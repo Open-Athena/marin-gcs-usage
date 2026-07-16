@@ -1,0 +1,25 @@
+# Canonical identity map for storage/cost attribution.
+#
+# Canonical user ids use the `rigging.provenance.sanitize_username` spelling
+# (email-like logins drop their domain; lowercase; anything outside [a-z0-9_-]
+# collapses to '-'). A raw spelling that sanitizes directly to a canonical id
+# needs no alias entry; `aliases` cover everything else (short handles,
+# initials) as observed in Iris job owners, provenance `built_by`, and
+# `users/<seg>/` path segments. The attribution job reports unknown-team users
+# — curate them into this file rather than letting them accumulate.
+users:
+  ryan-williams:
+    aliases: [ryan, rw]
+    team: infra
+  russell-power:
+    aliases: [rpower, russell]
+    team: infra
+
+teams: [infra, data, research]
+
+# Manual owners for big shared prefixes that no per-user signal covers
+# (datasets, ferry checkpoints, ...). `user` is optional; team-only rows are
+# expected here.
+prefix_owners: []
+#  - prefix: gs://marin-us-central2/datasets/
+#    team: data
