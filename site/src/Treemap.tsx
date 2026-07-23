@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
-import { squarify } from './squarify'
+import { foldSmall, squarify } from './squarify'
 import type { ColorMode, TreeNode } from './types'
 import { TEAM_VARS, domTeam, fmtBytes, fmtN } from './types'
 
@@ -77,15 +77,17 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
   )
 
   const rects = useMemo(
-    () => squarify(node.c ?? [], 0, 0, size.w, size.h),
+    () => squarify(foldSmall(node.c ?? [], size.w, size.h), 0, 0, size.w, size.h),
     [node, size],
   )
 
   const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, depth: number) => {
     const showLbl = r.w > 36 && r.h > 13
     // recurse while the cell has room — depth adapts to cell size
+    const kw = r.w - 6
+    const kh = r.h - (showLbl ? 23 : 6)
     const kids = kid.c && r.w > 90 && r.h > 44
-      ? squarify(kid.c, 0, 0, r.w - 6, r.h - (showLbl ? 23 : 6))
+      ? squarify(foldSmall(kid.c, kw, kh), 0, 0, kw, kh)
       : []
     let col: string
     let ink: string
