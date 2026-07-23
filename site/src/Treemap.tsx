@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { squarify } from './squarify'
 import type { TreeNode } from './types'
-import { fmtBytes, fmtN } from './types'
+import { TEAM_VARS, domTeam, fmtBytes, fmtN } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
+const TEAM_WHITE_INK = ['--t-core', '--t-stanford', '--t-oa']
+
+type ColorMode = 'tree' | 'team'
 
 interface Tip {
   x: number
@@ -17,6 +20,8 @@ export function Treemap({ root }: { root: TreeNode }) {
   const [path, setPath] = useState<TreeNode[]>([root])
   const [tip, setTip] = useState<Tip | null>(null)
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
+  const hasAttr = !!root.tm
+  const [mode, setMode] = useState<ColorMode>(hasAttr ? 'team' : 'tree')
   const mapRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const node = path[path.length - 1]
@@ -72,9 +77,18 @@ export function Treemap({ root }: { root: TreeNode }) {
   )
 
   const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, nested: boolean) => {
-    const slot = slotOf(kidPath)
-    const col = slot ? `var(${slot})` : 'var(--other)'
-    const ink = slot && WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)'
+    let col: string
+    let ink: string
+    if (mode === 'team') {
+      const team = domTeam(kid)
+      const tv = (team && TEAM_VARS[team]) || '--t-unattr'
+      col = `var(${tv})`
+      ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--cell-ink)'
+    } else {
+      const slot = slotOf(kidPath)
+      col = slot ? `var(${slot})` : 'var(--other)'
+      ink = slot && WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)'
+    }
     const gsPath = 'gs://' + kidPath.slice(1).map(n => n.n).join('/')
     const showTip = (e: React.MouseEvent) => {
       e.stopPropagation()
@@ -145,14 +159,34 @@ export function Treemap({ root }: { root: TreeNode }) {
           <span className="sep"> — {fmtBytes(node.b)} · {fmtN(node.o)} objects</span>
         </nav>
         <div className="legend">
-          {[...catSlot.entries()].map(([k, s]) => (
-            <span className="li" key={k}>
-              <span className="sw" style={{ background: `var(${s})` }} />
-              {k}
-            </span>
-          ))}
-          <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
+          {mode === 'team' ? (
+            Object.entries(TEAM_VARS).map(([t, v]) => (
+              <span className="li" key={t}>
+                <span className="sw" style={{ background: `var(${v})` }} />
+                {t}
+              </span>
+            ))
+          ) : (
+            <>
+              {[...catSlot.entries()].map(([k, s]) => (
+                <span className="li" key={k}>
+                  <span className="sw" style={{ background: `var(${s})` }} />
+                  {k}
+                </span>
+              ))}
+              <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
+            </>
+          )}
         </div>
+        {hasAttr && (
+          <button
+            className="mode"
+            onClick={() => setMode(m => (m === 'team' ? 'tree' : 'team'))}
+            title="Toggle cell coloring"
+          >
+            color: {mode}
+          </button>
+        )}
         <button className="fs" onClick={fullscreen} title="Toggle fullscreen">⛶</button>
       </div>
       <div className="map" ref={mapRef} role="application" aria-label="Storage treemap">
@@ -172,6 +206,25 @@ export function Treemap({ root }: { root: TreeNode }) {
           <div className="nums">
             {fmtBytes(tip.node.b)} · {fmtN(tip.node.o)} objects · {((100 * tip.node.b) / root.b).toFixed(2)}% of total
           </div>
+          {tip.node.tm && (
+            <div className="teams">
+              {Object.entries(tip.node.tm)
+                .filter(([, b]) => b >= 0.005 * tip.node.b)
+                .map(([t, b]) => (
+                  <span className="tt-team" key={t}>
+                    <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
+                    {t} {((100 * b) / tip.node.b).toFixed(0)}%
+                  </span>
+                ))}
+            </div>
+          )}
+          {tip.node.us && tip.node.us.length > 0 && (
+            <div className="users">
+              {tip.node.us.map(([u, b]) => (
+                <div key={u}>{u} · {fmtBytes(b)}</div>
+              ))}
+            </div>
+          )}
         </div>
       )}
       <div className="hint">click to drill in · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>

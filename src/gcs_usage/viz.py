@@ -9,14 +9,31 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import duckdb
 
 FOLD_MIN_BYTES = 20e9  # children below this fold into "(other ×N)"
+TOP_USERS_PER_NODE = 5
 
 
-def _build(rows: list[dict], levels: list[str]) -> list[dict]:
+def _attr_of(g: list[dict]) -> dict:
+    """Attribution summary of a row group: team-bytes map + top user-bytes."""
+    tm: dict[str, int] = defaultdict(int)
+    ub: dict[str, int] = defaultdict(int)
+    for r in g:
+        tm[r["team"]] += r["bytes"]
+        if r["user"]:
+            ub[r["user"]] += r["bytes"]
+    top = sorted(ub.items(), key=lambda kv: -kv[1])[:TOP_USERS_PER_NODE]
+    out = {"tm": dict(sorted(tm.items(), key=lambda kv: -kv[1]))}
+    if top:
+        out["us"] = [[u, b] for u, b in top]
+    return out
+
+
+def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict]:
     """Nested {n,b,o,c} tree from flat dir-component rows; small children folded."""
     if not levels:
         return []
@@ -29,8 +46,10 @@ def _build(rows: list[dict], levels: list[str]) -> list[dict]:
         b = sum(r["bytes"] for r in g)
         o = sum(r["objects"] for r in g)
         node: dict = {"n": name if name else "(files)", "b": b, "o": o}
+        if attr:
+            node.update(_attr_of(g))
         if levels[1:] and name != "":
-            kids = _build(g, levels[1:])
+            kids = _build(g, levels[1:], attr)
             if len(kids) > 1 or (kids and kids[0]["n"] != "(files)"):
                 node["c"] = kids
         out.append(node)
@@ -41,39 +60,93 @@ def _build(rows: list[dict], levels: list[str]) -> list[dict]:
         if len(small) == 1:
             big.append(small[0])
         else:
-            big.append(
-                {
-                    "n": f"(other ×{len(small)})",
-                    "b": sum(n["b"] for n in small),
-                    "o": sum(n["o"] for n in small),
-                }
-            )
+            folded: dict = {
+                "n": f"(other ×{len(small)})",
+                "b": sum(n["b"] for n in small),
+                "o": sum(n["o"] for n in small),
+            }
+            if attr:
+                tm: dict[str, int] = defaultdict(int)
+                ub: dict[str, int] = defaultdict(int)
+                for n in small:
+                    for t, tb in n.get("tm", {}).items():
+                        tm[t] += tb
+                    for u, b_ in n.get("us", []):
+                        ub[u] += b_
+                folded["tm"] = dict(sorted(tm.items(), key=lambda kv: -kv[1]))
+                top = sorted(ub.items(), key=lambda kv: -kv[1])[:TOP_USERS_PER_NODE]
+                if top:
+                    folded["us"] = [[u, b_] for u, b_ in top]
+            big.append(folded)
     return big
 
 
-def write_webdata(listing: str, out_dir: Path, asof: str) -> dict:
-    """Write tree.json / age.json / meta.json under ``out_dir``; returns meta."""
-    con = duckdb.connect()
-    con.execute("SET memory_limit='6GB'")
+def write_webdata(
+    listing: str,
+    out_dir: Path,
+    asof: str,
+    attributions: tuple[str, ...] = (),
+    identities_path: Path | None = None,
+) -> dict:
+    """Write tree.json / age.json / meta.json under ``out_dir``; returns meta.
 
-    dir_rows = con.execute(
-        f"""
-        WITH d AS (
-          SELECT bucket,
-            CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-            size_bytes
-          FROM read_parquet('{listing}')
-        )
-        SELECT bucket,
-          coalesce(regexp_extract(dir, '^([^/]+)', 1), '') AS d1,
-          coalesce(regexp_extract(dir, '^[^/]+/([^/]+)', 1), '') AS d2,
-          coalesce(regexp_extract(dir, '^[^/]+/[^/]+/([^/]+)', 1), '') AS d3,
-          sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
-        FROM d GROUP BY ALL
-        """
-    ).fetchall()
-    cols = ["bucket", "d1", "d2", "d3", "bytes", "objects"]
-    rows = [dict(zip(cols, r)) for r in dir_rows]
+    With ``attributions``, every dir is attributed (deepest-prefix-wins, same
+    join as ``report``) and each tree node carries ``tm`` (team-bytes map) and
+    ``us`` (top user-bytes) for ownership overlays.
+    """
+    attr = bool(attributions)
+    con = duckdb.connect()
+    # attribution mode is node-scale (34M-dir python-side walk); plain mode
+    # stays laptop-safe
+    con.execute(f"SET memory_limit='{'24GB' if attr else '6GB'}'")
+    if attr:
+        from .identity import DEFAULT_IDENTITIES, load_identities
+        from .prefixes import deepest_lookup, load_prefix_map
+
+        identities = load_identities(identities_path or DEFAULT_IDENTITIES)
+        deepest = deepest_lookup(load_prefix_map(con, attributions, identities, listing))
+        dir_rows = con.execute(
+            f"""
+            WITH d AS (
+              SELECT bucket,
+                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
+                size_bytes
+              FROM read_parquet('{listing}')
+            )
+            SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+            FROM d GROUP BY ALL
+            """
+        ).fetchall()
+        agg: dict[tuple, list] = defaultdict(lambda: [0, 0])
+        for bucket, dir_, nbytes, objects in dir_rows:
+            row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
+            user, team = (row[0], row[1]) if row else (None, "unattributed")
+            parts = dir_.split("/") if dir_ else []
+            key = (bucket, *((parts + ["", "", ""])[:3]), user, team)
+            a = agg[key]
+            a[0] += nbytes
+            a[1] += objects
+        cols = ["bucket", "d1", "d2", "d3", "user", "team", "bytes", "objects"]
+        rows = [dict(zip(cols, (*k, b, o))) for k, (b, o) in agg.items()]
+    else:
+        dir_rows = con.execute(
+            f"""
+            WITH d AS (
+              SELECT bucket,
+                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
+                size_bytes
+              FROM read_parquet('{listing}')
+            )
+            SELECT bucket,
+              coalesce(regexp_extract(dir, '^([^/]+)', 1), '') AS d1,
+              coalesce(regexp_extract(dir, '^[^/]+/([^/]+)', 1), '') AS d2,
+              coalesce(regexp_extract(dir, '^[^/]+/[^/]+/([^/]+)', 1), '') AS d3,
+              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+            FROM d GROUP BY ALL
+            """
+        ).fetchall()
+        cols = ["bucket", "d1", "d2", "d3", "bytes", "objects"]
+        rows = [dict(zip(cols, r)) for r in dir_rows]
 
     buckets: dict[str, list[dict]] = {}
     for r in rows:
@@ -83,7 +156,8 @@ def write_webdata(listing: str, out_dir: Path, asof: str) -> dict:
             "n": bucket,
             "b": sum(r["bytes"] for r in g),
             "o": sum(r["objects"] for r in g),
-            "c": _build(g, ["d1", "d2", "d3"]),
+            **(_attr_of(g) if attr else {}),
+            "c": _build(g, ["d1", "d2", "d3"], attr),
         }
         for bucket, g in buckets.items()
     ]
@@ -91,6 +165,8 @@ def write_webdata(listing: str, out_dir: Path, asof: str) -> dict:
     total_b = sum(n["b"] for n in roots)
     total_o = sum(n["o"] for n in roots)
     tree = {"n": "marin GCS", "b": total_b, "o": total_o, "c": roots}
+    if attr:
+        tree.update(_attr_of([r for g in buckets.values() for r in g]))
 
     age = con.execute(
         f"""

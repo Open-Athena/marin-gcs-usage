@@ -20,6 +20,7 @@ import pandas as pd
 from click import group, option
 
 from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
+from .prefixes import load_prefix_map
 from .records import mine_record_rows
 from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows
 
@@ -33,35 +34,6 @@ def _connect() -> "duckdb.DuckDBPyConnection":
     con.execute("SET memory_limit='24GB'")
     con.execute("SET threads=8")
     return con
-
-
-def _load_prefix_map(
-    con: "duckdb.DuckDBPyConnection",
-    attributions: tuple[str, ...],
-    identities,
-    listing: str,
-) -> dict:
-    """prefix -> (user, team, source), identity-resolved against the *current*
-    identities.yaml (so alias/team curation needs no parquet rebuild), plus
-    `prefix_owners` manual rows — a ``*`` in the bucket position fans out over
-    the listing's buckets (``gs://marin-*/raw/``)."""
-    from fnmatch import fnmatch
-
-    by_prefix: dict = {}
-    for attribution in attributions:
-        for prefix, user, team, source in con.execute(
-            "SELECT prefix, user, team, source FROM read_parquet(?)", [attribution]
-        ).fetchall():
-            user = identities.resolve(user) if user else user
-            by_prefix.setdefault(prefix, (user, identities.team_of(user) if user else team, source))
-    buckets = [b for (b,) in con.execute(f"SELECT DISTINCT bucket FROM read_parquet('{listing}')").fetchall()]
-    for owner in identities.prefix_owners:
-        bucket, _, rest = owner.prefix.removeprefix("gs://").partition("/")
-        expanded = (f"gs://{b}/{rest}" for b in buckets if fnmatch(b, bucket))
-        for prefix in expanded if "*" in bucket else (owner.prefix,):
-            by_prefix.setdefault(prefix, (owner.user, owner.team, "manual"))
-    err(f"{len(by_prefix)} attribution prefixes loaded")
-    return by_prefix
 
 
 @group()
@@ -213,7 +185,7 @@ def report(
     """
     identities = load_identities(identities_path)
     con = _connect()
-    by_prefix = _load_prefix_map(con, attributions, identities, listing)
+    by_prefix = load_prefix_map(con, attributions, identities, listing)
 
     dirs = con.execute(
         "SELECT bucket || '/' || CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,"
@@ -301,7 +273,7 @@ def gaps(
     new signals and `prefix_owners` curation."""
     identities = load_identities(identities_path)
     con = _connect()
-    by_prefix = _load_prefix_map(con, attributions, identities, listing)
+    by_prefix = load_prefix_map(con, attributions, identities, listing)
 
     dirs = con.execute(
         "SELECT bucket || '/' || CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,"
@@ -441,14 +413,22 @@ def wandb_mine(
 
 
 @main.command()
-@option("-a", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node team/user overlays")
+@option("-d", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
+@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
 @option("-o", "--out", "out_dir", type=Path, default=Path("site/public/data"), help="Output dir for JSON files")
-def webdata(asof: str, listing: str, out_dir: Path) -> None:
+def webdata(
+    attributions: tuple[str, ...],
+    asof: str,
+    identities_path: Path,
+    listing: str,
+    out_dir: Path,
+) -> None:
     """Generate the site's data JSONs (tree/age/meta) from a listing."""
     from .viz import write_webdata
 
-    meta = write_webdata(listing, out_dir, asof)
+    meta = write_webdata(listing, out_dir, asof, attributions, identities_path)
     err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
 
 

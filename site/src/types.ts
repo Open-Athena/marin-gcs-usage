@@ -2,7 +2,25 @@ export interface TreeNode {
   n: string
   b: number
   o: number
+  tm?: Record<string, number>  // team -> bytes (attribution overlay)
+  us?: [string, number][]      // top users -> bytes
   c?: TreeNode[]
+}
+
+export const TEAM_VARS: Record<string, string> = {
+  core: '--t-core',
+  stanford: '--t-stanford',
+  oa: '--t-oa',
+  unknown: '--t-unknown',
+  unattributed: '--t-unattr',
+}
+
+export const domTeam = (n: TreeNode): string | null => {
+  if (!n.tm) return null
+  let best: string | null = null
+  let bb = -1
+  for (const [t, b] of Object.entries(n.tm)) if (b > bb) { best = t; bb = b }
+  return best
 }
 
 export interface AgeRow {

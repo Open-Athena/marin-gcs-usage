@@ -60,9 +60,10 @@ export default function App() {
         <p>
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
           <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
-          scan (per-object listing, deduped). Treemap drills into prefixes; colors follow top-level trees.
-          Attribution (per-user / per-team ownership of these bytes) is being layered on — see the{' '}
-          <code>marin-gcs-usage</code> pipeline.
+          scan (per-object listing, deduped). Treemap drills into prefixes; cells color by owning team
+          (toggle to top-level-tree colors in the bar). Ownership comes from the <code>marin-gcs-usage</code>{' '}
+          attribution pipeline (W&B run/config joins, executor sidecars, manual curation) — hover a cell for
+          its team split and top users.
         </p>
       </section>
 

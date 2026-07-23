@@ -10,6 +10,8 @@
   --s1: #2a78d6; --s2: #008300; --s3: #e87ba4; --s4: #eda100;
   --s5: #1baf7a; --s6: #eb6834; --s7: #4a3aa7; --s8: #e34948;
   --other: #a6a49b;
+  --t-core: #2a78d6; --t-stanford: #b1040e; --t-oa: #1baf7a;
+  --t-unknown: #eda100; --t-unattr: #c9c7be;
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme='light'])) {
@@ -20,6 +22,8 @@
     --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500;
     --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
     --other: #5d5c55;
+    --t-core: #3987e5; --t-stanford: #d24855; --t-oa: #199e70;
+    --t-unknown: #c98500; --t-unattr: #4a4943;
   }
 }
 :root[data-theme='dark'] {
@@ -30,6 +34,8 @@
   --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500;
   --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
   --other: #5d5c55;
+  --t-core: #3987e5; --t-stanford: #d24855; --t-oa: #199e70;
+  --t-unknown: #c98500; --t-unattr: #4a4943;
 }
 
 * { box-sizing: border-box; }
@@ -102,6 +108,18 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
     .sw { width: 10px; height: 10px; border-radius: 3px; }
   }
+  .mode {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 2px 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    &:hover { filter: brightness(1.05); }
+    &:focus-visible { outline: 2px solid var(--s1); }
+  }
   .fs {
     background: var(--panel);
     color: var(--ink);
@@ -159,6 +177,20 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     word-break: break-all;
   }
   .nums { color: var(--ink-2); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .teams {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+    .tt-team { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+    .sw { width: 9px; height: 9px; border-radius: 2px; }
+  }
+  .users {
+    margin-top: 3px;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
 }
 
 .agechart {
