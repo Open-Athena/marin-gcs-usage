@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AgeChart } from './AgeChart'
 import { Treemap } from './Treemap'
-import type { AgeRow, Meta, TreeNode } from './types'
+import type { AgeRow, ColorMode, Meta, TreeNode } from './types'
 import { fmtBytes, fmtN } from './types'
 
 const CLASS_NAMES: Record<string, string> = { 1: 'Standard', 2: 'Nearline', 3: 'Coldline', 4: 'Archive' }
@@ -11,6 +11,9 @@ export default function App() {
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [age, setAge] = useState<AgeRow[]>([])
   const [meta, setMeta] = useState<Meta | null>(null)
+  const [mode, setMode] = useState<ColorMode>('team')
+  const hasAttr = !!tree?.tm
+  const effMode: ColorMode = hasAttr ? mode : 'tree'
 
   useEffect(() => {
     void fetch('/data/tree.json').then(r => r.json()).then(setTree)
@@ -60,19 +63,39 @@ export default function App() {
         <p>
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
           <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
-          scan (per-object listing, deduped). Treemap drills into prefixes; cells color by owning team
-          (toggle to top-level-tree colors in the bar). Ownership comes from the <code>marin-gcs-usage</code>{' '}
-          attribution pipeline (W&B run/config joins, executor sidecars, manual curation) — hover a cell for
-          its team split and top users.
+          scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control switches
+          both plots between owning-team and top-level-tree palettes. Ownership comes from the{' '}
+          <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
+          curation) — hover a cell for its team split and top users.
         </p>
       </section>
 
-      {tree ? <Treemap root={tree} /> : <p className="loading">loading tree…</p>}
+      {hasAttr && (
+        <div className="colorctl" role="radiogroup" aria-label="Color plots by">
+          <span className="lbl">color by</span>
+          {(['team', 'tree'] as ColorMode[]).map(m => (
+            <button
+              key={m}
+              role="radio"
+              aria-checked={effMode === m}
+              className={effMode === m ? 'on' : ''}
+              onClick={() => setMode(m)}
+            >
+              {m === 'team' ? 'owning team' : 'top-level tree'}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tree ? <Treemap root={tree} mode={effMode} /> : <p className="loading">loading tree…</p>}
 
       <section>
         <h2>Bytes by created month</h2>
-        <p className="sub">When today’s objects were written (created-time strata, colored by top-level tree).</p>
-        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} />}
+        <p className="sub">
+          When today’s objects were written (created-time strata, colored by{' '}
+          {effMode === 'team' ? 'owning team' : 'top-level tree'}).
+        </p>
+        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode} />}
       </section>
 
       {meta && (

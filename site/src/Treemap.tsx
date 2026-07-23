@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { squarify } from './squarify'
-import type { TreeNode } from './types'
+import type { ColorMode, TreeNode } from './types'
 import { TEAM_VARS, domTeam, fmtBytes, fmtN } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
 const TEAM_WHITE_INK = ['--t-core', '--t-stanford', '--t-oa']
-
-type ColorMode = 'tree' | 'team'
 
 interface Tip {
   x: number
@@ -16,12 +14,10 @@ interface Tip {
   node: TreeNode
 }
 
-export function Treemap({ root }: { root: TreeNode }) {
+export function Treemap({ root, mode }: { root: TreeNode; mode: ColorMode }) {
   const [path, setPath] = useState<TreeNode[]>([root])
   const [tip, setTip] = useState<Tip | null>(null)
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
-  const hasAttr = !!root.tm
-  const [mode, setMode] = useState<ColorMode>(hasAttr ? 'team' : 'tree')
   const mapRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const node = path[path.length - 1]
@@ -77,13 +73,22 @@ export function Treemap({ root }: { root: TreeNode }) {
   )
 
   const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, nested: boolean) => {
+    const kids = kid.c && !nested && r.w > 90 && r.h > 44
+      ? squarify(kid.c, 0, 0, r.w - 6, r.h - 23)
+      : []
     let col: string
     let ink: string
     if (mode === 'team') {
-      const team = domTeam(kid)
-      const tv = (team && TEAM_VARS[team]) || '--t-unattr'
-      col = `var(${tv})`
-      ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--cell-ink)'
+      if (kids.length > 0) {
+        // container: neutral so the nested tiles carry the team colors
+        col = 'var(--panel)'
+        ink = 'var(--ink)'
+      } else {
+        const team = domTeam(kid)
+        const tv = (team && TEAM_VARS[team]) || '--t-unattr'
+        col = `var(${tv})`
+        ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--cell-ink)'
+      }
     } else {
       const slot = slotOf(kidPath)
       col = slot ? `var(${slot})` : 'var(--other)'
@@ -101,9 +106,6 @@ export function Treemap({ root }: { root: TreeNode }) {
           setPath(kidPath)
         }
       : undefined
-    const kids = kid.c && !nested && r.w > 90 && r.h > 44
-      ? squarify(kid.c, 0, 0, r.w - 6, r.h - 23)
-      : []
     return (
       <div
         key={gsPath}
@@ -178,15 +180,6 @@ export function Treemap({ root }: { root: TreeNode }) {
             </>
           )}
         </div>
-        {hasAttr && (
-          <button
-            className="mode"
-            onClick={() => setMode(m => (m === 'team' ? 'tree' : 'team'))}
-            title="Toggle cell coloring"
-          >
-            color: {mode}
-          </button>
-        )}
         <button className="fs" onClick={fullscreen} title="Toggle fullscreen">⛶</button>
       </div>
       <div className="map" ref={mapRef} role="application" aria-label="Storage treemap">

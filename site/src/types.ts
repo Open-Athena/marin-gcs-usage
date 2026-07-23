@@ -26,9 +26,12 @@ export const domTeam = (n: TreeNode): string | null => {
 export interface AgeRow {
   m: string   // created month, YYYY-MM
   d1: string  // top-level dir
+  t?: string  // owning team (attribution-aware webdata only)
   b: number
   o: number
 }
+
+export type ColorMode = 'team' | 'tree'
 
 export interface Meta {
   asof: string

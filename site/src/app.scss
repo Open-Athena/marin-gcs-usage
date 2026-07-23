@@ -73,6 +73,29 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 .loading { color: var(--ink-3); }
 
+.colorctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  .lbl { color: var(--ink-2); font-size: 13px; margin-right: 2px; }
+  button {
+    background: var(--panel);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-size: 12.5px;
+    padding: 3px 10px;
+    cursor: pointer;
+    &.on {
+      background: var(--s1);
+      border-color: var(--s1);
+      color: #fff;
+    }
+    &:hover:not(.on) { filter: brightness(1.05); }
+    &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
+  }
+}
+
 .treemap {
   display: flex;
   flex-direction: column;

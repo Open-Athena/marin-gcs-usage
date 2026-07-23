@@ -168,19 +168,49 @@ def write_webdata(
     if attr:
         tree.update(_attr_of([r for g in buckets.values() for r in g]))
 
-    age = con.execute(
-        f"""
-        SELECT strftime(created, '%Y-%m') AS created_month,
-          regexp_extract(name, '^([^/]+)/', 1) AS d1,
-          sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
-        FROM read_parquet('{listing}')
-        WHERE created IS NOT NULL
-        GROUP BY ALL ORDER BY created_month
-        """
-    ).fetchall()
-    age_rows = [
-        {"m": m, "d1": d1 or "(files)", "b": b, "o": o} for m, d1, b, o in age
-    ]
+    if attr:
+        # (month, d1, team) strata: attribute at full-dir granularity (same
+        # cached deepest-prefix walk as the tree), streamed in record batches.
+        reader = con.execute(
+            f"""
+            SELECT strftime(created, '%Y-%m') AS m, bucket,
+              CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
+              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+            FROM read_parquet('{listing}')
+            WHERE created IS NOT NULL
+            GROUP BY ALL
+            """
+        ).fetch_record_batch(1_000_000)
+        age_agg: dict[tuple, list] = defaultdict(lambda: [0, 0])
+        for batch in reader:
+            d = batch.to_pydict()
+            for m, bucket, dir_, nbytes, objects in zip(
+                d["m"], d["bucket"], d["dir"], d["bytes"], d["objects"]
+            ):
+                row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
+                team = row[1] if row else "unattributed"
+                d1 = dir_.split("/", 1)[0] if dir_ else "(files)"
+                a = age_agg[(m, d1, team)]
+                a[0] += nbytes
+                a[1] += objects
+        age_rows = [
+            {"m": m, "d1": d1, "t": t, "b": b, "o": o}
+            for (m, d1, t), (b, o) in sorted(age_agg.items())
+        ]
+    else:
+        age = con.execute(
+            f"""
+            SELECT strftime(created, '%Y-%m') AS created_month,
+              regexp_extract(name, '^([^/]+)/', 1) AS d1,
+              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+            FROM read_parquet('{listing}')
+            WHERE created IS NOT NULL
+            GROUP BY ALL ORDER BY created_month
+            """
+        ).fetchall()
+        age_rows = [
+            {"m": m, "d1": d1 or "(files)", "b": b, "o": o} for m, d1, b, o in age
+        ]
 
     classes = con.execute(
         f"""

@@ -1,25 +1,32 @@
 import { useMemo, useState } from 'react'
-import type { AgeRow } from './types'
-import { fmtBytes } from './types'
+import type { AgeRow, ColorMode } from './types'
+import { TEAM_VARS, fmtBytes } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
-/** Stacked monthly bars: bytes by created month, split by top-level dir. */
-export function AgeChart({ rows, catOrder }: { rows: AgeRow[]; catOrder: string[] }) {
+/** Stacked monthly bars: bytes by created month, split by top-level dir or owning team. */
+export function AgeChart({ rows, catOrder, mode }: { rows: AgeRow[]; catOrder: string[]; mode: ColorMode }) {
   const [hover, setHover] = useState<{ m: string; x: number; y: number } | null>(null)
 
-  const { months, byMonth, slotOf } = useMemo(() => {
+  const { months, byMonth, slotOf, legend } = useMemo(() => {
     const slotMap = new Map(catOrder.slice(0, 8).map((k, i) => [k, SLOTS[i]]))
+    const teamMode = mode === 'team'
+    const keyOf = (r: AgeRow) =>
+      teamMode ? (r.t ?? 'unattributed') : slotMap.has(r.d1) ? r.d1 : '(other)'
     const byMonth = new Map<string, Map<string, number>>()
     for (const r of rows) {
-      const k = slotMap.has(r.d1) ? r.d1 : '(other)'
+      const k = keyOf(r)
       const m = byMonth.get(r.m) ?? new Map<string, number>()
       m.set(k, (m.get(k) ?? 0) + r.b)
       byMonth.set(r.m, m)
     }
     const months = [...byMonth.keys()].sort()
-    return { months, byMonth, slotOf: (k: string) => slotMap.get(k) }
-  }, [rows, catOrder])
+    const slotOf = (k: string) => (teamMode ? (TEAM_VARS[k] ?? '--t-unattr') : slotMap.get(k))
+    const legend: [string, string][] = teamMode
+      ? Object.entries(TEAM_VARS)
+      : [...catOrder.slice(0, 8).map((k, i): [string, string] => [k, SLOTS[i]]), ['(other)', '--other']]
+    return { months, byMonth, slotOf, legend }
+  }, [rows, catOrder, mode])
 
   const maxB = useMemo(
     () => Math.max(...months.map(m => [...byMonth.get(m)!.values()].reduce((a, b) => a + b, 0))),
@@ -33,13 +40,12 @@ export function AgeChart({ rows, catOrder }: { rows: AgeRow[]; catOrder: string[
   return (
     <div className="agechart">
       <div className="legend">
-        {catOrder.slice(0, 8).map((k, i) => (
+        {legend.map(([k, v]) => (
           <span className="li" key={k}>
-            <span className="sw" style={{ background: `var(${SLOTS[i]})` }} />
+            <span className="sw" style={{ background: `var(${v})` }} />
             {k}
           </span>
         ))}
-        <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
       </div>
       <svg viewBox={`0 0 ${W} ${H + 24}`} preserveAspectRatio="none" role="img" aria-label="Bytes by created month">
         {months.map((m, i) => {
