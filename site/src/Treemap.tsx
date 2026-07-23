@@ -113,10 +113,10 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         ink = 'var(--ink)'
       }
     } else {
-      // user / uteam: dominant user — only when they hold a real share of the
-      // node (team-row-attributed trees have token user slivers inside)
+      // user / uteam: a cell only takes a user's color when it is wholly
+      // (~100%) theirs — mixed boxes stay gray until you drill/zoom
       const [u, ub] = kid.us?.[0] ?? [null, 0]
-      col = userColor(ub >= kid.b / 3 ? u : null, userIdx, mode === 'uteam')
+      col = userColor(ub >= 0.98 * kid.b ? u : null, userIdx, mode === 'uteam')
       ink = inkFor(col)
     }
     const gsPath = 'gs://' + kidPath.slice(1).map(n => n.n).join('/')
@@ -131,14 +131,16 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
           setPath(kidPath)
         }
       : undefined
+    const dust = Math.min(r.w, r.h) < 14
     return (
       <div
         key={gsPath}
         className={'cell' + (kid.c ? ' branch' : '')}
         style={{
           left: r.x, top: r.y,
-          width: Math.max(0, r.w - 2), height: Math.max(0, r.h - 2),
+          width: Math.max(0, r.w - (dust ? 1 : 2)), height: Math.max(0, r.h - (dust ? 1 : 2)),
           background: col, color: ink, opacity: depth > 0 ? 0.82 : 0.92,
+          ...(dust && { boxShadow: 'none', borderRadius: 1.5 }),
         }}
         tabIndex={0}
         onMouseMove={showTip}
@@ -153,7 +155,7 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         )}
         {kids.length > 0 && (
           <div className="inner" style={{ top: showLbl ? 20 : 3 }}>
-            {kids.filter(s => s.w >= 6 && s.h >= 6).map(s =>
+            {kids.filter(s => s.w >= 3 && s.h >= 3).map(s =>
               cell(s.it, [...kidPath, s.it], s, depth + 1),
             )}
           </div>
@@ -225,7 +227,7 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
       </div>
       <div className="map" ref={mapRef} role="application" aria-label="Storage treemap">
         {rects
-          .filter(r => r.w >= 2 && r.h >= 2)
+          .filter(r => r.w >= 3 && r.h >= 3)
           .map(r => cell(r.it, [...path, r.it], r, 0))}
       </div>
       {tip && (

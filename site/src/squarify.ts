@@ -71,7 +71,7 @@ export function squarify(items: TreeNode[], x: number, y: number, w: number, h: 
 /** Fold items too small to render at this scale into one synthetic node, so
  * their combined area shows as a single tile instead of dropped rows of
  * sub-6px cells (which read as dead space). */
-export function foldSmall(items: TreeNode[], w: number, h: number, minArea = 49): TreeNode[] {
+export function foldSmall(items: TreeNode[], w: number, h: number, minArea = 16): TreeNode[] {
   const vis = items.filter(it => it.b > 0)
   const total = vis.reduce((s, it) => s + it.b, 0)
   if (!total || w <= 0 || h <= 0) return vis
