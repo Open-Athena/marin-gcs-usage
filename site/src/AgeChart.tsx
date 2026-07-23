@@ -32,6 +32,15 @@ export function AgeChart({ rows, catOrder }: { rows: AgeRow[]; catOrder: string[
 
   return (
     <div className="agechart">
+      <div className="legend">
+        {catOrder.slice(0, 8).map((k, i) => (
+          <span className="li" key={k}>
+            <span className="sw" style={{ background: `var(${SLOTS[i]})` }} />
+            {k}
+          </span>
+        ))}
+        <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
+      </div>
       <svg viewBox={`0 0 ${W} ${H + 24}`} preserveAspectRatio="none" role="img" aria-label="Bytes by created month">
         {months.map((m, i) => {
           const parts = byMonth.get(m)!
