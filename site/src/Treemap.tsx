@@ -81,9 +81,11 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
     [node, size],
   )
 
-  const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, nested: boolean) => {
-    const kids = kid.c && !nested && r.w > 90 && r.h > 44
-      ? squarify(kid.c, 0, 0, r.w - 6, r.h - 23)
+  const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, depth: number) => {
+    const showLbl = r.w > 36 && r.h > 13
+    // recurse while the cell has room — depth adapts to cell size
+    const kids = kid.c && r.w > 90 && r.h > 44
+      ? squarify(kid.c, 0, 0, r.w - 6, r.h - (showLbl ? 23 : 6))
       : []
     let col: string
     let ink: string
@@ -134,7 +136,7 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         style={{
           left: r.x, top: r.y,
           width: Math.max(0, r.w - 2), height: Math.max(0, r.h - 2),
-          background: col, color: ink, opacity: nested ? 0.82 : 0.92,
+          background: col, color: ink, opacity: depth > 0 ? 0.82 : 0.92,
         }}
         tabIndex={0}
         onMouseMove={showTip}
@@ -142,15 +144,15 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         onClick={drill}
         onKeyDown={e => e.key === 'Enter' && drill?.(e)}
       >
-        {r.w > 60 && r.h > 16 && (
-          <div className="lbl">
-            {kid.n} <span className="sz">{fmtBytes(kid.b)}</span>
+        {showLbl && (
+          <div className={'lbl' + (r.w < 64 ? ' sm' : '')}>
+            {kid.n}{r.w > 90 && <span className="sz"> {fmtBytes(kid.b)}</span>}
           </div>
         )}
         {kids.length > 0 && (
-          <div className="inner">
+          <div className="inner" style={{ top: showLbl ? 20 : 3 }}>
             {kids.filter(s => s.w >= 6 && s.h >= 6).map(s =>
-              cell(s.it, [...kidPath, s.it], s, true),
+              cell(s.it, [...kidPath, s.it], s, depth + 1),
             )}
           </div>
         )}
@@ -222,7 +224,7 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
       <div className="map" ref={mapRef} role="application" aria-label="Storage treemap">
         {rects
           .filter(r => r.w >= 2 && r.h >= 2)
-          .map(r => cell(r.it, [...path, r.it], r, false))}
+          .map(r => cell(r.it, [...path, r.it], r, 0))}
       </div>
       {tip && (
         <div

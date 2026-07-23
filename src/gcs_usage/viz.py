@@ -138,13 +138,13 @@ def write_webdata(
             row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
             user, team = (row[0], row[1]) if row else (None, "unattributed")
             parts = dir_.split("/") if dir_ else []
-            key = (bucket, *((parts + ["", "", ""])[:3]), user, team)
+            key = (bucket, *((parts + ["", "", "", ""])[:4]), user, team)
             a = agg[key]
             a[0] += nbytes
             a[1] += objects
             a[2] += wts or 0.0
             a[3] += wb or 0
-        cols = ["bucket", "d1", "d2", "d3", "user", "team", "bytes", "objects", "wts", "wb"]
+        cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb"]
         rows = [dict(zip(cols, (*k, *v))) for k, v in agg.items()]
     else:
         dir_rows = con.execute(
@@ -159,13 +159,14 @@ def write_webdata(
               coalesce(regexp_extract(dir, '^([^/]+)', 1), '') AS d1,
               coalesce(regexp_extract(dir, '^[^/]+/([^/]+)', 1), '') AS d2,
               coalesce(regexp_extract(dir, '^[^/]+/[^/]+/([^/]+)', 1), '') AS d3,
+              coalesce(regexp_extract(dir, '^[^/]+/[^/]+/[^/]+/([^/]+)', 1), '') AS d4,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
               sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
               sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
             FROM d GROUP BY ALL
             """
         ).fetchall()
-        cols = ["bucket", "d1", "d2", "d3", "bytes", "objects", "wts", "wb"]
+        cols = ["bucket", "d1", "d2", "d3", "d4", "bytes", "objects", "wts", "wb"]
         rows = [dict(zip(cols, r)) for r in dir_rows]
 
     buckets: dict[str, list[dict]] = {}
@@ -178,7 +179,7 @@ def write_webdata(
             "o": sum(r["objects"] for r in g),
             **({"d": _date_of(g)} if _date_of(g) is not None else {}),
             **(_attr_of(g) if attr else {}),
-            "c": _build(g, ["d1", "d2", "d3"], attr),
+            "c": _build(g, ["d1", "d2", "d3", "d4"], attr),
         }
         for bucket, g in buckets.items()
     ]

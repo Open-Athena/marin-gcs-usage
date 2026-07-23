@@ -164,6 +164,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     &:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
     .lbl {
       font-size: 11.5px;
+      &.sm { font-size: 9.5px; padding: 1px 3px; }
       line-height: 1.25;
       padding: 3px 5px;
       white-space: nowrap;
@@ -173,7 +174,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
       pointer-events: none;
       .sz { opacity: 0.75; }
     }
-    .inner { position: absolute; top: 20px; left: 3px; right: 3px; bottom: 3px; }
+    .inner { position: absolute; left: 3px; right: 3px; bottom: 3px; }
   }
   .hint { color: var(--ink-3); font-size: 12px; }
 }
