@@ -99,7 +99,7 @@ export function inkFor(color: string): string {
       }
       ;[r, g, b] = [f(h + 1 / 3) * 255, f(h) * 255, f(h - 1 / 3) * 255]
     }
-  } else return 'var(--cell-ink)' // css var background: let theme decide
+  } else return 'var(--ink)' // css var background (theme grays): use theme ink
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
   return lum > 0.62 ? '#1a1a19' : '#fff'
 }

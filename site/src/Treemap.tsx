@@ -90,7 +90,7 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
     if (mode === 'tree') {
       const slot = slotOf(kidPath)
       col = slot ? `var(${slot})` : 'var(--other)'
-      ink = slot && WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)'
+      ink = slot ? (WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)') : 'var(--ink)'
     } else if (kids.length > 0) {
       // container: neutral so the nested tiles carry the data colors
       col = 'var(--panel)'
@@ -99,14 +99,14 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
       const team = domTeam(kid)
       const tv = (team && TEAM_VARS[team]) || '--t-unattr'
       col = `var(${tv})`
-      ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--cell-ink)'
+      ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
     } else if (mode === 'date') {
       if (kid.d != null && dateRange && dateRange.max > dateRange.min) {
         col = dateColor((kid.d - dateRange.min) / (dateRange.max - dateRange.min))
         ink = inkFor(col)
       } else {
         col = 'var(--other)'
-        ink = 'var(--cell-ink)'
+        ink = 'var(--ink)'
       }
     } else {
       // user / uteam: dominant user — only when they hold a real share of the
