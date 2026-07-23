@@ -18,6 +18,13 @@ FOLD_MIN_BYTES = 20e9  # children below this fold into "(other ×N)"
 TOP_USERS_PER_NODE = 5
 
 
+def _date_of(g: list[dict]) -> int | None:
+    """Bytes-weighted mean created date of a row group, in epoch days."""
+    wts = sum(r["wts"] or 0 for r in g)
+    wb = sum(r["wb"] or 0 for r in g)
+    return int(wts / wb / 86400) if wb else None
+
+
 def _attr_of(g: list[dict]) -> dict:
     """Attribution summary of a row group: team-bytes map + top user-bytes."""
     tm: dict[str, int] = defaultdict(int)
@@ -46,6 +53,9 @@ def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict
         b = sum(r["bytes"] for r in g)
         o = sum(r["objects"] for r in g)
         node: dict = {"n": name if name else "(files)", "b": b, "o": o}
+        d = _date_of(g)
+        if d is not None:
+            node["d"] = d
         if attr:
             node.update(_attr_of(g))
         if levels[1:] and name != "":
@@ -65,6 +75,10 @@ def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict
                 "b": sum(n["b"] for n in small),
                 "o": sum(n["o"] for n in small),
             }
+            dated = [n for n in small if "d" in n]
+            if dated:
+                # approximate: re-weight the children's means by their bytes
+                folded["d"] = int(sum(n["d"] * n["b"] for n in dated) / sum(n["b"] for n in dated))
             if attr:
                 tm: dict[str, int] = defaultdict(int)
                 ub: dict[str, int] = defaultdict(int)
@@ -110,15 +124,17 @@ def write_webdata(
             WITH d AS (
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes
+                size_bytes, created
               FROM read_parquet('{listing}')
             )
-            SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+            SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
             FROM d GROUP BY ALL
             """
         ).fetchall()
-        agg: dict[tuple, list] = defaultdict(lambda: [0, 0])
-        for bucket, dir_, nbytes, objects in dir_rows:
+        agg: dict[tuple, list] = defaultdict(lambda: [0, 0, 0.0, 0])
+        for bucket, dir_, nbytes, objects, wts, wb in dir_rows:
             row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
             user, team = (row[0], row[1]) if row else (None, "unattributed")
             parts = dir_.split("/") if dir_ else []
@@ -126,26 +142,30 @@ def write_webdata(
             a = agg[key]
             a[0] += nbytes
             a[1] += objects
-        cols = ["bucket", "d1", "d2", "d3", "user", "team", "bytes", "objects"]
-        rows = [dict(zip(cols, (*k, b, o))) for k, (b, o) in agg.items()]
+            a[2] += wts or 0.0
+            a[3] += wb or 0
+        cols = ["bucket", "d1", "d2", "d3", "user", "team", "bytes", "objects", "wts", "wb"]
+        rows = [dict(zip(cols, (*k, *v))) for k, v in agg.items()]
     else:
         dir_rows = con.execute(
             f"""
             WITH d AS (
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes
+                size_bytes, created
               FROM read_parquet('{listing}')
             )
             SELECT bucket,
               coalesce(regexp_extract(dir, '^([^/]+)', 1), '') AS d1,
               coalesce(regexp_extract(dir, '^[^/]+/([^/]+)', 1), '') AS d2,
               coalesce(regexp_extract(dir, '^[^/]+/[^/]+/([^/]+)', 1), '') AS d3,
-              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
             FROM d GROUP BY ALL
             """
         ).fetchall()
-        cols = ["bucket", "d1", "d2", "d3", "bytes", "objects"]
+        cols = ["bucket", "d1", "d2", "d3", "bytes", "objects", "wts", "wb"]
         rows = [dict(zip(cols, r)) for r in dir_rows]
 
     buckets: dict[str, list[dict]] = {}
@@ -156,6 +176,7 @@ def write_webdata(
             "n": bucket,
             "b": sum(r["bytes"] for r in g),
             "o": sum(r["objects"] for r in g),
+            **({"d": _date_of(g)} if _date_of(g) is not None else {}),
             **(_attr_of(g) if attr else {}),
             "c": _build(g, ["d1", "d2", "d3"], attr),
         }
@@ -188,14 +209,14 @@ def write_webdata(
                 d["m"], d["bucket"], d["dir"], d["bytes"], d["objects"]
             ):
                 row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
-                team = row[1] if row else "unattributed"
+                user, team = (row[0], row[1]) if row else (None, "unattributed")
                 d1 = dir_.split("/", 1)[0] if dir_ else "(files)"
-                a = age_agg[(m, d1, team)]
+                a = age_agg[(m, d1, team, user)]
                 a[0] += nbytes
                 a[1] += objects
         age_rows = [
-            {"m": m, "d1": d1, "t": t, "b": b, "o": o}
-            for (m, d1, t), (b, o) in sorted(age_agg.items())
+            {"m": m, "d1": d1, "t": t, **({"u": u} if u else {}), "b": b, "o": o}
+            for (m, d1, t, u), (b, o) in sorted(age_agg.items(), key=lambda kv: kv[0][:2])
         ]
     else:
         age = con.execute(
@@ -226,6 +247,15 @@ def write_webdata(
         "total_objects": total_o,
         "class_bytes": {int(c): int(b) for c, b in classes},
     }
+    if attr:
+        user_bytes: dict[tuple, int] = defaultdict(int)
+        for r in rows:
+            if r["user"]:
+                user_bytes[(r["user"], r["team"])] += r["bytes"]
+        meta["users"] = [
+            {"u": u, "t": t, "b": b}
+            for (u, t), b in sorted(user_bytes.items(), key=lambda kv: -kv[1])
+        ]
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "tree.json").write_text(json.dumps(tree, separators=(",", ":")) + "\n")

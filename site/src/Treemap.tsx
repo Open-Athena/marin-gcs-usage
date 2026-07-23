@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
+import type { UserIndexEntry } from './colors'
 import { squarify } from './squarify'
 import type { ColorMode, TreeNode } from './types'
 import { TEAM_VARS, domTeam, fmtBytes, fmtN } from './types'
@@ -14,7 +16,14 @@ interface Tip {
   node: TreeNode
 }
 
-export function Treemap({ root, mode }: { root: TreeNode; mode: ColorMode }) {
+export interface DateRange { min: number; max: number }
+
+export function Treemap({ root, mode, userIdx, dateRange }: {
+  root: TreeNode
+  mode: ColorMode
+  userIdx: Map<string, UserIndexEntry>
+  dateRange: DateRange | null
+}) {
   const [path, setPath] = useState<TreeNode[]>([root])
   const [tip, setTip] = useState<Tip | null>(null)
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
@@ -78,21 +87,33 @@ export function Treemap({ root, mode }: { root: TreeNode; mode: ColorMode }) {
       : []
     let col: string
     let ink: string
-    if (mode === 'team') {
-      if (kids.length > 0) {
-        // container: neutral so the nested tiles carry the team colors
-        col = 'var(--panel)'
-        ink = 'var(--ink)'
-      } else {
-        const team = domTeam(kid)
-        const tv = (team && TEAM_VARS[team]) || '--t-unattr'
-        col = `var(${tv})`
-        ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--cell-ink)'
-      }
-    } else {
+    if (mode === 'tree') {
       const slot = slotOf(kidPath)
       col = slot ? `var(${slot})` : 'var(--other)'
       ink = slot && WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)'
+    } else if (kids.length > 0) {
+      // container: neutral so the nested tiles carry the data colors
+      col = 'var(--panel)'
+      ink = 'var(--ink)'
+    } else if (mode === 'team') {
+      const team = domTeam(kid)
+      const tv = (team && TEAM_VARS[team]) || '--t-unattr'
+      col = `var(${tv})`
+      ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--cell-ink)'
+    } else if (mode === 'date') {
+      if (kid.d != null && dateRange && dateRange.max > dateRange.min) {
+        col = dateColor((kid.d - dateRange.min) / (dateRange.max - dateRange.min))
+        ink = inkFor(col)
+      } else {
+        col = 'var(--other)'
+        ink = 'var(--cell-ink)'
+      }
+    } else {
+      // user / uteam: dominant user — only when they hold a real share of the
+      // node (team-row-attributed trees have token user slivers inside)
+      const [u, ub] = kid.us?.[0] ?? [null, 0]
+      col = userColor(ub >= kid.b / 3 ? u : null, userIdx, mode === 'uteam')
+      ink = inkFor(col)
     }
     const gsPath = 'gs://' + kidPath.slice(1).map(n => n.n).join('/')
     const showTip = (e: React.MouseEvent) => {
@@ -168,6 +189,22 @@ export function Treemap({ root, mode }: { root: TreeNode; mode: ColorMode }) {
                 {t}
               </span>
             ))
+          ) : mode === 'date' && dateRange ? (
+            <span className="li gradli">
+              {epochDaysToMonth(dateRange.min)}
+              <span className="gradbar" style={{ background: dateGradientCss() }} />
+              {epochDaysToMonth(dateRange.max)}
+            </span>
+          ) : mode === 'user' || mode === 'uteam' ? (
+            <>
+              {[...userIdx.entries()].slice(0, 10).map(([u]) => (
+                <span className="li" key={u}>
+                  <span className="sw" style={{ background: userColor(u, userIdx, mode === 'uteam') }} />
+                  {u}
+                </span>
+              ))}
+              <span className="li"><span className="sw" style={{ background: 'var(--t-unattr)' }} />unattributed</span>
+            </>
           ) : (
             <>
               {[...catSlot.entries()].map(([k, s]) => (
@@ -195,9 +232,13 @@ export function Treemap({ root, mode }: { root: TreeNode; mode: ColorMode }) {
             top: Math.min(tip.y + 14, window.innerHeight - 80),
           }}
         >
-          <div className="path">{tip.path}</div>
+          <div className="path">
+            <span className="dirname">{tip.path.slice(0, tip.path.lastIndexOf('/') + 1)}</span>
+            <span className="basename">{tip.path.slice(tip.path.lastIndexOf('/') + 1)}</span>
+          </div>
           <div className="nums">
             {fmtBytes(tip.node.b)} · {fmtN(tip.node.o)} objects · {((100 * tip.node.b) / root.b).toFixed(2)}% of total
+            {tip.node.d != null && <> · mean created {epochDaysToMonth(tip.node.d)}</>}
           </div>
           {tip.node.tm && (
             <div className="teams">

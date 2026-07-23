@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AgeChart } from './AgeChart'
+import { buildUserIndex } from './colors'
 import { Treemap } from './Treemap'
+import type { DateRange } from './Treemap'
 import type { AgeRow, ColorMode, Meta, TreeNode } from './types'
-import { fmtBytes, fmtN } from './types'
+import { MODE_LABELS, fmtBytes, fmtN } from './types'
 
 const CLASS_NAMES: Record<string, string> = { 1: 'Standard', 2: 'Nearline', 3: 'Coldline', 4: 'Archive' }
 const CLASS_PRICE_US: Record<string, number> = { 1: 0.02, 2: 0.01, 3: 0.004, 4: 0.0012 }
@@ -14,6 +16,23 @@ export default function App() {
   const [mode, setMode] = useState<ColorMode>('team')
   const hasAttr = !!tree?.tm
   const effMode: ColorMode = hasAttr ? mode : 'tree'
+
+  const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
+
+  const dateRange = useMemo((): DateRange | null => {
+    if (!tree) return null
+    let min = Infinity
+    let max = -Infinity
+    const walk = (n: TreeNode) => {
+      if (n.d != null && !n.c) {
+        if (n.d < min) min = n.d
+        if (n.d > max) max = n.d
+      }
+      n.c?.forEach(walk)
+    }
+    walk(tree)
+    return min < max ? { min, max } : null
+  }, [tree])
 
   useEffect(() => {
     void fetch('/data/tree.json').then(r => r.json()).then(setTree)
@@ -63,8 +82,9 @@ export default function App() {
         <p>
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
           <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
-          scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control switches
-          both plots between owning-team and top-level-tree palettes. Ownership comes from the{' '}
+          scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control recolors
+          both plots — by owning team, top-level tree, age (older→newer), or owning user (hi-contrast, or
+          hues grouped by team). Ownership comes from the{' '}
           <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
           curation) — hover a cell for its team split and top users.
         </p>
@@ -73,7 +93,7 @@ export default function App() {
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
           <span className="lbl">color by</span>
-          {(['team', 'tree'] as ColorMode[]).map(m => (
+          {(Object.keys(MODE_LABELS) as ColorMode[]).map(m => (
             <button
               key={m}
               role="radio"
@@ -81,21 +101,24 @@ export default function App() {
               className={effMode === m ? 'on' : ''}
               onClick={() => setMode(m)}
             >
-              {m === 'team' ? 'owning team' : 'top-level tree'}
+              {MODE_LABELS[m]}
             </button>
           ))}
         </div>
       )}
 
-      {tree ? <Treemap root={tree} mode={effMode} /> : <p className="loading">loading tree…</p>}
+      {tree ? (
+        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} />
+      ) : (
+        <p className="loading">loading tree…</p>
+      )}
 
       <section>
         <h2>Bytes by created month</h2>
         <p className="sub">
-          When today’s objects were written (created-time strata, colored by{' '}
-          {effMode === 'team' ? 'owning team' : 'top-level tree'}).
+          When today’s objects were written (created-time strata, colored by {MODE_LABELS[effMode]}).
         </p>
-        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode} />}
+        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode} userIdx={userIdx} />}
       </section>
 
       {meta && (
