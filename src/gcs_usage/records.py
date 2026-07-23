@@ -26,8 +26,14 @@ logger = logging.getLogger(__name__)
 
 
 def built_by_of_record(text: str) -> str | None:
-    """The ``provenance.built_by`` of an artifact-record JSON body, if any."""
+    """The ``provenance.built_by`` of an artifact-record JSON body, if any.
+
+    Pre-migration sidecars are frequently literal ``null`` (~95% of the fleet
+    as of 2026-07); any non-dict body is simply "no signal", not a failure.
+    """
     record = json.loads(text)
+    if not isinstance(record, dict):
+        return None
     provenance = record.get("provenance")
     if not isinstance(provenance, dict):
         return None

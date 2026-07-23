@@ -7,19 +7,168 @@
 # initials) as observed in Iris job owners, provenance `built_by`, and
 # `users/<seg>/` path segments. The attribution job reports unknown-team users
 # — curate them into this file rather than letting them accumulate.
+# Teams = spend categories per Will (Slack #marin-eng, 2026-07-21):
+#   core     — Marin release-model effort (incl. OA employees working on Marin)
+#   stanford — Percy's students' research (Percy manages)
+#   oa       — non-Marin OA projects (Coral, ...)
 users:
   ryan-williams:
     aliases: [ryan, rw]
-    team: infra
+    team: core
   russell-power:
-    aliases: [rpower, russell]
-    team: infra
+    aliases: [rpower, russell, power]  # `power` observed as `built_by` in 2026-07-13 scan records
+    team: core
+  # W&B usernames below observed in the 2026-07-22 full API mine (148,670 runs);
+  # display names come from the W&B user profile. Team assignments marked TODO
+  # need confirmation from Will/Percy.
+  david-hall:
+    aliases: [dlwh]  # David Leo Wright Hall
+    team: core
+  will-held:
+    aliases: [held]
+    team: core
+  rafal-wojdyla:
+    aliases: [ravwojdyla, rav]
+    team: oa
+  yael-elmatad:
+    team: oa
+  matt-wittmann:
+    aliases: [mcwitt]
+    team: oa
+  eric-czech:
+    aliases: [eczech]
+    team: oa
+  romain-yon:
+    team: core  # OA, works on Marin FT
+  moojin-kim:
+    aliases: [moojink]  # Moo Jin Kim
+    team: stanford
+  calvin-xu:
+    aliases: [pinlinxu, calvinxu]  # one person, two W&B accounts (display: Calvin Xu)
+    team: stanford
+  rohith-kuditipudi:
+    aliases: [rohithk]
+    team: stanford
+  michael-ryan:
+    aliases: [michaeljryan, michaelryan]
+    team: stanford
+  kaiyue-wen:
+    aliases: [when, kaiyuew, kaiyue]
+    team: stanford
+  pranshu-chaturvedi:
+    aliases: [pranshu-01-c]
+    team: stanford
+  ziqing-huang:
+    aliases: [ziqingh]
+    team: stanford
+  christopher-chou:
+    aliases: [babychousr]
+    team: stanford
+  percy-liang:
+    aliases: [percyliang]
+    team: stanford
+  ahmed-ahmed:
+    aliases: [ahmedah, ahmed]  # Ahmed Mohamed Ahmed
+    team: stanford
+  kevin-li:
+    aliases: [kevinxli]
+    team: stanford
+  chi-heem-wong:
+    aliases: [chiheem]  # display "CHW"
+    team: stanford
+  nikil-ravi:
+    team: stanford
+  suhas-kotha:
+    aliases: [kothasuhas]
+    team: stanford
+  elyas-obbad:
+    aliases: [eobbad]
+    team: stanford
+  herumb-shandilya:
+    aliases: [herumb-stanford]
+    team: stanford
+  jason-wang:
+    aliases: [blahblahhhj]
+    team: stanford
+  larry-dial:
+    aliases: [larrydial, larry]
+    team: core  # TODO confirm — 149.7 TB attributed; joined 2026-02, active daily
+  exedev:
+    team: core  # TODO confirm — CI/automation account? 11.5 TB
+  runner:
+    team: core  # TODO confirm — CI/automation account
 
-teams: [infra, data, research]
+teams: [core, stanford, oa]
 
 # Manual owners for big shared prefixes that no per-user signal covers
 # (datasets, ferry checkpoints, ...). `user` is optional; team-only rows are
-# expected here.
-prefix_owners: []
-#  - prefix: gs://marin-us-central2/datasets/
-#    team: data
+# expected here. A `*` in the bucket position fans out over the listing's
+# buckets at report time. Deepest-prefix-wins still applies, so per-user
+# signals inside these trees override the team row.
+prefix_owners:
+  # Shared data-pipeline trees — "core" per Will's taxonomy (storage for
+  # models planned for release; raw → normalized → tokenized + datakit infra).
+  - prefix: gs://marin-*/raw/
+    team: core
+  - prefix: gs://marin-*/normalized/
+    team: core
+  - prefix: gs://marin-*/tokenized/
+    team: core
+  - prefix: gs://marin-*/datakit/
+    team: core
+  - prefix: gs://marin-*/data/
+    team: core
+  - prefix: gs://marin-*/documents/
+    team: core
+  - prefix: gs://marin-*/processed/
+    team: core
+  # Shared dataset dirs outside the standard trees
+  - prefix: gs://marin-us-central2/datasets/
+    team: core
+  - prefix: gs://marin-us-central1/finetranslations-0d9d50/
+    team: core
+  - prefix: gs://marin-us-east5/finetranslations-0d9d50/
+    team: core
+  - prefix: gs://marin-us-east5/finepdfs_eng_Latn/
+    team: core
+  # Ephemeral TTL trees (auto-expiring; keep them out of the gap list)
+  - prefix: gs://marin-*/tmp/
+    team: core
+  # Centrally-run sweep namespaces (many configs have no matching W&B run
+  # name; per-user signals inside still win via deepest-prefix)
+  - prefix: gs://marin-*/checkpoints/isoflop/
+    team: core  # scaling-law ladders; runs by held/rohithk/larrydial et al.
+  - prefix: gs://marin-*/grug/chunked_perf/
+    team: core  # TODO confirm owner (grug infra sweeps)
+  - prefix: gs://marin-*/grug/moe_depth_mup_lr/
+    team: core  # TODO confirm owner (MoE muP LR sweeps)
+  # scratch/<user>/ segments (not definitionally per-user like users/, so
+  # only known-user segments are mapped)
+  - prefix: gs://marin-*/scratch/ahmed/
+    user: ahmed-ahmed
+    team: stanford
+  - prefix: gs://marin-*/scratch/kaiyue/
+    user: kaiyue-wen
+    team: stanford
+  - prefix: gs://marin-*/scratch/michaelryan/
+    user: michael-ryan
+    team: stanford
+  - prefix: gs://marin-*/scratch/rav/
+    user: rafal-wojdyla
+    team: oa
+  # Personal top-level dirs predating users/<name>/ convention
+  - prefix: gs://marin-us-east5/pinlin_calvin_xu/
+    user: calvin-xu
+    team: stanford
+  - prefix: gs://marin-*/julian/
+    user: julian
+    team: stanford  # TODO confirm which Julian; ~22 TB of julian/experiments/ across 3 buckets
+  - prefix: gs://marin-*/user/rav/
+    user: rafal-wojdyla
+    team: oa  # `user/` (singular) tree is ~all rav
+  - prefix: gs://marin-us-central1/ttl=30d/dlwh/
+    user: david-hall
+    team: core
+  - prefix: gs://marin-eu-west4/tomat/
+    user: ryan-williams
+    team: core  # TODO confirm — tomat is Ryan's CLI; results tree 2.8 TB

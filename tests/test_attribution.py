@@ -139,14 +139,19 @@ def test_mine_record_rows_local_files(tmp_path: Path, identities):
     owned = tmp_path / "owned"
     anonymous = tmp_path / "anonymous"
     corrupt = tmp_path / "corrupt"
-    for d in (owned, anonymous, corrupt):
+    null_body = tmp_path / "null_body"
+    for d in (owned, anonymous, corrupt, null_body):
         d.mkdir()
     owned_path = _write_record(owned, {"built_by": "rw", "tree_hash": "t", "base_commit": "b"})
     anonymous_path = _write_record(anonymous, None)
     corrupt_path = corrupt / ".artifact.json"
     corrupt_path.write_text("not json")
+    # Pre-migration sidecars are frequently a literal JSON null (~95% of the
+    # 2026-07 fleet): no signal, but must not count as a read failure either.
+    null_path = null_body / ".artifact.json"
+    null_path.write_text("null")
 
-    paths = [owned_path, anonymous_path, str(corrupt_path)]
+    paths = [owned_path, anonymous_path, str(corrupt_path), str(null_path)]
     rows, failed = mine_record_rows(paths, identities, ASOF, max_workers=2)
 
     assert rows == [
