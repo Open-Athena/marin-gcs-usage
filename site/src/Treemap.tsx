@@ -230,43 +230,50 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
           .filter(r => r.w >= 3 && r.h >= 3)
           .map(r => cell(r.it, [...path, r.it], r, 0))}
       </div>
-      {tip && (
-        <div
-          className="tip"
-          style={{
-            left: Math.min(tip.x + 14, window.innerWidth - 320),
-            top: Math.min(tip.y + 14, window.innerHeight - 80),
-          }}
-        >
-          <div className="path">
-            <span className="dirname">{tip.path.slice(0, tip.path.lastIndexOf('/') + 1)}</span>
-            <span className="basename">{tip.path.slice(tip.path.lastIndexOf('/') + 1)}</span>
-          </div>
-          <div className="nums">
-            {fmtBytes(tip.node.b)} · {fmtN(tip.node.o)} objects · {((100 * tip.node.b) / root.b).toFixed(2)}% of total
-            {tip.node.d != null && <> · mean created {epochDaysToMonth(tip.node.d)}</>}
-          </div>
-          {tip.node.tm && (
-            <div className="teams">
-              {Object.entries(tip.node.tm)
-                .filter(([, b]) => b >= 0.005 * tip.node.b)
-                .map(([t, b]) => (
-                  <span className="tt-team" key={t}>
-                    <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
-                    {t} {((100 * b) / tip.node.b).toFixed(0)}%
-                  </span>
-                ))}
-            </div>
-          )}
-          {tip.node.us && tip.node.us.length > 0 && (
-            <div className="users">
-              {tip.node.us.map(([u, b]) => (
-                <div key={u}>{u} · {fmtBytes(b)}</div>
+      {tip && (() => {
+        const userMode = mode === 'user' || mode === 'uteam'
+        const teams = tip.node.tm && (
+          <div className="teams">
+            {Object.entries(tip.node.tm)
+              .filter(([, b]) => b >= 0.005 * tip.node.b)
+              .map(([t, b]) => (
+                <span className="tt-team" key={t}>
+                  <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
+                  {t} {((100 * b) / tip.node.b).toFixed(0)}%
+                </span>
               ))}
+          </div>
+        )
+        const users = tip.node.us && tip.node.us.length > 0 && (
+          <div className="users">
+            {tip.node.us.map(([u, b]) => (
+              <div className="tt-user" key={u}>
+                {userMode && <span className="sw" style={{ background: userColor(u, userIdx, mode === 'uteam') }} />}
+                {u} · {fmtBytes(b)}
+              </div>
+            ))}
+          </div>
+        )
+        return (
+          <div
+            className="tip"
+            style={{
+              left: Math.min(tip.x + 14, window.innerWidth - 320),
+              top: Math.min(tip.y + 14, window.innerHeight - 80),
+            }}
+          >
+            <div className="path">
+              <span className="dirname">{tip.path.slice(0, tip.path.lastIndexOf('/') + 1)}</span>
+              <span className="basename">{tip.path.slice(tip.path.lastIndexOf('/') + 1)}</span>
             </div>
-          )}
-        </div>
-      )}
+            <div className="nums">
+              {fmtBytes(tip.node.b)} · {fmtN(tip.node.o)} objects · {((100 * tip.node.b) / root.b).toFixed(2)}% of total
+              {tip.node.d != null && <> · mean created {epochDaysToMonth(tip.node.d)}</>}
+            </div>
+            {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
+          </div>
+        )
+      })()}
       <div className="hint">click to drill in · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>
     </div>
   )

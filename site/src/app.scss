@@ -221,6 +221,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     color: var(--ink-2);
     font-variant-numeric: tabular-nums;
     font-size: 12px;
+    .tt-user { display: flex; align-items: center; gap: 5px; }
+    .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
   }
 }
 
