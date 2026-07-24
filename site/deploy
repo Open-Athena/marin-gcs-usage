@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Build and deploy to Cloudflare Pages: https://gcs.oa.dev (project oa-gcs-usage,
+# Open Athena account). CF Access (Zero Trust) gates every hostname — gcs.oa.dev
+# and the *.oa-gcs-usage.pages.dev production/preview URLs.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+# Deploys auth via the wrangler OAuth login (`wrangler login`), which has Pages
+# scope; the repo's direnv CLOUDFLARE_API_TOKEN (Access + DNS only) would
+# preempt it and fail, so drop it.
+unset CLOUDFLARE_API_TOKEN
+
+pnpm build
+CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d \
+  exec npx wrangler pages deploy dist --project-name oa-gcs-usage --branch main
