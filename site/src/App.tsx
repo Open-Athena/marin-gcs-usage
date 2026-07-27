@@ -9,11 +9,32 @@ import { MODE_LABELS, fmtBytes, fmtN } from './types'
 const CLASS_NAMES: Record<string, string> = { 1: 'Standard', 2: 'Nearline', 3: 'Coldline', 4: 'Archive' }
 const CLASS_PRICE_US: Record<string, number> = { 1: 0.02, 2: 0.01, 3: 0.004, 4: 0.0012 }
 
+// CF Access identity (present when served behind gcs.oa.dev; absent in local dev)
+interface Identity { email: string; name?: string }
+
+function useIdentity(): Identity | null {
+  const [ident, setIdent] = useState<Identity | null>(null)
+  useEffect(() => {
+    void fetch('/cdn-cgi/access/get-identity')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => d?.email && setIdent(d))
+      .catch(() => {})
+  }, [])
+  return ident
+}
+
+const avatarHue = (s: string): number => {
+  let h = 0
+  for (const c of s) h = (h * 31 + c.codePointAt(0)!) % 360
+  return h
+}
+
 export default function App() {
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [age, setAge] = useState<AgeRow[]>([])
   const [meta, setMeta] = useState<Meta | null>(null)
   const [mode, setMode] = useState<ColorMode>('team')
+  const ident = useIdentity()
   const hasAttr = !!tree?.tm
   const effMode: ColorMode = hasAttr ? mode : 'tree'
 
@@ -64,7 +85,18 @@ export default function App() {
   return (
     <main>
       <header>
-        <h1>Marin GCS usage</h1>
+        <div className="hrow">
+          <h1>Marin GCS usage</h1>
+          {ident && (
+            <div className="whoami">
+              <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>
+                {(ident.name || ident.email).trim()[0].toUpperCase()}
+              </span>
+              <span className="email">{ident.email}</span>
+              <a className="logout" href="/cdn-cgi/access/logout">log out</a>
+            </div>
+          )}
+        </div>
         {meta && (
           <p className="sub">
             scan <b>{meta.asof}</b> · <b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects
