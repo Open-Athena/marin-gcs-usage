@@ -18,11 +18,17 @@ interface Tip {
 
 export interface DateRange { min: number; max: number }
 
-export function Treemap({ root, mode, userIdx, dateRange }: {
+export interface Highlight {
+  user?: string
+  team?: string
+}
+
+export function Treemap({ root, mode, userIdx, dateRange, hl }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
+  hl?: Highlight | null
 }) {
   const [path, setPath] = useState<TreeNode[]>([root])
   const [tip, setTip] = useState<Tip | null>(null)
@@ -169,6 +175,12 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         }
       : undefined
     const dust = Math.min(r.w, r.h) < 14
+    // highlight mode: leaf cells not majority-owned by the selected user/team fade back
+    let dim = false
+    if (hl && kids.length === 0) {
+      if (hl.user) dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
+      else if (hl.team) dim = (kid.tm?.[hl.team] ?? 0) < 0.5 * kid.b
+    }
     return (
       <div
         key={gsPath}
@@ -176,7 +188,7 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         style={{
           left: r.x, top: r.y,
           width: Math.max(0, r.w - (dust ? 1 : 2)), height: Math.max(0, r.h - (dust ? 1 : 2)),
-          background: col, color: ink, opacity: depth > 0 ? 0.82 : 0.92,
+          background: col, color: ink, opacity: (depth > 0 ? 0.82 : 0.92) * (dim ? 0.22 : 1),
           ...(dust && { boxShadow: 'none', borderRadius: 1.5 }),
         }}
         tabIndex={0}

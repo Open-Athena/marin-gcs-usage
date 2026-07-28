@@ -137,6 +137,13 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     &:hover:not(.on) { filter: brightness(1.05); }
     &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
   }
+  .hlchip {
+    background: var(--t-unknown);
+    border-color: var(--t-unknown);
+    color: #1a1a19;
+    font-weight: 600;
+    margin-left: 6px;
+  }
 }
 
 .treemap {

@@ -14,6 +14,15 @@ importers:
       react-dom:
         specifier: ^19.1.0
         version: 19.2.8(react@19.2.8)
+      react-icons:
+        specifier: ^5.7.0
+        version: 5.7.0(react@19.2.8)
+      use-kbd:
+        specifier: ^0.12.0
+        version: 0.12.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      use-prms:
+        specifier: ^0.4.1
+        version: 0.4.1(react@19.2.8)
     devDependencies:
       '@types/react':
         specifier: ^19.1.0
@@ -648,6 +657,11 @@ packages:
     peerDependencies:
       react: ^19.2.8
 
+  react-icons@5.7.0:
+    resolution: {integrity: sha512-LBLy340Rzqy6+/yVhZKT3B/QpP1BZaesGqasf09HPOBzRarcDIFH0WwXlXQfE7q7ipxK4MSiC5DIBWURCny6fw==}
+    peerDependencies:
+      react: '*'
+
   react-refresh@0.17.0:
     resolution: {integrity: sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ==}
     engines: {node: '>=0.10.0'}
@@ -695,6 +709,20 @@ packages:
     hasBin: true
     peerDependencies:
       browserslist: '>= 4.21.0'
+
+  use-kbd@0.12.0:
+    resolution: {integrity: sha512-mt5BchpLyYi1tm0brENlZYYk6ta92JIZlVmLzGBrdjHpjKR2aEzst7b1BbWJcVn/nzXfJxf8DOwibt0YsGOOeg==}
+    peerDependencies:
+      react: '>=18.0.0'
+      react-dom: '>=18.0.0'
+
+  use-prms@0.4.1:
+    resolution: {integrity: sha512-137eYoyglpP3bnQqU+BDnr4kJnPqkibcSBpjHAIZJugtRjtInRCi+Af+hsk5lElXcIqz+ReEA4me6YrOehg6XA==}
+    peerDependencies:
+      react: ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      react:
+        optional: true
 
   vite@7.3.6:
     resolution: {integrity: sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg==}
@@ -1240,6 +1268,10 @@ snapshots:
       react: 19.2.8
       scheduler: 0.27.0
 
+  react-icons@5.7.0(react@19.2.8):
+    dependencies:
+      react: 19.2.8
+
   react-refresh@0.17.0: {}
 
   react@19.2.8: {}
@@ -1303,6 +1335,18 @@ snapshots:
       browserslist: 4.28.6
       escalade: 3.2.0
       picocolors: 1.1.1
+
+  use-kbd@0.12.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+    dependencies:
+      debug: 4.4.3
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+    transitivePeerDependencies:
+      - supports-color
+
+  use-prms@0.4.1(react@19.2.8):
+    optionalDependencies:
+      react: 19.2.8
 
   vite@7.3.6(sass@1.101.3):
     dependencies:

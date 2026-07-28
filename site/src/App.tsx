@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
+import { FaGithub } from 'react-icons/fa'
+import { MdBrightnessAuto, MdDarkMode, MdLightMode } from 'react-icons/md'
+import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
+import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
 import { buildUserIndex } from './colors'
 import { Treemap } from './Treemap'
-import type { DateRange } from './Treemap'
+import type { DateRange, Highlight } from './Treemap'
 import type { AgeRow, ColorMode, Meta, Rules, TreeNode } from './types'
 import { MODE_LABELS, fmtBytes, fmtN } from './types'
 
 const CLASS_NAMES: Record<string, string> = { 1: 'Standard', 2: 'Nearline', 3: 'Coldline', 4: 'Archive' }
 const CLASS_PRICE_US: Record<string, number> = { 1: 0.02, 2: 0.01, 3: 0.004, 4: 0.0012 }
+const MODES = Object.keys(MODE_LABELS) as ColorMode[]
+const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
 
 // CF Access identity (present when served behind gcs.oa.dev; absent in local dev)
 interface Identity { email: string; name?: string }
@@ -30,19 +36,109 @@ const avatarHue = (s: string): number => {
   return h
 }
 
-export default function App() {
+type Theme = 'system' | 'dark' | 'light'
+const THEME_KEY = 'gcs-usage:theme'
+
+function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem(THEME_KEY) as Theme) || 'system')
+  useEffect(() => {
+    if (theme === 'system') delete document.documentElement.dataset.theme
+    else document.documentElement.dataset.theme = theme
+    localStorage.setItem(THEME_KEY, theme)
+  }, [theme])
+  return [theme, () => setTheme(t => (t === 'system' ? 'dark' : t === 'dark' ? 'light' : 'system'))]
+}
+
+function AppContent() {
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [age, setAge] = useState<AgeRow[]>([])
   const [meta, setMeta] = useState<Meta | null>(null)
   const [rules, setRules] = useState<Rules | null>(null)
-  const [mode, setMode] = useState<ColorMode>('team')
+  const [modeP, setModeP] = useUrlState('c', stringParam('team'))
+  const [hlUser, setHlUser] = useUrlState('u', stringParam())
+  const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
   const [scans, setScans] = useState<string[]>([])
   const [asof, setAsof] = useState<string | null>(null)
+  const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
+  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
+  const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
   const effMode: ColorMode = hasAttr ? mode : 'tree'
+  const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
+
+  const pickUser = (u: string) => {
+    setHlTeam(undefined)
+    setHlUser(u)
+    if (mode !== 'user' && mode !== 'uteam') setMode('user')
+  }
+  const pickTeam = (t: string) => {
+    setHlUser(undefined)
+    setHlTeam(t)
+    if (mode !== 'team') setMode('team')
+  }
+  const clearHl = () => {
+    setHlUser(undefined)
+    setHlTeam(undefined)
+  }
+
+  useActions({
+    ...Object.fromEntries(
+      MODES.map((m, i) => [
+        `mode:${m}`,
+        {
+          label: `Color by ${MODE_LABELS[m]}`,
+          group: 'Color mode',
+          defaultBindings: [String(i + 1)],
+          handler: () => setMode(m),
+        },
+      ]),
+    ),
+    'highlight:clear': {
+      label: 'Clear user/team highlight',
+      group: 'Highlight',
+      defaultBindings: ['x'],
+      handler: clearHl,
+    },
+    'theme:cycle': {
+      label: `Theme: ${theme} (cycle)`,
+      group: 'View',
+      defaultBindings: ['shift+d'],
+      handler: cycleTheme,
+    },
+    ...Object.fromEntries(
+      (meta?.users ?? []).map(u => [
+        `user:${u.u}`,
+        {
+          label: `${u.u} · ${u.t} · ${fmtBytes(u.b)}`,
+          group: 'Users',
+          handler: () => pickUser(u.u),
+        },
+      ]),
+    ),
+    ...Object.fromEntries(
+      (rules?.teams ?? []).map(t => [
+        `team:${t}`,
+        {
+          label: `team: ${t}`,
+          group: 'Teams',
+          handler: () => pickTeam(t),
+        },
+      ]),
+    ),
+    ...Object.fromEntries(
+      scans.map(s => [
+        `scan:${s}`,
+        {
+          label: `Scan ${s}`,
+          group: 'Scans',
+          handler: () => setAsof(s),
+        },
+      ]),
+    ),
+  })
 
   const dateRange = useMemo((): DateRange | null => {
     if (!tree) return null
@@ -145,14 +241,14 @@ export default function App() {
           both plots — by owning team, top-level tree, age (older→newer), or owning user (hi-contrast, or
           hues grouped by team). Ownership comes from the{' '}
           <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
-          curation) — hover a cell for its team split and top users.
+          curation) — hover a cell for its team split and top users, or <kbd>⌘K</kbd> to jump to a user/team.
         </p>
       </section>
 
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
           <span className="lbl">color by</span>
-          {(Object.keys(MODE_LABELS) as ColorMode[]).map(m => (
+          {MODES.map(m => (
             <button
               key={m}
               role="radio"
@@ -163,11 +259,16 @@ export default function App() {
               {MODE_LABELS[m]}
             </button>
           ))}
+          {hl && (
+            <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">
+              {hlUser ?? hlTeam} ✕
+            </button>
+          )}
         </div>
       )}
 
       {tree ? (
-        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} />
+        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} />
       ) : (
         <p className="loading">loading tree…</p>
       )}
@@ -205,6 +306,26 @@ export default function App() {
           </table>
         </section>
       )}
+
+      <SpeedDial actions={[
+        { key: 'github', label: 'GitHub', icon: <FaGithub />, href: REPO_URL },
+        {
+          key: 'theme',
+          label: `Theme: ${theme}`,
+          icon: theme === 'light' ? <MdLightMode /> : theme === 'dark' ? <MdDarkMode /> : <MdBrightnessAuto />,
+          onClick: cycleTheme,
+        },
+      ]} />
+      <Omnibar placeholder="Users, teams, color modes, scans…" maxResults={15} />
+      <ShortcutsModal />
     </main>
+  )
+}
+
+export default function App() {
+  return (
+    <HotkeysProvider config={{ storageKey: 'gcs-usage' }}>
+      <AppContent />
+    </HotkeysProvider>
   )
 }
