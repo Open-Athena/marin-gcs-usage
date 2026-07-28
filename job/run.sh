@@ -7,21 +7,28 @@
 #
 # Buckets are mounted via GCS FUSE at /gcs/<bucket> (DuckDB needs local paths).
 # Env: SNAPSHOT_DATE (default today UTC), DATA_BUCKET, DUCKDB_MEM,
+# LISTING_PATH (default central2-listing/<date>; relative to the data bucket),
+# LISTING_EXISTS (error|reuse|clear; default reuse = idempotent re-runs),
+# SNAP_PATH (default snapshots/<date>), PUBLISH=0 to skip the site rebuild+deploy,
 # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (optional — skip deploy if absent).
+# Parallel/experimental runs: override LISTING_PATH + SNAP_PATH (and PUBLISH=0)
+# so they can't collide with the daily run'"'"'s outputs.
 set -euxo pipefail
 
 DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+LISTING_PATH=${LISTING_PATH:-central2-listing/$DATE}
+SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 SII_BUCKETS=(marin-us-east1 marin-us-east5 marin-us-central1 marin-eu-west4 marin-us-west4)
 FALLBACK_GLOB="/gcs/marin-us-central2/tmp/storage-scan/deduped/objects-*.parquet"
 KEEP_DEPLOYED=30  # most-recent snapshots included in the site deploy
 
 cd /app
 
-# 1. central2 direct listing (canonical schema shards straight into the data bucket);
-# clear any partial output from a previously failed run first
-rm -f "/gcs/$DATA/central2-listing/$DATE"/*.parquet 2>/dev/null || true
-gcs-usage list-bucket marin-us-central2 -o "gs://$DATA/central2-listing/$DATE" -P 6 -w 8
+# 1. central2 direct listing (canonical schema shards straight into the data bucket).
+# The exists-policy handles prior output: completed listings are reused,
+# partials from crashed runs are cleared.
+gcs-usage list-bucket marin-us-central2 -o "gs://$DATA/$LISTING_PATH" -P 6 -w 8 -x "${LISTING_EXISTS:-reuse}"
 
 # 2. assemble -l args: SII per bucket (skip loudly if a day's report is missing),
 # then the fresh central2 listing, then the weekly-scan fallback (earlier wins per bucket)
@@ -30,7 +37,7 @@ for b in "${SII_BUCKETS[@]}"; do
   glob="/gcs/$b/inventory-reports/*_${DATE}T*_*.parquet"
   if compgen -G "$glob" > /dev/null; then L+=(-l "$glob"); else echo "WARN: no SII report for $b on $DATE (falling back to weekly scan)" >&2; fi
 done
-L+=(-l "/gcs/$DATA/central2-listing/$DATE/*.parquet")
+L+=(-l "/gcs/$DATA/$LISTING_PATH/*.parquet")
 if compgen -G "$FALLBACK_GLOB" > /dev/null; then L+=(-l "$FALLBACK_GLOB"); else echo "WARN: weekly-scan fallback glob is empty" >&2; fi
 
 A=(-a "/gcs/$DATA/attr/attribution-2026-07-20.parquet" -a "/gcs/$DATA/attr/attribution-wandb.parquet")
@@ -39,11 +46,8 @@ gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" -o "/tmp/snap/$DATE"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 
 # 3. publish to the canonical store
-cp -r "/tmp/snap/$DATE" "/gcs/$DATA/snapshots/$DATE.tmp" && mv "/gcs/$DATA/snapshots/$DATE.tmp" "/gcs/$DATA/snapshots/$DATE" 2>/dev/null || {
-  # FUSE rename of dirs can be unsupported; fall back to direct copy
-  mkdir -p "/gcs/$DATA/snapshots/$DATE"
-  cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/snapshots/$DATE/"
-}
+mkdir -p "/gcs/$DATA/$SNAP_PATH"
+cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
 
 # 4. site data dir = recent snapshots from the bucket + fresh scans.json/rules.json
 DD=dist/data
@@ -62,7 +66,9 @@ print("scans.json:", dates)
 EOF
 cp /tmp/rules.json "$DD/rules.json" 2>/dev/null || true
 
-if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+if [ "${PUBLISH:-1}" != "1" ]; then
+  echo "PUBLISH=0 — snapshot written to gs://$DATA/$SNAP_PATH; site untouched" >&2
+elif [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   wrangler pages deploy dist --project-name oa-gcs-usage --branch main
 else
   echo "WARN: CLOUDFLARE_API_TOKEN not set — snapshot published to gs://$DATA but site NOT deployed" >&2

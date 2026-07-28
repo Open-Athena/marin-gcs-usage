@@ -57,6 +57,44 @@ def _write_shard(out_dir: str, name: str, frame: pd.DataFrame) -> None:
     frame.to_parquet(f"{out_root}/{name}.parquet", index=False, filesystem=out_fs)
 
 
+SUCCESS_MARKER = "_SUCCESS.json"
+
+
+def resolve_existing(out_fs, out_root: str, exists: str) -> dict | None:
+    """Apply the exists-policy to a target dir; returns the completed run's
+    ``_SUCCESS`` payload when it should be reused, else None (proceed to list).
+
+    - ``error``: refuse if any shards are present
+    - ``reuse``: short-circuit iff a completed run's marker is present;
+      clear partial output (shards without a marker) and proceed
+    - ``clear``: always delete existing shards and proceed
+    """
+    import json
+
+    shards = out_fs.glob(f"{out_root}/*.parquet")
+    marker = f"{out_root}/{SUCCESS_MARKER}"
+    complete = out_fs.exists(marker)
+    if not shards and not complete:
+        return None
+    if exists == "error":
+        raise ValueError(
+            f"{out_root} already has {len(shards)} shards"
+            f"{' and a completion marker' if complete else ' (no completion marker — partial run?)'};"
+            " pass --exists clear|reuse or choose another --out"
+        )
+    if exists == "reuse" and complete:
+        payload = json.loads(out_fs.cat(marker))
+        err(f"{out_root}: reusing completed listing ({payload.get('objects', '?'):,} objects)")
+        return payload
+    # 'clear', or 'reuse' over a partial run
+    err(f"{out_root}: clearing {len(shards)} existing shard(s){' (partial run)' if exists == 'reuse' else ''}")
+    if shards:
+        out_fs.rm(shards)
+    if complete:
+        out_fs.rm(marker)
+    return None
+
+
 def _stream_prefixes(
     bucket: str,
     prefixes: list[str],
@@ -131,12 +169,25 @@ def list_bucket_to_parquet(
     procs: int = 6,
     threads: int = 8,
     prefix: str | None = None,
+    exists: str = "error",
 ) -> int:
     """List ``bucket`` (optionally under ``prefix``) to parquet shards in ``out_dir``.
 
-    ``out_dir`` may be local or ``gs://``. Returns total object count.
+    ``out_dir`` may be local or ``gs://``. Returns total object count. A
+    ``_SUCCESS.json`` marker (with counts) is written on completion;
+    ``exists`` governs behavior when the target already has output (see
+    :func:`resolve_existing`).
     """
+    import json
+
+    import fsspec
     import gcsfs
+
+    out_fs, out_root = fsspec.core.url_to_fs(out_dir)
+    out_fs.makedirs(out_root, exist_ok=True)
+    reused = resolve_existing(out_fs, out_root, exists)
+    if reused is not None:
+        return int(reused["objects"])
 
     fs = gcsfs.GCSFileSystem(use_listings_cache=False)
     root = f"{bucket}/{prefix.strip('/')}" if prefix else bucket
@@ -163,5 +214,6 @@ def list_bucket_to_parquet(
         ]
         for f in futures:
             total += f.result()
+    out_fs.pipe(f"{out_root}/{SUCCESS_MARKER}", json.dumps({"bucket": bucket, "prefix": prefix, "objects": total}).encode())
     err(f"{root}: {total:,} objects listed → {out_dir}")
     return total

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
-from click import argument, group, option
+from click import Choice, argument, group, option
 
 from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
 from .listing import prepare_listing
@@ -465,8 +465,9 @@ def webdata(
 @option("-p", "--prefix", default=None, help="List only under this prefix (smoke tests / partial runs)")
 @option("-P", "--procs", default=6, help="Worker processes (page parsing is GIL-bound; processes scale it)")
 @option("-w", "--workers", "threads", default=8, help="Concurrent prefix streams per process")
+@option("-x", "--exists", type=Choice(["error", "reuse", "clear"]), default="error", help="On existing output: refuse, reuse-if-complete (clear partials), or clear")
 @argument("bucket")
-def list_bucket(out_dir: str, prefix: str | None, procs: int, threads: int, bucket: str) -> None:
+def list_bucket(out_dir: str, prefix: str | None, procs: int, threads: int, exists: str, bucket: str) -> None:
     """Directly list a GCS bucket to canonical listing parquet shards.
 
     Patch for buckets where Storage Insights inventory reports are
@@ -474,7 +475,7 @@ def list_bucket(out_dir: str, prefix: str | None, procs: int, threads: int, buck
     """
     from .bucket_list import list_bucket_to_parquet
 
-    list_bucket_to_parquet(bucket, out_dir, procs=procs, threads=threads, prefix=prefix)
+    list_bucket_to_parquet(bucket, out_dir, procs=procs, threads=threads, prefix=prefix, exists=exists)
 
 
 @main.command()
