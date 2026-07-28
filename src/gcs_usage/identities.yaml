@@ -90,6 +90,11 @@ users:
   jason-wang:
     aliases: [blahblahhhj]
     team: stanford
+  julian:
+    team: stanford  # TODO confirm which Julian; ~23 TB under julian/ top-level dirs
+  alex-merose:
+    aliases: [alxmrs]
+    team: oa
   larry-dial:
     aliases: [larrydial, larry]
     team: core  # TODO confirm — 149.7 TB attributed; joined 2026-02, active daily

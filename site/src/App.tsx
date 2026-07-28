@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AgeChart } from './AgeChart'
+import { AttributionRules } from './AttributionRules'
 import { buildUserIndex } from './colors'
 import { Treemap } from './Treemap'
 import type { DateRange } from './Treemap'
-import type { AgeRow, ColorMode, Meta, TreeNode } from './types'
+import type { AgeRow, ColorMode, Meta, Rules, TreeNode } from './types'
 import { MODE_LABELS, fmtBytes, fmtN } from './types'
 
 const CLASS_NAMES: Record<string, string> = { 1: 'Standard', 2: 'Nearline', 3: 'Coldline', 4: 'Archive' }
@@ -33,6 +34,7 @@ export default function App() {
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [age, setAge] = useState<AgeRow[]>([])
   const [meta, setMeta] = useState<Meta | null>(null)
+  const [rules, setRules] = useState<Rules | null>(null)
   const [mode, setMode] = useState<ColorMode>('team')
   const ident = useIdentity()
   const hasAttr = !!tree?.tm
@@ -59,6 +61,7 @@ export default function App() {
     void fetch('/data/tree.json').then(r => r.json()).then(setTree)
     void fetch('/data/age.json').then(r => r.json()).then(setAge)
     void fetch('/data/meta.json').then(r => r.json()).then(setMeta)
+    void fetch('/data/rules.json').then(r => r.json()).then(setRules).catch(() => {})
   }, [])
 
   const catOrder = useMemo(() => {
@@ -152,6 +155,10 @@ export default function App() {
         </p>
         {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode} userIdx={userIdx} />}
       </section>
+
+      {rules && tree?.tm && meta?.users && (
+        <AttributionRules rules={rules} tree={tree} users={meta.users} />
+      )}
 
       {meta && (
         <section>

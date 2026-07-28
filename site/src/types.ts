@@ -58,6 +58,26 @@ export interface Meta {
   users?: UserInfo[]
 }
 
+export interface RuleUser {
+  u: string
+  team: string
+  aliases: string[]
+  note?: string
+}
+
+export interface RulePrefix {
+  prefix: string
+  team: string
+  user?: string
+  note?: string
+}
+
+export interface Rules {
+  teams: string[]
+  users: RuleUser[]
+  prefix_owners: RulePrefix[]
+}
+
 export const fmtBytes = (b: number): string => {
   if (b >= 1e12) return (b / 1e12).toFixed(b >= 1e13 ? 0 : 1) + ' TB'
   if (b >= 1e9) return (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + ' GB'

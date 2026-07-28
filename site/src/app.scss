@@ -274,6 +274,46 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   th { color: var(--ink-2); font-weight: 600; font-size: 13px; }
 }
 
+.attrib {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  h2 { margin-bottom: 0; }
+  .feedback { margin-top: 8px; }
+  details {
+    summary {
+      cursor: pointer;
+      color: var(--ink-2);
+      font-size: 14px;
+      font-weight: 600;
+      &:hover { color: var(--ink); }
+    }
+    &[open] summary { margin-bottom: 6px; }
+  }
+  .rulestable {
+    font-size: 13px;
+    td, th { padding-right: 14px; }
+    code { font-size: 12px; }
+    .aliases { color: var(--ink-2); }
+  }
+  .teamchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    .sw { width: 9px; height: 9px; border-radius: 2px; }
+  }
+  .note { color: var(--ink-2); font-size: 12.5px; }
+  .todo {
+    background: var(--t-unknown);
+    color: #1a1a19;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 6px;
+    margin-right: 6px;
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .cell { transition: filter 80ms linear; }
 }

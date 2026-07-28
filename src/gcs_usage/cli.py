@@ -432,5 +432,31 @@ def webdata(
     err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
 
 
+@main.command()
+@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
+@option("-o", "--out", type=Path, default=None, help="Write rules JSON (users/aliases/teams/prefix_owners + notes) for the site")
+def rules(identities_path: Path, out: Path | None) -> None:
+    """Validate identities.yaml; optionally export it as site JSON.
+
+    Checks alias collisions/shadowing, unknown teams, and prefix_owners rows
+    referencing unknown users or malformed/duplicate prefixes. Exits nonzero
+    on findings (JSON is still written, so the site shows current state).
+    """
+    import json
+
+    from .rules import export_rules
+
+    payload, findings = export_rules(identities_path)
+    for finding in findings:
+        err(f"FINDING: {finding}")
+    err(f"{len(payload['users'])} users, {len(payload['prefix_owners'])} prefix rules, {len(findings)} findings")
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=1) + "\n")
+        err(f"wrote {out}")
+    if findings:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()
