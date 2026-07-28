@@ -31,13 +31,15 @@ export const domTeam = (n: TreeNode): string | null => {
 }
 
 export interface AgeRow {
-  m: string   // created month, YYYY-MM
+  d: number   // created day, epoch days (site aggregates to day/week/month)
   d1: string  // top-level dir
   t?: string  // owning team (attribution-aware webdata only)
   u?: string  // owning user
   b: number
   o: number
 }
+
+export type Granularity = 'month' | 'week' | 'day'
 
 export type ColorMode = 'team' | 'tree' | 'date' | 'user' | 'uteam'
 

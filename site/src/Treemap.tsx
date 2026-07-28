@@ -86,6 +86,25 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
     [node, size],
   )
 
+  // group roll-up for the current view: users in user modes, teams otherwise
+  const rollup = useMemo(() => {
+    if (!node.tm) return []
+    if (mode === 'user' || mode === 'uteam') {
+      const us = node.us ?? []
+      const unattr = node.tm['unattributed'] ?? 0
+      const attributed = Object.entries(node.tm)
+        .filter(([t]) => t !== 'unattributed')
+        .reduce((s, [, b]) => s + b, 0)
+      const other = attributed - us.reduce((s, [, b]) => s + b, 0)
+      return [
+        ...us.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam') })),
+        ...(other > 0 ? [{ k: '(other attributed)', b: other, col: 'var(--other)' }] : []),
+        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)' }] : []),
+      ].sort((a, b) => b.b - a.b)
+    }
+    return Object.entries(node.tm).map(([t, b]) => ({ k: t, b, col: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }))
+  }, [node, mode, userIdx])
+
   const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, depth: number) => {
     const showLbl = r.w > 36 && r.h > 13
     // recurse while the cell has room — depth adapts to cell size
@@ -230,6 +249,17 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         </div>
         <button className="fs" onClick={fullscreen} title="Toggle fullscreen">⛶</button>
       </div>
+      {rollup.length > 0 && (
+        <div className="rollup">
+          {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
+            <span className="ri" key={r.k}>
+              <span className="sw" style={{ background: r.col }} />
+              {r.k} <b>{fmtBytes(r.b)}</b>
+              <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="map" ref={mapRef} role="application" aria-label="Storage treemap">
         {rects
           .filter(r => r.w >= 3 && r.h >= 3)

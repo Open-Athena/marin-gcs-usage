@@ -1,7 +1,7 @@
 """Data extracts for the web viz (``gcs-usage webdata``).
 
 Everything here is laptop-scale DuckDB over the deduped listing parquet:
-a nested prefix tree for the treemap, created-month age strata, and a
+a nested prefix tree for the treemap, created-day age strata, and a
 small meta blob. Output is plain JSON consumed by ``site/``.
 """
 
@@ -191,11 +191,12 @@ def write_webdata(
         tree.update(_attr_of([r for g in buckets.values() for r in g]))
 
     if attr:
-        # (month, d1, team) strata: attribute at full-dir granularity (same
+        # (day, d1, team) strata: attribute at full-dir granularity (same
         # cached deepest-prefix walk as the tree), streamed in record batches.
+        # Day keys are epoch days; the site aggregates to day/week/month.
         reader = con.execute(
             f"""
-            SELECT strftime(created, '%Y-%m') AS m, bucket,
+            SELECT CAST(epoch(date_trunc('day', created)) / 86400 AS INTEGER) AS day, bucket,
               CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
             FROM read_parquet('{listing}')
@@ -206,32 +207,32 @@ def write_webdata(
         age_agg: dict[tuple, list] = defaultdict(lambda: [0, 0])
         for batch in reader:
             d = batch.to_pydict()
-            for m, bucket, dir_, nbytes, objects in zip(
-                d["m"], d["bucket"], d["dir"], d["bytes"], d["objects"]
+            for day, bucket, dir_, nbytes, objects in zip(
+                d["day"], d["bucket"], d["dir"], d["bytes"], d["objects"]
             ):
                 row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
                 user, team = (row[0], row[1]) if row else (None, "unattributed")
                 d1 = dir_.split("/", 1)[0] if dir_ else "(files)"
-                a = age_agg[(m, d1, team, user)]
+                a = age_agg[(day, d1, team, user)]
                 a[0] += nbytes
                 a[1] += objects
         age_rows = [
-            {"m": m, "d1": d1, "t": t, **({"u": u} if u else {}), "b": b, "o": o}
-            for (m, d1, t, u), (b, o) in sorted(age_agg.items(), key=lambda kv: kv[0][:2])
+            {"d": day, "d1": d1, "t": t, **({"u": u} if u else {}), "b": b, "o": o}
+            for (day, d1, t, u), (b, o) in sorted(age_agg.items(), key=lambda kv: kv[0][:2])
         ]
     else:
         age = con.execute(
             f"""
-            SELECT strftime(created, '%Y-%m') AS created_month,
+            SELECT CAST(epoch(date_trunc('day', created)) / 86400 AS INTEGER) AS day,
               regexp_extract(name, '^([^/]+)/', 1) AS d1,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
             FROM read_parquet('{listing}')
             WHERE created IS NOT NULL
-            GROUP BY ALL ORDER BY created_month
+            GROUP BY ALL ORDER BY day
             """
         ).fetchall()
         age_rows = [
-            {"m": m, "d1": d1 or "(files)", "b": b, "o": o} for m, d1, b, o in age
+            {"d": day, "d1": d1 or "(files)", "b": b, "o": o} for day, d1, b, o in age
         ]
 
     classes = con.execute(
