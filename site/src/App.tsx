@@ -130,7 +130,9 @@ export default function App() {
             {estCost && (
               <>
                 {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b> list
-                {' '}(<b>${Math.round(estCost.discounted).toLocaleString()}</b> at −30%)
+                {' '}<span title="Assumption, not a confirmed rate — actual discount depends on the billing account's negotiated agreement/credits">
+                  (<b>${Math.round(estCost.discounted).toLocaleString()}</b> if −30% negotiated)
+                </span>
               </>
             )}
           </p>
