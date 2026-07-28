@@ -5,21 +5,23 @@ Patch for buckets where Storage Insights is unavailable (`marin-us-central2`
 write shards in the canonical listing schema so `prepare_listing` treats the
 output like any other source.
 
-Memory discipline (the first two Cloud Run executions OOMed without it):
-every stage is bounded. Workers stream ``list_blobs`` pages (field-projected)
-and emit small frames; a bounded queue backpressures them; the main thread is
-the only writer, flushing chunky sequential shards straight to ``gs://``
-(FUSE writes would buffer whole files in container memory; gcsfs ``find``
-would materialize whole prefixes; executor ``map`` would pile up ordered
-results behind slow prefixes).
+Two levels of parallelism: depth-2 prefixes are round-robined across worker
+*processes* (page parsing is pure-Python — threads alone are GIL-bound to
+~1M objects/min), and each process streams several prefixes concurrently on
+threads. Memory stays bounded everywhere: workers stream ``list_blobs`` pages
+(field-projected) into small frames through a bounded queue, and each
+process's consumer is the only writer of its namespaced shards, flushed
+straight to ``gs://`` (FUSE writes would buffer whole files in RAM).
 """
 
 from __future__ import annotations
 
 import sys
 import threading
+from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from multiprocessing import get_context
 from queue import Queue
 
 import pandas as pd
@@ -47,37 +49,25 @@ def entries_to_frame(bucket: str, rows: list[tuple]) -> pd.DataFrame:
     )
 
 
-def list_bucket_to_parquet(
-    bucket: str,
-    out_dir: str,
-    workers: int = 24,
-    prefix: str | None = None,
-) -> int:
-    """List ``bucket`` (optionally under ``prefix``) to parquet shards in ``out_dir``.
-
-    ``out_dir`` may be local or ``gs://``. Returns total object count.
-    """
+def _write_shard(out_dir: str, name: str, frame: pd.DataFrame) -> None:
     import fsspec
-    import gcsfs
-    from google.cloud import storage
 
-    fs = gcsfs.GCSFileSystem(use_listings_cache=False)
     out_fs, out_root = fsspec.core.url_to_fs(out_dir)
     out_fs.makedirs(out_root, exist_ok=True)
+    frame.to_parquet(f"{out_root}/{name}.parquet", index=False, filesystem=out_fs)
 
-    root = f"{bucket}/{prefix.strip('/')}" if prefix else bucket
-    # depth-2 stream prefixes + everything shallower than depth 2 in one batch
-    shallow: list[tuple] = []
-    stream_prefixes: list[str] = []
-    for e1 in fs.ls(root, detail=True):
-        for e2 in [e1] if e1["type"] == "file" else fs.ls(e1["name"], detail=True):
-            if e2["type"] == "file":
-                shallow.append((e2["name"].split("/", 1)[1], e2["size"], e2.get("timeCreated"), e2.get("storageClass")))
-            else:
-                stream_prefixes.append(e2["name"].split("/", 1)[1] + "/")
-    err(f"{root}: {len(stream_prefixes)} depth-2 prefixes, {len(shallow)} shallow objects")
 
-    q: Queue = Queue(maxsize=workers)
+def _stream_prefixes(
+    bucket: str,
+    prefixes: list[str],
+    out_dir: str,
+    ns: int,
+    threads: int,
+) -> int:
+    """Worker-process body: stream ``prefixes`` to shards named ``shard-<ns>-*``."""
+    from google.cloud import storage
+
+    q: Queue = Queue(maxsize=threads)
     local = threading.local()
     done = object()
     produce_error: list[BaseException] = []
@@ -97,10 +87,10 @@ def list_bucket_to_parquet(
 
     def produce() -> None:
         try:
-            with ThreadPoolExecutor(workers) as ex:
-                for _ in ex.map(one, stream_prefixes):
+            with ThreadPoolExecutor(threads) as ex:
+                for _ in ex.map(one, prefixes):
                     pass
-        except BaseException as e:  # surfaced in the main thread below
+        except BaseException as e:  # surfaced in the consumer loop below
             produce_error.append(e)
         finally:
             q.put(done)
@@ -109,16 +99,14 @@ def list_bucket_to_parquet(
 
     total = 0
     n_out = 0
-    buffer: list[pd.DataFrame] = [entries_to_frame(bucket, shallow)]
-    buffered = len(shallow)
-    total += len(shallow)
+    buffer: list[pd.DataFrame] = []
+    buffered = 0
 
     def flush() -> None:
         nonlocal n_out, buffered
         if not buffered:
             return
-        frame = pd.concat(buffer, ignore_index=True)
-        frame.to_parquet(f"{out_root}/shard-{n_out:05d}.parquet", index=False, filesystem=out_fs)
+        _write_shard(out_dir, f"shard-{ns:02d}-{n_out:04d}", pd.concat(buffer, ignore_index=True))
         n_out += 1
         buffer.clear()
         buffered = 0
@@ -129,9 +117,51 @@ def list_bucket_to_parquet(
         total += len(item)
         if buffered >= ROWS_PER_SHARD:
             flush()
-            err(f"  {total:,} objects, {n_out} shards written")
+            err(f"  [w{ns}] {total:,} objects, {n_out} shards")
     if produce_error:
         raise produce_error[0]
     flush()
-    err(f"{root}: {total:,} objects listed → {out_dir} ({n_out} shards)")
+    err(f"  [w{ns}] done: {total:,} objects, {n_out} shards")
+    return total
+
+
+def list_bucket_to_parquet(
+    bucket: str,
+    out_dir: str,
+    procs: int = 6,
+    threads: int = 8,
+    prefix: str | None = None,
+) -> int:
+    """List ``bucket`` (optionally under ``prefix``) to parquet shards in ``out_dir``.
+
+    ``out_dir`` may be local or ``gs://``. Returns total object count.
+    """
+    import gcsfs
+
+    fs = gcsfs.GCSFileSystem(use_listings_cache=False)
+    root = f"{bucket}/{prefix.strip('/')}" if prefix else bucket
+    # depth-2 stream prefixes + everything shallower than depth 2 in one shard
+    shallow: list[tuple] = []
+    stream_prefixes: list[str] = []
+    for e1 in fs.ls(root, detail=True):
+        for e2 in [e1] if e1["type"] == "file" else fs.ls(e1["name"], detail=True):
+            if e2["type"] == "file":
+                shallow.append((e2["name"].split("/", 1)[1], e2["size"], e2.get("timeCreated"), e2.get("storageClass")))
+            else:
+                stream_prefixes.append(e2["name"].split("/", 1)[1] + "/")
+    err(f"{root}: {len(stream_prefixes)} depth-2 prefixes, {len(shallow)} shallow objects; {procs} procs × {threads} threads")
+
+    _write_shard(out_dir, "shard-shallow", entries_to_frame(bucket, shallow))
+    total = len(shallow)
+
+    chunks = [stream_prefixes[i::procs] for i in range(procs)]
+    with ProcessPoolExecutor(procs, mp_context=get_context("spawn")) as ex:
+        futures = [
+            ex.submit(_stream_prefixes, bucket, chunk, out_dir, ns, threads)
+            for ns, chunk in enumerate(chunks)
+            if chunk
+        ]
+        for f in futures:
+            total += f.result()
+    err(f"{root}: {total:,} objects listed → {out_dir}")
     return total

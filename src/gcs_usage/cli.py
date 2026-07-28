@@ -463,9 +463,10 @@ def webdata(
 @main.command("list-bucket")
 @option("-o", "--out", "out_dir", required=True, help="Output dir (local or gs://) for canonical listing parquet shards")
 @option("-p", "--prefix", default=None, help="List only under this prefix (smoke tests / partial runs)")
-@option("-w", "--workers", default=32, help="Concurrent prefix listings")
+@option("-P", "--procs", default=6, help="Worker processes (page parsing is GIL-bound; processes scale it)")
+@option("-w", "--workers", "threads", default=8, help="Concurrent prefix streams per process")
 @argument("bucket")
-def list_bucket(out_dir: str, prefix: str | None, workers: int, bucket: str) -> None:
+def list_bucket(out_dir: str, prefix: str | None, procs: int, threads: int, bucket: str) -> None:
     """Directly list a GCS bucket to canonical listing parquet shards.
 
     Patch for buckets where Storage Insights inventory reports are
@@ -473,7 +474,7 @@ def list_bucket(out_dir: str, prefix: str | None, workers: int, bucket: str) -> 
     """
     from .bucket_list import list_bucket_to_parquet
 
-    list_bucket_to_parquet(bucket, out_dir, workers=workers, prefix=prefix)
+    list_bucket_to_parquet(bucket, out_dir, procs=procs, threads=threads, prefix=prefix)
 
 
 @main.command()
