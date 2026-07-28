@@ -26,15 +26,22 @@ def _date_of(g: list[dict]) -> int | None:
 
 
 def _attr_of(g: list[dict]) -> dict:
-    """Attribution summary of a row group: team-bytes map + top user-bytes."""
+    """Attribution summary of a row group: team-bytes map (`tm`), the subset
+    of each team's bytes with no per-user owner (`sh`, "shared"), and top
+    user-bytes (`us`)."""
     tm: dict[str, int] = defaultdict(int)
     ub: dict[str, int] = defaultdict(int)
+    sh: dict[str, int] = defaultdict(int)
     for r in g:
         tm[r["team"]] += r["bytes"]
         if r["user"]:
             ub[r["user"]] += r["bytes"]
+        elif r["team"] != "unattributed":
+            sh[r["team"]] += r["bytes"]
     top = sorted(ub.items(), key=lambda kv: -kv[1])[:TOP_USERS_PER_NODE]
     out = {"tm": dict(sorted(tm.items(), key=lambda kv: -kv[1]))}
+    if sh:
+        out["sh"] = dict(sorted(sh.items(), key=lambda kv: -kv[1]))
     if top:
         out["us"] = [[u, b] for u, b in top]
     return out
@@ -82,12 +89,17 @@ def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict
             if attr:
                 tm: dict[str, int] = defaultdict(int)
                 ub: dict[str, int] = defaultdict(int)
+                sh: dict[str, int] = defaultdict(int)
                 for n in small:
                     for t, tb in n.get("tm", {}).items():
                         tm[t] += tb
+                    for t, tb in n.get("sh", {}).items():
+                        sh[t] += tb
                     for u, b_ in n.get("us", []):
                         ub[u] += b_
                 folded["tm"] = dict(sorted(tm.items(), key=lambda kv: -kv[1]))
+                if sh:
+                    folded["sh"] = dict(sorted(sh.items(), key=lambda kv: -kv[1]))
                 top = sorted(ub.items(), key=lambda kv: -kv[1])[:TOP_USERS_PER_NODE]
                 if top:
                     folded["us"] = [[u, b_] for u, b_ in top]

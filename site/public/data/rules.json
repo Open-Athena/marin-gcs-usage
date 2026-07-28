@@ -40,7 +40,7 @@
   },
   {
    "u": "rafal-wojdyla",
-   "team": "oa",
+   "team": "core",
    "aliases": [
     "ravwojdyla",
     "rav"
@@ -53,7 +53,7 @@
   },
   {
    "u": "matt-wittmann",
-   "team": "oa",
+   "team": "core",
    "aliases": [
     "mcwitt"
    ]
@@ -318,7 +318,7 @@
   },
   {
    "prefix": "gs://marin-*/scratch/rav/",
-   "team": "oa",
+   "team": "core",
    "user": "rafal-wojdyla"
   },
   {
@@ -334,7 +334,7 @@
   },
   {
    "prefix": "gs://marin-*/user/rav/",
-   "team": "oa",
+   "team": "core",
    "user": "rafal-wojdyla",
    "note": "`user/` (singular) tree is ~all rav"
   },

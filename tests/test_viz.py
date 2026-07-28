@@ -108,8 +108,9 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "o": 1,
         "d": epoch_day(TS["d0615"]),
         "tm": {"data": 200 * GB},
+        "sh": {"data": 200 * GB},
         "c": [
-            {"n": "raw", "b": 200 * GB, "o": 1, "d": epoch_day(TS["d0615"]), "tm": {"data": 200 * GB}},
+            {"n": "raw", "b": 200 * GB, "o": 1, "d": epoch_day(TS["d0615"]), "tm": {"data": 200 * GB}, "sh": {"data": 200 * GB}},
         ],
     }
     files = {"n": "(files)", "b": 30 * GB, "o": 1, "d": epoch_day(TS["d0702"]), "tm": {"unattributed": 30 * GB}}
@@ -119,6 +120,7 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "o": 4,
         "d": wmean_day(*zip([100 * GB, 50 * GB, 200 * GB, 30 * GB], [TS["d0701"], TS["d0703"], TS["d0615"], TS["d0702"]], strict=True)),
         "tm": {"data": 200 * GB, "infra": 150 * GB, "unattributed": 30 * GB},
+        "sh": {"data": 200 * GB},
         "us": [["ryan-williams", 150 * GB]],
         "c": [datasets, users, files],
     }
@@ -127,6 +129,7 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "b": 380 * GB,
         "o": 4,
         "tm": {"data": 200 * GB, "infra": 150 * GB, "unattributed": 30 * GB},
+        "sh": {"data": 200 * GB},
         "us": [["ryan-williams", 150 * GB]],
         "c": [b1],
     }

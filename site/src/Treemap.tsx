@@ -3,7 +3,7 @@ import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from 
 import type { UserIndexEntry } from './colors'
 import { foldSmall, squarify } from './squarify'
 import type { ColorMode, TreeNode } from './types'
-import { TEAM_VARS, domTeam, fmtBytes, fmtN } from './types'
+import { TEAM_VARS, domTeamSeg, fmtBytes, fmtN, sharedColor } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
@@ -102,7 +102,20 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)' }] : []),
       ].sort((a, b) => b.b - a.b)
     }
-    return Object.entries(node.tm).map(([t, b]) => ({ k: t, b, col: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }))
+    return Object.entries(node.tm)
+      .flatMap(([t, b]) => {
+        const tv = TEAM_VARS[t] ?? '--t-unattr'
+        const s = node.sh?.[t] ?? 0
+        return s > 0 && b - s > 0
+          ? [
+              { k: `${t} (users)`, b: b - s, col: `var(${tv})` },
+              { k: `${t} (shared)`, b: s, col: sharedColor(tv) },
+            ]
+          : s > 0
+            ? [{ k: `${t} (shared)`, b: s, col: sharedColor(tv) }]
+            : [{ k: t, b, col: `var(${tv})` }]
+      })
+      .sort((a, b) => b.b - a.b)
   }, [node, mode, userIdx])
 
   const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, depth: number) => {
@@ -124,10 +137,10 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
       col = 'var(--panel)'
       ink = 'var(--ink)'
     } else if (mode === 'team') {
-      const team = domTeam(kid)
-      const tv = (team && TEAM_VARS[team]) || '--t-unattr'
-      col = `var(${tv})`
-      ink = TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
+      const seg = domTeamSeg(kid)
+      const tv = (seg && TEAM_VARS[seg.team]) || '--t-unattr'
+      col = seg?.shared ? sharedColor(tv) : `var(${tv})`
+      ink = !seg?.shared && TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
     } else if (mode === 'date') {
       if (kid.d != null && dateRange && dateRange.max > dateRange.min) {
         col = dateColor((kid.d - dateRange.min) / (dateRange.max - dateRange.min))
@@ -213,12 +226,18 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
         </nav>
         <div className="legend">
           {mode === 'team' ? (
-            Object.entries(TEAM_VARS).map(([t, v]) => (
-              <span className="li" key={t}>
-                <span className="sw" style={{ background: `var(${v})` }} />
-                {t}
-              </span>
-            ))
+            Object.entries(TEAM_VARS)
+              .flatMap(([t, v]): [string, string][] =>
+                t === 'core'
+                  ? [[`${t} (users)`, `var(${v})`], [`${t} (shared)`, sharedColor(v)]]
+                  : [[t, `var(${v})`]],
+              )
+              .map(([t, c]) => (
+                <span className="li" key={t}>
+                  <span className="sw" style={{ background: c }} />
+                  {t}
+                </span>
+              ))
           ) : mode === 'date' && dateRange ? (
             <span className="li gradli">
               {epochDaysToMonth(dateRange.min)}
@@ -271,12 +290,16 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
           <div className="teams">
             {Object.entries(tip.node.tm)
               .filter(([, b]) => b >= 0.005 * tip.node.b)
-              .map(([t, b]) => (
-                <span className="tt-team" key={t}>
-                  <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
-                  {t} {((100 * b) / tip.node.b).toFixed(0)}%
-                </span>
-              ))}
+              .map(([t, b]) => {
+                const s = tip.node.sh?.[t] ?? 0
+                return (
+                  <span className="tt-team" key={t}>
+                    <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
+                    {t} {((100 * b) / tip.node.b).toFixed(0)}%
+                    {s >= 0.01 * b && <span className="shr"> ({((100 * s) / b).toFixed(0)}% shared)</span>}
+                  </span>
+                )
+              })}
           </div>
         )
         const users = tip.node.us && tip.node.us.length > 0 && (

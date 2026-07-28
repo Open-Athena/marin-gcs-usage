@@ -4,6 +4,7 @@ export interface TreeNode {
   o: number
   d?: number                   // bytes-weighted mean created date, epoch days
   tm?: Record<string, number>  // team -> bytes (attribution overlay)
+  sh?: Record<string, number>  // team -> bytes with no per-user owner ("shared" subset of tm)
   us?: [string, number][]      // top users -> bytes
   c?: TreeNode[]
 }
@@ -27,6 +28,24 @@ export const domTeam = (n: TreeNode): string | null => {
   let best: string | null = null
   let bb = -1
   for (const [t, b] of Object.entries(n.tm)) if (b > bb) { best = t; bb = b }
+  return best
+}
+
+// Washed-out variant of a team color for its "shared" (no per-user owner) subset.
+export const sharedColor = (teamVar: string): string =>
+  `color-mix(in oklab, var(${teamVar}) 52%, var(--panel))`
+
+// Dominant segment of a node when teams are split into user-attributed vs
+// shared halves (team color-mode rendering).
+export const domTeamSeg = (n: TreeNode): { team: string; shared: boolean } | null => {
+  if (!n.tm) return null
+  let best: { team: string; shared: boolean } | null = null
+  let bb = -1
+  for (const [t, b] of Object.entries(n.tm)) {
+    const s = n.sh?.[t] ?? 0
+    if (b - s > bb) { bb = b - s; best = { team: t, shared: false } }
+    if (s > bb) { bb = s; best = { team: t, shared: true } }
+  }
   return best
 }
 

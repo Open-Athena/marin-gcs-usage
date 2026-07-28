@@ -29,12 +29,12 @@ users:
     team: core
   rafal-wojdyla:
     aliases: [ravwojdyla, rav]
-    team: oa
+    team: core
   yael-elmatad:
     team: oa
   matt-wittmann:
     aliases: [mcwitt]
-    team: oa
+    team: core
   eric-czech:
     aliases: [eczech]
     team: oa
@@ -162,7 +162,7 @@ prefix_owners:
     team: stanford
   - prefix: gs://marin-*/scratch/rav/
     user: rafal-wojdyla
-    team: oa
+    team: core
   # Personal top-level dirs predating users/<name>/ convention
   - prefix: gs://marin-us-east5/pinlin_calvin_xu/
     user: calvin-xu
@@ -172,7 +172,7 @@ prefix_owners:
     team: stanford  # TODO confirm which Julian; ~22 TB of julian/experiments/ across 3 buckets
   - prefix: gs://marin-*/user/rav/
     user: rafal-wojdyla
-    team: oa  # `user/` (singular) tree is ~all rav
+    team: core  # `user/` (singular) tree is ~all rav
   - prefix: gs://marin-us-central1/ttl=30d/dlwh/
     user: david-hall
     team: core

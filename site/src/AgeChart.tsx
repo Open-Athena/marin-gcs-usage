@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
-import { TEAM_VARS, fmtBytes } from './types'
+import { TEAM_VARS, fmtBytes, sharedColor } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
@@ -37,7 +37,8 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
     const slotMap = new Map(catOrder.slice(0, 8).map((k, i) => [k, SLOTS[i]]))
     const userMode = mode === 'user' || mode === 'uteam'
     const keyOf = (r: AgeRow) =>
-      mode === 'team' ? (r.t ?? 'unattributed')
+      mode === 'team'
+        ? (!r.t || r.t === 'unattributed' ? 'unattributed' : r.u ? r.t : `${r.t} (shared)`)
       : userMode ? (r.u ?? 'unattributed')
       : slotMap.has(r.d1) ? r.d1 : '(other)'
     const byBucket = new Map<number, Map<string, number>>()
@@ -51,11 +52,19 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
     }
     const buckets = [...byBucket.keys()].sort((a, b) => a - b)
     const colorOf = (k: string): string =>
-      mode === 'team' ? `var(${TEAM_VARS[k] ?? '--t-unattr'})`
+      mode === 'team'
+        ? (k.endsWith(' (shared)')
+            ? sharedColor(TEAM_VARS[k.slice(0, -' (shared)'.length)] ?? '--t-unattr')
+            : `var(${TEAM_VARS[k] ?? '--t-unattr'})`)
       : userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx, mode === 'uteam'))
       : `var(${slotMap.get(k) ?? '--other'})`
     const legend: [string, string][] =
-      mode === 'team' ? Object.entries(TEAM_VARS).map(([t, v]): [string, string] => [t, `var(${v})`])
+      mode === 'team'
+        ? Object.entries(TEAM_VARS).flatMap(([t, v]): [string, string][] =>
+            t === 'core'
+              ? [[`${t} (users)`, `var(${v})`], [`${t} (shared)`, sharedColor(v)]]
+              : [[t, `var(${v})`]],
+          )
       : userMode
         ? [
             ...[...userIdx.keys()].slice(0, 10).map((u): [string, string] => [u, userColor(u, userIdx, mode === 'uteam')]),
