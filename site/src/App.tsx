@@ -98,7 +98,7 @@ export default function App() {
       (s, [c, b]) => s + gib(b) * (CLASS_PRICE_US[c] ?? 0.02),
       0,
     )
-    return { list, discounted: list * 0.7 }
+    return { list }
   }, [meta])
 
   return (
@@ -129,10 +129,8 @@ export default function App() {
             {' '}· <b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects
             {estCost && (
               <>
-                {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b> list
-                {' '}<span title="Assumption, not a confirmed rate — actual discount depends on the billing account's negotiated agreement/credits">
-                  (<b>${Math.round(estCost.discounted).toLocaleString()}</b> if −30% negotiated)
-                </span>
+                {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>
+                {' '}<span title="GCS list prices (US regions) × scanned bytes per storage class; actual spend depends on the billing account's negotiated rates/credits">at list price</span>
               </>
             )}
           </p>
