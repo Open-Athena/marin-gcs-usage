@@ -3,7 +3,7 @@
 FROM node:22-slim AS site
 WORKDIR /site
 COPY site/package.json site/pnpm-lock.yaml ./
-RUN corepack enable && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile
+RUN corepack enable && pnpm install --frozen-lockfile
 COPY site/ ./
 RUN pnpm build
 

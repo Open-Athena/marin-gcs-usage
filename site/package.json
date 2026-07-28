@@ -21,5 +21,12 @@
     "sass": "^1.89.0",
     "typescript": "^5.8.0",
     "vite": "^7.0.0"
-  }
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@parcel/watcher"
+    ]
+  },
+  "packageManager": "pnpm@10.18.1"
 }
