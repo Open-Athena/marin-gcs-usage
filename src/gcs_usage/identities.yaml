@@ -143,6 +143,8 @@ prefix_owners:
   # name; per-user signals inside still win via deepest-prefix)
   - prefix: gs://marin-*/checkpoints/isoflop/
     team: core  # scaling-law ladders; runs by held/rohithk/larrydial et al.
+  - prefix: gs://marin-*/checkpoints/isoflop-curation/
+    team: core  # curation runs for the isoflop ladders (per-user signals inside still win)
   - prefix: gs://marin-*/grug/chunked_perf/
     team: core  # TODO confirm owner (grug infra sweeps)
   - prefix: gs://marin-*/grug/moe_depth_mup_lr/

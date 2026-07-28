@@ -287,6 +287,11 @@
    "note": "scaling-law ladders; runs by held/rohithk/larrydial et al."
   },
   {
+   "prefix": "gs://marin-*/checkpoints/isoflop-curation/",
+   "team": "core",
+   "note": "curation runs for the isoflop ladders (per-user signals inside still win)"
+  },
+  {
    "prefix": "gs://marin-*/grug/chunked_perf/",
    "team": "core",
    "note": "TODO confirm owner (grug infra sweeps)"
