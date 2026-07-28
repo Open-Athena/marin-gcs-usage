@@ -35,6 +35,24 @@ BATCH_ROWS = 200_000
 BLOB_FIELDS = "items(name,size,timeCreated,storageClass),nextPageToken"
 
 
+def dedupe_prefixes(prefixes: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Sorted, de-duplicated prefixes plus the (descendant, ancestor) pairs dropped.
+
+    Placeholder "folder" objects (zero-byte ``dir/`` blobs) make gcsfs ``ls``
+    return a directory inside its own listing, so the depth-2 enumeration can
+    emit both ``scratch/`` and ``scratch/<user>/`` — streaming those subtrees
+    twice. Keeping only ancestors makes double-listing structurally impossible.
+    """
+    kept: list[str] = []
+    dropped: list[tuple[str, str]] = []
+    for p in sorted(set(prefixes)):
+        if kept and p.startswith(kept[-1]):
+            dropped.append((p, kept[-1]))
+            continue
+        kept.append(p)
+    return kept, dropped
+
+
 def entries_to_frame(bucket: str, rows: list[tuple]) -> pd.DataFrame:
     """(name, size, created, storage_class) tuples → canonical listing columns."""
     names, sizes, created, classes = zip(*rows) if rows else ((), (), (), ())
@@ -200,6 +218,9 @@ def list_bucket_to_parquet(
                 shallow.append((e2["name"].split("/", 1)[1], e2["size"], e2.get("timeCreated"), e2.get("storageClass")))
             else:
                 stream_prefixes.append(e2["name"].split("/", 1)[1] + "/")
+    stream_prefixes, nested = dedupe_prefixes(stream_prefixes)
+    for p, parent in nested:
+        err(f"WARN: dropping nested prefix {p!r} (inside {parent!r})")
     err(f"{root}: {len(stream_prefixes)} depth-2 prefixes, {len(shallow)} shallow objects; {procs} procs × {threads} threads")
 
     _write_shard(out_dir, "shard-shallow", entries_to_frame(bucket, shallow))

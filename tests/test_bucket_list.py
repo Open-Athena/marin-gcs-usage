@@ -73,3 +73,17 @@ def test_clear_removes_everything(out):
     seed(fs, root, 2, marker=True)
     assert resolve_existing(fs, root, "clear") is None
     assert listing_files(fs, root) == []
+
+
+def test_dedupe_prefixes_drops_nested_and_dups():
+    from gcs_usage.bucket_list import dedupe_prefixes
+
+    kept, dropped = dedupe_prefixes(
+        ["scratch/", "scratch/alice/", "scratch/bob/", "docs/x/", "docs/x/", "docsz/", "a/b/", "a/b/c/"]
+    )
+    assert kept == ["a/b/", "docs/x/", "docsz/", "scratch/"]
+    assert dropped == [
+        ("a/b/c/", "a/b/"),
+        ("scratch/alice/", "scratch/"),
+        ("scratch/bob/", "scratch/"),
+    ]
