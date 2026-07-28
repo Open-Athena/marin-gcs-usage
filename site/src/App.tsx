@@ -111,7 +111,7 @@ export default function App() {
               <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>
                 {(ident.name || ident.email).trim()[0].toUpperCase()}
               </span>
-              <span className="email">{ident.email}</span>
+              <span className="email" title={ident.email}>{ident.name || ident.email}</span>
               <a className="logout" href="/cdn-cgi/access/logout">log out</a>
             </div>
           )}
