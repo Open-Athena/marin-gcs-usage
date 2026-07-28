@@ -87,6 +87,16 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   margin: 0;
   font-variant-numeric: tabular-nums;
   b { color: var(--ink); font-weight: 600; }
+  .scanpick {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    font-weight: 600;
+    padding: 1px 4px;
+    cursor: pointer;
+  }
 }
 .prose {
   max-width: 68ch;

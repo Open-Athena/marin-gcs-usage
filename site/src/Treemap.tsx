@@ -47,6 +47,11 @@ export function Treemap({ root, mode, userIdx, dateRange }: {
   }, [root])
 
   useEffect(() => {
+    setPath([root])
+    setTip(null)
+  }, [root])
+
+  useEffect(() => {
     const el = mapRef.current
     if (!el) return
     const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }))

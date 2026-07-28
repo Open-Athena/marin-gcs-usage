@@ -417,19 +417,40 @@ def wandb_mine(
 @option("-d", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
-@option("-o", "--out", "out_dir", type=Path, default=Path("site/public/data"), help="Output dir for JSON files")
+@option("-o", "--out", "out_dir", type=Path, default=None, help="Output dir for JSON files [default: site/public/data/<asof>]")
 def webdata(
     attributions: tuple[str, ...],
     asof: str,
     identities_path: Path,
     listing: str,
-    out_dir: Path,
+    out_dir: Path | None,
 ) -> None:
-    """Generate the site's data JSONs (tree/age/meta) from a listing."""
+    """Generate a dated site-data snapshot (tree/age/meta JSONs) from a listing.
+
+    Snapshots live at site/public/data/<asof>/; the sibling scans.json index
+    (dates, newest first — the site's scan dropdown) is refreshed afterwards.
+    """
+    import json
+    import re
+
     from .viz import write_webdata
 
+    if out_dir is None:
+        out_dir = Path("site/public/data") / asof
     meta = write_webdata(listing, out_dir, asof, attributions, identities_path)
     err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
+    data_root = out_dir.parent
+    dates = sorted(
+        (
+            p.name
+            for p in data_root.iterdir()
+            if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name) and (p / "meta.json").exists()
+        ),
+        reverse=True,
+    )
+    if dates:
+        (data_root / "scans.json").write_text(json.dumps(dates) + "\n")
+        err(f"scans.json: {dates}")
 
 
 @main.command()

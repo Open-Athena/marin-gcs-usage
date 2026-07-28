@@ -36,6 +36,8 @@ export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [rules, setRules] = useState<Rules | null>(null)
   const [mode, setMode] = useState<ColorMode>('team')
+  const [scans, setScans] = useState<string[]>([])
+  const [asof, setAsof] = useState<string | null>(null)
   const ident = useIdentity()
   const hasAttr = !!tree?.tm
   const effMode: ColorMode = hasAttr ? mode : 'tree'
@@ -58,11 +60,25 @@ export default function App() {
   }, [tree])
 
   useEffect(() => {
-    void fetch('/data/tree.json').then(r => r.json()).then(setTree)
-    void fetch('/data/age.json').then(r => r.json()).then(setAge)
-    void fetch('/data/meta.json').then(r => r.json()).then(setMeta)
+    void fetch('/data/scans.json').then(r => r.json()).then((list: string[]) => {
+      setScans(list)
+      const param = new URLSearchParams(location.search).get('scan')
+      setAsof(param && list.includes(param) ? param : list[0])
+    })
     void fetch('/data/rules.json').then(r => r.json()).then(setRules).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!asof) return
+    setTree(null)
+    void fetch(`/data/${asof}/tree.json`).then(r => r.json()).then(setTree)
+    void fetch(`/data/${asof}/age.json`).then(r => r.json()).then(setAge)
+    void fetch(`/data/${asof}/meta.json`).then(r => r.json()).then(setMeta)
+    const url = new URL(location.href)
+    if (asof === scans[0]) url.searchParams.delete('scan')
+    else url.searchParams.set('scan', asof)
+    history.replaceState(null, '', url)
+  }, [asof, scans])
 
   const catOrder = useMemo(() => {
     if (!tree) return []
@@ -102,7 +118,15 @@ export default function App() {
         </div>
         {meta && (
           <p className="sub">
-            scan <b>{meta.asof}</b> · <b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects
+            scan{' '}
+            {scans.length > 1 && asof ? (
+              <select className="scanpick" value={asof} onChange={e => setAsof(e.target.value)} aria-label="Scan date">
+                {scans.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            ) : (
+              <b>{meta.asof}</b>
+            )}
+            {' '}· <b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects
             {estCost && (
               <>
                 {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b> list
