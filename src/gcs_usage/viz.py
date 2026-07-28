@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -126,7 +127,7 @@ def write_webdata(
     con = duckdb.connect()
     # attribution mode is node-scale (34M-dir python-side walk); plain mode
     # stays laptop-safe
-    con.execute(f"SET memory_limit='{'24GB' if attr else '6GB'}'")
+    con.execute(f"SET memory_limit='{os.environ.get('DUCKDB_MEM', '24GB' if attr else '6GB')}'")
     src = prepare_listing(con, listings)
     if attr:
         from .identity import DEFAULT_IDENTITIES, load_identities

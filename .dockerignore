@@ -1,0 +1,9 @@
+.git
+.venv
+tmp
+node_modules
+site/node_modules
+site/dist
+site/public/data/20*
+wt
+gh

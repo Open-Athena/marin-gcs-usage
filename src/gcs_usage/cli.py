@@ -9,6 +9,7 @@ need (distinct ``users/<seg>/`` prefixes and record-file rows).
 from __future__ import annotations
 
 import datetime as dt
+import os
 import sys
 from collections import Counter
 from dataclasses import asdict
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
-from click import group, option
+from click import argument, group, option
 
 from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
 from .listing import prepare_listing
@@ -32,7 +33,7 @@ def _connect() -> "duckdb.DuckDBPyConnection":
     """DuckDB with a hard memory cap — unbounded defaults (80% of RAM) have
     wedged the 61GB work node when combined with pandas-side structures."""
     con = duckdb.connect()
-    con.execute("SET memory_limit='24GB'")
+    con.execute(f"SET memory_limit='{os.environ.get('DUCKDB_MEM', '24GB')}'")
     con.execute("SET threads=8")
     return con
 
@@ -457,6 +458,22 @@ def webdata(
     if dates:
         (data_root / "scans.json").write_text(json.dumps(dates) + "\n")
         err(f"scans.json: {dates}")
+
+
+@main.command("list-bucket")
+@option("-o", "--out", "out_dir", required=True, help="Output dir (local or gs://) for canonical listing parquet shards")
+@option("-p", "--prefix", default=None, help="List only under this prefix (smoke tests / partial runs)")
+@option("-w", "--workers", default=32, help="Concurrent prefix listings")
+@argument("bucket")
+def list_bucket(out_dir: str, prefix: str | None, workers: int, bucket: str) -> None:
+    """Directly list a GCS bucket to canonical listing parquet shards.
+
+    Patch for buckets where Storage Insights inventory reports are
+    unavailable (currently `marin-us-central2`).
+    """
+    from .bucket_list import list_bucket_to_parquet
+
+    list_bucket_to_parquet(bucket, out_dir, workers=workers, prefix=prefix)
 
 
 @main.command()
