@@ -3,8 +3,16 @@
 Patch for buckets where Storage Insights is unavailable (`marin-us-central2`
 502s at config creation): list the bucket ourselves, prefix-parallelized, and
 write shards in the canonical listing schema so `prepare_listing` treats the
-output like any other source. Sharding is by depth-2 prefix (plus one shard
-of shallower objects) to bound per-`find` memory on huge trees.
+output like any other source.
+
+Memory discipline (the first Cloud Run execution OOMed without it):
+
+- listings cache disabled — gcsfs would otherwise retain every listed entry
+  in its dircache (~GBs at 100M objects);
+- results stream back to the main thread, which buffers rows and flushes
+  chunky sequential shards (~1M rows) instead of one file per prefix;
+- shard output goes straight to ``gs://`` via gcsfs — writing through a FUSE
+  mount buffers whole files in container memory.
 """
 
 from __future__ import annotations
@@ -12,13 +20,14 @@ from __future__ import annotations
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from pathlib import PurePosixPath
 
 import pandas as pd
 
 from .listing import SII_CLASS_IDS
 
 err = partial(print, file=sys.stderr)
+
+ROWS_PER_SHARD = 1_000_000
 
 
 def rows_to_frame(bucket: str, entries: list[dict]) -> pd.DataFrame:
@@ -37,7 +46,7 @@ def rows_to_frame(bucket: str, entries: list[dict]) -> pd.DataFrame:
 def list_bucket_to_parquet(
     bucket: str,
     out_dir: str,
-    workers: int = 32,
+    workers: int = 24,
     prefix: str | None = None,
 ) -> int:
     """List ``bucket`` (optionally under ``prefix``) to parquet shards in ``out_dir``.
@@ -47,12 +56,12 @@ def list_bucket_to_parquet(
     import fsspec
     import gcsfs
 
-    fs = gcsfs.GCSFileSystem()
+    fs = gcsfs.GCSFileSystem(use_listings_cache=False)
     out_fs, out_root = fsspec.core.url_to_fs(out_dir)
     out_fs.makedirs(out_root, exist_ok=True)
 
     root = f"{bucket}/{prefix.strip('/')}" if prefix else bucket
-    # depth-2 shard prefixes + everything shallower than depth 2 in one shard
+    # depth-2 shard prefixes + everything shallower than depth 2 in one batch
     shallow: list[dict] = []
     shard_prefixes: list[str] = []
     for e1 in fs.ls(root, detail=True):
@@ -64,26 +73,38 @@ def list_bucket_to_parquet(
                 shallow.append(e2)
             else:
                 shard_prefixes.append(e2["name"])
-    err(f"{root}: {len(shard_prefixes)} depth-2 shards, {len(shallow)} shallow objects")
+    err(f"{root}: {len(shard_prefixes)} depth-2 prefixes, {len(shallow)} shallow objects")
 
     total = 0
+    n_out = 0
+    buffer: list[pd.DataFrame] = [rows_to_frame(bucket, shallow)]
+    buffered = len(shallow)
 
-    def write(frame: pd.DataFrame, shard: str) -> int:
-        if len(frame):
-            frame.to_parquet(f"{out_root}/{shard}.parquet", index=False, filesystem=out_fs)
-        return len(frame)
+    def flush() -> None:
+        nonlocal n_out, buffered
+        if not buffered:
+            return
+        frame = pd.concat(buffer, ignore_index=True)
+        frame.to_parquet(f"{out_root}/shard-{n_out:05d}.parquet", index=False, filesystem=out_fs)
+        n_out += 1
+        buffer.clear()
+        buffered = 0
 
-    total += write(rows_to_frame(bucket, shallow), "shallow-000000")
-
-    def one(i_pfx: tuple[int, str]) -> int:
-        i, pfx = i_pfx
+    def one(pfx: str) -> pd.DataFrame:
         entries = [e for e in fs.find(pfx, detail=True).values() if e["type"] == "file"]
-        return write(rows_to_frame(bucket, entries), f"shard-{i:06d}")
+        return rows_to_frame(bucket, entries)
 
     with ThreadPoolExecutor(workers) as ex:
-        for i, n in enumerate(ex.map(one, enumerate(shard_prefixes))):
-            total += n
-            if i % 200 == 0:
-                err(f"  {i}/{len(shard_prefixes)} shards, {total:,} objects")
-    err(f"{root}: {total:,} objects listed → {out_dir}")
+        for i, frame in enumerate(ex.map(one, shard_prefixes)):
+            total += len(frame)
+            if len(frame):
+                buffer.append(frame)
+                buffered += len(frame)
+            if buffered >= ROWS_PER_SHARD:
+                flush()
+            if i % 500 == 0:
+                err(f"  {i}/{len(shard_prefixes)} prefixes, {total:,} objects, {n_out} shards written")
+    flush()
+    total += len(shallow)
+    err(f"{root}: {total:,} objects listed → {out_dir} ({n_out} shards)")
     return total
