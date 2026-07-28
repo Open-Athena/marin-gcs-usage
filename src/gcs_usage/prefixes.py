@@ -26,7 +26,7 @@ def load_prefix_map(
     con: "duckdb.DuckDBPyConnection",
     attributions: tuple[str, ...],
     identities: "IdentityMap",
-    listing: str,
+    listing_src: str,
 ) -> dict[str, tuple]:
     """prefix -> (user, team, source); parquet rows win over manual rows."""
     by_prefix: dict[str, tuple] = {}
@@ -36,7 +36,7 @@ def load_prefix_map(
         ).fetchall():
             user = identities.resolve(user) if user else user
             by_prefix.setdefault(prefix, (user, identities.team_of(user) if user else team, source))
-    buckets = [b for (b,) in con.execute(f"SELECT DISTINCT bucket FROM read_parquet('{listing}')").fetchall()]
+    buckets = [b for (b,) in con.execute(f"SELECT DISTINCT bucket FROM {listing_src}").fetchall()]
     for owner in identities.prefix_owners:
         bucket, _, rest = owner.prefix.removeprefix("gs://").partition("/")
         expanded = (f"gs://{b}/{rest}" for b in buckets if fnmatch(b, bucket))

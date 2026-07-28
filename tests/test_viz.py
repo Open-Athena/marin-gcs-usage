@@ -80,7 +80,7 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
     identities_path.write_text(IDENTITIES_YAML)
     out = tmp_path / "out"
 
-    meta = write_webdata(listing, out, "2026-07-20", (attribution,), identities_path)
+    meta = write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path)
 
     assert meta == {
         "asof": "2026-07-20",
@@ -145,7 +145,7 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
 
 def test_write_webdata_plain(tmp_path: Path, listing: str):
     out = tmp_path / "out"
-    meta = write_webdata(listing, out, "2026-07-20")
+    meta = write_webdata((listing,), out, "2026-07-20")
     assert "users" not in meta
     assert meta["total_bytes"] == 380 * GB
     age = json.loads((out / "age.json").read_text())

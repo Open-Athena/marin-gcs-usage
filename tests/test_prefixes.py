@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from gcs_usage.identity import load_identities
+from gcs_usage.listing import prepare_listing
 from gcs_usage.prefixes import deepest_lookup, load_prefix_map
 
 IDENTITIES_YAML = """\
@@ -61,7 +62,8 @@ def attribution(tmp_path: Path) -> str:
 
 
 def test_load_prefix_map(identities, listing: str, attribution: str):
-    by_prefix = load_prefix_map(duckdb.connect(), (attribution,), identities, listing)
+    con = duckdb.connect()
+    by_prefix = load_prefix_map(con, (attribution,), identities, prepare_listing(con, (listing,)))
     # parquet rows re-resolve raw users against current identities; wildcard
     # prefix_owners fan out over the listing's buckets (b* matches b1/b2, not c9)
     assert by_prefix == {
@@ -74,7 +76,8 @@ def test_load_prefix_map(identities, listing: str, attribution: str):
 
 
 def test_deepest_lookup_wins_and_misses(identities, listing: str, attribution: str):
-    deepest = deepest_lookup(load_prefix_map(duckdb.connect(), (attribution,), identities, listing))
+    con = duckdb.connect()
+    deepest = deepest_lookup(load_prefix_map(con, (attribution,), identities, prepare_listing(con, (listing,))))
     # deepest ancestor wins over shallower manual rows
     assert deepest("b1/datasets/finelog/part-0") == (None, "data", "manual")
     assert deepest("b1/datasets/other") == (None, "data", "manual")

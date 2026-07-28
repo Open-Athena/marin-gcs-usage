@@ -108,7 +108,7 @@ def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict
 
 
 def write_webdata(
-    listing: str,
+    listings: tuple[str, ...],
     out_dir: Path,
     asof: str,
     attributions: tuple[str, ...] = (),
@@ -120,24 +120,27 @@ def write_webdata(
     join as ``report``) and each tree node carries ``tm`` (team-bytes map) and
     ``us`` (top user-bytes) for ownership overlays.
     """
+    from .listing import prepare_listing
+
     attr = bool(attributions)
     con = duckdb.connect()
     # attribution mode is node-scale (34M-dir python-side walk); plain mode
     # stays laptop-safe
     con.execute(f"SET memory_limit='{'24GB' if attr else '6GB'}'")
+    src = prepare_listing(con, listings)
     if attr:
         from .identity import DEFAULT_IDENTITIES, load_identities
         from .prefixes import deepest_lookup, load_prefix_map
 
         identities = load_identities(identities_path or DEFAULT_IDENTITIES)
-        deepest = deepest_lookup(load_prefix_map(con, attributions, identities, listing))
+        deepest = deepest_lookup(load_prefix_map(con, attributions, identities, src))
         dir_rows = con.execute(
             f"""
             WITH d AS (
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
                 size_bytes, created
-              FROM read_parquet('{listing}')
+              FROM {src}
             )
             SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
               sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
@@ -165,7 +168,7 @@ def write_webdata(
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
                 size_bytes, created
-              FROM read_parquet('{listing}')
+              FROM {src}
             )
             SELECT bucket,
               coalesce(regexp_extract(dir, '^([^/]+)', 1), '') AS d1,
@@ -211,7 +214,7 @@ def write_webdata(
             SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day, bucket,
               CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
-            FROM read_parquet('{listing}')
+            FROM {src}
             WHERE created IS NOT NULL
             GROUP BY ALL
             """
@@ -238,7 +241,7 @@ def write_webdata(
             SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day,
               regexp_extract(name, '^([^/]+)/', 1) AS d1,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
-            FROM read_parquet('{listing}')
+            FROM {src}
             WHERE created IS NOT NULL
             GROUP BY ALL ORDER BY day
             """
@@ -250,7 +253,7 @@ def write_webdata(
     classes = con.execute(
         f"""
         SELECT storage_class_id, sum(size_bytes)::BIGINT AS bytes
-        FROM read_parquet('{listing}') GROUP BY ALL ORDER BY storage_class_id
+        FROM {src} GROUP BY ALL ORDER BY storage_class_id
         """
     ).fetchall()
 

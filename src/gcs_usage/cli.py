@@ -20,6 +20,7 @@ import pandas as pd
 from click import group, option
 
 from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
+from .listing import prepare_listing
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
 from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows
@@ -43,13 +44,13 @@ def main() -> None:
 
 @main.command()
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", required=True, type=Path, help="Output parquet path for the attribution table")
 @option("-R", "--no-records", is_flag=True, help="Skip artifact-record mining (no GETs; path signals only)")
 @option("-w", "--workers", default=16, help="Concurrent record reads")
 def build(
     identities_path: Path,
-    listing: str,
+    listings: tuple[str, ...],
     out: Path,
     no_records: bool,
     workers: int,
@@ -58,16 +59,16 @@ def build(
     identities = load_identities(identities_path)
     asof = dt.date.today()
     con = _connect()
+    src = prepare_listing(con, listings)
 
     users_df = con.execute(
         "SELECT DISTINCT bucket, regexp_extract(name, '^users/[^/]+/') AS name"
-        " FROM read_parquet(?) WHERE name LIKE 'users/%'",
-        [listing],
+        f" FROM {src} WHERE name LIKE 'users/%'"
     ).df()
     records_df = con.execute(
-        "SELECT DISTINCT bucket, name FROM read_parquet(?)"
+        f"SELECT DISTINCT bucket, name FROM {src}"
         " WHERE regexp_extract(name, '[^/]+$') = ?",
-        [listing, RECORD_BASENAME],
+        [RECORD_BASENAME],
     ).df()
 
     rows = user_prefix_rows(users_df, identities, asof) + manual_rows(identities, asof)
@@ -93,18 +94,19 @@ def build(
 
 
 @main.command("executor-mine")
-@option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", "out_path", type=Path, default=Path("tmp/executor-infos.parquet"), help="Output parquet")
 @option("-w", "--workers", default=64, help="Concurrent GETs")
-def executor_mine(listing: str, out_path: Path, workers: int) -> None:
+def executor_mine(listings: tuple[str, ...], out_path: Path, workers: int) -> None:
     """Targeted-GET mine of legacy `.executor_info` sidecars (name/output_path/config gs paths)."""
     from .executor_info import mine_executor_infos
 
     con = _connect()
+    src = prepare_listing(con, listings)
     paths = [
         f"gs://{b}/{n}"
         for b, n in con.execute(
-            f"SELECT DISTINCT bucket, name FROM read_parquet('{listing}') WHERE name LIKE '%.executor_info'"
+            f"SELECT DISTINCT bucket, name FROM {src} WHERE name LIKE '%.executor_info'"
         ).fetchall()
     ]
     mine_executor_infos(paths, out_path, max_workers=workers)
@@ -112,13 +114,13 @@ def executor_mine(listing: str, out_path: Path, workers: int) -> None:
 
 @main.command("wandb-attr")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", required=True, type=Path, help="Output parquet path for wandb attribution rows")
 @option("-r", "--runs", "runs_path", required=True, type=Path, help="wandb-mine output parquet")
 @option("-x", "--executor-infos", "executor_path", type=Path, default=None, help="executor-mine output parquet (adds executor-wandb rows)")
 def wandb_attr(
     identities_path: Path,
-    listing: str,
+    listings: tuple[str, ...],
     out: Path,
     runs_path: Path,
     executor_path: Path | None,
@@ -131,6 +133,7 @@ def wandb_attr(
     runs = pd.read_parquet(runs_path)
     err(f"{len(runs)} mined runs")
     con = _connect()
+    src = prepare_listing(con, listings)
     # Run-named dirs live at level 2 (checkpoints/<run>/) but also deeper under
     # namespace dirs — checkpoints/isoflop/<run>/, even
     # checkpoints/isoflop/isoflop/<run>/ — so emit levels 2-4 as (parent, leaf).
@@ -142,7 +145,7 @@ def wandb_attr(
             regexp_extract(name, '^[^/]+/([^/]+)/', 1) AS d2,
             regexp_extract(name, '^[^/]+/[^/]+/([^/]+)/', 1) AS d3,
             regexp_extract(name, '^[^/]+/[^/]+/[^/]+/([^/]+)/', 1) AS d4
-          FROM read_parquet('{listing}')
+          FROM {src}
           WHERE (name LIKE 'checkpoints/%' OR name LIKE 'grug/%')
         )
         SELECT DISTINCT bucket, d1 AS parent, d2 AS leaf FROM l WHERE d2 IS NOT NULL
@@ -168,13 +171,13 @@ def wandb_attr(
 @main.command()
 @option("-a", "--attribution", "attributions", required=True, multiple=True, help="Attribution parquet(s); repeatable, concatenated")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-n", "--top", default=30, help="Rows in the per-user table")
 @option("-u", "--user", "claim_user", default=None, help="Print this user's claim list (their attributed prefixes by bytes)")
 def report(
     attributions: tuple[str, ...],
     identities_path: Path,
-    listing: str,
+    listings: tuple[str, ...],
     top: int,
     claim_user: str | None,
 ) -> None:
@@ -185,12 +188,13 @@ def report(
     """
     identities = load_identities(identities_path)
     con = _connect()
-    by_prefix = load_prefix_map(con, attributions, identities, listing)
+    src = prepare_listing(con, listings)
+    by_prefix = load_prefix_map(con, attributions, identities, src)
 
     dirs = con.execute(
         "SELECT bucket || '/' || CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,"
         " sum(size_bytes) AS bytes, count(*) AS objects"
-        f" FROM read_parquet('{listing}') GROUP BY dir"
+        f" FROM {src} GROUP BY dir"
     ).df()
     err(f"{len(dirs)} distinct dirs")
 
@@ -260,25 +264,26 @@ def report(
 @option("-a", "--attribution", "attributions", required=True, multiple=True, help="Attribution parquet(s); repeatable, concatenated")
 @option("-d", "--depth", default=2, help="Prefix depth for the gap rollup (name components after bucket)")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-n", "--top", default=40, help="Rows in the gap table")
 def gaps(
     attributions: tuple[str, ...],
     depth: int,
     identities_path: Path,
-    listing: str,
+    listings: tuple[str, ...],
     top: int,
 ) -> None:
     """Largest *unattributed* prefixes at a given depth — the targeting list for
     new signals and `prefix_owners` curation."""
     identities = load_identities(identities_path)
     con = _connect()
-    by_prefix = load_prefix_map(con, attributions, identities, listing)
+    src = prepare_listing(con, listings)
+    by_prefix = load_prefix_map(con, attributions, identities, src)
 
     dirs = con.execute(
         "SELECT bucket || '/' || CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,"
         " sum(size_bytes) AS bytes, count(*) AS objects"
-        f" FROM read_parquet('{listing}') GROUP BY dir"
+        f" FROM {src} GROUP BY dir"
     ).df()
     err(f"{len(dirs)} distinct dirs")
 
@@ -323,12 +328,13 @@ def gaps(
 
 
 @main.command()
-@option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-n", "--top", default=25, help="Rows per top-prefix table")
-def census(listing: str, top: int) -> None:
+def census(listings: tuple[str, ...], top: int) -> None:
     """Listing-level coverage census: per-bucket totals, users/ bytes, record files, top prefixes."""
     con = _connect()
-    con.execute(f"CREATE VIEW l AS SELECT * FROM read_parquet('{listing}')")
+    src = prepare_listing(con, listings)
+    con.execute(f"CREATE VIEW l AS SELECT * FROM {src}")
 
     print("== per-bucket totals ==")
     print(
@@ -416,13 +422,13 @@ def wandb_mine(
 @option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node team/user overlays")
 @option("-d", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-l", "--listing", required=True, help="Parquet path/glob of the scan_gcs objects listing")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", "out_dir", type=Path, default=None, help="Output dir for JSON files [default: site/public/data/<asof>]")
 def webdata(
     attributions: tuple[str, ...],
     asof: str,
     identities_path: Path,
-    listing: str,
+    listings: tuple[str, ...],
     out_dir: Path | None,
 ) -> None:
     """Generate a dated site-data snapshot (tree/age/meta JSONs) from a listing.
@@ -437,7 +443,7 @@ def webdata(
 
     if out_dir is None:
         out_dir = Path("site/public/data") / asof
-    meta = write_webdata(listing, out_dir, asof, attributions, identities_path)
+    meta = write_webdata(listings, out_dir, asof, attributions, identities_path)
     err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
     data_root = out_dir.parent
     dates = sorted(
