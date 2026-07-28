@@ -196,7 +196,7 @@ def write_webdata(
         # Day keys are epoch days; the site aggregates to day/week/month.
         reader = con.execute(
             f"""
-            SELECT CAST(epoch(date_trunc('day', created)) / 86400 AS INTEGER) AS day, bucket,
+            SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day, bucket,
               CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
             FROM read_parquet('{listing}')
@@ -223,7 +223,7 @@ def write_webdata(
     else:
         age = con.execute(
             f"""
-            SELECT CAST(epoch(date_trunc('day', created)) / 86400 AS INTEGER) AS day,
+            SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day,
               regexp_extract(name, '^([^/]+)/', 1) AS d1,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
             FROM read_parquet('{listing}')

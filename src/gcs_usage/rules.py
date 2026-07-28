@@ -65,10 +65,10 @@ def check_rules(doc: dict) -> list[str]:
             findings.append(f"user {user}: team {team!r} not in teams {teams}")
         for alias in row.get("aliases") or []:
             alias_counts[alias] += 1
-            if alias in users:
-                findings.append(f"alias {alias!r} (of {user}) shadows canonical user id {alias!r}")
             if alias == user:
                 findings.append(f"user {user}: alias {alias!r} is redundant (equals canonical id)")
+            elif alias in users:
+                findings.append(f"alias {alias!r} (of {user}) shadows canonical user id {alias!r}")
     for alias, n in alias_counts.items():
         if n > 1:
             findings.append(f"alias {alias!r} appears under {n} users")
