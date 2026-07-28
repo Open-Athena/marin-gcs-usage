@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { Rules, TreeNode, UserInfo } from './types'
 import { TEAM_VARS, fmtBytes } from './types'
 
@@ -24,6 +25,11 @@ export function AttributionRules({ rules, tree, users }: {
   tree: TreeNode
   users: UserInfo[]
 }) {
+  // deep-linkable: the section mounts after data loads, so honor #attribution then
+  useEffect(() => {
+    if (location.hash === '#attribution') document.getElementById('attribution')?.scrollIntoView()
+  }, [])
+
   const bytesOf = new Map(users.map(u => [u.u, u.b]))
   const attributed = Object.entries(tree.tm ?? {})
     .filter(([t]) => t !== 'unattributed')
@@ -31,7 +37,7 @@ export function AttributionRules({ rules, tree, users }: {
   const pct = (b: number) => ((100 * b) / tree.b).toFixed(1)
   const ruleUsers = [...rules.users].sort((a, b) => (bytesOf.get(b.u) ?? 0) - (bytesOf.get(a.u) ?? 0))
   return (
-    <section className="attrib">
+    <section className="attrib" id="attribution">
       <h2>How attribution works</h2>
       <div className="prose">
         <p>

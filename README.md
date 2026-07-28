@@ -31,6 +31,15 @@ Signals, best-first (deepest-prefix-wins at join time):
 Unknown spellings resolve to their own sanitized segment with team `unknown`
 and are listed on stderr — curate them into `identities.yaml`.
 
+## Access ([gcs.oa.dev])
+
+The viz site is gated by [Cloudflare Access][cf-access] (app "GCS usage", Open Athena CF account). The allow policy is:
+
+- any `@openathena.ai` email (Google SSO or one-time email PIN), plus
+- a whitelist of external emails — currently Percy Liang: `psl@stanford.edu`, `percyliang@gmail.com` (one-time email PIN; Google SSO is restricted to the openathena.ai org by the OAuth client's consent config)
+
+To add/remove whitelisted emails: CF dashboard → Zero Trust → Access → Applications → "GCS usage" policy (or ask Ryan). Update this list in lockstep so the policy stays reviewable here.
+
 ## Development
 
 ```bash
@@ -47,6 +56,8 @@ standalone; if either changes upstream, update in lockstep:
   (`marin.execution.artifact.ArtifactRecord`), of which only
   `provenance.built_by` is read
 
+[gcs.oa.dev]: https://gcs.oa.dev
+[cf-access]: https://developers.cloudflare.com/cloudflare-one/applications/
 [marin]: https://github.com/marin-community/marin
 [marin#6790]: https://github.com/marin-community/marin/issues/6790
 [disk-tree]: https://github.com/runsascoded/disk-tree
