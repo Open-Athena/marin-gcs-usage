@@ -116,7 +116,7 @@ export default function App() {
       <section className="prose">
         <p>
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
-          <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
+          <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/" target="_blank" rel="noreferrer">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
           scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control recolors
           both plots — by owning team, top-level tree, age (older→newer), or owning user (hi-contrast, or
           hues grouped by team). Ownership comes from the{' '}

@@ -44,8 +44,8 @@ export function AttributionRules({ rules, tree, users }: {
           always mean its owner should pay for it. Treat per-user numbers as a starting point, not a bill.
         </p>
         <p className="feedback">
-          Spot a wrong owner? Say so in <a href={SLACK_URL}>#marin-eng</a> or PR{' '}
-          <a href={YAML_URL}><code>identities.yaml</code></a> — aliases, team assignments, and
+          Spot a wrong owner? Say so in <a href={SLACK_URL} target="_blank" rel="noreferrer">#marin-eng</a> or PR{' '}
+          <a href={YAML_URL} target="_blank" rel="noreferrer"><code>identities.yaml</code></a> — aliases, team assignments, and
           prefix rules all live there and take effect on the next data refresh.
         </p>
       </div>
