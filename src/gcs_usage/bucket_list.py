@@ -5,21 +5,22 @@ Patch for buckets where Storage Insights is unavailable (`marin-us-central2`
 write shards in the canonical listing schema so `prepare_listing` treats the
 output like any other source.
 
-Memory discipline (the first Cloud Run execution OOMed without it):
-
-- listings cache disabled — gcsfs would otherwise retain every listed entry
-  in its dircache (~GBs at 100M objects);
-- results stream back to the main thread, which buffers rows and flushes
-  chunky sequential shards (~1M rows) instead of one file per prefix;
-- shard output goes straight to ``gs://`` via gcsfs — writing through a FUSE
-  mount buffers whole files in container memory.
+Memory discipline (the first two Cloud Run executions OOMed without it):
+every stage is bounded. Workers stream ``list_blobs`` pages (field-projected)
+and emit small frames; a bounded queue backpressures them; the main thread is
+the only writer, flushing chunky sequential shards straight to ``gs://``
+(FUSE writes would buffer whole files in container memory; gcsfs ``find``
+would materialize whole prefixes; executor ``map`` would pile up ordered
+results behind slow prefixes).
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from queue import Queue
 
 import pandas as pd
 
@@ -28,17 +29,20 @@ from .listing import SII_CLASS_IDS
 err = partial(print, file=sys.stderr)
 
 ROWS_PER_SHARD = 1_000_000
+BATCH_ROWS = 200_000
+BLOB_FIELDS = "items(name,size,timeCreated,storageClass),nextPageToken"
 
 
-def rows_to_frame(bucket: str, entries: list[dict]) -> pd.DataFrame:
-    """gcsfs ``detail=True`` entries → canonical listing columns."""
+def entries_to_frame(bucket: str, rows: list[tuple]) -> pd.DataFrame:
+    """(name, size, created, storage_class) tuples → canonical listing columns."""
+    names, sizes, created, classes = zip(*rows) if rows else ((), (), (), ())
     return pd.DataFrame(
         {
             "bucket": bucket,
-            "name": [e["name"].split("/", 1)[1] for e in entries],
-            "size_bytes": [int(e["size"]) for e in entries],
-            "created": pd.to_datetime([e.get("timeCreated") for e in entries], utc=True, format="ISO8601"),
-            "storage_class_id": [SII_CLASS_IDS.get(e.get("storageClass", ""), 0) for e in entries],
+            "name": list(names),
+            "size_bytes": [int(s) for s in sizes],
+            "created": pd.to_datetime(list(created), utc=True),
+            "storage_class_id": [SII_CLASS_IDS.get(c or "", 0) for c in classes],
         }
     )
 
@@ -55,30 +59,59 @@ def list_bucket_to_parquet(
     """
     import fsspec
     import gcsfs
+    from google.cloud import storage
 
     fs = gcsfs.GCSFileSystem(use_listings_cache=False)
     out_fs, out_root = fsspec.core.url_to_fs(out_dir)
     out_fs.makedirs(out_root, exist_ok=True)
 
     root = f"{bucket}/{prefix.strip('/')}" if prefix else bucket
-    # depth-2 shard prefixes + everything shallower than depth 2 in one batch
-    shallow: list[dict] = []
-    shard_prefixes: list[str] = []
+    # depth-2 stream prefixes + everything shallower than depth 2 in one batch
+    shallow: list[tuple] = []
+    stream_prefixes: list[str] = []
     for e1 in fs.ls(root, detail=True):
-        if e1["type"] == "file":
-            shallow.append(e1)
-            continue
-        for e2 in fs.ls(e1["name"], detail=True):
+        for e2 in [e1] if e1["type"] == "file" else fs.ls(e1["name"], detail=True):
             if e2["type"] == "file":
-                shallow.append(e2)
+                shallow.append((e2["name"].split("/", 1)[1], e2["size"], e2.get("timeCreated"), e2.get("storageClass")))
             else:
-                shard_prefixes.append(e2["name"])
-    err(f"{root}: {len(shard_prefixes)} depth-2 prefixes, {len(shallow)} shallow objects")
+                stream_prefixes.append(e2["name"].split("/", 1)[1] + "/")
+    err(f"{root}: {len(stream_prefixes)} depth-2 prefixes, {len(shallow)} shallow objects")
+
+    q: Queue = Queue(maxsize=workers)
+    local = threading.local()
+    done = object()
+    produce_error: list[BaseException] = []
+
+    def one(pfx: str) -> None:
+        client = getattr(local, "client", None)
+        if client is None:
+            client = local.client = storage.Client()
+        rows: list[tuple] = []
+        for blob in client.list_blobs(bucket, prefix=pfx, fields=BLOB_FIELDS):
+            rows.append((blob.name, blob.size, blob.time_created, blob.storage_class))
+            if len(rows) >= BATCH_ROWS:
+                q.put(entries_to_frame(bucket, rows))
+                rows = []
+        if rows:
+            q.put(entries_to_frame(bucket, rows))
+
+    def produce() -> None:
+        try:
+            with ThreadPoolExecutor(workers) as ex:
+                for _ in ex.map(one, stream_prefixes):
+                    pass
+        except BaseException as e:  # surfaced in the main thread below
+            produce_error.append(e)
+        finally:
+            q.put(done)
+
+    threading.Thread(target=produce, daemon=True).start()
 
     total = 0
     n_out = 0
-    buffer: list[pd.DataFrame] = [rows_to_frame(bucket, shallow)]
+    buffer: list[pd.DataFrame] = [entries_to_frame(bucket, shallow)]
     buffered = len(shallow)
+    total += len(shallow)
 
     def flush() -> None:
         nonlocal n_out, buffered
@@ -90,21 +123,15 @@ def list_bucket_to_parquet(
         buffer.clear()
         buffered = 0
 
-    def one(pfx: str) -> pd.DataFrame:
-        entries = [e for e in fs.find(pfx, detail=True).values() if e["type"] == "file"]
-        return rows_to_frame(bucket, entries)
-
-    with ThreadPoolExecutor(workers) as ex:
-        for i, frame in enumerate(ex.map(one, shard_prefixes)):
-            total += len(frame)
-            if len(frame):
-                buffer.append(frame)
-                buffered += len(frame)
-            if buffered >= ROWS_PER_SHARD:
-                flush()
-            if i % 500 == 0:
-                err(f"  {i}/{len(shard_prefixes)} prefixes, {total:,} objects, {n_out} shards written")
+    while (item := q.get()) is not done:
+        buffer.append(item)
+        buffered += len(item)
+        total += len(item)
+        if buffered >= ROWS_PER_SHARD:
+            flush()
+            err(f"  {total:,} objects, {n_out} shards written")
+    if produce_error:
+        raise produce_error[0]
     flush()
-    total += len(shallow)
     err(f"{root}: {total:,} objects listed → {out_dir} ({n_out} shards)")
     return total
