@@ -18,7 +18,9 @@ KEEP_DEPLOYED=30  # most-recent snapshots included in the site deploy
 
 cd /app
 
-# 1. central2 direct listing (canonical schema shards straight into the data bucket)
+# 1. central2 direct listing (canonical schema shards straight into the data bucket);
+# clear any partial output from a previously failed run first
+rm -f "/gcs/$DATA/central2-listing/$DATE"/*.parquet 2>/dev/null || true
 gcs-usage list-bucket marin-us-central2 -o "gs://$DATA/central2-listing/$DATE" -w 24
 
 # 2. assemble -l args: SII per bucket (skip loudly if a day's report is missing),
