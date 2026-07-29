@@ -221,6 +221,13 @@ def list_bucket_to_parquet(
     stream_prefixes, nested = dedupe_prefixes(stream_prefixes)
     for p, parent in nested:
         err(f"WARN: dropping nested prefix {p!r} (inside {parent!r})")
+    # de-nested depth-1 parents stream their whole subtree, which includes
+    # depth-2 files that also landed in `shallow` — keep them stream-side only
+    parents = tuple({parent for _, parent in nested})
+    if parents:
+        before = len(shallow)
+        shallow = [row for row in shallow if not row[0].startswith(parents)]
+        err(f"{root}: dropped {before - len(shallow)} shallow objects covered by de-nested parents")
     err(f"{root}: {len(stream_prefixes)} depth-2 prefixes, {len(shallow)} shallow objects; {procs} procs × {threads} threads")
 
     _write_shard(out_dir, "shard-shallow", entries_to_frame(bucket, shallow))
