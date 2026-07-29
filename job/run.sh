@@ -27,8 +27,16 @@ cd /app
 
 # 1. central2 direct listing (canonical schema shards straight into the data bucket).
 # The exists-policy handles prior output: completed listings are reused,
-# partials from crashed runs are cleared.
-gcs-usage list-bucket marin-us-central2 -o "gs://$DATA/$LISTING_PATH" -P 6 -w 8 -x "${LISTING_EXISTS:-reuse}"
+# partials from crashed runs are cleared. Worker chunks are balanced using
+# the newest previously-completed listing'"'"'s per-prefix object counts.
+W=()
+for d in $(ls "/gcs/$DATA/central2-listing/" 2>/dev/null | sort -r); do
+  [ "$d" = "$(basename "$LISTING_PATH")" ] && continue
+  if [ -f "/gcs/$DATA/central2-listing/$d/_SUCCESS.json" ]; then
+    W=(-W "/gcs/$DATA/central2-listing/$d/*.parquet"); break
+  fi
+done
+gcs-usage list-bucket marin-us-central2 -o "gs://$DATA/$LISTING_PATH" -P 6 -w 8 -x "${LISTING_EXISTS:-reuse}" "${W[@]}"
 
 # 2. assemble -l args: SII per bucket (skip loudly if a day's report is missing),
 # then the fresh central2 listing, then the weekly-scan fallback (earlier wins per bucket)

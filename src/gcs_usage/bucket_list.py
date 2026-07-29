@@ -35,6 +35,42 @@ BATCH_ROWS = 200_000
 BLOB_FIELDS = "items(name,size,timeCreated,storageClass),nextPageToken"
 
 
+def pack_chunks(prefixes: list[str], weights: dict[str, int], n: int) -> list[list[str]]:
+    """Greedy bin-pack of ``prefixes`` into ``n`` chunks by ``weights``
+    (object counts from a prior listing; unknown prefixes weight 1).
+
+    Round-robin by count leaves one worker with the mega-prefixes (the first
+    balanced run spent half its wall clock on a single straggler chunk).
+    """
+    import heapq
+
+    bins: list[tuple[int, int, list[str]]] = [(0, i, []) for i in range(n)]
+    heapq.heapify(bins)
+    for p in sorted(prefixes, key=lambda p: -weights.get(p, 1)):
+        w, i, chunk = heapq.heappop(bins)
+        chunk.append(p)
+        heapq.heappush(bins, (w + weights.get(p, 1), i, chunk))
+    return [chunk for _, _, chunk in sorted(bins, key=lambda b: b[1])]
+
+
+def prefix_weights(weights_glob: str) -> dict[str, int]:
+    """Object counts per depth-1 and depth-2 prefix from a canonical listing."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("SET memory_limit='4GB'")
+    weights: dict[str, int] = {}
+    for expr in (
+        "split_part(name, '/', 1) || '/'",
+        "split_part(name, '/', 1) || '/' || split_part(name, '/', 2) || '/'",
+    ):
+        for prefix, count in con.execute(
+            f"SELECT {expr} AS p, count(*) FROM read_parquet('{weights_glob}') WHERE name LIKE '%/%' GROUP BY 1"
+        ).fetchall():
+            weights[prefix] = int(count)
+    return weights
+
+
 def dedupe_prefixes(prefixes: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
     """Sorted, de-duplicated prefixes plus the (descendant, ancestor) pairs dropped.
 
@@ -188,6 +224,7 @@ def list_bucket_to_parquet(
     threads: int = 8,
     prefix: str | None = None,
     exists: str = "error",
+    weights_from: str | None = None,
 ) -> int:
     """List ``bucket`` (optionally under ``prefix``) to parquet shards in ``out_dir``.
 
@@ -233,7 +270,10 @@ def list_bucket_to_parquet(
     _write_shard(out_dir, "shard-shallow", entries_to_frame(bucket, shallow))
     total = len(shallow)
 
-    chunks = [stream_prefixes[i::procs] for i in range(procs)]
+    weights = prefix_weights(weights_from) if weights_from else {}
+    if weights:
+        err(f"chunk balancing from {weights_from} ({len(weights)} weighted prefixes)")
+    chunks = pack_chunks(stream_prefixes, weights, procs)
     with ProcessPoolExecutor(procs, mp_context=get_context("spawn")) as ex:
         futures = [
             ex.submit(_stream_prefixes, bucket, chunk, out_dir, ns, threads)

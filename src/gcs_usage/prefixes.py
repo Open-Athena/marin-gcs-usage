@@ -46,9 +46,16 @@ def load_prefix_map(
     return by_prefix
 
 
+MAX_DEEPEST_CACHE = 4_000_000
+
+
 def deepest_lookup(by_prefix: dict[str, tuple]) -> Callable[[str], tuple | None]:
     """Cached ``dir_key -> attribution`` for gs-less 'bucket/a/b' dir keys:
-    the attribution of the deepest attributed ancestor, or None."""
+    the attribution of the deepest attributed ancestor, or None.
+
+    The cache (dir keys + their chopped ancestors) is epoch-cleared at
+    ``MAX_DEEPEST_CACHE`` entries — unbounded it reaches tens of millions of
+    string keys (several GB) on full-fleet listings."""
     cache: dict[str, tuple | None] = {}
 
     def deepest(dir_key: str) -> tuple | None:
@@ -67,6 +74,8 @@ def deepest_lookup(by_prefix: dict[str, tuple]) -> Callable[[str], tuple | None]
                 break
             chopped.append(probe)
             probe = probe.rsplit("/", 1)[0]
+        if len(cache) > MAX_DEEPEST_CACHE:
+            cache.clear()
         for key in chopped:
             cache[key] = result
         cache[dir_key] = result

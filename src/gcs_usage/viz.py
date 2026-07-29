@@ -135,7 +135,10 @@ def write_webdata(
 
         identities = load_identities(identities_path or DEFAULT_IDENTITIES)
         deepest = deepest_lookup(load_prefix_map(con, attributions, identities, src))
-        dir_rows = con.execute(
+        # streamed in record batches: at ~40M+ distinct dirs a fetchall() of
+        # python tuples alone is ~10GB — the reason the 32GiB Cloud Run job
+        # OOMed here
+        reader = con.execute(
             f"""
             WITH d AS (
               SELECT bucket,
@@ -148,18 +151,22 @@ def write_webdata(
               sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
             FROM d GROUP BY ALL
             """
-        ).fetchall()
+        ).fetch_record_batch(1_000_000)
         agg: dict[tuple, list] = defaultdict(lambda: [0, 0, 0.0, 0])
-        for bucket, dir_, nbytes, objects, wts, wb in dir_rows:
-            row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
-            user, team = (row[0], row[1]) if row else (None, "unattributed")
-            parts = dir_.split("/") if dir_ else []
-            key = (bucket, *((parts + ["", "", "", ""])[:4]), user, team)
-            a = agg[key]
-            a[0] += nbytes
-            a[1] += objects
-            a[2] += wts or 0.0
-            a[3] += wb or 0
+        for batch in reader:
+            cols = batch.to_pydict()
+            for bucket, dir_, nbytes, objects, wts, wb in zip(
+                cols["bucket"], cols["dir"], cols["bytes"], cols["objects"], cols["wts"], cols["wb"]
+            ):
+                row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
+                user, team = (row[0], row[1]) if row else (None, "unattributed")
+                parts = dir_.split("/") if dir_ else []
+                key = (bucket, *((parts + ["", "", "", ""])[:4]), user, team)
+                a = agg[key]
+                a[0] += nbytes
+                a[1] += objects
+                a[2] += wts or 0.0
+                a[3] += wb or 0
         cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb"]
         rows = [dict(zip(cols, (*k, *v))) for k, v in agg.items()]
     else:

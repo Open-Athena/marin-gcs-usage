@@ -87,3 +87,13 @@ def test_dedupe_prefixes_drops_nested_and_dups():
         ("scratch/alice/", "scratch/"),
         ("scratch/bob/", "scratch/"),
     ]
+
+
+def test_pack_chunks_balances_by_weight():
+    from gcs_usage.bucket_list import pack_chunks
+
+    weights = {"huge/": 100, "big/": 40, "mid/": 30, "small1/": 5, "small2/": 5}
+    chunks = pack_chunks(["huge/", "big/", "mid/", "small1/", "small2/", "unknown/"], weights, 3)
+    totals = sorted(sum(weights.get(p, 1) for p in c) for c in chunks)
+    assert totals == [40, 41, 100]
+    assert sorted(p for c in chunks for p in c) == ["big/", "huge/", "mid/", "small1/", "small2/", "unknown/"]
