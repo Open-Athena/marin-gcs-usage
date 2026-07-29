@@ -10,10 +10,21 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import resource
+import sys
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 
 import duckdb
+
+err = partial(print, file=sys.stderr)
+
+
+def _rss(tag: str) -> None:
+    """Log peak RSS so OOM autopsies can name the phase (linux: KB, mac: B)."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    err(f"[rss] {tag}: peak {peak / (1024**2 if sys.platform == 'linux' else 1024**3):.1f} GB")
 
 FOLD_MIN_BYTES = 20e9  # children below this fold into "(other ×N)"
 TOP_USERS_PER_NODE = 5
@@ -131,6 +142,7 @@ def write_webdata(
     # large hash aggregations stream instead of materializing ordered output;
     # matters in Cloud Run where DuckDB's disk spill is actually RAM-backed
     con.execute("SET preserve_insertion_order=false")
+    con.execute(f"SET threads={os.environ.get('DUCKDB_THREADS', '4')}")
     src = prepare_listing(con, listings)
     if attr:
         import pandas as pd
@@ -139,7 +151,9 @@ def write_webdata(
         from .prefixes import load_prefix_map
 
         identities = load_identities(identities_path or DEFAULT_IDENTITIES)
+        _rss("start")
         by_prefix = load_prefix_map(con, attributions, identities, src)
+        _rss("prefix-map")
         pfx_df = pd.DataFrame(
             [
                 {"key": k.removeprefix("gs://").rstrip("/"), "user": u, "team": t}
@@ -186,6 +200,7 @@ def write_webdata(
             SELECT bucket, dir, win.u AS "user", win.t AS team FROM won
             """
         )
+        _rss("dir_attr")
         tree_rows = con.execute(
             f"""
             WITH d AS (
@@ -212,6 +227,7 @@ def write_webdata(
             GROUP BY ALL
             """
         ).fetchall()
+        _rss("tree-rows")
         cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb"]
         rows = [dict(zip(cols, r)) for r in tree_rows]
         # per-(team|user) storage-class byte mixes — lets the site price group
@@ -235,6 +251,7 @@ def write_webdata(
             team_class[team][int(cls)] += nbytes
             if user:
                 user_class[user][int(cls)] += nbytes
+        _rss("class-mix")
     else:
         dir_rows = con.execute(
             f"""
@@ -303,6 +320,7 @@ def write_webdata(
             {"d": day, "d1": d1, "t": t, **({"u": u} if u else {}), "b": b, "o": o}
             for day, d1, t, u, b, o in age
         ]
+        _rss("age")
     else:
         age = con.execute(
             f"""
