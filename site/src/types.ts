@@ -77,7 +77,33 @@ export interface Meta {
   total_objects: number
   class_bytes: Record<string, number>
   users?: UserInfo[]
+  team_class_bytes?: Record<string, Record<string, number>>
+  user_class_bytes?: Record<string, Record<string, number>>
 }
+
+// GCS list prices, $/GiB·mo, US regions, by storage_class_id
+export const CLASS_PRICE_US: Record<string, number> = { 1: 0.02, 2: 0.01, 3: 0.004, 4: 0.0012 }
+export const CLASS_NAMES: Record<string, string> = { 1: 'Standard', 2: 'Nearline', 3: 'Coldline', 4: 'Archive' }
+
+// blended $/byte·mo for a storage-class byte mix
+export const ratePerByte = (classBytes: Record<string, number>): number => {
+  let usd = 0
+  let bytes = 0
+  for (const [c, b] of Object.entries(classBytes)) {
+    usd += (b / 1024 ** 3) * (CLASS_PRICE_US[c] ?? 0.02)
+    bytes += b
+  }
+  return bytes ? usd / bytes : 0
+}
+
+export interface Pricing {
+  blended: number                       // $/byte·mo across the whole fleet
+  teamRates?: Record<string, number>    // class-aware $/byte·mo per team
+  userRates?: Record<string, number>
+}
+
+export const fmtUsd = (x: number): string =>
+  '$' + (x >= 100 ? Math.round(x).toLocaleString('en-US') : x.toFixed(x >= 1 ? 0 : 2))
 
 export interface RuleUser {
   u: string

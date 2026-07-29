@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { foldSmall, squarify } from './squarify'
-import type { ColorMode, TreeNode } from './types'
-import { TEAM_VARS, domTeamSeg, fmtBytes, fmtN, sharedColor } from './types'
+import type { ColorMode, Pricing, TreeNode } from './types'
+import { TEAM_VARS, domTeamSeg, fmtBytes, fmtN, fmtUsd, sharedColor } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
@@ -23,12 +23,13 @@ export interface Highlight {
   team?: string
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, hl }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
   hl?: Highlight | null
+  pricing?: Pricing | null
 }) {
   const [path, setPath] = useState<TreeNode[]>([root])
   const [tip, setTip] = useState<Tip | null>(null)
@@ -92,9 +93,12 @@ export function Treemap({ root, mode, userIdx, dateRange, hl }: {
     [node, size],
   )
 
-  // group roll-up for the current view: users in user modes, teams otherwise
+  // group roll-up for the current view: users in user modes, teams otherwise;
+  // $ figures use class-aware per-group rates when the snapshot carries them
   const rollup = useMemo(() => {
     if (!node.tm) return []
+    const teamRate = (t: string) => pricing && (pricing.teamRates?.[t] ?? pricing.blended)
+    const userRate = (u: string) => pricing && (pricing.userRates?.[u] ?? pricing.blended)
     if (mode === 'user' || mode === 'uteam') {
       const us = node.us ?? []
       const unattr = node.tm['unattributed'] ?? 0
@@ -103,26 +107,27 @@ export function Treemap({ root, mode, userIdx, dateRange, hl }: {
         .reduce((s, [, b]) => s + b, 0)
       const other = attributed - us.reduce((s, [, b]) => s + b, 0)
       return [
-        ...us.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam') })),
-        ...(other > 0 ? [{ k: '(other attributed)', b: other, col: 'var(--other)' }] : []),
-        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)' }] : []),
+        ...us.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u) })),
+        ...(other > 0 ? [{ k: '(other attributed)', b: other, col: 'var(--other)', rate: pricing?.blended }] : []),
+        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: teamRate('unattributed') }] : []),
       ].sort((a, b) => b.b - a.b)
     }
     return Object.entries(node.tm)
       .flatMap(([t, b]) => {
         const tv = TEAM_VARS[t] ?? '--t-unattr'
         const s = node.sh?.[t] ?? 0
+        const rate = teamRate(t)
         return s > 0 && b - s > 0
           ? [
-              { k: `${t} (users)`, b: b - s, col: `var(${tv})` },
-              { k: `${t} (shared)`, b: s, col: sharedColor(tv) },
+              { k: `${t} (users)`, b: b - s, col: `var(${tv})`, rate },
+              { k: `${t} (shared)`, b: s, col: sharedColor(tv), rate },
             ]
           : s > 0
-            ? [{ k: `${t} (shared)`, b: s, col: sharedColor(tv) }]
-            : [{ k: t, b, col: `var(${tv})` }]
+            ? [{ k: `${t} (shared)`, b: s, col: sharedColor(tv), rate }]
+            : [{ k: t, b, col: `var(${tv})`, rate }]
       })
       .sort((a, b) => b.b - a.b)
-  }, [node, mode, userIdx])
+  }, [node, mode, userIdx, pricing])
 
   const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, depth: number) => {
     const showLbl = r.w > 36 && r.h > 13
@@ -234,7 +239,10 @@ export function Treemap({ root, mode, userIdx, dateRange, hl }: {
               )}
             </span>
           ))}
-          <span className="sep"> — {fmtBytes(node.b)} · {fmtN(node.o)} objects</span>
+          <span className="sep">
+            {' '}— {fmtBytes(node.b)} · {fmtN(node.o)} objects
+            {pricing && <> · est. {fmtUsd(node.b * pricing.blended)}/mo</>}
+          </span>
         </nav>
         <div className="legend">
           {mode === 'team' ? (
@@ -287,6 +295,11 @@ export function Treemap({ root, mode, userIdx, dateRange, hl }: {
               <span className="sw" style={{ background: r.col }} />
               {r.k} <b>{fmtBytes(r.b)}</b>
               <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
+              {r.rate != null && (
+                <span className="usd" title="Est. $/mo at list price; rate blends the group's storage-class mix">
+                  {fmtUsd(r.b * r.rate)}/mo
+                </span>
+              )}
             </span>
           ))}
         </div>

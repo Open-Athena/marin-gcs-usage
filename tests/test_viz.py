@@ -89,6 +89,12 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "total_objects": 4,
         "class_bytes": {1: 180 * GB, 2: 200 * GB},
         "users": [{"u": "ryan-williams", "t": "infra", "b": 150 * GB}],
+        "team_class_bytes": {
+            "data": {2: 200 * GB},
+            "infra": {1: 150 * GB},
+            "unattributed": {1: 30 * GB},
+        },
+        "user_class_bytes": {"ryan-williams": {1: 150 * GB}},
     }
 
     tree = json.loads((out / "tree.json").read_text())

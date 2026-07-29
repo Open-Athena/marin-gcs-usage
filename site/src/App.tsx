@@ -8,11 +8,8 @@ import { AttributionRules } from './AttributionRules'
 import { buildUserIndex } from './colors'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
-import type { AgeRow, ColorMode, Meta, Rules, TreeNode } from './types'
-import { MODE_LABELS, fmtBytes, fmtN } from './types'
-
-const CLASS_NAMES: Record<string, string> = { 1: 'Standard', 2: 'Nearline', 3: 'Coldline', 4: 'Archive' }
-const CLASS_PRICE_US: Record<string, number> = { 1: 0.02, 2: 0.01, 3: 0.004, 4: 0.0012 }
+import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtBytes, fmtN, ratePerByte } from './types'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
 
@@ -54,7 +51,11 @@ function AppContent() {
   const [age, setAge] = useState<AgeRow[]>([])
   const [meta, setMeta] = useState<Meta | null>(null)
   const [rules, setRules] = useState<Rules | null>(null)
-  const [modeP, setModeP] = useUrlState('c', stringParam('team'))
+  // URL token matches the visible label ("age"), not the internal key ("date")
+  const [modeP, setModeP] = useUrlState('c', {
+    encode: (v: string | undefined) => (v === 'team' || v === undefined ? undefined : v === 'date' ? 'age' : v),
+    decode: (e: string | undefined) => (e === undefined ? 'team' : e === 'age' ? 'date' : e),
+  })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
   const [scans, setScans] = useState<string[]>([])
@@ -197,6 +198,17 @@ function AppContent() {
     return { list }
   }, [meta])
 
+  const pricing = useMemo((): Pricing | null => {
+    if (!meta) return null
+    const rates = (m?: Record<string, Record<string, number>>) =>
+      m && Object.fromEntries(Object.entries(m).map(([k, cb]) => [k, ratePerByte(cb)]))
+    return {
+      blended: ratePerByte(meta.class_bytes),
+      teamRates: rates(meta.team_class_bytes),
+      userRates: rates(meta.user_class_bytes),
+    }
+  }, [meta])
+
   return (
     <main>
       <header>
@@ -268,7 +280,7 @@ function AppContent() {
       )}
 
       {tree ? (
-        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} />
+        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} />
       ) : (
         <p className="loading">loading tree…</p>
       )}

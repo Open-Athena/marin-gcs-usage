@@ -143,20 +143,24 @@ def write_webdata(
             WITH d AS (
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes, created
+                size_bytes, created, storage_class_id
               FROM {src}
             )
-            SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
+            SELECT bucket, dir, storage_class_id, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
               sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
               sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
             FROM d GROUP BY ALL
             """
         ).fetch_record_batch(1_000_000)
         agg: dict[tuple, list] = defaultdict(lambda: [0, 0, 0.0, 0])
+        # per-(team|user) storage-class byte mixes — lets the site price group
+        # roll-ups with class-aware rates rather than one global blend
+        team_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        user_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         for batch in reader:
             cols = batch.to_pydict()
-            for bucket, dir_, nbytes, objects, wts, wb in zip(
-                cols["bucket"], cols["dir"], cols["bytes"], cols["objects"], cols["wts"], cols["wb"]
+            for bucket, dir_, cls, nbytes, objects, wts, wb in zip(
+                cols["bucket"], cols["dir"], cols["storage_class_id"], cols["bytes"], cols["objects"], cols["wts"], cols["wb"]
             ):
                 row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
                 user, team = (row[0], row[1]) if row else (None, "unattributed")
@@ -167,6 +171,9 @@ def write_webdata(
                 a[1] += objects
                 a[2] += wts or 0.0
                 a[3] += wb or 0
+                team_class[team][int(cls)] += nbytes
+                if user:
+                    user_class[user][int(cls)] += nbytes
         cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb"]
         rows = [dict(zip(cols, (*k, *v))) for k, v in agg.items()]
     else:
@@ -281,6 +288,8 @@ def write_webdata(
             {"u": u, "t": t, "b": b}
             for (u, t), b in sorted(user_bytes.items(), key=lambda kv: -kv[1])
         ]
+        meta["team_class_bytes"] = {t: dict(sorted(c.items())) for t, c in sorted(team_class.items())}
+        meta["user_class_bytes"] = {u: dict(sorted(c.items())) for u, c in sorted(user_class.items())}
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "tree.json").write_text(json.dumps(tree, separators=(",", ":")) + "\n")
