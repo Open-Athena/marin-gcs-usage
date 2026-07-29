@@ -130,52 +130,103 @@ def write_webdata(
     con.execute(f"SET memory_limit='{os.environ.get('DUCKDB_MEM', '24GB' if attr else '6GB')}'")
     src = prepare_listing(con, listings)
     if attr:
+        import pandas as pd
+
         from .identity import DEFAULT_IDENTITIES, load_identities
-        from .prefixes import deepest_lookup, load_prefix_map
+        from .prefixes import load_prefix_map
 
         identities = load_identities(identities_path or DEFAULT_IDENTITIES)
-        deepest = deepest_lookup(load_prefix_map(con, attributions, identities, src))
-        # streamed in record batches: at ~40M+ distinct dirs a fetchall() of
-        # python tuples alone is ~10GB — the reason the 32GiB Cloud Run job
-        # OOMed here
-        reader = con.execute(
+        by_prefix = load_prefix_map(con, attributions, identities, src)
+        pfx_df = pd.DataFrame(
+            [
+                {"key": k.removeprefix("gs://").rstrip("/"), "user": u, "team": t}
+                for k, (u, t, _source) in by_prefix.items()
+            ]
+        )
+        pfx_df["depth"] = pfx_df["key"].str.count("/") + 1
+        maxd = int(pfx_df["depth"].max()) if len(pfx_df) else 1
+        con.register("pfx", pfx_df)
+        # deepest-prefix-wins for every distinct dir, entirely in SQL: explode
+        # each dir key into its ancestors (up to the deepest attribution
+        # prefix), equi-join, keep the deepest match. Replaces the
+        # single-threaded python walk that OOMed the 32GiB Cloud Run job and
+        # dominated webdata wall clock.
+        con.execute(
+            f"""
+            CREATE TEMP TABLE dir_attr AS
+            WITH dirs AS (
+              SELECT DISTINCT bucket,
+                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir
+              FROM {src}
+            ),
+            keyed AS (
+              SELECT bucket, dir,
+                CASE WHEN dir = '' THEN bucket ELSE bucket || '/' || dir END AS dk
+              FROM dirs
+            ),
+            cand AS (
+              SELECT k.bucket, k.dir, k.dk, r.k AS depth,
+                array_to_string((str_split(k.dk, '/'))[1:r.k], '/') AS anc
+              FROM keyed k, range(1, {maxd} + 1) r(k)
+              WHERE len(str_split(k.dk, '/')) >= r.k
+            ),
+            matched AS (
+              SELECT c.bucket, c.dir, p."user", p.team,
+                row_number() OVER (PARTITION BY c.dk ORDER BY c.depth DESC) AS rn
+              FROM cand c JOIN pfx p ON p.key = c.anc
+            )
+            SELECT bucket, dir, "user", team FROM matched WHERE rn = 1
+            """
+        )
+        tree_rows = con.execute(
             f"""
             WITH d AS (
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes, created, storage_class_id
+                size_bytes, created
               FROM {src}
+            ),
+            agg AS (
+              SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
+                sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+                sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
+              FROM d GROUP BY ALL
             )
-            SELECT bucket, dir, storage_class_id, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
-              sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-              sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
-            FROM d GROUP BY ALL
+            SELECT a.bucket,
+              coalesce(regexp_extract(a.dir, '^([^/]+)', 1), '') AS d1,
+              coalesce(regexp_extract(a.dir, '^[^/]+/([^/]+)', 1), '') AS d2,
+              coalesce(regexp_extract(a.dir, '^[^/]+/[^/]+/([^/]+)', 1), '') AS d3,
+              coalesce(regexp_extract(a.dir, '^[^/]+/[^/]+/[^/]+/([^/]+)', 1), '') AS d4,
+              t."user" AS user, coalesce(t.team, 'unattributed') AS team,
+              sum(a.bytes)::BIGINT AS bytes, sum(a.objects)::BIGINT AS objects,
+              sum(a.wts)::DOUBLE AS wts, sum(a.wb)::BIGINT AS wb
+            FROM agg a LEFT JOIN dir_attr t ON t.bucket = a.bucket AND t.dir = a.dir
+            GROUP BY ALL
             """
-        ).fetch_record_batch(1_000_000)
-        agg: dict[tuple, list] = defaultdict(lambda: [0, 0, 0.0, 0])
+        ).fetchall()
+        cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb"]
+        rows = [dict(zip(cols, r)) for r in tree_rows]
         # per-(team|user) storage-class byte mixes — lets the site price group
         # roll-ups with class-aware rates rather than one global blend
         team_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         user_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
-        for batch in reader:
-            cols = batch.to_pydict()
-            for bucket, dir_, cls, nbytes, objects, wts, wb in zip(
-                cols["bucket"], cols["dir"], cols["storage_class_id"], cols["bytes"], cols["objects"], cols["wts"], cols["wb"]
-            ):
-                row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
-                user, team = (row[0], row[1]) if row else (None, "unattributed")
-                parts = dir_.split("/") if dir_ else []
-                key = (bucket, *((parts + ["", "", "", ""])[:4]), user, team)
-                a = agg[key]
-                a[0] += nbytes
-                a[1] += objects
-                a[2] += wts or 0.0
-                a[3] += wb or 0
-                team_class[team][int(cls)] += nbytes
-                if user:
-                    user_class[user][int(cls)] += nbytes
-        cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb"]
-        rows = [dict(zip(cols, (*k, *v))) for k, v in agg.items()]
+        for team, user, cls, nbytes in con.execute(
+            f"""
+            WITH d AS (
+              SELECT bucket,
+                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
+                size_bytes, storage_class_id
+              FROM {src}
+            )
+            SELECT coalesce(t.team, 'unattributed') AS team, t."user" AS user,
+              d.storage_class_id, sum(d.size_bytes)::BIGINT AS bytes
+            FROM d LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
+            GROUP BY ALL
+            """
+        ).fetchall():
+            team_class[team][int(cls)] += nbytes
+            if user:
+                user_class[user][int(cls)] += nbytes
     else:
         dir_rows = con.execute(
             f"""
@@ -221,34 +272,28 @@ def write_webdata(
         tree.update(_attr_of([r for g in buckets.values() for r in g]))
 
     if attr:
-        # (day, d1, team) strata: attribute at full-dir granularity (same
-        # cached deepest-prefix walk as the tree), streamed in record batches.
+        # (day, d1, team, user) strata via the same SQL attribution join.
         # Day keys are epoch days; the site aggregates to day/week/month.
-        reader = con.execute(
+        age = con.execute(
             f"""
-            SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day, bucket,
-              CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
-            FROM {src}
-            WHERE created IS NOT NULL
-            GROUP BY ALL
+            WITH d AS (
+              SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day, bucket,
+                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
+                size_bytes
+              FROM {src}
+              WHERE created IS NOT NULL
+            )
+            SELECT d.day,
+              CASE WHEN d.dir = '' THEN '(files)' ELSE regexp_extract(d.dir, '^([^/]+)', 1) END AS d1,
+              coalesce(t.team, 'unattributed') AS team, t."user" AS user,
+              sum(d.size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+            FROM d LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
+            GROUP BY ALL ORDER BY day, d1
             """
-        ).fetch_record_batch(1_000_000)
-        age_agg: dict[tuple, list] = defaultdict(lambda: [0, 0])
-        for batch in reader:
-            d = batch.to_pydict()
-            for day, bucket, dir_, nbytes, objects in zip(
-                d["day"], d["bucket"], d["dir"], d["bytes"], d["objects"]
-            ):
-                row = deepest(f"{bucket}/{dir_}" if dir_ else bucket)
-                user, team = (row[0], row[1]) if row else (None, "unattributed")
-                d1 = dir_.split("/", 1)[0] if dir_ else "(files)"
-                a = age_agg[(day, d1, team, user)]
-                a[0] += nbytes
-                a[1] += objects
+        ).fetchall()
         age_rows = [
             {"d": day, "d1": d1, "t": t, **({"u": u} if u else {}), "b": b, "o": o}
-            for (day, d1, t, u), (b, o) in sorted(age_agg.items(), key=lambda kv: kv[0][:2])
+            for day, d1, t, u, b, o in age
         ]
     else:
         age = con.execute(
