@@ -161,3 +161,49 @@ def test_write_webdata_plain(tmp_path: Path, listing: str):
         {"d": epoch_day(TS["d0702"]), "d1": "(files)", "b": 30 * GB, "o": 1},
         {"d": epoch_day(TS["d0703"]), "d1": "users", "b": 50 * GB, "o": 1},
     ]
+
+
+def test_deeper_team_only_rule_overrides_user_prefix(tmp_path: Path):
+    # A team-only prefix nested INSIDE a user prefix must win for its subtree
+    # (deepest-prefix-wins is row-wise: the deeper row's NULL user must not be
+    # skipped in favor of the shallower row's user).
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(
+        """\
+users:
+  ryan-williams:
+    aliases: [rw]
+    team: infra
+teams: [infra, data]
+prefix_owners:
+  - prefix: gs://b1/users/rw/shared/
+    team: data
+"""
+    )
+    listing_path = tmp_path / "listing.parquet"
+    pd.DataFrame(
+        {
+            "bucket": ["b1", "b1"],
+            "name": ["users/rw/own/a.bin", "users/rw/shared/b.bin"],
+            "size_bytes": [100 * GB, 60 * GB],
+            "created": [TS["d0701"], TS["d0702"]],
+            "storage_class_id": [1, 1],
+        }
+    ).to_parquet(listing_path)
+    attribution_path = tmp_path / "attribution.parquet"
+    pd.DataFrame(
+        {
+            "prefix": ["gs://b1/users/rw/"],
+            "user": ["rw"],
+            "team": ["unknown"],
+            "source": ["user-prefix"],
+            "asof": [dt.date(2026, 7, 20)],
+        }
+    ).to_parquet(attribution_path)
+    out = tmp_path / "out"
+    write_webdata((str(listing_path),), out, "2026-07-28", (str(attribution_path),), identities_path)
+    tree = json.loads((out / "tree.json").read_text())
+    b1 = tree["c"][0]
+    assert b1["tm"] == {"infra": 100 * GB, "data": 60 * GB}
+    assert b1["sh"] == {"data": 60 * GB}
+    assert b1["us"] == [["ryan-williams", 100 * GB]]

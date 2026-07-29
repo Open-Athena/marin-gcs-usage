@@ -128,6 +128,9 @@ def write_webdata(
     # attribution mode is node-scale (34M-dir python-side walk); plain mode
     # stays laptop-safe
     con.execute(f"SET memory_limit='{os.environ.get('DUCKDB_MEM', '24GB' if attr else '6GB')}'")
+    # large hash aggregations stream instead of materializing ordered output;
+    # matters in Cloud Run where DuckDB's disk spill is actually RAM-backed
+    con.execute("SET preserve_insertion_order=false")
     src = prepare_listing(con, listings)
     if attr:
         import pandas as pd
@@ -169,13 +172,18 @@ def write_webdata(
                 array_to_string((str_split(k.dk, '/'))[1:r.k], '/') AS anc
               FROM keyed k, range(1, {maxd} + 1) r(k)
               WHERE len(str_split(k.dk, '/')) >= r.k
-            ),
-            matched AS (
-              SELECT c.bucket, c.dir, p."user", p.team,
-                row_number() OVER (PARTITION BY c.dk ORDER BY c.depth DESC) AS rn
-              FROM cand c JOIN pfx p ON p.key = c.anc
             )
-            SELECT bucket, dir, "user", team FROM matched WHERE rn = 1
+            -- arg_max instead of a row_number window: a hash aggregate streams,
+            -- the window would sort the full exploded candidate set. The
+            -- struct keeps the winning row's (user, team) together — separate
+            -- arg_max calls would skip a deeper row's NULL user and mix rows.
+            , won AS (
+              SELECT c.bucket, c.dir,
+                arg_max(struct_pack(u := p."user", t := p.team), c.depth) AS win
+              FROM cand c JOIN pfx p ON p.key = c.anc
+              GROUP BY c.bucket, c.dir
+            )
+            SELECT bucket, dir, win.u AS "user", win.t AS team FROM won
             """
         )
         tree_rows = con.execute(
