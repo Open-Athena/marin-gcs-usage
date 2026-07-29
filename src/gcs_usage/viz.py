@@ -313,7 +313,7 @@ def write_webdata(
               coalesce(t.team, 'unattributed') AS team, t."user" AS user,
               sum(d.size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
             FROM d LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
-            GROUP BY ALL ORDER BY day, d1
+            GROUP BY ALL ORDER BY ALL  -- fully deterministic output order (byte-identical reruns)
             """
         ).fetchall()
         age_rows = [
