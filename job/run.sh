@@ -39,9 +39,17 @@ fi
 # has none at all. Tasks reuse completed listings, so re-runs only fill gaps.
 if [ "${LISTING_MODE:-sii}" = "diy" ]; then
   FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-us-east1 marin-us-west4)
-  gcs-usage job submit-listing -d "$DATE" -W
+  gcs-usage job submit-listing -d "$DATE" -W || echo "WARN: listing fan-out failed; per-bucket fallbacks below" >&2
+  PREV=$(date -u -d "$DATE - 1 day" +%F)
   G=()
-  for b in "${FLEET[@]}"; do G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet"); done
+  for b in "${FLEET[@]}"; do
+    if [ -f "/gcs/$DATA/listing/$DATE/$b/_SUCCESS.json" ]; then G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet")
+    elif compgen -G "/gcs/$b/inventory-reports/*_${DATE}T*_*.parquet" > /dev/null; then
+      G+=("/gcs/$b/inventory-reports/*_${DATE}T*_*.parquet"); echo "WARN: no $DATE listing for $b — using its SII report" >&2
+    elif compgen -G "/gcs/$b/inventory-reports/*_${PREV}T*_*.parquet" > /dev/null; then
+      G+=("/gcs/$b/inventory-reports/*_${PREV}T*_*.parquet"); echo "WARN: no $DATE listing for $b — using $PREV's SII report" >&2
+    else echo "WARN: $b has no $DATE listing and no recent SII report — EXCLUDED from this snapshot" >&2; fi
+  done
   AG=("/gcs/$DATA/attr/attribution-2026-07-20.parquet" "/gcs/$DATA/attr/attribution-wandb.parquet")
 else
 

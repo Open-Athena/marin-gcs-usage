@@ -13,7 +13,15 @@ def test_listing_job_spec_task_per_bucket():
     assert (tg["taskCount"], tg["parallelism"]) == (2, 2)
     container = tg["taskSpec"]["runnables"][0]["container"]
     assert container["entrypoint"] == "/bin/bash"
-    assert container["volumes"] == ["/mnt/disks/gcs/oa-gcs-usage-dvx:/gcs/oa-gcs-usage-dvx:rw"]
+    assert container["volumes"] == [
+        "/mnt/disks/gcs/oa-gcs-usage-dvx:/gcs/oa-gcs-usage-dvx:rw",
+        "/mnt/disks/gcs/marin-us-central2:/gcs/marin-us-central2:ro",
+        "/mnt/disks/gcs/marin-eu-west4:/gcs/marin-eu-west4:ro",
+        "/mnt/disks/gcs/marin-us-central1:/gcs/marin-us-central1:ro",
+        "/mnt/disks/gcs/marin-us-east5:/gcs/marin-us-east5:ro",
+        "/mnt/disks/gcs/marin-us-east1:/gcs/marin-us-east1:ro",
+        "/mnt/disks/gcs/marin-us-west4:/gcs/marin-us-west4:ro",
+    ]
     assert container["commands"][0] == "-c"
     assert container["commands"][1] == (
         "#!/usr/bin/env bash\n"
@@ -25,14 +33,20 @@ def test_listing_job_spec_task_per_bucket():
         '  case "$d" in */listing/2026-07-30/$b) continue;; */central2-listing/*) [ "$b" = marin-us-central2 ] || continue;; esac\n'
         '  if [ -f "$d/_SUCCESS.json" ]; then W=(-W "$d/*.parquet"); break; fi\n'
         "done\n"
+        "if [ ${#W[@]} -eq 0 ]; then\n"
+        "  sii=$(ls \"/gcs/$b/inventory-reports/\" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -ru | head -1)\n"
+        '  [ -n "$sii" ] && W=(-W "/gcs/$b/inventory-reports/*_${sii}T*_*.parquet")\n'
+        "fi\n"
         'gcs-usage list-bucket "$b" -o "gs://oa-gcs-usage-dvx/listing/2026-07-30/$b" -P 4 -w 3 -x reuse "${W[@]}"\n'
     )
     assert tg["taskSpec"]["volumes"] == [
         {
-            "gcs": {"remotePath": "oa-gcs-usage-dvx"},
-            "mountPath": "/mnt/disks/gcs/oa-gcs-usage-dvx",
+            "gcs": {"remotePath": b},
+            "mountPath": f"/mnt/disks/gcs/{b}",
             "mountOptions": ["--implicit-dirs"],
         }
+        for b in ["oa-gcs-usage-dvx", "marin-us-central2", "marin-eu-west4", "marin-us-central1",
+                  "marin-us-east5", "marin-us-east1", "marin-us-west4"]
     ]
     policy = spec["allocationPolicy"]["instances"][0]["policy"]
     assert policy == {"machineType": "n2-standard-16", "bootDisk": {"type": "pd-balanced", "sizeGb": "50"}}

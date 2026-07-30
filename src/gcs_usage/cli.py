@@ -622,17 +622,23 @@ def job_submit_listing(
     Tasks reuse completed listings (``-x reuse``), so re-submitting for the
     same date only re-lists buckets that haven't finished — safe to retry.
     """
-    from .batch import FLEET_BUCKETS, listing_job_spec, submit_job, wait_job
+    from .batch import BUCKET_JOB_REGIONS, FLEET_BUCKETS, REGION, listing_job_spec, submit_job, wait_jobs
 
     bkts = list(buckets) or FLEET_BUCKETS
-    spec = listing_job_spec(date, bkts, machine=machine, procs=procs, threads=threads)
-    name = submit_job(spec)
-    err(f"submitted {name}: {len(bkts)} bucket task(s) on {machine}")
-    print(name)
+    by_region: dict[str, list[str]] = {}
+    for b in bkts:
+        by_region.setdefault(BUCKET_JOB_REGIONS.get(b, REGION), []).append(b)
+    jobs = []
+    for region, rb in by_region.items():
+        spec = listing_job_spec(date, rb, machine=machine, procs=procs, threads=threads, region=region)
+        name = submit_job(spec, region=region)
+        err(f"submitted {name} [{region}]: {len(rb)} bucket task(s) on {machine}")
+        print(name)
+        jobs.append((name, region))
     if wait:
-        state = wait_job(name, log=err)
-        if state != "SUCCEEDED":
-            raise SystemExit(f"listing job {name}: {state}")
+        states = wait_jobs(jobs, log=err)
+        if bad := {n: s for n, s in states.items() if s != "SUCCEEDED"}:
+            raise SystemExit(f"listing job(s) failed: {bad}")
 
 
 @job.command("metrics")
