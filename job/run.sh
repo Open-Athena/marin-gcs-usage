@@ -25,6 +25,14 @@ KEEP_DEPLOYED=30  # most-recent snapshots included in the site deploy
 
 cd /app
 
+# Scheduled retry attempts set NOP_IF_PUBLISHED=1: exit quietly when the
+# snapshot already exists (an earlier attempt won). Manual runs leave it
+# unset so intentional re-runs always proceed.
+if [ "${NOP_IF_PUBLISHED:-0}" = "1" ] && [ -f "/gcs/$DATA/$SNAP_PATH/meta.json" ]; then
+  echo "SNAPSHOT-JOB-NOP $DATE (already published)"
+  exit 0
+fi
+
 # DIY mode (LISTING_MODE=diy): list ALL buckets ourselves via a fan-out Batch
 # job (task per bucket) instead of depending on SII reports — their generation
 # times scatter 02:26-13:00 UTC, day-1 reports can lag ~30h, and us-central2
