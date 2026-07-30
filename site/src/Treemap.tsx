@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
+import { useHoverPin } from './hoverpin/useHoverPin'
 import { foldSmall, squarify } from './squarify'
 import type { ColorMode, Pricing, TreeNode } from './types'
-import { TEAM_VARS, domTeamSeg, fmtBytes, fmtN, fmtUsd, sharedColor } from './types'
+import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, ratePerByte, sharedColor } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
@@ -36,6 +37,13 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const mapRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const tipRef = useRef<HTMLDivElement>(null)
+  // pin state keyed by gs:// path; the pinned Tip snapshot freezes position/content
+  const pin = useHoverPin<string>({ excludeRefs: [tipRef] })
+  const [pinnedTip, setPinnedTip] = useState<Tip | null>(null)
+  useEffect(() => {
+    if (pin.pinned === null) setPinnedTip(null)
+  }, [pin.pinned])
   const node = path[path.length - 1]
 
   // Fixed category colors: global top-level dirs by total size.
@@ -170,15 +178,23 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
     const gsPath = 'gs://' + kidPath.slice(1).map(n => n.n).join('/')
     const showTip = (e: React.MouseEvent) => {
       e.stopPropagation()
+      pin.hover(gsPath)
       setTip({ x: e.clientX, y: e.clientY, path: gsPath, node: kid })
     }
+    // branch cells drill on click (existing UX); leaf cells pin their tooltip
     const drill = kid.c
       ? (e: React.SyntheticEvent) => {
           e.stopPropagation()
           setTip(null)
+          pin.clearPin()
           setPath(kidPath)
         }
-      : undefined
+      : (e: React.SyntheticEvent) => {
+          e.stopPropagation()
+          const me = e as React.MouseEvent
+          pin.togglePin(gsPath)
+          setPinnedTip(p => (p?.path === gsPath ? null : { x: me.clientX, y: me.clientY, path: gsPath, node: kid }))
+        }
     const dust = Math.min(r.w, r.h) < 14
     // highlight mode: leaf cells not majority-owned by the selected user/team fade back
     let dim = false
@@ -198,7 +214,10 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
         }}
         tabIndex={0}
         onMouseMove={showTip}
-        onMouseLeave={() => setTip(null)}
+        onMouseLeave={() => {
+          pin.hover(null)
+          setTip(null)
+        }}
         onClick={drill}
         onKeyDown={e => e.key === 'Enter' && drill?.(e)}
       >
@@ -309,27 +328,40 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
           .filter(r => r.w >= 3 && r.h >= 3)
           .map(r => cell(r.it, [...path, r.it], r, 0))}
       </div>
-      {tip && (() => {
+      {(pinnedTip ?? tip) && (() => {
+        const isPinned = pinnedTip !== null
+        const tp = (pinnedTip ?? tip)!
         const userMode = mode === 'user' || mode === 'uteam'
-        const teams = tip.node.tm && (
+        const mix = classMix(tp.node)
+        const classes = tp.node.cb && (
+          <div className="classes-row">
+            {Object.entries(mix).map(([c, b]) => (
+              <span className="tt-cls" key={c}>
+                {CLASS_NAMES[c]} {((100 * b) / tp.node.b).toFixed(0)}%
+              </span>
+            ))}
+            {pricing && <span className="usd">{fmtUsd(tp.node.b * ratePerByte(mix))}/mo</span>}
+          </div>
+        )
+        const teams = tp.node.tm && (
           <div className="teams">
-            {Object.entries(tip.node.tm)
-              .filter(([, b]) => b >= 0.005 * tip.node.b)
+            {Object.entries(tp.node.tm)
+              .filter(([, b]) => b >= 0.005 * tp.node.b)
               .map(([t, b]) => {
-                const s = tip.node.sh?.[t] ?? 0
+                const s = tp.node.sh?.[t] ?? 0
                 return (
                   <span className="tt-team" key={t}>
                     <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
-                    {t} {((100 * b) / tip.node.b).toFixed(0)}%
+                    {t} {((100 * b) / tp.node.b).toFixed(0)}%
                     {s >= 0.01 * b && <span className="shr"> ({((100 * s) / b).toFixed(0)}% shared)</span>}
                   </span>
                 )
               })}
           </div>
         )
-        const users = tip.node.us && tip.node.us.length > 0 && (
+        const users = tp.node.us && tp.node.us.length > 0 && (
           <div className="users">
-            {tip.node.us.map(([u, b]) => (
+            {tp.node.us.map(([u, b]) => (
               <div className="tt-user" key={u}>
                 {userMode && <span className="sw" style={{ background: userColor(u, userIdx, mode === 'uteam') }} />}
                 {u} · {fmtBytes(b)}
@@ -339,25 +371,30 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
         )
         return (
           <div
-            className="tip"
+            ref={tipRef}
+            className={'tip' + (isPinned ? ' pinned' : '')}
             style={{
-              left: Math.min(tip.x + 14, window.innerWidth - 320),
-              top: Math.min(tip.y + 14, window.innerHeight - 80),
+              left: Math.min(tp.x + 14, window.innerWidth - 320),
+              top: Math.min(tp.y + 14, window.innerHeight - 80),
             }}
           >
+            {isPinned && (
+              <button className="unpin" onClick={() => pin.clearPin()} title="Unpin (Esc)">×</button>
+            )}
             <div className="path">
-              <span className="dirname">{tip.path.slice(0, tip.path.lastIndexOf('/') + 1)}</span>
-              <span className="basename">{tip.path.slice(tip.path.lastIndexOf('/') + 1)}</span>
+              <span className="dirname">{tp.path.slice(0, tp.path.lastIndexOf('/') + 1)}</span>
+              <span className="basename">{tp.path.slice(tp.path.lastIndexOf('/') + 1)}</span>
             </div>
             <div className="nums">
-              {fmtBytes(tip.node.b)} · {fmtN(tip.node.o)} objects · {((100 * tip.node.b) / root.b).toFixed(2)}% of total
-              {tip.node.d != null && <> · mean created {epochDaysToMonth(tip.node.d)}</>}
+              {fmtBytes(tp.node.b)} · {fmtN(tp.node.o)} objects · {((100 * tp.node.b) / root.b).toFixed(2)}% of total
+              {tp.node.d != null && <> · mean created {epochDaysToMonth(tp.node.d)}</>}
             </div>
+            {classes}
             {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
           </div>
         )
       })()}
-      <div className="hint">click to drill in · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>
+      <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>
     </div>
   )
 }

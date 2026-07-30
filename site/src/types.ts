@@ -6,7 +6,14 @@ export interface TreeNode {
   tm?: Record<string, number>  // team -> bytes (attribution overlay)
   sh?: Record<string, number>  // team -> bytes with no per-user owner ("shared" subset of tm)
   us?: [string, number][]      // top users -> bytes
+  cb?: Record<string, number>  // non-STANDARD class -> bytes ("2" NL, "3" CL, "4" AR); STANDARD = b - sum
   c?: TreeNode[]
+}
+
+/** Full class mix of a node: cb plus the implied STANDARD remainder. */
+export const classMix = (n: Pick<TreeNode, 'b' | 'cb'>): Record<string, number> => {
+  const cold = Object.values(n.cb ?? {}).reduce((a, b) => a + b, 0)
+  return { ...(n.b > cold && { 1: n.b - cold }), ...n.cb }
 }
 
 export interface UserInfo {

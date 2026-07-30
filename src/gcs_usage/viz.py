@@ -30,6 +30,16 @@ FOLD_MIN_BYTES = 20e9  # children below this fold into "(other ×N)"
 TOP_USERS_PER_NODE = 5
 
 
+def _class_of(g: list[dict]) -> dict[str, int]:
+    """Non-STANDARD class bytes of a row group: {"2": nearline, "3": coldline,
+    "4": archive}, zero-classes omitted (STANDARD = node bytes − sum(cb))."""
+    return {
+        k[1]: b
+        for k in ("c2", "c3", "c4")
+        if (b := sum(r.get(k) or 0 for r in g))
+    }
+
+
 def _date_of(g: list[dict]) -> int | None:
     """Bytes-weighted mean created date of a row group, in epoch days."""
     wts = sum(r["wts"] or 0 for r in g)
@@ -75,6 +85,8 @@ def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict
         d = _date_of(g)
         if d is not None:
             node["d"] = d
+        if cb := _class_of(g):
+            node["cb"] = cb
         if attr:
             node.update(_attr_of(g))
         if levels[1:] and name != "":
@@ -98,6 +110,12 @@ def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict
             if dated:
                 # approximate: re-weight the children's means by their bytes
                 folded["d"] = int(sum(n["d"] * n["b"] for n in dated) / sum(n["b"] for n in dated))
+            fcb: dict[str, int] = defaultdict(int)
+            for n in small:
+                for k, b_ in n.get("cb", {}).items():
+                    fcb[k] += b_
+            if fcb:
+                folded["cb"] = dict(sorted(fcb.items()))
             if attr:
                 tm: dict[str, int] = defaultdict(int)
                 ub: dict[str, int] = defaultdict(int)
@@ -208,13 +226,16 @@ def write_webdata(
             WITH d AS (
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes, created
+                size_bytes, created, storage_class_id
               FROM {src}
             ),
             agg AS (
               SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
                 sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-                sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
+                sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
+                sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
+                sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
+                sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
               FROM d GROUP BY ALL
             )
             SELECT a.bucket,
@@ -224,13 +245,14 @@ def write_webdata(
               coalesce(regexp_extract(a.dir, '^[^/]+/[^/]+/[^/]+/([^/]+)', 1), '') AS d4,
               t."user" AS user, coalesce(t.team, 'unattributed') AS team,
               sum(a.bytes)::BIGINT AS bytes, sum(a.objects)::BIGINT AS objects,
-              sum(a.wts)::DOUBLE AS wts, sum(a.wb)::BIGINT AS wb
+              sum(a.wts)::DOUBLE AS wts, sum(a.wb)::BIGINT AS wb,
+              sum(a.c2)::BIGINT AS c2, sum(a.c3)::BIGINT AS c3, sum(a.c4)::BIGINT AS c4
             FROM agg a LEFT JOIN dir_attr t ON t.bucket = a.bucket AND t.dir = a.dir
             GROUP BY ALL
             """
         ).fetchall()
         _rss("tree-rows")
-        cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb"]
+        cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb", "c2", "c3", "c4"]
         rows = [dict(zip(cols, r)) for r in tree_rows]
         # per-(team|user) storage-class byte mixes — lets the site price group
         # roll-ups with class-aware rates rather than one global blend
@@ -260,7 +282,7 @@ def write_webdata(
             WITH d AS (
               SELECT bucket,
                 CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes, created
+                size_bytes, created, storage_class_id
               FROM {src}
             )
             SELECT bucket,
@@ -270,11 +292,14 @@ def write_webdata(
               coalesce(regexp_extract(dir, '^[^/]+/[^/]+/[^/]+/([^/]+)', 1), '') AS d4,
               sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
               sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-              sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
+              sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
+              sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
+              sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
             FROM d GROUP BY ALL
             """
         ).fetchall()
-        cols = ["bucket", "d1", "d2", "d3", "d4", "bytes", "objects", "wts", "wb"]
+        cols = ["bucket", "d1", "d2", "d3", "d4", "bytes", "objects", "wts", "wb", "c2", "c3", "c4"]
         rows = [dict(zip(cols, r)) for r in dir_rows]
 
     buckets: dict[str, list[dict]] = {}
@@ -286,6 +311,7 @@ def write_webdata(
             "b": sum(r["bytes"] for r in g),
             "o": sum(r["objects"] for r in g),
             **({"d": _date_of(g)} if _date_of(g) is not None else {}),
+            **({"cb": cb} if (cb := _class_of(g)) else {}),
             **(_attr_of(g) if attr else {}),
             "c": _build(g, ["d1", "d2", "d3", "d4"], attr),
         }
