@@ -521,5 +521,208 @@ def rules(identities_path: Path, out: Path | None) -> None:
         raise SystemExit(1)
 
 
+@main.group()
+def job() -> None:
+    """Read-only ops for the daily snapshot Batch job (status/logs/watch/metrics)."""
+
+
+def _resolve_job(name: str) -> dict:
+    from .gcp import batch_job, batch_jobs
+
+    if name in ("", "latest"):
+        jobs = batch_jobs()
+        if not jobs:
+            raise SystemExit("no Batch jobs found")
+        return jobs[0]
+    return batch_job(name)
+
+
+@job.command("status")
+@option("-n", "--limit", default=8, help="Jobs to list")
+@argument("name", required=False)
+def job_status(limit: int, name: str | None) -> None:
+    """List recent Batch jobs, or one job's state + status events."""
+    import json
+
+    from .gcp import batch_jobs
+
+    if name is None:
+        for j in batch_jobs()[:limit]:
+            print(f"{j['name'].rsplit('/', 1)[-1]}  {j['status'].get('state', '?'):22} {j.get('createTime', '')}")
+        return
+    j = _resolve_job(name)
+    print(f"{j['name'].rsplit('/', 1)[-1]}  {j['status'].get('state', '?')}  uid={j.get('uid')}")
+    for e in j["status"].get("statusEvents", []):
+        print(f"  {e.get('eventTime', '')[11:19]} {e.get('type', ''):16} {e.get('description', '')[:200]}")
+    if rund := j["status"].get("runDuration"):
+        print(f"  runDuration: {rund}")
+    env = j["taskGroups"][0]["taskSpec"].get("environment", {}).get("variables", {})
+    print(f"  env: {json.dumps(env)}")
+
+
+@job.command("logs")
+@option("-a", "--asc", is_flag=True, help="Oldest first (default: newest first)")
+@option("-g", "--grep", default=None, help="Regex filter on textPayload (server-side)")
+@option("-k", "--key-markers", is_flag=True, help="Only [rss]/stage/WARN/DONE/error marker lines")
+@option("-n", "--limit", default=40, help="Max entries")
+@argument("name", required=False)
+def job_logs(asc: bool, grep: str | None, key_markers: bool, limit: int, name: str | None) -> None:
+    """Container stdout for a Batch job (batch_task_logs; agent noise excluded)."""
+    from .gcp import log_entries, task_log_filter
+
+    j = _resolve_job(name or "latest")
+    if key_markers:
+        grep = r"\[rss\]|stage |WARN|SNAPSHOT-JOB-DONE|Deployment complete|reusing|objects listed|Error|Killed|Traceback"
+    for e in log_entries(task_log_filter(j["uid"], grep), limit=limit, asc=asc):
+        print(f"{e.get('timestamp', '')[:19]} {e.get('textPayload', '').rstrip()}")
+
+
+@job.command("watch")
+@option("-i", "--interval", default=90, help="Poll interval (seconds)")
+@argument("name", required=False)
+def job_watch(interval: int, name: str | None) -> None:
+    """Poll a Batch job to terminal state, then print its key log markers."""
+    import time
+    from datetime import datetime, timezone
+
+    from click import Context
+
+    j = _resolve_job(name or "latest")
+    short = j["name"].rsplit("/", 1)[-1]
+    err(f"watching {short} (uid={j['uid']})")
+    while True:
+        state = _resolve_job(short)["status"].get("state", "?")
+        err(f"{datetime.now(timezone.utc).strftime('%H:%M:%S')} {state}")
+        if state in ("SUCCEEDED", "FAILED", "DELETION_IN_PROGRESS"):
+            break
+        time.sleep(interval)
+    ctx = Context(job_logs)
+    ctx.invoke(job_logs, asc=True, grep=None, key_markers=True, limit=60, name=short)
+    if state != "SUCCEEDED":
+        raise SystemExit(1)
+
+
+@job.command("metrics")
+@option("-m", "--metric", type=Choice(["cpu", "net", "disk"]), default="cpu", help="Metric to show")
+@option("-n", "--minutes", default=30, help="Lookback window")
+@argument("name", required=False)
+def job_metrics(metric: str, minutes: int, name: str | None) -> None:
+    """VM utilization for a Batch job (finds the instance via agent logs)."""
+    from .gcp import METRICS, job_instance_id, vm_metric
+
+    j = _resolve_job(name or "latest")
+    inst = job_instance_id(j["uid"])
+    if not inst:
+        raise SystemExit(f"no instance found in agent logs for {j['uid']} (job not started yet?)")
+    unit = METRICS[metric][2]
+    terminal = j["status"].get("state") in ("SUCCEEDED", "FAILED")
+    span = dict(start=j.get("createTime"), end=j.get("updateTime")) if terminal else {}
+    for t, v in vm_metric(inst, metric, minutes, **span):
+        print(f"{t[:19]} {v:8.1f} {unit}")
+
+
+@main.group()
+def sii() -> None:
+    """Read-only Storage Insights inventory-report ops."""
+
+
+SII_BUCKETS = ["marin-us-east1", "marin-us-east5", "marin-us-central1", "marin-eu-west4", "marin-us-west4"]
+
+
+@sii.command("status")
+@option("-b", "--bucket", "buckets", multiple=True, help="Bucket(s) to check [default: all 5 SII buckets]")
+def sii_status(buckets: tuple[str, ...]) -> None:
+    """Per-bucket SII health: report config, latest generated report, and which
+    days' shards have actually landed in gs://<bucket>/inventory-reports/."""
+    import re as _re
+    from collections import defaultdict
+
+    from google.cloud import storage
+
+    from .gcp import sii_report_configs, sii_report_details
+
+    client = storage.Client()
+    for b in buckets or SII_BUCKETS:
+        location = b.removeprefix("marin-")
+        print(f"== {b}")
+        cfgs = [
+            c
+            for c in sii_report_configs(location)
+            if c.get("objectMetadataReportOptions", {}).get("storageFilters", {}).get("bucket") == b
+        ]
+        if not cfgs:
+            print("  NO report config")
+            continue
+        for c in cfgs:
+            details = sii_report_details(c["name"])
+            freq = c.get("frequencyOptions", {}).get("frequency", "?")
+            print(f"  config {c['name'].rsplit('/', 1)[-1][:8]}… ({freq}); {len(details)} reports generated")
+            for r in details[:2]:
+                m = r.get("reportMetrics", {})
+                print(
+                    f"    {r.get('snapshotTime', '')[:16]} records={int(m.get('processedRecordsCount', 0)):,}"
+                    f" shards={r.get('shardsCount', '?')}"
+                )
+        by_day: dict[str, list] = defaultdict(list)
+        for blob in client.list_blobs(b, prefix="inventory-reports/"):
+            if blob.name.endswith(".parquet") and (m := _re.search(r"_(\d{4}-\d{2}-\d{2})T", blob.name)):
+                by_day[m.group(1)].append(blob)
+        for day in sorted(by_day, reverse=True)[:3]:
+            blobs = by_day[day]
+            latest = max(x.time_created for x in blobs)
+            print(f"    landed {day}: {len(blobs)} shards ({sum(x.size for x in blobs) / 1e9:.1f} GB, written {latest:%m-%d %H:%M}Z)")
+
+
+@main.command()
+@option("-d", "--depth", default=1, help="Path depth to compare at (1 = bucket level)")
+@option("-n", "--top", default=30, help="Show top-N rows by absolute byte delta (depth >= 2)")
+@argument("a")
+@argument("b")
+def compare(depth: int, top: int, a: str, b: str) -> None:
+    """Compare two snapshot tree.jsons: objects/bytes per bucket (or deeper path).
+
+    A/B are snapshot dates (resolved under site/public/data/) or dirs
+    containing tree.json.
+    """
+    import json
+
+    def load(spec: str) -> dict:
+        p = Path(spec)
+        if not p.exists():
+            p = Path("site/public/data") / spec
+        f = p / "tree.json" if p.is_dir() else p
+        return json.loads(f.read_text())
+
+    def walk(node: dict, prefix: str, d: int, out: dict) -> None:
+        key = f"{prefix}/{node['n']}" if prefix else node["n"]
+        if d == depth or not node.get("c"):
+            o, byts = out.get(key, (0, 0))
+            out[key] = (o + node["o"], byts + node["b"])
+            return
+        for c in node["c"]:
+            walk(c, key, d + 1, out)
+
+    ta, tb = load(a), load(b)
+    ra: dict[str, tuple[int, int]] = {}
+    rb: dict[str, tuple[int, int]] = {}
+    for c in ta.get("c", []):
+        walk(c, "", 1, ra)
+    for c in tb.get("c", []):
+        walk(c, "", 1, rb)
+    all_keys = sorted(set(ra) | set(rb), key=lambda k: -abs(rb.get(k, (0, 0))[1] - ra.get(k, (0, 0))[1]))
+    keys = all_keys[:top] if depth >= 2 else all_keys
+    w = max(5, *(len(k) for k in keys)) if keys else 5
+    print(f"{'path':{w}} {'a objs':>14} {'b objs':>14} {'Δobjs':>12} {'a TB':>9} {'b TB':>9} {'ΔTB':>8}")
+    for k in keys:
+        ao, ab_ = ra.get(k, (0, 0))
+        bo, bb = rb.get(k, (0, 0))
+        print(f"{k:{w}} {ao:>14,} {bo:>14,} {bo - ao:>+12,} {ab_ / 1e12:>9.1f} {bb / 1e12:>9.1f} {(bb - ab_) / 1e12:>+8.1f}")
+    if len(keys) < len(all_keys):
+        print(f"(… {len(all_keys) - len(keys)} more paths)")
+    tao, tab_ = (sum(x) for x in zip(*ra.values())) if ra else (0, 0)
+    tbo, tbb = (sum(x) for x in zip(*rb.values())) if rb else (0, 0)
+    print(f"{'TOTAL':{w}} {tao:>14,} {tbo:>14,} {tbo - tao:>+12,} {tab_ / 1e12:>9.1f} {tbb / 1e12:>9.1f} {(tbb - tab_) / 1e12:>+8.1f}")
+
+
 if __name__ == "__main__":
     main()
