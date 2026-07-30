@@ -25,6 +25,18 @@ KEEP_DEPLOYED=30  # most-recent snapshots included in the site deploy
 
 cd /app
 
+# DIY mode (LISTING_MODE=diy): list ALL buckets ourselves via a fan-out Batch
+# job (task per bucket) instead of depending on SII reports — their generation
+# times scatter 02:26-13:00 UTC, day-1 reports can lag ~30h, and us-central2
+# has none at all. Tasks reuse completed listings, so re-runs only fill gaps.
+if [ "${LISTING_MODE:-sii}" = "diy" ]; then
+  FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-us-east1 marin-us-west4)
+  gcs-usage job submit-listing -d "$DATE" -W
+  G=()
+  for b in "${FLEET[@]}"; do G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet"); done
+  AG=("/gcs/$DATA/attr/attribution-2026-07-20.parquet" "/gcs/$DATA/attr/attribution-wandb.parquet")
+else
+
 # 1. central2 direct listing (canonical schema shards straight into the data bucket).
 # The exists-policy handles prior output: completed listings are reused,
 # partials from crashed runs are cleared. Worker chunks are balanced using
@@ -56,6 +68,7 @@ done
 G+=("/gcs/$DATA/$LISTING_PATH/*.parquet")
 if compgen -G "$FALLBACK_GLOB" > /dev/null; then G+=("$FALLBACK_GLOB"); else echo "WARN: weekly-scan fallback glob is empty" >&2; fi
 AG=("/gcs/$DATA/attr/attribution-2026-07-20.parquet" "/gcs/$DATA/attr/attribution-wandb.parquet")
+fi  # LISTING_MODE
 
 # With STAGE_DIR set (a local-SSD mount on Batch), copy all inputs there once
 # and point webdata at the local copies — gcsfuse reads are ~20-50 MB/s and

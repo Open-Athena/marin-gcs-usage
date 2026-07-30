@@ -602,6 +602,39 @@ def job_watch(interval: int, name: str | None) -> None:
         raise SystemExit(1)
 
 
+@job.command("submit-listing")
+@option("-b", "--bucket", "buckets", multiple=True, help="Bucket(s) to list [default: whole fleet]")
+@option("-d", "--date", "date", required=True, help="Listing date — output goes to listing/<date>/<bucket>/")
+@option("-m", "--machine", default="n2-standard-16", help="Machine type per task")
+@option("-P", "--procs", default=12, help="list-bucket worker processes per task")
+@option("-w", "--workers", "threads", default=10, help="Concurrent prefix streams per process")
+@option("-W", "--wait", "wait", is_flag=True, help="Block until the job reaches a terminal state")
+def job_submit_listing(
+    buckets: tuple[str, ...],
+    date: str,
+    machine: str,
+    procs: int,
+    threads: int,
+    wait: bool,
+) -> None:
+    """Submit the DIY fleet-listing Batch job (one task per bucket).
+
+    Tasks reuse completed listings (``-x reuse``), so re-submitting for the
+    same date only re-lists buckets that haven't finished — safe to retry.
+    """
+    from .batch import FLEET_BUCKETS, listing_job_spec, submit_job, wait_job
+
+    bkts = list(buckets) or FLEET_BUCKETS
+    spec = listing_job_spec(date, bkts, machine=machine, procs=procs, threads=threads)
+    name = submit_job(spec)
+    err(f"submitted {name}: {len(bkts)} bucket task(s) on {machine}")
+    print(name)
+    if wait:
+        state = wait_job(name, log=err)
+        if state != "SUCCEEDED":
+            raise SystemExit(f"listing job {name}: {state}")
+
+
 @job.command("metrics")
 @option("-m", "--metric", type=Choice(["cpu", "net", "disk"]), default="cpu", help="Metric to show")
 @option("-n", "--minutes", default=30, help="Lookback window")

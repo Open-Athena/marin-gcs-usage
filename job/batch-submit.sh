@@ -31,7 +31,7 @@ v = {
     "STAGE_DIR": os.environ.get("STAGE_DIR", "/stage"),
 }
 v = {k: s for k, s in v.items() if s}
-for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_PATH", "SNAP_PATH", "PUBLISH"]:
+for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH", "PUBLISH"]:
     if k in os.environ:
         v[k] = os.environ[k]
 print(json.dumps(v))
@@ -71,7 +71,7 @@ cat > "$spec" <<EOF
       "runnables": [{"container": {"imageUri": "$IMAGE", "volumes": $(container_volumes)}}],
       "computeResource": {"cpuMilli": 8000, "memoryMib": $MEMORY_MIB},
       "maxRetryCount": 0,
-      "maxRunDuration": "14400s",
+      "maxRunDuration": "21600s",
       "volumes": $(volumes | python3 -c 'import json,sys; v=json.load(sys.stdin); v.append({"deviceName": "stage", "mountPath": "/mnt/disks/stage"}); print(json.dumps(v))'),
       "environment": {
         "variables": $(vars),
