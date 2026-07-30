@@ -246,6 +246,47 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
 }
 
+.dotted {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+.tt-ref { display: inline; }
+
+.tooltip-content {
+  z-index: 10000;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  max-width: min(420px, 90vw);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.22);
+
+  .classmix {
+    table { border-collapse: collapse; }
+
+    td {
+      padding: 1px 0;
+      &:not(:first-child) { padding-left: 14px; }
+      &.num { text-align: right; font-variant-numeric: tabular-nums; }
+    }
+
+    .tot td {
+      border-top: 1px solid var(--line);
+      font-weight: 600;
+    }
+
+    .note {
+      margin-top: 5px;
+      color: var(--muted);
+      max-width: 300px;
+    }
+  }
+}
+
 .tip {
   position: fixed;
   z-index: 10;

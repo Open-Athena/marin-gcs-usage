@@ -107,6 +107,8 @@ export interface Pricing {
   blended: number                       // $/byte·mo across the whole fleet
   teamRates?: Record<string, number>    // class-aware $/byte·mo per team
   userRates?: Record<string, number>
+  teamMix?: Record<string, Record<string, number>>  // team -> class -> bytes (tooltip breakdowns)
+  userMix?: Record<string, Record<string, number>>
 }
 
 export const fmtUsd = (x: number): string =>

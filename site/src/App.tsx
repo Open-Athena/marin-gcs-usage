@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { FaGithub } from 'react-icons/fa'
-import { MdBrightnessAuto, MdDarkMode, MdLightMode } from 'react-icons/md'
+import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons/md'
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
 import { buildUserIndex } from './colors'
+import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
@@ -60,6 +61,7 @@ function AppContent() {
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
   const [scans, setScans] = useState<string[]>([])
   const [asof, setAsof] = useState<string | null>(null)
+  const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
@@ -108,6 +110,12 @@ function AppContent() {
       group: 'View',
       defaultBindings: ['shift+d'],
       handler: cycleTheme,
+    },
+    'lens:classes': {
+      label: 'Storage-class lens (hatch colder-class bytes)',
+      group: 'View',
+      defaultBindings: ['s'],
+      handler: () => setLens(v => !v),
     },
     ...Object.fromEntries(
       (meta?.users ?? []).map(u => [
@@ -206,6 +214,8 @@ function AppContent() {
       blended: ratePerByte(meta.class_bytes),
       teamRates: rates(meta.team_class_bytes),
       userRates: rates(meta.user_class_bytes),
+      teamMix: meta.team_class_bytes,
+      userMix: meta.user_class_bytes,
     }
   }, [meta])
 
@@ -237,8 +247,10 @@ function AppContent() {
             {' '}· <b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects
             {estCost && (
               <>
-                {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>
-                {' '}<span title="GCS list prices (US regions) × scanned bytes per storage class; actual spend depends on the billing account's negotiated rates/credits">at list price</span>
+                {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>{' '}
+                <Tooltip content={<ClassMixTip mix={meta.class_bytes} note="GCS list prices (US regions) × scanned bytes; actual spend depends on the billing account's negotiated rates/credits" />}>
+                  <span className="dotted">at list price</span>
+                </Tooltip>
               </>
             )}
           </p>
@@ -280,7 +292,7 @@ function AppContent() {
       )}
 
       {tree ? (
-        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} />
+        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens} />
       ) : (
         <p className="loading">loading tree…</p>
       )}
@@ -309,7 +321,11 @@ function AppContent() {
                 .sort((a, b) => b[1] - a[1])
                 .map(([c, b]) => (
                   <tr key={c}>
-                    <td>{CLASS_NAMES[c] ?? c}</td>
+                    <td>
+                      <Tooltip placement="right" content={<>${CLASS_PRICE_US[c] ?? 0.02}/GiB·mo · {((100 * b) / meta.total_bytes).toFixed(1)}% of scanned bytes</>}>
+                        <span className="dotted">{CLASS_NAMES[c] ?? c}</span>
+                      </Tooltip>
+                    </td>
                     <td>{fmtBytes(b)}</td>
                     <td>${Math.round((b / 1024 ** 3) * (CLASS_PRICE_US[c] ?? 0.02)).toLocaleString()}</td>
                   </tr>
@@ -321,6 +337,7 @@ function AppContent() {
 
       <SpeedDial actions={[
         { key: 'github', label: 'GitHub', icon: <FaGithub />, href: REPO_URL },
+        { key: 'lens', label: `Class lens: ${lens ? 'on' : 'off'} (s)`, icon: <MdLayers />, onClick: () => setLens(v => !v) },
         {
           key: 'theme',
           label: `Theme: ${theme}`,

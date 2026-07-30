@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { useHoverPin } from './hoverpin/useHoverPin'
+import { ClassMixTip, Tooltip } from './Tooltip'
 import { foldSmall, squarify } from './squarify'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, ratePerByte, sharedColor } from './types'
@@ -24,13 +25,14 @@ export interface Highlight {
   team?: string
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
   hl?: Highlight | null
   pricing?: Pricing | null
+  lens?: boolean
 }) {
   const [path, setPath] = useState<TreeNode[]>([root])
   const [tip, setTip] = useState<Tip | null>(null)
@@ -115,9 +117,9 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
         .reduce((s, [, b]) => s + b, 0)
       const other = attributed - us.reduce((s, [, b]) => s + b, 0)
       return [
-        ...us.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u) })),
-        ...(other > 0 ? [{ k: '(other attributed)', b: other, col: 'var(--other)', rate: pricing?.blended }] : []),
-        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: teamRate('unattributed') }] : []),
+        ...us.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u), mix: pricing?.userMix?.[u] })),
+        ...(other > 0 ? [{ k: '(other attributed)', b: other, col: 'var(--other)', rate: pricing?.blended, mix: undefined }] : []),
+        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: teamRate('unattributed'), mix: pricing?.teamMix?.['unattributed'] }] : []),
       ].sort((a, b) => b.b - a.b)
     }
     return Object.entries(node.tm)
@@ -125,14 +127,15 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
         const tv = TEAM_VARS[t] ?? '--t-unattr'
         const s = node.sh?.[t] ?? 0
         const rate = teamRate(t)
+        const mix = pricing?.teamMix?.[t]
         return s > 0 && b - s > 0
           ? [
-              { k: `${t} (users)`, b: b - s, col: `var(${tv})`, rate },
-              { k: `${t} (shared)`, b: s, col: sharedColor(tv), rate },
+              { k: `${t} (users)`, b: b - s, col: `var(${tv})`, rate, mix },
+              { k: `${t} (shared)`, b: s, col: sharedColor(tv), rate, mix },
             ]
           : s > 0
-            ? [{ k: `${t} (shared)`, b: s, col: sharedColor(tv), rate }]
-            : [{ k: t, b, col: `var(${tv})`, rate }]
+            ? [{ k: `${t} (shared)`, b: s, col: sharedColor(tv), rate, mix }]
+            : [{ k: t, b, col: `var(${tv})`, rate, mix }]
       })
       .sort((a, b) => b.b - a.b)
   }, [node, mode, userIdx, pricing])
@@ -196,6 +199,13 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
           setPinnedTip(p => (p?.path === gsPath ? null : { x: me.clientX, y: me.clientY, path: gsPath, node: kid }))
         }
     const dust = Math.min(r.w, r.h) < 14
+    // class lens: hatch by colder-class (non-STANDARD) byte fraction — leaf
+    // cells only (cells are semi-transparent, so a parent hatch would bleed
+    // through all-STANDARD children)
+    const coldFrac = lens && kids.length === 0 ? Object.values(kid.cb ?? {}).reduce((a, b) => a + b, 0) / kid.b : 0
+    const hatch = coldFrac > 0.01
+      ? `repeating-linear-gradient(135deg, rgb(120 170 255 / ${(0.18 + 0.5 * coldFrac).toFixed(2)}) 0 4px, transparent 4px 9px)`
+      : undefined
     // highlight mode: leaf cells not majority-owned by the selected user/team fade back
     let dim = false
     if (hl && kids.length === 0) {
@@ -210,6 +220,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
           left: r.x, top: r.y,
           width: Math.max(0, r.w - (dust ? 1 : 2)), height: Math.max(0, r.h - (dust ? 1 : 2)),
           background: col, color: ink, opacity: (depth > 0 ? 0.82 : 0.92) * (dim ? 0.22 : 1),
+          ...(hatch && { backgroundImage: hatch }),
           ...(dust && { boxShadow: 'none', borderRadius: 1.5 }),
         }}
         tabIndex={0}
@@ -315,9 +326,13 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing }: {
               {r.k} <b>{fmtBytes(r.b)}</b>
               <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
               {r.rate != null && (
-                <span className="usd" title="Est. $/mo at list price; rate blends the group's storage-class mix">
-                  {fmtUsd(r.b * r.rate)}/mo
-                </span>
+                r.mix ? (
+                  <Tooltip content={<ClassMixTip mix={r.mix} note="the group's fleet-wide class mix sets its $/byte rate; $ shown = rate × this view's bytes" />}>
+                    <span className="usd dotted">{fmtUsd(r.b * r.rate)}/mo</span>
+                  </Tooltip>
+                ) : (
+                  <span className="usd">{fmtUsd(r.b * r.rate)}/mo</span>
+                )
               )}
             </span>
           ))}
