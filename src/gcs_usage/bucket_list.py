@@ -35,6 +35,62 @@ BATCH_ROWS = 200_000
 BLOB_FIELDS = "items(name,size,timeCreated,storageClass),nextPageToken"
 
 
+def discover_prefixes(fs, root: str) -> tuple[list[tuple], list[str], list[str]]:
+    """Walk ``root`` two levels: (shallow file rows, depth-2 stream prefixes,
+    self-dir placeholder names).
+
+    Listings can contain the listed path *itself* as a directory entry when a
+    placeholder object (``tmp/``, or ``/`` at bucket root) backs it —
+    ``marin-us-east5`` shows its own bucket in ``ls(bucket)``. Recursing into
+    those re-lists the parent (IndexError on the bucket name at best, subtree
+    double-streams at worst), so they're skipped at both levels; their names
+    are returned so the caller can fetch the placeholder *objects* (invisible
+    to gcsfs, which folds them into directory entries) and count them.
+    """
+    shallow: list[tuple] = []
+    stream_prefixes: list[str] = []
+    self_dirs: list[str] = []
+    for e1 in fs.ls(root, detail=True):
+        if e1["name"].rstrip("/") == root.rstrip("/"):
+            err(f"WARN: skipping self entry {e1['name']!r} in {root!r} listing")
+            self_dirs.append("/")
+            continue
+        for e2 in [e1] if e1["type"] == "file" else fs.ls(e1["name"], detail=True):
+            rel = e2["name"].split("/", 1)
+            if e2["name"].rstrip("/") == e1["name"].rstrip("/") and e2["type"] != "file":
+                err(f"WARN: skipping self entry {e2['name']!r} in {e1['name']!r} listing")
+                self_dirs.append(rel[1] + "/" if len(rel) > 1 else "/")
+                continue
+            if len(rel) < 2 or not rel[1]:
+                err(f"WARN: skipping unparseable listing entry {e2['name']!r} under {e1['name']!r}")
+                continue
+            if e2["type"] == "file":
+                shallow.append((rel[1], e2["size"], e2.get("timeCreated"), e2.get("storageClass")))
+            else:
+                stream_prefixes.append(rel[1] + "/")
+    return shallow, stream_prefixes, self_dirs
+
+
+def placeholder_rows(bucket: str, self_dirs: list[str]) -> list[tuple]:
+    """Fetch the zero-byte placeholder objects behind self-dir entries.
+
+    They only match a streamed prefix when their whole depth-1 dir streams
+    wholesale, so with children streaming individually they must be counted
+    explicitly (central2 alone has 5 — e.g. an object literally named
+    ``tmp/``)."""
+    from google.cloud import storage
+
+    bkt = storage.Client().bucket(bucket)
+    rows = []
+    for d in self_dirs:
+        if blob := bkt.get_blob(d):
+            created = blob.time_created.isoformat().replace("+00:00", "Z") if blob.time_created else None
+            rows.append((blob.name, blob.size, created, blob.storage_class))
+        else:
+            err(f"WARN: no placeholder object behind self entry {d!r} in {bucket}")
+    return rows
+
+
 def pack_chunks(prefixes: list[str], weights: dict[str, int], n: int) -> list[list[str]]:
     """Greedy bin-pack of ``prefixes`` into ``n`` chunks by ``weights``
     (object counts from a prior listing; unknown prefixes weight 1).
@@ -246,15 +302,9 @@ def list_bucket_to_parquet(
 
     fs = gcsfs.GCSFileSystem(use_listings_cache=False)
     root = f"{bucket}/{prefix.strip('/')}" if prefix else bucket
-    # depth-2 stream prefixes + everything shallower than depth 2 in one shard
-    shallow: list[tuple] = []
-    stream_prefixes: list[str] = []
-    for e1 in fs.ls(root, detail=True):
-        for e2 in [e1] if e1["type"] == "file" else fs.ls(e1["name"], detail=True):
-            if e2["type"] == "file":
-                shallow.append((e2["name"].split("/", 1)[1], e2["size"], e2.get("timeCreated"), e2.get("storageClass")))
-            else:
-                stream_prefixes.append(e2["name"].split("/", 1)[1] + "/")
+    shallow, stream_prefixes, self_dirs = discover_prefixes(fs, root)
+    if self_dirs:
+        shallow.extend(placeholder_rows(bucket, self_dirs))
     stream_prefixes, nested = dedupe_prefixes(stream_prefixes)
     for p, parent in nested:
         err(f"WARN: dropping nested prefix {p!r} (inside {parent!r})")

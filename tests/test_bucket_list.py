@@ -97,3 +97,62 @@ def test_pack_chunks_balances_by_weight():
     totals = sorted(sum(weights.get(p, 1) for p in c) for c in chunks)
     assert totals == [40, 41, 100]
     assert sorted(p for c in chunks for p in c) == ["big/", "huge/", "mid/", "small1/", "small2/", "unknown/"]
+
+
+class StubFS:
+    """ls() from a dict of path -> entries; models gcsfs quirks seen in prod."""
+
+    def __init__(self, listings):
+        self.listings = listings
+
+    def ls(self, path, detail=True):
+        return self.listings[path]
+
+
+def d(name):
+    return {"name": name, "type": "directory", "size": 0, "timeCreated": None, "storageClass": "DIRECTORY"}
+
+
+def f(name, size=1, created="2026-07-01T00:00:00.000Z", cls="STANDARD"):
+    return {"name": name, "type": "file", "size": size, "timeCreated": created, "storageClass": cls}
+
+
+def test_discover_prefixes_plain():
+    from gcs_usage.bucket_list import discover_prefixes
+
+    fs = StubFS({
+        "bkt": [f("bkt/root.txt", 3), d("bkt/a")],
+        "bkt/a": [f("bkt/a/x.txt", 5), d("bkt/a/b")],
+    })
+    assert discover_prefixes(fs, "bkt") == (
+        [("root.txt", 3, "2026-07-01T00:00:00.000Z", "STANDARD"),
+         ("a/x.txt", 5, "2026-07-01T00:00:00.000Z", "STANDARD")],
+        ["a/b/"],
+        [],
+    )
+
+
+def test_discover_prefixes_bucket_self_entry():
+    # marin-us-east5 shape: ls(bucket) contains the bucket itself as a directory
+    from gcs_usage.bucket_list import discover_prefixes
+
+    fs = StubFS({
+        "bkt": [d("bkt"), d("bkt/a")],
+        "bkt/a": [d("bkt/a/b")],
+    })
+    assert discover_prefixes(fs, "bkt") == ([], ["a/b/"], ["/"])
+
+
+def test_discover_prefixes_dir_self_entry():
+    # marin-us-central2 shape: placeholder-backed dir appears inside its own listing
+    from gcs_usage.bucket_list import discover_prefixes
+
+    fs = StubFS({
+        "bkt": [d("bkt/tmp")],
+        "bkt/tmp": [d("bkt/tmp"), d("bkt/tmp/zephyr"), f("bkt/tmp/note.txt", 7)],
+    })
+    assert discover_prefixes(fs, "bkt") == (
+        [("tmp/note.txt", 7, "2026-07-01T00:00:00.000Z", "STANDARD")],
+        ["tmp/zephyr/"],
+        ["tmp/"],
+    )
