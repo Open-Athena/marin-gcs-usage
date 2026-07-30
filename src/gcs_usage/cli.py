@@ -460,6 +460,22 @@ def webdata(
         err(f"scans.json: {dates}")
 
 
+@main.command()
+@option("-o", "--out", "out_root", type=Path, required=True, help="Local root; objects land at <out>/<bucket>/<object name>")
+@option("-w", "--workers", default=16, help="Concurrent downloads")
+@argument("globs", nargs=-1, required=True)
+def stage(out_root: Path, workers: int, globs: tuple[str, ...]) -> None:
+    """Stage /gcs/<bucket>/<pattern> globs onto local disk (parallel download).
+
+    gcsfuse reads are slow (~20-50 MB/s) and webdata makes several passes over
+    its inputs; staging to local NVMe first makes those passes local-speed.
+    Already-staged files (same size) are skipped, so re-runs are idempotent.
+    """
+    from .stage import stage_globs
+
+    stage_globs(globs, out_root, workers)
+
+
 @main.command("list-bucket")
 @option("-o", "--out", "out_dir", required=True, help="Output dir (local or gs://) for canonical listing parquet shards")
 @option("-p", "--prefix", default=None, help="List only under this prefix (smoke tests / partial runs)")

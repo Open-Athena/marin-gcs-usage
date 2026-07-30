@@ -38,17 +38,37 @@ for d in $(ls "/gcs/$DATA/central2-listing/" 2>/dev/null | sort -r); do
 done
 gcs-usage list-bucket marin-us-central2 -o "gs://$DATA/$LISTING_PATH" -P 6 -w 8 -x "${LISTING_EXISTS:-reuse}" "${W[@]}"
 
-# 2. assemble -l args: SII per bucket (skip loudly if a day's report is missing),
-# then the fresh central2 listing, then the weekly-scan fallback (earlier wins per bucket)
-L=()
+# 2. assemble input globs: SII per bucket (skip loudly if a day's report is
+# missing), then the fresh central2 listing, then the weekly-scan fallback
+# (earlier wins per bucket)
+# SII reports generate at scattered times (02:30-13:00 UTC by bucket); when a
+# bucket's report for $DATE hasn't landed yet, yesterday's SII beats the weekly
+# scan fallback (which truncates huge flat prefixes, undercounting objects ~3x)
+PREV=$(date -u -d "$DATE - 1 day" +%F)
+G=()
 for b in "${SII_BUCKETS[@]}"; do
   glob="/gcs/$b/inventory-reports/*_${DATE}T*_*.parquet"
-  if compgen -G "$glob" > /dev/null; then L+=(-l "$glob"); else echo "WARN: no SII report for $b on $DATE (falling back to weekly scan)" >&2; fi
+  pglob="/gcs/$b/inventory-reports/*_${PREV}T*_*.parquet"
+  if compgen -G "$glob" > /dev/null; then G+=("$glob")
+  elif compgen -G "$pglob" > /dev/null; then G+=("$pglob"); echo "WARN: no SII report for $b on $DATE — using $PREV's" >&2
+  else echo "WARN: no SII report for $b on $DATE or $PREV (falling back to weekly scan)" >&2; fi
 done
-L+=(-l "/gcs/$DATA/$LISTING_PATH/*.parquet")
-if compgen -G "$FALLBACK_GLOB" > /dev/null; then L+=(-l "$FALLBACK_GLOB"); else echo "WARN: weekly-scan fallback glob is empty" >&2; fi
+G+=("/gcs/$DATA/$LISTING_PATH/*.parquet")
+if compgen -G "$FALLBACK_GLOB" > /dev/null; then G+=("$FALLBACK_GLOB"); else echo "WARN: weekly-scan fallback glob is empty" >&2; fi
+AG=("/gcs/$DATA/attr/attribution-2026-07-20.parquet" "/gcs/$DATA/attr/attribution-wandb.parquet")
 
-A=(-a "/gcs/$DATA/attr/attribution-2026-07-20.parquet" -a "/gcs/$DATA/attr/attribution-wandb.parquet")
+# With STAGE_DIR set (a local-SSD mount on Batch), copy all inputs there once
+# and point webdata at the local copies — gcsfuse reads are ~20-50 MB/s and
+# webdata makes several passes, so local NVMe scans win by an order of magnitude.
+# DuckDB spill goes to the same disk.
+if [ -n "${STAGE_DIR:-}" ]; then
+  gcs-usage stage -o "$STAGE_DIR" "${G[@]}" "${AG[@]}"
+  export DUCKDB_TMP=${DUCKDB_TMP:-$STAGE_DIR/.duckdb-tmp}
+  mkdir -p "$DUCKDB_TMP"
+fi
+loc() { if [ -n "${STAGE_DIR:-}" ]; then echo "$STAGE_DIR/${1#/gcs/}"; else echo "$1"; fi; }
+L=(); for g in "${G[@]}"; do L+=(-l "$(loc "$g")"); done
+A=(); for a in "${AG[@]}"; do A+=(-a "$(loc "$a")"); done
 
 gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" -o "/tmp/snap/$DATE"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot

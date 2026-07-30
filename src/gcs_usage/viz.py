@@ -143,6 +143,8 @@ def write_webdata(
     # matters in Cloud Run where DuckDB's disk spill is actually RAM-backed
     con.execute("SET preserve_insertion_order=false")
     con.execute(f"SET threads={os.environ.get('DUCKDB_THREADS', '4')}")
+    if tmp := os.environ.get("DUCKDB_TMP"):
+        con.execute(f"SET temp_directory='{tmp}'")
     src = prepare_listing(con, listings)
     if attr:
         import pandas as pd
