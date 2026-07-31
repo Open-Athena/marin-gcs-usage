@@ -32,6 +32,7 @@ err = partial(print, file=sys.stderr)
 
 ROWS_PER_SHARD = 1_000_000
 BATCH_ROWS = 200_000
+SAMPLE_ROWS = 500_000
 BLOB_FIELDS = "items(name,size,timeCreated,storageClass),nextPageToken"
 
 
@@ -148,8 +149,14 @@ def split_hot_prefixes(
             con = duckdb.connect()
             con.execute("SET memory_limit='4GB'")
         fracs = [i / k for i in range(1, k)]
+        # Reservoir-sample the prefix's names before quantiling: exact
+        # quantile_disc buffers every matching name (30M+ under one prefix →
+        # OOM). Boundaries only partition [start, end) ranges, so sample
+        # noise costs nothing — a 500k sample lands within ~0.3% of exact.
         [(bounds,)] = con.execute(
-            f"SELECT quantile_disc(name, {fracs}) FROM read_parquet('{weights_glob}') WHERE starts_with(name, ?)",
+            f"SELECT quantile_disc(name, {fracs}) FROM ("
+            f"SELECT name FROM read_parquet('{weights_glob}') WHERE starts_with(name, ?)"
+            f" USING SAMPLE reservoir({SAMPLE_ROWS} ROWS))",
             [p],
         ).fetchall()
         if not bounds or len(set(bounds)) != len(bounds):

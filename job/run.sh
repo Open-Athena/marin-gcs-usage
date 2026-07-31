@@ -38,17 +38,16 @@ fi
 # times scatter 02:26-13:00 UTC, day-1 reports can lag ~30h, and us-central2
 # has none at all. Tasks reuse completed listings, so re-runs only fill gaps.
 if [ "${LISTING_MODE:-sii}" = "diy" ]; then
+  # We own the listing end-to-end: no SII in the primary path. If the fan-out
+  # fails (any region OOMs or errors) or any bucket lacks a completed listing,
+  # abort — better no snapshot than a silently incomplete one (a dropped
+  # bucket like central2, which has no SII report at all, is a ~1000 TB hole).
   FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-us-east1 marin-us-west4)
-  gcs-usage job submit-listing -d "$DATE" -W || echo "WARN: listing fan-out failed; per-bucket fallbacks below" >&2
-  PREV=$(date -u -d "$DATE - 1 day" +%F)
+  gcs-usage job submit-listing -d "$DATE" -W
   G=()
   for b in "${FLEET[@]}"; do
     if [ -f "/gcs/$DATA/listing/$DATE/$b/_SUCCESS.json" ]; then G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet")
-    elif compgen -G "/gcs/$b/inventory-reports/*_${DATE}T*_*.parquet" > /dev/null; then
-      G+=("/gcs/$b/inventory-reports/*_${DATE}T*_*.parquet"); echo "WARN: no $DATE listing for $b — using its SII report" >&2
-    elif compgen -G "/gcs/$b/inventory-reports/*_${PREV}T*_*.parquet" > /dev/null; then
-      G+=("/gcs/$b/inventory-reports/*_${PREV}T*_*.parquet"); echo "WARN: no $DATE listing for $b — using $PREV's SII report" >&2
-    else echo "WARN: $b has no $DATE listing and no recent SII report — EXCLUDED from this snapshot" >&2; fi
+    else echo "ERROR: no completed $DATE listing for $b — aborting snapshot" >&2; exit 1; fi
   done
   AG=("/gcs/$DATA/attr/attribution-2026-07-20.parquet" "/gcs/$DATA/attr/attribution-wandb.parquet")
 else
