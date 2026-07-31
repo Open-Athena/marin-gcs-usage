@@ -41,8 +41,8 @@ def listing_job_spec(
     date: str,
     buckets: Sequence[str] = tuple(FLEET_BUCKETS),
     data_bucket: str = DATA_BUCKET,
-    machine: str = "n2-standard-16",
-    procs: int = 12,
+    machine: str = "n2-standard-32",
+    procs: int = 24,
     threads: int = 10,
     region: str = REGION,
 ) -> dict:
@@ -87,7 +87,7 @@ gcs-usage list-bucket "$b" -o "gs://{listing_dir(data_bucket, date, "$b")}" -P {
                             }
                         }
                     ],
-                    "computeResource": {"cpuMilli": 15000, "memoryMib": 24000},
+                    "computeResource": {"cpuMilli": 30000, "memoryMib": 48000},
                     "maxRetryCount": 1,
                     "maxRunDuration": "14400s",
                     "volumes": [

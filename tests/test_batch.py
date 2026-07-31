@@ -49,7 +49,7 @@ def test_listing_job_spec_task_per_bucket():
                   "marin-us-east5", "marin-us-east1", "marin-us-west4"]
     ]
     policy = spec["allocationPolicy"]["instances"][0]["policy"]
-    assert policy == {"machineType": "n2-standard-16", "bootDisk": {"type": "pd-balanced", "sizeGb": "50"}}
+    assert policy == {"machineType": "n2-standard-32", "bootDisk": {"type": "pd-balanced", "sizeGb": "50"}}
 
 
 def test_listing_job_spec_default_fleet():
