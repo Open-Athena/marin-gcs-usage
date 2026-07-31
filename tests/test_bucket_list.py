@@ -99,6 +99,76 @@ def test_pack_chunks_balances_by_weight():
     assert sorted(p for c in chunks for p in c) == ["big/", "huge/", "mid/", "small1/", "small2/", "unknown/"]
 
 
+@pytest.fixture
+def weights_parquet(tmp_path: Path) -> str:
+    names = [f"hot/{c}" for c in "abcdefgh"] + ["cold/x", "cold/y"]
+    path = tmp_path / "weights.parquet"
+    pd.DataFrame({"name": names}).to_parquet(path, index=False)
+    return str(path)
+
+
+def test_split_hot_prefixes_ranges(weights_parquet):
+    from gcs_usage.bucket_list import split_hot_prefixes
+
+    # total 10 over 4 streams → ideal 2; hot/ (8) splits into 4 ranges at the
+    # 25/50/75% name-quantiles of the parquet; cold/ (2) stays whole
+    items, weights = split_hot_prefixes(
+        ["hot/", "cold/"], {"hot/": 8, "cold/": 2}, weights_parquet, n_streams=4,
+    )
+    assert items == [
+        "cold/",
+        ("hot/", None, "hot/b"),
+        ("hot/", "hot/b", "hot/d"),
+        ("hot/", "hot/d", "hot/f"),
+        ("hot/", "hot/f", None),
+    ]
+    assert weights == {
+        "hot/": 8,
+        "cold/": 2,
+        ("hot/", None, "hot/b"): 2,
+        ("hot/", "hot/b", "hot/d"): 2,
+        ("hot/", "hot/d", "hot/f"): 2,
+        ("hot/", "hot/f", None): 2,
+    }
+
+
+def test_split_hot_prefixes_no_split_below_ideal(weights_parquet):
+    from gcs_usage.bucket_list import split_hot_prefixes
+
+    # ideal = 10 // 2 = 5; hot/ (8) → k = ceil(8/5) = 2 ranges; cold/ whole
+    items, weights = split_hot_prefixes(
+        ["hot/", "cold/"], {"hot/": 8, "cold/": 2}, weights_parquet, n_streams=2,
+    )
+    assert items == ["cold/", ("hot/", None, "hot/d"), ("hot/", "hot/d", None)]
+    assert weights == {
+        "hot/": 8,
+        "cold/": 2,
+        ("hot/", None, "hot/d"): 4,
+        ("hot/", "hot/d", None): 4,
+    }
+
+
+def test_split_hot_prefixes_degenerate_bounds(tmp_path: Path):
+    from gcs_usage.bucket_list import split_hot_prefixes
+
+    # all names identical → duplicate quantile bounds → prefix kept whole
+    path = tmp_path / "weights.parquet"
+    pd.DataFrame({"name": ["hot/same"] * 8}).to_parquet(path, index=False)
+    items, weights = split_hot_prefixes(["hot/"], {"hot/": 8}, str(path), n_streams=4)
+    assert items == ["hot/"]
+    assert weights == {"hot/": 8}
+
+
+def test_pack_chunks_accepts_range_items():
+    from gcs_usage.bucket_list import pack_chunks
+
+    r1, r2 = ("hot/", None, "hot/d"), ("hot/", "hot/d", None)
+    weights = {r1: 4, r2: 4, "cold/": 2}
+    chunks = pack_chunks([r1, r2, "cold/"], weights, 2)
+    # equal-weight tie broken by str(): "'hot/d'" sorts before "None"
+    assert chunks == [[r2, "cold/"], [r1]]
+
+
 class StubFS:
     """ls() from a dict of path -> entries; models gcsfs quirks seen in prod."""
 

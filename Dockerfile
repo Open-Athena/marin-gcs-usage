@@ -8,9 +8,13 @@ COPY site/ ./
 RUN pnpm build
 
 # Stage 2: pipeline + wrangler (node for wrangler; python for gcs-usage).
+# Node comes from the node:22-slim stage (same Debian base) — Debian's apt
+# nodejs is v20, below wrangler's floor (≥22 as of wrangler 4.116).
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && rm -rf /var/lib/apt/lists/* \
-    && npm install -g wrangler
+COPY --from=site /usr/local/bin/node /usr/local/bin/node
+COPY --from=site /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && npm install -g wrangler@4
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src

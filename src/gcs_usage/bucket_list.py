@@ -91,22 +91,77 @@ def placeholder_rows(bucket: str, self_dirs: list[str]) -> list[tuple]:
     return rows
 
 
-def pack_chunks(prefixes: list[str], weights: dict[str, int], n: int) -> list[list[str]]:
-    """Greedy bin-pack of ``prefixes`` into ``n`` chunks by ``weights``
-    (object counts from a prior listing; unknown prefixes weight 1).
+# A stream item is a prefix, optionally bounded to a [start, end) name range —
+# hot prefixes are split into ranges so one flat 100M-object dir (eu-west4's
+# datakit/store/ = 142M) can't serialize a whole bucket behind one stream.
+Item = "str | tuple[str, str | None, str | None]"
+
+
+def pack_chunks(items: list, weights: dict, n: int) -> list[list]:
+    """Greedy bin-pack of stream items into ``n`` chunks by ``weights``
+    (object counts from a prior listing; unknown items weight 1).
 
     Round-robin by count leaves one worker with the mega-prefixes (the first
     balanced run spent half its wall clock on a single straggler chunk).
     """
     import heapq
 
-    bins: list[tuple[int, int, list[str]]] = [(0, i, []) for i in range(n)]
+    bins: list[tuple[int, int, list]] = [(0, i, []) for i in range(n)]
     heapq.heapify(bins)
-    for p in sorted(prefixes, key=lambda p: -weights.get(p, 1)):
+    for p in sorted(items, key=lambda p: (-weights.get(p, 1), str(p))):
         w, i, chunk = heapq.heappop(bins)
         chunk.append(p)
         heapq.heappush(bins, (w + weights.get(p, 1), i, chunk))
     return [chunk for _, _, chunk in sorted(bins, key=lambda b: b[1])]
+
+
+def split_hot_prefixes(
+    prefixes: list[str],
+    weights: dict[str, int],
+    weights_glob: str,
+    n_streams: int,
+) -> tuple[list, dict]:
+    """Split prefixes heavier than the per-stream ideal into name ranges.
+
+    Range boundaries are name-quantiles from the weights parquet (a prior
+    listing or SII inventory — either has every object name), consumed by
+    ``list_blobs(start_offset=, end_offset=)``: start inclusive, end
+    exclusive, so quantile boundaries produce no gaps or dups even when
+    stale. Returns (items, weights) with ranges replacing their prefix.
+    """
+    import math
+
+    import duckdb
+
+    total = sum(weights.get(p, 1) for p in prefixes)
+    ideal = max(total // max(n_streams, 1), 1)
+    items: list = []
+    out_w: dict = dict(weights)
+    con = None
+    for p in sorted(prefixes):
+        w = weights.get(p, 1)
+        k = min(math.ceil(w / ideal), n_streams)
+        if k < 2:
+            items.append(p)
+            continue
+        if con is None:
+            con = duckdb.connect()
+            con.execute("SET memory_limit='4GB'")
+        fracs = [i / k for i in range(1, k)]
+        [(bounds,)] = con.execute(
+            f"SELECT quantile_disc(name, {fracs}) FROM read_parquet('{weights_glob}') WHERE starts_with(name, ?)",
+            [p],
+        ).fetchall()
+        if not bounds or len(set(bounds)) != len(bounds):
+            items.append(p)  # degenerate names distribution — keep whole
+            continue
+        edges = [None, *bounds, None]
+        err(f"splitting hot prefix {p!r} ({w:,} weighted objects) into {k} ranges")
+        for start, end in zip(edges[:-1], edges[1:]):
+            rng = (p, start, end)
+            items.append(rng)
+            out_w[rng] = w // k
+    return items, out_w
 
 
 def prefix_weights(weights_glob: str) -> dict[str, int]:
@@ -207,12 +262,13 @@ def resolve_existing(out_fs, out_root: str, exists: str) -> dict | None:
 
 def _stream_prefixes(
     bucket: str,
-    prefixes: list[str],
+    prefixes: list,
     out_dir: str,
     ns: int,
     threads: int,
 ) -> int:
-    """Worker-process body: stream ``prefixes`` to shards named ``shard-<ns>-*``."""
+    """Worker-process body: stream items (prefixes or ``(prefix, start, end)``
+    name ranges) to shards named ``shard-<ns>-*``."""
     from google.cloud import storage
 
     q: Queue = Queue(maxsize=threads)
@@ -220,12 +276,15 @@ def _stream_prefixes(
     done = object()
     produce_error: list[BaseException] = []
 
-    def one(pfx: str) -> None:
+    def one(item) -> None:
+        pfx, start, end = item if isinstance(item, tuple) else (item, None, None)
         client = getattr(local, "client", None)
         if client is None:
             client = local.client = storage.Client()
         rows: list[tuple] = []
-        for blob in client.list_blobs(bucket, prefix=pfx, fields=BLOB_FIELDS):
+        for blob in client.list_blobs(
+            bucket, prefix=pfx, fields=BLOB_FIELDS, start_offset=start, end_offset=end,
+        ):
             rows.append((blob.name, blob.size, blob.time_created, blob.storage_class))
             if len(rows) >= BATCH_ROWS:
                 q.put(entries_to_frame(bucket, rows))
@@ -321,9 +380,11 @@ def list_bucket_to_parquet(
     total = len(shallow)
 
     weights = prefix_weights(weights_from) if weights_from else {}
+    stream_items: list = stream_prefixes
     if weights:
         err(f"chunk balancing from {weights_from} ({len(weights)} weighted prefixes)")
-    chunks = pack_chunks(stream_prefixes, weights, procs)
+        stream_items, weights = split_hot_prefixes(stream_prefixes, weights, weights_from, procs * threads)
+    chunks = pack_chunks(stream_items, weights, procs)
     with ProcessPoolExecutor(procs, mp_context=get_context("spawn")) as ex:
         futures = [
             ex.submit(_stream_prefixes, bucket, chunk, out_dir, ns, threads)
