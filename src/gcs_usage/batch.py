@@ -71,6 +71,11 @@ fi
 gcs-usage list-bucket "$b" -o "gs://{listing_dir(data_bucket, date, "$b")}" -P {procs} -w {threads} -x reuse "${{W[@]}}"
 """
     mounts = [(data_bucket, "rw")] + [(b, "ro") for b in FLEET_BUCKETS]
+    # Size the task request off the machine, not a constant: a hardcoded
+    # cpuMilli that exceeds the chosen machine's vCPUs is a hard 400 from Batch
+    # ("machine_type cannot satisfy compute_resource"). Leave 2 vCPU for the
+    # agent; listing is CPU-bound so memory can be generous-but-modest.
+    vcpus = int(machine.rsplit("-", 1)[-1])
     return {
         "taskGroups": [
             {
@@ -87,7 +92,7 @@ gcs-usage list-bucket "$b" -o "gs://{listing_dir(data_bucket, date, "$b")}" -P {
                             }
                         }
                     ],
-                    "computeResource": {"cpuMilli": 30000, "memoryMib": 48000},
+                    "computeResource": {"cpuMilli": (vcpus - 2) * 1000, "memoryMib": vcpus * 1500},
                     "maxRetryCount": 1,
                     "maxRunDuration": "14400s",
                     "volumes": [

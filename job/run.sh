@@ -43,7 +43,15 @@ if [ "${LISTING_MODE:-sii}" = "diy" ]; then
   # abort — better no snapshot than a silently incomplete one (a dropped
   # bucket like central2, which has no SII report at all, is a ~1000 TB hole).
   FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-us-east1 marin-us-west4)
-  gcs-usage job submit-listing -d "$DATE" -W
+  # Listing node size/parallelism are runtime config: set LISTING_MACHINE /
+  # LISTING_PROCS / LISTING_WORKERS on the snapshot job's env (batch-submit.sh
+  # or the scheduler body) to resize without rebuilding — unset falls back to
+  # the CLI defaults. computeResource is derived from the machine, so any size fits.
+  LZ=()
+  [ -n "${LISTING_MACHINE:-}" ] && LZ+=(-m "$LISTING_MACHINE")
+  [ -n "${LISTING_PROCS:-}" ] && LZ+=(-P "$LISTING_PROCS")
+  [ -n "${LISTING_WORKERS:-}" ] && LZ+=(-w "$LISTING_WORKERS")
+  gcs-usage job submit-listing -d "$DATE" -W "${LZ[@]}"
   G=()
   for b in "${FLEET[@]}"; do
     if [ -f "/gcs/$DATA/listing/$DATE/$b/_SUCCESS.json" ]; then G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet")

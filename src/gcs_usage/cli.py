@@ -605,8 +605,8 @@ def job_watch(interval: int, name: str | None) -> None:
 @job.command("submit-listing")
 @option("-b", "--bucket", "buckets", multiple=True, help="Bucket(s) to list [default: whole fleet]")
 @option("-d", "--date", "date", required=True, help="Listing date — output goes to listing/<date>/<bucket>/")
-@option("-m", "--machine", default="n2-standard-16", help="Machine type per task")
-@option("-P", "--procs", default=12, help="list-bucket worker processes per task")
+@option("-m", "--machine", default="n2-standard-32", help="Machine type per task")
+@option("-P", "--procs", default=24, help="list-bucket worker processes per task")
 @option("-w", "--workers", "threads", default=10, help="Concurrent prefix streams per process")
 @option("-W", "--wait", "wait", is_flag=True, help="Block until the job reaches a terminal state")
 def job_submit_listing(

@@ -48,8 +48,20 @@ def test_listing_job_spec_task_per_bucket():
         for b in ["oa-gcs-usage-dvx", "marin-us-central2", "marin-eu-west4", "marin-us-central1",
                   "marin-us-east5", "marin-us-east1", "marin-us-west4"]
     ]
+    # cpuMilli/memoryMib derive from the machine (32 vCPU → 30 requested, 2 for
+    # the agent), never a constant that could exceed the node.
+    assert tg["taskSpec"]["computeResource"] == {"cpuMilli": 30000, "memoryMib": 48000}
     policy = spec["allocationPolicy"]["instances"][0]["policy"]
     assert policy == {"machineType": "n2-standard-32", "bootDisk": {"type": "pd-balanced", "sizeGb": "50"}}
+
+
+def test_listing_job_spec_compute_resource_fits_machine():
+    # Regression: a hardcoded cpuMilli that exceeds the machine's vCPUs is a hard
+    # 400 from Batch. The request must scale with `machine` and stay under its cap.
+    for machine, vcpus in [("n2-standard-16", 16), ("n2-standard-32", 32), ("n2-standard-8", 8)]:
+        cr = listing_job_spec("2026-07-30", ["marin-us-east1"], machine=machine)["taskGroups"][0]["taskSpec"]["computeResource"]
+        assert cr == {"cpuMilli": (vcpus - 2) * 1000, "memoryMib": vcpus * 1500}
+        assert cr["cpuMilli"] <= vcpus * 1000
 
 
 def test_listing_job_spec_default_fleet():

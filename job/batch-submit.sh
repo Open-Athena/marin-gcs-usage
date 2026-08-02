@@ -31,7 +31,8 @@ v = {
     "STAGE_DIR": os.environ.get("STAGE_DIR", "/stage"),
 }
 v = {k: s for k, s in v.items() if s}
-for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH", "PUBLISH"]:
+for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH", "PUBLISH",
+          "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS"]:
     if k in os.environ:
         v[k] = os.environ[k]
 print(json.dumps(v))
