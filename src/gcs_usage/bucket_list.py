@@ -221,12 +221,26 @@ def entries_to_frame(bucket: str, rows: list[tuple]) -> pd.DataFrame:
     )
 
 
+# Rows per parquet row group. Default (whole frame = 1 group) makes a shard
+# unstreamable: a reader that pages by row group (e.g. a browser preview) must
+# pull the entire shard at once. ~25k rows ≈ ~0.5 MB compressed here (~18 B/row)
+# — sized for the interactive paged-table reader (fast first-page fetch/parse).
+# Halving from 50k costs only ~2x row-group footer metadata (negligible: 5
+# small columns) and a marginal compression hit; our other consumer (DuckDB
+# full-scan aggregation) streams row groups and is ~indifferent to the size.
+# (Row *rendering* still needs a display cap downstream; this only bounds
+# per-group fetch+parse.)
+ROW_GROUP_SIZE = 25_000
+
+
 def _write_shard(out_dir: str, name: str, frame: pd.DataFrame) -> None:
     import fsspec
 
     out_fs, out_root = fsspec.core.url_to_fs(out_dir)
     out_fs.makedirs(out_root, exist_ok=True)
-    frame.to_parquet(f"{out_root}/{name}.parquet", index=False, filesystem=out_fs)
+    frame.to_parquet(
+        f"{out_root}/{name}.parquet", index=False, filesystem=out_fs, row_group_size=ROW_GROUP_SIZE
+    )
 
 
 SUCCESS_MARKER = "_SUCCESS.json"
