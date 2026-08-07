@@ -839,6 +839,11 @@ def alert(
             key=lambda x: -x[1],
         )[:top]
 
+    # Per-message avatar (mark + 📊/🚨 badge), served public so Slack can fetch it
+    # (the app itself is Access-gated). See job/gen-slack-icons.py + the
+    # gcs-usage-icons Pages project.
+    ICON_BASE = "https://gcs-usage-icons.pages.dev"
+    icon_url = f"{ICON_BASE}/gcs-{'breach' if breach else 'digest'}.png"
     emoji = "🚨" if breach else "📊"
     lines = [
         f"{emoji} *GCS usage — {date}*",
@@ -866,7 +871,7 @@ def alert(
 
     req = urllib.request.Request(
         webhook,
-        data=json.dumps({"text": text}).encode(),
+        data=json.dumps({"text": text, "username": "GCS Usage Bot", "icon_url": icon_url}).encode(),
         headers={"Content-Type": "application/json"},
     )
     urllib.request.urlopen(req).read()
