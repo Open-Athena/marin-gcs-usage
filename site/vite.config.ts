@@ -9,8 +9,13 @@ export default defineConfig({
     port: 3253,
     host: true,
     allowedHosts,
-    // dev only: forward the scan-browser API to the local wrangler Pages Function
-    proxy: { '/v1/files': 'http://localhost:3254' },
+    // dev only: forward the Pages Functions (snapshot data + scan-browser API)
+    // to the local `wrangler pages dev` (run it on :3254 with GCS HMAC creds in
+    // .dev.vars). Both /data and /v1/files now read live from the bucket.
+    proxy: {
+      '/data': 'http://localhost:3254',
+      '/v1/files': 'http://localhost:3254',
+    },
   },
   // The workspace-linked `@rdub/file-tree` calls `useLocation` etc. — force a
   // single instance of these so its hooks share the app's Router/React context

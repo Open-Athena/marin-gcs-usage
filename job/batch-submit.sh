@@ -5,7 +5,7 @@
 #
 # Env overrides: SNAPSHOT_DATE (default today UTC, resolved inside run.sh), IMAGE,
 # DUCKDB_MEM (default 48GB), DUCKDB_THREADS (default 8), LISTING_EXISTS, LISTING_PATH,
-# SNAP_PATH, PUBLISH — all forwarded into the container when set.
+# SNAP_PATH — all forwarded into the container when set.
 set -euo pipefail
 
 PROJECT=oa-internal-450019
@@ -26,14 +26,13 @@ v = {
     "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "100GB"),
     "DUCKDB_THREADS": os.environ.get("DUCKDB_THREADS", "16"),
     "DATA_BUCKET": os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx"),
-    "CLOUDFLARE_ACCOUNT_ID": "74981a43be0de7712369306c7b19133d",
     # stage inputs to the local-SSD mount (see disks below); STAGE_DIR="" disables
     "STAGE_DIR": os.environ.get("STAGE_DIR", "/stage"),
     # Slack digest target: chat.postMessage (bot token) so per-message avatars apply
     "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0BNWAASXFW"),  # #gcs-usage
 }
 v = {k: s for k, s in v.items() if s}
-for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH", "PUBLISH",
+for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
           "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:
@@ -80,7 +79,6 @@ cat > "$spec" <<EOF
       "environment": {
         "variables": $(vars),
         "secretVariables": {
-          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
           "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/gcs-alert-slack-bot-token/versions/latest",
           "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest"
         }

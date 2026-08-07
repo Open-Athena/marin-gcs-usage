@@ -3,16 +3,18 @@
 #   1. direct-list marin-us-central2 (SII unavailable there — API 502s)
 #   2. webdata over: SII inventories (5 buckets) + central2 listing + weekly-scan fallback
 #   3. publish snapshot JSONs to the data bucket (canonical store)
-#   4. rebuild site data dir from the bucket (recent snapshots + scans.json) and deploy
+#
+# The live site reads snapshots straight from the bucket (see
+# site/functions/data/[[path]].ts), so the job no longer builds or deploys a
+# site data dir — publishing to the bucket is the whole "publish" step.
 #
 # Buckets are mounted via GCS FUSE at /gcs/<bucket> (DuckDB needs local paths).
 # Env: SNAPSHOT_DATE (default today UTC), DATA_BUCKET, DUCKDB_MEM,
 # LISTING_PATH (default central2-listing/<date>; relative to the data bucket),
 # LISTING_EXISTS (error|reuse|clear; default reuse = idempotent re-runs),
-# SNAP_PATH (default snapshots/<date>), PUBLISH=0 to skip the site rebuild+deploy,
-# CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (optional — skip deploy if absent).
-# Parallel/experimental runs: override LISTING_PATH + SNAP_PATH (and PUBLISH=0)
-# so they can't collide with the daily run'"'"'s outputs.
+# SNAP_PATH (default snapshots/<date>).
+# Parallel/experimental runs: override LISTING_PATH + SNAP_PATH so they write to
+# their own bucket paths (the live site only reads snapshots/<date>/).
 set -euxo pipefail
 
 DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
@@ -21,7 +23,6 @@ LISTING_PATH=${LISTING_PATH:-central2-listing/$DATE}
 SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 SII_BUCKETS=(marin-us-east1 marin-us-east5 marin-us-central1 marin-eu-west4 marin-us-west4)
 FALLBACK_GLOB="/gcs/marin-us-central2/tmp/storage-scan/deduped/objects-*.parquet"
-KEEP_DEPLOYED=30  # most-recent snapshots included in the site deploy
 
 cd /app
 
@@ -109,34 +110,13 @@ A=(); for a in "${AG[@]}"; do A+=(-a "$(loc "$a")"); done
 gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" -o "/tmp/snap/$DATE"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 
-# 3. publish to the canonical store
+# 3. publish to the canonical store — the live site reads these directly
+# (site/functions/data/[[path]].ts), so no site rebuild/deploy is needed.
 mkdir -p "/gcs/$DATA/$SNAP_PATH"
 cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
+# attribution rules: the single latest copy the /data/rules.json function serves
+cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 
-# 4. site data dir = recent snapshots from the bucket + fresh scans.json/rules.json
-DD=dist/data
-mkdir -p "$DD"
-dates=$(ls "/gcs/$DATA/snapshots/" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -r)
-echo "$dates" | head -n "$KEEP_DEPLOYED" | while read -r d; do
-  mkdir -p "$DD/$d" && cp "/gcs/$DATA/snapshots/$d"/*.json "$DD/$d/"
-done
-python3 - "$DD" <<'EOF'
-import json, re, sys
-from pathlib import Path
-dd = Path(sys.argv[1])
-dates = sorted((p.name for p in dd.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name)), reverse=True)
-(dd / "scans.json").write_text(json.dumps(dates) + "\n")
-print("scans.json:", dates)
-EOF
-cp /tmp/rules.json "$DD/rules.json" 2>/dev/null || true
-
-if [ "${PUBLISH:-1}" != "1" ]; then
-  echo "PUBLISH=0 — snapshot written to gs://$DATA/$SNAP_PATH; site untouched" >&2
-elif [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
-  wrangler pages deploy dist --project-name oa-gcs-usage --branch main
-else
-  echo "WARN: CLOUDFLARE_API_TOKEN not set — snapshot published to gs://$DATA but site NOT deployed" >&2
-fi
 # Post the daily usage digest to Slack (only when a transport is configured, so
 # experimental / local runs stay quiet — only the scheduled job sets it). The
 # alert cmd prefers chat.postMessage (SLACK_BOT_TOKEN + SLACK_CHANNEL → per-message
