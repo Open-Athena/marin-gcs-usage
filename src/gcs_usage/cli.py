@@ -29,6 +29,9 @@ from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefi
 err = partial(print, file=sys.stderr)
 
 
+err = partial(print, file=sys.stderr)
+
+
 def _connect() -> "duckdb.DuckDBPyConnection":
     """DuckDB with a hard memory cap — unbounded defaults (80% of RAM) have
     wedged the 61GB work node when combined with pandas-side structures."""
@@ -761,6 +764,113 @@ def compare(depth: int, top: int, a: str, b: str) -> None:
     tao, tab_ = (sum(x) for x in zip(*ra.values())) if ra else (0, 0)
     tbo, tbb = (sum(x) for x in zip(*rb.values())) if rb else (0, 0)
     print(f"{'TOTAL':{w}} {tao:>14,} {tbo:>14,} {tbo - tao:>+12,} {tab_ / 1e12:>9.1f} {tbb / 1e12:>9.1f} {(tbb - tab_) / 1e12:>+8.1f}")
+
+
+def _load_meta(root: str, date: str) -> dict:
+    import json
+
+    import fsspec
+
+    with fsspec.open(f"{root.rstrip('/')}/{date}/meta.json", "rt") as f:
+        return json.load(f)
+
+
+def _snapshot_dates(root: str) -> list[str]:
+    import re
+
+    import fsspec
+
+    fs, r = fsspec.core.url_to_fs(root)
+    out = []
+    for e in fs.ls(r, detail=False):
+        name = e.rstrip("/").rsplit("/", 1)[-1]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name):
+            out.append(name)
+    return sorted(out)
+
+
+@main.command()
+@option("-c", "--ceiling-tb", type=float, help="absolute alert: flag when total TB exceeds this")
+@option("-d", "--date", help="snapshot date (default: latest under --root)")
+@option("-n", "--dry-run", is_flag=True, help="print the message instead of posting to Slack")
+@option("-p", "--prior", help="prior date to diff against (default: the snapshot before --date)")
+@option("-r", "--root", help="snapshots root: gs://bucket/snapshots or a local dir (default $DATA_BUCKET)")
+@option("-s", "--spike-pct", default=10.0, help="relative alert: flag when |Δ%%| exceeds this")
+@option("-t", "--top", default=5, help="number of top movers to name")
+@option("-w", "--webhook", help="Slack incoming webhook URL (or $SLACK_WEBHOOK)")
+def alert(
+    ceiling_tb: float | None,
+    date: str | None,
+    dry_run: bool,
+    prior: str | None,
+    root: str | None,
+    spike_pct: float,
+    top: int,
+    webhook: str | None,
+) -> None:
+    """Post a daily GCS-usage digest to Slack; flag threshold breaches (absolute
+    ceiling and/or relative spike) and name the top movers by user."""
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
+    dates = _snapshot_dates(root)
+    if not dates:
+        raise SystemExit(f"no snapshots under {root}")
+    date = date or dates[-1]
+    if prior is None:
+        earlier = [d for d in dates if d < date]
+        prior = earlier[-1] if earlier else None
+
+    cur = _load_meta(root, date)
+    tb = cur["total_bytes"] / 1e12
+    breach = []
+    if ceiling_tb is not None and tb > ceiling_tb:
+        breach.append(f"total {tb:,.0f} TB > ceiling {ceiling_tb:,.0f} TB")
+
+    d_bytes = d_pct = 0.0
+    movers: list[tuple[str, int, str]] = []
+    if prior:
+        pri = _load_meta(root, prior)
+        d_bytes = cur["total_bytes"] - pri["total_bytes"]
+        d_pct = 100 * d_bytes / pri["total_bytes"] if pri["total_bytes"] else 0.0
+        if abs(d_pct) > spike_pct:
+            breach.append(f"Δ {d_pct:+.1f}% vs {prior} exceeds ±{spike_pct:.0f}%")
+        pri_u = {u["u"]: u["b"] for u in pri["users"]}
+        movers = sorted(
+            ((u["u"], u["b"] - pri_u.get(u["u"], 0), u["t"]) for u in cur["users"]),
+            key=lambda x: -x[1],
+        )[:top]
+
+    emoji = "🚨" if breach else "📊"
+    lines = [
+        f"{emoji} *GCS usage — {date}*",
+        f"Total: *{tb:,.0f} TB* · {cur['total_objects']:,} objects",
+    ]
+    if prior:
+        lines.append(f"Δ vs {prior}: *{d_bytes / 1e12:+,.1f} TB* ({d_pct:+.1f}%)")
+    if breach:
+        lines.append(":rotating_light: " + "; ".join(breach))
+    if movers:
+        lines.append(f"Top movers (Δ vs {prior}):")
+        lines += [f" • {u} ({t}): {db / 1e12:+.1f} TB" for u, db, t in movers]
+    lines.append("<https://gcs.oa.dev|gcs.oa.dev>")
+    text = "\n".join(lines)
+
+    webhook = webhook or os.environ.get("SLACK_WEBHOOK")
+    if dry_run or not webhook:
+        if not webhook and not dry_run:
+            err("no --webhook / $SLACK_WEBHOOK set — printing (dry-run)")
+        print(text)
+        return
+
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(
+        webhook,
+        data=json.dumps({"text": text}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    urllib.request.urlopen(req).read()
+    err(f"posted GCS-usage alert for {date}")
 
 
 if __name__ == "__main__":
