@@ -137,16 +137,18 @@ elif [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
 else
   echo "WARN: CLOUDFLARE_API_TOKEN not set — snapshot published to gs://$DATA but site NOT deployed" >&2
 fi
-# Post the daily usage digest to Slack (only when a webhook is configured, so
-# experimental / local runs stay quiet — only the scheduled job sets it). A
-# failed digest never fails the snapshot.
-if [ -n "${SLACK_WEBHOOK:-}" ]; then
+# Post the daily usage digest to Slack (only when a transport is configured, so
+# experimental / local runs stay quiet — only the scheduled job sets it). The
+# alert cmd prefers chat.postMessage (SLACK_BOT_TOKEN + SLACK_CHANNEL → per-message
+# avatar), falling back to SLACK_WEBHOOK (static icon). A failed digest never
+# fails the snapshot.
+if { [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; } || [ -n "${SLACK_WEBHOOK:-}" ]; then
   gcs-usage alert -d "$DATE" -r "gs://$DATA/snapshots" \
     ${GCS_ALERT_CEILING_TB:+-c "$GCS_ALERT_CEILING_TB"} \
     ${GCS_ALERT_SPIKE_PCT:+-s "$GCS_ALERT_SPIKE_PCT"} \
     || echo "WARN: usage-digest (alert) step failed" >&2
 else
-  echo "SLACK_WEBHOOK not set — skipping usage digest" >&2
+  echo "no Slack transport (SLACK_BOT_TOKEN+SLACK_CHANNEL or SLACK_WEBHOOK) — skipping usage digest" >&2
 fi
 
 echo "SNAPSHOT-JOB-DONE $DATE"

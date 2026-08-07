@@ -29,6 +29,8 @@ v = {
     "CLOUDFLARE_ACCOUNT_ID": "74981a43be0de7712369306c7b19133d",
     # stage inputs to the local-SSD mount (see disks below); STAGE_DIR="" disables
     "STAGE_DIR": os.environ.get("STAGE_DIR", "/stage"),
+    # Slack digest target: chat.postMessage (bot token) so per-message avatars apply
+    "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0BNWAASXFW"),  # #gcs-usage
 }
 v = {k: s for k, s in v.items() if s}
 for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH", "PUBLISH",
@@ -79,6 +81,7 @@ cat > "$spec" <<EOF
         "variables": $(vars),
         "secretVariables": {
           "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
+          "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/gcs-alert-slack-bot-token/versions/latest",
           "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest"
         }
       }
