@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { FaGithub } from 'react-icons/fa'
+import { Link } from 'react-router-dom'
 import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons/md'
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
@@ -224,6 +225,7 @@ function AppContent() {
       <header>
         <div className="hrow">
           <h1>Marin GCS usage</h1>
+          <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
           {ident && (
             <div className="whoami">
               <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>
