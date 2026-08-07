@@ -33,7 +33,7 @@ v = {
 v = {k: s for k, s in v.items() if s}
 for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH", "PUBLISH",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
-          "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK → add as a secretVariable
+          "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:
         v[k] = os.environ[k]
 print(json.dumps(v))
@@ -78,7 +78,8 @@ cat > "$spec" <<EOF
       "environment": {
         "variables": $(vars),
         "secretVariables": {
-          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest"
+          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
+          "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest"
         }
       }
     }
