@@ -790,16 +790,20 @@ def _snapshot_dates(root: str) -> list[str]:
 
 
 @main.command()
+@option("-b", "--bot-token", help="Slack bot token (xoxb-…, or $SLACK_BOT_TOKEN); with --channel, posts via chat.postMessage so the per-message avatar applies")
 @option("-c", "--ceiling-tb", type=float, help="absolute alert: flag when total TB exceeds this")
+@option("-C", "--channel", help="Slack channel id for chat.postMessage (or $SLACK_CHANNEL)")
 @option("-d", "--date", help="snapshot date (default: latest under --root)")
 @option("-n", "--dry-run", is_flag=True, help="print the message instead of posting to Slack")
 @option("-p", "--prior", help="prior date to diff against (default: the snapshot before --date)")
 @option("-r", "--root", help="snapshots root: gs://bucket/snapshots or a local dir (default $DATA_BUCKET)")
 @option("-s", "--spike-pct", default=10.0, help="relative alert: flag when |Δ%%| exceeds this")
 @option("-t", "--top", default=5, help="number of top movers to name")
-@option("-w", "--webhook", help="Slack incoming webhook URL (or $SLACK_WEBHOOK)")
+@option("-w", "--webhook", help="Slack incoming webhook URL (or $SLACK_WEBHOOK); fallback with no per-message avatar")
 def alert(
+    bot_token: str | None,
     ceiling_tb: float | None,
+    channel: str | None,
     date: str | None,
     dry_run: bool,
     prior: str | None,
@@ -809,7 +813,11 @@ def alert(
     webhook: str | None,
 ) -> None:
     """Post a daily GCS-usage digest to Slack; flag threshold breaches (absolute
-    ceiling and/or relative spike) and name the top movers by user."""
+    ceiling and/or relative spike) and name the top movers by user.
+
+    Per-message avatars (mark + 📊/🚨) require the Web API: pass a bot token
+    (needs the chat:write.customize scope) + channel. Incoming webhooks ignore
+    icon overrides, so the --webhook path posts with the app's static icon."""
     root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
     dates = _snapshot_dates(root)
     if not dates:
@@ -860,22 +868,46 @@ def alert(
     text = "\n".join(lines)
 
     webhook = webhook or os.environ.get("SLACK_WEBHOOK")
-    if dry_run or not webhook:
-        if not webhook and not dry_run:
-            err("no --webhook / $SLACK_WEBHOOK set — printing (dry-run)")
+    bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
+    channel = channel or os.environ.get("SLACK_CHANNEL")
+    use_api = bool(bot_token and channel)  # chat.postMessage → per-message avatar
+
+    if dry_run or not (use_api or webhook):
+        if not (use_api or webhook) and not dry_run:
+            err("no bot-token+channel / --webhook set — printing (dry-run)")
         print(text)
         return
 
     import json
     import urllib.request
 
-    req = urllib.request.Request(
-        webhook,
-        data=json.dumps({"text": text, "username": "GCS Usage Bot", "icon_url": icon_url}).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    urllib.request.urlopen(req).read()
-    err(f"posted GCS-usage alert for {date}")
+    if use_api:
+        req = urllib.request.Request(
+            "https://slack.com/api/chat.postMessage",
+            data=json.dumps({
+                "channel": channel,
+                "text": text,
+                "icon_url": icon_url,
+                "unfurl_links": False,
+                "unfurl_media": False,
+            }).encode(),
+            headers={
+                "Authorization": f"Bearer {bot_token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        resp = json.loads(urllib.request.urlopen(req).read())
+        if not resp.get("ok"):
+            raise RuntimeError(f"Slack chat.postMessage failed: {resp.get('error')}")
+        err(f"posted GCS-usage alert for {date}")
+    else:
+        req = urllib.request.Request(
+            webhook,
+            data=json.dumps({"text": text}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req).read()
+        err(f"posted GCS-usage alert for {date} (webhook; no per-message avatar)")
 
 
 if __name__ == "__main__":
