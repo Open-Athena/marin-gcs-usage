@@ -12,8 +12,8 @@ importers:
         specifier: ^0.27.20
         version: 0.27.20(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@rdub/file-tree':
-        specifier: workspace:*
-        version: link:../../../js/file-tree
+        specifier: https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673
+        version: https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673(highlight.js@11.11.1)(hyparquet@1.27.1)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.17)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))
       hyparquet:
         specifier: ^1.27.1
         version: 1.27.1
@@ -777,6 +777,27 @@ packages:
       proxy-agent:
         optional: true
       yauzl:
+        optional: true
+
+  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673':
+    resolution: {tarball: https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673}
+    version: 0.0.1-dist.3418f69
+    peerDependencies:
+      highlight.js: ^11
+      hyparquet: ^1
+      jq-web: ^0.6
+      react: ^18 || ^19
+      react-dom: ^18 || ^19
+      react-markdown: ^9 || ^10
+      react-router-dom: ^6 || ^7
+      remark-gfm: ^4
+      use-prms: ^0.4
+    peerDependenciesMeta:
+      react:
+        optional: true
+      react-dom:
+        optional: true
+      react-router-dom:
         optional: true
 
   '@remix-run/router@1.23.3':
@@ -2442,6 +2463,20 @@ snapshots:
     optionalDependencies:
       yauzl: 2.10.0
 
+  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673(highlight.js@11.11.1)(hyparquet@1.27.1)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.17)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))':
+    dependencies:
+      aws4fetch: 1.0.20
+      highlight.js: 11.11.1
+      hyparquet: 1.27.1
+      jq-web: 0.6.2
+      react-markdown: 10.1.0(@types/react@19.2.17)(react@19.2.8)
+      remark-gfm: 4.0.1
+      use-prms: 0.4.1(react@19.2.8)
+    optionalDependencies:
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+      react-router-dom: 6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+
   '@remix-run/router@1.23.3': {}
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
@@ -3457,6 +3492,24 @@ snapshots:
       html-url-attributes: 3.0.1
       mdast-util-to-hast: 13.2.1
       react: 18.3.1
+      remark-parse: 11.0.0
+      remark-rehype: 11.1.2
+      unified: 11.0.5
+      unist-util-visit: 5.1.0
+      vfile: 6.0.3
+    transitivePeerDependencies:
+      - supports-color
+
+  react-markdown@10.1.0(@types/react@19.2.17)(react@19.2.8):
+    dependencies:
+      '@types/hast': 3.0.5
+      '@types/mdast': 4.0.4
+      '@types/react': 19.2.17
+      devlop: 1.1.0
+      hast-util-to-jsx-runtime: 2.3.6
+      html-url-attributes: 3.0.1
+      mdast-util-to-hast: 13.2.1
+      react: 19.2.8
       remark-parse: 11.0.0
       remark-rehype: 11.1.2
       unified: 11.0.5

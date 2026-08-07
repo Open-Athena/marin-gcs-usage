@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@floating-ui/react": "^0.27.20",
-    "@rdub/file-tree": "workspace:*",
+    "@rdub/file-tree": "https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673",
     "hyparquet": "^1.27.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
