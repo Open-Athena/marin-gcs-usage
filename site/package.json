@@ -6,6 +6,7 @@
   "devPort": 3253,
   "scripts": {
     "dev": "vite",
+    "dev:full": "./dev",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "shots": "scrns",
