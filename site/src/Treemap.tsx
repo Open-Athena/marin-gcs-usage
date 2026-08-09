@@ -274,48 +274,31 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
             {pricing && <> · est. {fmtUsd(node.b * pricing.blended)}/mo</>}
           </span>
         </nav>
-        <div className="legend">
-          {mode === 'team' ? (
-            Object.entries(TEAM_VARS)
-              .flatMap(([t, v]): [string, string][] =>
-                t === 'core'
-                  ? [[`${t} (users)`, `var(${v})`], [`${t} (shared)`, sharedColor(v)]]
-                  : [[t, `var(${v})`]],
-              )
-              .map(([t, c]) => (
-                <span className="li" key={t}>
-                  <span className="sw" style={{ background: c }} />
-                  {t}
-                </span>
-              ))
-          ) : mode === 'date' && dateRange ? (
-            <span className="li gradli">
-              {epochDaysToMonth(dateRange.min)}
-              <span className="gradbar" style={{ background: dateGradientCss() }} />
-              {epochDaysToMonth(dateRange.max)}
-            </span>
-          ) : mode === 'user' || mode === 'uteam' ? (
-            <>
-              {[...userIdx.entries()].slice(0, 10).map(([u]) => (
-                <span className="li" key={u}>
-                  <span className="sw" style={{ background: userColor(u, userIdx, mode === 'uteam') }} />
-                  {u}
-                </span>
-              ))}
-              <span className="li"><span className="sw" style={{ background: 'var(--t-unattr)' }} />unattributed</span>
-            </>
-          ) : (
-            <>
-              {[...catSlot.entries()].map(([k, s]) => (
-                <span className="li" key={k}>
-                  <span className="sw" style={{ background: `var(${s})` }} />
-                  {k}
-                </span>
-              ))}
-              <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
-            </>
-          )}
-        </div>
+        {/* Legend only for modes where it isn't a strict subset of the roll-up
+            bar below: team + user modes are dropped (the roll-up already shows
+            the same swatch+label, plus size and $). tree (prefix colors) and
+            age (date gradient) convey distinct keys, so they keep the legend. */}
+        {mode !== 'team' && mode !== 'user' && mode !== 'uteam' && (
+          <div className="legend">
+            {mode === 'date' && dateRange ? (
+              <span className="li gradli">
+                {epochDaysToMonth(dateRange.min)}
+                <span className="gradbar" style={{ background: dateGradientCss() }} />
+                {epochDaysToMonth(dateRange.max)}
+              </span>
+            ) : (
+              <>
+                {[...catSlot.entries()].map(([k, s]) => (
+                  <span className="li" key={k}>
+                    <span className="sw" style={{ background: `var(${s})` }} />
+                    {k}
+                  </span>
+                ))}
+                <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
+              </>
+            )}
+          </div>
+        )}
         <button className="fs" onClick={fullscreen} title="Toggle fullscreen">⛶</button>
       </div>
       {rollup.length > 0 && (
