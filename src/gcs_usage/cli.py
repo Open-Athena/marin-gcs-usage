@@ -794,6 +794,7 @@ def _snapshot_dates(root: str) -> list[str]:
 @option("-c", "--ceiling-tb", type=float, help="absolute alert: flag when total TB exceeds this")
 @option("-C", "--channel", help="Slack channel id for chat.postMessage (or $SLACK_CHANNEL)")
 @option("-d", "--date", help="snapshot date (default: latest under --root)")
+@option("-e", "--edit-ts", help="edit an existing message (chat.update at this ts) instead of posting a new one — back-applies a format change; avatar is unchanged")
 @option("-n", "--dry-run", is_flag=True, help="print the message instead of posting to Slack")
 @option("-p", "--prior", help="prior date to diff against (default: the snapshot before --date)")
 @option("-r", "--root", help="snapshots root: gs://bucket/snapshots or a local dir (default $DATA_BUCKET)")
@@ -805,6 +806,7 @@ def alert(
     ceiling_tb: float | None,
     channel: str | None,
     date: str | None,
+    edit_ts: str | None,
     dry_run: bool,
     prior: str | None,
     root: str | None,
@@ -834,7 +836,7 @@ def alert(
         breach.append(f"total {tb:,.0f} TB > ceiling {ceiling_tb:,.0f} TB")
 
     d_bytes = d_pct = 0.0
-    movers: list[tuple[str, int, str]] = []
+    movers: list[tuple[str, int, str, int]] = []  # (user, Δbytes, team, total bytes)
     if prior:
         pri = _load_meta(root, prior)
         d_bytes = cur["total_bytes"] - pri["total_bytes"]
@@ -843,7 +845,7 @@ def alert(
             breach.append(f"Δ {d_pct:+.1f}% vs {prior} exceeds ±{spike_pct:.0f}%")
         pri_u = {u["u"]: u["b"] for u in pri["users"]}
         movers = sorted(
-            ((u["u"], u["b"] - pri_u.get(u["u"], 0), u["t"]) for u in cur["users"]),
+            ((u["u"], u["b"] - pri_u.get(u["u"], 0), u["t"], u["b"]) for u in cur["users"]),
             key=lambda x: -x[1],
         )[:top]
 
@@ -852,18 +854,20 @@ def alert(
     # gcs-usage-icons Pages project.
     ICON_BASE = "https://gcs-usage-icons.pages.dev"
     icon_url = f"{ICON_BASE}/gcs-{'breach' if breach else 'digest'}.png"
-    emoji = "🚨" if breach else "📊"
     lines = [
-        f"{emoji} *GCS usage — {date}*",
+        f"*GCS usage — {date}*",  # no leading emoji — redundant with the bot avatar
         f"Total: *{tb:,.0f} TB* · {cur['total_objects']:,} objects",
     ]
     if prior:
         lines.append(f"Δ vs {prior}: *{d_bytes / 1e12:+,.1f} TB* ({d_pct:+.1f}%)")
     if breach:
         lines.append(":rotating_light: " + "; ".join(breach))
-    if movers:
+    # movers are sorted by Δ desc; drop the tail that rounds to ±0.0 TB, and
+    # show each mover's current total attributed bytes alongside the delta.
+    shown = [m for m in movers if abs(m[1]) / 1e12 >= 0.05]
+    if shown:
         lines.append(f"Top movers (Δ vs {prior}):")
-        lines += [f" • {u} ({t}): {db / 1e12:+.1f} TB" for u, db, t in movers]
+        lines += [f" • {u} ({t}): {db / 1e12:+.1f} TB ({b / 1e12:,.0f} TB total)" for u, db, t, b in shown]
     lines.append("<https://gcs.oa.dev|gcs.oa.dev>")
     text = "\n".join(lines)
 
@@ -872,6 +876,8 @@ def alert(
     channel = channel or os.environ.get("SLACK_CHANNEL")
     use_api = bool(bot_token and channel)  # chat.postMessage → per-message avatar
 
+    if edit_ts and not use_api:
+        raise SystemExit("--edit-ts needs a bot token + channel (chat.update)")
     if dry_run or not (use_api or webhook):
         if not (use_api or webhook) and not dry_run:
             err("no bot-token+channel / --webhook set — printing (dry-run)")
@@ -882,15 +888,17 @@ def alert(
     import urllib.request
 
     if use_api:
+        # chat.update to back-apply a format change (avatar set at post time is
+        # untouched); else chat.postMessage with the per-message avatar.
+        method = "chat.update" if edit_ts else "chat.postMessage"
+        payload = {"channel": channel, "text": text, "unfurl_links": False, "unfurl_media": False}
+        if edit_ts:
+            payload["ts"] = edit_ts
+        else:
+            payload["icon_url"] = icon_url
         req = urllib.request.Request(
-            "https://slack.com/api/chat.postMessage",
-            data=json.dumps({
-                "channel": channel,
-                "text": text,
-                "icon_url": icon_url,
-                "unfurl_links": False,
-                "unfurl_media": False,
-            }).encode(),
+            f"https://slack.com/api/{method}",
+            data=json.dumps(payload).encode(),
             headers={
                 "Authorization": f"Bearer {bot_token}",
                 "Content-Type": "application/json; charset=utf-8",
@@ -898,8 +906,8 @@ def alert(
         )
         resp = json.loads(urllib.request.urlopen(req).read())
         if not resp.get("ok"):
-            raise RuntimeError(f"Slack chat.postMessage failed: {resp.get('error')}")
-        err(f"posted GCS-usage alert for {date}")
+            raise RuntimeError(f"Slack {method} failed: {resp.get('error')}")
+        err(f"{'edited' if edit_ts else 'posted'} GCS-usage alert for {date}")
     else:
         req = urllib.request.Request(
             webhook,
