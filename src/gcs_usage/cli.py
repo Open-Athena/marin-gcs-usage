@@ -849,32 +849,40 @@ def alert(
             key=lambda x: -x[1],
         )[:top]
 
+    # Resolve the Slack transport up front: a new chat.postMessage post carries
+    # the date in a per-message username (the bold header Slack renders), so the
+    # body drops its own header line. chat.update (--edit-ts) and webhook posts
+    # can't set a username, so they keep the header line in the body.
+    webhook = webhook or os.environ.get("SLACK_WEBHOOK")
+    bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
+    channel = channel or os.environ.get("SLACK_CHANNEL")
+    use_api = bool(bot_token and channel)  # chat.postMessage → per-message avatar + username
+    name_header = use_api and not edit_ts and not dry_run  # date → username, not body
+
     # Per-message avatar (mark + 📊/🚨 badge), served public so Slack can fetch it
     # (the app itself is Access-gated). See job/gen-slack-icons.py + the
     # gcs-usage-icons Pages project.
     ICON_BASE = "https://gcs-usage-icons.pages.dev"
     icon_url = f"{ICON_BASE}/gcs-{'breach' if breach else 'digest'}.png"
-    lines = [
-        f"*GCS usage — {date}*",  # no leading emoji — redundant with the bot avatar
-        f"Total: *{tb:,.0f} TB* · {cur['total_objects']:,} objects",
-    ]
+    username = f"GCS usage — {date}"
+    md = lambda s: f"{int(s[5:7])}/{int(s[8:10])}"  # 2026-08-06 → 8/6
+
+    lines = []
+    if not name_header:  # no leading emoji (redundant with the avatar); date in bold
+        lines.append(f"*GCS usage — {date}*")
+    lines.append(f"Total: *{tb:,.0f} TB* · {cur['total_objects']:,} objects")
     if prior:
-        lines.append(f"Δ vs {prior}: *{d_bytes / 1e12:+,.1f} TB* ({d_pct:+.1f}%)")
+        lines.append(f"*{d_bytes / 1e12:+,.1f} TB* ({d_pct:+.1f}%) vs. {md(prior)}")
     if breach:
         lines.append(":rotating_light: " + "; ".join(breach))
     # movers are sorted by Δ desc; drop the tail that rounds to ±0.0 TB, and
     # show each mover's current total attributed bytes alongside the delta.
     shown = [m for m in movers if abs(m[1]) / 1e12 >= 0.05]
     if shown:
-        lines.append(f"Top movers (Δ vs {prior}):")
+        lines.append(f"Top movers (vs. {md(prior)}):")
         lines += [f" • {u} ({t}): {db / 1e12:+.1f} TB ({b / 1e12:,.0f} TB total)" for u, db, t, b in shown]
     lines.append("<https://gcs.oa.dev|gcs.oa.dev>")
     text = "\n".join(lines)
-
-    webhook = webhook or os.environ.get("SLACK_WEBHOOK")
-    bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
-    channel = channel or os.environ.get("SLACK_CHANNEL")
-    use_api = bool(bot_token and channel)  # chat.postMessage → per-message avatar
 
     if edit_ts and not use_api:
         raise SystemExit("--edit-ts needs a bot token + channel (chat.update)")
@@ -896,6 +904,7 @@ def alert(
             payload["ts"] = edit_ts
         else:
             payload["icon_url"] = icon_url
+            payload["username"] = username
         req = urllib.request.Request(
             f"https://slack.com/api/{method}",
             data=json.dumps(payload).encode(),
