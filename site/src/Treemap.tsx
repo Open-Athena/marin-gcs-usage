@@ -9,7 +9,7 @@ import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, r
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
-const TEAM_WHITE_INK = ['--t-core', '--t-stanford', '--t-oa']
+const TEAM_WHITE_INK = ['--t-core', '--t-stanford', '--t-oa', '--t-communal']
 
 interface Tip {
   x: number
@@ -134,7 +134,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
               { k: `${t} (shared)`, b: s, col: sharedColor(tv), rate, mix },
             ]
           : s > 0
-            ? [{ k: `${t} (shared)`, b: s, col: sharedColor(tv), rate, mix }]
+            ? [{ k: t, b: s, col: sharedColor(tv), rate, mix }]  // all-shared group (communal): no redundant "(shared)"
             : [{ k: t, b, col: `var(${tv})`, rate, mix }]
       })
       .sort((a, b) => b.b - a.b)

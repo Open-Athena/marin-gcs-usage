@@ -23,11 +23,12 @@ export interface UserInfo {
 }
 
 export const TEAM_VARS: Record<string, string> = {
-  core: '--t-core',
-  stanford: '--t-stanford',
   oa: '--t-oa',
+  stanford: '--t-stanford',
+  communal: '--t-communal',
   unknown: '--t-unknown',
   unattributed: '--t-unattr',
+  core: '--t-core',  // legacy (pre-group snapshots); harmless once all re-proc'd
 }
 
 export const domTeam = (n: TreeNode): string | null => {
@@ -70,11 +71,11 @@ export type Granularity = 'month' | 'week' | 'day'
 export type ColorMode = 'team' | 'tree' | 'date' | 'user' | 'uteam'
 
 export const MODE_LABELS: Record<ColorMode, string> = {
-  team: 'team',
+  team: 'group',
   tree: 'tree',
   date: 'age',
   user: 'user',
-  uteam: 'user·team',
+  uteam: 'user·group',
 }
 
 export interface Meta {

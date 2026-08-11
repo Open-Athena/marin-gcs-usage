@@ -108,7 +108,7 @@ function AppContent() {
       ]),
     ),
     'highlight:clear': {
-      label: 'Clear user/team highlight',
+      label: 'Clear user/group highlight',
       group: 'Highlight',
       defaultBindings: ['x'],
       handler: clearHl,
@@ -137,10 +137,10 @@ function AppContent() {
     ),
     ...Object.fromEntries(
       (rules?.teams ?? []).map(t => [
-        `team:${t}`,
+        `group:${t}`,
         {
-          label: `team: ${t}`,
-          group: 'Teams',
+          label: `group: ${t}`,
+          group: 'Groups',
           handler: () => pickTeam(t),
         },
       ]),
@@ -269,10 +269,10 @@ function AppContent() {
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
           <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/" target="_blank" rel="noreferrer">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
           scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control recolors
-          both plots — by owning team, top-level tree, age (older→newer), or owning user (hi-contrast, or
-          hues grouped by team). Ownership comes from the{' '}
+          both plots — by owning group (OA / Stanford / communal), top-level tree, age (older→newer), or owning
+          user (hi-contrast, or hues grouped by group). Ownership comes from the{' '}
           <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
-          curation) — hover a cell for its team split and top users, or <kbd>⌘K</kbd> to jump to a user/team.
+          curation) — hover a cell for its group split and top users, or <kbd>⌘K</kbd> to jump to a user/group.
         </p>
       </section>
 
@@ -352,7 +352,7 @@ function AppContent() {
           onClick: cycleTheme,
         },
       ]} />
-      <Omnibar placeholder="Users, teams, color modes, scans…" maxResults={15} />
+      <Omnibar placeholder="Users, groups, color modes, scans…" maxResults={15} />
       <ShortcutsModal />
     </main>
   )
