@@ -60,8 +60,15 @@ function AppContent() {
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
+  // Selected scan in the URL as short YYMMDD (`?d=260809`), kept always present
+  // so each day's Slack digest can deep-link straight to its own scan.
+  const [dP, setDP] = useUrlState('d', {
+    encode: (v: string | undefined) => (v ? v.slice(2).replace(/-/g, '') : undefined),
+    decode: (e: string | undefined) =>
+      e && /^\d{6}$/.test(e) ? `20${e.slice(0, 2)}-${e.slice(2, 4)}-${e.slice(4, 6)}` : undefined,
+  })
   const [scans, setScans] = useState<string[]>([])
-  const [asof, setAsof] = useState<string | null>(null)
+  const asof = useMemo(() => (dP && scans.includes(dP) ? dP : scans[0] ?? null), [dP, scans])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
@@ -144,7 +151,7 @@ function AppContent() {
         {
           label: `Scan ${s}`,
           group: 'Scans',
-          handler: () => setAsof(s),
+          handler: () => setDP(s),
         },
       ]),
     ),
@@ -166,11 +173,7 @@ function AppContent() {
   }, [tree])
 
   useEffect(() => {
-    void fetch('/data/scans.json').then(r => r.json()).then((list: string[]) => {
-      setScans(list)
-      const param = new URLSearchParams(location.search).get('scan')
-      setAsof(param && list.includes(param) ? param : list[0])
-    })
+    void fetch('/data/scans.json').then(r => r.json()).then(setScans)
     void fetch('/data/rules.json').then(r => r.json()).then(setRules).catch(() => {})
   }, [])
 
@@ -180,11 +183,13 @@ function AppContent() {
     void fetch(`/data/${asof}/tree.json`).then(r => r.json()).then(setTree)
     void fetch(`/data/${asof}/age.json`).then(r => r.json()).then(setAge)
     void fetch(`/data/${asof}/meta.json`).then(r => r.json()).then(setMeta)
-    const url = new URL(location.href)
-    if (asof === scans[0]) url.searchParams.delete('scan')
-    else url.searchParams.set('scan', asof)
-    history.replaceState(null, '', url)
-  }, [asof, scans])
+  }, [asof])
+
+  // Keep ?d= synced to the selected scan — always baked in (even the latest
+  // day) so any view is shareable and the digest deep-links resolve.
+  useEffect(() => {
+    if (asof && dP !== asof) setDP(asof)
+  }, [asof, dP])
 
   const catOrder = useMemo(() => {
     if (!tree) return []
@@ -240,7 +245,7 @@ function AppContent() {
           <p className="sub">
             scan{' '}
             {scans.length > 1 && asof ? (
-              <select className="scanpick" value={asof} onChange={e => setAsof(e.target.value)} aria-label="Scan date">
+              <select className="scanpick" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
                 {scans.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             ) : (

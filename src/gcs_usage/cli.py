@@ -870,7 +870,8 @@ def alert(
         return s[1:] if s.startswith("0") else s
 
     headline = f"{md(date)} — {tb:,.0f} TB"
-    cost_line = f"<https://gcs.oa.dev|${cur_cost:,.0f}/mo>"
+    yymmdd = date[2:].replace("-", "")  # 2026-08-09 → 260809 (site's ?d= deep-link)
+    cost_line = f"<https://gcs.oa.dev/?d={yymmdd}|${cur_cost:,.0f}/mo>"
     if prior:
         headline += f" ({d_bytes / 1e12:+.1f}, {pct(d_pct)}%)"
         d_cost_s = f"{'-' if d_cost < 0 else '+'}${abs(d_cost):,.0f}"  # sign before $
