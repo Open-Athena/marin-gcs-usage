@@ -4,8 +4,8 @@
 # 470M-row webdata step OOMs there; Batch VMs give 64G RAM + a 200G boot disk for spill.
 #
 # Env overrides: SNAPSHOT_DATE (default today UTC, resolved inside run.sh), IMAGE,
-# DUCKDB_MEM (default 48GB), DUCKDB_THREADS (default 8), LISTING_EXISTS, LISTING_PATH,
-# SNAP_PATH — all forwarded into the container when set.
+# DUCKDB_MEM (default 48GB), DUCKDB_THREADS (default 8), SNAP_PATH,
+# LISTING_MACHINE/PROCS/WORKERS (DIY fan-out sizing) — forwarded when set.
 set -euo pipefail
 
 PROJECT=oa-internal-450019
@@ -32,7 +32,7 @@ v = {
     "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0BNWAASXFW"),  # #gcs-usage
 }
 v = {k: s for k, s in v.items() if s}
-for k in ["SNAPSHOT_DATE", "LISTING_EXISTS", "LISTING_MODE", "LISTING_PATH", "SNAP_PATH",
+for k in ["SNAPSHOT_DATE", "SNAP_PATH",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
           "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:
