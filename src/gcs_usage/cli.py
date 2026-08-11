@@ -799,7 +799,6 @@ def _snapshot_dates(root: str) -> list[str]:
 @option("-p", "--prior", help="prior date to diff against (default: the snapshot before --date)")
 @option("-r", "--root", help="snapshots root: gs://bucket/snapshots or a local dir (default $DATA_BUCKET)")
 @option("-s", "--spike-pct", default=10.0, help="relative alert: flag when |Δ%%| exceeds this")
-@option("-t", "--top", default=5, help="number of top movers to name")
 @option("-w", "--webhook", help="Slack incoming webhook URL (or $SLACK_WEBHOOK); fallback with no per-message avatar")
 def alert(
     bot_token: str | None,
@@ -811,15 +810,16 @@ def alert(
     prior: str | None,
     root: str | None,
     spike_pct: float,
-    top: int,
     webhook: str | None,
 ) -> None:
-    """Post a daily GCS-usage digest to Slack; flag threshold breaches (absolute
-    ceiling and/or relative spike) and name the top movers by user.
+    """Post a daily GCS-usage digest to Slack: a one-line headline (date · total
+    · Δ, in the per-message sender name) + the $/mo run-rate linked to the site
+    (with Δ$); flag threshold breaches (absolute ceiling and/or relative spike).
 
     Per-message avatars (mark + 📊/🚨) require the Web API: pass a bot token
     (needs the chat:write.customize scope) + channel. Incoming webhooks ignore
-    icon overrides, so the --webhook path posts with the app's static icon."""
+    icon/name overrides, so the --webhook path folds the headline into the body
+    and posts with the app's static icon."""
     root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
     dates = _snapshot_dates(root)
     if not dates:
@@ -835,53 +835,51 @@ def alert(
     if ceiling_tb is not None and tb > ceiling_tb:
         breach.append(f"total {tb:,.0f} TB > ceiling {ceiling_tb:,.0f} TB")
 
-    d_bytes = d_pct = 0.0
-    movers: list[tuple[str, int, str, int]] = []  # (user, Δbytes, team, total bytes)
+    # est. $/mo from the class-byte mix (US list prices; mirror site CLASS_PRICE_US).
+    CLASS_PRICE = {"1": 0.02, "2": 0.01, "3": 0.004, "4": 0.0012}  # $/GiB·mo
+    cost = lambda cb: sum((cb.get(c, 0) / 1024**3) * p for c, p in CLASS_PRICE.items())
+    cur_cost = cost(cur["class_bytes"])
+
+    d_bytes = d_pct = d_cost = 0.0
     if prior:
         pri = _load_meta(root, prior)
         d_bytes = cur["total_bytes"] - pri["total_bytes"]
         d_pct = 100 * d_bytes / pri["total_bytes"] if pri["total_bytes"] else 0.0
+        d_cost = cur_cost - cost(pri["class_bytes"])
         if abs(d_pct) > spike_pct:
             breach.append(f"Δ {d_pct:+.1f}% vs {prior} exceeds ±{spike_pct:.0f}%")
-        pri_u = {u["u"]: u["b"] for u in pri["users"]}
-        movers = sorted(
-            ((u["u"], u["b"] - pri_u.get(u["u"], 0), u["t"], u["b"]) for u in cur["users"]),
-            key=lambda x: -x[1],
-        )[:top]
 
-    # Resolve the Slack transport up front: a new chat.postMessage post carries
-    # the date in a per-message username (the bold header Slack renders), so the
-    # body drops its own header line. chat.update (--edit-ts) and webhook posts
-    # can't set a username, so they keep the header line in the body.
+    # Resolve the Slack transport. A chat.postMessage carries the headline
+    # (date · total · Δ) in its per-message username — the bold name Slack
+    # renders beside the avatar — leaving a one-line body: the $/mo run-rate
+    # linked to the site, plus the Δ$. Webhooks can't set a username, so that
+    # path folds the headline into the body as a bold first line instead.
     webhook = webhook or os.environ.get("SLACK_WEBHOOK")
     bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
     channel = channel or os.environ.get("SLACK_CHANNEL")
     use_api = bool(bot_token and channel)  # chat.postMessage → per-message avatar + username
-    name_header = use_api and not edit_ts and not dry_run  # date → username, not body
 
-    # Per-message avatar (mark + 📊/🚨 badge), served public so Slack can fetch it
-    # (the app itself is Access-gated). See job/gen-slack-icons.py + the
+    # Per-message avatar (mark + 📊/🚨 badge), served public so Slack can fetch
+    # it (the app itself is Access-gated). See job/gen-slack-icons.py + the
     # gcs-usage-icons Pages project.
-    ICON_BASE = "https://gcs-usage-icons.pages.dev"
-    icon_url = f"{ICON_BASE}/gcs-{'breach' if breach else 'digest'}.png"
-    username = f"GCS usage — {date}"
+    icon_url = f"https://gcs-usage-icons.pages.dev/gcs-{'breach' if breach else 'digest'}.png"
     md = lambda s: f"{int(s[5:7])}/{int(s[8:10])}"  # 2026-08-06 → 8/6
 
-    lines = []
-    if not name_header:  # no leading emoji (redundant with the avatar); date in bold
-        lines.append(f"*GCS usage — {date}*")
-    lines.append(f"Total: *{tb:,.0f} TB* · {cur['total_objects']:,} objects")
+    def pct(p: float) -> str:
+        s = f"{abs(p):.1f}"  # 0.6 → ".6", 12.3 → "12.3" (sign carried by the ΔTB)
+        return s[1:] if s.startswith("0") else s
+
+    headline = f"{md(date)} — {tb:,.0f} TB"
+    cost_line = f"<https://gcs.oa.dev|${cur_cost:,.0f}/mo>"
     if prior:
-        lines.append(f"*{d_bytes / 1e12:+,.1f} TB* ({d_pct:+.1f}%) vs. {md(prior)}")
+        headline += f" ({d_bytes / 1e12:+.1f}, {pct(d_pct)}%)"
+        d_cost_s = f"{'-' if d_cost < 0 else '+'}${abs(d_cost):,.0f}"  # sign before $
+        cost_line += f" ({d_cost_s}/mo)"
+    username = headline
+    lines = [] if use_api else [f"*{headline}*"]  # webhook has no username → headline in body
+    lines.append(cost_line)
     if breach:
         lines.append(":rotating_light: " + "; ".join(breach))
-    # movers are sorted by Δ desc; drop the tail that rounds to ±0.0 TB, and
-    # show each mover's current total attributed bytes alongside the delta.
-    shown = [m for m in movers if abs(m[1]) / 1e12 >= 0.05]
-    if shown:
-        lines.append(f"Top movers (vs. {md(prior)}):")
-        lines += [f" • {u} ({t}): {db / 1e12:+.1f} TB ({b / 1e12:,.0f} TB total)" for u, db, t, b in shown]
-    lines.append("<https://gcs.oa.dev|gcs.oa.dev>")
     text = "\n".join(lines)
 
     if edit_ts and not use_api:
@@ -889,6 +887,8 @@ def alert(
     if dry_run or not (use_api or webhook):
         if not (use_api or webhook) and not dry_run:
             err("no bot-token+channel / --webhook set — printing (dry-run)")
+        if use_api and not edit_ts:  # headline rides in the sender name, not the body
+            err(f"[sender: {username}]")
         print(text)
         return
 
