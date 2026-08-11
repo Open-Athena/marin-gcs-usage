@@ -32,7 +32,7 @@ v = {
     "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0BNWAASXFW"),  # #gcs-usage
 }
 v = {k: s for k, s in v.items() if s}
-for k in ["SNAPSHOT_DATE", "SNAP_PATH",
+for k in ["SNAPSHOT_DATE", "SNAP_PATH", "REPROC",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
           "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:

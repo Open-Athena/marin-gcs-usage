@@ -42,11 +42,16 @@ FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-u
 # LISTING_PROCS / LISTING_WORKERS on the snapshot job's env (batch-submit.sh or
 # the scheduler body) to resize without rebuilding — unset falls back to the CLI
 # defaults. computeResource is derived from the machine, so any size fits.
-LZ=()
-[ -n "${LISTING_MACHINE:-}" ] && LZ+=(-m "$LISTING_MACHINE")
-[ -n "${LISTING_PROCS:-}" ] && LZ+=(-P "$LISTING_PROCS")
-[ -n "${LISTING_WORKERS:-}" ] && LZ+=(-w "$LISTING_WORKERS")
-gcs-usage job submit-listing -d "$DATE" -W "${LZ[@]}"
+# REPROC=1 re-aggregates an existing date from its already-archived listing/
+# (e.g. to re-apply an identities.yaml change): skip the fan-out entirely and
+# just verify the listings are present. The digest is also suppressed below.
+if [ "${REPROC:-0}" != "1" ]; then
+  LZ=()
+  [ -n "${LISTING_MACHINE:-}" ] && LZ+=(-m "$LISTING_MACHINE")
+  [ -n "${LISTING_PROCS:-}" ] && LZ+=(-P "$LISTING_PROCS")
+  [ -n "${LISTING_WORKERS:-}" ] && LZ+=(-w "$LISTING_WORKERS")
+  gcs-usage job submit-listing -d "$DATE" -W "${LZ[@]}"
+fi
 G=()
 for b in "${FLEET[@]}"; do
   if [ -f "/gcs/$DATA/listing/$DATE/$b/_SUCCESS.json" ]; then G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet")
@@ -82,7 +87,9 @@ cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 # alert cmd prefers chat.postMessage (SLACK_BOT_TOKEN + SLACK_CHANNEL → per-message
 # avatar), falling back to SLACK_WEBHOOK (static icon). A failed digest never
 # fails the snapshot.
-if { [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; } || [ -n "${SLACK_WEBHOOK:-}" ]; then
+if [ "${REPROC:-0}" = "1" ]; then
+  echo "REPROC — skipping usage digest" >&2
+elif { [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; } || [ -n "${SLACK_WEBHOOK:-}" ]; then
   gcs-usage alert -d "$DATE" -r "gs://$DATA/snapshots" \
     ${GCS_ALERT_CEILING_TB:+-c "$GCS_ALERT_CEILING_TB"} \
     ${GCS_ALERT_SPIKE_PCT:+-s "$GCS_ALERT_SPIKE_PCT"} \
