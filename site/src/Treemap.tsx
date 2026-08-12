@@ -228,16 +228,23 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
           ...(dust && { boxShadow: 'none', borderRadius: 1.5 }),
         }}
         tabIndex={0}
-        onMouseMove={showTip}
-        onMouseLeave={() => {
-          pin.hover(null)
-          setTip(null)
-        }}
+        // Leaf cells hover their whole body; branch cells hover only their
+        // title-bar label (below) — so sweeping across a branch's children never
+        // dips into the parent's tooltip through the inter-child gaps. Clearing
+        // lives on the `.map` container, not per-cell, so child→child is smooth
+        // (the tip persists across the gap instead of blinking off).
+        onMouseMove={kids.length > 0 ? undefined : showTip}
         onClick={drill}
         onKeyDown={e => e.key === 'Enter' && drill?.(e)}
       >
         {showLbl && (
-          <div className={'lbl' + (r.w < 64 ? ' sm' : '')}>
+          <div
+            className={'lbl' + (r.w < 64 ? ' sm' : '')}
+            // branch title bar is the parent's own hover target (leaf labels stay
+            // pointer-events:none so the body handles them)
+            style={kids.length > 0 ? { pointerEvents: 'auto' } : undefined}
+            onMouseMove={kids.length > 0 ? showTip : undefined}
+          >
             {kid.n}{r.w > 90 && <span className="sz"> {fmtBytes(kid.b)}</span>}
           </div>
         )}
@@ -325,7 +332,13 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
           ))}
         </div>
       )}
-      <div className="map" ref={mapRef} role="application" aria-label="Storage treemap">
+      <div
+        className="map"
+        ref={mapRef}
+        role="application"
+        aria-label="Storage treemap"
+        onMouseLeave={() => { pin.hover(null); setTip(null) }}
+      >
         {rects
           .filter(r => r.w >= 3 && r.h >= 3)
           .map(r => cell(r.it, [...path, r.it], r, 0))}
