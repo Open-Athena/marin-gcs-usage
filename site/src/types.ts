@@ -28,8 +28,11 @@ export const TEAM_VARS: Record<string, string> = {
   communal: '--t-communal',
   unknown: '--t-unknown',
   unattributed: '--t-unattr',
-  core: '--t-core',  // legacy (pre-group snapshots); harmless once all re-proc'd
 }
+
+// Groups that are entirely shared (no per-user owner) — rendered washed-out,
+// like the old "core (shared)" pool, and never split into a users/shared pair.
+export const SHARED_GROUPS = new Set(['communal'])
 
 export const domTeam = (n: TreeNode): string | null => {
   if (!n.tm) return null

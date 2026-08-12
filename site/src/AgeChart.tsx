@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
-import { TEAM_VARS, fmtBytes, sharedColor } from './types'
+import { SHARED_GROUPS, TEAM_VARS, fmtBytes, sharedColor } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
@@ -61,9 +61,7 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
     const legend: [string, string][] =
       mode === 'team'
         ? Object.entries(TEAM_VARS).flatMap(([t, v]): [string, string][] =>
-            t === 'core'
-              ? [[`${t} (users)`, `var(${v})`], [`${t} (shared)`, sharedColor(v)]]
-              : [[t, `var(${v})`]],
+            [[t, SHARED_GROUPS.has(t) ? sharedColor(v) : `var(${v})`]],
           )
       : userMode
         ? [

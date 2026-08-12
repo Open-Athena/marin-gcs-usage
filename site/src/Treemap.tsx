@@ -9,7 +9,7 @@ import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, r
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
-const TEAM_WHITE_INK = ['--t-core', '--t-stanford', '--t-oa', '--t-communal']
+const TEAM_WHITE_INK = ['--t-stanford', '--t-oa', '--t-communal']
 
 interface Tip {
   x: number
