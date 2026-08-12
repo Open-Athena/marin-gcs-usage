@@ -5,7 +5,7 @@ import { useHoverPin } from './hoverpin/useHoverPin'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { foldSmall, squarify } from './squarify'
 import type { ColorMode, Pricing, TreeNode } from './types'
-import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, ratePerByte, sharedColor } from './types'
+import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
@@ -25,7 +25,7 @@ export interface Highlight {
   team?: string
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -33,6 +33,9 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
   hl?: Highlight | null
   pricing?: Pricing | null
   lens?: boolean
+  // OG-image mode: hide every text detail (cell labels, crumb/rollup bars, hint)
+  // and render just the colored cells. Never set by the live app.
+  redact?: boolean
 }) {
   const [path, setPath] = useState<TreeNode[]>([root])
   const [tip, setTip] = useState<Tip | null>(null)
@@ -128,20 +131,21 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
         const s = node.sh?.[t] ?? 0
         const rate = teamRate(t)
         const mix = pricing?.teamMix?.[t]
+        const gl = groupLabel(t)
         return s > 0 && b - s > 0
           ? [
-              { k: `${t} (users)`, b: b - s, col: `var(${tv})`, rate, mix },
-              { k: `${t} (shared)`, b: s, col: sharedColor(tv), rate, mix },
+              { k: `${gl} (users)`, b: b - s, col: `var(${tv})`, rate, mix },
+              { k: `${gl} (shared)`, b: s, col: sharedColor(tv), rate, mix },
             ]
           : s > 0
-            ? [{ k: t, b: s, col: sharedColor(tv), rate, mix }]  // all-shared group (communal): no redundant "(shared)"
-            : [{ k: t, b, col: `var(${tv})`, rate, mix }]
+            ? [{ k: gl, b: s, col: sharedColor(tv), rate, mix }]  // all-shared group (communal): no redundant "(shared)"
+            : [{ k: gl, b, col: `var(${tv})`, rate, mix }]
       })
       .sort((a, b) => b.b - a.b)
   }, [node, mode, userIdx, pricing])
 
   const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, depth: number) => {
-    const showLbl = r.w > 36 && r.h > 13
+    const showLbl = !redact && r.w > 36 && r.h > 13
     // recurse while the cell has room — depth adapts to cell size
     const kw = r.w - 6
     const kh = r.h - (showLbl ? 23 : 6)
@@ -257,7 +261,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
 
   return (
     <div className="treemap" ref={wrapRef}>
-      <div className="bar">
+      {!redact && <div className="bar">
         <nav className="crumbs" aria-label="Path">
           {path.map((n, i) => (
             <span key={i}>
@@ -300,8 +304,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
           </div>
         )}
         <button className="fs" onClick={fullscreen} title="Toggle fullscreen">⛶</button>
-      </div>
-      {rollup.length > 0 && (
+      </div>}
+      {!redact && rollup.length > 0 && (
         <div className="rollup">
           {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
             <span className="ri" key={r.k}>
@@ -392,7 +396,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens }: {
           </div>
         )
       })()}
-      <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>
+      {!redact && <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>}
     </div>
   )
 }

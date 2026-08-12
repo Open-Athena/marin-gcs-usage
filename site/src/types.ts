@@ -34,6 +34,17 @@ export const TEAM_VARS: Record<string, string> = {
 // like the old "core (shared)" pool, and never split into a users/shared pair.
 export const SHARED_GROUPS = new Set(['communal'])
 
+// Display labels for group keys (legend items): OA stays all-caps; the rest
+// are title-cased. Raw keys stay lowercase in data/URLs/tooltips.
+export const GROUP_LABELS: Record<string, string> = {
+  oa: 'OA',
+  stanford: 'Stanford',
+  communal: 'Communal',
+  unknown: 'Unknown',
+  unattributed: 'Unattributed',
+}
+export const groupLabel = (t: string): string => GROUP_LABELS[t] ?? t
+
 export const domTeam = (n: TreeNode): string | null => {
   if (!n.tm) return null
   let best: string | null = null
