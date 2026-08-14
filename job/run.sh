@@ -36,7 +36,7 @@ fi
 # didn't exist at all for us-central2. Tasks reuse completed listings, so
 # re-runs only fill gaps. If the fan-out fails or any bucket lacks a completed
 # listing, abort — better no snapshot than a silently incomplete one (a dropped
-# bucket like central2 is a ~1000 TB hole).
+# bucket like central2 is a huge hole).
 FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-us-east1 marin-us-west4)
 # Listing node size/parallelism are runtime config: set LISTING_MACHINE /
 # LISTING_PROCS / LISTING_WORKERS on the snapshot job's env (batch-submit.sh or
