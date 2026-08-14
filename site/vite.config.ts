@@ -22,5 +22,8 @@ export default defineConfig({
   // (else the rollup build bundles a 2nd copy → "useLocation outside <Router>").
   resolve: {
     dedupe: ['react', 'react-dom', 'react-router-dom'],
-  }
+  },
+  optimizeDeps: {
+    exclude: ['@disk-tree/react'],
+  },
 })

@@ -1,0 +1,3 @@
+packages:
+  - .
+  - ../../../disk-tree/packages/react

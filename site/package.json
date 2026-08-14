@@ -13,6 +13,7 @@
     "clean": "rm -rf node_modules/.vite dist"
   },
   "dependencies": {
+    "@disk-tree/react": "workspace:*",
     "@floating-ui/react": "^0.27.20",
     "@rdub/file-tree": "https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673",
     "hyparquet": "^1.27.1",

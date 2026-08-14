@@ -1,22 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo } from 'react'
+import { Treemap as DtTreemap } from '@disk-tree/react'
+import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
-import { useHoverPin } from './hoverpin/useHoverPin'
 import { ClassMixTip, Tooltip } from './Tooltip'
-import { foldSmall, squarify } from './squarify'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
 const TEAM_WHITE_INK = ['--t-stanford', '--t-oa', '--t-communal']
-
-interface Tip {
-  x: number
-  y: number
-  path: string
-  node: TreeNode
-}
 
 export interface DateRange { min: number; max: number }
 
@@ -25,6 +18,10 @@ export interface Highlight {
   team?: string
 }
 
+// Domain wrapper over @disk-tree/react's generic <Treemap>: all layout,
+// drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
+// this file supplies marin's business logic (attribution color modes, class
+// lens, $-pricing, rollup bar, tooltip content) through the accessor props.
 export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact }: {
   root: TreeNode
   mode: ColorMode
@@ -37,20 +34,6 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
 }) {
-  const [path, setPath] = useState<TreeNode[]>([root])
-  const [tip, setTip] = useState<Tip | null>(null)
-  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
-  const mapRef = useRef<HTMLDivElement>(null)
-  const wrapRef = useRef<HTMLDivElement>(null)
-  const tipRef = useRef<HTMLDivElement>(null)
-  // pin state keyed by gs:// path; the pinned Tip snapshot freezes position/content
-  const pin = useHoverPin<string>({ excludeRefs: [tipRef] })
-  const [pinnedTip, setPinnedTip] = useState<Tip | null>(null)
-  useEffect(() => {
-    if (pin.pinned === null) setPinnedTip(null)
-  }, [pin.pinned])
-  const node = path[path.length - 1]
-
   // Fixed category colors: global top-level dirs by total size.
   const catSlot = useMemo(() => {
     const catBytes = new Map<string, number>()
@@ -66,30 +49,6 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     return new Map(cats.slice(0, 8).map((k, i) => [k, SLOTS[i]]))
   }, [root])
 
-  useEffect(() => {
-    setPath([root])
-    setTip(null)
-  }, [root])
-
-  useEffect(() => {
-    const el = mapRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }))
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.key === 'Backspace' || e.key === 'Escape') && path.length > 1) {
-        setPath(p => p.slice(0, -1))
-        setTip(null)
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [path.length])
-
   const slotOf = useCallback(
     (kidPath: TreeNode[]): string | null => {
       // kidPath: [root, bucket, d1, …]
@@ -101,14 +60,86 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     [catSlot],
   )
 
-  const rects = useMemo(
-    () => squarify(foldSmall(node.c ?? [], size.w, size.h), 0, 0, size.w, size.h),
-    [node, size],
+  const gsPathOf = (path: TreeNode[]) => 'gs://' + path.slice(1).map(n => n.n).join('/')
+
+  // Fold merger: first-class TreeNode aggregating tm/us/d so folded tiles keep
+  // real tooltips (upstream calls this at every nesting level).
+  const mergeSmall = useCallback((tiny: TreeNode[]): TreeNode => {
+    const b = tiny.reduce((s, it) => s + it.b, 0)
+    const o = tiny.reduce((s, it) => s + it.o, 0)
+    const tm: Record<string, number> = {}
+    const us: Record<string, number> = {}
+    let wd = 0
+    let wdb = 0
+    for (const it of tiny) {
+      for (const [t, tb] of Object.entries(it.tm ?? {})) tm[t] = (tm[t] ?? 0) + tb
+      for (const [u, ub] of it.us ?? []) us[u] = (us[u] ?? 0) + ub
+      if (it.d != null) {
+        wd += it.d * it.b
+        wdb += it.b
+      }
+    }
+    const folded: TreeNode = { n: `(+${tiny.length})`, b, o }
+    if (wdb) folded.d = Math.round(wd / wdb)
+    if (Object.keys(tm).length) folded.tm = tm
+    const topUs = Object.entries(us).sort((a, c) => c[1] - a[1]).slice(0, 5)
+    if (topUs.length) folded.us = topUs as [string, number][]
+    return folded
+  }, [])
+
+  const colorForCell = useCallback(
+    (kid: TreeNode, kidPath: TreeNode[], _depth: number, ctx: CellCtx): CellStyle => {
+      let bg: string
+      let ink: string
+      if (mode === 'tree') {
+        const slot = slotOf(kidPath)
+        bg = slot ? `var(${slot})` : 'var(--other)'
+        ink = slot ? (WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)') : 'var(--ink)'
+      } else if (ctx.hasKids) {
+        // container: neutral so the nested tiles carry the data colors
+        bg = 'var(--panel)'
+        ink = 'var(--ink)'
+      } else if (mode === 'team') {
+        const seg = domTeamSeg(kid)
+        const tv = (seg && TEAM_VARS[seg.team]) || '--t-unattr'
+        bg = seg?.shared ? sharedColor(tv) : `var(${tv})`
+        ink = !seg?.shared && TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
+      } else if (mode === 'date') {
+        if (kid.d != null && dateRange && dateRange.max > dateRange.min) {
+          bg = dateColor((kid.d - dateRange.min) / (dateRange.max - dateRange.min))
+          ink = inkFor(bg)
+        } else {
+          bg = 'var(--other)'
+          ink = 'var(--ink)'
+        }
+      } else {
+        // user / uteam: a cell only takes a user's color when it is wholly
+        // (~100%) theirs — mixed boxes stay gray until you drill/zoom
+        const [u, ub] = kid.us?.[0] ?? [null, 0]
+        bg = userColor(ub >= 0.98 * kid.b ? u : null, userIdx, mode === 'uteam')
+        ink = inkFor(bg)
+      }
+      // class lens: hatch by colder-class (non-STANDARD) byte fraction — leaf
+      // cells only (cells are semi-transparent, so a parent hatch would bleed
+      // through all-STANDARD children)
+      const coldFrac = lens && !ctx.hasKids ? Object.values(kid.cb ?? {}).reduce((a, b) => a + b, 0) / kid.b : 0
+      const hatch = coldFrac > 0.01
+        ? `repeating-linear-gradient(135deg, rgb(120 170 255 / ${(0.18 + 0.5 * coldFrac).toFixed(2)}) 0 4px, transparent 4px 9px)`
+        : undefined
+      // highlight mode: leaf cells not majority-owned by the selected user/team fade back
+      let dim = false
+      if (hl && !ctx.hasKids) {
+        if (hl.user) dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
+        else if (hl.team) dim = (kid.tm?.[hl.team] ?? 0) < 0.5 * kid.b
+      }
+      return { bg, ink, hatch, opacity: dim ? 0.22 : undefined }
+    },
+    [mode, slotOf, userIdx, dateRange, hl, lens],
   )
 
   // group roll-up for the current view: users in user modes, teams otherwise;
   // $ figures use class-aware per-group rates when the snapshot carries them
-  const rollup = useMemo(() => {
+  const rollupFor = (node: TreeNode) => {
     if (!node.tm) return []
     const teamRate = (t: string) => pricing && (pricing.teamRates?.[t] ?? pricing.blended)
     const userRate = (u: string) => pricing && (pricing.userRates?.[u] ?? pricing.blended)
@@ -142,274 +173,143 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
             : [{ k: gl, b, col: `var(${tv})`, rate, mix }]
       })
       .sort((a, b) => b.b - a.b)
-  }, [node, mode, userIdx, pricing])
+  }
 
-  const cell = (kid: TreeNode, kidPath: TreeNode[], r: { x: number; y: number; w: number; h: number }, depth: number) => {
-    const showLbl = !redact && r.w > 36 && r.h > 13
-    // recurse while the cell has room — depth adapts to cell size
-    const kw = r.w - 6
-    const kh = r.h - (showLbl ? 23 : 6)
-    const kids = kid.c && r.w > 90 && r.h > 44
-      ? squarify(foldSmall(kid.c, kw, kh), 0, 0, kw, kh)
-      : []
-    let col: string
-    let ink: string
-    if (mode === 'tree') {
-      const slot = slotOf(kidPath)
-      col = slot ? `var(${slot})` : 'var(--other)'
-      ink = slot ? (WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)') : 'var(--ink)'
-    } else if (kids.length > 0) {
-      // container: neutral so the nested tiles carry the data colors
-      col = 'var(--panel)'
-      ink = 'var(--ink)'
-    } else if (mode === 'team') {
-      const seg = domTeamSeg(kid)
-      const tv = (seg && TEAM_VARS[seg.team]) || '--t-unattr'
-      col = seg?.shared ? sharedColor(tv) : `var(${tv})`
-      ink = !seg?.shared && TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
-    } else if (mode === 'date') {
-      if (kid.d != null && dateRange && dateRange.max > dateRange.min) {
-        col = dateColor((kid.d - dateRange.min) / (dateRange.max - dateRange.min))
-        ink = inkFor(col)
-      } else {
-        col = 'var(--other)'
-        ink = 'var(--ink)'
-      }
-    } else {
-      // user / uteam: a cell only takes a user's color when it is wholly
-      // (~100%) theirs — mixed boxes stay gray until you drill/zoom
-      const [u, ub] = kid.us?.[0] ?? [null, 0]
-      col = userColor(ub >= 0.98 * kid.b ? u : null, userIdx, mode === 'uteam')
-      ink = inkFor(col)
-    }
-    const gsPath = 'gs://' + kidPath.slice(1).map(n => n.n).join('/')
-    const showTip = (e: React.MouseEvent) => {
-      e.stopPropagation()
-      pin.hover(gsPath)
-      setTip({ x: e.clientX, y: e.clientY, path: gsPath, node: kid })
-    }
-    // branch cells drill on click (existing UX); leaf cells pin their tooltip
-    const drill = kid.c
-      ? (e: React.SyntheticEvent) => {
-          e.stopPropagation()
-          setTip(null)
-          pin.clearPin()
-          setPath(kidPath)
-        }
-      : (e: React.SyntheticEvent) => {
-          e.stopPropagation()
-          const me = e as React.MouseEvent
-          pin.togglePin(gsPath)
-          setPinnedTip(p => (p?.path === gsPath ? null : { x: me.clientX, y: me.clientY, path: gsPath, node: kid }))
-        }
-    const dust = Math.min(r.w, r.h) < 14
-    // class lens: hatch by colder-class (non-STANDARD) byte fraction — leaf
-    // cells only (cells are semi-transparent, so a parent hatch would bleed
-    // through all-STANDARD children)
-    const coldFrac = lens && kids.length === 0 ? Object.values(kid.cb ?? {}).reduce((a, b) => a + b, 0) / kid.b : 0
-    const hatch = coldFrac > 0.01
-      ? `repeating-linear-gradient(135deg, rgb(120 170 255 / ${(0.18 + 0.5 * coldFrac).toFixed(2)}) 0 4px, transparent 4px 9px)`
-      : undefined
-    // highlight mode: leaf cells not majority-owned by the selected user/team fade back
-    let dim = false
-    if (hl && kids.length === 0) {
-      if (hl.user) dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
-      else if (hl.team) dim = (kid.tm?.[hl.team] ?? 0) < 0.5 * kid.b
-    }
+  const renderRollup = (node: TreeNode) => {
+    if (redact) return null
+    const rollup = rollupFor(node)
+    if (!rollup.length) return null
     return (
-      <div
-        key={gsPath}
-        className={'cell' + (kid.c ? ' branch' : '')}
-        style={{
-          left: r.x, top: r.y,
-          width: Math.max(0, r.w - (dust ? 1 : 2)), height: Math.max(0, r.h - (dust ? 1 : 2)),
-          background: col, color: ink, opacity: (depth > 0 ? 0.82 : 0.92) * (dim ? 0.22 : 1),
-          ...(hatch && { backgroundImage: hatch }),
-          ...(dust && { boxShadow: 'none', borderRadius: 1.5 }),
-        }}
-        tabIndex={0}
-        // Leaf cells hover their whole body; branch cells hover only their
-        // title-bar label (below) — so sweeping across a branch's children never
-        // dips into the parent's tooltip through the inter-child gaps. Clearing
-        // lives on the `.map` container, not per-cell, so child→child is smooth
-        // (the tip persists across the gap instead of blinking off).
-        onMouseMove={kids.length > 0 ? undefined : showTip}
-        onClick={drill}
-        onKeyDown={e => e.key === 'Enter' && drill?.(e)}
-      >
-        {showLbl && (
-          <div
-            className={'lbl' + (r.w < 64 ? ' sm' : '')}
-            // branch title bar is the parent's own hover target (leaf labels stay
-            // pointer-events:none so the body handles them)
-            style={kids.length > 0 ? { pointerEvents: 'auto' } : undefined}
-            onMouseMove={kids.length > 0 ? showTip : undefined}
-          >
-            {kid.n}{r.w > 90 && <span className="sz"> {fmtBytes(kid.b)}</span>}
-          </div>
-        )}
-        {kids.length > 0 && (
-          <div className="inner" style={{ top: showLbl ? 20 : 3 }}>
-            {kids.filter(s => s.w >= 3 && s.h >= 3).map(s =>
-              cell(s.it, [...kidPath, s.it], s, depth + 1),
+      <>
+        {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
+          <span className="ri" key={r.k}>
+            <span className="sw" style={{ background: r.col }} />
+            {r.k} <b>{fmtBytes(r.b)}</b>
+            <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
+            {r.rate != null && (
+              r.mix ? (
+                <Tooltip content={<ClassMixTip mix={r.mix} note="the group's fleet-wide class mix sets its $/byte rate; $ shown = rate × this view's bytes" />}>
+                  <span className="usd dotted">{fmtUsd(r.b * r.rate)}/mo</span>
+                </Tooltip>
+              ) : (
+                <span className="usd">{fmtUsd(r.b * r.rate)}/mo</span>
+              )
             )}
-          </div>
-        )}
-      </div>
+          </span>
+        ))}
+      </>
     )
   }
 
-  const fullscreen = () => {
-    const el = wrapRef.current
-    if (!el) return
-    if (document.fullscreenElement) void document.exitFullscreen()
-    else void el.requestFullscreen()
+  /* Legend only for modes where it isn't a strict subset of the roll-up bar:
+     team + user modes are dropped (the roll-up already shows the same
+     swatch+label, plus size and $). tree (prefix colors) and age (date
+     gradient) convey distinct keys, so they keep the legend. */
+  const legend = mode !== 'team' && mode !== 'user' && mode !== 'uteam'
+    ? () => (
+        <div className="legend">
+          {mode === 'date' && dateRange ? (
+            <span className="li gradli">
+              {epochDaysToMonth(dateRange.min)}
+              <span className="gradbar" style={{ background: dateGradientCss() }} />
+              {epochDaysToMonth(dateRange.max)}
+            </span>
+          ) : (
+            <>
+              {[...catSlot.entries()].map(([k, s]) => (
+                <span className="li" key={k}>
+                  <span className="sw" style={{ background: `var(${s})` }} />
+                  {k}
+                </span>
+              ))}
+              <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
+            </>
+          )}
+        </div>
+      )
+    : undefined
+
+  const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
+    const gsPath = gsPathOf(path)
+    const userMode = mode === 'user' || mode === 'uteam'
+    const mix = classMix(n)
+    const classes = n.cb && (
+      <div className="classes-row">
+        {Object.entries(mix).map(([c, b]) => (
+          <span className="tt-cls" key={c}>
+            {CLASS_NAMES[c]} {((100 * b) / n.b).toFixed(0)}%
+          </span>
+        ))}
+        {pricing && <span className="usd">{fmtUsd(n.b * ratePerByte(mix))}/mo</span>}
+      </div>
+    )
+    const teams = n.tm && (
+      <div className="teams">
+        {Object.entries(n.tm)
+          .filter(([, b]) => b >= 0.005 * n.b)
+          .map(([t, b]) => {
+            const s = n.sh?.[t] ?? 0
+            return (
+              <span className="tt-team" key={t}>
+                <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
+                {t} {((100 * b) / n.b).toFixed(0)}%
+                {s >= 0.01 * b && <span className="shr"> ({((100 * s) / b).toFixed(0)}% shared)</span>}
+              </span>
+            )
+          })}
+      </div>
+    )
+    const users = n.us && n.us.length > 0 && (
+      <div className="users">
+        {n.us.map(([u, b]) => (
+          <div className="tt-user" key={u}>
+            {userMode && <span className="sw" style={{ background: userColor(u, userIdx, mode === 'uteam') }} />}
+            {u} · {fmtBytes(b)}
+          </div>
+        ))}
+      </div>
+    )
+    return (
+      <>
+        <div className="path">
+          <span className="dirname">{gsPath.slice(0, gsPath.lastIndexOf('/') + 1)}</span>
+          <span className="basename">{gsPath.slice(gsPath.lastIndexOf('/') + 1)}</span>
+        </div>
+        <div className="nums">
+          {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
+          {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}
+        </div>
+        {classes}
+        {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
+      </>
+    )
   }
 
   return (
-    <div className="treemap" ref={wrapRef}>
-      {!redact && <div className="bar">
-        <nav className="crumbs" aria-label="Path">
-          {path.map((n, i) => (
-            <span key={i}>
-              {i > 0 && <span className="sep">/</span>}
-              {i < path.length - 1 ? (
-                <a tabIndex={0} onClick={() => setPath(path.slice(0, i + 1))}>{n.n}</a>
-              ) : (
-                <span className="cur">{n.n}</span>
-              )}
-            </span>
-          ))}
-          <span className="sep">
-            {' '}— {fmtBytes(node.b)} · {fmtN(node.o)} objects
-            {pricing && <> · est. {fmtUsd(node.b * pricing.blended)}/mo</>}
-          </span>
-        </nav>
-        {/* Legend only for modes where it isn't a strict subset of the roll-up
-            bar below: team + user modes are dropped (the roll-up already shows
-            the same swatch+label, plus size and $). tree (prefix colors) and
-            age (date gradient) convey distinct keys, so they keep the legend. */}
-        {mode !== 'team' && mode !== 'user' && mode !== 'uteam' && (
-          <div className="legend">
-            {mode === 'date' && dateRange ? (
-              <span className="li gradli">
-                {epochDaysToMonth(dateRange.min)}
-                <span className="gradbar" style={{ background: dateGradientCss() }} />
-                {epochDaysToMonth(dateRange.max)}
-              </span>
-            ) : (
-              <>
-                {[...catSlot.entries()].map(([k, s]) => (
-                  <span className="li" key={k}>
-                    <span className="sw" style={{ background: `var(${s})` }} />
-                    {k}
-                  </span>
-                ))}
-                <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
-              </>
-            )}
-          </div>
-        )}
-        <button className="fs" onClick={fullscreen} title="Toggle fullscreen">⛶</button>
-      </div>}
-      {!redact && rollup.length > 0 && (
-        <div className="rollup">
-          {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
-            <span className="ri" key={r.k}>
-              <span className="sw" style={{ background: r.col }} />
-              {r.k} <b>{fmtBytes(r.b)}</b>
-              <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
-              {r.rate != null && (
-                r.mix ? (
-                  <Tooltip content={<ClassMixTip mix={r.mix} note="the group's fleet-wide class mix sets its $/byte rate; $ shown = rate × this view's bytes" />}>
-                    <span className="usd dotted">{fmtUsd(r.b * r.rate)}/mo</span>
-                  </Tooltip>
-                ) : (
-                  <span className="usd">{fmtUsd(r.b * r.rate)}/mo</span>
-                )
-              )}
-            </span>
-          ))}
-        </div>
+    <DtTreemap<TreeNode>
+      root={root}
+      getSize={n => n.b}
+      getChildren={n => n.c}
+      getLabel={n => n.n}
+      getId={(_n, p) => gsPathOf(p)}
+      formatSize={fmtBytes}
+      mergeSmall={mergeSmall}
+      colorForCell={colorForCell}
+      renderTooltip={renderTooltip}
+      renderRollup={renderRollup}
+      renderLegend={redact ? undefined : legend}
+      renderCrumbSuffix={node => (
+        <>
+          — {fmtBytes(node.b)} · {fmtN(node.o)} objects
+          {pricing && <> · est. {fmtUsd(node.b * pricing.blended)}/mo</>}
+        </>
       )}
-      <div
-        className="map"
-        ref={mapRef}
-        role="application"
-        aria-label="Storage treemap"
-        onMouseLeave={() => { pin.hover(null); setTip(null) }}
-      >
-        {rects
-          .filter(r => r.w >= 3 && r.h >= 3)
-          .map(r => cell(r.it, [...path, r.it], r, 0))}
-      </div>
-      {(pinnedTip ?? tip) && (() => {
-        const isPinned = pinnedTip !== null
-        const tp = (pinnedTip ?? tip)!
-        const userMode = mode === 'user' || mode === 'uteam'
-        const mix = classMix(tp.node)
-        const classes = tp.node.cb && (
-          <div className="classes-row">
-            {Object.entries(mix).map(([c, b]) => (
-              <span className="tt-cls" key={c}>
-                {CLASS_NAMES[c]} {((100 * b) / tp.node.b).toFixed(0)}%
-              </span>
-            ))}
-            {pricing && <span className="usd">{fmtUsd(tp.node.b * ratePerByte(mix))}/mo</span>}
-          </div>
-        )
-        const teams = tp.node.tm && (
-          <div className="teams">
-            {Object.entries(tp.node.tm)
-              .filter(([, b]) => b >= 0.005 * tp.node.b)
-              .map(([t, b]) => {
-                const s = tp.node.sh?.[t] ?? 0
-                return (
-                  <span className="tt-team" key={t}>
-                    <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
-                    {t} {((100 * b) / tp.node.b).toFixed(0)}%
-                    {s >= 0.01 * b && <span className="shr"> ({((100 * s) / b).toFixed(0)}% shared)</span>}
-                  </span>
-                )
-              })}
-          </div>
-        )
-        const users = tp.node.us && tp.node.us.length > 0 && (
-          <div className="users">
-            {tp.node.us.map(([u, b]) => (
-              <div className="tt-user" key={u}>
-                {userMode && <span className="sw" style={{ background: userColor(u, userIdx, mode === 'uteam') }} />}
-                {u} · {fmtBytes(b)}
-              </div>
-            ))}
-          </div>
-        )
-        return (
-          <div
-            ref={tipRef}
-            className={'tip' + (isPinned ? ' pinned' : '')}
-            style={{
-              left: Math.min(tp.x + 14, window.innerWidth - 320),
-              top: Math.min(tp.y + 14, window.innerHeight - 80),
-            }}
-          >
-            {isPinned && (
-              <button className="unpin" onClick={() => pin.clearPin()} title="Unpin (Esc)">×</button>
-            )}
-            <div className="path">
-              <span className="dirname">{tp.path.slice(0, tp.path.lastIndexOf('/') + 1)}</span>
-              <span className="basename">{tp.path.slice(tp.path.lastIndexOf('/') + 1)}</span>
-            </div>
-            <div className="nums">
-              {fmtBytes(tp.node.b)} · {fmtN(tp.node.o)} objects · {((100 * tp.node.b) / root.b).toFixed(2)}% of total
-              {tp.node.d != null && <> · mean created {epochDaysToMonth(tp.node.d)}</>}
-            </div>
-            {classes}
-            {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
-          </div>
-        )
-      })()}
-      {!redact && <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>}
-    </div>
+      renderFooter={redact
+        ? undefined
+        : () => <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>}
+      chrome={!redact}
+      showLabels={!redact}
+      className="treemap"
+    />
   )
 }

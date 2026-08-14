@@ -4,13 +4,13 @@ import type { Config } from 'scrns'
 // full treemap + footer, framed as the viewport (scrns forces device-scale 1
 // and screenshots the viewport, no clip — so width/height *is* the crop).
 //
-// `.treemap .map .cell` only exists once the (async, ~6.5MB) tree.json has been
+// `.treemap … .dt-treemap-cell` only exists once the (async, ~6.5MB) tree.json has been
 // fetched and squarify-laid-out, so it gates the capture; the short settle
 // covers the final layout pass. Run against the local dev server (no CF
 // Access) — `pnpm dev` then `pnpm shots`.
 const base = {
   width: 1600,
-  selector: '.treemap .map .cell',
+  selector: '.treemap .dt-treemap-map .dt-treemap-cell',
   preScreenshotSleep: 800,
 }
 
@@ -26,9 +26,9 @@ const config: Config = {
     'gcs-groups': { ...base, height: 912, query: '' },         // color by group (default)
     'gcs-users': { ...base, height: 966, query: '?c=user' },  // color by user
     // Public og:image: the redacted `/og` route (group treemap, no labels/$/
-    // names) framed at the standard 1200×630 OG card. `.og .map .cell` gates on
+    // names) framed at the standard 1200×630 OG card. `.og … .dt-treemap-cell` gates on
     // the (async) tree.json layout, same as the crops above.
-    'og': { ...base, width: 1200, height: 630, selector: '.og .map .cell', query: 'og', preScreenshotSleep: 1200 },
+    'og': { ...base, width: 1200, height: 630, selector: '.og .dt-treemap-map .dt-treemap-cell', query: 'og', preScreenshotSleep: 1200 },
   },
 }
 
