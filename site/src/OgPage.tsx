@@ -1,25 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Treemap } from './Treemap'
-import type { TreeNode } from './types'
-import { TEAM_VARS, groupLabel, sharedColor } from './types'
-import type { UserIndexEntry } from './colors'
+import { buildUserIndex } from './colors'
+import type { UserIndex } from './colors'
+import type { Meta, TreeNode } from './types'
 
-// `/og` — a redacted, fixed-size (1200×630) render of the group treemap, used
-// only to screenshot the public og:image. Reuses <Treemap redact> so the cell
-// layout + group colors match `/` exactly, but every text detail is dropped:
-// no cell labels, no $/byte totals, no user names. Group color key only.
-const EMPTY_USERS = new Map<string, UserIndexEntry>()
-
-// communal is all-shared (washed-out swatch, matching its cells); the rest solid.
-const LEGEND: [string, string][] = [
-  [groupLabel('communal'), sharedColor(TEAM_VARS.communal)],
-  [groupLabel('oa'), `var(${TEAM_VARS.oa})`],
-  [groupLabel('stanford'), `var(${TEAM_VARS.stanford})`],
-  [groupLabel('unattributed'), `var(${TEAM_VARS.unattributed})`],
-]
-
+// `/og` — a redacted, fixed-size (1200×630) render of the per-user treemap,
+// used only to screenshot the public og:image. Reuses <Treemap redact> so the
+// cell layout + user colors match `/` exactly, but every text detail is
+// dropped: no cell labels, no $/byte totals, no user names (hence no legend).
 export function OgPage() {
   const [tree, setTree] = useState<TreeNode | null>(null)
+  const [userIdx, setUserIdx] = useState<UserIndex>(new Map())
 
   useEffect(() => {
     const prev = document.documentElement.dataset.theme
@@ -34,11 +25,17 @@ export function OgPage() {
     let cancel = false
     void fetch('/data/scans.json')
       .then(r => r.json())
-      .then((scans: string[]) => {
+      .then(async (scans: string[]) => {
         const asof = scans[0]
-        return asof ? fetch(`/data/${asof}/tree.json`).then(r => r.json()) : null
+        if (!asof || cancel) return
+        const [t, m] = await Promise.all([
+          fetch(`/data/${asof}/tree.json`).then(r => r.json()) as Promise<TreeNode>,
+          fetch(`/data/${asof}/meta.json`).then(r => r.json()) as Promise<Meta>,
+        ])
+        if (cancel) return
+        setUserIdx(buildUserIndex(m.users ?? []))
+        setTree(t)
       })
-      .then((t: TreeNode | null) => t && !cancel && setTree(t))
     return () => { cancel = true }
   }, [])
 
@@ -47,19 +44,11 @@ export function OgPage() {
       <div className="og-head">
         <h1>Marin GCS usage</h1>
         <p>
-          Per-group storage attribution across the six <code>marin-*</code> GCS buckets
+          Per-user storage attribution across the six <code>marin-*</code> GCS buckets
         </p>
       </div>
       <div className="og-map">
-        {tree && <Treemap root={tree} mode="team" userIdx={EMPTY_USERS} dateRange={null} redact />}
-      </div>
-      <div className="og-legend">
-        {LEGEND.map(([k, c]) => (
-          <span className="li" key={k}>
-            <span className="sw" style={{ background: c }} />
-            {k}
-          </span>
-        ))}
+        {tree && <Treemap root={tree} mode="user" userIdx={userIdx} dateRange={null} redact />}
       </div>
     </div>
   )

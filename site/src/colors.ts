@@ -38,42 +38,17 @@ export const HI_CONTRAST = [
   '#1f77b4', '#d67195', '#17becf', '#bcbd22', '#8c564b',
 ]
 
-const TEAM_HUE: Record<string, number> = {
-  core: 215,
-  stanford: 353,
-  oa: 157,
-  unknown: 40,
-}
-const TEAM_HUE_SPREAD = 44 // total degrees a team's users fan out over
+/** user -> overall rank by bytes (index into the categorical palette) */
+export type UserIndex = Map<string, number>
 
-export interface UserIndexEntry {
-  team: string
-  rank: number     // overall rank by bytes
-  iTeam: number    // rank within team
-  nTeam: number    // team size
+export function buildUserIndex(users: UserInfo[]): UserIndex {
+  return new Map(users.map((u, rank) => [u.u, rank]))
 }
 
-export function buildUserIndex(users: UserInfo[]): Map<string, UserIndexEntry> {
-  const teamCounts = new Map<string, number>()
-  const idx = new Map<string, UserIndexEntry>()
-  users.forEach((u, rank) => {
-    const iTeam = teamCounts.get(u.t) ?? 0
-    teamCounts.set(u.t, iTeam + 1)
-    idx.set(u.u, { team: u.t, rank, iTeam, nTeam: 0 })
-  })
-  for (const e of idx.values()) e.nTeam = teamCounts.get(e.team) ?? 1
-  return idx
-}
-
-export function userColor(u: string | null, idx: Map<string, UserIndexEntry>, teamHued: boolean): string {
-  const e = u ? idx.get(u) : undefined
-  if (!e) return 'var(--t-unattr)'
-  if (!teamHued) return HI_CONTRAST[e.rank % HI_CONTRAST.length]
-  const base = TEAM_HUE[e.team] ?? 40
-  const off = e.nTeam > 1 ? (e.iTeam / (e.nTeam - 1) - 0.5) * TEAM_HUE_SPREAD : 0
-  // alternate lightness a touch so adjacent same-hue users still separate
-  const l = 46 + (e.iTeam % 3) * 7
-  return `hsl(${(base + off + 360) % 360} 62% ${l}%)`
+export function userColor(u: string | null, idx: UserIndex): string {
+  const rank = u != null ? idx.get(u) : undefined
+  if (rank == null) return 'var(--t-unattr)'
+  return HI_CONTRAST[rank % HI_CONTRAST.length]
 }
 
 // ---- ink (label color) for a computed background ----

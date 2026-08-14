@@ -55,11 +55,10 @@ function AppContent() {
   const [rules, setRules] = useState<Rules | null>(null)
   // URL token matches the visible label ("age"), not the internal key ("date")
   const [modeP, setModeP] = useUrlState('c', {
-    encode: (v: string | undefined) => (v === 'team' || v === undefined ? undefined : v === 'date' ? 'age' : v),
-    decode: (e: string | undefined) => (e === undefined ? 'team' : e === 'age' ? 'date' : e),
+    encode: (v: string | undefined) => (v === 'user' || v === undefined ? undefined : v === 'date' ? 'age' : v),
+    decode: (e: string | undefined) => (e === undefined ? 'user' : e === 'age' ? 'date' : e),
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
-  const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
   // Selected scan in the URL as short YYMMDD (`?d=260809`), kept always present
   // so each day's Slack digest can deep-link straight to its own scan.
   const [dP, setDP] = useUrlState('d', {
@@ -72,27 +71,20 @@ function AppContent() {
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
-  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
+  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'user'
   const setMode = (m: ColorMode) => setModeP(m)
-  const hasAttr = !!tree?.tm
+  const hasAttr = (meta?.users?.length ?? 0) > 0
   const effMode: ColorMode = hasAttr ? mode : 'tree'
-  const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
+  const hl: Highlight | null = hlUser ? { user: hlUser } : null
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
 
   const pickUser = (u: string) => {
-    setHlTeam(undefined)
     setHlUser(u)
-    if (mode !== 'user' && mode !== 'uteam') setMode('user')
-  }
-  const pickTeam = (t: string) => {
-    setHlUser(undefined)
-    setHlTeam(t)
-    if (mode !== 'team') setMode('team')
+    if (mode !== 'user') setMode('user')
   }
   const clearHl = () => {
     setHlUser(undefined)
-    setHlTeam(undefined)
   }
 
   useActions({
@@ -108,7 +100,7 @@ function AppContent() {
       ]),
     ),
     'highlight:clear': {
-      label: 'Clear user/group highlight',
+      label: 'Clear user highlight',
       group: 'Highlight',
       defaultBindings: ['x'],
       handler: clearHl,
@@ -129,19 +121,9 @@ function AppContent() {
       (meta?.users ?? []).map(u => [
         `user:${u.u}`,
         {
-          label: `${u.u} · ${u.t} · ${fmtBytes(u.b)}`,
+          label: `${u.u} · ${fmtBytes(u.b)}`,
           group: 'Users',
           handler: () => pickUser(u.u),
-        },
-      ]),
-    ),
-    ...Object.fromEntries(
-      (rules?.teams ?? []).map(t => [
-        `group:${t}`,
-        {
-          label: `group: ${t}`,
-          group: 'Groups',
-          handler: () => pickTeam(t),
         },
       ]),
     ),
@@ -218,9 +200,7 @@ function AppContent() {
       m && Object.fromEntries(Object.entries(m).map(([k, cb]) => [k, ratePerByte(cb)]))
     return {
       blended: ratePerByte(meta.class_bytes),
-      teamRates: rates(meta.team_class_bytes),
       userRates: rates(meta.user_class_bytes),
-      teamMix: meta.team_class_bytes,
       userMix: meta.user_class_bytes,
     }
   }, [meta])
@@ -269,10 +249,9 @@ function AppContent() {
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
           <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/" target="_blank" rel="noreferrer">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
           scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control recolors
-          both plots — by owning group (OA / Stanford / communal), top-level tree, age (older→newer), or owning
-          user (hi-contrast, or hues grouped by group). Ownership comes from the{' '}
-          <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
-          curation) — hover a cell for its group split and top users, or <kbd>⌘K</kbd> to jump to a user/group.
+          both plots — by top-level tree, age (older→newer), or owning user (hi-contrast). Ownership comes
+          from the <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars,
+          manual curation) — hover a cell for its top users, or <kbd>⌘K</kbd> to jump to a user.
         </p>
       </section>
 
@@ -292,7 +271,7 @@ function AppContent() {
           ))}
           {hl && (
             <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">
-              {hlUser ?? hlTeam} ✕
+              {hlUser} ✕
             </button>
           )}
         </div>
@@ -312,7 +291,7 @@ function AppContent() {
         {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode} userIdx={userIdx} />}
       </section>
 
-      {rules && tree?.tm && meta?.users && (
+      {rules && tree && meta?.users && (
         <AttributionRules rules={rules} tree={tree} users={meta.users} />
       )}
 
@@ -352,7 +331,7 @@ function AppContent() {
           onClick: cycleTheme,
         },
       ]} />
-      <Omnibar placeholder="Users, groups, color modes, scans…" maxResults={15} />
+      <Omnibar placeholder="Users, color modes, scans…" maxResults={15} />
       <ShortcutsModal />
     </main>
   )

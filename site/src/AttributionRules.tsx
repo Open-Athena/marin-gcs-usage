@@ -1,16 +1,9 @@
 import { useEffect } from 'react'
 import type { Rules, TreeNode, UserInfo } from './types'
-import { TEAM_VARS, fmtBytes } from './types'
+import { fmtBytes } from './types'
 
 const SLACK_URL = 'https://openathena.slack.com/archives/C0AHF5KV11Q'
 const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/main/src/gcs_usage/identities.yaml'
-
-const TeamChip = ({ team }: { team: string }) => (
-  <span className="teamchip">
-    <span className="sw" style={{ background: `var(${TEAM_VARS[team] ?? '--t-unattr'})` }} />
-    {team}
-  </span>
-)
 
 const Note = ({ note }: { note?: string }) =>
   note ? (
@@ -31,9 +24,7 @@ export function AttributionRules({ rules, tree, users }: {
   }, [])
 
   const bytesOf = new Map(users.map(u => [u.u, u.b]))
-  const attributed = Object.entries(tree.tm ?? {})
-    .filter(([t]) => t !== 'unattributed')
-    .reduce((s, [, b]) => s + b, 0)
+  const attributed = users.reduce((s, u) => s + u.b, 0)
   const pct = (b: number) => ((100 * b) / tree.b).toFixed(1)
   const ruleUsers = [...rules.users].sort((a, b) => (bytesOf.get(b.u) ?? 0) - (bytesOf.get(a.u) ?? 0))
   return (
@@ -45,13 +36,13 @@ export function AttributionRules({ rules, tree, users }: {
           W&B run configs (checkpoint/output paths written by trainers), W&B run-name ↔ directory joins,{' '}
           <code>.executor_info</code> sidecars, provenance records, and the manual rules below.{' '}
           <b>{pct(attributed)}%</b> of bytes are attributed; the rest shows as{' '}
-          <i>unattributed</i> (gray). Attribution means “this user's runs wrote these bytes” — shared
-          datasets and infra are assigned to teams, not people, and a run writing to a dir doesn't
-          always mean its owner should pay for it. Treat per-user numbers as a starting point, not a bill.
+          <i>unattributed</i> (gray). Attribution means “this user's runs wrote these bytes” — a run
+          writing to a dir doesn't always mean its owner should pay for it. Treat per-user numbers as a
+          starting point, not a bill.
         </p>
         <p className="feedback">
           Spot a wrong owner? Say so in <a href={SLACK_URL} target="_blank" rel="noreferrer">#marin-eng</a> or PR{' '}
-          <a href={YAML_URL} target="_blank" rel="noreferrer"><code>identities.yaml</code></a> — aliases, team assignments, and
+          <a href={YAML_URL} target="_blank" rel="noreferrer"><code>identities.yaml</code></a> — aliases and
           prefix rules all live there and take effect on the next data refresh.
         </p>
       </div>
@@ -59,13 +50,12 @@ export function AttributionRules({ rules, tree, users }: {
         <summary>Users &amp; aliases ({rules.users.length})</summary>
         <table className="classes rulestable">
           <thead>
-            <tr><th>user</th><th>team</th><th>attributed</th><th>aliases</th><th>notes</th></tr>
+            <tr><th>user</th><th>attributed</th><th>aliases</th><th>notes</th></tr>
           </thead>
           <tbody>
             {ruleUsers.map(u => (
               <tr key={u.u}>
                 <td>{u.u}</td>
-                <td><TeamChip team={u.team} /></td>
                 <td>{bytesOf.has(u.u) ? fmtBytes(bytesOf.get(u.u)!) : '—'}</td>
                 <td className="aliases">{u.aliases.join(', ')}</td>
                 <td><Note note={u.note} /></td>
@@ -84,7 +74,7 @@ export function AttributionRules({ rules, tree, users }: {
             {rules.prefix_owners.map(p => (
               <tr key={p.prefix}>
                 <td><code>{p.prefix}</code></td>
-                <td>{p.user ? <>{p.user} <TeamChip team={p.team} /></> : <TeamChip team={p.team} />}</td>
+                <td>{p.user ?? '—'}</td>
                 <td><Note note={p.note} /></td>
               </tr>
             ))}

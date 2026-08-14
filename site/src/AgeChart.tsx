@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, userColor } from './colors'
-import type { UserIndexEntry } from './colors'
+import type { UserIndex } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
-import { SHARED_GROUPS, TEAM_VARS, fmtBytes, groupLabel, sharedColor } from './types'
+import { fmtBytes } from './types'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
@@ -28,18 +28,16 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
   rows: AgeRow[]
   catOrder: string[]
   mode: ColorMode
-  userIdx: Map<string, UserIndexEntry>
+  userIdx: UserIndex
 }) {
   const [gran, setGran] = useState<Granularity>('month')
   const [hover, setHover] = useState<{ b: number; x: number; y: number } | null>(null)
 
   const { buckets, byBucket, colorOf, legend } = useMemo(() => {
     const slotMap = new Map(catOrder.slice(0, 8).map((k, i) => [k, SLOTS[i]]))
-    const userMode = mode === 'user' || mode === 'uteam'
+    const userMode = mode === 'user'
     const keyOf = (r: AgeRow) =>
-      mode === 'team'
-        ? (!r.t || r.t === 'unattributed' ? 'unattributed' : r.u ? r.t : `${r.t} (shared)`)
-      : userMode ? (r.u ?? 'unattributed')
+      userMode ? (r.u ?? 'unattributed')
       : slotMap.has(r.d1) ? r.d1 : '(other)'
     const byBucket = new Map<number, Map<string, number>>()
     for (const r of rows) {
@@ -52,20 +50,12 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
     }
     const buckets = [...byBucket.keys()].sort((a, b) => a - b)
     const colorOf = (k: string): string =>
-      mode === 'team'
-        ? (k.endsWith(' (shared)')
-            ? sharedColor(TEAM_VARS[k.slice(0, -' (shared)'.length)] ?? '--t-unattr')
-            : `var(${TEAM_VARS[k] ?? '--t-unattr'})`)
-      : userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx, mode === 'uteam'))
+      userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx))
       : `var(${slotMap.get(k) ?? '--other'})`
     const legend: [string, string][] =
-      mode === 'team'
-        ? Object.entries(TEAM_VARS).flatMap(([t, v]): [string, string][] =>
-            [[groupLabel(t), SHARED_GROUPS.has(t) ? sharedColor(v) : `var(${v})`]],
-          )
-      : userMode
+      userMode
         ? [
-            ...[...userIdx.keys()].slice(0, 10).map((u): [string, string] => [u, userColor(u, userIdx, mode === 'uteam')]),
+            ...[...userIdx.keys()].slice(0, 10).map((u): [string, string] => [u, userColor(u, userIdx)]),
             ['unattributed', 'var(--t-unattr)'],
           ]
         : [

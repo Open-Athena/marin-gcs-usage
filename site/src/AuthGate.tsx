@@ -38,7 +38,7 @@ function LoginWall() {
     <div className="authwall">
       <div className="card">
         <h1>Marin GCS usage</h1>
-        <p>Per-group storage attribution across the six <code>marin-*</code> GCS buckets.</p>
+        <p>Per-user storage attribution across the six <code>marin-*</code> GCS buckets.</p>
         <p className="restrict">This dashboard is restricted to Open Athena members.</p>
         <a className="signin" href="/login">Sign in with Open Athena</a>
       </div>
