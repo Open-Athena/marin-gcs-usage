@@ -42,9 +42,9 @@ export function OgPage() {
   return (
     <div className="og">
       <div className="og-head">
-        <h1>Marin GCS usage</h1>
+        <h1>Marin CoreWeave usage</h1>
         <p>
-          Per-user storage attribution across the six <code>marin-*</code> GCS buckets
+          Per-user storage attribution across the Marin CoreWeave buckets
         </p>
       </div>
       <div className="og-map">

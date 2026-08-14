@@ -58,7 +58,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     [catSlot],
   )
 
-  const gsPathOf = (path: TreeNode[]) => 'gs://' + path.slice(1).map(n => n.n).join('/')
+  // this branch serves the CoreWeave (CAIOS) estate — object URLs are s3://
+  const pathOf = (path: TreeNode[]) => 's3://' + path.slice(1).map(n => n.n).join('/')
 
   // Fold merger: first-class TreeNode aggregating us/d so folded tiles keep
   // real tooltips (upstream calls this at every nesting level).
@@ -195,7 +196,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     : undefined
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
-    const gsPath = gsPathOf(path)
+    const gsPath = pathOf(path)
     const mix = classMix(n)
     const classes = n.cb && (
       <div className="classes-row">
@@ -239,7 +240,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
-      getId={(_n, p) => gsPathOf(p)}
+      getId={(_n, p) => pathOf(p)}
       formatSize={fmtBytes}
       mergeSmall={mergeSmall}
       colorForCell={colorForCell}

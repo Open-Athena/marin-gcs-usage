@@ -209,7 +209,7 @@ function AppContent() {
     <main>
       <header>
         <div className="hrow">
-          <h1>Marin GCS usage</h1>
+          <h1>Marin CoreWeave usage</h1>
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
           {ident && (
             <div className="whoami">
@@ -246,9 +246,8 @@ function AppContent() {
 
       <section className="prose">
         <p>
-          Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
-          <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/" target="_blank" rel="noreferrer">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
-          scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control recolors
+          Storage in CoreWeave AI Object Storage (<code>s3://marin-us-east-02a</code> and friends),
+          from a scheduled per-object listing. Treemap drills into prefixes; the “color by” control recolors
           both plots — by top-level tree, age (older→newer), or owning user (hi-contrast). Ownership comes
           from the <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars,
           manual curation) — hover a cell for its top users, or <kbd>⌘K</kbd> to jump to a user.
