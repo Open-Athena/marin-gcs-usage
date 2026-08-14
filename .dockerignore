@@ -7,3 +7,7 @@ site/dist
 site/public/data/20*
 wt
 gh
+marin/.venv
+ui/node_modules
+packages/react/node_modules
+marin/tmp
