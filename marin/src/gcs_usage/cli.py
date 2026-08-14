@@ -479,25 +479,6 @@ def stage(out_root: Path, workers: int, globs: tuple[str, ...]) -> None:
     stage_globs(globs, out_root, workers)
 
 
-@main.command("list-bucket")
-@option("-o", "--out", "out_dir", required=True, help="Output dir (local or gs://) for canonical listing parquet shards")
-@option("-p", "--prefix", default=None, help="List only under this prefix (smoke tests / partial runs)")
-@option("-P", "--procs", default=6, help="Worker processes (page parsing is GIL-bound; processes scale it)")
-@option("-w", "--workers", "threads", default=8, help="Concurrent prefix streams per process")
-@option("-W", "--weights-from", default=None, help="Prior canonical listing glob; balances worker chunks by object counts")
-@option("-x", "--exists", type=Choice(["error", "reuse", "clear"]), default="error", help="On existing output: refuse, reuse-if-complete (clear partials), or clear")
-@argument("bucket")
-def list_bucket(out_dir: str, prefix: str | None, procs: int, threads: int, weights_from: str | None, exists: str, bucket: str) -> None:
-    """Directly list a GCS bucket to canonical listing parquet shards.
-
-    Patch for buckets where Storage Insights inventory reports are
-    unavailable (currently `marin-us-central2`).
-    """
-    from .bucket_list import list_bucket_to_parquet
-
-    list_bucket_to_parquet(bucket, out_dir, procs=procs, threads=threads, prefix=prefix, exists=exists, weights_from=weights_from)
-
-
 @main.command()
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-o", "--out", type=Path, default=None, help="Write rules JSON (users/aliases/teams/prefix_owners + notes) for the site")
@@ -609,7 +590,7 @@ def job_watch(interval: int, name: str | None) -> None:
 @option("-b", "--bucket", "buckets", multiple=True, help="Bucket(s) to list [default: whole fleet]")
 @option("-d", "--date", "date", required=True, help="Listing date — output goes to listing/<date>/<bucket>/")
 @option("-m", "--machine", default="n2-standard-32", help="Machine type per task")
-@option("-P", "--procs", default=24, help="list-bucket worker processes per task")
+@option("-P", "--procs", default=24, help="bulk-list worker processes per task")
 @option("-w", "--workers", "threads", default=10, help="Concurrent prefix streams per process")
 @option("-W", "--wait", "wait", is_flag=True, help="Block until the job reaches a terminal state")
 def job_submit_listing(

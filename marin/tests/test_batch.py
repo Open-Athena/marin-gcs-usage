@@ -37,7 +37,7 @@ def test_listing_job_spec_task_per_bucket():
         "  sii=$(ls \"/gcs/$b/inventory-reports/\" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -ru | head -1)\n"
         '  [ -n "$sii" ] && W=(-W "/gcs/$b/inventory-reports/*_${sii}T*_*.parquet")\n'
         "fi\n"
-        'gcs-usage list-bucket "$b" -o "gs://oa-gcs-usage-dvx/listing/2026-07-30/$b" -P 4 -w 3 -x reuse "${W[@]}"\n'
+        'disk-tree bulk-list "gcs://$b" -o "gs://oa-gcs-usage-dvx/listing/2026-07-30/$b" -P 4 -w 3 -x reuse "${W[@]}"\n'
     )
     assert tg["taskSpec"]["volumes"] == [
         {
