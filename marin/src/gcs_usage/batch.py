@@ -4,7 +4,7 @@ DIY mode lists all buckets ourselves instead of depending on SII reports
 (whose generation times scatter 02:26-13:00 UTC, lag ~30h on day one, and are
 plain unavailable in us-central2). Buckets are embarrassingly parallel — one
 Batch *task* per bucket (``BATCH_TASK_INDEX`` picks from the bucket list), so
-fleet wall-clock ~= the slowest bucket. Within a bucket, ``list-bucket``'s
+fleet wall-clock ~= the slowest bucket. Within a bucket, ``bulk-list``'s
 own procs x threads prefix streams do the scaling.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ def listing_job_spec(
     threads: int = 10,
     region: str = REGION,
 ) -> dict:
-    """One task per bucket; each runs ``list-bucket`` straight to gs://.
+    """One task per bucket; each runs ``disk-tree bulk-list`` straight to gs://.
 
     Chunk weights come from, in order: the newest prior completed listing of
     the bucket (DIY layout, then legacy ``central2-listing/`` for central2),
@@ -68,7 +68,7 @@ if [ ${{#W[@]}} -eq 0 ]; then
   sii=$(ls "/gcs/$b/inventory-reports/" 2>/dev/null | grep -oE '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' | sort -ru | head -1)
   [ -n "$sii" ] && W=(-W "/gcs/$b/inventory-reports/*_${{sii}}T*_*.parquet")
 fi
-gcs-usage list-bucket "$b" -o "gs://{listing_dir(data_bucket, date, "$b")}" -P {procs} -w {threads} -x reuse "${{W[@]}}"
+disk-tree bulk-list "gcs://$b" -o "gs://{listing_dir(data_bucket, date, "$b")}" -P {procs} -w {threads} -x reuse "${{W[@]}}"
 """
     mounts = [(data_bucket, "rw")] + [(b, "ro") for b in FLEET_BUCKETS]
     # Size the task request off the machine, not a constant: a hardcoded
