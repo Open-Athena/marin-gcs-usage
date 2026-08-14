@@ -1,11 +1,17 @@
 # Cloud Run job image for daily storage snapshots (see job/run.sh).
 # Stage 1: build the static site (data dirs are overlaid at runtime).
+# The site is a pnpm-workspace member (with in-tree @disk-tree/react), so the
+# build context is the repo root: copy the workspace manifests + the members
+# the site needs (ui/ contributes only its package.json; its deps install
+# too — the workspace lockfile is one unit — but stay in this cached layer).
 FROM node:22-slim AS site
-WORKDIR /site
-COPY site/package.json site/pnpm-lock.yaml ./
+WORKDIR /repo
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY ui/package.json ./ui/
+COPY packages/react ./packages/react
+COPY site ./site
 RUN corepack enable && pnpm install --frozen-lockfile
-COPY site/ ./
-RUN pnpm build
+RUN cd site && pnpm build
 
 # Stage 2: pipeline + wrangler (node for wrangler; python for gcs-usage).
 # Node comes from the node:22-slim stage (same Debian base) — Debian's apt
@@ -16,9 +22,9 @@ COPY --from=site /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && npm install -g wrangler@4
 WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY src ./src
-RUN pip install --no-cache-dir .
-COPY --from=site /site/dist ./dist
+COPY marin/pyproject.toml ./marin/
+COPY marin/src ./marin/src
+RUN pip install --no-cache-dir ./marin
+COPY --from=site /repo/site/dist ./dist
 COPY job ./job
 ENTRYPOINT ["bash", "job/run.sh"]
