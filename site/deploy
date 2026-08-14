@@ -5,11 +5,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Deploys auth via the wrangler OAuth login (`wrangler login`), which has Pages
-# scope; the repo's direnv CLOUDFLARE_API_TOKEN (Access + DNS only) would
-# preempt it and fail, so drop it.
-unset CLOUDFLARE_API_TOKEN
+# `--status`: report whether HEAD is deployed (no build/deploy). Delegates to the
+# standalone `cf-status` (queries the CF Pages deployments API, compares to HEAD).
+if [ "${1:-}" = "--status" ]; then exec ./cf-status; fi
 
+# Auth via the repo's direnv CLOUDFLARE_API_TOKEN, which has Pages write on the
+# OA account (as well as Access + oa.dev DNS edit). We deliberately do NOT fall
+# back to `wrangler login` OAuth: that session tends to drift to a personal
+# account and then fails with auth error 10000 against the OA account.
 pnpm build
 CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d \
   exec npx wrangler pages deploy dist --project-name oa-gcs-usage --branch main
