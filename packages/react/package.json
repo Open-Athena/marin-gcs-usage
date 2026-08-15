@@ -1,6 +1,6 @@
 {
   "name": "@disk-tree/react",
-  "version": "0.1.0",
+  "version": "0.1.0-dist.fbced6b",
   "description": "Reusable React widgets (Treemap, TimeSeries) for disk-tree consumers. Accessor-based, chart-lib-free.",
   "type": "module",
   "main": "./src/index.ts",
@@ -16,12 +16,6 @@
   "sideEffects": [
     "*.css"
   ],
-  "scripts": {
-    "build": "pnpm run typecheck",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc -b --noEmit"
-  },
   "peerDependencies": {
     "react": ">=18",
     "react-dom": ">=18"
@@ -35,5 +29,11 @@
     "jsdom": "^25.0.1",
     "typescript": "~5.9.3",
     "vitest": "^2.1.9"
+  },
+  "scripts": {
+    "build": "pnpm run typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b --noEmit"
   }
 }
