@@ -20,6 +20,9 @@ Two entry points:
 
 from __future__ import annotations
 
+import os
+import sys
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -36,6 +39,12 @@ _PARENT_EXPR = (
     "THEN regexp_extract({col}, '^(.*)/[^/]+$', 1) "
     "ELSE '' END"
 )
+
+
+def _stage(msg: str) -> None:
+    """Stage-boundary log line (stderr): OOM post-mortems need to know which
+    statement was in flight — a SIGKILL leaves no traceback."""
+    print(f"[agg {datetime.now().isoformat(timespec='seconds')}] {msg}", file=sys.stderr, flush=True)
 
 
 def _register_inputs(con: "duckdb.DuckDBPyConnection", inputs: pd.DataFrame) -> None:
@@ -57,11 +66,8 @@ def _register_inputs(con: "duckdb.DuckDBPyConnection", inputs: pd.DataFrame) -> 
     con.unregister('inputs_df')
 
 
-def _aggregate_shared(
-    con: "duckdb.DuckDBPyConnection",
-    scan_root: str,
-) -> pd.DataFrame:
-    """The core SQL cascade. Assumes an `inputs` table with the schema above."""
+def _build_dirs_cascade(con: "duckdb.DuckDBPyConnection") -> None:
+    """Bottom-up group-by cascade over `inputs` → `dirs_all` + `n_children_tbl` tables."""
 
     parent_of_path = _PARENT_EXPR.format(col='path')
 
@@ -111,6 +117,7 @@ def _aggregate_shared(
             GROUP BY 1
         """)
         cnt = con.execute(f"SELECT COUNT(*) FROM {next_tbl}").fetchone()[0]
+        _stage(f"cascade level {level}: {cnt} rows")
         if cnt == 0:
             break
         level_tables.append(next_tbl)
@@ -134,6 +141,19 @@ def _aggregate_shared(
             CREATE OR REPLACE TABLE dirs_all AS
             SELECT path, size, mtime, n_desc, n_files FROM dirs0
         """)
+
+    # The level tables are folded into dirs_all; keeping them alive doubles the
+    # cascade's disk footprint (spill exhaustion at the 92.7M-row scale).
+    for t in ['dirs0', 'level_cur', *level_tables]:
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+
+
+def _aggregate_shared(
+    con: "duckdb.DuckDBPyConnection",
+    scan_root: str,
+) -> pd.DataFrame:
+    """The core SQL cascade. Assumes an `inputs` table with the schema above."""
+    _build_dirs_cascade(con)
 
     parent_of_agg = _PARENT_EXPR.format(col='d.path')
     dirs_agg = con.execute(f"""
@@ -232,6 +252,11 @@ def aggregate_listing_to_parquet(
     if con is None:
         con = _duckdb.connect()
     con.execute(f"SET memory_limit = '{memory_limit}'")
+    con.execute("SET preserve_insertion_order = false")
+    # Fewer threads → fewer concurrent per-operator buffers (sort runs +
+    # parquet-writer row groups scale with thread count and sit largely
+    # outside `memory_limit` accounting).
+    con.execute("SET threads = 8")
     if temp_dir:
         con.execute(f"SET temp_directory = '{temp_dir}'")
 
@@ -263,12 +288,12 @@ def aggregate_listing_to_parquet(
             size_bytes::BIGINT AS size,
             COALESCE(epoch(created), 0)::BIGINT AS mtime,
             'file'::VARCHAR AS kind,
-            {parent_of_name} AS parent,
-            ('{scan_root}/' || canonical)::VARCHAR AS uri
+            {parent_of_name} AS parent
         FROM canon
     """)
 
     n_files = con.execute("SELECT COUNT(*) FROM inputs").fetchone()[0]
+    _stage(f"inputs table: {n_files} file rows")
     if n_files == 0:
         raise ValueError(f"no rows for bucket {bucket!r}")
 
@@ -290,17 +315,92 @@ def aggregate_listing_to_parquet(
             0::BIGINT AS size,
             0::BIGINT AS mtime,
             'dir'::VARCHAR AS kind,
-            {_PARENT_EXPR.format(col='path')} AS parent,
-            CASE WHEN path = '' THEN '{scan_root}' ELSE '{scan_root}/' || path END AS uri
+            {_PARENT_EXPR.format(col='path')} AS parent
         FROM dir_paths
     """)
+    con.execute("DROP TABLE dir_paths")
+    _stage("dir rows synthesized")
 
-    df = _aggregate_shared(con, scan_root)
-    df.to_parquet(out_parquet, index=False)
+    # SQL-only tail: the pandas tail in `_aggregate_shared` materializes every
+    # file row (path/parent/uri object strings) — ~60GB RSS at 92.7M rows.
+    # Here the normalization + concat + sort stay inside DuckDB (spillable) and
+    # the output goes straight to parquet via COPY.
+    _build_dirs_cascade(con)
+    _stage("cascade done")
+    parent_of_agg = _PARENT_EXPR.format(col='path')
+    # Materialize the (small — one row per dir) aggregated dir table first, so
+    # the join + group-by run alone; the giant COPY below is then a pure
+    # union + sort + write. One operator at a time: v3/v4 post-mortems showed
+    # the combined pipeline allocating far past `memory_limit` (63-95GB RSS
+    # under 32-50GB caps) with no way to tell which operator was responsible.
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dirs_final AS
+        WITH dirs_agg AS (
+            SELECT
+                d.path AS path,
+                SUM(d.size)::BIGINT AS size,
+                MAX(d.mtime)::BIGINT AS mtime,
+                SUM(d.n_desc)::BIGINT AS n_desc,
+                SUM(d.n_files)::BIGINT AS n_files,
+                COALESCE(MAX(nc.n_children), 0)::BIGINT AS n_children
+            FROM dirs_all d
+            LEFT JOIN n_children_tbl nc ON d.path = nc.path
+            GROUP BY d.path
+        )
+        -- pandas-tail parity: root row '' → path '.', parent ''; other
+        -- dirs whose computed parent is '' (top-level) get parent '.'
+        SELECT
+            CASE WHEN path = '' THEN '.' ELSE path END AS path,
+            size, mtime, n_desc, n_files, n_children,
+            'dir' AS kind,
+            CASE
+                WHEN path = '' THEN ''
+                WHEN {parent_of_agg} = '' THEN '.'
+                ELSE {parent_of_agg}
+            END AS parent,
+            CASE WHEN path = '' THEN '{scan_root}' ELSE '{scan_root}/' || path END AS uri
+        FROM dirs_agg
+    """)
+    n_dirs = con.execute("SELECT COUNT(*) FROM dirs_final").fetchone()[0]
+    con.execute("DROP TABLE dirs_all")
+    con.execute("DROP TABLE n_children_tbl")
+    _stage(f"dirs_final: {n_dirs} dirs")
 
-    root = df[df['path'] == '.'].iloc[0] if not df[df['path'] == '.'].empty else None
+    # COPY straight from the union query — materializing it as a table first
+    # doubles the on-disk footprint (all 92.7M file rows a second time) and
+    # exhausted a ~95GiB spill budget at CW scale. `uri` is derived here rather
+    # than stored per input row for the same reason.
+    tmp_out = out_parquet + '.tmp'
+    con.execute(f"""
+        COPY (
+        WITH unioned AS (
+            SELECT path, size, mtime, n_desc, n_files, n_children, kind, parent, uri FROM dirs_final
+            UNION ALL
+            SELECT path, size, mtime,
+                   1::BIGINT AS n_desc, 1::BIGINT AS n_files, 0::BIGINT AS n_children,
+                   kind, parent,
+                   ('{scan_root}/' || path)::VARCHAR AS uri
+            FROM inputs WHERE kind = 'file'
+        )
+        SELECT *,
+               CASE WHEN path = '.' THEN 0
+                    ELSE length(path) - length(replace(path, '/', '')) + 1
+               END::BIGINT AS depth
+        FROM unioned
+        ORDER BY depth, path
+        ) TO '{tmp_out}' (FORMAT PARQUET)
+    """)
+    _stage("COPY done")
+    rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{tmp_out}')").fetchone()[0]
+    os.replace(tmp_out, out_parquet)
+
+    root = con.execute(f"""
+        SELECT * FROM read_parquet('{out_parquet}')
+        WHERE path = '.' LIMIT 1
+    """).df()
+    root = root.iloc[0] if len(root) else None
     return {
-        'rows': int(len(df)),
+        'rows': int(rows),
         'files': int(n_files),
         'root_size': int(root['size']) if root is not None else 0,
         'root_n_desc': int(root['n_desc']) if root is not None else 0,
