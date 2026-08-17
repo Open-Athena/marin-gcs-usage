@@ -323,6 +323,39 @@ def test_finalize_jobs_byte_identical(tmp_path: Path):
     assert open(outs[0], 'rb').read() == open(outs[1], 'rb').read()
 
 
+def test_boundary_rows_split_across_worker_ranges(tmp_path: Path):
+    """Boundary rows (spanning dirs) are the only ones not already range-scoped.
+    Splitting them across the workers' `[lo, hi)` is what makes every part
+    attributable to one range, which is what lets the finalize fan out by
+    (depth, worker) instead of by depth alone — the difference between
+    eu-west4's finalize being bound by its 92.2M-row depth 9 or not."""
+    from disk_tree.find.aggregate_stream import _write_boundary_parts
+    # segs: spanning dirs keyed by path, each [size, mtime, n_desc, n_files,
+    # n_children, pivots, mt_wsum]; '' is the root.
+    segs = {
+        '': [100, 5, 4, 4, 2, [], 0],
+        'aaa': [40, 5, 2, 2, 1, [], 0],
+        'mmm': [30, 5, 1, 1, 1, [], 0],
+        'zzz': [30, 5, 1, 1, 1, [], 0],
+    }
+    parts, _ = _write_boundary_parts(
+        str(tmp_path), segs, 'gs://b1', [], False,
+        ranges=[(None, 'n'), ('n', None)],
+    )
+    got = sorted((p['depth'], p['w'], p['file'], p['rows']) for p in parts)
+    assert got == [
+        (0, 0, '0000-dir.b.w000.parquet', 1),   # root '.' → first range
+        (1, 0, '0001-dir.b.w000.parquet', 2),   # 'aaa', 'mmm' < 'n'
+        (1, 1, '0001-dir.b.w001.parquet', 1),   # 'zzz' >= 'n'
+    ]
+    # Without ranges (jobs=1) it stays one part per depth, still tagged w=0.
+    parts1, _ = _write_boundary_parts(str(tmp_path), segs, 'gs://b1', [], False)
+    assert sorted((p['depth'], p['w'], p['file']) for p in parts1) == [
+        (0, 0, '0000-dir.b.parquet'),
+        (1, 0, '0001-dir.b.parquet'),
+    ]
+
+
 def test_depth_stream_coalesces_alternation_slices(tmp_path: Path):
     """The dir↔file merge emits one slice per alternation. Consumers turn each
     into a chunk, so an uncoalesced stream made every flush walk ~10^5 chunks
