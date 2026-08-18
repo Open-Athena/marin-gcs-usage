@@ -53,6 +53,9 @@ importers:
       '@rdub/file-tree':
         specifier: https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673
         version: https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))
+      '@tanstack/react-query':
+        specifier: ^5.101.4
+        version: 5.101.4(react@19.2.8)
       hyparquet:
         specifier: ^1.27.1
         version: 1.28.2

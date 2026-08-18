@@ -1,6 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { FaGithub } from 'react-icons/fa'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons/md'
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
@@ -10,10 +11,49 @@ import { buildUserIndex } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
+import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtBytes, fmtN, ratePerByte } from './types'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
+// How often an unpinned tab re-checks for newly published scans.
+const SCANS_POLL_MS = 5 * 60_000
+
+// Scan labels: drop the redundant year for the current one, so a list of
+// same-year scans reads as `8/17` rather than `2026-08-17`. Scan ids are
+// `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM`.
+export function fmtScan(s: string, now = new Date()): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):?(\d{2}))?/.exec(s)
+  if (!m) return s
+  const [, y, mo, d, hh, mm] = m
+  const md = `${Number(mo)}/${Number(d)}`
+  // Scan ids are UTC (the jobs run on UTC hosts, and the age chart's epoch-day
+  // buckets are UTC too). Readers are spread across timezones, so label the
+  // zone rather than silently rendering a bare wall-clock time that a PT reader
+  // would take for local — and don't convert, so the label still matches the
+  // `?d=` token, the bucket path, and what the ops dashboards/wiki quote.
+  const time = hh ? ` ${hh}:${mm}Z` : ''
+  return Number(y) === now.getFullYear() ? `${md}${time}` : `${y}-${mo}-${d}${time}`
+}
+
+// `?d` is a *prefix* of a scan id, in a compact form: `260817-1944` pins one
+// sub-daily scan, `260817-11` the 11:xx one, `260817` the whole day. Anything
+// that still matches several scans resolves to the newest and says so, rather
+// than sending you to a disambiguation page — the scan picker beside it already
+// lists the candidates, so an extra route would just be a worse picker.
+export const encodeScan = (v: string | undefined): string | undefined => {
+  const m = v && /^\d{2}(\d{2})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2}))?$/.exec(v)
+  if (!m) return v || undefined
+  const [, y, mo, d, hh, mm] = m
+  return `${y}${mo}${d}` + (hh ? `-${hh}${mm}` : '')
+}
+
+export const decodeScan = (e: string | undefined): string | undefined => {
+  const m = e && /^(\d{2})(\d{2})(\d{2})(?:-(\d{2})(\d{2})?)?$/.exec(e)
+  if (!m) return undefined
+  const [, y, mo, d, hh, mm] = m
+  return `20${y}-${mo}-${d}` + (hh ? `T${hh}${mm ?? ''}` : '')
+}
 
 // CF Access identity (present when served behind gcs.oa.dev; absent in local dev)
 interface Identity { email: string; name?: string }
@@ -49,10 +89,17 @@ function useTheme(): [Theme, () => void] {
 }
 
 function AppContent() {
-  const [tree, setTree] = useState<TreeNode | null>(null)
-  const [age, setAge] = useState<AgeRow[]>([])
-  const [meta, setMeta] = useState<Meta | null>(null)
-  const [rules, setRules] = useState<Rules | null>(null)
+  // Which object store to render comes from the path (`/` = GCS, `/cw` = the
+  // CoreWeave bucket), so each store is its own shareable URL with its own
+  // unfurl card rather than a query param on a single page.
+  const { pathname, search } = useLocation()
+  const navigate = useNavigate()
+  const store = storeForPath(pathname)
+  // The shell's <title> is rewritten per store for crawlers (functions/cw/), but
+  // client-side navigation between stores has to keep the tab in sync too.
+  useEffect(() => {
+    document.title = store.title
+  }, [store])
   // URL token matches the visible label ("age"), not the internal key ("date")
   const [modeP, setModeP] = useUrlState('c', {
     encode: (v: string | undefined) => (v === 'team' || v === undefined ? undefined : v === 'date' ? 'age' : v),
@@ -60,15 +107,43 @@ function AppContent() {
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
-  // Selected scan in the URL as short YYMMDD (`?d=260809`), kept always present
-  // so each day's Slack digest can deep-link straight to its own scan.
-  const [dP, setDP] = useUrlState('d', {
-    encode: (v: string | undefined) => (v ? v.slice(2).replace(/-/g, '') : undefined),
-    decode: (e: string | undefined) =>
-      e && /^\d{6}$/.test(e) ? `20${e.slice(0, 2)}-${e.slice(2, 4)}-${e.slice(4, 6)}` : undefined,
+  // Selected scan in the URL as short YYMMDD (`?d=260809`). Absent is a
+  // first-class state meaning "latest", so a tab parked on gcs.oa.dev keeps
+  // following new scans instead of pinning whatever day it was opened. `?d=`
+  // appears only when a specific scan is chosen — digest deep-links still
+  // resolve, they just aren't manufactured for the default view.
+  const [dP, setDP] = useUrlState('d', { encode: encodeScan, decode: decodeScan })
+  // The scan list polls so an unpinned tab discovers new scans on its own; the
+  // per-scan payloads are immutable once published, so they never refetch.
+  // Every key is store-scoped, so switching stores swaps the whole payload set
+  // rather than mixing one store's tree with another's scan list.
+  const scansQ = useQuery<string[]>({
+    queryKey: ['scans', store.key],
+    queryFn: () => fetch(`${store.base}/scans.json`).then(r => r.json()),
+    refetchInterval: SCANS_POLL_MS,
   })
-  const [scans, setScans] = useState<string[]>([])
-  const asof = useMemo(() => (dP && scans.includes(dP) ? dP : scans[0] ?? null), [dP, scans])
+  const rulesQ = useQuery({
+    queryKey: ['rules'],
+    queryFn: () => fetch('/data/rules.json').then(r => r.json()),
+    retry: false,
+  })
+  const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
+  const rules: Rules | null = rulesQ.data ?? null
+  // `scans` is newest-first, so the first prefix match is the newest one.
+  const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
+  const asof = dMatches[0] ?? scans[0] ?? null
+  const scanQuery = <T,>(name: string) => ({
+    queryKey: [name, store.key, asof],
+    queryFn: () => fetch(`${store.base}/${asof}/${name}.json`).then(r => r.json() as Promise<T>),
+    enabled: !!asof,
+    staleTime: Infinity,
+  })
+  const treeQ = useQuery(scanQuery<TreeNode>('tree'))
+  const ageQ = useQuery(scanQuery<AgeRow[]>('age'))
+  const metaQ = useQuery(scanQuery<Meta>('meta'))
+  const tree: TreeNode | null = treeQ.data ?? null
+  const age: AgeRow[] = ageQ.data ?? []
+  const meta: Meta | null = metaQ.data ?? null
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
@@ -149,9 +224,19 @@ function AppContent() {
       scans.map(s => [
         `scan:${s}`,
         {
-          label: `Scan ${s}`,
+          label: `Scan ${fmtScan(s)}`,
           group: 'Scans',
           handler: () => setDP(s),
+        },
+      ]),
+    ),
+    ...Object.fromEntries(
+      STORES.map(s => [
+        `store:${s.key}`,
+        {
+          label: `Store: ${s.label}`,
+          group: 'Stores',
+          handler: () => navigate({ pathname: s.path, search }),
         },
       ]),
     ),
@@ -172,25 +257,6 @@ function AppContent() {
     return min < max ? { min, max } : null
   }, [tree])
 
-  useEffect(() => {
-    void fetch('/data/scans.json').then(r => r.json()).then(setScans)
-    void fetch('/data/rules.json').then(r => r.json()).then(setRules).catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    if (!asof) return
-    setTree(null)
-    void fetch(`/data/${asof}/tree.json`).then(r => r.json()).then(setTree)
-    void fetch(`/data/${asof}/age.json`).then(r => r.json()).then(setAge)
-    void fetch(`/data/${asof}/meta.json`).then(r => r.json()).then(setMeta)
-  }, [asof])
-
-  // Keep ?d= synced to the selected scan — always baked in (even the latest
-  // day) so any view is shareable and the digest deep-links resolve.
-  useEffect(() => {
-    if (asof && dP !== asof) setDP(asof)
-  }, [asof, dP])
-
   const catOrder = useMemo(() => {
     if (!tree) return []
     const catBytes = new Map<string, number>()
@@ -202,18 +268,21 @@ function AppContent() {
     return [...catBytes.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k).filter(k => k !== '(other)')
   }, [tree])
 
+  // $ figures are GCS list prices per storage class, so they're only meaningful
+  // for stores that have those classes — a CoreWeave bucket priced at GCS rates
+  // would be an invented number, so its cost UI is dropped rather than faked.
   const estCost = useMemo(() => {
-    if (!meta) return null
+    if (!meta || !store.prices) return null
     const gib = (b: number) => b / 1024 ** 3
-    const list = Object.entries(meta.class_bytes).reduce(
+    const list = Object.entries(meta.class_bytes ?? {}).reduce(
       (s, [c, b]) => s + gib(b) * (CLASS_PRICE_US[c] ?? 0.02),
       0,
     )
     return { list }
-  }, [meta])
+  }, [meta, store])
 
   const pricing = useMemo((): Pricing | null => {
-    if (!meta) return null
+    if (!meta || !store.prices) return null
     const rates = (m?: Record<string, Record<string, number>>) =>
       m && Object.fromEntries(Object.entries(m).map(([k, cb]) => [k, ratePerByte(cb)]))
     return {
@@ -223,13 +292,29 @@ function AppContent() {
       teamMix: meta.team_class_bytes,
       userMix: meta.user_class_bytes,
     }
-  }, [meta])
+  }, [meta, store])
 
   return (
     <main>
       <header>
         <div className="hrow">
-          <h1>Marin GCS usage</h1>
+          <h1>{store.title}</h1>
+          {STORES.length > 1 && (
+            <div className="storectl" role="radiogroup" aria-label="Object store">
+              {STORES.map(s => (
+                <button
+                  key={s.key}
+                  role="radio"
+                  aria-checked={store.key === s.key}
+                  className={store.key === s.key ? 'on' : ''}
+                  // keep the view params (color mode, scan, highlight) across stores
+                  onClick={() => navigate({ pathname: s.path, search })}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          )}
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
           {ident && (
             <div className="whoami">
@@ -245,9 +330,23 @@ function AppContent() {
           <p className="sub">
             scan{' '}
             {scans.length > 1 && asof ? (
-              <select className="scanpick" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
-                {scans.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
+              <>
+                <select className="scanpick" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
+                  {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+                </select>
+                {/* A sub-daily id already carries its time; a date-only one
+                    (the daily GCS job) doesn't, so show when it was published. */}
+                {asof && !/[T ]\d{2}/.test(asof) && meta.published && (
+                  <Tooltip content={<>snapshot published {new Date(meta.published).toISOString().replace('T', ' ').slice(0, 16)} UTC</>}>
+                    <span className="pub dotted">{new Date(meta.published).toISOString().slice(11, 16)}Z</span>
+                  </Tooltip>
+                )}
+                {dMatches.length > 1 && (
+                  <Tooltip content={<>{dMatches.map(s => fmtScan(s)).join(' · ')} — showing the newest; pick one to pin it</>}>
+                    <span className="ambig dotted">{dMatches.length} match</span>
+                  </Tooltip>
+                )}
+              </>
             ) : (
               <b>{meta.asof}</b>
             )}
@@ -265,6 +364,16 @@ function AppContent() {
       </header>
 
       <section className="prose">
+        {store.key === 'cw' ? (
+          <p>
+            Storage in the <code>marin-us-east-02a</code> CoreWeave S3 bucket, from a per-object
+            listing of the whole bucket. Treemap drills into prefixes; cells are colored by prefix,
+            splitting any prefix that owns most of the bucket one level deeper (so <code>marin/</code>’s
+            children get their own hues instead of one blue mass). The age chart still groups by
+            top-level prefix. There’s no ownership attribution for this store yet — the group/user
+            color modes and $ estimates are GCS-only, so they’re hidden here.
+          </p>
+        ) : (
         <p>
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
           <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/" target="_blank" rel="noreferrer">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
@@ -274,6 +383,7 @@ function AppContent() {
           <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
           curation) — hover a cell for its group split and top users, or <kbd>⌘K</kbd> to jump to a user/group.
         </p>
+        )}
       </section>
 
       {hasAttr && (
@@ -299,13 +409,18 @@ function AppContent() {
       )}
 
       {tree ? (
-        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens} />
+        // Remount per store: the treemap owns drill/crumb state tied to the
+        // tree it mounted with, and a switch can swap `tree` without ever
+        // passing through null once both payloads are cached.
+        <Treemap key={store.key} root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens} scheme={store.scheme} />
       ) : (
         <p className="loading">loading tree…</p>
       )}
 
       <section>
-        <h2>Bytes by created month</h2>
+        {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
+            the heading stays unit-free rather than lying about "month". */}
+        <h2>Bytes by created date</h2>
         <p className="sub">
           When today’s objects were written (created-time strata, colored by {MODE_LABELS[effMode]}).
         </p>
@@ -316,7 +431,7 @@ function AppContent() {
         <AttributionRules rules={rules} tree={tree} users={meta.users} />
       )}
 
-      {meta && (
+      {meta && store.prices && (
         <section>
           <h2>Storage classes</h2>
           <table className="classes">

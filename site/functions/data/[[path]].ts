@@ -19,7 +19,10 @@ interface Env {
 }
 
 const BUCKET = 'oa-gcs-usage-dvx'
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+// Scan ids are `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM` (no
+// colon: it keeps the id safe as an object-key path segment). GCS publishes one
+// scan a day so its ids stay date-only; CoreWeave runs ad hoc, several a day.
+const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
 const CACHE = 'public, max-age=300' // daily cadence — ≤5min edge staleness is fine
 
 export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Response> => {
@@ -38,14 +41,20 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
   const rel = new URL(ctx.request.url).pathname.replace(/^\/data\//, '')
 
   try {
-    // scans.json → the date dirs directly under snapshots/ (newest-first)
-    if (rel === 'scans.json') {
+    // `<store>/scans.json` → the date dirs under snapshots/<store>/, newest-first.
+    // The default (GCS) store is the bare `snapshots/`; additional stores live in
+    // a named subdir (`snapshots/cw/`), which the DATE_RE filter keeps out of the
+    // GCS listing. Per-store payload paths need no special case: the generic
+    // `/data/<rel>` → `snapshots/<rel>` mapping below already resolves them.
+    const scansM = /^(?:([a-z0-9-]+)\/)?scans\.json$/.exec(rel)
+    if (scansM) {
+      const prefix = scansM[1] ? `snapshots/${scansM[1]}/` : 'snapshots/'
       const dates: string[] = []
       let cursor: string | undefined
       do {
-        const page = await store.list('snapshots/', { cursor })
+        const page = await store.list(prefix, { cursor })
         for (const e of page.entries) {
-          const d = e.key.replace(/^snapshots\//, '').replace(/\/$/, '')
+          const d = e.key.slice(prefix.length).replace(/\/$/, '')
           if (e.isDir && DATE_RE.test(d)) dates.push(d)
         }
         cursor = page.cursor
@@ -58,6 +67,20 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
     // rules.json → snapshots/rules.json ; else /data/<date>/<file> → snapshots/<date>/<file>
     const key = rel === 'rules.json' ? 'snapshots/rules.json' : `snapshots/${rel}`
     const { bytes, contentType } = await store.get(key)
+    // A date-only scan id can't say *when* in that day the scan ran, and the
+    // daily GCS job publishes ids without a time — but the object itself knows.
+    // Splice its lastModified into meta.json so the UI can show the real
+    // publish time; sizes move enough over 24h that "which 8/17?" matters.
+    if (key.endsWith('/meta.json')) {
+      const dir = key.slice(0, key.lastIndexOf('/') + 1)
+      const published = (await store.list(dir)).entries.find(e => e.key === key)?.lastModified
+      if (published) {
+        const meta = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
+        return new Response(JSON.stringify({ ...meta, published }), {
+          headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': CACHE },
+        })
+      }
+    }
     return new Response(bytes, {
       headers: { 'content-type': contentType ?? 'application/json; charset=utf-8', 'cache-control': CACHE },
     })

@@ -95,6 +95,7 @@ export const MODE_LABELS: Record<ColorMode, string> = {
 export interface Meta {
   asof: string
   generated: string
+  published?: string  // object lastModified (ISO) — real publish time behind a date-only id
   total_bytes: number
   total_objects: number
   class_bytes: Record<string, number>

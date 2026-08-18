@@ -16,6 +16,7 @@
     "@disk-tree/react": "workspace:*",
     "@floating-ui/react": "^0.27.20",
     "@rdub/file-tree": "https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673",
+    "@tanstack/react-query": "^5.101.4",
     "hyparquet": "^1.27.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
