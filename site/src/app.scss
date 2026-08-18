@@ -110,6 +110,30 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 .loading { color: var(--ink-3); }
 
+// Store switcher in the header — same button language as .colorctl, but inline
+// next to the <h1> rather than a sticky row of its own.
+.storectl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  button {
+    background: var(--panel);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-size: 12.5px;
+    padding: 3px 10px;
+    cursor: pointer;
+    &.on {
+      background: var(--s1);
+      border-color: var(--s1);
+      color: #fff;
+    }
+    &:hover:not(.on) { filter: brightness(1.05); }
+    &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
+  }
+}
+
 .colorctl {
   display: flex;
   align-items: center;
@@ -219,14 +243,30 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     height: 520px;
   }
   .dt-treemap-cell {
-    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25);
-    &.dust { box-shadow: none; }
-    &:hover { filter: brightness(1.07); }
+    // Cells are opaque now (depthFade={1}), so nesting no longer reads as a
+    // lightness step — the border is the only thing separating a branch from
+    // its children. A dark inset plus a light inner line keeps the edge legible
+    // against both a dark parent and a light one.
+    box-shadow:
+      inset 0 0 0 1px rgb(0 0 0 / 0.42),
+      inset 0 0 0 2px rgb(255 255 255 / 0.10);
+    &.branch { box-shadow: inset 0 0 0 2px rgb(0 0 0 / 0.5); }
+    &.dust { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.28); }
+    // Cells nest, `:hover` matches every ancestor of the pointer, and `filter`
+    // compounds multiplicatively down the tree — so a leaf 3 deep used to light
+    // up at 1.07³ and kept brightening as the pointer crossed each ancestor.
+    // Only brighten the innermost hovered cell.
+    &:hover:not(:has(.dt-treemap-cell:hover)) { filter: brightness(1.07); }
     &:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
     .dt-treemap-lbl {
       font-variant-numeric: tabular-nums;
+      font-weight: 500;
+      // Dark shadow regardless of ink polarity: it separates white ink from a
+      // mid-tone fill, and under dark ink (on the light end of a hue fan) it
+      // just reads as extra weight rather than fighting the glyph.
+      text-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
       &.sm { padding: 1px 3px !important; }
-      .sz { opacity: 0.75; }
+      .sz { opacity: 0.88; font-weight: 500; }
     }
   }
   .hint { color: var(--ink-3); font-size: 12px; }
@@ -501,4 +541,19 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 
 @media (prefers-reduced-motion: no-preference) {
   .dt-treemap-cell { transition: filter 80ms linear; }
+}
+
+// "N match" chip beside the scan picker, when `?d` is a prefix matching several
+// scans (e.g. `?d=260817` with two runs that day).
+.sub .ambig {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+// Publish time beside a date-only scan id (the daily GCS job's snapshots).
+.sub .pub {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
 }

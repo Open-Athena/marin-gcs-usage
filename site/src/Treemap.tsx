@@ -1,14 +1,15 @@
 import { useCallback, useMemo } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
-import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
+import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
 
-const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
-const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
+// A top-level prefix holding more than this share of the store is split one
+// level deeper for colouring (see catSlot).
+const DOMINANT_FRAC = 0.4
 const TEAM_WHITE_INK = ['--t-stanford', '--t-oa', '--t-communal']
 
 export interface DateRange { min: number; max: number }
@@ -22,7 +23,7 @@ export interface Highlight {
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -30,37 +31,83 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   hl?: Highlight | null
   pricing?: Pricing | null
   lens?: boolean
+  // URI scheme for cell paths — `gs://` for GCS, `s3://` for CoreWeave.
+  scheme?: string
   // OG-image mode: hide every text detail (cell labels, crumb/rollup bars, hint)
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
 }) {
-  // Fixed category colors: global top-level dirs by total size.
-  const catSlot = useMemo(() => {
-    const catBytes = new Map<string, number>()
-    for (const bucket of root.c ?? [])
-      for (const d of bucket.c ?? []) {
-        const k = d.n.startsWith('(') ? '(other)' : d.n
-        catBytes.set(k, (catBytes.get(k) ?? 0) + d.b)
-      }
-    const cats = [...catBytes.entries()]
+  // Fixed category colors: global top-level dirs by total size. A single-bucket
+  // store can be lopsided enough that one prefix owns most of the map (`marin/`
+  // is ~87% of the CoreWeave bucket), which paints almost every cell the same
+  // hue — so any prefix over DOMINANT_FRAC hands its slot down to its own
+  // children, and they get the distinct hues instead.
+  const { catSlot, splitCats, hueIdx } = useMemo(() => {
+    const tops: TreeNode[] = []
+    for (const bucket of root.c ?? []) tops.push(...(bucket.c ?? []))
+    const nameOf = (n: TreeNode) => (n.n.startsWith('(') ? '(other)' : n.n)
+    const total = root.b || 1
+    const splitCats = new Set(
+      tops.filter(d => nameOf(d) !== '(other)' && d.b / total > DOMINANT_FRAC).map(nameOf),
+    )
+    const bytes = new Map<string, number>()
+    const add = (k: string, b: number) => bytes.set(k, (bytes.get(k) ?? 0) + b)
+    for (const d of tops) {
+      const k = nameOf(d)
+      if (splitCats.has(k)) for (const c of d.c ?? []) add(nameOf(c) === '(other)' ? '(other)' : `${k}/${c.n}`, c.b)
+      else add(k, d.b)
+    }
+    const cats = [...bytes.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([k]) => k)
       .filter(k => k !== '(other)')
-    return new Map(cats.slice(0, 8).map((k, i) => [k, SLOTS[i]]))
+    const catSlot = new Map(cats.slice(0, 8).map((k, i): [string, number] => [k, i]))
+
+    // Rank each category's own children by size, so the hue fan is stable and
+    // orders large→small rather than by whatever order the tree happens to be
+    // in. Keyed by the child's full path so lookup from `kidPath` is exact —
+    // bare names collide (`store` appears under several prefixes).
+    const hueIdx = new Map<string, [number, number]>()
+    const rank = (catNode: TreeNode, prefix: string) => {
+      const kids = (catNode.c ?? []).filter(c => !c.n.startsWith('('))
+      const sorted = [...kids].sort((a, b) => b.b - a.b)
+      sorted.forEach((c, i) => hueIdx.set(`${prefix}/${c.n}`, [i, sorted.length]))
+    }
+    for (const bucket of root.c ?? []) {
+      for (const d of bucket.c ?? []) {
+        const k = nameOf(d)
+        if (splitCats.has(k)) for (const c of d.c ?? []) rank(c, `${bucket.n}/${k}/${c.n}`)
+        else rank(d, `${bucket.n}/${k}`)
+      }
+    }
+    return { catSlot, splitCats, hueIdx }
   }, [root])
 
   const slotOf = useCallback(
-    (kidPath: TreeNode[]): string | null => {
-      // kidPath: [root, bucket, d1, …]
+    (kidPath: TreeNode[]): { slot: number; i: number; n: number } | null => {
+      // kidPath: [root, bucket, d1, d2, …]
       const top = kidPath[2]
       if (!top) return null
       const k = top.n.startsWith('(') ? '(other)' : top.n
-      return catSlot.get(k) ?? null
+      const split = splitCats.has(k)
+      let slot: number | undefined
+      if (!split) slot = catSlot.get(k)
+      else {
+        const sub = kidPath[3]
+        slot = sub ? catSlot.get(sub.n.startsWith('(') ? '(other)' : `${k}/${sub.n}`) : undefined
+      }
+      if (slot == null) return null
+      // The node one level below whichever node owns the slot carries the hue
+      // offset; everything under it inherits that offset unchanged.
+      const catDepth = split ? 3 : 2
+      const hueNode = kidPath.slice(1, catDepth + 2)
+      const [i, n] = hueIdx.get(hueNode.map(x => x.n).join('/')) ?? [0, 1]
+      return { slot, i, n }
     },
-    [catSlot],
+    [catSlot, splitCats, hueIdx],
   )
 
-  const gsPathOf = (path: TreeNode[]) => 'gs://' + path.slice(1).map(n => n.n).join('/')
+  const uriOf = (path: TreeNode[]) => scheme + path.slice(1).map(n => n.n).join('/')
 
   // Fold merger: first-class TreeNode aggregating tm/us/d so folded tiles keep
   // real tooltips (upstream calls this at every nesting level).
@@ -92,9 +139,18 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       let bg: string
       let ink: string
       if (mode === 'tree') {
-        const slot = slotOf(kidPath)
-        bg = slot ? `var(${slot})` : 'var(--other)'
-        ink = slot ? (WHITE_INK.includes(slot) ? '#fff' : 'var(--cell-ink)') : 'var(--ink)'
+        const s = slotOf(kidPath)
+        if (!s && ctx.hasKids) {
+          // A container with no slot of its own — most importantly the split
+          // prefix itself (`marin/`, whose colour lives on its children). Cells
+          // are translucent, so painting it "(other)" grey would show through
+          // every child and mute them; stay neutral and let the kids carry it.
+          bg = 'var(--panel)'
+          ink = 'var(--ink)'
+        } else {
+          bg = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
+          ink = s ? inkFor(bg) : 'var(--ink)'
+        }
       } else if (ctx.hasKids) {
         // container: neutral so the nested tiles carry the data colors
         bg = 'var(--panel)'
@@ -218,7 +274,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
             <>
               {[...catSlot.entries()].map(([k, s]) => (
                 <span className="li" key={k}>
-                  <span className="sw" style={{ background: `var(${s})` }} />
+                  <span className="sw" style={{ background: slotColor(s) }} />
                   {k}
                 </span>
               ))}
@@ -230,7 +286,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     : undefined
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
-    const gsPath = gsPathOf(path)
+    const uri = uriOf(path)
     const userMode = mode === 'user' || mode === 'uteam'
     const mix = classMix(n)
     const classes = n.cb && (
@@ -272,8 +328,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     return (
       <>
         <div className="path">
-          <span className="dirname">{gsPath.slice(0, gsPath.lastIndexOf('/') + 1)}</span>
-          <span className="basename">{gsPath.slice(gsPath.lastIndexOf('/') + 1)}</span>
+          <span className="dirname">{uri.slice(0, uri.lastIndexOf('/') + 1)}</span>
+          <span className="basename">{uri.slice(uri.lastIndexOf('/') + 1)}</span>
         </div>
         <div className="nums">
           {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
@@ -291,10 +347,16 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
-      getId={(_n, p) => gsPathOf(p)}
+      getId={(_n, p) => uriOf(p)}
       formatSize={fmtBytes}
       mergeSmall={mergeSmall}
       colorForCell={colorForCell}
+      // Opaque cells. Upstream's default fades every nesting level by 0.82,
+      // which compounds: this store nests 6+ deep under `marin/datakit/...`,
+      // so leaves landed near 0.4 alpha and every category washed out to the
+      // same pale grey-blue. Structure comes from borders instead (app.scss).
+      depthFade={1}
+      rootFade={1}
       renderTooltip={renderTooltip}
       renderRollup={renderRollup}
       renderLegend={redact ? undefined : legend}
