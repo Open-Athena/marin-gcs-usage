@@ -17,6 +17,8 @@ export type Row = {
   path: string
   size: number | null
   mtime: number | null
+  /** Size-weighted mean mtime (epoch s) — present when the scan was indexed with `--mean-mtime`. */
+  mtime_mean?: number | null
   kind: 'file' | 'dir'
   parent: string | null
   uri: string
@@ -47,6 +49,39 @@ export type ScanDetails = {
 export async function fetchScans(): Promise<Scan[]> {
   const res = await fetch('/api/scans')
   if (!res.ok) throw new Error('Failed to fetch scans')
+  return res.json()
+}
+
+export type HistogramChild = {
+  path: string
+  kind: 'file' | 'dir'
+  /** Bytes per bin; length === edges.length - 1. */
+  bytes: number[]
+  total_bytes: number
+  n_files: number
+}
+
+export type Histogram = {
+  uri: string
+  scan_path: string
+  time: string
+  /** Shared bin edges, epoch seconds ascending. */
+  edges: number[]
+  children: HistogramChild[]
+  omitted: number
+  omitted_bytes: number
+}
+
+export async function fetchHistogram(uri: string, bins: number = 24, limit: number = 20, scanId?: number): Promise<Histogram> {
+  const params = new URLSearchParams({ uri, bins: String(bins), limit: String(limit) })
+  if (scanId !== undefined) {
+    params.set('scan_id', String(scanId))
+  }
+  const res = await fetch(`/api/histogram?${params}`)
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to fetch histogram')
+  }
   return res.json()
 }
 
@@ -287,5 +322,91 @@ export async function fetchBackendInfo(): Promise<BackendInfo> {
 export async function fetchAvailableBackends(): Promise<AvailableBackendsResponse> {
   const res = await fetch('/api/backend/available')
   if (!res.ok) throw new Error('Failed to fetch available backends')
+  return res.json()
+}
+
+export type FilterRow = {
+  path: string
+  uri: string
+  depth: number
+  kind: string
+  /** Matched bytes at-or-under this node — true re-aggregation. */
+  size: number
+  /** Outermost matches at-or-under this node. */
+  n_matches: number
+  /** This node itself is an outermost match. */
+  matched: boolean
+}
+
+export type FilterResult = {
+  uri: string
+  scan_path: string
+  time: string
+  query: string
+  total_size: number
+  n_matches: number
+  max_depth_scanned: number
+  rows: FilterRow[]
+}
+
+/** Recursive server-side filter (`/api/filter`): sizes count matched bytes
+ * only, outermost matches — never double-counted. */
+export async function fetchFilter(uri: string, q: string, scanId?: number, depth: number = 4): Promise<FilterResult> {
+  const params = new URLSearchParams({ uri, q, depth: String(depth) })
+  if (scanId !== undefined) {
+    params.set('scan_id', String(scanId))
+  }
+  const res = await fetch(`/api/filter?${params}`)
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to fetch filter results')
+  }
+  return res.json()
+}
+
+export type CompareRecRow = {
+  path: string
+  uri: string
+  depth: number
+  kind: 'file' | 'dir'
+  status: 'added' | 'removed' | 'changed' | 'unchanged'
+  size_a: number
+  size_b: number
+  size_delta: number
+  n_desc_a: number
+  n_desc_b: number
+  n_desc_delta: number
+  /** This dir's children were loaded and merged into the frontier. */
+  expanded: boolean
+  /** Stats differ below but the walk stopped here (budget/depth). */
+  pruned: boolean
+}
+
+export type CompareRecResult = {
+  uri: string
+  recursive: true
+  scan1: CompareResult['scan1']
+  scan2: CompareResult['scan2']
+  rows: CompareRecRow[]
+  summary: CompareResult['summary'] & { expansions: number; truncated: boolean }
+}
+
+/** Best-first pruned recursive diff (`/api/compare?recursive=1`): the delta
+ * frontier across depths — added/removed dirs are not descended, stats-equal
+ * dirs are pruned. */
+export async function compareScansRecursive(
+  uri: string,
+  scan1: number,
+  scan2: number,
+  budget: number = 200,
+): Promise<CompareRecResult> {
+  const params = new URLSearchParams({
+    uri, scan1: String(scan1), scan2: String(scan2), recursive: '1', budget: String(budget),
+  })
+  const res = await fetch(`/api/compare?${params}`)
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to compare scans')
+  }
   return res.json()
 }

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import { DEFAULT_PALETTE } from './colors'
+import { pow10 } from './stats'
 
 /**
  * DIY SVG line/area chart. No Plotly, no recharts, no d3 — the whole widget
@@ -48,16 +50,7 @@ export interface TimeSeriesProps<T> {
   height?: number | string
 }
 
-const DEFAULT_COLORS = [
-  'hsl(210 70% 55%)',
-  'hsl(30 80% 55%)',
-  'hsl(160 55% 45%)',
-  'hsl(350 65% 55%)',
-  'hsl(280 55% 55%)',
-  'hsl(50 75% 55%)',
-  'hsl(180 50% 45%)',
-  'hsl(120 45% 50%)',
-]
+const DEFAULT_COLORS = DEFAULT_PALETTE
 
 const PAD = { top: 12, right: 16, bottom: 24, left: 56 }
 
@@ -67,13 +60,13 @@ function niceTicks(min: number, max: number, count: number, log = false): number
     const lmax = Math.log10(Math.max(10, max))
     const step = Math.max(1, Math.ceil((lmax - lmin) / count))
     const out: number[] = []
-    for (let e = Math.ceil(lmin); e <= Math.floor(lmax); e += step) out.push(10 ** e)
+    for (let e = Math.ceil(lmin); e <= Math.floor(lmax); e += step) out.push(pow10(e))
     return out
   }
   if (min === max) return [min]
   const range = max - min
   const rawStep = range / Math.max(1, count)
-  const mag = 10 ** Math.floor(Math.log10(rawStep))
+  const mag = pow10(Math.floor(Math.log10(rawStep)))
   const norm = rawStep / mag
   const stepMult = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10
   const step = stepMult * mag
@@ -101,9 +94,13 @@ export function TimeSeries<T>({
   const wrapRef = useRef<HTMLDivElement>(null)
   const [dims, setDims] = useState({ w: 0, h: 0 })
 
-  useEffect(() => {
+  // Measure synchronously first — a ResizeObserver's initial delivery can be
+  // arbitrarily late (and never arrives in a hidden tab), which would leave
+  // the chart blank at its correct size.
+  useLayoutEffect(() => {
     const el = wrapRef.current
     if (!el) return
+    setDims({ w: el.clientWidth, h: el.clientHeight })
     const ro = new ResizeObserver(() => setDims({ w: el.clientWidth, h: el.clientHeight }))
     ro.observe(el)
     return () => ro.disconnect()

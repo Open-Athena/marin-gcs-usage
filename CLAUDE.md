@@ -47,6 +47,11 @@ Key goals:
 - `POST /api/scan/start` — Start a new scan (background thread)
 - `GET /api/scans/progress` — Current progress of active scans
 - `GET /api/scans/progress/stream` — SSE stream for real-time progress
+- `GET /api/compare?uri=<path>&scan1=&scan2=[&recursive=1&budget=N&max_depth=N]` — per-child Δ table; `recursive=1` walks changed spines best-first (|Δsize| priority) and returns the delta frontier across depths (added/removed dirs not descended; stats-equal dirs pruned)
+- `GET /api/filter?uri=<path>&q=<query>&depth=N` — recursive filter with true re-aggregation (matched bytes only, outermost matches, rolled up to a depth-N slice)
+- `GET /api/filter/stream` — SSE variant: one cumulative snapshot per depth (iterative deepening), final event `done: true`
+- `GET /api/histogram?uri=<path>&bins=N&limit=N` — Byte-weighted mtime histogram per child
+  - Loads every descendant file row (no depth pushdown possible; path-prefix pushdown prunes sibling subtrees); response cached, UI fetches lazily
 - `POST /api/delete` — Delete a file/directory and update scan parquets
 - Static file serving for bundled UI (SPA with catch-all routing)
 
@@ -55,10 +60,25 @@ Key goals:
 disk-tree index [URL]     # Scan directory or s3:// bucket
   -C, --no-cache-read     # Force fresh scan
   -g, --gc                # Garbage collect old scans
+  -m, --mean-mtime        # Emit `mtime_mean` (size-weighted mean mtime; feeds the UI age lens)
+  -M, --measure-memory    # Track peak memory
   -s, --sudo              # Run gfind with sudo
-  -m, --measure-memory    # Track peak memory
 
 disk-tree scans           # List cached scans (JSON)
+
+disk-tree diff ARGS       # Per-path Δ table between two scans (URI → two most recent, or two scan ids)
+  -r, --recursive         # Best-first walk down changed spines → delta frontier across depths
+  -b, --budget N          # Recursive mode: max directory expansions (default 100)
+
+disk-tree filter URI QUERY  # Recursive filter, true re-aggregation: sizes of everything matching QUERY
+                            # (`/…/` regex or substring); outermost matches only — never double-counts
+
+disk-tree histogram URI   # Byte-weighted mtime distribution per child (sparklines; -j for JSON)
+
+disk-tree fetch [BUCKET…] # Bulk-list configured buckets → dated raw-listing shards
+disk-tree pull [BUCKET…]  # fetch + import as dated scans
+disk-tree sync            # pull all configured buckets (cron entrypoint)
+                          # Config: ~/.config/disk-tree/buckets.yml (see specs/personal-sync.md)
 
 disk-tree migrate         # Backfill SQLite stats from parquet files
 disk-tree migrate-depth   # Add depth column to existing parquets
@@ -68,7 +88,8 @@ disk-tree-server          # Start Flask API server
 
 ### Web UI (`ui/`)
 
-Vite + React + TypeScript with Material-UI, Plotly treemaps, TanStack Query.
+Vite + React + TypeScript with Material-UI, TanStack Query, and `@disk-tree/react` widgets
+(chart-lib-free DIY SVG: `<Treemap>`, `<TimeSeries>`, `<StalenessScatter>`, `<AgeHistograms>`).
 
 **Key features**:
 - Directory listing with size, mtime, n_children, n_desc columns
@@ -76,7 +97,11 @@ Vite + React + TypeScript with Material-UI, Plotly treemaps, TanStack Query.
 - Rescan button with real-time progress (SSE)
 - Multi-select with keyboard navigation (Shift+arrows)
 - Bulk delete for selected items
-- Treemap visualization (Plotly, lazy-loaded)
+- Viz panel with a `View:` toggle — Treemap (+ age lens), Staleness scatter, Age histograms
+- Treemap drills past the response's depth: unloaded dirs fetch their subtree
+  (`<Treemap hasChildren/loadChildren>`), one request per drill, cached per node
+- Filter box: display-only dimming by default; the footer label toggles **re-aggregate**
+  mode (`/api/filter`) — treemap shows matched bytes only, matched dirs stay drillable
 - Pagination and search/filter
 - S3 bucket list with treemap visualization
 
@@ -85,7 +110,6 @@ Vite + React + TypeScript with Material-UI, Plotly treemaps, TanStack Query.
 - `src/components/ScanList.tsx` — Scans list with pagination
 - `src/components/ScanDetails.tsx` — Directory listing component
 - `src/components/S3BucketList.tsx` — S3 bucket browser with treemap
-- `src/components/LazyPlot.tsx` — Code-split Plotly wrapper
 - `src/hooks/useScanProgress.ts` — SSE-based progress tracking
 
 ## Development
@@ -101,7 +125,7 @@ disk-tree-server  # http://localhost:5001
 # Web UI
 cd ui
 pnpm install
-pnpm dev        # http://localhost:5180
+pnpm dev        # http://localhost:7788
 ```
 
 ## Packaging / Distribution
@@ -139,6 +163,11 @@ Default paths (override with `DISK_TREE_ROOT`):
 - `~/.config/disk-tree/disk-tree.db` — SQLite metadata
 - `~/.config/disk-tree/scans/` — Parquet blob storage
 
+Stream-engine tuning knobs (env, all with measured defaults — see the constants block in `find/aggregate_stream.py`):
+- `DISK_TREE_FLUSH_ROWS` — output row-group size (read-side: smaller = less fetched per directory browse, bigger footer)
+- `DISK_TREE_PARALLEL_FINALIZE_MIN_ROWS` — below this the finalize stays serial even at `-j N`
+- `DISK_TREE_SCAN_BATCH_ROWS` — pass-1 read-batch size (partition balance / seek granularity)
+
 ## Tests
 
 ```bash
@@ -164,6 +193,7 @@ Test fixtures in `tests/data/` (mock gfind/s3 output → expected parquet).
 
 - `/api/scan?uri=/` optimized from ~4s to ~26ms (154x speedup)
 - Depth column enables parquet predicate pushdown (only load needed rows)
+- `StorageBackend.load(path_prefix=)` pushes a subtree restriction down to parquet row-group pruning / SQL range predicates (rows sorted `(depth, path)`); wired into scan/compare/histogram/path-stats reads — see `specs/diff-and-search.md`
 - Denormalized stats avoid parquet reads for scan list and fresher child patching
 
 ## TODOs / Known Issues

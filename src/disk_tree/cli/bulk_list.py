@@ -117,25 +117,25 @@ def bulk_list_uri(
     endpoint_url: str | None = None,
     region: str | None = None,
 ) -> int:
-    """Scheme-dispatched bulk listing; shared by `bulk-list` and adaptive/planned callers."""
+    """Scheme-dispatched bulk listing; shared by `bulk-list` and `fetch`/`pull`/`sync`."""
     from disk_tree.backends.url import parse_url
 
     parsed = parse_url(uri)
     eff_prefix = prefix if prefix is not None else (parsed.path.strip('/') or None)
     if parsed.scheme == 'gcs':
         from disk_tree.find.bulk_gcs import list_gcs_bucket_to_parquet
-        total = list_gcs_bucket_to_parquet(
+        return list_gcs_bucket_to_parquet(
             bucket=parsed.host,
             out_dir=out_dir,
             procs=procs, threads=threads,
             prefix=eff_prefix,
             exists=exists, weights_from=weights_from,
         )
-    elif parsed.scheme in ('s3', 'r2'):
+    if parsed.scheme in ('s3', 'r2'):
         if parsed.scheme == 'r2' and not endpoint_url:
             raise ValueError("r2:// requires --endpoint-url (Cloudflare R2's S3-compatible endpoint)")
         from disk_tree.find.bulk_s3 import list_s3_bucket_to_parquet
-        total = list_s3_bucket_to_parquet(
+        return list_s3_bucket_to_parquet(
             bucket=parsed.host,
             out_dir=out_dir,
             procs=procs, threads=threads,
@@ -145,7 +145,4 @@ def bulk_list_uri(
             region_name=region,
             scheme=parsed.scheme,
         )
-    else:
-        raise ValueError(f"bulk-list requires a cloud URI (gcs://, s3://, r2://); got {uri!r}")
-
-    return total
+    raise ValueError(f"bulk-list requires a cloud URI (gcs://, s3://, r2://); got {uri!r}")
