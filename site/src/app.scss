@@ -549,12 +549,32 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .dt-treemap-cell { transition: filter 80ms linear; }
 }
 
-// "N match" chip beside the scan picker, when `?d` is a prefix matching several
-// scans (e.g. `?d=260817` with two runs that day).
-.sub .ambig {
-  margin-left: 6px;
-  font-size: 12px;
+// Disambiguation strip under the header when `?d` matches several scans
+// (e.g. `?d=8-19` with two runs that day) — same button language as .storectl.
+.disambig {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 0;
+  font-size: 12.5px;
   color: var(--ink-2);
+  code { font-size: 12px; }
+  button {
+    background: var(--panel);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 2px 8px;
+    cursor: pointer;
+    &.on {
+      background: var(--s1);
+      border-color: var(--s1);
+      color: #fff;
+    }
+    &:hover:not(.on) { filter: brightness(1.05); }
+  }
 }
 
 // Publish time beside a date-only scan id (the daily GCS job's snapshots).

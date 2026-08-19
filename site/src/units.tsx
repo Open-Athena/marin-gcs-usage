@@ -1,12 +1,18 @@
 import { createContext, useContext, useMemo, useState } from 'react'
+import { boolParam, useUrlState } from 'use-prms'
 import { fmtBytesIec, fmtBytesSi } from './types'
 import type { Units } from './types'
 
-// Persisted display preference: SI (TB, matching most cloud-console UIs) vs
-// IEC (TiB, matching quotas — CW's 910 TiB cap is binary). Default SI keeps
-// the pre-toggle behavior for viewers who never touch it.
+// Byte-unit display preference. IEC (TiB) is the default — quotas are binary
+// (CW's cap is 910 TiB) — with SI (TB) reachable three ways, in precedence
+// order: an explicit `?si` URL param (shareable), the persisted toggle
+// (localStorage), then the default. Toggling writes both, so a copied URL
+// carries SI-ness but plain links stay clean.
 const KEY = 'units'
-const load = (): Units => (localStorage.getItem(KEY) === 'iec' ? 'iec' : 'si')
+const load = (): Units | null => {
+  const v = localStorage.getItem(KEY)
+  return v === 'si' || v === 'iec' ? v : null
+}
 
 interface UnitsCtx {
   units: Units
@@ -14,22 +20,24 @@ interface UnitsCtx {
   toggleUnits: () => void
 }
 
-const Ctx = createContext<UnitsCtx>({ units: 'si', fmtBytes: fmtBytesSi, toggleUnits: () => {} })
+const Ctx = createContext<UnitsCtx>({ units: 'iec', fmtBytes: fmtBytesIec, toggleUnits: () => {} })
 
 export function UnitsProvider({ children }: { children: React.ReactNode }) {
-  const [units, setUnits] = useState<Units>(load)
+  const [siP, setSiP] = useUrlState('si', boolParam)
+  const [pref, setPref] = useState<Units | null>(load)
+  const units: Units = siP ? 'si' : (pref ?? 'iec')
   const value = useMemo<UnitsCtx>(
     () => ({
       units,
       fmtBytes: units === 'iec' ? fmtBytesIec : fmtBytesSi,
-      toggleUnits: () =>
-        setUnits(u => {
-          const next = u === 'si' ? 'iec' : 'si'
-          localStorage.setItem(KEY, next)
-          return next
-        }),
+      toggleUnits: () => {
+        const next: Units = units === 'si' ? 'iec' : 'si'
+        localStorage.setItem(KEY, next)
+        setPref(next)
+        setSiP(next === 'si')
+      },
     }),
-    [units],
+    [units, setSiP],
   )
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

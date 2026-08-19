@@ -27,33 +27,55 @@ export function fmtScan(s: string, now = new Date()): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):?(\d{2}))?/.exec(s)
   if (!m) return s
   const [, y, mo, d, hh, mm] = m
-  const md = `${Number(mo)}/${Number(d)}`
-  // Scan ids are UTC (the jobs run on UTC hosts, and the age chart's epoch-day
-  // buckets are UTC too). Readers are spread across timezones, so label the
-  // zone rather than silently rendering a bare wall-clock time that a PT reader
-  // would take for local — and don't convert, so the label still matches the
-  // `?d=` token, the bucket path, and what the ops dashboards/wiki quote.
-  const time = hh ? ` ${hh}:${mm}Z` : ''
-  return Number(y) === now.getFullYear() ? `${md}${time}` : `${y}-${mo}-${d}${time}`
+  if (!hh) {
+    // Date-only ids (the daily GCS job) are calendar dates, not instants —
+    // rendering them through a timezone would shift some readers a day off.
+    return Number(y) === now.getFullYear() ? `${Number(mo)}/${Number(d)}` : `${y}-${mo}-${d}`
+  }
+  // Sub-daily ids are UTC instants; display in the viewer's timezone, tagged
+  // with its abbreviation so nobody mistakes it for UTC. The `?d=` token stays
+  // UTC (see decodeScan) — display converts, the URL doesn't.
+  const dt = new Date(Date.UTC(+y, +mo - 1, +d, +hh, +(mm ?? '0')))
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZoneName: 'short',
+    ...(dt.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  }).format(dt).replace(', ', ' ')
 }
 
-// `?d` is a *prefix* of a scan id, in a compact form: `260817-1944` pins one
-// sub-daily scan, `260817-11` the 11:xx one, `260817` the whole day. Anything
-// that still matches several scans resolves to the newest and says so, rather
-// than sending you to a disambiguation page — the scan picker beside it already
-// lists the candidates, so an extra route would just be a worse picker.
+// `?d` is a *prefix* of a scan id (always UTC), accepted in several spellings —
+// examples that all pin the 2026-08-19T1008 scan:
+//   260819-1008 · 260819T10 (compact date; `-` or `T` before the time)
+//   8-19-10 · 8-19-10-08    (M-D-H[-MM]; current year assumed)
+//   26-8-19-10 · 2026-8-19-10 (year-first when the lead component can't be a month)
+// The canonical/emitted form stays compact (`260819-1008`). A token matching
+// several scans renders the newest plus a disambiguation strip listing the rest.
 export const encodeScan = (v: string | undefined): string | undefined => {
-  const m = v && /^\d{2}(\d{2})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2}))?$/.exec(v)
+  const m = v && /^\d{2}(\d{2})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?$/.exec(v)
   if (!m) return v || undefined
   const [, y, mo, d, hh, mm] = m
-  return `${y}${mo}${d}` + (hh ? `-${hh}${mm}` : '')
+  return `${y}${mo}${d}` + (hh ? `-${hh}${mm ?? ''}` : '')
 }
 
-export const decodeScan = (e: string | undefined): string | undefined => {
-  const m = e && /^(\d{2})(\d{2})(\d{2})(?:-(\d{2})(\d{2})?)?$/.exec(e)
-  if (!m) return undefined
-  const [, y, mo, d, hh, mm] = m
-  return `20${y}-${mo}-${d}` + (hh ? `T${hh}${mm ?? ''}` : '')
+export const decodeScan = (e: string | undefined, now = new Date()): string | undefined => {
+  if (!e) return undefined
+  const pad = (n: string) => n.padStart(2, '0')
+  const compact = /^(\d{2})(\d{2})(\d{2})(?:[T-](\d{2})(\d{2})?)?$/.exec(e)
+  if (compact) {
+    const [, y, mo, d, hh, mm] = compact
+    return `20${y}-${mo}-${d}` + (hh ? `T${hh}${mm ?? ''}` : '')
+  }
+  const parts = e.split(/[T-]/)
+  if (parts.length < 2 || parts.length > 5 || parts.some(p => !/^(\d{1,2}|\d{4})$/.test(p))) return undefined
+  // A lead component that can't be a month is a year (2- or 4-digit); 4-digit
+  // components anywhere else are malformed.
+  const yearFirst = parts[0].length === 4 || Number(parts[0]) > 12
+  if (parts.slice(yearFirst ? 1 : 0).some(p => p.length > 2)) return undefined
+  const y = yearFirst ? (parts[0].length === 4 ? parts[0] : `20${parts[0]}`) : String(now.getUTCFullYear())
+  const [mo, d, hh, mm] = parts.slice(yearFirst ? 1 : 0)
+  if (!mo || !d || Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return undefined
+  if ((hh && Number(hh) > 23) || (mm && Number(mm) > 59)) return undefined
+  return `${y}-${pad(mo)}-${pad(d)}` + (hh ? `T${pad(hh)}${mm ? pad(mm) : ''}` : '')
 }
 
 // CF Access identity (present when served behind gcs.oa.dev; absent in local dev)
@@ -346,12 +368,9 @@ function AppContent() {
                     (the daily GCS job) doesn't, so show when it was published. */}
                 {asof && !/[T ]\d{2}/.test(asof) && meta.published && (
                   <Tooltip content={<>snapshot published {new Date(meta.published).toISOString().replace('T', ' ').slice(0, 16)} UTC</>}>
-                    <span className="pub dotted">{new Date(meta.published).toISOString().slice(11, 16)}Z</span>
-                  </Tooltip>
-                )}
-                {dMatches.length > 1 && (
-                  <Tooltip content={<>{dMatches.map(s => fmtScan(s)).join(' · ')} — showing the newest; pick one to pin it</>}>
-                    <span className="ambig dotted">{dMatches.length} match</span>
+                    <span className="pub dotted">
+                      {new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' }).format(new Date(meta.published))}
+                    </span>
                   </Tooltip>
                 )}
               </>
@@ -371,6 +390,16 @@ function AppContent() {
                 </Tooltip>
               </>
             )}
+          </p>
+        )}
+        {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
+            end) with a strip listing every candidate to pin one. */}
+        {dMatches.length > 1 && (
+          <p className="disambig">
+            <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
+            {dMatches.map(s => (
+              <button key={s} className={s === asof ? 'on' : ''} onClick={() => setDP(s)}>{fmtScan(s)}</button>
+            ))}
           </p>
         )}
       </header>
