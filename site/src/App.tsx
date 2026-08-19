@@ -34,15 +34,16 @@ export function fmtScan(s: string, now = new Date()): string {
     // rendering them through a timezone would shift some readers a day off.
     return Number(y) === now.getFullYear() ? `${Number(mo)}/${Number(d)}` : `${y}-${mo}-${d}`
   }
-  // Sub-daily ids are UTC instants; display in the viewer's timezone, tagged
-  // with its abbreviation so nobody mistakes it for UTC. The `?d=` token stays
-  // UTC (see decodeScan) — display converts, the URL doesn't.
+  // Sub-daily ids are UTC instants; display in the viewer's local time,
+  // 12-hour with a bare a/p ("8/19 6:08a"). The `?d=` token stays UTC (see
+  // decodeScan) — display converts, the URL doesn't.
   const dt = new Date(Date.UTC(+y, +mo - 1, +d, +hh, +(mm ?? '0')))
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-    timeZoneName: 'short',
-    ...(dt.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
-  }).format(dt).replace(', ', ' ')
+  const h = dt.getHours()
+  const time = `${h % 12 || 12}:${String(dt.getMinutes()).padStart(2, '0')}${h < 12 ? 'a' : 'p'}`
+  const md = `${dt.getMonth() + 1}/${dt.getDate()}`
+  return dt.getFullYear() === now.getFullYear()
+    ? `${md} ${time}`
+    : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${time}`
 }
 
 // `?d` is a *prefix* of a scan id (always UTC), accepted in several spellings —
@@ -189,6 +190,14 @@ function AppContent() {
   const hasAttr = !!tree?.tm
   const effMode: ColorMode = hasAttr ? mode : 'tree'
   const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
+
+  // The prod hostnames are one-store-each; localhost/previews serve both.
+  const crossSite = useMemo(() => {
+    const host = location.hostname
+    if (/^cw[-.]/.test(host)) return { label: 'GCS usage', href: 'https://gcs.oa.dev/' }
+    if (host === 'gcs.oa.dev') return { label: 'CoreWeave usage', href: 'https://cw-s3.oa.dev/' }
+    return null
+  }, [])
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
 
@@ -342,7 +351,15 @@ function AppContent() {
       <header>
         <div className="hrow">
           <h1>{store.title}</h1>
-          {STORES.length > 1 && (
+          {/* On the prod hostnames each store is its own site (own Access
+              audience), so the in-app switcher would be a nop or an auth
+              surprise — cross-link instead, in a new tab. Localhost and
+              pages.dev previews keep the chips for dev convenience. */}
+          {crossSite ? (
+            <a className="crosslink" href={crossSite.href} target="_blank" rel="noreferrer">
+              {crossSite.label}&nbsp;↗
+            </a>
+          ) : STORES.length > 1 && (
             <div className="storectl" role="radiogroup" aria-label="Object store">
               {STORES.map(s => (
                 <button
@@ -424,8 +441,7 @@ function AppContent() {
             listing of the whole bucket. Treemap drills into prefixes; cells are colored by prefix,
             splitting any prefix that owns most of the bucket one level deeper (so <code>marin/</code>’s
             children get their own hues instead of one blue mass). The age chart still groups by
-            top-level prefix. There’s no ownership attribution for this store yet — the group/user
-            color modes and $ estimates are GCS-only, so they’re hidden here.
+            top-level prefix.
           </p>
         ) : (
         <p>

@@ -158,6 +158,7 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
         getLabel={n => n.label}
         getId={(_n, p) => p.map(x => x.key).join('|')}
         formatSize={n => fmtBytes(n)}
+        collapseChains
         depthFade={1}
         rootFade={1}
         colorForCell={n => {
