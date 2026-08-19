@@ -7,6 +7,8 @@ import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
+import { DiffTreemap } from './DiffTreemap'
+import type { DiffData } from './DiffTreemap'
 import { buildUserIndex } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
@@ -164,6 +166,17 @@ function AppContent() {
   const treeQ = useQuery(scanQuery<TreeNode>('tree'))
   const ageQ = useQuery(scanQuery<AgeRow[]>('age'))
   const metaQ = useQuery(scanQuery<Meta>('meta'))
+  // Optional: precomputed diff vs the previous snapshot (job/cw-diff.py).
+  // Older snapshots (and the GCS store, for now) don't have one — a 404 just
+  // hides the section, so no retry storm.
+  const diffQ = useQuery<DiffData | null>({
+    queryKey: ['diff', store.key, asof],
+    queryFn: () => fetch(`${store.base}/${asof}/diff.json`).then(r => (r.ok ? r.json() : null)),
+    enabled: !!asof,
+    staleTime: Infinity,
+    retry: false,
+  })
+  const diff: DiffData | null = diffQ.data ?? null
   const tree: TreeNode | null = treeQ.data ?? null
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
@@ -456,6 +469,21 @@ function AppContent() {
         <Treemap key={store.key} root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens} scheme={store.scheme} />
       ) : (
         <p className="loading">loading tree…</p>
+      )}
+
+      {diff && diff.rows.length > 0 && (
+        <section>
+          <h2>Changes since previous scan</h2>
+          <p className="sub">
+            {diff.prev ? fmtScan(diff.prev) : 'previous'} → {diff.curr ? fmtScan(diff.curr) : 'this scan'}
+            {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
+              {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
+            </b>
+            {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
+            {diff.truncated && ' · (largest changes shown; walk was budget-capped)'}
+          </p>
+          <DiffTreemap data={diff} label={store.title} />
+        </section>
       )}
 
       <section>
