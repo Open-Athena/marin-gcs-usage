@@ -136,3 +136,34 @@ Post-landing (2026-08-14): all core scaffolding + GCS parser + fixture tests
 in `6181b1c`+. Once marin's usage-log CSVs land, `disk-tree access import
 gs://marin-usage-logs/usage/<bucket>/* -o /tmp/canonical.parquet` should
 Just Work; anything that doesn't is a real-data-driven follow-up.
+
+## Productionize ingest (2026-08-19)
+
+Measured growth after 6 days of delivery (`gcloud storage du`, all objects in
+`gs://marin-usage-logs/usage/`): **1.50 TiB / 13,510 CSVs**, ~300 GiB/day
+steady state — ~9 TiB/month if left raw, with **no lifecycle policy** on the
+bucket. Per source bucket (6d totals): us-central1 618 GiB, us-central2
+435 GiB, us-east5 375 GiB, eu-west4 103 GiB, us-west4 7 GiB, us-east1 2 GiB,
+us-west1 ~0.
+
+Plan (cron over event-driven):
+
+1. **Incremental ingest job on GCP Batch**, same pattern as the scan crons
+   (NVMe staging, runs where the data lives — see Compute placement above).
+   Watermark = last ingested object name (delivery names embed the log hour
+   and sort lexicographically per bucket); each run lists names past the
+   watermark, so re-runs are idempotent and a missed run self-heals.
+   Cadence /6h piggybacking the existing schedule is plenty — the dashboard
+   refreshes /6h anyway, so event-driven (OBJECT_FINALIZE → Pub/Sub → Cloud
+   Run) buys ~nothing in freshness and adds a second infra shape; revisit
+   only if we ever want near-real-time read attribution.
+2. **Lossless layer-1a parquet** (zstd, partitioned `bucket/day/`): every CSV
+   row preserved. Usage CSVs are wide and repetitive; expect ≥10× compression
+   (~30 GiB/day → ~1 TiB/yr, vs ~110 TiB/yr raw).
+3. **Lossy layer-2a agg** per run (existing `dt access agg` shape +
+   the `(bucket, path)` key fix and `max(ts)` atime column from the Status
+   checklist) → feeds the dashboard age/atime lens.
+4. **Lifecycle on the raw CSVs once (2) is verified**: delete raw objects
+   after 30d (parquet is the durable record). Without this the log bucket
+   grows without bound and eventually rivals the estates it's metering.
+

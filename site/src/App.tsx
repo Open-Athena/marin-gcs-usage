@@ -182,7 +182,7 @@ function AppContent() {
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
-  const { units, fmtBytes, toggleUnits } = useUnits()
+  const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
@@ -251,6 +251,12 @@ function AppContent() {
       group: 'View',
       defaultBindings: ['i'],
       handler: toggleUnits,
+    },
+    'units:suffix': {
+      label: `Unit suffix: ${suffixB ? 'TiB/TB → Ti/T (drop B)' : 'Ti/T → TiB/TB (show B)'}`,
+      group: 'View',
+      defaultBindings: ['B'],
+      handler: toggleSuffixB,
     },
     ...Object.fromEntries(
       (meta?.users ?? []).map(u => [
@@ -408,8 +414,11 @@ function AppContent() {
               <b>{meta.asof}</b>
             )}
             {' '}·{' '}
-            <Tooltip content={<>{units === 'si' ? 'SI units (TB) — click for IEC (TiB)' : 'IEC units (TiB) — click for SI (TB)'}</>}>
-              <b className="units-toggle" onClick={toggleUnits}>{fmtBytes(meta.total_bytes)}</b>
+            <Tooltip content={<>
+              {units === 'si' ? 'SI units (TB) — click for IEC (TiB)' : 'IEC units (TiB) — click for SI (TB)'}
+              {'; shift-click to '}{suffixB ? 'drop' : 'restore'} the “B”
+            </>}>
+              <b className="units-toggle" onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}>{fmtBytes(meta.total_bytes)}</b>
             </Tooltip>
             {' '}· <b>{fmtN(meta.total_objects)}</b> objects
             {estCost && (
