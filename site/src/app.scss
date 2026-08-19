@@ -357,6 +357,12 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   cursor: help;
 }
 
+.units-toggle {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
 .tt-ref { display: inline; }
 
 .tooltip-content {

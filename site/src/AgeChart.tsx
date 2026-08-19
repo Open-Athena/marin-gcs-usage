@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
-import { SHARED_GROUPS, TEAM_VARS, fmtBytes, groupLabel, sharedColor } from './types'
+import { SHARED_GROUPS, TEAM_VARS, groupLabel, sharedColor } from './types'
+import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
@@ -30,6 +31,7 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
 }) {
+  const { fmtBytes } = useUnits()
   // Default to whichever granularity yields a readable number of bars. A fixed
   // 'month' default is wrong at both ends: CoreWeave's objects are all from the
   // last ~8 weeks (3 fat bars, no shape), while GCS spans years (unreadable at

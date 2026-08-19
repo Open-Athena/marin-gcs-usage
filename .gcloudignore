@@ -1,4 +1,6 @@
-# Source upload for `gcloud run jobs deploy --source` (mirror of .dockerignore).
+# Source upload for Cloud Build / `gcloud run jobs deploy --source`
+# (superset of .dockerignore: also excludes repo-local working state the
+# Docker build never needs).
 .git
 .venv
 tmp
@@ -9,3 +11,11 @@ site/public/data/20*
 wt
 gh
 specs
+marin/.venv
+ui/node_modules
+packages/react/node_modules
+marin/tmp
+thrds
+screenshots
+site/screenshots
+*.csv

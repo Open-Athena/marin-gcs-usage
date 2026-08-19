@@ -13,7 +13,8 @@ import {
 } from '@floating-ui/react'
 import { useState } from 'react'
 import type { Placement } from '@floating-ui/react'
-import { CLASS_NAMES, CLASS_PRICE_US, fmtBytes, fmtUsd } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, fmtUsd } from './types'
+import { useUnits } from './units'
 
 /** Generic hover/focus tooltip (@floating-ui/react); replaces native title=. */
 export function Tooltip({ content, children, placement = 'top' }: {
@@ -53,6 +54,7 @@ export function Tooltip({ content, children, placement = 'top' }: {
 
 /** Per-class bytes/rate/$ breakdown table for a class-byte mix. */
 export function ClassMixTip({ mix, note }: { mix: Record<string, number>; note?: string }) {
+  const { fmtBytes } = useUnits()
   const rows = Object.entries(mix)
     .filter(([, b]) => b > 0)
     .sort((a, b) => b[1] - a[1])

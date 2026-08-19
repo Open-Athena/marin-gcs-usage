@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import type { Rules, TreeNode, UserInfo } from './types'
-import { TEAM_VARS, fmtBytes } from './types'
+import { TEAM_VARS } from './types'
+import { useUnits } from './units'
 
 const SLACK_URL = 'https://openathena.slack.com/archives/C0AHF5KV11Q'
 const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/main/src/gcs_usage/identities.yaml'
@@ -25,6 +26,7 @@ export function AttributionRules({ rules, tree, users }: {
   tree: TreeNode
   users: UserInfo[]
 }) {
+  const { fmtBytes } = useUnits()
   // deep-linkable: the section mounts after data loads, so honor #attribution then
   useEffect(() => {
     if (location.hash === '#attribution') document.getElementById('attribution')?.scrollIntoView()

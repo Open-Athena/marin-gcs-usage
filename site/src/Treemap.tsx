@@ -5,7 +5,8 @@ import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userCo
 import type { UserIndexEntry } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
-import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtBytes, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
+import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
+import { useUnits } from './units'
 
 // A top-level prefix holding more than this share of the store is split one
 // level deeper for colouring (see catSlot).
@@ -37,6 +38,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
 }) {
+  const { fmtBytes } = useUnits()
   // Fixed category colors: global top-level dirs by total size. A single-bucket
   // store can be lopsided enough that one prefix owns most of the map (`marin/`
   // is ~87% of the CoreWeave bucket), which paints almost every cell the same

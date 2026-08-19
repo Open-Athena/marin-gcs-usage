@@ -13,7 +13,8 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtBytes, fmtN, ratePerByte } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
+import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
 // How often an unpinned tab re-checks for newly published scans.
@@ -145,6 +146,7 @@ function AppContent() {
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
+  const { units, fmtBytes, toggleUnits } = useUnits()
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
@@ -199,6 +201,12 @@ function AppContent() {
       group: 'View',
       defaultBindings: ['s'],
       handler: () => setLens(v => !v),
+    },
+    'units:toggle': {
+      label: `Byte units: ${units === 'si' ? 'SI (TB) → IEC (TiB)' : 'IEC (TiB) → SI (TB)'}`,
+      group: 'View',
+      defaultBindings: ['i'],
+      handler: toggleUnits,
     },
     ...Object.fromEntries(
       (meta?.users ?? []).map(u => [
@@ -350,7 +358,11 @@ function AppContent() {
             ) : (
               <b>{meta.asof}</b>
             )}
-            {' '}· <b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects
+            {' '}·{' '}
+            <Tooltip content={<>{units === 'si' ? 'SI units (TB) — click for IEC (TiB)' : 'IEC units (TiB) — click for SI (TB)'}</>}>
+              <b className="units-toggle" onClick={toggleUnits}>{fmtBytes(meta.total_bytes)}</b>
+            </Tooltip>
+            {' '}· <b>{fmtN(meta.total_objects)}</b> objects
             {estCost && (
               <>
                 {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>{' '}

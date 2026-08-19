@@ -150,11 +150,22 @@ export interface Rules {
   prefix_owners: RulePrefix[]
 }
 
-export const fmtBytes = (b: number): string => {
+export type Units = 'si' | 'iec'
+
+export const fmtBytesSi = (b: number): string => {
   if (b >= 1e12) return (b / 1e12).toFixed(b >= 1e13 ? 0 : 1) + ' TB'
   if (b >= 1e9) return (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + ' GB'
   if (b >= 1e6) return (b / 1e6).toFixed(0) + ' MB'
   return Math.round(b / 1e3) + ' KB'
+}
+
+const Ki = 1024, Mi = Ki ** 2, Gi = Ki ** 3, Ti = Ki ** 4
+
+export const fmtBytesIec = (b: number): string => {
+  if (b >= Ti) return (b / Ti).toFixed(b >= 10 * Ti ? 0 : 1) + ' TiB'
+  if (b >= Gi) return (b / Gi).toFixed(b >= 10 * Gi ? 0 : 1) + ' GiB'
+  if (b >= Mi) return (b / Mi).toFixed(0) + ' MiB'
+  return Math.round(b / Ki) + ' KiB'
 }
 
 export const fmtN = (n: number): string => n.toLocaleString('en-US')
