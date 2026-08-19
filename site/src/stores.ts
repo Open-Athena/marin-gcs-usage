@@ -52,8 +52,18 @@ export const STORES: Store[] = [
 export const DEFAULT_STORE = STORES[0]
 
 // Longest matching path wins, so `/cw` beats the `/` default.
+// A CW-dedicated hostname (cw-s3.oa.dev) roots the CoreWeave view: `/` there
+// IS the CW store, so links shared with the marin-ops audience don't need the
+// `/cw` path (and that host's CF Access policy can be wider than gcs.oa.dev's,
+// which carries $ estimates). Path routes still work on any host.
+const HOST_DEFAULT = (): Store | undefined =>
+  typeof location !== 'undefined' && /^cw[-.]/.test(location.hostname)
+    ? STORES.find(s => s.key === 'cw')
+    : undefined
+
 export const storeForPath = (pathname: string): Store =>
   [...STORES]
     .sort((a, b) => b.path.length - a.path.length)
     .find(s => s.path !== '/' && (pathname === s.path || pathname.startsWith(`${s.path}/`)))
+  ?? HOST_DEFAULT()
   ?? DEFAULT_STORE
