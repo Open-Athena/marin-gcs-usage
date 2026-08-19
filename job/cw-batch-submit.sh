@@ -38,6 +38,9 @@ v = {
     # boto/aws-sdk needs a region even though CAIOS ignores it
     "AWS_DEFAULT_REGION": "us-east-1",
     "AWS_EC2_METADATA_DISABLED": "true",
+    # CAIOS rejects path-style requests, and boto's auto degrades to path
+    # for custom endpoints when no ~/.aws/config says otherwise.
+    "DT_S3_ADDRESSING_STYLE": "virtual",
 }
 for k in ["SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
     if k in os.environ:
