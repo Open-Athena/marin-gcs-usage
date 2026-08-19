@@ -57,12 +57,22 @@ L2=$(ls "$WORK"/l2/scans/*.parquet | head -1)
 # 3. Site JSONs.
 python job/cw-webdata.py "$L2" "$WORK/web" -b "$BUCKET" -l "Marin CoreWeave" -a "$DATE"
 
+# 3.5. Diff vs the previous snapshot, precomputed here because the site is
+# static. Consecutive pairs only (no pair explosion); the previous l2 is
+# copied local first — the diff walk does a few hundred filtered reads, which
+# beat on a FUSE mount but are cheap against local disk.
+PREV=$(ls "/gcs/$DATA/cw-l2/" 2>/dev/null | awk -v s="$SNAP_ID" '$0 < s' | sort | tail -1)
+if [ -n "$PREV" ] && [ -f "/gcs/$DATA/cw-l2/$PREV/$BUCKET.parquet" ]; then
+  cp "/gcs/$DATA/cw-l2/$PREV/$BUCKET.parquet" "$WORK/prev.parquet"
+  python job/cw-diff.py "$WORK/prev.parquet" "$L2" "$WORK/web/diff.json" -p "$PREV" -c "$SNAP_ID"
+fi
+
 # 4. Publish. Written last and all at once: the site's scan list is derived by
 # listing this prefix, so a partially-uploaded snapshot would show up in the
 # dropdown as a broken entry.
 DEST="/gcs/$DATA/snapshots/cw/$SNAP_ID"
 mkdir -p "$DEST"
-cp "$WORK"/web/{tree,age,meta}.json "$DEST/"
+cp "$WORK"/web/*.json "$DEST/"
 
 # Keep the canonical layer-2 parquet too -- it's the input to every ad-hoc
 # question ("what grew?", "what's idle?") that the JSONs can't answer.
