@@ -12,24 +12,26 @@
 // CORS). CF Pages serves static assets before Functions, so this only works
 // because public/data/ is no longer shipped (see the build).
 import { S3Store } from '@rdub/file-tree/stores/s3'
-
-interface Env {
-  GCS_HMAC_KEY_ID: string
-  GCS_HMAC_SECRET: string
-}
+import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
 
 const BUCKET = 'oa-gcs-usage-dvx'
 // Scan ids are `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM` (no
 // colon: it keeps the id safe as an object-key path segment). GCS publishes one
 // scan a day so its ids stay date-only; CoreWeave runs ad hoc, several a day.
 const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
-const CACHE = 'public, max-age=300' // daily cadence — ≤5min edge staleness is fine
+// `private`: these responses are now auth-gated — browser caching only.
+const CACHE = 'private, max-age=300' // daily cadence — ≤5min staleness is fine
 
 export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Response> => {
   const { GCS_HMAC_KEY_ID, GCS_HMAC_SECRET } = ctx.env
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) {
     return new Response('data proxy not configured (missing GCS HMAC creds)', { status: 503 })
   }
+  // CW snapshot data is OA-only; everything else needs the base `gcs` scope
+  // (staff, the Stanford whitelist, or a minted share link).
+  const rel = new URL(ctx.request.url).pathname.replace(/^\/data\//, '')
+  const gated = await requireScope(ctx, rel.startsWith('cw/') ? CW_SCOPE : GCS_SCOPE)
+  if (gated instanceof Response) return gated
   const store = S3Store({
     endpoint: 'https://storage.googleapis.com', // GCS XML API is S3-compatible
     bucket: BUCKET,
@@ -38,7 +40,6 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
     accessKeyId: GCS_HMAC_KEY_ID,
     secretAccessKey: GCS_HMAC_SECRET,
   })
-  const rel = new URL(ctx.request.url).pathname.replace(/^\/data\//, '')
 
   try {
     // `<store>/scans.json` → the date dirs under snapshots/<store>/, newest-first.

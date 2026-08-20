@@ -1,4 +1,5 @@
 import { Route, Routes } from 'react-router-dom'
+import { AdminPage } from './AdminPage'
 import App from './App'
 import { AuthGate } from './AuthGate'
 import { FilesPage } from './FilesPage'
@@ -16,6 +17,7 @@ export default function Root() {
       {STORES.map(s => (
         <Route key={s.key} path={`${s.path.replace(/\/$/, '')}/og`} element={<OgPage store={s} />} />
       ))}
+      <Route path="/admin" element={<AuthGate><AdminPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>

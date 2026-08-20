@@ -6,6 +6,7 @@ import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
+import { useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
@@ -79,20 +80,6 @@ export const decodeScan = (e: string | undefined, now = new Date()): string | un
   if (!mo || !d || Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return undefined
   if ((hh && Number(hh) > 23) || (mm && Number(mm) > 59)) return undefined
   return `${y}-${pad(mo)}-${pad(d)}` + (hh ? `T${pad(hh)}${mm ? pad(mm) : ''}` : '')
-}
-
-// CF Access identity (present when served behind gcs.oa.dev; absent in local dev)
-interface Identity { email: string; name?: string }
-
-function useIdentity(): Identity | null {
-  const [ident, setIdent] = useState<Identity | null>(null)
-  useEffect(() => {
-    void fetch('/cdn-cgi/access/get-identity')
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => d?.email && setIdent(d))
-      .catch(() => {})
-  }, [])
-  return ident
 }
 
 const avatarHue = (s: string): number => {

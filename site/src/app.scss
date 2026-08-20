@@ -618,3 +618,55 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   font-size: 12px;
   color: var(--ink-2);
 }
+
+.admin-page {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px;
+
+  h1 { margin-bottom: 8px; }
+
+  .mint {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: 16px 0;
+
+    input {
+      padding: 6px 8px;
+      background: var(--bg-1, transparent);
+      color: inherit;
+      border: 1px solid var(--ink-3, #888);
+      border-radius: 4px;
+      &:first-child { min-width: 280px; }
+    }
+    .days { width: 4em; }
+    button { padding: 6px 12px; cursor: pointer; }
+    .err { color: #d33; }
+  }
+
+  .minted {
+    margin: 12px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--ink-3, #888);
+    border-radius: 6px;
+
+    .token-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      code { overflow-wrap: anywhere; user-select: all; }
+    }
+  }
+
+  .grants {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+
+    th, td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--ink-3, #4443); }
+    tr.revoked td { opacity: 0.5; }
+    .revoked-label { font-size: 12px; }
+  }
+}

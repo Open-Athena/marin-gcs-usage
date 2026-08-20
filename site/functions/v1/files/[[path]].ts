@@ -12,11 +12,7 @@
 // audience). No per-user authz.
 import { createHandlers } from '@rdub/file-tree/server'
 import { S3Store } from '@rdub/file-tree/stores/s3'
-
-interface Env {
-  GCS_HMAC_KEY_ID: string
-  GCS_HMAC_SECRET: string
-}
+import { type Env, GCS_SCOPE, requireScope } from '../../_lib/auth.js'
 
 const BUCKET = 'oa-gcs-usage-dvx'
 const BASE = '/v1/files'
@@ -26,6 +22,8 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) {
     return new Response('scan-browser proxy not configured (missing GCS HMAC creds)', { status: 503 })
   }
+  const gated = await requireScope(ctx, GCS_SCOPE)
+  if (gated instanceof Response) return gated
   const store = S3Store({
     endpoint: 'https://storage.googleapis.com', // GCS XML API is S3-compatible
     bucket: BUCKET,

@@ -1,0 +1,32 @@
+# CF Pages project config (oa-gcs-usage). `wrangler pages deploy` reads this,
+# so bindings + vars declared here apply to the deployment it creates.
+name = "oa-gcs-usage"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-06-01"
+
+# Auth backend (@open-athena/auth, Tier 2): D1 holds grants + access_log +
+# access_requests (package migrations 0001–0006) and the mark & sweep tables
+# (0007). Created with `wrangler d1 create oa-gcs-usage-auth`; apply migrations
+# with `wrangler d1 migrations apply oa-gcs-usage-auth --remote`.
+# database_id is a placeholder until `wrangler d1 create oa-gcs-usage-auth`
+# runs (needs an OA-account credential with D1 scope, which neither .envrc
+# token has yet) — replace it before deploying, or the deploy fails loudly.
+# Local dev ignores the id (`--local` keys on the name).
+[[d1_databases]]
+binding = "DB"
+database_name = "oa-gcs-usage-auth"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+# Zero Trust team domain whose JWTs the SSO hand-off + edge fallback accept.
+ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"
+# AUD tags of the two Access apps: "GCS usage" (gcs.oa.dev + pages.dev) and
+# "CoreWeave usage" (cw-s3.oa.dev, whole-host, OA-only — stays edge-gated).
+ACCESS_AUD = "a75188138fbb860cdcede865b65856c59240270a5135fb7d97b9342ba8c56864"
+ACCESS_AUD_CW = "1de65a9ffe270d860911b786720fefe00123e79e71ca038c311479e468dc8378"
+# Domain whose SSO identities are staff (gcs + cw + admin scopes).
+STAFF_DOMAIN = "openathena.ai"
+
+# Secrets (set with `wrangler pages secret put <NAME> --project-name oa-gcs-usage`):
+#   SESSION_SECRET   — HMAC key for session cookies + IP hashing
+#   GCS_HMAC_KEY_ID / GCS_HMAC_SECRET — existing read-only GCS proxy creds
