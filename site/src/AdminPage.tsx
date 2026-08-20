@@ -28,10 +28,10 @@ const linkFor = (token: string): string => `${window.location.origin}/?key=${tok
 
 export function AdminPage() {
   const qc = useQueryClient()
-  const [name, setName] = useState('')
-  const [note, setNote] = useState('')
+  const [memo, setMemo] = useState('')
+  const [user, setUser] = useState('')
   const [days, setDays] = useState('30')
-  const [minted, setMinted] = useState<{ name: string | null; url: string } | null>(null)
+  const [minted, setMinted] = useState<{ label: string; url: string } | null>(null)
 
   const grantsQ = useQuery<{ grants: Grant[] }, Error>({
     queryKey: ['auth', 'grants'],
@@ -47,19 +47,21 @@ export function AdminPage() {
   const mint = useMutation({
     mutationFn: async () => {
       const expiresInS = days.trim() ? Number(days) * 86400 : null
+      // memo → `note` (the link's label, admin-side); user → `name` (also the
+      // link-holder's display name, so only set when the link is person-bound)
       const r = await fetch('/api/auth/grants', {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: name.trim() || null, note: note.trim() || null, scopes: ['gcs'], expiresInS }),
+        body: JSON.stringify({ note: memo.trim(), name: user.trim() || null, scopes: ['gcs'], expiresInS }),
       })
       if (!r.ok) throw new Error(`mint failed: ${r.status}`)
       return r.json() as Promise<{ grant: Grant; token: string }>
     },
     onSuccess: ({ grant, token }) => {
-      setMinted({ name: grant.name, url: linkFor(token) })
-      setName('')
-      setNote('')
+      setMinted({ label: grant.note ?? grant.name ?? 'unnamed', url: linkFor(token) })
+      setMemo('')
+      setUser('')
       void qc.invalidateQueries({ queryKey: ['auth', 'grants'] })
     },
   })
@@ -98,20 +100,30 @@ export function AdminPage() {
           mint.mutate()
         }}
       >
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Who it's for — e.g. Jane Doe (Stanford)" required />
-        <input value={note} onChange={e => setNote(e.target.value)} placeholder="Why (optional)" />
-        <label>
-          expires in{' '}
-          <input className="days" value={days} onChange={e => setDays(e.target.value)} inputMode="numeric" size={4} /> days
-          {' '}(blank = never)
-        </label>
-        <button type="submit" disabled={mint.isPending}>Mint link</button>
-        {mint.error && <span className="err">{mint.error.message}</span>}
+        <div className="field">
+          <label htmlFor="mint-memo">Memo</label>
+          <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} required />
+          <span className="hint">label for this link — where it's shared or what it's for, e.g. <code>#internal-discuss</code></span>
+        </div>
+        <div className="field">
+          <label htmlFor="mint-user">User</label>
+          <input id="mint-user" value={user} onChange={e => setUser(e.target.value)} />
+          <span className="hint">optional — set when the link is for one person; shown as their display name while they browse</span>
+        </div>
+        <div className="field">
+          <label htmlFor="mint-days">Expiry</label>
+          <input id="mint-days" className="days" value={days} onChange={e => setDays(e.target.value)} inputMode="numeric" size={4} />
+          <span className="hint">days until the link stops working; blank = never</span>
+        </div>
+        <div className="field submit">
+          <button type="submit" disabled={mint.isPending}>Mint link</button>
+          {mint.error && <span className="err">{mint.error.message}</span>}
+        </div>
       </form>
       {minted && (
         <div className="minted">
           <p>
-            Link for <strong>{minted.name ?? 'unnamed'}</strong> — copy it now; it won't be shown again:
+            Link <strong>{minted.label}</strong> — copy it now; it won't be shown again:
           </p>
           <div className="token-row">
             <code>{minted.url}</code>
@@ -122,14 +134,14 @@ export function AdminPage() {
       <table className="grants">
         <thead>
           <tr>
-            <th>name</th><th>note</th><th>scopes</th><th>redeems</th><th>last used</th><th>expires</th><th>created</th><th></th>
+            <th>memo</th><th>user</th><th>scopes</th><th>redeems</th><th>last used</th><th>expires</th><th>created</th><th></th>
           </tr>
         </thead>
         <tbody>
           {grants.map(g => (
             <tr key={g.id} className={g.revokedAt ? 'revoked' : ''}>
-              <td>{g.name ?? <em>unnamed</em>}</td>
-              <td>{g.note}</td>
+              <td>{g.note ?? <em>—</em>}</td>
+              <td>{g.name}</td>
               <td>{g.scopes.join(' ')}</td>
               <td>{g.redeems}{g.maxRedeems != null ? `/${g.maxRedeems}` : ''}</td>
               <td>{fmtTs(g.lastUsedAt)}</td>

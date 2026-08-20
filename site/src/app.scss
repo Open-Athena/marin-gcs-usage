@@ -635,21 +635,32 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   h1 { margin-bottom: 8px; }
 
   .mint {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    display: grid;
+    grid-template-columns: max-content minmax(200px, 340px) 1fr;
+    gap: 8px 12px;
     align-items: center;
     margin: 16px 0;
 
+    .field { display: contents; }
+    .field.submit {
+      display: flex;
+      grid-column: 2;
+      gap: 12px;
+      align-items: center;
+    }
+    label { font-weight: 600; }
     input {
       padding: 6px 8px;
       background: var(--bg-1, transparent);
       color: inherit;
       border: 1px solid var(--ink-3, #888);
       border-radius: 4px;
-      &:first-child { min-width: 280px; }
     }
-    .days { width: 4em; }
+    .hint {
+      font-size: 12px;
+      color: var(--ink-2);
+      code { font-size: 11px; }
+    }
     button { padding: 6px 12px; cursor: pointer; }
     .err { color: #d33; }
   }
