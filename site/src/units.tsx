@@ -10,9 +10,9 @@ import type { Units } from './types'
 // carries SI-ness but plain links stay clean.
 //
 // The trailing "B" is its own preference on the same precedence ladder
-// (`?nb` param > localStorage > default-on): bare `1.2 Ti` is tighter in
-// dense treemap cells, but next to object counts the B disambiguates, so
-// it stays opt-out.
+// (`?rb` param > localStorage > default): bare `1.2 Ti` is the default —
+// tighter in dense treemap cells — with `?rb` ("restore B") / the persisted
+// toggle bringing back `TiB`/`TB`.
 const KEY = 'units'
 const load = (): Units | null => {
   const v = localStorage.getItem(KEY)
@@ -34,19 +34,19 @@ interface UnitsCtx {
 
 const Ctx = createContext<UnitsCtx>({
   units: 'iec',
-  suffixB: true,
-  fmtBytes: fmtBytesIec,
+  suffixB: false,
+  fmtBytes: (b: number) => fmtBytesIec(b, false),
   toggleUnits: () => {},
   toggleSuffixB: () => {},
 })
 
 export function UnitsProvider({ children }: { children: React.ReactNode }) {
   const [siP, setSiP] = useUrlState('si', boolParam)
-  const [nbP, setNbP] = useUrlState('nb', boolParam)
+  const [rbP, setRbP] = useUrlState('rb', boolParam)
   const [pref, setPref] = useState<Units | null>(load)
   const [bPref, setBPref] = useState<boolean | null>(loadB)
   const units: Units = siP ? 'si' : (pref ?? 'iec')
-  const suffixB = nbP ? false : (bPref ?? true)
+  const suffixB = rbP ? true : (bPref ?? false)
   const value = useMemo<UnitsCtx>(
     () => ({
       units,
@@ -62,10 +62,10 @@ export function UnitsProvider({ children }: { children: React.ReactNode }) {
         const next = !suffixB
         localStorage.setItem(BKEY, next ? '1' : '0')
         setBPref(next)
-        setNbP(!next)
+        setRbP(next)
       },
     }),
-    [units, suffixB, setSiP, setNbP],
+    [units, suffixB, setSiP, setRbP],
   )
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
