@@ -55,7 +55,7 @@ export function AdminPage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ note: memo.trim(), name: user.trim() || null, scopes: ['gcs'], expiresInS }),
       })
-      if (!r.ok) throw new Error(`mint failed: ${r.status}`)
+      if (!r.ok) throw new Error(`create failed: ${r.status}`)
       return r.json() as Promise<{ grant: Grant; token: string }>
     },
     onSuccess: ({ grant, token }) => {
@@ -90,7 +90,7 @@ export function AdminPage() {
       <h1>Share links</h1>
       <p>
         Named, revocable view links for people outside the SSO/whitelist set. The raw link is shown{' '}
-        <strong>once</strong>, at mint time; revoking kills every session it minted, on their next request.{' '}
+        <strong>once</strong>, when the link is created; revoking a link signs out everyone using it, on their next request.{' '}
         <Link to="/">← back to the dashboard</Link>
       </p>
       <form
@@ -116,7 +116,7 @@ export function AdminPage() {
           <span className="hint">days until the link stops working; blank = never</span>
         </div>
         <div className="field submit">
-          <button type="submit" disabled={mint.isPending}>Mint link</button>
+          <button type="submit" disabled={mint.isPending}>Create link</button>
           {mint.error && <span className="err">{mint.error.message}</span>}
         </div>
       </form>
@@ -155,7 +155,7 @@ export function AdminPage() {
             </tr>
           ))}
           {!grants.length && !grantsQ.isPending && (
-            <tr><td colSpan={8}><em>no links minted yet</em></td></tr>
+            <tr><td colSpan={8}><em>no links created yet</em></td></tr>
           )}
         </tbody>
       </table>
