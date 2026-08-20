@@ -6,7 +6,7 @@ import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
-import { useIdent as useIdentity } from './auth'
+import { useIdent as useIdentity, useSignOut } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
@@ -172,6 +172,7 @@ function AppContent() {
   const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
+  const signOut = useSignOut()
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
@@ -375,7 +376,7 @@ function AppContent() {
                 {(ident.name || ident.email).trim()[0].toUpperCase()}
               </span>
               <span className="email" title={ident.email}>{ident.name || ident.email}</span>
-              <a className="logout" href="/cdn-cgi/access/logout">log out</a>
+              <button className="logout" type="button" onClick={signOut}>log out</button>
             </div>
           )}
         </div>

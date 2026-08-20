@@ -4,7 +4,7 @@
 // (`/api/auth/whoami`), minted at `/auth/sso` (CF Access as SSO IdP) or by
 // redeeming a `?key=` share link. cw-* hosts stay whole-host edge-gated by
 // their own OA-only Access app, so there identity is still the edge probe.
-import { displayName, useWhoami, type Whoami, type WhoamiSource } from '@open-athena/auth/react'
+import { displayName, useForgetWhoami, useWhoami, type Whoami, type WhoamiSource } from '@open-athena/auth/react'
 
 const isCwHost = /^cw[-.]/.test(window.location.hostname)
 
@@ -22,6 +22,24 @@ export const signInUrl = (): string =>
 export interface Ident {
   email: string
   name?: string
+}
+
+/**
+ * Sign out of whichever session this host uses: the app session (POST
+ * /api/auth/logout clears the cookie) or, on edge-gated cw-* hosts, the CF
+ * Access session (its logout endpoint redirects through the edge).
+ */
+export function useSignOut(): () => void {
+  const forget = useForgetWhoami()
+  return () => {
+    if (isCwHost) {
+      window.location.href = '/cdn-cgi/access/logout'
+      return
+    }
+    void fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => {
+      forget()
+    })
+  }
 }
 
 /** The header chip's identity: null until (unless) someone is signed in. */

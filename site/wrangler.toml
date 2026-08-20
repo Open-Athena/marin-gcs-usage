@@ -8,14 +8,10 @@ compatibility_date = "2026-06-01"
 # access_requests (package migrations 0001–0006) and the mark & sweep tables
 # (0007). Created with `wrangler d1 create oa-gcs-usage-auth`; apply migrations
 # with `wrangler d1 migrations apply oa-gcs-usage-auth --remote`.
-# database_id is a placeholder until `wrangler d1 create oa-gcs-usage-auth`
-# runs (needs an OA-account credential with D1 scope, which neither .envrc
-# token has yet) — replace it before deploying, or the deploy fails loudly.
-# Local dev ignores the id (`--local` keys on the name).
 [[d1_databases]]
 binding = "DB"
 database_name = "oa-gcs-usage-auth"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"
 
 [vars]
 # Zero Trust team domain whose JWTs the SSO hand-off + edge fallback accept.
