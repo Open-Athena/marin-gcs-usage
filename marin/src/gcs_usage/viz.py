@@ -27,7 +27,6 @@ def _rss(tag: str) -> None:
     err(f"[rss] {tag}: peak {peak / (1024**2 if sys.platform == 'linux' else 1024**3):.1f} GB")
 
 FOLD_MIN_BYTES = 20e9  # children below this fold into "(other ×N)"
-TOP_USERS_PER_NODE = 5
 
 
 def _class_of(g: list[dict]) -> dict[str, int]:
@@ -49,8 +48,8 @@ def _date_of(g: list[dict]) -> int | None:
 
 def _attr_of(g: list[dict]) -> dict:
     """Attribution summary of a row group: team-bytes map (`tm`), the subset
-    of each team's bytes with no per-user owner (`sh`, "shared"), and top
-    user-bytes (`us`)."""
+    of each team's bytes with no per-user owner (`sh`, "shared"), and
+    per-user bytes (`us`, all users, sorted desc)."""
     tm: dict[str, int] = defaultdict(int)
     ub: dict[str, int] = defaultdict(int)
     sh: dict[str, int] = defaultdict(int)
@@ -60,7 +59,7 @@ def _attr_of(g: list[dict]) -> dict:
             ub[r["user"]] += r["bytes"]
         elif r["team"] != "unattributed":
             sh[r["team"]] += r["bytes"]
-    top = sorted(ub.items(), key=lambda kv: -kv[1])[:TOP_USERS_PER_NODE]
+    top = sorted(ub.items(), key=lambda kv: -kv[1])
     out = {"tm": dict(sorted(tm.items(), key=lambda kv: -kv[1]))}
     if sh:
         out["sh"] = dict(sorted(sh.items(), key=lambda kv: -kv[1]))
@@ -130,7 +129,7 @@ def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict
                 folded["tm"] = dict(sorted(tm.items(), key=lambda kv: -kv[1]))
                 if sh:
                     folded["sh"] = dict(sorted(sh.items(), key=lambda kv: -kv[1]))
-                top = sorted(ub.items(), key=lambda kv: -kv[1])[:TOP_USERS_PER_NODE]
+                top = sorted(ub.items(), key=lambda kv: -kv[1])
                 if top:
                     folded["us"] = [[u, b_] for u, b_ in top]
             big.append(folded)
@@ -148,7 +147,7 @@ def write_webdata(
 
     With ``attributions``, every dir is attributed (deepest-prefix-wins, same
     join as ``report``) and each tree node carries ``tm`` (team-bytes map) and
-    ``us`` (top user-bytes) for ownership overlays.
+    ``us`` (per-user bytes) for ownership overlays.
     """
     from .listing import prepare_listing
 

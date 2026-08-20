@@ -207,10 +207,18 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
       const attributed = Object.entries(node.tm)
         .filter(([t]) => t !== 'unattributed')
         .reduce((s, [, b]) => s + b, 0)
-      const other = attributed - us.reduce((s, [, b]) => s + b, 0)
+      const userTotal = us.reduce((s, [, b]) => s + b, 0)
+      // group/communal bytes with no individual owner (exact once `us` is
+      // uncapped; with legacy top-5 snapshots the tail users land here too)
+      const shared = attributed - userTotal
+      // individual traces while they stay legible: everyone ≥1% of the node,
+      // at least 5, at most 12; the rest roll into "(other users)"
+      const shown = us.filter(([, b], i) => i < 5 || (i < 12 && b >= 0.01 * node.b))
+      const otherUsers = userTotal - shown.reduce((s, [, b]) => s + b, 0)
       return [
-        ...us.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u), mix: pricing?.userMix?.[u] })),
-        ...(other > 0 ? [{ k: '(other attributed)', b: other, col: 'var(--other)', rate: pricing?.blended, mix: undefined }] : []),
+        ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u), mix: pricing?.userMix?.[u] })),
+        ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined }] : []),
+        ...(shared > 0 ? [{ k: '(shared/communal)', b: shared, col: 'var(--shared)', rate: pricing?.blended, mix: undefined }] : []),
         ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: teamRate('unattributed'), mix: pricing?.teamMix?.['unattributed'] }] : []),
       ].sort((a, b) => b.b - a.b)
     }
