@@ -30,6 +30,12 @@ import { useHoverPin } from './useHoverPin'
 
 export interface TreemapProps<T> {
   root: T
+  /**
+   * Start drilled to this path (must begin with `root`). Applied on mount and
+   * whenever `root`'s identity changes — crumbs still show the full ancestry,
+   * so a store with one meaningful top-level container can open inside it.
+   */
+  initialPath?: T[]
   /** Extract this node's *own* aggregated size (bytes, count, whatever). */
   getSize: (n: T) => number
   /** Extract children; return `undefined` or `[]` for leaves. */
@@ -228,6 +234,7 @@ const STATUS_STYLE: CSSProperties = {
 
 export function Treemap<T>({
   root,
+  initialPath,
   getSize,
   getChildren,
   hasChildren,
@@ -260,7 +267,7 @@ export function Treemap<T>({
   depthFade = 0.82,
   rootFade = 0.92,
 }: TreemapProps<T>) {
-  const [path, setPath] = useState<T[]>([root])
+  const [path, setPath] = useState<T[]>(initialPath?.[0] === root ? initialPath : [root])
   const [tip, setTip] = useState<TipState<T> | null>(null)
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const mapRef = useRef<HTMLDivElement>(null)
@@ -275,10 +282,12 @@ export function Treemap<T>({
 
   const node = path[path.length - 1]
 
-  // Reset drill path when root changes.
+  // Reset drill path when root changes (respecting `initialPath` when it
+  // belongs to the new root).
   useEffect(() => {
-    setPath([root])
+    setPath(initialPath?.[0] === root ? initialPath : [root])
     setTip(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath applies per-root, not on its own changes
   }, [root])
 
   // Notify consumer on path change.

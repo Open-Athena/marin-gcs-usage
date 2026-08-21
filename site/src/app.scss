@@ -277,6 +277,24 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
         inset 0 0 0 4px rgb(0 0 0 / 0.4);
     }
     &.dust { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.28); }
+  }
+  // GCS renders mostly in the muted team palette, which the CW-weight borders
+  // overpower (bright prefix hues carry them fine) — soften them here. This
+  // block is the sanctioned home for deliberate per-store presentation diffs.
+  &.store-gcs .dt-treemap-cell {
+    box-shadow:
+      inset 0 0 0 1px rgb(0 0 0 / 0.26),
+      inset 0 0 0 2px rgb(255 255 255 / 0.05);
+    &.branch { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.38); }
+    &.chain {
+      box-shadow:
+        inset 0 0 0 1px rgb(0 0 0 / 0.34),
+        inset 0 0 0 3px rgb(255 255 255 / 0.08),
+        inset 0 0 0 4px rgb(0 0 0 / 0.26);
+    }
+    &.dust { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18); }
+  }
+  .dt-treemap-cell {
     // Cells nest, `:hover` matches every ancestor of the pointer, and `filter`
     // compounds multiplicatively down the tree — so a leaf 3 deep used to light
     // up at 1.07³ and kept brightening as the pointer crossed each ancestor.

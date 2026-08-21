@@ -376,11 +376,8 @@ function AppContent() {
             </div>
           )}
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
-          {store.key === 'gcs' && (
-            markMode
-              ? <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Exit&nbsp;marking</Link>
-              : <Link className="nav-files nav-mark" to="/mark" style={{ fontSize: '0.9em' }}>Mark&nbsp;&amp;&nbsp;sweep&nbsp;→</Link>
-          )}
+          {/* /mark stays URL-only until the Monday reveal — no nav link yet */}
+          {markMode && <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Exit&nbsp;marking</Link>}
           {ident && (
             <div className="whoami">
               <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>
@@ -506,7 +503,21 @@ function AppContent() {
         // Remount per store: the treemap owns drill/crumb state tied to the
         // tree it mounted with, and a switch can swap `tree` without ever
         // passing through null once both payloads are cached.
-        <Treemap key={store.key} root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens} scheme={store.scheme} markIdx={markMode ? markIdx : undefined} />
+        <Treemap
+          key={store.key}
+          root={tree}
+          mode={effMode}
+          userIdx={userIdx}
+          dateRange={dateRange}
+          hl={hl}
+          pricing={pricing}
+          lens={lens}
+          scheme={store.scheme}
+          markIdx={markMode ? markIdx : undefined}
+          // A store with one bucket (CoreWeave today) opens inside it — the
+          // bucket level is a single full-width box otherwise.
+          initialPath={tree.c?.length === 1 ? [tree, tree.c[0]] : undefined}
+        />
       ) : (
         <p className="loading">loading tree…</p>
       )}

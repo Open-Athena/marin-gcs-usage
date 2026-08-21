@@ -26,7 +26,7 @@ export interface Highlight {
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, initialPath }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -41,6 +41,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
   redact?: boolean
   // Mark & sweep mode (/mark): overlay keep/delete badges and marking controls.
   markIdx?: MarkIndex | null
+  // Start drilled here (e.g. CW's lone bucket) — crumbs keep the ancestry.
+  initialPath?: TreeNode[]
 }) {
   const { fmtBytes } = useUnits()
   // Fixed category colors: global top-level dirs by total size. A single-bucket
@@ -386,6 +388,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
   return (
     <DtTreemap<TreeNode>
       root={root}
+      initialPath={initialPath}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
@@ -415,7 +418,9 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
         : () => <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>}
       chrome={!redact}
       showLabels={!redact}
-      className="treemap"
+      // Per-store style hook: deliberate CW/GCS presentation differences live
+      // under these classes in app.scss (one codebase, no branches).
+      className={`treemap store-${scheme === 's3://' ? 'cw' : 'gcs'}`}
     />
   )
 }
