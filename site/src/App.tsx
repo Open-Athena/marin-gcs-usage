@@ -15,6 +15,9 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { useMarkIndex, useMarks, sweepDaysLeft } from './marks'
+import { MarkTabs } from './MarkTabs'
+import type { MarkTab } from './MarkTabs'
+import { useMyUser } from './sweep'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
@@ -179,11 +182,21 @@ function AppContent() {
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
   const signOut = useSignOut()
+  const myUser = useMyUser(ident?.email, markMode)
+  const [markTab, setMarkTab] = useState<MarkTab>('mine')
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
   const effMode: ColorMode = hasAttr ? mode : 'tree'
   const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
+  // In mark mode the active tab drives the dimming, so the map gives spatial
+  // context for whichever worklist is showing.
+  const effHl: Highlight | null = !markMode
+    ? hl
+    : markTab === 'mine' && myUser ? { user: myUser }
+    : markTab === 'lost' ? { team: 'unattributed' }
+    : markTab === 'communal' ? { team: 'communal' }
+    : null
 
   // The prod hostnames are one-store-each; localhost/previews serve both.
   const crossSite = useMemo(() => {
@@ -499,6 +512,10 @@ function AppContent() {
         </div>
       )}
 
+      {markMode && tree && (
+        <MarkTabs root={tree} idx={markIdx} myUser={myUser} tab={markTab} setTab={setMarkTab} />
+      )}
+
       {tree ? (
         // Remount per store: the treemap owns drill/crumb state tied to the
         // tree it mounted with, and a switch can swap `tree` without ever
@@ -509,7 +526,7 @@ function AppContent() {
           mode={effMode}
           userIdx={userIdx}
           dateRange={dateRange}
-          hl={hl}
+          hl={effHl}
           pricing={pricing}
           lens={lens}
           scheme={store.scheme}

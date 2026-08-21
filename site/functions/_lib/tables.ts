@@ -56,6 +56,25 @@ export const TABLES: TableSpec[] = [
     validate: (col, v) => (col === 'email' && !EMAIL_RE.test(v) ? 'not an email address' : null),
   },
   {
+    name: 'user_emails',
+    pk: 'email',
+    desc: 'Sign-in email → canonical attribution user id (powers the /mark "My files" tab).',
+    columns: [
+      { name: 'email', type: 'text', required: true },
+      { name: 'user', type: 'text', editable: true, required: true },
+      { name: 'who', type: 'text', server: 'who' },
+      { name: 'ts', type: 'int', server: 'now' },
+    ],
+    readScope: 'gcs',
+    writeScope: 'admin',
+    orderBy: 'user, email',
+    normalize: (col, v) => (col === 'email' ? v.trim().toLowerCase() : col === 'user' ? v.trim().toLowerCase() : v),
+    validate: (col, v) =>
+      col === 'email' && !EMAIL_RE.test(v) ? 'not an email address'
+      : col === 'user' && !/^[a-z0-9_-]+$/.test(v) ? 'user must be a canonical id (lowercase, [a-z0-9_-])'
+      : null,
+  },
+  {
     name: 'marks',
     pk: 'prefix',
     desc: 'Mark & sweep: keep/delete marks over gs:// prefixes (deepest-mark-wins).',

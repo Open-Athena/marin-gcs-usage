@@ -879,3 +879,82 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   padding-top: 6px;
   border-top: 1px solid var(--line);
 }
+
+.mark-tabs {
+  .tabrow {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    button {
+      background: var(--panel);
+      color: var(--ink-2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 13px;
+      padding: 4px 12px;
+      cursor: pointer;
+      &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
+      &:hover:not(.on) { filter: brightness(1.05); }
+    }
+  }
+  .tab-note {
+    color: var(--ink-2);
+    font-size: 13.5px;
+    margin: 8px 0;
+    b { color: var(--ink); }
+  }
+  .worklist {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+    th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .prefix {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      max-width: 480px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 11.5px;
+      white-space: nowrap;
+      margin-right: 4px;
+      .sw { width: 8px; height: 8px; border-radius: 2px; }
+      &.unmarked { color: var(--ink-2); }
+    }
+    .actions {
+      white-space: nowrap;
+      button {
+        background: var(--panel);
+        color: var(--ink-2);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font-size: 11.5px;
+        padding: 1px 7px;
+        margin-right: 3px;
+        cursor: pointer;
+        &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
+        &:hover:not(.on) { filter: brightness(1.08); }
+      }
+    }
+  }
+  .more {
+    margin-top: 8px;
+    background: var(--panel);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    font-size: 12.5px;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  .err { color: #d33; }
+}
