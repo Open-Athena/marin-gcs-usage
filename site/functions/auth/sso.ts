@@ -26,7 +26,12 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const gate = gateFor(env)
   if (!gate) return new Response('auth backend not configured (DB / SESSION_SECRET)\n', { status: 503 })
   const res = await gate.signIn(email, request)
-  if (!res) return new Response(`${email} is not authorized for this app\n`, { status: 403 })
+  if (!res) {
+    return new Response(
+      `${email} is not on the allowlist for this dashboard.\nPing Ryan Williams (Discord) to be added, or open a share link if you were sent one.\n`,
+      { status: 403 },
+    )
+  }
 
   const next = safeNext(new URL(request.url).searchParams.get('next'))
   return new Response(null, { status: 302, headers: { location: next, 'set-cookie': res.cookie } })

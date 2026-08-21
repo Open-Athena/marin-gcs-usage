@@ -1,4 +1,5 @@
 import { Route, Routes } from 'react-router-dom'
+import { AdminDbPage } from './AdminDbPage'
 import { AdminPage } from './AdminPage'
 import App from './App'
 import { AuthGate } from './AuthGate'
@@ -18,6 +19,8 @@ export default function Root() {
         <Route key={s.key} path={`${s.path.replace(/\/$/, '')}/og`} element={<OgPage store={s} />} />
       ))}
       <Route path="/admin" element={<AuthGate><AdminPage /></AuthGate>} />
+      <Route path="/admin/db" element={<AuthGate><AdminDbPage /></AuthGate>} />
+      <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>

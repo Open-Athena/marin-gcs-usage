@@ -55,14 +55,20 @@ export const TEAM_DOMAIN = 'https://openathena-ai-pages.cloudflareaccess.com'
 const staffDomain = (env: Env) => env.STAFF_DOMAIN ?? 'openathena.ai'
 
 /**
- * Email → scopes. Only Access-verified emails ever reach this (via the edge
- * JWT or an `/auth/sso`-minted session), so the non-staff fallback is "the
- * Access whitelist", not "anyone".
+ * Email → scopes. Staff get everything; anyone else must be in the D1
+ * `allowed_emails` table (the app-owned whitelist — see /admin) to get the
+ * base `gcs` scope. Email sessions re-derive scopes here on every request,
+ * so removing a row de-authorizes existing sessions on their next request.
+ * If the DB isn't bound (local dev), non-staff fall back to allowed — the
+ * CF Access edge gate is the enforcement in that configuration.
  */
-export const scopesFor = (env: Env) => (email: string): string[] =>
-  email.endsWith(`@${staffDomain(env)}`)
-    ? [GCS_SCOPE, CW_SCOPE, ADMIN_SCOPE, REQUESTS_SCOPE]
-    : [GCS_SCOPE]
+export const scopesFor = (env: Env) => async (email: string): Promise<string[] | null> => {
+  if (email.endsWith(`@${staffDomain(env)}`)) return [GCS_SCOPE, CW_SCOPE, ADMIN_SCOPE, REQUESTS_SCOPE]
+  if (!env.DB) return [GCS_SCOPE]
+  const row = await env.DB.prepare('SELECT email FROM allowed_emails WHERE email = ?')
+    .bind(email.toLowerCase()).first()
+  return row ? [GCS_SCOPE] : null
+}
 
 export function gateFor(env: Env): Gate | null {
   if (!env.DB || !env.SESSION_SECRET) return null
@@ -90,7 +96,11 @@ async function edgeIdentity(req: Request, env: Env): Promise<Identity | null> {
   const teamDomain = env.ACCESS_TEAM_DOMAIN ?? TEAM_DOMAIN
   for (const aud of [env.ACCESS_AUD, env.ACCESS_AUD_CW]) {
     const email = await verifyAccessJwt(jwt, teamDomain, aud)
-    if (email) return { email, name: null, scopes: scopesFor(env)(email), via: 'edge' }
+    if (email) {
+      const scopes = await scopesFor(env)(email)
+      if (!scopes) return null
+      return { email, name: null, scopes, via: 'edge' }
+    }
   }
   return null
 }

@@ -91,7 +91,8 @@ export function AdminPage() {
       <p>
         Named, revocable view links for people outside the SSO/whitelist set. The raw link is shown{' '}
         <strong>once</strong>, when the link is created; revoking a link signs out everyone using it, on their next request.{' '}
-        <Link to="/">← back to the dashboard</Link>
+        Per-email access lives in the <Link to="/admin/db/allowed_emails">allowlist table</Link> (all tables:{' '}
+        <Link to="/admin/db">/admin/db</Link>). <Link to="/">← back to the dashboard</Link>
       </p>
       <form
         className="mint"

@@ -689,3 +689,66 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .revoked-label { font-size: 12px; }
   }
 }
+
+.admin-page {
+  .crumbs { font-size: 13px; color: var(--ink-2); }
+
+  .table-list {
+    list-style: none;
+    padding: 0;
+    li { margin: 6px 0; }
+    .ro-tag {
+      margin-left: 8px;
+      font-size: 11px;
+      color: var(--ink-2);
+      border: 1px solid var(--ink-3, #888);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+    .desc { margin-left: 10px; color: var(--ink-2); font-size: 13px; }
+  }
+
+  .db-table {
+    .add-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+      input {
+        padding: 6px 8px;
+        background: var(--bg-1, transparent);
+        color: inherit;
+        border: 1px solid var(--ink-3, #888);
+        border-radius: 4px;
+      }
+      button { padding: 6px 12px; cursor: pointer; }
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      th, td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--ink-3, #4443); }
+      th.sortable { cursor: pointer; user-select: none; }
+      td input {
+        width: 100%;
+        padding: 3px 5px;
+        background: var(--bg-1, transparent);
+        color: inherit;
+        border: 1px solid var(--s1, #58f);
+        border-radius: 3px;
+        font: inherit;
+      }
+      .cell.editable { cursor: pointer; border-bottom: 1px dashed var(--ink-3, #8886); }
+      .empty { color: var(--ink-2); }
+      .rm {
+        background: none;
+        border: none;
+        color: var(--ink-2);
+        cursor: pointer;
+        &:hover { color: #d33; }
+      }
+    }
+    .row-count { color: var(--ink-2); font-size: 12px; }
+  }
+  .err { color: #d33; }
+}
