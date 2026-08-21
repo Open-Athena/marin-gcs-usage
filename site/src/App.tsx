@@ -14,6 +14,7 @@ import { buildUserIndex } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
+import { applyFilter, parseQuery } from './filterTree'
 import { useMarkIndex, useMarks, sweepDaysLeft } from './marks'
 import { MarkTabs } from './MarkTabs'
 import type { MarkTab } from './MarkTabs'
@@ -175,6 +176,13 @@ function AppContent() {
   })
   const diff: DiffData | null = diffQ.data ?? null
   const tree: TreeNode | null = treeQ.data ?? null
+  // Name filter (`?f=`): substring or /regex/ over path segments, outermost
+  // match keeps its subtree, ancestors re-aggregate to matched bytes only.
+  // In-memory over the loaded tree — sub-depth-cap filtering is the
+  // vocab-sidecar arc and lands later.
+  const [fq, setFq] = useUrlState('f', stringParam())
+  const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
+  const shownTree = useMemo(() => (tree && pred ? applyFilter(tree, pred) : tree), [tree, pred])
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
@@ -504,6 +512,23 @@ function AppContent() {
               {MODE_LABELS[m]}
             </button>
           ))}
+          <span className="filterbox">
+            <input
+              value={fq ?? ''}
+              onChange={e => setFq(e.target.value || undefined)}
+              placeholder="filter names — text or /regex/"
+              aria-label="Filter tree by segment name"
+              size={22}
+            />
+            {pred && shownTree && tree && (
+              <span className="fnote">
+                {shownTree.b > 0
+                  ? <>{fmtBytes(shownTree.b)} matched ({((100 * shownTree.b) / tree.b).toFixed(1)}%)</>
+                  : 'no matches'}
+                <button type="button" title="clear filter" onClick={() => setFq(undefined)}>✕</button>
+              </span>
+            )}
+          </span>
           {hl && (
             <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">
               {hlUser ?? hlTeam} ✕
@@ -512,17 +537,17 @@ function AppContent() {
         </div>
       )}
 
-      {markMode && tree && (
-        <MarkTabs root={tree} idx={markIdx} myUser={myUser} tab={markTab} setTab={setMarkTab} />
+      {markMode && shownTree && (
+        <MarkTabs root={shownTree} idx={markIdx} myUser={myUser} tab={markTab} setTab={setMarkTab} />
       )}
 
-      {tree ? (
+      {shownTree ? (
         // Remount per store: the treemap owns drill/crumb state tied to the
         // tree it mounted with, and a switch can swap `tree` without ever
         // passing through null once both payloads are cached.
         <Treemap
           key={store.key}
-          root={tree}
+          root={shownTree}
           mode={effMode}
           userIdx={userIdx}
           dateRange={dateRange}
@@ -533,7 +558,7 @@ function AppContent() {
           markIdx={markMode ? markIdx : undefined}
           // A store with one bucket (CoreWeave today) opens inside it — the
           // bucket level is a single full-width box otherwise.
-          initialPath={tree.c?.length === 1 ? [tree, tree.c[0]] : undefined}
+          initialPath={shownTree.c?.length === 1 ? [shownTree, shownTree.c[0]] : undefined}
         />
       ) : (
         <p className="loading">loading tree…</p>
