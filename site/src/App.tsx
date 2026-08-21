@@ -14,6 +14,7 @@ import { buildUserIndex } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
+import { useMarkIndex, useMarks, sweepDaysLeft } from './marks'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
@@ -108,6 +109,11 @@ function AppContent() {
   const { pathname, search } = useLocation()
   const navigate = useNavigate()
   const store = storeForPath(pathname)
+  // Mark & sweep mode (specs/mark-sweep-ui.md): same treemap, plus keep/delete
+  // badges and marking controls. GCS only — CoreWeave is out of the sweep.
+  const markMode = pathname === '/mark' && store.key === 'gcs'
+  const marksQ = useMarks(markMode)
+  const markIdx = useMarkIndex(marksQ.data)
   // The shell's <title> is rewritten per store for crawlers (functions/cw/), but
   // client-side navigation between stores has to keep the tab in sync too.
   useEffect(() => {
@@ -370,6 +376,11 @@ function AppContent() {
             </div>
           )}
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
+          {store.key === 'gcs' && (
+            markMode
+              ? <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Exit&nbsp;marking</Link>
+              : <Link className="nav-files nav-mark" to="/mark" style={{ fontSize: '0.9em' }}>Mark&nbsp;&amp;&nbsp;sweep&nbsp;→</Link>
+          )}
           {ident && (
             <div className="whoami">
               <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>
@@ -431,6 +442,22 @@ function AppContent() {
         )}
       </header>
 
+      {markMode && (
+        <section className="mark-banner">
+          <p>
+            <b>Mark &amp; sweep</b> — unmarked data is <b>deleted permanently</b> after{' '}
+            <b>EOD Friday Aug&nbsp;28</b> (<b>{sweepDaysLeft()} day{sweepDaysLeft() === 1 ? '' : 's'} left</b>).
+            Drill to a prefix and mark it with the controls above the map, or click a cell to pin it and mark from
+            there. <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-keep)' }} />keep</span>{' '}
+            <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-klc)' }} />keep last checkpoint</span>{' '}
+            <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-del)' }} />delete</span>{' '}
+            — deepest mark wins; a child mark carves an exception out of its parent.
+            {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}
+            {marksQ.error && <span className="err"> marks unavailable: {marksQ.error.message}</span>}
+          </p>
+        </section>
+      )}
+
       <section className="prose">
         {store.key === 'cw' ? (
           <p>
@@ -479,7 +506,7 @@ function AppContent() {
         // Remount per store: the treemap owns drill/crumb state tied to the
         // tree it mounted with, and a switch can swap `tree` without ever
         // passing through null once both payloads are cached.
-        <Treemap key={store.key} root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens} scheme={store.scheme} />
+        <Treemap key={store.key} root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens} scheme={store.scheme} markIdx={markMode ? markIdx : undefined} />
       ) : (
         <p className="loading">loading tree…</p>
       )}

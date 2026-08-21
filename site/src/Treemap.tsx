@@ -3,6 +3,8 @@ import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
+import { ACTION_COLORS, MarkControls } from './MarkControls'
+import type { MarkIndex } from './marks'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
@@ -24,7 +26,7 @@ export interface Highlight {
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -37,6 +39,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
   // OG-image mode: hide every text detail (cell labels, crumb/rollup bars, hint)
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
+  // Mark & sweep mode (/mark): overlay keep/delete badges and marking controls.
+  markIdx?: MarkIndex | null
 }) {
   const { fmtBytes } = useUnits()
   // Fixed category colors: global top-level dirs by total size. A single-bucket
@@ -241,12 +245,38 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
       .sort((a, b) => b.b - a.b)
   }
 
-  const renderRollup = (node: TreeNode) => {
+  // Cell badge: the node's effective fate (deepest-mark-wins) — solid glyph
+  // when the mark sits on the node itself, faded when inherited — plus a
+  // count of marks deeper in the subtree (drill to see them).
+  const renderCellExtra = markIdx
+    ? (n: TreeNode, path: TreeNode[], { w, h }: { w: number; h: number }) => {
+        if (w < 40 || h < 20 || n.n.startsWith('(')) return null
+        const { mark, own, under } = markIdx.resolve(uriOf(path))
+        if (!mark && !under) return null
+        return (
+          <span className="mark-badge">
+            {mark && (
+              <span
+                className={'mk ' + (own ? 'own' : 'inh')}
+                style={{ background: ACTION_COLORS[mark.action] }}
+                title={`${mark.action}${own ? '' : ` (inherited from ${mark.prefix})`}`}
+              >
+                {mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'}
+              </span>
+            )}
+            {under > 0 && <span className="under" title={`${under} marks inside`}>{under}</span>}
+          </span>
+        )
+      }
+    : undefined
+
+  const renderRollup = (node: TreeNode, path: TreeNode[]) => {
     if (redact) return null
     const rollup = rollupFor(node)
-    if (!rollup.length) return null
+    if (!markIdx && !rollup.length) return null
     return (
       <>
+        {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} />}
         {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
           <span className="ri" key={r.k}>
             <span className="sw" style={{ background: r.col }} />
@@ -347,6 +377,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
         </div>
         {classes}
         {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
+        {/* interactive only when the tooltip is pinned; CSS hides it on hover */}
+        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} />}
       </>
     )
   }
@@ -369,6 +401,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
       depthFade={1}
       rootFade={1}
       renderTooltip={renderTooltip}
+      renderCellExtra={renderCellExtra}
       renderRollup={renderRollup}
       renderLegend={redact ? undefined : legend}
       renderCrumbSuffix={node => (
