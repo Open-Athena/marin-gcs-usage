@@ -5,7 +5,7 @@ import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { collectRows, looksCkpt, reviewedBytes, teamLens, userLens } from './sweep'
 import type { SweepRow } from './sweep'
-import { epochDaysToMonth } from './colors'
+import { epochDaysToDate, epochDaysToMonth } from './colors'
 import { Tooltip } from './Tooltip'
 import type { TreeNode } from './types'
 import { useUnits } from './units'
@@ -55,10 +55,14 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
       return collectRows(root, userLens(viewUser), { minBytes: 20e9 }).sort((a, b) => b.b - a.b)
     }
     if (tab === 'lost') {
-      // least-recently-created first (atime plane lands later; `d` is the
-      // fallback ordering the spec names) — undated rows go last, by size
+      // Least-recently-READ first (access-log atime; never-read sorts before
+      // everything), then least-recently-created, then size — the spec's
+      // coldest-first review order, with `d` as the pre-atime fallback.
       return collectRows(root, teamLens('unattributed')).sort(
-        (a, b) => (a.node.d ?? Infinity) - (b.node.d ?? Infinity) || b.b - a.b,
+        (a, b) =>
+          (a.node.a ?? -1) - (b.node.a ?? -1)
+          || (a.node.d ?? Infinity) - (b.node.d ?? Infinity)
+          || b.b - a.b,
       )
     }
     return collectRows(root, teamLens('communal'), { minBytes: 500e9 }).sort((a, b) => b.b - a.b)
@@ -188,7 +192,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
         <>
           <p className="tab-note">
             {tab === 'mine' && <>Prefixes attributed to <b>{viewUser}</b> — <b>{fmtBytes(reviewed)}</b> of <b>{fmtBytes(total)}</b> reviewed ({total ? ((100 * reviewed) / total).toFixed(0) : 0}%). Unmarked = deleted in the sweep.</>}
-            {tab === 'lost' && <>Unattributed prefixes, least-recently-created first — claim what's yours, then mark it. Unclaimed + unmarked = deleted.</>}
+            {tab === 'lost' && <>Unattributed prefixes, coldest first (never-read, then least-recently-read per access logs) — claim what's yours, then mark it. Unclaimed + unmarked = deleted.</>}
             {tab === 'communal' && <>Shared corpora / datakit — Rav &amp; Will sign off here. {fmtBytes(reviewed)} of {fmtBytes(total)} reviewed.</>}
           </p>
           {canMark && sel.size > 0 && (
@@ -216,7 +220,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
             <thead>
               <tr>
                 {canMark && <th><input type="checkbox" checked={allShownSel} onChange={toggleAll} title="select all shown" /></th>}
-                <th>prefix</th><th className="num">{tab === 'mine' ? (viewUser === myUser ? 'your bytes' : 'their bytes') : 'bytes'}</th><th className="num">share</th><th>created</th><th>state</th>
+                <th>prefix</th><th className="num">{tab === 'mine' ? (viewUser === myUser ? 'your bytes' : 'their bytes') : 'bytes'}</th><th className="num">share</th><th>created</th><th>read</th><th>state</th>
                 {canMark && <th>actions</th>}
               </tr>
             </thead>
@@ -229,7 +233,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
                   onOpen={() => openPath(r.uri.slice('gs://'.length).split('/'))}
                 />
               ))}
-              {!rows.length && <tr><td colSpan={canMark ? 7 : 5}><em>nothing above the size threshold for this lens</em></td></tr>}
+              {!rows.length && <tr><td colSpan={canMark ? 8 : 6}><em>nothing above the size threshold for this lens</em></td></tr>}
             </tbody>
           </table>
           {rows.length > limit && (
@@ -268,6 +272,9 @@ function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onCl
       <td className="num">{fmtBytes(r.b)}</td>
       <td className="num">{(100 * r.frac).toFixed(0)}%</td>
       <td>{r.node.d != null ? epochDaysToMonth(r.node.d) : '—'}</td>
+      <td title={r.node.a != null ? 'most recent GET/HEAD/LIST under this prefix (access logs)' : 'no reads since access logging began'}>
+        {r.node.a != null ? epochDaysToDate(r.node.a) : <span className="never">never</span>}
+      </td>
       <td>
         {mark ? (
           <span className="chip" title={`${mark.who}${own ? '' : ` (inherited from ${mark.prefix})`}`}

@@ -12,6 +12,7 @@
   --other: #a6a49b; --shared: #8f9aa6;
   --t-communal: #1baf7a; --t-stanford: #b1040e; --t-oa: #9d6a3c;  // oa = OA brand brown
   --t-unknown: #eda100; --t-unattr: #c9c7be;
+  --never-read: #b0685e;  // read lens: no GET/HEAD/LIST since logging began
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme='light'])) {
@@ -24,6 +25,7 @@
     --other: #5d5c55; --shared: #4c565f;
     --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
     --t-unknown: #c98500; --t-unattr: #4a4943;
+    --never-read: #6e332b;
   }
 }
 :root[data-theme='dark'] {
@@ -36,6 +38,7 @@
   --other: #5d5c55; --shared: #4c565f;
   --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
   --t-unknown: #c98500; --t-unattr: #4a4943;
+  --never-read: #6e332b;
 }
 
 * { box-sizing: border-box; }
@@ -992,6 +995,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
       .sw { width: 8px; height: 8px; border-radius: 2px; }
       &.unmarked { color: var(--ink-2); }
     }
+    .never { color: var(--never-read); font-weight: 600; filter: brightness(1.4); }
     .actions {
       white-space: nowrap;
       button {
@@ -1022,6 +1026,9 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 
 .children-tbl { margin-top: 10px; }
+
+// "no reads since …" callout in treemap tooltips (dark tip bg → soft red tint)
+.dt-treemap-tip .never-read { color: #e0917f; }
 
 .mark-tabs {
   .typed-path {

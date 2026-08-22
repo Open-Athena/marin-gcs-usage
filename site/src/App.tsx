@@ -10,7 +10,7 @@ import { useIdent as useIdentity, useSignOut } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
-import { buildUserIndex } from './colors'
+import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
@@ -208,10 +208,15 @@ function AppContent() {
   const setScoped = (v: boolean) => setScopedP(v ? undefined : '0')
   // `?p=` — the treemap's drill path (slash-joined segments below the root).
   const [pP, setPP] = useUrlState('p', stringParam())
+  // Read-recency lens domain: the access-log observation window (meta), not
+  // the tree's own min/max — "no reads" is only meaningful vs when logging began.
+  const readRange = useMemo((): DateRange | null =>
+    meta?.access ? { min: meta.access.from, max: meta.access.to } : null,
+  [meta])
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
-  const effMode: ColorMode = hasAttr ? mode : 'tree'
+  const effMode: ColorMode = mode === 'read' && !readRange ? 'team' : hasAttr ? mode : 'tree'
   const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
   // In mark mode the active tab scopes the map to its lens (filter +
   // re-aggregate — the worklists keep the unscoped tree, so their
@@ -555,7 +560,7 @@ function AppContent() {
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
           <span className="lbl">color by</span>
-          {MODES.map(m => {
+          {MODES.filter(m => m !== 'read' || readRange).map(m => {
             const btn = (
               <button
                 key={m}
@@ -571,8 +576,15 @@ function AppContent() {
               <Tooltip key={m} content={<>
                 colors by object <b>creation time</b>, from the bucket listings (each cell = the
                 byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.
-                This is <em>not</em> access time — read-recency from the GCS usage logs is a separate
-                data plane that hasn't landed yet.
+                For access time, see the <b>read</b> lens.
+              </>}>
+                {btn}
+              </Tooltip>
+            ) : m === 'read' ? (
+              <Tooltip key={m} content={<>
+                colors by <b>last read</b> — the most recent GET/HEAD/LIST anywhere under each cell,
+                from the GCS usage logs (logging began {readRange ? epochDaysToDate(readRange.min) : '—'}).
+                Brick-red = <b>never read</b> since then: prime sweep candidates.
               </>}>
                 {btn}
               </Tooltip>
@@ -624,6 +636,7 @@ function AppContent() {
             mode={effMode}
             userIdx={userIdx}
             dateRange={dateRange}
+            readRange={readRange}
             hl={effHl}
             pricing={pricing}
             lens={lens}
@@ -668,7 +681,8 @@ function AppContent() {
         <p className="sub">
           When today’s objects were written (created-time strata, colored by {MODE_LABELS[effMode]}).
         </p>
-        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode} userIdx={userIdx} />}
+        {/* age.json strata carry no read info — the read lens falls back to age here */}
+        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode === 'read' ? 'date' : effMode} userIdx={userIdx} />}
       </section>
 
       {rules && tree?.tm && meta?.users && (

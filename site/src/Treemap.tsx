@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
-import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
+import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls } from './MarkControls'
 import type { MarkIndex } from './marks'
@@ -34,11 +34,13 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
+  // Access-log observation window (epoch days) — domain of the read lens.
+  readRange?: DateRange | null
   hl?: Highlight | null
   pricing?: Pricing | null
   lens?: boolean
@@ -138,6 +140,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
     const us: Record<string, number> = {}
     let wd = 0
     let wdb = 0
+    let ma = -1
     for (const it of tiny) {
       for (const [t, tb] of Object.entries(it.tm ?? {})) tm[t] = (tm[t] ?? 0) + tb
       for (const [u, ub] of it.us ?? []) us[u] = (us[u] ?? 0) + ub
@@ -145,9 +148,11 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
         wd += it.d * it.b
         wdb += it.b
       }
+      if (it.a != null && it.a > ma) ma = it.a
     }
     const folded: TreeNode = { n: `(+${tiny.length})`, b, o }
     if (wdb) folded.d = Math.round(wd / wdb)
+    if (ma >= 0) folded.a = ma
     if (Object.keys(tm).length) folded.tm = tm
     const topUs = Object.entries(us).sort((a, c) => c[1] - a[1]).slice(0, 5)
     if (topUs.length) folded.us = topUs as [string, number][]
@@ -188,6 +193,15 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
           bg = 'var(--other)'
           ink = 'var(--ink)'
         }
+      } else if (mode === 'read') {
+        if (kid.a != null && readRange && readRange.max > readRange.min) {
+          bg = dateColor((kid.a - readRange.min) / (readRange.max - readRange.min))
+          ink = inkFor(bg)
+        } else {
+          // Never read since logging began — the sweep-interesting bucket.
+          bg = 'var(--never-read)'
+          ink = 'var(--ink)'
+        }
       } else {
         // user / uteam: a cell only takes a user's color when it is wholly
         // (~100%) theirs — mixed boxes stay gray until you drill/zoom
@@ -210,7 +224,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
       }
       return { bg, ink, hatch, opacity: dim ? 0.22 : undefined }
     },
-    [mode, slotOf, userIdx, dateRange, hl, lens],
+    [mode, slotOf, userIdx, dateRange, readRange, hl, lens],
   )
 
   // group roll-up for the current view: users in user modes, teams otherwise;
@@ -313,12 +327,21 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
 
   /* Legend only for modes where it isn't a strict subset of the roll-up bar:
      team + user modes are dropped (the roll-up already shows the same
-     swatch+label, plus size and $). tree (prefix colors) and age (date
-     gradient) convey distinct keys, so they keep the legend. */
+     swatch+label, plus size and $). tree (prefix colors), age, and read
+     (date gradients) convey distinct keys, so they keep the legend. */
   const legend = mode !== 'team' && mode !== 'user' && mode !== 'uteam'
     ? () => (
         <div className="legend">
-          {mode === 'date' && dateRange ? (
+          {mode === 'read' && readRange ? (
+            <>
+              <span className="li"><span className="sw" style={{ background: 'var(--never-read)' }} />never read</span>
+              <span className="li gradli">
+                {epochDaysToDate(readRange.min)}
+                <span className="gradbar" style={{ background: dateGradientCss() }} />
+                {epochDaysToDate(readRange.max)}
+              </span>
+            </>
+          ) : mode === 'date' && dateRange ? (
             <span className="li gradli">
               {epochDaysToMonth(dateRange.min)}
               <span className="gradbar" style={{ background: dateGradientCss() }} />
@@ -388,6 +411,9 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
         <div className="nums">
           {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
           {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}
+          {n.a != null
+            ? <> · last read {epochDaysToDate(n.a)}</>
+            : readRange && !n.n.startsWith('(') && <> · <span className="never-read">no reads since {epochDaysToDate(readRange.min)}</span></>}
         </div>
         {classes}
         {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}

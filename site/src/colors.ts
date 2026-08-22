@@ -28,6 +28,14 @@ export const epochDaysToMonth = (d: number): string => {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`
 }
 
+/** Day-precision variant (`8/21`, year-qualified when not the current year) —
+ * read-recency spans days, not the months the created-age lens works in. */
+export const epochDaysToDate = (d: number, now = new Date()): string => {
+  const dt = new Date(d * 86400_000)
+  const md = `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}`
+  return dt.getUTCFullYear() === now.getUTCFullYear() ? md : `${dt.getUTCFullYear()}-${md}`
+}
+
 // ---- category slots (tree mode) ----
 
 // Base hue/sat/light per category slot. These live here rather than as `--sN`
