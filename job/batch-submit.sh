@@ -24,6 +24,9 @@ vars() {  # container env: defaults + optional passthroughs
 import json, os
 v = {
     "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "100GB"),
+    # access-log ingest chunks are <=64GB of CSV — a modest cap keeps its
+    # DuckDB from fighting the webdata step's on the same node
+    "DUCKDB_MEM_ACCESS": os.environ.get("DUCKDB_MEM_ACCESS", "24GB"),
     "DUCKDB_THREADS": os.environ.get("DUCKDB_THREADS", "16"),
     "DATA_BUCKET": os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx"),
     # stage inputs to the local-SSD mount (see disks below); STAGE_DIR="" disables
@@ -33,6 +36,7 @@ v = {
 }
 v = {k: s for k, s in v.items() if s}
 for k in ["SNAPSHOT_DATE", "SNAP_PATH", "REPROC",
+          "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
           "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:
@@ -74,7 +78,7 @@ cat > "$spec" <<EOF
       "runnables": [{"container": {"imageUri": "$IMAGE", "volumes": $(container_volumes)}}],
       "computeResource": {"cpuMilli": 8000, "memoryMib": $MEMORY_MIB},
       "maxRetryCount": 0,
-      "maxRunDuration": "21600s",
+      "maxRunDuration": "${MAX_RUN_SECONDS:-21600}s",
       "volumes": $(volumes | python3 -c 'import json,sys; v=json.load(sys.stdin); v.append({"deviceName": "stage", "mountPath": "/mnt/disks/stage"}); print(json.dumps(v))'),
       "environment": {
         "variables": $(vars),

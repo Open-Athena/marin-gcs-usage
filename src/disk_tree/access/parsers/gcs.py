@@ -109,14 +109,27 @@ def parse_storage_daily(input_glob: str, con: "duckdb.DuckDBPyConnection | None"
 # vocabulary. Matches disk_tree.access.schema.normalize_op semantics exactly
 # so parser output === Python-normalized output. Any drift here would violate
 # the cross-parser identity contract.
+#
+# LIST detection is the subtle one — GCS spells "list the objects in a bucket"
+# three ways depending on API surface, none of them literally "LIST":
+#   XML API:  cs_operation = GET_Bucket      (an HTTP GET on the bucket)
+#   JSON API: cs_operation = storage.objects.list / storage.buckets.list
+#   (docs' LIST_Bucket spelling appears in older examples)
+# The original case-sensitive `LIKE '%_BUCKET'` matched none of the real
+# spellings, so every listing was miscounted as GET — the "no LIST rows"
+# mystery from the 2026-08-14 smoke. Uppercase once, then match.
 _normalize_op_sql = """
 CASE
-    WHEN COALESCE(cs_operation, '') LIKE 'LIST%' OR COALESCE(cs_operation, '') LIKE '%_BUCKET' THEN 'LIST'
-    WHEN COALESCE(cs_operation, '') LIKE 'GET%' OR cs_method = 'GET' THEN 'GET'
-    WHEN COALESCE(cs_operation, '') LIKE 'PUT%' OR cs_method = 'PUT'
-         OR COALESCE(cs_operation, '') IN ('POST_Object', 'POST_Uploads') THEN 'PUT'
-    WHEN COALESCE(cs_operation, '') LIKE 'HEAD%' OR cs_method = 'HEAD' THEN 'HEAD'
-    WHEN COALESCE(cs_operation, '') LIKE 'DELETE%' OR cs_method = 'DELETE' THEN 'DELETE'
+    WHEN upper(COALESCE(cs_operation, '')) LIKE '%LIST%'
+         OR upper(COALESCE(cs_operation, '')) = 'GET_BUCKET' THEN 'LIST'
+    WHEN upper(COALESCE(cs_operation, '')) LIKE 'GET%'
+         OR upper(COALESCE(cs_operation, '')) LIKE 'STORAGE.%.GET' OR cs_method = 'GET' THEN 'GET'
+    WHEN upper(COALESCE(cs_operation, '')) LIKE 'PUT%' OR cs_method = 'PUT'
+         OR upper(COALESCE(cs_operation, '')) IN ('POST_OBJECT', 'POST_UPLOADS')
+         OR upper(COALESCE(cs_operation, '')) SIMILAR TO 'STORAGE\\..*\\.(INSERT|PATCH|UPDATE)' THEN 'PUT'
+    WHEN upper(COALESCE(cs_operation, '')) LIKE 'HEAD%' OR cs_method = 'HEAD' THEN 'HEAD'
+    WHEN upper(COALESCE(cs_operation, '')) LIKE 'DELETE%'
+         OR upper(COALESCE(cs_operation, '')) LIKE 'STORAGE.%.DELETE' OR cs_method = 'DELETE' THEN 'DELETE'
     ELSE 'OTHER'
 END::VARCHAR
 """

@@ -22,6 +22,23 @@ SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 
 cd /app
 
+# Access-log ingest (incremental, watermarked — specs/access-logs-and-cost.md
+# § Productionize). Runs on every scheduled attempt, including ones where the
+# snapshot below NOPs, so read-recency ("atime") stays ~6h fresh. A failure
+# never blocks the snapshot (it self-heals next attempt via the watermark).
+# ACCESS_ONLY=1 = ingest-only job (e.g. the backlog backfill); SKIP_ACCESS=1
+# opts out entirely (e.g. REPROC runs that only re-aggregate).
+if [ "${SKIP_ACCESS:-0}" != "1" ]; then
+  if ! gcs-usage access ingest ${ACCESS_ARGS:-}; then
+    if [ "${ACCESS_ONLY:-0}" = "1" ]; then exit 1; fi
+    echo "WARN: access ingest failed (snapshot continues; watermark self-heals next run)" >&2
+  fi
+fi
+if [ "${ACCESS_ONLY:-0}" = "1" ]; then
+  echo "ACCESS-JOB-DONE"
+  exit 0
+fi
+
 # Scheduled retry attempts set NOP_IF_PUBLISHED=1: exit quietly when the
 # snapshot already exists (an earlier attempt won). Manual runs leave it
 # unset so intentional re-runs always proceed.
@@ -58,21 +75,29 @@ for b in "${FLEET[@]}"; do
   else echo "ERROR: no completed $DATE listing for $b — aborting snapshot" >&2; exit 1; fi
 done
 AG=("/gcs/$DATA/attr/attribution-2026-07-20.parquet" "/gcs/$DATA/attr/attribution-wandb.parquet")
+# Access-log layer-2a shards (read-recency join) — optional until the first
+# ingest lands them; webdata runs without -x when none exist yet.
+XG="/gcs/$DATA/access/agg/*/*.parquet"
+HAVE_ACCESS=0
+compgen -G "$XG" > /dev/null && HAVE_ACCESS=1
 
 # With STAGE_DIR set (a local-SSD mount on Batch), copy all inputs there once
 # and point webdata at the local copies — gcsfuse reads are ~20-50 MB/s and
 # webdata makes several passes, so local NVMe scans win by an order of magnitude.
 # DuckDB spill goes to the same disk.
 if [ -n "${STAGE_DIR:-}" ]; then
-  gcs-usage stage -o "$STAGE_DIR" "${G[@]}" "${AG[@]}"
+  SG=("${G[@]}" "${AG[@]}")
+  [ "$HAVE_ACCESS" = "1" ] && SG+=("$XG")
+  gcs-usage stage -o "$STAGE_DIR" "${SG[@]}"
   export DUCKDB_TMP=${DUCKDB_TMP:-$STAGE_DIR/.duckdb-tmp}
   mkdir -p "$DUCKDB_TMP"
 fi
 loc() { if [ -n "${STAGE_DIR:-}" ]; then echo "$STAGE_DIR/${1#/gcs/}"; else echo "$1"; fi; }
 L=(); for g in "${G[@]}"; do L+=(-l "$(loc "$g")"); done
 A=(); for a in "${AG[@]}"; do A+=(-a "$(loc "$a")"); done
+X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 
-gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" -o "/tmp/snap/$DATE"
+gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 
 # 3. publish to the canonical store — the live site reads these directly

@@ -41,6 +41,14 @@ def test_normalize_op_vocabulary():
     assert normalize_op('GET', 'GET_Object') == 'GET'
     assert normalize_op('GET', 'LIST_Bucket') == 'LIST'
     assert normalize_op('GET', 'LIST_Buckets') == 'LIST'
+    # XML-API object listing is an HTTP GET on the bucket — must not count as GET
+    assert normalize_op('GET', 'GET_Bucket') == 'LIST'
+    # JSON-API spellings
+    assert normalize_op('GET', 'storage.objects.list') == 'LIST'
+    assert normalize_op('GET', 'storage.buckets.list') == 'LIST'
+    assert normalize_op('GET', 'storage.objects.get') == 'GET'
+    assert normalize_op('POST', 'storage.objects.insert') == 'PUT'
+    assert normalize_op('DELETE', 'storage.objects.delete') == 'DELETE'
     assert normalize_op('POST', 'POST_Object') == 'PUT'
     assert normalize_op('POST', 'POST_Uploads') == 'PUT'
     assert normalize_op('DELETE', 'DELETE_Object') == 'DELETE'
@@ -199,6 +207,9 @@ def test_agg_produces_layer2a_tree(tmp_path: Path):
     assert len(days) == 2
     day1, day2 = days
 
+    # Bucket is a first-class key on every row.
+    assert set(df['bucket'].unique()) == {'b1'}
+
     # Every path present at every day/op it participates in.
     # tokenized/finemath: day1 GET → 3 ops, 9000 bytes_out.
     tf = df[(df.path == 'tokenized/finemath') & (df.op == 'GET')].iloc[0]
@@ -208,6 +219,11 @@ def test_agg_produces_layer2a_tree(tmp_path: Path):
     tok = df[(df.path == 'tokenized') & (df.op == 'GET')].iloc[0]
     assert int(tok['n_ops']) == 3
     assert int(tok['bytes_out']) == 9000
+    # last_ts (atime) = the most recent request under the path: the fixture's
+    # three finemath GETs land at +100/+200/+300µs past day1 — MAX propagates
+    # to the file rows' synthesized ancestors unchanged.
+    assert tf['last_ts'] == tok['last_ts']
+    assert int(tf['last_ts'].timestamp() * 1e6) == 1755302400_000_000 + 300
     # Root (`.`): day1 GET total = 3 (tokenized) + 1 (logs) = 4; bytes_out 9100.
     root_get_d1 = df[(df.path == '.') & (df.op == 'GET') & (df.day == day1)]
     assert len(root_get_d1) == 1
@@ -249,6 +265,34 @@ def test_top_hot_prefixes(tmp_path: Path):
     assert rows[0][0] == 'tokenized'
     assert rows[0][1] == 'GET'
     assert rows[0][3] == 9000
+
+
+def test_agg_keeps_buckets_separate(tmp_path: Path):
+    """Identically-named prefixes in different buckets must NOT merge — the
+    layer-2a key is (bucket, path), and each bucket gets its own `.` root."""
+    from disk_tree.access.aggregate import aggregate_access
+    from disk_tree.access.parsers.gcs import parse
+
+    csv_path = tmp_path / 'usage.csv'
+    _write_gcs_csv(csv_path, [
+        _gcs_row(1_000_000, '10.0.0.1', 'GET', 'GET_Object', 'b1', 'shared/x.bin',
+                 sc_bytes=100, req_id='a1'),
+        _gcs_row(2_000_000, '10.0.0.1', 'GET', 'GET_Object', 'b2', 'shared/x.bin',
+                 sc_bytes=700, req_id='a2'),
+    ])
+    con = duckdb.connect()
+    raw = str(tmp_path / 'raw.parquet')
+    parse(str(csv_path), con=con).write_parquet(raw)
+    out = str(tmp_path / 'agg.parquet')
+    aggregate_access(con, f"(SELECT * FROM read_parquet('{raw}'))", out)
+
+    df = pd.read_parquet(out)
+    shared = df[df.path == 'shared'].sort_values('bucket').reset_index(drop=True)
+    assert shared['bucket'].tolist() == ['b1', 'b2']
+    assert shared['bytes_out'].tolist() == [100, 700]
+    roots = df[df.path == '.'].sort_values('bucket').reset_index(drop=True)
+    assert roots['bucket'].tolist() == ['b1', 'b2']
+    assert roots['bytes_out'].tolist() == [100, 700]
 
 
 # ---------- Stubs surface a clear error ----------

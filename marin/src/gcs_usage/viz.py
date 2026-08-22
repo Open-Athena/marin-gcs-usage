@@ -142,12 +142,18 @@ def write_webdata(
     asof: str,
     attributions: tuple[str, ...] = (),
     identities_path: Path | None = None,
+    access: tuple[str, ...] = (),
 ) -> dict:
     """Write tree.json / age.json / meta.json under ``out_dir``; returns meta.
 
     With ``attributions``, every dir is attributed (deepest-prefix-wins, same
     join as ``report``) and each tree node carries ``tm`` (team-bytes map) and
     ``us`` (per-user bytes) for ownership overlays.
+
+    With ``access`` (layer-2a access-log agg parquet globs), every tree node
+    that has been read since logging began carries ``a`` — the epoch day of
+    its most recent read (GET/HEAD/LIST anywhere under the prefix) — and meta
+    gains the observation window (``meta.access = {from, to}``).
     """
     from .listing import prepare_listing
 
@@ -323,6 +329,47 @@ def write_webdata(
     if attr:
         tree.update(_attr_of([r for g in buckets.values() for r in g]))
 
+    # Read-recency join: per-(bucket, path) last-read epoch day from the
+    # access-log layer-2a shards, attached as `a` to every tree node whose
+    # prefix has been read since logging began. The agg's own MAX rollup means
+    # a prefix's `a` already covers everything under it — deeper than the
+    # tree's depth cap included.
+    access_window: tuple[int, int] | None = None
+    if access:
+        globs = "[" + ", ".join(f"'{g}'" for g in access) + "]"
+        amap: dict[str, int] = {}
+        for bucket, path, aday in con.execute(
+            f"""
+            SELECT bucket, CASE WHEN path = '.' THEN '' ELSE path END AS path,
+              CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday
+            FROM read_parquet({globs})
+            WHERE depth <= 4 AND op IN ('GET', 'HEAD', 'LIST')
+            GROUP BY 1, 2
+            """
+        ).fetchall():
+            amap[f"{bucket}/{path}" if path else bucket] = aday
+        lo, hi = con.execute(
+            f"SELECT CAST(floor(epoch(MIN(last_ts)) / 86400) AS INTEGER), "
+            f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs})"
+        ).fetchone()
+        if lo is not None:
+            access_window = (int(lo), int(hi))
+        _rss("access")
+
+        def _attach_atime(node: dict, key: str) -> None:
+            a = amap.get(key)
+            if a is not None:
+                node["a"] = a
+            for c in node.get("c") or []:
+                if not c["n"].startswith("("):
+                    _attach_atime(c, f"{key}/{c['n']}" if key else c["n"])
+
+        for root_node in roots:
+            _attach_atime(root_node, root_node["n"])
+        root_as = [n["a"] for n in roots if "a" in n]
+        if root_as:
+            tree["a"] = max(root_as)
+
     if attr:
         # (day, d1, team, user) strata via the same SQL attribution join.
         # Day keys are epoch days; the site aggregates to day/week/month.
@@ -377,6 +424,10 @@ def write_webdata(
         "total_objects": total_o,
         "class_bytes": {int(c): int(b) for c, b in classes},
     }
+    if access_window:
+        # Epoch days the access logs cover — the UI's "no reads since <from>"
+        # is only meaningful relative to when logging began.
+        meta["access"] = {"from": access_window[0], "to": access_window[1]}
     if attr:
         user_bytes: dict[tuple, int] = defaultdict(int)
         for r in rows:

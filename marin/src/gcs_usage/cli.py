@@ -428,12 +428,14 @@ def wandb_mine(
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", "out_dir", type=Path, default=None, help="Output dir for JSON files [default: site/public/data/<asof>]")
+@option("-x", "--access", "access", multiple=True, help="Access-log layer-2a agg parquet glob(s); adds per-node last-read ('a') for the read-recency lens")
 def webdata(
     attributions: tuple[str, ...],
     asof: str,
     identities_path: Path,
     listings: tuple[str, ...],
     out_dir: Path | None,
+    access: tuple[str, ...],
 ) -> None:
     """Generate a dated site-data snapshot (tree/age/meta JSONs) from a listing.
 
@@ -447,7 +449,7 @@ def webdata(
 
     if out_dir is None:
         out_dir = Path("site/public/data") / asof
-    meta = write_webdata(listings, out_dir, asof, attributions, identities_path)
+    meta = write_webdata(listings, out_dir, asof, attributions, identities_path, access=access)
     err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
     data_root = out_dir.parent
     dates = sorted(
@@ -503,6 +505,66 @@ def rules(identities_path: Path, out: Path | None) -> None:
         err(f"wrote {out}")
     if findings:
         raise SystemExit(1)
+
+
+@main.group()
+def access() -> None:
+    """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
+
+
+@access.command("ingest")
+@option("-b", "--bucket", "buckets", multiple=True, help="Source buckets (default: the marin fleet)")
+@option("-c", "--max-chunk-gb", default=64.0, help="Max staged CSV bytes per processing chunk")
+@option("-d", "--data-bucket", default="oa-gcs-usage-dvx", help="Output/state bucket")
+@option("-l", "--log-bucket", default=None, help="Usage-log delivery bucket (default: marin-usage-logs)")
+@option("-M", "--memory-limit", default=None, help="DuckDB memory limit (default: $DUCKDB_MEM or 8GB)")
+@option("-n", "--max-chunks", default=None, type=int, help="Stop after N chunks per bucket (smoke runs)")
+@option("-s", "--stage-dir", type=Path, default=None, help="Local staging dir (default: $STAGE_DIR or /tmp, + /access-stage)")
+@option("-w", "--workers", default=16, help="Concurrent CSV downloads")
+def access_ingest(
+    buckets: tuple[str, ...],
+    max_chunk_gb: float,
+    data_bucket: str,
+    log_bucket: str | None,
+    memory_limit: str | None,
+    max_chunks: int | None,
+    stage_dir: Path | None,
+    workers: int,
+) -> None:
+    """Incrementally ingest new usage CSVs → layer-1a/2a parquet in the data bucket."""
+    from .access import FLEET, USAGE_LOG_BUCKET, ingest
+
+    ingest(
+        buckets=buckets or FLEET,
+        log_bucket=log_bucket or USAGE_LOG_BUCKET,
+        data_bucket=data_bucket,
+        stage_dir=(stage_dir or Path(os.environ.get("STAGE_DIR") or "/tmp") / "access-stage"),
+        memory_limit=memory_limit or os.environ.get("DUCKDB_MEM_ACCESS") or "8GB",
+        max_chunk_gb=max_chunk_gb,
+        workers=workers,
+        max_chunks=max_chunks,
+    )
+
+
+@access.command("status")
+@option("-b", "--bucket", "buckets", multiple=True, help="Source buckets (default: the marin fleet)")
+@option("-d", "--data-bucket", default="oa-gcs-usage-dvx", help="Output/state bucket")
+@option("-l", "--log-bucket", default=None, help="Usage-log delivery bucket (default: marin-usage-logs)")
+def access_status(buckets: tuple[str, ...], data_bucket: str, log_bucket: str | None) -> None:
+    """Per-bucket watermark vs delivered backlog (files/bytes awaiting ingest)."""
+    from google.cloud import storage
+
+    from .access import FLEET, USAGE_LOG_BUCKET, list_new, load_state
+
+    client = storage.Client()
+    for b in buckets or FLEET:
+        state = load_state(client, data_bucket, b)
+        todo = list_new(client, log_bucket or USAGE_LOG_BUCKET, b, state)
+        n_bytes = sum(s for _, s in todo)
+        print(
+            f"{b:22s}  watermark={state.get('watermark') or '(none)'}  "
+            f"backlog={len(todo)} files / {n_bytes / 1e9:.1f} GB"
+        )
 
 
 @main.group()
