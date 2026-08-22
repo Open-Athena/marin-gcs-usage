@@ -25,10 +25,8 @@ export function parseQuery(q: string): NamePred | null {
   return name => name.toLowerCase().includes(needle)
 }
 
-export function filterTree(n: TreeNode, pred: NamePred): TreeNode | null {
-  if (!n.n.startsWith('(') && pred(n.n)) return n
-  const kids = (n.c ?? []).map(c => filterTree(c, pred)).filter((c): c is TreeNode => c != null)
-  if (!kids.length) return null
+/** Re-aggregate a node's stats (b/o/tm/sh/us/d) from a filtered kid set. */
+function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
   const tm: Record<string, number> = {}
   const sh: Record<string, number> = {}
   const us: Record<string, number> = {}
@@ -57,10 +55,15 @@ export function filterTree(n: TreeNode, pred: NamePred): TreeNode | null {
   return out
 }
 
+export function filterTree(n: TreeNode, pred: NamePred): TreeNode | null {
+  if (!n.n.startsWith('(') && pred(n.n)) return n
+  const kids = (n.c ?? []).map(c => filterTree(c, pred)).filter((c): c is TreeNode => c != null)
+  if (!kids.length) return null
+  return reaggregate(n, kids)
+}
+
 /** Filter below the root (the root's own name never counts as a match). */
 export function applyFilter(root: TreeNode, pred: NamePred): TreeNode {
   const kids = (root.c ?? []).map(bucket => filterTree(bucket, pred)).filter((c): c is TreeNode => c != null)
-  const b = kids.reduce((s, k) => s + k.b, 0)
-  const o = kids.reduce((s, k) => s + k.o, 0)
-  return { ...root, b, o, c: kids }
+  return reaggregate(root, kids)
 }
