@@ -876,6 +876,28 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .err { color: #d33; }
 }
 
+// Recency-override confirm strip (MarkControls + bulk bar).
+.override-confirm {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ink);
+  border: 1px solid var(--mk-del);
+  border-radius: 5px;
+  padding: 2px 8px;
+  button {
+    background: var(--panel);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    font-size: 12px;
+    padding: 1px 7px;
+    cursor: pointer;
+    &:first-of-type { border-color: var(--mk-del); color: var(--mk-del); }
+  }
+}
+
 // In the treemap tooltip: marking is only possible once the tip is pinned
 // (unpinned tips are pointer-events: none), so don't tease the controls on hover.
 .dt-treemap-tip:not(.pinned) .mark-controls { display: none; }

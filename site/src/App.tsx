@@ -15,7 +15,7 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { applyFilter, applyNodeFilter, parseQuery } from './filterTree'
-import { useMarkIndex, useMarks, sweepDaysLeft } from './marks'
+import { setCurrentScan, useMarkIndex, useMarks, sweepDaysLeft } from './marks'
 import { MarkTabs } from './MarkTabs'
 import type { MarkTab } from './MarkTabs'
 import { lensNodePred, teamLens, useMyUser, userLens } from './sweep'
@@ -155,6 +155,8 @@ function AppContent() {
   // `scans` is newest-first, so the first prefix match is the newest one.
   const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
   const asof = dMatches[0] ?? scans[0] ?? null
+  // Ledger actions record which scan the actor was viewing.
+  useEffect(() => setCurrentScan(asof ?? undefined), [asof])
   const scanQuery = <T,>(name: string) => ({
     queryKey: [name, store.key, asof],
     queryFn: () => fetch(`${store.base}/${asof}/${name}.json`).then(r => r.json() as Promise<T>),
@@ -484,7 +486,8 @@ function AppContent() {
             there. <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-keep)' }} />keep</span>{' '}
             <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-klc)' }} />keep last checkpoint</span>{' '}
             <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-del)' }} />delete</span>{' '}
-            — deepest mark wins; a child mark carves an exception out of its parent.
+            — the most recent mark covering a prefix wins: mark a child <em>after</em> its parent to
+            carve an exception; a broad mark repaints older deeper ones (you'll be asked to confirm).
             {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}
             {marksQ.error && <span className="err"> marks unavailable: {marksQ.error.message}</span>}
           </p>

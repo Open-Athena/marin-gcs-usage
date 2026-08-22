@@ -38,12 +38,13 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
   setScoped: (v: boolean) => void
 }) {
   const { fmtBytes } = useUnits()
-  const { put, claim } = useMarkMutations()
+  const { put, claim, post } = useMarkMutations()
   const canMark = useCanMark()
   const [limit, setLimit] = useState(PAGE)
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [typed, setTyped] = useState('')
   const [userDraft, setUserDraft] = useState<string | null>(null)
+  const [bulkPending, setBulkPending] = useState<{ action: MarkAction | null } | null>(null)
 
   const rows = useMemo<SweepRow[]>(() => {
     if (tab === 'all') return []
@@ -85,10 +86,14 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
       else n.add(uri)
       return n
     })
-  const bulkMark = (action: MarkAction | null) => {
-    for (const uri of sel) put.mutate({ prefix: uri + '/', action })
+  // One batch POST (one ledger transaction) instead of a mutate-per-row loop.
+  const bulkWrite = (action: MarkAction | null) => {
+    setBulkPending(null)
+    post.mutate([...sel].map(uri => ({ pattern: uri + '/', keep: action })))
     setSel(new Set())
   }
+  const bulkOv = [...sel].reduce((s, uri) => s + idx.overridesOf(uri).n, 0)
+  const bulkMark = (action: MarkAction | null) => (bulkOv > 0 ? setBulkPending({ action }) : bulkWrite(action))
 
   const typedPrefix = typed.trim().endsWith('/') ? typed.trim() : typed.trim() ? typed.trim() + '/' : ''
   const typedValid = PREFIX_RE.test(typedPrefix)
@@ -177,9 +182,18 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
               <Tooltip content={KLC_TIP}>
                 <button type="button" onClick={() => bulkMark('keep_last_ckpt')}>last ckpt</button>
               </Tooltip>
-              <button type="button" onClick={() => bulkMark('delete')}>delete</button>
+              <button type="button" onClick={() => bulkMark('sweep')}>delete</button>
               <button type="button" onClick={() => bulkMark(null)}>clear marks</button>
               <button type="button" onClick={() => setSel(new Set())}>deselect</button>
+              {bulkPending && (
+                <span className="override-confirm">
+                  overrides <b>{bulkOv}</b> more-specific mark{bulkOv === 1 ? '' : 's'} inside the selection —
+                  <button type="button" onClick={() => bulkWrite(bulkPending.action)}>
+                    {bulkPending.action === null ? 'clear' : ACTION_LABELS[bulkPending.action]} anyway
+                  </button>
+                  <button type="button" onClick={() => setBulkPending(null)}>cancel</button>
+                </span>
+              )}
             </div>
           )}
           <table className="worklist">
@@ -254,7 +268,7 @@ function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onCl
               <button type="button" className={own && mark?.action === 'keep_last_ckpt' ? 'on' : ''} onClick={() => onMark('keep_last_ckpt')}>last ckpt</button>
             </Tooltip>
           )}
-          <button type="button" className={own && mark?.action === 'delete' ? 'on' : ''} onClick={() => onMark('delete')}>delete</button>
+          <button type="button" className={own && mark?.action === 'sweep' ? 'on' : ''} onClick={() => onMark('sweep')}>delete</button>
           {own && <button type="button" onClick={() => onMark(null)}>clear</button>}
           {lost && !cl && <button type="button" onClick={onClaim}>claim</button>}
         </td>

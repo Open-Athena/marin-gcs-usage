@@ -36,7 +36,6 @@ export interface TableSpec {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const ACTIONS = new Set(['keep', 'keep_last_ckpt', 'delete'])
 
 export const TABLES: TableSpec[] = [
   {
@@ -75,32 +74,51 @@ export const TABLES: TableSpec[] = [
       : null,
   },
   {
-    name: 'marks',
-    pk: 'prefix',
-    desc: 'Mark & sweep: keep/delete marks over gs:// prefixes (deepest-mark-wins).',
+    name: 'actions',
+    pk: 'id',
+    desc: 'Actions ledger (append-only WAL): attribution + keep/sweep judgments. Writes go through /api/actions.',
     columns: [
-      { name: 'prefix', type: 'text', required: true },
-      { name: 'action', type: 'text', editable: true, required: true },
-      { name: 'who', type: 'text', server: 'who' },
-      { name: 'ts', type: 'int', server: 'now' },
-      { name: 'note', type: 'text', editable: true },
+      { name: 'id', type: 'int' },
+      { name: 'actor', type: 'text' },
+      { name: 'ts', type: 'int' },
+      { name: 'scan', type: 'text' },
+      { name: 'pattern', type: 'text' },
+      { name: 'set_owner', type: 'int' },
+      { name: 'owner', type: 'text' },
+      { name: 'set_keep', type: 'int' },
+      { name: 'keep', type: 'text' },
+      { name: 'memo', type: 'text' },
     ],
     readScope: 'gcs',
-    writeScope: 'admin',
+    writeScope: null,
+    orderBy: 'id DESC',
+  },
+  {
+    name: 'marks',
+    pk: 'prefix',
+    desc: 'Legacy (pre-ledger) marks table — migrated into `actions`; read-only history.',
+    columns: [
+      { name: 'prefix', type: 'text' },
+      { name: 'action', type: 'text' },
+      { name: 'who', type: 'text' },
+      { name: 'ts', type: 'int' },
+      { name: 'note', type: 'text' },
+    ],
+    readScope: 'admin',
+    writeScope: null,
     orderBy: 'prefix',
-    validate: (col, v) => (col === 'action' && !ACTIONS.has(v) ? `action must be one of ${[...ACTIONS].join(', ')}` : null),
   },
   {
     name: 'claims',
     pk: 'prefix',
-    desc: 'Mark & sweep: lost-and-found prefix claims.',
+    desc: 'Legacy (pre-ledger) claims table — migrated into `actions` (owner axis); read-only history.',
     columns: [
-      { name: 'prefix', type: 'text', required: true },
-      { name: 'who', type: 'text', server: 'who' },
-      { name: 'ts', type: 'int', server: 'now' },
+      { name: 'prefix', type: 'text' },
+      { name: 'who', type: 'text' },
+      { name: 'ts', type: 'int' },
     ],
-    readScope: 'gcs',
-    writeScope: 'admin',
+    readScope: 'admin',
+    writeScope: null,
     orderBy: 'prefix',
   },
   {
