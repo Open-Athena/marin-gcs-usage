@@ -8,6 +8,7 @@
 import type { TreeNode } from './types'
 
 export type NamePred = (name: string) => boolean
+export type NodePred = (n: TreeNode) => boolean
 
 /** `/…/` = regex (case-insensitive); anything else = substring (ci). */
 export function parseQuery(q: string): NamePred | null {
@@ -55,15 +56,19 @@ function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
   return out
 }
 
-export function filterTree(n: TreeNode, pred: NamePred): TreeNode | null {
-  if (!n.n.startsWith('(') && pred(n.n)) return n
+export function filterTree(n: TreeNode, pred: NodePred): TreeNode | null {
+  if (pred(n)) return n
   const kids = (n.c ?? []).map(c => filterTree(c, pred)).filter((c): c is TreeNode => c != null)
   if (!kids.length) return null
   return reaggregate(n, kids)
 }
 
-/** Filter below the root (the root's own name never counts as a match). */
-export function applyFilter(root: TreeNode, pred: NamePred): TreeNode {
+/** Filter below the root by node predicate (root itself never matches). */
+export function applyNodeFilter(root: TreeNode, pred: NodePred): TreeNode {
   const kids = (root.c ?? []).map(bucket => filterTree(bucket, pred)).filter((c): c is TreeNode => c != null)
   return reaggregate(root, kids)
 }
+
+/** Filter below the root by segment name (fold nodes never match by name). */
+export const applyFilter = (root: TreeNode, pred: NamePred): TreeNode =>
+  applyNodeFilter(root, n => !n.n.startsWith('(') && pred(n.n))

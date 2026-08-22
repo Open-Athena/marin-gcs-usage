@@ -868,6 +868,11 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
       font-size: 12px;
     }
   }
+  .guest-note {
+    color: var(--ink-2);
+    font-size: 12px;
+    a { color: var(--s1); }
+  }
   .err { color: #d33; }
 }
 
@@ -896,7 +901,31 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
       &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
       &:hover:not(.on) { filter: brightness(1.05); }
     }
+    .user-pick {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      input {
+        background: var(--panel);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font-size: 12.5px;
+        padding: 4px 8px;
+      }
+    }
+    .scope-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: auto;
+      color: var(--ink-2);
+      font-size: 12.5px;
+      cursor: pointer;
+      input { accent-color: var(--s1); }
+    }
   }
+  .guest-note a { color: var(--s1); }
   .tab-note {
     color: var(--ink-2);
     font-size: 13.5px;

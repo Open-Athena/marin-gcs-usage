@@ -278,7 +278,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
     if (!markIdx && !rollup.length) return null
     return (
       <>
-        {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} />}
+        {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} />}
         {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
           <span className="ri" key={r.k}>
             <span className="sw" style={{ background: r.col }} />
@@ -380,7 +380,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
         {classes}
         {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
         {/* interactive only when the tooltip is pinned; CSS hides it on hover */}
-        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} />}
+        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} />}
       </>
     )
   }

@@ -2,6 +2,7 @@
 // review lens cares about (mine / unattributed / communal), so each tab is a
 // ranked worklist of prefixes rather than a hunt through the treemap.
 import { useQuery } from '@tanstack/react-query'
+import type { NodePred } from './filterTree'
 import type { MarkIndex } from './marks'
 import type { TreeNode } from './types'
 
@@ -19,6 +20,16 @@ export type Lens = (n: TreeNode) => number
 
 export const userLens = (user: string): Lens => n => n.us?.find(([u]) => u === user)?.[1] ?? 0
 export const teamLens = (team: string): Lens => n => n.tm?.[team] ?? 0
+
+/**
+ * Treemap-scoping predicate for a lens: keep the maximal subtrees the lens
+ * owns (≥`minFrac` of the node), prune the rest, re-aggregate ancestors —
+ * so a tab's map shows just that tab's data instead of dimming the estate.
+ */
+export const lensNodePred = (lens: Lens, minFrac = 0.6): NodePred => n => {
+  const b = lens(n)
+  return b > 0 && b >= minFrac * n.b
+}
 
 /**
  * Maximal nodes where the lens owns ≥`minFrac` of the node and ≥`minBytes`
@@ -45,6 +56,19 @@ export function collectRows(
   for (const bucket of root.c ?? []) walk(bucket, `gs://${bucket.n}`)
   return rows
 }
+
+const CKPT_SEG_RE = /^(step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?\d+/i
+
+/**
+ * Checkpoint-shaped: under a checkpoints path segment, named like one, or
+ * ≥2 step-numbered children. Gates the `keep_last_ckpt` button — offering
+ * it on arbitrary dirs was confusing. (Scan post-proc will flag this
+ * properly per specs/actions-ledger.md; these heuristics cover the interim.)
+ */
+export const looksCkpt = (n: TreeNode, uri?: string): boolean =>
+  (!!uri && /\/(ckpts?|checkpoints?)(\/|$)/i.test(uri)) ||
+  /(^|[-_.])(ckpts?|checkpoints?)([-_.]|$)/i.test(n.n) ||
+  (n.c ?? []).filter(c => CKPT_SEG_RE.test(c.n)).length >= 2
 
 /** Reviewed = covered by any mark (deepest-wins ancestor or own). */
 export const reviewedBytes = (rows: SweepRow[], idx: MarkIndex): number =>

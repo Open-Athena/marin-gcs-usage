@@ -13,7 +13,10 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   if (!env.DB) return json({ error: 'marks backend not configured (DB)' }, 503)
   const id = await requireScope(ctx, GCS_SCOPE)
   if (id instanceof Response) return id
-  const who = id.email ?? id.name ?? 'unknown'
+  if (!id.email) {
+    return json({ error: 'claiming requires a signed-in email — guest links are read-only; sign in via Google or ask for a personal link' }, 403)
+  }
+  const who = id.email
 
   const b = (await request.json()) as { prefix?: string; release?: boolean }
   const prefix = b.prefix ?? ''

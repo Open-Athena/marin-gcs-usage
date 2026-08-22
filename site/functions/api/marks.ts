@@ -34,6 +34,9 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   }
 
   if (request.method === 'PUT') {
+    if (!id.email) {
+      return json({ error: 'marking requires a signed-in email — guest links are read-only; sign in via Google or ask for a personal link' }, 403)
+    }
     const b = (await request.json()) as { prefix?: string; action?: string | null; note?: string }
     const prefix = b.prefix ?? ''
     if (!PREFIX_RE.test(prefix) || prefix.length > 1024) {

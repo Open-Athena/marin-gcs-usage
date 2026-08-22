@@ -11,10 +11,14 @@ const isCwHost = /^cw[-.]/.test(window.location.hostname)
 export const WHOAMI_SOURCE: WhoamiSource = isCwHost ? { kind: 'edge' } : { kind: 'app' }
 
 // `?wall` forces the wall in dev (which otherwise short-circuits to authed,
-// since neither identity source exists locally).
+// since neither identity source exists locally). A real `oa_auth` cookie
+// (forged against the local wrangler's SESSION_SECRET, set via
+// document.cookie so it's visible here) disables the stub entirely — dev
+// then exercises the real whoami/scopes path, including guest grants.
 const forceWall = new URLSearchParams(window.location.search).has('wall')
+const hasLocalSession = document.cookie.includes('oa_auth=')
 export const DEV_IDENTITY: Whoami | null | undefined =
-  import.meta.env.DEV ? (forceWall ? null : { email: 'dev@example.test' }) : undefined
+  import.meta.env.DEV && !hasLocalSession ? (forceWall ? null : { email: 'dev@example.test' }) : undefined
 
 export const signInUrl = (): string =>
   `/auth/sso?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
@@ -49,4 +53,13 @@ export function useIdent(): Ident | null {
   const name = displayName(whoami) ?? undefined
   const email = (whoami as { email?: string | null }).email ?? name ?? 'guest'
   return { email, name }
+}
+
+/**
+ * Mark/claim writes require an email-bearing identity — anonymous guest
+ * links are read-only (the server enforces the same rule).
+ */
+export function useCanMark(): boolean {
+  const { whoami } = useWhoami(WHOAMI_SOURCE, { devIdentity: DEV_IDENTITY })
+  return !!(whoami as { email?: string | null } | null)?.email
 }

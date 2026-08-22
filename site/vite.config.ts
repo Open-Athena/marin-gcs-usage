@@ -15,6 +15,7 @@ export default defineConfig({
     proxy: {
       '/data': 'http://localhost:3254',
       '/v1/files': 'http://localhost:3254',
+      '/api': 'http://localhost:3254',
     },
   },
   // The workspace-linked `@rdub/file-tree` calls `useLocation` etc. — force a

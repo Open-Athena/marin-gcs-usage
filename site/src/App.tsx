@@ -14,11 +14,11 @@ import { buildUserIndex } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
-import { applyFilter, parseQuery } from './filterTree'
+import { applyFilter, applyNodeFilter, parseQuery } from './filterTree'
 import { useMarkIndex, useMarks, sweepDaysLeft } from './marks'
 import { MarkTabs } from './MarkTabs'
 import type { MarkTab } from './MarkTabs'
-import { useMyUser } from './sweep'
+import { lensNodePred, teamLens, useMyUser, userLens } from './sweep'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
@@ -192,16 +192,30 @@ function AppContent() {
   const signOut = useSignOut()
   const myUser = useMyUser(ident?.email, markMode)
   const [markTab, setMarkTab] = useState<MarkTab>('mine')
+  // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
+  const [muP, setMuP] = useUrlState('mu', stringParam())
+  const viewUser = muP ?? myUser
+  const [scoped, setScoped] = useState(true)
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
   const effMode: ColorMode = hasAttr ? mode : 'tree'
   const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
-  // In mark mode the active tab drives the dimming, so the map gives spatial
-  // context for whichever worklist is showing.
+  // In mark mode the active tab scopes the map to its lens (filter +
+  // re-aggregate — the worklists keep the unscoped tree, so their
+  // maximal-subtree rows don't coarsen); untoggled, fall back to dimming.
+  const scopedActive = markMode && scoped && markTab !== 'all' && (markTab !== 'mine' || !!viewUser)
+  const mapTree = useMemo(() => {
+    if (!shownTree || !scopedActive) return shownTree
+    const lens = markTab === 'mine'
+      ? userLens(viewUser!)
+      : teamLens(markTab === 'lost' ? 'unattributed' : 'communal')
+    return applyNodeFilter(shownTree, lensNodePred(lens))
+  }, [shownTree, scopedActive, markTab, viewUser])
   const effHl: Highlight | null = !markMode
     ? hl
-    : markTab === 'mine' && myUser ? { user: myUser }
+    : scopedActive ? null
+    : markTab === 'mine' && viewUser ? { user: viewUser }
     : markTab === 'lost' ? { team: 'unattributed' }
     : markTab === 'communal' ? { team: 'communal' }
     : null
@@ -215,6 +229,7 @@ function AppContent() {
   }, [])
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
+  const mkUsers = useMemo(() => (meta?.users ?? []).map(u => u.u).sort(), [meta])
 
   const pickUser = (u: string) => {
     setHlTeam(undefined)
@@ -538,16 +553,21 @@ function AppContent() {
       )}
 
       {markMode && shownTree && (
-        <MarkTabs root={shownTree} idx={markIdx} myUser={myUser} tab={markTab} setTab={setMarkTab} />
+        <MarkTabs root={shownTree} idx={markIdx} myUser={myUser}
+          viewUser={viewUser} setViewUser={setMuP}
+          users={mkUsers}
+          tab={markTab} setTab={setMarkTab}
+          scoped={scoped} setScoped={setScoped}
+        />
       )}
 
-      {shownTree ? (
+      {mapTree ? (
         // Remount per store: the treemap owns drill/crumb state tied to the
         // tree it mounted with, and a switch can swap `tree` without ever
         // passing through null once both payloads are cached.
         <Treemap
           key={store.key}
-          root={shownTree}
+          root={mapTree}
           mode={effMode}
           userIdx={userIdx}
           dateRange={dateRange}
@@ -558,7 +578,7 @@ function AppContent() {
           markIdx={markMode ? markIdx : undefined}
           // A store with one bucket (CoreWeave today) opens inside it — the
           // bucket level is a single full-width box otherwise.
-          initialPath={shownTree.c?.length === 1 ? [shownTree, shownTree.c[0]] : undefined}
+          initialPath={mapTree.c?.length === 1 ? [mapTree, mapTree.c[0]] : undefined}
         />
       ) : (
         <p className="loading">loading tree…</p>
