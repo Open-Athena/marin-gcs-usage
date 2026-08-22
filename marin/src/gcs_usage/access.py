@@ -90,6 +90,54 @@ def plan_chunks(names_sizes: list[tuple[str, int]], max_chunk_bytes: int) -> lis
     return chunks
 
 
+LEASE_TTL_HOURS = 8
+
+
+def acquire_lease(client, data_bucket: str, owner: str) -> bool:
+    """Single-writer lease over the whole ingest (atomic create-if-absent).
+
+    Two concurrent ingests would race the per-bucket watermarks and cut
+    different chunk spans over the same CSVs → double-counted rows under
+    different part names. The scheduled /6h job and any manual/backfill run
+    both take this lease; a crashed holder's lease is stolen after its TTL.
+    """
+    from google.api_core.exceptions import NotFound, PreconditionFailed
+
+    blob = client.bucket(data_bucket).blob("access/state/.lease")
+    body = json.dumps(
+        {
+            "owner": owner,
+            "expires": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=LEASE_TTL_HOURS)).isoformat(
+                timespec="seconds"
+            ),
+        }
+    )
+    for _ in range(2):
+        try:
+            blob.upload_from_string(body, content_type="application/json", if_generation_match=0)
+            return True
+        except PreconditionFailed:
+            blob.reload()
+            cur = json.loads(blob.download_as_bytes())
+            if dt.datetime.fromisoformat(cur["expires"]) > dt.datetime.now(dt.timezone.utc):
+                err(f"ingest lease held by {cur.get('owner')} until {cur['expires']} — skipping")
+                return False
+            try:  # expired: steal (generation-matched delete, then retry the create)
+                blob.delete(if_generation_match=blob.generation)
+            except (PreconditionFailed, NotFound):
+                pass
+    return False
+
+
+def release_lease(client, data_bucket: str) -> None:
+    from google.api_core.exceptions import NotFound
+
+    try:
+        client.bucket(data_bucket).blob("access/state/.lease").delete()
+    except NotFound:
+        pass
+
+
 def _state_blob(client, data_bucket: str, bucket: str):
     return client.bucket(data_bucket).blob(f"access/state/{bucket}.json")
 
@@ -257,24 +305,33 @@ def ingest(
     workers: int,
     max_chunks: int | None = None,
 ) -> list[dict]:
+    import os
+    import socket
+
     from google.cloud import storage
 
     client = storage.Client()
+    owner = os.environ.get("BATCH_JOB_UID") or f"{socket.gethostname()}:{os.getpid()}"
+    if not acquire_lease(client, data_bucket, owner):
+        return []
     out = []
-    for b in buckets:
-        out.append(
-            ingest_bucket(
-                client,
-                b,
-                log_bucket=log_bucket,
-                data_bucket=data_bucket,
-                stage_dir=stage_dir,
-                memory_limit=memory_limit,
-                max_chunk_bytes=int(max_chunk_gb * 1e9),
-                workers=workers,
-                max_chunks=max_chunks,
+    try:
+        for b in buckets:
+            out.append(
+                ingest_bucket(
+                    client,
+                    b,
+                    log_bucket=log_bucket,
+                    data_bucket=data_bucket,
+                    stage_dir=stage_dir,
+                    memory_limit=memory_limit,
+                    max_chunk_bytes=int(max_chunk_gb * 1e9),
+                    workers=workers,
+                    max_chunks=max_chunks,
+                )
             )
-        )
+    finally:
+        release_lease(client, data_bucket)
     done = [r for r in out if r["files"]]
     err(
         "access ingest done: "

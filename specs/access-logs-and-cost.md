@@ -110,26 +110,32 @@ the *listing* plane, whose API-call traffic is negligible-egress and ran fine fr
       `[ -s ]` and broke downstream `agg`). Output at `tmp/access/{agg.parquet,
       top-ops.txt,top-bytes.txt}`; headline finding was that 69% of reads in the
       window hit `tmp/ttl=1d/zephyr/`.
-- [ ] layer-2a keys on `path` alone — `bucket` is dropped between `access_in`
-      (`aggregate.py:60`) and `access_leaf` (`:74-84`), so identically-named
-      prefixes in different buckets silently merge. Any join to the per-bucket
-      scan snapshots is therefore only valid at fleet-aggregate grain until the
-      key becomes `(bucket, path)`.
-- [ ] `max(ts)` per path — the read-recency ("atime") column
-      `specs/viz-prototypes.md` needs; layer-2a carries only
-      `day, op, n_ops, bytes_out, bytes_in, n_requesters`. atime is the
-      *correct* coldness signal (shuffle scratch is written constantly but read
-      once; archives are written once but read hourly — mtime gets both
-      backwards). GCS-only: CAIOS returns `NotImplemented` for bucket logging.
-- [ ] no `LIST` rows at root in the 2026-08-14 agg — either GCS doesn't log
-      them under a `cs_operation` we map, or the op normalization drops them.
-      LIST is a Class-A cost driver, so a zero here is suspicious, not clean.
-- [ ] scheduled/incremental ingestion — the run above full-reprocessed the
-      whole CSV glob with no watermark. At ~10GB/hr (~240GB/day) fleet-wide
-      that has a hard ceiling, and the logs have accumulated unread since
-      2026-08-13. Must run *in GCP*: cross-cloud egress is ~$0.12/GB (the mgu
-      run cost was negligible and one-time and is explicitly not the pattern, per the
-      Cost/placement section above).
+- [x] layer-2a keys on `(bucket, path)` (2026-08-22) — `bucket` is a group key
+      at every level; each bucket gets its own `.` root row. Same-named
+      prefixes in different buckets no longer merge, and the webdata join is
+      exact at per-bucket grain.
+- [x] `max(ts)` per path — `last_ts` column (2026-08-22): MAX at the leaf
+      grain, MAX-propagated up parent synthesis, so any prefix's atime covers
+      everything under it (deeper than any depth cap included). `day`
+      truncation pinned to UTC (was session-TZ-dependent). GCS-only: CAIOS
+      returns `NotImplemented` for bucket logging.
+- [x] `LIST` zero explained + fixed (2026-08-22): GCS spells listing
+      `GET_Bucket` (XML API — an HTTP GET on the bucket) or
+      `storage.objects.list` (JSON API); the case-sensitive `LIKE '%_BUCKET'`
+      matched neither, so listings counted as GET (SQL path) / OTHER (python
+      path). Both normalizers now match case-insensitively (+ JSON-API
+      get/insert/patch/update/delete spellings).
+- [x] scheduled/incremental ingestion (2026-08-22) — `gcs-usage access
+      ingest|status` (marin/src/gcs_usage/access.py): per-bucket name
+      watermark + 6h lag-window re-list with an ingested-name tail (late
+      deliveries get picked up, not skipped); chunked (≤64GB CSV) stage →
+      parse → lossless layer-1a (zstd) → layer-2a agg shard → upload →
+      advance watermark. Crash reprocesses ≤1 chunk onto the same object
+      names (idempotent). Runs in-GCP on every scheduled Batch attempt
+      (job/run.sh, before the NOP gate; `ACCESS_ONLY=1` = ingest-only run).
+      NB delivery layout is FLAT — `usage/<bucket>_usage_<ts>_<id>_v0`
+      (bucket = filename prefix), not the `usage/<bucket>/*` this spec
+      originally assumed.
 - [ ] `dt cost` plane (deferred)
 
 Post-landing (2026-08-14): all core scaffolding + GCS parser + fixture tests
@@ -146,7 +152,10 @@ bucket. Per source bucket (6d totals): us-central1 618 GiB, us-central2
 435 GiB, us-east5 375 GiB, eu-west4 103 GiB, us-west4 7 GiB, us-east1 2 GiB,
 us-west1 ~0.
 
-Plan (cron over event-driven):
+Plan (cron over event-driven) — items 1–3 landed 2026-08-22 (see Status
+checklist; layout note: layer-1a shards are per-chunk `part-<first>--<last>`
+under `access/raw/<bucket>/`, not `bucket/day/` partitions — the `day` column
+inside serves the same pruning):
 
 1. **Incremental ingest job on GCP Batch**, same pattern as the scan crons
    (NVMe staging, runs where the data lives — see Compute placement above).
@@ -166,4 +175,16 @@ Plan (cron over event-driven):
 4. **Lifecycle on the raw CSVs once (2) is verified**: delete raw objects
    after 30d (parquet is the durable record). Without this the log bucket
    grows without bound and eventually rivals the estates it's metering.
+   *Still pending (2026-08-22): apply after the backfill's layer-1a is
+   verified complete — it deletes data, so it gets an explicit go-ahead.*
+
+## Webdata / UI (landed 2026-08-22)
+
+`gcs-usage webdata -x <agg glob>` joins per-(bucket, path) `MAX(last_ts)`
+over read ops (GET/HEAD/LIST, depth ≤ 4) into the snapshot: tree nodes gain
+`a` (last-read epoch day; MAX over the subtree), meta gains
+`access: {from, to}` (observation window). Site: `read` color mode (viridis
+over the window; never-read = `--never-read` brick), "last read" tooltip
+line, sortable read columns in the /mark worklists + children table, and
+Lost & found orders coldest-first (never-read → least-recently-read).
 

@@ -21,7 +21,7 @@ const PAGE = 40
 
 const PREFIX_RE = /^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/
 
-export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab, setTab, scoped, setScoped, openPath }: {
+export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab, setTab, scoped, setScoped, openPath, hasAtime }: {
   root: TreeNode
   idx: MarkIndex
   /** The signed-in viewer's own attribution user (labels, "back to me"). */
@@ -38,6 +38,8 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
   setScoped: (v: boolean) => void
   /** Drill the treemap to a prefix's path segments (detail view). */
   openPath: (segs: string[]) => void
+  /** Snapshot carries access-log data — gates the "never (read)" claim. */
+  hasAtime: boolean
 }) {
   const { fmtBytes } = useUnits()
   const { put, claim, post } = useMarkMutations()
@@ -226,7 +228,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
             </thead>
             <tbody>
               {shown.map(r => (
-                <Row key={r.uri} r={r} idx={idx} lost={tab === 'lost'} fmtBytes={fmtBytes} canMark={canMark}
+                <Row key={r.uri} r={r} idx={idx} lost={tab === 'lost'} fmtBytes={fmtBytes} canMark={canMark} hasAtime={hasAtime}
                   selected={sel.has(r.uri)} onToggle={() => toggle(r.uri)}
                   onMark={(action: MarkAction | null) => put.mutate({ prefix: r.uri + '/', action })}
                   onClaim={() => claim.mutate({ prefix: r.uri + '/' })}
@@ -248,12 +250,13 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
   )
 }
 
-function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onClaim, onOpen }: {
+function Row({ r, idx, lost, fmtBytes, canMark, hasAtime, selected, onToggle, onMark, onClaim, onOpen }: {
   r: SweepRow
   idx: MarkIndex
   lost: boolean
   fmtBytes: (b: number) => string
   canMark: boolean
+  hasAtime: boolean
   selected: boolean
   onToggle: () => void
   onMark: (a: MarkAction | null) => void
@@ -272,8 +275,8 @@ function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onCl
       <td className="num">{fmtBytes(r.b)}</td>
       <td className="num">{(100 * r.frac).toFixed(0)}%</td>
       <td>{r.node.d != null ? epochDaysToMonth(r.node.d) : '—'}</td>
-      <td title={r.node.a != null ? 'most recent GET/HEAD/LIST under this prefix (access logs)' : 'no reads since access logging began'}>
-        {r.node.a != null ? epochDaysToDate(r.node.a) : <span className="never">never</span>}
+      <td title={r.node.a != null ? 'most recent GET/HEAD/LIST under this prefix (access logs)' : hasAtime ? 'no reads since access logging began' : undefined}>
+        {r.node.a != null ? epochDaysToDate(r.node.a) : hasAtime ? <span className="never">never</span> : '—'}
       </td>
       <td>
         {mark ? (

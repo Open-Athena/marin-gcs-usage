@@ -622,6 +622,7 @@ function AppContent() {
           tab={markTab} setTab={setMarkTab}
           scoped={scoped} setScoped={setScoped}
           openPath={openPath}
+          hasAtime={!!readRange}
         />
       )}
 
