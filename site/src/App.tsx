@@ -11,6 +11,7 @@ import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
 import { buildUserIndex } from './colors'
+import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
@@ -193,11 +194,20 @@ function AppContent() {
   const ident = useIdentity()
   const signOut = useSignOut()
   const myUser = useMyUser(ident?.email, markMode)
-  const [markTab, setMarkTab] = useState<MarkTab>('mine')
+  // `?mt=` — active /mark tab (absent = "mine").
+  const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
+  const markTab: MarkTab =
+    markTabP === 'lost' || markTabP === 'communal' || markTabP === 'all' ? markTabP : 'mine'
+  const setMarkTab = (t: MarkTab) => setMarkTabP(t === 'mine' ? undefined : t)
   // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
   const [muP, setMuP] = useUrlState('mu', stringParam())
   const viewUser = muP ?? myUser
-  const [scoped, setScoped] = useState(true)
+  // `?ms=0` — scope-map-to-view toggled off (on is the default).
+  const [scopedP, setScopedP] = useUrlState('ms', stringParam())
+  const scoped = scopedP !== '0'
+  const setScoped = (v: boolean) => setScopedP(v ? undefined : '0')
+  // `?p=` — the treemap's drill path (slash-joined segments below the root).
+  const [pP, setPP] = useUrlState('p', stringParam())
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
@@ -214,6 +224,32 @@ function AppContent() {
       : teamLens(markTab === 'lost' ? 'unattributed' : 'communal')
     return applyNodeFilter(shownTree, lensNodePred(lens))
   }, [shownTree, scopedActive, markTab, viewUser])
+  // Controlled treemap drill path, resolved against the (possibly filtered/
+  // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
+  // switches by re-walking the new tree; a vanished path truncates to its
+  // deepest surviving ancestor.
+  const mapPath = useMemo((): TreeNode[] | undefined => {
+    if (!mapTree) return undefined
+    const path = [mapTree]
+    let cur: TreeNode = mapTree
+    for (const s of (pP ?? '').split('/').filter(Boolean)) {
+      const next = cur.c?.find(c => c.n === s)
+      if (!next) break
+      path.push(next)
+      cur = next
+    }
+    // A store with one bucket (CoreWeave today) opens inside it — the bucket
+    // level is a single full-width box otherwise.
+    if (path.length === 1 && mapTree.c?.length === 1) return [mapTree, mapTree.c[0]]
+    return path
+  }, [mapTree, pP])
+  const onMapPath = (p: TreeNode[]) =>
+    setPP(p.length > 1 ? p.slice(1).map(n => n.n).join('/') : undefined)
+  // Worklist rows / children table → drill the map to a prefix and show it.
+  const openPath = (segs: string[]) => {
+    setPP(segs.length ? segs.join('/') : undefined)
+    document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
   const effHl: Highlight | null = !markMode
     ? hl
     : scopedActive ? null
@@ -519,17 +555,29 @@ function AppContent() {
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
           <span className="lbl">color by</span>
-          {MODES.map(m => (
-            <button
-              key={m}
-              role="radio"
-              aria-checked={effMode === m}
-              className={effMode === m ? 'on' : ''}
-              onClick={() => setMode(m)}
-            >
-              {MODE_LABELS[m]}
-            </button>
-          ))}
+          {MODES.map(m => {
+            const btn = (
+              <button
+                key={m}
+                role="radio"
+                aria-checked={effMode === m}
+                className={effMode === m ? 'on' : ''}
+                onClick={() => setMode(m)}
+              >
+                {MODE_LABELS[m]}
+              </button>
+            )
+            return m === 'date' ? (
+              <Tooltip key={m} content={<>
+                colors by object <b>creation time</b>, from the bucket listings (each cell = the
+                byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.
+                This is <em>not</em> access time — read-recency from the GCS usage logs is a separate
+                data plane that hasn't landed yet.
+              </>}>
+                {btn}
+              </Tooltip>
+            ) : btn
+          })}
           <span className="filterbox">
             <input
               value={fq ?? ''}
@@ -561,28 +609,39 @@ function AppContent() {
           users={mkUsers}
           tab={markTab} setTab={setMarkTab}
           scoped={scoped} setScoped={setScoped}
+          openPath={openPath}
         />
       )}
 
       {mapTree ? (
-        // Remount per store: the treemap owns drill/crumb state tied to the
-        // tree it mounted with, and a switch can swap `tree` without ever
-        // passing through null once both payloads are cached.
-        <Treemap
-          key={store.key}
-          root={mapTree}
-          mode={effMode}
-          userIdx={userIdx}
-          dateRange={dateRange}
-          hl={effHl}
-          pricing={pricing}
-          lens={lens}
-          scheme={store.scheme}
-          markIdx={markMode ? markIdx : undefined}
-          // A store with one bucket (CoreWeave today) opens inside it — the
-          // bucket level is a single full-width box otherwise.
-          initialPath={mapTree.c?.length === 1 ? [mapTree, mapTree.c[0]] : undefined}
-        />
+        <>
+          {/* Remount per store: the treemap's caches are tied to the tree it
+              mounted with, and a switch can swap `tree` without ever passing
+              through null once both payloads are cached. */}
+          <Treemap
+            key={store.key}
+            root={mapTree}
+            mode={effMode}
+            userIdx={userIdx}
+            dateRange={dateRange}
+            hl={effHl}
+            pricing={pricing}
+            lens={lens}
+            scheme={store.scheme}
+            markIdx={markMode ? markIdx : undefined}
+            path={mapPath}
+            onPathChange={onMapPath}
+          />
+          {mapPath && (
+            <ChildrenTable
+              node={mapPath[mapPath.length - 1]}
+              segs={mapPath.slice(1).map(n => n.n)}
+              scheme={store.scheme}
+              markIdx={markMode ? markIdx : undefined}
+              onOpen={openPath}
+            />
+          )}
+        </>
       ) : (
         <p className="loading">loading tree…</p>
       )}

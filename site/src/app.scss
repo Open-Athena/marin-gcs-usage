@@ -954,13 +954,24 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     margin: 8px 0;
     b { color: var(--ink); }
   }
+}
+
+// Shared by the /mark worklists and the treemap children table.
+.mark-tabs, .children-tbl {
   .worklist {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
     th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--line); }
     th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+      &:hover { color: var(--ink); }
+      &.on { color: var(--s1); }
+    }
     .prefix {
+      a { cursor: pointer; &:hover { text-decoration: underline; } }
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px;
       max-width: 480px;
@@ -1009,6 +1020,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
   .err { color: #d33; }
 }
+
+.children-tbl { margin-top: 10px; }
 
 .mark-tabs {
   .typed-path {

@@ -26,7 +26,15 @@ export interface Highlight {
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, initialPath }: {
+// Scale a group's fleet-wide class-byte mix down to `b` bytes, so the rollup
+// tooltip's table totals the $ figure it explains (rate × this view's bytes)
+// rather than showing the group's whole-fleet Ti/$ next to a small slice.
+const scaleMix = (mix: Record<string, number>, b: number): Record<string, number> => {
+  const tot = Object.values(mix).reduce((s, x) => s + x, 0)
+  return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
+}
+
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -43,6 +51,10 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
   markIdx?: MarkIndex | null
   // Start drilled here (e.g. CW's lone bucket) — crumbs keep the ancestry.
   initialPath?: TreeNode[]
+  // Controlled drill path + change reporting (upstream contract) — lets the
+  // app keep the drill in the URL and command drills from worklist rows.
+  path?: TreeNode[]
+  onPathChange?: (p: TreeNode[]) => void
 }) {
   const { fmtBytes } = useUnits()
   // Fixed category colors: global top-level dirs by total size. A single-bucket
@@ -286,7 +298,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
             <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
             {r.rate != null && (
               r.mix ? (
-                <Tooltip content={<ClassMixTip mix={r.mix} note="the group's fleet-wide class mix sets its $/byte rate; $ shown = rate × this view's bytes" />}>
+                <Tooltip content={<ClassMixTip mix={scaleMix(r.mix, r.b)} note="assumes this slice mirrors the group's fleet-wide class mix — the table is that mix scaled to this view's bytes" />}>
                   <span className="usd dotted">{fmtUsd(r.b * r.rate)}/mo</span>
                 </Tooltip>
               ) : (
@@ -389,6 +401,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
     <DtTreemap<TreeNode>
       root={root}
       initialPath={initialPath}
+      path={path}
+      onPathChange={onPathChange}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}

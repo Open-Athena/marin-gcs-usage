@@ -21,7 +21,7 @@ const PAGE = 40
 
 const PREFIX_RE = /^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/
 
-export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab, setTab, scoped, setScoped }: {
+export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab, setTab, scoped, setScoped, openPath }: {
   root: TreeNode
   idx: MarkIndex
   /** The signed-in viewer's own attribution user (labels, "back to me"). */
@@ -36,6 +36,8 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
   /** Scope the treemap below to this tab's lens (vs the full estate). */
   scoped: boolean
   setScoped: (v: boolean) => void
+  /** Drill the treemap to a prefix's path segments (detail view). */
+  openPath: (segs: string[]) => void
 }) {
   const { fmtBytes } = useUnits()
   const { put, claim, post } = useMarkMutations()
@@ -98,13 +100,24 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
   const typedPrefix = typed.trim().endsWith('/') ? typed.trim() : typed.trim() ? typed.trim() + '/' : ''
   const typedValid = PREFIX_RE.test(typedPrefix)
 
-  // Commit the picker on exact match (datalist click sends the full value) or clear.
+  // The picker keeps a local draft so it's freely editable (a value-snapping
+  // controlled input fights Chrome's datalist and made the field feel stuck):
+  // a known user commits immediately (datalist click sends the full value);
+  // anything else commits on Enter/blur — exact user, or clear back to "me".
   const draftShown = userDraft ?? viewUser ?? ''
+  const commitUser = (v: string) => {
+    setUserDraft(null)
+    setViewUser(v === '' || v === myUser ? undefined : v)
+  }
   const onUserDraft = (v: string) => {
-    if (v === '' || users.includes(v)) {
-      setUserDraft(null)
-      setViewUser(v === '' || v === myUser ? undefined : v)
-    } else setUserDraft(v)
+    if (users.includes(v)) commitUser(v)
+    else setUserDraft(v)
+  }
+  const onUserDone = () => {
+    if (userDraft === null) return
+    const v = userDraft.trim()
+    if (v === '' || users.includes(v)) commitUser(v)
+    else setUserDraft(null)  // unknown user: revert to the committed value
   }
 
   return (
@@ -121,6 +134,9 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
               list="mk-users"
               value={draftShown}
               onChange={e => onUserDraft(e.target.value)}
+              onBlur={onUserDone}
+              onKeyDown={e => { if (e.key === 'Enter') onUserDone() }}
+              onFocus={e => e.currentTarget.select()}
               placeholder="view another user's files"
               aria-label="View another user's files"
               size={22}
@@ -210,6 +226,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
                   selected={sel.has(r.uri)} onToggle={() => toggle(r.uri)}
                   onMark={(action: MarkAction | null) => put.mutate({ prefix: r.uri + '/', action })}
                   onClaim={() => claim.mutate({ prefix: r.uri + '/' })}
+                  onOpen={() => openPath(r.uri.slice('gs://'.length).split('/'))}
                 />
               ))}
               {!rows.length && <tr><td colSpan={canMark ? 7 : 5}><em>nothing above the size threshold for this lens</em></td></tr>}
@@ -227,7 +244,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
   )
 }
 
-function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onClaim }: {
+function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onClaim, onOpen }: {
   r: SweepRow
   idx: MarkIndex
   lost: boolean
@@ -237,6 +254,7 @@ function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onCl
   onToggle: () => void
   onMark: (a: MarkAction | null) => void
   onClaim: () => void
+  onOpen: () => void
 }) {
   const { mark, own } = idx.resolve(r.uri)
   const cl = idx.claimOf(r.uri)
@@ -244,7 +262,9 @@ function Row({ r, idx, lost, fmtBytes, canMark, selected, onToggle, onMark, onCl
   return (
     <tr className={selected ? 'sel' : ''}>
       {canMark && <td><input type="checkbox" checked={selected} onChange={onToggle} /></td>}
-      <td className="prefix" title={r.uri}>{rel}</td>
+      <td className="prefix" title={`${r.uri} — click to open in the treemap`}>
+        <a role="link" tabIndex={0} onClick={onOpen}>{rel}</a>
+      </td>
       <td className="num">{fmtBytes(r.b)}</td>
       <td className="num">{(100 * r.frac).toFixed(0)}%</td>
       <td>{r.node.d != null ? epochDaysToMonth(r.node.d) : '—'}</td>
