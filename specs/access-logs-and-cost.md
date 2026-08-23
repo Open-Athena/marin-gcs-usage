@@ -136,6 +136,13 @@ the *listing* plane, whose API-call traffic is negligible-egress and ran fine fr
       NB delivery layout is FLAT — `usage/<bucket>_usage_<ts>_<id>_v0`
       (bucket = filename prefix), not the `usage/<bucket>/*` this spec
       originally assumed.
+      Backfill completed 2026-08-22 ~22:14 UTC (2.86 TB → 336 GB layer-1a,
+      579 MiB layer-2a, all 7 buckets). Gotcha found 2026-08-23: the daily
+      scheduler's static Batch template predated `DUCKDB_MEM_ACCESS`, so the
+      first scheduled ingest ran at the laptop-default 8GB cap and OOM'd its
+      parquet write (soft-fail; snapshot still published with `-x`). Fixed
+      both ends: scheduler body now carries `DUCKDB_MEM_ACCESS=24GB`, and
+      run.sh defaults it to 24GB so template drift can't regress it.
 - [ ] `dt cost` plane (deferred)
 
 Post-landing (2026-08-14): all core scaffolding + GCS parser + fixture tests

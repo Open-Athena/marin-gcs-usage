@@ -28,6 +28,10 @@ cd /app
 # never blocks the snapshot (it self-heals next attempt via the watermark).
 # ACCESS_ONLY=1 = ingest-only job (e.g. the backlog backfill); SKIP_ACCESS=1
 # opts out entirely (e.g. REPROC runs that only re-aggregate).
+# Default the ingest's DuckDB cap here (not just batch-submit.sh) so runs
+# launched from a stale scheduler template don't fall back to the laptop-sized
+# 8GB CLI default — that OOM'd the 2026-08-23 daily run's parquet write.
+export DUCKDB_MEM_ACCESS=${DUCKDB_MEM_ACCESS:-24GB}
 if [ "${SKIP_ACCESS:-0}" != "1" ]; then
   if ! gcs-usage access ingest ${ACCESS_ARGS:-}; then
     if [ "${ACCESS_ONLY:-0}" = "1" ]; then exit 1; fi
