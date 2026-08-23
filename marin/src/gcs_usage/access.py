@@ -189,6 +189,42 @@ def list_new(client, log_bucket: str, bucket: str, state: dict) -> list[tuple[st
     return out
 
 
+def sweep_ingested(client, log_bucket: str, bucket: str, watermark: str | None, workers: int = 16) -> int:
+    """Move fully-ingested CSVs out of ``usage/`` into ``ingested/``, where a
+    7d ``matchesPrefix`` lifecycle rule deletes them (the copy resets the
+    object's age clock, so that's 7 days *after conversion*, not delivery).
+
+    Sweeps every name strictly below the lag-window floor (watermark − 6h) —
+    exactly the set ``list_new`` will never re-list, so sweep and ingest can
+    never disagree about a file. A file delivered *ultra*-late (name-ts below
+    the floor by the time it lands) is already permanently skipped by ingest;
+    sweeping it just moves its deletion from the bucket-wide 30d backstop to
+    the 7d TTL. Self-healing: a crash mid-sweep leaves files in ``usage/``
+    for the next run; a crash between copy and delete just re-copies.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    wm_ts = name_ts(watermark or "")
+    if not wm_ts:
+        return 0
+    prefix = f"usage/{bucket}_usage_"
+    floor = prefix + _ts_minus_hours(wm_ts, LAG_HOURS)
+    blobs = list(client.list_blobs(log_bucket, prefix=prefix, end_offset=floor))
+    if not blobs:
+        return 0
+    bkt = client.bucket(log_bucket)
+
+    def move(blob) -> None:
+        base = blob.name.rsplit("/", 1)[-1]
+        bkt.copy_blob(blob, bkt, f"ingested/{base}")
+        blob.delete()
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(move, blobs))
+    err(f"[{bucket}] swept {len(blobs)} ingested CSVs → ingested/ (7d TTL)")
+    return len(blobs)
+
+
 def _span_name(first: str, last: str) -> str:
     a = name_ts(first.rsplit("/", 1)[-1]) or "unknown"
     b = name_ts(last.rsplit("/", 1)[-1]) or "unknown"
@@ -217,6 +253,7 @@ def ingest_bucket(
     todo = list_new(client, log_bucket, bucket, state)
     if not todo:
         err(f"[{bucket}] up to date (watermark {state.get('watermark')})")
+        sweep_ingested(client, log_bucket, bucket, state.get("watermark"), workers=workers)
         return {"bucket": bucket, "files": 0, "bytes": 0, "chunks": 0}
 
     chunks = plan_chunks(todo, max_chunk_bytes)
@@ -290,6 +327,8 @@ def ingest_bucket(
         tail |= set(bases)
         tail = {t for t in tail if (name_ts(t) or "") >= floor}
         save_state(client, data_bucket, bucket, watermark, sorted(tail))
+
+    sweep_ingested(client, log_bucket, bucket, watermark, workers=workers)
 
     return {
         "bucket": bucket,

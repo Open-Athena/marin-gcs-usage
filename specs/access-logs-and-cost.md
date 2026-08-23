@@ -179,11 +179,20 @@ inside serves the same pruning):
 3. **Lossy layer-2a agg** per run (existing `dt access agg` shape +
    the `(bucket, path)` key fix and `max(ts)` atime column from the Status
    checklist) → feeds the dashboard age/atime lens.
-4. **Lifecycle on the raw CSVs once (2) is verified**: delete raw objects
-   after 30d (parquet is the durable record). Without this the log bucket
-   grows without bound and eventually rivals the estates it's metering.
-   *Still pending (2026-08-22): apply after the backfill's layer-1a is
-   verified complete — it deletes data, so it gets an explicit go-ahead.*
+4. **Lifecycle on the raw CSVs** — landed 2026-08-23 (user go-ahead), and
+   NB the bucket turned out to already have a bucket-wide Delete@30d rule
+   (this spec's "no lifecycle" note was stale). Final shape: after each
+   ingest, `sweep_ingested` moves converted CSVs from `usage/` to
+   `ingested/`, where a `matchesPrefix` rule deletes at age 7d (the copy
+   resets the age clock → 7d *post-conversion*); never-ingested files keep
+   the 30d bucket-wide Delete as the backstop, so a broken ingest has a
+   month to be noticed before raw loss. Job SA got `objectAdmin` on
+   marin-usage-logs for the moves. Layer-1a retention (also 2026-08-23):
+   `access/raw/` on oa-gcs-usage-dvx transitions to Coldline @30d and
+   deletes @180d (~34 GB/day → ~6 TB ring, ~$40/mo; ≥150d in Coldline
+   clears the 90d minimum). 1a is archival/reprocessing only — the UI
+   serves tree.json built from layer-2a, so Coldline retrieval fees never
+   hit the serving path. Layer-2a (~25 MiB/day) is kept forever.
 
 ## Webdata / UI (landed 2026-08-22)
 
