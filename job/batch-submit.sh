@@ -24,9 +24,10 @@ vars() {  # container env: defaults + optional passthroughs
 import json, os
 v = {
     "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "100GB"),
-    # access-log ingest chunks are <=64GB of CSV — a modest cap keeps its
-    # DuckDB from fighting the webdata step's on the same node
-    "DUCKDB_MEM_ACCESS": os.environ.get("DUCKDB_MEM_ACCESS", "24GB"),
+    # access ingest runs before (not concurrent with) the webdata step, so
+    # it can take a big slice of the 128G node; 24GB OOM'd on a row-heavy
+    # 53GB chunk (2026-08-23)
+    "DUCKDB_MEM_ACCESS": os.environ.get("DUCKDB_MEM_ACCESS", "48GB"),
     "DUCKDB_THREADS": os.environ.get("DUCKDB_THREADS", "16"),
     "DATA_BUCKET": os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx"),
     # stage inputs to the local-SSD mount (see disks below); STAGE_DIR="" disables

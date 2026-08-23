@@ -514,7 +514,7 @@ def access() -> None:
 
 @access.command("ingest")
 @option("-b", "--bucket", "buckets", multiple=True, help="Source buckets (default: the marin fleet)")
-@option("-c", "--max-chunk-gb", default=64.0, help="Max staged CSV bytes per processing chunk")
+@option("-c", "--max-chunk-gb", default=32.0, help="Max staged CSV bytes per processing chunk")
 @option("-d", "--data-bucket", default="oa-gcs-usage-dvx", help="Output/state bucket")
 @option("-l", "--log-bucket", default=None, help="Usage-log delivery bucket (default: marin-usage-logs)")
 @option("-M", "--memory-limit", default=None, help="DuckDB memory limit (default: $DUCKDB_MEM or 8GB)")

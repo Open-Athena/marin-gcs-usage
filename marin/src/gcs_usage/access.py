@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import sys
@@ -254,6 +255,10 @@ def ingest_bucket(
         con = duckdb.connect()
         con.execute(f"SET memory_limit = '{memory_limit}'")
         con.execute("SET preserve_insertion_order = false")
+        # Half the cores: the parquet writer keeps per-thread row-group
+        # buffers in flight, and 16 threads' worth blew a 24GB cap on a
+        # row-heavy chunk (2026-08-23) that byte-similar chunks survived.
+        con.execute(f"SET threads = {max(4, (os.cpu_count() or 8) // 2)}")
         tmp = stage_dir / bucket / ".duckdb-tmp"
         tmp.mkdir(parents=True, exist_ok=True)
         con.execute(f"SET temp_directory = '{tmp}'")

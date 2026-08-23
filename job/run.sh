@@ -31,7 +31,9 @@ cd /app
 # Default the ingest's DuckDB cap here (not just batch-submit.sh) so runs
 # launched from a stale scheduler template don't fall back to the laptop-sized
 # 8GB CLI default — that OOM'd the 2026-08-23 daily run's parquet write.
-export DUCKDB_MEM_ACCESS=${DUCKDB_MEM_ACCESS:-24GB}
+# 48GB is safe: ingest runs *before* the webdata step (sequential, not
+# concurrent) on a 128G node, and a row-heavy chunk blew the earlier 24GB cap.
+export DUCKDB_MEM_ACCESS=${DUCKDB_MEM_ACCESS:-48GB}
 if [ "${SKIP_ACCESS:-0}" != "1" ]; then
   if ! gcs-usage access ingest ${ACCESS_ARGS:-}; then
     if [ "${ACCESS_ONLY:-0}" = "1" ]; then exit 1; fi
