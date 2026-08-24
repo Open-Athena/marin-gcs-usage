@@ -26,114 +26,7 @@ def _rss(tag: str) -> None:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     err(f"[rss] {tag}: peak {peak / (1024**2 if sys.platform == 'linux' else 1024**3):.1f} GB")
 
-FOLD_MIN_BYTES = 20e9  # children below this fold into "(other ×N)"
-
-
-def _class_of(g: list[dict]) -> dict[str, int]:
-    """Non-STANDARD class bytes of a row group: {"2": nearline, "3": coldline,
-    "4": archive}, zero-classes omitted (STANDARD = node bytes − sum(cb))."""
-    return {
-        k[1]: b
-        for k in ("c2", "c3", "c4")
-        if (b := sum(r.get(k) or 0 for r in g))
-    }
-
-
-def _date_of(g: list[dict]) -> int | None:
-    """Bytes-weighted mean created date of a row group, in epoch days."""
-    wts = sum(r["wts"] or 0 for r in g)
-    wb = sum(r["wb"] or 0 for r in g)
-    return int(wts / wb / 86400) if wb else None
-
-
-def _attr_of(g: list[dict]) -> dict:
-    """Attribution summary of a row group: team-bytes map (`tm`), the subset
-    of each team's bytes with no per-user owner (`sh`, "shared"), and
-    per-user bytes (`us`, all users, sorted desc)."""
-    tm: dict[str, int] = defaultdict(int)
-    ub: dict[str, int] = defaultdict(int)
-    sh: dict[str, int] = defaultdict(int)
-    for r in g:
-        tm[r["team"]] += r["bytes"]
-        if r["user"]:
-            ub[r["user"]] += r["bytes"]
-        elif r["team"] != "unattributed":
-            sh[r["team"]] += r["bytes"]
-    top = sorted(ub.items(), key=lambda kv: -kv[1])
-    out = {"tm": dict(sorted(tm.items(), key=lambda kv: -kv[1]))}
-    if sh:
-        out["sh"] = dict(sorted(sh.items(), key=lambda kv: -kv[1]))
-    if top:
-        out["us"] = [[u, b] for u, b in top]
-    return out
-
-
-def _build(rows: list[dict], levels: list[str], attr: bool = False) -> list[dict]:
-    """Nested {n,b,o,c} tree from flat dir-component rows; small children folded."""
-    if not levels:
-        return []
-    key = levels[0]
-    groups: dict[str, list[dict]] = {}
-    for r in rows:
-        groups.setdefault(r[key] or "", []).append(r)
-    out = []
-    for name, g in groups.items():
-        b = sum(r["bytes"] for r in g)
-        o = sum(r["objects"] for r in g)
-        node: dict = {"n": name if name else "(files)", "b": b, "o": o}
-        d = _date_of(g)
-        if d is not None:
-            node["d"] = d
-        if cb := _class_of(g):
-            node["cb"] = cb
-        if attr:
-            node.update(_attr_of(g))
-        if levels[1:] and name != "":
-            kids = _build(g, levels[1:], attr)
-            if len(kids) > 1 or (kids and kids[0]["n"] != "(files)"):
-                node["c"] = kids
-        out.append(node)
-    out.sort(key=lambda n: -n["b"])
-    big = [n for n in out if n["b"] >= FOLD_MIN_BYTES]
-    small = [n for n in out if n["b"] < FOLD_MIN_BYTES]
-    if small:
-        if len(small) == 1:
-            big.append(small[0])
-        else:
-            folded: dict = {
-                "n": f"(other ×{len(small)})",
-                "b": sum(n["b"] for n in small),
-                "o": sum(n["o"] for n in small),
-            }
-            dated = [n for n in small if "d" in n]
-            if dated:
-                # approximate: re-weight the children's means by their bytes
-                folded["d"] = int(sum(n["d"] * n["b"] for n in dated) / sum(n["b"] for n in dated))
-            fcb: dict[str, int] = defaultdict(int)
-            for n in small:
-                for k, b_ in n.get("cb", {}).items():
-                    fcb[k] += b_
-            if fcb:
-                folded["cb"] = dict(sorted(fcb.items()))
-            if attr:
-                tm: dict[str, int] = defaultdict(int)
-                ub: dict[str, int] = defaultdict(int)
-                sh: dict[str, int] = defaultdict(int)
-                for n in small:
-                    for t, tb in n.get("tm", {}).items():
-                        tm[t] += tb
-                    for t, tb in n.get("sh", {}).items():
-                        sh[t] += tb
-                    for u, b_ in n.get("us", []):
-                        ub[u] += b_
-                folded["tm"] = dict(sorted(tm.items(), key=lambda kv: -kv[1]))
-                if sh:
-                    folded["sh"] = dict(sorted(sh.items(), key=lambda kv: -kv[1]))
-                top = sorted(ub.items(), key=lambda kv: -kv[1])
-                if top:
-                    folded["us"] = [[u, b_] for u, b_ in top]
-            big.append(folded)
-    return big
+MIN_FRAC = 0.0002  # fold dirs below this fraction of total bytes into "(other)"
 
 
 def write_webdata(
@@ -226,43 +119,12 @@ def write_webdata(
             """
         )
         _rss("dir_attr")
-        tree_rows = con.execute(
-            f"""
-            WITH d AS (
-              SELECT bucket,
-                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes, created, storage_class_id
-              FROM {src}
-            ),
-            agg AS (
-              SELECT bucket, dir, sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
-                sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-                sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
-                sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
-                sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
-                sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
-              FROM d GROUP BY ALL
-            )
-            SELECT a.bucket,
-              coalesce(regexp_extract(a.dir, '^([^/]+)', 1), '') AS d1,
-              coalesce(regexp_extract(a.dir, '^[^/]+/([^/]+)', 1), '') AS d2,
-              coalesce(regexp_extract(a.dir, '^[^/]+/[^/]+/([^/]+)', 1), '') AS d3,
-              coalesce(regexp_extract(a.dir, '^[^/]+/[^/]+/[^/]+/([^/]+)', 1), '') AS d4,
-              t."user" AS user, coalesce(t.team, 'unattributed') AS team,
-              sum(a.bytes)::BIGINT AS bytes, sum(a.objects)::BIGINT AS objects,
-              sum(a.wts)::DOUBLE AS wts, sum(a.wb)::BIGINT AS wb,
-              sum(a.c2)::BIGINT AS c2, sum(a.c3)::BIGINT AS c3, sum(a.c4)::BIGINT AS c4
-            FROM agg a LEFT JOIN dir_attr t ON t.bucket = a.bucket AND t.dir = a.dir
-            GROUP BY ALL
-            """
-        ).fetchall()
-        _rss("tree-rows")
-        cols = ["bucket", "d1", "d2", "d3", "d4", "user", "team", "bytes", "objects", "wts", "wb", "c2", "c3", "c4"]
-        rows = [dict(zip(cols, r)) for r in tree_rows]
-        # per-(team|user) storage-class byte mixes — lets the site price group
-        # roll-ups with class-aware rates rather than one global blend
+        # per-(team|user) storage-class byte mixes (site prices group roll-ups
+        # with class-aware rates) + the per-(user,team) leaderboard meta.users
+        # needs. Both object-grain, so the tree's fold floor doesn't skew them.
         team_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         user_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        user_bytes: dict[tuple, int] = defaultdict(int)
         for team, user, cls, nbytes in con.execute(
             f"""
             WITH d AS (
@@ -280,54 +142,102 @@ def write_webdata(
             team_class[team][int(cls)] += nbytes
             if user:
                 user_class[user][int(cls)] += nbytes
+                user_bytes[(user, team)] += nbytes
         _rss("class-mix")
-    else:
-        dir_rows = con.execute(
-            f"""
-            WITH d AS (
-              SELECT bucket,
-                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes, created, storage_class_id
-              FROM {src}
-            )
-            SELECT bucket,
-              coalesce(regexp_extract(dir, '^([^/]+)', 1), '') AS d1,
-              coalesce(regexp_extract(dir, '^[^/]+/([^/]+)', 1), '') AS d2,
-              coalesce(regexp_extract(dir, '^[^/]+/[^/]+/([^/]+)', 1), '') AS d3,
-              coalesce(regexp_extract(dir, '^[^/]+/[^/]+/[^/]+/([^/]+)', 1), '') AS d4,
-              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects,
-              sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-              sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
-              sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
-              sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
-              sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
-            FROM d GROUP BY ALL
-            """
-        ).fetchall()
-        cols = ["bucket", "d1", "d2", "d3", "d4", "bytes", "objects", "wts", "wb", "c2", "c3", "c4"]
-        rows = [dict(zip(cols, r)) for r in dir_rows]
 
-    buckets: dict[str, list[dict]] = {}
-    for r in rows:
-        buckets.setdefault(r["bucket"], []).append(r)
-    roots = [
-        {
-            "n": bucket,
-            "b": sum(r["bytes"] for r in g),
-            "o": sum(r["objects"] for r in g),
-            **({"d": _date_of(g)} if _date_of(g) is not None else {}),
-            **({"cb": cb} if (cb := _class_of(g)) else {}),
-            **(_attr_of(g) if attr else {}),
-            "c": _build(g, ["d1", "d2", "d3", "d4"], attr),
-        }
-        for bucket, g in buckets.items()
-    ]
-    roots.sort(key=lambda n: -n["b"])
-    total_b = sum(n["b"] for n in roots)
-    total_o = sum(n["o"] for n in roots)
-    tree = {"n": "marin GCS", "b": total_b, "o": total_o, "c": roots}
-    if attr:
-        tree.update(_attr_of([r for g in buckets.values() for r in g]))
+    # --- arbitrary-depth tree (specs/tree-builder-unification.md) ---
+    # Roll every object up to *all* its ancestor prefixes (descendant-inclusive
+    # totals at every depth), attribute per dir, keep only prefixes clearing the
+    # fold floor so the Python side stays small regardless of object count, and
+    # link them parent->child. No d1..d4 cap — the tree is as deep as the data.
+    from disk_tree.tree_build import DirRow, build_tree
+
+    total_b, total_o = con.execute(
+        f"SELECT coalesce(sum(size_bytes), 0)::BIGINT, count(*)::BIGINT FROM {src}"
+    ).fetchone()
+    total_b, total_o = int(total_b), int(total_o)
+    floor = int(total_b * MIN_FRAC)
+    fp_dir = "CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END"
+    fp = f"CASE WHEN ({fp_dir}) = '' THEN bucket ELSE bucket || '/' || ({fp_dir}) END"
+    maxseg = int(con.execute(f"SELECT coalesce(max(len(str_split({fp}, '/'))), 1) FROM {src}").fetchone()[0])
+    attr_join = "LEFT JOIN dir_attr t ON t.bucket = o.bucket AND t.dir = o.dir" if attr else ""
+    team_sel = "coalesce(t.team, 'unattributed')" if attr else "'unattributed'"
+    user_sel = 't."user"' if attr else "CAST(NULL AS VARCHAR)"
+    ptu_rows = con.execute(
+        f"""
+        WITH obj AS (
+          SELECT bucket, {fp_dir} AS dir, size_bytes, created, storage_class_id, {fp} AS fp
+          FROM {src}
+        ),
+        pathed AS (
+          SELECT o.size_bytes, o.created, o.storage_class_id, o.fp,
+            {team_sel} AS team, {user_sel} AS usr
+          FROM obj o {attr_join}
+        ),
+        exploded AS (
+          SELECT array_to_string((str_split(fp, '/'))[1:r.k], '/') AS path,
+            size_bytes, created, storage_class_id, team, usr
+          FROM pathed, range(1, {maxseg} + 1) r(k)
+          WHERE len(str_split(fp, '/')) >= r.k
+        ),
+        ptu AS (
+          SELECT path, team, usr,
+            sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
+            sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+            sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
+            sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
+            sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
+            sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
+          FROM exploded GROUP BY path, team, usr
+        )
+        SELECT p.path, p.team, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
+        FROM ptu p
+        WHERE p.path IN (SELECT path FROM ptu GROUP BY path HAVING sum(b) >= {floor})
+        """
+    ).fetchall()
+    _rss("dir-rows")
+
+    def _new_add() -> dict:
+        return {"b": 0, "o": 0, "wts": 0.0, "wb": 0,
+                "cb": defaultdict(int), "tm": defaultdict(int),
+                "ub": defaultdict(int), "sh": defaultdict(int)}
+
+    def _merge(a: dict, b: int, o: int, wts, wb, c2, c3, c4, team: str, usr) -> None:
+        a["b"] += int(b); a["o"] += int(o)
+        a["wts"] += float(wts or 0); a["wb"] += int(wb or 0)
+        for cid, cv in (("2", c2), ("3", c3), ("4", c4)):
+            if cv:
+                a["cb"][cid] += int(cv)
+        a["tm"][team] += int(b)
+        if usr:
+            a["ub"][usr] += int(b)
+        elif team != "unattributed":
+            a["sh"][team] += int(b)
+
+    def _add(a: dict) -> dict:
+        out: dict = {}
+        if a["wb"]:
+            out["wts"], out["wb"] = a["wts"], a["wb"]
+        for k in ("cb", "tm", "ub", "sh"):
+            if a[k]:
+                out[k] = dict(a[k])
+        return out
+
+    agg_by_path: dict[str, dict] = {}
+    root = _new_add()
+    for path, team, usr, b, o, wts, wb, c2, c3, c4 in ptu_rows:
+        a = agg_by_path.get(path)
+        if a is None:
+            a = agg_by_path[path] = _new_add()
+        _merge(a, b, o, wts, wb, c2, c3, c4, team, usr)
+        if "/" not in path:  # bucket-level rows partition the fleet → the root
+            _merge(root, b, o, wts, wb, c2, c3, c4, team, usr)
+
+    dir_rows = [DirRow(p, a["b"], a["o"], _add(a)) for p, a in agg_by_path.items()]
+    dir_rows.append(DirRow(".", total_b, total_o, _add(root)))
+    tree = build_tree(dir_rows, total_b, MIN_FRAC)
+    tree["n"] = "marin GCS"
+    roots = tree.get("c", [])
 
     # Access join: per-(bucket, path) read-recency + read volume from the
     # access-log layer-2a shards. The agg's own rollups mean a prefix's values
@@ -350,7 +260,7 @@ def write_webdata(
               COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
               COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
             FROM read_parquet({globs})
-            WHERE depth <= 4 AND op IN ('GET', 'HEAD', 'LIST')
+            WHERE op IN ('GET', 'HEAD', 'LIST')
             GROUP BY 1, 2
             """
         ).fetchall():
@@ -437,16 +347,15 @@ def write_webdata(
         "total_bytes": total_b,
         "total_objects": total_o,
         "class_bytes": {int(c): int(b) for c, b in classes},
+        # Fold floor as a fraction of total bytes — lets the UI say "showing
+        # prefixes ≥ X"; dirs below it live under an expandable (other) node.
+        "fold_min_frac": MIN_FRAC,
     }
     if access_window:
         # Epoch days the access logs cover — the UI's "no reads since <from>"
         # is only meaningful relative to when logging began.
         meta["access"] = {"from": access_window[0], "to": access_window[1]}
     if attr:
-        user_bytes: dict[tuple, int] = defaultdict(int)
-        for r in rows:
-            if r["user"]:
-                user_bytes[(r["user"], r["team"])] += r["bytes"]
         meta["users"] = [
             {"u": u, "t": t, "b": b}
             for (u, t), b in sorted(user_bytes.items(), key=lambda kv: -kv[1])

@@ -1,7 +1,10 @@
 """End-to-end test of `write_webdata` on a tiny synthetic listing.
 
-Sizes sit above FOLD_MIN_BYTES so no "(other ×N)" folding kicks in and the
-tree can be asserted exactly.
+The tree is built at arbitrary depth (specs/tree-builder-unification.md): dirs
+are linked parent→child with no d1..d4 cap, and a directory's own direct files
+surface as an expandable `(other)` node (bytes the kept children don't account
+for), not a `(files)` leaf. The fold floor is relative (`MIN_FRAC` × total); at
+this fixture's scale nothing folds, so the tree is asserted exactly.
 """
 
 import datetime as dt
@@ -88,6 +91,7 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "total_bytes": 380 * GB,
         "total_objects": 4,
         "class_bytes": {1: 180 * GB, 2: 200 * GB},
+        "fold_min_frac": 0.0002,
         "users": [{"u": "ryan-williams", "t": "infra", "b": 150 * GB}],
         "team_class_bytes": {
             "data": {2: 200 * GB},
@@ -120,7 +124,10 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
             {"n": "raw", "b": 200 * GB, "o": 1, "d": epoch_day(TS["d0615"]), "cb": {"2": 200 * GB}, "tm": {"data": 200 * GB}, "sh": {"data": 200 * GB}},
         ],
     }
-    files = {"n": "(files)", "b": 30 * GB, "o": 1, "d": epoch_day(TS["d0702"]), "tm": {"unattributed": 30 * GB}}
+    # top.bin is a direct file of b1: bytes the kept children (datasets, users)
+    # don't cover, surfaced as an expandable (other) with its subtracted
+    # attribution. f=0: no sub-floor dirs folded in, only the direct file.
+    other = {"n": "(other)", "b": 30 * GB, "o": 1, "f": 0, "d": epoch_day(TS["d0702"]), "tm": {"unattributed": 30 * GB}}
     b1 = {
         "n": "b1",
         "b": 380 * GB,
@@ -130,12 +137,14 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "tm": {"data": 200 * GB, "infra": 150 * GB, "unattributed": 30 * GB},
         "sh": {"data": 200 * GB},
         "us": [["ryan-williams", 150 * GB]],
-        "c": [datasets, users, files],
+        "c": [datasets, users, other],
     }
     assert tree == {
         "n": "marin GCS",
         "b": 380 * GB,
         "o": 4,
+        "d": b1["d"],
+        "cb": {"2": 200 * GB},
         "tm": {"data": 200 * GB, "infra": 150 * GB, "unattributed": 30 * GB},
         "sh": {"data": 200 * GB},
         "us": [["ryan-williams", 150 * GB]],
