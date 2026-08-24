@@ -137,8 +137,8 @@ def test_gcs_parse_shape(tmp_path: Path):
     assert df['request_id'].tolist() == ['r1', 'r2', 'r3', 'r4']
 
 
-def test_gcs_parse_deduplicates_by_request_id(tmp_path: Path):
-    """Google documents rare duplicate log lines — parser dedupes on s_request_id."""
+def test_gcs_parse_deduplicates_identical_lines(tmp_path: Path):
+    """Google documents rare duplicate log lines — byte-identical lines collapse."""
     from disk_tree.access.parsers.gcs import parse
 
     csv_path = tmp_path / 'dup.csv'
@@ -151,6 +151,130 @@ def test_gcs_parse_deduplicates_by_request_id(tmp_path: Path):
     df = parse(str(csv_path), con=con).df()
     assert len(df) == 2
     assert sorted(df['request_id'].tolist()) == ['other', 'same']
+
+
+def test_dropped_fraction_reports_rows_in_and_loss(tmp_path: Path):
+    """The invariant whose absence let the batch-dedupe bug ship: 1a must come
+    out only marginally smaller than its source CSV."""
+    from disk_tree.access.parsers.gcs import dropped_fraction, parse
+
+    csv_path = tmp_path / 'mixed.csv'
+    _write_gcs_csv(csv_path, [
+        _gcs_row(1_000_000, '10.0.0.1', 'GET', 'GET_Object', 'b1', 'x', sc_bytes=100, req_id='dup'),
+        _gcs_row(1_000_000, '10.0.0.1', 'GET', 'GET_Object', 'b1', 'x', sc_bytes=100, req_id='dup'),
+        _gcs_row(2_000_000, '10.0.0.2', 'GET', 'GET_Object', 'b1', 'y', sc_bytes=50, req_id='r2'),
+        _gcs_row(3_000_000, '10.0.0.2', 'GET', 'GET_Object', 'b1', 'z', sc_bytes=50, req_id='r3'),
+    ])
+    con = duckdb.connect()
+    n_out = parse(str(csv_path), con=con).aggregate('COUNT(*)').fetchone()[0]
+    assert (n_out, dropped_fraction(con, n_out)) == (3, (4, 0.25))
+
+
+def test_dropped_fraction_is_zero_when_nothing_is_deduped(tmp_path: Path):
+    from disk_tree.access.parsers.gcs import dropped_fraction, parse
+
+    csv_path = tmp_path / 'clean.csv'
+    _write_gcs_csv(csv_path, [
+        _gcs_row(1_000_000, '10.0.0.1', 'GET', 'GET_Object', 'b1', 'x', sc_bytes=1, req_id='r1'),
+        _gcs_row(2_000_000, '10.0.0.2', 'GET', 'GET_Object', 'b1', 'y', sc_bytes=2, req_id='r2'),
+    ])
+    con = duckdb.connect()
+    n_out = parse(str(csv_path), con=con).aggregate('COUNT(*)').fetchone()[0]
+    assert (n_out, dropped_fraction(con, n_out)) == (2, (2, 0.0))
+
+
+def test_batch_request_stays_under_the_dedupe_warning_threshold(tmp_path: Path):
+    """The regression check with teeth: parse a batch-heavy CSV and assert the
+    loss rate is inside the alerting threshold. Under the old `request_id`-only
+    key this CSV lost 75% of its rows and would trip the warning."""
+    from disk_tree.access.parsers.gcs import DEDUPE_WARN_FRACTION, dropped_fraction, parse
+
+    csv_path = tmp_path / 'batchy.csv'
+    _write_gcs_csv(csv_path, [
+        _gcs_row(3_000_000, '10.0.0.9', 'POST', '', 'b1', '', req_id='batch'),
+        *[
+            _gcs_row(3_000_000, '10.0.0.9', 'PUT', 'PUT_Object', 'b1', f'p/{i}.gz',
+                     cs_bytes=i, req_id='batch')
+            for i in range(50)
+        ],
+    ])
+    from disk_tree.access.parsers.gcs import RAW_VIEW
+
+    con = duckdb.connect()
+    n_out = parse(str(csv_path), con=con).aggregate('COUNT(*)').fetchone()[0]
+    n_in, dropped = dropped_fraction(con, n_out)
+    assert (n_in, n_out, dropped) == (51, 51, 0.0)
+    assert dropped <= DEDUPE_WARN_FRACTION
+
+    # And demonstrate — not merely assert in prose — that the retired key loses
+    # the batch and that the guard would have caught it. `parse` leaves the
+    # pre-dedupe view on the connection, so the old key can be run against the
+    # very same input.
+    old_out = con.execute(
+        f'SELECT COUNT(*) FROM (SELECT DISTINCT ON (s_request_id) * FROM {RAW_VIEW})'
+    ).fetchone()[0]
+    _, old_dropped = dropped_fraction(con, old_out)
+    assert (old_out, round(old_dropped, 4)) == (1, 0.9804)
+    assert old_dropped > DEDUPE_WARN_FRACTION
+
+
+def test_batch_records_and_duplicate_records_are_told_apart(tmp_path: Path):
+    """The two phenomena that share an `s_request_id`, in one file.
+
+    Google: "Occasionally, a single record may appear twice... you can use the
+    s_request_id field to detect duplicates." *Detect*, not key on — a batched
+    write is one request emitting many distinct records. Keeping the batch and
+    dropping the repeat is the entire contract of this parser's dedupe.
+
+    The batch here mirrors the measured shape: records differing only by object
+    name. The leading no-operation record is included because such rows do
+    occur in real logs, not because every batch carries one.
+    """
+    from disk_tree.access.parsers.gcs import parse
+
+    csv_path = tmp_path / 'both.csv'
+    _write_gcs_csv(csv_path, [
+        # A batch: one envelope + three objects, all under req_id='batch'.
+        _gcs_row(3_000_000, '10.0.0.9', 'POST', '', 'b1', '', req_id='batch'),
+        _gcs_row(3_000_000, '10.0.0.9', 'PUT', 'PUT_Object', 'b1', 'p/a.gz', cs_bytes=11, req_id='batch'),
+        _gcs_row(3_000_000, '10.0.0.9', 'PUT', 'PUT_Object', 'b1', 'p/b.gz', cs_bytes=22, req_id='batch'),
+        _gcs_row(3_000_000, '10.0.0.9', 'PUT', 'PUT_Object', 'b1', 'p/c.gz', cs_bytes=33, req_id='batch'),
+        # A duplicate: the same record delivered twice, under its own id.
+        _gcs_row(4_000_000, '10.0.0.1', 'GET', 'GET_Object', 'b1', 'q/x', sc_bytes=7, req_id='twice'),
+        _gcs_row(4_000_000, '10.0.0.1', 'GET', 'GET_Object', 'b1', 'q/x', sc_bytes=7, req_id='twice'),
+    ])
+    con = duckdb.connect()
+    df = parse(str(csv_path), con=con).df().sort_values(['request_id', 'path']).reset_index(drop=True)
+    assert list(zip(df['request_id'], df['op'], df['path'], df['bytes_in'], df['bytes_out'])) == [
+        ('batch', 'OTHER', '', 0, 0),
+        ('batch', 'PUT', 'p/a.gz', 11, 0),
+        ('batch', 'PUT', 'p/b.gz', 22, 0),
+        ('batch', 'PUT', 'p/c.gz', 33, 0),
+        ('twice', 'GET', 'q/x', 0, 7),
+    ]
+
+
+def test_gcs_parse_keeps_every_object_of_a_batch_request(tmp_path: Path):
+    """A batched write logs one envelope line plus one line per object, all
+    sharing an `s_request_id`. Deduping on the id alone discards every object
+    but one — measured at 2,408 lost PUTs in a 7h window on marin-us-east1,
+    the fleet's *smallest* bucket.
+    """
+    from disk_tree.access.parsers.gcs import parse
+
+    csv_path = tmp_path / 'batch.csv'
+    _write_gcs_csv(csv_path, [
+        _gcs_row(3_000_000, '10.0.0.9', 'POST', '', 'b1', '', req_id='batch'),
+        _gcs_row(3_000_000, '10.0.0.9', 'PUT', 'PUT_Object', 'b1', 'p/a.gz', cs_bytes=11, req_id='batch'),
+        _gcs_row(3_000_000, '10.0.0.9', 'PUT', 'PUT_Object', 'b1', 'p/b.gz', cs_bytes=22, req_id='batch'),
+        _gcs_row(3_000_000, '10.0.0.9', 'PUT', 'PUT_Object', 'b1', 'p/c.gz', cs_bytes=33, req_id='batch'),
+    ])
+    con = duckdb.connect()
+    df = parse(str(csv_path), con=con).df().sort_values('path').reset_index(drop=True)
+    assert df['path'].tolist() == ['', 'p/a.gz', 'p/b.gz', 'p/c.gz']
+    assert df['op'].tolist() == ['OTHER', 'PUT', 'PUT', 'PUT']
+    assert df['bytes_in'].tolist() == [0, 11, 22, 33]
+    assert df['request_id'].tolist() == ['batch'] * 4
 
 
 # ---------- End-to-end: parse → agg → top ----------
