@@ -30,6 +30,11 @@ jobs:
     with:
       pkgs: packages/react
       source_ref: ${{ inputs.source_ref }}
+      # The public/DT-fork history rewrite gave mainline unrelated history, so
+      # the dist branch's source-parents share no ancestor with new commits —
+      # the default `rewrite` mode can't find one and errors. `preserve` chains
+      # onto the dist tip anyway (the built content is fine; only lineage broke).
+      on_source_rewrite: preserve
       # Source-first — `main`/`types` in package.json point at src/*.ts,
       # so the built branch keeps `src/` as-is next to the transformed
       # package.json.
