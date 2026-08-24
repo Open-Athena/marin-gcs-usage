@@ -487,6 +487,7 @@ function AppContent() {
             </div>
           )}
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
+          {markMode && <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>Recent&nbsp;marks&nbsp;→</Link>}
           {ident && (
             <div className="whoami">
               <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>

@@ -4,6 +4,7 @@ import { AdminPage } from './AdminPage'
 import App from './App'
 import { AuthGate } from './AuthGate'
 import { FilesPage } from './FilesPage'
+import { MarksPage } from './MarksPage'
 import { OgPage } from './OgPage'
 import { STORES } from './stores'
 
@@ -22,6 +23,7 @@ export default function Root() {
       <Route path="/admin/db" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
+      <Route path="/marks" element={<AuthGate><MarksPage /></AuthGate>} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>
   )

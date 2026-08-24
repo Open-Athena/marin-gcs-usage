@@ -1218,3 +1218,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     button { background: none; border: none; color: var(--ink-2); cursor: pointer; padding: 0 2px; }
   }
 }
+
+.marks-page {
+  .memo { color: var(--ink-2); font-style: italic; }
+  .marks-feed td { vertical-align: top; }
+}
