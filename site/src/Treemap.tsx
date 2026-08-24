@@ -176,6 +176,21 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
           bg = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
           ink = s ? inkFor(bg) : 'var(--ink)'
         }
+      } else if (mode === 'fate') {
+        // Keep-axis fate: paint kept (green) / keep-last-ckpt / swept (red);
+        // undecided cells stay grey — the review to-do, visible at a glance.
+        const st = markIdx?.resolve(uriOf(kidPath))
+        const m = st?.mark ?? null
+        if (m && (st!.own || !ctx.hasKids)) {
+          bg = ACTION_COLORS[m.action]
+          ink = inkFor(bg)
+        } else if (ctx.hasKids) {
+          bg = 'var(--panel)' // container without its own mark: children carry the fate
+          ink = 'var(--ink)'
+        } else {
+          bg = 'var(--other)' // undecided leaf
+          ink = 'var(--ink)'
+        }
       } else if (ctx.hasKids) {
         // container: neutral so the nested tiles carry the data colors
         bg = 'var(--panel)'
@@ -224,7 +239,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       }
       return { bg, ink, hatch, opacity: dim ? 0.22 : undefined }
     },
-    [mode, slotOf, userIdx, dateRange, readRange, hl, lens],
+    [mode, slotOf, userIdx, dateRange, readRange, hl, lens, markIdx],
   )
 
   // group roll-up for the current view: users in user modes, teams otherwise;

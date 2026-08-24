@@ -222,7 +222,11 @@ function AppContent() {
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
-  const effMode: ColorMode = mode === 'read' && !readRange ? 'team' : hasAttr ? mode : 'tree'
+  const effMode: ColorMode =
+    (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'team' : hasAttr ? mode : 'tree'
+  // The age chart is a time series — read/fate have no meaning there, so fall
+  // back to the written-date gradient (and label it honestly).
+  const ageMode: ColorMode = effMode === 'read' || effMode === 'fate' ? 'date' : effMode
   const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
   // In mark mode the active tab scopes the map to its lens (filter +
   // re-aggregate — the worklists keep the unscoped tree, so their
@@ -573,7 +577,7 @@ function AppContent() {
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
           <span className="lbl">color by</span>
-          {MODES.filter(m => m !== 'read' || readRange).map(m => {
+          {MODES.filter(m => (m !== 'read' || readRange) && (m !== 'fate' || markMode)).map(m => {
             const btn = (
               <button
                 key={m}
@@ -693,10 +697,10 @@ function AppContent() {
             the heading stays unit-free rather than lying about "month". */}
         <h2>Bytes by created date</h2>
         <p className="sub">
-          When today’s objects were written (created-time strata, colored by {MODE_LABELS[effMode]}).
+          When today’s objects were written (created-time strata, colored by {MODE_LABELS[ageMode]}).
         </p>
-        {/* age.json strata carry no read info — the read lens falls back to age here */}
-        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode === 'read' ? 'date' : effMode} userIdx={userIdx} />}
+        {/* age.json strata carry no read/fate info — those lenses fall back to written here */}
+        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={ageMode} userIdx={userIdx} />}
       </section>
 
       {rules && tree?.tm && meta?.users && (

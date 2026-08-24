@@ -85,7 +85,7 @@ export interface AgeRow {
 
 export type Granularity = 'month' | 'week' | 'day'
 
-export type ColorMode = 'team' | 'tree' | 'date' | 'read' | 'user' | 'uteam'
+export type ColorMode = 'team' | 'tree' | 'date' | 'read' | 'user' | 'uteam' | 'fate'
 
 export const MODE_LABELS: Record<ColorMode, string> = {
   team: 'group',
@@ -94,6 +94,7 @@ export const MODE_LABELS: Record<ColorMode, string> = {
   read: 'read',
   user: 'user',
   uteam: 'user·group',
+  fate: 'fate',
 }
 
 export interface Meta {
