@@ -6,7 +6,7 @@ n.b. the 1:1 notes say "Friday Aug 29", but Aug 29 is a Saturday; the Discord po
 
 ## Requirements (from the 1:1 + Discord post)
 
-- **Mark states per prefix**: `delete` (the default — absence of a mark), `keep-last-checkpoint`, `keep-all`. Editable until the deadline.
+- **Mark states per prefix**: `sweep` (the default — absence of a mark), `keep-last-checkpoint`, `keep-all`. Editable until the deadline. (Shipped as the action id `sweep`; the earlier `delete` label was renamed — it read as an immediate destructive action, when marking only schedules the prefix for the post-deadline sweep.)
 - **"My files" first**: each user primarily reviews prefixes attributed to *them* (the attribution rules we already run). They can also mark communal or unclaimed prefixes.
 - **Lost & found**: unattributed prefixes (~510 TB, suspected mostly Calvin-swarm output) are claimable; unclaimed defaults to deletion, surfaced **least-recently-touched first** (needs the access-log atime plane — `specs/access-logs-and-cost.md`; fallback ordering: created-date `d` until atime lands).
 - **Bulk ergonomics are the whole ballgame**: select-all + unselect-exceptions (mark a parent `keep-all`, carve out `delete` children). If marking is slow, people keep everything and the sweep recovers nothing.
@@ -15,7 +15,9 @@ n.b. the 1:1 notes say "Friday Aug 29", but Aug 29 is a Saturday; the Discord po
 
 ## Architecture
 
-Extend this repo's site (same deploy, new route `/mark`) rather than a separate app: the treemap browser, attribution join, snapshot data plane, and CF Access gate all already exist here.
+Extend this repo's site rather than a separate app: the treemap browser, attribution join, snapshot data plane, and CF Access gate all already exist here.
+
+> **As built (2026-08-24)** — marking is **folded onto `/`**, not a separate `/mark` route: any signed-in marker (`store.key === 'gcs' && canMark`) gets the mark banner, per-cell/row keep-sweep controls, and the `fate` color mode on the home view, while anon/guest (no-email) sessions see the read-only treemap. The *My files / Lost & found / Communal / Everything* worklist tabs live in a **collapsible "review backlog" panel** (banner toggle), seeded open on `/mark` or a `?mt=` deep-link so shared links still work. The default action id shipped as `sweep` (not `delete`). The depth cap is **gone** — the tree is now all-depths (shared `build_tree`), so the drill-past-the-cap slices below are moot. An **agent-facing CLI + API** (`gcs-usage mark`/`status`/`todo`, `/api/{resolve,todo,actions,token}`, self-service tokens) ships alongside the UI — see `AGENTS.md`.
 
 ### Identity — adopt `@open-athena/auth`, Tier 2
 
@@ -30,7 +32,7 @@ Every gcs.oa.dev viewer is already authenticated by CF Access (OA domain + the S
 ```sql
 CREATE TABLE marks (
   prefix    TEXT NOT NULL,            -- gs://bucket/path/, deepest-mark-wins
-  action    TEXT NOT NULL,            -- 'keep' | 'keep_last_ckpt' | 'delete'
+  action    TEXT NOT NULL,            -- 'keep' | 'keep_last_ckpt' | 'sweep'
   who       TEXT NOT NULL,            -- Access email (or auth grant sub)
   ts        INTEGER NOT NULL,
   note      TEXT,
@@ -50,10 +52,10 @@ Only non-default marks are stored (`delete` = absence), so the table stays small
 
 ### UI
 
-- **`/mark` route**: the existing treemap + directory drill, with a mark-state overlay (color-edge or badge per cell: kept / keep-last-ckpt / doomed-by-default) and mark buttons on the pinned-node panel.
+- **Home view (`/`, folded from the old `/mark` route)**: the existing treemap + directory drill, with a mark-state overlay (color-edge or badge per cell: kept / keep-last-ckpt / swept-by-default) and mark buttons on the pinned-node panel + the children table rows.
 - **Tabs**: *My files* (prefixes attributed to the viewer — default landing), *Lost & found* (unattributed, least-recently-touched first), *Communal* (Rav/Will), *Everything*.
 - **Progress + countdown header**: "X TB of your Y TB reviewed · sweep in N days" — the nag is part of the product.
-- **Depth**: marking needs to reach prefixes below the current webdata depth cap (the "19 TB flat" recursion complaint). Two-part fix: per-subtree JSON slices for drill-past-the-cap (the lazy-subtree data half DT already ships the widget side of), plus a path input for marking an arbitrary typed prefix.
+- **Depth**: ~~marking needs to reach prefixes below the current webdata depth cap~~ — **resolved**: the depth cap is gone (webdata now builds an all-depths tree via the shared `build_tree`), so cells are markable at any depth. A path input for marking an arbitrary typed prefix also ships (the "mark a typed prefix" box).
 - After the deadline: read-only freeze; the marks table is the sweep's input.
 
 ### Sweep (post-deadline, not in the UI)
