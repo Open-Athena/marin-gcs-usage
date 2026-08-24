@@ -192,3 +192,13 @@ def get_json(url: str, token: str, endpoint_path: str, params: dict | None = Non
 def resolve_path(url: str, token: str, path: str) -> dict:
     """One path's effective keep + owner (GET /api/resolve)."""
     return get_json(url, token, "/api/resolve", {"path": path})
+
+
+def todo_list(url: str, token: str, limit: int | None = None, min_frac: float | None = None) -> dict:
+    """The keep-axis review backlog — largest undecided prefixes (GET /api/todo)."""
+    params: dict = {}
+    if limit is not None:
+        params["limit"] = limit
+    if min_frac is not None:
+        params["min_frac"] = min_frac
+    return get_json(url, token, "/api/todo", params or None)

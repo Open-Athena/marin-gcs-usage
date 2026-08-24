@@ -639,6 +639,54 @@ def status(as_json: bool, token: str | None, url: str | None, path: str) -> None
     print(f"owner: {owner['owner'] + '  (' + _src(owner) + ')' if owner else 'unattributed — in lost & found'}")
 
 
+@main.command()
+@option("-f", "--min-frac", default=None, type=float, help="Ignore prefixes below this fraction of total bytes")
+@option("-j", "--json", "as_json", is_flag=True, help="Emit the raw /api/todo JSON")
+@option("-n", "--limit", default=None, type=int, help="Max items to return")
+@option("-p", "--prefixes", "prefixes_only", is_flag=True, help="Print bare prefixes (pipe into `gcs-usage mark`)")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+def todo(
+    min_frac: float | None,
+    as_json: bool,
+    limit: int | None,
+    prefixes_only: bool,
+    token: str | None,
+    url: str | None,
+) -> None:
+    """List the largest prefixes still needing a keep/sweep decision.
+
+    The review backlog: prefixes with no decision anywhere in their subtree or
+    ancestry (unmarked defaults to sweep at the deadline). Marking a chunk
+    keep/sweep drops it and surfaces its still-undecided siblings.
+
+        gcs-usage todo -p | head        # feed prefixes to review
+
+    Note the `-p` output is a review queue, not a mark command — you still
+    decide keep vs sweep per prefix.
+    """
+    from .mark import MarkError, creds, todo_list
+
+    base, tok = creds(token, url)
+    if not tok:
+        raise SystemExit("error: no token — pass --token or set $GCS_USAGE_TOKEN")
+    try:
+        r = todo_list(base, tok, limit=limit, min_frac=min_frac)
+    except MarkError as e:
+        raise SystemExit(f"error: {e}")
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+    items = r.get("items", [])
+    if prefixes_only:
+        for it in items:
+            print(it["prefix"])
+        return
+    err(f"scan {r.get('scan')}: {r.get('count')} undecided prefix(es) ≥ {r.get('min_bytes', 0) / 1e9:.1f} GB")
+    for it in items:
+        print(f"{it['bytes'] / 1e9:8.1f} GB  {it['objects']:>10,}  {it['prefix']}")
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
