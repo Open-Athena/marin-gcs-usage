@@ -115,9 +115,12 @@ function AppContent() {
   const { pathname, search } = useLocation()
   const navigate = useNavigate()
   const store = storeForPath(pathname)
-  // Mark & sweep mode (specs/mark-sweep-ui.md): same treemap, plus keep/delete
-  // badges and marking controls. GCS only — CoreWeave is out of the sweep.
-  const markMode = pathname === '/mark' && store.key === 'gcs'
+  const canMark = useCanMark()
+  // Mark & sweep (specs/mark-sweep-ui.md): the same treemap plus keep/sweep
+  // controls, shown to any signed-in marker on the GCS store — anon and guest
+  // (no-email) sessions get the read-only view. Folded onto `/` (was a separate
+  // `/mark` route); GCS only, since CoreWeave is out of the sweep.
+  const markMode = store.key === 'gcs' && canMark
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
   // The shell's <title> is rewritten per store for crawlers (functions/cw/), but
@@ -207,7 +210,6 @@ function AppContent() {
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
   const signOut = useSignOut()
-  const canMark = useCanMark()
   const [tokenOpen, setTokenOpen] = useState(false)
   const myUser = useMyUser(ident?.email, markMode)
   // `?mt=` — active /mark tab (absent = "mine").
@@ -217,6 +219,12 @@ function AppContent() {
   const markTab: MarkTab =
     markTabP === 'mine' || markTabP === 'lost' || markTabP === 'communal' || markTabP === 'all' ? markTabP : 'todo'
   const setMarkTab = (t: MarkTab) => setMarkTabP(t === 'todo' ? undefined : t)
+  // The review-backlog panel (MarkTabs — the todo/lost/communal/all queues).
+  // Seeded open when arriving at `/mark` or via a tab deep-link (`?mt=`); a
+  // banner toggle shows/hides it so `/` isn't dominated by the queue. Marking
+  // on the map + children table stays available whether or not it's open.
+  const [backlogOpen, setBacklogOpen] = useState(() => pathname === '/mark' || markTabP != null)
+  const backlogActive = markMode && backlogOpen
   // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
   const [muP, setMuP] = useUrlState('mu', stringParam())
   const viewUser = muP ?? myUser
@@ -244,7 +252,7 @@ function AppContent() {
   // re-aggregate — the worklists keep the unscoped tree, so their
   // maximal-subtree rows don't coarsen); untoggled, fall back to dimming.
   // `todo` is cross-cutting (no single lens), so it never scopes the map.
-  const scopedActive = markMode && scoped && markTab !== 'all' && markTab !== 'todo' && (markTab !== 'mine' || !!viewUser)
+  const scopedActive = backlogActive && scoped && markTab !== 'all' && markTab !== 'todo' && (markTab !== 'mine' || !!viewUser)
   const mapTree = useMemo(() => {
     if (!shownTree || !scopedActive) return shownTree
     const lens = markTab === 'mine'
@@ -278,7 +286,7 @@ function AppContent() {
     setPP(segs.length ? segs.join('/') : undefined)
     document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
-  const effHl: Highlight | null = !markMode
+  const effHl: Highlight | null = !backlogActive
     ? hl
     : scopedActive ? null
     : markTab === 'mine' && viewUser ? { user: viewUser }
@@ -479,8 +487,6 @@ function AppContent() {
             </div>
           )}
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
-          {/* /mark stays URL-only until the Monday reveal — no nav link yet */}
-          {markMode && <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Exit&nbsp;marking</Link>}
           {ident && (
             <div className="whoami">
               <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>
@@ -561,6 +567,9 @@ function AppContent() {
             {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}
             {marksQ.error && <span className="err"> marks unavailable: {marksQ.error.message}</span>}
           </p>
+          <button type="button" className="backlog-toggle" aria-expanded={backlogOpen} onClick={() => setBacklogOpen(o => !o)}>
+            {backlogOpen ? '▾ Hide' : '▸ Show'} review backlog
+          </button>
         </section>
       )}
 
@@ -651,7 +660,7 @@ function AppContent() {
         </div>
       )}
 
-      {markMode && shownTree && (
+      {backlogActive && shownTree && (
         <MarkTabs root={shownTree} idx={markIdx} myUser={myUser}
           viewUser={viewUser} setViewUser={setMuP}
           users={mkUsers}
