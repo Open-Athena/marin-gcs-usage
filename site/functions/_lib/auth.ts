@@ -110,7 +110,21 @@ function authIdentity(auth: Auth): Identity {
   return { email: auth.grant.email ?? null, name: auth.grant.name ?? null, scopes: auth.scopes, via: 'grant' }
 }
 
+/** All app scopes — granted to the local-dev identity so `/data` etc. work
+ *  without a CF Access edge or a minted session. */
+const DEV_SCOPES = [GCS_SCOPE, CW_SCOPE, ADMIN_SCOPE, REQUESTS_SCOPE]
+
 export async function identify(ctx: Ctx): Promise<Identity | null> {
+  // Local dev has no CF Access edge and no minted session, so `wrangler pages
+  // dev` requests would 401 — leaving the client `DEV_IDENTITY` stub (which
+  // only fakes the *client's* whoami) disagreeing with the server. Treat any
+  // request whose host is localhost as a full-scope dev user so the two agree.
+  // This can't reach prod: Cloudflare routes by the real hostname, so a
+  // gcs.oa.dev request's URL host is never `localhost`/`127.0.0.1`.
+  const host = new URL(ctx.request.url).hostname
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return { email: 'dev@example.test', name: null, scopes: DEV_SCOPES, via: 'session' }
+  }
   const edge = await edgeIdentity(ctx.request, ctx.env)
   if (edge) return edge
   const gate = gateFor(ctx.env)
