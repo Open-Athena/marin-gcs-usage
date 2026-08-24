@@ -17,13 +17,13 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { applyFilter, applyNodeFilter, parseQuery } from './filterTree'
-import { setCurrentScan, useMarkIndex, useMarks, sweepDaysLeft } from './marks'
+import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { MarkTabs } from './MarkTabs'
 import type { MarkTab } from './MarkTabs'
 import { lensNodePred, teamLens, useMyUser, userLens } from './sweep'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, ratePerByte } from './types'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
@@ -556,14 +556,12 @@ function AppContent() {
       {markMode && (
         <section className="mark-banner">
           <p>
-            <b>Mark &amp; sweep</b> — unmarked data is <b>deleted permanently</b> after{' '}
-            <b>EOD Friday Aug&nbsp;28</b> (<b>{sweepDaysLeft()} day{sweepDaysLeft() === 1 ? '' : 's'} left</b>).
-            Drill to a prefix and mark it with the controls above the map, or click a cell to pin it and mark from
-            there. <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-keep)' }} />keep</span>{' '}
-            <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-klc)' }} />keep last checkpoint</span>{' '}
-            <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-del)' }} />sweep</span>{' '}
-            — the most recent mark covering a prefix wins: mark a child <em>after</em> its parent to
-            carve an exception; a broad mark repaints older deeper ones (you'll be asked to confirm).
+            <b>Mark &amp; sweep</b> — review storage and mark what to <b>keep</b>; anything left
+            unmarked is <b>swept</b> (deleted) once the review window closes. Drill to a prefix and
+            mark it with the controls above the map, or click a cell to pin it and mark from there.
+            Marks are reversible until the sweep — the most recent mark covering a prefix wins: mark a
+            child <em>after</em> its parent to carve an exception; a broad mark repaints older deeper
+            ones (you'll be asked to confirm).
             {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}
             {marksQ.error && <span className="err"> marks unavailable: {marksQ.error.message}</span>}
           </p>
@@ -571,6 +569,17 @@ function AppContent() {
             {backlogOpen ? '▾ Hide' : '▸ Show'} review backlog
           </button>
         </section>
+      )}
+
+      {backlogActive && shownTree && (
+        <MarkTabs root={shownTree} idx={markIdx} myUser={myUser}
+          viewUser={viewUser} setViewUser={setMuP}
+          users={mkUsers}
+          tab={markTab} setTab={setMarkTab}
+          scoped={scoped} setScoped={setScoped}
+          openPath={openPath}
+          hasAtime={!!readRange}
+        />
       )}
 
       <section className="prose">
@@ -660,17 +669,6 @@ function AppContent() {
         </div>
       )}
 
-      {backlogActive && shownTree && (
-        <MarkTabs root={shownTree} idx={markIdx} myUser={myUser}
-          viewUser={viewUser} setViewUser={setMuP}
-          users={mkUsers}
-          tab={markTab} setTab={setMarkTab}
-          scoped={scoped} setScoped={setScoped}
-          openPath={openPath}
-          hasAtime={!!readRange}
-        />
-      )}
-
       {mapTree ? (
         <>
           {/* Remount per store: the treemap's caches are tied to the tree it
@@ -731,34 +729,48 @@ function AppContent() {
         {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={ageMode} userIdx={userIdx} />}
       </section>
 
+      {meta && store.prices && (() => {
+        // Class mix of the *drilled* node (each node carries descendant-inclusive
+        // `cb`), so this tracks the treemap instead of always showing fleet totals.
+        const node = mapPath ? mapPath[mapPath.length - 1] : tree
+        if (!node) return null
+        const mix = classMix(node)
+        const total = node.b || 1
+        const scope = mapPath && mapPath.length > 1 ? mapPath.slice(1).map(n => n.n).join('/') : 'all buckets'
+        return (
+          <section>
+            <h2>Storage classes</h2>
+            <p className="sub">
+              Class mix + list-price estimate for <code>{scope}</code> — updates as you drill the treemap.
+            </p>
+            <table className="classes">
+              <thead>
+                <tr><th>class</th><th>bytes</th><th>est. $/mo (list, US)</th></tr>
+              </thead>
+              <tbody>
+                {Object.entries(mix)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([c, b]) => (
+                    <tr key={c}>
+                      <td>
+                        <Tooltip placement="right" content={<>${CLASS_PRICE_US[c] ?? 0.02}/GiB·mo · {((100 * b) / total).toFixed(1)}% of these bytes</>}>
+                          <span className="dotted">{CLASS_NAMES[c] ?? c}</span>
+                        </Tooltip>
+                      </td>
+                      <td>{fmtBytes(b)}</td>
+                      <td>${Math.round((b / 1024 ** 3) * (CLASS_PRICE_US[c] ?? 0.02)).toLocaleString()}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </section>
+        )
+      })()}
+
+      {/* Static attribution reference — how ownership is inferred + the rule tables.
+          Reference material, so it sits last rather than sandwiched mid-page. */}
       {rules && tree?.tm && meta?.users && (
         <AttributionRules rules={rules} tree={tree} users={meta.users} />
-      )}
-
-      {meta && store.prices && (
-        <section>
-          <h2>Storage classes</h2>
-          <table className="classes">
-            <thead>
-              <tr><th>class</th><th>bytes</th><th>est. $/mo (list, US)</th></tr>
-            </thead>
-            <tbody>
-              {Object.entries(meta.class_bytes)
-                .sort((a, b) => b[1] - a[1])
-                .map(([c, b]) => (
-                  <tr key={c}>
-                    <td>
-                      <Tooltip placement="right" content={<>${CLASS_PRICE_US[c] ?? 0.02}/GiB·mo · {((100 * b) / meta.total_bytes).toFixed(1)}% of scanned bytes</>}>
-                        <span className="dotted">{CLASS_NAMES[c] ?? c}</span>
-                      </Tooltip>
-                    </td>
-                    <td>{fmtBytes(b)}</td>
-                    <td>${Math.round((b / 1024 ** 3) * (CLASS_PRICE_US[c] ?? 0.02)).toLocaleString()}</td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </section>
       )}
 
       <SpeedDial actions={[
