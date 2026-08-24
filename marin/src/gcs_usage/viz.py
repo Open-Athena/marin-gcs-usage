@@ -135,7 +135,7 @@ def write_webdata(
 
     fp_dir = "CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END"
     fp = f"CASE WHEN ({fp_dir}) = '' THEN bucket ELSE bucket || '/' || ({fp_dir}) END"
-    attr_join = "LEFT JOIN dir_attr t ON t.bucket = o.bucket AND t.dir = o.dir" if attr else ""
+    attr_join_s = "LEFT JOIN dir_attr t ON t.bucket = s.bucket AND t.dir = s.dir" if attr else ""
     team_sel = "coalesce(t.team, 'unattributed')" if attr else "'unattributed'"
     user_sel = 't."user"' if attr else "CAST(NULL AS VARCHAR)"
     # Aggregate objects to their *immediate* dir once (attributed, with class /
@@ -150,20 +150,21 @@ def write_webdata(
           SELECT bucket, {fp_dir} AS dir, size_bytes, created, storage_class_id, {fp} AS fp
           FROM {src}
         ),
-        pathed AS (
-          SELECT o.size_bytes, o.created, o.storage_class_id, o.fp,
-            {team_sel} AS team, {user_sel} AS usr
-          FROM obj o {attr_join}
+        dir_stats AS (
+          -- collapse 595M objects to a few million dirs FIRST; attribution is
+          -- then a join over dirs, not over every object.
+          SELECT bucket, dir, fp,
+            sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
+            sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+            sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
+            sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
+            sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
+            sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
+          FROM obj GROUP BY bucket, dir, fp
         )
-        SELECT fp, team, usr,
-          sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
-          sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-          sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
-          sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
-          sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
-          sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4,
-          string_split(fp, '/') AS segs
-        FROM pathed GROUP BY fp, team, usr
+        SELECT s.fp, {team_sel} AS team, {user_sel} AS usr,
+          s.b, s.o, s.wts, s.wb, s.c2, s.c3, s.c4, string_split(s.fp, '/') AS segs
+        FROM dir_stats s {attr_join_s}
         """
     )
     total_b, total_o = con.execute("SELECT coalesce(sum(b), 0)::BIGINT, coalesce(sum(o), 0)::BIGINT FROM dir_agg").fetchone()
