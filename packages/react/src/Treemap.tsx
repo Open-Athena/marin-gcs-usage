@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import { DEFAULT_PALETTE } from './colors'
 import { foldSmall, squarify } from './squarify'
 import { useHoverPin } from './useHoverPin'
 
@@ -29,10 +30,54 @@ import { useHoverPin } from './useHoverPin'
 
 export interface TreemapProps<T> {
   root: T
+  /**
+   * Start drilled to this path (must begin with `root`). Applied on mount and
+   * whenever `root`'s identity changes — crumbs still show the full ancestry,
+   * so a store with one meaningful top-level container can open inside it.
+   */
+  initialPath?: T[]
+  /**
+   * Controlled drill path (must begin with `root`). When given, the component
+   * renders this path and reports every drill/crumb/Backspace gesture through
+   * `onPathChange` instead of keeping its own state — so a consumer can put
+   * the path in the URL, or command a drill from outside (a table row, a
+   * search hit). Mutually exclusive with `initialPath`.
+   */
+  path?: T[]
   /** Extract this node's *own* aggregated size (bytes, count, whatever). */
   getSize: (n: T) => number
   /** Extract children; return `undefined` or `[]` for leaves. */
   getChildren: (n: T) => T[] | undefined
+  /**
+   * Whether this node has children *that may not be loaded yet*. Only
+   * consulted alongside `loadChildren`; without it, "has children" is just
+   * `getChildren(n)?.length`.
+   *
+   * This is the distinction a lazily-loaded tree needs and `getChildren`
+   * can't express: no children in hand means "leaf" to a fully-materialized
+   * tree but "not fetched yet" to a paged one. A server that answers with a
+   * bounded depth (disk-tree's `/api/scan?uri=…&depth=N`) knows the
+   * difference and usually says so — `n_children > 0`, `kind === 'dir'`.
+   */
+  hasChildren?: (n: T) => boolean
+  /**
+   * Fetch a node's children on demand. Called when the *viewed* node's
+   * children aren't in hand and `hasChildren` says it has some — one fetch
+   * per drill, never per rendered cell, so drilling costs one request rather
+   * than fanning out over everything on screen.
+   *
+   * Resolved children are cached inside the component (keyed by `getId`) for
+   * as long as `root` is unchanged; `onChildrenLoaded` lets a consumer that
+   * owns its own tree persist them too. Rejections surface through
+   * `renderLoadError` with a retry.
+   */
+  loadChildren?: (n: T, path: T[]) => Promise<T[]>
+  /** Called after `loadChildren` resolves, before the cells render. */
+  onChildrenLoaded?: (n: T, path: T[], children: T[]) => void
+  /** Map-area content while the viewed node's children load. Default: "Loading…". */
+  renderLoading?: (n: T, path: T[]) => ReactNode
+  /** Map-area content when a load rejects. Default: the message + a Retry button. */
+  renderLoadError?: (n: T, path: T[], error: Error, retry: () => void) => ReactNode
   /** Human label shown in the cell (and in breadcrumbs). */
   getLabel: (n: T) => string
   /** Stable key for this node — defaults to the joined path label. */
@@ -52,6 +97,20 @@ export interface TreemapProps<T> {
    * colors, and leaf-only treatments (hatch, highlight-dim) key off it.
    */
   colorForCell?: (n: T, path: T[], depth: number, ctx: CellCtx) => CellStyle | null | undefined
+  /**
+   * Post-resolution style transform, applied to whatever `colorForCell` or
+   * the default palette produced — so lenses (e.g. the age fade in
+   * `colors.ts`) *stack* on any color mode instead of replacing it. Return
+   * null/undefined to leave the resolved style untouched. Not called for
+   * synthetic folded tiles.
+   */
+  lens?: (n: T, path: T[], depth: number, ctx: CellCtx, style: CellStyle) => CellStyle | null | undefined
+  /**
+   * Collapse single-child wrapper chains into one cell labeled `a/…/z` (the
+   * cell is the deepest node; the chain is recorded in the drill path).
+   * Off by default — chains carry real information in some trees.
+   */
+  collapseChains?: boolean
   /** Optional extra content rendered inside the cell after the label. */
   renderCellExtra?: (n: T, path: T[], dims: CellDims) => ReactNode
   /** Tooltip body; return null to suppress the tooltip. */
@@ -102,6 +161,18 @@ export interface TreemapProps<T> {
   className?: string
   /** Style overrides on the map area. */
   mapStyle?: CSSProperties
+  /**
+   * Opacity applied to every nested (depth > 0) cell. Default: 0.82.
+   *
+   * Cells are nested DOM nodes, so this *compounds*: at the default a depth-5
+   * cell renders at 0.92 × 0.82⁴ ≈ 0.42, which reads as progressively washed
+   * out the deeper you go. That is the intended "recede into the background"
+   * effect for shallow trees, but a deep one loses its colors entirely — pass
+   * `1` to keep saturation constant and lean on borders for structure.
+   */
+  depthFade?: number
+  /** Opacity of the outermost (depth 0) cells. Default: 0.92. */
+  rootFade?: number
 }
 
 export interface CellStyle {
@@ -126,16 +197,7 @@ export interface CellCtx extends CellDims {
   hasKids: boolean
 }
 
-const DEFAULT_SLOTS = [
-  'hsl(210 70% 55%)',
-  'hsl(30 80% 55%)',
-  'hsl(160 55% 45%)',
-  'hsl(350 65% 55%)',
-  'hsl(280 55% 55%)',
-  'hsl(50 75% 55%)',
-  'hsl(180 50% 45%)',
-  'hsl(120 45% 50%)',
-]
+const DEFAULT_SLOTS = DEFAULT_PALETTE
 
 const defaultFormat = (n: number) => n.toLocaleString('en-US')
 
@@ -162,14 +224,39 @@ function isFolded<T>(n: T | FoldedNode<T>): n is FoldedNode<T> {
   return typeof n === 'object' && n !== null && (n as FoldedNode<T>).__folded === true
 }
 
+/** Centered overlay for the lazy-load loading/error states. */
+const STATUS_STYLE: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 2,
+  textAlign: 'center',
+  padding: 12,
+  color: 'var(--dt-treemap-ink, #d0d0d8)',
+  background: 'var(--dt-treemap-status-bg, rgba(0,0,0,0.35))',
+  pointerEvents: 'auto',
+}
+
 export function Treemap<T>({
   root,
+  initialPath,
+  path: pathProp,
   getSize,
   getChildren,
+  hasChildren,
+  loadChildren,
+  onChildrenLoaded,
+  renderLoading,
+  renderLoadError,
   getLabel,
   getId,
   formatSize = defaultFormat,
+  collapseChains = false,
   colorForCell,
+  lens,
   renderCellExtra,
   renderTooltip,
   renderRollup,
@@ -186,8 +273,12 @@ export function Treemap<T>({
   showLabels = true,
   className,
   mapStyle,
+  depthFade = 0.82,
+  rootFade = 0.92,
 }: TreemapProps<T>) {
-  const [path, setPath] = useState<T[]>([root])
+  const [pathState, setPathState] = useState<T[]>(initialPath?.[0] === root ? initialPath : [root])
+  const controlled = pathProp !== undefined
+  const path = controlled && pathProp[0] === root ? pathProp : pathState
   const [tip, setTip] = useState<TipState<T> | null>(null)
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const mapRef = useRef<HTMLDivElement>(null)
@@ -202,22 +293,48 @@ export function Treemap<T>({
 
   const node = path[path.length - 1]
 
-  // Reset drill path when root changes.
+  // Every drill/crumb/Backspace gesture routes through here: controlled mode
+  // only reports (the consumer renders the new `path` prop back); uncontrolled
+  // keeps its own state and reports from the effect below, so the mount and
+  // root-reset paths — which no gesture produces — report too.
+  const go = useCallback(
+    (p: T[]) => {
+      if (!controlled) setPathState(p)
+      setTip(null)
+      if (controlled) onPathChange?.(p)
+    },
+    [controlled, onPathChange],
+  )
+
+  // Reset drill path when root changes (respecting `initialPath` when it
+  // belongs to the new root). Controlled mode skips this — the consumer's
+  // `path` prop is recomputed against the new root by the consumer. Skipped on
+  // mount too: `useState` already seeded `path`, and re-seeding it here would
+  // report a second, identical `[root]` through the effect below.
+  const mountedRoot = useRef(root)
   useEffect(() => {
-    setPath([root])
+    if (controlled || mountedRoot.current === root) return
+    mountedRoot.current = root
+    setPathState(initialPath?.[0] === root ? initialPath : [root])
     setTip(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath applies per-root, not on its own changes
   }, [root])
 
-  // Notify consumer on path change.
+  // Report the path this component owns: mount (incl. `initialPath`), drills,
+  // and the root-change reset. Controlled mode reports from `go` instead, where
+  // no local state changes and this effect would never fire.
   useEffect(() => {
-    onPathChange?.(path)
-    // path is a fresh array on every drill — safe to depend on it
-  }, [path, onPathChange])
+    if (!controlled) onPathChange?.(path)
+  }, [controlled, path, onPathChange])
 
-  // Track container size via ResizeObserver.
-  useEffect(() => {
+  // Track container size: measure synchronously, then observe for changes.
+  // The initial ResizeObserver delivery is not guaranteed to arrive — in a
+  // hidden/background tab it never did, leaving a correctly-sized container
+  // rendering zero cells until something resized it.
+  useLayoutEffect(() => {
     const el = mapRef.current
     if (!el) return
+    setSize({ w: el.clientWidth, h: el.clientHeight })
     const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }))
     ro.observe(el)
     return () => ro.disconnect()
@@ -226,25 +343,85 @@ export function Treemap<T>({
   // Backspace/Escape pops the drill stack.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
       if ((e.key === 'Backspace' || e.key === 'Escape') && path.length > 1) {
-        setPath(p => p.slice(0, -1))
-        setTip(null)
+        go(path.slice(0, -1))
       }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [path.length])
-
-  // Categorical color slots by top-level index (used when no colorForCell is given).
-  const topLevelSlot = useMemo(() => {
-    const kids = getChildren(root) ?? []
-    return new Map(kids.map((k, i) => [getLabel(k), DEFAULT_SLOTS[i % DEFAULT_SLOTS.length]]))
-  }, [root, getChildren, getLabel])
+  }, [path, go])
 
   const idFor = useCallback(
     (n: T, p: T[]) => (getId ? getId(n, p) : defaultId(n, p, getLabel)),
     [getId, getLabel],
   )
+
+  // Lazily-fetched children, keyed by node id. Dropped when `root` changes,
+  // since a new root is a different tree (a different scan, in disk-tree's
+  // case) and its ids mean nothing here.
+  const [fetched, setFetched] = useState<Map<string, T[]>>(() => new Map())
+  const [pending, setPending] = useState<string | null>(null)
+  const [failed, setFailed] = useState<{ key: string; error: Error } | null>(null)
+  const [retries, setRetries] = useState(0)
+  useEffect(() => {
+    setFetched(new Map())
+    setPending(null)
+    setFailed(null)
+  }, [root])
+
+  const childrenOf = useCallback(
+    (n: T, p: T[]): T[] | undefined => getChildren(n) ?? fetched.get(idFor(n, p)),
+    [getChildren, fetched, idFor],
+  )
+  /** Drillable: has children in hand, or says it has some we can fetch. */
+  const expandable = useCallback(
+    (n: T, p: T[]): boolean =>
+      (childrenOf(n, p)?.length ?? 0) > 0 || (!!loadChildren && !!hasChildren?.(n)),
+    [childrenOf, loadChildren, hasChildren],
+  )
+
+  // One fetch per drill: only the *viewed* node loads, never the cells it
+  // renders. Nested tiles come from the depth the server already returned.
+  const viewKey = idFor(node, path)
+  const viewNeedsLoad =
+    !!loadChildren && !getChildren(node)?.length && !fetched.has(viewKey) && !!hasChildren?.(node)
+  useEffect(() => {
+    if (!viewNeedsLoad || !loadChildren) return
+    let live = true
+    setPending(viewKey)
+    setFailed(null)
+    loadChildren(node, path).then(
+      kids => {
+        if (!live) return
+        // Cache even a superseded load — the data is valid, and it spares a
+        // refetch if the user drills back in.
+        setFetched(m => (m.has(viewKey) ? m : new Map(m).set(viewKey, kids)))
+        setPending(p => (p === viewKey ? null : p))
+        onChildrenLoaded?.(node, path, kids)
+      },
+      (e: unknown) => {
+        if (!live) return
+        setPending(p => (p === viewKey ? null : p))
+        setFailed({ key: viewKey, error: e instanceof Error ? e : new Error(String(e)) })
+      },
+    )
+    return () => { live = false }
+    // `node`/`path` are pinned by `viewKey`; `retries` re-runs a failed load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey, viewNeedsLoad, retries])
+
+  const retry = useCallback(() => {
+    setFailed(null)
+    setRetries(r => r + 1)
+  }, [])
+
+  // Categorical color slots by top-level index (used when no colorForCell is given).
+  const topLevelSlot = useMemo(() => {
+    const kids = childrenOf(root, [root]) ?? []
+    return new Map(kids.map((k, i) => [getLabel(k), DEFAULT_SLOTS[i % DEFAULT_SLOTS.length]]))
+  }, [root, childrenOf, getLabel])
 
   // Fold small items at any level: consumer `mergeSmall` builds a first-class
   // T stand-in; the default builds a synthetic FoldedNode.
@@ -276,8 +453,8 @@ export function Treemap<T>({
 
   // Foldable children of the currently-viewed node.
   const children = useMemo(
-    () => fold((getChildren(node) ?? []).slice(), size.w, size.h),
-    [node, size, getChildren, fold],
+    () => fold((childrenOf(node, path) ?? []).slice(), size.w, size.h),
+    [node, path, size, childrenOf, fold],
   )
 
   const rects = useMemo(
@@ -291,15 +468,45 @@ export function Treemap<T>({
   )
 
   const cell = (
-    kid: T | FoldedNode<T>,
-    kidPath: T[],
+    kid0: T | FoldedNode<T>,
+    kidPath0: T[],
     r: { x: number; y: number; w: number; h: number },
     depth: number,
   ): ReactNode => {
-    const folded = isFolded(kid)
-    const kidSize = folded ? kid.size : getSize(kid)
-    const kidLabel = folded ? `(+${kid.count})` : getLabel(kid)
-    const kidChildren = folded ? undefined : getChildren(kid)
+    const folded = isFolded(kid0)
+    // Single-child wrapper chains render as ONE cell labeled `a/…/z`: each
+    // wrapper level otherwise costs a title strip + gutter, so a deep
+    // single-child spine eats area and reads as noise (five nested boxes
+    // all holding the same bytes). The cell *is* the deepest node — its
+    // children, drill target, and id — with the chain recorded in the path,
+    // so crumbs and tooltips still show every level.
+    const chained = collapseChains && !folded
+      ? (() => {
+          let cur = kid0 as T
+          let p = kidPath0
+          const labels = [getLabel(cur)]
+          for (;;) {
+            const only = childrenOf(cur, p)
+            if (!only || only.length !== 1) break
+            cur = only[0]
+            p = [...p, cur]
+            labels.push(getLabel(cur))
+          }
+          return labels.length > 1 ? { node: cur, path: p, labels } : null
+        })()
+      : null
+    const kid: T | FoldedNode<T> = chained ? chained.node : kid0
+    const kidPath = chained ? chained.path : kidPath0
+    const chainLabels = chained?.labels ?? null
+    const kidSize = isFolded(kid) ? kid.size : getSize(kid)
+    const kidLabel = folded
+      ? `(+${(kid as FoldedNode<T>).count})`
+      : chainLabels
+        ? (chainLabels.length > 3 ? `${chainLabels[0]}/…/${chainLabels[chainLabels.length - 1]}` : chainLabels.join('/'))
+        : getLabel(kid as T)
+    const kidChildren = folded ? undefined : childrenOf(kid as T, kidPath)
+    // Drillable even with nothing in hand, when a loader can go get it.
+    const kidDrillable = !folded && expandable(kid as T, kidPath)
     const showLbl = showLabels && r.w > 36 && r.h > 13
     const kw = r.w - 6
     const kh = r.h - (showLbl ? 23 : 6)
@@ -319,7 +526,7 @@ export function Treemap<T>({
     // the rest.
     const explicit = folded
       ? null
-      : colorForCell?.(kid, kidPath, depth, { w: r.w, h: r.h, hasKids: kids.length > 0 })
+      : colorForCell?.(kid as T, kidPath, depth, { w: r.w, h: r.h, hasKids: kids.length > 0 })
     let style: CellStyle
     if (explicit) {
       style = explicit
@@ -332,29 +539,31 @@ export function Treemap<T>({
         ? { bg: 'var(--dt-treemap-container-bg, #202024)', ink: 'var(--dt-treemap-ink, #d0d0d8)' }
         : { bg: slot ?? DEFAULT_SLOTS[0], ink: '#fff' }
     }
+    if (lens && !folded) {
+      style = lens(kid as T, kidPath, depth, { w: r.w, h: r.h, hasKids: kids.length > 0 }, style) ?? style
+    }
 
     const cellKey = folded
       ? `__folded_${depth}_${r.x}_${r.y}`
-      : idFor(kid, kidPath)
+      : idFor(kid as T, kidPath)
 
     const showTip = (e: React.MouseEvent) => {
       e.stopPropagation()
       if (folded) return
       pin.hover(cellKey)
-      setTip({ x: e.clientX, y: e.clientY, key: cellKey, node: kid, path: kidPath })
+      setTip({ x: e.clientX, y: e.clientY, key: cellKey, node: kid as T, path: kidPath })
     }
     const onClick = (e: React.MouseEvent) => {
       e.stopPropagation()
       if (folded) return
-      if (onCellClick && onCellClick(kid, kidPath, e)) return
-      if (kidChildren && kidChildren.length > 0) {
-        setTip(null)
+      if (onCellClick && onCellClick(kid as T, kidPath, e)) return
+      if (kidDrillable) {
         pin.clearPin()
-        setPath(kidPath)
+        go(kidPath)
       } else {
         pin.togglePin(cellKey)
         setPinnedTip(p =>
-          p?.key === cellKey ? null : { x: e.clientX, y: e.clientY, key: cellKey, node: kid, path: kidPath },
+          p?.key === cellKey ? null : { x: e.clientX, y: e.clientY, key: cellKey, node: kid as T, path: kidPath },
         )
       }
     }
@@ -363,7 +572,7 @@ export function Treemap<T>({
     return (
       <div
         key={cellKey}
-        className={'dt-treemap-cell' + (kidChildren && kidChildren.length ? ' branch' : '') + (dust ? ' dust' : '')}
+        className={'dt-treemap-cell' + (kidDrillable ? ' branch' : '') + (dust ? ' dust' : '') + (chainLabels ? ' chain' : '')}
         style={{
           position: 'absolute',
           left: r.x,
@@ -372,12 +581,12 @@ export function Treemap<T>({
           height: Math.max(0, r.h - (dust ? 1 : 2)),
           background: style.bg,
           color: style.ink,
-          opacity: (depth > 0 ? 0.82 : 0.92) * (style.opacity ?? 1),
+          opacity: (depth > 0 ? depthFade : rootFade) * (style.opacity ?? 1),
           ...(style.hatch && { backgroundImage: style.hatch }),
           borderRadius: dust ? 1.5 : 3,
           overflow: 'hidden',
           boxSizing: 'border-box',
-          cursor: kidChildren && kidChildren.length ? 'pointer' : 'default',
+          cursor: kidDrillable ? 'pointer' : 'default',
         }}
         tabIndex={folded ? -1 : 0}
         // Leaf cells hover their whole body; branch cells hover only their
@@ -399,27 +608,48 @@ export function Treemap<T>({
                 ? 'var(--dt-treemap-lbl-fs-sm, 0.72rem)'
                 : 'var(--dt-treemap-lbl-fs, 0.85rem)',
               lineHeight: 1.2,
-              whiteSpace: 'nowrap',
+              // Flex, not one nowrap run: a long name ellipsizes while the
+              // size span keeps its width, instead of pushing it out of view.
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 6,
               overflow: 'hidden',
-              textOverflow: 'ellipsis',
               // branch title bar is the parent's own hover target (leaf labels
               // stay pointer-events:none so the body handles them)
               pointerEvents: kids.length > 0 ? 'auto' : 'none',
             }}
             onMouseMove={kids.length > 0 ? showTip : undefined}
           >
-            {kidLabel}
+            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{kidLabel}</span>
             {r.w > 90 && (
-              <span style={{ opacity: 0.75, marginLeft: 6 }}>
+              <span className="sz" style={{ opacity: 0.75, whiteSpace: 'nowrap', flex: 'none' }}>
                 {formatSize(kidSize)}
                 {!folded && renderCellSubtitle && (
-                  <span style={{ marginLeft: 4 }}>{renderCellSubtitle(kid, kidPath)}</span>
+                  <span style={{ marginLeft: 4 }}>{renderCellSubtitle(kid as T, kidPath)}</span>
                 )}
               </span>
             )}
           </div>
         )}
-        {!folded && renderCellExtra && renderCellExtra(kid, kidPath, { w: r.w, h: r.h })}
+        {/* Narrow cells drop the inline size; give it a second line when the
+            cell is tall enough and its body isn't rendering child tiles. */}
+        {showLbl && r.w <= 90 && kids.length === 0 && r.h > 34 && (
+          <div
+            className="dt-treemap-lbl2"
+            style={{
+              padding: '0 4px',
+              fontSize: 'var(--dt-treemap-lbl-fs-sm, 0.72rem)',
+              lineHeight: 1.2,
+              opacity: 0.75,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              pointerEvents: 'none',
+            }}
+          >
+            {formatSize(kidSize)}
+          </div>
+        )}
+        {!folded && renderCellExtra && renderCellExtra(kid as T, kidPath, { w: r.w, h: r.h })}
         {kids.length > 0 && kidChildren && (
           <div
             className="dt-treemap-inner"
@@ -476,7 +706,7 @@ export function Treemap<T>({
                   tabIndex={0}
                   role="link"
                   style={{ cursor: 'pointer', textDecoration: 'underline' }}
-                  onClick={() => setPath(path.slice(0, i + 1))}
+                  onClick={() => go(path.slice(0, i + 1))}
                 >
                   {getLabel(n)}
                 </a>
@@ -517,6 +747,22 @@ export function Treemap<T>({
         }}
       >
         {rects.filter(r => r.w >= 3 && r.h >= 3).map(r => cell(r.it, isFolded(r.it) ? path : [...path, r.it as T], r, 0))}
+        {failed?.key === viewKey ? (
+          <div className="dt-treemap-status error" style={STATUS_STYLE}>
+            {renderLoadError
+              ? renderLoadError(node, path, failed.error, retry)
+              : (
+                <>
+                  <div>Couldn’t load {getLabel(node)}: {failed.error.message}</div>
+                  <button onClick={retry} style={{ marginTop: 6, cursor: 'pointer' }}>Retry</button>
+                </>
+              )}
+          </div>
+        ) : pending === viewKey ? (
+          <div className="dt-treemap-status loading" style={STATUS_STYLE}>
+            {renderLoading ? renderLoading(node, path) : 'Loading…'}
+          </div>
+        ) : null}
       </div>
       {(() => {
         const f = renderFooter?.(node, path)
