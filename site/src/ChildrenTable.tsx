@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react'
+import { useCanMark } from './auth'
 import { epochDaysToDate, epochDaysToMonth } from './colors'
-import { ACTION_COLORS } from './MarkControls'
-import type { MarkIndex } from './marks'
-import { ACTION_LABELS } from './marks'
+import { ACTION_COLORS, KLC_TIP } from './MarkControls'
+import type { MarkAction, MarkIndex } from './marks'
+import { ACTION_LABELS, useMarkMutations } from './marks'
+import { looksCkpt } from './sweep'
+import { Tooltip } from './Tooltip'
 import type { TreeNode } from './types'
 import { domTeamSeg, fmtN, groupLabel } from './types'
 import { useUnits } from './units'
@@ -24,8 +27,12 @@ export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
   onOpen: (segs: string[]) => void
 }) {
   const { fmtBytes } = useUnits()
+  const { put, claim } = useMarkMutations()
+  const canMark = useCanMark()
   const [sort, setSort] = useState<{ k: SortKey; asc: boolean }>({ k: 'b', asc: false })
   const [limit, setLimit] = useState(PAGE)
+  const showActions = !!markIdx && canMark
+  const mark = (uri: string, action: MarkAction | null) => put.mutate({ prefix: uri + '/', action })
 
   const kids = useMemo(() => {
     const ks = (node.c ?? []).slice()
@@ -68,6 +75,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
             <th>group</th>
             <th>top user</th>
             {markIdx && <th>state</th>}
+            {showActions && <th>actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -106,6 +114,23 @@ export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
                       </span>
                     ) : synthetic ? null : (
                       <span className="chip unmarked"><span className="sw" style={{ background: 'var(--mk-del)' }} />unmarked</span>
+                    )}
+                  </td>
+                )}
+                {showActions && (
+                  <td className="actions">
+                    {synthetic ? null : (
+                      <>
+                        <button type="button" className={mk?.own && mk.mark?.action === 'keep' ? 'on' : ''} onClick={() => mark(uri, 'keep')}>keep</button>
+                        {looksCkpt(k, uri) && (
+                          <Tooltip content={KLC_TIP}>
+                            <button type="button" className={mk?.own && mk.mark?.action === 'keep_last_ckpt' ? 'on' : ''} onClick={() => mark(uri, 'keep_last_ckpt')}>last ckpt</button>
+                          </Tooltip>
+                        )}
+                        <button type="button" className={mk?.own && mk.mark?.action === 'sweep' ? 'on' : ''} onClick={() => mark(uri, 'sweep')}>delete</button>
+                        {mk?.own && <button type="button" onClick={() => mark(uri, null)}>clear</button>}
+                        {!markIdx!.claimOf(uri) && <button type="button" onClick={() => claim.mutate({ prefix: uri + '/' })}>claim</button>}
+                      </>
                     )}
                   </td>
                 )}
