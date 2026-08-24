@@ -1,20 +1,21 @@
 """One arbitrary-depth tree builder for the site's layer-3 JSON.
 
 Both the GCS (`marin/gcs_usage/viz.py`) and CoreWeave (`job/cw-webdata.py`)
-paths produce the same `{n, b, o, c?, …}` `TreeNode`; they differed only in
-that CW linked rolled-up dir rows parent→child (any depth) while GCS flattened
-to four fixed path components. That flattening was a cardinality hack for
-aggregating a 595M-row object listing, never a design choice — see
-`specs/tree-builder-unification.md`. This module is CW's linker, generalized to
-carry GCS's per-node fields and to mark folded nodes so the client can expand
-them.
+paths produce the same `{n, b, o, c?, …}` `TreeNode`; they differed only in that
+CW linked rolled-up dir rows parent→child (any depth) while GCS flattened to
+four fixed path components — a cardinality hack for a 595M-row object listing,
+never a design choice (`specs/tree-builder-unification.md`). This is CW's
+linker, generalized to carry GCS's per-node fields and to mark folds.
 
-Input: **rolled-up dir rows**, one per directory, whose `b`/`o` (and any
-`extra` fields) are already **descendant-inclusive**. A node's children are the
-dir rows one path segment deeper; bytes the kept children don't account for
-(direct files + sub-floor dirs) become one `(other)` node carrying a fold
-count. The floor is a fraction of the total, so it scales with the fleet
-instead of a constant that a 10× growth silently turns into "mostly (other)".
+Input: **rolled-up dir rows**, one per directory, whose `b`/`o` and additive
+fields (`add`) are already **descendant-inclusive**. Additive fields are kept
+in that form — sums and weighted-sums, never pre-averaged — precisely so a
+folded `(other)` node can be computed by *subtracting* the kept children from
+their parent. That subtraction is what makes `(other)` correct in the presence
+of direct files: `(other)` = parent − Σ(kept children) = direct files + folded
+subdirs, and its attribution/class/date follow the same subtraction. Summing
+the folded children instead would silently drop the parent's own direct files.
+Display fields (`d`, `cb`, `tm`, `sh`, `us`) are derived from `add` last.
 """
 
 from __future__ import annotations
@@ -25,18 +26,23 @@ from dataclasses import dataclass, field
 #: Root sentinel — the path of the top dir row (CW uses "."; either works).
 ROOT_KEYS = ("", ".")
 
+#: Additive map fields on `add`: class bytes, team bytes, user bytes, shared
+#: (team bytes with no per-user owner). Summed on rollup, subtracted for folds.
+_MAPS = ("cb", "tm", "ub", "sh")
+#: Additive scalars: byte-weighted mtime numerator/denominator (mean = wts/wb).
+_SCALARS = ("wts", "wb")
+
 
 @dataclass
 class DirRow:
-    """One rolled-up directory. ``extra`` holds already-summarized, additive
-    per-node fields (class bytes ``cb``, weighted-mtime ``wts``/``wb``, and
-    attribution ``tm``/``sh``/``us``) that :func:`build_tree` carries onto the
-    node and re-combines for ``(other)`` fold nodes."""
+    """One rolled-up directory. ``add`` carries descendant-inclusive *additive*
+    quantities — any of ``cb``/``tm``/``ub``/``sh`` (dict ``{key: bytes}``) and
+    ``wts``/``wb`` (numbers) — from which display fields are derived."""
 
     path: str
     b: int
     o: int
-    extra: dict = field(default_factory=dict)
+    add: dict = field(default_factory=dict)
 
 
 def _seg(path: str) -> str:
@@ -47,76 +53,106 @@ def _parent(path: str) -> str:
     return path.rsplit("/", 1)[0] if "/" in path else "."
 
 
-def _combine(nodes: list[dict]) -> dict:
-    """Merge the additive optional fields of several nodes into one — the math
-    the ``(other)`` fold and any re-summary needs. Bytes/objects are summed by
-    the caller; this handles the maps and the byte-weighted mean date."""
+def _sum_add(rows: list[dict]) -> dict:
     out: dict = {}
-    # Byte-weighted mean created day (`d`): re-weight children's means by bytes.
-    dated = [(n["d"], n["b"]) for n in nodes if "d" in n and n["b"]]
-    if dated:
-        out["d"] = int(sum(d * b for d, b in dated) / sum(b for _, b in dated))
-    for key in ("cb", "tm", "sh"):
+    for key in _MAPS:
         acc: dict[str, int] = defaultdict(int)
-        for n in nodes:
-            for k, v in (n.get(key) or {}).items():
+        for r in rows:
+            for k, v in (r.get(key) or {}).items():
                 acc[k] += v
         if acc:
-            out[key] = dict(sorted(acc.items(), key=lambda kv: -kv[1]))
-    us: dict[str, int] = defaultdict(int)
-    for n in nodes:
-        for u, v in n.get("us", []):
-            us[u] += v
-    if us:
-        out["us"] = [[u, v] for u, v in sorted(us.items(), key=lambda kv: -kv[1])]
+            out[key] = dict(acc)
+    for key in _SCALARS:
+        s = sum(r.get(key) or 0 for r in rows)
+        if s:
+            out[key] = s
+    return out
+
+
+def _sub_add(parent: dict, kept: list[dict]) -> dict:
+    """``parent`` additive minus the kept children's — the ``(other)`` residual
+    (direct files + folded subdirs). Non-positive entries drop out."""
+    ksum = _sum_add(kept)
+    out: dict = {}
+    for key in _MAPS:
+        acc = {}
+        sub = ksum.get(key, {})
+        for k, v in (parent.get(key) or {}).items():
+            r = v - sub.get(k, 0)
+            if r > 0:
+                acc[k] = r
+        if acc:
+            out[key] = acc
+    for key in _SCALARS:
+        r = (parent.get(key) or 0) - ksum.get(key, 0)
+        if r > 0:
+            out[key] = r
+    return out
+
+
+def _display(add: dict) -> dict:
+    """Additive fields → the site's display fields, most-bytes-first."""
+    out: dict = {}
+    wb = add.get("wb") or 0
+    if wb:
+        out["d"] = int((add.get("wts") or 0) / wb / 86400)
+    if add.get("cb"):
+        out["cb"] = dict(sorted(add["cb"].items(), key=lambda kv: -kv[1]))
+    if add.get("tm"):
+        out["tm"] = dict(sorted(add["tm"].items(), key=lambda kv: -kv[1]))
+    if add.get("sh"):
+        out["sh"] = dict(sorted(add["sh"].items(), key=lambda kv: -kv[1]))
+    if add.get("ub"):
+        out["us"] = [[u, b] for u, b in sorted(add["ub"].items(), key=lambda kv: -kv[1])]
     return out
 
 
 def build_tree(rows: list[DirRow], total_bytes: int, min_frac: float) -> dict:
-    """Link ``rows`` into a nested tree; return the root node (the row whose
-    path is a :data:`ROOT_KEYS` sentinel).
+    """Link ``rows`` into a nested tree; return the root node (path in
+    :data:`ROOT_KEYS`).
 
-    ``min_frac`` × ``total_bytes`` is the fold floor: dirs below it are dropped
-    and their bytes roll into a per-parent ``(other)`` node marked ``f`` (the
-    count folded), which the client renders as an expandable placeholder rather
-    than a dead leaf. A lone sub-floor child is kept as-is (an ``(other)`` of
-    one is just noise).
+    ``min_frac`` × ``total_bytes`` is the fold floor: children below it drop and
+    their bytes roll into a per-parent ``(other)`` node — marked ``f`` (folded
+    count) and carrying the subtracted residual attribution — which the client
+    renders as an expandable placeholder rather than a dead leaf. When callers
+    pre-floor in SQL (so no sub-floor rows arrive), the ``(other)`` still forms
+    from the parent's byte gap; ``f`` is then the count actually seen.
     """
     floor = int(total_bytes * min_frac)
-    nodes: dict[str, dict] = {}
-    for r in rows:
-        n: dict = {"n": _seg(r.path) if r.path not in ROOT_KEYS else r.path, "b": int(r.b), "o": int(r.o), **r.extra}
-        nodes[r.path] = n
+    add_by_path = {r.path: r.add for r in rows}
+    nodes: dict[str, dict] = {
+        r.path: {"n": r.path if r.path in ROOT_KEYS else _seg(r.path), "b": int(r.b), "o": int(r.o)}
+        for r in rows
+    }
 
-    kids: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+    kids: dict[str, list[str]] = defaultdict(list)
     root_path = None
-    for path, n in nodes.items():
+    for path in nodes:
         if path in ROOT_KEYS:
             root_path = path
-            continue
-        kids[_parent(path)].append((path, n))
+        else:
+            kids[_parent(path)].append(path)
 
-    for parent_path, children in kids.items():
+    for parent_path, child_paths in kids.items():
         parent = nodes.get(parent_path)
         if not parent:
             continue
-        kept = sorted((n for _, n in children if n["b"] >= floor), key=lambda n: -n["b"])
-        folded = [n for _, n in children if n["b"] < floor]
+        children = sorted((nodes[p] for p in child_paths), key=lambda n: -n["b"])
+        kept = [n for n in children if n["b"] >= floor]
+        folded = [n for n in children if n["b"] < floor]
         parent["c"] = kept
-        # Bytes/objects not in kept children = direct files + folded dirs. Fold
-        # into one marked (other) when that remainder is itself above the floor;
-        # otherwise it's dust and drops (its bytes still count in the parent).
         rest_b = parent["b"] - sum(n["b"] for n in kept)
         rest_o = parent["o"] - sum(n["o"] for n in kept)
         if rest_b > floor:
-            other = {"n": "(other)", "b": int(rest_b), "o": int(max(rest_o, 0))}
-            if folded:
-                other["f"] = len(folded)
-                other.update(_combine(folded))
+            other = {"n": "(other)", "b": int(rest_b), "o": int(max(rest_o, 0)), "f": len(folded)}
+            kept_add = [add_by_path[p] for p in child_paths if nodes[p] in kept]
+            other.update(_display(_sub_add(add_by_path.get(parent_path, {}), kept_add)))
             parent["c"].append(other)
         if not parent["c"]:
             del parent["c"]
 
     if root_path is None:
         raise ValueError("no root row (path in {'', '.'}) among dir rows")
+    for path, node in nodes.items():
+        node.update(_display(add_by_path[path]))
     return nodes[root_path]
