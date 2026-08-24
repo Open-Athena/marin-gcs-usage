@@ -295,25 +295,37 @@ export function Treemap<T>({
 
   // Every drill/crumb/Backspace gesture routes through here: controlled mode
   // only reports (the consumer renders the new `path` prop back); uncontrolled
-  // keeps its own state and reports as a courtesy.
+  // keeps its own state and reports from the effect below, so the mount and
+  // root-reset paths — which no gesture produces — report too.
   const go = useCallback(
     (p: T[]) => {
       if (!controlled) setPathState(p)
       setTip(null)
-      onPathChange?.(p)
+      if (controlled) onPathChange?.(p)
     },
     [controlled, onPathChange],
   )
 
   // Reset drill path when root changes (respecting `initialPath` when it
   // belongs to the new root). Controlled mode skips this — the consumer's
-  // `path` prop is recomputed against the new root by the consumer.
+  // `path` prop is recomputed against the new root by the consumer. Skipped on
+  // mount too: `useState` already seeded `path`, and re-seeding it here would
+  // report a second, identical `[root]` through the effect below.
+  const mountedRoot = useRef(root)
   useEffect(() => {
-    if (controlled) return
+    if (controlled || mountedRoot.current === root) return
+    mountedRoot.current = root
     setPathState(initialPath?.[0] === root ? initialPath : [root])
     setTip(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath applies per-root, not on its own changes
   }, [root])
+
+  // Report the path this component owns: mount (incl. `initialPath`), drills,
+  // and the root-change reset. Controlled mode reports from `go` instead, where
+  // no local state changes and this effect would never fire.
+  useEffect(() => {
+    if (!controlled) onPathChange?.(path)
+  }, [controlled, path, onPathChange])
 
   // Track container size: measure synchronously, then observe for changes.
   // The initial ResizeObserver delivery is not guaranteed to arrive — in a
