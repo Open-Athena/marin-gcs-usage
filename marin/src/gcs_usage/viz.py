@@ -121,29 +121,10 @@ def write_webdata(
         _rss("dir_attr")
         # per-(team|user) storage-class byte mixes (site prices group roll-ups
         # with class-aware rates) + the per-(user,team) leaderboard meta.users
-        # needs. Both object-grain, so the tree's fold floor doesn't skew them.
+        # needs — both derived from `dir_agg` below, so no separate object scan.
         team_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         user_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         user_bytes: dict[tuple, int] = defaultdict(int)
-        for team, user, cls, nbytes in con.execute(
-            f"""
-            WITH d AS (
-              SELECT bucket,
-                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes, storage_class_id
-              FROM {src}
-            )
-            SELECT coalesce(t.team, 'unattributed') AS team, t."user" AS user,
-              d.storage_class_id, sum(d.size_bytes)::BIGINT AS bytes
-            FROM d LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
-            GROUP BY ALL
-            """
-        ).fetchall():
-            team_class[team][int(cls)] += nbytes
-            if user:
-                user_class[user][int(cls)] += nbytes
-                user_bytes[(user, team)] += nbytes
-        _rss("class-mix")
 
     # --- arbitrary-depth tree (specs/tree-builder-unification.md) ---
     # Roll every object up to *all* its ancestor prefixes (descendant-inclusive
@@ -152,19 +133,19 @@ def write_webdata(
     # link them parent->child. No d1..d4 cap — the tree is as deep as the data.
     from disk_tree.tree_build import DirRow, build_tree
 
-    total_b, total_o = con.execute(
-        f"SELECT coalesce(sum(size_bytes), 0)::BIGINT, count(*)::BIGINT FROM {src}"
-    ).fetchone()
-    total_b, total_o = int(total_b), int(total_o)
-    floor = int(total_b * MIN_FRAC)
     fp_dir = "CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END"
     fp = f"CASE WHEN ({fp_dir}) = '' THEN bucket ELSE bucket || '/' || ({fp_dir}) END"
-    maxseg = int(con.execute(f"SELECT coalesce(max(len(str_split({fp}, '/'))), 1) FROM {src}").fetchone()[0])
     attr_join = "LEFT JOIN dir_attr t ON t.bucket = o.bucket AND t.dir = o.dir" if attr else ""
     team_sel = "coalesce(t.team, 'unattributed')" if attr else "'unattributed'"
     user_sel = 't."user"' if attr else "CAST(NULL AS VARCHAR)"
-    ptu_rows = con.execute(
+    # Aggregate objects to their *immediate* dir once (attributed, with class /
+    # weighted-mtime sums and the split path segments), then explode these dir
+    # rows — a few million — to every ancestor rather than exploding all 595M
+    # objects. ~50-100x fewer rows through the explode. dir_agg also feeds the
+    # class-mix and leaderboard, so those need no separate object scan.
+    con.execute(
         f"""
+        CREATE TEMP TABLE dir_agg AS
         WITH obj AS (
           SELECT bucket, {fp_dir} AS dir, size_bytes, created, storage_class_id, {fp} AS fp
           FROM {src}
@@ -173,21 +154,51 @@ def write_webdata(
           SELECT o.size_bytes, o.created, o.storage_class_id, o.fp,
             {team_sel} AS team, {user_sel} AS usr
           FROM obj o {attr_join}
-        ),
-        exploded AS (
-          SELECT array_to_string((str_split(fp, '/'))[1:r.k], '/') AS path,
-            size_bytes, created, storage_class_id, team, usr
-          FROM pathed, range(1, {maxseg} + 1) r(k)
-          WHERE len(str_split(fp, '/')) >= r.k
+        )
+        SELECT fp, team, usr,
+          sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
+          sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+          sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
+          sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
+          sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
+          sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4,
+          string_split(fp, '/') AS segs
+        FROM pathed GROUP BY fp, team, usr
+        """
+    )
+    total_b, total_o = con.execute("SELECT coalesce(sum(b), 0)::BIGINT, coalesce(sum(o), 0)::BIGINT FROM dir_agg").fetchone()
+    total_b, total_o = int(total_b), int(total_o)
+    floor = int(total_b * MIN_FRAC)
+    maxseg = int(con.execute("SELECT coalesce(max(len(segs)), 1) FROM dir_agg").fetchone()[0])
+    _rss("dir-agg")
+
+    if attr:
+        # class-mix + leaderboard straight off dir_agg (class 1/STANDARD =
+        # total minus the non-standard classes we track explicitly).
+        for team, usr, b, c2, c3, c4 in con.execute(
+            "SELECT team, usr, sum(b), sum(c2), sum(c3), sum(c4) FROM dir_agg GROUP BY team, usr"
+        ).fetchall():
+            c1 = int(b) - int(c2 or 0) - int(c3 or 0) - int(c4 or 0)
+            for cid, cv in ((1, c1), (2, c2), (3, c3), (4, c4)):
+                if cv:
+                    team_class[team][cid] += int(cv)
+                    if usr:
+                        user_class[usr][cid] += int(cv)
+            if usr:
+                user_bytes[(usr, team)] += int(b)
+
+    ptu_rows = con.execute(
+        f"""
+        WITH exploded AS (
+          SELECT array_to_string(segs[1:r.k], '/') AS path, b, o, wts, wb, c2, c3, c4, team, usr
+          FROM dir_agg, range(1, {maxseg} + 1) r(k)
+          WHERE len(segs) >= r.k
         ),
         ptu AS (
           SELECT path, team, usr,
-            sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
-            sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-            sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
-            sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
-            sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
-            sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
+            sum(b)::BIGINT AS b, sum(o)::BIGINT AS o,
+            sum(wts)::DOUBLE AS wts, sum(wb)::BIGINT AS wb,
+            sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4
           FROM exploded GROUP BY path, team, usr
         )
         SELECT p.path, p.team, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
