@@ -19,6 +19,7 @@ start / exclusive-end contract:
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from dataclasses import dataclass
@@ -67,6 +68,17 @@ class S3BulkLister:
                 kw["endpoint_url"] = self.endpoint_url
             if self.region_name:
                 kw["region_name"] = self.region_name
+            # boto's `auto` addressing degrades to path-style for custom
+            # endpoints, and CoreWeave's CAIOS rejects that outright
+            # (PathStyleRequestNotAllowed). A workstation profile can carry
+            # `s3.addressing_style = virtual` in ~/.aws/config, but containers
+            # have no such file — honor an env override so headless runs (GCP
+            # Batch) can match. Values: virtual | path | auto.
+            style = os.environ.get("DT_S3_ADDRESSING_STYLE")
+            if style:
+                from botocore.config import Config
+
+                kw["config"] = Config(s3={"addressing_style": style})
             client = local.client = boto3.client("s3", **kw)
         return client
 
@@ -81,8 +93,9 @@ class S3BulkLister:
 
         # Compensate for S3's exclusive StartAfter: HEAD `start` and yield it
         # first if present. Reservoir-quantile boundaries are real names, so
-        # this typically hits.
-        if start is not None:
+        # this typically hits. `''` (keyspace origin) is not a real key — S3
+        # keys have min length 1 — so it needs neither HEAD nor StartAfter.
+        if start:
             try:
                 head = client.head_object(Bucket=bucket, Key=start)
             except client.exceptions.ClientError as e:
@@ -102,7 +115,7 @@ class S3BulkLister:
 
         paginator = client.get_paginator("list_objects_v2")
         kw: dict = {"Bucket": bucket, "Prefix": prefix}
-        if start is not None:
+        if start:
             kw["StartAfter"] = start
         for page in paginator.paginate(**kw):
             for obj in page.get("Contents", []) or []:
@@ -117,6 +130,49 @@ class S3BulkLister:
                     created=created,
                     storage_class=obj.get("StorageClass"),
                 )
+
+    def stream_pages(
+        self,
+        bucket: str,
+        prefix: Optional[str],
+        start: Optional[str],
+        end_hint: Optional[str],
+    ) -> "Iterable[list[BlobRow]]":
+        """Page-granular variant for adaptive listing (bulk_adaptive.PagedLister).
+
+        S3 has no server-side end cursor, so ``end_hint`` is ignored — the
+        adaptive worker enforces its (possibly shrunken) end client-side.
+        Inclusive-start compensation mirrors :meth:`stream_prefix`.
+        """
+        client = self._client()
+
+        def _row(key: str, size, lm, storage_class) -> BlobRow:
+            created = lm.isoformat().replace("+00:00", "Z") if lm else None
+            return BlobRow(name=key, size=int(size or 0), created=created, storage_class=storage_class)
+
+        # `''` (keyspace origin) is not a real key — no HEAD, no StartAfter.
+        if start:
+            try:
+                head = client.head_object(Bucket=bucket, Key=start)
+            except client.exceptions.ClientError as e:
+                if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+                    head = None
+                else:
+                    raise
+            if head is not None:
+                yield [_row(start, head.get("ContentLength"), head.get("LastModified"), head.get("StorageClass"))]
+
+        paginator = client.get_paginator("list_objects_v2")
+        kw: dict = {"Bucket": bucket}
+        if prefix:
+            kw["Prefix"] = prefix
+        if start:
+            kw["StartAfter"] = start
+        for page in paginator.paginate(**kw):
+            yield [
+                _row(o["Key"], o.get("Size"), o.get("LastModified"), o.get("StorageClass"))
+                for o in page.get("Contents", []) or []
+            ]
 
     def discover_prefixes(self, fs: "fsspec.AbstractFileSystem", root: str):
         return generic_discover(fs, root)

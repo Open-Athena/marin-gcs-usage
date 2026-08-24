@@ -1,4 +1,5 @@
 """Tests for the Flask API server."""
+import json
 import os
 import shutil
 import sqlite3
@@ -846,3 +847,264 @@ class TestCacheInvalidation:
         response = client.get('/api/scan?uri=/test')
         assert response.status_code == 200
         # Request should succeed (caching is now internal to storage backend)
+
+
+class TestGetHistogram:
+    """Tests for GET /api/histogram endpoint (spec: viz-widgets.md §4)."""
+
+    @staticmethod
+    def _seed(db_path: str, scans_dir: str, path: str = '/test') -> None:
+        """A scan of `path` with two dirs and a loose file at known mtimes."""
+        parquet_path = create_test_parquet(scans_dir, 'hist', [
+            {'path': '.', 'size': 300, 'mtime': 100, 'kind': 'dir', 'parent': '', 'uri': path, 'n_desc': 6, 'n_children': 3, 'depth': 0},
+            {'path': 'a', 'size': 210, 'mtime': 100, 'kind': 'dir', 'parent': '.', 'uri': f'{path}/a', 'n_desc': 2, 'n_children': 2, 'depth': 1},
+            {'path': 'b', 'size': 60, 'mtime': 50, 'kind': 'dir', 'parent': '.', 'uri': f'{path}/b', 'n_desc': 1, 'n_children': 1, 'depth': 1},
+            {'path': 'loose.txt', 'size': 30, 'mtime': 75, 'kind': 'file', 'parent': '.', 'uri': f'{path}/loose.txt', 'n_desc': 0, 'n_children': 0, 'depth': 1},
+            {'path': 'a/old.bin', 'size': 200, 'mtime': 0, 'kind': 'file', 'parent': 'a', 'uri': f'{path}/a/old.bin', 'n_desc': 0, 'n_children': 0, 'depth': 2},
+            {'path': 'a/new.bin', 'size': 10, 'mtime': 100, 'kind': 'file', 'parent': 'a', 'uri': f'{path}/a/new.bin', 'n_desc': 0, 'n_children': 0, 'depth': 2},
+            {'path': 'b/mid.bin', 'size': 60, 'mtime': 50, 'kind': 'file', 'parent': 'b', 'uri': f'{path}/b/mid.bin', 'n_desc': 0, 'n_children': 0, 'depth': 2},
+        ])
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            'INSERT INTO scan (path, time, blob, size, n_children, n_desc, mtime) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (path, '2025-01-01T12:00:00', parquet_path, 300, 3, 6, 100),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_bins_bytes_per_child(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/histogram?uri=/test&bins=4')
+        assert response.status_code == 200
+        assert response.json == {
+            'uri': '/test',
+            'scan_path': '/test',
+            'time': '2025-01-01T12:00:00',
+            'edges': [0, 25, 50, 75, 100],
+            'children': [
+                {'path': 'a', 'kind': 'dir', 'bytes': [200, 0, 0, 10], 'total_bytes': 210, 'n_files': 2},
+                {'path': 'b', 'kind': 'dir', 'bytes': [0, 0, 60, 0], 'total_bytes': 60, 'n_files': 1},
+                {'path': 'loose.txt', 'kind': 'file', 'bytes': [0, 0, 0, 30], 'total_bytes': 30, 'n_files': 1},
+            ],
+            'omitted': 0,
+            'omitted_bytes': 0,
+        }
+
+    def test_drills_into_subdir_of_an_ancestor_scan(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/histogram?uri=/test/a&bins=2')
+        assert response.status_code == 200
+        body = response.json
+        assert body['scan_path'] == '/test'
+        assert body['edges'] == [0, 50, 100]
+        assert body['children'] == [
+            {'path': 'old.bin', 'kind': 'file', 'bytes': [200, 0], 'total_bytes': 200, 'n_files': 1},
+            {'path': 'new.bin', 'kind': 'file', 'bytes': [0, 10], 'total_bytes': 10, 'n_files': 1},
+        ]
+
+    def test_limit_reports_omitted_children(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/histogram?uri=/test&bins=2&limit=1')
+        assert response.status_code == 200
+        body = response.json
+        assert [c['path'] for c in body['children']] == ['a']
+        assert (body['omitted'], body['omitted_bytes']) == (2, 90)
+
+    def test_limit_0_returns_all_children(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/histogram?uri=/test&bins=2&limit=0')
+        assert response.status_code == 200
+        assert [c['path'] for c in response.json['children']] == ['a', 'b', 'loose.txt']
+
+    def test_missing_scan_is_404(self, test_client):
+        client, _, _ = test_client
+        response = client.get('/api/histogram?uri=/nope')
+        assert response.status_code == 404
+        assert response.json == {'error': 'No scan found for path', 'uri': '/nope'}
+
+    def test_invalid_bins_is_400(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/histogram?uri=/test&bins=0')
+        assert response.status_code == 400
+        assert response.json == {'error': 'bins must be >= 1; got 0'}
+
+
+class TestCompareRecursive:
+    """`/api/compare?recursive=1` — best-first frontier across depths."""
+
+    def _seed(self, db_path, scans_dir):
+        base = [
+            {'path': '.', 'size': 1000, 'mtime': 100, 'kind': 'dir', 'parent': '', 'uri': '/test', 'n_desc': 4, 'n_children': 2, 'depth': 0},
+            {'path': 'a', 'size': 400, 'mtime': 90, 'kind': 'dir', 'parent': '.', 'uri': '/test/a', 'n_desc': 1, 'n_children': 1, 'depth': 1},
+            {'path': 'b', 'size': 600, 'mtime': 100, 'kind': 'dir', 'parent': '.', 'uri': '/test/b', 'n_desc': 1, 'n_children': 1, 'depth': 1},
+            {'path': 'a/f.txt', 'size': 400, 'mtime': 90, 'kind': 'file', 'parent': 'a', 'uri': '/test/a/f.txt', 'n_desc': 0, 'n_children': 0, 'depth': 2},
+            {'path': 'b/g.bin', 'size': 600, 'mtime': 100, 'kind': 'file', 'parent': 'b', 'uri': '/test/b/g.bin', 'n_desc': 0, 'n_children': 0, 'depth': 2},
+        ]
+        changed = [dict(r) for r in base]
+        for r in changed:
+            if r['path'] in ('.', 'b', 'b/g.bin'):
+                r['size'] += 1000
+                r['mtime'] = 110
+        p1 = create_test_parquet(scans_dir, 'rec1', base)
+        p2 = create_test_parquet(scans_dir, 'rec2', changed)
+        conn = sqlite3.connect(db_path)
+        conn.execute('INSERT INTO scan (path, time, blob, size, n_children, n_desc) VALUES (?, ?, ?, ?, ?, ?)',
+                     ('/test', '2025-01-01T12:00:00', p1, 1000, 2, 4))
+        conn.execute('INSERT INTO scan (path, time, blob, size, n_children, n_desc) VALUES (?, ?, ?, ?, ?, ?)',
+                     ('/test', '2025-01-02T12:00:00', p2, 2000, 2, 4))
+        conn.commit()
+        conn.close()
+
+    def test_recursive_returns_frontier_across_depths(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/compare?uri=/test&scan1=1&scan2=2&recursive=1')
+        assert response.status_code == 200
+        data = response.json
+        assert data['recursive'] is True
+        assert [
+            (r['path'], r['depth'], r['status'], r['size_delta'], r['expanded'], r['pruned'])
+            for r in data['rows']
+        ] == [
+            ('b', 1, 'changed', 1000, True, False),
+            ('b/g.bin', 2, 'changed', 1000, False, False),
+        ]
+        assert data['rows'][0]['uri'] == '/test/b'
+        assert data['summary'] == {
+            'added': 0, 'removed': 0, 'changed': 2, 'unchanged': 0,
+            'total_delta': 1000, 'expansions': 2, 'truncated': False,
+        }
+
+    def test_recursive_budget_prunes(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/compare?uri=/test&scan1=1&scan2=2&recursive=1&budget=1')
+        assert response.status_code == 200
+        data = response.json
+        assert [
+            (r['path'], r['status'], r['expanded'], r['pruned'])
+            for r in data['rows']
+        ] == [('b', 'changed', False, True)]
+        assert data['summary']['truncated'] is True
+
+    def test_non_recursive_shape_unchanged(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/compare?uri=/test&scan1=1&scan2=2')
+        assert response.status_code == 200
+        data = response.json
+        assert 'recursive' not in data
+        assert [(r['path'], r['status'], r['size_delta']) for r in data['rows']] == [
+            ('b', 'changed', 1000),
+            ('a', 'unchanged', 0),
+        ]
+
+
+class TestFilterEndpoint:
+    """`/api/filter` — recursive filter with true re-aggregation."""
+
+    def _seed(self, db_path, scans_dir):
+        rows = [
+            {'path': '.', 'size': 1450, 'mtime': 100, 'kind': 'dir', 'parent': '', 'uri': '/test', 'n_desc': 9, 'n_children': 3, 'depth': 0},
+            {'path': 'a', 'size': 700, 'mtime': 100, 'kind': 'dir', 'parent': '.', 'uri': '/test/a', 'n_desc': 4, 'n_children': 2, 'depth': 1},
+            {'path': 'b', 'size': 730, 'mtime': 100, 'kind': 'dir', 'parent': '.', 'uri': '/test/b', 'n_desc': 3, 'n_children': 1, 'depth': 1},
+            {'path': 'other.txt', 'size': 20, 'mtime': 100, 'kind': 'file', 'parent': '', 'uri': '/test/other.txt', 'n_desc': 0, 'n_children': 0, 'depth': 1},
+            {'path': 'a/demo', 'size': 500, 'mtime': 100, 'kind': 'dir', 'parent': 'a', 'uri': '/test/a/demo', 'n_desc': 1, 'n_children': 1, 'depth': 2},
+            {'path': 'a/noise.txt', 'size': 200, 'mtime': 100, 'kind': 'file', 'parent': 'a', 'uri': '/test/a/noise.txt', 'n_desc': 0, 'n_children': 0, 'depth': 2},
+            {'path': 'b/x', 'size': 730, 'mtime': 100, 'kind': 'dir', 'parent': 'b', 'uri': '/test/b/x', 'n_desc': 2, 'n_children': 1, 'depth': 2},
+            {'path': 'a/demo/demo.txt', 'size': 500, 'mtime': 100, 'kind': 'file', 'parent': 'a/demo', 'uri': '/test/a/demo/demo.txt', 'n_desc': 0, 'n_children': 0, 'depth': 3},
+            {'path': 'b/x/demo.dat', 'size': 730, 'mtime': 100, 'kind': 'file', 'parent': 'b/x', 'uri': '/test/b/x/demo.dat', 'n_desc': 0, 'n_children': 0, 'depth': 3},
+        ]
+        p = create_test_parquet(scans_dir, 'filt', rows)
+        conn = sqlite3.connect(db_path)
+        conn.execute('INSERT INTO scan (path, time, blob, size, n_children, n_desc) VALUES (?, ?, ?, ?, ?, ?)',
+                     ('/test', '2025-01-01T12:00:00', p, 1450, 3, 9))
+        conn.commit()
+        conn.close()
+
+    def test_filter_reaggregates_outermost_matches(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/filter?uri=/test&q=demo')
+        assert response.status_code == 200
+        data = response.json
+        # a/demo (dir) matches outermost — demo.txt inside it must not re-count.
+        assert [(r['path'], r['size'], r['n_matches'], r['matched']) for r in data['rows']] == [
+            ('a', 500, 1, False),
+            ('b', 730, 1, False),
+            ('a/demo', 500, 1, True),
+            ('b/x', 730, 1, False),
+            ('b/x/demo.dat', 730, 1, True),
+        ]
+        assert data['total_size'] == 1230
+        assert data['n_matches'] == 2
+        assert data['rows'][0]['uri'] == '/test/a'
+
+    def test_filter_under_subdir_uri(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/filter?uri=/test/b&q=demo')
+        assert response.status_code == 200
+        data = response.json
+        assert [(r['path'], r['size'], r['matched']) for r in data['rows']] == [
+            ('x', 730, False),
+            ('x/demo.dat', 730, True),
+        ]
+        assert data['total_size'] == 730
+        assert data['n_matches'] == 1
+
+    def test_filter_regex_and_display_depth(self, test_client):
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        response = client.get('/api/filter?uri=/test&q=' + r'/\.dat$/' + '&depth=1')
+        assert response.status_code == 200
+        data = response.json
+        assert [(r['path'], r['size'], r['matched']) for r in data['rows']] == [
+            ('b', 730, False),
+        ]
+        assert data['total_size'] == 730
+        assert data['n_matches'] == 1
+        assert data['max_depth_scanned'] == 3
+
+    def test_filter_stream_sse(self, test_client):
+        """`/api/filter/stream` — one cumulative snapshot per depth; the final
+        `done` event equals the plain endpoint's response."""
+        client, db_path, scans_dir = test_client
+        self._seed(db_path, scans_dir)
+
+        plain = client.get('/api/filter?uri=/test&q=demo').json
+
+        response = client.get('/api/filter/stream?uri=/test&q=demo')
+        assert response.status_code == 200
+        assert response.mimetype == 'text/event-stream'
+        events = [
+            json.loads(line[len('data: '):])
+            for line in response.get_data(as_text=True).splitlines()
+            if line.startswith('data: ')
+        ]
+        assert events[0] == {'phase': 'loading'}
+        depth_events = events[1:-1]
+        assert [(e['depth'], e['n_matches'], e['total_size'], e['done']) for e in depth_events] == [
+            (1, 0, 0, False),
+            (2, 1, 500, False),      # a/demo lands
+            (3, 2, 1230, False),     # b/x/demo.dat lands
+        ]
+        final = events[-1]
+        assert final['done'] is True
+        assert {k: v for k, v in final.items() if k != 'done'} == plain

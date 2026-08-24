@@ -1,7 +1,19 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from os.path import exists, join
+from shutil import move
+from uuid import uuid4
 
 import pandas as pd
+
+
+def path_prefix_bounds(prefix: str) -> tuple[str, str]:
+    """Half-open range `[lo, hi)` containing *exactly* the strings that start
+    with `prefix + '/'` — `'0' == chr(ord('/') + 1)`, so nothing sorts between
+    `pfx/…` and `pfx0`. Lets SQL backends express "descendant of" as a pure
+    range predicate and parquet prune row groups on `path` min/max stats.
+    """
+    return prefix + '/', prefix + chr(ord('/') + 1)
 
 
 @dataclass
@@ -45,6 +57,25 @@ class StorageBackend(ABC):
         """
         pass
 
+    def adopt_parquet(self, parquet_path: str, scan_path: str) -> str:
+        """Adopt an already-written canonical layer-2 parquet as a scan blob,
+        without reading it into memory (a 185M-row layer-2 doesn't fit in RAM
+        as a DataFrame — the `import -e duckdb` path writes parquet directly
+        and hands the file over here).
+
+        Default implementation covers file-backed backends (anything with a
+        `scans_dir`); table-backed backends must override or don't support it.
+        """
+        scans_dir = getattr(self, 'scans_dir', None)
+        if scans_dir is None:
+            raise NotImplementedError(f"{self.name} backend cannot adopt parquet files")
+        blob_ref = f'{uuid4()}.parquet'
+        blob_path = join(scans_dir, blob_ref)
+        if exists(blob_path):
+            raise RuntimeError(f"Blob path already exists: {blob_path}")
+        move(parquet_path, blob_path)
+        return blob_ref
+
     @abstractmethod
     def load(
         self,
@@ -52,6 +83,7 @@ class StorageBackend(ABC):
         max_depth: int | None = None,
         min_depth: int | None = None,
         follow_refs: bool = False,
+        path_prefix: str | None = None,
     ) -> pd.DataFrame:
         """Load scan data with optional depth filtering.
 
@@ -60,6 +92,11 @@ class StorageBackend(ABC):
             max_depth: Only return rows with depth <= max_depth
             min_depth: Only return rows with depth >= min_depth
             follow_refs: If True, recursively load child chunks (hybrid backend only)
+            path_prefix: Only return the row with `path == path_prefix` and rows
+                with `path.startswith(path_prefix + '/')` (exact semantics, not a
+                superset). Rows are sorted `(depth, path)`, so within each depth
+                a prefix is a contiguous run — parquet prunes row groups via
+                min/max stats on `path`; SQL backends use a range predicate.
 
         Returns:
             DataFrame with scan data
