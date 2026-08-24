@@ -6,7 +6,8 @@ import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
-import { useIdent as useIdentity, useSignOut } from './auth'
+import { useCanMark, useIdent as useIdentity, useSignOut } from './auth'
+import TokenModal from './TokenModal'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
@@ -193,6 +194,8 @@ function AppContent() {
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
   const signOut = useSignOut()
+  const canMark = useCanMark()
+  const [tokenOpen, setTokenOpen] = useState(false)
   const myUser = useMyUser(ident?.email, markMode)
   // `?mt=` — active /mark tab (absent = "mine").
   const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
@@ -427,6 +430,7 @@ function AppContent() {
 
   return (
     <main>
+      {tokenOpen && <TokenModal onClose={() => setTokenOpen(false)} />}
       <header>
         <div className="hrow">
           <h1>{store.title}</h1>
@@ -463,6 +467,11 @@ function AppContent() {
                 {(ident.name || ident.email).trim()[0].toUpperCase()}
               </span>
               <span className="email" title={ident.email}>{ident.name || ident.email}</span>
+              {canMark && (
+                <button className="token-btn" type="button" onClick={() => setTokenOpen(true)} title="Personal token for agents / CLI">
+                  token
+                </button>
+              )}
               <button className="logout" type="button" onClick={signOut}>log out</button>
             </div>
           )}

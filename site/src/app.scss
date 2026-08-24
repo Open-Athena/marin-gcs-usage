@@ -91,6 +91,110 @@ header .hrow {
     cursor: pointer;
     text-decoration: underline;
   }
+  .token-btn {
+    color: var(--s1);
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+}
+
+.token-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.token-modal {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  .token-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    strong { font-size: 15px; }
+  }
+  .token-x {
+    background: none;
+    border: none;
+    color: var(--ink-2);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  p { margin: 8px 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .token-muted { color: var(--ink-2); }
+  .token-small { font-size: 12px; }
+  .token-err { color: var(--s3); }
+  .token-warn { color: var(--s4); font-weight: 600; }
+  .token-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 5px 12px;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .token-danger { color: var(--s3); }
+  }
+  .token-value {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 8px 0;
+    code {
+      flex: 1;
+      overflow-x: auto;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 5px;
+      padding: 3px 10px;
+    }
+  }
+  .token-recipe {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    overflow-x: auto;
+    white-space: pre;
+    margin: 6px 0;
+  }
 }
 h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 .sub {
