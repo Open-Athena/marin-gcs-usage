@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { signInUrl, useCanMark } from './auth'
-import { ACTION_COLORS, KLC_TIP, MarkControls } from './MarkControls'
+import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, MarkControls, SWEEP_TIP, clearTip } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { collectRows, collectTodo, looksCkpt, reviewedBytes, teamLens, userLens } from './sweep'
@@ -203,11 +203,15 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
           {canMark && sel.size > 0 && (
             <div className="bulkbar">
               <b>{sel.size}</b> selected — mark all:
-              <button type="button" onClick={() => bulkMark('keep')}>keep</button>
+              <Tooltip content={KEEP_TIP}>
+                <button type="button" onClick={() => bulkMark('keep')}>keep</button>
+              </Tooltip>
               <Tooltip content={KLC_TIP}>
                 <button type="button" onClick={() => bulkMark('keep_last_ckpt')}>last ckpt</button>
               </Tooltip>
-              <button type="button" onClick={() => bulkMark('sweep')}>delete</button>
+              <Tooltip content={SWEEP_TIP}>
+                <button type="button" onClick={() => bulkMark('sweep')}>sweep</button>
+              </Tooltip>
               <button type="button" onClick={() => bulkMark(null)}>clear marks</button>
               <button type="button" onClick={() => setSel(new Set())}>deselect</button>
               {bulkPending && (
@@ -295,15 +299,27 @@ function Row({ r, idx, lost, fmtBytes, canMark, hasAtime, selected, onToggle, on
       </td>
       {canMark && (
         <td className="actions">
-          <button type="button" className={own && mark?.action === 'keep' ? 'on' : ''} onClick={() => onMark('keep')}>keep</button>
+          <Tooltip content={KEEP_TIP}>
+            <button type="button" className={own && mark?.action === 'keep' ? 'on' : ''} onClick={() => onMark('keep')}>keep</button>
+          </Tooltip>
           {looksCkpt(r.node, r.uri) && (
             <Tooltip content={KLC_TIP}>
               <button type="button" className={own && mark?.action === 'keep_last_ckpt' ? 'on' : ''} onClick={() => onMark('keep_last_ckpt')}>last ckpt</button>
             </Tooltip>
           )}
-          <button type="button" className={own && mark?.action === 'sweep' ? 'on' : ''} onClick={() => onMark('sweep')}>delete</button>
-          {own && <button type="button" onClick={() => onMark(null)}>clear</button>}
-          {lost && !cl && <button type="button" onClick={onClaim}>claim</button>}
+          <Tooltip content={SWEEP_TIP}>
+            <button type="button" className={own && mark?.action === 'sweep' ? 'on' : ''} onClick={() => onMark('sweep')}>sweep</button>
+          </Tooltip>
+          {own && (
+            <Tooltip content={clearTip(true)}>
+              <button type="button" onClick={() => onMark(null)}>clear</button>
+            </Tooltip>
+          )}
+          {lost && !cl && (
+            <Tooltip content={CLAIM_TIP}>
+              <button type="button" onClick={onClaim}>claim</button>
+            </Tooltip>
+          )}
         </td>
       )}
     </tr>

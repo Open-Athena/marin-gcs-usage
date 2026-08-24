@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useCanMark } from './auth'
 import { epochDaysToDate, epochDaysToMonth } from './colors'
-import { ACTION_COLORS, KLC_TIP } from './MarkControls'
+import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { looksCkpt } from './sweep'
@@ -121,15 +121,27 @@ export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
                   <td className="actions">
                     {synthetic ? null : (
                       <>
-                        <button type="button" className={mk?.own && mk.mark?.action === 'keep' ? 'on' : ''} onClick={() => mark(uri, 'keep')}>keep</button>
+                        <Tooltip content={KEEP_TIP}>
+                          <button type="button" className={mk?.own && mk.mark?.action === 'keep' ? 'on' : ''} onClick={() => mark(uri, 'keep')}>keep</button>
+                        </Tooltip>
                         {looksCkpt(k, uri) && (
                           <Tooltip content={KLC_TIP}>
                             <button type="button" className={mk?.own && mk.mark?.action === 'keep_last_ckpt' ? 'on' : ''} onClick={() => mark(uri, 'keep_last_ckpt')}>last ckpt</button>
                           </Tooltip>
                         )}
-                        <button type="button" className={mk?.own && mk.mark?.action === 'sweep' ? 'on' : ''} onClick={() => mark(uri, 'sweep')}>delete</button>
-                        {mk?.own && <button type="button" onClick={() => mark(uri, null)}>clear</button>}
-                        {!markIdx!.claimOf(uri) && <button type="button" onClick={() => claim.mutate({ prefix: uri + '/' })}>claim</button>}
+                        <Tooltip content={SWEEP_TIP}>
+                          <button type="button" className={mk?.own && mk.mark?.action === 'sweep' ? 'on' : ''} onClick={() => mark(uri, 'sweep')}>sweep</button>
+                        </Tooltip>
+                        {mk?.own && (
+                          <Tooltip content={clearTip(true)}>
+                            <button type="button" onClick={() => mark(uri, null)}>clear</button>
+                          </Tooltip>
+                        )}
+                        {!markIdx!.claimOf(uri) && (
+                          <Tooltip content={CLAIM_TIP}>
+                            <button type="button" onClick={() => claim.mutate({ prefix: uri + '/' })}>claim</button>
+                          </Tooltip>
+                        )}
                       </>
                     )}
                   </td>

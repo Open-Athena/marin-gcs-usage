@@ -555,7 +555,7 @@ function AppContent() {
             Drill to a prefix and mark it with the controls above the map, or click a cell to pin it and mark from
             there. <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-keep)' }} />keep</span>{' '}
             <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-klc)' }} />keep last checkpoint</span>{' '}
-            <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-del)' }} />delete</span>{' '}
+            <span className="mk-key"><span className="sw" style={{ background: 'var(--mk-del)' }} />sweep</span>{' '}
             — the most recent mark covering a prefix wins: mark a child <em>after</em> its parent to
             carve an exception; a broad mark repaints older deeper ones (you'll be asked to confirm).
             {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}

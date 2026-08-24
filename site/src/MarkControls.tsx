@@ -22,6 +22,18 @@ export const ACTION_COLORS: Record<MarkAction, string> = {
 export const KLC_TIP =
   'Keep only the newest checkpoint under this prefix: the sweep deletes older step-/checkpoint-numbered dirs and keeps the highest step in each run. Offered on checkpoint-shaped directories.'
 
+// Per-button tooltips. Nothing here deletes on click — "sweep" only *marks*
+// for the mark-and-sweep campaign; removal happens after the deadline.
+export const KEEP_TIP =
+  'Keep this prefix — protect everything under it from the sweep. Takes no immediate action; nothing is deleted.'
+export const SWEEP_TIP =
+  'Mark this prefix for the sweep. Takes no immediate action — matching objects are deleted only after the sweep deadline.'
+export const CLAIM_TIP =
+  'Claim this prefix as yours — pulls it out of the unattributed “lost & found” so it shows up as your data.'
+export const clearTip = (own: boolean): string =>
+  own ? 'Remove your mark — back to unmarked (swept by default).'
+      : 'Override the inherited mark: explicitly unmark this subtree.'
+
 /**
  * `node`: the tree node behind `uri`, when the caller has it — gates the
  * `keep_last_ckpt` button to checkpoint-shaped dirs. Omit (typed prefixes,
@@ -75,15 +87,27 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
       </span>
       {canMark ? (
         <span className="buttons">
-          <button type="button" className={own && mark?.action === 'keep' ? 'on' : ''} onClick={() => set('keep')}>keep</button>
+          <Tooltip content={KEEP_TIP}>
+            <button type="button" className={own && mark?.action === 'keep' ? 'on' : ''} onClick={() => set('keep')}>keep</button>
+          </Tooltip>
           {klcOk && (
             <Tooltip content={KLC_TIP}>
               <button type="button" className={own && mark?.action === 'keep_last_ckpt' ? 'on' : ''} onClick={() => set('keep_last_ckpt')}>keep last ckpt</button>
             </Tooltip>
           )}
-          <button type="button" className={own && mark?.action === 'sweep' ? 'on' : ''} onClick={() => set('sweep')}>delete</button>
-          {mark && <button type="button" title={own ? 'remove this mark (back to swept-by-default)' : 'override the inherited mark: explicitly unmark this subtree'} onClick={() => set(null)}>clear</button>}
-          {!cl && <button type="button" title="claim this prefix as yours (lost & found)" onClick={() => claim.mutate({ prefix })}>claim</button>}
+          <Tooltip content={SWEEP_TIP}>
+            <button type="button" className={own && mark?.action === 'sweep' ? 'on' : ''} onClick={() => set('sweep')}>sweep</button>
+          </Tooltip>
+          {mark && (
+            <Tooltip content={clearTip(own)}>
+              <button type="button" onClick={() => set(null)}>clear</button>
+            </Tooltip>
+          )}
+          {!cl && (
+            <Tooltip content={CLAIM_TIP}>
+              <button type="button" onClick={() => claim.mutate({ prefix })}>claim</button>
+            </Tooltip>
+          )}
           <input value={note} onChange={e => setNote(e.target.value)} placeholder="note (optional)" size={14} />
         </span>
       ) : (

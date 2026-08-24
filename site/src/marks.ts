@@ -48,7 +48,7 @@ export interface Owner {
 export const ACTION_LABELS: Record<MarkAction, string> = {
   keep: 'keep',
   keep_last_ckpt: 'keep last ckpt',
-  sweep: 'delete',
+  sweep: 'sweep',
 }
 
 /** Sweep deadline: EOD Friday 2026-08-28, Pacific (Percy's post governs). */
