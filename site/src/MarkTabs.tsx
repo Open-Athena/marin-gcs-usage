@@ -170,7 +170,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
           <input
             value={typed}
             onChange={e => setTyped(e.target.value)}
-            placeholder="mark a typed prefix — gs://marin-<bucket>/path/ (works below the tree's depth cap)"
+            placeholder="mark a typed prefix — gs://marin-<bucket>/path/ (any depth, even below the treemap's fold floor)"
             size={56}
             spellCheck={false}
           />
