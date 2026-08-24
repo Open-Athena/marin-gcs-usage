@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { type ReactNode, useState } from 'react'
 import { signInUrl, useCanMark } from './auth'
-import type { MarkAction, MarkIndex } from './marks'
+import type { Mark, MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { looksCkpt } from './sweep'
 import { Tooltip } from './Tooltip'
@@ -33,6 +33,20 @@ export const CLAIM_TIP =
 export const clearTip = (own: boolean): string =>
   own ? 'Remove your mark — back to unmarked (swept by default).'
       : 'Override the inherited mark: explicitly unmark this subtree.'
+
+/** Short date for a mark's timestamp, e.g. "Aug 24, 2026". */
+export const fmtMarkDate = (ts: number): string =>
+  new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+
+/** Tooltip body for a state chip: who set the mark, when, and whether inherited. */
+export function markProvenance(mark: Mark, own: boolean): ReactNode {
+  return (
+    <>
+      <b>{ACTION_LABELS[mark.action]}</b> by {mark.who} · {fmtMarkDate(mark.ts)}
+      {!own && <> · inherited from <code>{mark.prefix}</code></>}
+    </>
+  )
+}
 
 /**
  * `node`: the tree node behind `uri`, when the caller has it — gates the

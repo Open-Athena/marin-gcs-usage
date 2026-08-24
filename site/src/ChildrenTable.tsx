@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useCanMark } from './auth'
 import { epochDaysToDate, epochDaysToMonth } from './colors'
-import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip } from './MarkControls'
+import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip, markProvenance } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { looksCkpt } from './sweep'
@@ -107,11 +107,12 @@ export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
                 {markIdx && (
                   <td>
                     {mk?.mark ? (
-                      <span className="chip" title={`${mk.mark.who}${mk.own ? '' : ` (inherited from ${mk.mark.prefix})`}`}
-                        style={{ borderColor: ACTION_COLORS[mk.mark.action] }}>
-                        <span className="sw" style={{ background: ACTION_COLORS[mk.mark.action] }} />
-                        {ACTION_LABELS[mk.mark.action]}{mk.own ? '' : ' ⌃'}
-                      </span>
+                      <Tooltip content={markProvenance(mk.mark, mk.own)}>
+                        <span className="chip" style={{ borderColor: ACTION_COLORS[mk.mark.action] }}>
+                          <span className="sw" style={{ background: ACTION_COLORS[mk.mark.action] }} />
+                          {ACTION_LABELS[mk.mark.action]}{mk.own ? '' : ' ⌃'}
+                        </span>
+                      </Tooltip>
                     ) : synthetic ? null : (
                       <span className="chip unmarked"><span className="sw" style={{ background: 'var(--mk-del)' }} />unmarked</span>
                     )}

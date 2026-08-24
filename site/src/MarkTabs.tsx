@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { signInUrl, useCanMark } from './auth'
-import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, MarkControls, SWEEP_TIP, clearTip } from './MarkControls'
+import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, MarkControls, SWEEP_TIP, clearTip, markProvenance } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { collectRows, collectTodo, looksCkpt, reviewedBytes, teamLens, userLens } from './sweep'
@@ -287,11 +287,12 @@ function Row({ r, idx, lost, fmtBytes, canMark, hasAtime, selected, onToggle, on
       </td>
       <td>
         {mark ? (
-          <span className="chip" title={`${mark.who}${own ? '' : ` (inherited from ${mark.prefix})`}`}
-            style={{ borderColor: ACTION_COLORS[mark.action] }}>
-            <span className="sw" style={{ background: ACTION_COLORS[mark.action] }} />
-            {ACTION_LABELS[mark.action]}{own ? '' : ' ⌃'}
-          </span>
+          <Tooltip content={markProvenance(mark, own)}>
+            <span className="chip" style={{ borderColor: ACTION_COLORS[mark.action] }}>
+              <span className="sw" style={{ background: ACTION_COLORS[mark.action] }} />
+              {ACTION_LABELS[mark.action]}{own ? '' : ' ⌃'}
+            </span>
+          </Tooltip>
         ) : (
           <span className="chip unmarked"><span className="sw" style={{ background: 'var(--mk-del)' }} />unmarked</span>
         )}
