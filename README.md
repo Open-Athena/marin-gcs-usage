@@ -1,16 +1,30 @@
 # marin-gcs-usage
 
-Per-user attribution and reporting for Marin GCS storage: "who is using what."
+Storage-usage attribution and cleanup for the Marin GCS buckets: **who is using
+what**, and a **mark & sweep** workflow to reclaim space. Browse it at
+**[gcs.oa.dev]** (Open-Athena-gated).
 
-Private by design — the identity map (`src/gcs_usage/identities.yaml`: real
-names, teams, login aliases) and per-user usage reports stay out of the public
-[marin] repo, matching the privacy stance of marin's egress report.
+The identity map (`marin/src/gcs_usage/identities.yaml`: handles, teams, login
+aliases) is curated in-repo; it maps already-public GitHub / W&B handles to a
+team bucket (`oa` / `stanford` / `communal`) and carries no emails or private
+contact info.
 
-See [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md) for
-the full plan (attribution signals, join layer, weekly report integration,
-OA-gated webapp, [disk-tree] drill-down).
+## Mark & sweep
 
-## Usage
+Storage across the `marin-*` buckets is reviewed by **marking prefixes to keep**
+— everything left unmarked is **swept (deleted) after the cleanup deadline**.
+Mark from the web UI at [gcs.oa.dev], or non-interactively:
+
+- `gcs-usage mark` / `status` / `todo` — the CLI (bulk-mark, check a prefix's
+  effective fate, list the undecided backlog).
+- `GET /api/resolve`, `GET /api/todo`, `POST /api/actions` — the HTTP API.
+
+**[AGENTS.md](AGENTS.md)** documents the token, CLI, and API for driving this
+autonomously (e.g. pointing an agent at your team's prefixes). Marking only
+records a decision in the ledger — nothing is deleted at mark time, and marks
+are reversible until the sweep.
+
+## Attribution pipeline
 
 Attribution parquets (`prefix → user/team` rows) come from two builders:
 
@@ -49,8 +63,7 @@ spellings resolve to their own sanitized segment with team `unknown` and are
 listed on stderr — curate them into `identities.yaml` (`gcs-usage rules`
 validates it).
 
-Listing-scale runs (34M+ dirs) belong on a work node, not a laptop — see the
-weekly-refresh runbook in [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md).
+Listing-scale runs (34M+ dirs) belong on a work node, not a laptop.
 
 ## Access ([gcs.oa.dev])
 
@@ -61,9 +74,24 @@ The viz site is gated by [Cloudflare Access][cf-access] (app "GCS usage", Open A
 
 To add/remove whitelisted emails: CF dashboard → Zero Trust → Access → Applications → "GCS usage" policy (or ask Ryan). Update this list in lockstep so the policy stays reviewable here.
 
+## Repo layout
+
+Monorepo — a shared engine plus the Marin-specific app and site:
+
+- **`marin/`** — the `marin-gcs-usage` package (the `gcs-usage` CLI: attribution
+  builders, reporting, the mark & sweep ledger client, access-log ingest).
+- **`src/disk_tree/`** — the [disk-tree] engine (indexing, tree aggregation,
+  storage backends) this repo is built on; installed as the root `disk-tree`
+  package.
+- **`site/`** — the [gcs.oa.dev] web app: a Cloudflare Pages SPA (treemap +
+  browse + mark UI) with Pages Functions serving `/data` and `/api/*`.
+
 ## Development
 
+The `gcs-usage` CLI lives in `marin/`:
+
 ```bash
+cd marin
 uv sync
 uv run pytest
 ```
@@ -71,11 +99,14 @@ uv run pytest
 Two marin contracts are deliberately mirrored (not imported) to keep this repo
 standalone; if either changes upstream, update in lockstep:
 
-- `src/gcs_usage/usernames.py` — `sanitize_username` rules, mirror of
+- `marin/src/gcs_usage/usernames.py` — `sanitize_username` rules, mirror of
   `rigging.provenance.username_segment`
-- `src/gcs_usage/records.py` — the `.artifact.json` shape
+- `marin/src/gcs_usage/records.py` — the `.artifact.json` shape
   (`marin.execution.artifact.ArtifactRecord`), of which only
   `provenance.built_by` is read
+
+For the web app (`site/`), see [`site/`](site) — `./dev` runs the full local
+stack (Vite UI + `wrangler pages dev` for the Functions).
 
 [gcs.oa.dev]: https://gcs.oa.dev
 [cf-access]: https://developers.cloudflare.com/cloudflare-one/applications/
