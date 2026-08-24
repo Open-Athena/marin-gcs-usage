@@ -329,25 +329,32 @@ def write_webdata(
     if attr:
         tree.update(_attr_of([r for g in buckets.values() for r in g]))
 
-    # Read-recency join: per-(bucket, path) last-read epoch day from the
-    # access-log layer-2a shards, attached as `a` to every tree node whose
-    # prefix has been read since logging began. The agg's own MAX rollup means
-    # a prefix's `a` already covers everything under it — deeper than the
-    # tree's depth cap included.
+    # Access join: per-(bucket, path) read-recency + read volume from the
+    # access-log layer-2a shards. The agg's own rollups mean a prefix's values
+    # already cover everything under it — deeper than the tree's depth cap
+    # included. Two op filters, because they answer different questions:
+    #   `a`      MAX(last_ts) over GET/HEAD/LIST — "did anyone touch this at
+    #            all", the deletion veto.
+    #   `ro`/`rb` counts/bytes over GET/HEAD only — a bucket listing is not a
+    #            read of the data. `rb / ro` is mean read size, which separates
+    #            few-huge-sequential from millions-of-small-random (the
+    #            ops-cost-heavy pattern).
     access_window: tuple[int, int] | None = None
     if access:
         globs = "[" + ", ".join(f"'{g}'" for g in access) + "]"
-        amap: dict[str, int] = {}
-        for bucket, path, aday in con.execute(
+        amap: dict[str, tuple[int, int, int]] = {}
+        for bucket, path, aday, ro, rb in con.execute(
             f"""
             SELECT bucket, CASE WHEN path = '.' THEN '' ELSE path END AS path,
-              CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday
+              CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday,
+              COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
+              COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
             FROM read_parquet({globs})
             WHERE depth <= 4 AND op IN ('GET', 'HEAD', 'LIST')
             GROUP BY 1, 2
             """
         ).fetchall():
-            amap[f"{bucket}/{path}" if path else bucket] = aday
+            amap[f"{bucket}/{path}" if path else bucket] = (aday, int(ro), int(rb))
         lo, hi = con.execute(
             f"SELECT CAST(floor(epoch(MIN(last_ts)) / 86400) AS INTEGER), "
             f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs})"
@@ -356,19 +363,26 @@ def write_webdata(
             access_window = (int(lo), int(hi))
         _rss("access")
 
-        def _attach_atime(node: dict, key: str) -> None:
-            a = amap.get(key)
-            if a is not None:
+        def _attach_access(node: dict, key: str) -> None:
+            hit = amap.get(key)
+            if hit is not None:
+                a, ro, rb = hit
                 node["a"] = a
+                if ro:  # omit zero-read nodes entirely (LIST-only prefixes)
+                    node["ro"], node["rb"] = ro, rb
             for c in node.get("c") or []:
                 if not c["n"].startswith("("):
-                    _attach_atime(c, f"{key}/{c['n']}" if key else c["n"])
+                    _attach_access(c, f"{key}/{c['n']}" if key else c["n"])
 
         for root_node in roots:
-            _attach_atime(root_node, root_node["n"])
+            _attach_access(root_node, root_node["n"])
         root_as = [n["a"] for n in roots if "a" in n]
         if root_as:
             tree["a"] = max(root_as)
+        root_ro = sum(n.get("ro", 0) for n in roots)
+        if root_ro:
+            tree["ro"] = root_ro
+            tree["rb"] = sum(n.get("rb", 0) for n in roots)
 
     if attr:
         # (day, d1, team, user) strata via the same SQL attribution join.

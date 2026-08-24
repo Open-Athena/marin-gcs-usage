@@ -189,18 +189,31 @@ def list_new(client, log_bucket: str, bucket: str, state: dict) -> list[tuple[st
     return out
 
 
-def sweep_ingested(client, log_bucket: str, bucket: str, watermark: str | None, workers: int = 16) -> int:
+def sweep_ingested(
+    client,
+    log_bucket: str,
+    bucket: str,
+    watermark: str | None,
+    workers: int = 16,
+    lag_hours: int = LAG_HOURS,
+) -> int:
     """Move fully-ingested CSVs out of ``usage/`` into ``ingested/``, where a
     7d ``matchesPrefix`` lifecycle rule deletes them (the copy resets the
     object's age clock, so that's 7 days *after conversion*, not delivery).
 
-    Sweeps every name strictly below the lag-window floor (watermark − 6h) —
-    exactly the set ``list_new`` will never re-list, so sweep and ingest can
-    never disagree about a file. A file delivered *ultra*-late (name-ts below
-    the floor by the time it lands) is already permanently skipped by ingest;
-    sweeping it just moves its deletion from the bucket-wide 30d backstop to
-    the 7d TTL. Self-healing: a crash mid-sweep leaves files in ``usage/``
-    for the next run; a crash between copy and delete just re-copies.
+    Sweeps every name strictly below the lag-window floor (watermark −
+    ``lag_hours``) — exactly the set ``list_new`` will never re-list, so sweep
+    and ingest can never disagree about a file. A file delivered *ultra*-late
+    (name-ts below the floor by the time it lands) is already permanently
+    skipped by ingest; sweeping it just moves its deletion from the bucket-wide
+    30d backstop to the 7d TTL. Self-healing: a crash mid-sweep leaves files in
+    ``usage/`` for the next run; a crash between copy and delete just re-copies.
+
+    ``lag_hours=0`` sweeps everything through the watermark inclusive, which is
+    the cutover step to the list-based drain: the drain's work list is "in
+    ``usage/`` and not yet an L0 shard", so any CSV the polled path ingested has
+    to leave ``usage/`` before the drain starts, or it gets ingested a second
+    time. Only safe once the polled ingest has stopped for good.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -208,7 +221,9 @@ def sweep_ingested(client, log_bucket: str, bucket: str, watermark: str | None, 
     if not wm_ts:
         return 0
     prefix = f"usage/{bucket}_usage_"
-    floor = prefix + _ts_minus_hours(wm_ts, LAG_HOURS)
+    # end_offset is exclusive, so lag_hours=0 needs a nudge past the watermark
+    # itself; '`' is the byte just above '_', the separator that follows a stamp.
+    floor = prefix + (f"{wm_ts}`" if lag_hours <= 0 else _ts_minus_hours(wm_ts, lag_hours))
     blobs = list(client.list_blobs(log_bucket, prefix=prefix, end_offset=floor))
     if not blobs:
         return 0
@@ -223,6 +238,41 @@ def sweep_ingested(client, log_bucket: str, bucket: str, watermark: str | None, 
         list(ex.map(move, blobs))
     err(f"[{bucket}] swept {len(blobs)} ingested CSVs → ingested/ (7d TTL)")
     return len(blobs)
+
+
+# Above this, upload in parallel chunks instead of one stream. The job's
+# compute is us-central1 while the data bucket is us-east1, and a single
+# stream over that RTT measured ~61 MB/s (3.3 GB of layer-1a took 53s, ~37%
+# of total ingest wall time). Chunked upload is the standard remedy for a
+# latency-bound transfer; it also helps once the buckets are colocated.
+PARALLEL_UPLOAD_MIN_BYTES = 64 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024
+
+
+def upload_blob(blob, local: Path, workers: int = 16) -> None:
+    """Upload ``local`` to ``blob``, in parallel chunks when it's big enough.
+
+    Falls back to a single stream on any failure of the chunked path: XML
+    multipart upload needs ``storage.multipartUploads.*`` and a compatible
+    library version, and a slow upload beats a failed ingest.
+    """
+    from google.cloud.storage import transfer_manager
+
+    size = local.stat().st_size
+    if size >= PARALLEL_UPLOAD_MIN_BYTES:
+        try:
+            # Threads, not the default process pool: the work is socket writes
+            # (concurrency over RTT is the whole point), and process workers
+            # re-import __main__ in each child — fragile under a container
+            # entrypoint, and it hard-fails outright when __main__ isn't a file.
+            transfer_manager.upload_chunks_concurrently(
+                str(local), blob, chunk_size=UPLOAD_CHUNK_BYTES, max_workers=workers,
+                worker_type=transfer_manager.THREAD,
+            )
+            return
+        except Exception as e:
+            err(f"chunked upload of {blob.name} failed ({type(e).__name__}: {e}); retrying single-stream")
+    blob.upload_from_filename(str(local), timeout=600)
 
 
 def _span_name(first: str, last: str) -> str:
@@ -248,6 +298,8 @@ def ingest_bucket(
 
     from disk_tree.access.aggregate import aggregate_access
     from disk_tree.access.parsers import parser_for
+    from disk_tree.access.parsers.gcs import DEDUPE_WARN_FRACTION, dropped_fraction
+    from disk_tree.access.read_sizes import aggregate_read_sizes
 
     state = load_state(client, data_bucket, bucket)
     todo = list_new(client, log_bucket, bucket, state)
@@ -289,6 +341,7 @@ def ingest_bucket(
         span = _span_name(chunk.names[0], chunk.names[-1])
         raw_local = stage_dir / bucket / f"{span}.raw.parquet"
         agg_local = stage_dir / bucket / f"{span}.agg.parquet"
+        sizes_local = stage_dir / bucket / f"{span}.sizes.parquet"
         con = duckdb.connect()
         con.execute(f"SET memory_limit = '{memory_limit}'")
         con.execute("SET preserve_insertion_order = false")
@@ -304,19 +357,33 @@ def ingest_bucket(
         rel.write_parquet(str(raw_local), compression="zstd")
         n_rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{raw_local}')").fetchone()[0]
         n_rows_total += n_rows
-        stats = aggregate_access(con, f"(SELECT * FROM read_parquet('{raw_local}'))", str(agg_local))
+        # Rows-in vs rows-out — see disk_tree.access.parsers.gcs.dropped_fraction.
+        # This chunk-wide parse is the *worse* case for a bad dedupe key, since
+        # duplicates are hunted across ~16 CSVs rather than within one.
+        n_in, dropped = dropped_fraction(con, n_rows)
+        if dropped > DEDUPE_WARN_FRACTION:
+            err(
+                f"[{bucket}] WARNING chunk {ci + 1}: dedupe dropped "
+                f"{n_in - n_rows:,}/{n_in:,} rows ({dropped:.1%}) — expected <"
+                f"{DEDUPE_WARN_FRACTION:.0%}; suspect the dedupe key, not the data"
+            )
+        raw_rel = f"(SELECT * FROM read_parquet('{raw_local}'))"
+        stats = aggregate_access(con, raw_rel, str(agg_local))
+        # Layer-2b must read 1a, not 2a: 2a has already summed bytes_out across
+        # requests, and the per-request size distribution can't be recovered.
+        sizes = aggregate_read_sizes(con, raw_rel, str(sizes_local))
         con.close()
         err(
             f"[{bucket}] chunk {ci + 1}: {n_rows:,} rows → {raw_local.stat().st_size / 1e9:.2f} GB raw, "
-            f"{stats['paths_out']:,} paths / {stats['days']} day(s) agg"
+            f"{stats['paths_out']:,} paths / {stats['days']} day(s) agg, "
+            f"{sizes['rows']:,} read-size rows / {sizes['prefixes']:,} prefixes"
         )
 
         # Upload both, then (and only then) advance the watermark — a crash
         # in between reprocesses this chunk onto the same object names.
-        for local, kind in ((raw_local, "raw"), (agg_local, "agg")):
-            data_bkt.blob(f"access/{kind}/{bucket}/{span}.parquet").upload_from_filename(
-                str(local), timeout=600,
-            )
+        for local, kind in ((raw_local, "raw"), (agg_local, "agg"), (sizes_local, "sizes")):
+            blob = data_bkt.blob(f"access/{kind}/{bucket}/{span}.parquet")
+            upload_blob(blob, local, workers=workers)
             local.unlink()
         shutil.rmtree(csv_dir)
 

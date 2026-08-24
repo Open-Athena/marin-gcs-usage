@@ -9,6 +9,7 @@ need (distinct ``users/<seg>/`` prefixes and record-file rows).
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import sys
 from collections import Counter
@@ -21,6 +22,8 @@ import pandas as pd
 from click import Choice, argument, group, option
 
 from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
+from .mark import DEFAULT_URL as MARK_DEFAULT_URL
+from .mark import KEEP_ACTIONS as MARK_KEEPS
 from .listing import prepare_listing
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
@@ -507,6 +510,135 @@ def rules(identities_path: Path, out: Path | None) -> None:
         raise SystemExit(1)
 
 
+@main.command()
+@option("-f", "--file", "sources", multiple=True, type=Path, help="Read prefixes from FILE (one per line; '-' = stdin). Repeatable.")
+@option("-k", "--keep", default="keep", type=Choice([*MARK_KEEPS, "none"]), help="Keep action to set ('none' leaves the keep axis untouched)")
+@option("-m", "--memo", default=None, help="Note stored with every action in the ledger")
+@option("-n", "--dry-run", is_flag=True, help="Print the actions that would be posted, and send nothing")
+@option("-o", "--owner", default="@me", help="Owner to set ('@me' = you, resolved server-side); empty string leaves the owner axis untouched")
+@option("-s", "--scan", default=None, help="Snapshot id these marks were derived from (provenance)")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN); copy yours from the dashboard")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+@argument("prefixes", nargs=-1)
+def mark(
+    sources: tuple[Path, ...],
+    keep: str,
+    memo: str | None,
+    dry_run: bool,
+    owner: str,
+    scan: str | None,
+    token: str | None,
+    url: str | None,
+    prefixes: tuple[str, ...],
+) -> None:
+    """Bulk-mark GCS prefixes in the mark & sweep ledger.
+
+    The agent-facing entry point: an agent that knows which prefixes it owns
+    hands them over and claims them in one call.
+
+        gcs-usage mark gs://marin-us-central1/checkpoints/my-run/
+
+        find_my_dirs | gcs-usage mark --keep keep_last_ckpt
+
+    PREFIXES come from arguments, --file (repeatable; '-' reads stdin), or —
+    when neither is given — stdin. Each must be a directory prefix under a
+    marin bucket, gs://marin-<bucket>/<path>/, trailing slash required.
+    """
+    from .mark import (
+        MarkError,
+        batches,
+        build_actions,
+        creds as mark_creds,
+        gather_prefixes,
+        post_actions,
+    )
+
+    line_sources = []
+    opened = []
+    try:
+        for s in sources:
+            if str(s) == "-":
+                line_sources.append(sys.stdin)
+            else:
+                f = open(s)
+                opened.append(f)
+                line_sources.append(f)
+        # No explicit prefixes anywhere → read stdin, the pipe-friendly default.
+        if not prefixes and not sources:
+            line_sources.append(sys.stdin)
+        try:
+            all_prefixes = gather_prefixes(list(prefixes), line_sources)
+            actions = build_actions(
+                all_prefixes,
+                keep=None if keep == "none" else keep,
+                owner=owner or None,
+                memo=memo,
+                scan=scan,
+            )
+        except MarkError as e:
+            raise SystemExit(f"error: {e}")
+    finally:
+        for f in opened:
+            f.close()
+
+    chunks = batches(actions)
+    if dry_run:
+        print(json.dumps(actions, indent=2))
+        err(f"dry-run: {len(actions)} action(s) in {len(chunks)} request(s); nothing sent")
+        return
+
+    base, tok = mark_creds(token, url)
+    if not tok:
+        raise SystemExit("error: no token — pass --token or set $GCS_USAGE_TOKEN (copy it from the dashboard)")
+
+    total = 0
+    for i, chunk in enumerate(chunks, 1):
+        try:
+            res = post_actions(base, tok, chunk)
+        except MarkError as e:
+            raise SystemExit(f"error: {e}")
+        total += res.get("count", len(chunk))
+        err(f"batch {i}/{len(chunks)}: {res.get('count', len(chunk))} action(s) accepted")
+    err(f"marked {total} prefix(es) as {'owner=' + owner if owner else ''}{' ' if owner and keep != 'none' else ''}{'keep=' + keep if keep != 'none' else ''}")
+
+
+@main.command()
+@option("-j", "--json", "as_json", is_flag=True, help="Emit the raw /api/resolve JSON")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+@argument("path")
+def status(as_json: bool, token: str | None, url: str | None, path: str) -> None:
+    """Show the effective keep + owner of PATH (a gs://marin-<bucket>/<dir>/ prefix).
+
+    Resolves via /api/resolve — the same recency fold the dashboard uses, so an
+    agent sees exactly what a person would. Works at any depth (resolution is
+    prefix-matching over the ledger, independent of the tree's depth cap).
+    """
+    from .mark import MarkError, creds, resolve_path
+
+    base, tok = creds(token, url)
+    if not tok:
+        raise SystemExit("error: no token — pass --token or set $GCS_USAGE_TOKEN")
+    try:
+        r = resolve_path(base, tok, path)
+    except MarkError as e:
+        raise SystemExit(f"error: {e}")
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+
+    def _src(hit: dict) -> str:
+        where = "here" if hit["own"] else f"inherited from {hit['prefix']}"
+        day = dt.datetime.fromtimestamp(hit["ts"], dt.timezone.utc).strftime("%Y-%m-%d")
+        memo = f', memo="{hit["memo"]}"' if hit.get("memo") else ""
+        return f"{where}, by {hit['who']} on {day}{memo}"
+
+    keep, owner = r.get("keep"), r.get("owner")
+    print(f"path:  {r['path']}")
+    print(f"keep:  {keep['action'] + '  (' + _src(keep) + ')' if keep else 'unmarked — sweeps at the deadline unless kept'}")
+    print(f"owner: {owner['owner'] + '  (' + _src(owner) + ')' if owner else 'unattributed — in lost & found'}")
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
@@ -544,6 +676,206 @@ def access_ingest(
         workers=workers,
         max_chunks=max_chunks,
     )
+
+
+@access.command("ingest-one")
+@option("-d", "--data-bucket", default="oa-gcs-usage-dvx", help="Output bucket")
+@option("-l", "--log-bucket", default=None, help="Usage-log delivery bucket (default: marin-usage-logs)")
+@option("-M", "--memory-limit", default=None, help="DuckDB memory limit (default: $DUCKDB_MEM_ACCESS or 8GB)")
+@option("-S", "--no-sweep", is_flag=True, help="Leave the CSV in usage/ instead of moving it to ingested/")
+@option("-s", "--stage-dir", type=Path, default=None, help="Local staging dir (default: $STAGE_DIR or /tmp, + /access-stage)")
+@argument("object_name")
+def access_ingest_one(
+    data_bucket: str,
+    log_bucket: str | None,
+    memory_limit: str | None,
+    no_sweep: bool,
+    stage_dir: Path | None,
+    object_name: str,
+) -> None:
+    """Ingest a single usage CSV at OBJECT_NAME → L0 shards (the drain's unit).
+
+    Output names derive from OBJECT_NAME, so re-running is idempotent. Same code
+    path `access drain` runs per file; use it to exercise one CSV by hand
+    (`specs/reactive-ingest.md`).
+    """
+    from google.cloud import storage
+
+    from .access import USAGE_LOG_BUCKET
+    from .reactive import Skip, classify, ingest_one
+
+    what = classify(object_name)
+    if isinstance(what, Skip):
+        err(f"skipping {object_name}: {what.reason}")
+        return
+    ingest_one(
+        storage.Client(),
+        what,
+        stage_dir=(stage_dir or Path(os.environ.get("STAGE_DIR") or "/tmp") / "access-stage"),
+        data_bucket=data_bucket,
+        log_bucket=log_bucket or USAGE_LOG_BUCKET,
+        memory_limit=memory_limit or os.environ.get("DUCKDB_MEM_ACCESS") or "8GB",
+        sweep=not no_sweep,
+    )
+
+
+@access.command("drain")
+@option("-a", "--min-age-hours", default=0, help="Hold back CSVs whose log-hour is newer than this")
+@option("-b", "--bucket", "buckets", multiple=True, help="Source buckets (default: the marin fleet)")
+@option("-d", "--data-bucket", default="oa-gcs-usage-dvx", help="Output bucket")
+@option("-l", "--log-bucket", default=None, help="Usage-log delivery bucket (default: marin-usage-logs)")
+@option("-M", "--memory-limit", default=None, help="DuckDB memory limit, split across workers (default: $DUCKDB_MEM_ACCESS or 8GB)")
+@option("-n", "--dry-run", is_flag=True, help="Print the work list without ingesting it")
+@option("-S", "--no-sweep", is_flag=True, help="Leave CSVs in usage/ instead of moving them to ingested/")
+@option("-s", "--stage-dir", type=Path, default=None, help="Local staging dir (default: $STAGE_DIR or /tmp, + /access-stage)")
+@option("-w", "--workers", default=4, help="Concurrent CSV ingests")
+def access_drain(
+    min_age_hours: int,
+    buckets: tuple[str, ...],
+    data_bucket: str,
+    log_bucket: str | None,
+    memory_limit: str | None,
+    dry_run: bool,
+    no_sweep: bool,
+    stage_dir: Path | None,
+    workers: int,
+) -> None:
+    """Ingest every usage CSV that has no L0 shard yet. The primary ingest path.
+
+    The work list is a set difference between two bucket listings — what's in
+    `usage/` minus what's already in `access/raw/<bucket>/l0/` — so there is no
+    watermark, lease or queue to lose, and an interrupted run is repaired by
+    simply running again (`specs/reactive-ingest.md`).
+
+    Do not run this while the polled `access ingest` is still live: CSVs it has
+    ingested but not yet swept have no L0 shard, so they would be ingested a
+    second time. See `access sweep --through-watermark` for the cutover.
+    """
+    import datetime as dt
+
+    from google.cloud import storage
+
+    from .access import FLEET, USAGE_LOG_BUCKET, _ts_minus_hours
+    from .reactive import drain, pending
+
+    floor = ""
+    if min_age_hours:
+        now = dt.datetime.now(dt.timezone.utc).strftime("%Y_%m_%d_%H_%M_%S")
+        floor = _ts_minus_hours(now, min_age_hours)
+    client = storage.Client()
+    log_bucket = log_bucket or USAGE_LOG_BUCKET
+    if dry_run:
+        total = 0
+        for b in buckets or FLEET:
+            for basename in pending(client, b, log_bucket=log_bucket, data_bucket=data_bucket, floor=floor):
+                print(f"{b}\t{basename}")
+                total += 1
+        err(f"drain: {total} CSV(s) pending" + (f" (floor {floor})" if floor else ""))
+        return
+    stats = drain(
+        client,
+        buckets or FLEET,
+        log_bucket=log_bucket,
+        data_bucket=data_bucket,
+        stage_dir=(stage_dir or Path(os.environ.get("STAGE_DIR") or "/tmp") / "access-stage"),
+        floor=floor,
+        memory_limit=memory_limit or os.environ.get("DUCKDB_MEM_ACCESS") or "8GB",
+        workers=workers,
+        sweep=not no_sweep,
+    )
+    if stats["failed"]:
+        raise SystemExit(1)
+
+
+@access.command("sweep")
+@option("-b", "--bucket", "buckets", multiple=True, help="Source buckets (default: the marin fleet)")
+@option("-d", "--data-bucket", default="oa-gcs-usage-dvx", help="State bucket holding the watermarks")
+@option("-l", "--log-bucket", default=None, help="Usage-log delivery bucket (default: marin-usage-logs)")
+@option("-T", "--through-watermark", is_flag=True, help="Sweep through the watermark itself, not watermark − lag")
+@option("-w", "--workers", default=16, help="Concurrent copy+delete pairs")
+def access_sweep(
+    buckets: tuple[str, ...],
+    data_bucket: str,
+    log_bucket: str | None,
+    through_watermark: bool,
+    workers: int,
+) -> None:
+    """Move already-ingested CSVs out of `usage/` into `ingested/` (7d TTL).
+
+    The polled `ingest` does this itself at the end of each run, but only up to
+    watermark − 6h, leaving the lag window in place for late deliveries.
+
+    `-T` sweeps the lag window too, which is the one-shot cutover step to the
+    list-based drain: the drain treats anything left in `usage/` as un-ingested,
+    so the polled path's residue has to be cleared first. Run it only after the
+    polled ingest has been switched off for good.
+    """
+    from google.cloud import storage
+
+    from .access import FLEET, LAG_HOURS, USAGE_LOG_BUCKET, load_state, sweep_ingested
+
+    client = storage.Client()
+    total = 0
+    for b in buckets or FLEET:
+        state = load_state(client, data_bucket, b)
+        total += sweep_ingested(
+            client, log_bucket or USAGE_LOG_BUCKET, b, state.get("watermark"),
+            workers=workers, lag_hours=0 if through_watermark else LAG_HOURS,
+        )
+    err(f"sweep: {total} CSV(s) moved to ingested/")
+
+
+@access.command("compact")
+@option("-b", "--bucket", "buckets", multiple=True, help="Source buckets (default: the marin fleet)")
+@option("-d", "--data-bucket", default="oa-gcs-usage-dvx", help="Output bucket")
+@option("-K", "--keep-l0", is_flag=True, help="Leave L0 shards in place after promoting them")
+@option("-L", "--lag-days", default=2, help="Treat days within this many days of now as still open")
+@option("-M", "--memory-limit", default=None, help="DuckDB memory limit (default: $DUCKDB_MEM_ACCESS or 8GB)")
+@option("-n", "--dry-run", is_flag=True, help="Report what would be compacted")
+@option("-s", "--stage-dir", type=Path, default=None, help="Local staging dir (default: $STAGE_DIR or /tmp, + /access-stage)")
+def access_compact(
+    buckets: tuple[str, ...],
+    data_bucket: str,
+    keep_l0: bool,
+    lag_days: int,
+    memory_limit: str | None,
+    dry_run: bool,
+    stage_dir: Path | None,
+) -> None:
+    """Promote closed days' L0 shards into span-named layer-1a/2a/2b files.
+
+    Reactive ingest writes one L0 shard per CSV (~2,700/day fleet-wide); left
+    alone that's ~1M/year, which dominates any scan over the archive. This is
+    the L1 half of the split (`specs/reactive-ingest.md` § 4).
+    """
+    import datetime as dt
+
+    from google.cloud import storage
+
+    from .access import FLEET
+    from .reactive import closed_days, compact_day, group_by_day
+
+    cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=lag_days)).strftime("%Y_%m_%d")
+    client = storage.Client()
+    for b in buckets or FLEET:
+        l0_prefix = f"access/raw/{b}/l0/"
+        names = [
+            blob.name[len(l0_prefix):].removesuffix(".parquet")
+            for blob in client.list_blobs(data_bucket, prefix=l0_prefix)
+        ]
+        by_day = group_by_day(names)
+        for day in closed_days(by_day, cutoff):
+            if dry_run:
+                print(f"{b}\t{day}\t{len(by_day[day])} shards")
+                continue
+            compact_day(
+                client, b, day, by_day[day],
+                stage_dir=(stage_dir or Path(os.environ.get("STAGE_DIR") or "/tmp") / "access-stage"),
+                data_bucket=data_bucket,
+                memory_limit=memory_limit or os.environ.get("DUCKDB_MEM_ACCESS") or "8GB",
+                delete_l0=not keep_l0,
+            )
+    err(f"compact: done (cutoff {cutoff}, lag {lag_days}d)")
 
 
 @access.command("status")
