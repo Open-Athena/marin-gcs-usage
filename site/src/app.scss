@@ -909,6 +909,17 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
 }
 
+// Micro-hue mark ring: frames an explicitly-marked cell in its fate color,
+// layered over the macro-hue fill. `borderColor` is set inline per action.
+.mark-edge {
+  position: absolute;
+  inset: 0;
+  border: 2px solid transparent;
+  border-radius: 3px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
 .mark-badge {
   position: absolute;
   top: 2px;

@@ -288,28 +288,41 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       .sort((a, b) => b.b - a.b)
   }
 
-  // Cell badge: the node's effective fate (deepest-mark-wins) — solid glyph
-  // when the mark sits on the node itself, faded when inherited — plus a
-  // count of marks deeper in the subtree (drill to see them).
+  // Mark overlays, layered on whatever macro hue `colorForCell` painted:
+  //  - a micro-hue *ring* framing every explicitly-marked cell (keep green /
+  //    keep-last-ckpt / sweep red), so fate reads at a glance alongside the
+  //    fill's attribution — the "second color axis". Skipped in `fate` mode,
+  //    where the fill already *is* the fate, and on cells with no own mark
+  //    (unmarked = to-do = no frame).
+  //  - the corner *badge*: the node's effective fate (deepest-mark-wins), solid
+  //    when the mark sits here, faded when inherited, plus a count of marks
+  //    deeper in the subtree.
   const renderCellExtra = markIdx
     ? (n: TreeNode, path: TreeNode[], { w, h }: { w: number; h: number }) => {
-        if (w < 40 || h < 20 || n.n.startsWith('(')) return null
+        if (n.n.startsWith('(')) return null
         const { mark, own, under } = markIdx.resolve(uriOf(path))
         if (!mark && !under) return null
-        return (
-          <span className="mark-badge">
-            {mark && (
-              <span
-                className={'mk ' + (own ? 'own' : 'inh')}
-                style={{ background: ACTION_COLORS[mark.action] }}
-                title={`${mark.action}${own ? '' : ` (inherited from ${mark.prefix})`}`}
-              >
-                {mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'}
-              </span>
-            )}
-            {under > 0 && <span className="under" title={`${under} marks inside`}>{under}</span>}
-          </span>
-        )
+        const ring = mark && own && mode !== 'fate' && w >= 16 && h >= 10 ? (
+          <span className="mark-edge" style={{ borderColor: ACTION_COLORS[mark.action] }} />
+        ) : null
+        const badge = mark || under ? (
+          w >= 40 && h >= 20 ? (
+            <span className="mark-badge">
+              {mark && (
+                <span
+                  className={'mk ' + (own ? 'own' : 'inh')}
+                  style={{ background: ACTION_COLORS[mark.action] }}
+                  title={`${mark.action}${own ? '' : ` (inherited from ${mark.prefix})`}`}
+                >
+                  {mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'}
+                </span>
+              )}
+              {under > 0 && <span className="under" title={`${under} marks inside`}>{under}</span>}
+            </span>
+          ) : null
+        ) : null
+        if (!ring && !badge) return null
+        return <>{ring}{badge}</>
       }
     : undefined
 
