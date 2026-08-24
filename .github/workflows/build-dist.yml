@@ -6,12 +6,12 @@ name: Build @disk-tree/react dist branch
 # monorepo. Uses runsascoded/npm-dist in monorepo mode (`pkgs:
 # packages/react`), source-first (no compile — the package ships .ts).
 #
-# Fires on any push to main that touches packages/react/, and on
+# Fires on any push to gcs that touches packages/react/, and on
 # manual dispatch for one-off rebuilds.
 
 on:
   push:
-    branches: [main]
+    branches: [gcs]
     paths:
       - "packages/react/**"
       - ".github/workflows/build-dist.yml"
