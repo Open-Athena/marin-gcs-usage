@@ -6,7 +6,7 @@ import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
-import { useCanMark, useIdent as useIdentity, useSignOut } from './auth'
+import { signInUrl, useCanMark, useIdent as useIdentity, useSignOut } from './auth'
 import TokenModal from './TokenModal'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
@@ -145,12 +145,24 @@ function AppContent() {
   // rather than mixing one store's tree with another's scan list.
   const scansQ = useQuery<string[]>({
     queryKey: ['scans', store.key],
-    queryFn: () => fetch(`${store.base}/scans.json`).then(r => r.json()),
+    // Throw on a non-OK response (e.g. a 401 from the data proxy with no
+    // session) so react-query holds it as an error instead of handing the
+    // error body downstream — `scans` then stays `[]` rather than crashing
+    // `scans.map`, and the error surfaces as a sign-in prompt below.
+    queryFn: async () => {
+      const r = await fetch(`${store.base}/scans.json`)
+      if (!r.ok) throw Object.assign(new Error(`scans: ${r.status}`), { status: r.status })
+      return r.json()
+    },
     refetchInterval: SCANS_POLL_MS,
   })
   const rulesQ = useQuery({
     queryKey: ['rules'],
-    queryFn: () => fetch('/data/rules.json').then(r => r.json()),
+    queryFn: async () => {
+      const r = await fetch('/data/rules.json')
+      if (!r.ok) throw new Error(`rules: ${r.status}`)
+      return r.json()
+    },
     retry: false,
   })
   const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
@@ -573,6 +585,13 @@ function AppContent() {
         </p>
         )}
       </section>
+
+      {scansQ.isError && (
+        <p className="tab-note" style={{ color: 'var(--s3)' }}>
+          Couldn’t load snapshot data ({(scansQ.error as { status?: number })?.status === 401 ? 'not signed in — this dashboard is access-gated' : String(scansQ.error)}).
+          {' '}<a href={signInUrl()}>Sign in</a> or reload once your session is active.
+        </p>
+      )}
 
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
