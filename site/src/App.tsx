@@ -125,10 +125,11 @@ function AppContent() {
   useEffect(() => {
     document.title = store.title
   }, [store])
-  // URL token matches the visible label ("age"), not the internal key ("date")
+  // URL token matches the visible label ("written"), not the internal key
+  // ("date"); old ?c=age links still decode to the same mode.
   const [modeP, setModeP] = useUrlState('c', {
-    encode: (v: string | undefined) => (v === 'team' || v === undefined ? undefined : v === 'date' ? 'age' : v),
-    decode: (e: string | undefined) => (e === undefined ? 'team' : e === 'age' ? 'date' : e),
+    encode: (v: string | undefined) => (v === 'team' || v === undefined ? undefined : v === 'date' ? 'written' : v),
+    decode: (e: string | undefined) => (e === undefined ? 'team' : e === 'written' || e === 'age' ? 'date' : e),
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
@@ -199,9 +200,11 @@ function AppContent() {
   const myUser = useMyUser(ident?.email, markMode)
   // `?mt=` — active /mark tab (absent = "mine").
   const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
+  // Default to the review backlog (To-do), not the viewer's own files — the
+  // point of /mark is to review everything undecided, incl. others' & unowned.
   const markTab: MarkTab =
-    markTabP === 'todo' || markTabP === 'lost' || markTabP === 'communal' || markTabP === 'all' ? markTabP : 'mine'
-  const setMarkTab = (t: MarkTab) => setMarkTabP(t === 'mine' ? undefined : t)
+    markTabP === 'mine' || markTabP === 'lost' || markTabP === 'communal' || markTabP === 'all' ? markTabP : 'todo'
+  const setMarkTab = (t: MarkTab) => setMarkTabP(t === 'todo' ? undefined : t)
   // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
   const [muP, setMuP] = useUrlState('mu', stringParam())
   const viewUser = muP ?? myUser
@@ -559,7 +562,7 @@ function AppContent() {
           Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
           <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/" target="_blank" rel="noreferrer">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
           scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control recolors
-          both plots — by owning group (OA / Stanford / communal), top-level tree, age (older→newer), or owning
+          both plots — by owning group (OA / Stanford / communal), top-level tree, written (older→newer), or owning
           user (hi-contrast, or hues grouped by group). Ownership comes from the{' '}
           <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
           curation) — hover a cell for its group split and top users, or <kbd>⌘K</kbd> to jump to a user/group.

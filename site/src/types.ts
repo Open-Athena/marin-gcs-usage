@@ -90,7 +90,7 @@ export type ColorMode = 'team' | 'tree' | 'date' | 'read' | 'user' | 'uteam'
 export const MODE_LABELS: Record<ColorMode, string> = {
   team: 'group',
   tree: 'tree',
-  date: 'age',
+  date: 'written',
   read: 'read',
   user: 'user',
   uteam: 'user·group',
