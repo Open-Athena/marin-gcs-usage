@@ -200,7 +200,7 @@ function AppContent() {
   // `?mt=` — active /mark tab (absent = "mine").
   const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
   const markTab: MarkTab =
-    markTabP === 'lost' || markTabP === 'communal' || markTabP === 'all' ? markTabP : 'mine'
+    markTabP === 'todo' || markTabP === 'lost' || markTabP === 'communal' || markTabP === 'all' ? markTabP : 'mine'
   const setMarkTab = (t: MarkTab) => setMarkTabP(t === 'mine' ? undefined : t)
   // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
   const [muP, setMuP] = useUrlState('mu', stringParam())
@@ -224,7 +224,8 @@ function AppContent() {
   // In mark mode the active tab scopes the map to its lens (filter +
   // re-aggregate — the worklists keep the unscoped tree, so their
   // maximal-subtree rows don't coarsen); untoggled, fall back to dimming.
-  const scopedActive = markMode && scoped && markTab !== 'all' && (markTab !== 'mine' || !!viewUser)
+  // `todo` is cross-cutting (no single lens), so it never scopes the map.
+  const scopedActive = markMode && scoped && markTab !== 'all' && markTab !== 'todo' && (markTab !== 'mine' || !!viewUser)
   const mapTree = useMemo(() => {
     if (!shownTree || !scopedActive) return shownTree
     const lens = markTab === 'mine'

@@ -3,7 +3,7 @@ import { signInUrl, useCanMark } from './auth'
 import { ACTION_COLORS, KLC_TIP, MarkControls } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
-import { collectRows, looksCkpt, reviewedBytes, teamLens, userLens } from './sweep'
+import { collectRows, collectTodo, looksCkpt, reviewedBytes, teamLens, userLens } from './sweep'
 import type { SweepRow } from './sweep'
 import { epochDaysToDate, epochDaysToMonth } from './colors'
 import { Tooltip } from './Tooltip'
@@ -15,7 +15,7 @@ import { useUnits } from './units'
 // and communal — with inline mark buttons, so reviewing is a list-walk
 // rather than a treemap hunt. "Everything" = just the treemap below.
 
-export type MarkTab = 'mine' | 'lost' | 'communal' | 'all'
+export type MarkTab = 'todo' | 'mine' | 'lost' | 'communal' | 'all'
 
 const PAGE = 40
 
@@ -52,6 +52,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
 
   const rows = useMemo<SweepRow[]>(() => {
     if (tab === 'all') return []
+    if (tab === 'todo') return collectTodo(root, idx)
     if (tab === 'mine') {
       if (!viewUser) return []
       return collectRows(root, userLens(viewUser), { minBytes: 20e9 }).sort((a, b) => b.b - a.b)
@@ -68,7 +69,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
       )
     }
     return collectRows(root, teamLens('communal'), { minBytes: 500e9 }).sort((a, b) => b.b - a.b)
-  }, [root, tab, viewUser])
+  }, [root, tab, viewUser, idx])
 
   const total = rows.reduce((s, r) => s + r.b, 0)
   const reviewed = reviewedBytes(rows, idx)
@@ -77,6 +78,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
     : viewUser === myUser ? `My files (${viewUser})`
     : `${viewUser}'s files`
   const tabs: [MarkTab, string][] = [
+    ['todo', 'To-do'],
     ['mine', mineLabel],
     ['lost', 'Lost & found'],
     ['communal', 'Communal'],
@@ -193,6 +195,7 @@ export function MarkTabs({ root, idx, myUser, viewUser, setViewUser, users, tab,
       ) : (
         <>
           <p className="tab-note">
+            {tab === 'todo' && <>The review backlog, biggest first — prefixes with <b>no keep/sweep decision</b> yet (unmarked = deleted at the deadline). Mark one and it drops off, surfacing its still-undecided siblings. <b>{fmtBytes(total)}</b> still undecided.</>}
             {tab === 'mine' && <>Prefixes attributed to <b>{viewUser}</b> — <b>{fmtBytes(reviewed)}</b> of <b>{fmtBytes(total)}</b> reviewed ({total ? ((100 * reviewed) / total).toFixed(0) : 0}%). Unmarked = deleted in the sweep.</>}
             {tab === 'lost' && <>Unattributed prefixes, coldest first (never-read, then least-recently-read per access logs) — claim what's yours, then mark it. Unclaimed + unmarked = deleted.</>}
             {tab === 'communal' && <>Shared corpora / datakit — Rav &amp; Will sign off here. {fmtBytes(reviewed)} of {fmtBytes(total)} reviewed.</>}

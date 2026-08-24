@@ -57,6 +57,30 @@ export function collectRows(
   return rows
 }
 
+/**
+ * The keep-axis "to-do": the largest prefixes with no keep/sweep decision
+ * anywhere in their subtree or ancestry (mirrors `functions/_lib/todo.ts`, so
+ * the tab and `gcs-usage todo` agree). A keep decision inherits down, so a node
+ * is a to-do item only when it's fully untouched; marking part of it drops it
+ * and surfaces its still-clean siblings. Biggest first.
+ */
+export function collectTodo(root: TreeNode, idx: MarkIndex, minBytes = 20e9): SweepRow[] {
+  const rows: SweepRow[] = []
+  const walk = (n: TreeNode, uri: string) => {
+    const { mark, under } = idx.resolve(uri)
+    if (mark) return // decided on this prefix or an ancestor — whole subtree settled
+    if (under === 0) {
+      if (n.b >= minBytes) rows.push({ uri, node: n, b: n.b, frac: 1 })
+      return // no decision anywhere below → a clean chunk; take it whole
+    }
+    for (const c of n.c ?? []) {
+      if (!c.n.startsWith('(')) walk(c, `${uri}/${c.n}`)
+    }
+  }
+  for (const bucket of root.c ?? []) walk(bucket, `gs://${bucket.n}`)
+  return rows.sort((a, b) => b.b - a.b)
+}
+
 const CKPT_SEG_RE = /^(step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?\d+/i
 
 /**
