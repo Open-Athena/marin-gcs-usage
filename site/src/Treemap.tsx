@@ -291,42 +291,37 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       .sort((a, b) => b.b - a.b)
   }
 
-  // Mark overlays, layered on whatever macro hue `colorForCell` painted:
-  //  - a micro-hue *ring* framing every explicitly-marked cell (keep green /
-  //    keep-last-ckpt / sweep red), so fate reads at a glance alongside the
-  //    fill's attribution — the "second color axis". Skipped in `fate` mode,
-  //    where the fill already *is* the fate, and on cells with no own mark
-  //    (unmarked = to-do = no frame).
-  //  - the corner *badge*: the node's effective fate (deepest-mark-wins), solid
-  //    when the mark sits here, faded when inherited, plus a count of marks
-  //    deeper in the subtree.
+  // Mark decoration is state-as-*border* (keep green / keep-last-ckpt amber /
+  // sweep red), NOT an ✕ stamped on every descendant. A marked prefix inherits
+  // to its whole subtree, so decorating every cell is redundant noise — we mark
+  // only the top-most rendered cell that carries each mark:
+  //   - `own`  (the mark sits exactly here), or
+  //   - the drill root's direct children (a mark at/above the root surfaces here
+  //     first; its deeper descendants share it and stay undecorated).
+  // Skipped in `fate` mode, where the fill already *is* the fate. Bigger cells
+  // also get a corner badge: the actor's avatar + the state glyph. Full-opacity
+  // (inherited marks are no longer faded — they read as active). Provenance
+  // (who/when/inherited-from) lives in the cell tooltip.
+  const drillDepth = (path ?? initialPath)?.length ?? 1
   const renderCellExtra = markIdx
-    ? (n: TreeNode, path: TreeNode[], { w, h }: { w: number; h: number }) => {
-        if (n.n.startsWith('(')) return null
-        const { mark, own, under } = markIdx.resolve(uriOf(path))
-        if (!mark && !under) return null
-        const ring = mark && own && mode !== 'fate' && w >= 16 && h >= 10 ? (
-          <span className="mark-edge" style={{ borderColor: ACTION_COLORS[mark.action] }} />
+    ? (n: TreeNode, cellPath: TreeNode[], { w, h }: { w: number; h: number }) => {
+        if (n.n.startsWith('(') || mode === 'fate') return null
+        const { mark, own } = markIdx.resolve(uriOf(cellPath))
+        if (!mark) return null
+        const topLevel = cellPath.length === drillDepth + 1
+        if (!own && !topLevel) return null
+        const color = ACTION_COLORS[mark.action]
+        const glyph = mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'
+        const border = w >= 12 && h >= 8
+          ? <span className="mark-edge" style={{ borderColor: color }} /> : null
+        const badge = w >= 44 && h >= 24 ? (
+          <span className="mark-badge">
+            <Avatar github={ghHandle(mark.who)} name={shortName(mark.who)} size={14} />
+            <span className="mk" style={{ background: color }}>{glyph}</span>
+          </span>
         ) : null
-        const badge = mark || under ? (
-          w >= 40 && h >= 20 ? (
-            <span className="mark-badge">
-              {mark && (
-                // The cell tooltip carries the mark provenance now (a badge-only
-                // rTT competed with it and missed cells too small for a badge).
-                <span
-                  className={'mk ' + (own ? 'own' : 'inh')}
-                  style={{ background: ACTION_COLORS[mark.action] }}
-                >
-                  {mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'}
-                </span>
-              )}
-              {under > 0 && <span className="under" title={`${under} marks inside`}>{under}</span>}
-            </span>
-          ) : null
-        ) : null
-        if (!ring && !badge) return null
-        return <>{ring}{badge}</>
+        if (!border && !badge) return null
+        return <>{border}{badge}</>
       }
     : undefined
 

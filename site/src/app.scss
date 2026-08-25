@@ -910,40 +910,37 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 .mark-edge {
   position: absolute;
   inset: 0;
-  border: 2px solid transparent;
+  border: 2.5px solid transparent;
   border-radius: 3px;
   box-sizing: border-box;
   pointer-events: none;
 }
 
+// Corner badge on the top-most marked cell: actor avatar + state glyph. The
+// whole badge is transparent to hover so the cell tooltip (with full mark
+// provenance) still shows over it.
 .mark-badge {
   position: absolute;
-  top: 2px;
+  top: 3px;
   right: 3px;
   display: inline-flex;
   gap: 3px;
   align-items: center;
   pointer-events: none;
+  .user-avatar { box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35); }
   .mk {
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
     border-radius: 4px;
     color: #fff;
-    font-size: 10.5px;
+    font-size: 11px;
     font-weight: 700;
-    pointer-events: none;  // transparent to hover → the cell tooltip (with mark provenance) still shows over the badge
+    line-height: 1;
+    pointer-events: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    &.inh { opacity: 0.55; }
-  }
-  .under {
-    background: var(--panel);
-    color: var(--ink-2);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    font-size: 9.5px;
-    padding: 0 3px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
   }
 }
 

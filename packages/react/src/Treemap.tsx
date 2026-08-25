@@ -621,7 +621,10 @@ export function Treemap<T>({
             onMouseMove={kids.length > 0 ? showTip : undefined}
           >
             <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{kidLabel}</span>
-            {r.w > 90 && (
+            {/* Inline size only for branch title-bars and short leaves; a tall
+                leaf drops it to a 2nd line (below) so the name gets the full
+                first line and isn't crowded by the size or a corner badge. */}
+            {(kids.length > 0 || r.h <= 34) && r.w > 90 && (
               <span className="sz" style={{ opacity: 0.75, whiteSpace: 'nowrap', flex: 'none' }}>
                 {formatSize(kidSize)}
                 {!folded && renderCellSubtitle && (
@@ -631,9 +634,9 @@ export function Treemap<T>({
             )}
           </div>
         )}
-        {/* Narrow cells drop the inline size; give it a second line when the
-            cell is tall enough and its body isn't rendering child tiles. */}
-        {showLbl && r.w <= 90 && kids.length === 0 && r.h > 34 && (
+        {/* Size on a second line for any leaf tall enough to hold one — the
+            first line then belongs entirely to the (possibly long) name. */}
+        {showLbl && kids.length === 0 && r.h > 34 && (
           <div
             className="dt-treemap-lbl2"
             style={{
@@ -647,6 +650,9 @@ export function Treemap<T>({
             }}
           >
             {formatSize(kidSize)}
+            {!folded && renderCellSubtitle && (
+              <span style={{ marginLeft: 4 }}>{renderCellSubtitle(kid as T, kidPath)}</span>
+            )}
           </div>
         )}
         {!folded && renderCellExtra && renderCellExtra(kid as T, kidPath, { w: r.w, h: r.h })}
