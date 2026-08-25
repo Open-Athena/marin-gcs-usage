@@ -9,6 +9,7 @@ export interface IdentityRec {
 
 export const IDENTITIES: Record<string, IdentityRec> = {
   "ahmed-ahmed": {
+    "github": "ahmeda14960",
     "name": "Ahmed",
     "team": "stanford"
   },
@@ -18,14 +19,17 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa"
   },
   "calvin-xu": {
+    "github": "Calvin-Xu",
     "name": "Calvin",
     "team": "stanford"
   },
   "chi-heem-wong": {
+    "github": "chiheem",
     "name": "Chi-Heem",
     "team": "stanford"
   },
   "christopher-chou": {
+    "github": "BabyChouSr",
     "name": "Christopher",
     "team": "stanford"
   },
@@ -35,6 +39,7 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa"
   },
   "elyas-obbad": {
+    "github": "eobbad",
     "name": "Elyas",
     "team": "stanford"
   },
@@ -48,10 +53,12 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa"
   },
   "herumb-shandilya": {
+    "github": "krypticmouse",
     "name": "Herumb",
     "team": "stanford"
   },
   "jason-wang": {
+    "github": "blahBlahhhJ",
     "name": "Jason",
     "team": "stanford"
   },
@@ -60,14 +67,17 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "stanford"
   },
   "kaiyue-wen": {
+    "github": "WhenWen",
     "name": "Kaiyue",
     "team": "stanford"
   },
   "kevin-li": {
+    "github": "AlienKevin",
     "name": "Kevin",
     "team": "stanford"
   },
   "larry-dial": {
+    "github": "ClassicLarry",
     "name": "Larry",
     "team": "oa"
   },
@@ -86,6 +96,7 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "stanford"
   },
   "nikil-ravi": {
+    "github": "nikil-ravi",
     "name": "Nikil",
     "team": "stanford"
   },
@@ -95,6 +106,7 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "stanford"
   },
   "pranshu-chaturvedi": {
+    "github": "pc0618",
     "name": "Pranshu",
     "team": "stanford"
   },
@@ -104,10 +116,12 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa"
   },
   "rohith-kuditipudi": {
+    "github": "RohithKuditipudi",
     "name": "Rohith",
     "team": "stanford"
   },
   "romain-yon": {
+    "github": "yonromai",
     "name": "Romain",
     "team": "oa"
   },
@@ -116,6 +130,7 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa"
   },
   "russell-power": {
+    "github": "rjpower",
     "name": "Russell",
     "team": "oa"
   },
@@ -135,10 +150,12 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa"
   },
   "yael-elmatad": {
+    "github": "yaelelmatad",
     "name": "Yael",
     "team": "oa"
   },
   "ziqing-huang": {
+    "github": "ziqing-huang",
     "name": "Ziqing",
     "team": "stanford"
   }

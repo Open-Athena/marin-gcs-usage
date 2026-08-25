@@ -31,6 +31,7 @@ users:
     github: ryan-williams
     team: oa
   russell-power:
+    github: rjpower
     aliases: [rpower, russell, power]  # `power` observed as `built_by` in 2026-07-13 scan records
     team: oa
   # W&B usernames below observed in the 2026-07-22 full API mine (148,670 runs);
@@ -48,6 +49,7 @@ users:
     github: ravwojdyla
     team: oa
   yael-elmatad:
+    github: yaelelmatad
     team: oa
   matt-wittmann:
     aliases: [mcwitt]
@@ -58,30 +60,37 @@ users:
     github: eczech
     team: oa
   romain-yon:
+    github: yonromai
     team: oa
   moojin-kim:
     aliases: [moojink]  # Moo Jin Kim
     github: moojink
     team: stanford
   calvin-xu:
+    github: Calvin-Xu
     aliases: [pinlinxu, calvinxu]  # one person, two W&B accounts (display: Calvin Xu)
     team: stanford
   rohith-kuditipudi:
+    github: RohithKuditipudi
     aliases: [rohithk]
     team: stanford
   michael-ryan:
     aliases: [michaeljryan, michaelryan]
     team: stanford
   kaiyue-wen:
+    github: WhenWen
     aliases: [when, kaiyuew, kaiyue]
     team: stanford
   pranshu-chaturvedi:
+    github: pc0618
     aliases: [pranshu-01-c]
     team: stanford
   ziqing-huang:
+    github: ziqing-huang
     aliases: [ziqingh]
     team: stanford
   christopher-chou:
+    github: BabyChouSr
     aliases: [babychousr]
     team: stanford
   percy-liang:
@@ -89,28 +98,35 @@ users:
     github: percyliang
     team: stanford
   ahmed-ahmed:
+    github: ahmeda14960
     aliases: [ahmedah, ahmed]  # Ahmed Mohamed Ahmed
     team: stanford
   kevin-li:
+    github: AlienKevin
     aliases: [kevinxli]
     team: stanford
   chi-heem-wong:
+    github: chiheem
     aliases: [chiheem]  # display "CHW"
     name: Chi-Heem
     team: stanford
   nikil-ravi:
+    github: nikil-ravi
     team: stanford
   suhas-kotha:
     aliases: [kothasuhas]
     github: kothasuhas
     team: stanford
   elyas-obbad:
+    github: eobbad
     aliases: [eobbad]
     team: stanford
   herumb-shandilya:
+    github: krypticmouse
     aliases: [herumb-stanford]
     team: stanford
   jason-wang:
+    github: blahBlahhhJ
     aliases: [blahblahhhj]
     team: stanford
   julian:
@@ -120,6 +136,7 @@ users:
     github: alxmrs
     team: oa
   larry-dial:
+    github: ClassicLarry
     aliases: [larrydial, larry]
     team: oa  # TODO confirm — joined 2026-02, active daily
   exedev:
