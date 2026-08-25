@@ -1,7 +1,11 @@
+import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
+import { Avatar, whoToHandle } from './Avatar'
 import { ACTION_LABELS, useMarks } from './marks'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
+import { Tooltip } from './Tooltip'
+import { type RuleUser, type Rules, groupLabel } from './types'
 
 // Recent-marks activity feed (specs/actions-ledger.md): the ledger's keep +
 // owner rows, newest first — who decided what, when. Read-only; the map is
@@ -26,8 +30,44 @@ const prefixToPath = (prefix: string): string => {
   return m ? m[1] : prefix
 }
 
+// Avatar + name, hover for the full identity card. Maps the actor's email/id to
+// a canonical user via rules.json (by id or alias) for group + aka enrichment.
+function WhoCell({ who, user }: { who: string; user?: RuleUser }) {
+  const handle = whoToHandle(who)
+  const name = user?.u ?? handle
+  return (
+    <Tooltip content={
+      <div className="user-card">
+        <div className="uc-head"><Avatar handle={handle} label={name} size={32} /><b>{name}</b></div>
+        {user && <div>group: <b>{groupLabel(user.team)}</b></div>}
+        <div className="uc-sub">{who}</div>
+        {user?.aliases?.length ? <div className="uc-sub">aka {user.aliases.join(', ')}</div> : null}
+      </div>
+    }>
+      <span className="who-chip"><Avatar handle={handle} label={name} size={18} /> {name}</span>
+    </Tooltip>
+  )
+}
+
 export function MarksPage() {
   const { data, isLoading, error } = useMarks(true)
+  const { data: rules } = useQuery<Rules>({
+    queryKey: ['rules'],
+    queryFn: async () => {
+      const r = await fetch('/data/rules.json')
+      if (!r.ok) throw new Error(`rules: ${r.status}`)
+      return r.json()
+    },
+    retry: false,
+  })
+  const userByHandle = useMemo(() => {
+    const m = new Map<string, RuleUser>()
+    for (const u of rules?.users ?? []) {
+      m.set(u.u, u)
+      for (const a of u.aliases) m.set(a.toLowerCase(), u)
+    }
+    return m
+  }, [rules])
   const events = useMemo((): Event[] => {
     if (!data) return []
     const evs: Event[] = []
@@ -73,7 +113,7 @@ export function MarksPage() {
             {events.map(e => (
               <tr key={`${e.id}-${e.prefix}`}>
                 <td title={fmtMarkDate(e.ts)}>{fmtWhen(e.ts)}</td>
-                <td>{e.who}</td>
+                <td><WhoCell who={e.who} user={userByHandle.get(whoToHandle(e.who))} /></td>
                 <td>
                   <span className="chip" style={{ borderColor: e.color }}>
                     <span className="sw" style={{ background: e.color }} />
