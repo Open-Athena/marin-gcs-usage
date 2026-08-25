@@ -37,6 +37,7 @@ users:
   # display names come from the W&B user profile.
   david-hall:
     aliases: [dlwh]  # David Leo Wright Hall
+    github: dlwh
     team: oa
   will-held:
     aliases: [held]
@@ -44,19 +45,23 @@ users:
     team: oa
   rafal-wojdyla:
     aliases: [ravwojdyla, rav]
+    github: ravwojdyla
     team: oa
   yael-elmatad:
     team: oa
   matt-wittmann:
     aliases: [mcwitt]
+    github: mcwitt
     team: oa
   eric-czech:
     aliases: [eczech]
+    github: eczech
     team: oa
   romain-yon:
     team: oa
   moojin-kim:
     aliases: [moojink]  # Moo Jin Kim
+    github: moojink
     team: stanford
   calvin-xu:
     aliases: [pinlinxu, calvinxu]  # one person, two W&B accounts (display: Calvin Xu)
@@ -81,6 +86,7 @@ users:
     team: stanford
   percy-liang:
     aliases: [percyliang]
+    github: percyliang
     team: stanford
   ahmed-ahmed:
     aliases: [ahmedah, ahmed]  # Ahmed Mohamed Ahmed
@@ -96,6 +102,7 @@ users:
     team: stanford
   suhas-kotha:
     aliases: [kothasuhas]
+    github: kothasuhas
     team: stanford
   elyas-obbad:
     aliases: [eobbad]
@@ -110,6 +117,7 @@ users:
     team: stanford  # TODO confirm which Julian; julian/ top-level dirs
   alex-merose:
     aliases: [alxmrs]
+    github: alxmrs
     team: oa
   larry-dial:
     aliases: [larrydial, larry]
