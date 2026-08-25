@@ -729,7 +729,7 @@ function AppContent() {
         <p className="loading">loading tree…</p>
       )}
 
-      <SizeOverTime scans={scans} />
+      <SizeOverTime scans={scans} prefix={drillPath} base={store.base} />
 
       {markMode && <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} />}
 

@@ -4,17 +4,22 @@ import { useMemo } from 'react'
 import type { Meta } from './types'
 import { useUnits } from './units'
 
-// Total stored bytes across the historical scans (specs/size-over-time.md, case
-// pre-1). Built from the per-date `meta.json` (~4 KB each) — cheap, no tree
-// loads. Fleet-total only for now; subpath / regex scoping needs the precomputed
-// per-date index (see the spec), and a per-group stack needs a stacked-area mode
-// (TimeSeries overlays, which reads wrong for nested magnitudes).
+// Stored bytes over the historical scans (specs/size-over-time.md, case 1),
+// scoped to the currently-drilled prefix. The cross-scan index `series.json`
+// (precomputed by `gcs-usage series`) carries per-prefix bytes per date for
+// every prefix above a fold floor; the client just looks up the current `?p=`.
+// Below-floor / not-yet-published → fall back to the fleet total from meta.json.
 
 interface Pt { x: number; y: number }
+interface SeriesIndex {
+  dates: string[]
+  prefixes: string[]
+  bytes: Record<string, (number | null)[]>
+}
 
 // Nice y-ticks aligned to the *display* unit: a base-10-nice byte value (1e15)
 // is an ugly binary label (909 TiB), so nice-tick in the unit's own base
-// (1024 for IEC → 1000/2000/3000 TiB; 1000 for SI → round TB/PB).
+// (1024 for IEC → 1024/2048/3072 TiB; 1000 for SI → round TB/PB).
 const unitTicks = (max: number, base: number, count = 4): number[] => {
   if (max <= 0) return [0]
   const scale = base ** Math.floor(Math.log(max) / Math.log(base))
@@ -27,15 +32,32 @@ const unitTicks = (max: number, base: number, count = 4): number[] => {
   return out
 }
 
-export function SizeOverTime({ scans }: { scans: string[] }) {
+export function SizeOverTime({ scans, prefix, base }: { scans: string[]; prefix: string; base: string }) {
   const { fmtBytes, units } = useUnits()
+
+  // The cross-scan index (one small file); optional — 404 until it's published.
+  const indexQ = useQuery<SeriesIndex | null>({
+    queryKey: ['size-index', base],
+    staleTime: Infinity,
+    retry: false,
+    queryFn: async () => {
+      const r = await fetch(`${base}/series.json`)
+      return r.ok ? (r.json() as Promise<SeriesIndex>) : null
+    },
+  })
+
+  // Fleet-total fallback: per-date meta.json (~4 KB each) — only fetched/used
+  // when the index is missing or the drilled prefix isn't in it.
+  const idx = indexQ.data ?? null
+  const scopedArr = prefix && idx?.bytes[prefix] ? idx.bytes[prefix] : null
+  const needFleet = !scopedArr
   const metas = useQuery({
-    queryKey: ['size-series', scans],
-    enabled: scans.length > 1,
+    queryKey: ['size-series', base, scans],
+    enabled: scans.length > 1 && needFleet,
     staleTime: Infinity,
     queryFn: async () => {
       const rows = await Promise.all(scans.map(async d => {
-        const r = await fetch(`/data/${d}/meta.json`)
+        const r = await fetch(`${base}/${d}/meta.json`)
         if (!r.ok) return null
         return { date: d, m: (await r.json()) as Meta }
       }))
@@ -44,16 +66,22 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
   })
 
   const series = useMemo(() => {
+    if (scopedArr && idx) {
+      const points = idx.dates
+        .map((d, i) => ({ x: new Date(d).getTime(), y: scopedArr[i] }))
+        .filter((p): p is Pt => p.y != null)
+        .sort((a, b) => a.x - b.x)
+      return [{ key: 'scoped', label: prefix, color: 'var(--s1)', points }]
+    }
     const rows = metas.data ?? []
     if (rows.length < 2) return []
     return [{
       key: 'total',
       label: 'total',
       color: 'var(--s1)',
-      // A calendar date id renders as a UTC instant here; fine for month/day ticks.
       points: rows.map(r => ({ x: new Date(r.date).getTime(), y: r.m.total_bytes })).sort((a, b) => a.x - b.x),
     }]
-  }, [metas.data])
+  }, [scopedArr, idx, metas.data, prefix])
 
   const yTickValues = useMemo(() => {
     const max = Math.max(0, ...series.flatMap(s => s.points.map(p => p.y)))
@@ -61,14 +89,20 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
   }, [series, units])
 
   if (scans.length < 2) return null
+  const scoped = !!scopedArr
+  const belowFloor = !!prefix && !!idx && !scopedArr
   return (
     <section id="size-over-time">
       <h2>Size over time</h2>
       <p className="sub">
-        Total stored bytes per scan (fleet-wide). Subpath &amp; regex scoping — and a per-group
-        breakdown — are coming; see the size-over-time spec.
+        {scoped
+          ? <>Stored bytes under <code>{prefix}</code> per scan — the drilled subtree, from the cross-scan index.</>
+          : <>Total stored bytes per scan (fleet-wide).{' '}
+              {belowFloor
+                ? <><code>{prefix}</code> is below the size-index floor, so no scoped series — showing the fleet total.</>
+                : <>Drill in to scope this to a subpath.</>}</>}
       </p>
-      {metas.isError && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load the series.</p>}
+      {indexQ.isError && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load the size index.</p>}
       {series.length > 0 && (
         <TimeSeries<Pt>
           series={series}

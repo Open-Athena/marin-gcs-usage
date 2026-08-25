@@ -1203,6 +1203,13 @@ def _snapshot_dates(root: str) -> list[str]:
 
     import fsspec
 
+    # An http(s) root (e.g. the dev proxy) can't be `ls`ed — the scan list is
+    # synthesized. Fall back to its scans.json listing.
+    if root.startswith(("http://", "https://")):
+        import json
+
+        with fsspec.open(f"{root.rstrip('/')}/scans.json", "rt") as f:
+            return sorted(d for d in json.load(f) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d))
     fs, r = fsspec.core.url_to_fs(root)
     out = []
     for e in fs.ls(r, detail=False):
@@ -1210,6 +1217,78 @@ def _snapshot_dates(root: str) -> list[str]:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name):
             out.append(name)
     return sorted(out)
+
+
+def _load_tree(root: str, date: str) -> dict:
+    import json
+
+    import fsspec
+
+    with fsspec.open(f"{root.rstrip('/')}/{date}/tree.json", "rt") as f:
+        return json.load(f)
+
+
+@main.command()
+@option("-D", "--max-depth", default=4, help="Deepest prefix level to index (path segments below the bucket root)")
+@option("-f", "--min-frac", default=0.002, help="Chart a prefix if its bytes reach this fraction of the fleet total in any scan")
+@option("-F", "--full-depth", default=2, help="Always index prefixes this many segments deep (bucket + one dir), whatever their size, so common drill targets are covered")
+@option("-o", "--out", type=Path, default=None, help="Write the series JSON here (default: stdout)")
+@option("-r", "--root", help="snapshots root: gs://bucket/snapshots, an http base (the dev proxy), or a local dir (default $DATA_BUCKET)")
+def series(max_depth: int, min_frac: float, full_depth: int, out: Path | None, root: str | None) -> None:
+    """Cross-scan size index for the site's per-subpath "size over time" chart.
+
+    Folds every archived ``tree.json`` into one compact file: for each prefix
+    whose bytes clear a fraction-of-fleet floor in any scan (mirrors the treemap
+    fold), its stored bytes at every scan date. Scans are immutable, so this is
+    effectively append-only — re-run after each new snapshot. See
+    ``specs/size-over-time.md`` (case 1); below-floor / deeper prefixes fall back
+    to the fleet total in the UI.
+    """
+    import json
+
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
+    dates = _snapshot_dates(root)
+    if not dates:
+        raise SystemExit(f"no snapshots under {root}")
+
+    def walk(node: dict, segs: tuple[str, ...], depth: int, flat: dict[str, int]) -> None:
+        for c in node.get("c", ()):  # children
+            n = c["n"]
+            if n.startswith("("):  # synthetic "(other …)" fold, not a real prefix
+                continue
+            key = "/".join((*segs, n))
+            flat[key] = c["b"]
+            if depth + 1 < max_depth:
+                walk(c, (*segs, n), depth + 1, flat)
+
+    per_date: dict[str, dict[str, int]] = {}
+    peak = 0
+    for d in dates:
+        tree = _load_tree(root, d)
+        peak = max(peak, tree.get("b", 0))
+        flat: dict[str, int] = {}
+        walk(tree, (), 0, flat)
+        per_date[d] = flat
+        err(f"  {d}: {len(flat):>6,} prefixes, {tree.get('b', 0) / 1e12:>6.0f} TB")
+
+    floor = peak * min_frac
+    keep = sorted({
+        p for flat in per_date.values() for p, b in flat.items()
+        if b >= floor or p.count("/") < full_depth
+    })
+    payload = {
+        "dates": dates,
+        "prefixes": keep,
+        "bytes": {p: [per_date[d].get(p) for d in dates] for p in keep},
+    }
+    text = json.dumps(payload, separators=(",", ":")) + "\n"
+    err(f"{len(keep)} prefixes ≥ {min_frac:.2%} of {peak / 1e12:.0f} TB across {len(dates)} scans ({len(text):,} bytes)")
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        err(f"wrote {out}")
+    else:
+        print(text, end="")
 
 
 @main.command()

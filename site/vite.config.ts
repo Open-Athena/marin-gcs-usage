@@ -1,10 +1,27 @@
+import { existsSync, readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(',') ?? []
 
+// dev only: serve a locally-generated `tmp/series.json` (from `gcs-usage series
+// -r http://localhost:3254/data -o tmp/series.json`) at /data/series.json, so
+// the scoped size chart can be previewed before the index is published to the
+// bucket. Registered in the plugin body so it pre-empts the /data proxy; a no-op
+// (falls through to the bucket) when the file is absent.
+const devSeriesIndex = {
+  name: 'dev-series-index',
+  configureServer(server: { middlewares: { use: (path: string, fn: (req: unknown, res: { setHeader: (k: string, v: string) => void; end: (b: Buffer) => void }, next: () => void) => void) => void } }) {
+    server.middlewares.use('/data/series.json', (_req, res, next) => {
+      const p = 'tmp/series.json'
+      if (existsSync(p)) { res.setHeader('content-type', 'application/json'); res.end(readFileSync(p)) }
+      else next()
+    })
+  },
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), devSeriesIndex],
   server: {
     port: 3253,
     host: true,

@@ -87,10 +87,28 @@ Depends on #1's index landing first; the ledger side is cheap.
 
 ## Build order
 
-1. `series.json` index in `webdata` + the subpath chart (case 1) — the 80% win.
+1. ✅ **DONE** — `series.json` index (`gcs-usage series`) + the subpath chart (case 1).
 2. `/api/series?q=` with durable per-`(date,path,q)` cache (case 2) — regex.
 3. Fan-out the uncached-date compute if latency needs it.
 4. Mark/owner-over-time (case 3) once the index exists.
+
+## As built (case 1)
+
+- **`gcs-usage series -r <root> -o series.json`** folds every archived `tree.json`
+  into `{dates, prefixes, bytes: {prefix: [b@date…]}}`. A prefix is charted if it
+  clears `--min-frac` (0.2% of fleet) in any scan **or** is within `--full-depth`
+  (2 = bucket + one dir), so common shallow drill targets are always covered even
+  when small (e.g. `ego-dex`, 0.06%). ~478 prefixes / 26 scans ≈ 205 KB.
+  - Reads `gs://…/snapshots` on Batch; a local `-r http://localhost:3254/data`
+    folds the dev-proxied trees for local generation.
+- **`SizeOverTime`** fetches `<store.base>/series.json`, renders the current drill
+  prefix's series (round unit-aligned y-ticks), and **falls back to the fleet
+  total** (per-date `meta.json`) when the index is absent or the prefix is below
+  the floor — so prod never regresses before the index ships.
+- **Publish step (TODO to go live in prod):** the daily snapshot job must run
+  `gcs-usage series -o <snapshots>/series.json` (append-only — only the newest
+  date's column changes) after `webdata`. Until then the chart is fleet-wide in
+  prod; scoping works locally via the vite `dev-series-index` middleware.
 
 ## Open questions
 
