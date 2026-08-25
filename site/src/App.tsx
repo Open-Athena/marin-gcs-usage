@@ -219,8 +219,11 @@ function AppContent() {
   // Seeded open when arriving at `/mark` or via a tab deep-link (`?mt=`); a
   // banner toggle shows/hides it so `/` isn't dominated by the queue. Marking
   // on the map + children table stays available whether or not it's open.
-  const [backlogOpen, setBacklogOpen] = useState(() => pathname === '/mark' || markTabP != null)
-  const backlogActive = markMode && backlogOpen
+  // The review backlog (the To-do/lost/communal work queue) is its own surface at
+  // `/mark` — a cross-cutting list, not "this dir's children", so it doesn't
+  // belong stacked next to the drill table on `/`. `/` = treemap + its children
+  // table (one table, same dirs); `/mark` = treemap + the backlog worklist.
+  const backlogActive = markMode && pathname === '/mark'
   // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
   const [muP, setMuP] = useUrlState('mu', stringParam())
   const viewUser = muP ?? myUser
@@ -559,22 +562,12 @@ function AppContent() {
             ones (you'll be asked to confirm).
             {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}
             {marksQ.error && <span className="err"> marks unavailable: {marksQ.error.message}</span>}
+            {' '}
+            <Link className="backlog-link" to={backlogActive ? '/' : '/mark'}>
+              {backlogActive ? '← back to the map' : 'review the backlog →'}
+            </Link>
           </p>
-          <button type="button" className="backlog-toggle" aria-expanded={backlogOpen} onClick={() => setBacklogOpen(o => !o)}>
-            {backlogOpen ? '▾ Hide' : '▸ Show'} review backlog
-          </button>
         </section>
-      )}
-
-      {backlogActive && shownTree && (
-        <MarkTabs root={shownTree} idx={markIdx} myUser={myUser}
-          viewUser={viewUser} setViewUser={setMuP}
-          users={mkUsers}
-          tab={markTab} setTab={setMarkTab}
-          scoped={scoped} setScoped={setScoped}
-          openPath={openPath}
-          hasAtime={!!readRange}
-        />
       )}
 
       <section className="prose">
@@ -684,7 +677,18 @@ function AppContent() {
             path={mapPath}
             onPathChange={onMapPath}
           />
-          {mapPath && (
+          {/* One table below the map: the backlog worklist on `/mark`, else this
+              node's children. Never both — that read as two disconnected tables. */}
+          {backlogActive && shownTree ? (
+            <MarkTabs root={shownTree} idx={markIdx} myUser={myUser}
+              viewUser={viewUser} setViewUser={setMuP}
+              users={mkUsers}
+              tab={markTab} setTab={setMarkTab}
+              scoped={scoped} setScoped={setScoped}
+              openPath={openPath}
+              hasAtime={!!readRange}
+            />
+          ) : mapPath && (
             <ChildrenTable
               node={mapPath[mapPath.length - 1]}
               segs={mapPath.slice(1).map(n => n.n)}

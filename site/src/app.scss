@@ -896,16 +896,12 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin: 0 4px 0 2px; }
   }
   .err { color: #d33; }
-  .backlog-toggle {
-    margin-top: 8px;
-    font-size: 0.85em;
-    color: var(--ink-2);
-    background: none;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 2px 8px;
-    cursor: pointer;
-    &:hover { color: var(--ink); border-color: var(--ink-2); }
+  .backlog-link {
+    color: var(--s1);
+    font-weight: 600;
+    white-space: nowrap;
+    text-decoration: none;
+    &:hover { text-decoration: underline; }
   }
 }
 
