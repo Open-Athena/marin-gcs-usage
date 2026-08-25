@@ -19,8 +19,8 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { applyFilter, applyNodeFilter, parseQuery } from './filterTree'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
-import { MarkTabs } from './MarkTabs'
-import type { MarkTab } from './MarkTabs'
+import { LensBar, SCOPABLE } from './LensBar'
+import type { Lens } from './LensBar'
 import { lensNodePred, teamLens, useMyUser, userLens } from './sweep'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
@@ -208,22 +208,19 @@ function AppContent() {
   const signOut = useSignOut()
   const [tokenOpen, setTokenOpen] = useState(false)
   const myUser = useMyUser(ident?.email, markMode)
-  // `?mt=` — active /mark tab (absent = "mine").
+  // `?mt=` — active review lens over the map + children table (absent = no
+  // lens, the plain browse view). The lenses are presets on the normal view
+  // (LensBar), scoped to the current subtree — there's no separate /mark page.
   const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
-  // Default to the review backlog (To-do), not the viewer's own files — the
-  // point of /mark is to review everything undecided, incl. others' & unowned.
-  const markTab: MarkTab =
-    markTabP === 'mine' || markTabP === 'lost' || markTabP === 'communal' || markTabP === 'all' ? markTabP : 'todo'
-  const setMarkTab = (t: MarkTab) => setMarkTabP(t === 'todo' ? undefined : t)
-  // The review-backlog panel (MarkTabs — the todo/lost/communal/all queues).
-  // Seeded open when arriving at `/mark` or via a tab deep-link (`?mt=`); a
-  // banner toggle shows/hides it so `/` isn't dominated by the queue. Marking
-  // on the map + children table stays available whether or not it's open.
-  // The review backlog (the To-do/lost/communal work queue) is its own surface at
-  // `/mark` — a cross-cutting list, not "this dir's children", so it doesn't
-  // belong stacked next to the drill table on `/`. `/` = treemap + its children
-  // table (one table, same dirs); `/mark` = treemap + the backlog worklist.
-  const backlogActive = markMode && pathname === '/mark'
+  // No email (anon / no-email session) → no "My files" lens to attribute to.
+  const hasEmail = !!ident?.email
+  const markTabRaw: Lens =
+    markTabP === 'todo' || markTabP === 'mine' || markTabP === 'unclaimed' || markTabP === 'communal' ? markTabP : 'all'
+  const markTab: Lens = markTabRaw === 'mine' && !hasEmail ? 'all' : markTabRaw
+  const setMarkTab = (t: Lens) => {
+    setMarkTabP(t === 'all' ? undefined : t)
+    if (t === 'todo') setModeP('fate') // to-do reads best with the keep/sweep (fate) coloring
+  }
   // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
   const [muP, setMuP] = useUrlState('mu', stringParam())
   const viewUser = muP ?? myUser
@@ -251,12 +248,12 @@ function AppContent() {
   // re-aggregate — the worklists keep the unscoped tree, so their
   // maximal-subtree rows don't coarsen); untoggled, fall back to dimming.
   // `todo` is cross-cutting (no single lens), so it never scopes the map.
-  const scopedActive = backlogActive && scoped && markTab !== 'all' && markTab !== 'todo' && (markTab !== 'mine' || !!viewUser)
+  const scopedActive = markMode && scoped && SCOPABLE.includes(markTab) && (markTab !== 'mine' || !!viewUser)
   const mapTree = useMemo(() => {
     if (!shownTree || !scopedActive) return shownTree
     const lens = markTab === 'mine'
       ? userLens(viewUser!)
-      : teamLens(markTab === 'lost' ? 'unattributed' : 'communal')
+      : teamLens(markTab === 'unclaimed' ? 'unattributed' : 'communal')
     return applyNodeFilter(shownTree, lensNodePred(lens))
   }, [shownTree, scopedActive, markTab, viewUser])
   // Controlled treemap drill path, resolved against the (possibly filtered/
@@ -285,13 +282,14 @@ function AppContent() {
     setPP(segs.length ? segs.join('/') : undefined)
     document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
-  const effHl: Highlight | null = !backlogActive
-    ? hl
-    : scopedActive ? null
+  // A scopable lens highlights its slice even when "scope map" is off; with no
+  // lens (all / to-do) fall back to the manually-picked highlight.
+  const effHl: Highlight | null =
+    scopedActive ? null
     : markTab === 'mine' && viewUser ? { user: viewUser }
-    : markTab === 'lost' ? { team: 'unattributed' }
+    : markTab === 'unclaimed' ? { team: 'unattributed' }
     : markTab === 'communal' ? { team: 'communal' }
-    : null
+    : hl
 
   // The prod hostnames are one-store-each; localhost/previews serve both.
   const crossSite = useMemo(() => {
@@ -562,10 +560,8 @@ function AppContent() {
             ones (you'll be asked to confirm).
             {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}
             {marksQ.error && <span className="err"> marks unavailable: {marksQ.error.message}</span>}
-            {' '}
-            <Link className="backlog-link" to={backlogActive ? '/' : '/mark'}>
-              {backlogActive ? '← back to the map' : 'review the backlog →'}
-            </Link>
+            {' '}Pick a <b>lens</b> below to focus a slice (your files, unclaimed, communal) or the
+            to-do list, scoped to whatever you've drilled into.
           </p>
         </section>
       )}
@@ -597,6 +593,18 @@ function AppContent() {
           Couldn’t load snapshot data ({(scansQ.error as { status?: number })?.status === 401 ? 'not signed in — this dashboard is access-gated' : String(scansQ.error)}).
           {' '}<a href={signInUrl()}>Sign in</a> or reload once your session is active.
         </p>
+      )}
+
+      {markMode && (
+        <LensBar
+          idx={markIdx}
+          hasEmail={hasEmail}
+          myUser={myUser}
+          viewUser={viewUser} setViewUser={setMuP}
+          users={mkUsers}
+          lens={markTab} setLens={setMarkTab}
+          scoped={scoped} setScoped={setScoped}
+        />
       )}
 
       {hasAttr && (
@@ -677,23 +685,15 @@ function AppContent() {
             path={mapPath}
             onPathChange={onMapPath}
           />
-          {/* One table below the map: the backlog worklist on `/mark`, else this
-              node's children. Never both — that read as two disconnected tables. */}
-          {backlogActive && shownTree ? (
-            <MarkTabs root={shownTree} idx={markIdx} myUser={myUser}
-              viewUser={viewUser} setViewUser={setMuP}
-              users={mkUsers}
-              tab={markTab} setTab={setMarkTab}
-              scoped={scoped} setScoped={setScoped}
-              openPath={openPath}
-              hasAtime={!!readRange}
-            />
-          ) : mapPath && (
+          {/* The map's own listing — this node's children, narrowed to the active
+              lens (to-do drops already-decided prefixes). */}
+          {mapPath && (
             <ChildrenTable
               node={mapPath[mapPath.length - 1]}
               segs={mapPath.slice(1).map(n => n.n)}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
+              todoOnly={markMode && markTab === 'todo'}
               onOpen={openPath}
             />
           )}

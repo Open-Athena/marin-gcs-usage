@@ -30,7 +30,7 @@ export const KEEP_TIP =
 export const SWEEP_TIP =
   'Mark this prefix for the sweep. Takes no immediate action — matching objects are deleted only after the sweep deadline.'
 export const CLAIM_TIP =
-  'Claim this prefix as yours — pulls it out of the unattributed “lost & found” so it shows up as your data.'
+  'Claim this prefix as yours — pulls it out of the unattributed “Unclaimed” pool so it shows up as your data.'
 export const clearTip = (own: boolean): string =>
   own ? 'Remove your mark — back to unmarked (swept by default).'
       : 'Override the inherited mark: explicitly unmark this subtree.'

@@ -931,6 +931,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     color: #fff;
     font-size: 10.5px;
     font-weight: 700;
+    pointer-events: none;  // transparent to hover → the cell tooltip (with mark provenance) still shows over the badge
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1032,11 +1033,14 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   border-top: 1px solid var(--line);
 }
 
-.mark-tabs {
+.lens-bar {
+  margin: 10px 0 -4px;
   .tabrow {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+    align-items: center;
+    .lbl { color: var(--ink-2); font-size: 13px; margin-right: 2px; }
     button {
       background: var(--panel);
       color: var(--ink-2);
@@ -1081,8 +1085,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
 }
 
-// Shared by the /mark worklists and the treemap children table.
-.mark-tabs, .children-tbl {
+// The treemap children table (was also shared with the /mark worklists).
+.children-tbl {
   .worklist {
     width: 100%;
     border-collapse: collapse;
@@ -1144,6 +1148,23 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     padding: 3px 10px;
     cursor: pointer;
   }
+  .pager {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12.5px;
+    button {
+      background: var(--panel);
+      color: var(--ink-2);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 3px 10px;
+      cursor: pointer;
+      &:disabled { opacity: 0.4; cursor: default; }
+    }
+    .pager-count { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  }
   .err { color: #d33; }
 }
 
@@ -1151,8 +1172,11 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 
 // "no reads since …" callout in treemap tooltips (dark tip bg → soft red tint)
 .dt-treemap-tip .never-read { color: #e0917f; }
+// Mark provenance line in the cell tooltip (who/when, inherited or own).
+.dt-treemap-tip .tt-mark { margin-top: 6px; font-size: 12.5px; }
+.dt-treemap-tip .tt-mark code { font-size: 11px; opacity: 0.85; }
 
-.mark-tabs {
+.lens-bar {
   .typed-path {
     margin-top: 8px;
     display: flex;
@@ -1169,26 +1193,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     }
     .err { color: #d33; font-size: 12px; }
   }
-  .bulkbar {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    margin: 8px 0;
-    font-size: 13px;
-    color: var(--ink-2);
-    b { color: var(--ink); }
-    button {
-      background: var(--panel);
-      color: var(--ink-2);
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      font-size: 12px;
-      padding: 2px 9px;
-      cursor: pointer;
-      &:hover { filter: brightness(1.08); }
-    }
-  }
-  .worklist tr.sel td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 }
 
 .colorctl .filterbox {

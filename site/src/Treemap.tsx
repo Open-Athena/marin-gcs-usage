@@ -4,7 +4,8 @@ import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { Avatar } from './Avatar'
 import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
-import { ACTION_COLORS, MarkControls } from './MarkControls'
+import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
+import { ACTION_LABELS } from './marks'
 import type { MarkIndex } from './marks'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
@@ -310,10 +311,11 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
           w >= 40 && h >= 20 ? (
             <span className="mark-badge">
               {mark && (
+                // The cell tooltip carries the mark provenance now (a badge-only
+                // rTT competed with it and missed cells too small for a badge).
                 <span
                   className={'mk ' + (own ? 'own' : 'inh')}
                   style={{ background: ACTION_COLORS[mark.action] }}
-                  title={`${mark.action}${own ? '' : ` (inherited from ${mark.prefix})`}`}
                 >
                   {mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'}
                 </span>
@@ -381,6 +383,15 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
               <span className="gradbar" style={{ background: dateGradientCss() }} />
               {epochDaysToMonth(dateRange.max)}
             </span>
+          ) : mode === 'fate' ? (
+            // Keep-axis fate: the cell fill IS the mark decision, so the legend
+            // keys keep/last-ckpt/sweep/undecided — not the prefix colors below.
+            <>
+              <span className="li"><span className="sw" style={{ background: ACTION_COLORS.keep }} />{ACTION_LABELS.keep}</span>
+              <span className="li"><span className="sw" style={{ background: ACTION_COLORS.keep_last_ckpt }} />{ACTION_LABELS.keep_last_ckpt}</span>
+              <span className="li"><span className="sw" style={{ background: ACTION_COLORS.sweep }} />{ACTION_LABELS.sweep}</span>
+              <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />undecided</span>
+            </>
           ) : (
             <>
               {[...catSlot.entries()].map(([k, s]) => (
@@ -399,6 +410,10 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
     const uri = uriOf(path)
     const userMode = mode === 'user' || mode === 'uteam'
+    // The mark decision covering this cell — so provenance (who/when, inherited
+    // or own) is always legible in the tooltip, even on cells too small for the
+    // corner badge or when not in fate coloring.
+    const st = markIdx && !n.n.startsWith('(') ? markIdx.resolve(uri) : null
     const mix = classMix(n)
     const classes = n.cb && (
       <div className="classes-row">
@@ -449,6 +464,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
             ? <> · last read {epochDaysToDate(n.a)}</>
             : readRange && !n.n.startsWith('(') && <> · <span className="never-read">no reads since {epochDaysToDate(readRange.min)}</span></>}
         </div>
+        {st?.mark && <div className="tt-mark">{markProvenance(st.mark, st.own)}</div>}
         {classes}
         {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
         {/* interactive only when the tooltip is pinned; CSS hides it on hover */}

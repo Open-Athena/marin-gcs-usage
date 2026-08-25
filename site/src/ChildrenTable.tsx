@@ -17,13 +17,15 @@ type SortKey = 'n' | 'b' | 'o' | 'd' | 'a'
 
 const PAGE = 50
 
-export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
+export function ChildrenTable({ node, segs, scheme, markIdx, todoOnly = false, onOpen }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
   segs: string[]
   scheme: string
   markIdx?: MarkIndex | null
+  /** To-do lens: drop children already settled by a keep/sweep decision. */
+  todoOnly?: boolean
   onOpen: (segs: string[]) => void
 }) {
   const { fmtBytes } = useUnits()
@@ -35,7 +37,11 @@ export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
   const mark = (uri: string, action: MarkAction | null) => put.mutate({ prefix: uri + '/', action })
 
   const kids = useMemo(() => {
-    const ks = (node.c ?? []).slice()
+    let ks = (node.c ?? []).slice()
+    // To-do: keep only real children with no covering keep/sweep decision.
+    if (todoOnly && markIdx) {
+      ks = ks.filter(k => !k.n.startsWith('(') && !markIdx.resolve(scheme + [...segs, k.n].join('/')).mark)
+    }
     const dir = sort.asc ? 1 : -1
     const val = (n: TreeNode): number | string =>
       sort.k === 'n' ? n.n
@@ -48,9 +54,13 @@ export function ChildrenTable({ node, segs, scheme, markIdx, onOpen }: {
       const vb = val(b)
       return (typeof va === 'string' ? (va as string).localeCompare(vb as string) : (va as number) - (vb as number)) * dir
     })
-  }, [node, sort])
+  }, [node, sort, todoOnly, markIdx, scheme, segs])
 
-  if (!kids.length) return null
+  if (!kids.length) {
+    return todoOnly
+      ? <section className="children-tbl"><p className="tab-note">Nothing untriaged here — every prefix under this view has a keep/sweep decision.</p></section>
+      : null
+  }
   const th = (k: SortKey, label: string, num = true) => (
     <th
       className={(num ? 'num ' : '') + 'sortable' + (sort.k === k ? ' on' : '')}

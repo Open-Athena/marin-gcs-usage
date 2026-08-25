@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import { AdminDbPage } from './AdminDbPage'
 import { AdminPage } from './AdminPage'
 import App from './App'
@@ -24,6 +24,8 @@ export default function Root() {
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
       <Route path="/marks" element={<AuthGate><MarksPage /></AuthGate>} />
+      {/* The review lenses fold onto `/` now (LensBar) — /mark is just the map. */}
+      <Route path="/mark" element={<Navigate to="/" replace />} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>
   )
