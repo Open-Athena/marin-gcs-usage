@@ -305,16 +305,26 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
   const drillDepth = (path ?? initialPath)?.length ?? 1
   const renderCellExtra = markIdx
     ? (n: TreeNode, cellPath: TreeNode[], { w, h }: { w: number; h: number }) => {
-        if (n.n.startsWith('(') || mode === 'fate') return null
+        if (mode === 'fate') return null
+        // Folded "(other)" tiles reuse their *parent's* path, so the top-level
+        // fold has the drill root's path length. Decorate only that one — it
+        // shares its siblings' fate and should share their border, not read as
+        // an un-bordered gap; nested folds stay clean.
+        const isFold = n.n.startsWith('(')
+        if (isFold && cellPath.length !== drillDepth) return null
         const { mark, own } = markIdx.resolve(uriOf(cellPath))
         if (!mark) return null
-        const topLevel = cellPath.length === drillDepth + 1
+        const topLevel = cellPath.length === drillDepth + 1 || isFold
         if (!own && !topLevel) return null
         const color = ACTION_COLORS[mark.action]
         const glyph = mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'
-        const border = w >= 12 && h >= 8
+        // Low floor so a *thin* top-level tile still reads as marked (a bare
+        // sliver among bordered siblings looked like a gap); on a very narrow
+        // cell the inset border just fills it with the fate color.
+        const border = w >= 4 && h >= 5
           ? <span className="mark-edge" style={{ borderColor: color }} /> : null
-        const badge = w >= 44 && h >= 24 ? (
+        // No actor badge on an aggregate fold — it's many prefixes, not one.
+        const badge = !isFold && w >= 44 && h >= 24 ? (
           <span className="mark-badge">
             <Avatar github={ghHandle(mark.who)} name={shortName(mark.who)} size={14} />
             <span className="mk" style={{ background: color }}>{glyph}</span>
