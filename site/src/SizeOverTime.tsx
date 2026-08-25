@@ -42,7 +42,7 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
 
   if (scans.length < 2) return null
   return (
-    <section>
+    <section id="size-over-time">
       <h2>Size over time</h2>
       <p className="sub">
         Total stored bytes per scan (fleet-wide). Subpath &amp; regex scoping — and a per-group

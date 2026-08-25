@@ -109,7 +109,7 @@ function AppContent() {
   // Which object store to render comes from the path (`/` = GCS, `/cw` = the
   // CoreWeave bucket), so each store is its own shareable URL with its own
   // unfurl card rather than a query param on a single page.
-  const { pathname, search } = useLocation()
+  const { pathname, search, hash } = useLocation()
   const navigate = useNavigate()
   const store = storeForPath(pathname)
   const canMark = useCanMark()
@@ -202,6 +202,17 @@ function AppContent() {
   const shownTree = useMemo(() => (tree && pred ? applyFilter(tree, pred) : tree), [tree, pred])
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
+  // Deep-link to a section via `#hash` (e.g. `…/ego-dex#size-over-time`). Re-runs
+  // as each data source lands (sections mount off different queries), and defers
+  // to the next frame so the target exists and is laid out before we scroll.
+  useEffect(() => {
+    if (!hash) return
+    const id = hash.slice(1)
+    // Defer past the treemap/table's async layout so the anchor has settled.
+    const t = setTimeout(() =>
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 250)
+    return () => clearTimeout(t)
+  }, [hash, tree, meta, scans])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
   const [theme, cycleTheme] = useTheme()
@@ -229,8 +240,14 @@ function AppContent() {
   const [scopedP, setScopedP] = useUrlState('ms', stringParam())
   const scoped = scopedP !== '0'
   const setScoped = (v: boolean) => setScopedP(v ? undefined : '0')
-  // `?p=` — the treemap's drill path (slash-joined segments below the root).
-  const [pP, setPP] = useUrlState('p', stringParam())
+  // The treemap's drill path now lives in the URL *path* (below the store's own
+  // route prefix), so a drilled prefix is a real shareable URL —
+  // `/marin-us-central1/ego-dex`, not `/?p=marin-us-central1/ego-dex`. View
+  // options stay query params (`?c`, `?mt`, …); the section stays in the `#hash`.
+  const storeBase = store.path === '/' ? '' : store.path
+  const drillPath = pathname.slice(storeBase.length).replace(/^\/+/, '')
+  const drillTo = (segs: string[]) =>
+    navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
   // Read-recency lens domain: the access-log observation window (meta), not
   // the tree's own min/max — "no reads" is only meaningful vs when logging began.
   const readRange = useMemo((): DateRange | null =>
@@ -265,7 +282,7 @@ function AppContent() {
     if (!mapTree) return undefined
     const path = [mapTree]
     let cur: TreeNode = mapTree
-    for (const s of (pP ?? '').split('/').filter(Boolean)) {
+    for (const s of drillPath.split('/').filter(Boolean)) {
       const next = cur.c?.find(c => c.n === s)
       if (!next) break
       path.push(next)
@@ -275,12 +292,11 @@ function AppContent() {
     // level is a single full-width box otherwise.
     if (path.length === 1 && mapTree.c?.length === 1) return [mapTree, mapTree.c[0]]
     return path
-  }, [mapTree, pP])
-  const onMapPath = (p: TreeNode[]) =>
-    setPP(p.length > 1 ? p.slice(1).map(n => n.n).join('/') : undefined)
+  }, [mapTree, drillPath])
+  const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
   // Worklist rows / children table → drill the map to a prefix and show it.
   const openPath = (segs: string[]) => {
-    setPP(segs.length ? segs.join('/') : undefined)
+    drillTo(segs)
     document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
   // A scopable lens highlights its slice even when "scope map" is off; with no
@@ -706,7 +722,7 @@ function AppContent() {
       <SizeOverTime scans={scans} />
 
       {diff && diff.rows.length > 0 && (
-        <section>
+        <section id="changes">
           <h2>Changes since previous scan</h2>
           <p className="sub">
             {diff.prev ? fmtScan(diff.prev) : 'previous'} → {diff.curr ? fmtScan(diff.curr) : 'this scan'}
@@ -720,7 +736,7 @@ function AppContent() {
         </section>
       )}
 
-      <section>
+      <section id="created-date">
         {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
             the heading stays unit-free rather than lying about "month". */}
         <h2>Bytes by created date</h2>
@@ -740,7 +756,7 @@ function AppContent() {
         const total = node.b || 1
         const scope = mapPath && mapPath.length > 1 ? mapPath.slice(1).map(n => n.n).join('/') : 'all buckets'
         return (
-          <section>
+          <section id="storage-classes">
             <h2>Storage classes</h2>
             <p className="sub">
               Class mix + list-price estimate for <code>{scope}</code> — updates as you drill the treemap.

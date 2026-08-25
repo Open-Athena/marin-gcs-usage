@@ -6,6 +6,7 @@ import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { looksCkpt } from './sweep'
 import { Tooltip } from './Tooltip'
+import { UserChip } from './UserChip'
 import type { TreeNode } from './types'
 import { domTeamSeg, fmtN, groupLabel } from './types'
 import { useUnits } from './units'
@@ -113,7 +114,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, todoOnly = false, o
                   {k.a != null ? epochDaysToDate(k.a) : '—'}
                 </td>
                 <td>{seg ? groupLabel(seg.team) : '—'}</td>
-                <td>{u ?? '—'}</td>
+                <td>{u ? <UserChip who={u} size={15} /> : '—'}</td>
                 {markIdx && (
                   <td>
                     {mk?.mark ? (
