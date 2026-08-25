@@ -1023,8 +1023,12 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 
 // In the treemap tooltip: marking is only possible once the tip is pinned
 // (unpinned tips are pointer-events: none), so don't tease the controls on hover.
-.dt-treemap-tip:not(.pinned) .mark-controls { display: none; }
-.dt-treemap-tip.pinned .mark-controls {
+// Controls are hidden while the tip is a passive hover preview, but appear once
+// you move onto the tip (or pin it) — the tip is interactive + anchored now, so
+// hovering into it to mark is a supported gesture, not only click-to-pin.
+.dt-treemap-tip:not(.pinned):not(:hover) .mark-controls { display: none; }
+.dt-treemap-tip.pinned .mark-controls,
+.dt-treemap-tip:hover .mark-controls {
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--line);
