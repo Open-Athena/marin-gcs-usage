@@ -4,11 +4,16 @@
 # vite proxies the API paths to wrangler (see vite.config.ts), so the treemap
 # and the scan browser both work locally against the live bucket.
 #
-#   ./dev        # then open http://localhost:3253
+#   ./dev            # then open http://localhost:3253
+#   ./dev --refresh  # first refresh the local D1 from prod (see ./refresh-db)
 #
 # (`pnpm dev` alone runs only vite → blank treemap, since /data isn't served.)
 set -euo pipefail
 cd "$(dirname "$0")"
+
+if [ "${1:-}" = "--refresh" ] || [ "${1:-}" = "--staging" ]; then
+  ./refresh-db
+fi
 
 npx wrangler pages dev public --port 3254 --compatibility-date 2026-01-01 &
 wpid=$!
