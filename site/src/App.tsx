@@ -22,6 +22,7 @@ import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { MarkTabs } from './MarkTabs'
 import type { MarkTab } from './MarkTabs'
 import { lensNodePred, teamLens, useMyUser, userLens } from './sweep'
+import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, ratePerByte } from './types'
@@ -696,6 +697,8 @@ function AppContent() {
       ) : (
         <p className="loading">loading tree…</p>
       )}
+
+      <SizeOverTime scans={scans} />
 
       {diff && diff.rows.length > 0 && (
         <section>
