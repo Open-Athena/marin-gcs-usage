@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from 'react'
 import { Avatar } from './Avatar'
-import { ghHandle, shortName } from './UserChip'
+import { UserChip, allUsers, ghHandle, shortName } from './UserChip'
 import { signInUrl, useCanMark } from './auth'
 import type { Mark, MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
@@ -31,7 +31,9 @@ export const KEEP_TIP =
 export const SWEEP_TIP =
   'Mark this prefix for the sweep. Takes no immediate action — matching objects are deleted only after the sweep deadline.'
 export const CLAIM_TIP =
-  'Claim this prefix as yours — pulls it out of the unattributed “Unclaimed” pool so it shows up as your data.'
+  'Claim this prefix — assign an owner (you by default, or pick someone). Pulls it out of the unattributed “Unclaimed” pool so it shows up as that person’s data.'
+export const NOTE_TIP =
+  'Optional memo stored on the keep/sweep/clear action you take next — a reason others (and future you) can see in the mark history. Not the same as the owner.'
 export const clearTip = (own: boolean): string =>
   own ? 'Remove your mark — back to unmarked (swept by default).'
       : 'Override the inherited mark: explicitly unmark this subtree.'
@@ -63,6 +65,7 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
   const { put, claim } = useMarkMutations()
   const canMark = useCanMark()
   const [note, setNote] = useState('')
+  const [assign, setAssign] = useState('')
   const [pending, setPending] = useState<{ action: MarkAction | null } | null>(null)
   if (!uri.startsWith('gs://') || uri.indexOf('/', 5) === -1) {
     // store root ("gs://…" with no bucket path) — nothing markable
@@ -82,54 +85,78 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
   // Confirm before doing that to a subtree someone already reviewed.
   const set = (action: MarkAction | null) => (ov.n > 0 ? setPending({ action }) : write(action))
 
+  // Assign owner: a typed short name resolves to its canonical id; empty = the
+  // signed-in actor (`@me`); an unknown string passes through (id / email).
+  const doClaim = () => {
+    const v = assign.trim()
+    const owner = v ? (allUsers().find(u => u.name.toLowerCase() === v.toLowerCase())?.id ?? v) : undefined
+    claim.mutate({ prefix, owner })
+    setAssign('')
+  }
+
+  // The set-decision buttons, colored by fate. `keep_last_ckpt` only on
+  // checkpoint-shaped dirs.
+  const actions: { a: MarkAction; label: string; tip: string }[] = [
+    { a: 'keep', label: 'keep', tip: KEEP_TIP },
+    ...(klcOk ? [{ a: 'keep_last_ckpt' as const, label: 'keep last ckpt', tip: KLC_TIP }] : []),
+    { a: 'sweep', label: 'sweep', tip: SWEEP_TIP },
+  ]
+
   return (
     <div className="mark-controls" onClick={e => e.stopPropagation()}>
+      {/* Status — the current decision and who set it (read-only provenance). */}
       <span className="fate">
+        <span className="chip" style={{ background: mark ? ACTION_COLORS[mark.action] : 'var(--mk-del)' }}>
+          {mark?.action === 'keep' ? '✓' : mark?.action === 'keep_last_ckpt' ? '◐' : '✕'}
+        </span>
+        <b>{mark ? ACTION_LABELS[mark.action] : 'unmarked'}</b>
         {mark ? (
-          <>
-            <span className="sw" style={{ background: ACTION_COLORS[mark.action] }} />
-            <b>{ACTION_LABELS[mark.action]}</b>
-            <span className="prov" title={own ? undefined : `inherited from ${mark.prefix}`}>
-              {own ? '' : 'inherited · '}
-              {shortName(mark.who)}, {new Date(mark.ts * 1000).toLocaleDateString()}
-              {mark.note ? ` — ${mark.note}` : ''}
-            </span>
-          </>
+          <span className="prov" title={own ? undefined : `inherited from ${mark.prefix}`}>
+            {own ? 'set by' : 'inherited ·'}{' '}
+            <Avatar github={ghHandle(mark.who)} name={shortName(mark.who)} size={14} /> {shortName(mark.who)}
+            {' · '}{new Date(mark.ts * 1000).toLocaleDateString()}
+            {mark.note ? ` — ${mark.note}` : ''}
+          </span>
         ) : (
-          <>
-            <span className="sw" style={{ background: 'var(--mk-del)' }} />
-            <b>unmarked</b>
-            <span className="prov">deleted by default after the sweep deadline</span>
-          </>
+          <span className="prov">swept by default once the review window closes</span>
         )}
         {under > 0 && <span className="under">{under} mark{under === 1 ? '' : 's'} inside</span>}
-        {cl && <span className="claimed">claimed by {shortName(cl.who)}</span>}
       </span>
       {canMark ? (
-        <span className="buttons">
-          <Tooltip content={KEEP_TIP}>
-            <button type="button" className={own && mark?.action === 'keep' ? 'on' : ''} onClick={() => set('keep')}>keep</button>
-          </Tooltip>
-          {klcOk && (
-            <Tooltip content={KLC_TIP}>
-              <button type="button" className={own && mark?.action === 'keep_last_ckpt' ? 'on' : ''} onClick={() => set('keep_last_ckpt')}>keep last ckpt</button>
+        <>
+          {/* Set the decision — colored, active one filled. */}
+          <span className="buttons">
+            {actions.map(({ a, label, tip }) => (
+              <Tooltip key={a} content={tip}>
+                <button type="button" className={`act ${a}${own && mark?.action === a ? ' on' : ''}`} onClick={() => set(a)}>{label}</button>
+              </Tooltip>
+            ))}
+            {mark && (
+              <Tooltip content={clearTip(own)}>
+                <button type="button" className="act clear" onClick={() => set(null)}>clear</button>
+              </Tooltip>
+            )}
+            <Tooltip content={NOTE_TIP}>
+              <input className="note" value={note} onChange={e => setNote(e.target.value)} placeholder="note on this mark (optional)" size={20} />
             </Tooltip>
-          )}
-          <Tooltip content={SWEEP_TIP}>
-            <button type="button" className={own && mark?.action === 'sweep' ? 'on' : ''} onClick={() => set('sweep')}>sweep</button>
-          </Tooltip>
-          {mark && (
-            <Tooltip content={clearTip(own)}>
-              <button type="button" onClick={() => set(null)}>clear</button>
-            </Tooltip>
-          )}
-          {!cl && (
+          </span>
+          {/* Owner — claim for yourself, or assign to anyone (avatar + name). */}
+          <span className="owner">
+            <span className="lbl">owner</span>
+            {cl ? <UserChip who={cl.who} size={15} /> : <span className="none">unclaimed</span>}
+            <input
+              list="mk-assign-users" className="assign" value={assign}
+              onChange={e => setAssign(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') doClaim() }}
+              placeholder={cl ? 'reassign to…' : 'you'} size={12} spellCheck={false}
+            />
+            <datalist id="mk-assign-users">{allUsers().map(u => <option key={u.id} value={u.name} />)}</datalist>
             <Tooltip content={CLAIM_TIP}>
-              <button type="button" onClick={() => claim.mutate({ prefix })}>claim</button>
+              <button type="button" onClick={doClaim}>{cl ? 'reassign' : 'claim'}</button>
             </Tooltip>
-          )}
-          <input value={note} onChange={e => setNote(e.target.value)} placeholder="note (optional)" size={14} />
-        </span>
+            {cl && <button type="button" onClick={() => claim.mutate({ prefix, release: true })}>release</button>}
+          </span>
+        </>
       ) : (
         <span className="guest-note">
           viewing as guest — <a href={signInUrl()}>sign in</a> with your email to mark

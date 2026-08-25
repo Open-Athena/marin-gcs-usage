@@ -37,6 +37,12 @@ export const ghHandle = (who: string): string | undefined => IDENTITIES[canonId(
 
 export const teamOf = (who: string): string | undefined => IDENTITIES[canonId(who)]?.team
 
+/** All known users (canonical id + short name), sorted by name — for pickers. */
+export const allUsers = (): { id: string; name: string }[] =>
+  Object.entries(IDENTITIES)
+    .map(([id, rec]) => ({ id, name: rec.name }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
 const GROUP_LABELS: Record<string, string> = {
   oa: 'Open Athena', stanford: 'Stanford', communal: 'Communal', unknown: 'Unknown',
 }

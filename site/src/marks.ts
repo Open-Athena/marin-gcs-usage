@@ -111,8 +111,10 @@ export function useMarkMutations() {
     error: post.error,
   }
   const claim = {
-    mutate: (v: { prefix: string; release?: boolean }) =>
-      post.mutate({ pattern: v.prefix, owner: v.release ? null : '@me' }),
+    // `owner` omitted → claim for the actor (`'@me'`); a canonical user id →
+    // assign it to that user; `release: true` → clear ownership.
+    mutate: (v: { prefix: string; owner?: string | null; release?: boolean }) =>
+      post.mutate({ pattern: v.prefix, owner: v.release ? null : (v.owner ?? '@me') }),
     error: post.error,
   }
   return { put, claim, post }
