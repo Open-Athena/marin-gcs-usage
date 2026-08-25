@@ -742,9 +742,12 @@ function AppContent() {
       <section id="created-date">
         {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
             the heading stays unit-free rather than lying about "month". */}
-        <h2>Bytes by created date</h2>
+        <h2>Bytes by creation date</h2>
         <p className="sub">
-          When today’s objects were written (created-time strata, colored by {MODE_LABELS[ageMode]}).
+          When each stored byte was <b>written</b> — the object’s creation time from the listing.
+          GCS objects are immutable, so there’s no separate “modified” time; the one other time axis
+          we have is <b>last read</b> (the “read” lens, from the usage logs). Colored by {MODE_LABELS[ageMode]}
+          {ageMode !== effMode && <> — “{MODE_LABELS[effMode]}” has no per-stratum value here, so it falls back to written</>}.
         </p>
         {/* age.json strata carry no read/fate info — those lenses fall back to written here */}
         {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={ageMode} userIdx={userIdx} />}
