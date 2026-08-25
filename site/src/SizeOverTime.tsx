@@ -12,8 +12,23 @@ import { useUnits } from './units'
 
 interface Pt { x: number; y: number }
 
+// Nice y-ticks aligned to the *display* unit: a base-10-nice byte value (1e15)
+// is an ugly binary label (909 TiB), so nice-tick in the unit's own base
+// (1024 for IEC → 1000/2000/3000 TiB; 1000 for SI → round TB/PB).
+const unitTicks = (max: number, base: number, count = 4): number[] => {
+  if (max <= 0) return [0]
+  const scale = base ** Math.floor(Math.log(max) / Math.log(base))
+  const rawStep = max / scale / count
+  const mag = 10 ** Math.floor(Math.log10(rawStep))
+  const norm = rawStep / mag
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag * scale
+  const out: number[] = []
+  for (let v = 0; v <= max + step / 100; v += step) out.push(v)
+  return out
+}
+
 export function SizeOverTime({ scans }: { scans: string[] }) {
-  const { fmtBytes } = useUnits()
+  const { fmtBytes, units } = useUnits()
   const metas = useQuery({
     queryKey: ['size-series', scans],
     enabled: scans.length > 1,
@@ -40,6 +55,11 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
     }]
   }, [metas.data])
 
+  const yTickValues = useMemo(() => {
+    const max = Math.max(0, ...series.flatMap(s => s.points.map(p => p.y)))
+    return unitTicks(max, units === 'iec' ? 1024 : 1000)
+  }, [series, units])
+
   if (scans.length < 2) return null
   return (
     <section id="size-over-time">
@@ -56,6 +76,7 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
           getY={p => p.y}
           formatY={fmtBytes}
           formatX={x => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+          yTickValues={yTickValues}
           yLabel="stored bytes"
           height={220}
         />
