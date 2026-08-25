@@ -1245,3 +1245,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .uc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; b { font-size: 1.05em; } }
   .uc-sub { color: var(--ink-2); font-size: 0.92em; }
 }
+
+// Mark provenance tooltip: avatar + text row.
+.mark-prov { display: inline-flex; align-items: center; gap: 6px; }
+// Legend rows align their avatar with the swatch + text.
+.ri .user-avatar { margin: 0 1px; vertical-align: middle; }

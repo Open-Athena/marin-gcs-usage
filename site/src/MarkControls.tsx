@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from 'react'
+import { Avatar, whoToHandle } from './Avatar'
 import { signInUrl, useCanMark } from './auth'
 import type { Mark, MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
@@ -41,10 +42,13 @@ export const fmtMarkDate = (ts: number): string =>
 /** Tooltip body for a state chip: who set the mark, when, and whether inherited. */
 export function markProvenance(mark: Mark, own: boolean): ReactNode {
   return (
-    <>
-      <b>{ACTION_LABELS[mark.action]}</b> by {mark.who} · {fmtMarkDate(mark.ts)}
-      {!own && <> · inherited from <code>{mark.prefix}</code></>}
-    </>
+    <span className="mark-prov">
+      <Avatar handle={whoToHandle(mark.who)} label={mark.who} size={16} />
+      <span>
+        <b>{ACTION_LABELS[mark.action]}</b> by {mark.who} · {fmtMarkDate(mark.ts)}
+        {!own && <> · inherited from <code>{mark.prefix}</code></>}
+      </span>
+    </span>
   )
 }
 

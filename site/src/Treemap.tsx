@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
+import { Avatar } from './Avatar'
 import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls } from './MarkControls'
@@ -333,9 +334,14 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     return (
       <>
         {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} />}
-        {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
+        {rollup.filter(r => r.b >= 0.001 * node.b).map(r => {
+          // Real per-user rows (user modes, not synthetic "(shared)"/"unattributed")
+          // get a GitHub avatar next to the color swatch.
+          const isUser = (mode === 'user' || mode === 'uteam') && !r.k.startsWith('(') && r.k !== 'unattributed'
+          return (
           <span className="ri" key={r.k}>
             <span className="sw" style={{ background: r.col }} />
+            {isUser && <Avatar handle={r.k} label={r.k} size={15} />}
             {r.k} <b>{fmtBytes(r.b)}</b>
             <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
             {r.rate != null && (
@@ -348,7 +354,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
               )
             )}
           </span>
-        ))}
+        )})}
       </>
     )
   }
