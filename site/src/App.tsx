@@ -209,10 +209,19 @@ function AppContent() {
   useEffect(() => {
     if (!hash) return
     const id = hash.slice(1)
-    // Defer past the treemap/table's async layout so the anchor has settled.
-    const t = setTimeout(() =>
-      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 250)
-    return () => clearTimeout(t)
+    // The treemap/table lay out async and shift the page after first paint, so a
+    // single deferred scroll lands in the wrong place (or a still-empty page).
+    // Re-scroll over ~2s until the anchor's position stops moving.
+    let last = NaN
+    const timers = [150, 400, 800, 1400, 2000].map(ms => setTimeout(() => {
+      const el = document.getElementById(id)
+      if (!el) return
+      const top = el.getBoundingClientRect().top
+      if (Math.abs(top) < 4 && top === last) return // already parked at the top
+      last = top
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, ms))
+    return () => timers.forEach(clearTimeout)
   }, [hash, tree, meta, scans])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
