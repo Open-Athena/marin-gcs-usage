@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Avatar, whoToHandle } from './Avatar'
+import { whoToHandle } from './Avatar'
+import { UserChip } from './UserChip'
 import { ACTION_LABELS, useMarks } from './marks'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
-import { Tooltip } from './Tooltip'
-import { type RuleUser, type Rules, groupLabel } from './types'
+import { type RuleUser, type Rules } from './types'
 
 // Recent-marks activity feed (specs/actions-ledger.md): the ledger's keep +
 // owner rows, newest first — who decided what, when. Read-only; the map is
@@ -30,23 +30,13 @@ const prefixToPath = (prefix: string): string => {
   return m ? m[1] : prefix
 }
 
-// Avatar + name, hover for the full identity card. Maps the actor's email/id to
-// a canonical user via rules.json (by id or alias) for group + aka enrichment.
+// Avatar + short name, with the interactive identity hover card (UserChip). The
+// rules.json row adds the "aka <aliases>" line the registry alone doesn't carry.
 function WhoCell({ who, user }: { who: string; user?: RuleUser }) {
-  const handle = whoToHandle(who)
-  const name = user?.u ?? handle
-  return (
-    <Tooltip content={
-      <div className="user-card">
-        <div className="uc-head"><Avatar handle={handle} label={name} size={32} /><b>{name}</b></div>
-        {user && <div>group: <b>{groupLabel(user.team)}</b></div>}
-        <div className="uc-sub">{who}</div>
-        {user?.aliases?.length ? <div className="uc-sub">aka {user.aliases.join(', ')}</div> : null}
-      </div>
-    }>
-      <span className="who-chip"><Avatar handle={handle} label={name} size={18} /> {name}</span>
-    </Tooltip>
-  )
+  const extra = user?.aliases?.length
+    ? <div className="uc-sub">aka {user.aliases.join(', ')}</div>
+    : undefined
+  return <UserChip who={who} extra={extra} />
 }
 
 export function MarksPage() {

@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from 'react'
-import { Avatar, whoToHandle } from './Avatar'
+import { Avatar } from './Avatar'
+import { ghHandle, shortName } from './UserChip'
 import { signInUrl, useCanMark } from './auth'
 import type { Mark, MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
@@ -43,9 +44,10 @@ export const fmtMarkDate = (ts: number): string =>
 export function markProvenance(mark: Mark, own: boolean): ReactNode {
   return (
     <span className="mark-prov">
-      <Avatar handle={whoToHandle(mark.who)} label={mark.who} size={16} />
+      <span className="sw" style={{ background: ACTION_COLORS[mark.action] }} />
+      <Avatar github={ghHandle(mark.who)} name={shortName(mark.who)} size={16} />
       <span>
-        <b>{ACTION_LABELS[mark.action]}</b> by {mark.who} · {fmtMarkDate(mark.ts)}
+        <b>{ACTION_LABELS[mark.action]}</b> by {shortName(mark.who)} · {fmtMarkDate(mark.ts)}
         {!own && <> · inherited from <code>{mark.prefix}</code></>}
       </span>
     </span>
@@ -89,7 +91,7 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
             <b>{ACTION_LABELS[mark.action]}</b>
             <span className="prov" title={own ? undefined : `inherited from ${mark.prefix}`}>
               {own ? '' : 'inherited · '}
-              {mark.who}, {new Date(mark.ts * 1000).toLocaleDateString()}
+              {shortName(mark.who)}, {new Date(mark.ts * 1000).toLocaleDateString()}
               {mark.note ? ` — ${mark.note}` : ''}
             </span>
           </>
@@ -101,7 +103,7 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
           </>
         )}
         {under > 0 && <span className="under">{under} mark{under === 1 ? '' : 's'} inside</span>}
-        {cl && <span className="claimed">claimed by {cl.who}</span>}
+        {cl && <span className="claimed">claimed by {shortName(cl.who)}</span>}
       </span>
       {canMark ? (
         <span className="buttons">

@@ -1238,15 +1238,34 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     line-height: 1;
   }
 }
-.who-chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.who-chip, .user-chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.user-chip {
+  cursor: default;
+  border-radius: 5px;
+  outline: none;
+  &:hover, &:focus-visible { background: color-mix(in oklab, var(--ink) 8%, transparent); }
+}
 .user-card {
   display: grid;
-  gap: 3px;
+  gap: 4px;
+  min-width: 150px;
   .uc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; b { font-size: 1.05em; } }
-  .uc-sub { color: var(--ink-2); font-size: 0.92em; }
+  .uc-id { display: flex; flex-direction: column; gap: 1px; line-height: 1.2; }
+  .uc-group {
+    font-size: 0.78em; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.03em;
+    &[data-team="oa"] { color: var(--t-oa); }
+    &[data-team="stanford"] { color: var(--t-stanford); }
+    &[data-team="communal"] { color: var(--t-communal); }
+  }
+  .uc-sub { color: var(--ink-2); font-size: 0.9em; word-break: break-all; }
+  .uc-link { font-size: 0.9em; color: var(--link, #6ea8fe); text-decoration: none; &:hover { text-decoration: underline; } }
 }
+// The identity hover card is interactive (safePolygon) — let pointer events through.
+.user-card-pop { pointer-events: auto; }
 
-// Mark provenance tooltip: avatar + text row.
-.mark-prov { display: inline-flex; align-items: center; gap: 6px; }
+// Mark provenance tooltip: state swatch + avatar + text row.
+.mark-prov { display: inline-flex; align-items: center; gap: 6px;
+  .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+}
 // Legend rows align their avatar with the swatch + text.
 .ri .user-avatar { margin: 0 1px; vertical-align: middle; }

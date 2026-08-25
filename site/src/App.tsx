@@ -6,7 +6,8 @@ import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
-import { Avatar, whoToHandle } from './Avatar'
+import { Avatar } from './Avatar'
+import { ghHandle, shortName } from './UserChip'
 import { signInUrl, useCanMark, useIdent as useIdentity, useSignOut } from './auth'
 import TokenModal from './TokenModal'
 import { AttributionRules } from './AttributionRules'
@@ -487,8 +488,8 @@ function AppContent() {
           {markMode && <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>Recent&nbsp;marks&nbsp;→</Link>}
           {ident && (
             <div className="whoami">
-              <Avatar handle={whoToHandle(ident.email)} label={ident.name || ident.email} size={22} />
-              <span className="email" title={ident.email}>{ident.name || ident.email}</span>
+              <Avatar github={ghHandle(ident.email)} name={ident.name || ident.email} size={22} />
+              <span className="email" title={ident.email}>{ident.name || shortName(ident.email)}</span>
               {canMark && (
                 <button className="token-btn" type="button" onClick={() => setTokenOpen(true)} title="Personal token for agents / CLI">
                   token
