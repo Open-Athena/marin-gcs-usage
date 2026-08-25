@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fmtMarkDate } from './MarkControls'
 import { UserChip } from './UserChip'
-import { eventsUnder, useMarkEvents } from './markEvents'
+import { ActionChip, eventsUnder, useMarkEvents } from './markEvents'
 
 // Path-scoped slice of the mark ledger: every keep/sweep/clear/claim under the
 // currently-drilled prefix, newest first. The map shows *current* fate; this
@@ -48,12 +48,7 @@ export function MarkHistory({ prefix, scope }: { prefix: string; scope: string }
               <tr key={`${e.id}-${e.prefix}`}>
                 <td title={fmtMarkDate(e.ts)}>{fmtWhen(e.ts)}</td>
                 <td><UserChip who={e.who} size={15} /></td>
-                <td>
-                  <span className="chip" style={{ borderColor: e.color }}>
-                    <span className="sw" style={{ background: e.color }} />
-                    {e.label}
-                  </span>
-                </td>
+                <td><ActionChip e={e} /></td>
                 <td className="prefix">
                   <Link to={`/${prefixToPath(e.prefix)}`}>{rel}</Link>
                   {e.memo && <span className="memo" title={e.memo}> — {e.memo}</span>}

@@ -1,15 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { whoToHandle } from './Avatar'
 import { UserChip } from './UserChip'
 import { fmtMarkDate } from './MarkControls'
-import { useMarkEvents } from './markEvents'
+import { ActionChip, useMarkEvents } from './markEvents'
 import { type RuleUser, type Rules } from './types'
 
 // Recent-marks activity feed (specs/actions-ledger.md): the ledger's keep +
 // owner rows, newest first — who decided what, when. Read-only; the map is
 // where marks are set. Clicking a prefix jumps the treemap to it.
+
+const PAGE = 25
 
 const fmtWhen = (ts: number): string =>
   new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -31,6 +33,7 @@ function WhoCell({ who, user }: { who: string; user?: RuleUser }) {
 
 export function MarksPage() {
   const { events, isLoading, error } = useMarkEvents()
+  const [page, setPage] = useState(0)
   const { data: rules } = useQuery<Rules>({
     queryKey: ['rules'],
     queryFn: async () => {
@@ -66,31 +69,40 @@ export function MarksPage() {
       {isLoading && events.length === 0 && <p className="loading">loading marks…</p>}
       {!isLoading && !error && events.length === 0 && <p className="tab-note">No marks yet — head to the map and start marking.</p>}
 
-      {events.length > 0 && (
-        <table className="worklist marks-feed">
-          <thead>
-            <tr><th>when</th><th>who</th><th>action</th><th>prefix</th></tr>
-          </thead>
-          <tbody>
-            {events.map(e => (
-              <tr key={`${e.id}-${e.prefix}`}>
-                <td title={fmtMarkDate(e.ts)}>{fmtWhen(e.ts)}</td>
-                <td><WhoCell who={e.who} user={userByHandle.get(whoToHandle(e.who))} /></td>
-                <td>
-                  <span className="chip" style={{ borderColor: e.color }}>
-                    <span className="sw" style={{ background: e.color }} />
-                    {e.label}
-                  </span>
-                </td>
-                <td className="prefix">
-                  <Link to={`/${prefixToPath(e.prefix)}`}>{e.prefix}</Link>
-                  {e.memo && <span className="memo" title={e.memo}> — {e.memo}</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      {events.length > 0 && (() => {
+        const pages = Math.ceil(events.length / PAGE)
+        const p = Math.min(page, pages - 1)
+        const rows = events.slice(p * PAGE, p * PAGE + PAGE)
+        return (
+          <>
+            <table className="worklist marks-feed">
+              <thead>
+                <tr><th>when</th><th>who</th><th>action</th><th>prefix</th></tr>
+              </thead>
+              <tbody>
+                {rows.map(e => (
+                  <tr key={`${e.id}-${e.prefix}`}>
+                    <td title={fmtMarkDate(e.ts)}>{fmtWhen(e.ts)}</td>
+                    <td><WhoCell who={e.who} user={userByHandle.get(whoToHandle(e.who))} /></td>
+                    <td><ActionChip e={e} /></td>
+                    <td className="prefix">
+                      <Link to={`/${prefixToPath(e.prefix)}`}>{e.prefix}</Link>
+                      {e.memo && <span className="memo" title={e.memo}> — {e.memo}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {pages > 1 && (
+              <div className="pager">
+                <button type="button" disabled={p === 0} onClick={() => setPage(p - 1)}>← prev</button>
+                <span className="pager-count">{p * PAGE + 1}–{p * PAGE + rows.length} of {events.length}</span>
+                <button type="button" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>next →</button>
+              </div>
+            )}
+          </>
+        )
+      })()}
     </main>
   )
 }

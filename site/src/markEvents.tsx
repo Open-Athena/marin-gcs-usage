@@ -12,7 +12,14 @@ export interface MarkEvent {
   id: number
   label: string
   color: string
+  glyph: string
   memo: string | null
+}
+
+// Action glyph — matches the treemap's fate marks (✓ keep / ◐ keep-last-ckpt /
+// ✕ sweep), with distinct marks for clear and ownership changes.
+const ACTION_GLYPH: Record<string, string> = {
+  keep: '✓', keep_last_ckpt: '◐', sweep: '✕',
 }
 
 export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; error: Error | null } {
@@ -25,17 +32,28 @@ export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; erro
         ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, memo: r.memo,
         label: r.keep == null ? 'cleared' : ACTION_LABELS[r.keep],
         color: r.keep == null ? 'var(--line)' : ACTION_COLORS[r.keep],
+        glyph: r.keep == null ? '○' : ACTION_GLYPH[r.keep],
       })
     for (const r of data.owners)
       evs.push({
         ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, memo: r.memo,
         label: r.owner == null ? 'released' : `claimed${r.owner === r.who ? '' : ` for ${r.owner}`}`,
         color: 'var(--t-oa)',
+        glyph: r.owner == null ? '◇' : '◆',
       })
     // Newest first; action_id breaks ties within the same second.
     return evs.sort((a, b) => b.ts - a.ts || b.id - a.id)
   }, [data])
   return { events, isLoading, error: error ?? null }
+}
+
+/** The colored action chip (glyph + label) shared by the feed and history. */
+export function ActionChip({ e }: { e: MarkEvent }) {
+  return (
+    <span className="chip" style={{ borderColor: e.color, color: e.color }}>
+      <span className="glyph">{e.glyph}</span>{e.label}
+    </span>
+  )
 }
 
 /** Events touching a prefix: those under it, plus ancestor marks that cover it. */
