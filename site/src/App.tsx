@@ -23,6 +23,7 @@ import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { LensBar, SCOPABLE } from './LensBar'
 import type { Lens } from './LensBar'
 import { lensNodePred, teamLens, useMyUser, userLens } from './sweep'
+import { MarkHistory } from './MarkHistory'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
@@ -720,6 +721,8 @@ function AppContent() {
       )}
 
       <SizeOverTime scans={scans} />
+
+      {markMode && <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} />}
 
       {diff && diff.rows.length > 0 && (
         <section id="changes">
