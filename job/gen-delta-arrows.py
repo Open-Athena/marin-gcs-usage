@@ -11,8 +11,8 @@ shrinking (green), positive = N-ward = growing (red). Chunky constant head at ev
 Emits SVG sources + supersampled PNGs (Slack custom emoji: ≤128px, transparent),
 plus a contact-sheet PNG for quick review.
 
-Names: d«signed angle» with `m` for minus (Slack emoji names bar `-`/`+`):
-dm80 … dm10, d0, d10 … d80.
+Names double as the Slack emoji names (upload dialog prefills from basename):
+arrow_deg-80 … arrow_deg-10, arrow_deg0, arrow_deg10 … arrow_deg80.
 """
 import colorsys
 import math
@@ -87,7 +87,9 @@ def png(a: float) -> Image.Image:
 
 
 def name(a: int) -> str:
-    return f"d{'m' if a < 0 else ''}{abs(a)}"
+    # File basename == Slack emoji name (the upload dialog prefills from it).
+    # Slack allows `-` in emoji names, so negatives read naturally: arrow_deg-30.
+    return f"arrow_deg{a}"
 
 
 @command()
