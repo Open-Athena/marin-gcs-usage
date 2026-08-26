@@ -84,3 +84,49 @@ def test_deepest_lookup_wins_and_misses(identities, listing: str, attribution: s
     assert deepest("b1/users/rw/ckpt/step-1") == ("ryan-williams", "infra", "user-prefix")
     assert deepest("b1/unrelated/dir") is None
     assert deepest("c9/datasets/x") is None
+
+
+GLOB_IDENTITIES_YAML = """\
+users:
+  calvin-xu:
+    team: data
+teams: [infra, data]
+prefix_owners:
+  - prefix: gs://b1/grug/swarm_*/
+    user: calvin-xu
+    team: data
+"""
+
+
+def test_path_glob_expands_against_listing(tmp_path: Path):
+    """A `*` in the path part fans out over the listing's actual dirs at that
+    depth (one segment per glob star — `swarm_*` must not swallow `moe_*` or
+    reach deeper levels)."""
+    ident_path = tmp_path / "identities.yaml"
+    ident_path.write_text(GLOB_IDENTITIES_YAML)
+    identities = load_identities(ident_path)
+    listing = tmp_path / "glob-listing.parquet"
+    pd.DataFrame(
+        {
+            "bucket": ["b1"] * 5 + ["b2"],
+            "name": [
+                "grug/swarm_fisher_000001-aa/ckpt.bin",
+                "grug/swarm_fisher_000002-bb/opt/state.bin",
+                "grug/moe_67b-cc/ckpt.bin",          # non-matching sibling
+                "grug/swarm_deep/sub/x.bin",          # matches at level 2 only
+                "other/swarm_fisher_000003-dd/x.bin", # wrong parent dir
+                "grug/swarm_fisher_000004-ee/x.bin",  # wrong bucket
+            ],
+            "size_bytes": [1] * 6,
+        }
+    ).to_parquet(listing)
+    con = duckdb.connect()
+    by_prefix = load_prefix_map(con, (), identities, prepare_listing(con, (str(listing),)))
+    assert by_prefix == {
+        "gs://b1/grug/swarm_fisher_000001-aa/": ("calvin-xu", "data", "manual"),
+        "gs://b1/grug/swarm_fisher_000002-bb/": ("calvin-xu", "data", "manual"),
+        "gs://b1/grug/swarm_deep/": ("calvin-xu", "data", "manual"),
+    }
+    deepest = deepest_lookup(by_prefix)
+    assert deepest("b1/grug/swarm_fisher_000002-bb/opt") == ("calvin-xu", "data", "manual")
+    assert deepest("b1/grug/moe_67b-cc") is None

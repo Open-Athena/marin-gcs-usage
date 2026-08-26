@@ -213,6 +213,15 @@ prefix_owners:
   - prefix: gs://marin-*/julian/
     user: julian
     team: stanford  # Julian Humml (hummlj); julian/experiments/causal-diffusion across buckets (~23 TB)
+  # Calvin's data-mixture swarms (Percy, 8/18 call). Only ~350 of the ~1,060
+  # swarm dirs ever logged a W&B run (all his), so run-matching can't cover the
+  # rest — the name pattern can. Path-glob: `*` matches within one segment.
+  - prefix: gs://marin-us-central2/grug/swarm_*/
+    user: calvin-xu
+    team: stanford
+  - prefix: gs://marin-*/checkpoints/olmix-swarm/
+    user: calvin-xu
+    team: stanford  # olmix naming matches his pinlin_calvin_xu/data_mixture experiments
   - prefix: gs://marin-*/user/rav/
     user: rafal-wojdyla
     team: oa  # `user/` (singular) tree is ~all rav
