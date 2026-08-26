@@ -671,7 +671,7 @@ function AppContent() {
             <input
               value={fq ?? ''}
               onChange={e => setFq(e.target.value || undefined)}
-              placeholder="filter names — text or /regex/"
+              placeholder="filter paths — text, a|b, or /regex/"
               aria-label="Filter tree by segment name"
               size={22}
             />

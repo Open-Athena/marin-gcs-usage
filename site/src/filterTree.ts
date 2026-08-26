@@ -10,20 +10,27 @@ import type { TreeNode } from './types'
 export type NamePred = (name: string) => boolean
 export type NodePred = (n: TreeNode) => boolean
 
-/** `/…/` = regex (case-insensitive); anything else = substring (ci). */
+/** `/…/` = regex (case-insensitive); anything else = substring (ci), with
+ * `|` splitting alternatives (`grug|swarm` = either). Predicates receive the
+ * node's full path below the root (`bucket/dir/sub`), so `grug/swarm` matches
+ * across segments and regexes can span `/`. */
 export function parseQuery(q: string): NamePred | null {
   const s = q.trim()
   if (!s) return null
   if (s.length > 2 && s.startsWith('/') && s.endsWith('/')) {
     try {
       const re = new RegExp(s.slice(1, -1), 'i')
-      return name => re.test(name)
+      return path => re.test(path)
     } catch {
       return null
     }
   }
-  const needle = s.toLowerCase()
-  return name => name.toLowerCase().includes(needle)
+  const needles = s.toLowerCase().split('|').map(t => t.trim()).filter(Boolean)
+  if (!needles.length) return null
+  return path => {
+    const p = path.toLowerCase()
+    return needles.some(t => p.includes(t))
+  }
 }
 
 /** Re-aggregate a node's stats (b/o/tm/sh/us/d) from a filtered kid set. */
@@ -69,6 +76,18 @@ export function applyNodeFilter(root: TreeNode, pred: NodePred): TreeNode {
   return reaggregate(root, kids)
 }
 
-/** Filter below the root by segment name (fold nodes never match by name). */
-export const applyFilter = (root: TreeNode, pred: NamePred): TreeNode =>
-  applyNodeFilter(root, n => !n.n.startsWith('(') && pred(n.n))
+/** Filter below the root by *path* (fold nodes never match). Paths are the
+ * node's segments below the root joined with `/` (`bucket/dir/sub`), built
+ * during the walk so the predicate sees the whole ancestry. */
+export function applyFilter(root: TreeNode, pred: NamePred): TreeNode {
+  const walk = (n: TreeNode, path: string): TreeNode | null => {
+    if (!n.n.startsWith('(') && pred(path)) return n
+    const kids = (n.c ?? [])
+      .map(c => walk(c, c.n.startsWith('(') ? path : `${path}/${c.n}`))
+      .filter((c): c is TreeNode => c != null)
+    if (!kids.length) return null
+    return reaggregate(n, kids)
+  }
+  const kids = (root.c ?? []).map(b => walk(b, b.n)).filter((c): c is TreeNode => c != null)
+  return reaggregate(root, kids)
+}
