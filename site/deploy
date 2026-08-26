@@ -9,10 +9,29 @@ cd "$(dirname "$0")"
 # standalone `cf-status` (queries the CF Pages deployments API, compares to HEAD).
 if [ "${1:-}" = "--status" ]; then exec ./cf-status; fi
 
+# `-p`/`--push`: after moving the local `prod` pointer, also push it to GitHub
+# (`o`), so the live commit is visible remotely too. Off by default (local-only).
+push=false
+for a in "$@"; do case "$a" in -p|--push) push=true ;; esac; done
+
 # Auth via the repo's direnv CLOUDFLARE_API_TOKEN, which has Pages write on the
 # OA account (as well as Access + oa.dev DNS edit). We deliberately do NOT fall
 # back to `wrangler login` OAuth: that session tends to drift to a personal
 # account and then fails with auth error 10000 against the OA account.
 pnpm build
 CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d \
-  exec npx wrangler pages deploy dist --project-name oa-gcs-usage --branch main
+  npx wrangler pages deploy dist --project-name oa-gcs-usage --branch main
+
+# On a successful production deploy, advance the local `prod` pointer to exactly
+# what we shipped (HEAD). Kept in sync by deploy itself, so it can't drift the
+# way a hand-updated branch would; `cf-status` stays the authority (it reads
+# CF's own deployment metadata) and this is the git-native convenience for
+# `git log prod..HEAD` / offline diffing. (A preview/staging deploy would move a
+# `dev` pointer the same way, once we add that path.)
+sha=$(git rev-parse HEAD)
+git branch -f prod "$sha"
+echo "moved local prod → ${sha:0:9}"
+if $push; then
+  git push -f o prod
+  echo "pushed prod → o (GitHub)"
+fi
