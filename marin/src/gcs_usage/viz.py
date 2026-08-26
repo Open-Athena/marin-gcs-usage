@@ -36,8 +36,15 @@ def write_webdata(
     attributions: tuple[str, ...] = (),
     identities_path: Path | None = None,
     access: tuple[str, ...] = (),
+    dir_cache: Path | None = None,
 ) -> dict:
     """Write tree.json / age.json / meta.json under ``out_dir``; returns meta.
+
+    ``dir_cache`` names a directory for the layer-2 rollups (``dir-stats`` /
+    ``age-days`` parquet) — attribution-independent per-dir aggregates, cached
+    write-through so re-attribution runs skip the 595M-row object scans
+    entirely (specs/dir-agg-cache.md). Immutable per scan date, like the
+    listing they derive from.
 
     With ``attributions``, every dir is attributed (deepest-prefix-wins, same
     join as ``report``) and each tree node carries ``tm`` (team-bytes map) and
@@ -62,6 +69,66 @@ def write_webdata(
     if tmp := os.environ.get("DUCKDB_TMP"):
         con.execute(f"SET temp_directory='{tmp}'")
     src = prepare_listing(con, listings)
+
+    # --- layer-2 dir rollups (attribution-independent; cached when dir_cache) ---
+    # Everything downstream needs objects only via these two aggregates:
+    # `dir_stats` (per-dir sizes/objects/classes/weighted-mtimes) and
+    # `age_days` (per-(day, dir) bytes/objects). Cache them as parquet next to
+    # the listing (immutable per date) so re-attribution runs — REPROC, ledger
+    # refreshes — do zero 595M-row object scans; cold runs also drop from four
+    # object scans to two (attr dirs + storage classes now derive from these).
+    fp_dir = "CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END"
+    fp = f"CASE WHEN ({fp_dir}) = '' THEN bucket ELSE bucket || '/' || ({fp_dir}) END"
+    stats_pq = dir_cache / "dir-stats.parquet" if dir_cache else None
+    age_pq = dir_cache / "age-days.parquet" if dir_cache else None
+    if stats_pq is not None and stats_pq.exists():
+        con.execute(f"CREATE TEMP VIEW dir_stats AS SELECT * FROM read_parquet('{stats_pq}')")
+        err(f"dir-stats: cache hit ({stats_pq})")
+    else:
+        con.execute(
+            f"""
+            CREATE TEMP TABLE dir_stats AS
+            WITH obj AS (
+              SELECT bucket, {fp_dir} AS dir, size_bytes, created, storage_class_id, {fp} AS fp
+              FROM {src}
+            )
+            SELECT bucket, dir, fp,
+              sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
+              sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
+              sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
+              sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
+            FROM obj GROUP BY bucket, dir, fp
+            """
+        )
+        if stats_pq is not None:
+            stats_pq.parent.mkdir(parents=True, exist_ok=True)
+            con.execute(f"COPY dir_stats TO '{stats_pq}' (FORMAT parquet)")
+            err(f"dir-stats: wrote cache ({stats_pq})")
+    _rss("dir-stats")
+    if age_pq is not None and age_pq.exists():
+        con.execute(f"CREATE TEMP VIEW age_days AS SELECT * FROM read_parquet('{age_pq}')")
+        err(f"age-days: cache hit ({age_pq})")
+    else:
+        con.execute(
+            f"""
+            CREATE TEMP TABLE age_days AS
+            SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day, bucket, {fp_dir} AS dir,
+              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
+            FROM {src}
+            WHERE created IS NOT NULL
+            GROUP BY ALL
+            """
+        )
+        if age_pq is not None:
+            con.execute(f"COPY age_days TO '{age_pq}' (FORMAT parquet)")
+            err(f"age-days: wrote cache ({age_pq})")
+    _rss("age-days")
+    # Dir-level stand-in for the raw listing where only dir paths matter
+    # (bucket enumeration + path-glob prefix_owners expansion).
+    con.execute("CREATE TEMP VIEW listing_dirs AS SELECT bucket, dir AS name FROM dir_stats")
+
     if attr:
         import pandas as pd
 
@@ -70,7 +137,7 @@ def write_webdata(
 
         identities = load_identities(identities_path or DEFAULT_IDENTITIES)
         _rss("start")
-        by_prefix = load_prefix_map(con, attributions, identities, src)
+        by_prefix = load_prefix_map(con, attributions, identities, "listing_dirs")
         _rss("prefix-map")
         pfx_df = pd.DataFrame(
             [
@@ -100,9 +167,7 @@ def write_webdata(
             f"""
             CREATE TEMP TABLE dir_attr AS
             WITH dirs AS (
-              SELECT DISTINCT bucket,
-                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir
-              FROM {src}
+              SELECT bucket, dir FROM dir_stats
             ),
             keyed AS (
               SELECT bucket, dir,
@@ -143,35 +208,15 @@ def write_webdata(
     # link them parent->child. No d1..d4 cap — the tree is as deep as the data.
     from disk_tree.tree_build import DirRow, build_tree
 
-    fp_dir = "CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END"
-    fp = f"CASE WHEN ({fp_dir}) = '' THEN bucket ELSE bucket || '/' || ({fp_dir}) END"
     attr_join_s = "LEFT JOIN dir_attr t ON t.bucket = s.bucket AND t.dir = s.dir" if attr else ""
     team_sel = "coalesce(t.team, 'unattributed')" if attr else "'unattributed'"
     user_sel = 't."user"' if attr else "CAST(NULL AS VARCHAR)"
-    # Aggregate objects to their *immediate* dir once (attributed, with class /
-    # weighted-mtime sums and the split path segments), then explode these dir
-    # rows — a few million — to every ancestor rather than exploding all 595M
-    # objects. ~50-100x fewer rows through the explode. dir_agg also feeds the
-    # class-mix and leaderboard, so those need no separate object scan.
+    # Attribution is a join over the cached per-dir rollups — a few million
+    # rows — never over objects. dir_agg also feeds the class-mix and
+    # leaderboard, so those need no separate scan either.
     con.execute(
         f"""
         CREATE TEMP TABLE dir_agg AS
-        WITH obj AS (
-          SELECT bucket, {fp_dir} AS dir, size_bytes, created, storage_class_id, {fp} AS fp
-          FROM {src}
-        ),
-        dir_stats AS (
-          -- collapse 595M objects to a few million dirs FIRST; attribution is
-          -- then a join over dirs, not over every object.
-          SELECT bucket, dir, fp,
-            sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
-            sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
-            sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
-            sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
-            sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
-            sum(CASE WHEN storage_class_id = 4 THEN size_bytes END)::BIGINT AS c4
-          FROM obj GROUP BY bucket, dir, fp
-        )
         SELECT s.fp, {team_sel} AS team, {user_sel} AS usr,
           s.b, s.o, s.wts, s.wb, s.c2, s.c3, s.c4, string_split(s.fp, '/') AS segs
         FROM dir_stats s {attr_join_s}
@@ -317,22 +362,16 @@ def write_webdata(
             tree["rb"] = sum(n.get("rb", 0) for n in roots)
 
     if attr:
-        # (day, d1, team, user) strata via the same SQL attribution join.
-        # Day keys are epoch days; the site aggregates to day/week/month.
+        # (day, d1, team, user) strata: the cached per-(day, dir) rollup joined
+        # to the same dir attribution. Day keys are epoch days; the site
+        # aggregates to day/week/month.
         age = con.execute(
-            f"""
-            WITH d AS (
-              SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day, bucket,
-                CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END AS dir,
-                size_bytes
-              FROM {src}
-              WHERE created IS NOT NULL
-            )
+            """
             SELECT d.day,
               CASE WHEN d.dir = '' THEN '(files)' ELSE regexp_extract(d.dir, '^([^/]+)', 1) END AS d1,
               coalesce(t.team, 'unattributed') AS team, t."user" AS user,
-              sum(d.size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
-            FROM d LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
+              sum(d.bytes)::BIGINT AS bytes, sum(d.objects)::BIGINT AS objects
+            FROM age_days d LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
             GROUP BY ALL ORDER BY ALL  -- fully deterministic output order (byte-identical reruns)
             """
         ).fetchall()
@@ -343,12 +382,11 @@ def write_webdata(
         _rss("age")
     else:
         age = con.execute(
-            f"""
-            SELECT CAST(floor(epoch(created) / 86400) AS INTEGER) AS day,
-              regexp_extract(name, '^([^/]+)/', 1) AS d1,
-              sum(size_bytes)::BIGINT AS bytes, count(*)::BIGINT AS objects
-            FROM {src}
-            WHERE created IS NOT NULL
+            """
+            SELECT day,
+              CASE WHEN dir = '' THEN NULL ELSE regexp_extract(dir, '^([^/]+)', 1) END AS d1,
+              sum(bytes)::BIGINT AS bytes, sum(objects)::BIGINT AS objects
+            FROM age_days
             GROUP BY ALL ORDER BY day
             """
         ).fetchall()
@@ -356,12 +394,13 @@ def write_webdata(
             {"d": day, "d1": d1 or "(files)", "b": b, "o": o} for day, d1, b, o in age
         ]
 
-    classes = con.execute(
-        f"""
-        SELECT storage_class_id, sum(size_bytes)::BIGINT AS bytes
-        FROM {src} GROUP BY ALL ORDER BY storage_class_id
-        """
-    ).fetchall()
+    # Storage-class mix from the dir rollups (class 1/STANDARD = total minus
+    # the explicitly-tracked classes — same derivation the team mix uses).
+    s_b, s_c2, s_c3, s_c4 = con.execute(
+        "SELECT coalesce(sum(b), 0)::BIGINT, coalesce(sum(c2), 0)::BIGINT,"
+        " coalesce(sum(c3), 0)::BIGINT, coalesce(sum(c4), 0)::BIGINT FROM dir_stats"
+    ).fetchone()
+    classes = [(cid, cb) for cid, cb in ((1, int(s_b) - int(s_c2) - int(s_c3) - int(s_c4)), (2, int(s_c2)), (3, int(s_c3)), (4, int(s_c4))) if cb]
 
     meta = {
         "asof": asof,

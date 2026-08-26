@@ -218,3 +218,36 @@ prefix_owners:
     assert b1["tm"] == {"infra": 100 * GB, "data": 60 * GB}
     assert b1["sh"] == {"data": 60 * GB}
     assert b1["us"] == [["ryan-williams", 100 * GB]]
+
+
+def test_dir_cache_roundtrip(tmp_path: Path, listing: str, attribution: str):
+    """Cold run writes the layer-2 cache; a warm run (same cache dir, listing
+    unreadable to prove it isn't touched) produces byte-identical outputs."""
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    cache = tmp_path / "dir-cache"
+
+    cold_out = tmp_path / "cold"
+    write_webdata((listing,), cold_out, "2026-07-20", (attribution,), identities_path, dir_cache=cache)
+    assert sorted(p.name for p in cache.iterdir()) == ["age-days.parquet", "dir-stats.parquet"]
+
+    # Warm: point the listing at a copy that we then corrupt — object rows must
+    # not be read. (The listing arg is still parsed for schema, so keep a valid
+    # parquet with different contents: one giant bogus row.)
+    bogus = tmp_path / "bogus-listing.parquet"
+    pd.DataFrame(
+        {
+            "bucket": ["b1"],
+            "name": ["SHOULD_NOT_BE_READ"],
+            "size_bytes": [1],
+            "created": [TS["d0701"]],
+            "storage_class_id": [1],
+        }
+    ).to_parquet(bogus)
+    warm_out = tmp_path / "warm"
+    write_webdata((str(bogus),), warm_out, "2026-07-20", (attribution,), identities_path, dir_cache=cache)
+
+    for name in ("tree.json", "age.json", "meta.json"):
+        assert (warm_out / name).read_bytes() == (cold_out / name).read_bytes()
+    tree = json.loads((warm_out / "tree.json").read_text())
+    assert tree["b"] == 380 * GB  # cache content won, bogus listing ignored

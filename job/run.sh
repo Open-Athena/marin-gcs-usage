@@ -103,7 +103,12 @@ L=(); for g in "${G[@]}"; do L+=(-l "$(loc "$g")"); done
 A=(); for a in "${AG[@]}"; do A+=(-a "$(loc "$a")"); done
 X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 
-gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE"
+# Layer-2 dir-cache: attribution-independent per-dir rollups, written on the
+# first aggregation of a date and reused by any re-attribution run (REPROC,
+# ledger refreshes) — those then skip the 595M-row object scans entirely.
+# Colocated with the listing (immutable per date, same lifecycle).
+gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
+  -c "/gcs/$DATA/listing/$DATE/dir-cache"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 
 # 3. publish to the canonical store — the live site reads these directly

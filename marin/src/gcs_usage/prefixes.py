@@ -73,7 +73,10 @@ def _expand_path_glob(con: "duckdb.DuckDBPyConnection", listing_src: str, patter
         lead.append(s)
     like = "/".join(lead) + "/%" if lead else "%"
     depth = len(segs)
-    extract = "^(" + "[^/]+" + "(?:/[^/]+)" * (depth - 1) + ")/"
+    # End-or-slash after the captured depth: `name` may be an object path
+    # (dir + filename) or a bare dir path (viz's `listing_dirs` view) — a
+    # depth-exact dir has nothing after its last segment.
+    extract = "^(" + "[^/]+" + "(?:/[^/]+)" * (depth - 1) + ")(?:/|$)"
     rows = con.execute(
         f"SELECT DISTINCT regexp_extract(name, ?, 1) AS d FROM {listing_src}"
         " WHERE bucket = ? AND name LIKE ? AND d IS NOT NULL AND d != ''",
