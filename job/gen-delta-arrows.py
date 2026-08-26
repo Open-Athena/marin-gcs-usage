@@ -94,7 +94,7 @@ def name(a: int) -> str:
 
 @command()
 @option("-m", "--max-angle", default=80, help="Sweep endpoint (±deg)")
-@option("-o", "--out", type=Path, default=Path("slck/gcs-digest/emoji"), help="Output dir (svg/, png/, sheet.png)")
+@option("-o", "--out", type=Path, default=Path("tmp/delta-arrows"), help="Output dir (svg/, png/, sheet.png)")
 @option("-s", "--step", default=10, help="Degrees between arrows (5 for the full 35-emoji set)")
 def main(
     max_angle: int,
