@@ -105,10 +105,18 @@ Depends on #1's index landing first; the ledger side is cheap.
   prefix's series (round unit-aligned y-ticks), and **falls back to the fleet
   total** (per-date `meta.json`) when the index is absent or the prefix is below
   the floor — so prod never regresses before the index ships.
-- **Publish step (TODO to go live in prod):** the daily snapshot job must run
-  `gcs-usage series -o <snapshots>/series.json` (append-only — only the newest
-  date's column changes) after `webdata`. Until then the chart is fleet-wide in
-  prod; scoping works locally via the vite `dev-series-index` middleware.
+- **Publish step (live in prod):** the daily snapshot job (`job/run.sh`) runs
+  `gcs-usage series -r /gcs/$DATA/snapshots -o /gcs/$DATA/snapshots/series.json`
+  right after publishing the snapshot JSONs — over the same FUSE mount, guarded
+  so a failure never blocks the snapshot (the chart just falls back to the fleet
+  total). It re-folds every archived tree each run (append-only in effect), so it
+  self-heals. The `/data/series.json` → `snapshots/series.json` mapping is the
+  generic one in `site/functions/data/[[path]].ts` (no function change needed).
+  Requires the Batch image to carry the `series` command — see `job/build.sh`.
+  - **Backfill:** the initial `snapshots/series.json` was generated locally
+    (`gcs-usage series -r gs://oa-gcs-usage-dvx/snapshots -o series.json`, ADC
+    read) and `gsutil cp`'d up, so the chart worked before the next daily run.
+  - Locally, the vite `dev-series-index` middleware still serves `tmp/series.json`.
 
 ## Open questions
 

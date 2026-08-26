@@ -113,6 +113,16 @@ cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
 # attribution rules: the single latest copy the /data/rules.json function serves
 cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 
+# Cross-scan size index for the site's per-subpath "size over time" chart
+# (specs/size-over-time.md case 1). Re-folds every archived tree into a single
+# snapshots/series.json — scans are immutable, so this is effectively
+# append-only (only the new date's column changes). Reads/writes over the same
+# FUSE mount as the snapshot cp above. A failure never blocks the snapshot: the
+# chart just falls back to the fleet total, and the next run self-heals (it
+# always regenerates the whole index).
+gcs-usage series -r "/gcs/$DATA/snapshots" -o "/gcs/$DATA/snapshots/series.json" \
+  || echo "WARN: series-index step failed (size chart falls back to fleet total)" >&2
+
 # Post the daily usage digest to Slack (only when a transport is configured, so
 # experimental / local runs stay quiet — only the scheduled job sets it). The
 # alert cmd prefers chat.postMessage (SLACK_BOT_TOKEN + SLACK_CHANNEL → per-message
