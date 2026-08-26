@@ -63,6 +63,7 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "stanford"
   },
   "julian": {
+    "github": "hummlj",
     "name": "Julian",
     "team": "stanford"
   },
@@ -87,6 +88,7 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa"
   },
   "michael-ryan": {
+    "github": "XenonMolecule",
     "name": "Michael",
     "team": "stanford"
   },

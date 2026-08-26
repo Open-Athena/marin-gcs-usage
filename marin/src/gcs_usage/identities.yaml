@@ -76,6 +76,7 @@ users:
     team: stanford
   michael-ryan:
     aliases: [michaeljryan, michaelryan]
+    github: XenonMolecule
     team: stanford
   kaiyue-wen:
     github: WhenWen
@@ -130,7 +131,8 @@ users:
     aliases: [blahblahhhj]
     team: stanford
   julian:
-    team: stanford  # TODO confirm which Julian; julian/ top-level dirs
+    github: hummlj  # Julian Humml; Discord hummlj, owns a levanter fork of marin-community/levanter
+    team: stanford  # non-OA marin contributor → Stanford access group
   alex-merose:
     aliases: [alxmrs]
     github: alxmrs
@@ -210,7 +212,7 @@ prefix_owners:
     team: stanford
   - prefix: gs://marin-*/julian/
     user: julian
-    team: stanford  # TODO confirm which Julian; julian/experiments/ across 3 buckets
+    team: stanford  # Julian Humml (hummlj); julian/experiments/causal-diffusion across buckets (~23 TB)
   - prefix: gs://marin-*/user/rav/
     user: rafal-wojdyla
     team: oa  # `user/` (singular) tree is ~all rav
