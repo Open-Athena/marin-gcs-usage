@@ -138,7 +138,7 @@ users:
     github: alxmrs
     team: oa
   gonzalo-benegas:
-    aliases: [gonzalobenegas]
+    aliases: [gonzalo, gonzalobenegas]  # Iris owner; GitHub/W&B username
     github: gonzalobenegas
     team: oa
   larry-dial:
