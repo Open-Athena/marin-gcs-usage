@@ -4,6 +4,9 @@
 .git
 .venv
 tmp
+.tmp
+.dvc
+slck
 node_modules
 site/node_modules
 site/dist
