@@ -216,7 +216,7 @@ prefix_owners:
   # Calvin's data-mixture swarms (Percy, 8/18 call). Only ~350 of the ~1,060
   # swarm dirs ever logged a W&B run (all his), so run-matching can't cover the
   # rest — the name pattern can. Path-glob: `*` matches within one segment.
-  - prefix: gs://marin-us-central2/grug/swarm_*/
+  - prefix: gs://marin-*/grug/swarm_*/
     user: calvin-xu
     team: stanford
   - prefix: gs://marin-*/checkpoints/olmix-swarm/

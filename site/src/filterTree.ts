@@ -76,6 +76,22 @@ export function applyNodeFilter(root: TreeNode, pred: NodePred): TreeNode {
   return reaggregate(root, kids)
 }
 
+/** The outermost matched prefixes (what a bulk action targets): every
+ * non-fold node whose path matches, without descending inside matches —
+ * exactly the roots `applyFilter` keeps whole. */
+export function collectMatches(root: TreeNode, pred: NamePred): { path: string; b: number }[] {
+  const out: { path: string; b: number }[] = []
+  const walk = (n: TreeNode, path: string) => {
+    if (!n.n.startsWith('(') && pred(path)) {
+      out.push({ path, b: n.b })
+      return
+    }
+    for (const c of n.c ?? []) walk(c, c.n.startsWith('(') ? path : `${path}/${c.n}`)
+  }
+  for (const b of root.c ?? []) walk(b, b.n)
+  return out
+}
+
 /** Filter below the root by *path* (fold nodes never match). Paths are the
  * node's segments below the root joined with `/` (`bucket/dir/sub`), built
  * during the walk so the predicate sees the whole ancestry. */

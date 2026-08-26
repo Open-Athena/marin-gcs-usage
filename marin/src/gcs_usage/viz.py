@@ -79,6 +79,16 @@ def write_webdata(
             ]
         )
         pfx_df["depth"] = pfx_df["key"].str.count("/") + 1
+        # Cap attribution depth: the ancestor explosion below is dirs × maxd, so
+        # a handful of ultra-deep prefixes inflate memory for *everything* (the
+        # 2026-08-26 wandb re-mine's 231 depth-14+ config paths pushed maxd
+        # 13 → 16 and OOMed the 100GB REPROC). Deeper-than-cap rows are dropped
+        # (a truncated prefix would over-attribute whole parent dirs).
+        attr_max_depth = int(os.environ.get("GCS_USAGE_ATTR_MAX_DEPTH", "12"))
+        deep = pfx_df["depth"] > attr_max_depth
+        if deep.any():
+            err(f"dropping {int(deep.sum())} attribution prefixes deeper than {attr_max_depth}")
+            pfx_df = pfx_df[~deep]
         maxd = int(pfx_df["depth"].max()) if len(pfx_df) else 1
         con.register("pfx", pfx_df)
         # deepest-prefix-wins for every distinct dir, entirely in SQL: explode

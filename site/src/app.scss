@@ -1321,3 +1321,42 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 // Legend rows align their avatar with the swatch + text.
 .ri .user-avatar { margin: 0 1px; vertical-align: middle; }
+
+// Bulk actions over filter matches (BulkBar; specs/selection-actions.md).
+// Mirrors the MarkControls action-button look, inline next to the match chip.
+.bulkbar {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+  .bb-scope { color: var(--ink-2); }
+  button.act {
+    background: transparent;
+    border: 1px solid var(--act, var(--line));
+    color: var(--act, var(--ink-2));
+    border-radius: 5px;
+    font-size: 12px;
+    padding: 1px 8px;
+    cursor: pointer;
+    &.keep { --act: var(--mk-keep); }
+    &.sweep { --act: var(--mk-del); }
+    &.clear { --act: var(--ink-2); }
+    &.claim { --act: var(--s1); }
+    &.go { --act: var(--mk-keep); font-weight: 600; }
+    &:disabled { opacity: 0.45; cursor: default; }
+  }
+  input {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    color: var(--ink);
+    font-size: 12px;
+    padding: 1px 6px;
+  }
+  .bb-confirm { color: var(--ink); }
+  .bb-warn { color: var(--s3); }
+  .bb-progress { color: var(--s1); }
+}

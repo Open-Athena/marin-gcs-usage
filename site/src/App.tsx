@@ -18,7 +18,8 @@ import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
-import { applyFilter, applyNodeFilter, parseQuery } from './filterTree'
+import { applyFilter, applyNodeFilter, collectMatches, parseQuery } from './filterTree'
+import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { LensBar, SCOPABLE } from './LensBar'
 import type { Lens } from './LensBar'
@@ -201,6 +202,7 @@ function AppContent() {
   const [fq, setFq] = useUrlState('f', stringParam())
   const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
   const shownTree = useMemo(() => (tree && pred ? applyFilter(tree, pred) : tree), [tree, pred])
+  const fMatches = useMemo(() => (tree && pred ? collectMatches(tree, pred) : []), [tree, pred])
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
   // Deep-link to a section via `#hash` (e.g. `…/ego-dex#size-over-time`). Re-runs
@@ -684,6 +686,9 @@ function AppContent() {
               </span>
             )}
           </span>
+          {pred && fq && fMatches.length > 0 && (
+            <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
+          )}
           {hl && (
             <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">
               {hlUser ?? hlTeam} ✕
