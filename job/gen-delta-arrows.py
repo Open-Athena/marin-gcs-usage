@@ -7,7 +7,7 @@
 
 A sweep of arrows encoding each day's size delta: signed angle a ∈ [-85°, +85°]
 in math convention (0° = due E = flat/no change), negative = pointing S-ward =
-shrinking (green), positive = N-ward = growing (red). Grey + headless at 0.
+shrinking (green), positive = N-ward = growing (red). Chunky constant head at every angle (grey flat at 0).
 Emits SVG sources + supersampled PNGs (Slack custom emoji: ≤128px, transparent),
 plus a contact-sheet PNG for quick review.
 
@@ -37,19 +37,19 @@ def color(a: float) -> tuple[int, int, int]:
     return round(r * 255), round(g * 255), round(b * 255)
 
 
-def geometry(a: float, size: float) -> tuple[tuple, tuple, list[tuple] | None]:
-    """(tail, head, head-triangle) for signed math-angle `a`, y-up → y-down."""
-    t = min(1.0, abs(a) / MAX_A)
+def geometry(a: float, size: float) -> tuple[tuple, tuple, list[tuple]]:
+    """(tail, tip, head-triangle) for signed math-angle `a`, y-up → y-down.
+
+    Chunky, emoji-like proportions (cf. Slack's ⬆️ family): square-ish glyph,
+    thick stem, big constant head at every angle (flat grey included)."""
     c = size / 2
     rad = math.radians(a)
     dx, dy = math.cos(rad), -math.sin(rad)  # svg/PIL y-down
-    half = size * 0.30
+    half = size * 0.36
     tail = (c - dx * half, c - dy * half)
     tip = (c + dx * half, c + dy * half)
-    head_len = size * (0.10 + 0.14 * t) if abs(a) >= 5 else 0
-    if not head_len:
-        return tail, tip, None
-    head_w = head_len * 0.85
+    head_len = size * 0.40
+    head_w = size * 0.52
     bx, by = tip[0] - dx * head_len, tip[1] - dy * head_len  # head base center
     px, py = -dy, dx  # perpendicular
     tri = [tip, (bx + px * head_w / 2, by + py * head_w / 2), (bx - px * head_w / 2, by - py * head_w / 2)]
@@ -60,15 +60,14 @@ def svg(a: float) -> str:
     tail, tip, tri = geometry(a, SIZE)
     r, g, b = color(a)
     col = f"#{r:02x}{g:02x}{b:02x}"
-    w = SIZE * 0.11
-    # shaft stops short of the tip when there's a head (head covers the gap)
-    end = tip if tri is None else ((tail[0] + tip[0]) / 2 + (tip[0] - tail[0]) * 0.28,
-                                   (tail[1] + tip[1]) / 2 + (tip[1] - tail[1]) * 0.28)
+    w = SIZE * 0.20
+    # shaft ends inside the head; head triangle covers the joint
+    end = ((tail[0] + tip[0]) / 2 + (tip[0] - tail[0]) * 0.18,
+           (tail[1] + tip[1]) / 2 + (tip[1] - tail[1]) * 0.18)
+    pts = ' '.join(f"{x:.1f},{y:.1f}" for x, y in tri)
     parts = [f'<line x1="{tail[0]:.1f}" y1="{tail[1]:.1f}" x2="{end[0]:.1f}" y2="{end[1]:.1f}" '
-             f'stroke="{col}" stroke-width="{w:.1f}" stroke-linecap="round"/>']
-    if tri is not None:
-        pts = ' '.join(f"{x:.1f},{y:.1f}" for x, y in tri)
-        parts.append(f'<polygon points="{pts}" fill="{col}"/>')
+             f'stroke="{col}" stroke-width="{w:.1f}" stroke-linecap="round"/>',
+             f'<polygon points="{pts}" fill="{col}"/>']
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SIZE} {SIZE}">' + ''.join(parts) + '</svg>\n')
 
 
@@ -78,14 +77,12 @@ def png(a: float) -> Image.Image:
     d = ImageDraw.Draw(img)
     tail, tip, tri = geometry(a, s)
     col = (*color(a), 255)
-    w = round(s * 0.11)
-    end = tip if tri is None else ((tail[0] + tip[0]) / 2 + (tip[0] - tail[0]) * 0.28,
-                                   (tail[1] + tip[1]) / 2 + (tip[1] - tail[1]) * 0.28)
+    w = round(s * 0.20)
+    end = ((tail[0] + tip[0]) / 2 + (tip[0] - tail[0]) * 0.18,
+           (tail[1] + tip[1]) / 2 + (tip[1] - tail[1]) * 0.18)
     d.line([tail, end], fill=col, width=w)
-    for p in (tail, end) if tri is None else (tail,):
-        d.ellipse([p[0] - w / 2, p[1] - w / 2, p[0] + w / 2, p[1] + w / 2], fill=col)
-    if tri is not None:
-        d.polygon(tri, fill=col)
+    d.ellipse([tail[0] - w / 2, tail[1] - w / 2, tail[0] + w / 2, tail[1] + w / 2], fill=col)
+    d.polygon(tri, fill=col)
     return img.resize((SIZE, SIZE), Image.LANCZOS)
 
 
