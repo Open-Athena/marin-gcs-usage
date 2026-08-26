@@ -394,6 +394,7 @@ def census(listings: tuple[str, ...], top: int) -> None:
 @main.command("wandb-mine")
 @option("-e", "--entity", default="marin-community", help="W&B entity to mine")
 @option("-E", "--print-edges", is_flag=True, help="Print bisection-tree edges (valid --since/--until values for parallel workers) and exit")
+@option("-j", "--jobs", default=1, help="Concurrent (project, window) mining tasks — network-bound threads; ~8 is safe per API key")
 @option("-M", "--no-merge", is_flag=True, help="Skip the final concat (parallel range-workers; run once without to merge)")
 @option("-o", "--out", "out_path", type=Path, default=Path("tmp/wandb-runs.parquet"), help="Output parquet")
 @option("-p", "--project-filter", default=None, help="Substring filter on project names")
@@ -402,6 +403,7 @@ def census(listings: tuple[str, ...], top: int) -> None:
 def wandb_mine(
     entity: str,
     print_edges: bool,
+    jobs: int,
     no_merge: bool,
     out_path: Path,
     project_filter: str | None,
@@ -422,6 +424,7 @@ def wandb_mine(
         since=since or ROOT_SINCE,
         until=until or ROOT_UNTIL,
         merge=not no_merge,
+        jobs=jobs,
     )
 
 
