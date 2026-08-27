@@ -163,30 +163,39 @@ def write_webdata(
             err(f"dropping {int(deep.sum())} attribution prefixes deeper than {attr_max_depth}")
             pfx_df = pfx_df[~deep]
         con.register("pfx", pfx_df)
-        # Deepest-prefix-wins, resolved iteratively deepest-depth-first: one
-        # equi-join pass per prefix depth against the still-unresolved dirs,
-        # removing hits after each pass. Semantically identical to the old
-        # single dirs×maxd ancestor explosion, but peak memory is one depth
-        # slice (join build side = that depth's prefixes; probe streams the
-        # unresolved dirs) instead of the whole candidate set — the explosion
-        # + un-spillable arg_max OOM-killed the daily's 128GB node once the
-        # 2026-08-26 wandb re-mine grew/deepened the prefix map.
+        # Deepest-prefix-wins as ONE streaming pass: a chained LEFT JOIN per
+        # prefix depth (build side = just that depth's prefixes — thousands of
+        # rows), COALESCE'd deepest-first. Each dir row splits its key once,
+        # probes ≤maxd small hash tables, and streams out; nothing is exploded
+        # or aggregated, so memory is O(prefix map) regardless of dir count.
+        # Replaces (a) the dirs×maxd explosion + un-spillable arg_max that
+        # OOM-killed the daily's 128GB node when the 2026-08-26 wandb re-mine
+        # grew the prefix map, and (b) an interim iterative-delete version
+        # that was memory-safe but rewrote a 150M-row temp table per depth.
+        # The CASE-wrapped struct is NULL on a join miss (a bare struct_pack
+        # of NULLs is non-NULL and would poison the COALESCE).
+        depths = sorted({int(d) for d in pfx_df["depth"]}, reverse=True)
+        joins = "\n".join(
+            f"LEFT JOIN pfx p{k} ON p{k}.depth = {k} AND len(k.segs) >= {k}"
+            f" AND p{k}.key = array_to_string(k.segs[1:{k}], '/')"
+            for k in depths
+        )
+        win = "COALESCE(" + ", ".join(
+            f'CASE WHEN p{k}.key IS NOT NULL THEN struct_pack(u := p{k}."user", t := p{k}.team) END'
+            for k in depths
+        ) + ")"
         con.execute(
-            """
-            CREATE TEMP TABLE unresolved AS
-            SELECT bucket, dir,
-              str_split(CASE WHEN dir = '' THEN bucket ELSE bucket || '/' || dir END, '/') AS segs
-            FROM dir_stats
+            f"""
+            CREATE TEMP TABLE dir_attr AS
+            WITH k AS (
+              SELECT bucket, dir,
+                str_split(CASE WHEN dir = '' THEN bucket ELSE bucket || '/' || dir END, '/') AS segs
+              FROM dir_stats
+            ),
+            won AS (SELECT k.bucket, k.dir, {win} AS win FROM k {joins})
+            SELECT bucket, dir, win.u AS "user", win.t AS team FROM won WHERE win IS NOT NULL
             """
         )
-        con.execute('CREATE TEMP TABLE dir_attr (bucket VARCHAR, dir VARCHAR, "user" VARCHAR, team VARCHAR)')
-        for k in sorted({int(d) for d in pfx_df["depth"]}, reverse=True):
-            on = f"p.depth = {k} AND len(u.segs) >= {k} AND p.key = array_to_string(u.segs[1:{k}], '/')"
-            con.execute(f'INSERT INTO dir_attr SELECT u.bucket, u.dir, p."user", p.team FROM unresolved u JOIN pfx p ON {on}')
-            con.execute(f"CREATE TEMP TABLE unresolved_next AS SELECT u.* FROM unresolved u LEFT JOIN pfx p ON {on} WHERE p.key IS NULL")
-            con.execute("DROP TABLE unresolved")
-            con.execute("ALTER TABLE unresolved_next RENAME TO unresolved")
-        con.execute("DROP TABLE unresolved")
         _rss("dir_attr")
         # per-(team|user) storage-class byte mixes (site prices group roll-ups
         # with class-aware rates) + the per-(user,team) leaderboard meta.users
