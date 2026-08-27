@@ -220,13 +220,13 @@ def write_webdata(
         f"""
         CREATE TEMP TABLE dir_agg AS
         SELECT s.fp, {team_sel} AS team, {user_sel} AS usr,
-          s.b, s.o, s.wts, s.wb, s.c2, s.c3, s.c4, string_split(s.fp, '/') AS segs
+          s.b, s.o, s.wts, s.wb, s.c2, s.c3, s.c4
         FROM dir_stats s {attr_join_s}
         """
     )
     total_b, total_o = con.execute("SELECT coalesce(sum(b), 0)::BIGINT, coalesce(sum(o), 0)::BIGINT FROM dir_agg").fetchone()
     total_b, total_o = int(total_b), int(total_o)
-    maxseg = int(con.execute("SELECT coalesce(max(len(segs)), 1) FROM dir_agg").fetchone()[0])
+    maxseg = int(con.execute("SELECT coalesce(max(len(string_split(fp, '/'))), 1) FROM dir_agg").fetchone()[0])
     _rss("dir-agg")
 
     if attr:
@@ -252,10 +252,15 @@ def write_webdata(
     con.execute(
         f"""
         CREATE TEMP TABLE ptu AS
-        WITH exploded AS (
+        WITH da AS (
+          -- split computed here (streamed), not materialized into dir_agg —
+          -- a LIST column on 150M rows is a ~40GB temp table by itself
+          SELECT *, string_split(fp, '/') AS segs FROM dir_agg
+        ),
+        exploded AS (
           SELECT array_to_string(segs[1:r.k], '/') AS path, r.k AS depth,
             b, o, wts, wb, c2, c3, c4, team, usr
-          FROM dir_agg, range(1, {maxseg} + 1) r(k)
+          FROM da, range(1, {maxseg} + 1) r(k)
           WHERE len(segs) >= r.k
         )
         SELECT path, depth, team, usr,
