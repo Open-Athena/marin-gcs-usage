@@ -1,15 +1,18 @@
+import { Treemap, type CellStyle } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
 import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkIndex } from './marks'
 import { DEFAULT_STORE } from './stores'
 import { allUserFates, type Fate } from './sweep'
+import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, teamOf } from './UserChip'
 import {
-  GROUP_LABELS, ratePerByte, fmtBytesIec, fmtN, fmtUsd,
-  type Meta, type TreeNode,
+  CLASS_NAMES, CLASS_PRICE_US, GROUP_LABELS, TEAM_VARS,
+  ratePerByte, fmtBytesIec, fmtN, fmtUsd,
+  type Meta, type TreeNode, type UserInfo,
 } from './types'
 
 // Per-user estate pages (the view Ahmed went looking for and couldn't find):
@@ -103,6 +106,100 @@ function useScanFile<T>(name: string, asof: string | null) {
   })
 }
 
+// Group badge: color-coded pill with the full name on hover.
+const GROUP_ABBR: Record<string, string> = { oa: 'OA', stanford: 'SU', communal: 'COM', unknown: '?' }
+
+function GroupBadge({ team }: { team: string }) {
+  return (
+    <Tooltip content={GROUP_LABELS[team] ?? team}>
+      <span className="grp-badge" data-team={team}>{GROUP_ABBR[team] ?? team}</span>
+    </Tooltip>
+  )
+}
+
+// Est. $/mo with the storage-class mix behind it on hover.
+function DollarCell({ b, mix }: { b: number; mix?: Record<string, number> }) {
+  if (!mix) return <>—</>
+  const rows = Object.entries(mix)
+    .sort(([a], [c]) => Number(a) - Number(c))
+    .map(([cls, cb]) => ({
+      name: CLASS_NAMES[cls] ?? cls,
+      b: cb,
+      usd: (cb / 1024 ** 3) * (CLASS_PRICE_US[cls] ?? 0.02),
+    }))
+  return (
+    <Tooltip content={
+      <table className="class-tt">
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.name}>
+              <td>{r.name}</td>
+              <td className="num">{fmtBytesIec(r.b)}</td>
+              <td className="num">{fmtUsd(r.usd)}/mo</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    }>
+      <span className="has-tt">{fmtUsd(ratePerByte(mix) * b)}</span>
+    </Tooltip>
+  )
+}
+
+// One-level treemap of the whole estate by owner: every user, plus the
+// ownerless pools (communal, shared-in-group, unattributed).
+interface OwnerCell {
+  n: string
+  b: number
+  team?: string
+  id?: string      // canonical user id → /user/:id
+  c?: OwnerCell[]
+}
+
+function UsersMap({ meta }: { meta: Meta }) {
+  const navigate = useNavigate()
+  const root = useMemo((): OwnerCell => {
+    const users: UserInfo[] = meta.users ?? []
+    const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b, team: u.t }))
+    const teamTotal = (t: string) =>
+      Object.values(meta.team_class_bytes?.[t] ?? {}).reduce((s, b) => s + b, 0)
+    const userSum = users.reduce((s, u) => s + u.b, 0)
+    const communal = teamTotal('communal')
+    const unattr = meta.total_bytes - userSum - communal
+    if (communal > 0) cells.push({ n: 'communal', b: communal, team: 'communal' })
+    if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, team: 'unattributed' })
+    return { n: '', b: meta.total_bytes, c: cells.sort((a, b) => b.b - a.b) }
+  }, [meta])
+  return (
+    <div className="users-map">
+      <Treemap<OwnerCell>
+        root={root}
+        getSize={n => n.b}
+        getChildren={n => n.c}
+        getLabel={n => n.n}
+        formatSize={n => fmtBytesIec(n)}
+        chrome={false}
+        fullscreen={false}
+        colorForCell={(n): CellStyle | null =>
+          n.team ? { bg: `color-mix(in oklab, var(${TEAM_VARS[n.team] ?? '--t-unknown'}) 72%, var(--panel))` } : null}
+        renderTooltip={(n) => (
+          <div>
+            <b>{n.n}</b>{n.team && <> · {GROUP_LABELS[n.team] ?? n.team}</>}
+            <div>{fmtBytesIec(n.b, true)} · {meta.total_bytes ? ((100 * n.b) / meta.total_bytes).toFixed(1) : 0}%</div>
+            {n.id && <div className="tt-hint">click for breakdown</div>}
+          </div>
+        )}
+        onCellClick={(n) => {
+          if (n.id) {
+            navigate(`/user/${n.id}`)
+            return true
+          }
+        }}
+      />
+    </div>
+  )
+}
+
 export function UsersPage() {
   const asof = useLatestScan()
   const metaQ = useScanFile<Meta>('meta', asof)
@@ -123,7 +220,7 @@ export function UsersPage() {
     const b = fates?.get(u)?.[f] ?? 0
     return (
       <td className="num" style={b ? { color: fateColor(f) } : { color: 'var(--ink-2)', opacity: 0.5 }}>
-        {fates ? (b ? fmtBytesIec(b, true) : '—') : '…'}
+        {fates ? (b ? fmtBytesIec(b) : '—') : '…'}
       </td>
     )
   }
@@ -134,24 +231,25 @@ export function UsersPage() {
           <h1>Users</h1>
           <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Back&nbsp;to&nbsp;the&nbsp;map</Link>
         </div>
-        <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click through for the per-prefix breakdown.</p>
+        <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
       </header>
       {metaQ.isLoading && <p className="loading">loading…</p>}
+      {metaQ.data && <UsersMap meta={metaQ.data} />}
       {users.length > 0 && (
         <table className="worklist">
           <thead>
             <tr>
-              <th>user</th><th>group</th><th className="num">attributed</th><th className="num">est. $/mo</th>
-              <th className="num">keep</th>{klc && <th className="num">last-ckpt</th>}<th className="num">sweep</th><th className="num">unmarked</th>
+              <th>User</th><th>Group</th><th className="num">Attributed</th><th className="num">Est. $/mo</th>
+              <th className="num">Keep</th>{klc && <th className="num">Last-ckpt</th>}<th className="num">Sweep</th><th className="num">Unmarked</th>
             </tr>
           </thead>
           <tbody>
             {users.map(u => (
               <tr key={u.u}>
                 <td><Link className="user-link" to={`/user/${u.u}`}><UserChip who={u.u} /></Link></td>
-                <td>{GROUP_LABELS[u.t] ?? u.t}</td>
-                <td className="num">{fmtBytesIec(u.b, true)}</td>
-                <td className="num">{mixes?.[u.u] ? fmtUsd(ratePerByte(mixes[u.u]) * u.b) : '—'}</td>
+                <td><GroupBadge team={u.t} /></td>
+                <td className="num">{fmtBytesIec(u.b)}</td>
+                <td className="num"><DollarCell b={u.b} mix={mixes?.[u.u]} /></td>
                 {cell(u.u, 'keep')}
                 {klc && cell(u.u, 'keep_last_ckpt')}
                 {cell(u.u, 'sweep')}
@@ -177,7 +275,7 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
     <>
       <table className="worklist marks-feed">
         <thead>
-          <tr><th>fate</th><th className="num">your data</th><th>prefix</th><th>by</th><th>when</th></tr>
+          <tr><th>Fate</th><th className="num">Your data</th><th>Prefix</th><th>By</th><th>When</th></tr>
         </thead>
         <tbody>
           {slice.map(r => (
@@ -187,7 +285,7 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
                   {fateLabel(r.fate)}
                 </span>
               </td>
-              <td className="num">{fmtBytesIec(r.b, true)}</td>
+              <td className="num">{fmtBytesIec(r.b)}</td>
               <td className="prefix">
                 <Link to={`/${prefixToPath(r.uri)}`}>{r.uri}</Link>
                 {r.mark?.note && <span className="memo" title={r.mark.note}> — {r.mark.note}</span>}
@@ -277,7 +375,7 @@ export function UserPage() {
               return (
                 <div className="fate-cell" key={f} style={{ borderColor: fateColor(f) }}>
                   <b style={{ color: fateColor(f) }}>{fateLabel(f)}</b>
-                  <span className="fate-b">{fmtBytesIec(b, true)}</span>
+                  <span className="fate-b">{fmtBytesIec(b)}</span>
                   <span className="fate-n">{fmtN(n)} prefix{n === 1 ? '' : 'es'} · {attributed ? Math.round((b / attributed) * 100) : 0}%</span>
                 </div>
               )
