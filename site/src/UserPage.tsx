@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Avatar, whoToHandle } from './Avatar'
+import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
 import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkAction, type MarkIndex } from './marks'
 import { DEFAULT_STORE } from './stores'
-import { UserChip, ghHandle, shortName, teamOf } from './UserChip'
+import { UserChip, canonId, ghHandle, shortName, teamOf } from './UserChip'
 import {
   GROUP_LABELS, ratePerByte, fmtBytesIec, fmtN, fmtUsd,
   type Meta, type TreeNode,
@@ -210,7 +210,7 @@ export function UserPage() {
   const metaB = metaQ.data?.users?.find(u => u.u === id)?.b
   const mix = metaQ.data?.user_class_bytes?.[id]
   const authored = useMemo(
-    () => new Set((marksQ.data?.keeps ?? []).filter(r => r.keep != null && whoToHandle(r.who) === id).map(r => r.prefix)).size,
+    () => new Set((marksQ.data?.keeps ?? []).filter(r => r.keep != null && canonId(r.who) === id).map(r => r.prefix)).size,
     [marksQ.data, id],
   )
   const decidedRows = rows.filter(r => r.fate !== 'unmarked')

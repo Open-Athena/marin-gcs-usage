@@ -2,163 +2,422 @@
 // Display-only enrichment (short name + GitHub avatar handle) keyed by
 // canonical user id. Attribution (teams, bytes) still comes from meta/rules.
 export interface IdentityRec {
+  u: string  // canonical user id (alias keys point at their canonical rec)
   name: string
   github?: string
   team?: string
 }
 
 export const IDENTITIES: Record<string, IdentityRec> = {
+  "ahmed": {
+    "github": "ahmeda14960",
+    "name": "Ahmed",
+    "team": "stanford",
+    "u": "ahmed-ahmed"
+  },
   "ahmed-ahmed": {
     "github": "ahmeda14960",
     "name": "Ahmed",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "ahmed-ahmed"
+  },
+  "ahmedah": {
+    "github": "ahmeda14960",
+    "name": "Ahmed",
+    "team": "stanford",
+    "u": "ahmed-ahmed"
+  },
+  "ahmedsqred": {
+    "github": "ahmeda14960",
+    "name": "Ahmed",
+    "team": "stanford",
+    "u": "ahmed-ahmed"
   },
   "alex-merose": {
     "github": "alxmrs",
     "name": "Alex",
-    "team": "oa"
+    "team": "oa",
+    "u": "alex-merose"
+  },
+  "alxmrs": {
+    "github": "alxmrs",
+    "name": "Alex",
+    "team": "oa",
+    "u": "alex-merose"
+  },
+  "babychousr": {
+    "github": "BabyChouSr",
+    "name": "Christopher",
+    "team": "stanford",
+    "u": "christopher-chou"
+  },
+  "blahblahhhj": {
+    "github": "blahBlahhhJ",
+    "name": "Jason",
+    "team": "stanford",
+    "u": "jason-wang"
   },
   "calvin-xu": {
     "github": "Calvin-Xu",
     "name": "Calvin",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "calvin-xu"
+  },
+  "calvinxu": {
+    "github": "Calvin-Xu",
+    "name": "Calvin",
+    "team": "stanford",
+    "u": "calvin-xu"
   },
   "chi-heem-wong": {
     "github": "chiheem",
     "name": "Chi-Heem",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "chi-heem-wong"
+  },
+  "chiheem": {
+    "github": "chiheem",
+    "name": "Chi-Heem",
+    "team": "stanford",
+    "u": "chi-heem-wong"
   },
   "christopher-chou": {
     "github": "BabyChouSr",
     "name": "Christopher",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "christopher-chou"
   },
   "david-hall": {
     "github": "dlwh",
     "name": "David",
-    "team": "oa"
+    "team": "oa",
+    "u": "david-hall"
+  },
+  "dlwh": {
+    "github": "dlwh",
+    "name": "David",
+    "team": "oa",
+    "u": "david-hall"
+  },
+  "eczech": {
+    "github": "eczech",
+    "name": "Eric",
+    "team": "oa",
+    "u": "eric-czech"
   },
   "elyas-obbad": {
     "github": "eobbad",
     "name": "Elyas",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "elyas-obbad"
+  },
+  "eobbad": {
+    "github": "eobbad",
+    "name": "Elyas",
+    "team": "stanford",
+    "u": "elyas-obbad"
   },
   "eric-czech": {
     "github": "eczech",
     "name": "Eric",
-    "team": "oa"
+    "team": "oa",
+    "u": "eric-czech"
   },
   "exedev": {
     "name": "Exedev",
-    "team": "oa"
+    "team": "oa",
+    "u": "exedev"
+  },
+  "gonzalo-benegas": {
+    "name": "Gonzalo",
+    "team": "oa",
+    "u": "gonzalo-benegas"
+  },
+  "held": {
+    "github": "Helw150",
+    "name": "Will",
+    "team": "oa",
+    "u": "will-held"
   },
   "herumb-shandilya": {
     "github": "krypticmouse",
     "name": "Herumb",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "herumb-shandilya"
+  },
+  "herumb-stanford": {
+    "github": "krypticmouse",
+    "name": "Herumb",
+    "team": "stanford",
+    "u": "herumb-shandilya"
   },
   "jason-wang": {
     "github": "blahBlahhhJ",
     "name": "Jason",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "jason-wang"
   },
   "julian": {
     "github": "hummlj",
     "name": "Julian",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "julian"
+  },
+  "kaiyue": {
+    "github": "WhenWen",
+    "name": "Kaiyue",
+    "team": "stanford",
+    "u": "kaiyue-wen"
   },
   "kaiyue-wen": {
     "github": "WhenWen",
     "name": "Kaiyue",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "kaiyue-wen"
+  },
+  "kaiyuew": {
+    "github": "WhenWen",
+    "name": "Kaiyue",
+    "team": "stanford",
+    "u": "kaiyue-wen"
   },
   "kevin-li": {
     "github": "AlienKevin",
     "name": "Kevin",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "kevin-li"
+  },
+  "kevinxli": {
+    "github": "AlienKevin",
+    "name": "Kevin",
+    "team": "stanford",
+    "u": "kevin-li"
+  },
+  "kothasuhas": {
+    "github": "kothasuhas",
+    "name": "Suhas",
+    "team": "stanford",
+    "u": "suhas-kotha"
+  },
+  "larry": {
+    "github": "ClassicLarry",
+    "name": "Larry",
+    "team": "oa",
+    "u": "larry-dial"
   },
   "larry-dial": {
     "github": "ClassicLarry",
     "name": "Larry",
-    "team": "oa"
+    "team": "oa",
+    "u": "larry-dial"
+  },
+  "larrydial": {
+    "github": "ClassicLarry",
+    "name": "Larry",
+    "team": "oa",
+    "u": "larry-dial"
   },
   "matt-wittmann": {
     "github": "mcwitt",
     "name": "Matt",
-    "team": "oa"
+    "team": "oa",
+    "u": "matt-wittmann"
+  },
+  "mcwitt": {
+    "github": "mcwitt",
+    "name": "Matt",
+    "team": "oa",
+    "u": "matt-wittmann"
   },
   "michael-ryan": {
     "github": "XenonMolecule",
     "name": "Michael",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "michael-ryan"
+  },
+  "michaeljryan": {
+    "github": "XenonMolecule",
+    "name": "Michael",
+    "team": "stanford",
+    "u": "michael-ryan"
+  },
+  "michaelryan": {
+    "github": "XenonMolecule",
+    "name": "Michael",
+    "team": "stanford",
+    "u": "michael-ryan"
   },
   "moojin-kim": {
     "github": "moojink",
     "name": "Moojin",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "moojin-kim"
+  },
+  "moojink": {
+    "github": "moojink",
+    "name": "Moojin",
+    "team": "stanford",
+    "u": "moojin-kim"
+  },
+  "mryan0": {
+    "github": "XenonMolecule",
+    "name": "Michael",
+    "team": "stanford",
+    "u": "michael-ryan"
   },
   "nikil-ravi": {
     "github": "nikil-ravi",
     "name": "Nikil",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "nikil-ravi"
   },
   "percy-liang": {
     "github": "percyliang",
     "name": "Percy",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "percy-liang"
+  },
+  "percyliang": {
+    "github": "percyliang",
+    "name": "Percy",
+    "team": "stanford",
+    "u": "percy-liang"
+  },
+  "pinlinxu": {
+    "github": "Calvin-Xu",
+    "name": "Calvin",
+    "team": "stanford",
+    "u": "calvin-xu"
+  },
+  "power": {
+    "github": "rjpower",
+    "name": "Russell",
+    "team": "oa",
+    "u": "russell-power"
+  },
+  "pranshu-01-c": {
+    "github": "pc0618",
+    "name": "Pranshu",
+    "team": "stanford",
+    "u": "pranshu-chaturvedi"
   },
   "pranshu-chaturvedi": {
     "github": "pc0618",
     "name": "Pranshu",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "pranshu-chaturvedi"
   },
   "rafal-wojdyla": {
     "github": "ravwojdyla",
     "name": "Rafal",
-    "team": "oa"
+    "team": "oa",
+    "u": "rafal-wojdyla"
+  },
+  "rav": {
+    "github": "ravwojdyla",
+    "name": "Rafal",
+    "team": "oa",
+    "u": "rafal-wojdyla"
+  },
+  "ravwojdyla": {
+    "github": "ravwojdyla",
+    "name": "Rafal",
+    "team": "oa",
+    "u": "rafal-wojdyla"
   },
   "rohith-kuditipudi": {
     "github": "RohithKuditipudi",
     "name": "Rohith",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "rohith-kuditipudi"
+  },
+  "rohithk": {
+    "github": "RohithKuditipudi",
+    "name": "Rohith",
+    "team": "stanford",
+    "u": "rohith-kuditipudi"
   },
   "romain-yon": {
     "github": "yonromai",
     "name": "Romain",
-    "team": "oa"
+    "team": "oa",
+    "u": "romain-yon"
+  },
+  "rpower": {
+    "github": "rjpower",
+    "name": "Russell",
+    "team": "oa",
+    "u": "russell-power"
   },
   "runner": {
     "name": "Runner",
-    "team": "oa"
+    "team": "oa",
+    "u": "runner"
+  },
+  "russell": {
+    "github": "rjpower",
+    "name": "Russell",
+    "team": "oa",
+    "u": "russell-power"
   },
   "russell-power": {
     "github": "rjpower",
     "name": "Russell",
-    "team": "oa"
+    "team": "oa",
+    "u": "russell-power"
+  },
+  "rw": {
+    "github": "ryan-williams",
+    "name": "Ryan",
+    "team": "oa",
+    "u": "ryan-williams"
+  },
+  "ryan": {
+    "github": "ryan-williams",
+    "name": "Ryan",
+    "team": "oa",
+    "u": "ryan-williams"
   },
   "ryan-williams": {
     "github": "ryan-williams",
     "name": "Ryan",
-    "team": "oa"
+    "team": "oa",
+    "u": "ryan-williams"
   },
   "suhas-kotha": {
     "github": "kothasuhas",
     "name": "Suhas",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "suhas-kotha"
+  },
+  "when": {
+    "github": "WhenWen",
+    "name": "Kaiyue",
+    "team": "stanford",
+    "u": "kaiyue-wen"
   },
   "will-held": {
     "github": "Helw150",
     "name": "Will",
-    "team": "oa"
+    "team": "oa",
+    "u": "will-held"
   },
   "yael-elmatad": {
     "github": "yaelelmatad",
     "name": "Yael",
-    "team": "oa"
+    "team": "oa",
+    "u": "yael-elmatad"
   },
   "ziqing-huang": {
     "github": "ziqing-huang",
     "name": "Ziqing",
-    "team": "stanford"
+    "team": "stanford",
+    "u": "ziqing-huang"
+  },
+  "ziqingh": {
+    "github": "ziqing-huang",
+    "name": "Ziqing",
+    "team": "stanford",
+    "u": "ziqing-huang"
   }
 }

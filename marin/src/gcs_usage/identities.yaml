@@ -26,6 +26,8 @@
 #               user/org owner. Both Stanford and OA train on it (verified via
 #               W&B run configs, 2026-08-11).
 users:
+  gonzalo-benegas:  # ledger sign-in observed 2026-08; no scan-attributed data yet
+    team: oa
   ryan-williams:
     aliases: [ryan, rw]
     github: ryan-williams
@@ -75,7 +77,7 @@ users:
     aliases: [rohithk]
     team: stanford
   michael-ryan:
-    aliases: [michaeljryan, michaelryan]
+    aliases: [michaeljryan, michaelryan, mryan0]  # `mryan0` = ledger sign-in
     github: XenonMolecule
     team: stanford
   kaiyue-wen:
@@ -100,7 +102,7 @@ users:
     team: stanford
   ahmed-ahmed:
     github: ahmeda14960
-    aliases: [ahmedah, ahmed]  # Ahmed Mohamed Ahmed
+    aliases: [ahmedah, ahmed, ahmedsqred]  # Ahmed Mohamed Ahmed; `ahmedsqred` = ledger sign-in
     team: stanford
   kevin-li:
     github: AlienKevin

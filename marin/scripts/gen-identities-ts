@@ -16,6 +16,7 @@ Run after editing `identities.yaml`; commit the generated file.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -32,18 +33,31 @@ def short_name(user_id: str, explicit: str | None) -> str:
     return user_id.split("-")[0].capitalize()
 
 
+def sanitize(alias: str) -> str:
+    """Mirror the frontend's `whoToHandle` (Avatar.tsx): lowercase local part,
+    runs of non-[a-z0-9_-] collapsed to '-'."""
+    return re.sub(r"-+$|^-+", "", re.sub(r"[^a-z0-9_-]+", "-", alias.split("@")[0].lower()))
+
+
 def main() -> None:
     doc = yaml.safe_load(IDENTITIES.read_text())
     users = doc.get("users") or {}
     registry: dict[str, dict] = {}
+    aliased: dict[str, dict] = {}
     for uid, entry in users.items():
         entry = entry or {}
-        rec: dict[str, str] = {"name": short_name(uid, entry.get("name"))}
+        rec: dict[str, str] = {"u": uid, "name": short_name(uid, entry.get("name"))}
         if entry.get("github"):
             rec["github"] = entry["github"]
         if entry.get("team"):
             rec["team"] = entry["team"]
         registry[uid] = rec
+        # Alias keys resolve ledger `who`s (email local parts) that aren't the
+        # canonical id — e.g. a personal-gmail sign-in. Canonical ids win.
+        for alias in entry.get("aliases") or []:
+            aliased[sanitize(alias)] = rec
+    for k, rec in aliased.items():
+        registry.setdefault(k, rec)
 
     body = json.dumps(registry, indent=2, ensure_ascii=False, sort_keys=True)
     OUT.write_text(
@@ -51,6 +65,7 @@ def main() -> None:
         "// Display-only enrichment (short name + GitHub avatar handle) keyed by\n"
         "// canonical user id. Attribution (teams, bytes) still comes from meta/rules.\n"
         "export interface IdentityRec {\n"
+        "  u: string  // canonical user id (alias keys point at their canonical rec)\n"
         "  name: string\n"
         "  github?: string\n"
         "  team?: string\n"
