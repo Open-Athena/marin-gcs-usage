@@ -169,39 +169,32 @@ def write_webdata(
             err(f"dropping {int(deep.sum())} attribution prefixes deeper than {attr_max_depth}")
             pfx_df = pfx_df[~deep]
         con.register("pfx", pfx_df)
-        # Deepest-prefix-wins as ONE streaming pass: a chained LEFT JOIN per
-        # prefix depth (build side = just that depth's prefixes — thousands of
-        # rows), COALESCE'd deepest-first. Each dir row splits its key once,
-        # probes ≤maxd small hash tables, and streams out; nothing is exploded
-        # or aggregated, so memory is O(prefix map) regardless of dir count.
-        # Replaces (a) the dirs×maxd explosion + un-spillable arg_max that
-        # OOM-killed the daily's 128GB node when the 2026-08-26 wandb re-mine
-        # grew the prefix map, and (b) an interim iterative-delete version
-        # that was memory-safe but rewrote a 150M-row temp table per depth.
-        # The CASE-wrapped struct is NULL on a join miss (a bare struct_pack
-        # of NULLs is non-NULL and would poison the COALESCE).
+        # Deepest-prefix-wins, one INSERT per prefix depth (deepest first):
+        # inner hash join (build side = that depth's prefixes — thousands) plus
+        # an anti-join against already-resolved dirs (build side ≤ resolved
+        # set, a few GB at fleet scale). Keeps the proven-fast split+equi-join
+        # machinery of the original explosion but drops its un-spillable
+        # dirs×maxd arg_max aggregate (OOM-killed the daily's 128GB node when
+        # the 2026-08-26 wandb re-mine grew the prefix map). A chained-LEFT-
+        # JOIN single-pass variant planned pathologically (~100× slower);
+        # per-depth INSERTs give the planner 12 trivial queries instead.
         depths = sorted({int(d) for d in pfx_df["depth"]}, reverse=True)
-        joins = "\n".join(
-            f"LEFT JOIN pfx p{k} ON p{k}.depth = {k} AND len(k.segs) >= {k}"
-            f" AND p{k}.key = array_to_string(k.segs[1:{k}], '/')"
-            for k in depths
-        )
-        win = "COALESCE(" + ", ".join(
-            f'CASE WHEN p{k}.key IS NOT NULL THEN struct_pack(u := p{k}."user", t := p{k}.team) END'
-            for k in depths
-        ) + ")"
-        con.execute(
-            f"""
-            CREATE TEMP TABLE dir_attr AS
-            WITH k AS (
-              SELECT bucket, dir,
-                str_split(CASE WHEN dir = '' THEN bucket ELSE bucket || '/' || dir END, '/') AS segs
-              FROM dir_stats
-            ),
-            won AS (SELECT k.bucket, k.dir, {win} AS win FROM k {joins})
-            SELECT bucket, dir, win.u AS "user", win.t AS team FROM won WHERE win IS NOT NULL
-            """
-        )
+        con.execute('CREATE TEMP TABLE dir_attr (bucket VARCHAR, dir VARCHAR, "user" VARCHAR, team VARCHAR)')
+        dk = "CASE WHEN s.dir = '' THEN s.bucket ELSE s.bucket || '/' || s.dir END"
+        for k in depths:
+            con.execute(
+                f"""
+                INSERT INTO dir_attr
+                SELECT s.bucket, s.dir, p."user", p.team
+                FROM dir_stats s
+                JOIN pfx p ON p.depth = {k}
+                  AND p.key = array_to_string(str_split({dk}, '/')[1:{k}], '/')
+                WHERE len(str_split({dk}, '/')) >= {k}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM dir_attr d WHERE d.bucket = s.bucket AND d.dir = s.dir
+                  )
+                """
+            )
         _rss("dir_attr")
         # per-(team|user) storage-class byte mixes (site prices group roll-ups
         # with class-aware rates) + the per-(user,team) leaderboard meta.users
