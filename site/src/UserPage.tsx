@@ -120,7 +120,7 @@ function useScanFile<T>(name: string, asof: string | null) {
 // Group badge: real logo glyphs (block-S / OA branch mark, cropped from the
 // www site's brand SVGs into `public/groups/`) with the full name on hover;
 // unknown renders as a plain dash.
-const GROUP_ICONS: Record<string, string> = { stanford: '/groups/su.svg', oa: '/groups/oa.svg' }
+const GROUP_ICONS: Record<string, string> = { stanford: '/groups/su.png', oa: '/groups/oa.svg' }
 
 function GroupBadge({ team }: { team: string }) {
   const icon = GROUP_ICONS[team]
@@ -429,6 +429,68 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
         </div>
       )}
     </>
+  )
+}
+
+/** `/user/:id/og` — fixed 1200×630 per-user unfurl card: avatar, name, group
+ * glyph, and the keep / sweep / undecided proportions (percentages only —
+ * no bytes, no $). Screenshot by `scripts/shoot-user-ogs.mjs`. */
+export function UserOgPage() {
+  const { id = '' } = useParams()
+  const asof = useLatestScan()
+  const treeQ = useScanFile<TreeNode>('tree', asof)
+  const marksQ = useMarks(true)
+  const idx = useMarkIndex(marksQ.data)
+  const klcIdx = useKlcIdx(treeQ.data, idx)
+  const fates = useMemo(
+    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx) : null),
+    [treeQ.data, idx, klcIdx],
+  )
+  useEffect(() => {
+    const prev = document.documentElement.dataset.theme
+    document.documentElement.dataset.theme = 'dark'
+    return () => {
+      if (prev) document.documentElement.dataset.theme = prev
+      else delete document.documentElement.dataset.theme
+    }
+  }, [])
+  const raw = fates?.get(id)
+  const f = raw ? foldFates(raw) : null
+  const total = f ? SHOWN_FATES.reduce((s, k) => s + f[k], 0) : 0
+  const team = teamOf(id)
+  const pct = (k: ShownFate): number => (f && total ? (100 * f[k]) / total : 0)
+  const barColor = (k: ShownFate): string => (k === 'unmarked' ? 'var(--other)' : fateColor(k))
+  const barLabel: Record<ShownFate, string> = { keep: 'keep', sweep: 'sweep', unmarked: 'undecided' }
+  return (
+    <div className="og og-user">
+      <div className="og-head ogu-head">
+        <Avatar github={ghHandle(id)} name={shortName(id)} size={110} />
+        <div>
+          <h1>
+            {shortName(id)}
+            {team && GROUP_ICONS[team] && <img className="ogu-glyph" src={GROUP_ICONS[team]} alt={GROUP_LABELS[team] ?? team} />}
+          </h1>
+          <p>Marin GCS usage — where their bytes stand.</p>
+        </div>
+      </div>
+      {f && total > 0 && (
+        <>
+          <div className="ogu-bar">
+            {SHOWN_FATES.filter(k => f[k] > 0).map(k => (
+              <div key={k} style={{ width: `${pct(k)}%`, background: barColor(k) }} />
+            ))}
+          </div>
+          <div className="ogu-legend">
+            {SHOWN_FATES.filter(k => f[k] > 0).map(k => (
+              <span key={k}>
+                <i style={{ background: barColor(k) }} />
+                {barLabel[k]} <b>{Math.round(pct(k))}%</b>
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

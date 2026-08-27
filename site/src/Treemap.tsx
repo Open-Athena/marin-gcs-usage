@@ -361,7 +361,15 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
   const drillDepth = (path ?? initialPath)?.length ?? 1
   const renderCellExtra = markIdx
     ? (n: TreeNode, cellPath: TreeNode[], { w, h }: { w: number; h: number }) => {
-        if (mode === 'fate') return null
+        if (mode === 'fate') {
+          // The fills already ARE the fate — only the KLC "both fates live
+          // inside" barber-pole ring adds information here.
+          const { mark, own } = markIdx.resolve(uriOf(cellPath))
+          if (own && mark?.action === 'keep_last_ckpt' && w >= 8 && h >= 8) {
+            return <span className="mark-edge klc" />
+          }
+          return null
+        }
         // Folded "(other)" tiles reuse their *parent's* path, so the top-level
         // fold has the drill root's path length. Decorate only that one — it
         // shares its siblings' fate and should share their border, not read as
@@ -378,7 +386,10 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
         // sliver among bordered siblings looked like a gap); on a very narrow
         // cell the inset border just fills it with the fate color.
         const border = w >= 4 && h >= 5
-          ? <span className="mark-edge" style={{ borderColor: color }} /> : null
+          ? (mark.action === 'keep_last_ckpt'
+            ? <span className="mark-edge klc" />
+            : <span className="mark-edge" style={{ borderColor: color }} />)
+          : null
         // No actor badge on an aggregate fold — it's many prefixes, not one.
         const badge = !isFold && w >= 44 && h >= 24 ? (
           <span className="mark-badge">

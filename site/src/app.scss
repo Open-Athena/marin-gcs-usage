@@ -484,6 +484,37 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .map-legend { margin: 0; font-size: 14px; }
 }
 
+// Per-user unfurl card: avatar + name + fate proportion bar (percent only).
+.og-user {
+  justify-content: center;
+  gap: 44px;
+  .ogu-head {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    h1 { display: flex; align-items: center; gap: 18px; font-size: 54px; }
+    .ogu-glyph { width: 44px; height: 44px; object-fit: contain; }
+    p { font-size: 22px; }
+  }
+  .ogu-bar {
+    display: flex;
+    height: 64px;
+    border-radius: 10px;
+    overflow: hidden;
+    gap: 3px;
+    background: var(--panel);
+  }
+  .ogu-legend {
+    display: flex;
+    gap: 34px;
+    font-size: 24px;
+    color: var(--ink-2);
+    span { display: inline-flex; align-items: center; gap: 10px; }
+    i { width: 20px; height: 20px; border-radius: 5px; display: inline-block; }
+    b { color: var(--ink); }
+  }
+}
+
 .og {
   width: 1200px;
   height: 630px;
@@ -907,7 +938,11 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 
 // Mark & sweep (/mark)
 :root {
-  --mk-keep: #2da44e;
+  // Keep is BLUE, not green: (a) red/green is the classic colorblind trap
+  // (deutan/protan ~8% of men) — blue/red stays separable under all common
+  // CVD; (b) green read as "good/go", which subtly encouraged keeping —
+  // the opposite of the cleanup's aim. Amber KLC stays distinct from both.
+  --mk-keep: #3d8bfd;
   --mk-klc: #d4a72c;
   --mk-del: #d3382f;
 }
@@ -941,6 +976,13 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   border-radius: 3px;
   box-sizing: border-box;
   pointer-events: none;
+  // keep_last_ckpt: a keep+sweep barber-pole ring — "both fates live inside
+  // this rect" (border-image can't round corners; the straight ring is the
+  // trade for a real two-color edge).
+  &.klc {
+    border-radius: 0;
+    border-image: repeating-linear-gradient(45deg, var(--mk-keep) 0 5px, var(--mk-del) 5px 10px) 1;
+  }
 }
 
 // Corner badge on the top-most marked cell: actor avatar + state glyph. The
@@ -1314,8 +1356,10 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .user-chip { cursor: pointer; } // override the chip's default `cursor: default`
     &:hover .user-chip { background: color-mix(in oklab, var(--ink) 8%, transparent); }
   }
-  .grp-icon { height: 16px; vertical-align: middle; }
-  .grp-none { color: var(--ink-2); opacity: 0.6; display: inline-block; min-width: 12px; text-align: center; }
+  // Fixed square boxes so glyph / avatar / name columns align across rows
+  // (the OA branch mark and block-S have different aspect ratios).
+  .grp-icon { width: 16px; height: 16px; object-fit: contain; vertical-align: middle; }
+  .grp-none { color: var(--ink-2); opacity: 0.6; display: inline-block; width: 16px; text-align: center; }
   .user-cell { display: inline-flex; align-items: center; gap: 8px; }
   .grp-badge {
     display: inline-block;

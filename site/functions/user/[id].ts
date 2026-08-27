@@ -7,14 +7,18 @@ interface Env {
   ASSETS: { fetch: (req: Request) => Promise<Response> }
 }
 
-export const onRequest = (ctx: { request: Request; env: Env }): Promise<Response> => {
+export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Response> => {
   const url = new URL(ctx.request.url)
   const id = decodeURIComponent(url.pathname.split('/')[2] ?? '')
   const name = IDENTITIES[id]?.name ?? (id ? id.split('-')[0].replace(/^./, c => c.toUpperCase()) : 'User')
+  // Per-user card when `scripts/shoot-user-ogs.mjs` has generated one;
+  // otherwise the shared owner-map card.
+  const perUser = `${url.origin}/og-user/${encodeURIComponent(id)}.jpg`
+  const probe = await ctx.env.ASSETS.fetch(new Request(perUser, { method: 'HEAD' })).catch(() => null)
   return unfurlShell(ctx, {
     title: `${name} — Marin GCS usage`,
     desc: 'Per-user storage breakdown: what’s keep-marked, sweep-marked, and still undecided.',
-    image: `${url.origin}/og-users.jpg`,
+    image: probe?.ok ? perUser : `${url.origin}/og-users.jpg`,
     page: `${url.origin}${url.pathname}`,
   })
 }
