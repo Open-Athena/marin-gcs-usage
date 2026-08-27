@@ -1391,6 +1391,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     height: 300px;
     margin: 0.9em 0 1.1em;
     .dt-treemap { height: 100%; }
+    // Every tile navigates (users → their page, pools → home lenses).
+    .dt-treemap-cell { cursor: pointer; }
   }
   .tt-hint { color: var(--ink-2); font-size: 0.85em; margin-top: 2px; }
   h2 { margin: 1.2em 0 0.2em; font-size: 1.1em; }

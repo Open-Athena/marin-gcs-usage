@@ -300,10 +300,12 @@ function UsersMap({ meta, fates, redact = false }: {
         }}
         onCellClick={(n) => {
           if (redact) return true
-          if (n.id) {
-            navigate(`/user/${n.id}`)
-            return true
-          }
+          // Every tile goes somewhere sane: users to their page, the
+          // ownerless pools to the matching home lens.
+          if (n.id) navigate(`/user/${n.id}`)
+          else if (n.team === 'communal') navigate('/?l=communal')
+          else if (n.team === 'unattributed') navigate('/?l=unclaimed')
+          return true
         }}
       />
     </div>
