@@ -404,9 +404,12 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
 
   const renderRollup = (node: TreeNode, path: TreeNode[]) => {
     if (redact) return null
-    // In marks (fate) coloring the fate totals ARE the story — the group
-    // rollup there mixed two axes into one row and read as clutter.
-    const rollup = mode === 'fate' ? [] : rollupFor(node)
+    // The rollup follows the ACTIVE color axis: group/user breakdowns render
+    // only when the map is colored by them (tree/written/read/marks each key
+    // their own legend — a groups row there is a second axis nobody asked
+    // for). The fate row keys the mark overlay, which is active whenever
+    // markIdx is (mark mode), in every coloring.
+    const rollup = mode === 'team' || mode === 'user' || mode === 'uteam' ? rollupFor(node) : []
     if (!markIdx && !rollup.length) return null
     // Fate totals for the current view: of the drilled subtree's bytes, how
     // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
@@ -507,15 +510,28 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
               )
             })()
           ) : (
-            <>
-              {[...catSlot.entries()].map(([k, s]) => (
-                <span className="li" key={k}>
-                  <span className="sw" style={{ background: slotColor(s) }} />
-                  {k}
-                </span>
-              ))}
-              <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
-            </>
+            // Prefix colors: key only categories visible in the current view
+            // (ancestors of the drill + the node's top two levels), not the
+            // whole fleet's slot table.
+            (() => {
+              const present = new Set<string>()
+              for (const a of legendPath.slice(1)) present.add(a.n)
+              for (const c of legendNode.c ?? []) {
+                present.add(c.n)
+                for (const g of c.c ?? []) present.add(g.n)
+              }
+              return (
+                <>
+                  {[...catSlot.entries()].filter(([k]) => present.has(k)).map(([k, s]) => (
+                    <span className="li" key={k}>
+                      <span className="sw" style={{ background: slotColor(s) }} />
+                      {k}
+                    </span>
+                  ))}
+                  <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
+                </>
+              )
+            })()
           )}
         </div>
       )

@@ -134,6 +134,10 @@ export interface MarkIndex {
   /** Latest live row per prefix (normalized, trailing `/`) — for tree walks
    * that thread the winning mark down instead of calling `resolve` per node. */
   keeps: Map<string, KeepRow>
+  /** Latest live claim per prefix — the ownership WAL the walkers apply on
+   * top of scan attribution (a claim re-attributes its subtree instantly,
+   * without waiting for the next scan's pipeline pass). */
+  owners: Map<string, OwnerRow>
   count: number
 }
 
@@ -195,6 +199,6 @@ export function useMarkIndex(data: { keeps: KeepRow[]; owners: OwnerRow[] } | un
     }
     let count = 0
     for (const r of keeps.values()) if (r.keep != null) count++
-    return { resolve, claimOf, overridesOf, keeps, count }
+    return { resolve, claimOf, overridesOf, keeps, owners, count }
   }, [data])
 }

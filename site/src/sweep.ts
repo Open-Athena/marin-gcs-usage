@@ -3,7 +3,7 @@
 // ranked worklist of prefixes rather than a hunt through the treemap.
 import { useQuery } from '@tanstack/react-query'
 import { reaggregate, type NodePred } from './filterTree'
-import { newer, type KeepRow, type MarkAction, type MarkIndex } from './marks'
+import { newer, type KeepRow, type MarkAction, type MarkIndex, type OwnerRow } from './marks'
 import type { TreeNode } from './types'
 
 export interface SweepRow {
@@ -93,20 +93,36 @@ export type Fate = MarkAction | 'unmarked'
 interface FateWalkCtx {
   /** Latest live row exactly on this (trailing-`/`) prefix. */
   own: (uri: string) => KeepRow | undefined
-  /** Any live set-mark strictly below this prefix? (= `resolve(uri).under > 0`) */
+  /** Latest live claim exactly on this prefix (when claims are threaded). */
+  ownOwner: (uri: string) => OwnerRow | undefined
+  /** Any live set-mark or claim strictly below this prefix? */
   below: (uri: string) => boolean
 }
 
-function fateWalkCtx(keeps: Map<string, KeepRow>): FateWalkCtx {
+function fateWalkCtx(keeps: Map<string, KeepRow>, owners?: Map<string, OwnerRow>): FateWalkCtx {
   const anc = new Set<string>()
-  for (const r of keeps.values()) {
-    if (r.keep == null) continue
+  const addAnc = (prefix: string) => {
     // gs://bucket/a/b/ → ancestors gs://bucket/, gs://bucket/a/
-    const segs = r.prefix.replace(/\/+$/, '').split('/')
+    const segs = prefix.replace(/\/+$/, '').split('/')
     for (let i = 3; i < segs.length; i++) anc.add(segs.slice(0, i).join('/') + '/')
   }
+  for (const r of keeps.values()) if (r.keep != null) addAnc(r.prefix)
+  // Claims count as "something below" too — the walk must descend far enough
+  // to apply ownership overrides at their prefixes.
+  if (owners) for (const r of owners.values()) if (r.owner != null) addAnc(r.prefix)
   const norm = (uri: string) => (uri.endsWith('/') ? uri : uri + '/')
-  return { own: uri => keeps.get(norm(uri)), below: uri => anc.has(norm(uri)) }
+  return {
+    own: uri => keeps.get(norm(uri)),
+    ownOwner: uri => owners?.get(norm(uri)),
+    below: uri => anc.has(norm(uri)),
+  }
+}
+
+/** Newest of the inherited claim and this prefix's own (a newer null-owner
+ * row releases inherited claims). */
+const winOwner = (ctx: FateWalkCtx, uri: string, inherited: OwnerRow | null): OwnerRow | null => {
+  const own = ctx.ownOwner(uri)
+  return own && (!inherited || newer(own, inherited)) ? own : inherited
 }
 
 /** Newest of the inherited winner and this prefix's own row (clears count:
@@ -219,8 +235,12 @@ export function allUserFates(
   root: TreeNode,
   idx: MarkIndex,
   klc?: KlcIndex,
+  /** Canonicalize claim `owner` values (emails → user ids); claims are the
+   * ownership WAL — a claimed subtree attributes wholly to its claimant,
+   * overriding scan attribution until the pipeline catches up. */
+  canon: (who: string) => string = w => w,
 ): Map<string, Record<Fate, number>> {
-  const ctx = fateWalkCtx(idx.keeps)
+  const ctx = fateWalkCtx(idx.keeps, idx.owners)
   const out = new Map<string, Record<Fate, number>>()
   const add = (u: string, f: Fate, b: number) => {
     let rec = out.get(u)
@@ -240,25 +260,31 @@ export function allUserFates(
     each('keep', ratio)
     each('sweep', 1 - ratio)
   }
-  const walk = (n: TreeNode, uri: string, inherited: KeepRow | null) => {
-    const win = winRow(ctx, uri, inherited)
+  const walk = (n: TreeNode, uri: string, inhKeep: KeepRow | null, inhOwn: OwnerRow | null) => {
+    const win = winRow(ctx, uri, inhKeep)
+    const ownRow = winOwner(ctx, uri, inhOwn)
+    const claimant = ownRow?.owner != null ? canon(ownRow.owner) : null
     if (!ctx.below(uri)) {
       settle(uri, n.b, win, (f, frac) => {
-        for (const [u, b] of n.us ?? []) if (b > 0) add(u, f, b * frac)
+        if (claimant) add(claimant, f, n.b * frac)
+        else for (const [u, b] of n.us ?? []) if (b > 0) add(u, f, b * frac)
       })
       return
     }
     const rest = new Map<string, number>(n.us ?? [])
+    let restB = n.b
     for (const c of n.c ?? []) {
       if (c.n.startsWith('(')) continue
-      walk(c, `${uri}/${c.n}`, win)
+      restB -= c.b
+      walk(c, `${uri}/${c.n}`, win, ownRow)
       for (const [u, b] of c.us ?? []) rest.set(u, (rest.get(u) ?? 0) - b)
     }
     settle(uri, n.b, win, (f, frac) => {
-      for (const [u, b] of rest) if (b > 0) add(u, f, b * frac)
+      if (claimant) { if (restB > 0) add(claimant, f, restB * frac) }
+      else for (const [u, b] of rest) if (b > 0) add(u, f, b * frac)
     })
   }
-  for (const b of root.c ?? []) walk(b, `gs://${b.n}`, null)
+  for (const b of root.c ?? []) walk(b, `gs://${b.n}`, null, null)
   return out
 }
 

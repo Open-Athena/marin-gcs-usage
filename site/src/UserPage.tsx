@@ -78,6 +78,8 @@ function userFates(root: TreeNode, uid: string, idx: MarkIndex): FateRow[] {
 // Individual mark rows still show the first-class amber "keep last ckpt".
 export type ShownFate = 'keep' | 'sweep' | 'unmarked'
 const SHOWN_FATES: ShownFate[] = ['keep', 'sweep', 'unmarked']
+const ALL_FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
+const FATE_ORDER_TOTAL = (f: Record<Fate, number>): number => ALL_FATES.reduce((s, k) => s + f[k], 0)
 const foldFates = (f: Record<Fate, number>): Record<ShownFate, number> => ({
   keep: f.keep + f.keep_last_ckpt,
   sweep: f.sweep,
@@ -178,17 +180,52 @@ const tileBg = (team: string): string =>
   `color-mix(in oklab, var(${TEAM_VARS[team] ?? '--t-unknown'}) 48%, #131311)`
 const UNDECIDED_STRIPE = 'color-mix(in oklab, var(--panel) 45%, transparent)'
 
-function MapLegend() {
-  const groups = ['oa', 'stanford', 'communal', 'unattributed']
+/** The owner tiles (users + ownerless pools) — ONE derivation shared by the
+ * map and its legend, so the legend can never key a group absent from the
+ * tiles. Live fates (claims applied) win over scan meta when loaded. */
+function ownerCells(meta: Meta, fates: Map<string, Record<Fate, number>> | null): OwnerCell[] {
+  const metaUsers: UserInfo[] = meta.users ?? []
+  const users: { u: string; t: string; b: number }[] = fates
+    ? [...fates.entries()]
+        .map(([u, f]) => ({
+          u,
+          t: teamOf(u) ?? metaUsers.find(m => m.u === u)?.t ?? 'unknown',
+          b: FATE_ORDER_TOTAL(f),
+        }))
+        .filter(x => x.b > 0)
+    : metaUsers
+  const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b, team: u.t }))
+  const teamTotal = (t: string) =>
+    Object.values(meta.team_class_bytes?.[t] ?? {}).reduce((s, b) => s + b, 0)
+  const userSum = users.reduce((s, u) => s + u.b, 0)
+  const communal = teamTotal('communal')
+  const unattr = Math.max(0, meta.total_bytes - userSum - communal)
+  if (communal > 0) cells.push({ n: 'communal', b: communal, team: 'communal' })
+  if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, team: 'unattributed' })
+  return cells.sort((a, b) => b.b - a.b)
+}
+
+function MapLegend({ cells, fates }: {
+  cells: OwnerCell[]
+  fates: Map<string, Record<Fate, number>> | null
+}) {
+  const groups = [...new Set(cells.map(c => c.team).filter((t): t is string => !!t))]
+  const present: Record<ShownFate, boolean> = { keep: false, sweep: false, unmarked: false }
+  if (fates) {
+    for (const f of fates.values()) {
+      const s = foldFates(f)
+      for (const k of SHOWN_FATES) if (s[k] > 0) present[k] = true
+    }
+  }
   return (
     <div className="map-legend">
       {groups.map(t => (
         <span key={t}><i style={{ background: tileBg(t) }} />{t === 'unattributed' ? 'unclaimed' : GROUP_LABELS[t] ?? t}</span>
       ))}
-      <span className="sep" />
-      <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>
-      <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>
-      <span><i style={{ background: UNDECIDED_STRIPE, border: '1px solid var(--line)' }} />undecided</span>
+      {(!fates || present.keep || present.sweep) && <span className="sep" />}
+      {(!fates || present.keep) && <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>}
+      {(!fates || present.sweep) && <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>}
+      {(!fates || present.unmarked) && <span><i style={{ background: UNDECIDED_STRIPE, border: '1px solid var(--line)' }} />undecided</span>}
     </div>
   )
 }
@@ -200,18 +237,10 @@ function UsersMap({ meta, fates, redact = false }: {
   redact?: boolean
 }) {
   const navigate = useNavigate()
-  const root = useMemo((): OwnerCell => {
-    const users: UserInfo[] = meta.users ?? []
-    const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b, team: u.t }))
-    const teamTotal = (t: string) =>
-      Object.values(meta.team_class_bytes?.[t] ?? {}).reduce((s, b) => s + b, 0)
-    const userSum = users.reduce((s, u) => s + u.b, 0)
-    const communal = teamTotal('communal')
-    const unattr = meta.total_bytes - userSum - communal
-    if (communal > 0) cells.push({ n: 'communal', b: communal, team: 'communal' })
-    if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, team: 'unattributed' })
-    return { n: '', b: meta.total_bytes, c: cells.sort((a, b) => b.b - a.b) }
-  }, [meta])
+  const root = useMemo(
+    (): OwnerCell => ({ n: '', b: meta.total_bytes, c: ownerCells(meta, fates) }),
+    [meta, fates],
+  )
   return (
     <div className="users-map">
       <Treemap<OwnerCell>
@@ -291,7 +320,7 @@ export function UsersOgPage() {
   const idx = useMarkIndex(marksQ.data)
   const klcIdx = useKlcIdx(treeQ.data, idx)
   const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx) : null),
+    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
     [treeQ.data, idx, klcIdx],
   )
   useEffect(() => {
@@ -311,7 +340,7 @@ export function UsersOgPage() {
       <div className="og-map">
         {metaQ.data && fates && <UsersMap meta={metaQ.data} fates={fates} redact />}
       </div>
-      <MapLegend />
+      {metaQ.data && <MapLegend cells={ownerCells(metaQ.data, fates)} fates={fates} />}
     </div>
   )
 }
@@ -329,7 +358,7 @@ export function UsersPage() {
   )
   const mixes = metaQ.data?.user_class_bytes
   const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx) : null),
+    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
     [treeQ.data, idx, klcIdx],
   )
   const cell = (u: string, f: ShownFate) => {
@@ -354,7 +383,7 @@ export function UsersPage() {
       {metaQ.data && (
         <>
           <UsersMap meta={metaQ.data} fates={fates} />
-          <MapLegend />
+          <MapLegend cells={ownerCells(metaQ.data, fates)} fates={fates} />
         </>
       )}
       {users.length > 0 && (
@@ -400,7 +429,7 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
     <>
       <table className="worklist marks-feed">
         <thead>
-          <tr><th>Fate</th><th className="num">Your data</th><th>Prefix</th><th>By</th><th>When</th></tr>
+          <tr><th>Mark</th><th className="num">Your data</th><th>Prefix</th><th>By</th><th>When</th></tr>
         </thead>
         <tbody>
           {slice.map(r => (
@@ -443,7 +472,7 @@ export function UserOgPage() {
   const idx = useMarkIndex(marksQ.data)
   const klcIdx = useKlcIdx(treeQ.data, idx)
   const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx) : null),
+    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
     [treeQ.data, idx, klcIdx],
   )
   useEffect(() => {
@@ -502,6 +531,13 @@ export function UserPage() {
   const marksQ = useMarks(true)
   const idx = useMarkIndex(marksQ.data)
   const klcIdx = useKlcIdx(treeQ.data, idx)
+  // Scan attribution + live-claim overlay ("committed + WAL") — the page's
+  // headline totals come from here, so a claim reshapes them immediately.
+  const fatesAll = useMemo(
+    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
+    [treeQ.data, idx, klcIdx],
+  )
+  const mine = fatesAll?.get(id) ?? null
 
   const rows = useMemo(
     () => (treeQ.data ? userFates(treeQ.data, id, idx) : []),
@@ -531,7 +567,8 @@ export function UserPage() {
     }
     return t
   }, [rows, klcIdx])
-  const attributed = useMemo(() => rows.reduce((s, r) => s + r.b, 0), [rows])
+  const attributed = mine ? FATE_ORDER_TOTAL(mine) : rows.reduce((s, r) => s + r.b, 0)
+  const stripBytes = mine ? foldFates(mine) : null
   const metaB = metaQ.data?.users?.find(u => u.u === id)?.b
   const mix = metaQ.data?.user_class_bytes?.[id]
   const authored = useMemo(
@@ -564,10 +601,25 @@ export function UserPage() {
     }
     return out.sort((a, b) => b.b - a.b)
   }, [rows.length, treeQ.data, idx, id])
-  const claimed = useMemo(
-    () => new Set((marksQ.data?.owners ?? []).filter(r => r.owner != null && canonId(r.owner) === id).map(r => r.prefix)).size,
-    [marksQ.data, id],
-  )
+  const claimedRows = useMemo((): FateRow[] => {
+    if (!treeQ.data) return []
+    const root = treeQ.data
+    const nodeAt = (prefix: string): TreeNode | undefined => {
+      let node: TreeNode | undefined = root
+      for (const s of prefix.replace(/^[a-z0-9]+:\/\//, '').replace(/\/+$/, '').split('/')) {
+        node = node?.c?.find(c => c.n === s)
+      }
+      return node
+    }
+    const out: FateRow[] = []
+    for (const r of idx.owners.values()) {
+      if (r.owner == null || canonId(r.owner) !== id) continue
+      const st = idx.resolve(r.prefix)
+      out.push({ uri: r.prefix, fate: st.mark?.action ?? 'unmarked', b: nodeAt(r.prefix)?.b ?? 0, mark: st.mark })
+    }
+    return out.sort((a, b) => b.b - a.b)
+  }, [treeQ.data, idx, id])
+  const claimed = claimedRows.length
   const decidedRows = rows.filter(r => r.fate !== 'unmarked')
   const undecidedRows = rows.filter(r => r.fate === 'unmarked')
   const team = teamOf(id)
@@ -589,25 +641,20 @@ export function UserPage() {
           </span>
         </div>
         <p className="sub">
-          {fmtBytesIec(attributed, true)} attributed in the {asof ?? '…'} scan
+          {fmtBytesIec(attributed, true)} attributed ({asof ?? '…'} scan + live claims)
           {mix != null && metaB != null && <> · est. {fmtUsd(ratePerByte(mix) * metaB)}/mo</>}
           {authored > 0 && <> · {fmtN(authored)} prefixes marked by {shortName(id)}</>}.
-          Fate of every byte, resolved the way the map does it (most recent mark on an ancestor-or-equal prefix wins).
+          Where every byte stands, resolved the way the map does it (most recent mark on an ancestor-or-equal prefix wins).
         </p>
       </header>
 
       {loading && <p className="loading">loading…</p>}
       {marksQ.error && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load marks: {marksQ.error.message}</p>}
-      {!loading && !rows.length && (
+      {!loading && !rows.length && attributed === 0 && (
         <>
           <p className="tab-note">
-            No attributed data for “{id}” in this scan
-            {(authoredRows.length > 0 || claimed > 0)
-              ? <>
-                  {' '}— but their ledger activity is below.
-                  {claimed > 0 && <> Claimed prefixes ({fmtN(claimed)}) attribute on a future scan, once the pipeline maps them.</>}
-                </>
-              : '.'}
+            No attributed or claimed data for “{id}”
+            {authoredRows.length > 0 ? <>{' '}— but their marks are below.</> : '.'}
           </p>
           {authoredRows.length > 0 && (
             <>
@@ -619,29 +666,42 @@ export function UserPage() {
         </>
       )}
 
-      {rows.length > 0 && (
+      {(rows.length > 0 || attributed > 0) && (
         <>
           <div className="fate-strip">
             {SHOWN_FATES.map(f => {
-              const { b, n } = totals.get(f)!
+              const { b: rowB, n } = totals.get(f)!
+              const b = stripBytes ? stripBytes[f] : rowB
               if (!b) return null
               return (
                 <div className="fate-cell" key={f} style={{ borderColor: fateColor(f) }}>
                   <b style={{ color: fateColor(f) }}>{fateLabel(f)}</b>
                   <span className="fate-b">{fmtBytesIec(b)}</span>
-                  <span className="fate-n">{fmtN(n)} prefix{n === 1 ? '' : 'es'} · {attributed ? Math.round((b / attributed) * 100) : 0}%</span>
+                  <span className="fate-n">{n > 0 && <>{fmtN(n)} prefix{n === 1 ? '' : 'es'} · </>}{attributed ? Math.round((b / attributed) * 100) : 0}%</span>
                 </div>
               )
             })}
           </div>
 
-          <h2>Decided</h2>
-          <p className="tab-note">Prefixes whose mark governs your bytes — yours and anyone else’s marks both count.</p>
-          <FateTable rows={decidedRows} empty="Nothing marked yet." />
+          {rows.length > 0 && (
+            <>
+              <h2>Decided</h2>
+              <p className="tab-note">Prefixes whose mark governs your bytes — yours and anyone else’s marks both count.</p>
+              <FateTable rows={decidedRows} empty="Nothing marked yet." />
 
-          <h2>Undecided</h2>
-          <p className="tab-note">Your largest subtrees with no keep / sweep decision anywhere above or below — swept by default once the review window closes (date TBD).</p>
-          <FateTable rows={undecidedRows} empty="Every attributed byte has a decision. 🎉" />
+              <h2>Undecided</h2>
+              <p className="tab-note">Your largest subtrees with no keep / sweep decision anywhere above or below — swept by default once the review window closes (date TBD).</p>
+              <FateTable rows={undecidedRows} empty="Every attributed byte has a decision. 🎉" />
+            </>
+          )}
+
+          {claimedRows.length > 0 && (
+            <>
+              <h2>Claimed</h2>
+              <p className="tab-note">Prefixes claimed in the ledger — counted in the totals above immediately; the scan pipeline formalizes the attribution on its next run.</p>
+              <FateTable rows={claimedRows} empty="" />
+            </>
+          )}
         </>
       )}
     </main>
