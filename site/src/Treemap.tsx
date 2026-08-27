@@ -404,7 +404,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
 
   const renderRollup = (node: TreeNode, path: TreeNode[]) => {
     if (redact) return null
-    const rollup = rollupFor(node)
+    // In marks (fate) coloring the fate totals ARE the story — the group
+    // rollup there mixed two axes into one row and read as clutter.
+    const rollup = mode === 'fate' ? [] : rollupFor(node)
     if (!markIdx && !rollup.length) return null
     // Fate totals for the current view: of the drilled subtree's bytes, how
     // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
@@ -464,7 +466,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
      swatch+label, plus size and $). tree (prefix colors), age, and read
      (date gradients) convey distinct keys, so they keep the legend. */
   const legend = mode !== 'team' && mode !== 'user' && mode !== 'uteam'
-    ? () => (
+    ? (legendNode: TreeNode, legendPath: TreeNode[]) => (
         <div className="legend">
           {mode === 'read' && readRange ? (
             <>
@@ -482,14 +484,28 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
               {epochDaysToMonth(dateRange.max)}
             </span>
           ) : mode === 'fate' ? (
-            // Keep-axis fate: the cell fill IS the mark decision, so the legend
-            // keys keep/last-ckpt/sweep/undecided — not the prefix colors below.
-            <>
-              <span className="li"><span className="sw" style={{ background: ACTION_COLORS.keep }} />{ACTION_LABELS.keep}</span>
-              <span className="li"><span className="sw" style={{ background: ACTION_COLORS.keep_last_ckpt }} />{ACTION_LABELS.keep_last_ckpt}</span>
-              <span className="li"><span className="sw" style={{ background: ACTION_COLORS.sweep }} />{ACTION_LABELS.sweep}</span>
-              <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />undecided</span>
-            </>
+            // Keep-axis fate: the cell fill IS the mark decision. Only fates
+            // actually present in the current view get a legend item (the
+            // To-do lens is all-undecided by construction — keying absent
+            // fates there was noise).
+            (() => {
+              const t = markIdx
+                ? subtreeFateTotals(legendNode, legendPath.length > 1 ? uriOf(legendPath) : '', markIdx, klcIdx ?? undefined)
+                : null
+              const items: [string, string, number][] = [
+                [ACTION_LABELS.keep, ACTION_COLORS.keep, t?.keep ?? 1],
+                [ACTION_LABELS.keep_last_ckpt, ACTION_COLORS.keep_last_ckpt, t?.keep_last_ckpt ?? 1],
+                [ACTION_LABELS.sweep, ACTION_COLORS.sweep, t?.sweep ?? 1],
+                ['undecided', 'var(--other)', t?.unmarked ?? 1],
+              ]
+              return (
+                <>
+                  {items.filter(([, , b]) => b > 0).map(([label, col]) => (
+                    <span className="li" key={label}><span className="sw" style={{ background: col }} />{label}</span>
+                  ))}
+                </>
+              )
+            })()
           ) : (
             <>
               {[...catSlot.entries()].map(([k, s]) => (

@@ -162,6 +162,17 @@ export function ChildrenTable({ node, segs, scheme, markIdx, todoOnly = false, o
             )
           })}
         </tbody>
+        <tfoot>
+          {/* Totals of the LISTED rows — under a scoping lens (to-do) this is
+              the lens total, not the parent node's. */}
+          <tr className="total-row">
+            <td>total{kids.length !== (node.c ?? []).length ? ` (${kids.length} shown)` : ''}</td>
+            <td className="num">{fmtBytes(kids.reduce((s, k) => s + k.b, 0))}</td>
+            <td className="num">{node.b ? ((100 * kids.reduce((s, k) => s + k.b, 0)) / node.b).toFixed(1) : 0}%</td>
+            <td className="num">{kids.reduce((s, k) => s + k.o, 0).toLocaleString('en-US')}</td>
+            <td colSpan={4 + (markIdx ? 1 : 0) + (showActions ? 1 : 0)} />
+          </tr>
+        </tfoot>
       </table>
       {kids.length > limit && (
         <button type="button" className="more" onClick={() => setLimit(l => l + PAGE)}>

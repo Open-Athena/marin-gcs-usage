@@ -538,6 +538,36 @@ export function UserPage() {
     () => new Set((marksQ.data?.keeps ?? []).filter(r => r.keep != null && canonId(r.who) === id).map(r => r.prefix)).size,
     [marksQ.data, id],
   )
+  // Fallback content for a user with ledger activity but no attributed bytes
+  // yet (fresh identity, or claims the attribution pipeline hasn't mapped):
+  // their own latest live marks, sized from the tree (each prefix's total
+  // bytes — 0 when it sits below the tree's floors).
+  const authoredRows = useMemo((): FateRow[] => {
+    if (rows.length > 0 || !treeQ.data) return []
+    const root = treeQ.data
+    const nodeAt = (prefix: string): TreeNode | undefined => {
+      let node: TreeNode | undefined = root
+      for (const s of prefix.replace(/^[a-z0-9]+:\/\//, '').replace(/\/+$/, '').split('/')) {
+        node = node?.c?.find(c => c.n === s)
+      }
+      return node
+    }
+    const out: FateRow[] = []
+    for (const r of idx.keeps.values()) {
+      if (r.keep == null || canonId(r.who) !== id) continue
+      out.push({
+        uri: r.prefix,
+        fate: r.keep,
+        b: nodeAt(r.prefix)?.b ?? 0,
+        mark: { prefix: r.prefix, action: r.keep, who: r.who, ts: r.ts, note: r.memo },
+      })
+    }
+    return out.sort((a, b) => b.b - a.b)
+  }, [rows.length, treeQ.data, idx, id])
+  const claimed = useMemo(
+    () => new Set((marksQ.data?.owners ?? []).filter(r => r.owner != null && canonId(r.owner) === id).map(r => r.prefix)).size,
+    [marksQ.data, id],
+  )
   const decidedRows = rows.filter(r => r.fate !== 'unmarked')
   const undecidedRows = rows.filter(r => r.fate === 'unmarked')
   const team = teamOf(id)
@@ -568,7 +598,26 @@ export function UserPage() {
 
       {loading && <p className="loading">loading…</p>}
       {marksQ.error && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load marks: {marksQ.error.message}</p>}
-      {!loading && !rows.length && <p className="tab-note">No attributed data for “{id}” in this scan.</p>}
+      {!loading && !rows.length && (
+        <>
+          <p className="tab-note">
+            No attributed data for “{id}” in this scan
+            {(authoredRows.length > 0 || claimed > 0)
+              ? <>
+                  {' '}— but their ledger activity is below.
+                  {claimed > 0 && <> Claimed prefixes ({fmtN(claimed)}) attribute on a future scan, once the pipeline maps them.</>}
+                </>
+              : '.'}
+          </p>
+          {authoredRows.length > 0 && (
+            <>
+              <h2>Marked by {shortName(id)}</h2>
+              <p className="tab-note">Their keep / sweep decisions (sizes are each prefix’s total bytes, whoever owns them).</p>
+              <FateTable rows={authoredRows} empty="No marks yet." />
+            </>
+          )}
+        </>
+      )}
 
       {rows.length > 0 && (
         <>

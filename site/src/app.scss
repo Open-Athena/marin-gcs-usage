@@ -1336,6 +1336,13 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
 }
 
+// Totals footer on children/worklist tables.
+.worklist .total-row td {
+  border-top: 2px solid var(--line);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
 // Per-user estate pages (`/users`, `/user/:id`): fate rollup strip + tables.
 .user-page {
   .user-head {

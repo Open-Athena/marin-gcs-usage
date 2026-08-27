@@ -354,6 +354,9 @@ function AppContent() {
   // subtree already covered by a keep/sweep decision, show what's undecided.
   const scopedActive = markMode && scoped && SCOPABLE.includes(markTab) && (markTab !== 'mine' || !!viewUser)
   const todoActive = markMode && scoped && markTab === 'todo'
+  // Any review lens narrower than "all" — sections whose data can't follow
+  // the lens (series/age charts) hide rather than show fleet-wide numbers.
+  const lensScoped = markMode && markTab !== 'all'
   const mapTree = useMemo(() => {
     if (!shownTree) return shownTree
     if (todoActive) return applyTodoFilter(shownTree, markIdx)
@@ -813,7 +816,10 @@ function AppContent() {
         <p className="loading">loading tree…</p>
       )}
 
-      <SizeOverTime scans={scans} prefix={drillPath} base={store.base} />
+      {/* The series + age charts can't scope to a review lens (their data is
+          per-path/per-day, not per-mark-state) — showing fleet-wide charts
+          under a "To-do" heading read as if they were scoped, so they hide. */}
+      {!lensScoped && <SizeOverTime scans={scans} prefix={drillPath} base={store.base} />}
 
       {markMode && <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} />}
 
@@ -832,6 +838,7 @@ function AppContent() {
         </section>
       )}
 
+      {!lensScoped && (
       <section id="created-date">
         {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
             the heading stays unit-free rather than lying about "month". */}
@@ -845,6 +852,7 @@ function AppContent() {
         {/* age.json strata carry no read/fate info — those lenses fall back to written here */}
         {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={ageMode} userIdx={userIdx} />}
       </section>
+      )}
 
       {meta && store.prices && (() => {
         // Class mix of the *drilled* node (each node carries descendant-inclusive
