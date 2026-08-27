@@ -106,13 +106,19 @@ function useScanFile<T>(name: string, asof: string | null) {
   })
 }
 
-// Group badge: color-coded pill with the full name on hover.
+// Group badge: real logo glyphs (block-S / OA branch mark, cropped from the
+// www site's brand SVGs into `public/groups/`) with the full name on hover;
+// groups without a logo fall back to a color-coded pill.
 const GROUP_ABBR: Record<string, string> = { oa: 'OA', stanford: 'SU', communal: 'COM', unknown: '?' }
+const GROUP_ICONS: Record<string, string> = { stanford: '/groups/su.svg', oa: '/groups/oa.svg' }
 
 function GroupBadge({ team }: { team: string }) {
+  const icon = GROUP_ICONS[team]
   return (
     <Tooltip content={GROUP_LABELS[team] ?? team}>
-      <span className="grp-badge" data-team={team}>{GROUP_ABBR[team] ?? team}</span>
+      {icon
+        ? <img className="grp-icon" src={icon} alt={GROUP_LABELS[team] ?? team} />
+        : <span className="grp-badge" data-team={team}>{GROUP_ABBR[team] ?? team}</span>}
     </Tooltip>
   )
 }
@@ -156,7 +162,9 @@ interface OwnerCell {
   c?: OwnerCell[]
 }
 
-function UsersMap({ meta }: { meta: Meta }) {
+const FATE_ORDER: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
+
+function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate, number>> | null }) {
   const navigate = useNavigate()
   const root = useMemo((): OwnerCell => {
     const users: UserInfo[] = meta.users ?? []
@@ -180,15 +188,46 @@ function UsersMap({ meta }: { meta: Meta }) {
         formatSize={n => fmtBytesIec(n)}
         chrome={false}
         fullscreen={false}
-        colorForCell={(n): CellStyle | null =>
-          n.team ? { bg: `color-mix(in oklab, var(${TEAM_VARS[n.team] ?? '--t-unknown'}) 72%, var(--panel))` } : null}
-        renderTooltip={(n) => (
-          <div>
-            <b>{n.n}</b>{n.team && <> · {GROUP_LABELS[n.team] ?? n.team}</>}
-            <div>{fmtBytesIec(n.b, true)} · {meta.total_bytes ? ((100 * n.b) / meta.total_bytes).toFixed(1) : 0}%</div>
-            {n.id && <div className="tt-hint">click for breakdown</div>}
-          </div>
-        )}
+        colorForCell={(n): CellStyle | null => {
+          if (!n.team) return null
+          const style: CellStyle = { bg: `color-mix(in oklab, var(${TEAM_VARS[n.team] ?? '--t-unknown'}) 72%, var(--panel))` }
+          // Fate makeup stripes: each user tile shows its keep / sweep /
+          // unmarked proportions (the page's whole point, at a glance).
+          const f = n.id ? fates?.get(n.id) : undefined
+          if (f) {
+            const total = FATE_ORDER.reduce((s, k) => s + f[k], 0)
+            if (total > 0) {
+              // The unmarked stripe is the *remainder*, not a signal — keep it
+              // near the tile color so keep/sweep pop (ink-gray would repaint
+              // a mostly-unmarked tile solid gray).
+              const segs = FATE_ORDER.filter(k => f[k] > 0)
+                .map(k => ({
+                  color: k === 'unmarked' ? 'color-mix(in oklab, var(--panel) 45%, transparent)' : fateColor(k),
+                  frac: f[k] / total,
+                }))
+              if (segs.length > 1) style.segments = segs
+            }
+          }
+          return style
+        }}
+        renderTooltip={(n) => {
+          const f = n.id ? fates?.get(n.id) : undefined
+          const total = f ? FATE_ORDER.reduce((s, k) => s + f[k], 0) : 0
+          return (
+            <div>
+              <b>{n.n}</b>{n.team && <> · {GROUP_LABELS[n.team] ?? n.team}</>}
+              <div>{fmtBytesIec(n.b, true)} · {meta.total_bytes ? ((100 * n.b) / meta.total_bytes).toFixed(1) : 0}%</div>
+              {f && total > 0 && (
+                <div>
+                  {FATE_ORDER.filter(k => f[k] > 0).map(k => (
+                    <span key={k} style={{ color: fateColor(k), marginRight: 8 }}>{fateLabel(k)} {fmtBytesIec(f[k])}</span>
+                  ))}
+                </div>
+              )}
+              {n.id && <div className="tt-hint">click for breakdown</div>}
+            </div>
+          )
+        }}
         onCellClick={(n) => {
           if (n.id) {
             navigate(`/user/${n.id}`)
@@ -234,7 +273,7 @@ export function UsersPage() {
         <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
       </header>
       {metaQ.isLoading && <p className="loading">loading…</p>}
-      {metaQ.data && <UsersMap meta={metaQ.data} />}
+      {metaQ.data && <UsersMap meta={metaQ.data} fates={fates} />}
       {users.length > 0 && (
         <table className="worklist">
           <thead>
@@ -350,6 +389,7 @@ export function UserPage() {
             {team && <span className="uc-group" data-team={team}>{GROUP_LABELS[team] ?? team}</span>}
           </h1>
           <span style={{ display: 'inline-flex', gap: '1.2em' }}>
+            <Link className="nav-files" to={`/?mt=mine&mu=${id}`} style={{ fontSize: '0.9em' }}>On&nbsp;the&nbsp;map&nbsp;→</Link>
             <Link className="nav-files" to="/users" style={{ fontSize: '0.9em' }}>All&nbsp;users</Link>
             <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Back&nbsp;to&nbsp;the&nbsp;map</Link>
           </span>

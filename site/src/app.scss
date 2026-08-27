@@ -1282,6 +1282,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .user-chip { cursor: pointer; } // override the chip's default `cursor: default`
     &:hover .user-chip { background: color-mix(in oklab, var(--ink) 8%, transparent); }
   }
+  .grp-icon { height: 16px; vertical-align: middle; }
   .grp-badge {
     display: inline-block;
     padding: 1px 7px;

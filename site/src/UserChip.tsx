@@ -87,7 +87,9 @@ export function UserChip({ who, size = 18, extra }: { who: string; size?: number
   const { refs, floatingStyles, context } = useFloating({
     open,
     onOpenChange: setOpen,
-    placement: 'top-start',
+    // Off to the side, not above: an above-placed card covers the neighboring
+    // rows/chips you're about to hover next (flip handles tight right edges).
+    placement: 'right-start',
     middleware: [offset(6), flip(), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
   })
