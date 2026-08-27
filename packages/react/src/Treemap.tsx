@@ -172,17 +172,23 @@ export interface TreemapProps<T> {
   /** Style overrides on the map area. */
   mapStyle?: CSSProperties
   /**
-   * Opacity applied to every nested (depth > 0) cell. Default: 0.82.
+   * Per-level fade applied to nested (depth > 0) cell *backgrounds*.
+   * Default: 0.82.
    *
-   * Cells are nested DOM nodes, so this *compounds*: at the default a depth-5
-   * cell renders at 0.92 × 0.82⁴ ≈ 0.42, which reads as progressively washed
-   * out the deeper you go. That is the intended "recede into the background"
-   * effect for shallow trees, but a deep one loses its colors entirely — pass
-   * `1` to keep saturation constant and lean on borders for structure.
+   * Each cell paints its background on a dedicated layer at opacity
+   * `max(rootFade × depthFade^depth, fadeFloor)` — deeper paint recedes, but
+   * label ink never fades: text renders outside the faded layer at full
+   * strength at every depth. Pass `1` to keep saturation constant and lean on
+   * borders for structure.
    */
   depthFade?: number
-  /** Opacity of the outermost (depth 0) cells. Default: 0.92. */
+  /** Background opacity of the outermost (depth 0) cells. Default: 0.92. */
   rootFade?: number
+  /**
+   * Floor on the depth fade, so deep backgrounds don't wash out entirely
+   * (depth 4 at the defaults would otherwise paint at ~0.5). Default: 0.75.
+   */
+  fadeFloor?: number
 }
 
 export interface CellStyle {
@@ -192,7 +198,8 @@ export interface CellStyle {
   ink?: string
   /** repeating-gradient overlay (e.g. the class-lens hatch marin uses) */
   hatch?: string
-  /** opacity multiplier (0–1). Combined with the built-in depth fade. */
+  /** opacity multiplier (0–1). Combined with the built-in depth fade; applies
+   * to the cell's background layer, never its label ink. */
   opacity?: number
   /**
    * Proportional makeup stripes for a leaf-rendered cell (no nested tiles at
@@ -296,6 +303,7 @@ export function Treemap<T>({
   mapStyle,
   depthFade = 0.82,
   rootFade = 0.92,
+  fadeFloor = 0.75,
 }: TreemapProps<T>) {
   const [pathState, setPathState] = useState<T[]>(initialPath?.[0] === root ? initialPath : [root])
   const controlled = pathProp !== undefined
@@ -496,6 +504,11 @@ export function Treemap<T>({
     [children, size, getSize],
   )
 
+  // Background opacity at a given nesting depth. Applied per-cell to the
+  // `.dt-treemap-bg` layer (not the cell div), so ancestors' fades never
+  // compound and label ink stays full-strength at every depth.
+  const fadeAt = (d: number) => Math.max(rootFade * depthFade ** d, fadeFloor)
+
   const cell = (
     kid0: T | FoldedNode<T>,
     kidPath0: T[],
@@ -628,12 +641,9 @@ export function Treemap<T>({
           top: r.y,
           width: Math.max(0, r.w - (dust ? 1 : 2)),
           height: Math.max(0, r.h - (dust ? 1 : 2)),
-          background: style.bg,
           // Anchors must not fall through to the page's link color when the
           // consumer sets no ink.
           color: style.ink ?? (href ? 'inherit' : undefined),
-          opacity: (depth > 0 ? depthFade : rootFade) * (style.opacity ?? 1),
-          ...(style.hatch && { backgroundImage: style.hatch }),
           borderRadius: dust ? 1.5 : 3,
           overflow: 'hidden',
           boxSizing: 'border-box',
@@ -651,6 +661,21 @@ export function Treemap<T>({
         onClick={onClick}
         onKeyDown={e => e.key === 'Enter' && onClick(e as unknown as React.MouseEvent)}
       >
+        {/* All paint (bg, hatch, makeup stripes) lives on this layer so the
+            depth fade (and any per-cell `style.opacity`) dims backgrounds
+            only — label ink renders outside it, full-strength at every
+            depth. */}
+        <div
+          className="dt-treemap-bg"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: style.bg,
+            ...(style.hatch && { backgroundImage: style.hatch }),
+            opacity: fadeAt(depth) * (style.opacity ?? 1),
+            pointerEvents: 'none',
+          }}
+        >
         {/* Makeup stripes: a leaf/fold cell with a mixed composition renders
             proportional inset slices (longer axis) instead of one dominant
             blob. The `bg` frame showing through the inset + the single outer
@@ -679,6 +704,7 @@ export function Treemap<T>({
               )
             })
           })()}
+        </div>
         {showLbl && (
           <div
             className={'dt-treemap-lbl' + (r.w < 64 ? ' sm' : '')}

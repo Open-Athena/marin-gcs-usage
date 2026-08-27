@@ -87,6 +87,116 @@ describe('<Treemap>', () => {
     }
   })
 
+  it('initialPath mounts drilled and reports that path', () => {
+    const restore = withLayout()
+    try {
+      const onPathChange = vi.fn((_p: Node[]) => {})
+      const { container } = render(
+        <Treemap
+          root={tree}
+          initialPath={[tree, tree.children![0]]}
+          {...accessors}
+          onPathChange={onPathChange}
+          minCellArea={null}
+        />,
+      )
+      // Drilled into `foo`: its children are the top-level cells.
+      expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])
+      expect(onPathChange.mock.calls.map(([p]) => p.map(n => n.n))).toEqual([['root', 'foo']])
+    } finally {
+      restore()
+    }
+  })
+
+  it('controlled `path` renders the prop; gestures report without changing it', () => {
+    const restore = withLayout()
+    try {
+      const onPathChange = vi.fn((_p: Node[]) => {})
+      const props = { ...accessors, onPathChange, minCellArea: null }
+      const { container, rerender } = render(<Treemap root={tree} path={[tree]} {...props} />)
+      expect(cellLabels(container)).toEqual(['foo', 'bar'])
+
+      // A drill gesture only reports — the display follows the prop.
+      fireEvent.click(container.querySelector('.dt-treemap-map > .dt-treemap-cell.branch')!)
+      expect(onPathChange.mock.calls.map(([p]) => p.map(n => n.n))).toEqual([['root', 'foo']])
+      expect(cellLabels(container)).toEqual(['foo', 'bar'])
+
+      // Consumer renders the reported path back: now the drill shows.
+      rerender(<Treemap root={tree} path={[tree, tree.children![0]]} {...props} />)
+      expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])
+    } finally {
+      restore()
+    }
+  })
+
+  it('Backspace is inert while typing in an input', () => {
+    const restore = withLayout()
+    try {
+      const onPathChange = vi.fn((_p: Node[]) => {})
+      const { container } = render(
+        <Treemap root={tree} {...accessors} onPathChange={onPathChange} minCellArea={null} />,
+      )
+      fireEvent.click(container.querySelector('.dt-treemap-map > .dt-treemap-cell.branch')!)
+      const input = document.createElement('input')
+      document.body.appendChild(input)
+      try {
+        fireEvent.keyDown(input, { key: 'Backspace' })
+        expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])  // still drilled
+        fireEvent.keyDown(document.body, { key: 'Backspace' })
+        expect(cellLabels(container)).toEqual(['foo', 'bar'])      // popped
+      } finally {
+        input.remove()
+      }
+    } finally {
+      restore()
+    }
+  })
+
+  it('tall leaves put the size on a second line; branch bars keep it inline', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(
+        <Treemap root={tree} {...accessors} formatSize={n => `${n} B`} minCellArea={null} />,
+      )
+      const cells = [...container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')]
+      const shape = cells.map(el => [
+        el.querySelector(':scope > .dt-treemap-lbl')?.textContent,
+        el.querySelector(':scope > .dt-treemap-lbl2')?.textContent ?? null,
+      ])
+      // `foo` is a branch: inline size in its title bar, no 2nd line of its own.
+      // `bar` is a tall leaf: name-only first line, size on the 2nd.
+      expect(shape).toEqual([
+        ['foo200 B', null],
+        ['bar', '100 B'],
+      ])
+    } finally {
+      restore()
+    }
+  })
+
+  it('segments render proportional makeup stripes on leaves, never on branches', () => {
+    const restore = withLayout()
+    try {
+      const segments = [{ color: 'red', frac: 3 }, { color: 'blue', frac: 1 }]
+      const { container } = render(
+        <Treemap root={tree} {...accessors} minCellArea={null} colorForCell={() => ({ segments })} />,
+      )
+      const [foo, bar] = [...container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')]
+      // `foo` renders child tiles — no stripes despite the style.
+      expect([...foo.querySelectorAll(':scope > .dt-treemap-bg > div:not([class])')]).toEqual([])
+      // `bar` (leaf, 133.33×300 → vertical slicing): span = 300 − 2·3 − 1 = 293,
+      // split 3:1 → 219.75 / 73.25, stacked below the 3px inset with a 1px gap.
+      const stripes = [...bar.querySelectorAll(':scope > .dt-treemap-bg > div:not([class])')] as HTMLElement[]
+      const round2 = (v: string) => Math.round(parseFloat(v) * 100) / 100
+      expect(stripes.map(s => [s.style.background, round2(s.style.top), round2(s.style.height)])).toEqual([
+        ['red', 3, 219.75],
+        ['blue', 223.75, 73.25],
+      ])
+    } finally {
+      restore()
+    }
+  })
+
   it('breadcrumb bar shows a single non-link segment for the current node', () => {
     const { container } = render(<Treemap root={tree} {...accessors} />)
     // Root is the current node — no interactive anchor around it
@@ -300,5 +410,67 @@ describe('<Treemap> lazy children', () => {
     // Both cells render; neither is drillable, since nothing can fetch `deep`.
     expect(cellLabels(container)).toEqual(['deep', 'leaf.txt'])
     expect(container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell.branch').length).toBe(0)
+  })
+})
+
+describe('<Treemap> depth fade', () => {
+  // Single-child spine: root → d1 → d2 → d3 → leaf, so each level nests one
+  // cell inside the last and cumulative CSS opacity is the product of the
+  // spine's local values.
+  const spine: Node = {
+    n: 'root',
+    size: 100,
+    children: [{
+      n: 'd1',
+      size: 100,
+      children: [{
+        n: 'd2',
+        size: 100,
+        children: [{
+          n: 'd3',
+          size: 100,
+          children: [{ n: 'leaf', size: 100 }],
+        }],
+      }],
+    }],
+  }
+
+  /** Walk the spine collecting each cell's bg-layer opacity, asserting the
+   * cell div itself never fades (label ink stays full-strength). */
+  function bgFades(container: HTMLElement): number[] {
+    const fades: number[] = []
+    let el = container.querySelector('.dt-treemap-map > .dt-treemap-cell') as HTMLElement | null
+    while (el) {
+      expect(el.style.opacity).toBe('')
+      const bg = el.querySelector(':scope > .dt-treemap-bg') as HTMLElement
+      fades.push(Number(bg.style.opacity))
+      el = el.querySelector(':scope > .dt-treemap-inner > .dt-treemap-cell')
+    }
+    return fades
+  }
+
+  it('fades backgrounds per depth, floored at fadeFloor; cell divs (and their labels) never fade', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(<Treemap root={spine} {...accessors} minCellArea={null} />)
+      // Bg-layer opacity is max(rootFade × depthFade^d, fadeFloor) per cell —
+      // no compounding, since only the paint layer fades, not the subtree:
+      //   d0 0.92, d1 0.7544, d2 floored to 0.75, d3 held at 0.75.
+      expect(bgFades(container)).toEqual([0.92, 0.92 * 0.82, 0.75, 0.75])
+    } finally {
+      restore()
+    }
+  })
+
+  it('depthFade={1} keeps every level at rootFade', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(
+        <Treemap root={spine} {...accessors} minCellArea={null} depthFade={1} />,
+      )
+      expect(bgFades(container)).toEqual([0.92, 0.92, 0.92, 0.92])
+    } finally {
+      restore()
+    }
   })
 })
