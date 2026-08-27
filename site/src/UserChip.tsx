@@ -24,6 +24,16 @@ import { IDENTITIES } from './identities.gen'
 
 // Canonical id: sanitize to a handle, then follow the registry — alias keys
 // (email local parts, short handles) resolve to their canonical rec's id.
+/** Shortest registry key that canonicalizes to `id` — for golfed URLs
+ * (`?u=rw`, `?u=gonzalo`). Falls back to the id itself. */
+export const shortUserKey = (id: string): string => {
+  let best = id
+  for (const [k, rec] of Object.entries(IDENTITIES)) {
+    if (rec.u === id && k.length < best.length) best = k
+  }
+  return best
+}
+
 export const canonId = (who: string): string => {
   const h = whoToHandle(who)
   return IDENTITIES[h]?.u ?? h

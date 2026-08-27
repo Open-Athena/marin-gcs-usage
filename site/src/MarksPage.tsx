@@ -57,7 +57,7 @@ export function MarksPage() {
       <header>
         <div className="hrow">
           <h1>Recent marks</h1>
-          <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Back&nbsp;to&nbsp;the&nbsp;map</Link>
+          <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
         </div>
         <p className="sub">
           Every keep / sweep / claim in the ledger, newest first. Click a prefix to open it on the map.

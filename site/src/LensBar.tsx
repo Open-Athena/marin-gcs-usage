@@ -3,6 +3,7 @@ import { signInUrl, useCanMark } from './auth'
 import { MarkControls } from './MarkControls'
 import type { MarkIndex } from './marks'
 import { Tooltip } from './Tooltip'
+import { shortName } from './UserChip'
 
 // The review lenses, folded onto the normal treemap + children view (they used
 // to be a separate `/mark` worklist page). Picking a lens filters/scopes the
@@ -65,8 +66,8 @@ export function LensBar({ idx, hasEmail, myUser, viewUser, setViewUser, users, l
   const [userDraft, setUserDraft] = useState<string | null>(null)
 
   const mineLabel = !viewUser ? 'My files'
-    : viewUser === myUser ? `My files (${viewUser})`
-    : `${viewUser}'s files`
+    : viewUser === myUser ? 'My files'
+    : `${shortName(viewUser)}’s files`
 
   const typedPrefix = typed.trim().endsWith('/') ? typed.trim() : typed.trim() ? typed.trim() + '/' : ''
   const typedValid = PREFIX_RE.test(typedPrefix)

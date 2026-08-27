@@ -6,11 +6,11 @@ import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
 import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkIndex } from './marks'
 import { DEFAULT_STORE } from './stores'
-import { applyNodeFilter } from './filterTree'
+import { applyFilter, applyNodeFilter } from './filterTree'
 import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
 import { Tooltip } from './Tooltip'
-import { UserChip, canonId, ghHandle, shortName, teamOf } from './UserChip'
+import { UserChip, canonId, ghHandle, shortName, shortUserKey, teamOf } from './UserChip'
 import {
   CLASS_NAMES, CLASS_PRICE_US, GROUP_LABELS, TEAM_VARS,
   ratePerByte, fmtBytesIec, fmtN, fmtUsd,
@@ -377,7 +377,7 @@ export function UsersPage() {
       <header>
         <div className="hrow">
           <h1>Users</h1>
-          <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Back&nbsp;to&nbsp;the&nbsp;map</Link>
+          <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
         </div>
         <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
       </header>
@@ -543,10 +543,21 @@ export function UserPage() {
   // The user's slice of the estate as a drillable map (same scoping as the
   // homepage's "My files" lens: maximal subtrees ≥60% theirs), colored by
   // mark state.
-  const scopedTree = useMemo(
-    () => (treeQ.data ? applyNodeFilter(treeQ.data, lensNodePred(userLens(id))) : null),
-    [treeQ.data, id],
-  )
+  const scopedTree = useMemo(() => {
+    if (!treeQ.data) return null
+    const base = applyNodeFilter(treeQ.data, lensNodePred(userLens(id)))
+    if (base.b > 0) return base
+    // No scan-attributed subtrees (fresh identity / claims-only): scope the
+    // map to the claimed prefixes instead.
+    const claims = new Set(
+      [...idx.owners.values()]
+        .filter(r => r.owner != null && canonId(r.owner) === id)
+        .map(r => prefixToPath(r.prefix)),
+    )
+    if (!claims.size) return null
+    const claimed = applyFilter(treeQ.data, path => claims.has(path))
+    return claimed.b > 0 ? claimed : null
+  }, [treeQ.data, id, idx])
 
   const rows = useMemo(
     () => (treeQ.data ? userFates(treeQ.data, id, idx) : []),
@@ -644,9 +655,9 @@ export function UserPage() {
             {team && <span className="uc-group" data-team={team}>{GROUP_LABELS[team] ?? team}</span>}
           </h1>
           <span style={{ display: 'inline-flex', gap: '1.2em' }}>
-            <Link className="nav-files" to={`/?mt=mine&mu=${id}`} style={{ fontSize: '0.9em' }}>On&nbsp;the&nbsp;map&nbsp;→</Link>
+            <Link className="nav-files" to={`/?l=user&lu=${shortUserKey(id)}`} style={{ fontSize: '0.9em' }}>Home,&nbsp;filtered&nbsp;to&nbsp;{shortName(id)}&nbsp;→</Link>
             <Link className="nav-files" to="/users" style={{ fontSize: '0.9em' }}>All&nbsp;users</Link>
-            <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Back&nbsp;to&nbsp;the&nbsp;map</Link>
+            <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
           </span>
         </div>
         <p className="sub">

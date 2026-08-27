@@ -7,7 +7,7 @@ import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 
 import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
 import { Avatar } from './Avatar'
-import { ghHandle, shortName } from './UserChip'
+import { canonId, ghHandle, shortName, shortUserKey } from './UserChip'
 import { signInUrl, useCanMark, useIdent as useIdentity, useSignOut } from './auth'
 import TokenModal from './TokenModal'
 import { AttributionRules } from './AttributionRules'
@@ -180,16 +180,33 @@ function AppContent() {
     enabled: !!asof,
     staleTime: Infinity,
   })
-  // `?f=` (name filter) and `?mt=` (review lens) read early: they decide
+  // `?f=` (name filter) and `?l=` (review lens) read early: they decide
   // whether the full artifact tree is needed at all (see treeQ below).
+  // `?l=` replaces legacy `?mt=` (value `user` was `mine` — the lens views
+  // *a* user, not necessarily you); `?u=` replaces `?mu=`, encoded as the
+  // user's shortest registry alias. Old links normalize below.
   const [fq, setFq] = useUrlState('f', stringParam())
-  const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
+  const [markTabP, setMarkTabP] = useUrlState('l', stringParam())
   // tree.json is ~29MB — the estate-wide walks (name filter's match set +
   // re-aggregation, lens scoping) still need its depth, but plain browsing
   // doesn't: the map seeds from the same pixel-budget /api/subtree that
   // serves drills. So the full tree only downloads when a filter or lens is
   // active (or for stores with no path index, where it's the only source).
   const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null
+  // One-time legacy-param rewrite (`mt`/`mu` → `l`/`u`), so old links work
+  // and re-share in the golfed form.
+  useEffect(() => {
+    const sp = new URLSearchParams(search)
+    if (!sp.has('mt') && !sp.has('mu')) return
+    const mt = sp.get('mt')
+    const mu = sp.get('mu')
+    sp.delete('mt')
+    sp.delete('mu')
+    if (mt) sp.set('l', mt === 'mine' ? 'user' : mt)
+    if (mu) sp.set('lu', shortUserKey(canonId(mu)))
+    navigate({ pathname, search: `?${sp.toString()}`, hash }, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search])
   const treeQ = useQuery({ ...scanQuery<TreeNode>('tree'), enabled: !!asof && needFullTree })
   const ageQ = useQuery(scanQuery<AgeRow[]>('age'))
   const metaQ = useQuery(scanQuery<Meta>('meta'))
@@ -312,15 +329,20 @@ function AppContent() {
   // No email (anon / no-email session) → no "My files" lens to attribute to.
   const hasEmail = !!ident?.email
   const markTabRaw: Lens =
-    markTabP === 'todo' || markTabP === 'mine' || markTabP === 'unclaimed' || markTabP === 'communal' ? markTabP : 'all'
+    markTabP === 'user' || markTabP === 'mine' ? 'mine'
+    : markTabP === 'todo' || markTabP === 'unclaimed' || markTabP === 'communal' ? markTabP
+    : 'all'
   const markTab: Lens = markTabRaw === 'mine' && !hasEmail ? 'all' : markTabRaw
   const setMarkTab = (t: Lens) => {
-    setMarkTabP(t === 'all' ? undefined : t)
-    if (t === 'todo') setModeP('fate') // to-do reads best with the keep/sweep (fate) coloring
+    setMarkTabP(t === 'all' ? undefined : t === 'mine' ? 'user' : t)
+    if (t !== 'mine') setUP(undefined) // `u` is meaningless outside the user lens
+    if (t === 'todo') setModeP('user') // to-do reads best colored by owner
   }
-  // `?mu=` — whose files the "mine" tab shows (anyone's view is browsable).
-  const [muP, setMuP] = useUrlState('mu', stringParam())
-  const viewUser = muP ?? myUser
+  // `?lu=` — whose files the user lens shows (anyone's view is browsable;
+  // `?u=` is the highlight-user param). Only meaningful while that lens is
+  // active: an inactive lens must not redecorate its chip or the view.
+  const [uP, setUP] = useUrlState('lu', stringParam())
+  const viewUser = markTab === 'mine' ? ((uP ? canonId(uP) : null) ?? myUser) : null
   // `?ms=0` — scope-map-to-view toggled off (on is the default).
   const [scopedP, setScopedP] = useUrlState('ms', stringParam())
   const scoped = scopedP !== '0'
@@ -710,7 +732,7 @@ function AppContent() {
           idx={markIdx}
           hasEmail={hasEmail}
           myUser={myUser}
-          viewUser={viewUser} setViewUser={setMuP}
+          viewUser={viewUser} setViewUser={u => setUP(u ? shortUserKey(canonId(u)) : undefined)}
           users={mkUsers}
           lens={markTab} setLens={setMarkTab}
           scoped={scoped} setScoped={setScoped}
