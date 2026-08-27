@@ -287,10 +287,17 @@ def write_webdata(
     # rolled-up bytes clear MIN_FRAC of its parent's — so drilling stays useful
     # at every depth (a fleet-relative cut deletes every small-but-drillable
     # child everywhere; see build_tree's docstring for the grug regression).
-    ptu_rows = con.execute(
+    # Staged (not one statement): each big operator — the per-path totals agg,
+    # then the ranking window — runs alone, so peak memory is one operator's
+    # working set instead of a stacked pipeline. The one-statement version put
+    # the whole stack on top of DuckDB's cap and got the container kernel-
+    # OOM-killed (exit 137) on the daily's 128GB node, 2026-08-27.
+    con.execute("CREATE TEMP TABLE tot AS SELECT path, sum(b) AS pb FROM ptu GROUP BY path")
+    _rss("tot")
+    con.execute(
         f"""
-        WITH tot AS (SELECT path, sum(b) AS pb FROM ptu GROUP BY path),
-        ranked AS (
+        CREATE TEMP TABLE keep AS
+        WITH ranked AS (
           SELECT t.path, t.pb, par.pb AS parent_pb,
             row_number() OVER (
               PARTITION BY CASE WHEN t.path LIKE '%/%' THEN regexp_replace(t.path, '/[^/]*$', '') END
@@ -299,16 +306,22 @@ def write_webdata(
           FROM tot t
           LEFT JOIN tot par
             ON par.path = CASE WHEN t.path LIKE '%/%' THEN regexp_replace(t.path, '/[^/]*$', '') END
-        ),
-        keep AS (
-          SELECT path FROM ranked
-          WHERE parent_pb IS NULL
-             OR (pb >= greatest({MIN_FRAC} * parent_pb, {ABS_FLOOR}) AND rk <= {TOP_K})
         )
+        SELECT path FROM ranked
+        WHERE parent_pb IS NULL
+           OR (pb >= greatest({MIN_FRAC} * parent_pb, {ABS_FLOOR}) AND rk <= {TOP_K})
+        """
+    )
+    con.execute("DROP TABLE tot")
+    _rss("keep")
+    ptu_rows = con.execute(
+        """
         SELECT p.path, p.team, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
         FROM ptu p JOIN keep k USING (path)
         """
     ).fetchall()
+    con.execute("DROP TABLE keep")
+    con.execute("DROP TABLE ptu")
     # A path can clear its own parent while an ancestor failed (thin chains) —
     # prune anything whose ancestry isn't fully kept, else build_tree would
     # silently orphan it.

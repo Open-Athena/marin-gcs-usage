@@ -15,7 +15,7 @@ IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-u
 # tree-rows aggregates 34M+ dir groups; its hash-agg state doesn't fully spill
 # and blows a 48GB DuckDB limit, so the job wants a highmem-16 (128G) machine
 MACHINE=${MACHINE:-n2-highmem-16}
-MEMORY_MIB=${MEMORY_MIB:-120000}
+MEMORY_MIB=${MEMORY_MIB:-124000}
 LOCAL_SSD_GB=${LOCAL_SSD_GB:-750}  # n2 16-vCPU machines require >=2 local SSDs (375G each)
 JOB_ID=${JOB_ID:-gcs-usage-snapshot-$(date -u +%Y%m%d-%H%M%S)}
 
@@ -23,7 +23,9 @@ vars() {  # container env: defaults + optional passthroughs
   python3 - <<'EOF'
 import json, os
 v = {
-    "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "100GB"),
+    # 90 (not 100): DuckDB at its cap plus process overhead must fit the
+    # container — 100GB inside 117GiB got kernel-OOM-killed (exit 137) twice
+    "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "90GB"),
     # access ingest runs before (not concurrent with) the webdata step, so
     # it can take a big slice of the 128G node; 24GB OOM'd on a row-heavy
     # 53GB chunk (2026-08-23)
