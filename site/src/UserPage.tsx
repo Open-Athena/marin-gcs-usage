@@ -6,7 +6,9 @@ import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
 import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkIndex } from './marks'
 import { DEFAULT_STORE } from './stores'
-import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, type Fate, type KlcIndex } from './sweep'
+import { applyNodeFilter } from './filterTree'
+import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex } from './sweep'
+import { Treemap as MarkTreemap } from './Treemap'
 import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, teamOf } from './UserChip'
 import {
@@ -538,6 +540,13 @@ export function UserPage() {
     [treeQ.data, idx, klcIdx],
   )
   const mine = fatesAll?.get(id) ?? null
+  // The user's slice of the estate as a drillable map (same scoping as the
+  // homepage's "My files" lens: maximal subtrees ≥60% theirs), colored by
+  // mark state.
+  const scopedTree = useMemo(
+    () => (treeQ.data ? applyNodeFilter(treeQ.data, lensNodePred(userLens(id))) : null),
+    [treeQ.data, id],
+  )
 
   const rows = useMemo(
     () => (treeQ.data ? userFates(treeQ.data, id, idx) : []),
@@ -682,6 +691,20 @@ export function UserPage() {
               )
             })}
           </div>
+
+          {scopedTree && scopedTree.b > 0 && (
+            <div className="user-mini-map">
+              <MarkTreemap
+                root={scopedTree}
+                mode="fate"
+                userIdx={new Map()}
+                dateRange={null}
+                scheme={store.scheme}
+                markIdx={idx}
+                klcIdx={klcIdx}
+              />
+            </div>
+          )}
 
           {rows.length > 0 && (
             <>

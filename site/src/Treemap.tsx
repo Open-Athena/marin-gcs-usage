@@ -414,7 +414,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     // Fate totals for the current view: of the drilled subtree's bytes, how
     // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
     // amber "last ckpt" appears only for marks the tree can't split).
-    const fate = markIdx
+    const fate = markIdx && mode === 'fate'
       ? subtreeFateTotals(node, path.length > 1 ? uriOf(path) : '', markIdx, klcIdx ?? undefined)
       : null
     const fateRows = fate
@@ -473,7 +473,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
         <div className="legend">
           {mode === 'read' && readRange ? (
             <>
-              <span className="li"><span className="sw" style={{ background: 'var(--never-read)' }} />never read</span>
+              <Tooltip content={`No reads observed since access logging began (${epochDaysToDate(readRange.min)}) — activity before that predates the logs, so "never read" really means "not read in the observed window".`}>
+                <span className="li has-tt"><span className="sw" style={{ background: 'var(--never-read)' }} />never read*</span>
+              </Tooltip>
               <span className="li gradli">
                 {epochDaysToDate(readRange.min)}
                 <span className="gradbar" style={{ background: dateGradientCss() }} />
