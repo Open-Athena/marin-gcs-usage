@@ -70,7 +70,9 @@ function userFates(root: TreeNode, uid: string, idx: MarkIndex): FateRow[] {
 
 const FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
 const fateLabel = (f: Fate): string => (f === 'unmarked' ? 'unmarked' : ACTION_LABELS[f])
-const fateColor = (f: Fate): string => (f === 'unmarked' ? 'var(--t-unattr)' : ACTION_COLORS[f])
+// `unmarked` gets the regular secondary ink, not the unattributed-gray — as
+// the most common column value it has to be readable, not washed out.
+const fateColor = (f: Fate): string => (f === 'unmarked' ? 'var(--ink-2)' : ACTION_COLORS[f])
 
 // `gs://marin-<bucket>/<path>/` → the treemap's URL path.
 const prefixToPath = (prefix: string): string => {
