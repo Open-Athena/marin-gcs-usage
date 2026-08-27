@@ -100,6 +100,12 @@ const prefixToPath = (prefix: string): string => {
 
 const store = DEFAULT_STORE
 
+// The live Google Sheet mirror of this table (created 2026-08-27; re-seed
+// with: `gcs-usage report -a <actions.json> -o mark-status.csv` then
+// `gws drive files update --params '{"fileId":"<id>","uploadType":"multipart"}'
+//   --upload mark-status.csv --upload-content-type text/csv`).
+const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1k_11LA21g8uqMckPhkKvwrnRENVKF8yHxbW5NnUiRFc/edit'
+
 function useLatestScan() {
   const scansQ = useQuery<string[]>({
     queryKey: ['scans', store.key],
@@ -297,6 +303,14 @@ function UsersMap({ meta, fates, redact = false }: {
             </div>
           )
         }}
+        // Real anchors (this map is one flat level, so every tile qualifies):
+        // Vimium hints, cmd-click, native pointer all work; plain clicks
+        // still route through the SPA below.
+        cellHref={n =>
+          n.id ? `/user/${n.id}`
+          : n.team === 'communal' ? '/?l=communal'
+          : n.team === 'unattributed' ? '/?l=unclaimed'
+          : undefined}
         onCellClick={(n) => {
           if (redact) return true
           // Every tile goes somewhere sane: users to their page, the
@@ -367,6 +381,36 @@ export function UsersPage() {
     () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
     [treeQ.data, idx, klcIdx],
   )
+  // Client-side CSV of exactly what the table shows (claims applied).
+  const downloadCsv = () => {
+    const rowsIter = fates
+      ? [...fates.entries()].map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f), f: foldFates(f) }))
+      : users.map(u => ({ u: u.u, b: u.b, f: null as Record<ShownFate, number> | null }))
+    const tib = 1024 ** 4
+    const lines = [
+      ['user', 'group', 'attributed_TiB', 'est_usd_mo', 'keep_TiB', 'sweep_TiB', 'undecided_TiB', 'undecided_pct', 'page'],
+      ...rowsIter
+        .filter(r => r.b > 1e9)
+        .sort((a, b) => (b.f?.unmarked ?? b.b) - (a.f?.unmarked ?? a.b))
+        .map(r => [
+          r.u,
+          teamOf(r.u) ?? users.find(m => m.u === r.u)?.t ?? 'unknown',
+          (r.b / tib).toFixed(1),
+          mixes?.[r.u] ? Math.round(ratePerByte(mixes[r.u]) * r.b) : '',
+          ((r.f?.keep ?? 0) / tib).toFixed(1),
+          ((r.f?.sweep ?? 0) / tib).toFixed(1),
+          ((r.f?.unmarked ?? r.b) / tib).toFixed(1),
+          r.b ? Math.round((100 * (r.f?.unmarked ?? r.b)) / r.b) : 0,
+          `https://gcs.oa.dev/user/${r.u}`,
+        ]),
+    ]
+    const blob = new Blob([lines.map(l => l.join(',')).join('\n') + '\n'], { type: 'text/csv' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `marin-gcs-mark-status-${asof ?? 'latest'}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
   const cell = (u: string, f: ShownFate) => {
     const raw = fates?.get(u)
     const b = raw ? foldFates(raw)[f] : 0
@@ -381,7 +425,11 @@ export function UsersPage() {
       <header>
         <div className="hrow">
           <h1>Users</h1>
-          <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
+          <span style={{ display: 'inline-flex', gap: '1.2em', alignItems: 'baseline' }}>
+            <button type="button" className="csv-btn" onClick={downloadCsv}>Download&nbsp;CSV</button>
+            <a className="nav-files" href={SHEET_URL} target="_blank" rel="noreferrer">Google&nbsp;Sheet&nbsp;↗</a>
+            <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
+          </span>
         </div>
         <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
       </header>

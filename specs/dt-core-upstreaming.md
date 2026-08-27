@@ -37,6 +37,11 @@ Planned (specs in this repo, implement as core features):
 
 ## New since last sync (pending CP)
 
+- `Treemap.tsx`: `cellHref` accessor — leaf-rendered cells become real
+  `<a href>`s (native cursor/cmd-click/link hints); nested-tile cells stay
+  divs (anchors can't nest); plain clicks preventDefault into the normal
+  onCellClick/drill/pin flow.
+
 - `Treemap.tsx`: size-gate `branch`/`chain` chrome classes (`chromeOk` = min
   dim ≥ 28px; `branch` also whenever children actually render). Lazy-drill
   grafting turned dense fields of small tiles into drillable/chain cells, and

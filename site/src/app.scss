@@ -1365,6 +1365,17 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
   // Fixed square boxes so glyph / avatar / name columns align across rows
   // (the OA branch mark and block-S have different aspect ratios).
+  .csv-btn {
+    font: inherit;
+    font-size: 0.85em;
+    cursor: pointer;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink);
+    border-radius: 6px;
+    padding: 3px 10px;
+    &:hover { filter: brightness(1.08); }
+  }
   .grp-icon { width: 16px; height: 16px; object-fit: contain; vertical-align: middle; }
   .grp-none { color: var(--ink-2); opacity: 0.6; display: inline-block; width: 16px; text-align: center; }
   .user-cell { display: inline-flex; align-items: center; gap: 8px; }
