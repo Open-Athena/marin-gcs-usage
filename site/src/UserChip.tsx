@@ -13,6 +13,7 @@ import {
   useRole,
 } from '@floating-ui/react'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Avatar, whoToHandle } from './Avatar'
 import { IDENTITIES } from './identities.gen'
 
@@ -69,6 +70,7 @@ export function UserCard({ who, extra }: { who: string; extra?: React.ReactNode 
           @{gh} on GitHub
         </a>
       )}
+      {id && <Link className="uc-link" to={`/user/${id}`}>storage breakdown →</Link>}
       {extra}
     </div>
   )

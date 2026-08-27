@@ -6,6 +6,7 @@ import { AuthGate } from './AuthGate'
 import { FilesPage } from './FilesPage'
 import { MarksPage } from './MarksPage'
 import { OgPage } from './OgPage'
+import { UserPage, UsersPage } from './UserPage'
 import { STORES } from './stores'
 
 // `/files/*` → scan browser; `<store>/og` → redacted fixed-size treemap for that
@@ -24,6 +25,8 @@ export default function Root() {
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
       <Route path="/marks" element={<AuthGate><MarksPage /></AuthGate>} />
+      <Route path="/users" element={<AuthGate><UsersPage /></AuthGate>} />
+      <Route path="/user/:id" element={<AuthGate><UserPage /></AuthGate>} />
       {/* The review lenses fold onto `/` now (LensBar) — /mark is just the map. */}
       <Route path="/mark" element={<Navigate to="/" replace />} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
