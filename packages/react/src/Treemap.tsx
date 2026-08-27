@@ -589,11 +589,17 @@ export function Treemap<T>({
       }
     }
     const dust = Math.min(r.w, r.h) < 14
+    // `branch` / `chain` chrome (consumers hang inset rings / doubled edges
+    // off these) only when the cell is big enough for that treatment to read
+    // — a dense field of small drillable or chain-collapsed tiles must not
+    // all grow dark inner rings. `branch` also applies whenever children
+    // actually render (a container needs its edge at any size).
+    const chromeOk = Math.min(r.w, r.h) >= 28
 
     return (
       <div
         key={cellKey}
-        className={'dt-treemap-cell' + (kidDrillable ? ' branch' : '') + (dust ? ' dust' : '') + (chainLabels ? ' chain' : '')}
+        className={'dt-treemap-cell' + (kidDrillable && (kids.length > 0 || chromeOk) ? ' branch' : '') + (dust ? ' dust' : '') + (chainLabels && chromeOk ? ' chain' : '')}
         style={{
           position: 'absolute',
           left: r.x,
