@@ -27,6 +27,12 @@ def _rss(tag: str) -> None:
     err(f"[rss] {tag}: peak {peak / (1024**2 if sys.platform == 'linux' else 1024**3):.1f} GB")
 
 MIN_FRAC = 0.0002  # fold children below this fraction of their PARENT into "(other)"
+# Aggregate bounds on the kept set — parent-relative alone is unbounded (the
+# fleet has >100M dirs; 0.02%-of-parent keeps every child of an evenly-split
+# parent, recursively — OOM-killed the 8/26 attempt-4 REPROC). Values chosen
+# from the 8/26 full-listing estimate (see specs/dir-agg-cache.md).
+ABS_FLOOR = int(float(os.environ.get("GCS_USAGE_TREE_ABS_FLOOR", "5e9")))  # bytes
+TOP_K = int(os.environ.get("GCS_USAGE_TREE_TOP_K", "500"))  # kept children per parent
 
 
 def write_webdata(
@@ -261,11 +267,20 @@ def write_webdata(
           FROM exploded GROUP BY path, team, usr
         ),
         tot AS (SELECT path, sum(b) AS pb FROM ptu GROUP BY path),
-        keep AS (
-          SELECT t.path FROM tot t
+        ranked AS (
+          SELECT t.path, t.pb, par.pb AS parent_pb,
+            row_number() OVER (
+              PARTITION BY CASE WHEN t.path LIKE '%/%' THEN regexp_replace(t.path, '/[^/]*$', '') END
+              ORDER BY t.pb DESC
+            ) AS rk
+          FROM tot t
           LEFT JOIN tot par
             ON par.path = CASE WHEN t.path LIKE '%/%' THEN regexp_replace(t.path, '/[^/]*$', '') END
-          WHERE par.path IS NULL OR t.pb >= {MIN_FRAC} * par.pb
+        ),
+        keep AS (
+          SELECT path FROM ranked
+          WHERE parent_pb IS NULL
+             OR (pb >= greatest({MIN_FRAC} * parent_pb, {ABS_FLOOR}) AND rk <= {TOP_K})
         )
         SELECT p.path, p.team, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
         FROM ptu p JOIN keep k USING (path)
@@ -325,7 +340,7 @@ def write_webdata(
 
     dir_rows = [DirRow(p, a["b"], a["o"], _add(a)) for p, a in agg_by_path.items()]
     dir_rows.append(DirRow(".", total_b, total_o, _add(root)))
-    tree = build_tree(dir_rows, total_b, MIN_FRAC)
+    tree = build_tree(dir_rows, total_b, MIN_FRAC, abs_floor=ABS_FLOOR, max_children=TOP_K)
     tree["n"] = "marin GCS"
     roots = tree.get("c", [])
 

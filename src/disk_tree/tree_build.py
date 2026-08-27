@@ -107,7 +107,13 @@ def _display(add: dict) -> dict:
     return out
 
 
-def build_tree(rows: list[DirRow], total_bytes: int, min_frac: float) -> dict:
+def build_tree(
+    rows: list[DirRow],
+    total_bytes: int,
+    min_frac: float,
+    abs_floor: int = 0,
+    max_children: int | None = None,
+) -> dict:
     """Link ``rows`` into a nested tree; return the root node (path in
     :data:`ROOT_KEYS`).
 
@@ -122,7 +128,10 @@ def build_tree(rows: list[DirRow], total_bytes: int, min_frac: float) -> dict:
     into one blob because each was <0.02% of the *fleet*). When callers
     pre-floor in SQL (so no sub-floor rows arrive), the ``(other)`` still forms
     from the parent's byte gap; ``f`` is then the count actually seen.
-    ``total_bytes`` sizes the root (kept for signature stability).
+    ``abs_floor`` (bytes) and ``max_children`` (top-K per parent) bound the
+    artifact when parent-relative alone would keep too much — the fleet has
+    >100M dirs, and 0.02%-of-parent keeps every child of any evenly-split
+    parent recursively. ``total_bytes`` sizes the root (signature stability).
     """
     add_by_path = {r.path: r.add for r in rows}
     nodes: dict[str, dict] = {
@@ -142,16 +151,19 @@ def build_tree(rows: list[DirRow], total_bytes: int, min_frac: float) -> dict:
         parent = nodes.get(parent_path)
         if not parent:
             continue
-        floor = int(parent["b"] * min_frac)
+        floor = max(int(parent["b"] * min_frac), abs_floor)
         children = sorted((nodes[p] for p in child_paths), key=lambda n: -n["b"])
         kept = [n for n in children if n["b"] >= floor]
-        folded = [n for n in children if n["b"] < floor]
+        if max_children is not None and len(kept) > max_children:
+            kept = kept[:max_children]
+        kept_ids = {id(n) for n in kept}
+        folded = [n for n in children if id(n) not in kept_ids]
         parent["c"] = kept
         rest_b = parent["b"] - sum(n["b"] for n in kept)
         rest_o = parent["o"] - sum(n["o"] for n in kept)
         if rest_b > floor:
             other = {"n": "(other)", "b": int(rest_b), "o": int(max(rest_o, 0)), "f": len(folded)}
-            kept_add = [add_by_path[p] for p in child_paths if nodes[p] in kept]
+            kept_add = [add_by_path[p] for p in child_paths if id(nodes[p]) in kept_ids]
             other.update(_display(_sub_add(add_by_path.get(parent_path, {}), kept_add)))
             parent["c"].append(other)
         if not parent["c"]:
