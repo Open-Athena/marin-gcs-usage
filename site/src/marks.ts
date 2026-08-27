@@ -131,10 +131,13 @@ export interface MarkIndex {
   claimOf: (uri: string) => Owner | null
   /** Live set-marks strictly under a prefix — what a broad mark would repaint. */
   overridesOf: (uri: string) => { n: number; keeps: number }
+  /** Latest live row per prefix (normalized, trailing `/`) — for tree walks
+   * that thread the winning mark down instead of calling `resolve` per node. */
+  keeps: Map<string, KeepRow>
   count: number
 }
 
-const newer = (a: { ts: number; action_id: number }, b: { ts: number; action_id: number }) =>
+export const newer = (a: { ts: number; action_id: number }, b: { ts: number; action_id: number }): boolean =>
   a.ts > b.ts || (a.ts === b.ts && a.action_id > b.action_id)
 
 /** Latest live row per prefix (the API may return history rows per prefix). */
@@ -192,6 +195,6 @@ export function useMarkIndex(data: { keeps: KeepRow[]; owners: OwnerRow[] } | un
     }
     let count = 0
     for (const r of keeps.values()) if (r.keep != null) count++
-    return { resolve, claimOf, overridesOf, count }
+    return { resolve, claimOf, overridesOf, keeps, count }
   }, [data])
 }

@@ -2,8 +2,8 @@
 // review lens cares about (mine / unattributed / communal), so each tab is a
 // ranked worklist of prefixes rather than a hunt through the treemap.
 import { useQuery } from '@tanstack/react-query'
-import type { NodePred } from './filterTree'
-import type { MarkIndex } from './marks'
+import { reaggregate, type NodePred } from './filterTree'
+import { newer, type KeepRow, type MarkAction, type MarkIndex } from './marks'
 import type { TreeNode } from './types'
 
 export interface SweepRow {
@@ -79,6 +79,100 @@ export function collectTodo(root: TreeNode, idx: MarkIndex, minBytes = 20e9): Sw
   }
   for (const bucket of root.c ?? []) walk(bucket, `gs://${bucket.n}`)
   return rows.sort((a, b) => b.b - a.b)
+}
+
+// ---- Fast fate walks -------------------------------------------------------
+// `MarkIndex.resolve` is O(marked prefixes) per call — fine per rendered cell,
+// quadratic-feeling over a whole-tree walk. These walkers instead thread the
+// winning row down the DFS (newest ancestor-or-equal row, same semantics as
+// `resolve`) and answer "any live mark strictly below?" from a precomputed
+// ancestor set, so each node costs O(1).
+
+export type Fate = MarkAction | 'unmarked'
+
+interface FateWalkCtx {
+  /** Latest live row exactly on this (trailing-`/`) prefix. */
+  own: (uri: string) => KeepRow | undefined
+  /** Any live set-mark strictly below this prefix? (= `resolve(uri).under > 0`) */
+  below: (uri: string) => boolean
+}
+
+function fateWalkCtx(keeps: Map<string, KeepRow>): FateWalkCtx {
+  const anc = new Set<string>()
+  for (const r of keeps.values()) {
+    if (r.keep == null) continue
+    // gs://bucket/a/b/ → ancestors gs://bucket/, gs://bucket/a/
+    const segs = r.prefix.replace(/\/+$/, '').split('/')
+    for (let i = 3; i < segs.length; i++) anc.add(segs.slice(0, i).join('/') + '/')
+  }
+  const norm = (uri: string) => (uri.endsWith('/') ? uri : uri + '/')
+  return { own: uri => keeps.get(norm(uri)), below: uri => anc.has(norm(uri)) }
+}
+
+/** Newest of the inherited winner and this prefix's own row (clears count:
+ * a newer `keep: null` row repaints inherited marks back to unmarked). */
+const winRow = (ctx: FateWalkCtx, uri: string, inherited: KeepRow | null): KeepRow | null => {
+  const own = ctx.own(uri)
+  return own && (!inherited || newer(own, inherited)) ? own : inherited
+}
+
+const fateOf = (win: KeepRow | null): Fate => win?.keep ?? 'unmarked'
+
+/**
+ * Scope the map to the undecided estate (the To-do lens): prune any subtree
+ * covered by a keep/sweep decision, keep fully-clean subtrees whole, recurse
+ * into mixed ones and re-aggregate ancestors. Folded `(other)` tiles inside
+ * mixed nodes are dropped — the tree can't say what's inside them.
+ */
+export function applyTodoFilter(root: TreeNode, idx: MarkIndex): TreeNode {
+  const ctx = fateWalkCtx(idx.keeps)
+  const walk = (n: TreeNode, uri: string, inherited: KeepRow | null): TreeNode | null => {
+    const win = winRow(ctx, uri, inherited)
+    if (!ctx.below(uri)) return fateOf(win) === 'unmarked' ? n : null
+    const kids = (n.c ?? [])
+      .filter(c => !c.n.startsWith('('))
+      .map(c => walk(c, `${uri}/${c.n}`, win))
+      .filter((c): c is TreeNode => c != null)
+    return kids.length ? reaggregate(n, kids) : null
+  }
+  const buckets = (root.c ?? [])
+    .map(b => walk(b, `gs://${b.n}`, null))
+    .filter((c): c is TreeNode => c != null)
+  return reaggregate(root, buckets)
+}
+
+/**
+ * Per-user bytes by fate across the whole tree, in one walk: descend only
+ * while a subtree still holds deeper marks; at each settle point distribute
+ * the node's `us` shares (minus what descended into recursed children — so
+ * folded tiles and floor residue take the node's own fate).
+ */
+export function allUserFates(root: TreeNode, idx: MarkIndex): Map<string, Record<Fate, number>> {
+  const ctx = fateWalkCtx(idx.keeps)
+  const out = new Map<string, Record<Fate, number>>()
+  const add = (u: string, f: Fate, b: number) => {
+    let rec = out.get(u)
+    if (!rec) out.set(u, (rec = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }))
+    rec[f] += b
+  }
+  const walk = (n: TreeNode, uri: string, inherited: KeepRow | null) => {
+    const win = winRow(ctx, uri, inherited)
+    if (!ctx.below(uri)) {
+      const f = fateOf(win)
+      for (const [u, b] of n.us ?? []) if (b > 0) add(u, f, b)
+      return
+    }
+    const rest = new Map<string, number>(n.us ?? [])
+    for (const c of n.c ?? []) {
+      if (c.n.startsWith('(')) continue
+      walk(c, `${uri}/${c.n}`, win)
+      for (const [u, b] of c.us ?? []) rest.set(u, (rest.get(u) ?? 0) - b)
+    }
+    const f = fateOf(win)
+    for (const [u, b] of rest) if (b > 0) add(u, f, b)
+  }
+  for (const b of root.c ?? []) walk(b, `gs://${b.n}`, null)
+  return out
 }
 
 const CKPT_SEG_RE = /^(step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?\d+/i

@@ -23,7 +23,7 @@ import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { LensBar, SCOPABLE } from './LensBar'
 import type { Lens } from './LensBar'
-import { lensNodePred, teamLens, useMyUser, userLens } from './sweep'
+import { applyTodoFilter, lensNodePred, teamLens, useMyUser, userLens } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
@@ -344,15 +344,19 @@ function AppContent() {
   // In mark mode the active tab scopes the map to its lens (filter +
   // re-aggregate — the worklists keep the unscoped tree, so their
   // maximal-subtree rows don't coarsen); untoggled, fall back to dimming.
-  // `todo` is cross-cutting (no single lens), so it never scopes the map.
+  // `todo` scopes by mark state instead of an attribution lens: prune every
+  // subtree already covered by a keep/sweep decision, show what's undecided.
   const scopedActive = markMode && scoped && SCOPABLE.includes(markTab) && (markTab !== 'mine' || !!viewUser)
+  const todoActive = markMode && scoped && markTab === 'todo'
   const mapTree = useMemo(() => {
-    if (!shownTree || !scopedActive) return shownTree
+    if (!shownTree) return shownTree
+    if (todoActive) return applyTodoFilter(shownTree, markIdx)
+    if (!scopedActive) return shownTree
     const lens = markTab === 'mine'
       ? userLens(viewUser!)
       : teamLens(markTab === 'unclaimed' ? 'unattributed' : 'communal')
     return applyNodeFilter(shownTree, lensNodePred(lens))
-  }, [shownTree, scopedActive, markTab, viewUser])
+  }, [shownTree, scopedActive, todoActive, markIdx, markTab, viewUser])
   // Controlled treemap drill path, resolved against the (possibly filtered/
   // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
   // switches by re-walking the new tree; a vanished path truncates to its

@@ -3,8 +3,9 @@ import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
-import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkAction, type MarkIndex } from './marks'
+import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkIndex } from './marks'
 import { DEFAULT_STORE } from './stores'
+import { allUserFates, type Fate } from './sweep'
 import { UserChip, canonId, ghHandle, shortName, teamOf } from './UserChip'
 import {
   GROUP_LABELS, ratePerByte, fmtBytesIec, fmtN, fmtUsd,
@@ -23,8 +24,6 @@ import {
 // deeper marks — every byte there shares one resolved fate. Residual bytes at
 // mixed nodes (folded `(other)` tiles, share not covered by kept children)
 // take the node's own resolved fate.
-
-type Fate = MarkAction | 'unmarked'
 
 interface FateRow {
   uri: string          // marked prefix (decided) or maximal clean subtree (unmarked)
@@ -105,11 +104,27 @@ function useScanFile<T>(name: string, asof: string | null) {
 export function UsersPage() {
   const asof = useLatestScan()
   const metaQ = useScanFile<Meta>('meta', asof)
+  const treeQ = useScanFile<TreeNode>('tree', asof)
+  const marksQ = useMarks(true)
+  const idx = useMarkIndex(marksQ.data)
   const users = useMemo(
     () => [...(metaQ.data?.users ?? [])].sort((a, b) => b.b - a.b),
     [metaQ.data],
   )
   const mixes = metaQ.data?.user_class_bytes
+  const fates = useMemo(
+    () => (treeQ.data ? allUserFates(treeQ.data, idx) : null),
+    [treeQ.data, idx],
+  )
+  const klc = users.some(u => (fates?.get(u.u)?.keep_last_ckpt ?? 0) > 0)
+  const cell = (u: string, f: Fate) => {
+    const b = fates?.get(u)?.[f] ?? 0
+    return (
+      <td className="num" style={b ? { color: fateColor(f) } : { color: 'var(--ink-2)', opacity: 0.5 }}>
+        {fates ? (b ? fmtBytesIec(b, true) : '—') : '…'}
+      </td>
+    )
+  }
   return (
     <main className="marks-page user-page">
       <header>
@@ -117,13 +132,16 @@ export function UsersPage() {
           <h1>Users</h1>
           <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Back&nbsp;to&nbsp;the&nbsp;map</Link>
         </div>
-        <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first. Click through for the keep / sweep / undecided breakdown.</p>
+        <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click through for the per-prefix breakdown.</p>
       </header>
       {metaQ.isLoading && <p className="loading">loading…</p>}
       {users.length > 0 && (
         <table className="worklist">
           <thead>
-            <tr><th>user</th><th>group</th><th className="num">attributed</th><th className="num">est. $/mo</th></tr>
+            <tr>
+              <th>user</th><th>group</th><th className="num">attributed</th><th className="num">est. $/mo</th>
+              <th className="num">keep</th>{klc && <th className="num">last-ckpt</th>}<th className="num">sweep</th><th className="num">unmarked</th>
+            </tr>
           </thead>
           <tbody>
             {users.map(u => (
@@ -132,6 +150,10 @@ export function UsersPage() {
                 <td>{GROUP_LABELS[u.t] ?? u.t}</td>
                 <td className="num">{fmtBytesIec(u.b, true)}</td>
                 <td className="num">{mixes?.[u.u] ? fmtUsd(ratePerByte(mixes[u.u]) * u.b) : '—'}</td>
+                {cell(u.u, 'keep')}
+                {klc && cell(u.u, 'keep_last_ckpt')}
+                {cell(u.u, 'sweep')}
+                {cell(u.u, 'unmarked')}
               </tr>
             ))}
           </tbody>

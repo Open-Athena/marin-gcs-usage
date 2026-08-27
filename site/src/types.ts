@@ -94,7 +94,7 @@ export const MODE_LABELS: Record<ColorMode, string> = {
   read: 'read',
   user: 'user',
   uteam: 'user·group',
-  fate: 'fate',
+  fate: 'marks',
 }
 
 export interface Meta {

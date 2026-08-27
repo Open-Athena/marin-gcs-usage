@@ -34,7 +34,7 @@ export function parseQuery(q: string): NamePred | null {
 }
 
 /** Re-aggregate a node's stats (b/o/tm/sh/us/d) from a filtered kid set. */
-function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
+export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
   const tm: Record<string, number> = {}
   const sh: Record<string, number> = {}
   const us: Record<string, number> = {}
