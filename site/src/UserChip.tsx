@@ -92,7 +92,14 @@ export function UserCard({ who, extra }: { who: string; extra?: React.ReactNode 
 }
 
 /** Avatar + short name, with an interactive hover card. The default user display. */
-export function UserChip({ who, size = 18, extra }: { who: string; size?: number; extra?: React.ReactNode }) {
+export function UserChip({ who, size = 18, extra, before }: {
+  who: string
+  size?: number
+  extra?: React.ReactNode
+  /** Rendered inside the hover target, before the avatar (e.g. a group glyph
+   * — so hovering it opens this card too, not a dead zone). */
+  before?: React.ReactNode
+}) {
   const [open, setOpen] = useState(false)
   const { refs, floatingStyles, context } = useFloating({
     open,
@@ -106,7 +113,9 @@ export function UserChip({ who, size = 18, extra }: { who: string; size?: number
   const { getReferenceProps, getFloatingProps } = useInteractions([
     // safePolygon: keep the card open while the cursor travels into it, so its
     // links stay clickable (the whole point — a mouse-following tip can't be).
-    useHover(context, { delay: { open: 120 }, handleClose: safePolygon() }),
+    // Small close delay: rows render flush, so scanning down a list crosses
+    // chip borders constantly — without it the card flickers per row.
+    useHover(context, { delay: { open: 120, close: 80 }, handleClose: safePolygon() }),
     useFocus(context),
     useDismiss(context),
     useRole(context, { role: 'label' }),
@@ -114,6 +123,7 @@ export function UserChip({ who, size = 18, extra }: { who: string; size?: number
   return (
     <>
       <span className="user-chip" ref={refs.setReference} tabIndex={0} {...getReferenceProps()}>
+        {before}
         <Avatar github={ghHandle(who)} name={shortName(who)} size={size} />
         {shortName(who)}
       </span>

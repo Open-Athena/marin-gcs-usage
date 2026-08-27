@@ -126,15 +126,14 @@ function useScanFile<T>(name: string, asof: string | null) {
 // unknown renders as a plain dash.
 const GROUP_ICONS: Record<string, string> = { stanford: '/groups/su.png', oa: '/groups/oa.svg' }
 
-function GroupBadge({ team }: { team: string }) {
+function GroupBadge({ team, tip = true }: { team: string; tip?: boolean }) {
   const icon = GROUP_ICONS[team]
-  return (
-    <Tooltip content={GROUP_LABELS[team] ?? team}>
-      {icon
-        ? <img className="grp-icon" src={icon} alt={GROUP_LABELS[team] ?? team} />
-        : <span className="grp-none">–</span>}
-    </Tooltip>
-  )
+  const el = icon
+    ? <img className="grp-icon" src={icon} alt={GROUP_LABELS[team] ?? team} />
+    : <span className="grp-none">–</span>
+  // tip=false when the badge sits inside a UserChip's hover target — a nested
+  // tooltip there would fight the user card.
+  return tip ? <Tooltip content={GROUP_LABELS[team] ?? team}>{el}</Tooltip> : el
 }
 
 // Est. $/mo with the storage-class mix behind it on hover.
@@ -404,11 +403,10 @@ export function UsersPage() {
           <tbody>
             {users.map(u => (
               <tr key={u.u}>
-                <td>
-                  <span className="user-cell">
-                    <GroupBadge team={teamOf(u.u) ?? u.t} />
-                    <Link className="user-link" to={`/user/${u.u}`}><UserChip who={u.u} /></Link>
-                  </span>
+                <td className="user-td">
+                  <Link className="user-link" to={`/user/${u.u}`}>
+                    <UserChip who={u.u} before={<GroupBadge team={teamOf(u.u) ?? u.t} tip={false} />} />
+                  </Link>
                 </td>
                 <td className="num">{fmtBytesIec(u.b)}</td>
                 <td className="num"><DollarCell b={u.b} mix={mixes?.[u.u]} /></td>

@@ -1368,6 +1368,15 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .grp-icon { width: 16px; height: 16px; object-fit: contain; vertical-align: middle; }
   .grp-none { color: var(--ink-2); opacity: 0.6; display: inline-block; width: 16px; text-align: center; }
   .user-cell { display: inline-flex; align-items: center; gap: 8px; }
+  // Full-height, vertically-flush hover targets down the user column: the td
+  // sheds its padding into the chip, so scanning the list never crosses a
+  // dead zone (which flickered the hover card per row).
+  .user-td {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    .user-link { display: block; }
+    .user-chip { display: flex; width: 100%; padding: 6px 4px; gap: 8px; }
+  }
   .grp-badge {
     display: inline-block;
     padding: 1px 7px;
