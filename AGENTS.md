@@ -92,6 +92,17 @@ need `Authorization: Bearer $GCS_USAGE_TOKEN`.
 | `GET /api/actions` | The live ledger: `{ keeps: [...], owners: [...] }` — every expanded prefix joined to the raw action that set it. |
 | `POST /api/actions` | Append one action, or an array. Body: `{ pattern, keep?, set_keep?, owner?, set_owner?, memo?, scan? }`. |
 | `GET/POST/DELETE /api/token` | Manage your own token (browser SSO session only). |
+| `GET /data/scans.json`, `/data/<scan>/{tree,age,meta}.json`, `/data/rules.json` | The published per-scan artifacts the UI renders (tree = size-floored rollup; meta = totals + per-user/class bytes). |
+| `GET /api/subtree?date=&path=&w=&h=` | Pixel-budget subtree of any path — UI-shaped `TreeNode`s (`{n,b,o,d,tm,sh,us,cb,c}`), folded to what a w×h canvas can draw. What the treemap drills with. |
+| `GET/HEAD /api/path-index?date=` | The **floor-free** path index behind `/api/subtree`, as raw parquet with HTTP Range support — bring your own query engine (see below). One row per rolled-up path × attribution slice: `(path, depth, team, usr, b, o, wts, wb, c2, c3, c4)`, sorted `(depth, path)`. |
+
+```sql
+-- DuckDB, straight against prod (httpfs sends HEAD + range GETs, so a
+-- depth/path predicate only fetches the row groups it needs):
+CREATE SECRET (TYPE http, EXTRA_HTTP_HEADERS MAP {'Authorization': 'Bearer <token>'});
+SELECT path, sum(b) AS bytes FROM read_parquet('https://gcs.oa.dev/api/path-index?date=2026-08-26')
+WHERE depth = 2 GROUP BY path ORDER BY bytes DESC LIMIT 20;
+```
 
 `pattern` is a `gs://marin-<bucket>/<dir>/…/` prefix. `set_keep`/`set_owner`
 default to "true if the corresponding field is present", so send `keep` to set the

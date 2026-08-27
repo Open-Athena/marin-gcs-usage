@@ -1,14 +1,40 @@
 // Personal agent-token panel (specs/actions-ledger.md § API).
 //
 // Opens from the header chip. Shows whether the signed-in user has an active
-// token, mints/rotates one (the raw value is shown exactly once — the server
-// stores only its hash), and revokes. The copy-once secret plus the CLI recipe
-// are the whole point: paste it into an agent's env and it can `gcs-usage mark`.
+// token, mints/rotates one (the server stores only its hash), and revokes.
+// The raw value is also cached in this browser's localStorage at mint, so
+// *this device* can re-show it — any other device sees status only.
 import { useCallback, useEffect, useState } from 'react'
 
 interface Status {
   active: boolean
   created: number | null
+}
+
+// Device-local token cache. The server can never re-show a token (hash-only
+// storage); the browser that minted it can. Keyed with the mint time so a
+// rotation from another device is detectable as stale.
+const LS_KEY = 'gcs_agent_token'
+
+const lsGet = (): { token: string; created: number } | null => {
+  try {
+    const raw = localStorage.getItem(LS_KEY)
+    return raw ? (JSON.parse(raw) as { token: string; created: number }) : null
+  } catch {
+    return null
+  }
+}
+
+const lsSet = (token: string, created: number) => {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({ token, created }))
+  } catch { /* private mode etc. — re-show just won't work */ }
+}
+
+const lsClear = () => {
+  try {
+    localStorage.removeItem(LS_KEY)
+  } catch { /* ignore */ }
 }
 
 type Phase =
@@ -56,6 +82,7 @@ export default function TokenModal({ onClose }: { onClose: () => void }) {
       const r = await call('POST')
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`)
       const { token, created } = (await r.json()) as { token: string; created: number }
+      lsSet(token, created)
       setPhase({ k: 'minted', token, created })
       setCopied(false)
     } catch (e) {
@@ -70,6 +97,7 @@ export default function TokenModal({ onClose }: { onClose: () => void }) {
     try {
       const r = await call('DELETE')
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`)
+      lsClear()
       await loadStatus()
     } catch (e) {
       setPhase({ k: 'error', msg: e instanceof Error ? e.message : String(e) })
@@ -99,17 +127,26 @@ export default function TokenModal({ onClose }: { onClose: () => void }) {
           </>
         )}
 
-        {phase.k === 'status' && (
+        {phase.k === 'status' && (() => {
+          // Re-showable only if this browser minted the *current* token.
+          const cached = lsGet()
+          const showable = phase.s.active && cached != null && cached.created === phase.s.created
+          return (
           <>
             <p className="token-muted">
               A personal token lets your agents mark prefixes as you, from the CLI or any HTTP client.
-              It carries only the <code>gcs</code> scope (mark &amp; view), and is shown once — we store
-              only its hash.
+              It carries only the <code>gcs</code> scope (mark &amp; view) — the server stores only its
+              hash, but the browser that minted it can re-show it.
             </p>
             {phase.s.active
               ? <p>Active token, created <strong>{fmt(phase.s.created!)}</strong>.</p>
               : <p className="token-muted">No token yet.</p>}
             <div className="token-actions">
+              {showable && (
+                <button type="button" onClick={() => setPhase({ k: 'minted', token: cached.token, created: cached.created })}>
+                  Show token
+                </button>
+              )}
               <button type="button" onClick={() => void mint()} disabled={busy}>
                 {phase.s.active ? 'Rotate token' : 'Generate token'}
               </button>
@@ -119,6 +156,11 @@ export default function TokenModal({ onClose }: { onClose: () => void }) {
                 </button>
               )}
             </div>
+            {phase.s.active && !showable && (
+              <p className="token-muted token-small">
+                This browser didn’t mint the current token, so it can’t re-show it — rotate to get a fresh one.
+              </p>
+            )}
             {phase.s.active && (
               <p className="token-muted token-small">
                 Rotating revokes the current token immediately — anything using it stops working until
@@ -126,12 +168,13 @@ export default function TokenModal({ onClose }: { onClose: () => void }) {
               </p>
             )}
           </>
-        )}
+          )
+        })()}
 
         {phase.k === 'minted' && (
           <>
             <p className="token-warn">
-              Copy this now — it won’t be shown again.
+              Copy this — only this browser can re-show it (the server keeps just the hash).
             </p>
             <div className="token-value">
               <code>{phase.token}</code>
