@@ -162,43 +162,31 @@ def write_webdata(
         if deep.any():
             err(f"dropping {int(deep.sum())} attribution prefixes deeper than {attr_max_depth}")
             pfx_df = pfx_df[~deep]
-        maxd = int(pfx_df["depth"].max()) if len(pfx_df) else 1
         con.register("pfx", pfx_df)
-        # deepest-prefix-wins for every distinct dir, entirely in SQL: explode
-        # each dir key into its ancestors (up to the deepest attribution
-        # prefix), equi-join, keep the deepest match. Replaces the
-        # single-threaded python walk that OOMed the 32GiB Cloud Run job and
-        # dominated webdata wall clock.
+        # Deepest-prefix-wins, resolved iteratively deepest-depth-first: one
+        # equi-join pass per prefix depth against the still-unresolved dirs,
+        # removing hits after each pass. Semantically identical to the old
+        # single dirs×maxd ancestor explosion, but peak memory is one depth
+        # slice (join build side = that depth's prefixes; probe streams the
+        # unresolved dirs) instead of the whole candidate set — the explosion
+        # + un-spillable arg_max OOM-killed the daily's 128GB node once the
+        # 2026-08-26 wandb re-mine grew/deepened the prefix map.
         con.execute(
-            f"""
-            CREATE TEMP TABLE dir_attr AS
-            WITH dirs AS (
-              SELECT bucket, dir FROM dir_stats
-            ),
-            keyed AS (
-              SELECT bucket, dir,
-                CASE WHEN dir = '' THEN bucket ELSE bucket || '/' || dir END AS dk
-              FROM dirs
-            ),
-            cand AS (
-              SELECT k.bucket, k.dir, k.dk, r.k AS depth,
-                array_to_string((str_split(k.dk, '/'))[1:r.k], '/') AS anc
-              FROM keyed k, range(1, {maxd} + 1) r(k)
-              WHERE len(str_split(k.dk, '/')) >= r.k
-            )
-            -- arg_max instead of a row_number window: a hash aggregate streams,
-            -- the window would sort the full exploded candidate set. The
-            -- struct keeps the winning row's (user, team) together — separate
-            -- arg_max calls would skip a deeper row's NULL user and mix rows.
-            , won AS (
-              SELECT c.bucket, c.dir,
-                arg_max(struct_pack(u := p."user", t := p.team), c.depth) AS win
-              FROM cand c JOIN pfx p ON p.key = c.anc
-              GROUP BY c.bucket, c.dir
-            )
-            SELECT bucket, dir, win.u AS "user", win.t AS team FROM won
+            """
+            CREATE TEMP TABLE unresolved AS
+            SELECT bucket, dir,
+              str_split(CASE WHEN dir = '' THEN bucket ELSE bucket || '/' || dir END, '/') AS segs
+            FROM dir_stats
             """
         )
+        con.execute('CREATE TEMP TABLE dir_attr (bucket VARCHAR, dir VARCHAR, "user" VARCHAR, team VARCHAR)')
+        for k in sorted({int(d) for d in pfx_df["depth"]}, reverse=True):
+            on = f"p.depth = {k} AND len(u.segs) >= {k} AND p.key = array_to_string(u.segs[1:{k}], '/')"
+            con.execute(f'INSERT INTO dir_attr SELECT u.bucket, u.dir, p."user", p.team FROM unresolved u JOIN pfx p ON {on}')
+            con.execute(f"CREATE TEMP TABLE unresolved_next AS SELECT u.* FROM unresolved u LEFT JOIN pfx p ON {on} WHERE p.key IS NULL")
+            con.execute("DROP TABLE unresolved")
+            con.execute("ALTER TABLE unresolved_next RENAME TO unresolved")
+        con.execute("DROP TABLE unresolved")
         _rss("dir_attr")
         # per-(team|user) storage-class byte mixes (site prices group roll-ups
         # with class-aware rates) + the per-(user,team) leaderboard meta.users
