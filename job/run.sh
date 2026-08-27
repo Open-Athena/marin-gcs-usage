@@ -108,7 +108,8 @@ X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 # ledger refreshes) — those then skip the 595M-row object scans entirely.
 # Colocated with the listing (immutable per date, same lifecycle).
 gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
-  -c "/gcs/$DATA/listing/$DATE/dir-cache"
+  -c "/gcs/$DATA/listing/$DATE/dir-cache" \
+  -P "/gcs/$DATA/listing/$DATE/path-index.parquet"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 
 # 3. publish to the canonical store — the live site reads these directly

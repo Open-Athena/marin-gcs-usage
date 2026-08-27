@@ -435,6 +435,7 @@ def wandb_mine(
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", "out_dir", type=Path, default=None, help="Output dir for JSON files [default: site/public/data/<asof>]")
+@option("-P", "--path-index", "path_index", type=Path, default=None, help="Write the complete floor-free path index parquet here (pixel-budget subtree API; specs/path-index-lazy-drill.md)")
 @option("-x", "--access", "access", multiple=True, help="Access-log layer-2a agg parquet glob(s); adds per-node last-read ('a') for the read-recency lens")
 def webdata(
     attributions: tuple[str, ...],
@@ -443,6 +444,7 @@ def webdata(
     identities_path: Path,
     listings: tuple[str, ...],
     out_dir: Path | None,
+    path_index: Path | None,
     access: tuple[str, ...],
 ) -> None:
     """Generate a dated site-data snapshot (tree/age/meta JSONs) from a listing.
@@ -457,7 +459,7 @@ def webdata(
 
     if out_dir is None:
         out_dir = Path("site/public/data") / asof
-    meta = write_webdata(listings, out_dir, asof, attributions, identities_path, access=access, dir_cache=dir_cache)
+    meta = write_webdata(listings, out_dir, asof, attributions, identities_path, access=access, dir_cache=dir_cache, path_index=path_index)
     err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
     data_root = out_dir.parent
     dates = sorted(

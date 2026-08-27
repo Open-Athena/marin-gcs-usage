@@ -43,8 +43,14 @@ def write_webdata(
     identities_path: Path | None = None,
     access: tuple[str, ...] = (),
     dir_cache: Path | None = None,
+    path_index: Path | None = None,
 ) -> dict:
     """Write tree.json / age.json / meta.json under ``out_dir``; returns meta.
+
+    ``path_index`` writes the complete floor-free rolled-up path index
+    (every ancestor path × attribution, sorted ``(depth, path)``) — the
+    artifact the pixel-budget subtree API serves
+    (specs/path-index-lazy-drill.md).
 
     ``dir_cache`` names a directory for the layer-2 rollups (``dir-stats`` /
     ``age-days`` parquet) — attribution-independent per-dir aggregates, cached
@@ -245,25 +251,47 @@ def write_webdata(
             if usr:
                 user_bytes[(usr, team)] += int(b)
 
+    # The full rolled-up (path, team, user) relation — every ancestor path,
+    # descendant-inclusive, attributed, NO floor. Materialized because three
+    # consumers share it: the floored tree query below, the (optional)
+    # path-index artifact, and — via that artifact — the pixel-budget subtree
+    # API (specs/path-index-lazy-drill.md).
+    con.execute(
+        f"""
+        CREATE TEMP TABLE ptu AS
+        WITH exploded AS (
+          SELECT array_to_string(segs[1:r.k], '/') AS path, r.k AS depth,
+            b, o, wts, wb, c2, c3, c4, team, usr
+          FROM dir_agg, range(1, {maxseg} + 1) r(k)
+          WHERE len(segs) >= r.k
+        )
+        SELECT path, depth, team, usr,
+          sum(b)::BIGINT AS b, sum(o)::BIGINT AS o,
+          sum(wts)::DOUBLE AS wts, sum(wb)::BIGINT AS wb,
+          sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4
+        FROM exploded GROUP BY path, depth, team, usr
+        """
+    )
+    _rss("ptu")
+    if path_index is not None:
+        # The complete, floor-free index the subtree API serves: one row per
+        # (path, team, usr), sorted (depth, path) — the engine's canonical
+        # order for prefix-range + row-group pruning. Immutable per date.
+        path_index.parent.mkdir(parents=True, exist_ok=True)
+        con.execute(
+            f"COPY (SELECT * FROM ptu ORDER BY depth, path) TO '{path_index}' "
+            "(FORMAT parquet, ROW_GROUP_SIZE 65536)"
+        )
+        err(f"path-index: wrote {path_index}")
+        _rss("path-index")
+
     # Pre-floor is **parent-relative** (matches build_tree): keep a path iff its
     # rolled-up bytes clear MIN_FRAC of its parent's — so drilling stays useful
     # at every depth (a fleet-relative cut deletes every small-but-drillable
     # child everywhere; see build_tree's docstring for the grug regression).
     ptu_rows = con.execute(
         f"""
-        WITH exploded AS (
-          SELECT array_to_string(segs[1:r.k], '/') AS path, b, o, wts, wb, c2, c3, c4, team, usr
-          FROM dir_agg, range(1, {maxseg} + 1) r(k)
-          WHERE len(segs) >= r.k
-        ),
-        ptu AS (
-          SELECT path, team, usr,
-            sum(b)::BIGINT AS b, sum(o)::BIGINT AS o,
-            sum(wts)::DOUBLE AS wts, sum(wb)::BIGINT AS wb,
-            sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4
-          FROM exploded GROUP BY path, team, usr
-        ),
-        tot AS (SELECT path, sum(b) AS pb FROM ptu GROUP BY path),
+        WITH tot AS (SELECT path, sum(b) AS pb FROM ptu GROUP BY path),
         ranked AS (
           SELECT t.path, t.pb, par.pb AS parent_pb,
             row_number() OVER (
