@@ -15,11 +15,13 @@ import type { TreeNode } from './types'
 // "swept by default". Marking a prefix that has deeper marks inside repaints
 // them (recency beats specificity) — hence the inline override confirm.
 
+// KLC stays amber wherever it renders *as itself* (chips, buttons, history) —
+// green made it indistinguishable from keep. Aggregations (fate cells,
+// stripes, rollups) instead *decompose* it into real keep/sweep proportions
+// via `klcSplits` (sweep.ts): last-ckpt child kept, siblings swept.
 export const ACTION_COLORS: Record<MarkAction, string> = {
   keep: 'var(--mk-keep)',
-  // keep-family green, not its own amber: the ledger keeps the distinction
-  // (the executor needs it) but it's too niche to be a first-class color.
-  keep_last_ckpt: 'var(--mk-keep)',
+  keep_last_ckpt: 'var(--mk-klc)',
   sweep: 'var(--mk-del)',
 }
 

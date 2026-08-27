@@ -346,6 +346,14 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     &:hover { filter: brightness(1.05); }
     &:focus-visible { outline: 2px solid var(--s1); }
   }
+  // Fate totals for the current view — leads the rollup bar in mark mode.
+  .fate-rollup {
+    display: inline-flex;
+    gap: 14px;
+    padding-right: 12px;
+    margin-right: 2px;
+    border-right: 1px solid var(--line);
+  }
   .dt-treemap-rollup {
     display: flex;
     flex-wrap: wrap;

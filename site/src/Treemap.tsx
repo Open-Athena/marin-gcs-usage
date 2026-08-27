@@ -8,6 +8,8 @@ import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
 import { ACTION_LABELS } from './marks'
 import type { MarkIndex } from './marks'
+import { klcFateAt, klcKeptWithin, subtreeFateTotals } from './sweep'
+import type { KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
@@ -37,7 +39,7 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -54,6 +56,8 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
   redact?: boolean
   // Mark & sweep mode (/mark): overlay keep/delete badges and marking controls.
   markIdx?: MarkIndex | null
+  // keep_last_ckpt → concrete keep/sweep decomposition (sweep.ts `klcSplits`).
+  klcIdx?: KlcIndex | null
   // Start drilled here (e.g. CW's lone bucket) — crumbs keep the ancestry.
   initialPath?: TreeNode[]
   // Controlled drill path + change reporting (upstream contract) — lets the
@@ -181,13 +185,36 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
           ink = s ? inkFor(bg) : 'var(--ink)'
         }
       } else if (mode === 'fate') {
-        // Keep-axis fate: paint kept (green) / keep-last-ckpt / swept (red);
-        // undecided cells stay grey — the review to-do, visible at a glance.
+        // Keep-axis fate: paint kept (green) / swept (red); undecided cells
+        // stay grey — the review to-do, visible at a glance. A
+        // keep_last_ckpt mark decomposes into its *actual* keep/sweep: the
+        // kept step-child subtrees are green, siblings red, and a mixed cell
+        // (the mark root, a run dir holding its kept step) gets proportional
+        // stripes. Amber only when the split can't be resolved from the tree.
         const st = markIdx?.resolve(uriOf(kidPath))
         const m = st?.mark ?? null
         if (m && (st!.own || !ctx.hasKids)) {
           bg = ACTION_COLORS[m.action]
           ink = inkFor(bg)
+          if (m.action === 'keep_last_ckpt' && klcIdx) {
+            const split = klcIdx.get(m.prefix.endsWith('/') ? m.prefix : m.prefix + '/')
+            if (split) {
+              const uri = uriOf(kidPath)
+              const rel = klcFateAt(uri, split)
+              if (rel === 'mixed') {
+                const frac = kid.b > 0 ? Math.min(1, klcKeptWithin(uri, split) / kid.b) : 0
+                segments = [
+                  { color: ACTION_COLORS.keep, frac },
+                  { color: ACTION_COLORS.sweep, frac: 1 - frac },
+                ]
+                bg = 'var(--panel)'
+                ink = 'var(--ink)'
+              } else {
+                bg = ACTION_COLORS[rel]
+                ink = inkFor(bg)
+              }
+            }
+          }
         } else if (ctx.hasKids) {
           bg = 'var(--panel)' // container without its own mark: children carry the fate
           ink = 'var(--ink)'
@@ -271,7 +298,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       }
       return { bg, ink, hatch, segments, opacity: dim ? 0.22 : undefined }
     },
-    [mode, slotOf, userIdx, dateRange, readRange, hl, lens, markIdx],
+    [mode, slotOf, userIdx, dateRange, readRange, hl, lens, markIdx, klcIdx],
   )
 
   // group roll-up for the current view: users in user modes, teams otherwise;
@@ -368,9 +395,34 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     if (redact) return null
     const rollup = rollupFor(node)
     if (!markIdx && !rollup.length) return null
+    // Fate totals for the current view: of the drilled subtree's bytes, how
+    // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
+    // amber "last ckpt" appears only for marks the tree can't split).
+    const fate = markIdx
+      ? subtreeFateTotals(node, path.length > 1 ? uriOf(path) : '', markIdx, klcIdx ?? undefined)
+      : null
+    const fateRows = fate
+      ? ([
+          ['keep', fate.keep, ACTION_COLORS.keep],
+          ['last ckpt', fate.keep_last_ckpt, ACTION_COLORS.keep_last_ckpt],
+          ['sweep', fate.sweep, ACTION_COLORS.sweep],
+          ['undecided', fate.unmarked, 'var(--other)'],
+        ] as [string, number, string][]).filter(([, b]) => b > 0)
+      : []
     return (
       <>
         {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} />}
+        {fateRows.length > 0 && (
+          <span className="fate-rollup">
+            {fateRows.map(([k, b, col]) => (
+              <span className="ri" key={k}>
+                <span className="sw" style={{ background: col }} />
+                {k} <b>{fmtBytes(b)}</b>
+                <span className="pct">{node.b ? ((100 * b) / node.b).toFixed(1) : 0}%</span>
+              </span>
+            ))}
+          </span>
+        )}
         {rollup.filter(r => r.b >= 0.001 * node.b).map(r => {
           // Real per-user rows (user modes, not synthetic "(shared)"/"unattributed")
           // get a GitHub avatar next to the color swatch.

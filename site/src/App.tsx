@@ -23,7 +23,7 @@ import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { LensBar, SCOPABLE } from './LensBar'
 import type { Lens } from './LensBar'
-import { applyTodoFilter, lensNodePred, teamLens, useMyUser, userLens } from './sweep'
+import { applyTodoFilter, klcSplits, lensNodePred, teamLens, useMyUser, userLens } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
@@ -267,6 +267,12 @@ function AppContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseTree, subtreePaths, subStamp])
 
+  // keep_last_ckpt → concrete keep/sweep split, resolved against the loaded
+  // tree (fate cells, stripes, and the fate rollup all decompose through it).
+  const klcIdx = useMemo(
+    () => (tree && markIdx.count ? klcSplits(tree, markIdx.keeps) : undefined),
+    [tree, markIdx],
+  )
   const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
   const shownTree = useMemo(() => (tree && pred ? applyFilter(tree, pred) : tree), [tree, pred])
   const fMatches = useMemo(() => (tree && pred ? collectMatches(tree, pred) : []), [tree, pred])
@@ -786,6 +792,7 @@ function AppContent() {
             lens={lens}
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
+            klcIdx={markMode ? klcIdx : undefined}
             path={mapPath}
             onPathChange={onMapPath}
           />

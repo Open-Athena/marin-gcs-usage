@@ -6,7 +6,7 @@ import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
 import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkIndex } from './marks'
 import { DEFAULT_STORE } from './stores'
-import { allUserFates, type Fate } from './sweep'
+import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, type Fate, type KlcIndex } from './sweep'
 import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, teamOf } from './UserChip'
 import {
@@ -71,10 +71,11 @@ function userFates(root: TreeNode, uid: string, idx: MarkIndex): FateRow[] {
   return rows.sort((a, b) => b.b - a.b)
 }
 
-// `keep_last_ckpt` is a keep-family action: the ledger keeps the distinction
-// (the sweep executor needs it), but the UI folds it into keep everywhere
-// aggregated — too niche for its own column/color. Individual mark rows still
-// carry the "keep last ckpt" label.
+// `keep_last_ckpt` decomposes into real keep/sweep proportions wherever
+// possible (`klcSplits` — last-ckpt children kept, siblings swept); the
+// walkers do that themselves when handed a KlcIndex, so only bytes under
+// *unresolvable* KLC marks reach this fold, where they count as keep.
+// Individual mark rows still show the first-class amber "keep last ckpt".
 export type ShownFate = 'keep' | 'sweep' | 'unmarked'
 const SHOWN_FATES: ShownFate[] = ['keep', 'sweep', 'unmarked']
 const foldFates = (f: Record<Fate, number>): Record<ShownFate, number> => ({
@@ -275,6 +276,11 @@ function UsersMap({ meta, fates, redact = false }: {
   )
 }
 
+/** KLC keep/sweep decomposition index for the loaded tree + live marks. */
+function useKlcIdx(tree: TreeNode | undefined, idx: MarkIndex): KlcIndex | undefined {
+  return useMemo(() => (tree && idx.count ? klcSplits(tree, idx.keeps) : undefined), [tree, idx])
+}
+
 /** `/users/og` — fixed 1200×630 unfurl render of the owner map: names + fate
  * stripes only (no sizes, no $, no tooltips). Screenshot via `pnpm shots`. */
 export function UsersOgPage() {
@@ -283,9 +289,10 @@ export function UsersOgPage() {
   const treeQ = useScanFile<TreeNode>('tree', asof)
   const marksQ = useMarks(true)
   const idx = useMarkIndex(marksQ.data)
+  const klcIdx = useKlcIdx(treeQ.data, idx)
   const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx) : null),
-    [treeQ.data, idx],
+    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx) : null),
+    [treeQ.data, idx, klcIdx],
   )
   useEffect(() => {
     const prev = document.documentElement.dataset.theme
@@ -315,14 +322,15 @@ export function UsersPage() {
   const treeQ = useScanFile<TreeNode>('tree', asof)
   const marksQ = useMarks(true)
   const idx = useMarkIndex(marksQ.data)
+  const klcIdx = useKlcIdx(treeQ.data, idx)
   const users = useMemo(
     () => [...(metaQ.data?.users ?? [])].sort((a, b) => b.b - a.b),
     [metaQ.data],
   )
   const mixes = metaQ.data?.user_class_bytes
   const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx) : null),
-    [treeQ.data, idx],
+    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx) : null),
+    [treeQ.data, idx, klcIdx],
   )
   const cell = (u: string, f: ShownFate) => {
     const raw = fates?.get(u)
@@ -431,6 +439,7 @@ export function UserPage() {
   const metaQ = useScanFile<Meta>('meta', asof)
   const marksQ = useMarks(true)
   const idx = useMarkIndex(marksQ.data)
+  const klcIdx = useKlcIdx(treeQ.data, idx)
 
   const rows = useMemo(
     () => (treeQ.data ? userFates(treeQ.data, id, idx) : []),
@@ -439,12 +448,27 @@ export function UserPage() {
   const totals = useMemo(() => {
     const t = new Map<ShownFate, { b: number; n: number }>(SHOWN_FATES.map(f => [f, { b: 0, n: 0 }]))
     for (const r of rows) {
+      // KLC rows split into their real keep/sweep proportions (the prefix
+      // itself counts under keep); unresolvable KLC counts whole as keep.
+      if (r.fate === 'keep_last_ckpt' && klcIdx && r.mark) {
+        const pfx = r.mark.prefix.endsWith('/') ? r.mark.prefix : r.mark.prefix + '/'
+        const split = klcIdx.get(pfx)
+        if (split && split.totalB > 0) {
+          const rel = klcFateAt(r.uri, split)
+          const ratio = rel === 'keep' ? 1 : rel === 'sweep' ? 0 : Math.min(1, klcKeptWithin(r.uri, split) / split.totalB)
+          const keep = t.get('keep')!
+          keep.b += r.b * ratio
+          keep.n++
+          t.get('sweep')!.b += r.b * (1 - ratio)
+          continue
+        }
+      }
       const cur = t.get(r.fate === 'keep_last_ckpt' ? 'keep' : r.fate)!
       cur.b += r.b
       cur.n++
     }
     return t
-  }, [rows])
+  }, [rows, klcIdx])
   const attributed = useMemo(() => rows.reduce((s, r) => s + r.b, 0), [rows])
   const metaB = metaQ.data?.users?.find(u => u.u === id)?.b
   const mix = metaQ.data?.user_class_bytes?.[id]
