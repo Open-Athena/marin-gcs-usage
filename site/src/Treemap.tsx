@@ -166,6 +166,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     (kid: TreeNode, kidPath: TreeNode[], _depth: number, ctx: CellCtx): CellStyle => {
       let bg: string
       let ink: string
+      let segments: CellStyle['segments']
       if (mode === 'tree') {
         const s = slotOf(kidPath)
         if (!s && ctx.hasKids) {
@@ -199,10 +200,23 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
         bg = 'var(--panel)'
         ink = 'var(--ink)'
       } else if (mode === 'team') {
-        const seg = domTeamSeg(kid)
-        const tv = (seg && TEAM_VARS[seg.team]) || '--t-unattr'
-        bg = seg?.shared ? sharedColor(tv) : `var(${tv})`
-        ink = !seg?.shared && TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
+        // Mixed leaf/fold: render the group makeup as proportional stripes
+        // (≥6% shares, up to 4) instead of letting the dominant group paint
+        // the whole blob — an 88/11 stanford/oa fold reads as both.
+        const shares = Object.entries(kid.tm ?? {})
+          .filter(([, b]) => b >= 0.06 * kid.b)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 4)
+        if (shares.length > 1) {
+          segments = shares.map(([t, b]) => ({ color: `var(${TEAM_VARS[t] ?? '--t-unattr'})`, frac: b / kid.b }))
+          bg = 'var(--panel)'
+          ink = 'var(--ink)'
+        } else {
+          const seg = domTeamSeg(kid)
+          const tv = (seg && TEAM_VARS[seg.team]) || '--t-unattr'
+          bg = seg?.shared ? sharedColor(tv) : `var(${tv})`
+          ink = !seg?.shared && TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
+        }
       } else if (mode === 'date') {
         if (kid.d != null && dateRange && dateRange.max > dateRange.min) {
           bg = dateColor((kid.d - dateRange.min) / (dateRange.max - dateRange.min))
@@ -221,11 +235,26 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
           ink = 'var(--ink)'
         }
       } else {
-        // user / uteam: a cell only takes a user's color when it is wholly
-        // (~100%) theirs — mixed boxes stay gray until you drill/zoom
+        // user / uteam: a wholly-owned (~100%) cell takes its user's color;
+        // a mixed cell renders its top users as proportional stripes (with a
+        // gray remainder for unattributed/shared bytes) instead of one blob.
         const [u, ub] = kid.us?.[0] ?? [null, 0]
-        bg = userColor(ub >= 0.98 * kid.b ? u : null, userIdx, mode === 'uteam')
-        ink = inkFor(bg)
+        if (ub >= 0.98 * kid.b) {
+          bg = userColor(u, userIdx, mode === 'uteam')
+          ink = inkFor(bg)
+        } else {
+          const us = (kid.us ?? []).filter(([, b]) => b >= 0.06 * kid.b).slice(0, 4)
+          const rem = kid.b - us.reduce((s, [, b]) => s + b, 0)
+          if (us.length && (us.length > 1 || rem >= 0.06 * kid.b)) {
+            segments = us.map(([uu, b]) => ({ color: userColor(uu, userIdx, mode === 'uteam'), frac: b / kid.b }))
+            if (rem >= 0.06 * kid.b) segments.push({ color: userColor(null, userIdx, false), frac: rem / kid.b })
+            bg = 'var(--panel)'
+            ink = 'var(--ink)'
+          } else {
+            bg = userColor(null, userIdx, mode === 'uteam')
+            ink = inkFor(bg)
+          }
+        }
       }
       // class lens: hatch by colder-class (non-STANDARD) byte fraction — leaf
       // cells only (cells are semi-transparent, so a parent hatch would bleed
@@ -240,7 +269,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
         if (hl.user) dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
         else if (hl.team) dim = (kid.tm?.[hl.team] ?? 0) < 0.5 * kid.b
       }
-      return { bg, ink, hatch, opacity: dim ? 0.22 : undefined }
+      return { bg, ink, hatch, segments, opacity: dim ? 0.22 : undefined }
     },
     [mode, slotOf, userIdx, dateRange, readRange, hl, lens, markIdx],
   )
