@@ -111,14 +111,19 @@ def build_tree(rows: list[DirRow], total_bytes: int, min_frac: float) -> dict:
     """Link ``rows`` into a nested tree; return the root node (path in
     :data:`ROOT_KEYS`).
 
-    ``min_frac`` × ``total_bytes`` is the fold floor: children below it drop and
-    their bytes roll into a per-parent ``(other)`` node — marked ``f`` (folded
-    count) and carrying the subtracted residual attribution — which the client
-    renders as an expandable placeholder rather than a dead leaf. When callers
+    ``min_frac`` is the fold floor **relative to each parent**: a child below
+    ``min_frac`` × its parent's bytes folds into that parent's ``(other)`` node
+    — marked ``f`` (folded count) and carrying the subtracted residual
+    attribution — which the client renders as an expandable placeholder rather
+    than a dead leaf. Parent-relative (not total-relative) so drilling stays
+    useful at every depth: each level folds only what's invisible *in that
+    view*, instead of a fleet-scale cut deleting every small child everywhere
+    (the 2026-08-26 grug regression: 1,060 drill-worthy swarm dirs collapsed
+    into one blob because each was <0.02% of the *fleet*). When callers
     pre-floor in SQL (so no sub-floor rows arrive), the ``(other)`` still forms
     from the parent's byte gap; ``f`` is then the count actually seen.
+    ``total_bytes`` sizes the root (kept for signature stability).
     """
-    floor = int(total_bytes * min_frac)
     add_by_path = {r.path: r.add for r in rows}
     nodes: dict[str, dict] = {
         r.path: {"n": r.path if r.path in ROOT_KEYS else _seg(r.path), "b": int(r.b), "o": int(r.o)}
@@ -137,6 +142,7 @@ def build_tree(rows: list[DirRow], total_bytes: int, min_frac: float) -> dict:
         parent = nodes.get(parent_path)
         if not parent:
             continue
+        floor = int(parent["b"] * min_frac)
         children = sorted((nodes[p] for p in child_paths), key=lambda n: -n["b"])
         kept = [n for n in children if n["b"] >= floor]
         folded = [n for n in children if n["b"] < floor]

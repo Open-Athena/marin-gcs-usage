@@ -26,7 +26,7 @@ def _rss(tag: str) -> None:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     err(f"[rss] {tag}: peak {peak / (1024**2 if sys.platform == 'linux' else 1024**3):.1f} GB")
 
-MIN_FRAC = 0.0002  # fold dirs below this fraction of total bytes into "(other)"
+MIN_FRAC = 0.0002  # fold children below this fraction of their PARENT into "(other)"
 
 
 def write_webdata(
@@ -224,7 +224,6 @@ def write_webdata(
     )
     total_b, total_o = con.execute("SELECT coalesce(sum(b), 0)::BIGINT, coalesce(sum(o), 0)::BIGINT FROM dir_agg").fetchone()
     total_b, total_o = int(total_b), int(total_o)
-    floor = int(total_b * MIN_FRAC)
     maxseg = int(con.execute("SELECT coalesce(max(len(segs)), 1) FROM dir_agg").fetchone()[0])
     _rss("dir-agg")
 
@@ -243,6 +242,10 @@ def write_webdata(
             if usr:
                 user_bytes[(usr, team)] += int(b)
 
+    # Pre-floor is **parent-relative** (matches build_tree): keep a path iff its
+    # rolled-up bytes clear MIN_FRAC of its parent's — so drilling stays useful
+    # at every depth (a fleet-relative cut deletes every small-but-drillable
+    # child everywhere; see build_tree's docstring for the grug regression).
     ptu_rows = con.execute(
         f"""
         WITH exploded AS (
@@ -256,12 +259,32 @@ def write_webdata(
             sum(wts)::DOUBLE AS wts, sum(wb)::BIGINT AS wb,
             sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4
           FROM exploded GROUP BY path, team, usr
+        ),
+        tot AS (SELECT path, sum(b) AS pb FROM ptu GROUP BY path),
+        keep AS (
+          SELECT t.path FROM tot t
+          LEFT JOIN tot par
+            ON par.path = CASE WHEN t.path LIKE '%/%' THEN regexp_replace(t.path, '/[^/]*$', '') END
+          WHERE par.path IS NULL OR t.pb >= {MIN_FRAC} * par.pb
         )
         SELECT p.path, p.team, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
-        FROM ptu p
-        WHERE p.path IN (SELECT path FROM ptu GROUP BY path HAVING sum(b) >= {floor})
+        FROM ptu p JOIN keep k USING (path)
         """
     ).fetchall()
+    # A path can clear its own parent while an ancestor failed (thin chains) —
+    # prune anything whose ancestry isn't fully kept, else build_tree would
+    # silently orphan it.
+    kept_paths = {p for p, *_ in ptu_rows}
+    def _rooted(path: str) -> bool:
+        while "/" in path:
+            path = path.rsplit("/", 1)[0]
+            if path not in kept_paths:
+                return False
+        return True
+    rooted = {p for p in kept_paths if _rooted(p)}
+    if len(rooted) < len(kept_paths):
+        err(f"pruned {len(kept_paths) - len(rooted)} orphaned sub-floor-ancestry paths")
+        ptu_rows = [r for r in ptu_rows if r[0] in rooted]
     _rss("dir-rows")
 
     def _new_add() -> dict:
@@ -408,8 +431,8 @@ def write_webdata(
         "total_bytes": total_b,
         "total_objects": total_o,
         "class_bytes": {int(c): int(b) for c, b in classes},
-        # Fold floor as a fraction of total bytes — lets the UI say "showing
-        # prefixes ≥ X"; dirs below it live under an expandable (other) node.
+        # Fold floor as a fraction of each PARENT's bytes — children below it
+        # live under that parent's expandable (other) node.
         "fold_min_frac": MIN_FRAC,
     }
     if access_window:

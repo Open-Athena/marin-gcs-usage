@@ -540,7 +540,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       )}
       renderFooter={redact
         ? undefined
-        : () => <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>}
+        : () => <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · small children fold into an expandable “(other)”</div>}
       chrome={!redact}
       showLabels={!redact}
       // Per-store style hook: deliberate CW/GCS presentation differences live
