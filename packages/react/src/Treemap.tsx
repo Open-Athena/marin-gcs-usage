@@ -137,6 +137,16 @@ export interface TreemapProps<T> {
    * drill/pin behavior (i.e. the consumer handled it).
    */
   onCellClick?: (n: T, path: T[], event: React.MouseEvent) => boolean | void
+  /**
+   * Make leaf-rendered cells real anchors (`<a href>`): native cursor,
+   * middle/cmd-click, link hints (Vimium), crawlability. Return `undefined`
+   * for cells that shouldn't be links. Cells that render nested tiles stay
+   * `<div>`s (anchors can't nest), so this suits shallow maps best. Plain
+   * clicks are `preventDefault`ed and flow through `onCellClick`/drill/pin
+   * as usual — an SPA router intercepts while the href keeps its native
+   * affordances.
+   */
+  cellHref?: (n: T, path: T[]) => string | undefined
   /** Called whenever the drill path changes (drill in, drill back). */
   onPathChange?: (path: T[]) => void
   /**
@@ -275,6 +285,7 @@ export function Treemap<T>({
   renderFooter,
   renderCellSubtitle,
   onCellClick,
+  cellHref,
   onPathChange,
   minCellArea = 16,
   mergeSmall,
@@ -574,9 +585,18 @@ export function Treemap<T>({
       // a mouse-following tip can't be hovered into to click its contents.
       setTip(prev => (prev?.key === cellKey ? prev : { x: e.clientX, y: e.clientY, key: cellKey, node: kid as T, path: kidPath }))
     }
+    // Real-anchor cells (`cellHref`): only leaf-rendered ones — a cell with
+    // nested tiles would nest <a>s, which HTML forbids. Modified/middle
+    // clicks keep native behavior (new tab); plain clicks preventDefault and
+    // flow through the normal handler so SPA routers can intercept.
+    const href = cellHref && !folded && kids.length === 0 ? cellHref(kid as T, kidPath) : undefined
     const onClick = (e: React.MouseEvent) => {
       e.stopPropagation()
       if (folded) return
+      if (href) {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button === 1) return
+        e.preventDefault()
+      }
       if (onCellClick && onCellClick(kid as T, kidPath, e)) return
       if (kidDrillable) {
         pin.clearPin()
@@ -596,9 +616,11 @@ export function Treemap<T>({
     // actually render (a container needs its edge at any size).
     const chromeOk = Math.min(r.w, r.h) >= 28
 
+    const CellTag: 'a' | 'div' = href ? 'a' : 'div'
     return (
-      <div
+      <CellTag
         key={cellKey}
+        {...(href && { href })}
         className={'dt-treemap-cell' + (kidDrillable && (kids.length > 0 || chromeOk) ? ' branch' : '') + (dust ? ' dust' : '') + (chainLabels && chromeOk ? ' chain' : '')}
         style={{
           position: 'absolute',
@@ -607,13 +629,16 @@ export function Treemap<T>({
           width: Math.max(0, r.w - (dust ? 1 : 2)),
           height: Math.max(0, r.h - (dust ? 1 : 2)),
           background: style.bg,
-          color: style.ink,
+          // Anchors must not fall through to the page's link color when the
+          // consumer sets no ink.
+          color: style.ink ?? (href ? 'inherit' : undefined),
           opacity: (depth > 0 ? depthFade : rootFade) * (style.opacity ?? 1),
           ...(style.hatch && { backgroundImage: style.hatch }),
           borderRadius: dust ? 1.5 : 3,
           overflow: 'hidden',
           boxSizing: 'border-box',
-          cursor: kidDrillable ? 'pointer' : 'default',
+          cursor: href || kidDrillable ? 'pointer' : 'default',
+          ...(href && { textDecoration: 'none' }),
         }}
         tabIndex={folded ? -1 : 0}
         // Leaf cells hover their whole body; branch cells hover only their
@@ -725,7 +750,7 @@ export function Treemap<T>({
               .map(s => cell(s.it, isFolded(s.it) ? kidPath : [...kidPath, s.it as T], s, depth + 1))}
           </div>
         )}
-      </div>
+      </CellTag>
     )
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@disk-tree/react",
-  "version": "0.1.0-dist.d9bd72a",
+  "version": "0.1.0-dist.1109034",
   "description": "Reusable React widgets (Treemap, TimeSeries, StalenessScatter, AgeHistograms) for disk-tree consumers. Accessor-based, chart-lib-free.",
   "type": "module",
   "main": "./src/index.ts",
