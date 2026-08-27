@@ -51,11 +51,8 @@ export const ACTION_LABELS: Record<MarkAction, string> = {
   sweep: 'sweep',
 }
 
-/** Sweep deadline: EOD Friday 2026-08-28, Pacific (Percy's post governs). */
-export const SWEEP_DEADLINE = new Date('2026-08-29T00:00:00-07:00')
-
-export const sweepDaysLeft = (): number =>
-  Math.max(0, Math.ceil((SWEEP_DEADLINE.getTime() - Date.now()) / 86_400_000))
+// The sweep close date is TBD (it slipped past the original 2026-08-28
+// target); UI copy says "date TBD" rather than committing to one.
 
 // 30s poll: several people mark concurrently during the sprint, and the
 // overlay should reflect their marks without a reload.

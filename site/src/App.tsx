@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { FaGithub } from 'react-icons/fa'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -180,7 +180,17 @@ function AppContent() {
     enabled: !!asof,
     staleTime: Infinity,
   })
-  const treeQ = useQuery(scanQuery<TreeNode>('tree'))
+  // `?f=` (name filter) and `?mt=` (review lens) read early: they decide
+  // whether the full artifact tree is needed at all (see treeQ below).
+  const [fq, setFq] = useUrlState('f', stringParam())
+  const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
+  // tree.json is ~29MB — the estate-wide walks (name filter's match set +
+  // re-aggregation, lens scoping) still need its depth, but plain browsing
+  // doesn't: the map seeds from the same pixel-budget /api/subtree that
+  // serves drills. So the full tree only downloads when a filter or lens is
+  // active (or for stores with no path index, where it's the only source).
+  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null
+  const treeQ = useQuery({ ...scanQuery<TreeNode>('tree'), enabled: !!asof && needFullTree })
   const ageQ = useQuery(scanQuery<AgeRow[]>('age'))
   const metaQ = useQuery(scanQuery<Meta>('meta'))
   // Optional: precomputed diff vs the previous snapshot (job/cw-diff.py).
@@ -194,45 +204,69 @@ function AppContent() {
     retry: false,
   })
   const diff: DiffData | null = diffQ.data ?? null
-  const baseTree: TreeNode | null = treeQ.data ?? null
-  // Name filter (`?f=`): substring or /regex/ over path segments, outermost
-  // match keeps its subtree, ancestors re-aggregate to matched bytes only.
-  // In-memory over the loaded tree — sub-depth-cap filtering is the
-  // vocab-sidecar arc and lands later.
-  // Lazy drill (specs/path-index-lazy-drill.md step 3): on drill, fetch the
-  // pixel-budget subtree for the drilled path and graft it over the loaded
-  // tree — tree.json seeds the first paint; every drill refines past its
-  // floors (the API's threshold at the drilled root is finer than the
-  // artifact's pipeline floor once you're a level or two deep). GCS only —
-  // the CW store has no path index yet.
+  // Lazy drill (specs/path-index-lazy-drill.md step 3, now the primary
+  // source): the map's base is the pixel-budget subtree at the store root,
+  // and every level of the drilled path gets its own subtree query, grafted
+  // in depth order — interactive drills hit each level's cache as they go,
+  // and a cold deep link fans the whole chain out in parallel. tree.json is
+  // only the base when it's already needed (filter/lens) or the store has no
+  // path index (CW).
   const graftPath = pathname.slice((store.path === '/' ? '' : store.path).length).replace(/^\/+/, '')
   const canW = Math.ceil((typeof window === 'undefined' ? 1280 : window.innerWidth) / 128) * 128
-  const subtreeQ = useQuery<{ tree: TreeNode } | null>({
-    queryKey: ['subtree', store.key, asof, graftPath, canW],
-    enabled: !!asof && !!graftPath && store.key === 'gcs',
-    staleTime: Infinity,
-    retry: false,
-    queryFn: async () => {
-      const r = await fetch(
-        `/api/subtree?date=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}`,
-        { credentials: 'include' },
-      )
-      return r.ok ? (r.json() as Promise<{ tree: TreeNode }>) : null
-    },
+  const subtreePaths = useMemo(() => {
+    if (store.key !== 'gcs') return []
+    const segs = graftPath.split('/').filter(Boolean)
+    return ['', ...segs.map((_, i) => segs.slice(0, i + 1).join('/'))]
+  }, [store.key, graftPath])
+  const subtreeQs = useQueries({
+    queries: subtreePaths.map(p => ({
+      queryKey: ['subtree', store.key, asof, p, canW],
+      enabled: !!asof,
+      staleTime: Infinity,
+      retry: false,
+      queryFn: async () => {
+        const r = await fetch(
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}`,
+          { credentials: 'include' },
+        )
+        return r.ok ? (r.json() as Promise<{ tree: TreeNode }>) : null
+      },
+    })),
   })
+  const rootSub = subtreeQs[0]?.data?.tree ?? null
+  const baseTree: TreeNode | null = treeQ.data ?? (store.key === 'gcs' ? rootSub : null)
+  // useQueries returns a fresh array each render; stamp the data so the graft
+  // memo re-runs exactly when a response lands.
+  const subStamp = subtreeQs.map(q => q.dataUpdatedAt).join(',')
   const tree = useMemo((): TreeNode | null => {
-    const sub = subtreeQ.data?.tree
-    if (!baseTree || !sub || !graftPath) return baseTree
-    const graft = (n: TreeNode, segs: string[]): TreeNode => {
-      if (!segs.length) return { ...n, c: sub.c } // keep artifact totals; adopt finer children
-      const [head, ...rest] = segs
-      const c = n.c?.map(k => (k.n === head ? graft(k, rest) : k))
-      return c ? { ...n, c } : n
+    if (!baseTree) return null
+    const graftAt = (t: TreeNode, segs: string[], sub: TreeNode): TreeNode => {
+      const rec = (n: TreeNode, i: number): TreeNode => {
+        if (i === segs.length) return { ...n, c: sub.c } // keep own totals; adopt finer children
+        const seg = segs[i]
+        const kids = n.c ?? []
+        if (kids.some(k => k.n === seg)) return { ...n, c: kids.map(k => (k.n === seg ? rec(k, i + 1) : k)) }
+        // The spine segment fell below this level's pixel budget (it's inside
+        // "(other)"): synthesize it from its own subtree response — the
+        // response root carries the real totals — and shave those bytes off
+        // the fold so the level still sums. Deeper segments wait for their
+        // own level's graft to land.
+        if (i !== segs.length - 1) return n
+        const c = kids.map(k =>
+          k.n === '(other)' ? { ...k, b: Math.max(0, k.b - sub.b), o: Math.max(0, k.o - sub.o) } : k)
+        return { ...n, c: [...c, { ...sub, n: seg }] }
+      }
+      return rec(t, 0)
     }
-    return graft(baseTree, graftPath.split('/'))
-  }, [baseTree, subtreeQ.data, graftPath])
+    let t = baseTree
+    subtreePaths.forEach((p, i) => {
+      const sub = subtreeQs[i]?.data?.tree
+      if (p && sub) t = graftAt(t, p.split('/'), sub)
+    })
+    return t
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseTree, subtreePaths, subStamp])
 
-  const [fq, setFq] = useUrlState('f', stringParam())
   const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
   const shownTree = useMemo(() => (tree && pred ? applyFilter(tree, pred) : tree), [tree, pred])
   const fMatches = useMemo(() => (tree && pred ? collectMatches(tree, pred) : []), [tree, pred])
@@ -265,10 +299,10 @@ function AppContent() {
   const signOut = useSignOut()
   const [tokenOpen, setTokenOpen] = useState(false)
   const myUser = useMyUser(ident?.email, markMode)
-  // `?mt=` — active review lens over the map + children table (absent = no
-  // lens, the plain browse view). The lenses are presets on the normal view
-  // (LensBar), scoped to the current subtree — there's no separate /mark page.
-  const [markTabP, setMarkTabP] = useUrlState('mt', stringParam())
+  // `?mt=` (declared above, near treeQ) — active review lens over the map +
+  // children table (absent = no lens, the plain browse view). The lenses are
+  // presets on the normal view (LensBar), scoped to the current subtree —
+  // there's no separate /mark page.
   // No email (anon / no-email session) → no "My files" lens to attribute to.
   const hasEmail = !!ident?.email
   const markTabRaw: Lens =
@@ -615,7 +649,8 @@ function AppContent() {
         <section className="mark-banner">
           <p>
             <b>Mark &amp; sweep</b> — review storage and mark what to <b>keep</b>; anything left
-            unmarked is <b>swept</b> (deleted) once the review window closes. Drill to a prefix and
+            unmarked is <b>swept</b> (deleted) once the review window closes (closing date TBD —
+            announced in advance; only explicit <b>sweep</b> marks are deleted before then). Drill to a prefix and
             mark it with the controls above the map, or click a cell to pin it and mark from there.
             Marks are reversible until the sweep — the most recent mark covering a prefix wins: mark a
             child <em>after</em> its parent to carve an exception; a broad mark repaints older deeper

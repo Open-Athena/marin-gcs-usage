@@ -118,7 +118,7 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
             {mark.note ? ` — ${mark.note}` : ''}
           </span>
         ) : (
-          <span className="prov">swept by default once the review window closes</span>
+          <span className="prov">swept by default once the review window closes (date TBD)</span>
         )}
         {under > 0 && <span className="under">{under} mark{under === 1 ? '' : 's'} inside</span>}
       </span>
