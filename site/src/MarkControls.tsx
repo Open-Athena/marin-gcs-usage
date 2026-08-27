@@ -17,7 +17,9 @@ import type { TreeNode } from './types'
 
 export const ACTION_COLORS: Record<MarkAction, string> = {
   keep: 'var(--mk-keep)',
-  keep_last_ckpt: 'var(--mk-klc)',
+  // keep-family green, not its own amber: the ledger keeps the distinction
+  // (the executor needs it) but it's too niche to be a first-class color.
+  keep_last_ckpt: 'var(--mk-keep)',
   sweep: 'var(--mk-del)',
 }
 

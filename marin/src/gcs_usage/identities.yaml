@@ -137,6 +137,10 @@ users:
     aliases: [alxmrs]
     github: alxmrs
     team: oa
+  benjamin-feuer:
+    name: Ben
+    aliases: [benjaminfeuer]
+    team: oa
   gonzalo-benegas:
     aliases: [gonzalo, gonzalobenegas]  # Iris owner; GitHub/W&B username
     github: gonzalobenegas

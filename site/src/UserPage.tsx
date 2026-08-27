@@ -71,7 +71,17 @@ function userFates(root: TreeNode, uid: string, idx: MarkIndex): FateRow[] {
   return rows.sort((a, b) => b.b - a.b)
 }
 
-const FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
+// `keep_last_ckpt` is a keep-family action: the ledger keeps the distinction
+// (the sweep executor needs it), but the UI folds it into keep everywhere
+// aggregated — too niche for its own column/color. Individual mark rows still
+// carry the "keep last ckpt" label.
+export type ShownFate = 'keep' | 'sweep' | 'unmarked'
+const SHOWN_FATES: ShownFate[] = ['keep', 'sweep', 'unmarked']
+const foldFates = (f: Record<Fate, number>): Record<ShownFate, number> => ({
+  keep: f.keep + f.keep_last_ckpt,
+  sweep: f.sweep,
+  unmarked: f.unmarked,
+})
 const fateLabel = (f: Fate): string => (f === 'unmarked' ? 'unmarked' : ACTION_LABELS[f])
 // `unmarked` gets the regular secondary ink, not the unattributed-gray — as
 // the most common column value it has to be readable, not washed out.
@@ -108,8 +118,7 @@ function useScanFile<T>(name: string, asof: string | null) {
 
 // Group badge: real logo glyphs (block-S / OA branch mark, cropped from the
 // www site's brand SVGs into `public/groups/`) with the full name on hover;
-// groups without a logo fall back to a color-coded pill.
-const GROUP_ABBR: Record<string, string> = { oa: 'OA', stanford: 'SU', communal: 'COM', unknown: '?' }
+// unknown renders as a plain dash.
 const GROUP_ICONS: Record<string, string> = { stanford: '/groups/su.svg', oa: '/groups/oa.svg' }
 
 function GroupBadge({ team }: { team: string }) {
@@ -118,7 +127,7 @@ function GroupBadge({ team }: { team: string }) {
     <Tooltip content={GROUP_LABELS[team] ?? team}>
       {icon
         ? <img className="grp-icon" src={icon} alt={GROUP_LABELS[team] ?? team} />
-        : <span className="grp-badge" data-team={team}>{GROUP_ABBR[team] ?? team}</span>}
+        : <span className="grp-none">–</span>}
     </Tooltip>
   )
 }
@@ -162,7 +171,26 @@ interface OwnerCell {
   c?: OwnerCell[]
 }
 
-const FATE_ORDER: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
+// Tile background: the group color pulled well toward dark, so the full-
+// strength keep/sweep stripes read as *marks on* the tile, not more of it.
+const tileBg = (team: string): string =>
+  `color-mix(in oklab, var(${TEAM_VARS[team] ?? '--t-unknown'}) 48%, #131311)`
+const UNDECIDED_STRIPE = 'color-mix(in oklab, var(--panel) 45%, transparent)'
+
+function MapLegend() {
+  const groups = ['oa', 'stanford', 'communal', 'unattributed']
+  return (
+    <div className="map-legend">
+      {groups.map(t => (
+        <span key={t}><i style={{ background: tileBg(t) }} />{t === 'unattributed' ? 'unclaimed' : GROUP_LABELS[t] ?? t}</span>
+      ))}
+      <span className="sep" />
+      <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>
+      <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>
+      <span><i style={{ background: UNDECIDED_STRIPE, border: '1px solid var(--line)' }} />undecided</span>
+    </div>
+  )
+}
 
 function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate, number>> | null }) {
   const navigate = useNavigate()
@@ -190,19 +218,19 @@ function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate,
         fullscreen={false}
         colorForCell={(n): CellStyle | null => {
           if (!n.team) return null
-          const style: CellStyle = { bg: `color-mix(in oklab, var(${TEAM_VARS[n.team] ?? '--t-unknown'}) 72%, var(--panel))` }
+          const style: CellStyle = { bg: tileBg(n.team) }
           // Fate makeup stripes: each user tile shows its keep / sweep /
-          // unmarked proportions (the page's whole point, at a glance).
-          const f = n.id ? fates?.get(n.id) : undefined
+          // undecided proportions (the page's whole point, at a glance). The
+          // undecided stripe is the *remainder*, not a signal — near the tile
+          // color, so the full-strength keep/sweep bands pop.
+          const raw = n.id ? fates?.get(n.id) : undefined
+          const f = raw ? foldFates(raw) : undefined
           if (f) {
-            const total = FATE_ORDER.reduce((s, k) => s + f[k], 0)
+            const total = SHOWN_FATES.reduce((s, k) => s + f[k], 0)
             if (total > 0) {
-              // The unmarked stripe is the *remainder*, not a signal — keep it
-              // near the tile color so keep/sweep pop (ink-gray would repaint
-              // a mostly-unmarked tile solid gray).
-              const segs = FATE_ORDER.filter(k => f[k] > 0)
+              const segs = SHOWN_FATES.filter(k => f[k] > 0)
                 .map(k => ({
-                  color: k === 'unmarked' ? 'color-mix(in oklab, var(--panel) 45%, transparent)' : fateColor(k),
+                  color: k === 'unmarked' ? UNDECIDED_STRIPE : fateColor(k),
                   frac: f[k] / total,
                 }))
               if (segs.length > 1) style.segments = segs
@@ -211,15 +239,16 @@ function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate,
           return style
         }}
         renderTooltip={(n) => {
-          const f = n.id ? fates?.get(n.id) : undefined
-          const total = f ? FATE_ORDER.reduce((s, k) => s + f[k], 0) : 0
+          const raw = n.id ? fates?.get(n.id) : undefined
+          const f = raw ? foldFates(raw) : undefined
+          const total = f ? SHOWN_FATES.reduce((s, k) => s + f[k], 0) : 0
           return (
             <div>
               <b>{n.n}</b>{n.team && <> · {GROUP_LABELS[n.team] ?? n.team}</>}
               <div>{fmtBytesIec(n.b, true)} · {meta.total_bytes ? ((100 * n.b) / meta.total_bytes).toFixed(1) : 0}%</div>
               {f && total > 0 && (
                 <div>
-                  {FATE_ORDER.filter(k => f[k] > 0).map(k => (
+                  {SHOWN_FATES.filter(k => f[k] > 0).map(k => (
                     <span key={k} style={{ color: fateColor(k), marginRight: 8 }}>{fateLabel(k)} {fmtBytesIec(f[k])}</span>
                   ))}
                 </div>
@@ -254,9 +283,9 @@ export function UsersPage() {
     () => (treeQ.data ? allUserFates(treeQ.data, idx) : null),
     [treeQ.data, idx],
   )
-  const klc = users.some(u => (fates?.get(u.u)?.keep_last_ckpt ?? 0) > 0)
-  const cell = (u: string, f: Fate) => {
-    const b = fates?.get(u)?.[f] ?? 0
+  const cell = (u: string, f: ShownFate) => {
+    const raw = fates?.get(u)
+    const b = raw ? foldFates(raw)[f] : 0
     return (
       <td className="num" style={b ? { color: fateColor(f) } : { color: 'var(--ink-2)', opacity: 0.5 }}>
         {fates ? (b ? fmtBytesIec(b) : '—') : '…'}
@@ -273,24 +302,32 @@ export function UsersPage() {
         <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
       </header>
       {metaQ.isLoading && <p className="loading">loading…</p>}
-      {metaQ.data && <UsersMap meta={metaQ.data} fates={fates} />}
+      {metaQ.data && (
+        <>
+          <UsersMap meta={metaQ.data} fates={fates} />
+          <MapLegend />
+        </>
+      )}
       {users.length > 0 && (
         <table className="worklist">
           <thead>
             <tr>
-              <th>User</th><th>Group</th><th className="num">Attributed</th><th className="num">Est. $/mo</th>
-              <th className="num">Keep</th>{klc && <th className="num">Last-ckpt</th>}<th className="num">Sweep</th><th className="num">Unmarked</th>
+              <th>User</th><th className="num">Attributed</th><th className="num">Est. $/mo</th>
+              <th className="num">Keep</th><th className="num">Sweep</th><th className="num">Unmarked</th>
             </tr>
           </thead>
           <tbody>
             {users.map(u => (
               <tr key={u.u}>
-                <td><Link className="user-link" to={`/user/${u.u}`}><UserChip who={u.u} /></Link></td>
-                <td><GroupBadge team={u.t} /></td>
+                <td>
+                  <span className="user-cell">
+                    <GroupBadge team={teamOf(u.u) ?? u.t} />
+                    <Link className="user-link" to={`/user/${u.u}`}><UserChip who={u.u} /></Link>
+                  </span>
+                </td>
                 <td className="num">{fmtBytesIec(u.b)}</td>
                 <td className="num"><DollarCell b={u.b} mix={mixes?.[u.u]} /></td>
                 {cell(u.u, 'keep')}
-                {klc && cell(u.u, 'keep_last_ckpt')}
                 {cell(u.u, 'sweep')}
                 {cell(u.u, 'unmarked')}
               </tr>
@@ -359,9 +396,9 @@ export function UserPage() {
     [treeQ.data, id, idx],
   )
   const totals = useMemo(() => {
-    const t = new Map<Fate, { b: number; n: number }>(FATES.map(f => [f, { b: 0, n: 0 }]))
+    const t = new Map<ShownFate, { b: number; n: number }>(SHOWN_FATES.map(f => [f, { b: 0, n: 0 }]))
     for (const r of rows) {
-      const cur = t.get(r.fate)!
+      const cur = t.get(r.fate === 'keep_last_ckpt' ? 'keep' : r.fate)!
       cur.b += r.b
       cur.n++
     }
@@ -409,7 +446,7 @@ export function UserPage() {
       {rows.length > 0 && (
         <>
           <div className="fate-strip">
-            {FATES.map(f => {
+            {SHOWN_FATES.map(f => {
               const { b, n } = totals.get(f)!
               if (!b) return null
               return (

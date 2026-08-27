@@ -1260,6 +1260,11 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 .marks-page {
   .memo { color: var(--ink-2); font-style: italic; }
   .marks-feed td { vertical-align: top; }
+  // th defaults to centered while td is left — align them.
+  .worklist {
+    th, td { text-align: left; }
+    th.num, td.num { text-align: right; }
+  }
 }
 
 // Per-user estate pages (`/users`, `/user/:id`): fate rollup strip + tables.
@@ -1283,6 +1288,20 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     &:hover .user-chip { background: color-mix(in oklab, var(--ink) 8%, transparent); }
   }
   .grp-icon { height: 16px; vertical-align: middle; }
+  .grp-none { color: var(--ink-2); opacity: 0.6; display: inline-block; min-width: 12px; text-align: center; }
+  .user-cell { display: inline-flex; align-items: center; gap: 8px; }
+  .map-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    align-items: center;
+    margin: -0.5em 0 1em;
+    font-size: 12px;
+    color: var(--ink-2);
+    span { display: inline-flex; align-items: center; gap: 5px; }
+    i { width: 11px; height: 11px; border-radius: 2.5px; display: inline-block; }
+    .sep { width: 1px; height: 14px; background: var(--line); margin: 0 2px; }
+  }
   .grp-badge {
     display: inline-block;
     padding: 1px 7px;
