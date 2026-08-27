@@ -285,8 +285,7 @@ function CompareTreemap({
               const band = deltaColor(Math.sign(n.delta))
               return {
                 bg: `linear-gradient(to top, ${band} ${pct}, ${UNCHANGED_GREY} ${pct})`,
-                // The label sits at the top, over grey, unless the band covers ~everything.
-                ink: divergingInk(f > 0.85 ? 1 : 0),
+                ink: '#fff', // uniform with every other label
               }
             }
             // Δ mode: full cell tinted by Δ relative to the largest |Δ|.
