@@ -194,11 +194,44 @@ function AppContent() {
     retry: false,
   })
   const diff: DiffData | null = diffQ.data ?? null
-  const tree: TreeNode | null = treeQ.data ?? null
+  const baseTree: TreeNode | null = treeQ.data ?? null
   // Name filter (`?f=`): substring or /regex/ over path segments, outermost
   // match keeps its subtree, ancestors re-aggregate to matched bytes only.
   // In-memory over the loaded tree — sub-depth-cap filtering is the
   // vocab-sidecar arc and lands later.
+  // Lazy drill (specs/path-index-lazy-drill.md step 3): on drill, fetch the
+  // pixel-budget subtree for the drilled path and graft it over the loaded
+  // tree — tree.json seeds the first paint; every drill refines past its
+  // floors (the API's threshold at the drilled root is finer than the
+  // artifact's pipeline floor once you're a level or two deep). GCS only —
+  // the CW store has no path index yet.
+  const graftPath = pathname.slice((store.path === '/' ? '' : store.path).length).replace(/^\/+/, '')
+  const canW = Math.ceil((typeof window === 'undefined' ? 1280 : window.innerWidth) / 128) * 128
+  const subtreeQ = useQuery<{ tree: TreeNode } | null>({
+    queryKey: ['subtree', store.key, asof, graftPath, canW],
+    enabled: !!asof && !!graftPath && store.key === 'gcs',
+    staleTime: Infinity,
+    retry: false,
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/subtree?date=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}`,
+        { credentials: 'include' },
+      )
+      return r.ok ? (r.json() as Promise<{ tree: TreeNode }>) : null
+    },
+  })
+  const tree = useMemo((): TreeNode | null => {
+    const sub = subtreeQ.data?.tree
+    if (!baseTree || !sub || !graftPath) return baseTree
+    const graft = (n: TreeNode, segs: string[]): TreeNode => {
+      if (!segs.length) return { ...n, c: sub.c } // keep artifact totals; adopt finer children
+      const [head, ...rest] = segs
+      const c = n.c?.map(k => (k.n === head ? graft(k, rest) : k))
+      return c ? { ...n, c } : n
+    }
+    return graft(baseTree, graftPath.split('/'))
+  }, [baseTree, subtreeQ.data, graftPath])
+
   const [fq, setFq] = useUrlState('f', stringParam())
   const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
   const shownTree = useMemo(() => (tree && pred ? applyFilter(tree, pred) : tree), [tree, pred])
