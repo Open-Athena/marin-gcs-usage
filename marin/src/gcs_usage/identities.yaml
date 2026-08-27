@@ -26,8 +26,6 @@
 #               user/org owner. Both Stanford and OA train on it (verified via
 #               W&B run configs, 2026-08-11).
 users:
-  gonzalo-benegas:  # ledger sign-in observed 2026-08; no scan-attributed data yet
-    team: oa
   ryan-williams:
     aliases: [ryan, rw]
     github: ryan-williams
@@ -138,6 +136,10 @@ users:
   alex-merose:
     aliases: [alxmrs]
     github: alxmrs
+    team: oa
+  gonzalo-benegas:
+    aliases: [gonzalo, gonzalobenegas]  # Iris owner; GitHub/W&B username
+    github: gonzalobenegas
     team: oa
   larry-dial:
     github: ClassicLarry

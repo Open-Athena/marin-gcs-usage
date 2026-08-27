@@ -128,7 +128,20 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "oa",
     "u": "exedev"
   },
+  "gonzalo": {
+    "github": "gonzalobenegas",
+    "name": "Gonzalo",
+    "team": "oa",
+    "u": "gonzalo-benegas"
+  },
   "gonzalo-benegas": {
+    "github": "gonzalobenegas",
+    "name": "Gonzalo",
+    "team": "oa",
+    "u": "gonzalo-benegas"
+  },
+  "gonzalobenegas": {
+    "github": "gonzalobenegas",
     "name": "Gonzalo",
     "team": "oa",
     "u": "gonzalo-benegas"
