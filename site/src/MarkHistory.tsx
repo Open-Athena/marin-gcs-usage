@@ -32,7 +32,10 @@ export function MarkHistory({ prefix, scope }: { prefix: string; scope: string }
 
   return (
     <section id="mark-history" className="children-tbl">
-      <h2>Mark history</h2>
+      <div className="hrow">
+        <h2>Mark history</h2>
+        <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>All&nbsp;marks&nbsp;→</Link>
+      </div>
       <p className="sub">
         Every keep / sweep / clear / claim under <code>{scope}</code>, newest first — {scoped.length} action{scoped.length === 1 ? '' : 's'}.
       </p>

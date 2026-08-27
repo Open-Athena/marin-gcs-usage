@@ -15,6 +15,8 @@ interface SeriesIndex {
   dates: string[]
   prefixes: string[]
   bytes: Record<string, (number | null)[]>
+  /** Ledger replayed per scan date (gcs-usage series -a) — the burn-down. */
+  fate?: Record<'keep' | 'sweep' | 'undecided', number[]>
 }
 
 // Nice y-ticks aligned to the *display* unit: a base-10-nice byte value (1e15)
@@ -32,7 +34,15 @@ const unitTicks = (max: number, base: number, count = 4): number[] => {
   return out
 }
 
-export function SizeOverTime({ scans, prefix, base }: { scans: string[]; prefix: string; base: string }) {
+export function SizeOverTime({ scans, prefix, base, fate = false }: {
+  scans: string[]
+  prefix: string
+  base: string
+  /** Mark-progress mode (the To-do lens): plot keep/sweep/undecided per scan
+   * from the replayed ledger instead of stored-bytes. Renders nothing until
+   * the index carries `fate`. */
+  fate?: boolean
+}) {
   const { fmtBytes, units } = useUnits()
 
   // The cross-scan index (one small file); optional — 404 until it's published.
@@ -66,6 +76,20 @@ export function SizeOverTime({ scans, prefix, base }: { scans: string[]; prefix:
   })
 
   const series = useMemo(() => {
+    if (fate) {
+      if (!idx?.fate) return []
+      const mk = (k: 'keep' | 'sweep' | 'undecided', label: string, color: string) => ({
+        key: k,
+        label,
+        color,
+        points: idx.dates.map((d, i) => ({ x: new Date(d).getTime(), y: idx.fate![k][i] })).sort((a, b) => a.x - b.x),
+      })
+      return [
+        mk('undecided', 'undecided', 'var(--ink-2)'),
+        mk('keep', 'keep', 'var(--mk-keep)'),
+        mk('sweep', 'sweep', 'var(--mk-del)'),
+      ]
+    }
     if (scopedArr && idx) {
       const points = idx.dates
         .map((d, i) => ({ x: new Date(d).getTime(), y: scopedArr[i] }))
@@ -81,7 +105,7 @@ export function SizeOverTime({ scans, prefix, base }: { scans: string[]; prefix:
       color: 'var(--s1)',
       points: rows.map(r => ({ x: new Date(r.date).getTime(), y: r.m.total_bytes })).sort((a, b) => a.x - b.x),
     }]
-  }, [scopedArr, idx, metas.data, prefix])
+  }, [fate, scopedArr, idx, metas.data, prefix])
 
   const yTickValues = useMemo(() => {
     const max = Math.max(0, ...series.flatMap(s => s.points.map(p => p.y)))
@@ -89,6 +113,28 @@ export function SizeOverTime({ scans, prefix, base }: { scans: string[]; prefix:
   }, [series, units])
 
   if (scans.length < 2) return null
+  if (fate) {
+    if (!series.length) return null
+    return (
+      <section id="size-over-time">
+        <h2>Mark progress</h2>
+        <p className="sub">
+          Keep / sweep / undecided bytes per scan — the actions ledger replayed against each archived
+          scan, so the gray line is the review burn-down.
+        </p>
+        <TimeSeries<Pt>
+          series={series}
+          getX={p => p.x}
+          getY={p => p.y}
+          formatY={fmtBytes}
+          formatX={x => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+          yTickValues={yTickValues}
+          yLabel="bytes"
+          height={220}
+        />
+      </section>
+    )
+  }
   const scoped = !!scopedArr
   const belowFloor = !!prefix && !!idx && !scopedArr
   return (

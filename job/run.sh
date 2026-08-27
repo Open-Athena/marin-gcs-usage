@@ -126,7 +126,19 @@ cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 # FUSE mount as the snapshot cp above. A failure never blocks the snapshot: the
 # chart just falls back to the fleet total, and the next run self-heals (it
 # always regenerates the whole index).
-gcs-usage series -r "/gcs/$DATA/snapshots" -o "/gcs/$DATA/snapshots/series.json" \
+# Ledger export for the fate-over-time replay (specs/lens-aware-time-series.md):
+# needs an agent token (GCS_USAGE_TOKEN, e.g. via Secret Manager); without one
+# the series omits `fate` and the To-do burn-down chart hides.
+SER_A=()
+if [ -n "${GCS_USAGE_TOKEN:-}" ]; then
+  if curl -fsS -H "Authorization: Bearer $GCS_USAGE_TOKEN" \
+      "${GCS_USAGE_URL:-https://gcs.oa.dev}/api/actions" -o /tmp/actions.json; then
+    SER_A=(-a /tmp/actions.json)
+  else
+    echo "WARN: actions export failed — series omits fate" >&2
+  fi
+fi
+gcs-usage series "${SER_A[@]}" -r "/gcs/$DATA/snapshots" -o "/gcs/$DATA/snapshots/series.json" \
   || echo "WARN: series-index step failed (size chart falls back to fleet total)" >&2
 
 # Post the daily usage digest to Slack (only when a transport is configured, so

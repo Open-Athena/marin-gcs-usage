@@ -180,7 +180,7 @@ interface OwnerCell {
 // strength keep/sweep stripes read as *marks on* the tile, not more of it.
 const tileBg = (team: string): string =>
   `color-mix(in oklab, var(${TEAM_VARS[team] ?? '--t-unknown'}) 48%, #131311)`
-const UNDECIDED_STRIPE = 'color-mix(in oklab, var(--panel) 45%, transparent)'
+const USER_TILE_BG = 'color-mix(in oklab, var(--ink) 7%, var(--panel))'
 
 /** The owner tiles (users + ownerless pools) — ONE derivation shared by the
  * map and its legend, so the legend can never key a group absent from the
@@ -211,7 +211,8 @@ function MapLegend({ cells, fates }: {
   cells: OwnerCell[]
   fates: Map<string, Record<Fate, number>> | null
 }) {
-  const groups = [...new Set(cells.map(c => c.team).filter((t): t is string => !!t))]
+  // Only the POOL tiles carry group colors now — user tiles are fate-striped.
+  const groups = [...new Set(cells.filter(c => !c.id).map(c => c.team).filter((t): t is string => !!t))]
   const present: Record<ShownFate, boolean> = { keep: false, sweep: false, unmarked: false }
   if (fates) {
     for (const f of fates.values()) {
@@ -227,7 +228,7 @@ function MapLegend({ cells, fates }: {
       {(!fates || present.keep || present.sweep) && <span className="sep" />}
       {(!fates || present.keep) && <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>}
       {(!fates || present.sweep) && <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>}
-      {(!fates || present.unmarked) && <span><i style={{ background: UNDECIDED_STRIPE, border: '1px solid var(--line)' }} />undecided</span>}
+      {(!fates || present.unmarked) && <span><i style={{ background: 'var(--other)' }} />undecided</span>}
     </div>
   )
 }
@@ -254,23 +255,25 @@ function UsersMap({ meta, fates, redact = false }: {
         chrome={false}
         fullscreen={false}
         colorForCell={(n): CellStyle | null => {
-          if (!n.team) return null
-          const style: CellStyle = { bg: tileBg(n.team) }
-          // Fate makeup stripes: each user tile shows its keep / sweep /
-          // undecided proportions (the page's whole point, at a glance). The
-          // undecided stripe is the *remainder*, not a signal — near the tile
-          // color, so the full-strength keep/sweep bands pop.
-          const raw = n.id ? fates?.get(n.id) : undefined
+          // ONE categorical axis per tile: user tiles carry their fate makeup
+          // (neutral base + full-strength keep/sweep/undecided stripes —
+          // group would be a second axis fighting the same channel); the
+          // ownerless pools, which have no fate stripes, keep their own
+          // colors.
+          if (!n.id) return n.team ? { bg: tileBg(n.team) } : null
+          const style: CellStyle = { bg: USER_TILE_BG }
+          const raw = fates?.get(n.id)
           const f = raw ? foldFates(raw) : undefined
           if (f) {
             const total = SHOWN_FATES.reduce((s, k) => s + f[k], 0)
             if (total > 0) {
               const segs = SHOWN_FATES.filter(k => f[k] > 0)
                 .map(k => ({
-                  color: k === 'unmarked' ? UNDECIDED_STRIPE : fateColor(k),
+                  color: k === 'unmarked' ? 'var(--other)' : fateColor(k),
                   frac: f[k] / total,
                 }))
               if (segs.length > 1) style.segments = segs
+              else if (segs.length === 1) style.bg = segs[0].color
             }
           }
           return style

@@ -1235,13 +1235,134 @@ def _load_tree(root: str, date: str) -> dict:
         return json.load(f)
 
 
+
+def _fate_totals(tree: dict, keep_rows: list[dict], cutoff_ts: int) -> dict[str, int]:
+    """Replay the actions ledger as of ``cutoff_ts`` against one archived tree.
+
+    Mirrors the site's fate resolution (``site/src/sweep.ts``): most recent
+    live mark on an ancestor-or-equal prefix wins; ``keep_last_ckpt``
+    decomposes into real keep/sweep via the newest step-child of every
+    checkpoint run under the mark (unresolvable KLC counts as keep, matching
+    the UI fold). Returns bytes per fate: keep / sweep / undecided.
+    """
+    import re as _re
+
+    live: dict[str, dict] = {}
+    for r in keep_rows:
+        if r["ts"] > cutoff_ts:
+            continue
+        cur = live.get(r["prefix"])
+        if cur is None or (r["ts"], r["action_id"]) > (cur["ts"], cur["action_id"]):
+            live[r["prefix"]] = r
+
+    def norm(u: str) -> str:
+        return u if u.endswith("/") else u + "/"
+
+    anc: set[str] = set()
+    for r in live.values():
+        if r["keep"] is None:
+            continue
+        segs = r["prefix"].rstrip("/").split("/")
+        for i in range(3, len(segs)):
+            anc.add("/".join(segs[:i]) + "/")
+    own = {norm(r["prefix"]): r for r in live.values()}
+
+    ckpt_re = _re.compile(r"^(?:step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?(\d+)", _re.I)
+
+    def node_at(prefix: str) -> dict | None:
+        node: dict | None = tree
+        for s in prefix.split("://", 1)[-1].rstrip("/").split("/"):
+            node = next((c for c in (node or {}).get("c", ()) if c["n"] == s), None)
+            if node is None:
+                return None
+        return node
+
+    splits: dict[str, tuple[list[tuple[str, int]], int, int]] = {}
+    for r in live.values():
+        if r["keep"] != "keep_last_ckpt":
+            continue
+        nd = node_at(r["prefix"])
+        if not nd:
+            continue
+        kept: list[tuple[str, int]] = []
+
+        def kw(n: dict, u: str) -> None:
+            steps = [(c, ckpt_re.match(c["n"])) for c in n.get("c", ())]
+            steps = [(c, m) for c, m in steps if m]
+            if steps:
+                best = max(steps, key=lambda x: int(x[1].group(1)))
+                kept.append((u + best[0]["n"] + "/", best[0]["b"]))
+                return
+            for c in n.get("c", ()):
+                if not c["n"].startswith("("):
+                    kw(c, u + c["n"] + "/")
+
+        kw(nd, norm(r["prefix"]))
+        if kept:
+            splits[norm(r["prefix"])] = (kept, sum(b for _, b in kept), nd["b"])
+
+    tot = {"keep": 0, "sweep": 0, "undecided": 0}
+
+    def newer(a: dict, b: dict) -> bool:
+        return (a["ts"], a["action_id"]) > (b["ts"], b["action_id"])
+
+    def win_of(uri: str, inh: dict | None) -> dict | None:
+        o = own.get(norm(uri))
+        return o if o and (inh is None or newer(o, inh)) else inh
+
+    def settle(uri: str, b: int, win: dict | None) -> None:
+        if b <= 0:
+            return
+        f = win["keep"] if win else None
+        if f is None:
+            tot["undecided"] += b
+            return
+        if f == "keep_last_ckpt":
+            sp = splits.get(norm(win["prefix"]))
+            if sp:
+                kept, _kept_b, _total_b = sp
+                u = norm(uri)
+                if any(u.startswith(k) for k, _ in kept):
+                    tot["keep"] += b
+                    return
+                inside = sum(kb for k, kb in kept if k.startswith(u))
+                if inside:
+                    kb = min(b, inside)
+                    tot["keep"] += kb
+                    tot["sweep"] += b - kb
+                    return
+                tot["sweep"] += b
+                return
+            tot["keep"] += b
+            return
+        tot["keep" if f == "keep" else "sweep"] += b
+
+    def fwalk(n: dict, uri: str, inh: dict | None) -> None:
+        win = win_of(uri, inh)
+        if norm(uri) not in anc:
+            settle(uri, n["b"], win)
+            return
+        rest = n["b"]
+        for c in n.get("c", ()):
+            if c["n"].startswith("("):
+                continue
+            rest -= c["b"]
+            fwalk(c, f"{uri}/{c['n']}", win)
+        settle(uri, rest, win)
+
+    for bkt in tree.get("c", ()):
+        fwalk(bkt, f"gs://{bkt['n']}", None)
+    return tot
+
+
 @main.command()
+@option("-a", "--actions", "actions_path", help="Actions-ledger export (the /api/actions JSON; path or URL). When given, replays marks as of each scan date and emits per-date keep/sweep/undecided totals")
 @option("-D", "--max-depth", default=4, help="Deepest prefix level to index (path segments below the bucket root)")
 @option("-f", "--min-frac", default=0.002, help="Chart a prefix if its bytes reach this fraction of the fleet total in any scan")
 @option("-F", "--full-depth", default=2, help="Always index prefixes this many segments deep (bucket + one dir), whatever their size, so common drill targets are covered")
 @option("-o", "--out", type=Path, default=None, help="Write the series JSON here (default: stdout)")
 @option("-r", "--root", help="snapshots root: gs://bucket/snapshots, an http base (the dev proxy), or a local dir (default $DATA_BUCKET)")
-def series(max_depth: int, min_frac: float, full_depth: int, out: Path | None, root: str | None) -> None:
+def series(actions_path: str | None, max_depth: int, min_frac: float, full_depth: int, out: Path | None, root: str | None) -> None:
     """Cross-scan size index for the site's per-subpath "size over time" chart.
 
     Folds every archived ``tree.json`` into one compact file: for each prefix
@@ -1268,7 +1389,20 @@ def series(max_depth: int, min_frac: float, full_depth: int, out: Path | None, r
             if depth + 1 < max_depth:
                 walk(c, (*segs, n), depth + 1, flat)
 
+    keep_rows: list[dict] | None = None
+    if actions_path:
+        import fsspec
+
+        with fsspec.open(actions_path, "rt") as f:
+            keep_rows = json.load(f)["keeps"]
+        err(f"ledger: {len(keep_rows):,} keep rows from {actions_path}")
+
+    import time as _time
+    from datetime import datetime, timezone
+
+    now_ts = int(_time.time())
     per_date: dict[str, dict[str, int]] = {}
+    fate_by_date: dict[str, dict[str, int]] = {}
     peak = 0
     for d in dates:
         tree = _load_tree(root, d)
@@ -1276,18 +1410,31 @@ def series(max_depth: int, min_frac: float, full_depth: int, out: Path | None, r
         flat: dict[str, int] = {}
         walk(tree, (), 0, flat)
         per_date[d] = flat
-        err(f"  {d}: {len(flat):>6,} prefixes, {tree.get('b', 0) / 1e12:>6.0f} TB")
+        note = ""
+        if keep_rows is not None:
+            # Marks made *during* scan day D count as of D (end-of-day UTC,
+            # capped at now for the latest scan).
+            y, mo, dd = map(int, d.split("-"))
+            cutoff = min(now_ts, int(datetime(y, mo, dd, tzinfo=timezone.utc).timestamp()) + 86400)
+            fate_by_date[d] = _fate_totals(tree, keep_rows, cutoff)
+            f = fate_by_date[d]
+            note = f" · keep {f['keep'] / 1e12:.0f} / sweep {f['sweep'] / 1e12:.0f} / undecided {f['undecided'] / 1e12:.0f} TB"
+        err(f"  {d}: {len(flat):>6,} prefixes, {tree.get('b', 0) / 1e12:>6.0f} TB{note}")
 
     floor = peak * min_frac
     keep = sorted({
         p for flat in per_date.values() for p, b in flat.items()
         if b >= floor or p.count("/") < full_depth
     })
-    payload = {
+    payload: dict = {
         "dates": dates,
         "prefixes": keep,
         "bytes": {p: [per_date[d].get(p) for d in dates] for p in keep},
     }
+    if fate_by_date:
+        payload["fate"] = {
+            k: [fate_by_date[d][k] for d in dates] for k in ("keep", "sweep", "undecided")
+        }
     text = json.dumps(payload, separators=(",", ":")) + "\n"
     err(f"{len(keep)} prefixes ≥ {min_frac:.2%} of {peak / 1e12:.0f} TB across {len(dates)} scans ({len(text):,} bytes)")
     if out is not None:
@@ -1296,6 +1443,176 @@ def series(max_depth: int, min_frac: float, full_depth: int, out: Path | None, r
         err(f"wrote {out}")
     else:
         print(text, end="")
+
+
+
+@main.command()
+@option("-a", "--actions", "actions_path", required=True, help="Actions-ledger export (the /api/actions JSON; path or URL)")
+@option("-o", "--out", type=Path, default=None, help="Write CSV here (default: stdout)")
+@option("-r", "--root", help="snapshots root (default $DATA_BUCKET)")
+@option("-u", "--site-url", default="https://gcs.oa.dev", help="Site base for per-user page links")
+def report(actions_path: str, out: Path | None, root: str | None, site_url: str) -> None:
+    """Per-user mark-status CSV — the "who still needs to mark & sweep" list.
+
+    Mirrors the site's /users page: scan attribution + live claims applied as
+    a WAL, keep_last_ckpt decomposed, one row per user sorted by undecided
+    bytes (nag order), with the ownerless pools at the bottom.
+    """
+    import csv
+    import io
+    import json
+    import sys
+
+    import fsspec
+
+    from .identity import load_identities
+
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
+    dates = _snapshot_dates(root)
+    if not dates:
+        raise SystemExit(f"no snapshots under {root}")
+    date = dates[-1]
+    tree = _load_tree(root, date)
+    meta = _load_meta(root, date)
+    with fsspec.open(actions_path, "rt") as f:
+        ledger = json.load(f)
+    idmap = load_identities()
+
+    def canon(who: str) -> str:
+        return idmap.resolve(who)
+
+    def norm(u: str) -> str:
+        return u if u.endswith("/") else u + "/"
+
+    def latest(rows: list[dict]) -> dict[str, dict]:
+        live: dict[str, dict] = {}
+        for r in rows:
+            cur = live.get(r["prefix"])
+            if cur is None or (r["ts"], r["action_id"]) > (cur["ts"], cur["action_id"]):
+                live[r["prefix"]] = r
+        return live
+
+    keeps = latest(ledger["keeps"])
+    owners = latest(ledger["owners"])
+
+    anc: set[str] = set()
+    for r in keeps.values():
+        if r["keep"] is not None:
+            segs = r["prefix"].rstrip("/").split("/")
+            for i in range(3, len(segs)):
+                anc.add("/".join(segs[:i]) + "/")
+    for r in owners.values():
+        if r["owner"] is not None:
+            segs = r["prefix"].rstrip("/").split("/")
+            for i in range(3, len(segs)):
+                anc.add("/".join(segs[:i]) + "/")
+    own_keep = {norm(r["prefix"]): r for r in keeps.values()}
+    own_owner = {norm(r["prefix"]): r for r in owners.values()}
+
+    def newer(a: dict, b: dict) -> bool:
+        return (a["ts"], a["action_id"]) > (b["ts"], b["action_id"])
+
+    # user -> fate -> bytes; claims override scan `us` shares wholesale.
+    per_user: dict[str, dict[str, float]] = {}
+
+    def add(u: str, f: str, b: float) -> None:
+        per_user.setdefault(u, {"keep": 0.0, "sweep": 0.0, "undecided": 0.0})[f] += b
+
+    def fate_of(win: dict | None) -> str:
+        k = win["keep"] if win else None
+        if k is None:
+            return "undecided"
+        # keep_last_ckpt folds to keep here (its sweep share is small and the
+        # site strip does the exact split; a nag list doesn't need it).
+        return "sweep" if k == "sweep" else "keep"
+
+    def walk(n: dict, uri: str, inh_k: dict | None, inh_o: dict | None) -> None:
+        u = norm(uri)
+        ok = own_keep.get(u)
+        win_k = ok if ok and (inh_k is None or newer(ok, inh_k)) else inh_k
+        oo = own_owner.get(u)
+        win_o = oo if oo and (inh_o is None or newer(oo, inh_o)) else inh_o
+        claimant = canon(win_o["owner"]) if win_o and win_o["owner"] is not None else None
+        if u not in anc:
+            f = fate_of(win_k)
+            if claimant:
+                add(claimant, f, n["b"])
+            else:
+                for usr, b in n.get("us") or ():
+                    if b > 0:
+                        add(canon(usr), f, b)
+            return
+        rest_b = n["b"]
+        rest = {usr: b for usr, b in n.get("us") or ()}
+        for c in n.get("c", ()):
+            if c["n"].startswith("("):
+                continue
+            rest_b -= c["b"]
+            walk(c, f"{uri}/{c['n']}", win_k, win_o)
+            for usr, b in c.get("us") or ():
+                rest[usr] = rest.get(usr, 0) - b
+        f = fate_of(win_k)
+        if claimant:
+            if rest_b > 0:
+                add(claimant, f, rest_b)
+        else:
+            for usr, b in rest.items():
+                if b > 0:
+                    add(canon(usr), f, b)
+
+    for bkt in tree.get("c", ()):
+        walk(bkt, f"gs://{bkt['n']}", None, None)
+
+    authored: dict[str, int] = {}
+    for r in keeps.values():
+        if r["keep"] is not None:
+            authored[canon(r["who"])] = authored.get(canon(r["who"]), 0) + 1
+
+    user_meta = {u["u"]: u for u in meta.get("users", ())}
+    mixes = meta.get("user_class_bytes", {})
+    price = {"1": 0.02, "2": 0.01, "3": 0.004, "4": 0.0012}
+
+    def usd_mo(uid: str, b: float) -> float:
+        mix = mixes.get(uid)
+        if not mix:
+            return b / 1024**3 * 0.02
+        tot = sum(mix.values()) or 1
+        rate = sum(price.get(c, 0.02) * v for c, v in mix.items()) / tot
+        return b / 1024**3 * rate
+
+    tib = 1024**4
+    rows_out = []
+    for uid, f in per_user.items():
+        total = f["keep"] + f["sweep"] + f["undecided"]
+        if total < 1e9:
+            continue
+        team = idmap.team_of(uid) or user_meta.get(uid, {}).get("t", "unknown")
+        rows_out.append({
+            "user": uid,
+            "group": team,
+            "attributed_TiB": round(total / tib, 1),
+            "est_usd_mo": round(usd_mo(uid, total)),
+            "keep_TiB": round(f["keep"] / tib, 1),
+            "sweep_TiB": round(f["sweep"] / tib, 1),
+            "undecided_TiB": round(f["undecided"] / tib, 1),
+            "undecided_pct": round(100 * f["undecided"] / total) if total else 0,
+            "marks_made": authored.get(uid, 0),
+            "page": f"{site_url}/user/{uid}",
+        })
+    rows_out.sort(key=lambda r: -r["undecided_TiB"])
+
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=list(rows_out[0].keys()))
+    w.writeheader()
+    w.writerows(rows_out)
+    text = buf.getvalue()
+    err(f"{len(rows_out)} users · scan {date} · {sum(r['undecided_TiB'] for r in rows_out):,.0f} TiB undecided across users")
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        err(f"wrote {out}")
+    else:
+        sys.stdout.write(text)
 
 
 @main.command()

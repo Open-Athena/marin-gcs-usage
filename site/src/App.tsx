@@ -127,11 +127,14 @@ function AppContent() {
   useEffect(() => {
     document.title = store.title
   }, [store])
-  // URL token matches the visible label ("written"), not the internal key
-  // ("date"); old ?c=age links still decode to the same mode.
+  // URL token matches the visible label ("written"/"group"), not the internal
+  // key ("date"/"team"); old ?c=age links still decode to the same mode.
+  // ABSENT is meaningful: it means "the lens-appropriate default" (see `mode`
+  // below), so switching lenses re-defaults the coloring — but an explicit
+  // pick (any `?c=`, including group) survives every lens change.
   const [modeP, setModeP] = useUrlState('c', {
-    encode: (v: string | undefined) => (v === 'team' || v === undefined ? undefined : v === 'date' ? 'written' : v),
-    decode: (e: string | undefined) => (e === undefined ? 'team' : e === 'written' || e === 'age' ? 'date' : e),
+    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'written' : v === 'team' ? 'group' : v),
+    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'written' || e === 'age' ? 'date' : e === 'group' ? 'team' : e),
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
@@ -335,8 +338,7 @@ function AppContent() {
   const markTab: Lens = markTabRaw === 'mine' && !hasEmail ? 'all' : markTabRaw
   const setMarkTab = (t: Lens) => {
     setMarkTabP(t === 'all' ? undefined : t === 'mine' ? 'user' : t)
-    if (t !== 'mine') setUP(undefined) // `u` is meaningless outside the user lens
-    if (t === 'todo') setModeP('user') // to-do reads best colored by owner
+    if (t !== 'mine') setUP(undefined) // `lu` is meaningless outside the user lens
   }
   // `?lu=` — whose files the user lens shows (anyone's view is browsable;
   // `?u=` is the highlight-user param). Only meaningful while that lens is
@@ -360,7 +362,10 @@ function AppContent() {
   const readRange = useMemo((): DateRange | null =>
     meta?.access ? { min: meta.access.from, max: meta.access.to } : null,
   [meta])
-  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'team'
+  // No explicit `?c=` → a lens-appropriate default (group shading is useless
+  // on an all-undecided or single-owner view); an explicit pick always wins.
+  const lensDefaultMode: ColorMode = markTab === 'todo' || markTab === 'mine' ? 'user' : 'team'
+  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
   const effMode: ColorMode =
@@ -416,8 +421,10 @@ function AppContent() {
   // A scopable lens highlights its slice even when "scope map" is off; with no
   // lens (all / to-do) fall back to the manually-picked highlight.
   const effHl: Highlight | null =
-    scopedActive ? null
-    : markTab === 'mine' && viewUser ? { user: viewUser }
+    // The user lens highlights its user scoped or not: a scoped subtree still
+    // contains minority co-tenants, and user coloring should dim them.
+    markTab === 'mine' && viewUser ? { user: viewUser }
+    : scopedActive ? null
     : markTab === 'unclaimed' ? { team: 'unattributed' }
     : markTab === 'communal' ? { team: 'communal' }
     : hl
@@ -615,6 +622,7 @@ function AppContent() {
             </div>
           )}
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
+          {markMode && <Link className="nav-files" to="/users" style={{ fontSize: '0.9em' }}>Users&nbsp;→</Link>}
           {markMode && <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>Recent&nbsp;marks&nbsp;→</Link>}
           {ident && (
             <div className="whoami">
@@ -838,10 +846,13 @@ function AppContent() {
         <p className="loading">loading tree…</p>
       )}
 
-      {/* The series + age charts can't scope to a review lens (their data is
-          per-path/per-day, not per-mark-state) — showing fleet-wide charts
-          under a "To-do" heading read as if they were scoped, so they hide. */}
-      {!lensScoped && <SizeOverTime scans={scans} prefix={drillPath} base={store.base} />}
+      {/* Under the To-do lens the series chart flips to mark-progress (the
+          ledger replayed per scan — specs/lens-aware-time-series.md); other
+          lenses still hide it (their data can't scope), as does the age chart
+          below until /api/age lands. */}
+      {(!lensScoped || markTab === 'todo') && (
+        <SizeOverTime scans={scans} prefix={drillPath} base={store.base} fate={markTab === 'todo'} />
+      )}
 
       {markMode && <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} />}
 
