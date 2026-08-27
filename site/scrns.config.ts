@@ -32,6 +32,8 @@ const config: Config = {
     // Same card for the CoreWeave store at /cw — colored by top-level prefix
     // (that bucket has no ownership attribution), served as /og-cw.jpg by the
     // `/cw` shell rewriter in functions/cw/.
+    // /users unfurl card: owner map, names + fate stripes, no sizes/$.
+    'og-users': { ...base, width: 1200, height: 630, selector: '.og .dt-treemap-map .dt-treemap-cell', query: 'users/og', preScreenshotSleep: 1400 },
     'og-cw': { ...base, width: 1200, height: 630, selector: '.og .dt-treemap-map .dt-treemap-cell', query: 'cw/og', preScreenshotSleep: 1200 },
   },
 }

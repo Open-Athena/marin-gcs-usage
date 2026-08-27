@@ -457,6 +457,25 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 
 // `/og` — fixed 1200×630 frame for the public og:image screenshot. Reuses
 // <Treemap redact> (cells only); head + group color-key framed around it.
+// Owner-map legend (shared by /users and its og render).
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  align-items: center;
+  margin: -0.5em 0 1em;
+  font-size: 12px;
+  color: var(--ink-2);
+  span { display: inline-flex; align-items: center; gap: 5px; }
+  i { width: 11px; height: 11px; border-radius: 2.5px; display: inline-block; }
+  .sep { width: 1px; height: 14px; background: var(--line); margin: 0 2px; }
+}
+
+.og-users {
+  .users-map { height: 100%; margin: 0; .dt-treemap { height: 100%; } }
+  .map-legend { margin: 0; font-size: 14px; }
+}
+
 .og {
   width: 1200px;
   height: 630px;
@@ -1290,18 +1309,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .grp-icon { height: 16px; vertical-align: middle; }
   .grp-none { color: var(--ink-2); opacity: 0.6; display: inline-block; min-width: 12px; text-align: center; }
   .user-cell { display: inline-flex; align-items: center; gap: 8px; }
-  .map-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 16px;
-    align-items: center;
-    margin: -0.5em 0 1em;
-    font-size: 12px;
-    color: var(--ink-2);
-    span { display: inline-flex; align-items: center; gap: 5px; }
-    i { width: 11px; height: 11px; border-radius: 2.5px; display: inline-block; }
-    .sep { width: 1px; height: 14px; background: var(--line); margin: 0 2px; }
-  }
   .grp-badge {
     display: inline-block;
     padding: 1px 7px;

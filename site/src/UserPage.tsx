@@ -1,6 +1,6 @@
 import { Treemap, type CellStyle } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
@@ -192,7 +192,12 @@ function MapLegend() {
   )
 }
 
-function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate, number>> | null }) {
+function UsersMap({ meta, fates, redact = false }: {
+  meta: Meta
+  fates: Map<string, Record<Fate, number>> | null
+  /** og:image mode — names + stripes only: no sizes, no tooltips, no drill. */
+  redact?: boolean
+}) {
   const navigate = useNavigate()
   const root = useMemo((): OwnerCell => {
     const users: UserInfo[] = meta.users ?? []
@@ -213,7 +218,7 @@ function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate,
         getSize={n => n.b}
         getChildren={n => n.c}
         getLabel={n => n.n}
-        formatSize={n => fmtBytesIec(n)}
+        formatSize={redact ? () => '' : n => fmtBytesIec(n)}
         chrome={false}
         fullscreen={false}
         colorForCell={(n): CellStyle | null => {
@@ -239,6 +244,7 @@ function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate,
           return style
         }}
         renderTooltip={(n) => {
+          if (redact) return null
           const raw = n.id ? fates?.get(n.id) : undefined
           const f = raw ? foldFates(raw) : undefined
           const total = f ? SHOWN_FATES.reduce((s, k) => s + f[k], 0) : 0
@@ -258,12 +264,47 @@ function UsersMap({ meta, fates }: { meta: Meta; fates: Map<string, Record<Fate,
           )
         }}
         onCellClick={(n) => {
+          if (redact) return true
           if (n.id) {
             navigate(`/user/${n.id}`)
             return true
           }
         }}
       />
+    </div>
+  )
+}
+
+/** `/users/og` — fixed 1200×630 unfurl render of the owner map: names + fate
+ * stripes only (no sizes, no $, no tooltips). Screenshot via `pnpm shots`. */
+export function UsersOgPage() {
+  const asof = useLatestScan()
+  const metaQ = useScanFile<Meta>('meta', asof)
+  const treeQ = useScanFile<TreeNode>('tree', asof)
+  const marksQ = useMarks(true)
+  const idx = useMarkIndex(marksQ.data)
+  const fates = useMemo(
+    () => (treeQ.data ? allUserFates(treeQ.data, idx) : null),
+    [treeQ.data, idx],
+  )
+  useEffect(() => {
+    const prev = document.documentElement.dataset.theme
+    document.documentElement.dataset.theme = 'dark'
+    return () => {
+      if (prev) document.documentElement.dataset.theme = prev
+      else delete document.documentElement.dataset.theme
+    }
+  }, [])
+  return (
+    <div className="og og-users">
+      <div className="og-head">
+        <h1>Marin GCS usage — users</h1>
+        <p>Who owns what, and where every user’s bytes stand: keep / sweep / undecided.</p>
+      </div>
+      <div className="og-map">
+        {metaQ.data && fates && <UsersMap meta={metaQ.data} fates={fates} redact />}
+      </div>
+      <MapLegend />
     </div>
   )
 }
