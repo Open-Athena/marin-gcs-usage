@@ -9,10 +9,12 @@ cd "$(dirname "$0")"
 # standalone `cf-status` (queries the CF Pages deployments API, compares to HEAD).
 if [ "${1:-}" = "--status" ]; then exec ./cf-status; fi
 
-# `-p`/`--push`: after moving the local `prod` pointer, also push it to GitHub
-# (`o`), so the live commit is visible remotely too. Off by default (local-only).
-push=false
-for a in "$@"; do case "$a" in -p|--push) push=true ;; esac; done
+# Push is the DEFAULT: everything deployed to gcs.oa.dev is public-facing, so
+# the deployed commit (and the branch that contains it) belong on GitHub too —
+# otherwise agents reading the repo infer from stale source (bit us 8/27+8/28).
+# `-P`/`--no-push` keeps a deploy local (rare: experiments off the main branch).
+push=true
+for a in "$@"; do case "$a" in -P|--no-push) push=false ;; esac; done
 
 # Auth via the repo's direnv CLOUDFLARE_API_TOKEN, which has Pages write on the
 # OA account (as well as Access + oa.dev DNS edit). We deliberately do NOT fall
@@ -32,6 +34,8 @@ sha=$(git rev-parse HEAD)
 git branch -f prod "$sha"
 echo "moved local prod → ${sha:0:9}"
 if $push; then
+  branch=$(git rev-parse --abbrev-ref HEAD)
+  git push o "$branch" || echo "WARN: push of $branch to o failed (deploy itself succeeded)" >&2
   git push -f o prod
-  echo "pushed prod → o (GitHub)"
+  echo "pushed $branch + prod → o (GitHub)"
 fi

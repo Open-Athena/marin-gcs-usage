@@ -95,6 +95,14 @@ need `Authorization: Bearer $GCS_USAGE_TOKEN`.
 | `GET /data/scans.json`, `/data/<scan>/{tree,age,meta}.json`, `/data/rules.json` | The published per-scan artifacts the UI renders (tree = size-floored rollup; meta = totals + per-user/class bytes). |
 | `GET /api/subtree?date=&path=&w=&h=` | Pixel-budget subtree of any path — UI-shaped `TreeNode`s (`{n,b,o,d,tm,sh,us,cb,c}`), folded to what a w×h canvas can draw. What the treemap drills with. |
 | `GET/HEAD /api/path-index?date=` | The **floor-free** path index behind `/api/subtree`, as raw parquet with HTTP Range support — bring your own query engine (see below). One row per rolled-up path × attribution slice: `(path, depth, team, usr, b, o, wts, wb, c2, c3, c4)`, sorted `(depth, path)`. |
+| `GET /v1/files/<path>` | Raw scan-store proxy (range-supporting) over `listing/` + `snapshots/` — the per-object listing parquets, `dir-cache/`, `path-index.parquet`, and published snapshot JSONs, addressed by bucket path. |
+
+Human-facing pages, same data: [`/files`](https://gcs.oa.dev/files) browses the
+raw store with an in-browser parquet viewer (e.g.
+[`/files/listing/2026-08-28/path-index.parquet`](https://gcs.oa.dev/files/listing/2026-08-28/path-index.parquet)
+— schema + row-group paging over HTTP ranges), [`/users`](https://gcs.oa.dev/users)
+is the per-user mark-status rollup, `/user/<id>` one user's estate, and `/marks`
+the recent-actions feed.
 
 ```sql
 -- DuckDB, straight against prod (httpfs sends HEAD + range GETs, so a
