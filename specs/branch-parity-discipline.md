@@ -55,7 +55,7 @@ architecture.
 
 | pair | surface | intended delta |
 |---|---|---|
-| gcs ↔ cw-s3 | `site/` | branding, `s3://` scheme, no team/group axis, own auth list + Access app, no mark & sweep (for now) |
+| gcs ↔ cw-s3 | `site/` | own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA-only, edge identity); branding, `s3://` scheme, no team/group axis, no mark & sweep (for now); no `/user/:id` pages |
 | gcs ↔ cw-s3 | `job/` | `run.sh`+`batch-submit.sh` (GCS) vs `cw-*` (CW: S3-compat listing, precomputed `diff.json`); restore `cw-*` onto cw-s3 from `053cc33^` |
 | gcs ↔ cw-s3 | `packages/react`, `src/disk_tree` | **none** — keep at parity (synced 8/28) |
 | marin ↔ dt/main | `src/disk_tree` | upstream carries Flask serving (`server.py`, diff index, vocab sidecar, compare perf); marin carries nothing server-side. Shared core must be a superset upstream: fork→upstream manifest `~/c/disk-tree/specs/marin-python-cp-2026-08-28.md` |
@@ -121,4 +121,4 @@ model needs (Ryan's call — DNS + Access app): a second Pages project (e.g.
 `oa-cw-usage`), the `cw-s3.oa.dev` custom domain moved onto it, the CW Access
 app `4c463052` re-pointed if needed, `cw-s3`'s `site/deploy` retargeted, and
 then gcs's host-aware CW branches (`/cw`, `isCwHost`) become dead code to prune.
-Until then, cw-s3 `site/` commits are staged, not live.
+**Resolved 2026-08-28 (same day):** `oa-cw-s3-usage` created, secrets copied, Access app extended to its pages.dev hosts, custom domain + CNAME moved, `cw-s3`'s `site/deploy` retargeted and run; gcs pruned of the host-keyed CW code (`f4e7025`). Both hosts verified gated with the right build.
