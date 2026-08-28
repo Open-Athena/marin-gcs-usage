@@ -131,7 +131,8 @@ users:
     aliases: [blahblahhhj]
     team: stanford
   julian:
-    github: hummlj  # Julian Humml (same handle on Discord)
+    aliases: [julian-q, julianq]
+    github: julian-q  # Julian Quevedo (Discord jujujulian) — earlier misread as Julian Humml (hummlj)
     team: stanford  # non-OA marin contributor → Stanford access group
   alex-merose:
     aliases: [alxmrs]
@@ -220,7 +221,7 @@ prefix_owners:
     team: stanford
   - prefix: gs://marin-*/julian/
     user: julian
-    team: stanford  # Julian Humml (hummlj); julian/experiments/causal-diffusion across buckets (~23 TB)
+    team: stanford  # Julian Quevedo (julian-q); julian/experiments/causal-diffusion across buckets (~23 TB)
   # Calvin's data-mixture swarms (Percy, 8/18 call). Only ~350 of the ~1,060
   # swarm dirs ever logged a W&B run (all his), so run-matching can't cover the
   # rest — the name pattern can. Path-glob: `*` matches within one segment.
