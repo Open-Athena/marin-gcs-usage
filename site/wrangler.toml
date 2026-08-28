@@ -16,10 +16,8 @@ database_id = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"
 [vars]
 # Zero Trust team domain whose JWTs the SSO hand-off + edge fallback accept.
 ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"
-# AUD tags of the two Access apps: "GCS usage" (gcs.oa.dev + pages.dev) and
-# "CoreWeave usage" (cw-s3.oa.dev, whole-host, OA-only — stays edge-gated).
+# AUD tag of the "GCS usage" Access app (gcs.oa.dev + pages.dev, `/auth/sso`).
 ACCESS_AUD = "a75188138fbb860cdcede865b65856c59240270a5135fb7d97b9342ba8c56864"
-ACCESS_AUD_CW = "1de65a9ffe270d860911b786720fefe00123e79e71ca038c311479e468dc8378"
 # Domain whose SSO identities are staff (gcs + cw + admin scopes).
 STAFF_DOMAIN = "openathena.ai"
 

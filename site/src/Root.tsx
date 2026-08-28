@@ -12,7 +12,7 @@ import { STORES } from './stores'
 // `/files/*` → scan browser; `<store>/og` → redacted fixed-size treemap for that
 // store's og:image screenshot (public, ungated — it's what unfurl crawlers
 // render); every other path → the treemap app, which picks its store from the
-// path (`/` = GCS, `/cw` = CoreWeave). The two data-backed routes sit behind
+// path. The two data-backed routes sit behind
 // <AuthGate>, which shows a login wall when there's no CF Access session.
 export default function Root() {
   return (

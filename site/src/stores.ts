@@ -4,7 +4,7 @@
 //
 // Data comes from the snapshot bucket via `functions/data/[[path]].ts`, not
 // from the site build: GCS snapshots sit at `snapshots/<date>/`, and every
-// other store gets a named subdir (`snapshots/cw/<date>/`). The Function's
+// other store would get a named subdir (`snapshots/<store>/<date>/`). The Function's
 // date-dir filter keeps a store subdir out of the GCS scan list, and its
 // generic `/data/<rel>` -> `snapshots/<rel>` mapping serves the payloads
 // unchanged -- only the `scans.json` listing needed a store prefix.
@@ -36,34 +36,15 @@ export const STORES: Store[] = [
     ogImage: '/og.jpg',
     prices: true,
   },
-  {
-    key: 'cw',
-    label: 'CoreWeave',
-    title: 'Marin CoreWeave usage',
-    desc: 'Storage usage across the marin-us-east-02a CoreWeave S3 bucket.',
-    path: '/cw',
-    scheme: 's3://',
-    base: '/data/cw',
-    ogImage: '/og-cw.jpg',
-    prices: false,
-  },
 ]
 
 export const DEFAULT_STORE = STORES[0]
 
-// Longest matching path wins, so `/cw` beats the `/` default.
-// A CW-dedicated hostname (cw-s3.oa.dev) roots the CoreWeave view: `/` there
-// IS the CW store, so links shared with the marin-ops audience don't need the
-// `/cw` path (and that host's CF Access policy can be wider than gcs.oa.dev's,
-// which carries $ estimates). Path routes still work on any host.
-const HOST_DEFAULT = (): Store | undefined =>
-  typeof location !== 'undefined' && /^cw[-.]/.test(location.hostname)
-    ? STORES.find(s => s.key === 'cw')
-    : undefined
-
+// Longest matching path wins. (The CoreWeave view is its own deployment —
+// cw-s3.oa.dev, the `cw-s3` branch — not a store here; `/cw` redirects there
+// via functions/cw.ts.)
 export const storeForPath = (pathname: string): Store =>
   [...STORES]
     .sort((a, b) => b.path.length - a.path.length)
     .find(s => s.path !== '/' && (pathname === s.path || pathname.startsWith(`${s.path}/`)))
-  ?? HOST_DEFAULT()
   ?? DEFAULT_STORE

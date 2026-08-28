@@ -15,8 +15,7 @@ export function SiteNav({ inline = false }: { inline?: boolean }) {
   const ident = useIdent()
   const canMark = useCanMark()
   const signOut = useSignOut()
-  // Mark-related pages are GCS-only (CoreWeave is out of the sweep).
-  const markLinks = canMark && !pathname.startsWith('/cw')
+  const markLinks = canMark
   const myUser = useMyUser(ident?.email, canMark)
   const emails = useUserEmails(canMark)
   const [tokenOpen, setTokenOpen] = useState(false)

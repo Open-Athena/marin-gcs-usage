@@ -108,9 +108,8 @@ function useTheme(): [Theme, () => void] {
 }
 
 function AppContent() {
-  // Which object store to render comes from the path (`/` = GCS, `/cw` = the
-  // CoreWeave bucket), so each store is its own shareable URL with its own
-  // unfurl card rather than a query param on a single page.
+  // Which object store to render comes from the path (one store today; the
+  // abstraction stays so a second cloud store is a `STORES` row + data).
   const { pathname, search, hash } = useLocation()
   const navigate = useNavigate()
   const store = storeForPath(pathname)
@@ -122,8 +121,7 @@ function AppContent() {
   const markMode = store.key === 'gcs' && canMark
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
-  // The shell's <title> is rewritten per store for crawlers (functions/cw/), but
-  // client-side navigation between stores has to keep the tab in sync too.
+  // Keep the tab title in sync with the store on client-side navigation.
   useEffect(() => {
     document.title = store.title
   }, [store])
@@ -432,13 +430,9 @@ function AppContent() {
     : markTab === 'communal' ? { team: 'communal' }
     : hl
 
-  // The prod hostnames are one-store-each; localhost/previews serve both.
-  const crossSite = useMemo(() => {
-    const host = location.hostname
-    if (/^cw[-.]/.test(host)) return { label: 'GCS usage', href: 'https://gcs.oa.dev/' }
-    if (host === 'gcs.oa.dev') return { label: 'CoreWeave usage', href: 'https://cw-s3.oa.dev/' }
-    return null
-  }, [])
+  // The CoreWeave dashboard is a sibling deployment (`cw-s3` branch), not a
+  // store of this app — cross-link it.
+  const crossSite = { label: 'CoreWeave usage', href: 'https://cw-s3.oa.dev/' }
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
   const mkUsers = useMemo(() => (meta?.users ?? []).map(u => u.u).sort(), [meta])
@@ -695,15 +689,6 @@ function AppContent() {
       )}
 
       <section className="prose">
-        {store.key === 'cw' ? (
-          <p>
-            Storage in the <code>marin-us-east-02a</code> CoreWeave S3 bucket, from a per-object
-            listing of the whole bucket. Treemap drills into prefixes; cells are colored by prefix,
-            splitting any prefix that owns most of the bucket one level deeper (so <code>marin/</code>’s
-            children get their own hues instead of one blue mass). The age chart still groups by
-            top-level prefix.
-          </p>
-        ) : (
         <p>
           Storage across the six <code>marin-*</code> GCS buckets — a full per-object listing
           (deduped), snapshotted daily by the{' '}
@@ -719,7 +704,6 @@ function AppContent() {
           top users, <kbd>⌘K</kbd> to jump to a user/group, or see the per-user breakdown at{' '}
           <Link to="/users">/users</Link>.
         </p>
-        )}
       </section>
 
       {scansQ.isError && (

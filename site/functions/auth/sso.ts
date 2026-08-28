@@ -17,7 +17,7 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   if (!jwt) return new Response('no Access JWT — is this path still gated?\n', { status: 401 })
   const teamDomain = env.ACCESS_TEAM_DOMAIN ?? TEAM_DOMAIN
   let email: string | null = null
-  for (const aud of [env.ACCESS_AUD, env.ACCESS_AUD_CW]) {
+  for (const aud of [env.ACCESS_AUD]) {
     email = await verifyAccessJwt(jwt, teamDomain, aud)
     if (email) break
   }

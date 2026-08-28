@@ -7,10 +7,8 @@
  * Identity sources, in the order `requireScope` tries them:
  *
  *  1. `Cf-Access-Jwt-Assertion` header — present on any request that came
- *     through a CF Access edge gate. This is the *entire* auth story today
- *     (gcs.oa.dev pre-cutover) and stays the story on cw-s3.oa.dev, whose
- *     whole-host OA-only Access app is intentionally untouched (CW data is
- *     not for Stanford/external viewers).
+ *     through a CF Access edge gate — today only `/auth/sso` (the SSO hand-off;
+ *     the CoreWeave dashboard is its own deployment with its own Access app).
  *  2. The app session cookie / `Authorization: Bearer` / `?key=` — the
  *     `@open-athena/auth` gate, backed by D1. This is what makes named share
  *     links ("anyone with the link can view") possible: minted links redeem
@@ -34,7 +32,6 @@ export interface Env {
   ACCESS_TEAM_DOMAIN?: string
   /** AUD tags of the Access apps whose edge JWTs we accept (gcs + cw). */
   ACCESS_AUD?: string
-  ACCESS_AUD_CW?: string
   STAFF_DOMAIN?: string
   GCS_HMAC_KEY_ID: string
   GCS_HMAC_SECRET: string
@@ -94,7 +91,7 @@ async function edgeIdentity(req: Request, env: Env): Promise<Identity | null> {
   const jwt = req.headers.get('Cf-Access-Jwt-Assertion')
   if (!jwt) return null
   const teamDomain = env.ACCESS_TEAM_DOMAIN ?? TEAM_DOMAIN
-  for (const aud of [env.ACCESS_AUD, env.ACCESS_AUD_CW]) {
+  for (const aud of [env.ACCESS_AUD]) {
     const email = await verifyAccessJwt(jwt, teamDomain, aud)
     if (email) {
       const scopes = await scopesFor(env)(email)
