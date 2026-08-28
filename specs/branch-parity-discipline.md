@@ -109,3 +109,16 @@ gated; that is an intended delta for now).
 
 Verification: `scripts/branch-audit gcs cw-s3` — react/engine parity; `job`
 now differs only by the ledger's intended files.
+
+**Found while closing the site tier — cw-s3.oa.dev does not serve the `cw-s3`
+branch.** It is a custom domain on the `oa-gcs-usage` Pages project (`wrangler
+pages project list`), i.e. it serves the **`gcs` branch's build**, whose
+host-aware store default (`ab88049`) shows the CW view on `cw-*` hosts. The
+`cw-s3` branch's `site/` has never been deployed, and its `site/deploy` still
+targets `--project-name oa-gcs-usage` — running it would overwrite gcs.oa.dev.
+So today only the *job* half of the CW deployment is branch-owned. Closing the
+model needs (Ryan's call — DNS + Access app): a second Pages project (e.g.
+`oa-cw-usage`), the `cw-s3.oa.dev` custom domain moved onto it, the CW Access
+app `4c463052` re-pointed if needed, `cw-s3`'s `site/deploy` retargeted, and
+then gcs's host-aware CW branches (`/cw`, `isCwHost`) become dead code to prune.
+Until then, cw-s3 `site/` commits are staged, not live.
