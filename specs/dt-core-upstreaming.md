@@ -52,3 +52,22 @@ measured tip clamp landed upstream as `cb075ea`. `Treemap.tsx` should now
 differ only by whatever lands next on either side. Marin uses
 `tiling={(…, ctx) => ctx.medianChildArea < 100 ? 'shared' : 'gaps'}` and
 themes `--dt-treemap-container-bg` / `--dt-treemap-edge` via `app.scss`.
+
+## Python engine drift (`src/disk_tree`) — untracked until 2026-08-28
+
+`gcs` ≈ `cw-s3` (only `tree_build.py` floors differed; synced 8/28), but both
+vs upstream `main` diverge **in both directions** (22 files, +646/−1388 at
+`cb075ea`):
+
+- **upstream-only** (not here): diff index (`diff_index.py`, `cli/diff_index.py`),
+  vocab sidecar + block index (`sidecar.py`, `cli/vocab.py`), compare perf
+  (64K row groups, chunk map, single-flight), `touched` status, `recursive_diff`
+  outer-join rewrite, `server.py` compare routes. Marin's `DiffTreemap` uses the
+  older recursive diff — CP if/when the compare view matters here.
+- **fork-only** (not upstream): `tree_build.py` (additive-field model, parent-
+  relative floors, `ABS_FLOOR`/`TOP_K` — deferred by design, see above), access
+  plane productionization (`access/{aggregate,parsers/gcs,read_sizes,schema}.py`,
+  `cli/access.py`, `dt access sizes`), GCS usage-log dedup fix.
+
+Needs a Python CP manifest from the disk-tree session (which side wants what);
+the react lib is the only surface currently kept at parity on every sync.
