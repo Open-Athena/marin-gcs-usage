@@ -37,6 +37,10 @@ Planned (specs in this repo, implement as core features):
 
 ## New since last sync (pending CP)
 
+- `Treemap.tsx`: viewport-clamp the hover tip by its MEASURED size (consumers
+  widen it via CSS `max-width` overrides; the fixed 320px guess overflowed
+  the right edge).
+
 - `Treemap.tsx`: `cellHref` accessor — leaf-rendered cells become real
   `<a href>`s (native cursor/cmd-click/link hints); nested-tile cells stay
   divs (anchors can't nest); plain clicks preventDefault into the normal

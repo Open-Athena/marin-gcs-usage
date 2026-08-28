@@ -1,5 +1,6 @@
 import { Treemap, type CellStyle } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
+import { stringParam, useUrlState } from 'use-prms'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Avatar } from './Avatar'
@@ -605,6 +606,9 @@ export function UserPage() {
     [treeQ.data, idx, klcIdx],
   )
   const mine = fatesAll?.get(id) ?? null
+  // Drill state lives in `?p=` so deep views are shareable and the back
+  // button walks back out (same contract as the homepage map).
+  const [pP, setPP] = useUrlState('p', stringParam())
   // The user's slice of the estate as a drillable map (same scoping as the
   // homepage's "My files" lens: maximal subtrees ≥60% theirs), colored by
   // mark state.
@@ -707,6 +711,20 @@ export function UserPage() {
   const claimed = claimedRows.length
   const decidedRows = rows.filter(r => r.fate !== 'unmarked')
   const undecidedRows = rows.filter(r => r.fate === 'unmarked')
+  // Resolve `?p=` against the scoped tree each render; a vanished segment
+  // truncates to its deepest surviving ancestor.
+  const mapPath = useMemo((): TreeNode[] | undefined => {
+    if (!scopedTree) return undefined
+    const path = [scopedTree]
+    let cur: TreeNode = scopedTree
+    for (const s of (pP ?? '').split('/').filter(Boolean)) {
+      const next = cur.c?.find(c => c.n === s)
+      if (!next) break
+      path.push(next)
+      cur = next
+    }
+    return path
+  }, [scopedTree, pP])
   const team = teamOf(id)
   const loading = !asof || treeQ.isLoading || marksQ.isLoading
 
@@ -778,6 +796,8 @@ export function UserPage() {
                 scheme={store.scheme}
                 markIdx={idx}
                 klcIdx={klcIdx}
+                path={mapPath}
+                onPathChange={pth => setPP(pth.slice(1).map(n => n.n).join('/') || undefined)}
               />
             </div>
           )}
