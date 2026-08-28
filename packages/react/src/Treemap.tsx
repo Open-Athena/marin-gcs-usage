@@ -762,6 +762,15 @@ export function Treemap<T>({
   }
 
   const tipToShow = pinnedTip ?? tip
+  // Clamp the tip to the viewport using its MEASURED size — consumers widen
+  // it with CSS (max-width overrides), so a fixed guess overflows the edge.
+  const [tipDims, setTipDims] = useState<{ w: number; h: number } | null>(null)
+  useLayoutEffect(() => {
+    const el = tipRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    setTipDims(d => (d && Math.abs(d.w - r.width) < 1 && Math.abs(d.h - r.height) < 1 ? d : { w: r.width, h: r.height }))
+  })
   const tipContent = tipToShow && renderTooltip
     ? renderTooltip(tipToShow.node, tipToShow.path)
     : tipToShow
@@ -868,8 +877,8 @@ export function Treemap<T>({
           onMouseLeave={() => { if (!pinnedTip) { pin.hover(null); setTip(null) } }}
           style={{
             position: 'fixed',
-            left: Math.min(tipToShow.x + 14, (typeof window !== 'undefined' ? window.innerWidth : 1600) - 320),
-            top: Math.min(tipToShow.y + 14, (typeof window !== 'undefined' ? window.innerHeight : 1200) - 80),
+            left: Math.max(4, Math.min(tipToShow.x + 14, (typeof window !== 'undefined' ? window.innerWidth : 1600) - (tipDims?.w ?? 320) - 8)),
+            top: Math.max(4, Math.min(tipToShow.y + 14, (typeof window !== 'undefined' ? window.innerHeight : 1200) - (tipDims?.h ?? 80) - 8)),
             background: 'var(--dt-treemap-tip-bg, #1a1a1e)',
             color: 'var(--dt-treemap-tip-ink, #e6e6ea)',
             border: '1px solid var(--dt-treemap-tip-border, #333)',
