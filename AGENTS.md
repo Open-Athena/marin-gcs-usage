@@ -157,8 +157,10 @@ GitHub handle max); sizes and $ stay behind the site's auth.
   `disk_tree` engine below.
 - `job/` — daily snapshot pipeline on **GCP Batch** (`run.sh` entrypoint,
   `batch-submit.sh`, `build.sh` → Cloud Build image; Cloud Scheduler crons
-  `gcs-usage-snapshot-daily` 07:00 UTC and `cw-usage-snapshot` 12-hourly live in
-  GCP, bodies edited in place — never regenerated).
+  `gcs-usage-snapshot-daily` 07:00 UTC on the `:latest` image built from this
+  branch, and `cw-usage-snapshot` 12-hourly on the `:cw` image built from the
+  `cw-s3` branch's `job/cw-*` — live in GCP, bodies edited in place, never
+  regenerated). One branch per deployment: `specs/branch-parity-discipline.md`.
 - `packages/react/` — `@disk-tree/react` widget lib (Treemap etc.); core changes
   here CP upstream to disk-tree (`specs/dt-core-upstreaming.md`).
 - `src/`, `ui/`, `tests/` — the vendored **disk-tree** engine + its own app and
