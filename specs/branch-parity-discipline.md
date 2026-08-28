@@ -122,3 +122,20 @@ model needs (Ryan's call — DNS + Access app): a second Pages project (e.g.
 app `4c463052` re-pointed if needed, `cw-s3`'s `site/deploy` retargeted, and
 then gcs's host-aware CW branches (`/cw`, `isCwHost`) become dead code to prune.
 **Resolved 2026-08-28 (same day):** `oa-cw-s3-usage` created, secrets copied, Access app extended to its pages.dev hosts, custom domain + CNAME moved, `cw-s3`'s `site/deploy` retargeted and run; gcs pruned of the host-keyed CW code (`f4e7025`). Both hosts verified gated with the right build.
+
+### 2026-08-28 (cw-ward, pass 2) — after cw-s3.oa.dev moved onto the branch
+
+The move exposed everything the CW *view* had only via the gcs build. Landed
+on `cw-s3` (`245501f`, `1e5ee40`): `/data` rooted at `snapshots/cw/` with
+sub-daily ids (the branch had never read CW data); `?d=` codecs + `fmtScan`;
+diff.json "Changes since previous scan" (`DiffTreemap`); `initialPath` into
+the lone bucket; latest scan = clean URL (no `?d` bake-in); `hasPrices` gates
+every $ surface (CW has no class breakdown); auto age-chart granularity
+(~30 bars); shared-edge tiling + core edge/container/cell-border vars.
+
+Finding for the **gcs-ward** list: since today's core CP the core paints
+sibling borders inline (`boxShadow` — `--dt-treemap-cell-border` ring in gaps
+mode, half-stroke ring in shared mode), so the class-level inset box-shadow
+rules in `app.scss` (`.dt-treemap-cell`, `.branch`, `.chain`, `.dust`,
+`&.store-gcs …`) are dead on gcs too. gcs should drop them and tune
+`--dt-treemap-cell-border` like cw-s3 did (`1e5ee40`).
