@@ -35,4 +35,4 @@ COPY marin/src ./marin/src
 RUN pip install --no-cache-dir ./marin
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
-ENTRYPOINT ["bash", "job/run.sh"]
+ENTRYPOINT ["bash", "job/cw-run.sh"]
