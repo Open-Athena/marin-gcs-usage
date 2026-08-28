@@ -7,6 +7,9 @@ tmp
 .tmp
 .dvc
 slck
+dscrd
+.envrc
+site/.dev.vars
 node_modules
 site/node_modules
 site/dist

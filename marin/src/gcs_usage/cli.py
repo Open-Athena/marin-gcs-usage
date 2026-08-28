@@ -175,13 +175,13 @@ def wandb_attr(
     err(f"wrote {len(rows)} attribution rows to {out}: {dict(by_source)}")
 
 
-@main.command()
+@main.command("attr-report")
 @option("-a", "--attribution", "attributions", required=True, multiple=True, help="Attribution parquet(s); repeatable, concatenated")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-n", "--top", default=30, help="Rows in the per-user table")
 @option("-u", "--user", "claim_user", default=None, help="Print this user's claim list (their attributed prefixes by bytes)")
-def report(
+def attr_report(
     attributions: tuple[str, ...],
     identities_path: Path,
     listings: tuple[str, ...],
