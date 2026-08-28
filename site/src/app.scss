@@ -11,6 +11,12 @@
   --s5: #1baf7a; --s6: #eb6834; --s7: #4a3aa7; --s8: #e34948;
   --other: #a6a49b;
   --t-unknown: #eda100; --t-unattr: #c9c7be;
+  // @disk-tree/react: opaque base under each cell's paint layer (gutters/title
+  // bars) + shared-edge stroke; the core defaults are dark constants.
+  --dt-treemap-container-bg: var(--panel);
+  --dt-treemap-edge: var(--line);
+  // Bright prefix hues carry a strong ring (the gcs palette is muted; it doesn't).
+  --dt-treemap-cell-border: rgb(0 0 0 / 0.45);
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme='light'])) {
@@ -216,14 +222,20 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     height: 520px;
   }
   .dt-treemap-cell {
-    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25);
-    &.dust { box-shadow: none; }
-    &:hover { filter: brightness(1.07); }
+    // Sibling separation is the core's (inline `boxShadow`): the opt-in
+    // `--dt-treemap-cell-border` ring in gaps mode, and the half-stroke inset
+    // ring in shared mode — a class-level box-shadow here would lose to the
+    // inline style, so borders are tuned via the vars in :root.
+    // `:hover` matches every ancestor of the pointer and `filter` compounds
+    // down the tree — only brighten the innermost hovered cell.
+    &:hover:not(:has(.dt-treemap-cell:hover)) { filter: brightness(1.07); }
     &:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
     .dt-treemap-lbl {
       font-variant-numeric: tabular-nums;
+      font-weight: 500;
+      text-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
       &.sm { padding: 1px 3px !important; }
-      .sz { opacity: 0.75; }
+      .sz { opacity: 0.88; font-weight: 500; }
     }
   }
   .hint { color: var(--ink-3); font-size: 12px; }

@@ -237,11 +237,6 @@ function AppContent() {
     void fetch(`/data/${asof}/diff.json`).then(r => (r.ok ? r.json() : null)).then(setDiff).catch(() => {})
   }, [asof])
 
-  // Keep ?d= synced to the selected scan — always baked in (even the latest
-  // day) so any view is shareable and the digest deep-links resolve.
-  useEffect(() => {
-    if (asof && dP !== asof) setDP(asof)
-  }, [asof, dP])
 
   const catOrder = useMemo(() => {
     if (!tree) return []
@@ -254,18 +249,21 @@ function AppContent() {
     return [...catBytes.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k).filter(k => k !== '(other)')
   }, [tree])
 
+  // Storage-class $ estimates are GCS list prices; a store that publishes no
+  // class breakdown (CoreWeave) has nothing to price — hide every $ surface.
+  const hasPrices = !!meta && Object.keys(meta.class_bytes).length > 0
   const estCost = useMemo(() => {
-    if (!meta) return null
+    if (!meta || !hasPrices) return null
     const gib = (b: number) => b / 1024 ** 3
     const list = Object.entries(meta.class_bytes).reduce(
       (s, [c, b]) => s + gib(b) * (CLASS_PRICE_US[c] ?? 0.02),
       0,
     )
     return { list }
-  }, [meta])
+  }, [meta, hasPrices])
 
   const pricing = useMemo((): Pricing | null => {
-    if (!meta) return null
+    if (!meta || !hasPrices) return null
     const rates = (m?: Record<string, Record<string, number>>) =>
       m && Object.fromEntries(Object.entries(m).map(([k, cb]) => [k, ratePerByte(cb)]))
     return {
@@ -273,7 +271,7 @@ function AppContent() {
       userRates: rates(meta.user_class_bytes),
       userMix: meta.user_class_bytes,
     }
-  }, [meta])
+  }, [meta, hasPrices])
 
   return (
     <main>
@@ -377,7 +375,7 @@ function AppContent() {
         <AttributionRules rules={rules} tree={tree} users={meta.users} />
       )}
 
-      {meta && (
+      {meta && hasPrices && (
         <section>
           <h2>Storage classes</h2>
           <table className="classes">

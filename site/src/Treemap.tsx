@@ -243,6 +243,10 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     <DtTreemap<TreeNode>
       root={root}
       initialPath={initialPath}
+      // Shared-edge tiling for leaf swarms (specs/treemap-shared-edges.md):
+      // gaps keep containers legible; dense fields of small siblings tile
+      // edge-to-edge with one depth-scaled stroke per boundary.
+      tiling={(_n, _p, _depth, ctx) => (ctx.medianChildArea < 100 ? 'shared' : 'gaps')}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
