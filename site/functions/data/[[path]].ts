@@ -19,7 +19,10 @@ interface Env {
 }
 
 const BUCKET = 'oa-gcs-usage-dvx'
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+// CW scans run sub-daily: ids are `YYYY-MM-DDTHHMM` (date-only accepted too).
+const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
+// This deployment's snapshots live under a named subdir of the shared bucket.
+const ROOT = 'snapshots/cw/'
 const CACHE = 'public, max-age=300' // daily cadence — ≤5min edge staleness is fine
 
 export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Response> => {
@@ -43,9 +46,9 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
       const dates: string[] = []
       let cursor: string | undefined
       do {
-        const page = await store.list('snapshots/', { cursor })
+        const page = await store.list(ROOT, { cursor })
         for (const e of page.entries) {
-          const d = e.key.replace(/^snapshots\//, '').replace(/\/$/, '')
+          const d = e.key.slice(ROOT.length).replace(/\/$/, '')
           if (e.isDir && DATE_RE.test(d)) dates.push(d)
         }
         cursor = page.cursor
@@ -56,7 +59,7 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
       })
     }
     // rules.json → snapshots/rules.json ; else /data/<date>/<file> → snapshots/<date>/<file>
-    const key = rel === 'rules.json' ? 'snapshots/rules.json' : `snapshots/${rel}`
+    const key = rel === 'rules.json' ? 'snapshots/rules.json' : `${ROOT}${rel}`
     const { bytes, contentType } = await store.get(key)
     return new Response(bytes, {
       headers: { 'content-type': contentType ?? 'application/json; charset=utf-8', 'cache-control': CACHE },

@@ -22,7 +22,9 @@ export interface Highlight {
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact, initialPath }: {
+  // Start drilled here (the lone bucket) — crumbs keep the ancestry.
+  initialPath?: TreeNode[]
   root: TreeNode
   mode: ColorMode
   userIdx: UserIndex
@@ -240,6 +242,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   return (
     <DtTreemap<TreeNode>
       root={root}
+      initialPath={initialPath}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}

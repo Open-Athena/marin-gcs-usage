@@ -523,3 +523,21 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   font-size: 12px; color: var(--ink-2);
   code { margin-right: 4px; }
 }
+
+// Diff treemap (CP'd from gcs)
+.diff-tm {
+  height: 380px;
+  margin-top: 8px;
+}
+.grew { color: #3fb950; }
+.shrank { color: #f85149; }
+.diff-mode {
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-2);
+  &.on { background: var(--panel); color: var(--ink); }
+}
