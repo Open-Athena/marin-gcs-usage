@@ -362,6 +362,23 @@ export const looksCkpt = (n: TreeNode, uri?: string): boolean =>
 export const reviewedBytes = (rows: SweepRow[], idx: MarkIndex): number =>
   rows.reduce((s, r) => s + (idx.resolve(r.uri).mark ? r.b : 0), 0)
 
+/** D1 `user_emails` as an email → canonical-user map (signed-in readers only). */
+export function useUserEmails(enabled: boolean): Record<string, string> | undefined {
+  const { data } = useQuery<Record<string, string>, Error>({
+    queryKey: ['user-emails'],
+    enabled,
+    staleTime: 10 * 60_000,
+    retry: false,
+    queryFn: async () => {
+      const r = await fetch('/api/db/user_emails', { credentials: 'include' })
+      if (!r.ok) throw new Error(`user_emails: ${r.status}`)
+      const { rows } = (await r.json()) as { rows: { email: string; user: string }[] }
+      return Object.fromEntries(rows.map(x => [x.email, x.user]))
+    },
+  })
+  return data
+}
+
 /** The viewer's canonical attribution user id, from D1 `user_emails`. */
 export function useMyUser(email: string | undefined, enabled: boolean): string | null {
   const { data } = useQuery<Record<string, string>, Error>({

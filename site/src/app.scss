@@ -64,6 +64,19 @@ header .hrow {
   gap: 12px;
   flex-wrap: wrap;
 }
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  .brand { font-weight: 700; font-size: 17px; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; margin-right: auto; }
+  .whoami { margin-left: 8px; }
+}
+.nav-links { display: inline-flex; gap: 1.2em; align-items: baseline; }
+.nav-files { font-size: 0.9em; }
+.nav-files[aria-current] { color: var(--ink); font-weight: 600; text-decoration: none; }
+.whoami-tt { display: grid; gap: 3px; }
 .whoami {
   display: inline-flex;
   align-items: center;

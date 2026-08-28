@@ -34,6 +34,13 @@ upstream's controlled-path reporting includes our `c982c51` fix verbatim.
 Planned (specs in this repo, implement as core features):
 - pixel-budget subtree serving hooks (`specs/path-index-lazy-drill.md`)
 - shared-edge tiling + depth-scaled borders (`specs/treemap-shared-edges.md`)
+- hybrid canvas rendering (question raised 8/28): dense fields of tiny leaves
+  (hundreds of sub-20px rects that today either fold into "(other)" or render
+  as DOM cells) could paint to a `<canvas>` layer with hit-testing for hover,
+  while cells above an interaction threshold stay DOM (anchors, badges, CSS
+  borders, tooltips). Would let the fold floor drop without DOM cost. Note the
+  8/28 sluggishness was NOT DOM count — it was an O(marks) per-cell lookup in
+  the consumer (`marks.ts`), fixed to O(depth).
 
 ## New since last sync (pending CP)
 

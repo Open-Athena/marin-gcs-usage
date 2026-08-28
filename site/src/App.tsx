@@ -8,9 +8,7 @@ import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
 import { Avatar } from './Avatar'
 import { canonId, ghHandle, shortName, shortUserKey } from './UserChip'
-import { IDENTITIES } from './identities.gen'
-import { signInUrl, useCanMark, useIdent as useIdentity, useSignOut } from './auth'
-import TokenModal from './TokenModal'
+import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
@@ -26,6 +24,7 @@ import { LensBar, SCOPABLE } from './LensBar'
 import type { Lens } from './LensBar'
 import { applyTodoFilter, klcSplits, lensNodePred, teamLens, useMyUser, userLens } from './sweep'
 import { MarkHistory } from './MarkHistory'
+import { SiteNav } from './SiteNav'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
@@ -323,8 +322,6 @@ function AppContent() {
   const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
-  const signOut = useSignOut()
-  const [tokenOpen, setTokenOpen] = useState(false)
   const myUser = useMyUser(ident?.email, markMode)
   // `?mt=` (declared above, near treeQ) — active review lens over the map +
   // children table (absent = no lens, the plain browse view). The lenses are
@@ -599,7 +596,6 @@ function AppContent() {
 
   return (
     <main>
-      {tokenOpen && <TokenModal onClose={() => setTokenOpen(false)} />}
       <header>
         <div className="hrow">
           <h1>{store.title}</h1>
@@ -627,25 +623,7 @@ function AppContent() {
               ))}
             </div>
           )}
-          <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
-          {markMode && <Link className="nav-files" to="/users" style={{ fontSize: '0.9em' }}>Users&nbsp;→</Link>}
-          {markMode && <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>Recent&nbsp;marks&nbsp;→</Link>}
-          {ident && (
-            <div className="whoami">
-              <Tooltip content={<WhoamiTip email={ident.email} name={ident.name} user={myUser} />}>
-                <span className="has-tt" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <Avatar github={ghHandle(ident.email)} name={ident.name || ident.email} size={22} />
-                  <span className="email">{ident.name || shortName(ident.email)}</span>
-                </span>
-              </Tooltip>
-              {canMark && (
-                <button className="token-btn" type="button" onClick={() => setTokenOpen(true)} title="Personal token for agents / CLI">
-                  token
-                </button>
-              )}
-              <button className="logout" type="button" onClick={signOut}>log out</button>
-            </div>
-          )}
+          <SiteNav inline />
         </div>
         {meta && (
           <p className="sub">
@@ -729,7 +707,7 @@ function AppContent() {
         <p>
           Storage across the six <code>marin-*</code> GCS buckets — a full per-object listing
           (deduped), snapshotted daily by the{' '}
-          <a href="https://github.com/Open-Athena/marin-gcs-usage" target="_blank" rel="noreferrer"><code>marin-gcs-usage</code></a>{' '}
+          <a href="https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/AGENTS.md#data-flow" target="_blank" rel="noreferrer"><code>marin-gcs-usage</code></a>{' '}
           pipeline, which also ingests the buckets’ access logs and joins ownership onto every prefix
           (W&B run/config matching, executor sidecars, manual curation). The treemap drills into
           prefixes; “color by” recolors both plots — <b>marks</b> (keep / sweep / undecided; the
@@ -968,27 +946,5 @@ export default function App() {
     <HotkeysProvider config={{ storageKey: 'gcs-usage' }}>
       <AppContent />
     </HotkeysProvider>
-  )
-}
-
-// Header identity chip tooltip: which sign-in email this session is, and which
-// attribution user it maps to (with that user's known handles) — so signing in
-// via an alternate email (personal Google, OTP) is legible as "still you".
-function WhoamiTip({ email, name, user }: { email: string; name?: string; user: string | null }) {
-  const rec = user ? IDENTITIES[user] : undefined
-  const aliases = user ? Object.keys(IDENTITIES).filter(k => k !== user && IDENTITIES[k].u === user) : []
-  return (
-    <div className="whoami-tt">
-      <div><b>{name || email}</b>{name && <> · {email}</>}</div>
-      {user ? (
-        <>
-          <div>attribution user: <Link to={`/user/${user}`}><code>{user}</code></Link>{rec?.team && <> · {rec.team}</>}</div>
-          {rec?.github && <div>GitHub: <a href={`https://github.com/${rec.github}`} target="_blank" rel="noreferrer">{rec.github}</a></div>}
-          {aliases.length > 0 && <div>aliases: {aliases.map(a => <code key={a} style={{ marginRight: 4 }}>{a}</code>)}</div>}
-        </>
-      ) : (
-        <div>not mapped to an attribution user — "My files" won't resolve; ping Ryan.</div>
-      )}
-    </div>
   )
 }

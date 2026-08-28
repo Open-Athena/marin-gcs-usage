@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { whoToHandle } from './Avatar'
+import { SiteNav } from './SiteNav'
 import { UserChip } from './UserChip'
 import { fmtMarkDate } from './MarkControls'
 import { ActionChip, useMarkEvents } from './markEvents'
@@ -54,10 +55,10 @@ export function MarksPage() {
 
   return (
     <main className="marks-page">
+      <SiteNav />
       <header>
         <div className="hrow">
           <h1>Recent marks</h1>
-          <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
         </div>
         <p className="sub">
           Every keep / sweep / claim in the ledger, newest first. Click a prefix to open it on the map.

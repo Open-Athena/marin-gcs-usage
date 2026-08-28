@@ -10,6 +10,7 @@ import { DEFAULT_STORE } from './stores'
 import { applyFilter, applyNodeFilter } from './filterTree'
 import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
+import { SiteNav } from './SiteNav'
 import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, shortUserKey, teamOf } from './UserChip'
 import {
@@ -453,13 +454,13 @@ export function UsersPage() {
   )
   return (
     <main className="marks-page user-page">
+      <SiteNav />
       <header>
         <div className="hrow">
           <h1>Users</h1>
           <span style={{ display: 'inline-flex', gap: '1.2em', alignItems: 'baseline' }}>
             <button type="button" className="csv-btn" onClick={downloadCsv}>Download&nbsp;CSV</button>
             <a className="nav-files" href={SHEET_URL} target="_blank" rel="noreferrer">Google&nbsp;Sheet&nbsp;↗</a>
-            <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
           </span>
         </div>
         <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
@@ -762,6 +763,7 @@ export function UserPage() {
 
   return (
     <main className="marks-page user-page">
+      <SiteNav />
       <header>
         <div className="hrow">
           <h1 className="user-head">
@@ -772,7 +774,6 @@ export function UserPage() {
           <span style={{ display: 'inline-flex', gap: '1.2em' }}>
             <Link className="nav-files" to={`/?l=user&lu=${shortUserKey(id)}`} style={{ fontSize: '0.9em' }}>Home,&nbsp;filtered&nbsp;to&nbsp;{shortName(id)}&nbsp;→</Link>
             <Link className="nav-files" to="/users" style={{ fontSize: '0.9em' }}>All&nbsp;users</Link>
-            <Link className="nav-files" to="/" style={{ fontSize: '0.9em' }}>←&nbsp;Home</Link>
           </span>
         </div>
         <p className="sub">

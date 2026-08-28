@@ -155,47 +155,65 @@ function foldLatest<R extends { prefix: string; ts: number; action_id: number }>
 }
 
 /**
- * O(prefixes) per lookup — thousands of rows at most, lookups run per
- * rendered cell (~hundreds), so brute force beats maintaining a trie.
+ * Lookups are O(depth): a prefix's fate is decided by the newest live row on
+ * one of its ancestors-or-self, so `resolve` walks the ~6 ancestor prefixes
+ * and probes a Map — not a scan over every mark. (The original brute-force
+ * scan was fine at hundreds of marks; at ~7k marks × ~1k rendered cells ×
+ * a re-render per hover it made tooltips take seconds.) "Marks strictly
+ * below" counts are precomputed once per index build (rows × depth).
  */
 export function useMarkIndex(data: { keeps: KeepRow[]; owners: OwnerRow[] } | undefined): MarkIndex {
   return useMemo(() => {
-    const keeps = foldLatest(data?.keeps ?? [])
-    const owners = foldLatest(data?.owners ?? [])
     const norm = (uri: string) => (uri.endsWith('/') ? uri : uri + '/')
+    const keeps = foldLatest((data?.keeps ?? []).map(r => (r.prefix.endsWith('/') ? r : { ...r, prefix: r.prefix + '/' })))
+    const owners = foldLatest((data?.owners ?? []).map(r => (r.prefix.endsWith('/') ? r : { ...r, prefix: r.prefix + '/' })))
+    // 'gs://b/x/y/' → ['gs://b/', 'gs://b/x/', 'gs://b/x/y/'] (self last).
+    const ancestors = (p: string): string[] => {
+      const out: string[] = []
+      let i = p.indexOf('/', 'gs://'.length)
+      while (i !== -1) {
+        out.push(p.slice(0, i + 1))
+        i = p.indexOf('/', i + 1)
+      }
+      return out
+    }
+    // Live set-marks strictly inside each prefix (n) and how many of those
+    // are keeps (kept) — what a broad mark at that prefix would repaint.
+    const below = new Map<string, { n: number; kept: number }>()
+    for (const r of keeps.values()) {
+      if (r.keep == null) continue
+      const anc = ancestors(r.prefix)
+      for (const a of anc.slice(0, -1)) {
+        const b = below.get(a) ?? { n: 0, kept: 0 }
+        b.n++
+        if (r.keep !== 'sweep') b.kept++
+        below.set(a, b)
+      }
+    }
     const resolve = (uri: string): MarkState => {
       const p = norm(uri)
       let win: KeepRow | null = null
-      let under = 0
-      for (const r of keeps.values()) {
-        if (p.startsWith(r.prefix)) {
-          if (!win || newer(r, win)) win = r
-        } else if (r.prefix.startsWith(p) && r.keep != null) under++
+      for (const a of ancestors(p)) {
+        const r = keeps.get(a)
+        if (r && (!win || newer(r, win))) win = r
       }
       const mark = win?.keep != null
         ? { prefix: win.prefix, action: win.keep, who: win.who, ts: win.ts, note: win.memo }
         : null
-      return { mark, own: mark != null && win!.prefix === p, under }
+      return { mark, own: mark != null && win!.prefix === p, under: below.get(p)?.n ?? 0 }
     }
     const claimOf = (uri: string): Owner | null => {
       const p = norm(uri)
       let win: OwnerRow | null = null
-      for (const r of owners.values()) {
-        if (p.startsWith(r.prefix) && (!win || newer(r, win))) win = r
+      for (const a of ancestors(p)) {
+        const r = owners.get(a)
+        if (r && (!win || newer(r, win))) win = r
       }
       return win?.owner != null ? { prefix: win.prefix, who: win.owner, ts: win.ts } : null
     }
     const overridesOf = (uri: string) => {
-      const p = norm(uri)
-      let n = 0
-      let kept = 0
-      for (const r of keeps.values()) {
-        if (r.prefix !== p && r.prefix.startsWith(p) && r.keep != null) {
-          n++
-          if (r.keep !== 'sweep') kept++
-        }
-      }
-      return { n, keeps: kept }
+      const b = below.get(norm(uri))
+      return { n: b?.n ?? 0, keeps: b?.kept ?? 0 }
     }
     let count = 0
     for (const r of keeps.values()) if (r.keep != null) count++
