@@ -136,7 +136,7 @@ users:
     team: stanford  # non-OA marin contributor → Stanford access group
   tony-lee:
     aliases: [tony, teetone]
-    github: teetone  # Tony Lee (Stanford); owns the selfinstill SFT sweeps (path rule below)
+    github: teetone  # Tony Lee (Stanford; Discord tonyatstanford); owns the selfinstill SFT sweeps (path rule below)
     team: stanford
   alex-merose:
     aliases: [alxmrs]
