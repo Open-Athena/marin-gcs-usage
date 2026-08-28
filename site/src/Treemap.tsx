@@ -603,6 +603,11 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       // same pale grey-blue. Structure comes from borders instead (app.scss).
       depthFade={1}
       rootFade={1}
+      // Shared-edge tiling for leaf swarms (specs/treemap-shared-edges.md):
+      // gaps keep containers legible; dense fields of small siblings tile
+      // edge-to-edge with one depth-scaled stroke per boundary instead of
+      // two gutters' worth of dark space around every tiny cell.
+      tiling={(_n, _p, _depth, ctx) => (ctx.medianChildArea < 100 ? 'shared' : 'gaps')}
       renderTooltip={renderTooltip}
       renderCellExtra={renderCellExtra}
       renderRollup={renderRollup}

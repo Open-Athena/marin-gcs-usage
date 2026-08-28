@@ -42,19 +42,13 @@ Planned (specs in this repo, implement as core features):
   8/28 sluggishness was NOT DOM count — it was an O(marks) per-cell lookup in
   the consumer (`marks.ts`), fixed to O(depth).
 
-## New since last sync (pending CP)
+## Sync state (2026-08-28)
 
-- `Treemap.tsx`: viewport-clamp the hover tip by its MEASURED size (consumers
-  widen it via CSS `max-width` overrides; the fixed 320px guess overflowed
-  the right edge).
-
-- `Treemap.tsx`: `cellHref` accessor — leaf-rendered cells become real
-  `<a href>`s (native cursor/cmd-click/link hints); nested-tile cells stay
-  divs (anchors can't nest); plain clicks preventDefault into the normal
-  onCellClick/drill/pin flow.
-
-- `Treemap.tsx`: size-gate `branch`/`chain` chrome classes (`chromeOk` = min
-  dim ≥ 28px; `branch` also whenever children actually render). Lazy-drill
-  grafting turned dense fields of small tiles into drillable/chain cells, and
-  the consumers' inset-ring treatments (drill affordance, chain doubled edge)
-  read as dark inner rings at ≤~22px.
+Both directions clean as of today: upstream `761602c`…`c128ff0` (paint-layer
+fade, opaque container base, `--dt-treemap-cell-border`, `renderCellSubtitle`
+dims, shared-edge tiling + `borderWidth`) cherry-picked here (manifest:
+`specs/done/dt-core-cp-2026-08-28.md`); our `cellHref`, size-gated chrome, and
+measured tip clamp landed upstream as `cb075ea`. `Treemap.tsx` should now
+differ only by whatever lands next on either side. Marin uses
+`tiling={(…, ctx) => ctx.medianChildArea < 100 ? 'shared' : 'gaps'}` and
+themes `--dt-treemap-container-bg` / `--dt-treemap-edge` via `app.scss`.

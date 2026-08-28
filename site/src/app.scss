@@ -13,6 +13,10 @@
   --t-communal: #1baf7a; --t-stanford: #b1040e; --t-oa: #9d6a3c;  // oa = OA brand brown
   --t-unknown: #eda100; --t-unattr: #c9c7be;
   --never-read: #b0685e;  // read lens: no GET/HEAD/LIST since logging began
+  // @disk-tree/react: opaque base under each cell's paint layer (gutters/title
+  // bars); the core default is a dark constant, so follow the theme instead.
+  --dt-treemap-container-bg: var(--panel);
+  --dt-treemap-edge: var(--line);
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme='light'])) {
