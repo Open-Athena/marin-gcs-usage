@@ -2,7 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { Avatar } from './Avatar'
-import { ghHandle, shortName } from './UserChip'
+import { UserChip, ghHandle, shortName } from './UserChip'
 import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
@@ -445,8 +445,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
           return (
           <span className="ri" key={r.k}>
             <span className="sw" style={{ background: r.col }} />
-            {isUser && <Avatar github={ghHandle(r.k)} name={shortName(r.k)} size={15} />}
-            {isUser ? shortName(r.k) : r.k} <b>{fmtBytes(r.b)}</b>
+            {isUser ? <UserChip who={r.k} size={15} /> : r.k} <b>{fmtBytes(r.b)}</b>
             <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
             {r.rate != null && (
               r.mix ? (

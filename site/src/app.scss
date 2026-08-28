@@ -80,7 +80,12 @@ header .hrow {
 .nav-links { display: inline-flex; gap: 1.2em; align-items: baseline; }
 .nav-files { font-size: 0.9em; }
 .nav-files[aria-current] { color: var(--ink); font-weight: 600; text-decoration: none; }
-.whoami-tt { display: grid; gap: 3px; }
+.uc-session {
+  display: grid; gap: 2px; margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--ink-2);
+  code { margin-right: 4px; }
+  .uc-warn { color: var(--s4); }
+}
 .whoami {
   display: inline-flex;
   align-items: center;

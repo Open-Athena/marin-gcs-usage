@@ -1,12 +1,10 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { Avatar } from './Avatar'
 import { useCanMark, useIdent, useSignOut } from './auth'
 import { IDENTITIES } from './identities.gen'
 import { useMyUser, useUserEmails } from './sweep'
 import TokenModal from './TokenModal'
-import { Tooltip } from './Tooltip'
-import { ghHandle, shortName } from './UserChip'
+import { UserChip } from './UserChip'
 
 // Shared page chrome: cross-page nav links + the signed-in identity chip. The
 // home page embeds it `inline` in its own header row (its h1 + store switcher
@@ -37,12 +35,7 @@ export function SiteNav({ inline = false }: { inline?: boolean }) {
       </span>
       {ident && (
         <div className="whoami">
-          <Tooltip content={<WhoamiTip email={ident.email} name={ident.name} user={myUser} emails={emails} />}>
-            <span className="has-tt" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <Avatar github={ghHandle(ident.email)} name={ident.name || ident.email} size={22} />
-              <span className="email">{ident.name || shortName(ident.email)}</span>
-            </span>
-          </Tooltip>
+          <UserChip who={myUser ?? ident.email} size={22} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />
           {canMark && (
             <button className="token-btn" type="button" onClick={() => setTokenOpen(true)} title="Personal token for agents / CLI">
               token
@@ -56,30 +49,23 @@ export function SiteNav({ inline = false }: { inline?: boolean }) {
   return inline ? body : <div className="hrow site-nav">{body}</div>
 }
 
-// Identity chip tooltip: which sign-in email this session is, which attribution
-// user it maps to, and that user's other known handles/emails — so signing in
-// via an alternate address (personal Google, OTP) is legible as "still you".
-function WhoamiTip({ email, name, user, emails }: {
-  email: string
-  name?: string
-  user: string | null
-  emails?: Record<string, string>
-}) {
-  const rec = user ? IDENTITIES[user] : undefined
+// Session-specific lines appended to the header chip's identity card (the
+// card itself — avatar, name, group, GitHub, storage link — is the shared
+// <UserCard>): which sign-in email this session is, the user's other aliases
+// and sign-in emails, or a warning when the email maps to no user.
+function SessionLines({ email, user, emails }: { email: string; user: string | null; emails?: Record<string, string> }) {
   const aliases = user ? Object.keys(IDENTITIES).filter(k => k !== user && IDENTITIES[k].u === user) : []
   const others = user && emails ? Object.keys(emails).filter(e => emails[e] === user && e !== email.toLowerCase()) : []
   return (
-    <div className="whoami-tt">
-      <div><b>{name && name !== email ? name : email}</b>{name && name !== email && <> · {email}</>}</div>
+    <div className="uc-session">
+      <div>signed in as <code>{email}</code></div>
       {user ? (
         <>
-          <div>attribution user: <Link to={`/user/${user}`}><code>{user}</code></Link>{rec?.team && <> · {rec.team}</>}</div>
-          {rec?.github && <div>GitHub: <a href={`https://github.com/${rec.github}`} target="_blank" rel="noreferrer">{rec.github}</a></div>}
-          {aliases.length > 0 && <div>aliases: {aliases.map(a => <code key={a} style={{ marginRight: 4 }}>{a}</code>)}</div>}
-          {others.length > 0 && <div>also signs in as: {others.map(e => <code key={e} style={{ marginRight: 4 }}>{e}</code>)}</div>}
+          {aliases.length > 0 && <div>aliases: {aliases.map(a => <code key={a}>{a}</code>)}</div>}
+          {others.length > 0 && <div>also signs in as: {others.map(e => <code key={e}>{e}</code>)}</div>}
         </>
       ) : (
-        <div>not mapped to an attribution user — "My files" won't resolve; ping Ryan.</div>
+        <div className="uc-warn">not mapped to an attribution user — "My files" won't resolve; ping Ryan.</div>
       )}
     </div>
   )
