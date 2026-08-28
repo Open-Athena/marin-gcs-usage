@@ -83,3 +83,29 @@ A "vanilla" **Vite + CFN + cloud-store** demo app (no auth, no attribution, no
 marks: `scans.json` + `/api/subtree` + treemap) as the reference impl for that
 arch, alongside upstream's Flask × local reference. Natural home: the disk-tree
 repo (owner of reference impls) — a spec for the dt session once we want it.
+
+## Scramble log
+
+### 2026-08-28 (cw-ward), triggered by the CW cron crash-loop
+
+Landed on `cw-s3` (`7d348a0`, `18e4a10`, `f0d0b48`):
+- `job/`: `cw-*` scripts restored from `053cc33^`; own `:cw` image (`job/build.sh`
+  default tag, Dockerfile entrypoint `cw-run.sh`, `.[gcs,s3]` extras — the
+  first build lacked `boto3`); GCS-only `run.sh`/`batch-submit.sh`/digest icons
+  removed per the ledger; ERR-trap Slack alerting (dormant: no transport on the
+  CW scheduler body yet — needs `SLACK_BOT_TOKEN` secret + a channel).
+- `site/`: identity registry (Avatar/UserChip/UserCard + `identities.gen.ts`,
+  `identities.yaml` synced) on rollup rows, tooltip user rows, ⌘K picker,
+  whoami chip; IEC/SI units provider (`?si`/`?rb`, `i`/`b`). Intended delta
+  recorded: no `/user/:id` link in the card.
+- `packages/react`, `src/disk_tree`: parity (earlier today).
+
+Deferred to the next cw-ward pass (each needs App.tsx wiring on cw-s3's older
+App): `?f=` path filter (`filterTree.ts`), drill path in the URL path, shared
+`SiteNav` chrome + `/files` bucket line, `series.json` size-over-time (needs a
+`series` step in `cw-run.sh`), `/api/subtree` lazy drill (needs `-P` path index
+from `cw-webdata.py`), CF-Access-cookie → app-session auth (cw-s3 still edge-
+gated; that is an intended delta for now).
+
+Verification: `scripts/branch-audit gcs cw-s3` — react/engine parity; `job`
+now differs only by the ledger's intended files.
