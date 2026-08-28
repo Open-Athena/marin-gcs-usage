@@ -6,7 +6,6 @@ import { ghHandle, shortName } from './UserChip'
 import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
-import { ACTION_LABELS } from './marks'
 import type { MarkIndex } from './marks'
 import { klcFateAt, klcKeptWithin, subtreeFateTotals } from './sweep'
 import type { KlcIndex } from './sweep'
@@ -464,11 +463,13 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     )
   }
 
-  /* Legend only for modes where it isn't a strict subset of the roll-up bar:
-     team + user modes are dropped (the roll-up already shows the same
-     swatch+label, plus size and $). tree (prefix colors), age, and read
-     (date gradients) convey distinct keys, so they keep the legend. */
-  const legend = mode !== 'team' && mode !== 'user' && mode !== 'uteam'
+  /* One keying strip per view: any CATEGORICAL axis keys through the roll-up
+     bar (swatch + label + size + %, presence-filtered) — team, user, uteam,
+     and fate all render there, so a separate legend for them would be a
+     strict-subset duplicate. This legend exists only for encodings the
+     roll-up can't key: date gradients (written/read) and the tree prefix
+     palette. A new mode should default into the roll-up, not here. */
+  const legend = mode === 'read' || mode === 'date' || mode === 'tree'
     ? (legendNode: TreeNode, legendPath: TreeNode[]) => (
         <div className="legend">
           {mode === 'read' && readRange ? (
@@ -488,29 +489,6 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
               <span className="gradbar" style={{ background: dateGradientCss() }} />
               {epochDaysToMonth(dateRange.max)}
             </span>
-          ) : mode === 'fate' ? (
-            // Keep-axis fate: the cell fill IS the mark decision. Only fates
-            // actually present in the current view get a legend item (the
-            // To-do lens is all-undecided by construction — keying absent
-            // fates there was noise).
-            (() => {
-              const t = markIdx
-                ? subtreeFateTotals(legendNode, legendPath.length > 1 ? uriOf(legendPath) : '', markIdx, klcIdx ?? undefined)
-                : null
-              const items: [string, string, number][] = [
-                [ACTION_LABELS.keep, ACTION_COLORS.keep, t?.keep ?? 1],
-                [ACTION_LABELS.keep_last_ckpt, ACTION_COLORS.keep_last_ckpt, t?.keep_last_ckpt ?? 1],
-                [ACTION_LABELS.sweep, ACTION_COLORS.sweep, t?.sweep ?? 1],
-                ['undecided', 'var(--other)', t?.unmarked ?? 1],
-              ]
-              return (
-                <>
-                  {items.filter(([, , b]) => b > 0).map(([label, col]) => (
-                    <span className="li" key={label}><span className="sw" style={{ background: col }} />{label}</span>
-                  ))}
-                </>
-              )
-            })()
           ) : (
             // Prefix colors: key only categories visible in the current view
             // (ancestors of the drill + the node's top two levels), not the

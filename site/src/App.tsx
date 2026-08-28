@@ -728,7 +728,9 @@ function AppContent() {
           pipeline, which also ingests the buckets’ access logs and joins ownership onto every prefix
           (W&B run/config matching, executor sidecars, manual curation). The treemap drills into
           prefixes; “color by” recolors both plots — <b>marks</b> (keep / sweep / undecided; the
-          default), <b>read</b> (last-read recency — never-read bytes are the best sweep candidates),
+          default), <b>read</b> (last-read recency — never-read bytes are the best sweep candidates,
+          though access logging only began {readRange ? epochDaysToDate(readRange.min) : '8/13'}, so
+          “never read” means “not since then”),
           owning user or group (OA / Stanford / communal), written (older→newer), or top-level tree.
           Marks and claims apply live on top of the latest snapshot. Hover a cell for its makeup and
           top users, <kbd>⌘K</kbd> to jump to a user/group, or see the per-user breakdown at{' '}
