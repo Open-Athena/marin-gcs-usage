@@ -20,6 +20,28 @@ DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
 SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 
+# Failure alerting: any command dying under `set -e` posts to Slack before the
+# job exits — otherwise silence in #gcs-usage is the only failure signal (the
+# success digest is the very last step, so a hard failure posts nothing; both
+# 2026-08-28 incidents went unnoticed this way). Uses the same transport gating
+# as the digest; `set +x` first because the curl carries the bot token, which
+# xtrace would otherwise echo into Cloud Logging.
+fail_alert() {
+  local rc=$1 line=$2 cmd=$3
+  { set +x; } 2>/dev/null
+  local msg="❌ \`gcs-usage\` snapshot job failed ($DATE): \`${cmd}\` exited $rc at run.sh:$line"
+  [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
+  if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
+    curl -sS -X POST https://slack.com/api/chat.postMessage \
+      -H "Authorization: Bearer $SLACK_BOT_TOKEN" -H 'Content-type: application/json; charset=utf-8' \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"channel": sys.argv[1], "text": sys.argv[2]}))' "$SLACK_CHANNEL" "$msg")" >/dev/null || true
+  elif [ -n "${SLACK_WEBHOOK:-}" ]; then
+    curl -sS -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$msg")" >/dev/null || true
+  fi
+}
+trap 'fail_alert $? $LINENO "$BASH_COMMAND"' ERR
+
 cd /app
 
 # Access-log ingest (incremental, watermarked — specs/access-logs-and-cost.md
@@ -131,8 +153,9 @@ cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 # the series omits `fate` and the To-do burn-down chart hides.
 SER_A=()
 if [ -n "${GCS_USAGE_TOKEN:-}" ]; then
-  if curl -fsS -H "Authorization: Bearer $GCS_USAGE_TOKEN" \
-      "${GCS_USAGE_URL:-https://gcs.oa.dev}/api/actions" -o /tmp/actions.json; then
+  # subshell +x: the Authorization header must not hit the xtrace log
+  if ( { set +x; } 2>/dev/null; curl -fsS -H "Authorization: Bearer $GCS_USAGE_TOKEN" \
+      "${GCS_USAGE_URL:-https://gcs.oa.dev}/api/actions" -o /tmp/actions.json ); then
     SER_A=(-a /tmp/actions.json)
   else
     echo "WARN: actions export failed — series omits fate" >&2
