@@ -15,4 +15,4 @@ if [ "${1:-}" = "--status" ]; then exec ./cf-status; fi
 # account and then fails with auth error 10000 against the OA account.
 pnpm build
 CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d \
-  exec npx wrangler pages deploy dist --project-name oa-gcs-usage --branch main
+  exec npx wrangler pages deploy dist --project-name oa-cw-s3-usage --branch main
