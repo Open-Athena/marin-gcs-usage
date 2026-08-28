@@ -87,14 +87,17 @@ export type Granularity = 'month' | 'week' | 'day'
 
 export type ColorMode = 'team' | 'tree' | 'date' | 'read' | 'user' | 'uteam' | 'fate'
 
+// Key order = the "color by" button row (and ⌘K entry order): the cleanup
+// axes lead (marks is the default fill; read is the best sweep-candidate
+// signal), attribution next, chronology/structure last.
 export const MODE_LABELS: Record<ColorMode, string> = {
-  team: 'group',
-  tree: 'tree',
-  date: 'written',
+  fate: 'marks',
   read: 'read',
   user: 'user',
   uteam: 'user·group',
-  fate: 'marks',
+  team: 'group',
+  date: 'written',
+  tree: 'tree',
 }
 
 export interface Meta {

@@ -460,6 +460,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
       &:hover { filter: brightness(1.08); }
       &:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     }
+    .signin-how { color: var(--ink-3); font-size: 13px; margin: 18px 0 0; line-height: 1.5; }
   }
 }
 

@@ -362,9 +362,14 @@ function AppContent() {
   const readRange = useMemo((): DateRange | null =>
     meta?.access ? { min: meta.access.from, max: meta.access.to } : null,
   [meta])
-  // No explicit `?c=` → a lens-appropriate default (group shading is useless
-  // on an all-undecided or single-owner view); an explicit pick always wins.
-  const lensDefaultMode: ColorMode = markTab === 'todo' || markTab === 'mine' ? 'user' : 'team'
+  // No explicit `?c=` → a lens-appropriate default; an explicit pick always
+  // wins. During the cleanup sprint the primary axis is mark state ("marks"),
+  // so the fill and the keep/sweep decorations are ONE axis — group shading
+  // (with mark borders as a colliding second color axis) is opt-in, not the
+  // landing view. Per-owner lenses default to `user` instead (fate is useless
+  // on an all-undecided view; group is useless on a single-owner one).
+  const lensDefaultMode: ColorMode =
+    markTab === 'todo' || markTab === 'mine' ? 'user' : markMode ? 'fate' : 'team'
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = !!tree?.tm
@@ -717,13 +722,17 @@ function AppContent() {
           </p>
         ) : (
         <p>
-          Storage across the six <code>marin-*</code> GCS buckets, from the weekly{' '}
-          <a href="https://github.com/marin-community/marin/blob/main/scripts/ops/storage/" target="_blank" rel="noreferrer">Ops&nbsp;-&nbsp;Storage&nbsp;Report</a>{' '}
-          scan (per-object listing, deduped). Treemap drills into prefixes; the “color by” control recolors
-          both plots — by owning group (OA / Stanford / communal), top-level tree, written (older→newer), or owning
-          user (hi-contrast, or hues grouped by group). Ownership comes from the{' '}
-          <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars, manual
-          curation) — hover a cell for its group split and top users, or <kbd>⌘K</kbd> to jump to a user/group.
+          Storage across the six <code>marin-*</code> GCS buckets — a full per-object listing
+          (deduped), snapshotted daily by the{' '}
+          <a href="https://github.com/Open-Athena/marin-gcs-usage" target="_blank" rel="noreferrer"><code>marin-gcs-usage</code></a>{' '}
+          pipeline, which also ingests the buckets’ access logs and joins ownership onto every prefix
+          (W&B run/config matching, executor sidecars, manual curation). The treemap drills into
+          prefixes; “color by” recolors both plots — <b>marks</b> (keep / sweep / undecided; the
+          default), <b>read</b> (last-read recency — never-read bytes are the best sweep candidates),
+          owning user or group (OA / Stanford / communal), written (older→newer), or top-level tree.
+          Marks and claims apply live on top of the latest snapshot. Hover a cell for its makeup and
+          top users, <kbd>⌘K</kbd> to jump to a user/group, or see the per-user breakdown at{' '}
+          <Link to="/users">/users</Link>.
         </p>
         )}
       </section>

@@ -20,9 +20,14 @@ function LoginWall() {
     <div className="authwall">
       <div className="card">
         <h1>Marin GCS usage</h1>
-        <p>Per-group storage attribution across the six <code>marin-*</code> GCS buckets.</p>
-        <p className="restrict">This dashboard is restricted to Open Athena members and invited collaborators.</p>
-        <a className="signin" href={signInUrl()}>Sign in with Open Athena</a>
+        <p>Storage attribution + cleanup across the six <code>marin-*</code> GCS buckets.</p>
+        <p className="restrict">Access is limited to marin contributors and invited collaborators.</p>
+        <a className="signin" href={signInUrl()}>Sign in</a>
+        <p className="signin-how">
+          Open Athena accounts use Google sign-in; everyone else picks <b>one-time PIN</b> on the
+          next page — a code emailed to any allow-listed address (no Google account needed).
+          Invited guests can also use a personal share link.
+        </p>
       </div>
     </div>
   )
