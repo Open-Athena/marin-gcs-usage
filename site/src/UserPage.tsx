@@ -435,6 +435,22 @@ export function UsersPage() {
       </td>
     )
   }
+  // Footer totals over exactly the rows shown (same claims-applied basis);
+  // $ only sums users whose class mix is known, so it's a floor, flagged as such.
+  const totals = useMemo(() => {
+    const t = { b: 0, usd: 0, priced: 0, keep: 0, sweep: 0, unmarked: 0 }
+    for (const u of users) {
+      t.b += u.b
+      const mix = mixes?.[u.u]
+      if (mix) { t.usd += ratePerByte(mix) * u.b; t.priced++ }
+      const raw = fates?.get(u.u)
+      if (raw) { const f = foldFates(raw); t.keep += f.keep; t.sweep += f.sweep; t.unmarked += f.unmarked }
+    }
+    return t
+  }, [users, mixes, fates])
+  const totalCell = (f: ShownFate) => (
+    <td className="num" style={{ color: fateColor(f) }}>{fates ? fmtBytesIec(totals[f]) : '…'}</td>
+  )
   return (
     <main className="marks-page user-page">
       <header>
@@ -479,6 +495,22 @@ export function UsersPage() {
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr className="total-row">
+              <td>Total <span style={{ fontWeight: 400, opacity: 0.7 }}>· {users.length} users</span></td>
+              <td className="num">{fmtBytesIec(totals.b)}</td>
+              <td className="num">
+                {totals.priced
+                  ? <Tooltip content={totals.priced < users.length ? `${totals.priced} of ${users.length} users have a storage-class mix; the rest are unpriced, so this is a floor` : 'sum of the per-user estimates'}>
+                      <span className="has-tt">{totals.priced < users.length ? '≥ ' : ''}{fmtUsd(totals.usd)}</span>
+                    </Tooltip>
+                  : '—'}
+              </td>
+              {totalCell('keep')}
+              {totalCell('sweep')}
+              {totalCell('unmarked')}
+            </tr>
+          </tfoot>
         </table>
       )}
     </main>

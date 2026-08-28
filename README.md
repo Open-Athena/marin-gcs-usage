@@ -68,7 +68,7 @@ Listing-scale runs (34M+ dirs) belong on a work node, not a laptop.
 
 ## Access ([gcs.oa.dev])
 
-The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at `/auth/sso` (Google SSO for `@openathena.ai` accounts — the OAuth client's consent config restricts it to that org — or a one-time email PIN for anyone else), and the app then checks the signed-in email against an allowlist it owns (a D1 table, edited by admins at `/admin/db/allowed_emails`; removals take effect immediately). Invited guests can also be issued personal share links. To be added, ping Ryan (Discord) or ask any admin.
+The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at `/auth/sso` (Google sign-in with any account, or a one-time email PIN), and the app then checks the signed-in email against an allowlist it owns (a D1 table, edited by admins at `/admin/db/allowed_emails`; removals take effect immediately). Invited guests can also be issued personal share links. To be added, ping Ryan (Discord) or ask any admin.
 
 ## Repo layout
 

@@ -8,6 +8,7 @@ import { stringParam, useUrlState } from 'use-prms'
 import { AgeChart } from './AgeChart'
 import { Avatar } from './Avatar'
 import { canonId, ghHandle, shortName, shortUserKey } from './UserChip'
+import { IDENTITIES } from './identities.gen'
 import { signInUrl, useCanMark, useIdent as useIdentity, useSignOut } from './auth'
 import TokenModal from './TokenModal'
 import { AttributionRules } from './AttributionRules'
@@ -631,8 +632,12 @@ function AppContent() {
           {markMode && <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>Recent&nbsp;marks&nbsp;→</Link>}
           {ident && (
             <div className="whoami">
-              <Avatar github={ghHandle(ident.email)} name={ident.name || ident.email} size={22} />
-              <span className="email" title={ident.email}>{ident.name || shortName(ident.email)}</span>
+              <Tooltip content={<WhoamiTip email={ident.email} name={ident.name} user={myUser} />}>
+                <span className="has-tt" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Avatar github={ghHandle(ident.email)} name={ident.name || ident.email} size={22} />
+                  <span className="email">{ident.name || shortName(ident.email)}</span>
+                </span>
+              </Tooltip>
               {canMark && (
                 <button className="token-btn" type="button" onClick={() => setTokenOpen(true)} title="Personal token for agents / CLI">
                   token
@@ -963,5 +968,27 @@ export default function App() {
     <HotkeysProvider config={{ storageKey: 'gcs-usage' }}>
       <AppContent />
     </HotkeysProvider>
+  )
+}
+
+// Header identity chip tooltip: which sign-in email this session is, and which
+// attribution user it maps to (with that user's known handles) — so signing in
+// via an alternate email (personal Google, OTP) is legible as "still you".
+function WhoamiTip({ email, name, user }: { email: string; name?: string; user: string | null }) {
+  const rec = user ? IDENTITIES[user] : undefined
+  const aliases = user ? Object.keys(IDENTITIES).filter(k => k !== user && IDENTITIES[k].u === user) : []
+  return (
+    <div className="whoami-tt">
+      <div><b>{name || email}</b>{name && <> · {email}</>}</div>
+      {user ? (
+        <>
+          <div>attribution user: <Link to={`/user/${user}`}><code>{user}</code></Link>{rec?.team && <> · {rec.team}</>}</div>
+          {rec?.github && <div>GitHub: <a href={`https://github.com/${rec.github}`} target="_blank" rel="noreferrer">{rec.github}</a></div>}
+          {aliases.length > 0 && <div>aliases: {aliases.map(a => <code key={a} style={{ marginRight: 4 }}>{a}</code>)}</div>}
+        </>
+      ) : (
+        <div>not mapped to an attribution user — "My files" won't resolve; ping Ryan.</div>
+      )}
+    </div>
   )
 }

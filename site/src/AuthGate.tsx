@@ -24,9 +24,9 @@ function LoginWall() {
         <p className="restrict">Access is limited to marin contributors and invited collaborators.</p>
         <a className="signin" href={signInUrl()}>Sign in</a>
         <p className="signin-how">
-          Open Athena accounts use Google sign-in; everyone else picks <b>one-time PIN</b> on the
-          next page — a code emailed to any allow-listed address (no Google account needed).
-          Invited guests can also use a personal share link.
+          Use <b>Google</b> with any allow-listed account (Stanford, personal, or Open Athena), or pick{' '}
+          <b>one-time PIN</b> for a code emailed to any allow-listed address (no Google account
+          needed). Invited guests can also use a personal share link.
         </p>
       </div>
     </div>
