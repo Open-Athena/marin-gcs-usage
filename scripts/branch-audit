@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Branch parity audit (specs/branch-parity-discipline.md): for each branch
+# pair, diff-of-diffs (git-didi) per surface since the pair's merge-base —
+# files where the two branches' changes differ. Surfaces expected at parity
+# (react lib, python engine) should print "No differences"; the rest is the
+# CP-scramble candidate list, to be reconciled against the intended-delta
+# ledger in the spec. Run at the start and end of every scramble.
+#
+#   scripts/branch-audit                  # default pairs + surfaces
+#   scripts/branch-audit gcs cw-s3 site   # one pair, one surface
+set -euo pipefail
+cd "$(dirname "$0")/.."
+command -v git-didi >/dev/null || { echo "git-didi missing: uv tool install git-didi" >&2; exit 1; }
+
+PAIRS=("gcs cw-s3" "gcs dt/main")
+SURFACES=(packages/react/src packages/react/tests src/disk_tree job marin/src site/functions site/src)
+if [ $# -ge 2 ]; then PAIRS=("$1 $2"); [ $# -ge 3 ] && SURFACES=("${@:3}"); fi
+
+for pair in "${PAIRS[@]}"; do
+  set -- $pair
+  a=$1; b=$2
+  git rev-parse -q --verify "$b" >/dev/null || { echo "## $a ↔ $b: ref $b missing (git fetch?)"; continue; }
+  mb=$(git merge-base "$a" "$b")
+  echo "## $a ↔ $b  (merge-base ${mb:0:9}, $(git log -1 --format=%ad --date=short "$mb"))"
+  for s in "${SURFACES[@]}"; do
+    out=$(git-didi stat --pager never --color never "$mb..$a" "$mb..$b" "$s" 2>&1 || true)
+    if grep -q "No differences" <<<"$out"; then
+      printf '  %-22s parity\n' "$s"
+    else
+      n=$(grep -cE '^[-+][0-9-]+\s' <<<"$out" || true)
+      printf '  %-22s %s files differ  (git-didi stat %s..%s %s..%s %s)\n' "$s" "$n" "${mb:0:9}" "$a" "${mb:0:9}" "$b" "$s"
+    fi
+  done
+done
