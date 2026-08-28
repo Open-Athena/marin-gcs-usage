@@ -264,6 +264,32 @@ function CompareTreemap({
           getSize={n => n.weight}
           getChildren={n => (n as { children?: CompareTMNode[] }).children}
           getLabel={n => n.label}
+          // First-class fold cells: aggregate the dust's Δ so a green parent
+          // whose change lives entirely in tiny children still shows where
+          // (band + tooltip), instead of an inert "(+N)" tile.
+          mergeSmall={small => ({
+            key: `${small[0].key}__fold${small.length}`,
+            label: `(+${small.length})`,
+            weight: small.reduce((s, c) => s + c.weight, 0),
+            delta: small.reduce((s, c) => s + c.delta, 0),
+            grew: small.reduce((s, c) => s + c.grew, 0),
+            shrank: small.reduce((s, c) => s + c.shrank, 0),
+            nGrew: small.reduce((s, c) => s + c.nGrew, 0),
+            nShrank: small.reduce((s, c) => s + c.nShrank, 0),
+            status: 'fold',
+            size_old: small.reduce((s, c) => s + c.size_old, 0),
+            size_new: small.reduce((s, c) => s + c.size_new, 0),
+            n_desc_delta: small.reduce((s, c) => s + c.n_desc_delta, 0),
+            kind: 'fold',
+            uri: small[0].uri,
+            nFolded: small.reduce((s, c) => s + (c.nFolded ?? 1), 0),
+          })}
+          // Brighter sibling separation: the compare palette's dark neutrals
+          // make the default (transparent) cell rings invisible.
+          // Shared-edge tiling: exact areas (gaps under-paint dense leaf
+          // fields by ~perimeter/area); the stroke is the visible boundary.
+          tiling="shared"
+          mapStyle={{ '--dt-treemap-edge': 'rgba(255, 255, 255, 0.18)' } as CSSProperties}
           // Displayed inline with the label — the raw |Δ| magnitude. Sign is
           // encoded by the cell color; exact old/new/Δ lives in the tooltip.
           formatSize={formatSize}
