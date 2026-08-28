@@ -29,7 +29,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY --from=site /repo/ui/dist ./ui/dist
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[gcs,s3]"
 COPY marin/pyproject.toml ./marin/
 COPY marin/src ./marin/src
 RUN pip install --no-cache-dir ./marin
