@@ -425,6 +425,24 @@ export const IDENTITIES: Record<string, IdentityRec> = {
     "team": "stanford",
     "u": "suhas-kotha"
   },
+  "teetone": {
+    "github": "teetone",
+    "name": "Tony",
+    "team": "stanford",
+    "u": "tony-lee"
+  },
+  "tony": {
+    "github": "teetone",
+    "name": "Tony",
+    "team": "stanford",
+    "u": "tony-lee"
+  },
+  "tony-lee": {
+    "github": "teetone",
+    "name": "Tony",
+    "team": "stanford",
+    "u": "tony-lee"
+  },
   "when": {
     "github": "WhenWen",
     "name": "Kaiyue",

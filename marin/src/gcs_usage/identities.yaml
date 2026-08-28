@@ -134,6 +134,10 @@ users:
     aliases: [julian-q, julianq]
     github: julian-q  # Julian Quevedo (Discord jujujulian) — earlier misread as Julian Humml (hummlj)
     team: stanford  # non-OA marin contributor → Stanford access group
+  tony-lee:
+    aliases: [tony, teetone]
+    github: teetone  # Tony Lee (Stanford); owns the selfinstill SFT sweeps (path rule below)
+    team: stanford
   alex-merose:
     aliases: [alxmrs]
     github: alxmrs
@@ -227,6 +231,13 @@ prefix_owners:
   # rest — the name pattern can. Path-glob: `*` matches within one segment.
   - prefix: gs://marin-*/grug/swarm_*/
     user: calvin-xu
+    team: stanford
+  # Tony's self-instill SFT sweeps (Percy, 8/28: "everything selfinstill is
+  # Tony Lee") — 123 `checkpoints/exp_sft_qwen3_*_selfinstill_*` dirs across
+  # east5/central1/central2, ~92 TiB, none logged W&B runs. Segment glob catches
+  # the one `exp_fzzhang_sft_…_selfinstill_…` variant too.
+  - prefix: gs://marin-*/checkpoints/*selfinstill*/
+    user: tony-lee
     team: stanford
   - prefix: gs://marin-*/checkpoints/olmix-swarm/
     user: calvin-xu
