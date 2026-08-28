@@ -372,15 +372,29 @@ export function UsersPage() {
   const marksQ = useMarks(true)
   const idx = useMarkIndex(marksQ.data)
   const klcIdx = useKlcIdx(treeQ.data, idx)
-  const users = useMemo(
-    () => [...(metaQ.data?.users ?? [])].sort((a, b) => b.b - a.b),
-    [metaQ.data],
-  )
   const mixes = metaQ.data?.user_class_bytes
   const fates = useMemo(
     () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
     [treeQ.data, idx, klcIdx],
   )
+  // ONE basis for every column: once the fate walk has run, Attributed is
+  // its claims-applied total (same numbers as the tiles, the fate columns,
+  // and the CSV) — a scan-only Attributed next to walk-based Keep let a
+  // user's keep exceed their "attributed" (Percy caught Michael at 67>41:
+  // his claims added 40 Ti the old column ignored). Scan meta is only the
+  // pre-load fallback.
+  const users = useMemo(() => {
+    const metaUsers = metaQ.data?.users ?? []
+    if (!fates) return [...metaUsers].sort((a, b) => b.b - a.b)
+    return [...fates.entries()]
+      .map(([u, f]) => ({
+        u,
+        t: teamOf(u) ?? metaUsers.find(m => m.u === u)?.t ?? 'unknown',
+        b: FATE_ORDER_TOTAL(f),
+      }))
+      .filter(x => x.b > 1e9)
+      .sort((a, b) => b.b - a.b)
+  }, [metaQ.data, fates])
   // Client-side CSV of exactly what the table shows (claims applied).
   const downloadCsv = () => {
     const rowsIter = fates
