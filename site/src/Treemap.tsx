@@ -5,7 +5,9 @@ import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from 
 import type { UserIndex } from './colors'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
-import { CLASS_NAMES, classMix, fmtBytes, fmtN, fmtUsd, ratePerByte } from './types'
+import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
+import { UserChip } from './UserChip'
+import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
@@ -32,6 +34,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
 }) {
+  const { fmtBytes } = useUnits()
   // Fixed category colors: global top-level dirs by total size.
   const catSlot = useMemo(() => {
     const catBytes = new Map<string, number>()
@@ -150,7 +153,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
         {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
           <span className="ri" key={r.k}>
             <span className="sw" style={{ background: r.col }} />
-            {r.k} <b>{fmtBytes(r.b)}</b>
+            {r.k.startsWith('(') || r.k === 'unattributed' ? r.k : <UserChip who={r.k} size={15} />} <b>{fmtBytes(r.b)}</b>
             <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
             {r.rate != null && (
               r.mix ? (
@@ -213,7 +216,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
         {n.us.map(([u, b]) => (
           <div className="tt-user" key={u}>
             {mode === 'user' && <span className="sw" style={{ background: userColor(u, userIdx) }} />}
-            {u} · {fmtBytes(b)}
+            <UserChip who={u} size={15} /> · {fmtBytes(b)}
           </div>
         ))}
       </div>

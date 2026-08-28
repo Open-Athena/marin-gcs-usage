@@ -11,7 +11,9 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtBytes, fmtN, ratePerByte } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
+import { UserChip, shortName } from './UserChip'
+import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
 
@@ -27,12 +29,6 @@ function useIdentity(): Identity | null {
       .catch(() => {})
   }, [])
   return ident
-}
-
-const avatarHue = (s: string): number => {
-  let h = 0
-  for (const c of s) h = (h * 31 + c.codePointAt(0)!) % 360
-  return h
 }
 
 type Theme = 'system' | 'dark' | 'light'
@@ -71,6 +67,7 @@ function AppContent() {
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
+  const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'user'
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = (meta?.users?.length ?? 0) > 0
@@ -105,6 +102,18 @@ function AppContent() {
       defaultBindings: ['x'],
       handler: clearHl,
     },
+    'units:toggle': {
+      label: `Byte units: ${units === 'si' ? 'SI (TB) → IEC (TiB)' : 'IEC (TiB) → SI (TB)'}`,
+      group: 'View',
+      defaultBindings: ['i'],
+      handler: toggleUnits,
+    },
+    'units:suffix': {
+      label: `Unit suffix: ${suffixB ? 'TiB → Ti' : 'Ti → TiB'}`,
+      group: 'View',
+      defaultBindings: ['b'],
+      handler: toggleSuffixB,
+    },
     'theme:cycle': {
       label: `Theme: ${theme} (cycle)`,
       group: 'View',
@@ -121,7 +130,7 @@ function AppContent() {
       (meta?.users ?? []).map(u => [
         `user:${u.u}`,
         {
-          label: `${u.u} · ${fmtBytes(u.b)}`,
+          label: `${shortName(u.u)} · ${fmtBytes(u.b)}`,
           group: 'Users',
           handler: () => pickUser(u.u),
         },
@@ -213,10 +222,7 @@ function AppContent() {
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
           {ident && (
             <div className="whoami">
-              <span className="avatar" style={{ background: `hsl(${avatarHue(ident.email)} 55% 42%)` }} title={ident.name || ident.email}>
-                {(ident.name || ident.email).trim()[0].toUpperCase()}
-              </span>
-              <span className="email" title={ident.email}>{ident.name || ident.email}</span>
+              <UserChip who={ident.email} size={22} extra={<div className="uc-session"><div>signed in as <code>{ident.email}</code></div></div>} />
               <a className="logout" href="/cdn-cgi/access/logout">log out</a>
             </div>
           )}
@@ -231,7 +237,7 @@ function AppContent() {
             ) : (
               <b>{meta.asof}</b>
             )}
-            {' '}· <b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects
+            {' '}· <Tooltip content={`${units === 'si' ? 'SI' : 'IEC'} units${suffixB ? '' : ', bare suffix'} — click to toggle (i / b)`}><b className="dotted" style={{ cursor: 'pointer' }} onClick={toggleUnits}>{fmtBytes(meta.total_bytes)}</b></Tooltip> · <b>{fmtN(meta.total_objects)}</b> objects
             {estCost && (
               <>
                 {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>{' '}

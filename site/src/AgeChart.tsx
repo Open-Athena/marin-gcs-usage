@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, userColor } from './colors'
 import type { UserIndex } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
-import { fmtBytes } from './types'
+import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
@@ -30,6 +30,7 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
   mode: ColorMode
   userIdx: UserIndex
 }) {
+  const { fmtBytes } = useUnits()
   const [gran, setGran] = useState<Granularity>('month')
   const [hover, setHover] = useState<{ b: number; x: number; y: number } | null>(null)
 
