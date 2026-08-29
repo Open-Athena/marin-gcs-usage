@@ -23,9 +23,9 @@ So: yes, `tree.json` and `age.json` are shipped whole, and the root is the only 
 
 A parquet file sorted `(depth, path)` is a level-order trie: the descendants of `P` at depth `depth(P)+k` are one contiguous run of rows, found by binary search over row-group `path` min/max. A subtree query to depth `k` is `k` range reads, wherever `P` is. That's the property "fast no matter the path" needs, and `/api/subtree` tier 2 already exploits it. What's wrong is the granularity: 65 k-row groups (~7 MB) mean a small subtree can pull a 7 MB group for a 30-row answer, and a Worker has 128 MB / 30 s.
 
-- **Row groups → 8 k rows** (~0.9 MB) and **hive-partition by depth** (`path-index/depth=N/…`) so the per-depth binary search is over one file's footer and reads are ≤ ~1 MB per level. 220 M rows / 8 k = 27 k groups; footers stay cached per isolate as today.
-- **Columns:** keep `(path, depth, team, usr, b, o, wts, wb, c2, c3, c4)`; add `a` (last-read day, subtree max — the read lens should not depend on `tree.json` either) and `d` (min created day) so the `read` / `written` colorings come from the index.
-- **Store:** move the index to **R2** (zero egress to Workers; today every range read is GCS egress via the S3-compat endpoint). The job writes both; the site reads R2.
+- **Row groups → 8 k rows** (~0.9 MB). **Shipped** (`78b3bc8`): `ROW_GROUP_SIZE 8192` (was 65,536 → ~7 MB), so a deep narrow drill reads ~1 MB/level. Still to do: **hive-partition by depth** (`path-index/depth=N/…`) so the per-depth binary search is over one partition's footer, not the whole file's.
+- **Columns:** **Shipped** (`78b3bc8`): `a` (last-read day, subtree MAX) now in the index and emitted by `/api/subtree`, so the `read` lens colors drilled views from the index, not `tree.json`. `d` (written) stays derived from `wts`/`wb` (mean created day) — a stored min-created `d` is optional.
+- **Store:** move the index to **R2** (zero egress to Workers; today every range read is GCS egress via the S3-compat endpoint). The job writes both; the site reads R2. *(Not started — the biggest remaining cost lever.)*
 
 ### 2.2 Age strata per path (`/api/age?date&path`)
 
@@ -59,7 +59,7 @@ Recommendation: the CFN path — the workload *is* prefix ranges over a trie, th
 
 1. `/api/marks/totals` + server-side WAL fold (KV-cached trie). Consumers: map rollup, `/users`, digest, executor manifest. Removes the last reason mark mode loads `tree.json`. *(This is also the sweep executor's prerequisite — do it first.)*
    **Shipped 2026-08-29** (`611ec46`): D1-cached per (scan, ledger head), not KV (no KV binding; D1 is shared across isolates). Prod cold compute 10.5 s / 25 row groups for 6,885 prefixes; cached hits are ms. Exact estate: keep 207 Ti · sweep **734 Ti** · undecided 2,426 Ti — `tree.json`'s floor had been hiding ~160 Ti of sweep (576 Ti). Consumers wired: map root rollup, `/users` (no `tree.json` fetch). Still to consume: the digest bot, `?path=` scoping for drilled rollups, the executor (`?marks=1` manifest exists).
-2. Index re-layout: 8 k-row groups, depth partitions, `a`/`d` columns, R2 copy. `/api/subtree` reads R2; applies marks + claims per node.
+2. Index re-layout: 8 k-row groups ✓ + `a` column ✓ (`78b3bc8`); **remaining**: depth partitions, R2 copy, and `/api/subtree` applying marks + claims per node (so the map's colors/rollups are claims-applied like `/users`, and the client stops fetching the whole ledger).
 3. Lenses / filters / pinned rows server-side; drop client re-aggregation and `needFullTree`.
 4. `age-index.parquet` + `/api/age`; delete `age.json` reads.
 5. Path-sorted listings; deep-path age on demand.
