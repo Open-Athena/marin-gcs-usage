@@ -26,6 +26,7 @@ export interface Row {
   c2: number
   c3: number
   c4: number
+  a: number | null
 }
 
 export interface GroupSpan {
@@ -121,6 +122,7 @@ const toRow = (r: Record<string, unknown>): Row => ({
   c2: num(r.c2),
   c3: num(r.c3),
   c4: num(r.c4),
+  a: r.a == null ? null : num(r.a),
 })
 
 /** Read all rows in groups whose (depth, path) stats can intersect the ask. */

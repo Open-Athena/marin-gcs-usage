@@ -195,6 +195,26 @@ def test_age_rows_carry_last_read(tmp_path: Path, listing: str, attribution: str
     ]
 
 
+def test_path_index_carries_read_day(tmp_path: Path, listing: str, attribution: str, access: str):
+    """The floor-free path index carries subtree-MAX `a` (last-read epoch day):
+    a read on `users/rw/ckpt` lights up every ancestor up to the bucket, while
+    a never-read sibling (`datasets`) stays NULL."""
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    out = tmp_path / "out"
+    pidx = tmp_path / "path-index.parquet"
+    write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path, access=(access,), path_index=pidx)
+    rd = epoch_day(TS["d0703"])
+    df = pd.read_parquet(pidx)
+    assert list(df.columns) == ["path", "depth", "team", "usr", "b", "o", "wts", "wb", "c2", "c3", "c4", "a"]
+    # `a` is per (path) — collapse the team/usr slices to the path's max.
+    a_by_path = df.groupby("path")["a"].max().to_dict()
+    assert a_by_path["b1"] == rd            # bucket: max over everything under it
+    assert a_by_path["b1/users"] == rd      # read subtree
+    assert a_by_path["b1/users/rw/ckpt"] == rd
+    assert pd.isna(a_by_path["b1/datasets"])  # never read → NULL
+
+
 def test_write_webdata_plain(tmp_path: Path, listing: str):
     out = tmp_path / "out"
     meta = write_webdata((listing,), out, "2026-07-20")

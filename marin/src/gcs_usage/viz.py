@@ -203,6 +203,38 @@ def write_webdata(
         user_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         user_bytes: dict[tuple, int] = defaultdict(int)
 
+    # Access agg first (small): its per-dir last-read day joins into
+    # `dir_agg` below so the path index carries a subtree-MAX `a`, and it
+    # also decorates the built tree + age strata. Empty without logs.
+    access_window: tuple[int, int] | None = None
+    con.execute("CREATE TEMP TABLE access_agg (bucket VARCHAR, dir VARCHAR, aday INTEGER, ro BIGINT, rb BIGINT)")
+    if access:
+        globs = "[" + ", ".join(f"'{g}'" for g in access) + "]"
+        con.execute(
+            f"""
+            INSERT INTO access_agg
+            SELECT bucket, CASE WHEN path = '.' THEN '' ELSE path END AS dir,
+              CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday,
+              COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
+              COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
+            FROM read_parquet({globs})
+            WHERE op IN ('GET', 'HEAD', 'LIST')
+            GROUP BY 1, 2
+            """
+        )
+        amap: dict[str, tuple[int, int, int]] = {}
+        for bucket, path, aday, ro, rb in con.execute(
+            "SELECT bucket, dir, aday, ro, rb FROM access_agg"
+        ).fetchall():
+            amap[f"{bucket}/{path}" if path else bucket] = (aday, int(ro), int(rb))
+        lo, hi = con.execute(
+            f"SELECT CAST(floor(epoch(MIN(last_ts)) / 86400) AS INTEGER), "
+            f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs})"
+        ).fetchone()
+        if lo is not None:
+            access_window = (int(lo), int(hi))
+        _rss("access")
+
     # --- arbitrary-depth tree (specs/tree-builder-unification.md) ---
     # Roll every object up to *all* its ancestor prefixes (descendant-inclusive
     # totals at every depth), attribute per dir, keep only prefixes clearing the
@@ -220,8 +252,9 @@ def write_webdata(
         f"""
         CREATE TEMP TABLE dir_agg AS
         SELECT s.fp, {team_sel} AS team, {user_sel} AS usr,
-          s.b, s.o, s.wts, s.wb, s.c2, s.c3, s.c4
+          s.b, s.o, s.wts, s.wb, s.c2, s.c3, s.c4, xa.aday AS a
         FROM dir_stats s {attr_join_s}
+        LEFT JOIN access_agg xa ON xa.bucket = s.bucket AND xa.dir = s.dir
         """
     )
     total_b, total_o = con.execute("SELECT coalesce(sum(b), 0)::BIGINT, coalesce(sum(o), 0)::BIGINT FROM dir_agg").fetchone()
@@ -259,14 +292,15 @@ def write_webdata(
         ),
         exploded AS (
           SELECT array_to_string(segs[1:r.k], '/') AS path, r.k AS depth,
-            b, o, wts, wb, c2, c3, c4, team, usr
+            b, o, wts, wb, c2, c3, c4, a, team, usr
           FROM da, range(1, {maxseg} + 1) r(k)
           WHERE len(segs) >= r.k
         )
         SELECT path, depth, team, usr,
           sum(b)::BIGINT AS b, sum(o)::BIGINT AS o,
           sum(wts)::DOUBLE AS wts, sum(wb)::BIGINT AS wb,
-          sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4
+          sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4,
+          max(a) AS a  -- subtree-max last-read epoch day (NULL = never read)
         FROM exploded GROUP BY path, depth, team, usr
         """
     )
@@ -277,8 +311,11 @@ def write_webdata(
         # order for prefix-range + row-group pruning. Immutable per date.
         path_index.parent.mkdir(parents=True, exist_ok=True)
         con.execute(
-            f"COPY (SELECT * FROM ptu ORDER BY depth, path) TO '{path_index}' "
-            "(FORMAT parquet, ROW_GROUP_SIZE 65536)"
+            f"COPY (SELECT path, depth, team, usr, b, o, wts, wb, c2, c3, c4, a "
+            f"FROM ptu ORDER BY depth, path) TO '{path_index}' "
+            # ~8k rows/group (~1 MB): a deep, narrow subtree drill reads ~1 MB
+            # per level instead of a 7 MB 64k-row group (specs/path-agnostic-serving.md §2.1).
+            "(FORMAT parquet, ROW_GROUP_SIZE 8192)"
         )
         err(f"path-index: wrote {path_index}")
         _rss("path-index")
@@ -380,47 +417,10 @@ def write_webdata(
     tree["n"] = "marin GCS"
     roots = tree.get("c", [])
 
-    # Access join: per-(bucket, path) read-recency + read volume from the
-    # access-log layer-2a shards. The agg's own rollups mean a prefix's values
-    # already cover everything under it — deeper than the tree's depth cap
-    # included. Two op filters, because they answer different questions:
-    #   `a`      MAX(last_ts) over GET/HEAD/LIST — "did anyone touch this at
-    #            all", the deletion veto.
-    #   `ro`/`rb` counts/bytes over GET/HEAD only — a bucket listing is not a
-    #            read of the data. `rb / ro` is mean read size, which separates
-    #            few-huge-sequential from millions-of-small-random (the
-    #            ops-cost-heavy pattern).
-    # `access_agg` is also joined into the age strata below (per-dir `a`), so
-    # it exists — empty — even without access logs, keeping that SQL uniform.
-    access_window: tuple[int, int] | None = None
-    con.execute("CREATE TEMP TABLE access_agg (bucket VARCHAR, dir VARCHAR, aday INTEGER, ro BIGINT, rb BIGINT)")
+    # Decorate the built tree with per-node read-recency/volume from `amap`
+    # (built above with access_agg). `a` = MAX(last_ts) over GET/HEAD/LIST
+    # (the deletion veto); `ro`/`rb` = GET/HEAD counts/bytes.
     if access:
-        globs = "[" + ", ".join(f"'{g}'" for g in access) + "]"
-        con.execute(
-            f"""
-            INSERT INTO access_agg
-            SELECT bucket, CASE WHEN path = '.' THEN '' ELSE path END AS dir,
-              CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday,
-              COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
-              COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
-            FROM read_parquet({globs})
-            WHERE op IN ('GET', 'HEAD', 'LIST')
-            GROUP BY 1, 2
-            """
-        )
-        amap: dict[str, tuple[int, int, int]] = {}
-        for bucket, path, aday, ro, rb in con.execute(
-            "SELECT bucket, dir, aday, ro, rb FROM access_agg"
-        ).fetchall():
-            amap[f"{bucket}/{path}" if path else bucket] = (aday, int(ro), int(rb))
-        lo, hi = con.execute(
-            f"SELECT CAST(floor(epoch(MIN(last_ts)) / 86400) AS INTEGER), "
-            f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs})"
-        ).fetchone()
-        if lo is not None:
-            access_window = (int(lo), int(hi))
-        _rss("access")
-
         def _attach_access(node: dict, key: str) -> None:
             hit = amap.get(key)
             if hit is not None:

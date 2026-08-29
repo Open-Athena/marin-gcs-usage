@@ -96,19 +96,21 @@ interface Agg {
   o: number
   wts: number
   wb: number
+  a: number | null // subtree-max last-read epoch day (read lens); null = never read
   cb: Record<string, number>
   tm: Record<string, number>
   ub: Record<string, number>
   sh: Record<string, number>
 }
 
-const newAgg = (): Agg => ({ b: 0, o: 0, wts: 0, wb: 0, cb: {}, tm: {}, ub: {}, sh: {} })
+const newAgg = (): Agg => ({ b: 0, o: 0, wts: 0, wb: 0, a: null, cb: {}, tm: {}, ub: {}, sh: {} })
 
 function merge(a: Agg, r: Row): void {
   a.b += r.b
   a.o += r.o
   a.wts += r.wts
   a.wb += r.wb
+  if (r.a != null) a.a = a.a == null ? r.a : Math.max(a.a, r.a)
   for (const [k, v] of [['2', r.c2], ['3', r.c3], ['4', r.c4]] as [string, number][]) {
     if (v) a.cb[k] = (a.cb[k] ?? 0) + v
   }
@@ -120,6 +122,7 @@ function merge(a: Agg, r: Row): void {
 
 function subtract(parent: Agg, kids: Agg[]): Agg {
   const out = newAgg()
+  out.a = parent.a // max isn't subtractable; the residual's read day ≤ parent's
   const sum = (f: (a: Agg) => number) => kids.reduce((s, k) => s + f(k), 0)
   out.b = parent.b - sum(a => a.b)
   out.o = Math.max(0, parent.o - sum(a => a.o))
@@ -137,6 +140,7 @@ function subtract(parent: Agg, kids: Agg[]): Agg {
 function display(a: Agg): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (a.wb) out.d = Math.round(a.wts / a.wb / 86400)
+  if (a.a != null) out.a = a.a
   const desc = (m: Record<string, number>) =>
     Object.fromEntries(Object.entries(m).sort((x, y) => y[1] - x[1]))
   if (Object.keys(a.cb).length) out.cb = desc(a.cb)
