@@ -58,6 +58,7 @@ Recommendation: the CFN path — the workload *is* prefix ranges over a trie, th
 ## 4. Order
 
 1. `/api/marks/totals` + server-side WAL fold (KV-cached trie). Consumers: map rollup, `/users`, digest, executor manifest. Removes the last reason mark mode loads `tree.json`. *(This is also the sweep executor's prerequisite — do it first.)*
+   **Shipped 2026-08-29** (`611ec46`): D1-cached per (scan, ledger head), not KV (no KV binding; D1 is shared across isolates). Prod cold compute 10.5 s / 25 row groups for 6,885 prefixes; cached hits are ms. Exact estate: keep 207 Ti · sweep **734 Ti** · undecided 2,426 Ti — `tree.json`'s floor had been hiding ~160 Ti of sweep (576 Ti). Consumers wired: map root rollup, `/users` (no `tree.json` fetch). Still to consume: the digest bot, `?path=` scoping for drilled rollups, the executor (`?marks=1` manifest exists).
 2. Index re-layout: 8 k-row groups, depth partitions, `a`/`d` columns, R2 copy. `/api/subtree` reads R2; applies marks + claims per node.
 3. Lenses / filters / pinned rows server-side; drop client re-aggregation and `needFullTree`.
 4. `age-index.parquet` + `/api/age`; delete `age.json` reads.
