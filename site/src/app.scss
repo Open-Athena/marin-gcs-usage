@@ -428,10 +428,12 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
     .sw { width: 10px; height: 10px; border-radius: 3px; }
   }
+  .ctl { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
   .gran {
-    margin-left: auto;
     display: inline-flex;
     gap: 4px;
+    align-items: center;
+    .lbl { color: var(--ink-3); font-size: 11.5px; margin-right: 2px; }
     button {
       background: var(--panel);
       color: var(--ink-2);
@@ -554,14 +556,16 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   &.on { background: var(--panel); color: var(--ink); }
 }
 
-// gaps | shared treemap tiling toggle (header/nav).
+// shared | gaps treemap tiling toggle — sits in the crumbs bar beside ⛶, so
+// it stays quiet: small, muted, the active side only a touch inked.
 .tiling-toggle {
-  display: inline-flex; gap: 2px; font-size: 12px;
+  display: inline-flex; font-size: 11px; margin-left: 8px; opacity: 0.7;
+  &:hover { opacity: 1; }
   button {
-    background: var(--panel); color: var(--ink-2); border: 1px solid var(--line);
-    padding: 1px 7px; cursor: pointer; font: inherit;
-    &:first-child { border-radius: 5px 0 0 5px; }
-    &:last-child { border-radius: 0 5px 5px 0; }
-    &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
+    background: transparent; color: var(--ink-3); border: 1px solid var(--line);
+    padding: 0 6px; line-height: 16px; cursor: pointer; font: inherit;
+    &:first-child { border-radius: 4px 0 0 4px; }
+    &:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+    &.on { background: var(--line); color: var(--ink); }
   }
 }

@@ -25,7 +25,7 @@ export const setTiling = (t: Tiling): void => {
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l) } }
 export const useTiling = (): [Tiling, (t: Tiling) => void] => [useSyncExternalStore(subscribe, get, get), setTiling]
 
-/** Two-button `gaps | shared` control, for a header/nav row. */
+/** Two-button `shared | gaps` control — lives in the treemap's crumbs bar. */
 export function TilingToggle() {
   const [t, set] = useTiling()
   return (

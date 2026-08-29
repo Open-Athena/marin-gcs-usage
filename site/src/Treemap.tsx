@@ -7,7 +7,7 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
 import { UserChip } from './UserChip'
-import { useTiling } from './tiling'
+import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
@@ -179,9 +179,9 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
      user mode is dropped (the roll-up already shows the same swatch+label,
      plus size and $). tree (prefix colors) and age (date gradient) convey
      distinct keys, so they keep the legend. */
-  const legend = mode !== 'user'
+  const modeLegend = mode !== 'user'
     ? () => (
-        <div className="legend">
+        <>
           {mode === 'date' && dateRange ? (
             <span className="li gradli">
               {epochDaysToMonth(dateRange.min)}
@@ -199,9 +199,17 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
               <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
             </>
           )}
-        </div>
+        </>
       )
-    : undefined
+    : null
+  // The tiling toggle rides in the same slot (right of the crumbs, left of ⛶)
+  // in every mode: a map-level preference belongs on the map, not in the nav.
+  const legend = () => (
+    <div className="legend">
+      {modeLegend?.()}
+      <TilingToggle />
+    </div>
+  )
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
     const gsPath = pathOf(path)

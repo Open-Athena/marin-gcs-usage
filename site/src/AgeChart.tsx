@@ -2,9 +2,13 @@ import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, userColor } from './colors'
 import type { UserIndex } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
+import { MODE_LABELS } from './types'
 import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
+
+/** Color axes the chart can stratify by — every mode with a per-row value. */
+export const AGE_MODES: ColorMode[] = ['date', 'user', 'tree']
 
 const dateBarColor = (i: number, n: number): string => dateColor(n > 1 ? i / (n - 1) : 1)
 
@@ -24,10 +28,11 @@ const bucketLabel = (b: number, gran: Granularity): string =>
   gran === 'month' ? isoMonth(b) : iso(b)
 
 /** Stacked bars of bytes by created date (month/week/day), split per color mode. */
-export function AgeChart({ rows, catOrder, mode, userIdx }: {
+export function AgeChart({ rows, catOrder, mode, onMode, userIdx }: {
   rows: AgeRow[]
   catOrder: string[]
   mode: ColorMode
+  onMode?: (m: ColorMode) => void
   userIdx: UserIndex
 }) {
   const { fmtBytes } = useUnits()
@@ -106,12 +111,24 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
             </span>
           ))
         )}
-        <span className="gran" role="radiogroup" aria-label="Time granularity">
-          {(['month', 'week', 'day'] as Granularity[]).map(g => (
-            <button key={g} role="radio" aria-checked={gran === g} className={gran === g ? 'on' : ''} onClick={() => setGran(g)}>
-              {g}
-            </button>
-          ))}
+        <span className="ctl">
+          {onMode && (
+            <span className="gran" role="radiogroup" aria-label="Color by">
+              <span className="lbl">color by</span>
+              {AGE_MODES.map(m => (
+                <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? 'on' : ''} onClick={() => onMode(m)}>
+                  {MODE_LABELS[m]}
+                </button>
+              ))}
+            </span>
+          )}
+          <span className="gran" role="radiogroup" aria-label="Time granularity">
+            {(['month', 'week', 'day'] as Granularity[]).map(g => (
+              <button key={g} role="radio" aria-checked={gran === g} className={gran === g ? 'on' : ''} onClick={() => setGran(g)}>
+                {g}
+              </button>
+            ))}
+          </span>
         </span>
       </div>
       <svg viewBox={`0 0 ${W} ${H + 24}`} preserveAspectRatio="none" role="img" aria-label={`Bytes by created ${gran}`}>

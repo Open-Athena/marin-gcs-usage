@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons/md'
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
-import { AgeChart } from './AgeChart'
+import { AGE_MODES, AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
@@ -15,7 +15,6 @@ import type { DateRange, Highlight } from './Treemap'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
 import { UserChip, shortName } from './UserChip'
-import { TilingToggle } from './tiling'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
@@ -118,6 +117,11 @@ function AppContent() {
     encode: (v: string | undefined) => (v === 'user' || v === undefined ? undefined : v === 'date' ? 'age' : v),
     decode: (e: string | undefined) => (e === undefined ? 'user' : e === 'age' ? 'date' : e),
   })
+  // The age chart's own color axis (`?ac=`); absent = follow the map.
+  const [ageModeP, setAgeModeP] = useUrlState('ac', {
+    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'age' : v),
+    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'age' ? 'date' : e),
+  })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   // Selected scan in the URL as short YYMMDD (`?d=260809`), kept always present
   // so each day's Slack digest can deep-link straight to its own scan.
@@ -132,6 +136,10 @@ function AppContent() {
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = (meta?.users?.length ?? 0) > 0
   const effMode: ColorMode = hasAttr ? mode : 'tree'
+  const ageMode: ColorMode = (() => {
+    const want = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode
+    return want === 'user' && !hasAttr ? 'tree' : want
+  })()
   const hl: Highlight | null = hlUser ? { user: hlUser } : null
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
@@ -280,7 +288,6 @@ function AppContent() {
         <div className="hrow">
           <h1>Marin CoreWeave usage</h1>
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
-          <TilingToggle />
           {ident && (
             <div className="whoami">
               <UserChip who={ident.email} size={22} extra={<div className="uc-session"><div>signed in as <code>{ident.email}</code></div></div>} />
@@ -366,11 +373,14 @@ function AppContent() {
 
 
       <section>
-        <h2>Bytes by created month</h2>
+        <h2>Bytes by creation date</h2>
         <p className="sub">
-          When today’s objects were written (created-time strata, colored by {MODE_LABELS[effMode]}).
+          When today’s objects were written — created-time strata. The chart’s color axis is its own
+          (right); it follows the map’s until you pick one.
         </p>
-        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={effMode} userIdx={userIdx} />}
+        {age.length > 0 && (
+          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} userIdx={userIdx} />
+        )}
       </section>
 
       {rules && tree && meta?.users && (
