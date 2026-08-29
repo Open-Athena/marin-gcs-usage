@@ -15,6 +15,7 @@ import type { DateRange, Highlight } from './Treemap'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
 import { UserChip, shortName } from './UserChip'
+import { TilingToggle } from './tiling'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
@@ -279,6 +280,7 @@ function AppContent() {
         <div className="hrow">
           <h1>Marin CoreWeave usage</h1>
           <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
+          <TilingToggle />
           {ident && (
             <div className="whoami">
               <UserChip who={ident.email} size={22} extra={<div className="uc-session"><div>signed in as <code>{ident.email}</code></div></div>} />

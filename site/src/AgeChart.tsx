@@ -31,18 +31,16 @@ export function AgeChart({ rows, catOrder, mode, userIdx }: {
   userIdx: UserIndex
 }) {
   const { fmtBytes } = useUnits()
-  // Default to whichever granularity yields a readable number of bars. A fixed
-  // 'month' default is wrong at both ends: CoreWeave's objects are all from the
-  // last ~8 weeks (3 fat bars, no shape), while GCS spans years (unreadable at
-  // /day). Picking by bar count gets /day for the former and /month for the
-  // latter with no per-store special-casing.
+  // Default to the finest granularity that still fits on screen: the most
+  // bars we'll draw is MAX (≈8px each across the 900-unit viewBox), and finer
+  // beats coarser — CoreWeave's ~8-week history gets /day, GCS's years get
+  // /week (its /day would be ~740 bars; /month was needlessly chunky).
   const [gran, setGran] = useState<Granularity>(() => {
     const days = rows.map(r => r.d).filter(Number.isFinite)
     if (!days.length) return 'month'
     const count = (g: Granularity) => new Set(days.map(d => bucketOf(d, g))).size
-    const TARGET = 30
-    return (['day', 'week', 'month'] as Granularity[])
-      .reduce((a, b) => (Math.abs(count(b) - TARGET) < Math.abs(count(a) - TARGET) ? b : a))
+    const MAX = 120
+    return (['day', 'week', 'month'] as Granularity[]).find(g => count(g) <= MAX) ?? 'month'
   })
   const [hover, setHover] = useState<{ b: number; x: number; y: number } | null>(null)
 

@@ -553,3 +553,15 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   color: var(--ink-2);
   &.on { background: var(--panel); color: var(--ink); }
 }
+
+// gaps | shared treemap tiling toggle (header/nav).
+.tiling-toggle {
+  display: inline-flex; gap: 2px; font-size: 12px;
+  button {
+    background: var(--panel); color: var(--ink-2); border: 1px solid var(--line);
+    padding: 1px 7px; cursor: pointer; font: inherit;
+    &:first-child { border-radius: 5px 0 0 5px; }
+    &:last-child { border-radius: 0 5px 5px 0; }
+    &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
+  }
+}

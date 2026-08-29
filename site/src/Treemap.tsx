@@ -7,6 +7,7 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
 import { UserChip } from './UserChip'
+import { useTiling } from './tiling'
 import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
@@ -37,6 +38,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   redact?: boolean
 }) {
   const { fmtBytes } = useUnits()
+  // Tiling is a user preference (header toggle): `shared` by default.
+  const [tiling] = useTiling()
   // Fixed category colors: global top-level dirs by total size.
   const catSlot = useMemo(() => {
     const catBytes = new Map<string, number>()
@@ -243,10 +246,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     <DtTreemap<TreeNode>
       root={root}
       initialPath={initialPath}
-      // Shared-edge tiling for leaf swarms (specs/treemap-shared-edges.md):
-      // gaps keep containers legible; dense fields of small siblings tile
-      // edge-to-edge with one depth-scaled stroke per boundary.
-      tiling={(_n, _p, _depth, ctx) => (ctx.medianChildArea < 100 ? 'shared' : 'gaps')}
+      tiling={tiling}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
