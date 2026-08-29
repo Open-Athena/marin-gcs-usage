@@ -8,7 +8,7 @@ import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
 import type { MarkIndex } from './marks'
 import { klcFateAt, klcKeptWithin, subtreeFateTotals } from './sweep'
-import type { KlcIndex } from './sweep'
+import type { Fate, KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
@@ -39,17 +39,17 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickTeam, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, fateReady = true, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickTeam, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, rootFates, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
   // Access-log observation window (epoch days) — domain of the read lens.
   readRange?: DateRange | null
-  /** False while the full artifact tree is still loading: the fate rollup
-   *  waits rather than showing totals from the coarse pixel-budget tree
-   *  (which folds most mark prefixes away and understates sweep). */
-  fateReady?: boolean
+  /** Exact estate-wide keep / sweep totals (`/api/marks/totals`) — shown at
+   *  the root instead of a client walk. Drilled views still walk the loaded
+   *  (pixel-budget) subtree and say so. */
+  rootFates?: Record<Fate, number> | null
   hl?: Highlight | null
   /** Legend-row interactions (plotly-style): hover a row = solo it (others
    *  fade, map dims to it), click = pin (sticky `hl`; click again, any empty
@@ -444,9 +444,12 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
     // amber "last ckpt" appears only for marks the tree can't split).
     const fateWanted = !!markIdx && mode === 'fate'
-    const fate = fateWanted && fateReady
-      ? subtreeFateTotals(node, path.length > 1 ? uriOf(path) : '', markIdx!, klcIdx ?? undefined)
-      : null
+    const atRoot = path.length <= 1
+    // Root: the exact server-side number. Drilled: resolved against whatever
+    // this view loaded (marks folded below its resolution settle as their
+    // ancestor's fate), flagged ≈ until `?path=` scoping lands server-side.
+    const exact = atRoot && rootFates ? rootFates : null
+    const fate = fateWanted ? (exact ?? subtreeFateTotals(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
     const fateRows = fate
       ? ([
           ['keep', fate.keep, ACTION_COLORS.keep],
@@ -458,9 +461,14 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     return (
       <>
         {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} />}
-        {fateWanted && !fateReady && <span className="fate-rollup pending">keep / sweep totals — loading the full tree…</span>}
         {fateRows.length > 0 && (
-          <span className="fate-rollup">
+          <span
+            className={`fate-rollup${exact ? '' : ' approx'}`}
+            title={exact
+              ? 'exact: the live ledger priced against the floor-free path index'
+              : 'approximate: resolved at this view’s resolution — marks folded below it settle as their ancestor’s fate; the root total is exact'}
+          >
+            {!exact && <span className="approx-mark">≈</span>}
             {fateRows.map(([k, b, col]) => (
               <span className="ri" key={k}>
                 <span className="sw" style={{ background: col }} />

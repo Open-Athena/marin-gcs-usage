@@ -1,0 +1,272 @@
+/**
+ * Exact keep / sweep / undecided totals from the ledger + the floor-free path
+ * index (specs/path-agnostic-serving.md §2.3; algorithm from
+ * specs/exact-fate-totals.md). Pure: callers supply the folded ledger and the
+ * index aggregates for the prefixes involved; nothing here does I/O.
+ *
+ * Model. Every live ledger prefix (a mark or a claim) is a node of a trie
+ * `U`. Its *band* is its own bytes minus the bytes of its nearest marked
+ * descendants — the exclusive slice that no deeper prefix claims. The band
+ * is painted with the prefix's *effective* keep and owner: the newest row on
+ * an ancestor-or-self (recency beats specificity — a newer broad mark
+ * repaints older deeper ones, a newer clear repaints them back). Totals are
+ * sums of bands; whatever a bucket holds outside every band is undecided.
+ */
+
+export type MarkAction = 'keep' | 'sweep' | 'keep_last_ckpt'
+export type Fate = MarkAction | 'unmarked'
+export const FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
+
+export interface LedgerRow { prefix: string; ts: number; action_id: number }
+export interface KeepRow extends LedgerRow { keep: MarkAction | null; who?: string }
+export interface OwnerRow extends LedgerRow { owner: string | null }
+
+/** Per-path aggregate from the index: bytes, objects, per-user bytes, and
+ * non-STANDARD class bytes ("2" NL, "3" CL, "4" AR; STANDARD = b − Σ). */
+export interface PathAgg { b: number; o: number; us: Record<string, number>; cb: Record<string, number> }
+export const newAgg = (): PathAgg => ({ b: 0, o: 0, us: {}, cb: {} })
+export const addAgg = (a: PathAgg, r: { b: number; o: number; usr: string | null; c2: number; c3: number; c4: number }): void => {
+  a.b += r.b
+  a.o += r.o
+  if (r.usr) a.us[r.usr] = (a.us[r.usr] ?? 0) + r.b
+  for (const [k, v] of [['2', r.c2], ['3', r.c3], ['4', r.c4]] as [string, number][]) if (v) a.cb[k] = (a.cb[k] ?? 0) + v
+}
+const subAgg = (a: PathAgg, kids: PathAgg[]): PathAgg => {
+  const out: PathAgg = { b: a.b, o: a.o, us: { ...a.us }, cb: { ...a.cb } }
+  for (const k of kids) {
+    out.b -= k.b
+    out.o -= k.o
+    for (const [u, b] of Object.entries(k.us)) out.us[u] = (out.us[u] ?? 0) - b
+    for (const [c, b] of Object.entries(k.cb)) out.cb[c] = (out.cb[c] ?? 0) - b
+  }
+  out.b = Math.max(0, out.b)
+  out.o = Math.max(0, out.o)
+  for (const m of [out.us, out.cb]) for (const k of Object.keys(m)) if (m[k] <= 0) delete m[k]
+  return out
+}
+/** Full class mix (STANDARD implied) scaled to `b` of the aggregate's bytes. */
+const mixOf = (a: PathAgg, b: number): Record<string, number> => {
+  if (a.b <= 0 || b <= 0) return {}
+  const cold = Object.values(a.cb).reduce((s, v) => s + v, 0)
+  const f = b / a.b
+  const out: Record<string, number> = {}
+  if (a.b > cold) out['1'] = (a.b - cold) * f
+  for (const [c, v] of Object.entries(a.cb)) out[c] = v * f
+  return out
+}
+
+export const newer = (a: LedgerRow, b: LedgerRow): boolean => a.ts > b.ts || (a.ts === b.ts && a.action_id > b.action_id)
+export const norm = (p: string): string => (p.endsWith('/') ? p : p + '/')
+
+/** Latest live row per (normalized) prefix — the API returns history rows. */
+export function foldLatest<R extends LedgerRow>(rows: R[]): Map<string, R> {
+  const m = new Map<string, R>()
+  for (const raw of rows) {
+    const r = raw.prefix.endsWith('/') ? raw : { ...raw, prefix: raw.prefix + '/' }
+    const cur = m.get(r.prefix)
+    if (!cur || newer(r, cur)) m.set(r.prefix, r)
+  }
+  return m
+}
+
+/** `gs://marin-b/x/y/` → index key `marin-b/x/y` at depth 3. */
+export const idxKey = (prefix: string): { path: string; depth: number } => {
+  const path = prefix.replace(/^[a-z0-9]+:\/\//, '').replace(/\/+$/, '')
+  return { path, depth: path.split('/').length }
+}
+const parentOf = (path: string): string => {
+  const i = path.lastIndexOf('/')
+  return i === -1 ? '' : path.slice(0, i)
+}
+
+export const CKPT_NUM_RE = /^(?:step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?(\d+)/i
+
+export interface FateTotals { keep: number; keep_last_ckpt: number; sweep: number; unmarked: number }
+export interface UserTotals extends FateTotals { mix: Record<Fate, Record<string, number>> }
+export interface MarkRow {
+  prefix: string
+  keep: MarkAction
+  who?: string
+  ts: number
+  bytes: number
+  objects: number
+  /** Bytes/objects this mark alone decides (minus deeper live marks). */
+  net_bytes: number
+  net_objects: number
+  /** Set when a newer ancestor mark repaints this one — it decides nothing. */
+  repainted_by?: string
+}
+export interface Totals {
+  bytes: number
+  objects: number
+  total: FateTotals
+  users: Record<string, UserTotals>
+  marks: MarkRow[]
+}
+
+export interface TotalsInput {
+  keeps: Map<string, KeepRow>
+  owners: Map<string, OwnerRow>
+  /** Aggregates by index path for every ledger prefix (missing = 0 bytes:
+   * the prefix no longer exists in this scan) and for every bucket (depth 1). */
+  aggs: Map<string, PathAgg>
+  /** Bucket index paths (depth-1 rows present in the scan). */
+  buckets: string[]
+  /** For `keep_last_ckpt` prefixes: candidate children (index path → bytes)
+   * one and two levels down, keyed by the KLC prefix's index path. */
+  klcKids: Map<string, { path: string; b: number }[]>
+}
+
+interface Node {
+  prefix: string
+  path: string
+  depth: number
+  parent: Node | null
+  kids: Node[]
+  keep: KeepRow | null
+  owner: OwnerRow | null
+  effKeep: KeepRow | null
+  effOwner: OwnerRow | null
+  agg: PathAgg
+  band: PathAgg
+}
+
+/** Kept bytes inside a KLC prefix: at the first level (1 or 2 down) that has
+ * step-numbered dirs, each ckpt-parent keeps its max-step child. */
+export function klcKeptBytes(kPath: string, kids: { path: string; b: number }[]): number {
+  const byParent = new Map<string, { path: string; b: number }[]>()
+  for (const k of kids) {
+    const par = parentOf(k.path)
+    const arr = byParent.get(par)
+    if (arr) arr.push(k)
+    else byParent.set(par, [k])
+  }
+  const bestOf = (arr: { path: string; b: number }[]): number | null => {
+    let best: { n: number; b: number } | null = null
+    for (const k of arr) {
+      const m = CKPT_NUM_RE.exec(k.path.slice(k.path.lastIndexOf('/') + 1))
+      if (!m) continue
+      const n = Number(m[1])
+      if (!best || n > best.n) best = { n, b: k.b }
+    }
+    return best?.b ?? null
+  }
+  // Direct step children win (the client walk stops at the first step level).
+  const direct = byParent.get(kPath)
+  if (direct) {
+    const b = bestOf(direct)
+    if (b != null) return b
+  }
+  let kept = 0
+  for (const [par, arr] of byParent) if (par !== kPath) kept += bestOf(arr) ?? 0
+  return kept
+}
+
+export function computeTotals(input: TotalsInput): Totals {
+  const { keeps, owners, aggs, buckets, klcKids } = input
+  const nodes = new Map<string, Node>()
+  const mk = (prefix: string): Node => {
+    let n = nodes.get(prefix)
+    if (n) return n
+    const { path, depth } = idxKey(prefix)
+    n = { prefix, path, depth, parent: null, kids: [], keep: null, owner: null, effKeep: null, effOwner: null, agg: aggs.get(path) ?? newAgg(), band: newAgg() }
+    nodes.set(prefix, n)
+    return n
+  }
+  for (const [p, r] of keeps) mk(p).keep = r
+  for (const [p, r] of owners) mk(p).owner = r
+  // Parent = nearest strict ancestor in the trie.
+  const ancestors = (p: string): string[] => {
+    const out: string[] = []
+    let i = p.indexOf('/', 'gs://'.length)
+    while (i !== -1) { out.push(p.slice(0, i + 1)); i = p.indexOf('/', i + 1) }
+    return out.slice(0, -1) // strict
+  }
+  const ordered = [...nodes.values()].sort((a, b) => a.depth - b.depth || (a.prefix < b.prefix ? -1 : 1))
+  for (const n of ordered) {
+    for (const a of ancestors(n.prefix).reverse()) {
+      const par = nodes.get(a)
+      if (par) { n.parent = par; par.kids.push(n); break }
+    }
+    const inhK = n.parent?.effKeep ?? null
+    n.effKeep = n.keep && (!inhK || newer(n.keep, inhK)) ? n.keep : inhK
+    const inhO = n.parent?.effOwner ?? null
+    n.effOwner = n.owner && (!inhO || newer(n.owner, inhO)) ? n.owner : inhO
+  }
+  for (const n of nodes.values()) n.band = subAgg(n.agg, n.kids.map(k => k.agg))
+
+  const total: FateTotals = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
+  const users: Record<string, UserTotals> = {}
+  const userRec = (u: string): UserTotals => (users[u] ??= { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0, mix: { keep: {}, keep_last_ckpt: {}, sweep: {}, unmarked: {} } })
+  const addMix = (into: Record<string, number>, mix: Record<string, number>, f: number) => {
+    for (const [c, b] of Object.entries(mix)) if (b * f > 0) into[c] = (into[c] ?? 0) + b * f
+  }
+  // Paint `frac` of a band with fate `f`: the band's bytes to the total, and
+  // to its claimant (whole band) or its scan-attributed users (their slices).
+  const paint = (band: PathAgg, f: Fate, frac: number, claimant: string | null) => {
+    if (frac <= 0 || band.b <= 0) return
+    total[f] += band.b * frac
+    const mix = mixOf(band, band.b)
+    if (claimant) {
+      const u = userRec(claimant)
+      u[f] += band.b * frac
+      addMix(u.mix[f], mix, frac)
+    } else {
+      for (const [usr, b] of Object.entries(band.us)) {
+        const u = userRec(usr)
+        u[f] += b * frac
+        addMix(u.mix[f], mix, (b / band.b) * frac)
+      }
+    }
+  }
+  for (const n of nodes.values()) {
+    const f: Fate = n.effKeep?.keep ?? 'unmarked'
+    const claimant = n.effOwner?.owner ?? null
+    if (f === 'keep_last_ckpt') {
+      // Decompose where the step dirs are in view; the kept child's bytes are
+      // keep, the rest of the band sweeps. Unresolvable → stays "last ckpt".
+      const kPath = idxKey(n.effKeep!.prefix).path
+      const kids = klcKids.get(kPath)
+      const kept = kids?.length ? Math.min(n.band.b, klcKeptBytes(kPath, kids)) : null
+      if (kept == null) paint(n.band, 'keep_last_ckpt', 1, claimant)
+      else {
+        const r = n.band.b > 0 ? kept / n.band.b : 0
+        paint(n.band, 'keep', r, claimant)
+        paint(n.band, 'sweep', 1 - r, claimant)
+      }
+    } else paint(n.band, f, 1, claimant)
+  }
+  // Undecided remainder: each bucket minus its top-level bands. A ledger row
+  // exactly on the bucket is the sole top-level node and its band already
+  // covers the whole remainder.
+  let bytes = 0
+  let objects = 0
+  for (const bp of buckets) {
+    const agg = aggs.get(bp) ?? newAgg()
+    bytes += agg.b
+    objects += agg.o
+    if (nodes.has(`gs://${bp}/`)) continue
+    const top = [...nodes.values()].filter(n => !n.parent && n.path.startsWith(bp + '/'))
+    paint(subAgg(agg, top.map(n => n.agg)), 'unmarked', 1, null)
+  }
+  const marks: MarkRow[] = []
+  for (const n of nodes.values()) {
+    if (!n.keep?.keep) continue
+    const live = n.effKeep === n.keep
+    marks.push({
+      prefix: n.prefix,
+      keep: n.keep.keep,
+      who: n.keep.who,
+      ts: n.keep.ts,
+      bytes: n.agg.b,
+      objects: n.agg.o,
+      net_bytes: live ? n.band.b : 0,
+      net_objects: live ? n.band.o : 0,
+      ...(live ? {} : { repainted_by: n.effKeep!.prefix }),
+    })
+  }
+  marks.sort((a, b) => b.net_bytes - a.net_bytes)
+  for (const k of FATES) total[k] = Math.round(total[k])
+  for (const u of Object.values(users)) for (const k of FATES) u[k] = Math.round(u[k])
+  return { bytes, objects, total, users, marks }
+}

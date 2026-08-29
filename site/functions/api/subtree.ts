@@ -17,11 +17,9 @@
  * never change — and cached in the edge cache accordingly. w/h arrive
  * quantized-up to 128px so resizes mostly re-hit the cache.
  */
-import { S3Store } from '@rdub/file-tree/stores/s3'
-import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { makeStore, openIndex, readRows, type Row } from '../_lib/index.js'
 
-const BUCKET = 'oa-gcs-usage-dvx'
 const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
 // insets) — and deeper detail is one drill away regardless. The per-node
@@ -31,39 +29,7 @@ const QUANT = 128 // px quantization for w/h → cache-key stability
 const HARD_CAP = 50_000 // response nodes; way above any real canvas budget
 const CACHE = 'private, max-age=86400' // immutable per scan; browser may hold it
 
-interface Row {
-  path: string
-  depth: number
-  team: string | null
-  usr: string | null
-  b: number
-  o: number
-  wts: number
-  wb: number
-  c2: number
-  c3: number
-  c4: number
-}
-
-interface GroupSpan {
-  rowStart: number
-  rowEnd: number
-  dMin: number
-  dMax: number
-  pMin: string
-  pMax: string
-  bMax: number
-}
-
-interface IndexHandle {
-  file: { byteLength: number; slice: (s: number, e?: number) => Promise<ArrayBuffer> }
-  metadata: Awaited<ReturnType<typeof parquetMetadataAsync>>
-  groups: GroupSpan[]
-}
-
-// Per-isolate caches — footer metadata and the coarse tree are ~MBs and
-// immutable per date.
-const handles = new Map<string, Promise<IndexHandle>>()
+// Per-isolate cache — the coarse tree is ~30 MB and immutable per date.
 const trees = new Map<string, Promise<TreeNode>>()
 
 type TreeNode = { n: string; b: number; o: number; c?: TreeNode[]; f?: number } & Record<string, unknown>
@@ -123,116 +89,6 @@ function sliceTree(root: TreeNode, path: string, thrAt: (d: number) => number, d
     return out
   }
   return fold(node, dP)
-}
-
-const num = (v: unknown): number => (typeof v === 'bigint' ? Number(v) : (v as number) ?? 0)
-const str = (v: unknown): string =>
-  typeof v === 'string' ? v : v instanceof Uint8Array ? new TextDecoder().decode(v) : String(v ?? '')
-
-function makeStore(env: Env) {
-  return S3Store({
-    endpoint: 'https://storage.googleapis.com',
-    bucket: BUCKET,
-    region: 'us-east1',
-    prefixes: ['listing/', 'snapshots/'],
-    accessKeyId: env.GCS_HMAC_KEY_ID,
-    secretAccessKey: env.GCS_HMAC_SECRET,
-  })
-}
-
-async function openIndex(env: Env, date: string): Promise<IndexHandle> {
-  const cached = handles.get(date)
-  if (cached) return cached
-  const p = (async () => {
-    const store = makeStore(env)
-    const key = `listing/${date}/path-index.parquet`
-    // Object size via a 1-byte ranged read's Content-Range (S3Store populates totalSize).
-    const probe = await store.get(key, { offset: 0, length: 1 })
-    const byteLength = probe.totalSize
-    if (!byteLength) throw new Error('index size unknown (no Content-Range)')
-    const file = {
-      byteLength,
-      slice: async (s: number, e?: number) => {
-        const r = await store.get(key, { offset: s, length: (e ?? byteLength) - s })
-        return r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength) as ArrayBuffer
-      },
-    }
-    const metadata = await parquetMetadataAsync(file)
-    const cols = metadata.row_groups[0]?.columns.map(c => c.meta_data?.path_in_schema?.[0]) ?? []
-    const di = cols.indexOf('depth')
-    const pi = cols.indexOf('path')
-    const bi = cols.indexOf('b')
-    let at = 0
-    const groups: GroupSpan[] = metadata.row_groups.map(g => {
-      const n = num(g.num_rows)
-      const ds = g.columns[di]?.meta_data?.statistics
-      const ps = g.columns[pi]?.meta_data?.statistics
-      const bs = g.columns[bi]?.meta_data?.statistics
-      const span = {
-        rowStart: at,
-        rowEnd: at + n,
-        dMin: num(ds?.min_value ?? 0),
-        dMax: num(ds?.max_value ?? 1e9),
-        pMin: str(ps?.min_value ?? ''),
-        pMax: str(ps?.max_value ?? '￿'),
-        bMax: bs?.max_value != null ? num(bs.max_value) : Number.MAX_SAFE_INTEGER,
-      }
-      at += n
-      return span
-    })
-    return { file, metadata, groups }
-  })()
-  handles.set(date, p)
-  p.catch(() => handles.delete(date))
-  return p
-}
-
-/** Read all rows in groups whose (depth, path) stats can intersect the ask. */
-async function readRows(
-  h: IndexHandle,
-  dLo: number,
-  dHi: number,
-  pLo: string,
-  pHi: string,
-  thrAt?: (depth: number) => number,
-): Promise<Row[]> {
-  const out: Row[] = []
-  let selected = 0
-  for (const g of h.groups) {
-    if (g.dMax < dLo || g.dMin > dHi) continue
-    // Path stats only discriminate within a single depth; a group spanning a
-    // depth boundary resets path order, so only apply the path test then.
-    if (g.dMin === g.dMax && (g.pMax < pLo || g.pMin > pHi)) continue
-    // A group whose biggest row can't clear the (shallowest applicable)
-    // threshold contributes nothing but fold-count noise — skip it.
-    if (thrAt && g.bMax < thrAt(Math.max(g.dMin, dLo))) continue
-    if (++selected > 80) throw new Error('query too wide: drill deeper or raise minArea')
-    const rows = (await parquetReadObjects({
-      file: h.file,
-      metadata: h.metadata,
-      rowStart: g.rowStart,
-      rowEnd: g.rowEnd,
-    })) as Record<string, unknown>[]
-    for (const r of rows) {
-      const depth = num(r.depth)
-      const path = str(r.path)
-      if (depth < dLo || depth > dHi || path < pLo || path > pHi) continue
-      out.push({
-        path,
-        depth,
-        team: r.team == null ? null : str(r.team),
-        usr: r.usr == null ? null : str(r.usr),
-        b: num(r.b),
-        o: num(r.o),
-        wts: num(r.wts),
-        wb: num(r.wb),
-        c2: num(r.c2),
-        c3: num(r.c3),
-        c4: num(r.c4),
-      })
-    }
-  }
-  return out
 }
 
 interface Agg {

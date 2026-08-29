@@ -29,6 +29,7 @@ import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, ratePerByte } from './types'
 import { SiteKbd } from './SiteKbd'
+import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 // How often an unpinned tab re-checks for newly published scans.
@@ -162,6 +163,8 @@ function AppContent() {
   // `scans` is newest-first, so the first prefix match is the newest one.
   const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
   const asof = dMatches[0] ?? scans[0] ?? null
+  // Exact estate-wide totals (server-side ledger × index) for the root rollup.
+  const totalsQ = useMarkTotals(asof, markMode)
   // Ledger actions record which scan the actor was viewing.
   useEffect(() => setCurrentScan(asof ?? undefined), [asof])
   const scanQuery = <T,>(name: string) => ({
@@ -182,13 +185,10 @@ function AppContent() {
   // doesn't: the map seeds from the same pixel-budget /api/subtree that
   // serves drills. So the full tree only downloads when a filter or lens is
   // active (or for stores with no path index, where it's the only source).
-  // Mark mode needs it too: the keep/sweep/undecided rollup resolves marks
-  // against whatever tree is loaded, and the pixel-budget subtree folds most
-  // mark prefixes away — so the coarse tree understated sweep by ~100 Ti and
-  // the numbers jumped the moment a lens pulled tree.json in. Same tree every
-  // time, or the totals aren't comparable (specs/exact-fate-totals.md for the
-  // floor-free version).
-  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null || markMode || hlUser != null || hlTeam != null
+  // Mark mode does NOT need it any more: the root keep/sweep/undecided rollup
+  // and /users come from /api/marks/totals (ledger × floor-free index,
+  // server-side); drilled rollups resolve on the loaded subtree and say ≈.
+  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null || hlUser != null || hlTeam != null
   // One-time legacy-param rewrite (`mt`/`mu` → `l`/`u`), so old links work
   // and re-share in the golfed form.
   useEffect(() => {
@@ -796,7 +796,7 @@ function AppContent() {
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
             klcIdx={markMode ? klcIdx : undefined}
-            fateReady={!!treeQ.data}
+            rootFates={totalsQ.data?.total ?? null}
             path={mapPath}
             onPathChange={onMapPath}
           />

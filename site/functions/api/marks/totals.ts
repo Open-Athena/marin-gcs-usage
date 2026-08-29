@@ -1,0 +1,137 @@
+/**
+ * GET /api/marks/totals?date=<scan>
+ *
+ * Exact keep / sweep / last-ckpt / undecided bytes for the whole estate —
+ * the ledger folded server-side and priced against the floor-free path
+ * index, so every consumer (map rollup, /users, digest, sweep executor)
+ * reads one number (specs/path-agnostic-serving.md §2.3).
+ *
+ * Cost model: one point lookup per live ledger prefix + a one/two-level
+ * range under each keep_last_ckpt prefix. Marks cluster, so ~8k prefixes
+ * touch ~25 row groups (~200 MB of parquet, read once per (scan, ledger
+ * head) and cached in D1 — `mark_totals`). A new action invalidates by
+ * changing the head; the recompute happens on the next request.
+ */
+import { type Ctx, GCS_SCOPE, json, requireScope } from '../../_lib/auth.js'
+import { openIndex, readAsks, type Ask, type Row } from '../../_lib/index.js'
+import {
+  addAgg, computeTotals, foldLatest, idxKey, newAgg,
+  type KeepRow, type OwnerRow, type PathAgg, type Totals,
+} from '../../_lib/marks.js'
+
+const COLUMNS = ['path', 'depth', 'usr', 'b', 'o', 'c2', 'c3', 'c4']
+const MAX_GROUPS = 80
+
+interface Body extends Totals {
+  scan: string
+  head: number
+  computed: { at: number; ms: number; groups: number; prefixes: number }
+}
+
+// Per-isolate memo on top of D1 (the body is a few hundred KB).
+const memo = new Map<string, Promise<Body>>()
+
+async function compute(ctx: Ctx, date: string, keeps: Map<string, KeepRow>, owners: Map<string, OwnerRow>, head: number): Promise<Body> {
+  const t0 = Date.now()
+  const idx = await openIndex(ctx.env, date)
+  const want = new Map<string, number>() // index path → depth, for point lookups
+  for (const p of [...keeps.keys(), ...owners.keys()]) {
+    const { path, depth } = idxKey(p)
+    want.set(path, depth)
+  }
+  const klcPaths = new Set<string>()
+  for (const r of keeps.values()) if (r.keep === 'keep_last_ckpt') klcPaths.add(idxKey(r.prefix).path)
+  const asks: Ask[] = [{ depth: 1, under: '' }]
+  for (const [path, depth] of want) asks.push({ depth, path })
+  for (const k of klcPaths) {
+    const d = k.split('/').length
+    asks.push({ depth: d + 1, under: k }, { depth: d + 2, under: k })
+  }
+  const parentOf = (p: string) => p.slice(0, Math.max(0, p.lastIndexOf('/')))
+  const isKlcKid = (r: Row): string | null => {
+    const p1 = parentOf(r.path)
+    if (klcPaths.has(p1)) return p1
+    const p2 = parentOf(p1)
+    return p2 && klcPaths.has(p2) ? p2 : null
+  }
+  const { rows, groups } = await readAsks(
+    idx,
+    asks,
+    r => r.depth === 1 || want.get(r.path) === r.depth || isKlcKid(r) != null,
+    { columns: COLUMNS, maxGroups: MAX_GROUPS },
+  )
+  const aggs = new Map<string, PathAgg>()
+  const buckets = new Set<string>()
+  const klcKidAgg = new Map<string, Map<string, number>>() // klc path → child path → bytes
+  for (const r of rows) {
+    if (r.depth === 1) buckets.add(r.path)
+    if (r.depth === 1 || want.get(r.path) === r.depth) {
+      let a = aggs.get(r.path)
+      if (!a) aggs.set(r.path, (a = newAgg()))
+      addAgg(a, r)
+    }
+    const k = isKlcKid(r)
+    if (k) {
+      let m = klcKidAgg.get(k)
+      if (!m) klcKidAgg.set(k, (m = new Map()))
+      m.set(r.path, (m.get(r.path) ?? 0) + r.b)
+    }
+  }
+  const klcKids = new Map([...klcKidAgg].map(([k, m]) => [k, [...m].map(([path, b]) => ({ path, b }))]))
+  const totals = computeTotals({ keeps, owners, aggs, buckets: [...buckets].sort(), klcKids })
+  return {
+    scan: date,
+    head,
+    ...totals,
+    computed: { at: Math.floor(Date.now() / 1000), ms: Date.now() - t0, groups, prefixes: want.size },
+  }
+}
+
+export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
+  const { env, request } = ctx
+  if (!env.DB) return json({ error: 'ledger backend not configured (DB)' }, 503)
+  if (!env.GCS_HMAC_KEY_ID || !env.GCS_HMAC_SECRET) return json({ error: 'index reader not configured' }, 503)
+  const gated = await requireScope(ctx, GCS_SCOPE)
+  if (gated instanceof Response) return gated
+  const url = new URL(request.url)
+  const date = url.searchParams.get('date') ?? ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: 'date=YYYY-MM-DD required' }, 400)
+  const withMarks = url.searchParams.get('marks') === '1'
+
+  const [keepRows, ownerRows, headRow] = await Promise.all([
+    env.DB.prepare(
+      'SELECT k.prefix, k.keep, k.ts, a.actor AS who, a.id AS action_id ' +
+      'FROM keep_prefixes k JOIN actions a ON a.id = k.action_id WHERE k.tombstoned IS NULL',
+    ).all<KeepRow>(),
+    env.DB.prepare(
+      'SELECT o.prefix, o.owner, o.ts, a.id AS action_id ' +
+      'FROM owner_prefixes o JOIN actions a ON a.id = o.action_id WHERE o.tombstoned IS NULL',
+    ).all<OwnerRow>(),
+    env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS head FROM actions').first<{ head: number }>(),
+  ])
+  const head = headRow?.head ?? 0
+  const key = `${date}:${head}`
+
+  let bodyP = memo.get(key)
+  if (!bodyP) {
+    bodyP = (async () => {
+      const cached = await env.DB!.prepare('SELECT body FROM mark_totals WHERE scan = ? AND head = ?').bind(date, head).first<{ body: string }>()
+      if (cached) return JSON.parse(cached.body) as Body
+      const keeps = foldLatest(keepRows.results)
+      const owners = foldLatest(ownerRows.results)
+      const body = await compute(ctx, date, keeps, owners, head)
+      await env.DB!.prepare('INSERT OR IGNORE INTO mark_totals (scan, head, body, computed_ts, ms) VALUES (?, ?, ?, ?, ?)')
+        .bind(date, head, JSON.stringify(body), body.computed.at, body.computed.ms).run()
+      return body
+    })()
+    memo.set(key, bodyP)
+    bodyP.catch(() => memo.delete(key))
+  }
+  try {
+    const body = await bodyP
+    const out = withMarks ? body : { ...body, marks: undefined, mark_count: body.marks.length }
+    return json(out, 200, { 'cache-control': 'private, no-store' })
+  } catch (e) {
+    return json({ error: (e as Error).message }, 503)
+  }
+}

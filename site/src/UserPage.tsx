@@ -13,6 +13,7 @@ import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLe
 import { Treemap as MarkTreemap } from './Treemap'
 import { SiteNav } from './SiteNav'
 import { SiteKbd } from './SiteKbd'
+import { useMarkTotals } from './markTotals'
 import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, shortUserKey, teamOf } from './UserChip'
 import {
@@ -386,14 +387,14 @@ export function UsersOgPage() {
 export function UsersPage() {
   const asof = useLatestScan()
   const metaQ = useScanFile<Meta>('meta', asof)
-  const treeQ = useScanFile<TreeNode>('tree', asof)
-  const marksQ = useMarks(true)
-  const idx = useMarkIndex(marksQ.data)
-  const klcIdx = useKlcIdx(treeQ.data, idx)
   const mixes = metaQ.data?.user_class_bytes
+  // Per-user keep / sweep / undecided from /api/marks/totals — the ledger
+  // folded server-side against the floor-free index (claims applied), so the
+  // table, the map's root rollup and the digest agree, and no tree.json.
+  const totalsQ = useMarkTotals(asof)
   const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
-    [treeQ.data, idx, klcIdx],
+    () => (totalsQ.data ? new Map(Object.entries(totalsQ.data.users).map(([u, f]) => [canonId(u), f])) : null),
+    [totalsQ.data],
   )
   // ONE basis for every column: once the fate walk has run, Attributed is
   // its claims-applied total (same numbers as the tiles, the fate columns,

@@ -87,7 +87,10 @@ export const setCurrentScan = (s?: string) => { currentScan = s }
 
 export function useMarkMutations() {
   const qc = useQueryClient()
-  const done = () => void qc.invalidateQueries({ queryKey: ['actions'] })
+  const done = () => {
+    void qc.invalidateQueries({ queryKey: ['actions'] })
+    void qc.invalidateQueries({ queryKey: ['mark-totals'] })
+  }
   const post = useMutation({
     mutationFn: async (v: ActionPost | ActionPost[]) => {
       const items = (Array.isArray(v) ? v : [v]).map(a => ({ scan: currentScan, ...a }))
