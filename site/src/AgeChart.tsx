@@ -35,9 +35,11 @@ const bucketLabel = (b: number, gran: Granularity): string =>
 /** Stacked bars of bytes by created date (month/week/day), split per color mode.
  *  `readRange` null means the read axis is unavailable for this scan (no access
  *  window, or age strata published before they carried `a`). */
-export function AgeChart({ rows, catOrder, mode, onMode, userIdx, readRange }: {
+export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, userIdx, readRange }: {
   rows: AgeRow[]
   catOrder: string[]
+  /** Axes to offer (caller drops the ones this scan can't color by — never a dead button). */
+  modes?: ColorMode[]
   mode: ColorMode
   onMode?: (m: ColorMode) => void
   userIdx: Map<string, UserIndexEntry>
@@ -155,22 +157,11 @@ export function AgeChart({ rows, catOrder, mode, onMode, userIdx, readRange }: {
           {onMode && (
             <span className="gran" role="radiogroup" aria-label="Color by">
               <span className="lbl">color by</span>
-              {AGE_MODES.map(m => {
-                const off = m === 'read' && !readRange
-                return (
-                  <button
-                    key={m}
-                    role="radio"
-                    aria-checked={mode === m}
-                    className={mode === m ? 'on' : ''}
-                    disabled={off}
-                    title={off ? 'Read strata arrive with the next scan (published after 2026-08-28)' : undefined}
-                    onClick={() => onMode(m)}
-                  >
-                    {MODE_LABELS[m]}
-                  </button>
-                )
-              })}
+              {modes.map(m => (
+                <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? 'on' : ''} onClick={() => onMode(m)}>
+                  {MODE_LABELS[m]}
+                </button>
+              ))}
             </span>
           )}
           <span className="gran" role="radiogroup" aria-label="Time granularity">

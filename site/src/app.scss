@@ -1369,6 +1369,15 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   color: var(--ink-2);
 }
 
+// `/users` table: (bytes, est. $/mo) column pairs under one group header per
+// fate; the $ sub-columns read as annotations of the bytes, not peers.
+.user-page .worklist thead {
+  .groups th { text-align: center; border-bottom: none; padding-bottom: 0; }
+  .groups th:first-child { border-bottom: none; }
+  .subs th { font-weight: 400; font-size: 11px; color: var(--ink-3); padding-top: 0; }
+}
+.user-page .worklist .usd { font-size: 12px; opacity: .8; padding-left: 0; }
+
 // Per-user estate pages (`/users`, `/user/:id`): fate rollup strip + tables.
 .user-page {
   .user-head {

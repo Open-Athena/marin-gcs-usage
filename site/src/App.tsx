@@ -385,9 +385,12 @@ function AppContent() {
   // read axis needs strata that carry `a` (scans published from 8/29 on) —
   // without them it's offered disabled and the chart falls back to written.
   const ageReadRange = age.some(r => r.a != null) ? readRange : null
+  // Only axes this scan can actually color by are offered (no dead buttons):
+  // `read` needs `a` strata, the attribution axes need `tm`.
+  const ageModes = AGE_MODES.filter(m => (m !== 'read' || ageReadRange) && (hasAttr || m === 'date' || m === 'tree'))
   const ageMode: ColorMode = (() => {
     const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'fate' ? 'date' : effMode
-    return (want === 'read' && !ageReadRange) || (!hasAttr && want !== 'date' && want !== 'tree') ? 'date' : want
+    return ageModes.includes(want) ? want : 'date'
   })()
   const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
   // In mark mode the active tab scopes the map to its lens (filter +
@@ -878,7 +881,7 @@ function AppContent() {
           it follows the map’s until you pick one; marks have no per-stratum value here.
         </p>
         {age.length > 0 && (
-          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} userIdx={userIdx} readRange={ageReadRange} />
+          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
         )}
       </section>
       )}

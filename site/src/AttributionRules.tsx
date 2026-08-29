@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import type { TreeNode } from './types'
 
 const GROUP_EMAIL = 'marin-gcs-usage@openathena.ai'
-const GROUP_URL = 'https://groups.google.com/a/openathena.ai/g/marin-gcs-usage'
 const DISCORD_URL = 'https://discord.com/channels/1354881461060243556/1412294350645493840'
 const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/marin/src/gcs_usage/identities.yaml'
 
@@ -36,8 +35,7 @@ export function AttributionRules({ tree }: { tree: TreeNode }) {
         </p>
         <p className="feedback">
           Questions, a wrong owner, access for a teammate:{' '}
-          <a href={`mailto:${GROUP_EMAIL}`}>{GROUP_EMAIL}</a>{' '}
-          (<a href={GROUP_URL} target="_blank" rel="noreferrer">Google Group</a>) or{' '}
+          <a href={`mailto:${GROUP_EMAIL}`}>{GROUP_EMAIL}</a> or{' '}
           <a href={DISCORD_URL} target="_blank" rel="noreferrer">#internal-discuss</a> on the Marin Discord.
         </p>
       </div>

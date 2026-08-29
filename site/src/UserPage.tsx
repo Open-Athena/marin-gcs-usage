@@ -1,14 +1,14 @@
 import { Treemap, type CellStyle } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
 import { stringParam, useUrlState } from 'use-prms'
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
 import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkIndex } from './marks'
 import { DEFAULT_STORE } from './stores'
 import { applyFilter, applyNodeFilter } from './filterTree'
-import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex } from './sweep'
+import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex, type UserFates } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
 import { SiteNav } from './SiteNav'
 import { Tooltip } from './Tooltip'
@@ -89,6 +89,20 @@ const foldFates = (f: Record<Fate, number>): Record<ShownFate, number> => ({
   sweep: f.sweep,
   unmarked: f.unmarked,
 })
+type ClassMix = Record<string, number>
+const addMix = (into: ClassMix, m: ClassMix): ClassMix => {
+  for (const [c, b] of Object.entries(m)) into[c] = (into[c] ?? 0) + b
+  return into
+}
+// Same fold for the storage-class mixes behind each fate (KLC's kept bytes
+// price as keep).
+const foldMixes = (f: UserFates): Record<ShownFate, ClassMix> => ({
+  keep: addMix({ ...f.mix.keep }, f.mix.keep_last_ckpt),
+  sweep: f.mix.sweep,
+  unmarked: f.mix.unmarked,
+})
+// Every fate's mix together = the user's whole (claims-applied) estate mix.
+const wholeMix = (f: UserFates): ClassMix => ALL_FATES.reduce((m, k) => addMix(m, f.mix[k]), {} as ClassMix)
 const fateLabel = (f: Fate): string => (f === 'unmarked' ? 'unmarked' : ACTION_LABELS[f])
 // `unmarked` gets the regular secondary ink, not the unattributed-gray — as
 // the most common column value it has to be readable, not washed out.
@@ -145,8 +159,8 @@ function GroupBadge({ team, tip = true }: { team: string; tip?: boolean }) {
 }
 
 // Est. $/mo with the storage-class mix behind it on hover.
-function DollarCell({ b, mix }: { b: number; mix?: Record<string, number> }) {
-  if (!mix) return <>—</>
+function DollarCell({ b, mix, color }: { b: number; mix?: Record<string, number>; color?: string }) {
+  if (!mix || !b) return <>—</>
   const rows = Object.entries(mix)
     .sort(([a], [c]) => Number(a) - Number(c))
     .map(([cls, cb]) => ({
@@ -168,7 +182,7 @@ function DollarCell({ b, mix }: { b: number; mix?: Record<string, number> }) {
         </tbody>
       </table>
     }>
-      <span className="has-tt">{fmtUsd(ratePerByte(mix) * b)}</span>
+      <span className="has-tt" style={color ? { color } : undefined}>{fmtUsd(ratePerByte(mix) * b)}</span>
     </Tooltip>
   )
 }
@@ -400,11 +414,12 @@ export function UsersPage() {
   // Client-side CSV of exactly what the table shows (claims applied).
   const downloadCsv = () => {
     const rowsIter = fates
-      ? [...fates.entries()].map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f), f: foldFates(f) }))
-      : users.map(u => ({ u: u.u, b: u.b, f: null as Record<ShownFate, number> | null }))
+      ? [...fates.entries()].map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f), f: foldFates(f), m: foldMixes(f), mix: wholeMix(f) }))
+      : users.map(u => ({ u: u.u, b: u.b, f: null as Record<ShownFate, number> | null, m: null as Record<ShownFate, ClassMix> | null, mix: mixes?.[u.u] }))
+    const usd = (mix: ClassMix | undefined, b: number) => (mix && b ? Math.round(ratePerByte(mix) * b) : '')
     const tib = 1024 ** 4
     const lines = [
-      ['user', 'group', 'attributed_TiB', 'est_usd_mo', 'keep_TiB', 'sweep_TiB', 'undecided_TiB', 'undecided_pct', 'page'],
+      ['user', 'group', 'attributed_TiB', 'est_usd_mo', 'keep_TiB', 'keep_usd_mo', 'sweep_TiB', 'sweep_usd_mo', 'undecided_TiB', 'undecided_usd_mo', 'undecided_pct', 'page'],
       ...rowsIter
         .filter(r => r.b > 1e9)
         .sort((a, b) => (b.f?.unmarked ?? b.b) - (a.f?.unmarked ?? a.b))
@@ -412,10 +427,13 @@ export function UsersPage() {
           r.u,
           teamOf(r.u) ?? users.find(m => m.u === r.u)?.t ?? 'unknown',
           (r.b / tib).toFixed(1),
-          mixes?.[r.u] ? Math.round(ratePerByte(mixes[r.u]) * r.b) : '',
+          usd(r.mix, r.b),
           ((r.f?.keep ?? 0) / tib).toFixed(1),
+          usd(r.m?.keep, r.f?.keep ?? 0),
           ((r.f?.sweep ?? 0) / tib).toFixed(1),
+          usd(r.m?.sweep, r.f?.sweep ?? 0),
           ((r.f?.unmarked ?? r.b) / tib).toFixed(1),
+          usd(r.m?.unmarked, r.f?.unmarked ?? 0),
           r.b ? Math.round((100 * (r.f?.unmarked ?? r.b)) / r.b) : 0,
           `https://gcs.oa.dev/user/${r.u}`,
         ]),
@@ -427,30 +445,45 @@ export function UsersPage() {
     a.click()
     URL.revokeObjectURL(a.href)
   }
+  // Each fate is a (bytes, est. $/mo) pair; the $ prices that fate's own
+  // storage-class mix from the walk (a cold sweep is cheap, a hot one isn't).
   const cell = (u: string, f: ShownFate) => {
     const raw = fates?.get(u)
     const b = raw ? foldFates(raw)[f] : 0
+    const dim = { color: 'var(--ink-2)', opacity: 0.5 }
     return (
-      <td className="num" style={b ? { color: fateColor(f) } : { color: 'var(--ink-2)', opacity: 0.5 }}>
-        {fates ? (b ? fmtBytesIec(b) : '—') : '…'}
-      </td>
+      <>
+        <td className="num" style={b ? { color: fateColor(f) } : dim}>
+          {fates ? (b ? fmtBytesIec(b) : '—') : '…'}
+        </td>
+        <td className="num usd" style={b ? undefined : dim}>
+          {fates ? <DollarCell b={b} mix={raw ? foldMixes(raw)[f] : undefined} color={fateColor(f)} /> : '…'}
+        </td>
+      </>
     )
   }
   // Footer totals over exactly the rows shown (same claims-applied basis);
   // $ only sums users whose class mix is known, so it's a floor, flagged as such.
   const totals = useMemo(() => {
-    const t = { b: 0, usd: 0, priced: 0, keep: 0, sweep: 0, unmarked: 0 }
+    const t = { b: 0, usd: 0, priced: 0, keep: 0, sweep: 0, unmarked: 0, mix: { keep: {} as ClassMix, sweep: {} as ClassMix, unmarked: {} as ClassMix } }
     for (const u of users) {
       t.b += u.b
-      const mix = mixes?.[u.u]
-      if (mix) { t.usd += ratePerByte(mix) * u.b; t.priced++ }
       const raw = fates?.get(u.u)
-      if (raw) { const f = foldFates(raw); t.keep += f.keep; t.sweep += f.sweep; t.unmarked += f.unmarked }
+      const mix = raw ? wholeMix(raw) : mixes?.[u.u]
+      if (mix) { t.usd += ratePerByte(mix) * u.b; t.priced++ }
+      if (raw) {
+        const f = foldFates(raw); t.keep += f.keep; t.sweep += f.sweep; t.unmarked += f.unmarked
+        const m = foldMixes(raw)
+        for (const k of SHOWN_FATES) addMix(t.mix[k], m[k])
+      }
     }
     return t
   }, [users, mixes, fates])
   const totalCell = (f: ShownFate) => (
-    <td className="num" style={{ color: fateColor(f) }}>{fates ? fmtBytesIec(totals[f]) : '…'}</td>
+    <>
+      <td className="num" style={{ color: fateColor(f) }}>{fates ? fmtBytesIec(totals[f]) : '…'}</td>
+      <td className="num usd">{fates ? <DollarCell b={totals[f]} mix={totals.mix[f]} color={fateColor(f)} /> : '…'}</td>
+    </>
   )
   return (
     <main className="marks-page user-page">
@@ -475,9 +508,18 @@ export function UsersPage() {
       {users.length > 0 && (
         <table className="worklist">
           <thead>
-            <tr>
-              <th>User</th><th className="num">Attributed</th><th className="num">Est. $/mo</th>
-              <th className="num">Keep</th><th className="num">Sweep</th><th className="num">Unmarked</th>
+            <tr className="groups">
+              <th />
+              <th className="num" colSpan={2}>Attributed</th>
+              <th className="num" colSpan={2}>Keep</th>
+              <th className="num" colSpan={2}>Sweep</th>
+              <th className="num" colSpan={2}>Unmarked</th>
+            </tr>
+            <tr className="subs">
+              <th>User</th>
+              {['attributed', ...SHOWN_FATES].map(k => (
+                <Fragment key={k}><th className="num">bytes</th><th className="num usd">est. $/mo</th></Fragment>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -489,7 +531,7 @@ export function UsersPage() {
                   </Link>
                 </td>
                 <td className="num">{fmtBytesIec(u.b)}</td>
-                <td className="num"><DollarCell b={u.b} mix={mixes?.[u.u]} /></td>
+                <td className="num usd"><DollarCell b={u.b} mix={fates?.get(u.u) ? wholeMix(fates.get(u.u)!) : mixes?.[u.u]} /></td>
                 {cell(u.u, 'keep')}
                 {cell(u.u, 'sweep')}
                 {cell(u.u, 'unmarked')}
@@ -505,7 +547,7 @@ export function UsersPage() {
                 {' '}<span style={{ fontWeight: 400, opacity: 0.7 }}>· {users.length} users</span>
               </td>
               <td className="num">{fmtBytesIec(totals.b)}</td>
-              <td className="num">
+              <td className="num usd">
                 {totals.priced
                   ? <Tooltip content={totals.priced < users.length ? `${totals.priced} of ${users.length} users have a storage-class mix; the rest are unpriced, so this is a floor` : 'sum of the per-user estimates'}>
                       <span className="has-tt">{totals.priced < users.length ? '≥ ' : ''}{fmtUsd(totals.usd)}</span>

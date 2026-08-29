@@ -4,7 +4,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { reaggregate, type NodePred } from './filterTree'
 import { newer, type KeepRow, type MarkAction, type MarkIndex, type OwnerRow } from './marks'
-import type { TreeNode } from './types'
+import { classMix, type TreeNode } from './types'
 
 export interface SweepRow {
   uri: string
@@ -231,6 +231,14 @@ export function applyTodoFilter(root: TreeNode, idx: MarkIndex): TreeNode {
  * the node's `us` shares (minus what descended into recursed children — so
  * folded tiles and floor residue take the node's own fate).
  */
+/** One user's bytes by fate, plus the storage-class mix behind each fate
+ * (class id → bytes; STANDARD = "1") so keep / sweep / undecided can be priced
+ * like Attributed is. A user's share of a node is assumed to carry the node's
+ * class mix (the tree has no per-user class split). */
+export interface UserFates extends Record<Fate, number> {
+  mix: Record<Fate, Record<string, number>>
+}
+
 export function allUserFates(
   root: TreeNode,
   idx: MarkIndex,
@@ -239,13 +247,17 @@ export function allUserFates(
    * ownership WAL — a claimed subtree attributes wholly to its claimant,
    * overriding scan attribution until the pipeline catches up. */
   canon: (who: string) => string = w => w,
-): Map<string, Record<Fate, number>> {
+): Map<string, UserFates> {
   const ctx = fateWalkCtx(idx.keeps, idx.owners)
-  const out = new Map<string, Record<Fate, number>>()
-  const add = (u: string, f: Fate, b: number) => {
+  const out = new Map<string, UserFates>()
+  // `mix` is the class mix of the bytes being settled at this point (the
+  // node's, or the residue left after recursed children); the user's `b` is
+  // spread over it pro rata.
+  const add = (u: string, f: Fate, b: number, mix: Record<string, number>, mixB: number) => {
     let rec = out.get(u)
-    if (!rec) out.set(u, (rec = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }))
+    if (!rec) out.set(u, (rec = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0, mix: { keep: {}, keep_last_ckpt: {}, sweep: {}, unmarked: {} } }))
     rec[f] += b
+    if (mixB > 0) for (const [c, cb] of Object.entries(mix)) if (cb > 0) rec.mix[f][c] = (rec.mix[f][c] ?? 0) + b * (cb / mixB)
   }
   // Settle `each(f, frac)` bytes at `uri` under `win` — KLC decomposes into
   // its real keep/sweep proportions when the split is resolvable.
@@ -265,23 +277,27 @@ export function allUserFates(
     const ownRow = winOwner(ctx, uri, inhOwn)
     const claimant = ownRow?.owner != null ? canon(ownRow.owner) : null
     if (!ctx.below(uri)) {
+      const mix = classMix(n)
       settle(uri, n.b, win, (f, frac) => {
-        if (claimant) add(claimant, f, n.b * frac)
-        else for (const [u, b] of n.us ?? []) if (b > 0) add(u, f, b * frac)
+        if (claimant) add(claimant, f, n.b * frac, mix, n.b)
+        else for (const [u, b] of n.us ?? []) if (b > 0) add(u, f, b * frac, mix, n.b)
       })
       return
     }
     const rest = new Map<string, number>(n.us ?? [])
     let restB = n.b
+    const restMix = classMix(n)
     for (const c of n.c ?? []) {
       if (c.n.startsWith('(')) continue
       restB -= c.b
       walk(c, `${uri}/${c.n}`, win, ownRow)
       for (const [u, b] of c.us ?? []) rest.set(u, (rest.get(u) ?? 0) - b)
+      for (const [cls, cb] of Object.entries(classMix(c))) restMix[cls] = Math.max(0, (restMix[cls] ?? 0) - cb)
     }
+    const restMixB = Object.values(restMix).reduce((a, b) => a + b, 0)
     settle(uri, n.b, win, (f, frac) => {
-      if (claimant) { if (restB > 0) add(claimant, f, restB * frac) }
-      else for (const [u, b] of rest) if (b > 0) add(u, f, b * frac)
+      if (claimant) { if (restB > 0) add(claimant, f, restB * frac, restMix, restMixB) }
+      else for (const [u, b] of rest) if (b > 0) add(u, f, b * frac, restMix, restMixB)
     })
   }
   for (const b of root.c ?? []) walk(b, `gs://${b.n}`, null, null)
