@@ -28,9 +28,11 @@ const bucketLabel = (b: number, gran: Granularity): string =>
   gran === 'month' ? isoMonth(b) : iso(b)
 
 /** Stacked bars of bytes by created date (month/week/day), split per color mode. */
-export function AgeChart({ rows, catOrder, mode, onMode, userIdx }: {
+export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, userIdx }: {
   rows: AgeRow[]
   catOrder: string[]
+  /** Axes to offer (caller drops the ones this scan can't color by — never a dead button). */
+  modes?: ColorMode[]
   mode: ColorMode
   onMode?: (m: ColorMode) => void
   userIdx: UserIndex
@@ -115,7 +117,7 @@ export function AgeChart({ rows, catOrder, mode, onMode, userIdx }: {
           {onMode && (
             <span className="gran" role="radiogroup" aria-label="Color by">
               <span className="lbl">color by</span>
-              {AGE_MODES.map(m => (
+              {modes.map(m => (
                 <button key={m} role="radio" aria-checked={mode === m} className={mode === m ? 'on' : ''} onClick={() => onMode(m)}>
                   {MODE_LABELS[m]}
                 </button>

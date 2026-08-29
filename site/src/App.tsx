@@ -136,9 +136,12 @@ function AppContent() {
   const setMode = (m: ColorMode) => setModeP(m)
   const hasAttr = (meta?.users?.length ?? 0) > 0
   const effMode: ColorMode = hasAttr ? mode : 'tree'
+  // Only axes this scan can color by are offered — `user` needs attribution
+  // (CoreWeave has none today), so it's absent rather than a dead button.
+  const ageModes = AGE_MODES.filter(m => hasAttr || m !== 'user')
   const ageMode: ColorMode = (() => {
     const want = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode
-    return want === 'user' && !hasAttr ? 'tree' : want
+    return ageModes.includes(want) ? want : 'tree'
   })()
   const hl: Highlight | null = hlUser ? { user: hlUser } : null
 
@@ -379,7 +382,7 @@ function AppContent() {
           (right); it follows the map’s until you pick one.
         </p>
         {age.length > 0 && (
-          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} userIdx={userIdx} />
+          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} />
         )}
       </section>
 
