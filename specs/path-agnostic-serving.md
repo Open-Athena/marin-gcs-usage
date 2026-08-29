@@ -1,0 +1,67 @@
+# Path-agnostic serving: retire `tree.json` / `age.json`, fold the WAL server-side
+
+Ryan, 2026-08-29: "I want a design that is fast no matter the path. No min-blob floors, no depth floors. These are big tries and should be used as such, not shipped as one big JSON to the client. Serving up-to-date requests means replaying a WAL of online actions on top of the daily index — is that hooked up?"
+
+This spec answers that with the current state (audited, not from memory), the target design, and the order to get there. It supersedes the totals half of `exact-fate-totals.md` (same algorithm, renamed: the API is `marks`, not `fates`) and finishes `path-index-lazy-drill.md` step 4.
+
+## 1. What actually ships to whom today (2026-08-29 scan)
+
+| artifact | size | floor | who reads it | how |
+|---|---|---|---|---|
+| `listing/<date>/path-index.parquet` | 7.5 GB, **220 M rows** (path × group × user slices), 3,358 row groups × 65,536 rows, sorted `(depth, path)` | **none** | `/api/subtree` (tier 2), `/api/path-index` (raw) | hyparquet range reads over the S3-compat store; edge-cached by `(date, path, w, h)` |
+| `snapshots/<date>/tree.json` | 29.5 MB | `MIN_FRAC = 0.0002` of parent, per node | **browser, whole** — any lens, `?f=`, mark mode (i.e. every signed-in visit), pinned legend row; `/users`, `/user/:id`; `/api/todo` and `/api/subtree` tier 1 server-side | one GET, walked client-side |
+| `snapshots/<date>/age.json` | 1.2 MB, 17 k strata `(day, top-level dir, group, user, last-read day)` | strata only at top-level-dir granularity | browser, whole | stacked client-side; can't follow a drill |
+| `snapshots/<date>/meta.json`, `series.json`, `rules.json` | 6 KB, small | — | browser | fine |
+| D1 actions ledger (`keep_prefixes`, `owner_prefixes`) | 6.8 k live marks | — | `/api/actions` → **browser, whole**, folded into a prefix trie (`useMarkIndex`) | resolves per cell; totals walk the loaded tree |
+| per-object listings `listing/<date>/<bucket>/*.parquet` | 600 M objects, ~1.2 GB/bucket, 73 files/bucket, **not path-sorted** | — | pipeline only | — |
+
+So: yes, `tree.json` and `age.json` are shipped whole, and the root is the only path they're "fast" for — the floor makes every deeper answer approximate, and the 29 MB is paid before a marker sees a single keep/sweep number. The WAL is only replayed client-side, and only partially: marks re-color and total on the client (against the floored tree), claims re-attribute only on `/users` (`allUserFates`), and the map's user coloring / legend rollups still show scan-time attribution. `/api/subtree` knows nothing about the ledger. `/api/todo` replays it server-side but over `tree.json`.
+
+## 2. Target: one index family, one WAL fold, every read is O(answer)
+
+### 2.1 The index is already a trie — read it like one
+
+A parquet file sorted `(depth, path)` is a level-order trie: the descendants of `P` at depth `depth(P)+k` are one contiguous run of rows, found by binary search over row-group `path` min/max. A subtree query to depth `k` is `k` range reads, wherever `P` is. That's the property "fast no matter the path" needs, and `/api/subtree` tier 2 already exploits it. What's wrong is the granularity: 65 k-row groups (~7 MB) mean a small subtree can pull a 7 MB group for a 30-row answer, and a Worker has 128 MB / 30 s.
+
+- **Row groups → 8 k rows** (~0.9 MB) and **hive-partition by depth** (`path-index/depth=N/…`) so the per-depth binary search is over one file's footer and reads are ≤ ~1 MB per level. 220 M rows / 8 k = 27 k groups; footers stay cached per isolate as today.
+- **Columns:** keep `(path, depth, team, usr, b, o, wts, wb, c2, c3, c4)`; add `a` (last-read day, subtree max — the read lens should not depend on `tree.json` either) and `d` (min created day) so the `read` / `written` colorings come from the index.
+- **Store:** move the index to **R2** (zero egress to Workers; today every range read is GCS egress via the S3-compat endpoint). The job writes both; the site reads R2.
+
+### 2.2 Age strata per path (`/api/age?date&path`)
+
+`age.json` becomes a second index, `age-index.parquet`: rows `(path, depth, day, team, usr, b, o, a)` for every path at `depth ≤ D` (D = 4 covers every drill anyone has done; count = Σ paths≤D × active days ≈ tens of millions of rows, same serving pattern as 2.1). Deeper paths: on demand from a **path-sorted per-object listing** — the daily job re-sorts each bucket's listing by `name` (it already sorts the 220 M-row index; 600 M objects on the highmem-16 node is the same order of cost) so objects under `P` are one range and the histogram is exact, cost ∝ objects under `P`, which is small precisely when `P` is deep. Until the re-sort ships, the chart hides below `D` (as it hides under lenses today) — never a floored or fleet-wide number pretending to be scoped.
+
+### 2.3 The WAL, folded once, applied everywhere
+
+The ledger is the OLTP side: marks and claims since the scan. Fold it **server-side** into a prefix trie keyed by `(scan, max(action_id))` — cached in KV, rebuilt on write (6.8 k prefixes → ~300 KB, ms to fold) — and apply it in every read path:
+
+- **`/api/subtree`**: each returned node carries its resolved mark (`{prefix, action, who, ts, own}`) and, where a claim covers it, its `usr` slices re-pointed at the claimant. The map, legend rollups and cell tooltips then show the claims-applied estate the way `/users` already does. The client keeps a trie of the marks *under the drilled path* only (returned with the subtree), not the whole ledger.
+- **`/api/marks/totals?date&path`** (was `/api/fates`): the exact `exact-fate-totals.md` algorithm over the index — for each live mark `m` under `path`, `bytes(m)` is one row lookup, `net(m)` subtracts deeper overriding marks via the trie, `keep_last_ckpt` decomposes by listing `m`'s step-numbered children from the index. Returns `{ total: {keep, sweep, keep_last_ckpt, unmarked}, users: {…}, marks: [{prefix, action, bytes, objects, net_bytes, net_objects}] }`. Cached by `(scan, action head, path)`. This is the map rollup, `/users`, the digest bot's numbers, and — `marks[]` — the **sweep executor's manifest**. One number, everywhere, exact.
+- **`/api/todo`**: same trie + index (largest undecided prefixes = index rows at each depth minus covered ones), no `tree.json`.
+- **Lenses / `?f=` filters** (`specs/path-index-lazy-drill.md` "follow-up"): server-side predicates on the same query — `usr = X ≥ 60%` (My files / pinned user), `team = communal`, name regex on `path` — evaluated per row before the pixel-budget fold. The client stops re-aggregating anything.
+
+Freshness: scan daily, WAL live, caches keyed by the WAL head so a new mark invalidates exactly what it changes. The client can still apply its own just-written action optimistically (it has the prefix) until the next fetch.
+
+### 2.4 What the browser receives, after
+
+Per view: ≤ pixel-budget nodes (a few hundred), the marks under the drilled path, age strata for the drilled path, `meta.json`, `series.json`. Nothing O(estate). `tree.json` is no longer read by the site (the job can keep writing it for the og:image renderer and as a debugging artifact until nothing needs it, then stop); `MIN_FRAC` goes away with it.
+
+## 3. Query engine: parquet-over-ranges in Workers vs a real DB
+
+Argued both ways:
+
+- **Keep parquet + range reads in Pages Functions** (what exists): no infra, zero idle cost, scales with the edge, and every query above is a few binary searches plus ≤ ~1 MB reads — well inside Worker limits once row groups shrink. Weakness: anything that isn't a prefix-range (ad-hoc SQL, joins, the deep-path age histogram before listings are sorted) doesn't fit.
+- **A query service (DuckDB on Cloud Run, or a Postgres/ClickHouse with the index loaded)**: SQL for everything, including the listings; but an always-on process to babysit, cold starts, and a second auth boundary. D1 can't hold 220 M rows (10 GB cap, and the daily reload would be the job's slowest step).
+
+Recommendation: the CFN path — the workload *is* prefix ranges over a trie, that's what the layout gives for free — and the DuckDB service only if 2.2's on-demand histogram or a future ad-hoc need outgrows Workers. `/api/path-index` (raw parquet with Range) already gives DuckDB users the escape hatch today.
+
+## 4. Order
+
+1. `/api/marks/totals` + server-side WAL fold (KV-cached trie). Consumers: map rollup, `/users`, digest, executor manifest. Removes the last reason mark mode loads `tree.json`. *(This is also the sweep executor's prerequisite — do it first.)*
+2. Index re-layout: 8 k-row groups, depth partitions, `a`/`d` columns, R2 copy. `/api/subtree` reads R2; applies marks + claims per node.
+3. Lenses / filters / pinned rows server-side; drop client re-aggregation and `needFullTree`.
+4. `age-index.parquet` + `/api/age`; delete `age.json` reads.
+5. Path-sorted listings; deep-path age on demand.
+6. Stop writing `tree.json` / `age.json` (og renderer moves onto `/api/subtree`); delete `MIN_FRAC`.
+
+Not in scope: attribution itself (still computed by the daily job; claims are the live override), the access-log ingest.

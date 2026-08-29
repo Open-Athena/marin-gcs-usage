@@ -1,5 +1,7 @@
 # Exact keep / sweep / undecided totals (floor-free)
 
+> Superseded 2026-08-29 by `path-agnostic-serving.md` §2.3 — same algorithm, surfaced as `GET /api/marks/totals` (not `/api/fates`; the ledger vocabulary is *marks*), with the server-side WAL fold it needs.
+
 ## Symptom (2026-08-28)
 
 Same scan, same ledger, three different "sweep" numbers:
