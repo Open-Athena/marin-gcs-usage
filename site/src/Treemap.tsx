@@ -477,8 +477,10 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           const pickable = !!r.hl && !!(r.hl.user ? onPickUser : onPickTeam)
           const same = (a: Highlight | null | undefined, b: Highlight | undefined) => !!a && !!b && a.user === b.user && a.team === b.team
           const pinned = same(hl, r.hl)
-          // Faded whenever some row is solo'd/pinned and it isn't this one.
-          const faded = !!effHl && !same(effHl, r.hl)
+          // Hover-solo fades the other rows; a pin (the map is scoped to the
+          // pinned row's bytes) hides them.
+          const faded = !hl && !!hoverHl && !same(hoverHl, r.hl)
+          const hidden = !!hl && !pinned
           const pick = () => {
             if (!r.hl) return
             if (pinned) onClearHl?.()
@@ -488,6 +490,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           return (
           <span
             className={`ri${pickable ? ' pickable' : ''}${pinned ? ' pinned' : ''}${faded ? ' faded' : ''}`}
+            hidden={hidden}
             key={r.k}
             onMouseEnter={pickable ? () => setHoverHl(r.hl!) : undefined}
             onMouseLeave={pickable ? () => setHoverHl(null) : undefined}

@@ -385,6 +385,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .ri.pickable:hover { background: var(--line); }
     .ri.pinned { background: var(--line); box-shadow: 0 0 0 1px var(--ink-3); }
     .ri.faded { opacity: .35; }
+    .ri[hidden] { display: none; }
     .ri .unpin { color: var(--ink-3); font-size: 11px; margin-left: 2px; }
     .sw { width: 10px; height: 10px; border-radius: 3px; }
     b { color: var(--ink); font-weight: 600; }

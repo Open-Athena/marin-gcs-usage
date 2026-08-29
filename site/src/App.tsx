@@ -188,7 +188,7 @@ function AppContent() {
   // the numbers jumped the moment a lens pulled tree.json in. Same tree every
   // time, or the totals aren't comparable (specs/exact-fate-totals.md for the
   // floor-free version).
-  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null || markMode
+  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null || markMode || hlUser != null || hlTeam != null
   // One-time legacy-param rewrite (`mt`/`mu` → `l`/`u`), so old links work
   // and re-share in the golfed form.
   useEffect(() => {
@@ -390,13 +390,19 @@ function AppContent() {
   const lensScoped = markMode && markTab !== 'all'
   const mapTree = useMemo(() => {
     if (!shownTree) return shownTree
-    if (todoActive) return applyTodoFilter(shownTree, markIdx)
-    if (!scopedActive) return shownTree
-    const lens = markTab === 'mine'
-      ? userLens(viewUser!)
-      : teamLens(markTab === 'unclaimed' ? 'unattributed' : 'communal')
-    return applyNodeFilter(shownTree, lensNodePred(lens))
-  }, [shownTree, scopedActive, todoActive, markIdx, markTab, viewUser])
+    let t = shownTree
+    if (todoActive) t = applyTodoFilter(t, markIdx)
+    else if (scopedActive) {
+      const lens = markTab === 'mine'
+        ? userLens(viewUser!)
+        : teamLens(markTab === 'unclaimed' ? 'unattributed' : 'communal')
+      t = applyNodeFilter(t, lensNodePred(lens))
+    }
+    // A PINNED legend row scopes the map to what it owns (same maximal-subtree
+    // rule as the review lenses); a hovered row only fades the rest.
+    if (hl) t = applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : teamLens(hl.team!)))
+    return t
+  }, [shownTree, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
   // Controlled treemap drill path, resolved against the (possibly filtered/
   // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
   // switches by re-walking the new tree; a vanished path truncates to its
@@ -440,15 +446,18 @@ function AppContent() {
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
   const mkUsers = useMemo(() => (meta?.users ?? []).map(u => u.u).sort(), [meta])
 
-  const pickUser = (u: string) => {
+  // `switchMode`: a ⌘K pick from any coloring jumps to an axis where the
+  // highlight is visible; a legend-row click is already on such an axis and
+  // must not move it (clicking "unattributed" in user mode stays in user mode).
+  const pickUser = (u: string, switchMode = true) => {
     setHlTeam(undefined)
     setHlUser(u)
-    if (mode !== 'user' && mode !== 'uteam') setMode('user')
+    if (switchMode && mode !== 'user' && mode !== 'uteam') setMode('user')
   }
-  const pickTeam = (t: string) => {
+  const pickTeam = (t: string, switchMode = true) => {
     setHlUser(undefined)
     setHlTeam(t)
-    if (mode !== 'team') setMode('team')
+    if (switchMode && mode !== 'team') setMode('team')
   }
   const clearHl = () => {
     setHlUser(undefined)
@@ -779,8 +788,8 @@ function AppContent() {
             dateRange={dateRange}
             readRange={readRange}
             hl={effHl}
-            onPickUser={pickUser}
-            onPickTeam={pickTeam}
+            onPickUser={u => pickUser(u, false)}
+            onPickTeam={t => pickTeam(t, false)}
             onClearHl={clearHl}
             pricing={pricing}
             lens={lens}
