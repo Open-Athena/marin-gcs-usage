@@ -5,6 +5,14 @@ import { ACTION_LABELS, useMarks } from './marks'
 // The ledger's keep + owner rows, folded into one newest-first event stream —
 // shared by the full `/marks` feed and the path-scoped "Mark history" section.
 
+/** Ledger timestamps render in the viewer's zone; the tables name it in their
+ *  header so "2:24 AM" is never mistaken for UTC (the ledger stores epoch s). */
+export const LOCAL_TZ: string =
+  new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(new Date())
+    .find(p => p.type === 'timeZoneName')?.value ?? 'local'
+export const fmtWhen = (ts: number): string =>
+  new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+
 export interface MarkEvent {
   ts: number
   who: string

@@ -2,16 +2,13 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fmtMarkDate } from './MarkControls'
 import { UserChip } from './UserChip'
-import { ActionChip, eventsUnder, useMarkEvents } from './markEvents'
+import { ActionChip, LOCAL_TZ, eventsUnder, fmtWhen, useMarkEvents } from './markEvents'
 
 // Path-scoped slice of the mark ledger: every keep/sweep/clear/claim under the
 // currently-drilled prefix, newest first. The map shows *current* fate; this
 // shows how it got there (and, when size-over-time can't, the change story).
 
 const PAGE = 8
-
-const fmtWhen = (ts: number): string =>
-  new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 /** `gs://marin-<bucket>/<path>/` → the treemap's URL path segments. */
 const prefixToPath = (prefix: string): string => {
@@ -41,7 +38,7 @@ export function MarkHistory({ prefix, scope }: { prefix: string; scope: string }
       </p>
       <table className="worklist marks-feed">
         <thead>
-          <tr><th>when</th><th>who</th><th>action</th><th>prefix</th></tr>
+          <tr><th>when ({LOCAL_TZ})</th><th>who</th><th>action</th><th>prefix</th></tr>
         </thead>
         <tbody>
           {rows.map(e => {

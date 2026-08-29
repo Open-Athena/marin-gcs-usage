@@ -498,7 +498,12 @@ export function UsersPage() {
           </tbody>
           <tfoot>
             <tr className="total-row">
-              <td>Total <span style={{ fontWeight: 400, opacity: 0.7 }}>· {users.length} users</span></td>
+              <td>
+                <Tooltip content="Sum of the rows above — bytes attributed to (or claimed by) some user. Bytes with no owner (shared datasets, unattributed) are in no row, so this is less than the estate-wide keep / sweep rollup on the map.">
+                  <span className="dotted">Total</span>
+                </Tooltip>
+                {' '}<span style={{ fontWeight: 400, opacity: 0.7 }}>· {users.length} users</span>
+              </td>
               <td className="num">{fmtBytesIec(totals.b)}</td>
               <td className="num">
                 {totals.priced

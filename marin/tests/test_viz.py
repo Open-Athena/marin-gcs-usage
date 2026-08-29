@@ -160,6 +160,41 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
     ]
 
 
+@pytest.fixture
+def access(tmp_path: Path) -> str:
+    """Layer-2a access agg: one read prefix (plus its ancestor rollup row)."""
+    path = tmp_path / "access.parquet"
+    pd.DataFrame(
+        {
+            "bucket": ["b1", "b1"],
+            "path": ["users/rw/ckpt", "users"],
+            "op": ["GET", "GET"],
+            "last_ts": [TS["d0703"], TS["d0703"]],
+            "n_ops": [3, 3],
+            "bytes_out": [1000, 1000],
+        }
+    ).to_parquet(path)
+    return str(path)
+
+
+def test_age_rows_carry_last_read(tmp_path: Path, listing: str, attribution: str, access: str):
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    out = tmp_path / "out"
+    meta = write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path, access=(access,))
+    rd = epoch_day(TS["d0703"])
+    assert meta["access"] == {"from": rd, "to": rd}
+    # Strata whose dir was read carry `a` (its last-read epoch day); the rest
+    # omit it — the site's read axis colors those "never read".
+    age = json.loads((out / "age.json").read_text())
+    assert sorted(age, key=lambda r: (r["d"], r["d1"])) == [
+        {"d": epoch_day(TS["d0615"]), "d1": "datasets", "t": "data", "b": 200 * GB, "o": 1},
+        {"d": epoch_day(TS["d0701"]), "d1": "users", "t": "infra", "u": "ryan-williams", "a": rd, "b": 100 * GB, "o": 1},
+        {"d": epoch_day(TS["d0702"]), "d1": "(files)", "t": "unattributed", "b": 30 * GB, "o": 1},
+        {"d": epoch_day(TS["d0703"]), "d1": "users", "t": "infra", "u": "ryan-williams", "a": rd, "b": 50 * GB, "o": 1},
+    ]
+
+
 def test_write_webdata_plain(tmp_path: Path, listing: str):
     out = tmp_path / "out"
     meta = write_webdata((listing,), out, "2026-07-20")

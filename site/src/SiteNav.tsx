@@ -3,7 +3,6 @@ import { Link, useLocation } from 'react-router-dom'
 import { useCanMark, useIdent, useSignOut } from './auth'
 import { IDENTITIES } from './identities.gen'
 import { useMyUser, useUserEmails } from './sweep'
-import { TilingToggle } from './tiling'
 import TokenModal from './TokenModal'
 import { UserChip } from './UserChip'
 
@@ -32,7 +31,6 @@ export function SiteNav({ inline = false }: { inline?: boolean }) {
         {link('/files', 'Browse scans →')}
         {markLinks && link('/users', 'Users →')}
         {markLinks && link('/marks', 'Recent marks →')}
-        <TilingToggle />
       </span>
       {ident && (
         <div className="whoami">

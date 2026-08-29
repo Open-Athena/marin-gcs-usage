@@ -79,6 +79,7 @@ export interface AgeRow {
   d1: string  // top-level dir
   t?: string  // owning team (attribution-aware webdata only)
   u?: string  // owning user
+  a?: number  // last-read epoch day of the row's dir (access logs; subtree MAX, like TreeNode.a); absent = no read observed
   b: number
   o: number
 }

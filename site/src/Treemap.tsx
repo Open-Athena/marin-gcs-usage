@@ -12,7 +12,7 @@ import type { KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
-import { useTiling } from './tiling'
+import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
 
 // A top-level prefix holding more than this share of the store is split one
@@ -39,13 +39,17 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, fateReady = true, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
   // Access-log observation window (epoch days) — domain of the read lens.
   readRange?: DateRange | null
+  /** False while the full artifact tree is still loading: the fate rollup
+   *  waits rather than showing totals from the coarse pixel-budget tree
+   *  (which folds most mark prefixes away and understates sweep). */
+  fateReady?: boolean
   hl?: Highlight | null
   pricing?: Pricing | null
   lens?: boolean
@@ -416,8 +420,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     // Fate totals for the current view: of the drilled subtree's bytes, how
     // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
     // amber "last ckpt" appears only for marks the tree can't split).
-    const fate = markIdx && mode === 'fate'
-      ? subtreeFateTotals(node, path.length > 1 ? uriOf(path) : '', markIdx, klcIdx ?? undefined)
+    const fateWanted = !!markIdx && mode === 'fate'
+    const fate = fateWanted && fateReady
+      ? subtreeFateTotals(node, path.length > 1 ? uriOf(path) : '', markIdx!, klcIdx ?? undefined)
       : null
     const fateRows = fate
       ? ([
@@ -430,6 +435,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     return (
       <>
         {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} />}
+        {fateWanted && !fateReady && <span className="fate-rollup pending">keep / sweep totals — loading the full tree…</span>}
         {fateRows.length > 0 && (
           <span className="fate-rollup">
             {fateRows.map(([k, b, col]) => (
@@ -471,9 +477,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
      strict-subset duplicate. This legend exists only for encodings the
      roll-up can't key: date gradients (written/read) and the tree prefix
      palette. A new mode should default into the roll-up, not here. */
-  const legend = mode === 'read' || mode === 'date' || mode === 'tree'
+  const modeLegend = mode === 'read' || mode === 'date' || mode === 'tree'
     ? (legendNode: TreeNode, legendPath: TreeNode[]) => (
-        <div className="legend">
+        <>
           {mode === 'read' && readRange ? (
             <>
               <Tooltip content={`No reads observed since access logging began (${epochDaysToDate(readRange.min)}) — activity before that predates the logs, so "never read" really means "not read in the observed window".`}>
@@ -515,9 +521,17 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
               )
             })()
           )}
-        </div>
+        </>
       )
-    : undefined
+    : null
+  // The tiling toggle rides in the same slot (right of the crumbs, left of ⛶)
+  // in every mode: a map-level preference belongs on the map, not in the nav.
+  const legend = (legendNode: TreeNode, legendPath: TreeNode[]) => (
+    <div className="legend">
+      {modeLegend?.(legendNode, legendPath)}
+      <TilingToggle />
+    </div>
+  )
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
     const uri = uriOf(path)

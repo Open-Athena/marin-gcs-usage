@@ -1,98 +1,46 @@
 import { useEffect } from 'react'
-import type { Rules, TreeNode, UserInfo } from './types'
-import { TEAM_VARS } from './types'
-import { useUnits } from './units'
+import type { TreeNode } from './types'
 
-const SLACK_URL = 'https://openathena.slack.com/archives/C0AHF5KV11Q'
-const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/main/src/gcs_usage/identities.yaml'
+const GROUP_EMAIL = 'marin-gcs-usage@openathena.ai'
+const GROUP_URL = 'https://groups.google.com/a/openathena.ai/g/marin-gcs-usage'
+const DISCORD_URL = 'https://discord.com/channels/1354881461060243556/1412294350645493840'
+const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/marin/src/gcs_usage/identities.yaml'
 
-const TeamChip = ({ team }: { team: string }) => (
-  <span className="teamchip">
-    <span className="sw" style={{ background: `var(${TEAM_VARS[team] ?? '--t-unattr'})` }} />
-    {team}
-  </span>
-)
-
-const Note = ({ note }: { note?: string }) =>
-  note ? (
-    <span className="note">
-      {note.startsWith('TODO') && <span className="todo">unconfirmed</span>}
-      {note.replace(/^TODO confirm( —|:)? ?/, '')}
-    </span>
-  ) : null
-
-export function AttributionRules({ rules, tree, users }: {
-  rules: Rules
-  tree: TreeNode
-  users: UserInfo[]
-}) {
-  const { fmtBytes } = useUnits()
+/** Where owners come from, and where to go with questions. Claims are the
+ *  source of truth; inferred attribution is only the bootstrap for whatever
+ *  nobody has claimed yet — so this stays short and points at people, not at
+ *  the rule tables (those live in identities.yaml for whoever wants them). */
+export function AttributionRules({ tree }: { tree: TreeNode }) {
   // deep-linkable: the section mounts after data loads, so honor #attribution then
   useEffect(() => {
     if (location.hash === '#attribution') document.getElementById('attribution')?.scrollIntoView()
   }, [])
 
-  const bytesOf = new Map(users.map(u => [u.u, u.b]))
   const attributed = Object.entries(tree.tm ?? {})
     .filter(([t]) => t !== 'unattributed')
     .reduce((s, [, b]) => s + b, 0)
-  const pct = (b: number) => ((100 * b) / tree.b).toFixed(1)
-  const ruleUsers = [...rules.users].sort((a, b) => (bytesOf.get(b.u) ?? 0) - (bytesOf.get(a.u) ?? 0))
+  const pct = ((100 * attributed) / tree.b).toFixed(1)
   return (
     <section className="attrib" id="attribution">
-      <h2>How attribution works</h2>
+      <h2>Ownership</h2>
       <div className="prose">
         <p>
-          Ownership is inferred per directory prefix, deepest match wins. Signals, roughly by weight:
-          W&B run configs (checkpoint/output paths written by trainers), W&B run-name ↔ directory joins,{' '}
-          <code>.executor_info</code> sidecars, provenance records, and the manual rules below.{' '}
-          <b>{pct(attributed)}%</b> of bytes are attributed; the rest shows as{' '}
-          <i>unattributed</i> (gray). Attribution means “this user's runs wrote these bytes” — shared
-          datasets and infra are assigned to teams, not people, and a run writing to a dir doesn't
-          always mean its owner should pay for it. Treat per-user numbers as a starting point, not a bill.
+          An owner comes from one of two places. A <b>claim</b> — someone marking a prefix as theirs, from the
+          map, the CLI, or the API — is the source of truth and always wins. Everything unclaimed falls back to
+          <b> inferred</b> ownership (W&amp;B run configs, <code>.executor_info</code> sidecars, provenance records,
+          and a short list of manual prefix rules in{' '}
+          <a href={YAML_URL} target="_blank" rel="noreferrer"><code>identities.yaml</code></a>): “this user's runs
+          wrote these bytes” — a starting point for finding your data, not a bill. Shared datasets and infra sit
+          with a group, not a person. <b>{pct}%</b> of bytes have an owner today; the rest shows as{' '}
+          <i>unattributed</i> (gray) until someone claims it.
         </p>
         <p className="feedback">
-          Spot a wrong owner? Say so in <a href={SLACK_URL} target="_blank" rel="noreferrer">#marin-eng</a> or PR{' '}
-          <a href={YAML_URL} target="_blank" rel="noreferrer"><code>identities.yaml</code></a> — aliases, team assignments, and
-          prefix rules all live there and take effect on the next data refresh.
+          Questions, a wrong owner, access for a teammate:{' '}
+          <a href={`mailto:${GROUP_EMAIL}`}>{GROUP_EMAIL}</a>{' '}
+          (<a href={GROUP_URL} target="_blank" rel="noreferrer">Google Group</a>) or{' '}
+          <a href={DISCORD_URL} target="_blank" rel="noreferrer">#internal-discuss</a> on the Marin Discord.
         </p>
       </div>
-      <details>
-        <summary>Users &amp; aliases ({rules.users.length})</summary>
-        <table className="classes rulestable">
-          <thead>
-            <tr><th>user</th><th>team</th><th>attributed</th><th>aliases</th><th>notes</th></tr>
-          </thead>
-          <tbody>
-            {ruleUsers.map(u => (
-              <tr key={u.u}>
-                <td>{u.u}</td>
-                <td><TeamChip team={u.team} /></td>
-                <td>{bytesOf.has(u.u) ? fmtBytes(bytesOf.get(u.u)!) : '—'}</td>
-                <td className="aliases">{u.aliases.join(', ')}</td>
-                <td><Note note={u.note} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </details>
-      <details>
-        <summary>Manual prefix rules ({rules.prefix_owners.length})</summary>
-        <table className="classes rulestable">
-          <thead>
-            <tr><th>prefix</th><th>owner</th><th>notes</th></tr>
-          </thead>
-          <tbody>
-            {rules.prefix_owners.map(p => (
-              <tr key={p.prefix}>
-                <td><code>{p.prefix}</code></td>
-                <td>{p.user ? <>{p.user} <TeamChip team={p.team} /></> : <TeamChip team={p.team} />}</td>
-                <td><Note note={p.note} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </details>
     </section>
   )
 }

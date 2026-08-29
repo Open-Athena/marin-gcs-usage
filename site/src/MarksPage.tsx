@@ -5,7 +5,7 @@ import { whoToHandle } from './Avatar'
 import { SiteNav } from './SiteNav'
 import { UserChip } from './UserChip'
 import { fmtMarkDate } from './MarkControls'
-import { ActionChip, useMarkEvents } from './markEvents'
+import { ActionChip, LOCAL_TZ, fmtWhen, useMarkEvents } from './markEvents'
 import { type RuleUser, type Rules } from './types'
 
 // Recent-marks activity feed (specs/actions-ledger.md): the ledger's keep +
@@ -13,9 +13,6 @@ import { type RuleUser, type Rules } from './types'
 // where marks are set. Clicking a prefix jumps the treemap to it.
 
 const PAGE = 25
-
-const fmtWhen = (ts: number): string =>
-  new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 // `gs://marin-<bucket>/<path>/` → the treemap's URL path (below the store root).
 const prefixToPath = (prefix: string): string => {
@@ -78,7 +75,7 @@ export function MarksPage() {
           <>
             <table className="worklist marks-feed">
               <thead>
-                <tr><th>when</th><th>who</th><th>action</th><th>prefix</th></tr>
+                <tr><th>when ({LOCAL_TZ})</th><th>who</th><th>action</th><th>prefix</th></tr>
               </thead>
               <tbody>
                 {rows.map(e => (

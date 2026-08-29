@@ -390,13 +390,16 @@ def write_webdata(
     #            read of the data. `rb / ro` is mean read size, which separates
     #            few-huge-sequential from millions-of-small-random (the
     #            ops-cost-heavy pattern).
+    # `access_agg` is also joined into the age strata below (per-dir `a`), so
+    # it exists — empty — even without access logs, keeping that SQL uniform.
     access_window: tuple[int, int] | None = None
+    con.execute("CREATE TEMP TABLE access_agg (bucket VARCHAR, dir VARCHAR, aday INTEGER, ro BIGINT, rb BIGINT)")
     if access:
         globs = "[" + ", ".join(f"'{g}'" for g in access) + "]"
-        amap: dict[str, tuple[int, int, int]] = {}
-        for bucket, path, aday, ro, rb in con.execute(
+        con.execute(
             f"""
-            SELECT bucket, CASE WHEN path = '.' THEN '' ELSE path END AS path,
+            INSERT INTO access_agg
+            SELECT bucket, CASE WHEN path = '.' THEN '' ELSE path END AS dir,
               CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday,
               COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
               COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
@@ -404,6 +407,10 @@ def write_webdata(
             WHERE op IN ('GET', 'HEAD', 'LIST')
             GROUP BY 1, 2
             """
+        )
+        amap: dict[str, tuple[int, int, int]] = {}
+        for bucket, path, aday, ro, rb in con.execute(
+            "SELECT bucket, dir, aday, ro, rb FROM access_agg"
         ).fetchall():
             amap[f"{bucket}/{path}" if path else bucket] = (aday, int(ro), int(rb))
         lo, hi = con.execute(
@@ -435,37 +442,46 @@ def write_webdata(
             tree["ro"] = root_ro
             tree["rb"] = sum(n.get("rb", 0) for n in roots)
 
+    # Age strata also carry `a` — the dir's last-read epoch day from the access
+    # agg (subtree MAX, the same semantics as the tree's `a`) — so the site can
+    # color a vintage by whether anyone has touched it since logging began.
+    # Absent = no read observed. Multiplies rows by at most the number of
+    # distinct read days (a few weeks of logs), not by dirs.
     if attr:
-        # (day, d1, team, user) strata: the cached per-(day, dir) rollup joined
-        # to the same dir attribution. Day keys are epoch days; the site
+        # (day, d1, team, user, a) strata: the cached per-(day, dir) rollup
+        # joined to the same dir attribution. Day keys are epoch days; the site
         # aggregates to day/week/month.
         age = con.execute(
             """
             SELECT d.day,
               CASE WHEN d.dir = '' THEN '(files)' ELSE regexp_extract(d.dir, '^([^/]+)', 1) END AS d1,
-              coalesce(t.team, 'unattributed') AS team, t."user" AS user,
+              coalesce(t.team, 'unattributed') AS team, t."user" AS user, x.aday AS a,
               sum(d.bytes)::BIGINT AS bytes, sum(d.objects)::BIGINT AS objects
-            FROM age_days d LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
+            FROM age_days d
+            LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
+            LEFT JOIN access_agg x ON x.bucket = d.bucket AND x.dir = d.dir
             GROUP BY ALL ORDER BY ALL  -- fully deterministic output order (byte-identical reruns)
             """
         ).fetchall()
         age_rows = [
-            {"d": day, "d1": d1, "t": t, **({"u": u} if u else {}), "b": b, "o": o}
-            for day, d1, t, u, b, o in age
+            {"d": day, "d1": d1, "t": t, **({"u": u} if u else {}), **({"a": a} if a is not None else {}), "b": b, "o": o}
+            for day, d1, t, u, a, b, o in age
         ]
         _rss("age")
     else:
         age = con.execute(
             """
-            SELECT day,
-              CASE WHEN dir = '' THEN NULL ELSE regexp_extract(dir, '^([^/]+)', 1) END AS d1,
-              sum(bytes)::BIGINT AS bytes, sum(objects)::BIGINT AS objects
-            FROM age_days
-            GROUP BY ALL ORDER BY day
+            SELECT d.day,
+              CASE WHEN d.dir = '' THEN NULL ELSE regexp_extract(d.dir, '^([^/]+)', 1) END AS d1,
+              x.aday AS a,
+              sum(d.bytes)::BIGINT AS bytes, sum(d.objects)::BIGINT AS objects
+            FROM age_days d LEFT JOIN access_agg x ON x.bucket = d.bucket AND x.dir = d.dir
+            GROUP BY ALL ORDER BY ALL
             """
         ).fetchall()
         age_rows = [
-            {"d": day, "d1": d1 or "(files)", "b": b, "o": o} for day, d1, b, o in age
+            {"d": day, "d1": d1 or "(files)", **({"a": a} if a is not None else {}), "b": b, "o": o}
+            for day, d1, a, b, o in age
         ]
 
     # Storage-class mix from the dir rollups (class 1/STANDARD = total minus

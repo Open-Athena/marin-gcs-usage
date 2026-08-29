@@ -5,7 +5,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons/md'
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
-import { AgeChart } from './AgeChart'
+import { AGE_MODES, AgeChart } from './AgeChart'
 import { Avatar } from './Avatar'
 import { canonId, ghHandle, shortName, shortUserKey } from './UserChip'
 import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
@@ -130,10 +130,13 @@ function AppContent() {
   // ABSENT is meaningful: it means "the lens-appropriate default" (see `mode`
   // below), so switching lenses re-defaults the coloring — but an explicit
   // pick (any `?c=`, including group) survives every lens change.
-  const [modeP, setModeP] = useUrlState('c', {
+  const modeCodec = {
     encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'written' : v === 'team' ? 'group' : v === 'fate' ? 'mark' : v),
     decode: (e: string | undefined) => (e === undefined ? undefined : e === 'written' || e === 'age' ? 'date' : e === 'group' ? 'team' : e === 'mark' || e === 'fate' ? 'fate' : e),
-  })
+  }
+  const [modeP, setModeP] = useUrlState('c', modeCodec)
+  // The age chart's own color axis (`?ac=`, same tokens); absent = follow the map.
+  const [ageModeP, setAgeModeP] = useUrlState('ac', modeCodec)
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
   // Selected scan in the URL as short YYMMDD (`?d=260809`). Absent is a
@@ -193,7 +196,13 @@ function AppContent() {
   // doesn't: the map seeds from the same pixel-budget /api/subtree that
   // serves drills. So the full tree only downloads when a filter or lens is
   // active (or for stores with no path index, where it's the only source).
-  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null
+  // Mark mode needs it too: the keep/sweep/undecided rollup resolves marks
+  // against whatever tree is loaded, and the pixel-budget subtree folds most
+  // mark prefixes away — so the coarse tree understated sweep by ~100 Ti and
+  // the numbers jumped the moment a lens pulled tree.json in. Same tree every
+  // time, or the totals aren't comparable (specs/exact-fate-totals.md for the
+  // floor-free version).
+  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null || markMode
   // One-time legacy-param rewrite (`mt`/`mu` → `l`/`u`), so old links work
   // and re-share in the golfed form.
   useEffect(() => {
@@ -371,9 +380,15 @@ function AppContent() {
   const hasAttr = !!tree?.tm
   const effMode: ColorMode =
     (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'team' : hasAttr ? mode : 'tree'
-  // The age chart is a time series — read/fate have no meaning there, so fall
-  // back to the written-date gradient (and label it honestly).
-  const ageMode: ColorMode = effMode === 'read' || effMode === 'fate' ? 'date' : effMode
+  // The age chart's color axis: an explicit `?ac=` wins; otherwise it follows
+  // the map, except marks (no per-stratum value in age.json) → written. The
+  // read axis needs strata that carry `a` (scans published from 8/29 on) —
+  // without them it's offered disabled and the chart falls back to written.
+  const ageReadRange = age.some(r => r.a != null) ? readRange : null
+  const ageMode: ColorMode = (() => {
+    const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'fate' ? 'date' : effMode
+    return (want === 'read' && !ageReadRange) || (!hasAttr && want !== 'date' && want !== 'tree') ? 'date' : want
+  })()
   const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
   // In mark mode the active tab scopes the map to its lens (filter +
   // re-aggregate — the worklists keep the unscoped tree, so their
@@ -804,6 +819,7 @@ function AppContent() {
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
             klcIdx={markMode ? klcIdx : undefined}
+            fateReady={!!treeQ.data}
             path={mapPath}
             onPathChange={onMapPath}
           />
@@ -856,12 +872,14 @@ function AppContent() {
         <h2>Bytes by creation date</h2>
         <p className="sub">
           When each stored byte was <b>written</b> — the object’s creation time from the listing.
-          GCS objects are immutable, so there’s no separate “modified” time; the one other time axis
-          we have is <b>last read</b> (the “read” lens, from the usage logs). Colored by {MODE_LABELS[ageMode]}
-          {ageMode !== effMode && <> — “{MODE_LABELS[effMode]}” has no per-stratum value here, so it falls back to written</>}.
+          GCS objects are immutable, so there’s no separate “modified” time; the other time axis is{' '}
+          <b>last read</b> (from the usage logs, since {readRange ? epochDaysToDate(readRange.min) : '8/13'}) —
+          color by it to see which vintages nobody has touched. The chart’s color axis is its own (right):
+          it follows the map’s until you pick one; marks have no per-stratum value here.
         </p>
-        {/* age.json strata carry no read/fate info — those lenses fall back to written here */}
-        {age.length > 0 && <AgeChart rows={age} catOrder={catOrder} mode={ageMode} userIdx={userIdx} />}
+        {age.length > 0 && (
+          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} userIdx={userIdx} readRange={ageReadRange} />
+        )}
       </section>
       )}
 
@@ -905,9 +923,7 @@ function AppContent() {
 
       {/* Static attribution reference — how ownership is inferred + the rule tables.
           Reference material, so it sits last rather than sandwiched mid-page. */}
-      {rules && tree?.tm && meta?.users && (
-        <AttributionRules rules={rules} tree={tree} users={meta.users} />
-      )}
+      {tree?.tm && <AttributionRules tree={tree} />}
 
       <SpeedDial actions={[
         { key: 'github', label: 'GitHub', icon: <FaGithub />, href: REPO_URL },
