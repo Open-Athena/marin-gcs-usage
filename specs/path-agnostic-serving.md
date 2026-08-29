@@ -65,3 +65,13 @@ Recommendation: the CFN path — the workload *is* prefix ranges over a trie, th
 6. Stop writing `tree.json` / `age.json` (og renderer moves onto `/api/subtree`); delete `MIN_FRAC`.
 
 Not in scope: attribution itself (still computed by the daily job; claims are the live override), the access-log ingest.
+
+## 5. Q&A (2026-08-29)
+
+**Sort order.** The index is `(depth, path)` (level order), not `(path,)`. Pre-order gives a whole subtree as one range; level order gives one range per depth, sized by that level only — the pixel-budget drill wants the latter, and a whole-subtree read is still ≤ maxDepth exact ranges, so one copy serves prefix queries of both shapes. A *second sorted copy* is for a different **key**: per-user (`(usr, depth, path)`) and per-group rows are scattered under `(depth, path)`, so lenses and per-user totals would scan the file. Parquet has no secondary indexes — sorted denormalized copies are the indexes (row-group min/max = sparse index); each is a sort in the job and ~7 GB of R2. Plan: `by-path` (exists), `by-user`, later `by-group`.
+
+**Why not a DB.** The scan is an immutable daily snapshot rebuilt whole (220 M rows/day is a write volume no OLTP store wants), the WAL is thousands of rows/day. That is an LSM: immutable sorted runs + a small memtable (D1), merged at read time, and the daily scan is the compaction — the job replays the ledger as of scan time into the index (per-prefix bytes for every live mark/claim), so only post-scan actions are folded live.
+
+**WAL scaling.** Actions are prefix rules, not row edits. Read-time cost: per returned node a longest-prefix match (O(depth)); totals one row lookup per live mark, cached by WAL head. Linear in live marks; at ~10⁵ marks switch to incremental recompute (a new action changes only its subtree — the trie names the affected marks) on top of the scan-time materialization above.
+
+**`/api/actions`** ships the whole ledger to the browser: the `/marks` feed gets server-side `?after=` paging; the map gets the marks under its drilled path inside the subtree response and drops the client trie.
