@@ -2,6 +2,7 @@ import { FileTree } from '@rdub/file-tree/react'
 import { HttpStore } from '@rdub/file-tree/stores/http'
 import { ParquetViewer } from '@rdub/file-tree/renderers/parquet'
 import { SiteNav } from './SiteNav'
+import { SiteKbd } from './SiteKbd'
 
 // Same-origin proxy (CF Pages Function, app session required) → the raw scan
 // bucket. `prefixes` in the function allow-lists listing/ + snapshots/.
@@ -21,6 +22,7 @@ export function FilesPage() {
         title="Scan data — raw listings + snapshots"
         parquetRenderer={ParquetViewer}
       />
+      <SiteKbd />
     </main>
   )
 }

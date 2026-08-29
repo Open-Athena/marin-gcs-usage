@@ -2,6 +2,7 @@ import { Treemap, type CellStyle } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
 import { stringParam, useUrlState } from 'use-prms'
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useActions } from 'use-kbd'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
@@ -11,6 +12,7 @@ import { applyFilter, applyNodeFilter } from './filterTree'
 import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex, type UserFates } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
 import { SiteNav } from './SiteNav'
+import { SiteKbd } from './SiteKbd'
 import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, shortUserKey, teamOf } from './UserChip'
 import {
@@ -106,7 +108,7 @@ const wholeMix = (f: UserFates): ClassMix => ALL_FATES.reduce((m, k) => addMix(m
 const fateLabel = (f: Fate): string => (f === 'unmarked' ? 'unmarked' : ACTION_LABELS[f])
 // `unmarked` gets the regular secondary ink, not the unattributed-gray — as
 // the most common column value it has to be readable, not washed out.
-const fateColor = (f: Fate): string => (f === 'unmarked' ? 'var(--ink-2)' : ACTION_COLORS[f])
+const fateColor = (f: Fate): string => (f === 'unmarked' ? 'var(--ink-2)' : f === 'sweep' ? 'var(--mk-del-ink)' : ACTION_COLORS[f])
 
 // `gs://marin-<bucket>/<path>/` → the treemap's URL path.
 const prefixToPath = (prefix: string): string => {
@@ -447,6 +449,10 @@ export function UsersPage() {
   }
   // Each fate is a (bytes, est. $/mo) pair; the $ prices that fate's own
   // storage-class mix from the walk (a cold sweep is cheap, a hot one isn't).
+  useActions({
+    'users:csv': { label: 'Download CSV (this table, claims applied)', group: 'Users page', handler: downloadCsv },
+    'users:sheet': { label: 'Google Sheet mirror ↗', group: 'Users page', handler: () => window.open(SHEET_URL, '_blank', 'noreferrer') },
+  })
   const cell = (u: string, f: ShownFate) => {
     const raw = fates?.get(u)
     const b = raw ? foldFates(raw)[f] : 0
@@ -561,6 +567,7 @@ export function UsersPage() {
           </tfoot>
         </table>
       )}
+      <SiteKbd />
     </main>
   )
 }
@@ -903,6 +910,7 @@ export function UserPage() {
           )}
         </>
       )}
+      <SiteKbd />
     </main>
   )
 }

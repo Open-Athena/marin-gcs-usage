@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { whoToHandle } from './Avatar'
 import { SiteNav } from './SiteNav'
+import { SiteKbd } from './SiteKbd'
 import { UserChip } from './UserChip'
 import { fmtMarkDate } from './MarkControls'
 import { ActionChip, LOCAL_TZ, fmtWhen, useMarkEvents } from './markEvents'
@@ -101,6 +102,7 @@ export function MarksPage() {
           </>
         )
       })()}
+      <SiteKbd />
     </main>
   )
 }

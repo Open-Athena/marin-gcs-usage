@@ -36,6 +36,10 @@ export interface TimeSeriesProps<T> {
   formatY?: (y: number) => string
   /** `linear` (default) or `log`. */
   yScale?: 'linear' | 'log'
+  /** Where the linear y-axis starts: `zero` (default) or `data` — fit the
+   *  y-range to the series (5% pad each side) so small movements in a large
+   *  total stay visible. Ignored for `log`. */
+  yFrom?: 'zero' | 'data'
   /** Y-axis label (rendered vertically). */
   yLabel?: string
   /** Approximate tick counts. */
@@ -86,6 +90,7 @@ export function TimeSeries<T>({
   formatX = x => new Date(x).toLocaleDateString(),
   formatY = y => y.toLocaleString('en-US'),
   yScale = 'linear',
+  yFrom = 'zero',
   yLabel,
   xTicks = 5,
   yTicks = 4,
@@ -122,13 +127,15 @@ export function TimeSeries<T>({
     if (xs.length === 0) return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }
     const yMinRaw = Math.min(...ys)
     const yMaxRaw = Math.max(...ys)
+    const fit = yScale === 'linear' && yFrom === 'data'
+    const pad = fit ? Math.max(yMaxRaw - yMinRaw, Math.abs(yMaxRaw) * 0.01) * 0.05 : 0
     return {
       xMin: Math.min(...xs),
       xMax: Math.max(...xs),
-      yMin: yScale === 'log' ? Math.max(1, yMinRaw) : 0,
-      yMax: yMaxRaw > 0 ? yMaxRaw * 1.05 : 1,
+      yMin: yScale === 'log' ? Math.max(1, yMinRaw) : fit ? yMinRaw - pad : 0,
+      yMax: fit ? yMaxRaw + pad : yMaxRaw > 0 ? yMaxRaw * 1.05 : 1,
     }
-  }, [series, getX, getY, yScale])
+  }, [series, getX, getY, yScale, yFrom])
 
   const plotW = Math.max(0, dims.w - PAD.left - PAD.right)
   const plotH = Math.max(0, dims.h - PAD.top - PAD.bottom)

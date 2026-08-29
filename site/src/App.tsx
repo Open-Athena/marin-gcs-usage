@@ -1,9 +1,8 @@
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
-import { FaGithub } from 'react-icons/fa'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons/md'
-import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
+import { MdLayers } from 'react-icons/md'
+import { useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { Avatar } from './Avatar'
@@ -29,9 +28,9 @@ import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, ratePerByte } from './types'
+import { SiteKbd } from './SiteKbd'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
-const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
 // How often an unpinned tab re-checks for newly published scans.
 const SCANS_POLL_MS = 5 * 60_000
 
@@ -92,19 +91,6 @@ export const decodeScan = (e: string | undefined, now = new Date()): string | un
   if (!mo || !d || Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return undefined
   if ((hh && Number(hh) > 23) || (mm && Number(mm) > 59)) return undefined
   return `${y}-${pad(mo)}-${pad(d)}` + (hh ? `T${pad(hh)}${mm ? pad(mm) : ''}` : '')
-}
-
-type Theme = 'system' | 'dark' | 'light'
-const THEME_KEY = 'gcs-usage:theme'
-
-function useTheme(): [Theme, () => void] {
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem(THEME_KEY) as Theme) || 'system')
-  useEffect(() => {
-    if (theme === 'system') delete document.documentElement.dataset.theme
-    else document.documentElement.dataset.theme = theme
-    localStorage.setItem(THEME_KEY, theme)
-  }, [theme])
-  return [theme, () => setTheme(t => (t === 'system' ? 'dark' : t === 'dark' ? 'light' : 'system'))]
 }
 
 function AppContent() {
@@ -327,7 +313,6 @@ function AppContent() {
   }, [hash, tree, meta, scans])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
-  const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
   const myUser = useMyUser(ident?.email, markMode)
   // `?mt=` (declared above, near treeQ) — active review lens over the map +
@@ -488,29 +473,11 @@ function AppContent() {
       defaultBindings: ['x'],
       handler: clearHl,
     },
-    'theme:cycle': {
-      label: `Theme: ${theme} (cycle)`,
-      group: 'View',
-      defaultBindings: ['shift+d'],
-      handler: cycleTheme,
-    },
     'lens:classes': {
       label: 'Storage-class lens (hatch colder-class bytes)',
       group: 'View',
       defaultBindings: ['s'],
       handler: () => setLens(v => !v),
-    },
-    'units:toggle': {
-      label: `Byte units: ${units === 'si' ? 'SI (TB) → IEC (TiB)' : 'IEC (TiB) → SI (TB)'}`,
-      group: 'View',
-      defaultBindings: ['i'],
-      handler: toggleUnits,
-    },
-    'units:suffix': {
-      label: `Unit suffix: ${suffixB ? 'TiB/TB → Ti/T (drop B)' : 'Ti/T → TiB/TB (show B)'}`,
-      group: 'View',
-      defaultBindings: ['B'],
-      handler: toggleSuffixB,
     },
     ...Object.fromEntries(
       (meta?.users ?? []).map(u => [
@@ -796,11 +763,6 @@ function AppContent() {
           {pred && fq && fMatches.length > 0 && (
             <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
           )}
-          {hl && (
-            <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">
-              {hlUser ?? hlTeam} ✕
-            </button>
-          )}
         </div>
       )}
 
@@ -817,6 +779,9 @@ function AppContent() {
             dateRange={dateRange}
             readRange={readRange}
             hl={effHl}
+            onPickUser={pickUser}
+            onPickTeam={pickTeam}
+            onClearHl={clearHl}
             pricing={pricing}
             lens={lens}
             scheme={store.scheme}
@@ -928,26 +893,14 @@ function AppContent() {
           Reference material, so it sits last rather than sandwiched mid-page. */}
       {tree?.tm && <AttributionRules tree={tree} />}
 
-      <SpeedDial actions={[
-        { key: 'github', label: 'GitHub', icon: <FaGithub />, href: REPO_URL },
-        { key: 'lens', label: `Class lens: ${lens ? 'on' : 'off'} (s)`, icon: <MdLayers />, onClick: () => setLens(v => !v) },
-        {
-          key: 'theme',
-          label: `Theme: ${theme}`,
-          icon: theme === 'light' ? <MdLightMode /> : theme === 'dark' ? <MdDarkMode /> : <MdBrightnessAuto />,
-          onClick: cycleTheme,
-        },
-      ]} />
-      <Omnibar placeholder="Users, groups, color modes, scans…" maxResults={15} />
-      <ShortcutsModal />
+      <SiteKbd
+        placeholder="Users, groups, color modes, scans, pages…"
+        extra={[{ key: 'lens', label: `Class lens: ${lens ? 'on' : 'off'} (s)`, icon: <MdLayers />, onClick: () => setLens(v => !v) }]}
+      />
     </main>
   )
 }
 
 export default function App() {
-  return (
-    <HotkeysProvider config={{ storageKey: 'gcs-usage' }}>
-      <AppContent />
-    </HotkeysProvider>
-  )
+  return <AppContent />
 }

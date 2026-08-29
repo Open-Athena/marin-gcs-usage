@@ -17,6 +17,7 @@ All `packages/react` items are on disk-tree `main` (each with new tests there):
 | a8924d6 | 23746c3 | anchored + interactive tooltips (grace timer, hover-into) |
 | 6805541 | 3c0e45d | `CellStyle.segments` — makeup stripes |
 | e73055f | 46e31ed | `TimeSeries.yTickValues` (unit-aligned y-ticks) |
+| (pending) | — | `TimeSeries.yFrom` (`zero` \| `data`: fit the linear y-range to the series, 5% pad) — 2026-08-29, not yet CP'd upstream |
 
 `Treemap.tsx`/`TimeSeries.tsx` now differ from upstream **only** by upstream's
 `fadeFloor` cumulative-fade scheme (upstream `d9ded7c`, not yet adopted here) —

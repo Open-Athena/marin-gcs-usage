@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { Avatar } from './Avatar'
@@ -39,7 +39,7 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, fateReady = true, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickTeam, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, fateReady = true, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -51,6 +51,12 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
    *  (which folds most mark prefixes away and understates sweep). */
   fateReady?: boolean
   hl?: Highlight | null
+  /** Legend-row interactions (plotly-style): hover a row = solo it (others
+   *  fade, map dims to it), click = pin (sticky `hl`; click again, any empty
+   *  spot, or `x` clears). Absent → rows are inert. */
+  onPickUser?: (u: string) => void
+  onPickTeam?: (t: string) => void
+  onClearHl?: () => void
   pricing?: Pricing | null
   lens?: boolean
   // URI scheme for cell paths — `gs://` for GCS, `s3://` for CoreWeave.
@@ -171,6 +177,22 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
     if (topUs.length) folded.us = topUs as [string, number][]
     return folded
   }, [])
+
+  // Transient solo from hovering a legend row; a pinned `hl` (URL state) wins.
+  const [hoverHl, setHoverHl] = useState<Highlight | null>(null)
+  const effHl = hl ?? hoverHl
+  // Pinned highlight clears on a click anywhere that isn't a legend row, the
+  // map, or a control — the plotly "click empty space to unpin" convention.
+  useEffect(() => {
+    if (!hl || !onClearHl) return
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t?.closest('.ri, .dt-treemap-map, button, a, input, select, textarea, [role="dialog"], [role="tooltip"], .tt')) return
+      onClearHl()
+    }
+    document.addEventListener('click', onDoc)
+    return () => document.removeEventListener('click', onDoc)
+  }, [hl, onClearHl])
 
   const colorForCell = useCallback(
     (kid: TreeNode, kidPath: TreeNode[], _depth: number, ctx: CellCtx): CellStyle => {
@@ -298,13 +320,13 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
         : undefined
       // highlight mode: leaf cells not majority-owned by the selected user/team fade back
       let dim = false
-      if (hl && !ctx.hasKids) {
-        if (hl.user) dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
-        else if (hl.team) dim = (kid.tm?.[hl.team] ?? 0) < 0.5 * kid.b
+      if (effHl && !ctx.hasKids) {
+        if (effHl.user) dim = (kid.us?.find(([u]) => u === effHl.user)?.[1] ?? 0) < 0.5 * kid.b
+        else if (effHl.team) dim = (kid.tm?.[effHl.team] ?? 0) < 0.5 * kid.b
       }
       return { bg, ink, hatch, segments, opacity: dim ? 0.22 : undefined }
     },
-    [mode, slotOf, userIdx, dateRange, readRange, hl, lens, markIdx, klcIdx],
+    [mode, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx, klcIdx],
   )
 
   // group roll-up for the current view: users in user modes, teams otherwise;
@@ -328,10 +350,10 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       const shown = us.filter(([, b], i) => i < 5 || (i < 12 && b >= 0.01 * node.b))
       const otherUsers = userTotal - shown.reduce((s, [, b]) => s + b, 0)
       return [
-        ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u), mix: pricing?.userMix?.[u] })),
-        ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined }] : []),
-        ...(shared > 0 ? [{ k: '(shared/communal)', b: shared, col: 'var(--shared)', rate: pricing?.blended, mix: undefined }] : []),
-        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: teamRate('unattributed'), mix: pricing?.teamMix?.['unattributed'] }] : []),
+        ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u), mix: pricing?.userMix?.[u], hl: { user: u } as Highlight | undefined })),
+        ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
+        ...(shared > 0 ? [{ k: '(shared/communal)', b: shared, col: 'var(--shared)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
+        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: teamRate('unattributed'), mix: pricing?.teamMix?.['unattributed'], hl: { team: 'unattributed' } as Highlight | undefined }] : []),
       ].sort((a, b) => b.b - a.b)
     }
     return Object.entries(node.tm)
@@ -341,14 +363,15 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
         const rate = teamRate(t)
         const mix = pricing?.teamMix?.[t]
         const gl = groupLabel(t)
+        const hl: Highlight | undefined = { team: t }
         return s > 0 && b - s > 0
           ? [
-              { k: `${gl} (users)`, b: b - s, col: `var(${tv})`, rate, mix },
-              { k: `${gl} (shared)`, b: s, col: sharedColor(tv), rate, mix },
+              { k: `${gl} (users)`, b: b - s, col: `var(${tv})`, rate, mix, hl },
+              { k: `${gl} (shared)`, b: s, col: sharedColor(tv), rate, mix, hl },
             ]
           : s > 0
-            ? [{ k: gl, b: s, col: sharedColor(tv), rate, mix }]  // all-shared group (communal): no redundant "(shared)"
-            : [{ k: gl, b, col: `var(${tv})`, rate, mix }]
+            ? [{ k: gl, b: s, col: sharedColor(tv), rate, mix, hl }]  // all-shared group (communal): no redundant "(shared)"
+            : [{ k: gl, b, col: `var(${tv})`, rate, mix, hl }]
       })
       .sort((a, b) => b.b - a.b)
   }
@@ -451,8 +474,26 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
           // Real per-user rows (user modes, not synthetic "(shared)"/"unattributed")
           // get a GitHub avatar next to the color swatch.
           const isUser = (mode === 'user' || mode === 'uteam') && !r.k.startsWith('(') && r.k !== 'unattributed'
+          const pickable = !!r.hl && !!(r.hl.user ? onPickUser : onPickTeam)
+          const same = (a: Highlight | null | undefined, b: Highlight | undefined) => !!a && !!b && a.user === b.user && a.team === b.team
+          const pinned = same(hl, r.hl)
+          // Faded whenever some row is solo'd/pinned and it isn't this one.
+          const faded = !!effHl && !same(effHl, r.hl)
+          const pick = () => {
+            if (!r.hl) return
+            if (pinned) onClearHl?.()
+            else if (r.hl.user) onPickUser?.(r.hl.user)
+            else if (r.hl.team) onPickTeam?.(r.hl.team)
+          }
           return (
-          <span className="ri" key={r.k}>
+          <span
+            className={`ri${pickable ? ' pickable' : ''}${pinned ? ' pinned' : ''}${faded ? ' faded' : ''}`}
+            key={r.k}
+            onMouseEnter={pickable ? () => setHoverHl(r.hl!) : undefined}
+            onMouseLeave={pickable ? () => setHoverHl(null) : undefined}
+            onClick={pickable ? pick : undefined}
+            title={pickable ? (pinned ? 'Unpin (or press x)' : 'Click to pin this highlight') : undefined}
+          >
             <span className="sw" style={{ background: r.col }} />
             {isUser ? <UserChip who={r.k} size={15} /> : r.k} <b>{fmtBytes(r.b)}</b>
             <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
@@ -465,6 +506,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
                 <span className="usd">{fmtUsd(r.b * r.rate)}/mo</span>
               )
             )}
+            {pinned && <span className="unpin" aria-hidden>✕</span>}
           </span>
         )})}
       </>

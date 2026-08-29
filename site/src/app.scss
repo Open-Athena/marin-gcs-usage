@@ -12,6 +12,7 @@
   --other: #a6a49b; --shared: #8f9aa6;
   --t-communal: #1baf7a; --t-stanford: #b1040e; --t-oa: #9d6a3c;  // oa = OA brand brown
   --t-unknown: #eda100; --t-unattr: #c9c7be;
+  --mk-del-ink: #c4302a;  // sweep as TEXT (the fill token reads too dark/light for type)
   --never-read: #b0685e;  // read lens: no GET/HEAD/LIST since logging began
   // @disk-tree/react: opaque base under each cell's paint layer (gutters/title
   // bars); the core default is a dark constant, so follow the theme instead.
@@ -29,6 +30,7 @@
     --other: #5d5c55; --shared: #4c565f;
     --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
     --t-unknown: #c98500; --t-unattr: #4a4943;
+    --mk-del-ink: #f2635a;
     --never-read: #6e332b;
   }
 }
@@ -42,6 +44,7 @@
   --other: #5d5c55; --shared: #4c565f;
   --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
   --t-unknown: #c98500; --t-unattr: #4a4943;
+  --mk-del-ink: #f2635a;
   --never-read: #6e332b;
 }
 
@@ -307,13 +310,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     &:hover:not(.on) { filter: brightness(1.05); }
     &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
   }
-  .hlchip {
-    background: var(--t-unknown);
-    border-color: var(--t-unknown);
-    color: #1a1a19;
-    font-weight: 600;
-    margin-left: 6px;
-  }
 }
 
 // Treemap styling: the component is @disk-tree/react's generic <Treemap>
@@ -384,7 +380,12 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     font-size: 12.5px;
     color: var(--ink-2);
     font-variant-numeric: tabular-nums;
-    .ri { display: inline-flex; align-items: center; gap: 5px; }
+    .ri { display: inline-flex; align-items: center; gap: 5px; border-radius: 4px; padding: 0 3px; margin: 0 -3px; transition: opacity .12s; }
+    .ri.pickable { cursor: pointer; }
+    .ri.pickable:hover { background: var(--line); }
+    .ri.pinned { background: var(--line); box-shadow: 0 0 0 1px var(--ink-3); }
+    .ri.faded { opacity: .35; }
+    .ri .unpin { color: var(--ink-3); font-size: 11px; margin-left: 2px; }
     .sw { width: 10px; height: 10px; border-radius: 3px; }
     b { color: var(--ink); font-weight: 600; }
     .pct { color: var(--ink-3); margin-left: 2px; }
@@ -731,24 +732,27 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .sw { width: 10px; height: 10px; border-radius: 3px; }
   }
   .ctl { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
-  .gran {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-    .lbl { color: var(--ink-3); font-size: 11.5px; margin-right: 2px; }
-    button {
-      background: var(--panel);
-      color: var(--ink-2);
-      border: 1px solid var(--line);
-      border-radius: 5px;
-      font-size: 11.5px;
-      padding: 1px 8px;
-      cursor: pointer;
-      &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
-      &:hover:not(.on) { filter: brightness(1.05); }
-    }
+}
+
+// Small radio strips (age chart granularity/axis, size-chart y-range).
+.gran {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  .lbl { color: var(--ink-3); font-size: 11.5px; margin-right: 2px; }
+  button {
+    background: var(--panel);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    font-size: 11.5px;
+    padding: 1px 8px;
+    cursor: pointer;
+    &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
+    &:hover:not(.on) { filter: brightness(1.05); }
   }
 }
+#size-over-time h2 .gran { margin-left: 12px; font-weight: 400; vertical-align: middle; }
 
 .classes {
   border-collapse: collapse;
@@ -1376,7 +1380,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .groups th:first-child { border-bottom: none; }
   .subs th { font-weight: 400; font-size: 11px; color: var(--ink-3); padding-top: 0; }
 }
-.user-page .worklist .usd { font-size: 12px; opacity: .8; padding-left: 0; }
+.user-page .worklist .usd { padding-left: 0; }
 
 // Per-user estate pages (`/users`, `/user/:id`): fate rollup strip + tables.
 .user-page {
