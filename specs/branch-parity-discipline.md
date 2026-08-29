@@ -152,3 +152,10 @@ gcs's does — before this, what ran on cw-s3.oa.dev could be ahead of GitHub.
 
 Intended deltas (not ported): `read` axis and `fateReady` rollup gating (no
 access logs / no marks on CW); `/users` fate $ pairs (no class pricing).
+
+Queued for the next cw-ward pass (landed on `gcs` `974ee7c`, 2026-08-29):
+`TimeSeries.yFrom` core prop + the size chart's `fit | from 0` toggle;
+interactive legend rows (hover = solo, click = pin) — CW has user rows only
+when attribution exists, so it's the group/tree-less subset; `SiteKbd`
+(site-wide SpeedDial/omnibar) — CW is a single page, so only the omnibar's
+page-link group matters there.
