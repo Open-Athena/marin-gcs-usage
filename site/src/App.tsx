@@ -125,14 +125,14 @@ function AppContent() {
   useEffect(() => {
     document.title = store.title
   }, [store])
-  // URL token matches the visible label ("written"/"group"), not the internal
-  // key ("date"/"team"); old ?c=age links still decode to the same mode.
+  // URL token matches the visible label ("written"/"group"/"mark"), not the
+  // internal key ("date"/"team"/"fate"); old ?c=age / ?c=fate links still decode.
   // ABSENT is meaningful: it means "the lens-appropriate default" (see `mode`
   // below), so switching lenses re-defaults the coloring — but an explicit
   // pick (any `?c=`, including group) survives every lens change.
   const [modeP, setModeP] = useUrlState('c', {
-    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'written' : v === 'team' ? 'group' : v),
-    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'written' || e === 'age' ? 'date' : e === 'group' ? 'team' : e),
+    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'written' : v === 'team' ? 'group' : v === 'fate' ? 'mark' : v),
+    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'written' || e === 'age' ? 'date' : e === 'group' ? 'team' : e === 'mark' || e === 'fate' ? 'fate' : e),
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())

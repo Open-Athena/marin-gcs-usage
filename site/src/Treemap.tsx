@@ -12,6 +12,7 @@ import type { KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
+import { useTiling } from './tiling'
 import { useUnits } from './units'
 
 // A top-level prefix holding more than this share of the store is split one
@@ -65,6 +66,8 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
   onPathChange?: (p: TreeNode[]) => void
 }) {
   const { fmtBytes } = useUnits()
+  // Tiling is a user preference (header toggle): `shared` by default.
+  const [tiling] = useTiling()
   // Fixed category colors: global top-level dirs by total size. A single-bucket
   // store can be lopsided enough that one prefix owns most of the map (`marin/`
   // is ~87% of the CoreWeave bucket), which paints almost every cell the same
@@ -602,11 +605,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, pricing
       // same pale grey-blue. Structure comes from borders instead (app.scss).
       depthFade={1}
       rootFade={1}
-      // Shared-edge tiling for leaf swarms (specs/treemap-shared-edges.md):
-      // gaps keep containers legible; dense fields of small siblings tile
-      // edge-to-edge with one depth-scaled stroke per boundary instead of
-      // two gutters' worth of dark space around every tiny cell.
-      tiling={(_n, _p, _depth, ctx) => (ctx.medianChildArea < 100 ? 'shared' : 'gaps')}
+      tiling={tiling}
       renderTooltip={renderTooltip}
       renderCellExtra={renderCellExtra}
       renderRollup={renderRollup}
