@@ -139,3 +139,16 @@ mode, half-stroke ring in shared mode), so the class-level inset box-shadow
 rules in `app.scss` (`.dt-treemap-cell`, `.branch`, `.chain`, `.dust`,
 `&.store-gcs …`) are dead on gcs too. gcs should drop them and tune
 `--dt-treemap-cell-border` like cw-s3 did (`1e5ee40`).
+
+### 2026-08-28/29 (cw-ward, pass 3) — age-chart axis, toggle placement, deploy parity
+
+Landed on `cw-s3` (`fc90798`, `ec4ac9b`, `7d7dffb`): age chart gets its own
+`?ac=` color axis with the `color by` control beside month|week|day (modes
+`date|user|tree`; the caller passes `modes` so `user` is absent — CW has no
+attribution — rather than a dead button); tiling toggle moves out of the
+header into the treemap's crumbs bar via `renderLegend` (quiet style);
+`site/deploy` now pushes the branch to `o` by default (`-P` to skip) like
+gcs's does — before this, what ran on cw-s3.oa.dev could be ahead of GitHub.
+
+Intended deltas (not ported): `read` axis and `fateReady` rollup gating (no
+access logs / no marks on CW); `/users` fate $ pairs (no class pricing).
