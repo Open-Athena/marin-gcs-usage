@@ -44,12 +44,15 @@ Planned (specs in this repo, implement as core features):
 
 ## Sync state (2026-08-28)
 
-Both directions clean as of today: upstream `761602c`…`c128ff0` (paint-layer
+Both directions clean as of today (re-synced 01:20Z to `b6d4dc5`: shared-stroke
+fix `e2272e5` + per-cell `CellStyle.edge`/`CellCtx.fade` `b6d4dc5`): upstream `761602c`…`c128ff0` (paint-layer
 fade, opaque container base, `--dt-treemap-cell-border`, `renderCellSubtitle`
 dims, shared-edge tiling + `borderWidth`) cherry-picked here (manifest:
 `specs/done/dt-core-cp-2026-08-28.md`); our `cellHref`, size-gated chrome, and
 measured tip clamp landed upstream as `cb075ea`. `Treemap.tsx` should now
-differ only by whatever lands next on either side. Marin uses
+differ only by whatever lands next on either side. Follow-up for marin: adopt
+per-cell adaptive edges (`CellStyle.edge`, upstream's CompareView pattern) —
+needs our CSS-var fills resolved to luminance first. Marin uses
 `tiling={(…, ctx) => ctx.medianChildArea < 100 ? 'shared' : 'gaps'}` and
 themes `--dt-treemap-container-bg` / `--dt-treemap-edge` via `app.scss`.
 
