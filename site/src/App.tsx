@@ -24,6 +24,7 @@ import type { Lens } from './LensBar'
 import { applyTodoFilter, klcSplits, lensNodePred, teamLens, useMyUser, userLens } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SiteNav } from './SiteNav'
+import { encodeScan, fmtScan, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
@@ -32,67 +33,6 @@ import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
-// How often an unpinned tab re-checks for newly published scans.
-const SCANS_POLL_MS = 5 * 60_000
-
-// Scan labels: drop the redundant year for the current one, so a list of
-// same-year scans reads as `8/17` rather than `2026-08-17`. Scan ids are
-// `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM`.
-export function fmtScan(s: string, now = new Date()): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):?(\d{2}))?/.exec(s)
-  if (!m) return s
-  const [, y, mo, d, hh, mm] = m
-  if (!hh) {
-    // Date-only ids (the daily GCS job) are calendar dates, not instants —
-    // rendering them through a timezone would shift some readers a day off.
-    return Number(y) === now.getFullYear() ? `${Number(mo)}/${Number(d)}` : `${y}-${mo}-${d}`
-  }
-  // Sub-daily ids are UTC instants; display in the viewer's local time,
-  // 12-hour with a bare a/p ("8/19 6:08a"). The `?d=` token stays UTC (see
-  // decodeScan) — display converts, the URL doesn't.
-  const dt = new Date(Date.UTC(+y, +mo - 1, +d, +hh, +(mm ?? '0')))
-  const h = dt.getHours()
-  const time = `${h % 12 || 12}:${String(dt.getMinutes()).padStart(2, '0')}${h < 12 ? 'a' : 'p'}`
-  const md = `${dt.getMonth() + 1}/${dt.getDate()}`
-  return dt.getFullYear() === now.getFullYear()
-    ? `${md} ${time}`
-    : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${time}`
-}
-
-// `?d` is a *prefix* of a scan id (always UTC), accepted in several spellings —
-// examples that all pin the 2026-08-19T1008 scan:
-//   260819-1008 · 260819T10 (compact date; `-` or `T` before the time)
-//   8-19-10 · 8-19-10-08    (M-D-H[-MM]; current year assumed)
-//   26-8-19-10 · 2026-8-19-10 (year-first when the lead component can't be a month)
-// The canonical/emitted form stays compact (`260819-1008`). A token matching
-// several scans renders the newest plus a disambiguation strip listing the rest.
-export const encodeScan = (v: string | undefined): string | undefined => {
-  const m = v && /^\d{2}(\d{2})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?$/.exec(v)
-  if (!m) return v || undefined
-  const [, y, mo, d, hh, mm] = m
-  return `${y}${mo}${d}` + (hh ? `-${hh}${mm ?? ''}` : '')
-}
-
-export const decodeScan = (e: string | undefined, now = new Date()): string | undefined => {
-  if (!e) return undefined
-  const pad = (n: string) => n.padStart(2, '0')
-  const compact = /^(\d{2})(\d{2})(\d{2})(?:[T-](\d{2})(\d{2})?)?$/.exec(e)
-  if (compact) {
-    const [, y, mo, d, hh, mm] = compact
-    return `20${y}-${mo}-${d}` + (hh ? `T${hh}${mm ?? ''}` : '')
-  }
-  const parts = e.split(/[T-]/)
-  if (parts.length < 2 || parts.length > 5 || parts.some(p => !/^(\d{1,2}|\d{4})$/.test(p))) return undefined
-  // A lead component that can't be a month is a year (2- or 4-digit); 4-digit
-  // components anywhere else are malformed.
-  const yearFirst = parts[0].length === 4 || Number(parts[0]) > 12
-  if (parts.slice(yearFirst ? 1 : 0).some(p => p.length > 2)) return undefined
-  const y = yearFirst ? (parts[0].length === 4 ? parts[0] : `20${parts[0]}`) : String(now.getUTCFullYear())
-  const [mo, d, hh, mm] = parts.slice(yearFirst ? 1 : 0)
-  if (!mo || !d || Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return undefined
-  if ((hh && Number(hh) > 23) || (mm && Number(mm) > 59)) return undefined
-  return `${y}-${pad(mo)}-${pad(d)}` + (hh ? `T${pad(hh)}${mm ? pad(mm) : ''}` : '')
-}
 
 function AppContent() {
   // Which object store to render comes from the path (one store today; the
@@ -126,29 +66,10 @@ function AppContent() {
   const [ageModeP, setAgeModeP] = useUrlState('ac', modeCodec)
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
-  // Selected scan in the URL as short YYMMDD (`?d=260809`). Absent is a
-  // first-class state meaning "latest", so a tab parked on gcs.oa.dev keeps
-  // following new scans instead of pinning whatever day it was opened. `?d=`
-  // appears only when a specific scan is chosen — digest deep-links still
-  // resolve, they just aren't manufactured for the default view.
-  const [dP, setDP] = useUrlState('d', { encode: encodeScan, decode: decodeScan })
-  // The scan list polls so an unpinned tab discovers new scans on its own; the
-  // per-scan payloads are immutable once published, so they never refetch.
-  // Every key is store-scoped, so switching stores swaps the whole payload set
-  // rather than mixing one store's tree with another's scan list.
-  const scansQ = useQuery<string[]>({
-    queryKey: ['scans', store.key],
-    // Throw on a non-OK response (e.g. a 401 from the data proxy with no
-    // session) so react-query holds it as an error instead of handing the
-    // error body downstream — `scans` then stays `[]` rather than crashing
-    // `scans.map`, and the error surfaces as a sign-in prompt below.
-    queryFn: async () => {
-      const r = await fetch(`${store.base}/scans.json`)
-      if (!r.ok) throw Object.assign(new Error(`scans: ${r.status}`), { status: r.status })
-      return r.json()
-    },
-    refetchInterval: SCANS_POLL_MS,
-  })
+  // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
+  // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
+  // a first-class "latest", so a parked tab follows new scans.
+  const { asof, scans, dMatches, dP, setDP, scansQ } = useScan(store)
   const rulesQ = useQuery({
     queryKey: ['rules'],
     queryFn: async () => {
@@ -158,12 +79,7 @@ function AppContent() {
     },
     retry: false,
   })
-  const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
   const rules: Rules | null = rulesQ.data ?? null
-  // `scans` is newest-first, so the first prefix match is the newest one.
-  const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
-  const asof = dMatches[0] ?? scans[0] ?? null
-  // Exact estate-wide totals (server-side ledger × index) for the root rollup.
   // Ledger actions record which scan the actor was viewing.
   useEffect(() => setCurrentScan(asof ?? undefined), [asof])
   const scanQuery = <T,>(name: string) => ({

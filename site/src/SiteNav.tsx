@@ -3,6 +3,8 @@ import { Link, useLocation } from 'react-router-dom'
 import { useCanMark, useIdent, useSignOut } from './auth'
 import { IDENTITIES } from './identities.gen'
 import { useMyUser, useUserEmails } from './sweep'
+import { ScanPicker } from './ScanPicker'
+import type { Scan } from './scan'
 import TokenModal from './TokenModal'
 import { UserChip } from './UserChip'
 
@@ -10,7 +12,7 @@ import { UserChip } from './UserChip'
 // home page embeds it `inline` in its own header row (its h1 + store switcher
 // lead); every other page renders the full bar (brand link + links + chip), so
 // "where am I / who am I" reads the same everywhere.
-export function SiteNav({ inline = false }: { inline?: boolean }) {
+export function SiteNav({ inline = false, scan }: { inline?: boolean; scan?: Scan }) {
   const { pathname } = useLocation()
   const ident = useIdent()
   const canMark = useCanMark()
@@ -32,6 +34,10 @@ export function SiteNav({ inline = false }: { inline?: boolean }) {
         {markLinks && link('/users', 'Users →')}
         {markLinks && link('/marks', 'Recent marks →')}
       </span>
+      {/* A scan picker rides in the shared nav only on pages scoped to one
+          scan (home, /users, /user/:id). /marks (ledger spans scans) and
+          /files (date is in the path) pass no `scan`, so it's omitted. */}
+      {scan && !inline && <ScanPicker scan={scan} />}
       {ident && (
         <div className="whoami">
           <UserChip who={myUser ?? ident.email} size={22} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />

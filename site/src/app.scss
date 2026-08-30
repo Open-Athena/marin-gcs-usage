@@ -81,6 +81,27 @@ header .hrow {
   .whoami { margin-left: 8px; }
 }
 .nav-links { display: inline-flex; gap: 1.2em; align-items: baseline; }
+// Scan picker riding in the shared nav (SiteNav) on /users, /user/:id — the
+// home map has its own richer inline picker. Mirrors `.sub .scanpick`.
+.scan-nav {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.9em; color: var(--ink-2);
+  .scan-lbl { color: var(--ink-2); }
+  .scanpick {
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px;
+    font: inherit; font-weight: 600; padding: 1px 4px; cursor: pointer;
+  }
+  .disambig-inline {
+    display: inline-flex; gap: 4px; flex-wrap: wrap;
+    button {
+      background: var(--panel); color: var(--ink-2);
+      border: 1px solid var(--line); border-radius: 6px;
+      font-size: 12px; padding: 1px 6px; cursor: pointer;
+      &.on { color: var(--ink); border-color: var(--ink-2); font-weight: 600; }
+    }
+  }
+}
 .nav-files { font-size: 0.9em; }
 .nav-files[aria-current] { color: var(--ink); font-weight: 600; text-decoration: none; }
 .uc-session {

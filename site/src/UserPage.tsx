@@ -12,6 +12,7 @@ import { applyFilter, applyNodeFilter } from './filterTree'
 import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex, type UserFates } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
 import { SiteNav } from './SiteNav'
+import { useScan, type Scan } from './scan'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { Tooltip } from './Tooltip'
@@ -385,7 +386,8 @@ export function UsersOgPage() {
 }
 
 export function UsersPage() {
-  const asof = useLatestScan()
+  const scan = useScan(store)
+  const asof = scan.asof
   const metaQ = useScanFile<Meta>('meta', asof)
   const mixes = metaQ.data?.user_class_bytes
   // Per-user keep / sweep / undecided from /api/marks/totals — the ledger
@@ -494,7 +496,7 @@ export function UsersPage() {
   )
   return (
     <main className="marks-page user-page">
-      <SiteNav />
+      <SiteNav scan={scan} />
       <header>
         <div className="hrow">
           <h1>Users</h1>
@@ -681,7 +683,8 @@ export function UserOgPage() {
 
 export function UserPage() {
   const { id = '' } = useParams()
-  const asof = useLatestScan()
+  const scan = useScan(store)
+  const asof = scan.asof
   const treeQ = useScanFile<TreeNode>('tree', asof)
   const metaQ = useScanFile<Meta>('meta', asof)
   const marksQ = useMarks(true)
@@ -818,7 +821,7 @@ export function UserPage() {
 
   return (
     <main className="marks-page user-page">
-      <SiteNav />
+      <SiteNav scan={scan} />
       <header>
         <div className="hrow">
           <h1 className="user-head">
