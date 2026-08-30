@@ -115,7 +115,18 @@ export interface TotalsInput {
   /** For `keep_last_ckpt` prefixes: candidate children (index path → bytes)
    * one and two levels down, keyed by the KLC prefix's index path. */
   klcKids: Map<string, { path: string; b: number }[]>
+  /** Scope the totals to one subtree P instead of the whole estate: `buckets`
+   * is `[P]`, `keeps`/`owners` hold only the marks under-or-at P, and P's
+   * residual (bytes under no deeper mark) takes P's *inherited* fate — the
+   * newest mark/claim on an ancestor-or-self of P. Absent = whole estate
+   * (buckets are the depth-1 roots, residual is unmarked). */
+  scope?: {
+    inheritedKeep: KeepRow | null
+    inheritedOwner: OwnerRow | null
+  }
 }
+
+const fateOf = (r: KeepRow | null): Fate => r?.keep ?? 'unmarked'
 
 interface Node {
   prefix: string
@@ -188,9 +199,9 @@ export function computeTotals(input: TotalsInput): Totals {
       const par = nodes.get(a)
       if (par) { n.parent = par; par.kids.push(n); break }
     }
-    const inhK = n.parent?.effKeep ?? null
+    const inhK = n.parent?.effKeep ?? input.scope?.inheritedKeep ?? null
     n.effKeep = n.keep && (!inhK || newer(n.keep, inhK)) ? n.keep : inhK
-    const inhO = n.parent?.effOwner ?? null
+    const inhO = n.parent?.effOwner ?? input.scope?.inheritedOwner ?? null
     n.effOwner = n.owner && (!inhO || newer(n.owner, inhO)) ? n.owner : inhO
   }
   for (const n of nodes.values()) n.band = subAgg(n.agg, n.kids.map(k => k.agg))
@@ -241,13 +252,17 @@ export function computeTotals(input: TotalsInput): Totals {
   // covers the whole remainder.
   let bytes = 0
   let objects = 0
+  const residualFate = fateOf(input.scope?.inheritedKeep ?? null)
+  const residualClaimant = input.scope?.inheritedOwner?.owner ?? null
   for (const bp of buckets) {
     const agg = aggs.get(bp) ?? newAgg()
     bytes += agg.b
     objects += agg.o
+    // A mark/claim exactly on the root covers its whole subtree — its own band
+    // already painted the remainder; nothing left to attribute to inheritance.
     if (nodes.has(`gs://${bp}/`)) continue
     const top = [...nodes.values()].filter(n => !n.parent && n.path.startsWith(bp + '/'))
-    paint(subAgg(agg, top.map(n => n.agg)), 'unmarked', 1, null)
+    paint(subAgg(agg, top.map(n => n.agg)), residualFate, 1, residualClaimant)
   }
   const marks: MarkRow[] = []
   for (const n of nodes.values()) {
