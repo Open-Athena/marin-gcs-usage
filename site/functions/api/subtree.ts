@@ -231,7 +231,18 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
 
     // Tier 2 — fine: narrow/deep queries against the floor-free index (the
     // lens variant when a lens is set — its rows carry the lens's bytes).
-    const idx = await openIndex(ctx.env, date, lensVariant)
+    let idx
+    try {
+      idx = await openIndex(ctx.env, date, lensVariant)
+    } catch (e) {
+      // A lens variant that isn't synced for this scan is not a server fault —
+      // 409 tells the client to fall back to tree.json + the client filter
+      // (a 500 would look transient and get retried forever).
+      if (lens && String((e as Error).message).includes('not synced')) {
+        return new Response('lens index not available for this scan', { status: 409 })
+      }
+      throw e
+    }
 
     // Root aggregate P.pb (and P's own tm/us for the response root).
     const rootAgg = newAgg()

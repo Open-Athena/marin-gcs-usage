@@ -277,14 +277,17 @@ function AppContent() {
       staleTime: Infinity,
       // Retry (not `false`): a cold isolate can transiently 500 on a lens read;
       // returning null-without-retry left the map stuck on "loading tree…".
-      retry: 3,
+      // Retry transient failures, but NOT a 409 (lens variant not synced for
+      // this scan) — that's deterministic; fail fast so the effect below falls
+      // back to tree.json + the client filter.
+      retry: (n: number, e: Error) => !e.message.startsWith('409') && n < 3,
       retryDelay: (n: number) => 400 * 2 ** n,
       queryFn: async () => {
         const r = await fetch(
           `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${activeLens ? `&lens=${activeLens}` : ''}`,
           { credentials: 'include' },
         )
-        if (!r.ok) throw new Error(`subtree ${r.status}: ${(await r.text()).slice(0, 120)}`)
+        if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
         return r.json() as Promise<{ tree: TreeNode }>
       },
     })),
