@@ -163,9 +163,12 @@ def sync_d1(
     so it runs in the Node-less Batch image. Returns #row groups written.
     ``remote=False`` uses the local wrangler D1 (dev only, via `d1 execute`)."""
     schema, rows = extract(parquet_path)
+    # Order matters for crash-safety: `openIndex` keys off index_schema, so the
+    # schema row is written LAST (after every group). A mid-run failure then
+    # leaves no schema → the reader falls back to the parsed footer, rather than
+    # taking the D1 path over a half-written group set (silent partial reads).
+    clear_sql = f"DELETE FROM index_schema WHERE date='{date}';DELETE FROM index_groups WHERE date='{date}';"
     schema_sql = (
-        f"DELETE FROM index_schema WHERE date='{date}';"
-        f"DELETE FROM index_groups WHERE date='{date}';"
         "INSERT INTO index_schema (date, version, schema_json) VALUES "
         f"('{date}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}');"
     )
@@ -179,7 +182,7 @@ def sync_d1(
 
     cols = "(date, rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end, rg_json)"
     if not remote:  # dev: local wrangler D1
-        stmts = [schema_sql] + [f"INSERT INTO index_groups {cols} VALUES {group_values(r)};" for r in rows]
+        stmts = [clear_sql] + [f"INSERT INTO index_groups {cols} VALUES {group_values(r)};" for r in rows] + [schema_sql]
         site = _site_dir()
         for i in range(0, len(stmts), 300):
             with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as tf:
@@ -189,9 +192,10 @@ def sync_d1(
         return len(rows)
 
     tok, acct = _creds()
-    _d1_query(schema_sql, acct, tok, db_id)
+    _d1_query(clear_sql, acct, tok, db_id)  # drop any prior/partial rows first
     for i in range(0, len(rows), rows_per_insert):
         chunk = rows[i : i + rows_per_insert]
         sql = f"INSERT INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
         _d1_query(sql, acct, tok, db_id)
+    _d1_query(schema_sql, acct, tok, db_id)  # schema row last = completeness marker
     return len(rows)
