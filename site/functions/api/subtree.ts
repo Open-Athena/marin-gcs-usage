@@ -203,7 +203,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
           if (tree) {
             const count = (n: TreeNode): number => 1 + (n.c ?? []).reduce((s, c) => s + count(c), 0)
             const body = JSON.stringify({
-              date, path, w, h, minArea, atten, tier: 'coarse',
+              date, path, w, h, minArea, atten, tier: 'coarse', index: 'coarse',
               threshold: Math.round(threshold), nodes: count(tree), truncated: false, tree,
             })
             const res = new Response(body, {
@@ -306,6 +306,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       minArea,
       atten,
       tier: 'fine',
+      index: idx.mode,
       threshold: Math.round(threshold),
       nodes: keptMap.size,
       truncated,

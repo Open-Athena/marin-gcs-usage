@@ -25,7 +25,7 @@ const MAX_GROUPS = 80
 interface Body extends Totals {
   scan: string
   head: number
-  computed: { at: number; ms: number; groups: number; prefixes: number }
+  computed: { at: number; ms: number; groups: number; prefixes: number; index: string }
 }
 
 // Per-isolate memo on top of D1 (the body is a few hundred KB).
@@ -83,7 +83,7 @@ async function compute(ctx: Ctx, date: string, keeps: Map<string, KeepRow>, owne
     scan: date,
     head,
     ...totals,
-    computed: { at: Math.floor(Date.now() / 1000), ms: Date.now() - t0, groups, prefixes: want.size },
+    computed: { at: Math.floor(Date.now() / 1000), ms: Date.now() - t0, groups, prefixes: want.size, index: idx.mode },
   }
 }
 

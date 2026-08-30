@@ -4,9 +4,17 @@
  * drill) and `/api/marks/totals` (exact keep / sweep bytes per live mark).
  *
  * The file is sorted (depth, path): the descendants of P at each depth are
- * one contiguous run, so any prefix query is a few binary-search-style
- * row-group selections on the footer stats plus ranged reads of just those
- * groups (specs/path-agnostic-serving.md §2.1).
+ * one contiguous run, so any prefix query is a few row-group selections on
+ * the footer stats plus ranged reads of just those groups.
+ *
+ * Two ways to get the footer stats (specs/path-agnostic-serving.md §2.1):
+ *   - **D1** (preferred): `index_schema` / `index_groups`, populated per scan
+ *     by `gcs-usage index-sync`. Row-group selection is a SQL query and we
+ *     fetch the metadata only for the groups a query actually reads, so the
+ *     ~5 MB thrift footer is never parsed on a cold isolate (that parse scales
+ *     with row-group count and blew the Worker CPU budget at 8k-row groups).
+ *   - **Parsed footer** (fallback): `parquetMetadataAsync` when D1 has no rows
+ *     for the date — back-compatible, works on any index.
  */
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
@@ -29,7 +37,7 @@ export interface Row {
   a: number | null
 }
 
-export interface GroupSpan {
+interface GroupSpan {
   rowStart: number
   rowEnd: number
   dMin: number
@@ -39,11 +47,25 @@ export interface GroupSpan {
   bMax: number
 }
 
-export interface IndexHandle {
-  file: { byteLength: number; slice: (s: number, e?: number) => Promise<ArrayBuffer> }
+type FileSlice = { byteLength: number; slice: (s: number, e?: number) => Promise<ArrayBuffer> }
+
+// D1-backed: metadata comes from index_schema/index_groups per query.
+interface D1Handle {
+  mode: 'd1'
+  file: FileSlice
+  env: Env
+  date: string
+  schema: unknown[]
+  version: number
+}
+// Footer-parse fallback: the classic in-memory metadata + spans.
+interface FooterHandle {
+  mode: 'footer'
+  file: FileSlice
   metadata: Awaited<ReturnType<typeof parquetMetadataAsync>>
   groups: GroupSpan[]
 }
+export type IndexHandle = D1Handle | FooterHandle
 
 export const num = (v: unknown): number => (typeof v === 'bigint' ? Number(v) : (v as number) ?? 0)
 export const str = (v: unknown): string =>
@@ -60,55 +82,85 @@ export function makeStore(env: Env) {
   })
 }
 
-// Per-isolate cache — the footer is ~MBs and immutable per date.
+function fileFor(env: Env, date: string): FileSlice {
+  const store = makeStore(env)
+  const key = `listing/${date}/path-index.parquet`
+  let size: Promise<number> | null = null
+  const byteLengthP = () => (size ??= store.get(key, { offset: 0, length: 1 }).then(r => {
+    if (!r.totalSize) throw new Error('index size unknown (no Content-Range)')
+    return r.totalSize
+  }))
+  return {
+    // byteLength is only read by the footer path (metadata parse); the D1 path
+    // never needs it (offsets are absolute), so it stays lazy.
+    get byteLength() { return 0 },
+    slice: async (s: number, e?: number) => {
+      const end = e ?? (await byteLengthP())
+      const r = await store.get(key, { offset: s, length: end - s })
+      return r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength) as ArrayBuffer
+    },
+  }
+}
+
+// Per-isolate cache — cheap (D1 schema row, or parsed footer) and immutable per date.
 const handles = new Map<string, Promise<IndexHandle>>()
 
 export async function openIndex(env: Env, date: string): Promise<IndexHandle> {
   const cached = handles.get(date)
   if (cached) return cached
-  const p = (async () => {
-    const store = makeStore(env)
-    const key = `listing/${date}/path-index.parquet`
-    // Object size via a 1-byte ranged read's Content-Range (S3Store populates totalSize).
-    const probe = await store.get(key, { offset: 0, length: 1 })
-    const byteLength = probe.totalSize
-    if (!byteLength) throw new Error('index size unknown (no Content-Range)')
-    const file = {
-      byteLength,
-      slice: async (s: number, e?: number) => {
-        const r = await store.get(key, { offset: s, length: (e ?? byteLength) - s })
-        return r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength) as ArrayBuffer
-      },
+  const p = (async (): Promise<IndexHandle> => {
+    // Prefer D1 (no footer parse). Only the schema row is fetched here.
+    if (env.DB) {
+      const s = await env.DB.prepare('SELECT version, schema_json FROM index_schema WHERE date = ?').bind(date).first<{ version: number; schema_json: string }>()
+      if (s) return { mode: 'd1', file: fileFor(env, date), env, date, schema: JSON.parse(s.schema_json), version: s.version }
     }
-    const metadata = await parquetMetadataAsync(file)
-    const cols = metadata.row_groups[0]?.columns.map(c => c.meta_data?.path_in_schema?.[0]) ?? []
-    const di = cols.indexOf('depth')
-    const pi = cols.indexOf('path')
-    const bi = cols.indexOf('b')
-    let at = 0
-    const groups: GroupSpan[] = metadata.row_groups.map(g => {
-      const n = num(g.num_rows)
-      const ds = g.columns[di]?.meta_data?.statistics
-      const ps = g.columns[pi]?.meta_data?.statistics
-      const bs = g.columns[bi]?.meta_data?.statistics
-      const span = {
-        rowStart: at,
-        rowEnd: at + n,
-        dMin: num(ds?.min_value ?? 0),
-        dMax: num(ds?.max_value ?? 1e9),
-        pMin: str(ps?.min_value ?? ''),
-        pMax: str(ps?.max_value ?? '￿'),
-        bMax: bs?.max_value != null ? num(bs.max_value) : Number.MAX_SAFE_INTEGER,
-      }
-      at += n
-      return span
-    })
-    return { file, metadata, groups }
+    return openFooter(env, date)
   })()
   handles.set(date, p)
   p.catch(() => handles.delete(date))
   return p
 }
+
+async function openFooter(env: Env, date: string): Promise<FooterHandle> {
+  const store = makeStore(env)
+  const key = `listing/${date}/path-index.parquet`
+  const probe = await store.get(key, { offset: 0, length: 1 })
+  const byteLength = probe.totalSize
+  if (!byteLength) throw new Error('index size unknown (no Content-Range)')
+  const file: FileSlice = {
+    byteLength,
+    slice: async (s: number, e?: number) => {
+      const r = await store.get(key, { offset: s, length: (e ?? byteLength) - s })
+      return r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength) as ArrayBuffer
+    },
+  }
+  const metadata = await parquetMetadataAsync(file)
+  const cols = metadata.row_groups[0]?.columns.map(c => c.meta_data?.path_in_schema?.[0]) ?? []
+  const di = cols.indexOf('depth')
+  const pi = cols.indexOf('path')
+  const bi = cols.indexOf('b')
+  let at = 0
+  const groups: GroupSpan[] = metadata.row_groups.map(g => {
+    const n = num(g.num_rows)
+    const ds = g.columns[di]?.meta_data?.statistics
+    const ps = g.columns[pi]?.meta_data?.statistics
+    const bs = g.columns[bi]?.meta_data?.statistics
+    const span = {
+      rowStart: at,
+      rowEnd: at + n,
+      dMin: num(ds?.min_value ?? 0),
+      dMax: num(ds?.max_value ?? 1e9),
+      pMin: str(ps?.min_value ?? ''),
+      pMax: str(ps?.max_value ?? '￿'),
+      bMax: bs?.max_value != null ? num(bs.max_value) : Number.MAX_SAFE_INTEGER,
+    }
+    at += n
+    return span
+  })
+  return { mode: 'footer', file, metadata, groups }
+}
+
+// --- shared row shaping ------------------------------------------------------
 
 const toRow = (r: Record<string, unknown>): Row => ({
   path: str(r.path),
@@ -125,7 +177,80 @@ const toRow = (r: Record<string, unknown>): Row => ({
   a: r.a == null ? null : num(r.a),
 })
 
-/** Read all rows in groups whose (depth, path) stats can intersect the ask. */
+// --- D1 metadata: revive stored RowGroup JSON into hyparquet's shape ---------
+
+const bi = (v: unknown): bigint | undefined => (v == null ? undefined : BigInt(v as string))
+function reviveRowGroup(json: string): Record<string, unknown> {
+  const g = JSON.parse(json) as { columns: { file_offset: string; meta_data: Record<string, unknown> }[]; total_byte_size: string; num_rows: string; file_offset?: string }
+  return {
+    num_rows: bi(g.num_rows),
+    total_byte_size: bi(g.total_byte_size),
+    ...(g.file_offset != null ? { file_offset: bi(g.file_offset) } : {}),
+    columns: g.columns.map(c => {
+      const m = c.meta_data
+      return {
+        file_offset: bi(c.file_offset),
+        meta_data: {
+          ...m,
+          num_values: bi(m.num_values),
+          total_uncompressed_size: bi(m.total_uncompressed_size),
+          total_compressed_size: bi(m.total_compressed_size),
+          data_page_offset: bi(m.data_page_offset),
+          ...(m.dictionary_page_offset != null ? { dictionary_page_offset: bi(m.dictionary_page_offset) } : {}),
+        },
+      }
+    }),
+  }
+}
+
+/** Read one row group (given its stored metadata JSON) via a subset FileMetaData. */
+async function readGroup(h: D1Handle, rgJson: string, columns?: string[]): Promise<Row[]> {
+  const rg = reviveRowGroup(rgJson)
+  const metadata = { version: h.version, schema: h.schema, num_rows: rg.num_rows, row_groups: [rg], metadata_length: 0 } as unknown as Awaited<ReturnType<typeof parquetMetadataAsync>>
+  const rows = (await parquetReadObjects({ file: h.file, metadata, columns })) as Record<string, unknown>[]
+  return rows.map(toRow)
+}
+
+interface Span extends GroupSpan { rg: number }
+
+/** Candidate row groups for a set of (depth, path-range) rectangles — one SQL
+ * pass (no rg_json yet), carrying each group's stats so the caller can apply a
+ * finer per-ask test. A group spanning a depth boundary resets path order, so
+ * the path test only applies within a single depth (`d_min = d_max`). */
+async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: string; pHi: string }[], cap = 400, bMin = 0): Promise<Span[]> {
+  const where: string[] = []
+  const binds: unknown[] = []
+  for (const r of rects) {
+    where.push('(d_max >= ? AND d_min <= ? AND (d_min <> d_max OR (p_max >= ? AND p_min <= ?)))')
+    binds.push(r.dLo, r.dHi, r.pLo, r.pHi)
+  }
+  // Prune groups whose biggest row can't clear the shallowest threshold — the
+  // footer path prunes by b_max during its scan, so without this a large
+  // subtree returns far more candidate groups than it can draw and hits `cap`.
+  const bFloor = bMin > 0 ? ' AND b_max >= ?' : ''
+  const sql = `SELECT rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end FROM index_groups WHERE date = ? AND (${where.join(' OR ')})${bFloor} ORDER BY rg LIMIT ${cap + 1}`
+  if (bMin > 0) binds.push(Math.floor(bMin))
+  const res = await h.env.DB!.prepare(sql).bind(h.date, ...binds).all<{ rg: number; d_min: number; d_max: number; p_min: string; p_max: string; b_max: number; row_start: number; row_end: number }>()
+  if (res.results.length > cap) throw new Error(`query too wide: >${cap} row groups (drill deeper or raise minArea)`)
+  return res.results.map(r => ({ rg: r.rg, dMin: num(r.d_min), dMax: num(r.d_max), pMin: r.p_min, pMax: r.p_max, bMax: num(r.b_max), rowStart: num(r.row_start), rowEnd: num(r.row_end) }))
+}
+
+/** Fetch stored metadata JSON for a set of row groups. */
+async function fetchGroupJson(h: D1Handle, rgs: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  for (let i = 0; i < rgs.length; i += 100) {
+    const chunk = rgs.slice(i, i + 100)
+    const sql = `SELECT rg, rg_json FROM index_groups WHERE date = ? AND rg IN (${chunk.map(() => '?').join(',')})`
+    const res = await h.env.DB!.prepare(sql).bind(h.date, ...chunk).all<{ rg: number; rg_json: string }>()
+    for (const r of res.results) out.set(r.rg, r.rg_json)
+  }
+  return out
+}
+
+// --- public read API ---------------------------------------------------------
+
+/** Rows in the (depth, path) rectangle; `thrAt(depth)` prunes groups whose
+ * biggest row can't clear the threshold. Same contract in both handle modes. */
 export async function readRows(
   h: IndexHandle,
   dLo: number,
@@ -134,23 +259,31 @@ export async function readRows(
   pHi: string,
   thrAt?: (depth: number) => number,
 ): Promise<Row[]> {
+  if (h.mode === 'd1') {
+    const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 400, thrAt ? thrAt(dLo) : 0)
+    const kept = thrAt ? spans.filter(s => s.bMax >= thrAt(Math.max(s.dMin, dLo))) : spans
+    if (kept.length > 80) throw new Error('query too wide: drill deeper or raise minArea')
+    const jsons = await fetchGroupJson(h, kept.map(s => s.rg))
+    const out: Row[] = []
+    for (const s of kept) {
+      const j = jsons.get(s.rg)
+      if (!j) continue
+      for (const r of await readGroup(h, j)) {
+        if (r.depth < dLo || r.depth > dHi || r.path < pLo || r.path > pHi) continue
+        out.push(r)
+      }
+    }
+    return out
+  }
+  // footer mode
   const out: Row[] = []
   let selected = 0
   for (const g of h.groups) {
     if (g.dMax < dLo || g.dMin > dHi) continue
-    // Path stats only discriminate within a single depth; a group spanning a
-    // depth boundary resets path order, so only apply the path test then.
     if (g.dMin === g.dMax && (g.pMax < pLo || g.pMin > pHi)) continue
-    // A group whose biggest row can't clear the (shallowest applicable)
-    // threshold contributes nothing but fold-count noise — skip it.
     if (thrAt && g.bMax < thrAt(Math.max(g.dMin, dLo))) continue
     if (++selected > 80) throw new Error('query too wide: drill deeper or raise minArea')
-    const rows = (await parquetReadObjects({
-      file: h.file,
-      metadata: h.metadata,
-      rowStart: g.rowStart,
-      rowEnd: g.rowEnd,
-    })) as Record<string, unknown>[]
+    const rows = (await parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd })) as Record<string, unknown>[]
     for (const r of rows) {
       const depth = num(r.depth)
       const path = str(r.path)
@@ -164,19 +297,22 @@ export async function readRows(
 /** A point lookup `(depth, path)` or a one-level range under a prefix. */
 export type Ask = { depth: number; path: string } | { depth: number; under: string }
 
+const askRect = (a: Ask) =>
+  'path' in a
+    ? { dLo: a.depth, dHi: a.depth, pLo: a.path, pHi: a.path }
+    : { dLo: a.depth, dHi: a.depth, pLo: a.under + '/', pHi: a.under + '0' } // '0' sorts just past '/'
+
 const groupMayHold = (g: GroupSpan, a: Ask): boolean => {
   if (g.dMax < a.depth || g.dMin > a.depth) return false
   if (g.dMin !== g.dMax) return true
-  return 'path' in a
-    ? !(g.pMax < a.path || g.pMin > a.path)
-    : !(g.pMax < a.under + '/' || g.pMin > a.under + '0') // '0' sorts just past '/'
+  return 'path' in a ? !(g.pMax < a.path || g.pMin > a.path) : !(g.pMax < a.under + '/' || g.pMin > a.under + '0')
 }
 
 /**
- * Rows for a *set* of asks in one pass over the groups that can hold any of
- * them — each selected group is read once (only `columns`), and `keep`
- * decides which rows to return. Live marks cluster (siblings share groups),
- * so ~8k prefixes today touch ~25 of 3,358 groups.
+ * Rows for a *set* of asks, `keep`-filtered. Live marks cluster (siblings share
+ * groups), so ~8k prefixes touch a couple dozen groups. One SQL pass selects
+ * the candidate groups (D1 mode) or a single scan of the spans (footer mode);
+ * each candidate group is read once (only `columns`).
  */
 export async function readAsks(
   h: IndexHandle,
@@ -185,16 +321,34 @@ export async function readAsks(
   { columns, maxGroups = 60 }: { columns?: string[]; maxGroups?: number } = {},
 ): Promise<{ rows: Row[]; groups: number }> {
   const out: Row[] = []
+  if (h.mode === 'd1') {
+    // Collapse asks to one rectangle per depth (min..max path) to keep the SQL
+    // small; the exact ask set is enforced by `keep` after the read.
+    const byDepth = new Map<number, { pLo: string; pHi: string }>()
+    for (const a of asks) {
+      const r = askRect(a)
+      const cur = byDepth.get(a.depth)
+      byDepth.set(a.depth, cur ? { pLo: cur.pLo < r.pLo ? cur.pLo : r.pLo, pHi: cur.pHi > r.pHi ? cur.pHi : r.pHi } : { pLo: r.pLo, pHi: r.pHi })
+    }
+    const rects = [...byDepth.entries()].map(([d, r]) => ({ dLo: d, dHi: d, pLo: r.pLo, pHi: r.pHi }))
+    // A per-depth [min,max] rectangle over-selects the groups between the
+    // lowest and highest ask; narrow to groups an actual ask falls in.
+    const cand = await selectSpans(h, rects)
+    const spans = cand.filter(s => asks.some(a => groupMayHold(s, a)))
+    if (spans.length > maxGroups) throw new Error(`lookup too wide: ${spans.length} row groups (cap ${maxGroups})`)
+    const jsons = await fetchGroupJson(h, spans.map(s => s.rg))
+    for (const s of spans) {
+      const j = jsons.get(s.rg)
+      if (!j) continue
+      for (const r of await readGroup(h, j, columns)) if (keep(r)) out.push(r)
+    }
+    return { rows: out, groups: spans.length }
+  }
+  // footer mode
   const selected = h.groups.filter(g => asks.some(a => groupMayHold(g, a)))
   if (selected.length > maxGroups) throw new Error(`lookup too wide: ${selected.length} row groups (cap ${maxGroups})`)
   for (const g of selected) {
-    const rows = (await parquetReadObjects({
-      file: h.file,
-      metadata: h.metadata,
-      rowStart: g.rowStart,
-      rowEnd: g.rowEnd,
-      columns,
-    })) as Record<string, unknown>[]
+    const rows = (await parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd, columns })) as Record<string, unknown>[]
     for (const r of rows) {
       const row = toRow(r)
       if (keep(row)) out.push(row)
