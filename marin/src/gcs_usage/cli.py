@@ -1767,7 +1767,7 @@ def index_sync(bucket: str, local: bool, parquet_path: str | None, date: str) ->
     from .index_footer import sync_d1
 
     path = parquet_path or f"{bucket}/listing/{date}/path-index.parquet"
-    n = sync_d1(date, path, remote=not local, chunk=300)
+    n = sync_d1(date, path, remote=not local)
     err(f"index-sync: wrote schema + {n} row groups for {date} ({'local' if local else 'remote'})")
 
 

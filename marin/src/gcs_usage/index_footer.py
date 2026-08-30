@@ -103,50 +103,95 @@ def _sql_escape(s: str) -> str:
     return s.replace("'", "''")
 
 
+# The D1 database `/query` runs one SQL string; we send multi-row INSERTs.
+D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"  # oa-gcs-usage-auth (site/wrangler.toml)
+
+
+def _creds() -> tuple[str, str]:
+    """(api_token, account_id) from the env, falling back to the repo .envrc —
+    so it works in the Batch job (env) and from a laptop (direnv/.envrc)."""
+    tok = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    acct = os.environ.get("CLOUDFLARE_ACCOUNT_ID") or os.environ.get("OA_CF_ACCT", "")
+    if not (tok and acct):
+        try:
+            envrc = _site_dir().parent / ".envrc"
+            for line in envrc.read_text().splitlines():
+                m = re.match(r"^\s*export\s+(CLOUDFLARE_API_TOKEN|OA_CF_ACCT)=[\"']?([^\"'\s]+)", line)
+                if m:
+                    if m.group(1) == "CLOUDFLARE_API_TOKEN" and not tok:
+                        tok = m.group(2)
+                    if m.group(1) == "OA_CF_ACCT" and not acct:
+                        acct = m.group(2)
+        except FileNotFoundError:
+            pass
+    if not (tok and acct):
+        raise RuntimeError("need CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (or OA_CF_ACCT)")
+    return tok, acct
+
+
+def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
+    """Run one SQL string against D1 over the HTTP API (no Node/wrangler)."""
+    import urllib.error
+    import urllib.request
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db_id}/query"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps({"sql": sql}).encode(),
+        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = json.loads(urllib.request.urlopen(req).read())
+    except urllib.error.HTTPError as e:
+        # Surface D1's error body (scope/SQL) without echoing the token.
+        raise RuntimeError(f"D1 query failed ({e.code}): {e.read().decode()[:300]}") from None
+    if not resp.get("success"):
+        raise RuntimeError(f"D1 query error: {resp.get('errors')}")
+
+
 def sync_d1(
     date: str,
     parquet_path: str,
     *,
-    db: str = "oa-gcs-usage-auth",
+    db_id: str = D1_DB_ID,
     remote: bool = True,
-    chunk: int = 400,
+    rows_per_insert: int = 8,
 ) -> int:
-    """Extract footer for ``date`` and upsert into D1 (index_schema/index_groups).
-    Runs `wrangler d1 execute` in chunked SQL files. Returns #groups written."""
+    """Extract the footer for ``date`` and upsert it into D1
+    (index_schema/index_groups) over the Cloudflare **HTTP API** — pure Python,
+    so it runs in the Node-less Batch image. Returns #row groups written.
+    ``remote=False`` uses the local wrangler D1 (dev only, via `d1 execute`)."""
     schema, rows = extract(parquet_path)
-    stmts = [
-        f"DELETE FROM index_schema WHERE date='{date}';",
-        f"DELETE FROM index_groups WHERE date='{date}';",
+    schema_sql = (
+        f"DELETE FROM index_schema WHERE date='{date}';"
+        f"DELETE FROM index_groups WHERE date='{date}';"
         "INSERT INTO index_schema (date, version, schema_json) VALUES "
-        f"('{date}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}');",
-    ]
-    for r in rows:
-        stmts.append(
-            "INSERT INTO index_groups (date, rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end, rg_json) VALUES "
+        f"('{date}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}');"
+    )
+
+    def group_values(r: dict) -> str:
+        return (
             f"('{date}', {r['rg']}, {r['d_min']}, {r['d_max']}, "
             f"'{_sql_escape(r['p_min'])}', '{_sql_escape(r['p_max'])}', {r['b_max']}, "
-            f"{r['row_start']}, {r['row_end']}, '{_sql_escape(r['rg_json'])}');"
+            f"{r['row_start']}, {r['row_end']}, '{_sql_escape(r['rg_json'])}')"
         )
-    site = _site_dir()
-    # Remote writes need CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID; source
-    # them from the repo `.envrc` when present (as the D1 helpers do) so the
-    # command works whether or not direnv has exported them into this shell.
-    env = dict(os.environ)
-    if remote:
-        envrc = site.parent / ".envrc"
-        if envrc.exists():
-            for line in envrc.read_text().splitlines():
-                m = re.match(r"^\s*export\s+(CLOUDFLARE_API_TOKEN|OA_CF_ACCT)=[\"']?([^\"'\s]+)", line)
-                if m:
-                    env[m.group(1)] = m.group(2)
-        env.setdefault("CLOUDFLARE_ACCOUNT_ID", env.get("OA_CF_ACCT", ""))
-    mode = "--remote" if remote else "--local"
-    for i in range(0, len(stmts), chunk):
-        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as tf:
-            tf.write("\n".join(stmts[i : i + chunk]))
-            sqlpath = tf.name
-        cmd = ["npx", "wrangler", "d1", "execute", db, mode, "--file", sqlpath]
-        if remote:
-            cmd.append("--yes")  # skip the remote-write confirmation prompt
-        subprocess.run(cmd, check=True, cwd=str(site), env=env)
+
+    cols = "(date, rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end, rg_json)"
+    if not remote:  # dev: local wrangler D1
+        stmts = [schema_sql] + [f"INSERT INTO index_groups {cols} VALUES {group_values(r)};" for r in rows]
+        site = _site_dir()
+        for i in range(0, len(stmts), 300):
+            with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as tf:
+                tf.write("\n".join(stmts[i : i + 300]))
+                sqlpath = tf.name
+            subprocess.run(["npx", "wrangler", "d1", "execute", "oa-gcs-usage-auth", "--local", "--file", sqlpath], check=True, cwd=str(site))
+        return len(rows)
+
+    tok, acct = _creds()
+    _d1_query(schema_sql, acct, tok, db_id)
+    for i in range(0, len(rows), rows_per_insert):
+        chunk = rows[i : i + rows_per_insert]
+        sql = f"INSERT INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
+        _d1_query(sql, acct, tok, db_id)
     return len(rows)
