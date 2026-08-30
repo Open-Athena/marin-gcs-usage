@@ -220,7 +220,14 @@ function AppContent() {
   // specs/path-agnostic-serving.md §2.3).
   const lensUser = markTab === 'mine' ? viewUser : hlUser || null
   const subtreeLens = store.key === 'gcs' && scoped && lensUser && !fq ? `user:${lensUser}` : null
-  const needFullTree = !subtreeLens && (store.key !== 'gcs' || fq != null || markTabP != null || hlUser != null || hlTeam != null)
+  // A scan whose by-user variant isn't synced (e.g. the daily ran on an image
+  // predating it) makes the lens subtree 500; remember that (scan, lens) as
+  // broken and fall back to tree.json + the client filter, rather than sticking
+  // on "loading tree…". Set by the effect after the subtree queries below.
+  const [lensBrokenKey, setLensBrokenKey] = useState<string | null>(null)
+  const lensKey = subtreeLens ? `${asof}:${subtreeLens}` : null
+  const activeLens = subtreeLens && lensBrokenKey !== lensKey ? subtreeLens : null
+  const needFullTree = !activeLens && (store.key !== 'gcs' || fq != null || markTabP != null || hlUser != null || hlTeam != null)
   // One-time legacy-param rewrite (`mt`/`mu` → `l`/`u`), so old links work
   // and re-share in the golfed form.
   useEffect(() => {
@@ -265,7 +272,7 @@ function AppContent() {
   }, [store.key, graftPath])
   const subtreeQs = useQueries({
     queries: subtreePaths.map(p => ({
-      queryKey: ['subtree', store.key, asof, p, canW, subtreeLens],
+      queryKey: ['subtree', store.key, asof, p, canW, activeLens],
       enabled: !!asof,
       staleTime: Infinity,
       // Retry (not `false`): a cold isolate can transiently 500 on a lens read;
@@ -274,7 +281,7 @@ function AppContent() {
       retryDelay: (n: number) => 400 * 2 ** n,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${subtreeLens ? `&lens=${subtreeLens}` : ''}`,
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${activeLens ? `&lens=${activeLens}` : ''}`,
           { credentials: 'include' },
         )
         if (!r.ok) throw new Error(`subtree ${r.status}: ${(await r.text()).slice(0, 120)}`)
@@ -283,6 +290,11 @@ function AppContent() {
     })),
   })
   const rootSub = subtreeQs[0]?.data?.tree ?? null
+  // Lens variant missing for this scan → the root sub errored; fall back.
+  const rootSubErr = subtreeQs[0]?.isError
+  useEffect(() => {
+    if (lensKey && rootSubErr) setLensBrokenKey(lensKey)
+  }, [lensKey, rootSubErr])
   const baseTree: TreeNode | null = treeQ.data ?? (store.key === 'gcs' ? rootSub : null)
   // useQueries returns a fresh array each render; stamp the data so the graft
   // memo re-runs exactly when a response lands.
@@ -406,7 +418,7 @@ function AppContent() {
   const mapTree = useMemo(() => {
     if (!shownTree) return shownTree
     // A server user-lens already scoped the tree (it IS that user's treemap).
-    if (subtreeLens) return shownTree
+    if (activeLens) return shownTree
     let t = shownTree
     if (todoActive) t = applyTodoFilter(t, markIdx)
     else if (scopedActive) {
@@ -419,7 +431,7 @@ function AppContent() {
     // rule as the review lenses); a hovered row only fades the rest.
     if (hl) t = applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : teamLens(hl.team!)))
     return t
-  }, [shownTree, subtreeLens, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
+  }, [shownTree, activeLens, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
   // Controlled treemap drill path, resolved against the (possibly filtered/
   // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
   // switches by re-walking the new tree; a vanished path truncates to its
@@ -449,7 +461,7 @@ function AppContent() {
   // lens (all / to-do) fall back to the manually-picked highlight.
   const effHl: Highlight | null =
     // A server user-lens map is already just that user's bytes — nothing to dim.
-    subtreeLens ? null
+    activeLens ? null
     // The user lens highlights its user scoped or not: a scoped subtree still
     // contains minority co-tenants, and user coloring should dim them.
     : markTab === 'mine' && viewUser ? { user: viewUser }
