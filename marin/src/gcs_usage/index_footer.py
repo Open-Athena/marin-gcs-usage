@@ -189,10 +189,14 @@ def sync_d1(
     # schema row is written LAST (after every group). A mid-run failure then
     # leaves no schema → the reader falls back to the parsed footer, rather than
     # taking the D1 path over a half-written group set (silent partial reads).
-    clear_sql = (
-        f"DELETE FROM index_schema WHERE date='{date}' AND variant='{variant}';"
-        f"DELETE FROM index_groups WHERE date='{date}' AND variant='{variant}';"
-    )
+    # Two separate statements: the D1 `/query` HTTP API runs only ONE statement
+    # per call, so a semicolon-joined pair silently skips the second — which
+    # left partial group rows on a re-sync and collided on the PK.
+    clear_stmts = [
+        f"DELETE FROM index_schema WHERE date='{date}' AND variant='{variant}';",
+        f"DELETE FROM index_groups WHERE date='{date}' AND variant='{variant}';",
+    ]
+    clear_sql = "".join(clear_stmts)  # local wrangler d1 execute runs multi-statement files fine
     schema_sql = (
         "INSERT INTO index_schema (date, variant, version, schema_json) VALUES "
         f"('{date}', '{variant}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}');"
@@ -218,7 +222,8 @@ def sync_d1(
         return len(rows)
 
     tok, acct = _creds()
-    _d1_query(clear_sql, acct, tok, db_id)  # drop any prior/partial rows first
+    for stmt in clear_stmts:  # one per call — the HTTP API runs a single statement
+        _d1_query(stmt, acct, tok, db_id)  # drop any prior/partial rows first
     for i in range(0, len(rows), rows_per_insert):
         chunk = rows[i : i + rows_per_insert]
         sql = f"INSERT INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
