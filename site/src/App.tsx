@@ -268,13 +268,17 @@ function AppContent() {
       queryKey: ['subtree', store.key, asof, p, canW, subtreeLens],
       enabled: !!asof,
       staleTime: Infinity,
-      retry: false,
+      // Retry (not `false`): a cold isolate can transiently 500 on a lens read;
+      // returning null-without-retry left the map stuck on "loading tree…".
+      retry: 3,
+      retryDelay: (n: number) => 400 * 2 ** n,
       queryFn: async () => {
         const r = await fetch(
           `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${subtreeLens ? `&lens=${subtreeLens}` : ''}`,
           { credentials: 'include' },
         )
-        return r.ok ? (r.json() as Promise<{ tree: TreeNode }>) : null
+        if (!r.ok) throw new Error(`subtree ${r.status}: ${(await r.text()).slice(0, 120)}`)
+        return r.json() as Promise<{ tree: TreeNode }>
       },
     })),
   })
