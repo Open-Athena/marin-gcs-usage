@@ -6,7 +6,7 @@ import { useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { Avatar } from './Avatar'
-import { canonId, ghHandle, shortName, shortUserKey } from './UserChip'
+import { UserChip, canonId, ghHandle, shortName, shortUserKey } from './UserChip'
 import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
@@ -27,7 +27,7 @@ import { SiteNav } from './SiteNav'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, ratePerByte } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, groupLabel, ratePerByte } from './types'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
@@ -753,6 +753,20 @@ function AppContent() {
         />
       )}
 
+      {/* Active pin/highlight, shown in EVERY color mode (the user legend only
+          renders in user modes, so without this a pin was invisible + unclearable
+          after switching to "marks"). Says whether the map is filtered to the
+          slice or just highlighting it, and clears in one click. */}
+      {(hlUser || hlTeam) && (
+        <div className={`scope-chip${activeLens ? ' filtering' : ''}`}>
+          <span className="lbl">{activeLens ? 'showing only' : scoped ? 'scoped to' : 'highlighting'}</span>
+          {hlUser
+            ? <UserChip who={hlUser} size={16} />
+            : <span className="team">{groupLabel(hlTeam!)}</span>}
+          <button type="button" className="clear" onClick={clearHl} title="Clear (x)">✕</button>
+        </div>
+      )}
+
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
           <span className="lbl">color by</span>
@@ -830,7 +844,7 @@ function AppContent() {
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
             klcIdx={markMode ? klcIdx : undefined}
-            viewFates={totalsQ.data?.total ?? null}
+            viewFates={activeLens && lensUser ? (totalsQ.data?.users?.[lensUser] ?? null) : (totalsQ.data?.total ?? null)}
             path={mapPath}
             onPathChange={onMapPath}
           />

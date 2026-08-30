@@ -735,6 +735,29 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .ctl { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
 }
 
+// Active pin/highlight indicator (shown in every color mode).
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding: 3px 6px 3px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  width: fit-content;
+  &.filtering { border-color: var(--s1); }
+  .lbl { color: var(--ink-3); }
+  .team { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); font-weight: 600; }
+  .clear {
+    margin-left: 2px; background: transparent; border: none; color: var(--ink-3);
+    cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 3px; border-radius: 4px;
+    &:hover { background: var(--line); color: var(--ink); }
+  }
+}
+
 // Small radio strips (age chart granularity/axis, size-chart y-range).
 .gran {
   display: inline-flex;
