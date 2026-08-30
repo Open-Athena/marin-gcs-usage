@@ -10,6 +10,8 @@ strings; the reader revives them.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -126,6 +128,18 @@ def sync_d1(
             f"{r['row_start']}, {r['row_end']}, '{_sql_escape(r['rg_json'])}');"
         )
     site = _site_dir()
+    # Remote writes need CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID; source
+    # them from the repo `.envrc` when present (as the D1 helpers do) so the
+    # command works whether or not direnv has exported them into this shell.
+    env = dict(os.environ)
+    if remote:
+        envrc = site.parent / ".envrc"
+        if envrc.exists():
+            for line in envrc.read_text().splitlines():
+                m = re.match(r"^\s*export\s+(CLOUDFLARE_API_TOKEN|OA_CF_ACCT)=[\"']?([^\"'\s]+)", line)
+                if m:
+                    env[m.group(1)] = m.group(2)
+        env.setdefault("CLOUDFLARE_ACCOUNT_ID", env.get("OA_CF_ACCT", ""))
     mode = "--remote" if remote else "--local"
     for i in range(0, len(stmts), chunk):
         with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as tf:
@@ -134,5 +148,5 @@ def sync_d1(
         cmd = ["npx", "wrangler", "d1", "execute", db, mode, "--file", sqlpath]
         if remote:
             cmd.append("--yes")  # skip the remote-write confirmation prompt
-        subprocess.run(cmd, check=True, cwd=str(site))
+        subprocess.run(cmd, check=True, cwd=str(site), env=env)
     return len(rows)
