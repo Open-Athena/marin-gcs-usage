@@ -286,6 +286,11 @@ export async function readRows(
     const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 4000, thrAt ? thrAt(dLo) : 0, lens)
     const kept = thrAt ? spans.filter(s => s.bMax >= thrAt(Math.max(s.dMin, dLo))) : spans
     if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
+    // Bound the decode too, not just the group count — a broad lens (a big
+    // team spread across the estate) can select few-enough groups but still
+    // decode millions of rows and blow the Worker CPU. Error cleanly instead.
+    const totalRows = kept.reduce((n, s) => n + (s.rowEnd - s.rowStart), 0)
+    if (totalRows > 700_000) throw new Error('query too wide: drill deeper or raise minArea')
     const jsons = await fetchGroupJson(h, kept.map(s => s.rg))
     const out: Row[] = []
     for (const s of kept) {
