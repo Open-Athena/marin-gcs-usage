@@ -145,13 +145,16 @@ cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 # reader skips the cold-isolate footer parse (specs/path-agnostic-serving.md
 # §2.1). Needs CLOUDFLARE_API_TOKEN (D1 write) + CLOUDFLARE_ACCOUNT_ID — set as
 # Batch secretVariables; without them the site falls back to parsing the footer,
-# so this never blocks the snapshot. `set +x`: the token must not hit xtrace.
+# so this never blocks the snapshot. Disable xtrace for the WHOLE block first:
+# even the `[ -n "$CLOUDFLARE_API_TOKEN" ]` test echoes the token under `set -x`.
+{ set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  ( { set +x; } 2>/dev/null
-    gcs-usage index-sync -d "/gcs/$DATA/listing/$DATE" "$DATE" )     || echo "WARN: index-sync failed (site falls back to footer parse)" >&2
+  gcs-usage index-sync -d "/gcs/$DATA/listing/$DATE" "$DATE" \
+    || echo "WARN: index-sync failed (site falls back to footer parse)" >&2
 else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (site parses the footer)" >&2
 fi
+set -x
 
 # Cross-scan size index for the site's per-subpath "size over time" chart
 # (specs/size-over-time.md case 1). Re-folds every archived tree into a single
