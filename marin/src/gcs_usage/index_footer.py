@@ -56,6 +56,18 @@ def _group_rows(md: "pq.FileMetaData") -> list[dict]:
     di = md.schema.names.index("depth")
     pi = md.schema.names.index("path")
     bi = md.schema.names.index("b")
+    ui = md.schema.names.index("usr")
+    ti = md.schema.names.index("team")
+
+    def _srange(stats) -> tuple:
+        # (min, max) of a string column's stats, or (None, None) when absent
+        # (an all-NULL group has no min/max). Bytes → str for JSON.
+        if stats is None or not stats.has_min_max:
+            return None, None
+        def s(v):
+            return v.decode() if isinstance(v, bytes) else v
+        return s(stats.min), s(stats.max)
+
     for g in range(md.num_row_groups):
         rg = md.row_group(g)
         n = rg.num_rows
@@ -77,11 +89,14 @@ def _group_rows(md: "pq.FileMetaData") -> list[dict]:
             cols.append({"file_offset": str(cc.file_offset), "meta_data": m})
         rg_json = {"columns": cols, "total_byte_size": str(rg.total_byte_size), "num_rows": str(n)}
         ds, ps, bs = rg.column(di).statistics, rg.column(pi).statistics, rg.column(bi).statistics
+        u_min, u_max = _srange(rg.column(ui).statistics)
+        t_min, t_max = _srange(rg.column(ti).statistics)
         rows.append({
             "rg": g,
             "d_min": int(ds.min), "d_max": int(ds.max),
             "p_min": ps.min, "p_max": ps.max,
             "b_max": int(bs.max),
+            "u_min": u_min, "u_max": u_max, "t_min": t_min, "t_max": t_max,
             "row_start": row_start, "row_end": row_start + n,
             "rg_json": json.dumps(rg_json, separators=(",", ":")),
         })
@@ -150,10 +165,15 @@ def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
         raise RuntimeError(f"D1 query error: {resp.get('errors')}")
 
 
+def _q(v) -> str:  # nullable string literal for SQL
+    return "NULL" if v is None else f"'{_sql_escape(v)}'"
+
+
 def sync_d1(
     date: str,
     parquet_path: str,
     *,
+    variant: str = "path",
     db_id: str = D1_DB_ID,
     remote: bool = True,
     rows_per_insert: int = 8,
@@ -161,26 +181,32 @@ def sync_d1(
     """Extract the footer for ``date`` and upsert it into D1
     (index_schema/index_groups) over the Cloudflare **HTTP API** — pure Python,
     so it runs in the Node-less Batch image. Returns #row groups written.
-    ``remote=False`` uses the local wrangler D1 (dev only, via `d1 execute`)."""
+    ``variant`` is the sort order ('path' | 'user' | 'team'); each is a separate
+    parquet (path-index[-by-<variant>].parquet). ``remote=False`` uses the local
+    wrangler D1 (dev only, via `d1 execute`)."""
     schema, rows = extract(parquet_path)
     # Order matters for crash-safety: `openIndex` keys off index_schema, so the
     # schema row is written LAST (after every group). A mid-run failure then
     # leaves no schema → the reader falls back to the parsed footer, rather than
     # taking the D1 path over a half-written group set (silent partial reads).
-    clear_sql = f"DELETE FROM index_schema WHERE date='{date}';DELETE FROM index_groups WHERE date='{date}';"
+    clear_sql = (
+        f"DELETE FROM index_schema WHERE date='{date}' AND variant='{variant}';"
+        f"DELETE FROM index_groups WHERE date='{date}' AND variant='{variant}';"
+    )
     schema_sql = (
-        "INSERT INTO index_schema (date, version, schema_json) VALUES "
-        f"('{date}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}');"
+        "INSERT INTO index_schema (date, variant, version, schema_json) VALUES "
+        f"('{date}', '{variant}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}');"
     )
 
     def group_values(r: dict) -> str:
         return (
-            f"('{date}', {r['rg']}, {r['d_min']}, {r['d_max']}, "
+            f"('{date}', '{variant}', {r['rg']}, {r['d_min']}, {r['d_max']}, "
             f"'{_sql_escape(r['p_min'])}', '{_sql_escape(r['p_max'])}', {r['b_max']}, "
+            f"{_q(r['u_min'])}, {_q(r['u_max'])}, {_q(r['t_min'])}, {_q(r['t_max'])}, "
             f"{r['row_start']}, {r['row_end']}, '{_sql_escape(r['rg_json'])}')"
         )
 
-    cols = "(date, rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end, rg_json)"
+    cols = "(date, variant, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, t_min, t_max, row_start, row_end, rg_json)"
     if not remote:  # dev: local wrangler D1
         stmts = [clear_sql] + [f"INSERT INTO index_groups {cols} VALUES {group_values(r)};" for r in rows] + [schema_sql]
         site = _site_dir()
@@ -198,4 +224,5 @@ def sync_d1(
         sql = f"INSERT INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
         _d1_query(sql, acct, tok, db_id)
     _d1_query(schema_sql, acct, tok, db_id)  # schema row last = completeness marker
+    return len(rows)
     return len(rows)

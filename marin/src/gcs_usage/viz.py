@@ -310,17 +310,27 @@ def write_webdata(
         # (path, team, usr), sorted (depth, path) — the engine's canonical
         # order for prefix-range + row-group pruning. Immutable per date.
         path_index.parent.mkdir(parents=True, exist_ok=True)
-        con.execute(
-            f"COPY (SELECT path, depth, team, usr, b, o, wts, wb, c2, c3, c4, a "
-            f"FROM ptu ORDER BY depth, path) TO '{path_index}' "
-            # 8k rows/group (~1 MB): a deep drill decodes ~8k rows/group, not
-            # 64k, and the footer (now in D1 per index-sync) is never parsed on
-            # a cold isolate, so the ~27k-group count costs nothing at read time
-            # (specs/path-agnostic-serving.md §2.1).
-            "(FORMAT parquet, ROW_GROUP_SIZE 8192)"
-        )
+        cols = "path, depth, team, usr, b, o, wts, wb, c2, c3, c4, a"
+        # 8k rows/group (~1 MB): a deep drill decodes ~8k rows/group, not 64k,
+        # and the footer (now in D1 per index-sync) is never parsed on a cold
+        # isolate, so the ~27k-group count costs nothing at read time
+        # (specs/path-agnostic-serving.md §2.1).
+        rg = "(FORMAT parquet, ROW_GROUP_SIZE 8192)"
+        con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY depth, path) TO '{path_index}' {rg}")
         err(f"path-index: wrote {path_index}")
         _rss("path-index")
+        # `by-user` / `by-team` copies: the SAME rows re-sorted so a user/team
+        # lens's row groups prune by `usr`/`team` (the `by-path` copy's stats
+        # are on `b`, useless for a lens). `b` in a usr=X row is X's bytes under
+        # `path`, so the lens read pixel-budgets on it directly. NULL usr sorts
+        # last (the unattributed pool). specs/path-agnostic-serving.md §2.3.
+        by_user = path_index.with_name("path-index-by-user.parquet")
+        by_team = path_index.with_name("path-index-by-team.parquet")
+        con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY usr NULLS LAST, depth, path) TO '{by_user}' {rg}")
+        err(f"path-index: wrote {by_user}")
+        con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY team, depth, path) TO '{by_team}' {rg}")
+        err(f"path-index: wrote {by_team}")
+        _rss("path-index-variants")
 
     # Pre-floor is **parent-relative** (matches build_tree): keep a path iff its
     # rolled-up bytes clear MIN_FRAC of its parent's — so drilling stays useful

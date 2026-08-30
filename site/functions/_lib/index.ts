@@ -55,9 +55,14 @@ interface D1Handle {
   file: FileSlice
   env: Env
   date: string
+  variant: string
   schema: unknown[]
   version: number
 }
+
+/** A user/team lens filter: `usr`/`team` column = `key`, applied on the
+ * matching by-user/by-team index variant. */
+export type Lens = { col: 'u' | 't'; key: string }
 // Footer-parse fallback: the classic in-memory metadata + spans.
 interface FooterHandle {
   mode: 'footer'
@@ -82,9 +87,9 @@ export function makeStore(env: Env) {
   })
 }
 
-function fileFor(env: Env, date: string): FileSlice {
+function fileFor(env: Env, date: string, variant: string): FileSlice {
   const store = makeStore(env)
-  const key = `listing/${date}/path-index.parquet`
+  const key = `listing/${date}/path-index${variant === 'path' ? '' : `-by-${variant}`}.parquet`
   let size: Promise<number> | null = null
   const byteLengthP = () => (size ??= store.get(key, { offset: 0, length: 1 }).then(r => {
     if (!r.totalSize) throw new Error('index size unknown (no Content-Range)')
@@ -105,19 +110,23 @@ function fileFor(env: Env, date: string): FileSlice {
 // Per-isolate cache — cheap (D1 schema row, or parsed footer) and immutable per date.
 const handles = new Map<string, Promise<IndexHandle>>()
 
-export async function openIndex(env: Env, date: string): Promise<IndexHandle> {
-  const cached = handles.get(date)
+export async function openIndex(env: Env, date: string, variant = 'path'): Promise<IndexHandle> {
+  const ck = `${date}:${variant}`
+  const cached = handles.get(ck)
   if (cached) return cached
   const p = (async (): Promise<IndexHandle> => {
     // Prefer D1 (no footer parse). Only the schema row is fetched here.
     if (env.DB) {
-      const s = await env.DB.prepare('SELECT version, schema_json FROM index_schema WHERE date = ?').bind(date).first<{ version: number; schema_json: string }>()
-      if (s) return { mode: 'd1', file: fileFor(env, date), env, date, schema: JSON.parse(s.schema_json), version: s.version }
+      const s = await env.DB.prepare('SELECT version, schema_json FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string }>()
+      if (s) return { mode: 'd1', file: fileFor(env, date, variant), env, date, variant, schema: JSON.parse(s.schema_json), version: s.version }
     }
+    // Only the default 'path' variant has a parsed-footer fallback (the by-user/
+    // by-team lens variants are D1-only — no footer path serves them).
+    if (variant !== 'path') throw new Error(`index variant '${variant}' not synced for ${date}`)
     return openFooter(env, date)
   })()
-  handles.set(date, p)
-  p.catch(() => handles.delete(date))
+  handles.set(ck, p)
+  p.catch(() => handles.delete(ck))
   return p
 }
 
@@ -217,20 +226,31 @@ interface Span extends GroupSpan { rg: number }
  * pass (no rg_json yet), carrying each group's stats so the caller can apply a
  * finer per-ask test. A group spanning a depth boundary resets path order, so
  * the path test only applies within a single depth (`d_min = d_max`). */
-async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: string; pHi: string }[], cap = 4000, bMin = 0): Promise<Span[]> {
+async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: string; pHi: string }[], cap = 4000, bMin = 0, lens?: Lens): Promise<Span[]> {
   const where: string[] = []
   const binds: unknown[] = []
+  // The (depth, path) rect; valid within a single primary-key group only
+  // (single-depth for the path index, single-user/team for a lens index).
+  const rectSql = '(d_max >= ? AND d_min <= ? AND (d_min <> d_max OR (p_max >= ? AND p_min <= ?)))'
   for (const r of rects) {
-    where.push('(d_max >= ? AND d_min <= ? AND (d_min <> d_max OR (p_max >= ? AND p_min <= ?)))')
-    binds.push(r.dLo, r.dHi, r.pLo, r.pHi)
+    if (lens) {
+      // Prune to groups whose usr/team range covers the lens key; the rect is a
+      // secondary test that only holds inside a single-key group.
+      const c = lens.col
+      where.push(`(${c}_min <= ? AND ${c}_max >= ? AND (${c}_min <> ${c}_max OR ${rectSql}))`)
+      binds.push(lens.key, lens.key, r.dLo, r.dHi, r.pLo, r.pHi)
+    } else {
+      where.push(rectSql)
+      binds.push(r.dLo, r.dHi, r.pLo, r.pHi)
+    }
   }
   // Prune groups whose biggest row can't clear the shallowest threshold — the
   // footer path prunes by b_max during its scan, so without this a large
   // subtree returns far more candidate groups than it can draw and hits `cap`.
   const bFloor = bMin > 0 ? ' AND b_max >= ?' : ''
-  const sql = `SELECT rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end FROM index_groups WHERE date = ? AND (${where.join(' OR ')})${bFloor} ORDER BY rg LIMIT ${cap + 1}`
+  const sql = `SELECT rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end FROM index_groups WHERE date = ? AND variant = ? AND (${where.join(' OR ')})${bFloor} ORDER BY rg LIMIT ${cap + 1}`
   if (bMin > 0) binds.push(Math.floor(bMin))
-  const res = await h.env.DB!.prepare(sql).bind(h.date, ...binds).all<{ rg: number; d_min: number; d_max: number; p_min: string; p_max: string; b_max: number; row_start: number; row_end: number }>()
+  const res = await h.env.DB!.prepare(sql).bind(h.date, h.variant, ...binds).all<{ rg: number; d_min: number; d_max: number; p_min: string; p_max: string; b_max: number; row_start: number; row_end: number }>()
   if (res.results.length > cap) throw new Error(`query too wide: >${cap} row groups (drill deeper or raise minArea)`)
   return res.results.map(r => ({ rg: r.rg, dMin: num(r.d_min), dMax: num(r.d_max), pMin: r.p_min, pMax: r.p_max, bMax: num(r.b_max), rowStart: num(r.row_start), rowEnd: num(r.row_end) }))
 }
@@ -240,8 +260,8 @@ async function fetchGroupJson(h: D1Handle, rgs: number[]): Promise<Map<number, s
   const out = new Map<number, string>()
   for (let i = 0; i < rgs.length; i += 100) {
     const chunk = rgs.slice(i, i + 100)
-    const sql = `SELECT rg, rg_json FROM index_groups WHERE date = ? AND rg IN (${chunk.map(() => '?').join(',')})`
-    const res = await h.env.DB!.prepare(sql).bind(h.date, ...chunk).all<{ rg: number; rg_json: string }>()
+    const sql = `SELECT rg, rg_json FROM index_groups WHERE date = ? AND variant = ? AND rg IN (${chunk.map(() => '?').join(',')})`
+    const res = await h.env.DB!.prepare(sql).bind(h.date, h.variant, ...chunk).all<{ rg: number; rg_json: string }>()
     for (const r of res.results) out.set(r.rg, r.rg_json)
   }
   return out
@@ -258,9 +278,12 @@ export async function readRows(
   pLo: string,
   pHi: string,
   thrAt?: (depth: number) => number,
+  lens?: Lens,
 ): Promise<Row[]> {
+  // A row passes the lens iff its usr/team equals the key.
+  const lensOk = (r: Row) => !lens || (lens.col === 'u' ? r.usr === lens.key : r.team === lens.key)
   if (h.mode === 'd1') {
-    const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 4000, thrAt ? thrAt(dLo) : 0)
+    const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 4000, thrAt ? thrAt(dLo) : 0, lens)
     const kept = thrAt ? spans.filter(s => s.bMax >= thrAt(Math.max(s.dMin, dLo))) : spans
     if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
     const jsons = await fetchGroupJson(h, kept.map(s => s.rg))
@@ -269,13 +292,13 @@ export async function readRows(
       const j = jsons.get(s.rg)
       if (!j) continue
       for (const r of await readGroup(h, j)) {
-        if (r.depth < dLo || r.depth > dHi || r.path < pLo || r.path > pHi) continue
+        if (r.depth < dLo || r.depth > dHi || r.path < pLo || r.path > pHi || !lensOk(r)) continue
         out.push(r)
       }
     }
     return out
   }
-  // footer mode
+  // footer mode (path variant only)
   const out: Row[] = []
   let selected = 0
   for (const g of h.groups) {

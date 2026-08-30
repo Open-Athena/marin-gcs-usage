@@ -1755,20 +1755,24 @@ def alert(
 
 
 @main.command("index-sync")
-@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding listing/<date>/path-index.parquet")
+@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding listing/<date>/path-index*.parquet")
+@option("-d", "--dir", "listing_dir", default=None, help="Override the listing dir holding the parquets (default: <bucket>/listing/<date>)")
 @option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
-@option("-p", "--parquet", "parquet_path", default=None, help="Override the path-index parquet path (default: <bucket>/listing/<date>/path-index.parquet)")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(["path", "user", "team"]), help="Only sync these variants (default: all three)")
 @argument("date")
-def index_sync(bucket: str, local: bool, parquet_path: str | None, date: str) -> None:
-    """Sync a scan's path-index parquet footer into D1 (index_schema/index_groups)
-    so the site's reader skips the cold-isolate footer parse
-    (specs/path-agnostic-serving.md §2.1). Needs CLOUDFLARE_API_TOKEN +
-    CLOUDFLARE_ACCOUNT_ID in the env (as `d1 execute` does)."""
+def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tuple[str, ...], date: str) -> None:
+    """Sync a scan's path-index parquet footers into D1 (index_schema/index_groups)
+    so the site's reader skips the cold-isolate footer parse. Syncs all three
+    sort variants (path / user / team) — the drill index plus the by-user/by-team
+    lens indexes (specs/path-agnostic-serving.md §2.1/§2.3). Needs
+    CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the env."""
     from .index_footer import sync_d1
 
-    path = parquet_path or f"{bucket}/listing/{date}/path-index.parquet"
-    n = sync_d1(date, path, remote=not local)
-    err(f"index-sync: wrote schema + {n} row groups for {date} ({'local' if local else 'remote'})")
+    base = listing_dir or f"{bucket}/listing/{date}"
+    files = {"path": f"{base}/path-index.parquet", "user": f"{base}/path-index-by-user.parquet", "team": f"{base}/path-index-by-team.parquet"}
+    for variant in (variants or ("path", "user", "team")):
+        n = sync_d1(date, files[variant], variant=variant, remote=not local)
+        err(f"index-sync: {date} [{variant}] — schema + {n} row groups ({'local' if local else 'remote'})")
 
 
 if __name__ == "__main__":

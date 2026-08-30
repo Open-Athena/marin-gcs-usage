@@ -148,7 +148,7 @@ cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 # so this never blocks the snapshot. `set +x`: the token must not hit xtrace.
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
   ( { set +x; } 2>/dev/null
-    gcs-usage index-sync -p "/gcs/$DATA/listing/$DATE/path-index.parquet" "$DATE" )     || echo "WARN: index-sync failed (site falls back to footer parse)" >&2
+    gcs-usage index-sync -d "/gcs/$DATA/listing/$DATE" "$DATE" )     || echo "WARN: index-sync failed (site falls back to footer parse)" >&2
 else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (site parses the footer)" >&2
 fi

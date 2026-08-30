@@ -18,7 +18,7 @@
  * quantized-up to 128px so resizes mostly re-hit the cache.
  */
 import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
-import { makeStore, openIndex, readRows, type Row } from '../_lib/index.js'
+import { makeStore, openIndex, readRows, type Lens, type Row } from '../_lib/index.js'
 
 const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -164,6 +164,19 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const h = Math.ceil((Number(url.searchParams.get('h')) || 800) / QUANT) * QUANT
   const minArea = Number(url.searchParams.get('minArea')) || MIN_AREA_DEFAULT
   const atten = Number(url.searchParams.get('atten')) || ATTEN_DEFAULT
+  // Optional lens: `lens=user:<id>` / `lens=team:<name>` — treemap of that
+  // user's/team's bytes, served from the by-user/by-team index variant
+  // (specs/path-agnostic-serving.md §2.3). Skips the coarse tier (tree.json has
+  // no per-user split).
+  const lensRaw = url.searchParams.get('lens')
+  let lens: Lens | undefined
+  let lensVariant = 'path'
+  if (lensRaw) {
+    const m = /^(user|team):(.+)$/.exec(lensRaw)
+    if (!m) return new Response('bad lens (want user:<id> or team:<name>)', { status: 400 })
+    lens = { col: m[1] === 'user' ? 'u' : 't', key: m[2] }
+    lensVariant = m[1] === 'user' ? 'user' : 'team'
+  }
   if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
   if (path.startsWith('cw/')) {
     const gated = await requireScope(ctx, CW_SCOPE)
@@ -173,7 +186,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   if (gated instanceof Response) return gated
 
   const cacheKey = new Request(
-    `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}`,
+    `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
@@ -187,7 +200,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     // kept set is a superset of the query's — re-fold it by pixel budget and
     // never touch the index. This covers root/shallow queries, whose index
     // prefix ranges would otherwise span most of the file.
-    const coarse = await treeFor(ctx.env, date).catch(() => null)
+    const coarse = lens ? null : await treeFor(ctx.env, date).catch(() => null)
     if (coarse) {
       let node: TreeNode | undefined = coarse
       for (const seg of path === '' ? [] : path.split('/')) node = node?.c?.find(c => c.n === seg)
@@ -216,15 +229,16 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       }
     }
 
-    // Tier 2 — fine: narrow/deep queries against the floor-free index.
-    const idx = await openIndex(ctx.env, date)
+    // Tier 2 — fine: narrow/deep queries against the floor-free index (the
+    // lens variant when a lens is set — its rows carry the lens's bytes).
+    const idx = await openIndex(ctx.env, date, lensVariant)
 
     // Root aggregate P.pb (and P's own tm/us for the response root).
     const rootAgg = newAgg()
     if (path === '') {
-      for (const r of await readRows(idx, 1, 1, '', '￿')) merge(rootAgg, r)
+      for (const r of await readRows(idx, 1, 1, '', '￿', undefined, lens)) merge(rootAgg, r)
     } else {
-      const rows = await readRows(idx, dP, dP, path, path)
+      const rows = await readRows(idx, dP, dP, path, path, undefined, lens)
       if (!rows.length) return new Response('path not found', { status: 404 })
       for (const r of rows) merge(rootAgg, r)
     }
@@ -235,7 +249,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     // attenuated threshold bounds both row count and depth by construction.
     const pLo = path === '' ? '' : path + '/'
     const pHi = path === '' ? '￿' : path + '0' // '0' sorts just past '/'
-    const rows = await readRows(idx, dP + 1, 1e9, pLo, pHi, thrAt)
+    const rows = await readRows(idx, dP + 1, 1e9, pLo, pHi, thrAt, lens)
     const aggs = new Map<string, Agg>()
     const aggDepth = new Map<string, number>()
     for (const r of rows) {
@@ -307,6 +321,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       atten,
       tier: 'fine',
       index: idx.mode,
+      ...(lensRaw ? { lens: lensRaw } : {}),
       threshold: Math.round(threshold),
       nodes: keptMap.size,
       truncated,

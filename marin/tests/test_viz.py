@@ -213,6 +213,15 @@ def test_path_index_carries_read_day(tmp_path: Path, listing: str, attribution: 
     assert a_by_path["b1/users"] == rd      # read subtree
     assert a_by_path["b1/users/rw/ckpt"] == rd
     assert pd.isna(a_by_path["b1/datasets"])  # never read → NULL
+    # by-user / by-team variants: same rows, re-sorted so a lens's row groups
+    # prune by usr / team (specs/path-agnostic-serving.md §2.3).
+    by_user = pd.read_parquet(pidx.with_name("path-index-by-user.parquet"))
+    by_team = pd.read_parquet(pidx.with_name("path-index-by-team.parquet"))
+    assert len(by_user) == len(df) and len(by_team) == len(df)
+    # by-user is sorted (usr NULLS LAST, depth, path)
+    uk = by_user["usr"].fillna("\uffff").tolist()
+    assert uk == sorted(uk)
+    assert by_team["team"].tolist() == sorted(by_team["team"].tolist())
 
 
 def test_write_webdata_plain(tmp_path: Path, listing: str):
