@@ -179,6 +179,28 @@ function AppContent() {
   // user's shortest registry alias. Old links normalize below.
   const [fq, setFq] = useUrlState('f', stringParam())
   const [markTabP, setMarkTabP] = useUrlState('l', stringParam())
+  const ident = useIdentity()
+  const myUser = useMyUser(ident?.email, markMode)
+  // `?mt=` (declared above, near treeQ) — active review lens over the map +
+  // children table (absent = no lens, the plain browse view). The lenses are
+  // presets on the normal view (LensBar), scoped to the current subtree —
+  // there's no separate /mark page.
+  // No email (anon / no-email session) → no "My files" lens to attribute to.
+  const hasEmail = !!ident?.email
+  const markTabRaw: Lens =
+    markTabP === 'user' || markTabP === 'mine' ? 'mine'
+    : markTabP === 'todo' || markTabP === 'unclaimed' || markTabP === 'communal' ? markTabP
+    : 'all'
+  const markTab: Lens = markTabRaw === 'mine' && !hasEmail ? 'all' : markTabRaw
+  const setMarkTab = (t: Lens) => {
+    setMarkTabP(t === 'all' ? undefined : t === 'mine' ? 'user' : t)
+    if (t !== 'mine') setUP(undefined) // `lu` is meaningless outside the user lens
+  }
+  // `?lu=` — whose files the user lens shows (anyone's view is browsable;
+  // `?u=` is the highlight-user param). Only meaningful while that lens is
+  // active: an inactive lens must not redecorate its chip or the view.
+  const [uP, setUP] = useUrlState('lu', stringParam())
+  const viewUser = markTab === 'mine' ? ((uP ? canonId(uP) : null) ?? myUser) : null
   // tree.json is ~29MB — the estate-wide walks (name filter's match set +
   // re-aggregation, lens scoping) still need its depth, but plain browsing
   // doesn't: the map seeds from the same pixel-budget /api/subtree that
@@ -187,7 +209,18 @@ function AppContent() {
   // Mark mode does NOT need it any more: the root keep/sweep/undecided rollup
   // and /users come from /api/marks/totals (ledger × floor-free index,
   // server-side); drilled rollups resolve on the loaded subtree and say ≈.
-  const needFullTree = store.key !== 'gcs' || fq != null || markTabP != null || hlUser != null || hlTeam != null
+  // `?ms=0` — scope-map-to-view toggled off (on is the default).
+  const [scopedP, setScopedP] = useUrlState('ms', stringParam())
+  const scoped = scopedP !== '0'
+  const setScoped = (v: boolean) => setScopedP(v ? undefined : '0')
+  // Server-side USER lens: My files / a pinned user render as a treemap of that
+  // user's bytes, served from the by-user index variant (`/api/subtree?lens=`)
+  // — no tree.json. Team lenses (communal/unclaimed) and todo/name-filter stay
+  // on tree.json (a big team overruns the floor-free lens; see
+  // specs/path-agnostic-serving.md §2.3).
+  const lensUser = markTab === 'mine' ? viewUser : hlUser || null
+  const subtreeLens = store.key === 'gcs' && scoped && lensUser && !fq ? `user:${lensUser}` : null
+  const needFullTree = !subtreeLens && (store.key !== 'gcs' || fq != null || markTabP != null || hlUser != null || hlTeam != null)
   // One-time legacy-param rewrite (`mt`/`mu` → `l`/`u`), so old links work
   // and re-share in the golfed form.
   useEffect(() => {
@@ -232,13 +265,13 @@ function AppContent() {
   }, [store.key, graftPath])
   const subtreeQs = useQueries({
     queries: subtreePaths.map(p => ({
-      queryKey: ['subtree', store.key, asof, p, canW],
+      queryKey: ['subtree', store.key, asof, p, canW, subtreeLens],
       enabled: !!asof,
       staleTime: Infinity,
       retry: false,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}`,
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${subtreeLens ? `&lens=${subtreeLens}` : ''}`,
           { credentials: 'include' },
         )
         return r.ok ? (r.json() as Promise<{ tree: TreeNode }>) : null
@@ -312,32 +345,6 @@ function AppContent() {
   }, [hash, tree, meta, scans])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
-  const ident = useIdentity()
-  const myUser = useMyUser(ident?.email, markMode)
-  // `?mt=` (declared above, near treeQ) — active review lens over the map +
-  // children table (absent = no lens, the plain browse view). The lenses are
-  // presets on the normal view (LensBar), scoped to the current subtree —
-  // there's no separate /mark page.
-  // No email (anon / no-email session) → no "My files" lens to attribute to.
-  const hasEmail = !!ident?.email
-  const markTabRaw: Lens =
-    markTabP === 'user' || markTabP === 'mine' ? 'mine'
-    : markTabP === 'todo' || markTabP === 'unclaimed' || markTabP === 'communal' ? markTabP
-    : 'all'
-  const markTab: Lens = markTabRaw === 'mine' && !hasEmail ? 'all' : markTabRaw
-  const setMarkTab = (t: Lens) => {
-    setMarkTabP(t === 'all' ? undefined : t === 'mine' ? 'user' : t)
-    if (t !== 'mine') setUP(undefined) // `lu` is meaningless outside the user lens
-  }
-  // `?lu=` — whose files the user lens shows (anyone's view is browsable;
-  // `?u=` is the highlight-user param). Only meaningful while that lens is
-  // active: an inactive lens must not redecorate its chip or the view.
-  const [uP, setUP] = useUrlState('lu', stringParam())
-  const viewUser = markTab === 'mine' ? ((uP ? canonId(uP) : null) ?? myUser) : null
-  // `?ms=0` — scope-map-to-view toggled off (on is the default).
-  const [scopedP, setScopedP] = useUrlState('ms', stringParam())
-  const scoped = scopedP !== '0'
-  const setScoped = (v: boolean) => setScopedP(v ? undefined : '0')
   // The treemap's drill path now lives in the URL *path* (below the store's own
   // route prefix), so a drilled prefix is a real shareable URL —
   // `/marin-us-central1/ego-dex`, not `/?p=marin-us-central1/ego-dex`. View
@@ -394,6 +401,8 @@ function AppContent() {
   const lensScoped = markMode && markTab !== 'all'
   const mapTree = useMemo(() => {
     if (!shownTree) return shownTree
+    // A server user-lens already scoped the tree (it IS that user's treemap).
+    if (subtreeLens) return shownTree
     let t = shownTree
     if (todoActive) t = applyTodoFilter(t, markIdx)
     else if (scopedActive) {
@@ -406,7 +415,7 @@ function AppContent() {
     // rule as the review lenses); a hovered row only fades the rest.
     if (hl) t = applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : teamLens(hl.team!)))
     return t
-  }, [shownTree, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
+  }, [shownTree, subtreeLens, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
   // Controlled treemap drill path, resolved against the (possibly filtered/
   // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
   // switches by re-walking the new tree; a vanished path truncates to its
@@ -435,9 +444,11 @@ function AppContent() {
   // A scopable lens highlights its slice even when "scope map" is off; with no
   // lens (all / to-do) fall back to the manually-picked highlight.
   const effHl: Highlight | null =
+    // A server user-lens map is already just that user's bytes — nothing to dim.
+    subtreeLens ? null
     // The user lens highlights its user scoped or not: a scoped subtree still
     // contains minority co-tenants, and user coloring should dim them.
-    markTab === 'mine' && viewUser ? { user: viewUser }
+    : markTab === 'mine' && viewUser ? { user: viewUser }
     : scopedActive ? null
     : markTab === 'unclaimed' ? { team: 'unattributed' }
     : markTab === 'communal' ? { team: 'communal' }
