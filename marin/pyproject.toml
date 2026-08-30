@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 wandb = ["wandb>=0.19"]
+sheets = ["gspread>=6.0"]  # `sheet-push` → Google Sheets (ADC auth)
 
 [project.scripts]
 gcs-usage = "gcs_usage.cli:main"

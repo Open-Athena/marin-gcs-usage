@@ -1615,6 +1615,66 @@ def report(actions_path: str, out: Path | None, root: str | None, site_url: str)
         sys.stdout.write(text)
 
 
+@main.command("sheet-push")
+@option("-D", "--disclaimer", help="footer line written 2 rows below the table (e.g. an 'auto-synced' note)")
+@option("-I", "--impersonate", help="service-account email to impersonate for Sheets auth (needs Token Creator); default is ambient ADC")
+@option("-n", "--dry-run", is_flag=True, help="parse + summarize, don't touch the sheet")
+@option("-w", "--worksheet", default="", help="tab to replace, by title (default: the first tab)")
+@argument("sheet_id")
+@argument("csv_path", default="-")
+def sheet_push(disclaimer: str | None, impersonate: str | None, dry_run: bool, worksheet: str, sheet_id: str, csv_path: str) -> None:
+    """Push a mark-status CSV (from `report`) to a Google Sheet.
+
+    Full-replaces ONE named tab in place (the site's `/users` mirror). Target it
+    by `-w <title>` — the sheet may hold other, human-authored tabs (derived
+    views), so never blindly overwrite the first. `clear()` is values-only, so
+    header styling / frozen rows survive; Google's version history is the audit
+    trail. `-D` writes an "auto-synced" footer two rows below the table.
+    Idempotent.
+
+    Auth is Application Default Credentials: the job's GCP service account in
+    Cloud Run / Batch, or your `gcloud auth application-default` locally. The
+    sheet must be shared (Editor) with that identity, and the Sheets API enabled
+    in the project. See specs/gsheet-mark-status-sync.md.
+
+    Pipe straight from `report`:  gcs-usage report -a … | gcs-usage sheet-push <id>
+    """
+    import csv
+    import io as _io
+
+    text = sys.stdin.read() if csv_path == "-" else Path(csv_path).read_text()
+    rows = [r for r in csv.reader(_io.StringIO(text)) if r]
+    if len(rows) < 2:
+        raise SystemExit(f"expected a header + ≥1 data row, got {len(rows)}")
+    err(f"{len(rows) - 1} rows → sheet {sheet_id} tab '{worksheet or '(first)'}'")
+    if dry_run:
+        err("dry-run — not writing")
+        return
+
+    import google.auth  # noqa: PLC0415 — optional (sheets extra), imported on use
+    import gspread  # noqa: PLC0415
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    if impersonate:
+        from google.auth import impersonated_credentials  # noqa: PLC0415
+        source, _ = google.auth.default()
+        creds = impersonated_credentials.Credentials(
+            source_credentials=source, target_principal=impersonate, target_scopes=scopes,
+        )
+    else:
+        creds, _ = google.auth.default(scopes=scopes)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(sheet_id)
+    ws = sh.worksheet(worksheet) if worksheet else sh.get_worksheet(0)
+    # Full-replace in place: clear values (formatting/frozen rows survive), then
+    # write header + data at A1, and an optional footer note below the table.
+    ws.clear()
+    ws.update(values=rows, range_name="A1", value_input_option="RAW")
+    if disclaimer:
+        ws.update(values=[[disclaimer]], range_name=f"A{len(rows) + 2}", value_input_option="RAW")
+    err(f"pushed {len(rows) - 1} rows to '{ws.title}'")
+
+
 @main.command()
 @option("-b", "--bot-token", help="Slack bot token (xoxb-…, or $SLACK_BOT_TOKEN); with --channel, posts via chat.postMessage so the per-message avatar applies")
 @option("-c", "--ceiling-tb", type=float, help="absolute alert: flag when total TB exceeds this")
