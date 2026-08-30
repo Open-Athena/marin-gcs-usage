@@ -258,8 +258,8 @@ async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: 
 /** Fetch stored metadata JSON for a set of row groups. */
 async function fetchGroupJson(h: D1Handle, rgs: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
-  for (let i = 0; i < rgs.length; i += 100) {
-    const chunk = rgs.slice(i, i + 100)
+  for (let i = 0; i < rgs.length; i += 80) {
+    const chunk = rgs.slice(i, i + 80)
     const sql = `SELECT rg, rg_json FROM index_groups WHERE date = ? AND variant = ? AND rg IN (${chunk.map(() => '?').join(',')})`
     const res = await h.env.DB!.prepare(sql).bind(h.date, h.variant, ...chunk).all<{ rg: number; rg_json: string }>()
     for (const r of res.results) out.set(r.rg, r.rg_json)
