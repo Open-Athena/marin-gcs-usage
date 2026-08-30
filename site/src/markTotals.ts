@@ -16,9 +16,9 @@ export interface MarkTotals {
   computed: { at: number; ms: number; groups: number; prefixes: number }
 }
 
-export function useMarkTotals(scan: string | null, enabled = true) {
+export function useMarkTotals(scan: string | null, path?: string, enabled = true) {
   return useQuery<MarkTotals, Error>({
-    queryKey: ['mark-totals', scan],
+    queryKey: ['mark-totals', scan, path ?? ''],
     enabled: enabled && !!scan,
     staleTime: 30_000,
     refetchInterval: 30_000,
@@ -26,7 +26,8 @@ export function useMarkTotals(scan: string | null, enabled = true) {
     // on the first slow answer.
     retry: 2,
     queryFn: async () => {
-      const r = await fetch(`/api/marks/totals?date=${scan}`, { credentials: 'include' })
+      const q = `date=${scan}` + (path ? `&path=${encodeURIComponent(path)}` : '')
+      const r = await fetch(`/api/marks/totals?${q}`, { credentials: 'include' })
       if (!r.ok) throw new Error(`marks/totals: ${r.status}`)
       return r.json()
     },

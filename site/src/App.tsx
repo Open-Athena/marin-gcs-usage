@@ -164,7 +164,6 @@ function AppContent() {
   const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
   const asof = dMatches[0] ?? scans[0] ?? null
   // Exact estate-wide totals (server-side ledger × index) for the root rollup.
-  const totalsQ = useMarkTotals(asof, markMode)
   // Ledger actions record which scan the actor was viewing.
   useEffect(() => setCurrentScan(asof ?? undefined), [asof])
   const scanQuery = <T,>(name: string) => ({
@@ -345,6 +344,11 @@ function AppContent() {
   // options stay query params (`?c`, `?mt`, …); the section stays in the `#hash`.
   const storeBase = store.path === '/' ? '' : store.path
   const drillPath = pathname.slice(storeBase.length).replace(/^\/+/, '')
+  // Exact keep/sweep/undecided for the CURRENT view — estate at the root, the
+  // drilled subtree once you drill (`?path=`), so the map's rollup is exact at
+  // every depth, not just the root (specs/path-agnostic-serving.md §2.3).
+  const drillPfx = drillPath ? `${store.scheme}${drillPath}/` : undefined
+  const totalsQ = useMarkTotals(asof, markMode ? drillPfx : undefined, markMode)
   const drillTo = (segs: string[]) =>
     navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
   // Read-recency lens domain: the access-log observation window (meta), not
@@ -796,7 +800,7 @@ function AppContent() {
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
             klcIdx={markMode ? klcIdx : undefined}
-            rootFates={totalsQ.data?.total ?? null}
+            viewFates={totalsQ.data?.total ?? null}
             path={mapPath}
             onPathChange={onMapPath}
           />

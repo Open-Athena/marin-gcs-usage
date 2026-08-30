@@ -39,17 +39,17 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickTeam, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, rootFates, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickTeam, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
   // Access-log observation window (epoch days) — domain of the read lens.
   readRange?: DateRange | null
-  /** Exact estate-wide keep / sweep totals (`/api/marks/totals`) — shown at
-   *  the root instead of a client walk. Drilled views still walk the loaded
-   *  (pixel-budget) subtree and say so. */
-  rootFates?: Record<Fate, number> | null
+  /** Exact keep / sweep totals for the CURRENT view (`/api/marks/totals`,
+   *  estate at the root or the drilled subtree via `?path=`). Used at any
+   *  depth; the client walk is the instant fallback while it loads (shown ≈). */
+  viewFates?: Record<Fate, number> | null
   hl?: Highlight | null
   /** Legend-row interactions (plotly-style): hover a row = solo it (others
    *  fade, map dims to it), click = pin (sticky `hl`; click again, any empty
@@ -445,10 +445,10 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     // amber "last ckpt" appears only for marks the tree can't split).
     const fateWanted = !!markIdx && mode === 'fate'
     const atRoot = path.length <= 1
-    // Root: the exact server-side number. Drilled: resolved against whatever
-    // this view loaded (marks folded below its resolution settle as their
-    // ancestor's fate), flagged ≈ until `?path=` scoping lands server-side.
-    const exact = atRoot && rootFates ? rootFates : null
+    // Exact server-side total for this exact view (root or drilled); the client
+    // walk over the loaded (floored) tree is the instant fallback while the
+    // exact fetch is in flight, marked ≈.
+    const exact = fateWanted && viewFates ? viewFates : null
     const fate = fateWanted ? (exact ?? subtreeFateTotals(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
     const fateRows = fate
       ? ([
