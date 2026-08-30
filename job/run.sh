@@ -141,6 +141,18 @@ cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
 # attribution rules: the single latest copy the /data/rules.json function serves
 cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 
+# Footer-in-D1: sync the path-index parquet footer into the site's D1 so the
+# reader skips the cold-isolate footer parse (specs/path-agnostic-serving.md
+# §2.1). Needs CLOUDFLARE_API_TOKEN (D1 write) + CLOUDFLARE_ACCOUNT_ID — set as
+# Batch secretVariables; without them the site falls back to parsing the footer,
+# so this never blocks the snapshot. `set +x`: the token must not hit xtrace.
+if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  ( { set +x; } 2>/dev/null
+    gcs-usage index-sync -p "/gcs/$DATA/listing/$DATE/path-index.parquet" "$DATE" )     || echo "WARN: index-sync failed (site falls back to footer parse)" >&2
+else
+  echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (site parses the footer)" >&2
+fi
+
 # Cross-scan size index for the site's per-subpath "size over time" chart
 # (specs/size-over-time.md case 1). Re-folds every archived tree into a single
 # snapshots/series.json — scans are immutable, so this is effectively

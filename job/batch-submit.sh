@@ -36,6 +36,8 @@ v = {
     "STAGE_DIR": os.environ.get("STAGE_DIR", "/stage"),
     # Slack digest target: chat.postMessage (bot token) so per-message avatars apply
     "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0BNWAASXFW"),  # #gcs-usage
+    # CF account for index-sync's `wrangler d1 execute` (token is a secretVariable)
+    "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }
 v = {k: s for k, s in v.items() if s}
 for k in ["SNAPSHOT_DATE", "SNAP_PATH", "REPROC",
@@ -87,7 +89,8 @@ cat > "$spec" <<EOF
         "variables": $(vars),
         "secretVariables": {
           "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/gcs-alert-slack-bot-token/versions/latest",
-          "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest"
+          "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest",
+          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest"
         }
       }
     }

@@ -313,12 +313,11 @@ def write_webdata(
         con.execute(
             f"COPY (SELECT path, depth, team, usr, b, o, wts, wb, c2, c3, c4, a "
             f"FROM ptu ORDER BY depth, path) TO '{path_index}' "
-            # 64k rows/group. Smaller groups (~8k) would cut per-drill read
-            # size, BUT over one monolithic 220M-row file that's 27k groups,
-            # whose footer parse blows the CFN's cold-isolate CPU budget (1102).
-            # Group-shrink is coupled to depth-partitioning (per-partition
-            # footers stay small) — do them together (specs/path-agnostic-serving.md §2.1).
-            "(FORMAT parquet, ROW_GROUP_SIZE 65536)"
+            # 8k rows/group (~1 MB): a deep drill decodes ~8k rows/group, not
+            # 64k, and the footer (now in D1 per index-sync) is never parsed on
+            # a cold isolate, so the ~27k-group count costs nothing at read time
+            # (specs/path-agnostic-serving.md §2.1).
+            "(FORMAT parquet, ROW_GROUP_SIZE 8192)"
         )
         err(f"path-index: wrote {path_index}")
         _rss("path-index")

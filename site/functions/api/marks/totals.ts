@@ -20,7 +20,7 @@ import {
 } from '../../_lib/marks.js'
 
 const COLUMNS = ['path', 'depth', 'usr', 'b', 'o', 'c2', 'c3', 'c4']
-const MAX_GROUPS = 80
+const MAX_GROUPS = 400
 
 interface Body extends Totals {
   scan: string

@@ -217,7 +217,7 @@ interface Span extends GroupSpan { rg: number }
  * pass (no rg_json yet), carrying each group's stats so the caller can apply a
  * finer per-ask test. A group spanning a depth boundary resets path order, so
  * the path test only applies within a single depth (`d_min = d_max`). */
-async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: string; pHi: string }[], cap = 400, bMin = 0): Promise<Span[]> {
+async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: string; pHi: string }[], cap = 4000, bMin = 0): Promise<Span[]> {
   const where: string[] = []
   const binds: unknown[] = []
   for (const r of rects) {
@@ -260,9 +260,9 @@ export async function readRows(
   thrAt?: (depth: number) => number,
 ): Promise<Row[]> {
   if (h.mode === 'd1') {
-    const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 400, thrAt ? thrAt(dLo) : 0)
+    const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 4000, thrAt ? thrAt(dLo) : 0)
     const kept = thrAt ? spans.filter(s => s.bMax >= thrAt(Math.max(s.dMin, dLo))) : spans
-    if (kept.length > 80) throw new Error('query too wide: drill deeper or raise minArea')
+    if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
     const jsons = await fetchGroupJson(h, kept.map(s => s.rg))
     const out: Row[] = []
     for (const s of kept) {
@@ -282,7 +282,7 @@ export async function readRows(
     if (g.dMax < dLo || g.dMin > dHi) continue
     if (g.dMin === g.dMax && (g.pMax < pLo || g.pMin > pHi)) continue
     if (thrAt && g.bMax < thrAt(Math.max(g.dMin, dLo))) continue
-    if (++selected > 80) throw new Error('query too wide: drill deeper or raise minArea')
+    if (++selected > 250) throw new Error('query too wide: drill deeper or raise minArea')
     const rows = (await parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd })) as Record<string, unknown>[]
     for (const r of rows) {
       const depth = num(r.depth)
