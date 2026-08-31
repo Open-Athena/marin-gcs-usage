@@ -248,10 +248,13 @@ def render_plot(rows: list[Scan], month: dt.date, out_path) -> None:
     os.unlink(days_json)
 
 
-def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None) -> dict:
+def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0) -> dict:
     """Converge the month's thread: render+host the plot, post/edit the OP, post
     one reply per not-yet-posted scan, persist and return state. ``icons_dir`` is
-    where to write the PNG; ``deploy_plot(local_png, basename)`` publishes it."""
+    where to write the PNG; ``deploy_plot(local_png, basename)`` publishes it.
+    ``reply_delay`` sleeps that many seconds between replies (>0 for a spaced
+    backfill, so Slack doesn't collapse the per-reply sender chrome)."""
+    import time
     from pathlib import Path
 
     from thrds.slack import SlackClient
@@ -284,13 +287,15 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
         _err(f"digest: posted OP {op_ts}")
 
     posted = state.setdefault("posted", {})
-    for r in rows:
-        if r.date in posted:
-            continue
+    todo = [r for r in rows if r.date not in posted]
+    for i, r in enumerate(todo):
         sender, rbody, avatar = reply(r, site_url)
         rm = client.post(rbody, thread_id=op_ts, username=sender, icon_url=avatar)
         posted[r.date] = rm.id
+        save_state(root, month, state)   # persist after each → a spaced backfill is resumable
         _err(f"digest: reply {r.date} -> {rm.id}")
+        if reply_delay and i < len(todo) - 1:
+            time.sleep(reply_delay)
 
     save_state(root, month, state)
     return state

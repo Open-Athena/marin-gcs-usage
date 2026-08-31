@@ -1932,12 +1932,13 @@ def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tupl
 
 @main.command()
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
+@option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so Slack keeps per-reply sender chrome)")
 @option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
 @option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
 @option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
 @option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default gcs.oa.dev)")
-def digest(channel: str | None, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None) -> None:
+def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None) -> None:
     """Converge the Shape-C monthly digest thread in Slack: an OP (month-to-date
     headline, per-week bullets, mosaic plot) edited in place + one reply per scan
     (headline sender, class breakdown body, colour-coded arrow avatar). State
@@ -1974,7 +1975,12 @@ def digest(channel: str | None, month: str | None, dry_run: bool, root: str | No
     token = token or os.environ.get("SLACK_BOT_TOKEN")
     if not (channel and token):
         raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
-    icons = Path(__file__).resolve().parents[3] / "job" / "icons"
+    # Resolve job/icons in both layouts: pip-installed in the image (cwd=/app,
+    # icons at /app/job/icons) or the repo checkout (…/parents[3]/job/icons).
+    icons = next(
+        (c for c in (Path.cwd() / "job" / "icons", Path(__file__).resolve().parents[3] / "job" / "icons") if c.exists()),
+        Path(__file__).resolve().parents[3] / "job" / "icons",
+    )
 
     def deploy(local: Path, name: str) -> None:
         # publish the icons dir (incl. the freshly-rendered plot) to the Pages
@@ -1986,7 +1992,7 @@ def digest(channel: str | None, month: str | None, dry_run: bool, root: str | No
             check=True,
         )
 
-    dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy)
+    dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
     err(f"digest: converged {m:%Y-%m}")
 
 
