@@ -53,27 +53,40 @@ cd /app
 # Default the ingest's DuckDB cap here (not just batch-submit.sh) so runs
 # launched from a stale scheduler template don't fall back to the laptop-sized
 # 8GB CLI default — that OOM'd the 2026-08-23 daily run's parquet write.
-# 48GB is safe: ingest runs *before* the webdata step (sequential, not
-# concurrent) on a 128G node, and a row-heavy chunk blew the earlier 24GB cap.
+# 48GB is safe: ingest still completes before the webdata step (the barrier
+# below), and it overlaps only the listing fan-out — which runs on a *separate*
+# node, leaving the orchestrator's 128G free for ingest. A row-heavy chunk blew
+# the earlier 24GB cap.
 export DUCKDB_MEM_ACCESS=${DUCKDB_MEM_ACCESS:-48GB}
-if [ "${SKIP_ACCESS:-0}" != "1" ]; then
-  if ! gcs-usage access ingest ${ACCESS_ARGS:-}; then
-    if [ "${ACCESS_ONLY:-0}" = "1" ]; then exit 1; fi
-    echo "WARN: access ingest failed (snapshot continues; watermark self-heals next run)" >&2
-  fi
-fi
+# ACCESS_ONLY (backlog backfill): serial ingest, then exit — no snapshot.
 if [ "${ACCESS_ONLY:-0}" = "1" ]; then
+  gcs-usage access ingest ${ACCESS_ARGS:-} || exit 1
   echo "ACCESS-JOB-DONE"
   exit 0
 fi
 
 # Scheduled retry attempts set NOP_IF_PUBLISHED=1: exit quietly when the
 # snapshot already exists (an earlier attempt won). Manual runs leave it
-# unset so intentional re-runs always proceed.
+# unset so intentional re-runs always proceed. A NOP retry still ingests access
+# logs (keeps read-recency ~6h fresh) — serially, since no listing follows it.
 if [ "${NOP_IF_PUBLISHED:-0}" = "1" ] && [ -f "/gcs/$DATA/$SNAP_PATH/meta.json" ]; then
+  [ "${SKIP_ACCESS:-0}" = "1" ] || gcs-usage access ingest ${ACCESS_ARGS:-} \
+    || echo "WARN: access ingest failed (watermark self-heals next run)" >&2
   echo "SNAPSHOT-JOB-NOP $DATE (already published)"
   exit 0
 fi
+
+# Real snapshot run: kick access ingest off in the BACKGROUND so it overlaps the
+# listing fan-out below — both are ~40 min and independent (only `stage` reads
+# the ingest's access/agg shards, gated on the `wait` barrier before staging).
+# Was serial (ingest THEN listing), putting ~37 min squarely on the critical
+# path; now it hides under the listing's wall time. Non-fatal: a failure is
+# caught at the barrier and the watermark self-heals next run.
+ACCESS_PID=""
+if [ "${SKIP_ACCESS:-0}" != "1" ] && [ "${REPROC:-0}" != "1" ]; then
+  gcs-usage access ingest ${ACCESS_ARGS:-} & ACCESS_PID=$!
+fi
+SECONDS=0   # phase-timing baseline (see PHASE markers below)
 
 # 1. List every bucket ourselves via a fan-out Batch job (one task per bucket).
 # We own the listing end-to-end — no dependency on SII inventory reports, which
@@ -97,6 +110,14 @@ if [ "${REPROC:-0}" != "1" ]; then
   [ -n "${LISTING_WORKERS:-}" ] && LZ+=(-w "$LISTING_WORKERS")
   gcs-usage job submit-listing -d "$DATE" -W "${LZ[@]}"
 fi
+echo "PHASE listing-fanout: ${SECONDS}s (wall)" >&2
+
+# Barrier: the concurrent access ingest must finish before we stage (stage reads
+# its access/agg shards) and before HAVE_ACCESS is computed just below. Non-fatal.
+if [ -n "$ACCESS_PID" ]; then
+  wait "$ACCESS_PID" || echo "WARN: access ingest failed (snapshot continues; watermark self-heals next run)" >&2
+fi
+echo "PHASE access-ingest: ${SECONDS}s (wall, overlapped the listing)" >&2
 G=()
 for b in "${FLEET[@]}"; do
   if [ -f "/gcs/$DATA/listing/$DATE/$b/_SUCCESS.json" ]; then G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet")
@@ -133,6 +154,7 @@ gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" 
   -c "/gcs/$DATA/listing/$DATE/dir-cache" \
   -P "/gcs/$DATA/listing/$DATE/path-index.parquet"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
+echo "PHASE webdata+stage: ${SECONDS}s (wall)" >&2
 
 # 3. publish to the canonical store — the live site reads these directly
 # (site/functions/data/[[path]].ts), so no site rebuild/deploy is needed.
@@ -140,6 +162,7 @@ mkdir -p "/gcs/$DATA/$SNAP_PATH"
 cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
 # attribution rules: the single latest copy the /data/rules.json function serves
 cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
+echo "PHASE publish: ${SECONDS}s (wall)" >&2
 
 # Footer-in-D1: sync the path-index parquet footer into the site's D1 so the
 # reader skips the cold-isolate footer parse (specs/path-agnostic-serving.md
@@ -195,4 +218,5 @@ else
   echo "no Slack transport (SLACK_BOT_TOKEN+SLACK_CHANNEL or SLACK_WEBHOOK) — skipping usage digest" >&2
 fi
 
+echo "PHASE total: ${SECONDS}s (wall)" >&2
 echo "SNAPSHOT-JOB-DONE $DATE"
