@@ -3,8 +3,8 @@
 One thread per calendar month: an OP (month-to-date headline, per-week rollup
 bullets, and a 2-panel mosaic plot) that's edited in place as the month
 progresses, plus one reply per scan. Each reply's sender name is the scan's
-headline (date . TB . delta . $/mo), its body the abbreviated storage-class
-breakdown, and its avatar a colour-coded trend arrow (`av_deg{N}.png`). Posts
+headline (date . TB . delta), its body the $/mo + a linked arrow to the day's
+scan, and its avatar a colour-coded trend arrow (`av_deg{N}.png?v=REV`). Posts
 via the `thrds` `SlackClient` (per-message username/icon overrides need a bot
 token). Converge state lives in a per-month JSON in the data bucket.
 
@@ -32,6 +32,9 @@ THRESH = [0.39, 0.78, 1.5, 3.1, 6.25, 12.5, 25, 50]
 MINUS = "−"  # matches the site's unicode minus
 DEFAULT_URL = "https://gcs.oa.dev"
 ICONS_BASE = "https://gcs-usage-icons.pages.dev"
+# bump when the av_deg glyphs change: Slack caches avatars per-URL at post
+# time, so a stable URL serves MIXED generations after a redesign.
+AVATAR_REV = 2
 
 
 def deg(pct_signed: float, mult: float = 1.0) -> int:
@@ -161,18 +164,15 @@ def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
 
     Style B, mobile-first: the SENDER is the size headline (bold, plain text --
     Slack renders no links/emoji/markdown there), sized to not wrap on a phone;
-    the BODY's first line is the linked date + cost (also one-line on mobile),
-    and the second line is the abbreviated class breakdown (may wrap -- it's the
-    tertiary detail). The avatar is the day's colour-coded trend arrow."""
+    the BODY is one line: the cost + a linked \u2197 to the day's scan at EOL.
+    The avatar is the day's colour-coded trend arrow (URL carries AVATAR_REV --
+    Slack caches avatars per-URL, so glyph redesigns must bust it)."""
     d = dt.date.fromisoformat(r.date)
     dtb = r.dtb or 0
     dcost = r.dcost or 0
     sender = f"{d.month}/{d.day} — {r.tb:,.0f} TB ({_tb(dtb)}, {_pct(dtb, r.tb)}%)"
-    body = (
-        f"[{d.month}/{d.day}]({site_url}/?d={_yy(r.date)}) · ${r.cost:,}/mo ({_usd(dcost)})\n"
-        f"Std **{r.std:,.0f}** · Near **{r.near:,.0f}** · Cold **{r.cold:,.0f}** · Arch **{r.arch:,.0f}** TiB"
-    )
-    avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 7)}.png"
+    body = f"${r.cost:,}/mo ({_usd(dcost)}) [\u2197]({site_url}/?d={_yy(r.date)})"
+    avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 7)}.png?v={AVATAR_REV}"
     return sender, body, avatar
 
 
