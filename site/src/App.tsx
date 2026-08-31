@@ -307,7 +307,7 @@ function AppContent() {
   const lensDefaultMode: ColorMode =
     markTab === 'todo' || markTab === 'mine' ? 'user' : markMode ? 'fate' : 'team'
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
-  const setMode = (m: ColorMode) => setModeP(m)
+  const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
   const hasAttr = !!tree?.tm
   const effMode: ColorMode =
     (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'team' : hasAttr ? mode : 'tree'
