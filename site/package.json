@@ -18,7 +18,7 @@
     "@disk-tree/react": "workspace:*",
     "@floating-ui/react": "^0.27.20",
     "@open-athena/auth": "github:Open-Athena/auth#a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30",
-    "@rdub/file-tree": "https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673",
+    "@rdub/file-tree": "https://github.com/runsascoded/file-tree#49c02fab96dd4d7b98e695c1bc0c9ac4bb2764a1",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-table": "^8.21.3",
     "hyparquet": "^1.27.1",

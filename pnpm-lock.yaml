@@ -63,8 +63,8 @@ importers:
         specifier: github:Open-Athena/auth#a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30
         version: https://codeload.github.com/Open-Athena/auth/tar.gz/a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30(@cloudflare/workers-types@5.20260820.1)(@tanstack/react-query@5.101.4(react@19.2.8))(react@19.2.8)
       '@rdub/file-tree':
-        specifier: https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673
-        version: https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))
+        specifier: https://github.com/runsascoded/file-tree#49c02fab96dd4d7b98e695c1bc0c9ac4bb2764a1
+        version: https://codeload.github.com/runsascoded/file-tree/tar.gz/49c02fab96dd4d7b98e695c1bc0c9ac4bb2764a1(@disk-tree/react@packages+react)(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))(wa-sqlite@1.0.0)(yaml@1.10.3)
       '@tanstack/react-query':
         specifier: ^5.101.4
         version: 5.101.4(react@19.2.8)
@@ -107,7 +107,7 @@ importers:
         version: 19.2.4(@types/react@19.2.18)
       '@vitejs/plugin-react':
         specifier: ^4.5.0
-        version: 4.7.0(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0))
+        version: 4.7.0(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3))
       puppeteer:
         specifier: ^25.4.0
         version: 25.7.0(yauzl@2.10.0)
@@ -122,7 +122,7 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^7.0.0
-        version: 7.3.6(@types/node@24.13.3)(sass@1.102.0)
+        version: 7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3)
 
   ui:
     dependencies:
@@ -201,7 +201,7 @@ importers:
         version: 8.66.0(eslint@9.39.5)(typescript@5.9.3)
       vite:
         specifier: ^7.2.4
-        version: 7.3.6(@types/node@24.13.3)(sass@1.102.0)
+        version: 7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3)
 
 packages:
 
@@ -975,19 +975,22 @@ packages:
       yauzl:
         optional: true
 
-  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673':
-    resolution: {tarball: https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673}
-    version: 0.0.1-dist.3418f69
+  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/49c02fab96dd4d7b98e695c1bc0c9ac4bb2764a1':
+    resolution: {tarball: https://codeload.github.com/runsascoded/file-tree/tar.gz/49c02fab96dd4d7b98e695c1bc0c9ac4bb2764a1}
+    version: 0.0.1-dist.412a456
     peerDependencies:
+      '@disk-tree/react': '*'
       highlight.js: ^11
       hyparquet: ^1
       jq-web: ^0.6
       react: ^18 || ^19
       react-dom: ^18 || ^19
-      react-markdown: ^9 || ^10
+      react-markdown: ^7 || ^8 || ^9 || ^10
       react-router-dom: ^6 || ^7
-      remark-gfm: ^4
+      remark-gfm: ^3 || ^4
       use-prms: ^0.4
+      wa-sqlite: ^1
+      yaml: ^2
     peerDependenciesMeta:
       react:
         optional: true
@@ -3043,6 +3046,9 @@ packages:
     resolution: {integrity: sha512-o8qghlI8NZHU1lLPrpi2+Uq7abh4GGPpYANlalzWxyWteJOCsr/P+oPBA49TOLu5FTZO4d3F9MnWJfiMo4BkmA==}
     engines: {node: '>=18'}
 
+  wa-sqlite@1.0.0:
+    resolution: {integrity: sha512-Kyybo5/BaJp76z7gDWGk2J6Hthl4NIPsE+swgraEjy3IY6r5zIR02wAs1OJH4XtJp1y3puj3Onp5eMGS0z7nUA==}
+
   webdriver-bidi-protocol@0.4.2:
     resolution: {integrity: sha512-VSV+fzfChirL3e7jay2yUC7B4HQCGtEWEg/MSSQbK+qWbqeGlRLlXTzPpYr3XGUvbpDHumWZBJxgesg4N7dbtA==}
 
@@ -3817,8 +3823,9 @@ snapshots:
     optionalDependencies:
       yauzl: 2.10.0
 
-  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/5709d4e4e3eef252baa1e8cc94f82c116d329673(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))':
+  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/49c02fab96dd4d7b98e695c1bc0c9ac4bb2764a1(@disk-tree/react@packages+react)(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))(wa-sqlite@1.0.0)(yaml@1.10.3)':
     dependencies:
+      '@disk-tree/react': link:packages/react
       aws4fetch: 1.0.20
       highlight.js: 11.12.0
       hyparquet: 1.28.2
@@ -3826,6 +3833,8 @@ snapshots:
       react-markdown: 10.1.0(@types/react@19.2.18)(react@19.2.8)
       remark-gfm: 4.0.1
       use-prms: 0.4.1(react@19.2.8)
+      wa-sqlite: 1.0.0
+      yaml: 1.10.3
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -4129,7 +4138,7 @@ snapshots:
 
   '@ungap/structured-clone@1.3.3': {}
 
-  '@vitejs/plugin-react@4.7.0(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0))':
+  '@vitejs/plugin-react@4.7.0(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3))':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7)
@@ -4137,7 +4146,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-beta.27
       '@types/babel__core': 7.20.5
       react-refresh: 0.17.0
-      vite: 7.3.6(@types/node@24.13.3)(sass@1.102.0)
+      vite: 7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3)
     transitivePeerDependencies:
       - supports-color
 
@@ -4149,7 +4158,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-rc.3
       '@types/babel__core': 7.20.5
       react-refresh: 0.18.0
-      vite: 7.3.6(@types/node@24.13.3)(sass@1.102.0)
+      vite: 7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3)
     transitivePeerDependencies:
       - supports-color
 
@@ -6143,7 +6152,7 @@ snapshots:
       fsevents: 2.3.3
       sass: 1.102.0
 
-  vite@7.3.6(@types/node@24.13.3)(sass@1.102.0):
+  vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3):
     dependencies:
       esbuild: 0.28.1
       fdir: 6.5.0(picomatch@4.0.5)
@@ -6155,6 +6164,7 @@ snapshots:
       '@types/node': 24.13.3
       fsevents: 2.3.3
       sass: 1.102.0
+      yaml: 1.10.3
 
   vitest@2.1.9(@types/node@24.13.3)(jsdom@25.0.1)(sass@1.102.0):
     dependencies:
@@ -6195,6 +6205,8 @@ snapshots:
   w3c-xmlserializer@5.0.0:
     dependencies:
       xml-name-validator: 5.0.0
+
+  wa-sqlite@1.0.0: {}
 
   webdriver-bidi-protocol@0.4.2: {}
 
