@@ -47,16 +47,18 @@ def test_rows_from_meta_deltas():
 
 def test_reply_grow():
     assert D.reply(ROWS[0]) == (
-        "8/3 — 3,030 TB (+30.0, 1.0%) · $19,784/mo (+$615)",
-        "[8/3](https://gcs.oa.dev/?d=260803) · Std **330** · Near **600** · Cold **1,500** · Arch **600** TiB",
+        "8/3 — 3,030 TB (+30.0, 1.0%)",
+        "[8/3](https://gcs.oa.dev/?d=260803) · $19,784/mo (+$615)\n"
+        "Std **330** · Near **600** · Cold **1,500** · Arch **600** TiB",
         "https://gcs-usage-icons.pages.dev/arrows/av_deg50.png",
     )
 
 
 def test_reply_shrink():
     assert D.reply(ROWS[1]) == (
-        "8/4 — 3,010 TB (−20.0, 0.7%) · $19,374/mo (−$410)",
-        "[8/4](https://gcs.oa.dev/?d=260804) · Std **310** · Near **600** · Cold **1,500** · Arch **600** TiB",
+        "8/4 — 3,010 TB (−20.0, 0.7%)",
+        "[8/4](https://gcs.oa.dev/?d=260804) · $19,374/mo (−$410)\n"
+        "Std **310** · Near **600** · Cold **1,500** · Arch **600** TiB",
         "https://gcs-usage-icons.pages.dev/arrows/av_deg-40.png",
     )
 

@@ -159,18 +159,17 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str, site_url: str = DEF
 def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
     """One scan's reply -> (sender_username, body, avatar_url).
 
-    Style B: the headline is the bold sender name (plain text -- Slack renders no
-    links/emoji/markdown there); the body is the linked date + abbreviated class
-    breakdown; the avatar is the day's colour-coded trend arrow."""
+    Style B, mobile-first: the SENDER is the size headline (bold, plain text --
+    Slack renders no links/emoji/markdown there), sized to not wrap on a phone;
+    the BODY's first line is the linked date + cost (also one-line on mobile),
+    and the second line is the abbreviated class breakdown (may wrap -- it's the
+    tertiary detail). The avatar is the day's colour-coded trend arrow."""
     d = dt.date.fromisoformat(r.date)
     dtb = r.dtb or 0
     dcost = r.dcost or 0
-    sender = (
-        f"{d.month}/{d.day} — {r.tb:,.0f} TB ({_tb(dtb)}, {_pct(dtb, r.tb)}%) · "
-        f"${r.cost:,}/mo ({_usd(dcost)})"
-    )
+    sender = f"{d.month}/{d.day} — {r.tb:,.0f} TB ({_tb(dtb)}, {_pct(dtb, r.tb)}%)"
     body = (
-        f"[{d.month}/{d.day}]({site_url}/?d={_yy(r.date)}) · "
+        f"[{d.month}/{d.day}]({site_url}/?d={_yy(r.date)}) · ${r.cost:,}/mo ({_usd(dcost)})\n"
         f"Std **{r.std:,.0f}** · Near **{r.near:,.0f}** · Cold **{r.cold:,.0f}** · Arch **{r.arch:,.0f}** TiB"
     )
     avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 7)}.png"
@@ -285,12 +284,17 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
     client = SlackClient(token, channel)
 
     plot_name = state.get("plot_name") or f"plot-{secrets.token_hex(16)}.png"
+    base = ICONS_BASE
     if icons_dir is not None:
         local = Path(icons_dir) / plot_name
         render_plot(rows, month, local)
         if deploy_plot is not None:
-            deploy_plot(local, plot_name)
-    plot_url = f"{ICONS_BASE}/{plot_name}?v={int(dt.datetime.now(dt.timezone.utc).timestamp())}"
+            # the deployment-specific host serves the just-uploaded plot
+            # immediately (no root-alias propagation race → no invalid_blocks)
+            dep = deploy_plot(local, plot_name)
+            if dep:
+                base = dep
+    plot_url = f"{base}/{plot_name}?v={int(dt.datetime.now(dt.timezone.utc).timestamp())}"
     state["plot_name"] = plot_name
     # A just-deployed Pages asset isn't instantly served at the root alias; if we
     # post before it propagates, Slack's image-block validation 500s the whole

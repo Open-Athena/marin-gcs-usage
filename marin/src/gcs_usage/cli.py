@@ -1982,15 +1982,21 @@ def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: 
         Path(__file__).resolve().parents[3] / "job" / "icons",
     )
 
-    def deploy(local: Path, name: str) -> None:
+    def deploy(local: Path, name: str) -> str | None:
         # publish the icons dir (incl. the freshly-rendered plot) to the Pages
-        # project so the OP's image URL resolves; needs CLOUDFLARE_* + node/wrangler.
+        # project; needs CLOUDFLARE_* + node/wrangler. Return the deployment-
+        # specific URL (served instantly), which the OP image uses to avoid
+        # racing root-alias CDN propagation (→ Slack `invalid_blocks`).
+        import re
         import subprocess
 
-        subprocess.run(
+        r = subprocess.run(
             ["npx", "wrangler", "pages", "deploy", str(icons), "--project-name", "gcs-usage-icons", "--branch", "main", "--commit-dirty=true"],
-            check=True,
+            check=True, capture_output=True, text=True,
         )
+        err(r.stdout)
+        m = re.search(r"https://[a-z0-9]+\.gcs-usage-icons\.pages\.dev", r.stdout + r.stderr)
+        return m.group(0) if m else None
 
     dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
     err(f"digest: converged {m:%Y-%m}")
