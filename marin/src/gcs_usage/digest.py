@@ -208,6 +208,24 @@ def load_month(root: str, month: dt.date) -> list[Scan]:
     return rows[1:] if first_idx > 0 else rows
 
 
+def _wait_reachable(url: str, timeout: float = 90, interval: float = 3) -> None:
+    """Block until ``url`` serves 200 (Pages CDN propagation after a deploy)."""
+    import time
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": "gcs-usage-digest/1.0"})
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                if r.status == 200:
+                    return
+        except Exception:
+            pass
+        time.sleep(interval)
+    _err(f"digest: WARN {url} not reachable after {timeout:.0f}s — posting anyway")
+
+
 def _state_path(root: str, month: dt.date) -> str:
     base = root.rsplit("/snapshots", 1)[0]
     return f"{base}/digest/{month:%Y-%m}.json"
@@ -274,6 +292,11 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
             deploy_plot(local, plot_name)
     plot_url = f"{ICONS_BASE}/{plot_name}?v={int(dt.datetime.now(dt.timezone.utc).timestamp())}"
     state["plot_name"] = plot_name
+    # A just-deployed Pages asset isn't instantly served at the root alias; if we
+    # post before it propagates, Slack's image-block validation 500s the whole
+    # message with `invalid_blocks`. Poll until the URL is live (or give up + warn).
+    if icons_dir is not None and deploy_plot is not None:
+        _wait_reachable(plot_url)
 
     body = op_body(rows, month, plot_url, site_url)
     op_ts = state.get("op_ts")
