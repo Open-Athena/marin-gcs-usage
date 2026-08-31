@@ -90,7 +90,8 @@ cat > "$spec" <<EOF
         "secretVariables": {
           "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/gcs-alert-slack-bot-token/versions/latest",
           "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest",
-          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest"
+          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
+          "GCS_USAGE_TOKEN": "projects/$PROJECT/secrets/gcs-sheet-sync-token/versions/latest"
         }
       }
     }
