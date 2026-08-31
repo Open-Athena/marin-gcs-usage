@@ -12,6 +12,10 @@ dependencies = [
     "pandas>=2.0",
     "pyarrow>=16.0",
     "pyyaml>=6.0",
+    # `gcs-usage digest` drives Slack via thrds; pinned to the `py` branch (has
+    # editable image blocks + per-message sender). Direct URL so `pip install
+    # ./marin` in the image resolves it (not just uv). Bump the SHA to update.
+    "thrds @ git+https://github.com/runsascoded/thrds@200e1fd94d51832b872d30b4604e101afe429711",
 ]
 
 [project.optional-dependencies]

@@ -418,6 +418,15 @@ wheels = [
 ]
 
 [[package]]
+name = "emoji"
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/78/0d2db9382c92a163d7095fc08efff7800880f830a152cfced40161e7638d/emoji-2.15.0.tar.gz", hash = "sha256:eae4ab7d86456a70a00a985125a03263a5eac54cd55e51d7e184b1ed3b6757e4", size = 615483, upload-time = "2025-09-21T12:13:02.755Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/5e/4b5aaaabddfacfe36ba7768817bd1f71a7a810a43705e531f3ae4c690767/emoji-2.15.0-py3-none-any.whl", hash = "sha256:205296793d66a89d88af4688fa57fd6496732eb48917a87175a023c8138995eb", size = 608433, upload-time = "2025-09-21T12:13:01.197Z" },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -794,6 +803,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pyyaml" },
+    { name = "thrds" },
 ]
 
 [package.optional-dependencies]
@@ -820,6 +830,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=16.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "thrds", git = "https://github.com/runsascoded/thrds?rev=200e1fd94d51832b872d30b4604e101afe429711" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.19" },
 ]
 provides-extras = ["wandb", "sheets"]
@@ -1476,6 +1487,26 @@ wheels = [
 ]
 
 [[package]]
+name = "stdlb"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/e2/6efe231933a33bd9d1af2b6d0f3649f199ae797c3865159c55c509995da8/stdlb-0.1.1.tar.gz", hash = "sha256:45dbebf9eefa5c4363d5e40e980ad86b25849561f0e33a788d3f7640413a677c", size = 5331, upload-time = "2025-11-01T16:16:11.492Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f0/d9/b8e183026e24b2911d674c8f12af06564e57d5e9e53a332140ad96517b48/stdlb-0.1.1-py3-none-any.whl", hash = "sha256:122b21f17ec10b20e4804898bf7e590607506182696822e698db2c6ea9b92125", size = 5950, upload-time = "2025-11-01T16:16:09.935Z" },
+]
+
+[[package]]
+name = "thrds"
+version = "0.5.0"
+source = { git = "https://github.com/runsascoded/thrds?rev=200e1fd94d51832b872d30b4604e101afe429711#200e1fd94d51832b872d30b4604e101afe429711" }
+dependencies = [
+    { name = "click" },
+    { name = "emoji" },
+    { name = "pyyaml" },
+    { name = "utz" },
+]
+
+[[package]]
 name = "typing-extensions"
 version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1512,6 +1543,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
+]
+
+[[package]]
+name = "utz"
+version = "0.22.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "stdlb" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/62/aafef36bdb0944e0eb6adf919e06da4fe36e3ee07111c0d380ccbac29b41/utz-0.22.0.tar.gz", hash = "sha256:fda9d841b70c0485c2db58be16c3348876c7b2cb97d161797d719a08604ea7c9", size = 101607, upload-time = "2026-08-05T16:58:39.914Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/40/d688367d99a9a6885811551b1ab0e4d7b63a91477e2c7fcad2d483925ad7/utz-0.22.0-py3-none-any.whl", hash = "sha256:1df3df3e3159e7da287ac5aa86b3658ce1c15363b1907eca91d8e6dd559147fc", size = 86610, upload-time = "2026-08-05T16:58:38.77Z" },
 ]
 
 [[package]]
