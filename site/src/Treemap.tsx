@@ -15,6 +15,28 @@ import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel,
 import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
 
+/** The `gs://…` path shown at the top of a pinned tooltip, with a copy-to-
+ * clipboard button (eject the prefix to the CLI) and an "open ↗" that drills the
+ * map to / focuses this prefix (also a shareable `?path=` URL). Its own component
+ * so the copy state has somewhere to live (renderTooltip is a plain function). */
+function PathBar({ uri, onOpen }: { uri: string; onOpen?: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const slash = uri.lastIndexOf('/') + 1
+  return (
+    <div className="path">
+      <span className="dirname">{uri.slice(0, slash)}</span>
+      <span className="basename">{uri.slice(slash)}</span>
+      <span className="path-acts" onClick={e => e.stopPropagation()}>
+        <button
+          type="button" className="path-copy" title="Copy path to clipboard"
+          onClick={() => navigator.clipboard?.writeText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
+        >{copied ? 'copied ✓' : 'copy'}</button>
+        {onOpen && <button type="button" className="path-open" title="Focus this prefix (drill in / shareable ?path= link)" onClick={onOpen}>open ↗</button>}
+      </span>
+    </div>
+  )
+}
+
 // A top-level prefix holding more than this share of the store is split one
 // level deeper for colouring (see catSlot).
 const DOMINANT_FRAC = 0.4
@@ -632,10 +654,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     )
     return (
       <>
-        <div className="path">
-          <span className="dirname">{uri.slice(0, uri.lastIndexOf('/') + 1)}</span>
-          <span className="basename">{uri.slice(uri.lastIndexOf('/') + 1)}</span>
-        </div>
+        <PathBar uri={uri} onOpen={n.n.startsWith('(') ? undefined : () => onPathChange?.(path)} />
         <div className="nums">
           {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
           {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}

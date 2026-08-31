@@ -132,7 +132,7 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
           <span className="buttons">
             {actions.map(({ a, label, tip }) => (
               <Tooltip key={a} content={tip}>
-                <button type="button" className={`act ${a}${own && mark?.action === a ? ' on' : ''}`} onClick={() => set(a)}>{label}</button>
+                <button type="button" className={`act ${a}${mark?.action === a ? ' on' : ''}${!own && mark?.action === a ? ' inh' : ''}`} onClick={() => set(a)}>{label}</button>
               </Tooltip>
             ))}
             {mark && (
