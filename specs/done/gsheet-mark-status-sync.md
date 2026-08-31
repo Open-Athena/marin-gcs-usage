@@ -1,5 +1,14 @@
 # Auto-sync the per-user mark-status → Percy's Google Sheet
 
+> **✅ Shipped 2026-08-31.** Option B (hourly, GCP-side, no stored key), as a
+> **standalone lightweight image** (`sheet-sync/`) rather than the heavy daily
+> Batch image — the sync needs only the `gcs-usage` CLI, so a dedicated
+> `python:3.12-slim` + `marin[sheets]` image keeps hourly runs cheap and
+> cold-start fast. Cloud Run job `gcs-sheet-sync` + hourly Cloud Scheduler
+> `gcs-sheet-sync-hourly` (`5 * * * *` UTC), both as the snapshot SA
+> `gcs-usage-job@…`. Validated end-to-end incl. the scheduler→job invoke path.
+> Path ① (grant token → `/api/actions`). See `sheet-sync/README.md`.
+
 **Commitment:** keep the shared GSheet
 (`docs.google.com/spreadsheets/d/1k_11LA21g8uqMckPhkKvwrnRENVKF8yHxbW5NnUiRFc`)
 updated with the per-user "who still needs to mark & sweep" rollup, without a
@@ -132,40 +141,34 @@ test) — not a reason to avoid a scoped, revocable grant. (The snapshot tree/me
 still come from GCS via the job's ambient SA; only the *marks* need to be hourly,
 and the token fetches those live.)
 
-### Hourly trigger (turnkey once the sheet is shared)
+### Hourly trigger — shipped (`sheet-sync/`)
 
-Reuse the Batch/Cloud Build image; add a lightweight entrypoint (or a `run.sh
---sheet-only` flag) that does: export ledger from D1 → `report` → `sheet-push`.
-Then:
+A **standalone** dir, independent of the daily Batch image:
 
-```bash
-# a Cloud Run *job* running the same image, sheet-only entrypoint
-gcloud run jobs create gcs-sheet-sync --image <IMAGE> --region us-central1 \
-  --service-account <SA> --set-env-vars SHEET_ID=1k_11LA…RFc,MODE=sheet-only
-# hourly Scheduler → run the job
-gcloud scheduler jobs create http gcs-sheet-sync-hourly --schedule "5 * * * *" \
-  --uri "https://<region>-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/<PROJECT>/jobs/gcs-sheet-sync:run" \
-  --oauth-service-account-email <SA> --location us-central1
-```
+- `sheet-sync/Dockerfile` — `python:3.12-slim` + `pip install ./marin[sheets]`
+  (no site build, no wrangler, no disk-tree engine — imported lazily only by
+  `access`/`reactive`, which this path never touches).
+- `sheet-sync/sync.sh` (entrypoint) — fetch `/api/actions` (SM token + real UA,
+  via **urllib**, since the slim base has no `curl`) → `report` → `sheet-push -w
+  <tab> -D <auto footer>`. Runs as the SA: ambient ADC covers the GCS snapshot
+  read *and* the Sheets write (SA is Editor) — no key, no impersonation.
+- `sheet-sync/build.sh` → Cloud Build (context = repo root, so it can copy
+  `marin/`; Dockerfile under `sheet-sync/` → a `cloudbuild.yaml`, since
+  `builds submit --tag` only finds a root Dockerfile).
+- `sheet-sync/deploy.sh` — idempotent: `run jobs deploy` (upsert) +
+  create-or-update Scheduler + the two IAM grants (`secretmanager.secretAccessor`
+  on the token, `run.invoker` on the job so the Scheduler can trigger it).
 
-(Mirrors the existing `gcs-usage-snapshot-daily` Scheduler → Batch wiring; the
-`5 * * * *` offset just avoids top-of-hour contention.)
+## One-time setup — all done (2026-08-31)
 
-## Blocked on you (one-time)
-
-1. **Share the sheet (Editor)** with the job's SA —
-   `gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com` (the daily-snapshot
-   SA; reuse it for the hourly Cloud Run job) — and **enable the Sheets API** in
-   `oa-internal-450019`.
-2. **A `gcs`-scoped grant token** for the job to read `/api/actions` (mint a named
-   `$oa/auth` grant, or quick-start with a personal `/api/token`); I'll stash it
-   in Secret Manager and bind it to the job.
-3. **Lock the sheet to read-only** — demote everyone (incl. Percy) to
-   Commenter/Viewer; **keep the SA `gcs-usage-job@…` as Editor** (it writes). The
-   job full-replaces the first tab in place; derivations are "Make a copy".
-
-Everything else (CLI, image entrypoint, IaC commands) is ready to wire the moment
-that's done.
+1. ✅ Sheet shared (Editor) with the SA `gcs-usage-job@…`; Sheets+Drive APIs
+   enabled in `oa-internal-450019`.
+2. ✅ Read-only `gcs` grant minted (`id=j4wYCiDECdUG`, `email=NULL`), raw token
+   in Secret Manager `gcs-sheet-sync-token`; the SA reads it via
+   `secretmanager.secretAccessor`.
+3. ⓘ Sheet **not** locked down (Percy stays Editor, by his choice) — the job
+   rewrites only the one named tab in place, so derived tabs are safe. An "AUTO
+   — regenerated hourly" footer disclaims the mirror.
 
 ## The reusable pattern (worth generalizing)
 

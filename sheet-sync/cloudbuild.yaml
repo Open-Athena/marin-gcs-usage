@@ -1,0 +1,8 @@
+# Build the standalone sheet-sync image. Context is the repo root (so the build
+# can copy marin/), but the Dockerfile lives under sheet-sync/ — hence a config
+# instead of `builds submit --tag` (which only finds a root Dockerfile).
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', 'sheet-sync/Dockerfile', '-t', '${_IMAGE}', '.']
+images:
+  - '${_IMAGE}'

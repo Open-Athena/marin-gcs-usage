@@ -1450,13 +1450,16 @@ def series(actions_path: str | None, max_depth: int, min_frac: float, full_depth
 @option("-a", "--actions", "actions_path", required=True, help="Actions-ledger export (the /api/actions JSON; path or URL)")
 @option("-o", "--out", type=Path, default=None, help="Write CSV here (default: stdout)")
 @option("-r", "--root", help="snapshots root (default $DATA_BUCKET)")
+@option("-s", "--sort", "sort", type=Choice(["undecided", "attributed", "user"]), default="undecided", help="row order: undecided desc (nag order, default), attributed desc (size, stable within a day), or user A-Z (stable identity)")
 @option("-u", "--site-url", default="https://gcs.oa.dev", help="Site base for per-user page links")
-def report(actions_path: str, out: Path | None, root: str | None, site_url: str) -> None:
+def report(actions_path: str, out: Path | None, root: str | None, sort: str, site_url: str) -> None:
     """Per-user mark-status CSV — the "who still needs to mark & sweep" list.
 
     Mirrors the site's /users page: scan attribution + live claims applied as
-    a WAL, keep_last_ckpt decomposed, one row per user sorted by undecided
-    bytes (nag order), with the ownerless pools at the bottom.
+    a WAL, keep_last_ckpt decomposed, one row per user, with the ownerless pools
+    at the bottom. Default order is undecided-bytes desc (nag order); `-s` picks
+    a more diff-stable order for a synced mirror (a username tiebreaker keeps
+    equal-value rows from swapping seats regardless).
     """
     import csv
     import io
@@ -1599,7 +1602,12 @@ def report(actions_path: str, out: Path | None, root: str | None, site_url: str)
             "marks_made": authored.get(uid, 0),
             "page": f"{site_url}/user/{uid}",
         })
-    rows_out.sort(key=lambda r: -r["undecided_TiB"])
+    sort_key = {
+        "undecided": lambda r: (-r["undecided_TiB"], r["user"]),
+        "attributed": lambda r: (-r["attributed_TiB"], r["user"]),
+        "user": lambda r: r["user"],
+    }[sort]
+    rows_out.sort(key=sort_key)
 
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=list(rows_out[0].keys()))
@@ -1616,7 +1624,7 @@ def report(actions_path: str, out: Path | None, root: str | None, site_url: str)
 
 
 @main.command("sheet-push")
-@option("-D", "--disclaimer", help="footer line written 2 rows below the table (e.g. an 'auto-synced' note)")
+@option("-D", "--disclaimer", help="static footer text 2 rows below the table; a '; last change <ts>' stamp is appended that only advances when data changes")
 @option("-I", "--impersonate", help="service-account email to impersonate for Sheets auth (needs Token Creator); default is ambient ADC")
 @option("-n", "--dry-run", is_flag=True, help="parse + summarize, don't touch the sheet")
 @option("-w", "--worksheet", default="", help="tab to replace, by title (default: the first tab)")
@@ -1625,12 +1633,15 @@ def report(actions_path: str, out: Path | None, root: str | None, site_url: str)
 def sheet_push(disclaimer: str | None, impersonate: str | None, dry_run: bool, worksheet: str, sheet_id: str, csv_path: str) -> None:
     """Push a mark-status CSV (from `report`) to a Google Sheet.
 
-    Full-replaces ONE named tab in place (the site's `/users` mirror). Target it
-    by `-w <title>` — the sheet may hold other, human-authored tabs (derived
-    views), so never blindly overwrite the first. `clear()` is values-only, so
-    header styling / frozen rows survive; Google's version history is the audit
-    trail. `-D` writes an "auto-synced" footer two rows below the table.
-    Idempotent.
+    Syncs ONE named tab in place (the site's `/users` mirror). Target it by
+    `-w <title>` — the sheet may hold other, human-authored tabs (derived
+    views), so never blindly overwrite the first. Writes only the cells whose
+    value actually changed (diffing the tab's current contents), so Google's
+    version history highlights just the real deltas instead of the whole range
+    — and formatting / frozen rows survive untouched. `-D` writes an
+    "auto-synced" footer two rows below the table (with a "last change"
+    stamp that only advances when data actually moves, so no-op runs write
+    nothing). Idempotent.
 
     Auth is Application Default Credentials: the job's GCP service account in
     Cloud Run / Batch, or your `gcloud auth application-default` locally. The
@@ -1666,13 +1677,61 @@ def sheet_push(disclaimer: str | None, impersonate: str | None, dry_run: bool, w
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
     ws = sh.worksheet(worksheet) if worksheet else sh.get_worksheet(0)
-    # Full-replace in place: clear values (formatting/frozen rows survive), then
-    # write header + data at A1, and an optional footer note below the table.
-    ws.clear()
-    ws.update(values=rows, range_name="A1", value_input_option="RAW")
+
+    # Cell-level diff against what's already there, so version history shows the
+    # real deltas (not a full-range rewrite) and we never clear()/re-write
+    # unchanged cells. Compare numerically where possible: RAW-writing "0.0"
+    # makes Sheets store 0 (displayed "0"), so a string compare would flag every
+    # "0.0" cell as changed on every run.
+    existing = ws.get_all_values()
+
+    def at(grid: list[list[str]], r: int, c: int) -> str:
+        return grid[r][c] if r < len(grid) and c < len(grid[r]) else ""
+
+    def norm(v: str) -> tuple[str, object]:
+        v = (v or "").strip()
+        try:
+            return ("n", float(v))
+        except ValueError:
+            return ("s", v)
+
+    # Did any DATA cell (the header+data block) change? Compared in isolation so
+    # the footer's own timestamp never counts as a data change.
+    data_cols = max((len(r) for r in rows), default=0)
+    data_changed = any(
+        norm(at(rows, r, c)) != norm(at(existing, r, c))
+        for r in range(len(rows))
+        for c in range(data_cols)
+    )
+
+    # Target grid: header + data at A1, then a blank separator row and the
+    # optional footer at row N+2 (col A). The footer's "last change" stamp only
+    # advances when data actually moved (parsed back from the prior footer
+    # otherwise) — so a no-op hourly run rewrites nothing: no cell churn, no new
+    # version. First run seeds it (old footer has no parseable stamp).
+    target: list[list[str]] = [list(r) for r in rows]
     if disclaimer:
-        ws.update(values=[[disclaimer]], range_name=f"A{len(rows) + 2}", value_input_option="RAW")
-    err(f"pushed {len(rows) - 1} rows to '{ws.title}'")
+        import datetime  # noqa: PLC0415
+        import re  # noqa: PLC0415
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        pat = re.compile(r"last change (\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC)")
+        prior = next((m.group(1) for row in existing for cell in row if (m := pat.search(cell or ""))), None)
+        stamp = now if (data_changed or prior is None) else prior
+        target.append([])
+        target.append([f"{disclaimer}; last change {stamp}"])
+
+    n_rows = max(len(target), len(existing))
+    n_cols = max((len(r) for r in (*target, *existing)), default=0)
+    changed = [
+        gspread.Cell(r + 1, c + 1, at(target, r, c))
+        for r in range(n_rows)
+        for c in range(n_cols)
+        if norm(at(target, r, c)) != norm(at(existing, r, c))
+    ]
+    if changed:
+        ws.update_cells(changed, value_input_option="RAW")
+    verb = "changed" if data_changed else "unchanged"
+    err(f"synced '{ws.title}': {len(changed)} cell(s) written ({len(rows) - 1} data rows, data {verb})")
 
 
 @main.command()
