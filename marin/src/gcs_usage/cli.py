@@ -694,6 +694,42 @@ def todo(
         print(f"{it['bytes'] / 1e9:8.1f} GB  {it['objects']:>10,}  {it['prefix']}")
 
 
+@main.command()
+@option("-d", "--date", default=None, help="Scan date YYYY-MM-DD (default: latest from scans.json)")
+@option("-f", "--max-age-days", default=2, type=int, help="Freshness: latest scan must be within this many days")
+@option("-j", "--json", "as_json", is_flag=True, help="Emit machine-readable JSON to stdout")
+@option("-m", "--max-ms", default=25000, type=int, help="marks/totals compute budget (ms) before it's flagged")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+def healthcheck(date: str | None, max_age_days: int, as_json: bool, max_ms: int, token: str | None, url: str | None) -> None:
+    """Live-site health: is the latest scan actually *servable* end-to-end?
+
+    Catches failures where the data pipeline succeeds but the site can't serve
+    the scan — e.g. a path-index footer that never synced to D1, so
+    /api/marks/totals footer-parses and 1102s (the 2026-08-31 /users outage).
+    Checks scan freshness, marks/totals (200 + D1-index path + non-empty users
+    + compute budget), subtree, and the published data JSONs. Exits nonzero if
+    any check fails — wire it into a cron / post-snapshot gate.
+    """
+    from .healthcheck import as_dict, run_checks
+    from .mark import creds
+
+    base, tok = creds(token, url)
+    if not tok:
+        raise SystemExit("error: no token — pass --token or set $GCS_USAGE_TOKEN")
+    resolved, checks = run_checks(base, tok, date, max_age_days=max_age_days, max_ms=max_ms)
+    err(f"healthcheck {base} @ {resolved or '?'}")
+    for c in checks:
+        err(f"  {'✓' if c.ok else '✗'} {c.name:<16} {c.detail}")
+    n_ok = sum(c.ok for c in checks)
+    ok = n_ok == len(checks)
+    err(f"{'PASS' if ok else 'FAIL'} ({n_ok}/{len(checks)})")
+    if as_json:
+        print(json.dumps(as_dict(resolved, checks), indent=2))
+    if not ok:
+        raise SystemExit(1)
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
