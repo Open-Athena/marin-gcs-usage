@@ -10,7 +10,9 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "shots": "scrns",
-    "clean": "rm -rf node_modules/.vite dist"
+    "clean": "rm -rf node_modules/.vite dist",
+    "test:e2e": "playwright test",
+    "test:e2e:list": "playwright test --list"
   },
   "dependencies": {
     "@disk-tree/react": "workspace:*",
@@ -29,6 +31,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260820.1",
+    "@playwright/test": "^1.56.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.5.0",
