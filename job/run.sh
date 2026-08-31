@@ -227,20 +227,20 @@ fi
 gcs-usage series "${SER_A[@]}" -r "/gcs/$DATA/snapshots" -o "/gcs/$DATA/snapshots/series.json" \
   || echo "WARN: series-index step failed (size chart falls back to fleet total)" >&2
 
-# Post the daily usage digest to Slack (only when a transport is configured, so
-# experimental / local runs stay quiet — only the scheduled job sets it). The
-# alert cmd prefers chat.postMessage (SLACK_BOT_TOKEN + SLACK_CHANNEL → per-message
-# avatar), falling back to SLACK_WEBHOOK (static icon). A failed digest never
-# fails the snapshot.
+# Converge the monthly Shape-C digest thread in Slack (specs/done/slack-digest-
+# shape-c.md): the OP + one reply per scan. Only when SLACK_BOT_TOKEN +
+# SLACK_CHANNEL are set — Shape C needs the Web API's per-message sender/avatar
+# overrides, so the webhook fallback can't drive it. `gcs-usage digest` also
+# renders the mosaic plot into job/icons/ and `wrangler pages deploy`s it to the
+# gcs-usage-icons Pages project, so it needs CLOUDFLARE_* + node/wrangler (both
+# present in this image). A failed digest never fails the snapshot.
 if [ "${REPROC:-0}" = "1" ]; then
   echo "REPROC — skipping usage digest" >&2
-elif { [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; } || [ -n "${SLACK_WEBHOOK:-}" ]; then
-  gcs-usage alert -d "$DATE" -r "gs://$DATA/snapshots" \
-    ${GCS_ALERT_CEILING_TB:+-c "$GCS_ALERT_CEILING_TB"} \
-    ${GCS_ALERT_SPIKE_PCT:+-s "$GCS_ALERT_SPIKE_PCT"} \
-    || echo "WARN: usage-digest (alert) step failed" >&2
+elif [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
+  gcs-usage digest -r "gs://$DATA/snapshots" \
+    || echo "WARN: usage-digest step failed" >&2
 else
-  echo "no Slack transport (SLACK_BOT_TOKEN+SLACK_CHANNEL or SLACK_WEBHOOK) — skipping usage digest" >&2
+  echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
 fi
 
 echo "PHASE total: ${SECONDS}s (wall)" >&2
