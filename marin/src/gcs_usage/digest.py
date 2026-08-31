@@ -34,7 +34,7 @@ DEFAULT_URL = "https://gcs.oa.dev"
 ICONS_BASE = "https://gcs-usage-icons.pages.dev"
 # bump when the av_deg glyphs change: Slack caches avatars per-URL at post
 # time, so a stable URL serves MIXED generations after a redesign.
-AVATAR_REV = 2
+AVATAR_REV = 3
 
 
 def deg(pct_signed: float, mult: float = 1.0) -> int:
@@ -171,7 +171,10 @@ def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
     dtb = r.dtb or 0
     dcost = r.dcost or 0
     sender = f"{d.month}/{d.day} — {r.tb:,.0f} TB ({_tb(dtb)}, {_pct(dtb, r.tb)}%)"
-    body = f"${r.cost:,}/mo ({_usd(dcost)}) [\u2197]({site_url}/?d={_yy(r.date)})"
+    # \u2197\ufe0e = NE arrow + text-presentation selector: renders as a font
+    # glyph in link colour (bare \u2197 gets emoji-ized by Slack into the
+    # cartoonish :arrow_upper_right:)
+    body = f"${r.cost:,}/mo ({_usd(dcost)}) [\u2197\ufe0e]({site_url}/?d={_yy(r.date)})"
     avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 7)}.png?v={AVATAR_REV}"
     return sender, body, avatar
 
