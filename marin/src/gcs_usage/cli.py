@@ -1930,5 +1930,65 @@ def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tupl
         err(f"index-sync: {date} [{variant}] — schema + {n} row groups ({'local' if local else 'remote'})")
 
 
+@main.command()
+@option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
+@option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
+@option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
+@option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
+@option("-u", "--url", "site_url", default=None, help="Site base for links (default gcs.oa.dev)")
+def digest(channel: str | None, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None) -> None:
+    """Converge the Shape-C monthly digest thread in Slack: an OP (month-to-date
+    headline, per-week bullets, mosaic plot) edited in place + one reply per scan
+    (headline sender, class breakdown body, colour-coded arrow avatar). State
+    lives in gs://<bucket>/digest/<YYYY-MM>.json. See specs/done/slack-digest-shape-c.md."""
+    from pathlib import Path
+
+    from . import digest as dg
+
+    site_url = site_url or dg.DEFAULT_URL
+    m = (
+        dt.datetime.strptime(month, "%Y-%m").date()
+        if month
+        else dt.datetime.now(dt.timezone.utc).date().replace(day=1)
+    )
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
+
+    if dry_run:
+        rows = dg.load_month(root, m)
+        if not rows:
+            raise SystemExit(f"digest: no scans for {m:%Y-%m}")
+        import tempfile
+
+        out = Path(tempfile.gettempdir()) / f"digest-{m:%Y%m}.png"
+        dg.render_plot(rows, m, out)
+        err(f"rendered plot → {out}")
+        print(dg.op_body(rows, m, "<plot-url>", site_url))
+        print("\n--- replies (sender | body | avatar) ---")
+        for r in rows:
+            s, b, a = dg.reply(r, site_url)
+            print(f"{s} | {b} | {a.split('/')[-1]}")
+        return
+
+    channel = channel or os.environ.get("SLACK_CHANNEL")
+    token = token or os.environ.get("SLACK_BOT_TOKEN")
+    if not (channel and token):
+        raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
+    icons = Path(__file__).resolve().parents[3] / "job" / "icons"
+
+    def deploy(local: Path, name: str) -> None:
+        # publish the icons dir (incl. the freshly-rendered plot) to the Pages
+        # project so the OP's image URL resolves; needs CLOUDFLARE_* + node/wrangler.
+        import subprocess
+
+        subprocess.run(
+            ["npx", "wrangler", "pages", "deploy", str(icons), "--project-name", "gcs-usage-icons", "--branch", "main", "--commit-dirty=true"],
+            check=True,
+        )
+
+    dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy)
+    err(f"digest: converged {m:%Y-%m}")
+
+
 if __name__ == "__main__":
     main()
