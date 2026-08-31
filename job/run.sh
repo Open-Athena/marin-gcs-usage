@@ -26,11 +26,12 @@ SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 # 2026-08-28 incidents went unnoticed this way). Uses the same transport gating
 # as the digest; `set +x` first because the curl carries the bot token, which
 # xtrace would otherwise echo into Cloud Logging.
-fail_alert() {
-  local rc=$1 line=$2 cmd=$3
+# Post one message to #gcs-usage via the same transport the digest uses
+# (chat.postMessage bot token → webhook fallback). `set +x` FIRST — the curl
+# carries the token, which xtrace would echo into Cloud Logging.
+slack_post() {
   { set +x; } 2>/dev/null
-  local msg="❌ \`gcs-usage\` snapshot job failed ($DATE): \`${cmd}\` exited $rc at run.sh:$line"
-  [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
+  local msg=$1
   if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
     curl -sS -X POST https://slack.com/api/chat.postMessage \
       -H "Authorization: Bearer $SLACK_BOT_TOKEN" -H 'Content-type: application/json; charset=utf-8' \
@@ -39,6 +40,12 @@ fail_alert() {
     curl -sS -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' \
       -d "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$msg")" >/dev/null || true
   fi
+}
+fail_alert() {
+  local rc=$1 line=$2 cmd=$3
+  local msg="❌ \`gcs-usage\` snapshot job failed ($DATE): \`${cmd}\` exited $rc at run.sh:$line"
+  [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
+  slack_post "$msg"
 }
 trap 'fail_alert $? $LINENO "$BASH_COMMAND"' ERR
 
@@ -178,6 +185,24 @@ else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (site parses the footer)" >&2
 fi
 set -x
+
+# Serving invariant: the snapshot published + the footer synced — but is the
+# SITE actually serving this scan? `gcs-usage healthcheck` asserts
+# /api/marks/totals is 200 on the D1-index path (not the footer-parse fallback
+# that 1102'd on 2026-08-31 → /users blank), plus subtree + the data JSONs.
+# Non-fatal — the snapshot data is fine, only serving would be degraded — but
+# warn to #gcs-usage so it's caught at 07:00, not via a screenshot. Needs the
+# agent token (also used by `series` below); skip quietly without it, and on
+# REPROC (no fresh publish to verify). The token rides in env, never the
+# cmdline, so xtrace is safe here.
+if [ -n "${GCS_USAGE_TOKEN:-}" ] && [ "${REPROC:-0}" != "1" ]; then
+  if gcs-usage healthcheck -d "$DATE"; then
+    echo "healthcheck OK — $DATE is servable" >&2
+  else
+    echo "WARN: post-snapshot healthcheck failed for $DATE" >&2
+    slack_post "⚠️ \`gcs-usage\` $DATE published but the live site health check failed — data is fine, serving may be degraded (e.g. missing D1 index footer → /users blank). Debug: \`gcs-usage healthcheck -d $DATE\`."
+  fi
+fi
 
 # Cross-scan size index for the site's per-subpath "size over time" chart
 # (specs/size-over-time.md case 1). Re-folds every archived tree into a single
