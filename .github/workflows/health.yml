@@ -1,0 +1,40 @@
+name: Healthcheck
+
+# Live-site serving health for gcs.oa.dev, independent of the test suite: hits
+# the running site (latest scan) and fails if it isn't servable — the class of
+# outage a green data pipeline can still cause (2026-08-31: a scan whose D1
+# index footer never synced → /api/marks/totals 1102 → /users blank).
+#
+# Needs a `gcs`-scoped grant token in the `GCS_USAGE_TOKEN` repo secret; the job
+# skips (exit 0) when it's absent, so this is inert until the secret is added.
+on:
+  schedule:
+    - cron: "17 * * * *" # hourly, offset off the top of the hour
+  workflow_dispatch:
+
+jobs:
+  healthcheck:
+    name: gcs.oa.dev serving health
+    runs-on: ubuntu-latest
+    env:
+      GCS_USAGE_TOKEN: ${{ secrets.GCS_USAGE_TOKEN }}
+      GCS_USAGE_URL: ${{ vars.GCS_USAGE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync marin
+        run: cd marin && uv sync
+
+      - name: Run healthcheck
+        run: |
+          if [ -z "${GCS_USAGE_TOKEN:-}" ]; then
+            echo "GCS_USAGE_TOKEN secret not set — skipping live healthcheck"
+            exit 0
+          fi
+          cd marin && uv run --no-sync gcs-usage healthcheck

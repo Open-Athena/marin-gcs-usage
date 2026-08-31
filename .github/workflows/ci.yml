@@ -149,3 +149,49 @@ jobs:
           name: playwright-report
           path: ui/playwright-report/
           retention-days: 7
+
+  marin-test:
+    name: marin CLI tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      # marin has its own pyproject/venv (separate from the root disk_tree).
+      - name: Sync marin
+        run: cd marin && uv sync
+
+      - name: Run marin tests
+        run: cd marin && uv run --no-sync pytest tests -v
+
+  site-build:
+    name: Site typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # pnpm version comes from root package.json's `packageManager` field.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm build` = `tsc -b && vite build` — typechecks the SPA (+ referenced
+      # projects) and the Functions, then bundles. Catches a broken site/ before
+      # a manual `site/deploy` ships it.
+      - name: Build site (typecheck + bundle)
+        run: cd site && pnpm build
