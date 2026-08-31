@@ -35,9 +35,12 @@ def avatar(deg: int, S: int = 128) -> Image.Image:
     L = Image.new("RGBA", (SS, SS), (0, 0, 0, 0))
     d = ImageDraw.Draw(L)
     cx = cy = SS / 2
-    sh = SS * 0.17                         # shaft half-thickness
-    x0, xn, xt = SS * 0.14, SS * 0.52, SS * 0.84  # shaft start / neck / tip
-    hh = SS * 0.30                         # arrowhead half-height
+    sh = SS * 0.155                        # shaft half-thickness
+    # shorter + centered: the arrow's footprint stays inside a circle, so every
+    # rotation reads the same size (a longer arrow reached the frame corners at
+    # diagonal angles, making steep arrows look bigger than the flat one).
+    x0, xn, xt = SS * 0.26, SS * 0.55, SS * 0.74  # shaft start / neck / tip
+    hh = SS * 0.265                        # arrowhead half-height
     d.polygon(
         [(x0, cy - sh), (xn, cy - sh), (xn, cy - hh), (xt, cy),
          (xn, cy + hh), (xn, cy + sh), (x0, cy + sh)],
