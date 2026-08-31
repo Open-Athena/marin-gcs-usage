@@ -39,7 +39,10 @@ def avatar(deg: int, S: int = 128) -> Image.Image:
     # v3: sleek + centered — long enough to read as an arrow at every angle,
     # short enough that diagonals don't crowd the frame corners (v1 was long
     # and corner-heavy at steep angles; v2 was stubby and read as a blob).
-    x0, xn, xt = SS * 0.16, SS * 0.54, SS * 0.78  # shaft start / neck / tip
+    # +0.03 shift right so the arrow's BOUNDING-RECT center coincides with
+    # the frame center we rotate about — otherwise the pivot sits at the
+    # arrowhead base and steep angles read as off-center.
+    x0, xn, xt = SS * 0.19, SS * 0.57, SS * 0.81  # shaft start / neck / tip
     hh = SS * 0.225                        # arrowhead half-height
     d.polygon(
         [(x0, cy - sh), (xn, cy - sh), (xn, cy - hh), (xt, cy),

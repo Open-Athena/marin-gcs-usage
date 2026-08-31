@@ -34,7 +34,7 @@ DEFAULT_URL = "https://gcs.oa.dev"
 ICONS_BASE = "https://gcs-usage-icons.pages.dev"
 # bump when the av_deg glyphs change: Slack caches avatars per-URL at post
 # time, so a stable URL serves MIXED generations after a redesign.
-AVATAR_REV = 3
+AVATAR_REV = 4
 
 
 def deg(pct_signed: float, mult: float = 1.0) -> int:
