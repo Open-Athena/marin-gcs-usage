@@ -43,6 +43,15 @@ Planned (specs in this repo, implement as core features):
   8/28 sluggishness was NOT DOM count — it was an O(marks) per-cell lookup in
   the consumer (`marks.ts`), fixed to O(depth).
 
+## Sync state (2026-08-31)
+
+Re-synced from upstream DT: CP'd `3a4a9ff` (`foldThin` + `minCellSide` prop,
+default 7px — folds tall/thin sliver cells the area-keyed `minCellArea` fold
+misses into a hoverable `(+n)` tile) and `93e24b01` (`squarifyRemainder` —
+side-by-side long-tail layout; what file-tree's OG-card path uses). Applied as
+clean `git apply` of the upstream diffs (`packages/react` paths identical);
+`squarify` tests came along. Prior state:
+
 ## Sync state (2026-08-28)
 
 Both directions clean as of today (re-synced 01:20Z to `b6d4dc5`: shared-stroke
