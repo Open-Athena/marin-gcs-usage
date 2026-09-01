@@ -33,6 +33,10 @@ test = ["pytest>=8.3"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+# the direct-URL `thrds` pin above
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/gcs_usage"]
 
