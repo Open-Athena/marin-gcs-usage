@@ -167,9 +167,11 @@ jobs:
 
       # marin has its own pyproject/venv (separate from the root disk_tree,
       # which the viz tests import — install it into the same venv, as the
-      # Batch image does).
+      # Batch image does). The root wheel force-includes `ui/dist`; stub it
+      # (the viz tests don't touch the static UI, and building it here would
+      # drag node+pnpm into a python test job).
       - name: Sync marin
-        run: cd marin && uv sync --group test && uv pip install ..
+        run: mkdir -p ui/dist && cd marin && uv sync --group test && uv pip install ..
 
       - name: Run marin tests
         run: cd marin && uv run --no-sync pytest tests -v
