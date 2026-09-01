@@ -49,6 +49,13 @@ def main(days_path: Path, out: Path, title: str | None) -> None:
     xs = [Date.fromisoformat(r["date"]) for r in rows]
     tot = [sum(r[k] for k, _, _ in TIERS) for r in rows]
     title = title or f"GCS usage — {xs[-1]:%B %Y}"
+    # month-wide x frame: stable early in the month (a 1-scan month otherwise
+    # degenerates — zero-width stackplot, tick-label explosion) and days fill
+    # in left→right as the month progresses.
+    from calendar import monthrange
+
+    m0 = xs[-1].replace(day=1)
+    m1 = m0.replace(day=monthrange(m0.year, m0.month)[1])
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 4.6), dpi=200, height_ratios=[1, 1.7], sharex=True)
     fig.patch.set_facecolor(BG)
@@ -67,17 +74,30 @@ def main(days_path: Path, out: Path, title: str | None) -> None:
     ax1.fill_between(xs, tot, min(tot) - (max(tot) - min(tot)) * 0.15, color=FILL, alpha=0.12)
     ax1.plot(xs, tot, color=LINE, lw=2)
     ax1.plot(xs[-1], tot[-1], "o", color=LINE, ms=5)
-    ax1.annotate(f"{tot[-1]:,.0f} TiB", (xs[-1], tot[-1]), textcoords="offset points", xytext=(-6, 7), ha="right", color=INK, fontsize=11, fontweight="bold")
+    # label goes on whichever side of the point has room in the month frame
+    left_half = (xs[-1] - m0) < (m1 - xs[-1])
+    ax1.annotate(f"{tot[-1]:,.0f} TiB", (xs[-1], tot[-1]), textcoords="offset points", xytext=(6, 7) if left_half else (-6, 7), ha="left" if left_half else "right", color=INK, fontsize=11, fontweight="bold")
     lo, hi = min(tot), max(tot)
-    ax1.set_ylim(lo - (hi - lo) * 0.25, hi + (hi - lo) * 0.25)
+    pad = (hi - lo) * 0.25 or max(hi * 0.002, 1.0)
+    ax1.set_ylim(lo - pad, hi + pad)
     ax1.set_title(title, color=INK, fontsize=14, fontweight="bold", loc="left", pad=10)
     ax1.text(1.0, 1.04, "gcs.oa.dev", transform=ax1.transAxes, ha="right", va="bottom", color=DIM, fontsize=9)
     ax1.grid(True, color=GRID, lw=0.7, alpha=0.5, axis="y")
 
-    # bottom: stacked tiers, cold→hot
+    # bottom: stacked tiers, cold→hot (a 1-scan month gets a stacked bar —
+    # stackplot over a single x is a zero-width polygon, i.e. invisible)
     ys = [[r[k] for r in rows] for k, _, _ in TIERS]
-    ax2.stackplot(xs, *ys, labels=[n for _, n, _ in TIERS], colors=[c for *_, c in TIERS], alpha=0.92)
+    if len(xs) > 1:
+        ax2.stackplot(xs, *ys, labels=[n for _, n, _ in TIERS], colors=[c for *_, c in TIERS], alpha=0.92)
+    else:
+        bottom = 0.0
+        for (k, name, c), y in zip(TIERS, ys):
+            ax2.bar(xs, y, bottom=bottom, width=0.8, label=name, color=c, alpha=0.92)
+            bottom += y[0]
     ax2.set_ylim(0, None)
+    from datetime import timedelta
+
+    ax2.set_xlim(m0 - timedelta(hours=16), m1 + timedelta(hours=16))
     ax2.grid(True, color=GRID, lw=0.7, alpha=0.4, axis="y")
     ax2.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
     ax2.xaxis.set_major_formatter(mdates.DateFormatter("%-m/%-d"))
