@@ -227,9 +227,17 @@ fi
 # the series omits `fate` and the To-do burn-down chart hides.
 SER_A=()
 if [ -n "${GCS_USAGE_TOKEN:-}" ]; then
-  # subshell +x: the Authorization header must not hit the xtrace log
-  if ( { set +x; } 2>/dev/null; curl -fsS -H "Authorization: Bearer $GCS_USAGE_TOKEN" \
-      "${GCS_USAGE_URL:-https://gcs.oa.dev}/api/actions" -o /tmp/actions.json ); then
+  # subshell +x: the Authorization header must not hit the xtrace log. python3
+  # (not curl — absent from the slim image; bit the 2026-09-01 run).
+  if ( { set +x; } 2>/dev/null; python3 -c '
+import os, urllib.request
+req = urllib.request.Request(
+    os.environ.get("GCS_USAGE_URL", "https://gcs.oa.dev") + "/api/actions",
+    headers={"Authorization": "Bearer " + os.environ["GCS_USAGE_TOKEN"],
+             "User-Agent": "gcs-usage-job/1.0"},
+)
+open("/tmp/actions.json", "wb").write(urllib.request.urlopen(req, timeout=60).read())
+' ); then
     SER_A=(-a /tmp/actions.json)
   else
     echo "WARN: actions export failed — series omits fate" >&2
@@ -237,6 +245,11 @@ if [ -n "${GCS_USAGE_TOKEN:-}" ]; then
 fi
 gcs-usage series "${SER_A[@]}" -r "/gcs/$DATA/snapshots" -o "/gcs/$DATA/snapshots/series.json" \
   || echo "WARN: series-index step failed (size chart falls back to fleet total)" >&2
+
+# Scan-over-scan diff → snapshots/$DATE/diff.json (the site's "Changes since
+# previous scan" treemap; the section hides itself when the file is absent).
+gcs-usage diff -r "/gcs/$DATA" \
+  || echo "WARN: diff step failed (Changes section hidden for this scan)" >&2
 
 # Converge the monthly Shape-C digest thread in Slack (specs/done/slack-digest-
 # shape-c.md): the OP + one reply per scan. Only when SLACK_BOT_TOKEN +

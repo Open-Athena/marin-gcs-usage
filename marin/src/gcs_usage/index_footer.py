@@ -144,25 +144,40 @@ def _creds() -> tuple[str, str]:
     return tok, acct
 
 
+# Transient-error retries for the D1 HTTP API: the 2026-09-01 daily run's
+# index-sync 401'd on the [team] variant after the same token had just synced
+# [path] and [user] — CF's API throws occasional spurious 401/5xx under
+# sustained load. Retried statuses, attempts, and base sleep (doubles per try).
+D1_RETRY_STATUSES = (401, 429, 500, 502, 503, 504)
+D1_RETRIES = 4
+D1_RETRY_SLEEP = 5.0
+
+
 def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
     """Run one SQL string against D1 over the HTTP API (no Node/wrangler)."""
+    import time
     import urllib.error
     import urllib.request
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db_id}/query"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps({"sql": sql}).encode(),
-        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        resp = json.loads(urllib.request.urlopen(req).read())
-    except urllib.error.HTTPError as e:
-        # Surface D1's error body (scope/SQL) without echoing the token.
-        raise RuntimeError(f"D1 query failed ({e.code}): {e.read().decode()[:300]}") from None
-    if not resp.get("success"):
-        raise RuntimeError(f"D1 query error: {resp.get('errors')}")
+    for attempt in range(D1_RETRIES + 1):
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"sql": sql}).encode(),
+            headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            resp = json.loads(urllib.request.urlopen(req).read())
+        except urllib.error.HTTPError as e:
+            if e.code in D1_RETRY_STATUSES and attempt < D1_RETRIES:
+                time.sleep(D1_RETRY_SLEEP * 2**attempt)
+                continue
+            # Surface D1's error body (scope/SQL) without echoing the token.
+            raise RuntimeError(f"D1 query failed ({e.code}): {e.read().decode()[:300]}") from None
+        if not resp.get("success"):
+            raise RuntimeError(f"D1 query error: {resp.get('errors')}")
+        return
 
 
 def _q(v) -> str:  # nullable string literal for SQL
