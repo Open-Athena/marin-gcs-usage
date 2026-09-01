@@ -122,6 +122,62 @@ class FateResolver:
         return (w.keep if w else None), w
 
 
+# ---- clobbered keeps (2026-09-01 broad-sweep incident) ---------------------
+
+@dataclass(frozen=True)
+class Clobber:
+    """A prefix somebody marked keep whose *effective* fate is now sweep — a
+    newer covering sweep repainted it (recency beats specificity). The
+    2026-09-01 case: a whole-`checkpoints/` sweep clobbering earlier keeps."""
+
+    prefix: str
+    keep: str  # keep | keep_last_ckpt (the clobbered mark)
+    keeper: str
+    keep_ts: int
+    by_prefix: str  # the winning row that repainted it
+    by_who: str
+    by_ts: int
+    to: str = "sweep"  # sweep | unmarked (unmarked = at risk at the deadline)
+
+
+def clobbered_keeps(rows: Iterable[KeepRow]) -> list[Clobber]:
+    """Every prefix with a live keep-valued row that currently resolves to
+    sweep. Reports the *latest* keep-valued row per prefix as the victim."""
+    rows = list(rows)
+    fr = FateResolver(rows)
+    latest_keep: dict[str, KeepRow] = {}
+    for r in rows:
+        if r.keep in ("keep", "keep_last_ckpt"):
+            b = latest_keep.get(r.prefix)
+            if b is None or (r.ts, r.action_id) > (b.ts, b.action_id):
+                latest_keep[r.prefix] = r
+    out = []
+    for prefix, victim in latest_keep.items():
+        w = fr.winner(prefix)
+        # a winner that is the victim itself (or any keep-valued row) is fine;
+        # a newer covering sweep OR unmark repainted the keep away. Unmarked
+        # matters too: "unmarked is swept once the review window closes".
+        if w is not None and w.keep not in ("keep", "keep_last_ckpt"):
+            out.append(Clobber(
+                prefix=prefix,
+                keep=victim.keep,
+                keeper=victim.who,
+                keep_ts=victim.ts,
+                by_prefix=w.prefix,
+                by_who=w.who,
+                by_ts=w.ts,
+                to="sweep" if w.keep == "sweep" else "unmarked",
+            ))
+    return sorted(out, key=lambda c: (c.by_prefix, c.prefix))
+
+
+def ever_kept_prefixes(rows: Iterable[KeepRow]) -> frozenset[str]:
+    """Prefixes with ANY live keep-valued row, regardless of what later
+    repainted them — the planner's "never delete what anyone ever marked keep"
+    guard (Ryan's 2026-09-01 commitment in #internal-discuss)."""
+    return frozenset(r.prefix for r in rows if r.keep in ("keep", "keep_last_ckpt"))
+
+
 # ---- KLC expansion (object-level klcSplits) --------------------------------
 
 @dataclass(frozen=True)

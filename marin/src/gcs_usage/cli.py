@@ -774,6 +774,43 @@ def diff_cmd(budget: int, curr: str | None, max_depth: int, out: str | None, pre
 
 
 @main.group()
+def sweep() -> None:
+    """Sweep-executor phases — plan / review / execute (specs/sweep-executor.md)."""
+
+
+@sweep.command("clobbers")
+@option("-j", "--json", "as_json", is_flag=True, help="Machine-readable JSON to stdout")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+def sweep_clobbers(as_json: bool, token: str | None, url: str | None) -> None:
+    """Keeps whose effective fate is now sweep — a newer covering sweep
+    repainted them (recency beats specificity). The review list for reverting
+    accidental broad sweeps; the planner independently refuses to delete
+    anything with keep history (`ever_kept_prefixes`)."""
+    from .mark import creds, get_json
+    from .sweep_plan import clobbered_keeps, load_keeps
+
+    base, tok = creds(token, url)
+    if not tok:
+        raise SystemExit("no token — set $GCS_USAGE_TOKEN or pass -t")
+    payload = get_json(base, tok, "/api/actions")
+    rows = load_keeps(payload)
+    clobbers = clobbered_keeps(rows)
+    if as_json:
+        print(json.dumps([asdict(c) for c in clobbers], indent=2))
+        return
+    if not clobbers:
+        err("no clobbered keeps — every keep-marked prefix still resolves keep")
+        return
+    n_sweep = sum(1 for c in clobbers if c.to == "sweep")
+    err(f"{len(clobbers)} keep-marked prefix(es) repainted away ({n_sweep} → sweep, {len(clobbers) - n_sweep} → unmarked):")
+    fmt_ts = lambda ts: dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%m-%d %H:%M")  # noqa: E731
+    for c in clobbers:
+        print(f"{c.prefix}")
+        print(f"    {c.keep} by {c.keeper} @ {fmt_ts(c.keep_ts)}  ⟵ now {c.to} via {c.by_prefix} ({c.by_who} @ {fmt_ts(c.by_ts)})")
+
+
+@main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
 

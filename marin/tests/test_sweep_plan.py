@@ -144,3 +144,35 @@ def test_klc_split_stops_at_first_step_level():
     assert split.kept == ("step-2/",)
     assert klc_key_fate("step-2/inner/step-1/w.bin", split) == "keep"
     assert klc_key_fate("step-1/inner/step-99/w.bin", split) == "sweep"
+
+# ---- clobbered keeps + ever-kept guard ------------------------------------
+
+def test_clobbered_keeps_broad_sweep_incident():
+    """The 2026-09-01 shape: a whole-checkpoints/ sweep repaints two earlier
+    keeps; a later carve-out keep is NOT clobbered."""
+    from gcs_usage.sweep_plan import Clobber, clobbered_keeps
+    rows = [
+        _r(f"{B}checkpoints/calvin/", "keep", ts=100, aid=1),
+        _r(f"{B}checkpoints/pinlin_calvin_xu/", "keep", ts=110, aid=2),
+        KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=200, action_id=3, who="p@x"),
+        _r(f"{B}checkpoints/gold/", "keep", ts=300, aid=4),  # re-kept after — safe
+        _r(f"{B}elsewhere/", "keep", ts=50, aid=5),  # never covered by a sweep
+    ]
+    assert clobbered_keeps(rows) == [
+        Clobber(prefix=f"{B}checkpoints/calvin/", keep="keep", keeper="t@oa", keep_ts=100,
+                by_prefix=f"{B}checkpoints/", by_who="p@x", by_ts=200),
+        Clobber(prefix=f"{B}checkpoints/pinlin_calvin_xu/", keep="keep", keeper="t@oa", keep_ts=110,
+                by_prefix=f"{B}checkpoints/", by_who="p@x", by_ts=200),
+    ]
+
+
+def test_ever_kept_prefixes_ignores_repaints():
+    from gcs_usage.sweep_plan import ever_kept_prefixes
+    rows = [
+        _r(f"{B}a/", "keep", ts=100, aid=1),
+        KeepRow(prefix=f"{B}a/", keep="sweep", ts=200, action_id=2, who="p@x"),
+        _r(f"{B}b/", "keep_last_ckpt", ts=100, aid=3),
+        KeepRow(prefix=f"{B}c/", keep="sweep", ts=100, action_id=4, who="p@x"),
+        _r(f"{B}d/", None, ts=100, aid=5),  # unmark is not a keep
+    ]
+    assert ever_kept_prefixes(rows) == frozenset({f"{B}a/", f"{B}b/"})

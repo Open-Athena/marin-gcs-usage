@@ -28,6 +28,8 @@ from urllib.request import Request, urlopen
 err = partial(print, file=sys.stderr)
 
 DEFAULT_URL = "https://gcs.oa.dev"
+# a real UA — CF edge-blocks bot UAs (1010), same as healthcheck.UA
+UA = "gcs-usage-cli/1.0"
 
 
 def creds(token: str | None, url: str | None) -> tuple[str, str | None]:
@@ -150,7 +152,7 @@ def post_actions(url: str, token: str, chunk: list[dict], timeout: int = 30) -> 
         endpoint,
         data=json.dumps(chunk).encode(),
         method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}", "User-Agent": UA},
     )
     try:
         with urlopen(req, timeout=timeout) as resp:
@@ -174,7 +176,7 @@ def get_json(url: str, token: str, endpoint_path: str, params: dict | None = Non
     """
     q = f"?{urlencode(params)}" if params else ""
     endpoint = f"{url.rstrip('/')}{endpoint_path}{q}"
-    req = Request(endpoint, headers={"Authorization": f"Bearer {token}"})
+    req = Request(endpoint, headers={"Authorization": f"Bearer {token}", "User-Agent": UA})
     try:
         with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
