@@ -23,9 +23,11 @@ vars() {  # container env: defaults + optional passthroughs
   python3 - <<'EOF'
 import json, os
 v = {
-    # 90 (not 100): DuckDB at its cap plus process overhead must fit the
-    # container — 100GB inside 117GiB got kernel-OOM-killed (exit 137) twice
-    "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "90GB"),
+    # 86 (was 100, then 90): DuckDB at its cap plus process overhead must fit
+    # the container — 100GB inside 117GiB got kernel-OOM-killed (exit 137)
+    # twice, and 90GB tipped over the same way on 2026-09-01 as the dir-group
+    # count grew (the tree-rows hash agg overshoots DuckDB's own accounting)
+    "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "86GB"),
     # access ingest runs before (not concurrent with) the webdata step, so
     # it can take a big slice of the 128G node; 24GB OOM'd on a row-heavy
     # 53GB chunk (2026-08-23)

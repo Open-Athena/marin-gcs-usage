@@ -26,19 +26,31 @@ SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 # incidents went unnoticed this way). Alerts go to #gcs-usage-alerts
 # (SLACK_ALERT_CHANNEL, falling back to the digest's SLACK_CHANNEL) so they
 # don't clutter the #gcs-usage digest thread; same transport gating as the
-# digest (chat.postMessage bot token → webhook fallback). `set +x` FIRST — the
-# curl carries the token, which xtrace would echo into Cloud Logging.
+# digest (chat.postMessage bot token → webhook fallback). Pure python3 — the
+# python:3.12-slim image has no curl (the 2026-09-01 failure alert died on
+# `curl: command not found` and the OOM went unreported). `set +x` FIRST — the
+# request carries the token, which xtrace would echo into Cloud Logging.
 slack_post() {
   { set +x; } 2>/dev/null
   local msg=$1 chan="${SLACK_ALERT_CHANNEL:-${SLACK_CHANNEL:-}}"
-  if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "$chan" ]; then
-    curl -sS -X POST https://slack.com/api/chat.postMessage \
-      -H "Authorization: Bearer $SLACK_BOT_TOKEN" -H 'Content-type: application/json; charset=utf-8' \
-      -d "$(python3 -c 'import json,sys; print(json.dumps({"channel": sys.argv[1], "text": sys.argv[2]}))' "$chan" "$msg")" >/dev/null || true
-  elif [ -n "${SLACK_WEBHOOK:-}" ]; then
-    curl -sS -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' \
-      -d "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$msg")" >/dev/null || true
-  fi
+  SLACK_MSG="$msg" SLACK_CHAN="$chan" python3 - <<'PY' || true
+import json, os, urllib.request
+msg, chan = os.environ["SLACK_MSG"], os.environ["SLACK_CHAN"]
+tok, hook = os.environ.get("SLACK_BOT_TOKEN"), os.environ.get("SLACK_WEBHOOK")
+if tok and chan:
+    url, hdrs, body = ("https://slack.com/api/chat.postMessage",
+                       {"Authorization": f"Bearer {tok}"}, {"channel": chan, "text": msg})
+elif hook:
+    url, hdrs, body = hook, {}, {"text": msg}
+else:
+    raise SystemExit(0)
+hdrs["Content-type"] = "application/json; charset=utf-8"
+req = urllib.request.Request(url, json.dumps(body).encode(), hdrs)
+try:
+    urllib.request.urlopen(req, timeout=30).read()
+except Exception as e:  # alerting must never mask the real failure
+    print(f"slack_post failed: {e}", flush=True)
+PY
 }
 fail_alert() {
   local rc=$1 line=$2 cmd=$3
