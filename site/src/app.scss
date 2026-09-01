@@ -269,6 +269,18 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     font-size: 0.92em;
   }
 }
+// Collapsible intro blocks (the mark banner + the about paragraph): a summary
+// line always shows; the full copy earns its space the first visit or two,
+// then folds away (the viewer's choice sticks via localStorage).
+details.fold {
+  > summary {
+    cursor: pointer;
+    color: var(--ink-2);
+    &::marker { color: var(--ink-3); }
+    b { color: var(--ink); }
+  }
+  &[open] > summary { margin-bottom: 6px; }
+}
 .loading { color: var(--ink-3); }
 
 // Cross-site link (prod hosts are one-store-each; see App's `crossSite`).
@@ -420,41 +432,11 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     flex-basis: 520px !important;
     height: 520px;
   }
-  .dt-treemap-cell {
-    // Cells are opaque now (depthFade={1}), so nesting no longer reads as a
-    // lightness step — the border is the only thing separating a branch from
-    // its children. A dark inset plus a light inner line keeps the edge legible
-    // against both a dark parent and a light one.
-    box-shadow:
-      inset 0 0 0 1px rgb(0 0 0 / 0.42),
-      inset 0 0 0 2px rgb(255 255 255 / 0.10);
-    &.branch { box-shadow: inset 0 0 0 2px rgb(0 0 0 / 0.5); }
-    // A collapsed single-child chain (label `a/…/z`) gets a doubled edge —
-    // the visual hint that one box stands for several nested levels.
-    &.chain {
-      box-shadow:
-        inset 0 0 0 1px rgb(0 0 0 / 0.5),
-        inset 0 0 0 3px rgb(255 255 255 / 0.14),
-        inset 0 0 0 4px rgb(0 0 0 / 0.4);
-    }
-    &.dust { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.28); }
-  }
-  // GCS renders mostly in the muted team palette, which the CW-weight borders
-  // overpower (bright prefix hues carry them fine) — soften them here. This
-  // block is the sanctioned home for deliberate per-store presentation diffs.
-  &.store-gcs .dt-treemap-cell {
-    box-shadow:
-      inset 0 0 0 1px rgb(0 0 0 / 0.26),
-      inset 0 0 0 2px rgb(255 255 255 / 0.05);
-    &.branch { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.38); }
-    &.chain {
-      box-shadow:
-        inset 0 0 0 1px rgb(0 0 0 / 0.34),
-        inset 0 0 0 3px rgb(255 255 255 / 0.08),
-        inset 0 0 0 4px rgb(0 0 0 / 0.26);
-    }
-    &.dust { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18); }
-  }
+  // Sibling separation is the core's inline `boxShadow` (which any class-level
+  // box-shadow here would lose to): depth-based widths via the `borderWidth`
+  // prop and per-cell adaptive `edge` colors via `colorForCell`, both in
+  // site/src/Treemap.tsx. The old class-level inset rules were dead — dropped
+  // (same cleanup cw-s3 did in `1e5ee40`; see specs/branch-parity-discipline.md).
   .dt-treemap-cell {
     // Cells nest, `:hover` matches every ancestor of the pointer, and `filter`
     // compounds multiplicatively down the tree — so a leaf 3 deep used to light
@@ -1033,6 +1015,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   border: 1px solid var(--mk-del);
   border-radius: 8px;
   padding: 10px 14px;
+  max-width: 68ch; // match .prose — the two intro blocks read as a pair
+  box-sizing: border-box;
   p { margin: 0; color: var(--ink-2); }
   b { color: var(--ink); }
   .mk-key {

@@ -217,7 +217,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   }, [hl, onClearHl])
 
   const colorForCell = useCallback(
-    (kid: TreeNode, kidPath: TreeNode[], _depth: number, ctx: CellCtx): CellStyle => {
+    (kid: TreeNode, kidPath: TreeNode[], depth: number, ctx: CellCtx): CellStyle => {
       let bg: string
       let ink: string
       let segments: CellStyle['segments']
@@ -346,7 +346,18 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         if (effHl.user) dim = (kid.us?.find(([u]) => u === effHl.user)?.[1] ?? 0) < 0.5 * kid.b
         else if (effHl.team) dim = (kid.tm?.[effHl.team] ?? 0) < 0.5 * kid.b
       }
-      return { bg, ink, hatch, segments, opacity: dim ? 0.22 : undefined }
+      // Shared-edge stroke, per cell: each neighbor paints its own half of a
+      // boundary, so the line can adapt to the face it borders. Top-level
+      // (bucket) rects take the page background — the strongest seam the
+      // theme has — and deeper cells pull their own fill toward it, so even
+      // grey-on-grey siblings show a visible edge. Gradient fills (stripe
+      // segments paint over bg anyway) keep the themed default.
+      const edge = depth === 0
+        ? 'var(--bg)'
+        : bg.includes('gradient')
+          ? undefined
+          : `color-mix(in oklab, ${bg} ${depth === 1 ? 40 : 62}%, var(--bg))`
+      return { bg, ink, hatch, segments, edge, opacity: dim ? 0.22 : undefined }
     },
     [mode, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx, klcIdx],
   )
@@ -691,6 +702,12 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       // same pale grey-blue. Structure comes from borders instead (app.scss).
       depthFade={1}
       rootFade={1}
+      // Depth-emphasized seams: the core default (max(1, 3-depth)) tops out
+      // at 1.5px painted per side — invisible between same-grey buckets. Give
+      // the top level a fat gutter (3px per side → 6px between buckets), one
+      // step down a clear line, leaves a hairline. Colors come from
+      // `colorForCell`'s `edge` (page-bg at depth 0, fill-adaptive below).
+      borderWidth={depth => (depth === 0 ? 6 : depth === 1 ? 2.5 : 1)}
       tiling={tiling}
       renderTooltip={renderTooltip}
       renderCellExtra={renderCellExtra}

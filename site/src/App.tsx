@@ -1,5 +1,6 @@
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
+import type { SyntheticEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { MdLayers } from 'react-icons/md'
 import { useActions } from 'use-kbd'
@@ -34,6 +35,20 @@ import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 
+// Collapsible intro block state: open by default (the copy earns its space the
+// first couple of visits), and a viewer's collapse sticks via localStorage.
+function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>) => void] {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(key) !== '0' } catch { return true }
+  })
+  const onToggle = (e: SyntheticEvent<HTMLDetailsElement>) => {
+    const o = e.currentTarget.open
+    setOpen(o)
+    try { localStorage.setItem(key, o ? '1' : '0') } catch { /* in-memory only */ }
+  }
+  return [open, onToggle]
+}
+
 function AppContent() {
   // Which object store to render comes from the path (one store today; the
   // abstraction stays so a second cloud store is a `STORES` row + data).
@@ -48,6 +63,8 @@ function AppContent() {
   const markMode = store.key === 'gcs' && canMark
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
+  const [bannerOpen, onBannerToggle] = useFold('gcs-usage:fold:banner')
+  const [introOpen, onIntroToggle] = useFold('gcs-usage:fold:intro')
   // Keep the tab title in sync with the store on client-side navigation.
   useEffect(() => {
     document.title = store.title
@@ -615,24 +632,28 @@ function AppContent() {
       </header>
 
       {markMode && (
-        <section className="mark-banner">
+        <details className="mark-banner fold" open={bannerOpen} onToggle={onBannerToggle}>
+          <summary>
+            <b>Mark &amp; sweep</b> — mark what to <b>keep</b>; unmarked data is swept when the
+            review window closes
+            {markIdx.count > 0 && <> · <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far</>}
+            {marksQ.error && <span className="err"> · marks unavailable: {marksQ.error.message}</span>}
+          </summary>
           <p>
-            <b>Mark &amp; sweep</b> — review storage and mark what to <b>keep</b>; anything left
-            unmarked is <b>swept</b> (deleted) once the review window closes (closing date TBD —
-            announced in advance; only explicit <b>sweep</b> marks are deleted before then). Drill to a prefix and
-            mark it with the controls above the map, or click a cell to pin it and mark from there.
-            Marks are reversible until the sweep — the most recent mark covering a prefix wins: mark a
-            child <em>after</em> its parent to carve an exception; a broad mark repaints older deeper
-            ones (you'll be asked to confirm).
-            {markIdx.count > 0 && <> <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far.</>}
-            {marksQ.error && <span className="err"> marks unavailable: {marksQ.error.message}</span>}
-            {' '}Pick a <b>lens</b> below to focus a slice (your files, unclaimed, communal) or the
-            to-do list, scoped to whatever you've drilled into.
+            Anything left unmarked is <b>swept</b> (deleted) once the review window closes (closing
+            date TBD — announced in advance; only explicit <b>sweep</b> marks are deleted before
+            then). Drill to a prefix and mark it with the controls above the map, or click a cell to
+            pin it and mark from there. Marks are reversible until the sweep — the most recent mark
+            covering a prefix wins: mark a child <em>after</em> its parent to carve an exception; a
+            broad mark repaints older deeper ones (you'll be asked to confirm). Pick a <b>lens</b>{' '}
+            below to focus a slice (your files, unclaimed, communal) or the to-do list, scoped to
+            whatever you've drilled into.
           </p>
-        </section>
+        </details>
       )}
 
-      <section className="prose">
+      <details className="prose fold" open={introOpen} onToggle={onIntroToggle}>
+        <summary>About this dashboard — the data, lenses &amp; color modes</summary>
         <p>
           Storage across the six <code>marin-*</code> GCS buckets — a full per-object listing
           (deduped), snapshotted daily by the{' '}
@@ -648,7 +669,7 @@ function AppContent() {
           top users, <kbd>⌘K</kbd> to jump to a user/group, or see the per-user breakdown at{' '}
           <Link to="/users">/users</Link>.
         </p>
-      </section>
+      </details>
 
       {scansQ.isError && (
         <p className="tab-note" style={{ color: 'var(--s3)' }}>
