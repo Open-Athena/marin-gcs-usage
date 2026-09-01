@@ -810,6 +810,70 @@ def sweep_clobbers(as_json: bool, token: str | None, url: str | None) -> None:
         print(f"    {c.keep} by {c.keeper} @ {fmt_ts(c.keep_ts)}  ⟵ now {c.to} via {c.by_prefix} ({c.by_who} @ {fmt_ts(c.by_ts)})")
 
 
+@sweep.command("plan")
+@option("-d", "--date", default=None, help="Scan date (default: latest from scans.json)")
+@option("-j", "--json", "as_json", is_flag=True, help="Machine-readable JSON to stdout")
+@option("-n", "--top", default=20, type=int, help="Top sweep-only bands to list")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+def sweep_plan_cmd(date: str | None, as_json: bool, top: int, token: str | None, url: str | None) -> None:
+    """Band-level sweep plan under the VOTE model (specs/vote-model.md):
+    per-mark bands (the site's `?marks=1` manifest — exact D1-index bytes)
+    re-aggregated by vote-state. `sweep` bands are deletable now; `conflict`
+    goes to triage; `unmarked` waits for the deadline. Object-level manifest
+    generation (the exact delete list) is the Batch-side follow-up."""
+    from .mark import creds, get_json
+    from .sweep_plan import VoteResolver, load_keeps
+
+    base, tok = creds(token, url)
+    if not tok:
+        raise SystemExit("no token — set $GCS_USAGE_TOKEN or pass -t")
+    actions = get_json(base, tok, "/api/actions")
+    rows = load_keeps(actions)
+    head = max((r.action_id for r in rows), default=0)
+    vr = VoteResolver(rows)
+    if not date:
+        scans = get_json(base, tok, "/data/scans.json")
+        date = scans[0] if isinstance(scans, list) and scans else None
+        if not date:
+            raise SystemExit("no --date and scans.json gave none")
+    totals = get_json(base, tok, "/api/marks/totals", {"marks": "1", "date": date}, timeout=90)
+    marks = totals.get("marks") or []
+
+    states: dict[str, dict] = {}
+    for m in marks:
+        votes = vr.votes(m["prefix"])
+        st = VoteResolver._agg(votes.values())
+        if st == "keep" and votes and all(v == "keep_last_ckpt" for v in votes.values()):
+            st = "keep_last_ckpt"
+        b = states.setdefault(st, {"bands": 0, "net_bytes": 0, "net_objects": 0, "rows": []})
+        b["bands"] += 1
+        b["net_bytes"] += m.get("net_bytes") or 0
+        b["net_objects"] += m.get("net_objects") or 0
+        b["rows"].append({**m, "votes": votes})
+
+    if as_json:
+        print(json.dumps({
+            "date": date, "head": head,
+            "site_total": totals.get("total"),
+            "states": {k: {kk: vv for kk, vv in v.items() if kk != "rows"} for k, v in states.items()},
+            "sweep_bands": sorted(states.get("sweep", {}).get("rows", []), key=lambda r: -(r.get("net_bytes") or 0)),
+            "conflict_bands": sorted(states.get("conflict", {}).get("rows", []), key=lambda r: -(r.get("net_bytes") or 0)),
+        }, indent=2))
+        return
+
+    err(f"vote-model plan @ head {head} · scan {date or 'latest'} · {len(marks)} mark bands")
+    for st in ("sweep", "conflict", "keep", "keep_last_ckpt", "unmarked"):
+        v = states.get(st)
+        if not v:
+            continue
+        err(f"  {st:15s} {v['bands']:6,} bands  {v['net_bytes'] / 1e12:10.2f} TB  {v['net_objects']:>13,} objects")
+    err(f"\ntop {top} sweep-only (deletable) bands:")
+    for r in sorted(states.get("sweep", {}).get("rows", []), key=lambda r: -(r.get("net_bytes") or 0))[:top]:
+        who = ",".join(sorted(r["votes"]))
+        print(f"{(r.get('net_bytes') or 0) / 1e12:9.2f} TB  {r['prefix']}  [{who}]")
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""

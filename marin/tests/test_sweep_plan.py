@@ -176,3 +176,58 @@ def test_ever_kept_prefixes_ignores_repaints():
         _r(f"{B}d/", None, ts=100, aid=5),  # unmark is not a keep
     ]
     assert ever_kept_prefixes(rows) == frozenset({f"{B}a/", f"{B}b/"})
+
+# ---- vote model (specs/vote-model.md) -------------------------------------
+
+def test_votes_broad_sweep_does_not_clobber():
+    """The 9/1 incident under the vote model: Pranshu's broad sweep + Calvin's
+    earlier keep = conflict at Calvin's path, sweep-only elsewhere."""
+    from gcs_usage.sweep_plan import VoteResolver
+    vr = VoteResolver([
+        KeepRow(prefix=f"{B}checkpoints/calvin/", keep="keep", ts=100, action_id=1, who="calvin"),
+        KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=200, action_id=2, who="pranshu"),
+    ])
+    assert vr.votes(f"{B}checkpoints/calvin/") == {"calvin": "keep", "pranshu": "sweep"}
+    assert vr.state(f"{B}checkpoints/calvin/") == "conflict"
+    assert vr.votes(f"{B}checkpoints/junk/") == {"pranshu": "sweep"}
+    assert vr.state(f"{B}checkpoints/junk/") == "sweep"
+    assert vr.state(f"{B}elsewhere/") == "unmarked"
+
+
+def test_votes_unmark_retracts_only_own_vote():
+    """Pranshu's final east5 unmark drops HIS vote; the keeps stand alone."""
+    from gcs_usage.sweep_plan import VoteResolver
+    vr = VoteResolver([
+        KeepRow(prefix=f"{B}checkpoints/g/", keep="keep", ts=100, action_id=1, who="gonzalo"),
+        KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=200, action_id=2, who="pranshu"),
+        KeepRow(prefix=f"{B}checkpoints/", keep=None, ts=300, action_id=3, who="pranshu"),
+    ])
+    assert vr.votes(f"{B}checkpoints/g/") == {"gonzalo": "keep"}
+    assert vr.state(f"{B}checkpoints/g/") == "keep"
+    assert vr.state(f"{B}checkpoints/junk/") == "unmarked"
+
+
+def test_votes_self_repaint_still_works():
+    """A user repainting their OWN keep to sweep yields a deletable path —
+    more precise than the ever-kept guard."""
+    from gcs_usage.sweep_plan import VoteResolver
+    vr = VoteResolver([
+        KeepRow(prefix=f"{B}mine/", keep="keep", ts=100, action_id=1, who="a"),
+        KeepRow(prefix=f"{B}mine/", keep="sweep", ts=200, action_id=2, who="a"),
+    ])
+    assert vr.votes(f"{B}mine/") == {"a": "sweep"}
+    assert vr.state(f"{B}mine/") == "sweep"
+
+
+def test_key_state_per_user_granularity():
+    """Per-user recency across granularity: A sweeps broad then keeps a child;
+    B sweeps the child later — child is conflict, sibling sweep-only."""
+    from gcs_usage.sweep_plan import VoteResolver
+    vr = VoteResolver([
+        KeepRow(prefix=f"{B}run/", keep="sweep", ts=100, action_id=1, who="a"),
+        KeepRow(prefix=f"{B}run/gold/", keep="keep", ts=200, action_id=2, who="a"),
+        KeepRow(prefix=f"{B}run/gold/", keep="sweep", ts=300, action_id=3, who="b"),
+    ])
+    assert vr.key_votes("marin-us-east5", "run/gold/model.bin") == {"a": "keep", "b": "sweep"}
+    assert vr.key_state("marin-us-east5", "run/gold/model.bin") == "conflict"
+    assert vr.key_state("marin-us-east5", "run/junk/f.bin") == "sweep"

@@ -122,6 +122,59 @@ class FateResolver:
         return (w.keep if w else None), w
 
 
+# ---- vote-model resolution (specs/vote-model.md) ---------------------------
+
+class VoteResolver:
+    """Per-user votes; sweep needs unanimity (specs/vote-model.md).
+
+    A user's vote at a path = their most-recent covering row (the existing
+    fold, partitioned by actor; NULL = retract). A path's state = the set of
+    live votes: only-keep → keep, only-sweep → sweep (deletable), both →
+    conflict (triage, never deleted), none → unmarked."""
+
+    def __init__(self, rows: Iterable[KeepRow]):
+        by_actor: dict[str, list[KeepRow]] = {}
+        for r in rows:
+            by_actor.setdefault(r.who, []).append(r)
+        self.by_actor = {who: FateResolver(rs) for who, rs in by_actor.items()}
+
+    def votes(self, prefix: str) -> dict[str, str]:
+        """Live votes at `prefix`: actor → keep|keep_last_ckpt|sweep. Actors
+        whose latest covering row is a retract (NULL) are absent."""
+        out: dict[str, str] = {}
+        for who, fr in self.by_actor.items():
+            v = fr.fate(prefix)
+            if v is not None:
+                out[who] = v
+        return out
+
+    def state(self, prefix: str) -> str:
+        """keep | sweep | conflict | unmarked."""
+        return self._agg(self.votes(prefix).values())
+
+    def key_votes(self, bucket: str, name: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for who, fr in self.by_actor.items():
+            v, _ = fr.key_fate(bucket, name)
+            if v is not None:
+                out[who] = v
+        return out
+
+    def key_state(self, bucket: str, name: str) -> str:
+        return self._agg(self.key_votes(bucket, name).values())
+
+    @staticmethod
+    def _agg(votes) -> str:
+        votes = list(votes)
+        if not votes:
+            return "unmarked"
+        any_keep = any(v in ("keep", "keep_last_ckpt") for v in votes)
+        any_sweep = any(v == "sweep" for v in votes)
+        if any_keep and any_sweep:
+            return "conflict"
+        return "keep" if any_keep else "sweep"
+
+
 # ---- clobbered keeps (2026-09-01 broad-sweep incident) ---------------------
 
 @dataclass(frozen=True)
