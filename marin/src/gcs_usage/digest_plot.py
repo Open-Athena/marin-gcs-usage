@@ -1,17 +1,18 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["matplotlib>=3.8", "click>=8.1"]
-# ///
 """Digest OP plot for the Slack monthly thread (`gcs-usage digest`): a 2-panel
 mosaic. Top = total-TiB line, y-autofit (change over time) + a dashed reference
 line at the month-start total (inc/dec at a glance). Bottom = stacked storage
 tiers, reversed cold→hot (stable Archive/Coldline on the bottom, active
 Nearline/Standard on top) so the total's wiggle lives at the readable top edge.
 
-Input: per-scan `{date, std, near, cold, arch}` TiB (JSON list). Output: a PNG
-sized for a Slack image block. The digest renders this per run and cache-busts
-the OP's image URL so `chat.update` refetches."""
+In-package (not a standalone `uv run` script under `job/`) so the Batch image
+runs it: `digest.render_plot` imports and calls :func:`render` in-process —
+the 2026-09-01 daily run failed resolving a repo-relative script path from
+site-packages, and the slim image has neither `uv` nor matplotlib (now the
+`[plot]` extra). Ad-hoc renders: `python -m gcs_usage.digest_plot -d … -o …`.
+
+Input: per-scan `{date, std, near, cold, arch}` TiB rows. Output: a PNG sized
+for a Slack image block. The digest renders this per run and cache-busts the
+OP's image URL so `chat.update` refetches."""
 from datetime import date as Date
 from json import load
 from pathlib import Path
@@ -34,18 +35,19 @@ TIERS = [
 ]
 
 
-@command()
-@option("-d", "--days", "days_path", type=CP(exists=True, path_type=Path), default=Path("tmp/class-days.json"), help="Per-scan tier rows: {date, std, near, cold, arch} TiB")
-@option("-o", "--out", type=CP(path_type=Path), default=Path("tmp/plot-mosaic.png"), help="Output PNG")
-@option("-t", "--title", default=None, help="Title (default: 'GCS usage — <Month Year>')")
-def main(days_path: Path, out: Path, title: str | None) -> None:
+def render(
+    rows: list[dict],
+    out: Path,
+    title: str | None = None,
+) -> None:
+    """Render the mosaic PNG for ``rows`` (each ``{date, std, near, cold,
+    arch}``, TiB) to ``out``. matplotlib imported lazily — the `[plot]` extra."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.dates as mdates
     import matplotlib.pyplot as plt
 
-    rows = load(open(days_path))
     xs = [Date.fromisoformat(r["date"]) for r in rows]
     tot = [sum(r[k] for k, _, _ in TIERS) for r in rows]
     title = title or f"GCS usage — {xs[-1]:%B %Y}"
@@ -107,6 +109,15 @@ def main(days_path: Path, out: Path, title: str | None) -> None:
     fig.tight_layout(h_pad=0.6)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, facecolor=BG)
+    plt.close(fig)
+
+
+@command()
+@option("-d", "--days", "days_path", type=CP(exists=True, path_type=Path), default=Path("tmp/class-days.json"), help="Per-scan tier rows: {date, std, near, cold, arch} TiB")
+@option("-o", "--out", type=CP(path_type=Path), default=Path("tmp/plot-mosaic.png"), help="Output PNG")
+@option("-t", "--title", default=None, help="Title (default: 'GCS usage — <Month Year>')")
+def main(days_path: Path, out: Path, title: str | None) -> None:
+    render(load(open(days_path)), out, title)
     print(f"wrote {out}")
 
 

@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 wandb = ["wandb>=0.19"]
 sheets = ["gspread>=6.0"]  # `sheet-push` → Google Sheets (ADC auth)
+plot = ["matplotlib>=3.8"]  # `gcs-usage digest` OP mosaic (digest_plot)
 
 [project.scripts]
 gcs-usage = "gcs_usage.cli:main"

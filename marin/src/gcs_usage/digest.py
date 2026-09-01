@@ -251,21 +251,14 @@ def save_state(root: str, month: dt.date, state: dict) -> None:
 
 
 def render_plot(rows: list[Scan], month: dt.date, out_path) -> None:
-    """Render the mosaic PNG for ``rows`` to ``out_path`` (runs the uv script)."""
-    import subprocess
-    import tempfile
+    """Render the mosaic PNG for ``rows`` to ``out_path`` (in-process; needs
+    the `[plot]` extra — matplotlib)."""
     from pathlib import Path
 
+    from .digest_plot import render
+
     tiers = [{"date": r.date, "std": r.std, "near": r.near, "cold": r.cold, "arch": r.arch} for r in rows]
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
-        json.dump(tiers, tf)
-        days_json = tf.name
-    script = Path(__file__).resolve().parents[3] / "job" / "gen-digest-plot.py"
-    subprocess.run(
-        [str(script), "-d", days_json, "-o", str(out_path), "-t", f"GCS usage — {month:%B %Y}"],
-        check=True,
-    )
-    os.unlink(days_json)
+    render(tiers, Path(out_path), f"GCS usage — {month:%B %Y}")
 
 
 def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0) -> dict:
