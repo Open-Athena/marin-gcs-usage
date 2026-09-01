@@ -830,7 +830,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=16.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "thrds", git = "https://github.com/runsascoded/thrds?rev=200e1fd94d51832b872d30b4604e101afe429711" },
+    { name = "thrds", url = "https://github.com/runsascoded/thrds/archive/200e1fd94d51832b872d30b4604e101afe429711.tar.gz" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.19" },
 ]
 provides-extras = ["wandb", "sheets"]
@@ -1498,13 +1498,26 @@ wheels = [
 [[package]]
 name = "thrds"
 version = "0.5.0"
-source = { git = "https://github.com/runsascoded/thrds?rev=200e1fd94d51832b872d30b4604e101afe429711#200e1fd94d51832b872d30b4604e101afe429711" }
+source = { url = "https://github.com/runsascoded/thrds/archive/200e1fd94d51832b872d30b4604e101afe429711.tar.gz" }
 dependencies = [
     { name = "click" },
     { name = "emoji" },
     { name = "pyyaml" },
     { name = "utz" },
 ]
+sdist = { hash = "sha256:3d6e6c98f9c0f3792fcd899aace2106c7aab7e2357d7eb8aafdda8525b4b8ee2" }
+
+[package.metadata]
+requires-dist = [
+    { name = "atproto", marker = "extra == 'all'", specifier = ">=0.0.46" },
+    { name = "atproto", marker = "extra == 'bsky'", specifier = ">=0.0.46" },
+    { name = "click", specifier = ">=8.0" },
+    { name = "emoji", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'test'" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "utz", specifier = ">=0.21.3" },
+]
+provides-extras = ["slack", "discord", "bsky", "all", "test"]
 
 [[package]]
 name = "typing-extensions"
