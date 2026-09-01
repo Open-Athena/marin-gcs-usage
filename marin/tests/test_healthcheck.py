@@ -99,3 +99,54 @@ def test_run_checks_flags_footer_fallback_and_missing_data():
         ("data/meta.json", True),
         ("data/tree.json", False),
     ]
+
+
+def test_run_checks_retries_transport_blip_once(monkeypatch):
+    # First subtree probe dies at the transport level (status 0), the retry
+    # succeeds — the check passes and the probe was fetched exactly twice.
+    import gcs_usage.healthcheck as hc
+
+    monkeypatch.setattr(hc, "RETRY_SLEEP", 0)
+    inner = _fake_site(totals_body={"computed": {"index": "d1", "ms": 13319}, "users": {"a": {}}})
+    subtree_calls = []
+
+    def get(url: str, rng: str | None) -> tuple[int, bytes]:
+        if "/api/subtree" in url:
+            subtree_calls.append(url)
+            if len(subtree_calls) == 1:
+                return 0, b""
+        return inner(url, rng)
+
+    date, checks = run_checks("https://gcs.oa.dev", "tok", None, today=TODAY, get=get)
+    assert date == "2026-08-31"
+    assert len(subtree_calls) == 2
+    assert checks == [
+        Check("freshness", True, "latest scan 2026-08-31 (0d old, limit 2d)"),
+        Check("marks/totals", True, "200 · index=d1 · users=1 · 13319ms"),
+        Check("subtree", True, "HTTP 200 (want 200)"),
+        Check("data/meta.json", True, "HTTP 200 (want 200)"),
+        Check("data/tree.json", True, "HTTP 206 (want 200/206)"),
+    ]
+
+
+def test_run_checks_transport_failure_persists_after_retry():
+    # Both attempts fail at the transport level → the check fails as HTTP 0.
+    import gcs_usage.healthcheck as hc
+
+    assert hc.RETRY_SLEEP == 5.0  # prod pause between attempts
+
+    inner = _fake_site(totals_body={"computed": {"index": "d1", "ms": 13319}, "users": {"a": {}}})
+    hc.RETRY_SLEEP = 0
+    try:
+        def get(url: str, rng: str | None) -> tuple[int, bytes]:
+            if "/api/subtree" in url:
+                return 0, b""
+            return inner(url, rng)
+
+        date, checks = run_checks("https://gcs.oa.dev", "tok", None, today=TODAY, get=get)
+    finally:
+        hc.RETRY_SLEEP = 5.0
+    assert date == "2026-08-31"
+    assert [(c.name, c.ok, c.detail) for c in checks if c.name == "subtree"] == [
+        ("subtree", False, "HTTP 0 (want 200)"),
+    ]

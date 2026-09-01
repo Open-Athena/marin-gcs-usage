@@ -36,6 +36,8 @@ v = {
     "STAGE_DIR": os.environ.get("STAGE_DIR", "/stage"),
     # Slack digest target: chat.postMessage (bot token) so per-message avatars apply
     "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0BNWAASXFW"),  # #gcs-usage
+    # failure/healthcheck alerts go to #gcs-usage-alerts, not the digest channel
+    "SLACK_ALERT_CHANNEL": os.environ.get("SLACK_ALERT_CHANNEL", "C0BTUNT3B5Z"),
     # CF account for index-sync's `wrangler d1 execute` (token is a secretVariable)
     "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }

@@ -20,6 +20,10 @@ from dataclasses import asdict, dataclass
 from typing import Callable
 
 UA = "gcs-usage-healthcheck/1.0"  # a real UA — CF edge-blocks bot UAs (1010)
+# One retry after a transport-level failure (status 0) — a single timed-out
+# probe shouldn't page (2026-09-01: a transient subtree stall alerted while
+# every other check passed). Tests monkeypatch this to 0.
+RETRY_SLEEP = 5.0
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,19 @@ def run_checks(
     if get is None:
         def get(url: str, rng: str | None = None) -> tuple[int, bytes]:
             return _http_get(url, rng, token=token)
+
+    # status 0 = transport-level failure (timeout, conn reset): retry once
+    # after RETRY_SLEEP so a single blip doesn't fail the check and alert.
+    raw_get = get
+
+    def get(url: str, rng: str | None = None) -> tuple[int, bytes]:  # noqa: F811
+        status, body = raw_get(url, rng)
+        if status == 0:
+            import time
+
+            time.sleep(RETRY_SLEEP)
+            status, body = raw_get(url, rng)
+        return status, body
 
     def get_json(path: str) -> tuple[int, dict | None]:
         status, body = get(f"{base}{path}", None)

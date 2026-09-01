@@ -165,9 +165,11 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      # marin has its own pyproject/venv (separate from the root disk_tree).
+      # marin has its own pyproject/venv (separate from the root disk_tree,
+      # which the viz tests import — install it into the same venv, as the
+      # Batch image does).
       - name: Sync marin
-        run: cd marin && uv sync
+        run: cd marin && uv sync --group test && uv pip install ..
 
       - name: Run marin tests
         run: cd marin && uv run --no-sync pytest tests -v

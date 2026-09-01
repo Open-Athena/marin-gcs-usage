@@ -21,21 +21,20 @@ DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
 SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 
 # Failure alerting: any command dying under `set -e` posts to Slack before the
-# job exits — otherwise silence in #gcs-usage is the only failure signal (the
-# success digest is the very last step, so a hard failure posts nothing; both
-# 2026-08-28 incidents went unnoticed this way). Uses the same transport gating
-# as the digest; `set +x` first because the curl carries the bot token, which
-# xtrace would otherwise echo into Cloud Logging.
-# Post one message to #gcs-usage via the same transport the digest uses
-# (chat.postMessage bot token → webhook fallback). `set +x` FIRST — the curl
-# carries the token, which xtrace would echo into Cloud Logging.
+# job exits — otherwise silence is the only failure signal (the success digest
+# is the very last step, so a hard failure posts nothing; both 2026-08-28
+# incidents went unnoticed this way). Alerts go to #gcs-usage-alerts
+# (SLACK_ALERT_CHANNEL, falling back to the digest's SLACK_CHANNEL) so they
+# don't clutter the #gcs-usage digest thread; same transport gating as the
+# digest (chat.postMessage bot token → webhook fallback). `set +x` FIRST — the
+# curl carries the token, which xtrace would echo into Cloud Logging.
 slack_post() {
   { set +x; } 2>/dev/null
-  local msg=$1
-  if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
+  local msg=$1 chan="${SLACK_ALERT_CHANNEL:-${SLACK_CHANNEL:-}}"
+  if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "$chan" ]; then
     curl -sS -X POST https://slack.com/api/chat.postMessage \
       -H "Authorization: Bearer $SLACK_BOT_TOKEN" -H 'Content-type: application/json; charset=utf-8' \
-      -d "$(python3 -c 'import json,sys; print(json.dumps({"channel": sys.argv[1], "text": sys.argv[2]}))' "$SLACK_CHANNEL" "$msg")" >/dev/null || true
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"channel": sys.argv[1], "text": sys.argv[2]}))' "$chan" "$msg")" >/dev/null || true
   elif [ -n "${SLACK_WEBHOOK:-}" ]; then
     curl -sS -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' \
       -d "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$msg")" >/dev/null || true
