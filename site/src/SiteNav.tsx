@@ -30,9 +30,9 @@ export function SiteNav({ inline = false, scan }: { inline?: boolean; scan?: Sca
       {tokenOpen && <TokenModal onClose={() => setTokenOpen(false)} />}
       {!inline && <Link className="brand" to="/">Marin GCS usage</Link>}
       <span className="nav-links">
-        {link('/files', 'Browse scans →')}
-        {markLinks && link('/users', 'Users →')}
-        {markLinks && link('/marks', 'Recent marks →')}
+        {link('/files', 'Scans')}
+        {markLinks && link('/users', 'Users')}
+        {markLinks && link('/marks', 'Marks')}
       </span>
       {/* A scan picker rides in the shared nav only on pages scoped to one
           scan (home, /users, /user/:id). /marks (ledger spans scans) and

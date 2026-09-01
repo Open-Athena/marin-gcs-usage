@@ -2,7 +2,7 @@ import { useQueries, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { MdLayers } from 'react-icons/md'
+import { MdInfoOutline, MdLayers } from 'react-icons/md'
 import { useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
@@ -35,14 +35,26 @@ import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
 const MODES = Object.keys(MODE_LABELS) as ColorMode[]
 
-// Collapsible intro block state: open by default (the copy earns its space the
-// first couple of visits), and a viewer's collapse sticks via localStorage.
+// Edu-fold state: open for the viewer's FIRST session (the copy is onboarding
+// — it earns its space once), collapsed by default ever after. An explicit
+// toggle wins forever (localStorage); sessionStorage marks the grace session
+// so a mid-session reload doesn't slam the fold shut on a first-time reader.
 function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>) => void] {
   const [open, setOpen] = useState(() => {
-    try { return localStorage.getItem(key) !== '0' } catch { return true }
+    try {
+      const chosen = localStorage.getItem(key)
+      if (chosen != null) return chosen !== '0'
+      if (localStorage.getItem(`${key}:seen`) == null) {
+        localStorage.setItem(`${key}:seen`, '1')
+        sessionStorage.setItem(`${key}:grace`, '1')
+        return true
+      }
+      return sessionStorage.getItem(`${key}:grace`) != null
+    } catch { return true }
   })
   const onToggle = (e: SyntheticEvent<HTMLDetailsElement>) => {
     const o = e.currentTarget.open
+    if (o === open) return // browsers fire `toggle` when the attr is first set — not a choice
     setOpen(o)
     try { localStorage.setItem(key, o ? '1' : '0') } catch { /* in-memory only */ }
   }
@@ -63,8 +75,10 @@ function AppContent() {
   const markMode = store.key === 'gcs' && canMark
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
-  const [bannerOpen, onBannerToggle] = useFold('gcs-usage:fold:banner')
-  const [introOpen, onIntroToggle] = useFold('gcs-usage:fold:intro')
+  // `fold2`: v1 keys recorded the browser's spurious initial toggle event as
+  // an explicit choice — retire them rather than inherit the bad state.
+  const [bannerOpen, onBannerToggle] = useFold('gcs-usage:fold2:banner')
+  const [introOpen, onIntroToggle] = useFold('gcs-usage:fold2:intro')
   // Keep the tab title in sync with the store on client-side navigation.
   useEffect(() => {
     document.title = store.title
@@ -556,13 +570,10 @@ function AppContent() {
           <h1>{store.title}</h1>
           {/* On the prod hostnames each store is its own site (own Access
               audience), so the in-app switcher would be a nop or an auth
-              surprise — cross-link instead, in a new tab. Localhost and
-              pages.dev previews keep the chips for dev convenience. */}
-          {crossSite ? (
-            <a className="crosslink" href={crossSite.href} target="_blank" rel="noreferrer">
-              {crossSite.label}&nbsp;↗
-            </a>
-          ) : STORES.length > 1 && (
+              surprise — the CW deployment is cross-linked from the About fold
+              instead. Localhost and pages.dev previews keep the chips for dev
+              convenience. */}
+          {!crossSite && STORES.length > 1 && (
             <div className="storectl" role="radiogroup" aria-label="Object store">
               {STORES.map(s => (
                 <button
@@ -642,13 +653,16 @@ function AppContent() {
         )}
       </header>
 
+      <div className="edu">
       {markMode && (
         <details className="mark-banner fold" open={bannerOpen} onToggle={onBannerToggle}>
           <summary>
-            <b>Mark &amp; sweep</b> — mark what to <b>keep</b>; unmarked data is swept when the
-            review window closes
-            {markIdx.count > 0 && <> · <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far</>}
-            {marksQ.error && <span className="err"> · marks unavailable: {marksQ.error.message}</span>}
+            <MdInfoOutline className="fold-icon warn" aria-hidden />
+            <span>
+              <b>Mark &amp; sweep</b> — mark what to <b>keep</b>; unmarked data is swept
+              {markIdx.count > 0 && <> · <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far</>}
+              {marksQ.error && <span className="err"> · marks unavailable: {marksQ.error.message}</span>}
+            </span>
           </summary>
           <p>
             Anything left unmarked is <b>swept</b> (deleted) once the review window closes (closing
@@ -664,7 +678,10 @@ function AppContent() {
       )}
 
       <details className="prose fold" open={introOpen} onToggle={onIntroToggle}>
-        <summary>About this dashboard — the data, lenses &amp; color modes</summary>
+        <summary>
+          <MdInfoOutline className="fold-icon" aria-hidden />
+          <span><b>About</b> — the data, lenses &amp; color modes</span>
+        </summary>
         <p>
           Storage across the six <code>marin-*</code> GCS buckets — a full per-object listing
           (deduped), snapshotted daily by the{' '}
@@ -679,8 +696,15 @@ function AppContent() {
           Marks and claims apply live on top of the latest snapshot. Hover a cell for its makeup and
           top users, <kbd>⌘K</kbd> to jump to a user/group, or see the per-user breakdown at{' '}
           <Link to="/users">/users</Link>.
+          {crossSite && (
+            <>
+              {' '}CoreWeave storage is tracked separately at{' '}
+              <a href={crossSite.href} target="_blank" rel="noreferrer">{new URL(crossSite.href).host}&nbsp;↗</a>.
+            </>
+          )}
         </p>
       </details>
+      </div>
 
       {scansQ.isError && (
         <p className="tab-note" style={{ color: 'var(--s3)' }}>
