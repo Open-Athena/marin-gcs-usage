@@ -607,6 +607,12 @@ details.fold {
 }
 .grew { color: #3fb950; }
 .shrank { color: #f85149; }
+// Header quick-link into the "Changes since previous scan" treemap section.
+.changes-link {
+  color: var(--ink-2);
+  text-decoration: none;
+  &:hover { text-decoration: underline; }
+}
 .diff-mode {
   cursor: pointer;
   font-size: 0.75rem;

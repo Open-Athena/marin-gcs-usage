@@ -617,6 +617,17 @@ function AppContent() {
                 </Tooltip>
               </>
             )}
+            {diff && diff.rows.length > 0 && (
+              <>
+                {' '}·{' '}
+                <a className="changes-link" href="#changes">
+                  <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
+                    {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
+                  </b>{' '}
+                  since {diff.prev ? fmtScan(diff.prev) : 'prev'} ↓
+                </a>
+              </>
+            )}
           </p>
         )}
         {/* Ambiguous `?d`: render the newest match (a best guess beats a dead

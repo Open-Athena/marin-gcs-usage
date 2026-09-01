@@ -730,6 +730,49 @@ def healthcheck(date: str | None, max_age_days: int, as_json: bool, max_ms: int,
         raise SystemExit(1)
 
 
+@main.command("diff")
+@option("-b", "--budget", default=400, type=int, help="Max directory expansions for the best-first walk")
+@option("-c", "--curr", default=None, help="Curr scan date YYYY-MM-DD (default: latest with a path-index)")
+@option("-D", "--max-depth", default=8, type=int, help="Deepest level to descend to")
+@option("-o", "--out", default=None, help="Output (default <root>/snapshots/<curr>/diff.json; '-' = stdout)")
+@option("-p", "--prev", default=None, help="Prev scan date (default: nearest earlier date with a path-index)")
+@option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Data bucket root (gs:// or a local mount)")
+@option("-t", "--top", default=500, type=int, help="Max rows kept in the JSON (by |Δsize|)")
+def diff_cmd(budget: int, curr: str | None, max_depth: int, out: str | None, prev: str | None, root: str, top: int) -> None:
+    """Scan-over-scan diff → the site's `diff.json` ("Changes since previous
+    scan" treemap). Runs disk-tree's best-first `recursive_diff` over two
+    dates' `listing/<date>/path-index.parquet`, so a delta N levels deep
+    surfaces as its own row instead of an undifferentiated blob at depth 1."""
+    import fsspec
+
+    from .diff import compute_diff, write_json
+
+    fs, rootpath = fsspec.core.url_to_fs(root)
+    idxs = sorted(fs.glob(f"{rootpath}/listing/*/path-index.parquet"))
+    dates = [p.rsplit("/", 2)[-2] for p in idxs]
+    if curr is None:
+        curr = dates[-1] if dates else None
+    if curr is None or curr not in dates:
+        raise SystemExit(f"no path-index for curr={curr!r} under {root}/listing/ (have {dates[-3:]})")
+    if prev is None:
+        earlier = [d for d in dates if d < curr]
+        if not earlier:
+            raise SystemExit(f"no scan earlier than {curr} has a path-index — nothing to diff against")
+        prev = earlier[-1]
+    if prev not in dates:
+        raise SystemExit(f"no path-index for prev={prev!r} under {root}/listing/")
+    idx = lambda d: f"{rootpath}/listing/{d}/path-index.parquet"  # noqa: E731
+    err(f"diff {prev} → {curr} (budget {budget}, max-depth {max_depth})")
+    payload = compute_diff(idx(prev), idx(curr), prev_id=prev, curr_id=curr, budget=budget, max_depth=max_depth, top=top, fs=fs)
+    if out == "-":
+        print(json.dumps(payload))
+    else:
+        out = out or f"{root.rstrip('/')}/snapshots/{curr}/diff.json"
+        write_json(payload, out)
+        err(f"{len(payload['rows'])} delta rows, {payload['expansions']} expansions, "
+            f"Δtotal {payload['total_b'] - payload['total_a']:+,} bytes -> {out}")
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
