@@ -986,8 +986,9 @@ def sweep_manifest(approved: tuple[str, ...], only_buckets: tuple[str, ...], dat
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
 @option("-w", "--workers", default=8, type=int, help="Concurrent directory re-lists")
 @option("--for-real", is_flag=True, help="Actually delete (default: dry-run writes would-delete/)")
+@option("--no-record", is_flag=True, help="Skip the D1 deletion_runs/bands record (recorded by default)")
 @argument("plan_dir")
-def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, url: str | None, workers: int, for_real: bool, plan_dir: str) -> None:
+def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, url: str | None, workers: int, for_real: bool, no_record: bool, plan_dir: str) -> None:
     """Execute (default: DRY-RUN) a `sweep manifest` plan: fresh re-list per
     eligible dir, generation-matched deletes of manifest∩live keys whose
     timeCreated is unchanged. Every manifest dir is re-classified at the
@@ -1015,6 +1016,7 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
     def reclassify(bucket: str, dn: str) -> str:
         return classify_dir(bucket, dn, vr, own, idmap, ever)[0]
 
+    started = int(dt.datetime.now(dt.timezone.utc).timestamp())
     summary = execute_plan(
         plan_dir,
         for_real=for_real,
@@ -1023,8 +1025,16 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
         workers=workers,
         reclassify=reclassify,
     )
+    finished = int(dt.datetime.now(dt.timezone.utc).timestamp())
     total = sum(b.get("delete_bytes", 0) for b in summary["buckets"].values())
     err(f"\n{'deleted' if for_real else 'would delete'}: {total / 1e12:.2f} TB total")
+    if not no_record:
+        from .sweep_exec import record_run
+        try:
+            run_id = record_run(summary, summary["_plan"], exec_head=head, actor=os.environ.get("USER", "?"), started_ts=started, finished_ts=finished)
+            err(f"recorded deletion run {run_id}")
+        except Exception as e:  # recording must never mask a completed run
+            err(f"WARN: deletion-run record failed: {e}")
 
 
 @main.group()

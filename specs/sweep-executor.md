@@ -70,3 +70,31 @@ Batch job (same image/infra as the snapshot). **Dry-run is the default**; `--for
 [mark-sweep-ui.md]: mark-sweep-ui.md
 [actions-ledger.md]: actions-ledger.md
 [repo-hygiene-audit.md]: repo-hygiene-audit.md
+
+## Deletion records — executed sweeps as first-class data (2026-09-02)
+
+Marks are intent; deletions are fact, and they deserve their own table + UI
+(Ryan's ask, night of the first execution). D1 migration `0015_deletions`:
+
+- **`deletion_runs`** — one row per executor invocation: plan (scan+head),
+  head at execution, actor, mode (dry/real), started/finished, totals,
+  expected-vs-actual counters (gone / overwritten / drift / ledger-drift),
+  **`undo_deadline`** (finish + the soft-delete window) + `undo_state`, and
+  `log_dir` — the plan dir holding the object-level
+  `{would-delete,deleted}/<bucket>.parquet` logs + summaries (kept in the GCS
+  data bucket rather than R2: the `/files` parquet browser and `/v1/files`
+  ranged proxy already render there; a second store buys nothing).
+- **`deletion_bands`** — the run aggregated per covering band prefix: the
+  queryable per-path unit. A path's deletion history = bands ancestor-or-equal
+  to it; "deletions of descendants" = the prefix range under it (both hit
+  `idx_deletion_bands_prefix`; paginate descendants by keyset).
+- The executor records both by default (`--no-record` to skip); recording
+  failure warns and never masks a completed run.
+- **Undo**: soft-delete restore is per-object `objects.restore` with the
+  generation from the `deleted/` log — `gcs-usage sweep undo <run> [prefix]`
+  (to build), valid until `undo_deadline`. The web UI shows the window and
+  per-band undo state; the *trigger* stays a CLI/Batch job in v1 — a Worker
+  cannot restore millions of objects in-request (the button can enqueue).
+- **UI (to build)**: `/api/deletions?path=` (covering + descendant bands,
+  paginated) feeding a "deletions here" panel on the drill/pin view; later a
+  distinct "swept (executed)" surface in the fate coloring.

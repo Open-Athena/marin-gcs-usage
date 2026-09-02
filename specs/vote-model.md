@@ -48,3 +48,15 @@ Partition-by-actor reuses the existing single-actor fold everywhere:
 
 Owner axis (unchanged). Vote weights/roles (any user's keep blocks deletion;
 social pressure handles abuse). Regex patterns (still don't exist).
+
+## Covering-marks panel (UI, 2026-09-02)
+
+Disentangling the clobbers showed the UI surfaces only the *effective* mark —
+the drilled `checkpoints/` showed just the newest sweep, hiding the repainted
+keeps under it. With votes as the model this becomes core UI:
+
+- **Drilled/pinned path**: show ALL marks covering it — the live vote set
+  (one per user) plus the full history rows on ancestor-or-equal prefixes.
+  Backend: `keep_prefixes WHERE prefix IN (<ancestors>)` — cheap, indexed.
+- **Dirs**: also list marks on descendants (`prefix` range scan), newest /
+  largest first, keyset-paginated — both panels paginate.

@@ -50,6 +50,15 @@ def execute_plan(
     with fs.open(f"{ppath}/plan-summary.json") as fh:
         plan = json.load(fh)
     client = client or storage.Client()
+    approved = tuple(plan.get("approved") or ())
+
+    def band_of(bucket: str, dn: str) -> str:
+        p = f"gs://{bucket}/{dn}/" if dn else f"gs://{bucket}/"
+        hits = [a for a in approved if p.startswith(a)]
+        if hits:
+            return max(hits, key=len)
+        top = dn.split("/", 1)[0] if dn else ""
+        return f"gs://{bucket}/{top}/" if top else f"gs://{bucket}/"
 
     mode = "deleted" if for_real else "would-delete"
     summary: dict = {"plan": plan_dir, "for_real": for_real, "drift": drift, "buckets": {}}
@@ -87,7 +96,7 @@ def execute_plan(
         rows: list[dict] = []
 
         def do_dir(item):
-            dn, g = item
+            dn, g = item  # returns (dn, decisions, drift-record, deleted-bytes)
             want = {r.name: r for r in g.itertuples()}
             live: dict = {}
             extra_b = extra_o = 0
@@ -110,7 +119,7 @@ def execute_plan(
                     todo.append(blob)
             drifted = extra_o > 0
             if drifted and drift == "skip":
-                return out, {"dir": dn, "new_objects": extra_o, "new_bytes": extra_b, "skipped_deletes": len(todo)}, 0
+                return dn, out, {"dir": dn, "new_objects": extra_o, "new_bytes": extra_b, "skipped_deletes": len(todo)}, 0
             if for_real:
                 for i in range(0, len(todo), BATCH):
                     # raise on failure: a 412 (generation moved) or transient
@@ -122,17 +131,27 @@ def execute_plan(
             for blob in todo:
                 out.append({"name": blob.name, "size_bytes": int(blob.size or 0), "generation": int(blob.generation), "decision": "delete", "dir": dn})
                 deleted_b += blob.size or 0
-            return out, ({"dir": dn, "new_objects": extra_o, "new_bytes": extra_b, "skipped_deletes": 0} if drifted else None), deleted_b
+            return dn, out, ({"dir": dn, "new_objects": extra_o, "new_bytes": extra_b, "skipped_deletes": 0} if drifted else None), deleted_b
 
         total_deleted_b = 0
+        bands: dict[str, Counter] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for out, drifted, dbytes in pool.map(do_dir, by_dir.items()):
+            for dn, out, drifted, dbytes in pool.map(do_dir, by_dir.items()):
                 rows.extend(out)
+                band = bands.setdefault(band_of(bucket, dn), Counter())
                 if drifted:
                     drift_dirs.append(drifted)
+                    band["drift_new_objects"] += drifted["new_objects"]
                 total_deleted_b += dbytes
                 for r in out:
                     counts[r["decision"]] += 1
+                    if r["decision"] == "delete":
+                        band["bytes"] += r["size_bytes"]
+                        band["objects"] += 1
+                    elif r["decision"] == "skipped_gone":
+                        band["gone"] += 1
+                    else:
+                        band["overwritten"] += 1
 
         log_path = f"{plan_dir}/{mode}/{bucket}.parquet"
         lfs, lpath = fsspec.core.url_to_fs(log_path)
@@ -143,6 +162,7 @@ def execute_plan(
             "delete_bytes": total_deleted_b,
             "drift_dirs": drift_dirs,
             "ledger_drift_dirs": ledger_drift,
+            "bands": {b: dict(c) for b, c in bands.items()},
         }
         err(
             f"  {bucket}: {counts['delete']:,} {mode} ({total_deleted_b / 1e12:.2f} TB), "
@@ -152,7 +172,59 @@ def execute_plan(
 
     with fsspec.open(f"{plan_dir}/{mode}-summary.json", "w") as fh:
         json.dump(summary, fh, indent=2)
+    summary["_plan"] = plan
     return summary
+
+
+def record_run(
+    summary: dict,
+    plan: dict,
+    exec_head: int,
+    actor: str,
+    started_ts: int,
+    finished_ts: int,
+    soft_delete_days: int = 7,
+) -> str:
+    """Persist the run + per-band rows to D1 (migration 0015) — deletions as
+    first-class records the site can surface per path. Returns the run_id."""
+    from .index_footer import _creds, _d1_query, _q
+
+    mode = "real" if summary["for_real"] else "dry"
+    run_id = f"{plan['date']}-h{plan['head']}/{dt.datetime.fromtimestamp(started_ts, dt.timezone.utc):%Y%m%dT%H%M%SZ}"
+    tot = Counter()
+    band_rows = []
+    for bucket, b in summary["buckets"].items():
+        d = b.get("decisions", {})
+        tot["deleted_objects"] += d.get("delete", 0)
+        tot["deleted_bytes"] += b.get("delete_bytes", 0)
+        tot["skipped_gone"] += d.get("skipped_gone", 0)
+        tot["skipped_overwritten"] += d.get("skipped_overwritten", 0)
+        tot["drift_dirs"] += len(b.get("drift_dirs", []))
+        tot["ledger_drift_dirs"] += len(b.get("ledger_drift_dirs", []))
+        for prefix, c in (b.get("bands") or {}).items():
+            band_rows.append(
+                f"({_q(run_id)}, {_q(prefix)}, {c.get('bytes', 0)}, {c.get('objects', 0)}, "
+                f"{c.get('gone', 0)}, {c.get('overwritten', 0)}, {c.get('drift_new_objects', 0)}, 0)"
+            )
+    undo = f"{finished_ts + soft_delete_days * 86400}" if mode == "real" else "NULL"
+    tok, acct = _creds()
+    _d1_query(
+        "INSERT INTO deletion_runs (run_id, plan, scan, head, exec_head, actor, mode, started_ts, finished_ts, "
+        "deleted_bytes, deleted_objects, skipped_gone, skipped_overwritten, drift_dirs, ledger_drift_dirs, "
+        "undo_deadline, log_dir) VALUES ("
+        f"{_q(run_id)}, {_q(summary['plan'])}, {_q(plan['date'])}, {plan['head']}, {exec_head}, {_q(actor)}, "
+        f"{_q(mode)}, {started_ts}, {finished_ts}, {tot['deleted_bytes']}, {tot['deleted_objects']}, "
+        f"{tot['skipped_gone']}, {tot['skipped_overwritten']}, {tot['drift_dirs']}, {tot['ledger_drift_dirs']}, "
+        f"{undo}, {_q(summary['plan'])})",
+        acct, tok,
+    )
+    if band_rows:
+        _d1_query(
+            "INSERT INTO deletion_bands (run_id, prefix, bytes, objects, gone, overwritten, drift_new_objects, undone_objects) VALUES "
+            + ", ".join(band_rows),
+            acct, tok,
+        )
+    return run_id
 
 
 def _require_soft_delete(client, bucket: str, min_days: int) -> None:
