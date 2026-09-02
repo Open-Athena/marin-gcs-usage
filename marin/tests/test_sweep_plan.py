@@ -231,3 +231,32 @@ def test_key_state_per_user_granularity():
     assert vr.key_votes("marin-us-east5", "run/gold/model.bin") == {"a": "keep", "b": "sweep"}
     assert vr.key_state("marin-us-east5", "run/gold/model.bin") == "conflict"
     assert vr.key_state("marin-us-east5", "run/junk/f.bin") == "sweep"
+
+# ---- manifest classification (policy (b)) ---------------------------------
+
+def test_classify_dir_policy_b():
+    from gcs_usage.identity import IdentityMap
+    from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
+    idmap = IdentityMap(user_teams={}, alias_to_user={"kaiyuewen3": "kaiyue"}, teams=(), prefix_owners=())
+    rows = [
+        KeepRow(prefix=f"{B}grug/", keep="sweep", ts=100, action_id=1, who="kaiyuewen3@gmail.com"),
+        KeepRow(prefix=f"{B}other/", keep="sweep", ts=100, action_id=2, who="kaiyuewen3@gmail.com"),
+        KeepRow(prefix=f"{B}unowned/", keep="sweep", ts=100, action_id=3, who="kaiyuewen3@gmail.com"),
+        KeepRow(prefix=f"{B}was-kept/", keep="keep", ts=50, action_id=4, who="kaiyuewen3@gmail.com"),
+        KeepRow(prefix=f"{B}was-kept/", keep="sweep", ts=100, action_id=5, who="kaiyuewen3@gmail.com"),
+        KeepRow(prefix=f"{B}klc/", keep="keep_last_ckpt", ts=100, action_id=6, who="kaiyuewen3@gmail.com"),
+    ]
+    owners = {"owners": [
+        {"prefix": f"{B}grug/", "owner": "kaiyue", "ts": 90, "action_id": 10, "who": "kaiyuewen3@gmail.com"},
+        {"prefix": f"{B}other/", "owner": "gonzalo", "ts": 90, "action_id": 11, "who": "g@oa"},
+        {"prefix": f"{B}was-kept/", "owner": "kaiyue", "ts": 90, "action_id": 12, "who": "kaiyuewen3@gmail.com"},
+    ]}
+    vr, own = VoteResolver(rows), owners_resolver(owners)
+    ever = ever_kept_prefixes(rows)
+    bkt = "marin-us-east5"
+    assert classify_dir(bkt, "grug/run1", vr, own, idmap, ever) == ("eligible", "kaiyue", ("kaiyue",))
+    assert classify_dir(bkt, "other/x", vr, own, idmap, ever) == ("deferred_owner", "gonzalo", ("kaiyue",))
+    assert classify_dir(bkt, "unowned/x", vr, own, idmap, ever) == ("deferred_unowned", None, ("kaiyue",))
+    assert classify_dir(bkt, "was-kept/x", vr, own, idmap, ever) == ("ever_kept", None, ("kaiyue",))
+    assert classify_dir(bkt, "klc/run", vr, own, idmap, ever) == ("klc_pending", None, ())
+    assert classify_dir(bkt, "nothing/here", vr, own, idmap, ever) == ("unmarked", None, ())

@@ -231,6 +231,73 @@ def ever_kept_prefixes(rows: Iterable[KeepRow]) -> frozenset[str]:
     return frozenset(r.prefix for r in rows if r.keep in ("keep", "keep_last_ckpt"))
 
 
+# ---- object-level manifest (policy (b): sweeper must own the band) ---------
+
+#: Why a directory's keys are (or aren't) in tonight's manifest.
+CATEGORIES = (
+    "eligible",         # sweep-only + sweeper owns it + no keep history → delete
+    "deferred_owner",   # sweep-only but the sweeper isn't the effective owner
+    "deferred_unowned", # sweep-only but nobody claimed it
+    "ever_kept",        # sweep-only but some ancestor once carried a keep (belt+suspenders)
+    "conflict",         # keep and sweep votes both present → triage
+    "klc_pending",      # keep_last_ckpt only — needs the object-level split (later phase)
+    "keep",             # keep votes only
+    "unmarked",         # no votes — waits for the deadline
+)
+
+
+def owners_resolver(actions_payload: dict) -> FateResolver:
+    """Effective-owner resolution (single-value axis, actor-blind most-recent-
+    wins — unchanged by the vote model). ``fate()`` returns the owner user id
+    (or None = unclaimed); rides the keep-slot of :class:`KeepRow`."""
+    rows = [
+        KeepRow(
+            prefix=r["prefix"],
+            keep=r.get("owner"),
+            ts=int(r["ts"]),
+            action_id=int(r["action_id"]),
+            who=r.get("who") or "",
+        )
+        for r in actions_payload["owners"]
+    ]
+    return FateResolver(rows)
+
+
+def classify_dir(
+    bucket: str,
+    dirname: str,  # '' for bucket-root files, else 'a/b'
+    vr: "VoteResolver",
+    own: FateResolver,
+    idmap,
+    ever_kept: frozenset[str],
+) -> tuple[str, Optional[str], tuple[str, ...]]:
+    """(category, owner, sweeper ids) for one directory. Policy (b): a
+    sweep-only dir is deletable tonight only when its effective owner is one
+    of the sweepers (by canonical user id) and no covering prefix ever
+    carried a keep."""
+    prefix = f"gs://{bucket}/" + (dirname + "/" if dirname else "")
+    votes = vr.votes(prefix)
+    if not votes:
+        return "unmarked", None, ()
+    vals = set(votes.values())
+    any_keep = bool(vals & {"keep", "keep_last_ckpt"})
+    any_sweep = "sweep" in vals
+    if any_keep and any_sweep:
+        return "conflict", None, ()
+    if any_keep:
+        return ("klc_pending" if vals == {"keep_last_ckpt"} else "keep"), None, ()
+    sweepers = tuple(sorted({idmap.resolve(w) for w in votes}))
+    anc = key_to_prefixes(bucket, f"{dirname}/f" if dirname else "f")
+    if any(p in ever_kept for p in anc):
+        return "ever_kept", None, sweepers
+    owner = own.fate(prefix)
+    if owner is None:
+        return "deferred_unowned", None, sweepers
+    if idmap.resolve(owner) not in sweepers:
+        return "deferred_owner", owner, sweepers
+    return "eligible", owner, sweepers
+
+
 # ---- KLC expansion (object-level klcSplits) --------------------------------
 
 @dataclass(frozen=True)

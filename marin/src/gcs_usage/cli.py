@@ -874,6 +874,109 @@ def sweep_plan_cmd(date: str | None, as_json: bool, top: int, token: str | None,
         print(f"{(r.get('net_bytes') or 0) / 1e12:9.2f} TB  {r['prefix']}  [{who}]")
 
 
+@sweep.command("manifest")
+@option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets (default: all six)")
+@option("-d", "--date", required=True, help="Scan date whose listing to plan from (pinned)")
+@option("-o", "--out", default=None, help="Output dir (default gs://oa-gcs-usage-dvx/sweep/<date>-h<head>)")
+@option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Listing root (gs:// or local mount)")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+def sweep_manifest(only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None) -> None:
+    """Object-level sweep manifest under the vote model + policy (b): stream
+    the pinned listing, classify every directory (specs/sweep-executor.md,
+    specs/vote-model.md), and write per-bucket parquets of the ELIGIBLE keys
+    (sweep-only, sweeper-owned, no keep history) plus a category summary.
+    Pure read + artifact write — deletes nothing."""
+    import fsspec
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from .identity import load_identities
+    from .mark import creds, get_json
+    from .sweep_plan import (
+        CATEGORIES, VoteResolver, classify_dir, ever_kept_prefixes, load_keeps, owners_resolver,
+    )
+
+    base, tok = creds(token, url)
+    if not tok:
+        raise SystemExit("no token — set $GCS_USAGE_TOKEN or pass -t")
+    actions = get_json(base, tok, "/api/actions")
+    rows = load_keeps(actions)
+    head = max((r.action_id for r in rows), default=0)
+    vr = VoteResolver(rows)
+    own = owners_resolver(actions)
+    idmap = load_identities()
+    ever = ever_kept_prefixes(rows)
+    out = out or f"gs://oa-gcs-usage-dvx/sweep/{date}-h{head}"
+    err(f"sweep manifest: scan {date} @ head {head} → {out}")
+
+    fs, rootpath = fsspec.core.url_to_fs(root)
+    buckets = list(only_buckets) or [
+        "marin-us-east1", "marin-us-east5", "marin-us-central1",
+        "marin-us-central2", "marin-eu-west4", "marin-us-west4",
+    ]
+    summary: dict = {"date": date, "head": head, "policy": "b:sweeper-owns", "buckets": {}}
+    schema = pa.schema([
+        ("name", pa.string()), ("size_bytes", pa.int64()),
+        ("storage_class_id", pa.int8()), ("created", pa.timestamp("us", tz="UTC")),
+        ("dir", pa.string()), ("owner", pa.string()), ("sweepers", pa.string()),
+    ])
+    for bucket in buckets:
+        shards = sorted(fs.glob(f"{rootpath}/listing/{date}/{bucket}/*.parquet"))
+        if not shards:
+            raise SystemExit(f"no listing shards for {bucket} under {root}/listing/{date}/")
+        cache: dict[str, tuple[str, str | None, tuple[str, ...]]] = {}
+        cats = {c: [0, 0] for c in CATEGORIES}  # bytes, objects
+        writer = None
+        out_path = f"{out}/manifest/{bucket}.parquet"
+        ofs, opath = fsspec.core.url_to_fs(out_path)
+        n = 0
+        for shard in shards:
+            pf = pq.ParquetFile(shard, filesystem=fs)
+            for batch in pf.iter_batches(columns=["name", "size_bytes", "storage_class_id", "created"], batch_size=1 << 17):
+                df = batch.to_pandas()
+                dirs = df["name"].str.rpartition("/")[0]
+                for dn in dirs.unique():
+                    if dn not in cache:
+                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever)
+                cat = dirs.map(lambda dn: cache[dn][0])
+                sizes = df["size_bytes"]
+                for c, g in sizes.groupby(cat):
+                    cats[c][0] += int(g.sum())
+                    cats[c][1] += len(g)
+                elig = cat == "eligible"
+                if elig.any():
+                    sel = df[elig].copy()
+                    sel["dir"] = dirs[elig]
+                    sel["owner"] = sel["dir"].map(lambda dn: cache[dn][1])
+                    sel["sweepers"] = sel["dir"].map(lambda dn: ",".join(cache[dn][2]))
+                    t = pa.Table.from_pandas(sel, preserve_index=False).select(schema.names).cast(schema)
+                    if writer is None:
+                        writer = pq.ParquetWriter(opath, schema, filesystem=ofs)
+                    writer.write_table(t)
+                n += len(df)
+        if writer is not None:
+            writer.close()
+        summary["buckets"][bucket] = {"objects": n, "dirs": len(cache), **{c: {"bytes": b, "objects": o} for c, (b, o) in cats.items() if o}}
+        eb, eo = cats["eligible"]
+        err(f"  {bucket}: {n:,} keys, {len(cache):,} dirs — eligible {eb / 1e12:.2f} TB / {eo:,} objects")
+
+    tot = {c: [0, 0] for c in CATEGORIES}
+    for b in summary["buckets"].values():
+        for c in CATEGORIES:
+            if c in b:
+                tot[c][0] += b[c]["bytes"]
+                tot[c][1] += b[c]["objects"]
+    summary["total"] = {c: {"bytes": v[0], "objects": v[1]} for c, v in tot.items() if v[1]}
+    with fsspec.open(f"{out}/plan-summary.json", "w") as fh:
+        json.dump(summary, fh, indent=2)
+    err("\ntotals by category:")
+    for c, (b, o) in tot.items():
+        if o:
+            err(f"  {c:16s} {b / 1e12:10.2f} TB  {o:>13,} objects")
+    err(f"\nwrote {out}/plan-summary.json")
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
