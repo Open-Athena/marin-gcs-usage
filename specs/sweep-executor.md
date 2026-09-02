@@ -38,6 +38,29 @@ New CLI subcommand (runs on Batch for the full estate; laptop-OK for `-p` scoped
 - **Approval**: admin clicks approve (typed-confirmation of the plan-id + headline bytes) → D1 row. The runbook keeps the human step: post the plan summary to Slack (#gcs-usage) for Percy/David sign-off before approving. Approval is void if the ledger head moves — execute re-checks.
 - **Users**: v1 read-only visibility — their existing lens views already show fate; the `/sweep` plan page is admin-only. Self-serve "delete my claimed data now" is explicitly **v2** (same manifest machinery scoped to `owner=me` + their own approval; not built until the admin path has survived a real sweep).
 
+### Attribution gate — approval deletes the sweeper's own slice (2026-09-02)
+
+Band-level `owner_match` on the console is a *plurality* signal and turned out
+to be misleading on shared dirs: `marin-eu-west4/checkpoints/` badged "=
+sweeper" with Kaiyue at 41% while the other 59% (Percy's `llama-8b-tootsie`,
+`coral`, `isoflop-curation`, big unattributed `vlm-*`) belonged to others —
+the broad-sweep pattern (Kaiyue/Pranshu dir-level sweeps) that also caused the
+9/1 clobber incident. Quantified over all 150 candidate bands: ~258 TB of
+band-child bytes are attributed to the sweeper themself, ~320 TB (gross) to
+other users, ~79 TB unattributed.
+
+So the manifest pushes the check to **directory level** (`gcs_usage/attr_index.py`,
+default ON, `-X` to disable): an approved-band dir is `eligible` only when the
+attribution top user of its nearest indexed ancestor (path-index parquet,
+run-dir depth) **is one of its sweepers with ≥50% of the subtree's bytes**;
+otherwise the new `deferred_attr` category. Approving a band therefore means
+"delete the sweeper's own slice of it" — other users' data inside a broad
+sweep is a *nomination* deferred to them (they cast their own vote under the
+vote model: their sweep makes it unanimous, their keep makes it a conflict),
+never deleted on someone else's vote. `candidates.json` bands carry the
+per-child split (`attr_match_bytes` / `attr_other_bytes` / `attr_unattr_bytes`)
+and the console shows "≈ deletable" per band and on the real-delete confirm.
+
 ## Phase 3 — `gcs-usage sweep execute`
 
 Batch job (same image/infra as the snapshot). **Dry-run is the default**; `--for-real` is required for deletion, and hard preconditions are re-verified in code at startup:

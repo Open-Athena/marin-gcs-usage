@@ -18,7 +18,16 @@ interface Candidate {
   top_user: string | null
   share: number | null
   owner_match: boolean
+  /** Per-child sweeper-vs-attribution split (gross): the manifest's attr
+   * gate only deletes the sweeper-attributed slice of an approved band. */
+  attr_match_bytes?: number | null
+  attr_other_bytes?: number | null
+  attr_unattr_bytes?: number | null
 }
+
+/** What approving this band would let the executor delete (≈, gross-capped). */
+const attrCap = (c: Candidate): number | null =>
+  c.attr_match_bytes == null ? null : Math.min(c.attr_match_bytes, c.net_bytes)
 
 interface DeletionRun {
   run_id: string
@@ -100,7 +109,9 @@ export function SweepPage() {
   })
 
   const bands = candsQ.data?.bands ?? []
-  const approvedBytes = bands.filter(b => approvals.has(b.prefix)).reduce((s, b) => s + b.net_bytes, 0)
+  const approvedRows = bands.filter(b => approvals.has(b.prefix))
+  const approvedBytes = approvedRows.reduce((s, b) => s + b.net_bytes, 0)
+  const approvedAttrBytes = approvedRows.reduce((s, b) => s + (attrCap(b) ?? b.net_bytes), 0)
 
   const [armed, setArmed] = useState(false)
   const dispatch = useMutation({
@@ -124,16 +135,19 @@ export function SweepPage() {
       <h1>Sweep console</h1>
       <p className="sub">
         Candidate bands are <b>sweep-only under the vote model</b> (no keep votes anywhere) — approval is the
-        human owner check (sweeper vs the attribution top user). Approved bands feed{' '}
+        human owner check. The executor's <b>attribution gate</b> then deletes only the <i>sweeper's own slice</i> of
+        an approved band: each directory must be majority-attributed to its sweeper, so other users' data inside a
+        broad sweep is deferred to them, never deleted on someone else's vote. Approved bands feed{' '}
         <code>sweep manifest --approved-from-site</code>; runs land below with their logs.
-        {plan && <> Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>} · approved <b>{tb(approvedBytes)}</b></>}
+        {plan && <> Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>} · approved <b>{tb(approvedBytes)}</b>
+          {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the attr gate)</>}</>}
       </p>
 
       {latestQ.isError && <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>}
       {candsQ.data && (
         <table className="sweep-table">
           <thead>
-            <tr><th>band</th><th className="num">size</th><th className="num">objects</th><th>swept by</th><th>attributed top user</th><th>status</th></tr>
+            <tr><th>band</th><th className="num">size</th><th className="num">≈ deletable</th><th className="num">objects</th><th>swept by</th><th>attributed top user</th><th>status</th></tr>
           </thead>
           <tbody>
             {bands.map(c => {
@@ -143,6 +157,15 @@ export function SweepPage() {
                 <tr key={c.prefix} className={a ? 'approved' : c.owner_match ? 'matched' : ''}>
                   <td><Link to={drill}><code>{c.prefix.replace('gs://', '')}</code></Link></td>
                   <td className="num">{tb(c.net_bytes)}</td>
+                  <td className="num" title={c.attr_other_bytes ? `${tb(c.attr_other_bytes)} attributed to other users + ${tb(c.attr_unattr_bytes ?? 0)} unattributed/mixed are deferred, not deleted` : undefined}>
+                    {attrCap(c) == null ? <span className="dim">—</span> : (
+                      <>
+                        {tb(attrCap(c)!)}
+                        {(c.attr_other_bytes ?? 0) + (c.attr_unattr_bytes ?? 0) > 0 && attrCap(c)! < c.net_bytes
+                          ? <span className="dim"> of {tb(c.net_bytes)}</span> : null}
+                      </>
+                    )}
+                  </td>
                   <td className="num">{c.net_objects.toLocaleString()}</td>
                   <td>{c.sweepers.map(s => <UserChip key={s} who={s} size={16} />)}</td>
                   <td>
@@ -189,7 +212,7 @@ export function SweepPage() {
           ) : (
             <>
               <button className="mini danger armed" disabled={dispatch.isPending} onClick={() => dispatch.mutate('real')}>
-                confirm REAL delete — {tb(approvedBytes)} approved
+                confirm REAL delete — ≈{tb(approvedAttrBytes)} (attr-gated, of {tb(approvedBytes)} approved)
               </button>
               <button className="mini" onClick={() => setArmed(false)}>cancel</button>
             </>

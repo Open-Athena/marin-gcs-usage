@@ -238,6 +238,7 @@ CATEGORIES = (
     "eligible",         # sweep-only + sweeper owns it + no keep history → delete
     "deferred_owner",   # sweep-only but the sweeper isn't the effective owner
     "deferred_unowned", # sweep-only but nobody claimed it
+    "deferred_attr",    # approved band, but the dir's attributed top user isn't the sweeper (or is unattributed / minority-share)
     "ever_kept",        # sweep-only but some ancestor once carried a keep (belt+suspenders)
     "conflict",         # keep and sweep votes both present → triage
     "klc_pending",      # keep_last_ckpt only — needs the object-level split (later phase)
@@ -271,6 +272,7 @@ def classify_dir(
     idmap,
     ever_kept: frozenset[str],
     approved: tuple[str, ...] = (),
+    attr=None,  # (band, bucket, dirname) -> (top_user, share) | None
 ) -> tuple[str, Optional[str], tuple[str, ...]]:
     """(category, owner, sweeper ids) for one directory. Policy (b): a
     sweep-only dir is deletable tonight only when its effective owner is one
@@ -278,7 +280,12 @@ def classify_dir(
     carried a keep. When ``approved`` band prefixes are given they REPLACE
     the owner-claim check: approval is the human owner-verification (the
     owner axis turned out to be unclaimed on every big sweep band —
-    attribution + review stands in)."""
+    attribution + review stands in). With ``attr`` (an
+    :class:`~gcs_usage.attr_index.AttrIndex`-style lookup), approval means
+    "delete the sweeper's own slice of the band": each dir must additionally
+    be attributed to one of its sweepers with a majority of its bytes —
+    otherwise ``deferred_attr`` (a broad sweep over a shared dir is a
+    nomination for the other users' slices, not a decision)."""
     prefix = f"gs://{bucket}/" + (dirname + "/" if dirname else "")
     votes = vr.votes(prefix)
     if not votes:
@@ -295,9 +302,15 @@ def classify_dir(
     if any(p in ever_kept for p in anc):
         return "ever_kept", None, sweepers
     if approved:
-        if any(prefix.startswith(a) for a in approved):
-            return "eligible", own.fate(prefix), sweepers
-        return "deferred_owner", own.fate(prefix), sweepers
+        band = next((a for a in approved if prefix.startswith(a)), None)
+        if band is None:
+            return "deferred_owner", own.fate(prefix), sweepers
+        if attr is not None:
+            from .attr_index import MIN_SHARE
+            hit = attr(band, bucket, dirname)
+            if hit is None or hit[0] is None or hit[0] not in sweepers or hit[1] < MIN_SHARE:
+                return "deferred_attr", own.fate(prefix), sweepers
+        return "eligible", own.fate(prefix), sweepers
     owner = own.fate(prefix)
     if owner is None:
         return "deferred_unowned", None, sweepers

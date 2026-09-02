@@ -278,3 +278,97 @@ def test_classify_dir_approved_bands_replace_owner_check():
     assert classify_dir("marin-us-east5", "grug/x", vr, own, idmap, ever, approved) == ("deferred_owner", None, ("k",))
     # without an approved list the unclaimed dirs defer entirely
     assert classify_dir("marin-us-east5", "rl_testing/run1", vr, own, idmap, ever) == ("deferred_unowned", None, ("ahmed",))
+
+
+def test_classify_dir_attr_gate():
+    """With an attr lookup, approval means "the sweeper's own slice": dirs
+    attributed to someone else, unattributed, or minority-share defer."""
+    from gcs_usage.identity import IdentityMap
+    from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
+    idmap = IdentityMap(user_teams={}, alias_to_user={"k": "kaiyue"}, teams=(), prefix_owners=())
+    rows = [KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=100, action_id=1, who="k@x")]
+    vr = VoteResolver(rows)
+    own = owners_resolver({"owners": []})
+    ever = ever_kept_prefixes(rows)
+    approved = (f"{B}checkpoints/",)
+    attrs = {
+        "marin-us-east5/checkpoints/isoflop": ("kaiyue", 0.97),
+        "marin-us-east5/checkpoints/llama-8b": ("percy", 0.99),
+        "marin-us-east5/checkpoints/vlm": (None, 0.0),
+        "marin-us-east5/checkpoints/mixed": ("kaiyue", 0.41),
+    }
+
+    def attr(band, bucket, dirname):
+        assert band == f"{B}checkpoints/"
+        path = f"{bucket}/{dirname}"
+        while path:
+            if path in attrs:
+                return attrs[path]
+            path = path.rsplit("/", 1)[0] if "/" in path else ""
+        return None
+
+    def cat(dn):
+        return classify_dir("marin-us-east5", dn, vr, own, idmap, ever, approved, attr)[0]
+
+    assert cat("checkpoints/isoflop/run1/step-100") == "eligible"  # sweeper's own run
+    assert cat("checkpoints/llama-8b/ckpt") == "deferred_attr"     # someone else's
+    assert cat("checkpoints/vlm/x") == "deferred_attr"             # unattributed
+    assert cat("checkpoints/mixed/y") == "deferred_attr"           # minority share
+    assert cat("checkpoints/unknown/z") == "deferred_attr"         # no index row at all
+    # attr=None keeps the pre-gate behavior (whole band eligible)
+    assert classify_dir("marin-us-east5", "checkpoints/llama-8b/ckpt", vr, own, idmap, ever, approved)[0] == "eligible"
+
+
+def test_attr_index_lookup_ancestor_walk(tmp_path):
+    import pandas as pd
+    from gcs_usage.attr_index import AttrIndex
+    df = pd.DataFrame([
+        {"path": "marin-us-east5/checkpoints", "depth": 2, "usr": "kaiyue", "b": 41},
+        {"path": "marin-us-east5/checkpoints", "depth": 2, "usr": "percy", "b": 30},
+        {"path": "marin-us-east5/checkpoints", "depth": 2, "usr": None, "b": 29},
+        {"path": "marin-us-east5/checkpoints/isoflop", "depth": 3, "usr": "kaiyue", "b": 90},
+        {"path": "marin-us-east5/checkpoints/isoflop", "depth": 3, "usr": None, "b": 10},
+        {"path": "marin-us-east5/checkpoints/llama-8b", "depth": 3, "usr": "percy", "b": 100},
+        {"path": "marin-us-east5/checkpoints/rooty", "depth": 3, "usr": "root", "b": 100},
+        {"path": "marin-us-east5/other", "depth": 2, "usr": "kaiyue", "b": 5},
+    ])
+    p = tmp_path / "path-index.parquet"
+    df.to_parquet(p, index=False)
+    ai = AttrIndex(str(p))
+    band = "gs://marin-us-east5/checkpoints/"
+    # deep dirs inherit the run-level attribution via the ancestor walk
+    assert ai.lookup(band, "marin-us-east5", "checkpoints/isoflop/run/step-5") == ("kaiyue", 0.9)
+    assert ai.lookup(band, "marin-us-east5", "checkpoints/llama-8b/x") == ("percy", 1.0)
+    # infra ids don't count as people; nothing else attributed → (None, 0.0)
+    assert ai.lookup(band, "marin-us-east5", "checkpoints/rooty/x") == (None, 0.0)
+    # falls back to the band root's own (plurality) attribution
+    assert ai.lookup(band, "marin-us-east5", "checkpoints/never-indexed") == ("kaiyue", 0.41)
+    # outside the band → None
+    assert ai.lookup(band, "marin-us-east5", "other/x") is None
+
+
+def test_attr_index_child_split(tmp_path):
+    import pandas as pd
+    from gcs_usage.attr_index import AttrIndex
+    df = pd.DataFrame([
+        {"path": "b/ck", "depth": 2, "usr": "kaiyue", "b": 41},
+        {"path": "b/ck/iso", "depth": 3, "usr": "kaiyue", "b": 90},
+        {"path": "b/ck/iso", "depth": 3, "usr": None, "b": 10},
+        {"path": "b/ck/llama", "depth": 3, "usr": "percy", "b": 100},
+        {"path": "b/ck/vlm", "depth": 3, "usr": None, "b": 60},
+        {"path": "b/ck/mixed", "depth": 3, "usr": "kaiyue", "b": 40},
+        {"path": "b/ck/mixed", "depth": 3, "usr": "percy", "b": 30},
+        {"path": "b/ck/mixed", "depth": 3, "usr": None, "b": 30},
+        {"path": "b/ck/iso/run", "depth": 4, "usr": "kaiyue", "b": 90},
+        {"path": "b/leaf", "depth": 2, "usr": "ahmed", "b": 70},
+        {"path": "b/leaf", "depth": 2, "usr": None, "b": 30},
+    ])
+    p = tmp_path / "path-index.parquet"
+    df.to_parquet(p, index=False)
+    ai = AttrIndex(str(p))
+    # iso → kaiyue 90% (match); llama → percy (other); vlm unattributed and
+    # mixed minority-share (40%) → unattr bucket. Depth-4 rows don't count.
+    assert ai.child_split("gs://b/ck/", {"kaiyue"}) == (100, 100, 160)
+    # leaf band with no children: judged on its own row (ahmed 70%)
+    assert ai.child_split("gs://b/leaf/", {"ahmed"}) == (100, 0, 0)
+    assert ai.child_split("gs://b/leaf/", {"kaiyue"}) == (0, 100, 0)

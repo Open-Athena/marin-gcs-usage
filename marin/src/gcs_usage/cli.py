@@ -881,9 +881,11 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
         import fsspec
         from urllib.parse import quote
 
+        from .attr_index import AttrIndex
         from .identity import load_identities
 
         idmap = load_identities()
+        aidx = AttrIndex(f"gs://oa-gcs-usage-dvx/listing/{date}/path-index.parquet")
         bands = sorted(states.get("sweep", {}).get("rows", []), key=lambda r: -(r.get("net_bytes") or 0))[:150]
         cands = []
         for r in bands:
@@ -897,10 +899,17 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
             except Exception:
                 pass
             sweepers = sorted({idmap.resolve(w) for w in r["votes"]})
+            # per-child sweeper-vs-attribution split — what the manifest's
+            # attr gate will actually let an approval delete (gross estimate)
+            try:
+                m, o, u = aidx.child_split(r["prefix"], set(sweepers))
+            except Exception:
+                m = o = u = None
             cands.append({
                 "prefix": r["prefix"], "net_bytes": r.get("net_bytes") or 0, "net_objects": r.get("net_objects") or 0,
                 "sweepers": sweepers, "top_user": top_user, "share": share,
                 "owner_match": top_user in sweepers if top_user else False,
+                "attr_match_bytes": m, "attr_other_bytes": o, "attr_unattr_bytes": u,
             })
         plan_id = f"{date}-h{head}"
         root = "gs://oa-gcs-usage-dvx/sweep"
@@ -920,7 +929,8 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
 @option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Listing root (gs:// or local mount)")
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
-def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None) -> None:
+@option("-X", "--no-attr-check", is_flag=True, help="Skip the per-dir sweeper-vs-attribution gate on approved bands (default ON: approval deletes only the sweeper's own slice)")
+def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None, no_attr_check: bool) -> None:
     """Object-level sweep manifest under the vote model + policy (b): stream
     the pinned listing, classify every directory (specs/sweep-executor.md,
     specs/vote-model.md), and write per-bucket parquets of the ELIGIBLE keys
@@ -953,6 +963,12 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
     out = out or f"gs://oa-gcs-usage-dvx/sweep/{date}-h{head}"
     err(f"sweep manifest: scan {date} @ head {head} → {out}"
         + (f" · {len(approved)} approved band(s)" if approved else ""))
+    attr = None
+    if approved and not no_attr_check:
+        from .attr_index import AttrIndex
+        aidx = AttrIndex(f"{root}/listing/{date}/path-index.parquet")
+        attr = aidx.lookup
+        err("attr gate ON: approved-band dirs must be majority-attributed to their sweeper")
 
     fs, rootpath = fsspec.core.url_to_fs(root)
     buckets = list(only_buckets) or [
@@ -982,7 +998,7 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
                 dirs = df["name"].str.rpartition("/")[0]
                 for dn in dirs.unique():
                     if dn not in cache:
-                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever, approved)
+                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever, approved, attr)
                 cat = dirs.map(lambda dn: cache[dn][0])
                 sizes = df["size_bytes"]
                 for c, g in sizes.groupby(cat):
