@@ -51,14 +51,14 @@ export function SweepPage() {
   const qc = useQueryClient()
   const latestQ = useQuery({
     queryKey: ['sweep-latest'],
-    queryFn: () => jfetch<{ plan: string }>('/v1/files/sweep/latest.json'),
+    queryFn: () => jfetch<{ plan: string }>('/v1/files/get?path=sweep/latest.json'),
     staleTime: 60_000,
   })
   const plan = latestQ.data?.plan
   const candsQ = useQuery({
     queryKey: ['sweep-candidates', plan],
     enabled: !!plan,
-    queryFn: () => jfetch<{ plan: string; scan: string; head: number; bands: Candidate[] }>(`/v1/files/sweep/${plan}/candidates.json`),
+    queryFn: () => jfetch<{ plan: string; scan: string; head: number; bands: Candidate[] }>(`/v1/files/get?path=${encodeURIComponent(`sweep/${plan}/candidates.json`)}`),
     staleTime: 60_000,
   })
   const apprQ = useQuery({

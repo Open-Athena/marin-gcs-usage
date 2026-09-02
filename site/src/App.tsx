@@ -12,6 +12,7 @@ import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
+import { clientDiff } from './clientDiff'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
@@ -202,7 +203,38 @@ function AppContent() {
     staleTime: Infinity,
     retry: false,
   })
-  const diff: DiffData | null = diffQ.data ?? null
+  const bakedDiff: DiffData | null = diffQ.data ?? null
+  // `?dp=` — the Changes section's "before" endpoint. Absent = the baked
+  // diff.json pair (previous scan → this scan, the batch job's exact walk).
+  // Any other earlier scan → client-side align of the two dates' pixel-budget
+  // subtrees (clientDiff). The "after" endpoint IS the page's scan (`?d=`).
+  const [dpP, setDpP] = useUrlState('dp', stringParam())
+  const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
+  const dpValid = dpP && asof && dpP < asof && scans.includes(dpP) ? dpP : null
+  // client-align when the viewer picked a non-default "before", or when this
+  // scan has no baked diff.json at all (older scans; the default pair still
+  // deserves a diff) — but only once the baked fetch has actually answered.
+  const diffPrev =
+    dpValid && dpValid !== bakedDiff?.prev ? dpValid
+    : diffQ.isFetched && !bakedDiff && prevScan ? prevScan
+    : null
+  const diffPair = useQueries({
+    queries: (diffPrev ? [diffPrev, asof!] : []).map(d => ({
+      queryKey: ['diff-side', store.key, d],
+      staleTime: Infinity,
+      retry: 1,
+      queryFn: async () => {
+        const r = await fetch(`/api/subtree?date=${d}&w=1200&h=720`, { credentials: 'include' })
+        if (!r.ok) throw new Error(`${r.status}`)
+        return r.json() as Promise<{ tree: TreeNode }>
+      },
+    })),
+  })
+  const diff: DiffData | null = useMemo(() => {
+    if (!diffPrev) return bakedDiff
+    const [a, b] = [diffPair[0]?.data?.tree, diffPair[1]?.data?.tree]
+    return a && b && asof ? clientDiff(a, b, diffPrev, asof) : null
+  }, [diffPrev, bakedDiff, diffPair[0]?.data, diffPair[1]?.data, asof])
   // Lazy drill (specs/path-index-lazy-drill.md step 3, now the primary
   // source): the map's base is the pixel-budget subtree at the store root,
   // and every level of the drilled path gets its own subtree query, grafted
@@ -847,18 +879,36 @@ function AppContent() {
 
       {markMode && <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} />}
 
-      {diff && diff.rows.length > 0 && (
+      {asof && prevScan && (diff || diffPrev) && (
         <section id="changes">
-          <h2>Changes since previous scan</h2>
+          <h2>Changes</h2>
           <p className="sub">
-            {diff.prev ? fmtScan(diff.prev) : 'previous'} → {diff.curr ? fmtScan(diff.curr) : 'this scan'}
-            {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
-              {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
-            </b>
-            {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
-            {diff.truncated && ' · (largest changes shown; walk was budget-capped)'}
+            {/* both endpoints are pickable; "after" IS the page's scan, so
+                changing it moves the whole page (same as the header picker) */}
+            <select className="scanpick" value={diffPrev ?? bakedDiff?.prev ?? prevScan} aria-label="Diff from scan"
+              onChange={e => setDpP(e.target.value === (bakedDiff?.prev ?? prevScan) ? undefined : e.target.value)}>
+              {scans.filter(s => s < asof).map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+            </select>
+            {' '}→{' '}
+            <select className="scanpick" value={asof} aria-label="Diff to scan (moves the page)"
+              onChange={e => setDP(e.target.value)}>
+              {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+            </select>
+            {diff ? (
+              <>
+                {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
+                  {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
+                </b>
+                {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
+                {diffPrev
+                  ? ' · aligned client-side from the two scans’ budget trees (approximate below the fold)'
+                  : diff.truncated && ' · (largest changes shown; walk was budget-capped)'}
+              </>
+            ) : (
+              <span className="loading"> · aligning {fmtScan(diffPrev!)} → {fmtScan(asof)}…</span>
+            )}
           </p>
-          <DiffTreemap data={diff} label={store.title} />
+          {diff && diff.rows.length > 0 && <DiffTreemap data={diff} label={store.title} />}
         </section>
       )}
 
