@@ -1666,3 +1666,37 @@ details.fold {
     &.on { background: var(--line); color: var(--ink); }
   }
 }
+
+// /sweep console (specs/sweep-executor.md § Phase 2)
+.sweep-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px 24px 48px;
+  h1 { font-size: 22px; margin: 10px 0 4px; }
+  h2 { margin-top: 28px; }
+  .sub { color: var(--ink-2); max-width: 80ch; }
+  .err { color: var(--s3); }
+  .dim { color: var(--ink-3); }
+  .ok { color: #3fb950; font-weight: 600; }
+  .real { color: var(--mk-del); }
+  .pct { color: var(--ink-3); }
+  .match-tag {
+    margin-left: 6px; font-size: 11px; font-weight: 650; color: #3fb950;
+    border: 1px solid #3fb95055; border-radius: 5px; padding: 0 4px;
+  }
+  .sweep-table {
+    width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 10px;
+    th { text-align: left; color: var(--ink-3); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+    td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.approved td { background: #3fb95012; }
+    tr.matched td:first-child { box-shadow: inset 2px 0 0 #3fb95088; }
+    code { font-size: 12.5px; }
+  }
+  button.mini {
+    font-size: 12px; padding: 1px 8px; margin-left: 6px; cursor: pointer;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+    &.go { border-color: #3fb950; color: #3fb950; font-weight: 650; }
+    &:hover { border-color: var(--ink-2); }
+  }
+}

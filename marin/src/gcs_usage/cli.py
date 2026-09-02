@@ -811,12 +811,13 @@ def sweep_clobbers(as_json: bool, token: str | None, url: str | None) -> None:
 
 
 @sweep.command("plan")
+@option("-C", "--candidates", "bake_candidates", is_flag=True, help="Bake candidates.json (+ sweep/latest.json pointer) for the /sweep console")
 @option("-d", "--date", default=None, help="Scan date (default: latest from scans.json)")
 @option("-j", "--json", "as_json", is_flag=True, help="Machine-readable JSON to stdout")
 @option("-n", "--top", default=20, type=int, help="Top sweep-only bands to list")
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
-def sweep_plan_cmd(date: str | None, as_json: bool, top: int, token: str | None, url: str | None) -> None:
+def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: int, token: str | None, url: str | None) -> None:
     """Band-level sweep plan under the VOTE model (specs/vote-model.md):
     per-mark bands (the site's `?marks=1` manifest — exact D1-index bytes)
     re-aggregated by vote-state. `sweep` bands are deletable now; `conflict`
@@ -873,16 +874,53 @@ def sweep_plan_cmd(date: str | None, as_json: bool, top: int, token: str | None,
         who = ",".join(sorted(r["votes"]))
         print(f"{(r.get('net_bytes') or 0) / 1e12:9.2f} TB  {r['prefix']}  [{who}]")
 
+    if bake_candidates:
+        # Evidence rows for the /sweep console: sweep-only bands (largest
+        # first, capped) + who swept them + the attribution top-user via the
+        # subtree API — the owner signal the empty owner axis can't provide.
+        import fsspec
+        from urllib.parse import quote
+
+        from .identity import load_identities
+
+        idmap = load_identities()
+        bands = sorted(states.get("sweep", {}).get("rows", []), key=lambda r: -(r.get("net_bytes") or 0))[:150]
+        cands = []
+        for r in bands:
+            pth = r["prefix"].removeprefix("gs://").rstrip("/")
+            top_user = share = None
+            try:
+                t = get_json(base, tok, f"/api/subtree", {"date": date, "path": pth, "w": 64, "h": 64})["tree"]
+                us = t.get("us") or []
+                if us and t.get("b"):
+                    top_user, share = us[0][0], us[0][1] / t["b"]
+            except Exception:
+                pass
+            sweepers = sorted({idmap.resolve(w) for w in r["votes"]})
+            cands.append({
+                "prefix": r["prefix"], "net_bytes": r.get("net_bytes") or 0, "net_objects": r.get("net_objects") or 0,
+                "sweepers": sweepers, "top_user": top_user, "share": share,
+                "owner_match": top_user in sweepers if top_user else False,
+            })
+        plan_id = f"{date}-h{head}"
+        root = "gs://oa-gcs-usage-dvx/sweep"
+        with fsspec.open(f"{root}/{plan_id}/candidates.json", "w") as fh:
+            json.dump({"plan": plan_id, "scan": date, "head": head, "bands": cands}, fh, indent=1)
+        with fsspec.open(f"{root}/latest.json", "w") as fh:
+            json.dump({"plan": plan_id}, fh)
+        err(f"candidates: {len(cands)} bands → {root}/{plan_id}/candidates.json (+ latest.json)")
+
 
 @sweep.command("manifest")
 @option("-A", "--approve", "approved", multiple=True, help="Approved band prefix (gs://…/); given ≥1, approval REPLACES the owner-claim check")
+@option("-S", "--approved-from-site", is_flag=True, help="Load approved bands from the site's sweep_approvals table (the /sweep console's sign-offs)")
 @option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets (default: all six)")
 @option("-d", "--date", required=True, help="Scan date whose listing to plan from (pinned)")
 @option("-o", "--out", default=None, help="Output dir (default gs://oa-gcs-usage-dvx/sweep/<date>-h<head>)")
 @option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Listing root (gs:// or local mount)")
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
-def sweep_manifest(approved: tuple[str, ...], only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None) -> None:
+def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None) -> None:
     """Object-level sweep manifest under the vote model + policy (b): stream
     the pinned listing, classify every directory (specs/sweep-executor.md,
     specs/vote-model.md), and write per-bucket parquets of the ELIGIBLE keys
@@ -908,6 +946,10 @@ def sweep_manifest(approved: tuple[str, ...], only_buckets: tuple[str, ...], dat
     own = owners_resolver(actions)
     idmap = load_identities()
     ever = ever_kept_prefixes(rows)
+    if approved_from_site:
+        site_rows = get_json(base, tok, "/api/db/sweep_approvals")["rows"]
+        approved = tuple(sorted(set(approved) | {r["prefix"] for r in site_rows}))
+        err(f"approved-from-site: {len(site_rows)} band(s) from sweep_approvals")
     out = out or f"gs://oa-gcs-usage-dvx/sweep/{date}-h{head}"
     err(f"sweep manifest: scan {date} @ head {head} → {out}"
         + (f" · {len(approved)} approved band(s)" if approved else ""))

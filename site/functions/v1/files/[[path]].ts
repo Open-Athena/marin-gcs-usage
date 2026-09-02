@@ -28,7 +28,7 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
     endpoint: 'https://storage.googleapis.com', // GCS XML API is S3-compatible
     bucket: BUCKET,
     region: 'us-east1', // bucket location; GCS validates the SigV4 credential-scope region
-    prefixes: ['listing/', 'snapshots/'], // allow-list: only the scan outputs
+    prefixes: ['listing/', 'snapshots/', 'sweep/'], // allow-list: scan outputs + sweep plans/logs
     accessKeyId: GCS_HMAC_KEY_ID,
     secretAccessKey: GCS_HMAC_SECRET,
   })

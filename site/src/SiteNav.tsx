@@ -33,6 +33,7 @@ export function SiteNav({ inline = false, scan }: { inline?: boolean; scan?: Sca
         {link('/files', 'Scans')}
         {markLinks && link('/users', 'Users')}
         {markLinks && link('/marks', 'Marks')}
+        {markLinks && link('/sweep', 'Sweep')}
       </span>
       {/* A scan picker rides in the shared nav only on pages scoped to one
           scan (home, /users, /user/:id). /marks (ledger spans scans) and
