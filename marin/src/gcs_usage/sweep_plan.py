@@ -270,11 +270,15 @@ def classify_dir(
     own: FateResolver,
     idmap,
     ever_kept: frozenset[str],
+    approved: tuple[str, ...] = (),
 ) -> tuple[str, Optional[str], tuple[str, ...]]:
     """(category, owner, sweeper ids) for one directory. Policy (b): a
     sweep-only dir is deletable tonight only when its effective owner is one
     of the sweepers (by canonical user id) and no covering prefix ever
-    carried a keep."""
+    carried a keep. When ``approved`` band prefixes are given they REPLACE
+    the owner-claim check: approval is the human owner-verification (the
+    owner axis turned out to be unclaimed on every big sweep band —
+    attribution + review stands in)."""
     prefix = f"gs://{bucket}/" + (dirname + "/" if dirname else "")
     votes = vr.votes(prefix)
     if not votes:
@@ -290,6 +294,10 @@ def classify_dir(
     anc = key_to_prefixes(bucket, f"{dirname}/f" if dirname else "f")
     if any(p in ever_kept for p in anc):
         return "ever_kept", None, sweepers
+    if approved:
+        if any(prefix.startswith(a) for a in approved):
+            return "eligible", own.fate(prefix), sweepers
+        return "deferred_owner", own.fate(prefix), sweepers
     owner = own.fate(prefix)
     if owner is None:
         return "deferred_unowned", None, sweepers

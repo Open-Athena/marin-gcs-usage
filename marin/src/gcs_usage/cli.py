@@ -875,13 +875,14 @@ def sweep_plan_cmd(date: str | None, as_json: bool, top: int, token: str | None,
 
 
 @sweep.command("manifest")
+@option("-A", "--approve", "approved", multiple=True, help="Approved band prefix (gs://…/); given ≥1, approval REPLACES the owner-claim check")
 @option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets (default: all six)")
 @option("-d", "--date", required=True, help="Scan date whose listing to plan from (pinned)")
 @option("-o", "--out", default=None, help="Output dir (default gs://oa-gcs-usage-dvx/sweep/<date>-h<head>)")
 @option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Listing root (gs:// or local mount)")
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
-def sweep_manifest(only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None) -> None:
+def sweep_manifest(approved: tuple[str, ...], only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None) -> None:
     """Object-level sweep manifest under the vote model + policy (b): stream
     the pinned listing, classify every directory (specs/sweep-executor.md,
     specs/vote-model.md), and write per-bucket parquets of the ELIGIBLE keys
@@ -908,14 +909,15 @@ def sweep_manifest(only_buckets: tuple[str, ...], date: str, out: str | None, ro
     idmap = load_identities()
     ever = ever_kept_prefixes(rows)
     out = out or f"gs://oa-gcs-usage-dvx/sweep/{date}-h{head}"
-    err(f"sweep manifest: scan {date} @ head {head} → {out}")
+    err(f"sweep manifest: scan {date} @ head {head} → {out}"
+        + (f" · {len(approved)} approved band(s)" if approved else ""))
 
     fs, rootpath = fsspec.core.url_to_fs(root)
     buckets = list(only_buckets) or [
         "marin-us-east1", "marin-us-east5", "marin-us-central1",
         "marin-us-central2", "marin-eu-west4", "marin-us-west4",
     ]
-    summary: dict = {"date": date, "head": head, "policy": "b:sweeper-owns", "buckets": {}}
+    summary: dict = {"date": date, "head": head, "policy": "b:approved-bands" if approved else "b:sweeper-owns", "approved": list(approved), "buckets": {}}
     schema = pa.schema([
         ("name", pa.string()), ("size_bytes", pa.int64()),
         ("storage_class_id", pa.int8()), ("created", pa.timestamp("us", tz="UTC")),
@@ -938,7 +940,7 @@ def sweep_manifest(only_buckets: tuple[str, ...], date: str, out: str | None, ro
                 dirs = df["name"].str.rpartition("/")[0]
                 for dn in dirs.unique():
                     if dn not in cache:
-                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever)
+                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever, approved)
                 cat = dirs.map(lambda dn: cache[dn][0])
                 sizes = df["size_bytes"]
                 for c, g in sizes.groupby(cat):

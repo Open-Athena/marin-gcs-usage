@@ -260,3 +260,21 @@ def test_classify_dir_policy_b():
     assert classify_dir(bkt, "was-kept/x", vr, own, idmap, ever) == ("ever_kept", None, ("kaiyue",))
     assert classify_dir(bkt, "klc/run", vr, own, idmap, ever) == ("klc_pending", None, ())
     assert classify_dir(bkt, "nothing/here", vr, own, idmap, ever) == ("unmarked", None, ())
+
+
+def test_classify_dir_approved_bands_replace_owner_check():
+    from gcs_usage.identity import IdentityMap
+    from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
+    idmap = IdentityMap(user_teams={}, alias_to_user={}, teams=(), prefix_owners=())
+    rows = [
+        KeepRow(prefix=f"{B}rl_testing/", keep="sweep", ts=100, action_id=1, who="ahmed@x"),
+        KeepRow(prefix=f"{B}grug/", keep="sweep", ts=100, action_id=2, who="k@x"),
+    ]
+    vr = VoteResolver(rows)
+    own = owners_resolver({"owners": []})
+    ever = ever_kept_prefixes(rows)
+    approved = (f"{B}rl_testing/",)
+    assert classify_dir("marin-us-east5", "rl_testing/run1", vr, own, idmap, ever, approved) == ("eligible", None, ("ahmed",))
+    assert classify_dir("marin-us-east5", "grug/x", vr, own, idmap, ever, approved) == ("deferred_owner", None, ("k",))
+    # without an approved list the unclaimed dirs defer entirely
+    assert classify_dir("marin-us-east5", "rl_testing/run1", vr, own, idmap, ever) == ("deferred_unowned", None, ("ahmed",))

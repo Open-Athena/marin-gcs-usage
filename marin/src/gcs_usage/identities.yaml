@@ -68,7 +68,7 @@ users:
     team: stanford
   calvin-xu:
     github: Calvin-Xu
-    aliases: [pinlinxu, calvinxu]  # one person, two W&B accounts (display: Calvin Xu)
+    aliases: [pinlinxu, calvinxu, calvinxu806]  # two W&B accounts + gmail login (display: Calvin Xu)
     team: stanford
   rohith-kuditipudi:
     github: RohithKuditipudi
@@ -80,7 +80,7 @@ users:
     team: stanford
   kaiyue-wen:
     github: WhenWen
-    aliases: [when, kaiyuew, kaiyue]
+    aliases: [when, kaiyuew, kaiyue, kaiyuewen3]  # kaiyuewen3: gmail login on gcs.oa.dev marks
     team: stanford
   pranshu-chaturvedi:
     github: pc0618
