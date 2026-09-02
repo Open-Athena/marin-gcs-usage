@@ -977,6 +977,54 @@ def sweep_manifest(only_buckets: tuple[str, ...], date: str, out: str | None, ro
     err(f"\nwrote {out}/plan-summary.json")
 
 
+@sweep.command("execute")
+@option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets")
+@option("-D", "--drift", type=Choice(["skip", "proceed"]), default="skip", help="Dirs that gained new keys since the scan: skip (default) or proceed (manifest keys only — new keys always survive)")
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
+@option("-w", "--workers", default=8, type=int, help="Concurrent directory re-lists")
+@option("--for-real", is_flag=True, help="Actually delete (default: dry-run writes would-delete/)")
+@argument("plan_dir")
+def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, url: str | None, workers: int, for_real: bool, plan_dir: str) -> None:
+    """Execute (default: DRY-RUN) a `sweep manifest` plan: fresh re-list per
+    eligible dir, generation-matched deletes of manifest∩live keys whose
+    timeCreated is unchanged. Every manifest dir is re-classified at the
+    CURRENT ledger head first — newer keeps/unmarks drop dirs (ledger drift).
+    `--for-real` additionally requires ≥7d soft delete on every bucket."""
+    from .identity import load_identities
+    from .mark import creds, get_json
+    from .sweep_plan import (
+        VoteResolver, classify_dir, ever_kept_prefixes, load_keeps, owners_resolver,
+    )
+    from .sweep_exec import execute_plan
+
+    base, tok = creds(token, url)
+    if not tok:
+        raise SystemExit("no token — set $GCS_USAGE_TOKEN or pass -t")
+    actions = get_json(base, tok, "/api/actions")
+    rows = load_keeps(actions)
+    vr = VoteResolver(rows)
+    own = owners_resolver(actions)
+    idmap = load_identities()
+    ever = ever_kept_prefixes(rows)
+    head = max((r.action_id for r in rows), default=0)
+    err(f"execute {'FOR REAL' if for_real else '(dry-run)'} @ current head {head}")
+
+    def reclassify(bucket: str, dn: str) -> str:
+        return classify_dir(bucket, dn, vr, own, idmap, ever)[0]
+
+    summary = execute_plan(
+        plan_dir,
+        for_real=for_real,
+        only_buckets=only_buckets,
+        drift=drift,
+        workers=workers,
+        reclassify=reclassify,
+    )
+    total = sum(b.get("delete_bytes", 0) for b in summary["buckets"].values())
+    err(f"\n{'deleted' if for_real else 'would delete'}: {total / 1e12:.2f} TB total")
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""
