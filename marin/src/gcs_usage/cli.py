@@ -1055,8 +1055,8 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
     head = max((r.action_id for r in rows), default=0)
     err(f"execute {'FOR REAL' if for_real else '(dry-run)'} @ current head {head}")
 
-    def reclassify(bucket: str, dn: str) -> str:
-        return classify_dir(bucket, dn, vr, own, idmap, ever)[0]
+    def reclassify(bucket: str, dn: str, approved: tuple[str, ...]) -> str:
+        return classify_dir(bucket, dn, vr, own, idmap, ever, approved)[0]
 
     started = int(dt.datetime.now(dt.timezone.utc).timestamp())
     summary = execute_plan(

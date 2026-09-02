@@ -39,7 +39,7 @@ def execute_plan(
     workers: int = 8,
     min_soft_delete_days: int = 7,
     client=None,
-    reclassify=None,  # (bucket, dir) -> category at the CURRENT ledger head; non-eligible dirs are skipped (ledger drift)
+    reclassify=None,  # (bucket, dir, approved) -> category at the CURRENT ledger head; non-eligible dirs are skipped (ledger drift). `approved` is the plan's approved bands — without them, band-approved dirs would all reclassify as deferred and be dropped.
 ) -> dict:
     import fsspec
     import pyarrow as pa
@@ -83,7 +83,7 @@ def execute_plan(
         if reclassify is not None:
             still = {}
             for dn, g in by_dir.items():
-                if reclassify(bucket, dn) == "eligible":
+                if reclassify(bucket, dn, approved) == "eligible":
                     still[dn] = g
                 else:
                     ledger_drift.append(dn)

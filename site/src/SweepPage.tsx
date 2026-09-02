@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { SiteNav } from './SiteNav'
 import { UserChip } from './UserChip'
@@ -101,6 +102,22 @@ export function SweepPage() {
   const bands = candsQ.data?.bands ?? []
   const approvedBytes = bands.filter(b => approvals.has(b.prefix)).reduce((s, b) => s + b.net_bytes, 0)
 
+  const [armed, setArmed] = useState(false)
+  const dispatch = useMutation({
+    mutationFn: async (mode: 'dry' | 'real') => {
+      const r = await fetch('/api/sweep/dispatch', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, date: candsQ.data!.scan }),
+      })
+      const j = await r.json() as { error?: string; job_id?: string; plan?: string; mode?: string }
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`)
+      return j as { job_id: string; plan: string; mode: string }
+    },
+    onSuccess: () => setArmed(false),
+  })
+
   return (
     <main className="sweep-page">
       <SiteNav />
@@ -156,6 +173,37 @@ export function SweepPage() {
         </table>
       )}
       {(approve.error || revoke.error) && <p className="err">{String(approve.error ?? revoke.error)}</p>}
+
+      {canWrite && candsQ.data && (
+        <div className="dispatch">
+          {/* Dispatches a GCP Batch executor run: `sweep manifest -S` (reads
+              the approvals above) → `sweep execute` — the run records itself
+              into the table below. Dry-run is the default posture; "real"
+              takes a second, armed click and shows what it will consume. */}
+          <button className="mini go" disabled={dispatch.isPending} onClick={() => dispatch.mutate('dry')}>dispatch dry-run</button>
+          {!armed ? (
+            <button className="mini danger" disabled={approvedBytes === 0 || dispatch.isPending} onClick={() => setArmed(true)}
+                    title={approvedBytes === 0 ? 'approve at least one band first' : undefined}>
+              real delete…
+            </button>
+          ) : (
+            <>
+              <button className="mini danger armed" disabled={dispatch.isPending} onClick={() => dispatch.mutate('real')}>
+                confirm REAL delete — {tb(approvedBytes)} approved
+              </button>
+              <button className="mini" onClick={() => setArmed(false)}>cancel</button>
+            </>
+          )}
+          {dispatch.isPending && <span className="dim">submitting…</span>}
+          {dispatch.data && (
+            <span className="ok">
+              submitted <code>{dispatch.data.job_id}</code> — appears below once the executor records it
+              (streaming the listing takes a while; this page refetches runs every 30s)
+            </span>
+          )}
+          {dispatch.error != null && <span className="err">{String(dispatch.error)}</span>}
+        </div>
+      )}
 
       <h2>Deletion runs</h2>
       {!runsQ.data?.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here.</p>}

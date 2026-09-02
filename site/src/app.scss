@@ -1697,6 +1697,17 @@ details.fold {
     font-size: 12px; padding: 1px 8px; margin-left: 6px; cursor: pointer;
     background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
     &.go { border-color: #3fb950; color: #3fb950; font-weight: 650; }
+    &.danger { border-color: var(--mk-del); color: var(--mk-del); font-weight: 650; }
+    &.danger.armed { background: var(--mk-del); color: #fff; }
     &:hover { border-color: var(--ink-2); }
+    &:disabled { opacity: 0.45; cursor: default; }
+  }
+  .dispatch {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    margin-top: 14px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+    button.mini { margin-left: 0; font-size: 13px; padding: 3px 12px; }
+    .ok { font-weight: 500; font-size: 13px; }
+    .err { font-size: 13px; }
   }
 }

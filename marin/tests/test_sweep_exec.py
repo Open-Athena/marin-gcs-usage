@@ -142,7 +142,31 @@ def test_for_real_refuses_without_soft_delete(tmp_path):
 def test_ledger_drift_reclassify_drops_dirs(tmp_path):
     plan = _plan_dir(tmp_path)
     client = _client()
-    s = execute_plan(str(plan), client=client, reclassify=lambda b, dn: "eligible" if dn == "b" else "conflict")
+    s = execute_plan(str(plan), client=client, reclassify=lambda b, dn, approved: "eligible" if dn == "b" else "conflict")
     assert s["buckets"]["b1"]["ledger_drift_dirs"] == ["a"]
     # only b was processed; it drifted (new key) → nothing would-delete
     assert s["buckets"]["b1"]["decisions"] == {}
+
+
+def test_reclassify_receives_plan_approved_bands(tmp_path):
+    # A plan built from approved bands must hand those bands to reclassify —
+    # without them every band-approved dir reclassifies as deferred and the
+    # whole plan silently no-ops as "ledger drift".
+    plan = _plan_dir(tmp_path)
+    summ = json.loads((plan / "plan-summary.json").read_text())
+    summ["approved"] = ["gs://b1/a/"]
+    (plan / "plan-summary.json").write_text(json.dumps(summ))
+    client = _client()
+    seen: list[tuple[str, str, tuple[str, ...]]] = []
+
+    def reclassify(bucket, dn, approved):
+        seen.append((bucket, dn, tuple(approved)))
+        return "eligible"
+
+    s = execute_plan(str(plan), client=client, reclassify=reclassify)
+    assert sorted(seen) == [
+        ("b1", "a", ("gs://b1/a/",)),
+        ("b1", "b", ("gs://b1/a/",)),
+    ]
+    assert s["buckets"]["b1"]["ledger_drift_dirs"] == []
+    assert s["buckets"]["b1"]["decisions"] == {"delete": 1, "skipped_gone": 1, "skipped_overwritten": 1}
