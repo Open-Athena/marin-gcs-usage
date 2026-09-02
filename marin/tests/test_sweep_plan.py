@@ -372,3 +372,23 @@ def test_attr_index_child_split(tmp_path):
     # leaf band with no children: judged on its own row (ahmed 70%)
     assert ai.child_split("gs://b/leaf/", {"ahmed"}) == (100, 0, 0)
     assert ai.child_split("gs://b/leaf/", {"kaiyue"}) == (0, 100, 0)
+
+
+def test_classify_dir_attr_exempt_full_mode():
+    """A band approved in 'full' mode skips the attr gate — the whole band is
+    eligible even where dirs are attributed to others."""
+    from gcs_usage.identity import IdentityMap
+    from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
+    idmap = IdentityMap(user_teams={}, alias_to_user={"k": "kaiyue"}, teams=(), prefix_owners=())
+    rows = [KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=100, action_id=1, who="k@x")]
+    vr = VoteResolver(rows)
+    own = owners_resolver({"owners": []})
+    ever = ever_kept_prefixes(rows)
+    band = f"{B}checkpoints/"
+
+    def attr(b, bucket, dn):
+        return ("percy", 1.0)  # everything belongs to someone else
+
+    gated = classify_dir("marin-us-east5", "checkpoints/llama/x", vr, own, idmap, ever, (band,), attr)
+    exempt = classify_dir("marin-us-east5", "checkpoints/llama/x", vr, own, idmap, ever, (band,), attr, frozenset({band}))
+    assert (gated[0], exempt[0]) == ("deferred_attr", "eligible")

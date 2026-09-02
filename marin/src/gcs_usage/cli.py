@@ -956,10 +956,13 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
     own = owners_resolver(actions)
     idmap = load_identities()
     ever = ever_kept_prefixes(rows)
+    attr_exempt: frozenset[str] = frozenset()
     if approved_from_site:
         site_rows = get_json(base, tok, "/api/db/sweep_approvals")["rows"]
         approved = tuple(sorted(set(approved) | {r["prefix"] for r in site_rows}))
-        err(f"approved-from-site: {len(site_rows)} band(s) from sweep_approvals")
+        attr_exempt = frozenset(r["prefix"] for r in site_rows if r.get("mode") == "full")
+        err(f"approved-from-site: {len(site_rows)} band(s) from sweep_approvals"
+            + (f" ({len(attr_exempt)} in full mode — attr gate skipped)" if attr_exempt else ""))
     out = out or f"gs://oa-gcs-usage-dvx/sweep/{date}-h{head}"
     err(f"sweep manifest: scan {date} @ head {head} → {out}"
         + (f" · {len(approved)} approved band(s)" if approved else ""))
@@ -975,7 +978,7 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
         "marin-us-east1", "marin-us-east5", "marin-us-central1",
         "marin-us-central2", "marin-eu-west4", "marin-us-west4",
     ]
-    summary: dict = {"date": date, "head": head, "policy": "b:approved-bands" if approved else "b:sweeper-owns", "approved": list(approved), "buckets": {}}
+    summary: dict = {"date": date, "head": head, "policy": "b:approved-bands" if approved else "b:sweeper-owns", "approved": list(approved), "approved_full": sorted(attr_exempt), "buckets": {}}
     schema = pa.schema([
         ("name", pa.string()), ("size_bytes", pa.int64()),
         ("storage_class_id", pa.int8()), ("created", pa.timestamp("us", tz="UTC")),
@@ -998,7 +1001,7 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
                 dirs = df["name"].str.rpartition("/")[0]
                 for dn in dirs.unique():
                     if dn not in cache:
-                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever, approved, attr)
+                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever, approved, attr, attr_exempt)
                 cat = dirs.map(lambda dn: cache[dn][0])
                 sizes = df["size_bytes"]
                 for c, g in sizes.groupby(cat):

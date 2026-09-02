@@ -273,6 +273,7 @@ def classify_dir(
     ever_kept: frozenset[str],
     approved: tuple[str, ...] = (),
     attr=None,  # (band, bucket, dirname) -> (top_user, share) | None
+    attr_exempt: frozenset[str] = frozenset(),  # bands approved in 'full' mode: whole band, gate skipped
 ) -> tuple[str, Optional[str], tuple[str, ...]]:
     """(category, owner, sweeper ids) for one directory. Policy (b): a
     sweep-only dir is deletable tonight only when its effective owner is one
@@ -285,7 +286,9 @@ def classify_dir(
     "delete the sweeper's own slice of the band": each dir must additionally
     be attributed to one of its sweepers with a majority of its bytes —
     otherwise ``deferred_attr`` (a broad sweep over a shared dir is a
-    nomination for the other users' slices, not a decision)."""
+    nomination for the other users' slices, not a decision). Bands in
+    ``attr_exempt`` were approved in 'full' mode (verified out-of-band) and
+    skip the gate."""
     prefix = f"gs://{bucket}/" + (dirname + "/" if dirname else "")
     votes = vr.votes(prefix)
     if not votes:
@@ -305,7 +308,7 @@ def classify_dir(
         band = next((a for a in approved if prefix.startswith(a)), None)
         if band is None:
             return "deferred_owner", own.fate(prefix), sweepers
-        if attr is not None:
+        if attr is not None and band not in attr_exempt:
             from .attr_index import MIN_SHARE
             hit = attr(band, bucket, dirname)
             if hit is None or hit[0] is None or hit[0] not in sweepers or hit[1] < MIN_SHARE:

@@ -1684,6 +1684,9 @@ details.fold {
     margin-left: 6px; font-size: 11px; font-weight: 650; color: #3fb950;
     border: 1px solid #3fb95055; border-radius: 5px; padding: 0 4px;
   }
+  .warn-tag { color: #d29922; font-weight: 650; }
+  .hashelp { border-bottom: 1px dotted var(--ink-3); cursor: help; }
+  .btn-sub { font-weight: 400; opacity: 0.85; }
   .sweep-table {
     width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 10px;
     th { text-align: left; color: var(--ink-3); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--line); }
@@ -1697,6 +1700,7 @@ details.fold {
     font-size: 12px; padding: 1px 8px; margin-left: 6px; cursor: pointer;
     background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
     &.go { border-color: #3fb950; color: #3fb950; font-weight: 650; }
+    &.warn { border-color: #d29922; color: #d29922; }
     &.danger { border-color: var(--mk-del); color: var(--mk-del); font-weight: 650; }
     &.danger.armed { background: var(--mk-del); color: #fff; }
     &:hover { border-color: var(--ink-2); }

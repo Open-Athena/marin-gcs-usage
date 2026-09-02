@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { SiteNav } from './SiteNav'
+import { Tooltip } from './Tooltip'
 import { UserChip } from './UserChip'
 
 // /sweep — the sweep console (specs/sweep-executor.md § Phase 2): review the
@@ -73,7 +74,7 @@ export function SweepPage() {
   })
   const apprQ = useQuery({
     queryKey: ['sweep-approvals'],
-    queryFn: () => jfetch<{ spec: { canWrite: boolean }; rows: { prefix: string; who: string; ts: number }[] }>('/api/db/sweep_approvals'),
+    queryFn: () => jfetch<{ spec: { canWrite: boolean }; rows: { prefix: string; who: string; ts: number; mode?: string }[] }>('/api/db/sweep_approvals'),
   })
   const runsQ = useQuery({
     queryKey: ['deletion-runs'],
@@ -84,7 +85,7 @@ export function SweepPage() {
   const approvals = new Map((apprQ.data?.rows ?? []).map(r => [r.prefix, r]))
 
   const approve = useMutation({
-    mutationFn: async (c: Candidate) => {
+    mutationFn: async ({ c, mode }: { c: Candidate; mode: 'slice' | 'full' }) => {
       const r = await fetch('/api/db/sweep_approvals', {
         method: 'POST',
         credentials: 'include',
@@ -93,6 +94,7 @@ export function SweepPage() {
           prefix: c.prefix,
           scan: candsQ.data!.scan,
           head: String(candsQ.data!.head),
+          mode,
           note: `console: sweepers=${c.sweepers.join(',')} top=${c.top_user ?? '—'}${c.share != null ? ` ${(c.share * 100).toFixed(0)}%` : ''}`,
         } }),
       })
@@ -111,7 +113,9 @@ export function SweepPage() {
   const bands = candsQ.data?.bands ?? []
   const approvedRows = bands.filter(b => approvals.has(b.prefix))
   const approvedBytes = approvedRows.reduce((s, b) => s + b.net_bytes, 0)
-  const approvedAttrBytes = approvedRows.reduce((s, b) => s + (attrCap(b) ?? b.net_bytes), 0)
+  // 'full'-mode approvals bypass the attr gate → count the whole band
+  const approvedAttrBytes = approvedRows.reduce(
+    (s, b) => s + (approvals.get(b.prefix)?.mode === 'full' ? b.net_bytes : attrCap(b) ?? b.net_bytes), 0)
 
   const [armed, setArmed] = useState(false)
   const dispatch = useMutation({
@@ -134,11 +138,11 @@ export function SweepPage() {
       <SiteNav />
       <h1>Sweep console</h1>
       <p className="sub">
-        Candidate bands are <b>sweep-only under the vote model</b> (no keep votes anywhere) — approval is the
-        human owner check. The executor's <b>attribution gate</b> then deletes only the <i>sweeper's own slice</i> of
-        an approved band: each directory must be majority-attributed to its sweeper, so other users' data inside a
-        broad sweep is deferred to them, never deleted on someone else's vote. Approved bands feed{' '}
-        <code>sweep manifest --approved-from-site</code>; runs land below with their logs.
+        Candidate bands are <b>sweep-only under the vote model</b> (no keep votes anywhere). Two ways to sign one off:{' '}
+        <b>approve</b> (slice) lets the executor delete only the <i>sweeper's own slice</i> — each directory must be
+        majority-attributed to its sweeper, so other users' data inside a broad sweep is deferred to their own votes;{' '}
+        <b>all</b> signs off the entire band regardless of attribution (for bands verified out-of-band). Approved bands
+        feed <code>sweep manifest --approved-from-site</code>; runs land below with their logs.
         {plan && <> Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>} · approved <b>{tb(approvedBytes)}</b>
           {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the attr gate)</>}</>}
       </p>
@@ -147,7 +151,16 @@ export function SweepPage() {
       {candsQ.data && (
         <table className="sweep-table">
           <thead>
-            <tr><th>band</th><th className="num">size</th><th className="num">≈ deletable</th><th className="num">objects</th><th>swept by</th><th>attributed top user</th><th>status</th></tr>
+            <tr>
+              <th>band</th>
+              <th className="num">size</th>
+              <th className="num">
+                <Tooltip content={<>What an <b>approve slice</b> on this band would actually delete: the executor's attribution gate only deletes directories <b>majority-attributed to the band's sweeper</b> (per the scan's path index). Other users' and unattributed/mixed directories are deferred to their own votes. Estimate is gross (kept data inside still counts toward it), capped at the band's net size; the dry-run gives exact numbers.</>}>
+                  <span className="hashelp">≈ deletable</span>
+                </Tooltip>
+              </th>
+              <th className="num">objects</th><th>swept by</th><th>attributed top user</th><th>status</th>
+            </tr>
           </thead>
           <tbody>
             {bands.map(c => {
@@ -180,11 +193,27 @@ export function SweepPage() {
                   <td>
                     {a ? (
                       <>
-                        <span className="ok">approved</span> <span className="dim">by {a.who.split('@')[0]}</span>
+                        {a.mode === 'full'
+                          ? <Tooltip content={<>Approved in <b>full</b> mode: the ENTIRE band is deletable — including data attributed to other users or unattributed. The attribution gate is skipped for this band.</>}>
+                              <span className="warn-tag">approved · FULL</span>
+                            </Tooltip>
+                          : <Tooltip content={<>Approved in <b>slice</b> mode: only directories majority-attributed to the sweeper ({c.sweepers.join(', ')}) are deletable{attrCap(c) != null && <> — ≈{tb(attrCap(c)!)} of {tb(c.net_bytes)}</>}. Everyone else's data in this band stays.</>}>
+                              <span className="ok">approved</span>
+                            </Tooltip>}
+                        {' '}<span className="dim">by {a.who.split('@')[0]}</span>
                         {canWrite && <button className="mini" onClick={() => revoke.mutate(c.prefix)}>revoke</button>}
                       </>
                     ) : canWrite ? (
-                      <button className="mini go" onClick={() => approve.mutate(c)}>approve</button>
+                      <>
+                        <Tooltip content={<>Sign off the <b>sweeper's slice</b>: the executor deletes only directories majority-attributed to {c.sweepers.join(', ')}{attrCap(c) != null && <> — ≈<b>{tb(attrCap(c)!)}</b> of {tb(c.net_bytes)}</>}. Data attributed to other users, or unattributed, is deferred to their own votes — never deleted by this approval.</>}>
+                          <button className="mini go" onClick={() => approve.mutate({ c, mode: 'slice' })}>
+                            approve{attrCap(c) != null && <span className="btn-sub"> ≈{tb(attrCap(c)!)}</span>}
+                          </button>
+                        </Tooltip>
+                        <Tooltip content={<>Sign off the <b>ENTIRE band</b> — all {tb(c.net_bytes)}, including data attributed to other users or unattributed. Skips the attribution gate. Use only after confirming out-of-band (e.g. with the affected users) that everything under this prefix can go.</>}>
+                          <button className="mini warn" onClick={() => approve.mutate({ c, mode: 'full' })}>all</button>
+                        </Tooltip>
+                      </>
                     ) : (
                       <span className="dim">—</span>
                     )}

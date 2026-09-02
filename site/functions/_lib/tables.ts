@@ -145,6 +145,7 @@ export const TABLES: TableSpec[] = [
       { name: 'prefix', type: 'text', required: true },
       { name: 'scan', type: 'text', required: true },
       { name: 'head', type: 'int', required: true },
+      { name: 'mode', type: 'text', editable: true },
       { name: 'note', type: 'text', editable: true },
       { name: 'who', type: 'text', server: 'who' },
       { name: 'ts', type: 'int', server: 'now' },
@@ -152,7 +153,10 @@ export const TABLES: TableSpec[] = [
     readScope: 'gcs',
     writeScope: 'admin',
     orderBy: 'prefix',
-    validate: (col, v) => (col === 'prefix' && !/^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/.test(v) ? 'must be gs://marin-<bucket>/<dir>/ (trailing slash)' : null),
+    validate: (col, v) =>
+      col === 'prefix' && !/^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/.test(v) ? 'must be gs://marin-<bucket>/<dir>/ (trailing slash)'
+      : col === 'mode' && v !== 'slice' && v !== 'full' ? "mode must be 'slice' or 'full'"
+      : null,
   },
   {
     name: 'deletion_runs',
