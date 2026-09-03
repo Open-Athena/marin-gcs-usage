@@ -111,6 +111,14 @@ export function SweepPage() {
   })
 
   const bands = candsQ.data?.bands ?? []
+  // Default view: only bands where an approve would actually delete something
+  // (a non-zero sweeper-attributed slice, or already approved). Overly-broad
+  // sweeps of other users' data are noise for the reviewer — folded away.
+  const [showAll, setShowAll] = useState(false)
+  const actionable = (c: Candidate) => approvals.has(c.prefix) || (attrCap(c) ?? 0) > 0
+  const hidden = bands.filter(c => !actionable(c))
+  const hiddenBytes = hidden.reduce((s, b) => s + b.net_bytes, 0)
+  const shown = showAll ? bands : [...bands.filter(actionable)].sort((x, y) => (attrCap(y) ?? 0) - (attrCap(x) ?? 0))
   const approvedRows = bands.filter(b => approvals.has(b.prefix))
   const approvedBytes = approvedRows.reduce((s, b) => s + b.net_bytes, 0)
   // 'full'-mode approvals bypass the attr gate → count the whole band
@@ -163,7 +171,7 @@ export function SweepPage() {
             </tr>
           </thead>
           <tbody>
-            {bands.map(c => {
+            {shown.map(c => {
               const a = approvals.get(c.prefix)
               const drill = '/' + c.prefix.replace(/^gs:\/\//, '').replace(/\/$/, '')
               return (
@@ -174,7 +182,7 @@ export function SweepPage() {
                     {attrCap(c) == null ? <span className="dim">—</span> : (
                       <>
                         {tb(attrCap(c)!)}
-                        {(c.attr_other_bytes ?? 0) + (c.attr_unattr_bytes ?? 0) > 0 && attrCap(c)! < c.net_bytes
+                        {(c.attr_other_bytes ?? 0) + (c.attr_unattr_bytes ?? 0) > 0 && tb(attrCap(c)!) !== tb(c.net_bytes)
                           ? <span className="dim"> of {tb(c.net_bytes)}</span> : null}
                       </>
                     )}
@@ -223,6 +231,14 @@ export function SweepPage() {
             })}
           </tbody>
         </table>
+      )}
+      {candsQ.data && hidden.length > 0 && (
+        <p className="dim table-fold">
+          {showAll
+            ? <>showing all {bands.length} bands (incl. {hidden.length} with nothing slice-deletable) </>
+            : <>{hidden.length} bands hidden — nothing slice-deletable (≈{tb(hiddenBytes)}, mostly other users' data under overly-broad sweeps; deferred to their own votes) </>}
+          <button className="mini" onClick={() => setShowAll(v => !v)}>{showAll ? 'hide them' : 'show anyway'}</button>
+        </p>
       )}
       {(approve.error || revoke.error) && <p className="err">{String(approve.error ?? revoke.error)}</p>}
 
