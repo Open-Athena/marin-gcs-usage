@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, userColor } from './colors'
@@ -12,6 +12,26 @@ import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 const WHITE_INK = ['--s1', '--s2', '--s6', '--s7', '--s8']
+
+/** The `s3://…` path shown at the top of a pinned tooltip, with a copy-to-
+ * clipboard button (eject the prefix to the CLI). Its own component so the copy
+ * state has somewhere to live (renderTooltip is a plain function). */
+function PathBar({ uri }: { uri: string }) {
+  const [copied, setCopied] = useState(false)
+  const slash = uri.lastIndexOf('/') + 1
+  return (
+    <div className="path">
+      <span className="dirname">{uri.slice(0, slash)}</span>
+      <span className="basename">{uri.slice(slash)}</span>
+      <span className="path-acts" onClick={e => e.stopPropagation()}>
+        <button
+          type="button" className="path-copy" title="Copy path to clipboard"
+          onClick={() => navigator.clipboard?.writeText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
+        >{copied ? 'copied ✓' : 'copy'}</button>
+      </span>
+    </div>
+  )
+}
 
 export interface DateRange { min: number; max: number }
 
@@ -92,7 +112,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   }, [])
 
   const colorForCell = useCallback(
-    (kid: TreeNode, kidPath: TreeNode[], _depth: number, ctx: CellCtx): CellStyle => {
+    (kid: TreeNode, kidPath: TreeNode[], depth: number, ctx: CellCtx): CellStyle => {
       let bg: string
       let ink: string
       if (mode === 'tree') {
@@ -112,10 +132,12 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
           ink = 'var(--ink)'
         }
       } else {
-        // user: a cell only takes a user's color when it is wholly (~100%)
-        // theirs — mixed boxes stay gray until you drill/zoom
+        // user: a cell takes a user's color only when it is (nearly) wholly
+        // theirs — mixed boxes stay gray until you drill/zoom. The bar is 94%
+        // rather than ~100%: a dominant owner with a sub-6% remainder read as
+        // unattributed gray (gcs `9fe605b`).
         const [u, ub] = kid.us?.[0] ?? [null, 0]
-        bg = userColor(ub >= 0.98 * kid.b ? u : null, userIdx)
+        bg = userColor(ub >= 0.94 * kid.b ? u : null, userIdx)
         ink = inkFor(bg)
       }
       // class lens: hatch by colder-class (non-STANDARD) byte fraction — leaf
@@ -130,7 +152,15 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       if (hl?.user && !ctx.hasKids) {
         dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
       }
-      return { bg, ink, hatch, opacity: dim ? 0.22 : undefined }
+      // Shared-edge stroke, per cell: each neighbor paints its own half of a
+      // boundary, so the line can adapt to the face it borders. Top-level
+      // rects take the page background — the strongest seam the theme has —
+      // and deeper cells pull their own fill toward it, so even grey-on-grey
+      // siblings show a visible edge.
+      const edge = depth === 0
+        ? 'var(--surface)'
+        : `color-mix(in oklab, ${bg} ${depth === 1 ? 40 : 62}%, var(--surface))`
+      return { bg, ink, hatch, edge, opacity: dim ? 0.22 : undefined }
     },
     [mode, slotOf, userIdx, dateRange, hl, lens],
   )
@@ -236,10 +266,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     )
     return (
       <>
-        <div className="path">
-          <span className="dirname">{gsPath.slice(0, gsPath.lastIndexOf('/') + 1)}</span>
-          <span className="basename">{gsPath.slice(gsPath.lastIndexOf('/') + 1)}</span>
-        </div>
+        <PathBar uri={gsPath} />
         <div className="nums">
           {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
           {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}
@@ -255,6 +282,18 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       root={root}
       initialPath={initialPath}
       tiling={tiling}
+      // Depth-emphasized seams: the core default (max(1, 3-depth)) tops out
+      // at 1.5px painted per side — invisible between same-grey siblings.
+      // Give the top level a fat gutter (3px per side → 6px between cells),
+      // one step down a clear line, leaves a hairline. Colors come from
+      // `colorForCell`'s `edge` (page-bg at depth 0, fill-adaptive below).
+      // Capped by cell size: drilling into a flat dir puts hundreds of small
+      // cells at depth 0, where the 6px seam eats the area shared-edges mode
+      // exists to preserve.
+      borderWidth={(depth, { w, h }) => {
+        const base = depth === 0 ? 6 : depth === 1 ? 2.5 : 1
+        return Math.min(base, Math.max(1, Math.min(w, h) / 16))
+      }}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}

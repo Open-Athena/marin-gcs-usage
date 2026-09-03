@@ -57,12 +57,36 @@ main {
   gap: 22px;
 }
 header h1 { font-size: 24px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
+// Header: h1 left, nav + units + identity flush right as one designed cluster.
 header .hrow {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   flex-wrap: wrap;
+  .nav-links { margin-left: auto; }
+}
+.nav-links { display: inline-flex; gap: 1.2em; align-items: baseline; }
+// Nav links: quiet tabs, not underlined prose links; the current page reads
+// bright + bold via aria-current.
+.nav-files {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-2);
+  text-decoration: none;
+  &:hover { color: var(--ink); }
+}
+.nav-files[aria-current] { color: var(--ink); font-weight: 650; }
+// Site-wide byte units (TiB ↔ TB; shift-click for the trailing B).
+.units-btn {
+  color: var(--s1);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
 }
 .whoami {
   display: inline-flex;
@@ -109,6 +133,29 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.92em;
+  }
+}
+// Edu fold (the about paragraph): collapsed it's a slim info line — icon +
+// one sentence, no box; open it shows the full copy. Open on a viewer's
+// first session, collapsed after (App.tsx `useFold`).
+details.fold {
+  > summary {
+    cursor: pointer;
+    color: var(--ink-3);
+    font-size: 13.5px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    list-style: none;
+    &::-webkit-details-marker { display: none; }
+    .fold-icon { flex: none; font-size: 16px; opacity: 0.8; }
+    b { color: var(--ink-2); font-weight: 600; }
+    &:hover { color: var(--ink-2); b { color: var(--ink); } }
+  }
+  &[open] > summary {
+    color: var(--ink-2);
+    margin-bottom: 8px;
+    b { color: var(--ink); }
   }
 }
 .loading { color: var(--ink-3); }
@@ -404,6 +451,13 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     .dirname { color: var(--ink-3); word-break: break-all; font-size: 11.5px; }
     .basename { display: block; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .path-acts {
+      display: inline-flex; gap: 6px; margin-top: 4px;
+      font-family: system-ui, sans-serif;
+      button { font: inherit; font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer; }
+      button:hover { background: color-mix(in oklab, var(--ink) 9%, transparent); }
+      .path-copy { min-width: 3.6em; }
+    }
   }
   .nums { color: var(--ink-2); font-variant-numeric: tabular-nums; margin-top: 2px; }
   .users {
@@ -415,6 +469,10 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
   }
 }
+
+// The copy button only matters once the tip is interactive (pinned, or the
+// pointer has moved onto it); hidden on a passing hover so it doesn't jitter.
+.dt-treemap-tip:not(.pinned):not(:hover) .path-acts { display: none; }
 
 .agechart {
   svg { width: 100%; height: auto; display: block; }

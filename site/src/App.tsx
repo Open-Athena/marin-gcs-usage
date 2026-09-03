@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { SyntheticEvent } from 'react'
 import { FaGithub } from 'react-icons/fa'
 import { Link } from 'react-router-dom'
-import { MdBrightnessAuto, MdDarkMode, MdLayers, MdLightMode } from 'react-icons/md'
+import { MdBrightnessAuto, MdDarkMode, MdInfoOutline, MdLayers, MdLightMode } from 'react-icons/md'
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
+import { clientDiff } from './clientDiff'
 import { buildUserIndex } from './colors'
+import { fmtScan, useScan } from './scan'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
@@ -33,63 +36,46 @@ function useIdentity(): Identity | null {
   return ident
 }
 
-// Scan labels: drop the redundant year for the current one, so a list of
-// same-year scans reads as `8/17` rather than `2026-08-17`. Scan ids are
-// `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM`.
-export function fmtScan(s: string, now = new Date()): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):?(\d{2}))?/.exec(s)
-  if (!m) return s
-  const [, y, mo, d, hh, mm] = m
-  if (!hh) {
-    // Date-only ids (the daily GCS job) are calendar dates, not instants —
-    // rendering them through a timezone would shift some readers a day off.
-    return Number(y) === now.getFullYear() ? `${Number(mo)}/${Number(d)}` : `${y}-${mo}-${d}`
+// Per-scan payloads are immutable once published — dedupe tree fetches so the
+// Changes section's "before" side, and a revisited scan, never re-download.
+const treeLoads = new Map<string, Promise<TreeNode>>()
+function loadTree(d: string): Promise<TreeNode> {
+  let p = treeLoads.get(d)
+  if (!p) {
+    p = fetch(`/data/${d}/tree.json`).then(r => {
+      if (!r.ok) throw new Error(`tree ${d}: ${r.status}`)
+      return r.json() as Promise<TreeNode>
+    })
+    p.catch(() => treeLoads.delete(d))
+    treeLoads.set(d, p)
   }
-  // Sub-daily ids are UTC instants; display in the viewer's local time,
-  // 12-hour with a bare a/p ("8/19 6:08a"). The `?d=` token stays UTC (see
-  // decodeScan) — display converts, the URL doesn't.
-  const dt = new Date(Date.UTC(+y, +mo - 1, +d, +hh, +(mm ?? '0')))
-  const h = dt.getHours()
-  const time = `${h % 12 || 12}:${String(dt.getMinutes()).padStart(2, '0')}${h < 12 ? 'a' : 'p'}`
-  const md = `${dt.getMonth() + 1}/${dt.getDate()}`
-  return dt.getFullYear() === now.getFullYear()
-    ? `${md} ${time}`
-    : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${time}`
+  return p
 }
 
-// `?d` is a *prefix* of a scan id (always UTC), accepted in several spellings —
-// examples that all pin the 2026-08-19T1008 scan:
-//   260819-1008 · 260819T10 (compact date; `-` or `T` before the time)
-//   8-19-10 · 8-19-10-08    (M-D-H[-MM]; current year assumed)
-//   26-8-19-10 · 2026-8-19-10 (year-first when the lead component can't be a month)
-// The canonical/emitted form stays compact (`260819-1008`). A token matching
-// several scans renders the newest plus a disambiguation strip listing the rest.
-export const encodeScan = (v: string | undefined): string | undefined => {
-  const m = v && /^\d{2}(\d{2})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?$/.exec(v)
-  if (!m) return v || undefined
-  const [, y, mo, d, hh, mm] = m
-  return `${y}${mo}${d}` + (hh ? `-${hh}${mm ?? ''}` : '')
-}
-
-export const decodeScan = (e: string | undefined, now = new Date()): string | undefined => {
-  if (!e) return undefined
-  const pad = (n: string) => n.padStart(2, '0')
-  const compact = /^(\d{2})(\d{2})(\d{2})(?:[T-](\d{2})(\d{2})?)?$/.exec(e)
-  if (compact) {
-    const [, y, mo, d, hh, mm] = compact
-    return `20${y}-${mo}-${d}` + (hh ? `T${hh}${mm ?? ''}` : '')
+// Edu-fold state: open for the viewer's FIRST session (the copy is onboarding
+// — it earns its space once), collapsed by default ever after. An explicit
+// toggle wins forever (localStorage); sessionStorage marks the grace session
+// so a mid-session reload doesn't slam the fold shut on a first-time reader.
+function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>) => void] {
+  const [open, setOpen] = useState(() => {
+    try {
+      const chosen = localStorage.getItem(key)
+      if (chosen != null) return chosen !== '0'
+      if (localStorage.getItem(`${key}:seen`) == null) {
+        localStorage.setItem(`${key}:seen`, '1')
+        sessionStorage.setItem(`${key}:grace`, '1')
+        return true
+      }
+      return sessionStorage.getItem(`${key}:grace`) != null
+    } catch { return true }
+  })
+  const onToggle = (e: SyntheticEvent<HTMLDetailsElement>) => {
+    const o = e.currentTarget.open
+    if (o === open) return // browsers fire `toggle` when the attr is first set — not a choice
+    setOpen(o)
+    try { localStorage.setItem(key, o ? '1' : '0') } catch { /* in-memory only */ }
   }
-  const parts = e.split(/[T-]/)
-  if (parts.length < 2 || parts.length > 5 || parts.some(p => !/^(\d{1,2}|\d{4})$/.test(p))) return undefined
-  // A lead component that can't be a month is a year (2- or 4-digit); 4-digit
-  // components anywhere else are malformed.
-  const yearFirst = parts[0].length === 4 || Number(parts[0]) > 12
-  if (parts.slice(yearFirst ? 1 : 0).some(p => p.length > 2)) return undefined
-  const y = yearFirst ? (parts[0].length === 4 ? parts[0] : `20${parts[0]}`) : String(now.getUTCFullYear())
-  const [mo, d, hh, mm] = parts.slice(yearFirst ? 1 : 0)
-  if (!mo || !d || Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return undefined
-  if ((hh && Number(hh) > 23) || (mm && Number(mm) > 59)) return undefined
-  return `${y}-${pad(mo)}-${pad(d)}` + (hh ? `T${pad(hh)}${mm ? pad(mm) : ''}` : '')
+  return [open, onToggle]
 }
 
 type Theme = 'system' | 'dark' | 'light'
@@ -106,12 +92,43 @@ function useTheme(): [Theme, () => void] {
 }
 
 function AppContent() {
-  const [tree, setTree] = useState<TreeNode | null>(null)
+  // Scan selection (`?d=YYMMDD`) + the polling scan list; absent `?d` is a
+  // first-class "latest", so a parked tab follows new scans.
+  const { asof, scans, setDP } = useScan()
+  // Loaded trees by scan id: the page's own (`asof`) plus, when the Changes
+  // section aligns client-side, its "before" scan.
+  const [trees, setTrees] = useState<Record<string, TreeNode>>({})
+  const tree = asof ? trees[asof] ?? null : null
   const [age, setAge] = useState<AgeRow[]>([])
   const [meta, setMeta] = useState<Meta | null>(null)
   const [rules, setRules] = useState<Rules | null>(null)
-  // Precomputed diff vs the previous scan (job/cw-diff.py); older scans lack one.
-  const [diff, setDiff] = useState<DiffData | null>(null)
+  // Precomputed diff vs the previous scan (job/cw-diff.py): `undefined` while
+  // the fetch is in flight, `null` once it has answered "none" (older scans).
+  const [bakedDiff, setBakedDiff] = useState<DiffData | null | undefined>(undefined)
+  // `?dp=` — the Changes section's "before" endpoint. Absent = the baked
+  // diff.json pair (previous scan → this scan, the batch job's exact walk).
+  // Any other earlier scan → client-side align of the two scans' trees
+  // (clientDiff). The "after" endpoint IS the page's scan (`?d=`).
+  const [dpP, setDpP] = useUrlState('dp', stringParam())
+  const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
+  const dpValid = dpP && asof && dpP < asof && scans.includes(dpP) ? dpP : null
+  // client-align when the viewer picked a non-default "before", or when this
+  // scan has no baked diff.json at all (older scans; the default pair still
+  // deserves a diff) — but only once the baked fetch has actually answered.
+  const diffPrev =
+    dpValid && dpValid !== bakedDiff?.prev ? dpValid
+    : bakedDiff === null && prevScan ? prevScan
+    : null
+  const prevTree = diffPrev ? trees[diffPrev] ?? null : null
+  const diff: DiffData | null = useMemo(() => {
+    if (!diffPrev) return bakedDiff ?? null
+    if (!prevTree || !tree || !asof) return null
+    // The baked diff.json paths are bucket-relative (`checkpoints/…`); the
+    // store root wraps one bucket node, so align from there to match.
+    const bucketOf = (t: TreeNode) => (t.c?.length === 1 ? t.c[0] : t)
+    return clientDiff(bucketOf(prevTree), bucketOf(tree), diffPrev, asof)
+  }, [diffPrev, bakedDiff, prevTree, tree, asof])
+  const [introOpen, onIntroToggle] = useFold('gcs-usage:fold2:intro')
   // URL token matches the visible label ("age"), not the internal key ("date")
   const [modeP, setModeP] = useUrlState('c', {
     encode: (v: string | undefined) => (v === 'user' || v === undefined ? undefined : v === 'date' ? 'age' : v),
@@ -123,11 +140,6 @@ function AppContent() {
     decode: (e: string | undefined) => (e === undefined ? undefined : e === 'age' ? 'date' : e),
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
-  // Selected scan in the URL as short YYMMDD (`?d=260809`), kept always present
-  // so each day's Slack digest can deep-link straight to its own scan.
-  const [dP, setDP] = useUrlState('d', { encode: encodeScan, decode: decodeScan })
-  const [scans, setScans] = useState<string[]>([])
-  const asof = useMemo(() => (dP && scans.includes(dP) ? dP : scans[0] ?? null), [dP, scans])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const [theme, cycleTheme] = useTheme()
   const ident = useIdentity()
@@ -235,18 +247,24 @@ function AppContent() {
   }, [tree])
 
   useEffect(() => {
-    void fetch('/data/scans.json').then(r => r.json()).then(setScans)
     void fetch('/data/rules.json').then(r => r.json()).then(setRules).catch(() => {})
   }, [])
 
+  // Any scan the view needs a tree for (the page's own + the diff's "before").
+  const wantTrees = useMemo(() => [asof, diffPrev].filter((d): d is string => !!d), [asof, diffPrev])
+  useEffect(() => {
+    for (const d of wantTrees) {
+      if (trees[d]) continue
+      loadTree(d).then(t => setTrees(prev => (prev[d] ? prev : { ...prev, [d]: t }))).catch(() => {})
+    }
+  }, [wantTrees, trees])
+
   useEffect(() => {
     if (!asof) return
-    setTree(null)
-    void fetch(`/data/${asof}/tree.json`).then(r => r.json()).then(setTree)
     void fetch(`/data/${asof}/age.json`).then(r => r.json()).then(setAge)
     void fetch(`/data/${asof}/meta.json`).then(r => r.json()).then(setMeta)
-    setDiff(null)
-    void fetch(`/data/${asof}/diff.json`).then(r => (r.ok ? r.json() : null)).then(setDiff).catch(() => {})
+    setBakedDiff(undefined)
+    void fetch(`/data/${asof}/diff.json`).then(r => (r.ok ? r.json() : null)).then(setBakedDiff).catch(() => setBakedDiff(null))
   }, [asof])
 
 
@@ -290,7 +308,18 @@ function AppContent() {
       <header>
         <div className="hrow">
           <h1>Marin CoreWeave usage</h1>
-          <Link className="nav-files" to="/files" style={{ fontSize: '0.9em' }}>Browse&nbsp;scans&nbsp;→</Link>
+          {/* Nav + units + identity flush right as one designed cluster
+              (CP'd from gcs `5c50fa3` / `9fe605b`; no SiteNav here — one page). */}
+          <span className="nav-links">
+            <Link className="nav-files" to="/files">Scans</Link>
+          </span>
+          <button
+            className="units-btn" type="button"
+            onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
+            title="Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B"
+          >
+            {(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}
+          </button>
           {ident && (
             <div className="whoami">
               <UserChip who={ident.email} size={22} extra={<div className="uc-session"><div>signed in as <code>{ident.email}</code></div></div>} />
@@ -321,7 +350,11 @@ function AppContent() {
         )}
       </header>
 
-      <section className="prose">
+      <details className="prose fold" open={introOpen} onToggle={onIntroToggle}>
+        <summary>
+          <MdInfoOutline className="fold-icon" aria-hidden />
+          <span><b>About</b> — the data &amp; color modes</span>
+        </summary>
         <p>
           Storage in CoreWeave AI Object Storage (<code>s3://marin-us-east-02a</code> and friends),
           from a scheduled per-object listing. Treemap drills into prefixes; the “color by” control recolors
@@ -329,7 +362,7 @@ function AppContent() {
           from the <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars,
           manual curation) — hover a cell for its top users, or <kbd>⌘K</kbd> to jump to a user.
         </p>
-      </section>
+      </details>
 
       {hasAttr && (
         <div className="colorctl" role="radiogroup" aria-label="Color plots by">
@@ -359,18 +392,36 @@ function AppContent() {
       ) : (
         <p className="loading">loading tree…</p>
       )}
-      {diff && diff.rows.length > 0 && (
+      {asof && prevScan && (diff || diffPrev) && (
         <section id="changes">
-          <h2>Changes since previous scan</h2>
+          <h2>Changes</h2>
           <p className="sub">
-            {diff.prev ? fmtScan(diff.prev) : 'previous'} → {diff.curr ? fmtScan(diff.curr) : 'this scan'}
-            {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
-              {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
-            </b>
-            {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
-            {diff.truncated && ' · (largest changes shown; walk was budget-capped)'}
+            {/* both endpoints are pickable; "after" IS the page's scan, so
+                changing it moves the whole page (same as the header picker) */}
+            <select className="scanpick" value={diffPrev ?? bakedDiff?.prev ?? prevScan} aria-label="Diff from scan"
+              onChange={e => setDpP(e.target.value === (bakedDiff?.prev ?? prevScan) ? undefined : e.target.value)}>
+              {scans.filter(s => s < asof).map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+            </select>
+            {' '}→{' '}
+            <select className="scanpick" value={asof} aria-label="Diff to scan (moves the page)"
+              onChange={e => setDP(e.target.value)}>
+              {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+            </select>
+            {diff ? (
+              <>
+                {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
+                  {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
+                </b>
+                {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
+                {diffPrev
+                  ? ' · aligned client-side from the two scans’ budget trees (approximate below the fold)'
+                  : diff.truncated && ' · (largest changes shown; walk was budget-capped)'}
+              </>
+            ) : (
+              <span className="loading"> · aligning {fmtScan(diffPrev!)} → {fmtScan(asof)}…</span>
+            )}
           </p>
-          <DiffTreemap data={diff} label="Marin CoreWeave usage" />
+          {diff && diff.rows.length > 0 && <DiffTreemap data={diff} label="Marin CoreWeave usage" />}
         </section>
       )}
 

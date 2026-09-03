@@ -6,15 +6,15 @@ const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(',') ?? []
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3253,
+    port: 3263,
     host: true,
     allowedHosts,
     // dev only: forward the Pages Functions (snapshot data + scan-browser API)
-    // to the local `wrangler pages dev` (run it on :3254 with GCS HMAC creds in
+    // to the local `wrangler pages dev` (run it on :3264 with GCS HMAC creds in
     // .dev.vars). Both /data and /v1/files now read live from the bucket.
     proxy: {
-      '/data': 'http://localhost:3254',
-      '/v1/files': 'http://localhost:3254',
+      '/data': 'http://localhost:3264',
+      '/v1/files': 'http://localhost:3264',
     },
   },
   // The workspace-linked `@rdub/file-tree` calls `useLocation` etc. — force a

@@ -16,7 +16,7 @@ const base = {
 
 const config: Config = {
   engine: 'puppeteer',
-  host: 3253,
+  host: 3263,
   output: 'screenshots',
   screenshots: {
     // Per-view height: the user legend wraps to an extra row (11 users vs 6
