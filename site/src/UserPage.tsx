@@ -900,7 +900,7 @@ export function UserPage() {
               <FateTable rows={decidedRows} empty="Nothing marked yet." />
 
               <h2>Undecided</h2>
-              <p className="tab-note">Your largest subtrees with no keep / sweep decision anywhere above or below — swept by default once the review window closes (date TBD).</p>
+              <p className="tab-note">Your largest subtrees with no keep / sweep decision anywhere above or below — the review backlog.</p>
               <FateTable rows={undecidedRows} empty="Every attributed byte has a decision. 🎉" />
             </>
           )}

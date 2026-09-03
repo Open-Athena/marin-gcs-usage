@@ -595,6 +595,22 @@ function AppContent() {
     }
   }, [meta, store])
 
+  // Catch-all route: a first path segment that isn't one of the store's
+  // buckets is a typo'd URL (/sweeps), not a drillable prefix — 404 it
+  // instead of silently rendering the root view at a bogus address.
+  const seg0 = drillPath.split('/')[0]
+  if (baseTree?.c && seg0 && !baseTree.c.some(k => k.n === seg0)) {
+    return (
+      <main>
+        <header><div className="hrow"><h1>{store.title}</h1><SiteNav inline /></div></header>
+        <p className="err">
+          404 — <code>/{drillPath}</code> is not a bucket or page here.{' '}
+          <Link to="/">home</Link> · <Link to="/sweep">sweep console</Link> · <Link to="/users">users</Link>
+        </p>
+      </main>
+    )
+  }
+
   return (
     <main>
       <header>
@@ -691,15 +707,16 @@ function AppContent() {
           <summary>
             <MdInfoOutline className="fold-icon warn" aria-hidden />
             <span>
-              <b>Mark &amp; sweep</b> — mark what to <b>keep</b>; unmarked data is swept
+              <b>Mark &amp; sweep</b> — mark data to <b>keep</b> or <b>sweep</b>
               {markIdx.count > 0 && <> · <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far</>}
               {marksQ.error && <span className="err"> · marks unavailable: {marksQ.error.message}</span>}
             </span>
           </summary>
           <p>
-            Anything left unmarked is <b>swept</b> (deleted) once the review window closes (closing
-            date TBD — announced in advance; only explicit <b>sweep</b> marks are deleted before
-            then). Drill to a prefix and mark it with the controls above the map, or click a cell to
+            Nothing is deleted automatically: deletions happen only through reviewed sweep runs
+            (explicit <b>sweep</b> marks, human-approved band by band on <a href="/sweep">/sweep</a>,
+            executed with logs). Unmarked data is the review backlog.
+            Drill to a prefix and mark it with the controls above the map, or click a cell to
             pin it and mark from there. Marks are reversible until the sweep — the most recent mark
             covering a prefix wins: mark a child <em>after</em> its parent to carve an exception; a
             broad mark repaints older deeper ones (you'll be asked to confirm). Pick a <b>lens</b>{' '}

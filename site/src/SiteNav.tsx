@@ -7,6 +7,7 @@ import { ScanPicker } from './ScanPicker'
 import type { Scan } from './scan'
 import TokenModal from './TokenModal'
 import { UserChip } from './UserChip'
+import { useUnits } from './units'
 
 // Shared page chrome: cross-page nav links + the signed-in identity chip. The
 // home page embeds it `inline` in its own header row (its h1 + store switcher
@@ -21,6 +22,7 @@ export function SiteNav({ inline = false, scan }: { inline?: boolean; scan?: Sca
   const myUser = useMyUser(ident?.email, canMark)
   const emails = useUserEmails(canMark)
   const [tokenOpen, setTokenOpen] = useState(false)
+  const { units, suffixB, toggleUnits, toggleSuffixB } = useUnits()
   const link = (to: string, label: string) => {
     const here = to === '/' ? pathname === '/' : pathname === to || pathname.startsWith(to + '/')
     return <Link className="nav-files" to={to} aria-current={here ? 'page' : undefined}>{label}</Link>
@@ -42,6 +44,13 @@ export function SiteNav({ inline = false, scan }: { inline?: boolean; scan?: Sca
       {ident && (
         <div className="whoami">
           <UserChip who={myUser ?? ident.email} size={22} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />
+          <button
+            className="token-btn units-btn" type="button"
+            onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
+            title="Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B"
+          >
+            {(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}
+          </button>
           {canMark && (
             <button className="token-btn" type="button" onClick={() => setTokenOpen(true)} title="Personal token for agents / CLI">
               token

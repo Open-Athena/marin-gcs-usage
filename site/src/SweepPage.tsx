@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { SiteNav } from './SiteNav'
 import { Tooltip } from './Tooltip'
 import { UserChip } from './UserChip'
+import { useUnits } from './units'
 
 // /sweep — the sweep console (specs/sweep-executor.md § Phase 2): review the
 // candidate sweep-only bands with their ownership evidence, sign bands off
@@ -49,7 +50,6 @@ interface DeletionRun {
   log_dir: string
 }
 
-const tb = (b: number) => `${(b / 1e12).toFixed(2)} TB`
 const when = (ts: number | null) => (ts ? new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—')
 
 const jfetch = async <T,>(url: string): Promise<T> => {
@@ -60,6 +60,9 @@ const jfetch = async <T,>(url: string): Promise<T> => {
 
 export function SweepPage() {
   const qc = useQueryClient()
+  // Site-wide byte-unit preference (IEC TiB default; header toggle / `?si`) —
+  // the treemap pages use the same formatter, so sizes agree across pages.
+  const { fmtBytes: tb } = useUnits()
   const latestQ = useQuery({
     queryKey: ['sweep-latest'],
     queryFn: () => jfetch<{ plan: string }>('/v1/files/get?path=sweep/latest.json'),
@@ -173,7 +176,11 @@ export function SweepPage() {
           <tbody>
             {shown.map(c => {
               const a = approvals.get(c.prefix)
+              // Land on the band scoped to its sweeper's attributed slice —
+              // the data an approval would actually delete — colored by read
+              // recency (staleness is the case for deletion).
               const drill = '/' + c.prefix.replace(/^gs:\/\//, '').replace(/\/$/, '')
+                + '?c=read' + (c.sweepers.length === 1 ? `&u=${encodeURIComponent(c.sweepers[0])}` : '')
               return (
                 <tr key={c.prefix} className={a ? 'approved' : c.owner_match ? 'matched' : ''}>
                   <td><Link to={drill}><code>{c.prefix.replace('gs://', '')}</code></Link></td>

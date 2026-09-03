@@ -121,9 +121,7 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
             {' · '}{new Date(mark.ts * 1000).toLocaleDateString()}
             {mark.note ? ` — ${mark.note}` : ''}
           </span>
-        ) : (
-          <span className="prov">swept by default once the review window closes (date TBD)</span>
-        )}
+        ) : null}
         {under > 0 && <span className="under">{under} mark{under === 1 ? '' : 's'} inside</span>}
       </span>
       {canMark ? (

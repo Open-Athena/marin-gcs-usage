@@ -327,6 +327,12 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
             if (rem >= 0.06 * kid.b) segments.push({ color: userColor(null, userIdx, false), frac: rem / kid.b })
             bg = 'var(--panel)'
             ink = 'var(--ink)'
+          } else if (us.length === 1) {
+            // One dominant user, remainder too small to stripe (<6%): their
+            // color, not unattributed gray — covers the 94–98% window the
+            // wholly-owned fast path above misses.
+            bg = userColor(us[0][0], userIdx, mode === 'uteam')
+            ink = inkFor(bg)
           } else {
             bg = userColor(null, userIdx, mode === 'uteam')
             ink = inkFor(bg)
@@ -707,7 +713,13 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       // the top level a fat gutter (3px per side → 6px between buckets), one
       // step down a clear line, leaves a hairline. Colors come from
       // `colorForCell`'s `edge` (page-bg at depth 0, fill-adaptive below).
-      borderWidth={depth => (depth === 0 ? 6 : depth === 1 ? 2.5 : 1)}
+      // Capped by cell size: drilling into a flat dir puts hundreds of small
+      // cells at depth 0, where the bucket-grade 6px seam eats the area
+      // shared-edges mode exists to preserve.
+      borderWidth={(depth, { w, h }) => {
+        const base = depth === 0 ? 6 : depth === 1 ? 2.5 : 1
+        return Math.min(base, Math.max(1, Math.min(w, h) / 16))
+      }}
       tiling={tiling}
       renderTooltip={renderTooltip}
       renderCellExtra={renderCellExtra}
