@@ -20,7 +20,11 @@ const LENS_LABELS: Record<Lens, string> = {
   all: 'All',
   todo: 'To-do',
   mine: 'My files',
-  unclaimed: 'Unclaimed',
+  // The lens key stays `unclaimed` (URLs), but the label matches what it
+  // actually selects: the *unattributed* slice of the group axis — no user,
+  // no group, no claim. "Unclaimed" read as the owner axis and collided with
+  // the user-legend's separate "unattributed" row.
+  unclaimed: 'Unattributed',
   communal: 'Communal',
 }
 
@@ -28,15 +32,15 @@ const LENS_LABELS: Record<Lens, string> = {
 // agnostic, by mark state); Unclaimed is the narrower "no known owner" slice.
 const LENS_TIPS: Record<Lens, string> = {
   all: 'The whole estate under the current view — no lens. Browse and mark anywhere in the treemap or the table below.',
-  todo: 'Untriaged — every prefix with no keep/sweep mark yet, whoever owns it. The map and table scope to just these; unmarked = deleted at the sweep.',
+  todo: 'Untriaged — every prefix with no keep/sweep mark yet, whoever owns it. The map and table scope to just these.',
   mine: 'Prefixes attributed to you (or the user you pick). Scope the current subtree to just your share of it.',
-  unclaimed: 'Prefixes with no known owner — nobody has written-and-claimed them. Claim what’s yours to move it under "My files", then decide keep/sweep.',
+  unclaimed: 'Bytes attributed to nobody — no user, no group, no claim. Claim what’s yours to move it under "My files", then decide keep/sweep.',
   communal: 'Shared corpora / datakit — the communal pool, not any one person’s.',
 }
 
 const LENS_NOTES: Partial<Record<Lens, string>> = {
   todo: 'Map + children table scoped to prefixes with no keep/sweep decision yet.',
-  unclaimed: 'Unattributed prefixes — claim what’s yours, then mark it. Unclaimed + unmarked = deleted.',
+  unclaimed: 'Bytes attributed to nobody — claim what’s yours, then mark it.',
   communal: 'Shared corpora / datakit — Rav & Will sign off here.',
 }
 

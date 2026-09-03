@@ -865,7 +865,18 @@ function AppContent() {
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
             klcIdx={markMode ? klcIdx : undefined}
-            viewFates={activeLens && lensUser ? (totalsQ.data?.users?.[lensUser] ?? null) : (totalsQ.data?.total ?? null)}
+            // Exact fate totals only when they describe THIS view: a server
+            // user-lens map gets that user's totals; the unscoped estate gets
+            // the estate totals. Any client-side scoping (team lens, to-do,
+            // pinned legend row) has no server-sliced totals — pass null so
+            // the ≈ client walk over the scoped tree keeps numerator and
+            // denominator on the same slice (estate totals over a 269 Ti
+            // scope read as "undecided 777%").
+            viewFates={
+              activeLens && lensUser ? totalsQ.data?.users?.[lensUser] ?? null
+              : scopedActive || todoActive || hl ? null
+              : totalsQ.data?.total ?? null
+            }
             path={mapPath}
             onPathChange={onMapPath}
           />

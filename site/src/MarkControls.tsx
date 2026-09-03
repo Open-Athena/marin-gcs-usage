@@ -33,13 +33,13 @@ export const KLC_TIP =
 export const KEEP_TIP =
   'Keep this prefix — protect everything under it from the sweep. Takes no immediate action; nothing is deleted.'
 export const SWEEP_TIP =
-  'Mark this prefix for the sweep. Takes no immediate action — matching objects are deleted only after the sweep deadline.'
+  'Mark this prefix for the sweep. Takes no immediate action — deletions happen only through reviewed sweep runs (approved band by band on /sweep).'
 export const CLAIM_TIP =
-  'Claim this prefix — assign an owner (you by default, or pick someone). Pulls it out of the unattributed “Unclaimed” pool so it shows up as that person’s data.'
+  'Claim this prefix — assign an owner (you by default, or pick someone). Pulls it out of the “Unattributed” pool so it shows up as that person’s data.'
 export const NOTE_TIP =
   'Optional memo stored on the keep/sweep/clear action you take next — a reason others (and future you) can see in the mark history. Not the same as the owner.'
 export const clearTip = (own: boolean): string =>
-  own ? 'Remove your mark — back to unmarked (swept by default).'
+  own ? 'Remove your mark — back to unmarked (undecided).'
       : 'Override the inherited mark: explicitly unmark this subtree.'
 
 /** Short date for a mark's timestamp, e.g. "Aug 24, 2026". */
