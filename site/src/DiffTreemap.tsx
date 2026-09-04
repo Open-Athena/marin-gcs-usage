@@ -186,8 +186,14 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
         // or Σ|Δ|), which reads as a nonsense total next to the header's scan
         // size. Show the movement instead: start − removed + added = end.
         renderCrumbSuffix={n => n.status === 'root'
-          ? <>— {fmtBytes(n.size_old)} − {fmtBytes(removed)} + {fmtBytes(added)} {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}</>
-          : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} ({fmtDelta(n.delta)})</>}
+          ? <>
+              — {fmtBytes(n.size_old)}{' '}
+              <span className="shrank">− {fmtBytes(removed)}</span>{' '}
+              <span className="grew">+ {fmtBytes(added)}</span>{' '}
+              {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
+              <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
+            </>
+          : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span></>}
         collapseChains
         depthFade={1}
         rootFade={1}
