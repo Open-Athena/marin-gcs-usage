@@ -454,6 +454,17 @@ details.fold {
     b { color: var(--ink); font-weight: 600; }
     .pct { color: var(--ink-3); margin-left: 2px; }
     .usd { color: var(--ink-2); margin-left: 2px; }
+    // size / % / $ chips: which metrics the legend rows inline (name always shows)
+    .li-metrics {
+      display: inline-flex; gap: 4px; margin-left: auto; opacity: 0.7;
+      &:hover { opacity: 1; }
+      button {
+        font: inherit; font-size: 11px; background: transparent; color: var(--ink-3);
+        border: 1px solid var(--line); border-radius: 4px; padding: 0 6px;
+        line-height: 16px; cursor: pointer;
+        &.on { background: var(--line); color: var(--ink); }
+      }
+    }
   }
   .dt-treemap-map {
     // upstream sets inline `flex: 1 1 0%` (fill-parent layout); in this page
@@ -1643,18 +1654,14 @@ details.fold {
   .bb-progress { color: var(--s1); }
 }
 
-// shared | gaps treemap tiling toggle — sits in the crumbs bar beside ⛶, so
-// it stays quiet: small, muted, the active side only a touch inked.
+// `gaps` treemap-tiling chip — sits in the crumbs bar beside ⛶, so it stays
+// quiet: small, muted, only a touch inked when on.
 .tiling-toggle {
-  display: inline-flex; font-size: 11px; margin-left: 8px; opacity: 0.7;
+  font: inherit; font-size: 11px; margin-left: 8px; opacity: 0.7;
+  background: transparent; color: var(--ink-3); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 6px; line-height: 16px; cursor: pointer;
   &:hover { opacity: 1; }
-  button {
-    background: transparent; color: var(--ink-3); border: 1px solid var(--line);
-    padding: 0 6px; line-height: 16px; cursor: pointer; font: inherit;
-    &:first-child { border-radius: 4px 0 0 4px; }
-    &:last-child { border-radius: 0 4px 4px 0; border-left: none; }
-    &.on { background: var(--line); color: var(--ink); }
-  }
+  &.on { background: var(--line); color: var(--ink); opacity: 1; }
 }
 
 // /sweep console (specs/sweep-executor.md § Phase 2)

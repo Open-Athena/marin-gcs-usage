@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { Avatar } from './Avatar'
@@ -14,6 +14,39 @@ import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
 import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
+
+// Legend rows inline only the metrics toggled on (swatch + name always show):
+// size by default; % and est. $/mo opt-in — all three at once made the bar
+// unreadable. Module store à la `tiling.tsx`; persisted per-browser.
+type LiMetric = 'b' | 'pct' | 'usd'
+const LI_KEY = 'gcs-usage:li-metrics'
+const isLiMetric = (m: string): m is LiMetric => m === 'b' || m === 'pct' || m === 'usd'
+const loadLi = (): ReadonlySet<LiMetric> => {
+  try {
+    const v = localStorage.getItem(LI_KEY)
+    if (v != null) return new Set(v.split(',').filter(isLiMetric))
+  } catch { /* no storage — default below */ }
+  return new Set<LiMetric>(['b'])
+}
+let liCur = loadLi()
+const liListeners = new Set<() => void>()
+const liGet = () => liCur
+const liToggle = (m: LiMetric): void => {
+  const next = new Set(liCur)
+  if (next.has(m)) next.delete(m)
+  else next.add(m)
+  liCur = next
+  try { localStorage.setItem(LI_KEY, [...next].join(',')) } catch { /* in-memory only */ }
+  liListeners.forEach(l => l())
+}
+const liSub = (l: () => void) => { liListeners.add(l); return () => { liListeners.delete(l) } }
+const useLiMetrics = (): ReadonlySet<LiMetric> => useSyncExternalStore(liSub, liGet, liGet)
+
+const LI_METRIC_CHIPS: [LiMetric, string, string][] = [
+  ['b', 'size', 'Show each legend row’s bytes'],
+  ['pct', '%', 'Show each legend row’s share of the current view'],
+  ['usd', '$', 'Show each legend row’s estimated storage cost ($/mo, list price)'],
+]
 
 /** The `gs://…` path shown at the top of a pinned tooltip, with a copy-to-
  * clipboard button (eject the prefix to the CLI) and an "open ↗" that drills the
@@ -98,6 +131,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   onPathChange?: (p: TreeNode[]) => void
 }) {
   const { fmtBytes } = useUnits()
+  const liMetrics = useLiMetrics()
   // Tiling is a user preference (header toggle): `shared` by default.
   const [tiling] = useTiling()
   // Fixed category colors: global top-level dirs by total size. A single-bucket
@@ -549,9 +583,10 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
             title={pickable ? (pinned ? 'Unpin (or press x)' : 'Click to pin this highlight') : undefined}
           >
             <span className="sw" style={{ background: r.col }} />
-            {isUser ? <UserChip who={r.k} size={15} /> : r.k} <b>{fmtBytes(r.b)}</b>
-            <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
-            {r.rate != null && (
+            {isUser ? <UserChip who={r.k} size={15} /> : r.k}
+            {liMetrics.has('b') && <> <b>{fmtBytes(r.b)}</b></>}
+            {liMetrics.has('pct') && <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>}
+            {r.rate != null && liMetrics.has('usd') && (
               r.mix ? (
                 <Tooltip content={<ClassMixTip mix={scaleMix(r.mix, r.b)} note="assumes this slice mirrors the group's fleet-wide class mix — the table is that mix scaled to this view's bytes" />}>
                   <span className="usd dotted">{fmtUsd(r.b * r.rate)}/mo</span>
@@ -563,6 +598,15 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
             {pinned && <span className="unpin" aria-hidden>✕</span>}
           </span>
         )})}
+        {rollup.length > 0 && (
+          <span className="li-metrics" role="group" aria-label="Legend row metrics">
+            {LI_METRIC_CHIPS.map(([m, label, tip]) => (
+              <Tooltip key={m} content={tip}>
+                <button type="button" aria-pressed={liMetrics.has(m)} className={liMetrics.has(m) ? 'on' : ''} onClick={() => liToggle(m)}>{label}</button>
+              </Tooltip>
+            ))}
+          </span>
+        )}
       </>
     )
   }

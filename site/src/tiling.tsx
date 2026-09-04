@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { Tiling } from '@disk-tree/react'
+import { Tooltip } from './Tooltip'
 
 // Treemap tiling preference: `shared` (cells share edges — one stroke per
 // boundary, exact areas; the default) vs `gaps` (2px gutters, rounded). Same
@@ -25,14 +26,21 @@ export const setTiling = (t: Tiling): void => {
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l) } }
 export const useTiling = (): [Tiling, (t: Tiling) => void] => [useSyncExternalStore(subscribe, get, get), setTiling]
 
-/** Two-button `shared | gaps` control — lives in the treemap's crumbs bar. */
+/** Single `gaps` toggle chip (off by default → shared-edge tiling) — lives in
+ * the treemap's crumbs bar. */
 export function TilingToggle() {
   const [t, set] = useTiling()
+  const on = t === 'gaps'
   return (
-    <span className="tiling-toggle" role="radiogroup" aria-label="Treemap tiling" title="Treemap tiling: shared edges (one stroke per boundary, exact areas) vs gutters">
-      {(['shared', 'gaps'] as Tiling[]).map(v => (
-        <button key={v} type="button" role="radio" aria-checked={t === v} className={t === v ? 'on' : ''} onClick={() => set(v)}>{v}</button>
-      ))}
-    </span>
+    <Tooltip content="Cell gutters. Off (default): cells share edges — one stroke per boundary, areas stay exact. On: gaps and rounded corners between cells.">
+      <button
+        type="button"
+        className={`tiling-toggle${on ? ' on' : ''}`}
+        aria-pressed={on}
+        onClick={() => set(on ? 'shared' : 'gaps')}
+      >
+        gaps
+      </button>
+    </Tooltip>
   )
 }
