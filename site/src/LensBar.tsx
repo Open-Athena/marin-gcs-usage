@@ -20,10 +20,10 @@ const LENS_LABELS: Record<Lens, string> = {
   all: 'All',
   todo: 'To-do',
   mine: 'My files',
-  // The lens key stays `unclaimed` (URLs), but the label matches what it
-  // actually selects: everything no *person* owns — the unattributed slice
-  // plus the shared/communal pools (which have groups but no users).
-  unclaimed: 'Unattributed',
+  // Everything no *person* owns — the unattributed slice plus the shared/
+  // communal pools (which have groups but no users). "Unclaimed" is the
+  // standardized display name for that pool (it names the action: claim it).
+  unclaimed: 'Unclaimed',
   communal: 'Communal',
 }
 

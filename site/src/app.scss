@@ -12,6 +12,7 @@
   --other: #a6a49b; --shared: #8f9aa6;
   --t-communal: #1baf7a; --t-stanford: #b1040e; --t-oa: #9d6a3c;  // oa = OA brand brown
   --t-unknown: #eda100; --t-unattr: #c9c7be;
+  --grew: #1a8f3a; --shrank: #d7302f;
   --mk-del-ink: #c4302a;  // sweep as TEXT (the fill token reads too dark/light for type)
   --never-read: #b0685e;  // read lens: no GET/HEAD/LIST since logging began
   // @disk-tree/react: opaque base under each cell's paint layer (gutters/title
@@ -30,6 +31,7 @@
     --other: #5d5c55; --shared: #4c565f;
     --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
     --t-unknown: #c98500; --t-unattr: #4a4943;
+    --grew: #4ade80; --shrank: #ff7b72;
     --mk-del-ink: #f2635a;
     --never-read: #6e332b;
   }
@@ -44,6 +46,7 @@
   --other: #5d5c55; --shared: #4c565f;
   --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
   --t-unknown: #c98500; --t-unattr: #4a4943;
+  --grew: #4ade80; --shrank: #ff7b72;
   --mk-del-ink: #f2635a;
   --never-read: #6e332b;
 }
@@ -84,7 +87,11 @@ header .hrow {
 // Home header: h1 left, nav + identity flush right as one designed cluster.
 header .hrow {
   justify-content: flex-start;
-  .nav-links { margin-left: auto; }
+  // The row aligns by baseline (right for the brand/h1), but the identity
+  // cluster's flex baseline is its 22px avatar, which floated the whole chip
+  // above the nav links — center these two clusters on the row instead.
+  .nav-links { margin-left: auto; align-self: center; }
+  .whoami { align-self: center; }
 }
 // Scan picker riding in the shared nav (SiteNav) on /users, /user/:id — the
 // home map has its own richer inline picker. Mirrors `.sub .scanpick`.
@@ -397,13 +404,16 @@ details.fold {
     padding: 0 !important;
     flex-wrap: wrap;
   }
+  // The path keeps its natural width (never squeezed into an x-scroller);
+  // the legend takes the remaining room and wraps its items, and the whole
+  // bar wraps the legend under a long path.
   .dt-treemap-crumbs {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12.5px;
     color: var(--ink-2);
     white-space: nowrap;
+    flex: 0 0 auto !important;
     flex-wrap: nowrap !important;
-    overflow-x: auto;
     a {
       color: var(--s1);
       cursor: pointer;
@@ -411,12 +421,16 @@ details.fold {
       &:hover, &:focus-visible { text-decoration: underline !important; outline: none; }
     }
   }
+  // Basis wide enough that a long path pushes the legend onto its own
+  // full-width row rather than squeezing it into a one-item-wide column.
+  .dt-treemap-legend { flex: 1 1 360px; min-width: 0; }
   .legend {
     display: flex;
-    gap: 10px;
+    gap: 6px 10px;
     flex-wrap: wrap;
+    align-items: center;
     .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
-    .sw { width: 10px; height: 10px; border-radius: 3px; }
+    .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
   }
   .dt-treemap-fs {
     background: var(--panel) !important;
@@ -484,6 +498,19 @@ details.fold {
     // up at 1.07³ and kept brightening as the pointer crossed each ancestor.
     // Only brighten the innermost hovered cell.
     &:hover:not(:has(.dt-treemap-cell:hover)) { filter: brightness(1.07); }
+    // Hover affordance: the innermost hovered cell gets a crisp inked outline;
+    // each ancestor under the pointer a fainter one, so the nesting you're
+    // inside reads at a glance. `outline` (not box-shadow) so it doesn't fight
+    // the core's inline shared-edge stroke.
+    &:hover {
+      outline: 1px solid color-mix(in oklab, var(--ink) 45%, transparent);
+      outline-offset: -1px;
+      &:not(:has(.dt-treemap-cell:hover)) {
+        outline: 2px solid var(--ink);
+        outline-offset: -2px;
+        z-index: 1;
+      }
+    }
     &:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
     .dt-treemap-lbl {
       font-variant-numeric: tabular-nums;
@@ -646,8 +673,10 @@ details.fold {
   height: 380px;
   margin-top: 8px;
 }
-.grew { color: #3fb950; }
-.shrank { color: #f85149; }
+// Diff accents: brighter than the cell fills (they're read as 12px text on
+// the page background, not as a block of colour); light mode goes darker.
+.grew { color: var(--grew); }
+.shrank { color: var(--shrank); }
 // Header quick-link into the "Changes since previous scan" treemap section.
 .changes-link {
   color: var(--ink-2);
@@ -820,20 +849,23 @@ details.fold {
   display: inline-flex;
   gap: 4px;
   align-items: center;
-  .lbl { color: var(--ink-3); font-size: 11.5px; margin-right: 2px; }
+  .lbl { color: var(--ink-3); font-size: 11.5px; margin-right: 4px; }
   button {
     background: var(--panel);
     color: var(--ink-2);
     border: 1px solid var(--line);
     border-radius: 5px;
+    font: inherit;
     font-size: 11.5px;
+    line-height: 1.4;
     padding: 1px 8px;
     cursor: pointer;
     &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
     &:hover:not(.on) { filter: brightness(1.05); }
   }
 }
-#size-over-time h2 .gran { margin-left: 12px; font-weight: 400; vertical-align: middle; }
+#over-time h2 .gran { margin-left: 12px; font-weight: 400; vertical-align: middle; }
+.sub .gran { margin-left: 10px; vertical-align: middle; }
 
 .classes {
   border-collapse: collapse;

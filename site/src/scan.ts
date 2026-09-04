@@ -1,10 +1,13 @@
 import { useMemo } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
-import { stringParam, useUrlState } from 'use-prms'
+import { useUrlState } from 'use-prms'
 import type { Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
 export const SCANS_POLL_MS = 5 * 60_000
+
+const HOUR = 3600_000
+export const DAY = 24 * HOUR
 
 // Scan labels: drop the redundant year for the current one, so a list of
 // same-year scans reads as `8/17` rather than `2026-08-17`. Scan ids are
@@ -28,6 +31,12 @@ export function fmtScan(s: string, now = new Date()): string {
   return dt.getFullYear() === now.getFullYear()
     ? `${md} ${time}`
     : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${time}`
+}
+
+/** A scan id's instant (UTC). Date-only ids read as midnight UTC. */
+export const scanTime = (d: string): number => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?/.exec(d)
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? '0'), +(m[5] ?? '0')) : NaN
 }
 
 // `?d` is a *prefix* of a scan id (always UTC), accepted in several spellings —
@@ -65,12 +74,74 @@ export const decodeScan = (e: string | undefined, now = new Date()): string | un
   return `${y}-${pad(mo)}-${pad(d)}` + (hh ? `T${pad(hh)}${mm ? pad(mm) : ''}` : '')
 }
 
+// ---- span (the Changes section's look-back) ----
+//
+// `?d=[scan][-span]` — same shape as awair's `?t=`: the scan is the "after"
+// endpoint (absent = latest, a sticky state that follows new scans), the span
+// is how far back the "before" endpoint sits (absent = the baked previous
+// scan). Spans are `Nd`, `Nh`, or both (`6d12h`); a span alone (`-7d`) keeps
+// the page on latest.
+//   ?d=-7d            latest, 7 days back
+//   ?d=260904-0002    pinned to the 9/4 00:02Z scan, default look-back
+//   ?d=260904-0002-7d pinned, 7 days back
+// The span resolves to the *nearest* scan (scan times drift minutes past
+// exact multiples), so an explicit dropdown pick round-trips as its own span.
+
+export const encodeSpan = (ms: number): string => {
+  const days = Math.floor(ms / DAY)
+  const hours = Math.round((ms - days * DAY) / HOUR)
+  return (days ? `${days}d` : '') + (hours ? `${hours}h` : '') || '0h'
+}
+
+export const decodeSpan = (s: string): number | undefined => {
+  const m = /^(?:(\d+)d)?(?:(\d+)h)?$/.exec(s)
+  if (!m || !s) return undefined
+  const ms = (+(m[1] ?? 0)) * DAY + (+(m[2] ?? 0)) * HOUR
+  return ms > 0 ? ms : undefined
+}
+
+export interface ScanSel {
+  /** Scan-id prefix (decoded form, e.g. `2026-09-04T0002`); absent = latest. */
+  d?: string
+  /** Look-back in ms; absent = the baked previous scan. */
+  span?: number
+}
+
+const SPAN_SUFFIX = /-(\d+d(?:\d+h)?|\d+h)$/
+
+export const encodeSel = (v: ScanSel | undefined): string | undefined => {
+  if (!v) return undefined
+  const d = encodeScan(v.d) ?? ''
+  const span = v.span ? `-${encodeSpan(v.span)}` : ''
+  return d + span || undefined
+}
+
+export const decodeSel = (e: string | undefined, now = new Date()): ScanSel | undefined => {
+  if (!e) return undefined
+  const m = SPAN_SUFFIX.exec(e)
+  const span = m ? decodeSpan(m[1]) : undefined
+  const head = m ? e.slice(0, m.index) : e
+  const d = head ? decodeScan(head, now) : undefined
+  return d || span ? { ...(d ? { d } : {}), ...(span ? { span } : {}) } : undefined
+}
+
+/** The scan nearest to `t` among `scans` (any order); null when empty. */
+export const nearestScan = (scans: string[], t: number): string | null => {
+  let best: string | null = null
+  for (const s of scans) if (!best || Math.abs(scanTime(s) - t) < Math.abs(scanTime(best) - t)) best = s
+  return best
+}
+
 export interface Scan {
   asof: string | null
   scans: string[]
   dMatches: string[]
   dP: string | undefined
+  /** Pin the "after" scan; the latest scan (or undefined) clears the pin. */
   setDP: (v: string | undefined) => void
+  /** Changes look-back in ms; undefined = the baked previous scan. */
+  span: number | undefined
+  setSpan: (ms: number | undefined) => void
   scansQ: UseQueryResult<string[]>
 }
 
@@ -81,7 +152,7 @@ export interface Scan {
 // page-independent dimension. `scans` is newest-first, so the first prefix match
 // is the newest. See specs/scan-param-all-pages.md.
 export function useScan(store: Store): Scan {
-  const [dP, setDP] = useUrlState('d', { encode: encodeScan, decode: decodeScan })
+  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel })
   const scansQ = useQuery<string[]>({
     // The scan list polls so an unpinned tab discovers new scans on its own; the
     // per-scan payloads are immutable once published, so they never refetch.
@@ -99,7 +170,15 @@ export function useScan(store: Store): Scan {
     refetchInterval: SCANS_POLL_MS,
   })
   const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
+  const dP = sel?.d
+  const span = sel?.span
   const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
   const asof = dMatches[0] ?? scans[0] ?? null
-  return { asof, scans, dMatches, dP, setDP, scansQ }
+  const setDP = (v: string | undefined) => {
+    const d = v && v !== scans[0] ? v : undefined
+    setSel(d || span ? { ...(d ? { d } : {}), ...(span ? { span } : {}) } : undefined)
+  }
+  const setSpan = (ms: number | undefined) =>
+    setSel(dP || ms ? { ...(dP ? { d: dP } : {}), ...(ms ? { span: ms } : {}) } : undefined)
+  return { asof, scans, dMatches, dP, setDP, span, setSpan, scansQ }
 }

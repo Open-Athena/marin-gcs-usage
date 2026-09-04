@@ -225,7 +225,7 @@ function ownerCells(meta: Meta, fates: Map<string, Record<Fate, number>> | null)
   const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b, team: u.t }))
   const userSum = users.reduce((s, u) => s + u.b, 0)
   const unattr = Math.max(0, meta.total_bytes - userSum)
-  if (unattr > 0) cells.push({ n: 'unattributed', b: unattr, team: 'unattributed' })
+  if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, team: 'unattributed' })
   return cells.sort((a, b) => b.b - a.b)
 }
 
@@ -545,7 +545,7 @@ export function UsersPage() {
           <tfoot>
             <tr className="total-row">
               <td>
-                <Tooltip content="Sum of the rows above — bytes attributed to (or claimed by) some user. Bytes with no owner (shared datasets, unattributed) are in no row, so this is less than the estate-wide keep / sweep rollup on the map.">
+                <Tooltip content="Sum of the rows above — bytes attributed to (or claimed by) some user. Unclaimed bytes (no owner: shared datasets, communal pools) are in no row, so this is less than the estate-wide keep / sweep rollup on the map.">
                   <span className="dotted">Total</span>
                 </Tooltip>
                 {' '}<span style={{ fontWeight: 400, opacity: 0.7 }}>· {users.length} users</span>

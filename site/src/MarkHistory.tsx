@@ -28,7 +28,7 @@ export function MarkHistory({ prefix, scope }: { prefix: string; scope: string }
   const base = prefix.endsWith('/') ? prefix : prefix + '/'
 
   return (
-    <section id="mark-history" className="children-tbl">
+    <section id="marks" className="children-tbl">
       <div className="hrow">
         <h2>Mark history</h2>
         <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>All&nbsp;marks&nbsp;→</Link>

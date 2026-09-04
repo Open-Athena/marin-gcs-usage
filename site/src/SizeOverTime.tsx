@@ -1,6 +1,8 @@
 import { TimeSeries } from '@disk-tree/react'
+import type { Annotation } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
+import { boolParam, useUrlState } from 'use-prms'
 import type { Meta } from './types'
 import { groupLabel } from './types'
 import { shortName } from './UserChip'
@@ -39,14 +41,10 @@ const unitTicks = (min: number, max: number, base: number, count = 4): number[] 
 }
 
 type YFrom = 'data' | 'zero'
-const Y_KEY = 'gcs-usage:sot-y'
-const loadYFrom = (): YFrom => {
-  try { if (localStorage.getItem(Y_KEY) === 'zero') return 'zero' } catch { /* no storage */ }
-  return 'data'
-}
 
-// y-axis origin toggle: fit the data (default — a ~1% wiggle on 3 PiB is
-// invisible from zero) or anchor at zero (honest proportions).
+// y-axis origin toggle (`?y0` — from-zero on): fit the data (default — a ~1%
+// wiggle on 3 PiB is invisible from zero) or anchor at zero (honest
+// proportions).
 function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
   return (
     <span className="gran" role="radiogroup" aria-label="Y-axis range">
@@ -60,7 +58,7 @@ function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
   )
 }
 
-export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: {
+export function SizeOverTime({ scans, prefix, base, fate = false, user, team, onPickDate }: {
   scans: string[]
   prefix: string
   base: string
@@ -74,10 +72,13 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: 
   /** A pinned/lensed group — `unattributed` = total − Σ user bytes (the
    * nobody-owns-it pool), others sum their `team_class_bytes`. `user` wins. */
   team?: string | null
+  /** Click a point → view the page as of that scan (pins `?d=`). */
+  onPickDate?: (date: string) => void
 }) {
   const { fmtBytes, units } = useUnits()
-  const [yFrom, setYFromState] = useState<YFrom>(loadYFrom)
-  const setYFrom = (y: YFrom) => { setYFromState(y); try { localStorage.setItem(Y_KEY, y) } catch { /* in-memory only */ } }
+  const [y0P, setY0P] = useUrlState('y0', boolParam)
+  const yFrom: YFrom = y0P ? 'zero' : 'data'
+  const setYFrom = (y: YFrom) => setY0P(y === 'zero')
 
   // The cross-scan index (one small file); optional — 404 until it's published.
   const indexQ = useQuery<SeriesIndex | null>({
@@ -161,6 +162,26 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: 
     }]
   }, [fate, slice?.kind, slice?.key, scopedArr, idx, metas.data, prefix])
 
+  // Callouts at the points a reader looks for first: the ends of the series
+  // and its extremes. Coinciding roles (first is also max) share one label.
+  // Single-series views only (the fate burn-down would triple-label).
+  const annotations = useMemo((): Annotation[] => {
+    if (fate || series.length !== 1) return []
+    const pts = series[0].points
+    if (pts.length < 2) return []
+    let lo = pts[0]
+    let hi = pts[0]
+    for (const p of pts) {
+      if (p.y < lo.y) lo = p
+      if (p.y > hi.y) hi = p
+    }
+    const picks = new Map<Pt, boolean>() // point → below?
+    picks.set(hi, false)
+    picks.set(lo, true)
+    for (const p of [pts[0], pts[pts.length - 1]]) if (!picks.has(p)) picks.set(p, p.y < (lo.y + hi.y) / 2)
+    return [...picks].map(([p, below]) => ({ x: p.x, y: p.y, label: fmtBytes(p.y), below }))
+  }, [fate, series, fmtBytes])
+
   const yTickValues = useMemo(() => {
     const ys = series.flatMap(s => s.points.map(p => p.y))
     const max = Math.max(0, ...ys)
@@ -174,7 +195,7 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: 
   if (fate) {
     if (!series.length) return null
     return (
-      <section id="size-over-time">
+      <section id="over-time">
         <h2>Mark progress <YFromToggle v={yFrom} set={setYFrom} /></h2>
         <p className="sub">
           Keep / sweep / undecided bytes per scan — the actions ledger replayed against each archived
@@ -190,6 +211,7 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: 
           yFrom={yFrom}
           yLabel="bytes"
           height={220}
+          onPickX={onPickDate && (x => onPickDate(new Date(x).toISOString().slice(0, 10)))}
         />
       </section>
     )
@@ -197,7 +219,7 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: 
   const scoped = !!scopedArr
   const belowFloor = !!prefix && !!idx && !scopedArr
   return (
-    <section id="size-over-time">
+    <section id="over-time">
       <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
       <p className="sub">
         {slice
@@ -225,6 +247,8 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: 
           yFrom={yFrom}
           yLabel="stored bytes"
           height={220}
+          annotations={annotations}
+          onPickX={onPickDate && (x => onPickDate(new Date(x).toISOString().slice(0, 10)))}
         />
       )}
     </section>

@@ -26,7 +26,7 @@ import type { Lens } from './LensBar'
 import { applyTodoFilter, communalSlice, klcSplits, lensNodePred, teamLens, unattrSlice, useMyUser, userLens } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SiteNav } from './SiteNav'
-import { encodeScan, fmtScan, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
@@ -61,6 +61,20 @@ function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>)
   }
   return [open, onToggle]
 }
+
+// Diff-section span presets (days back from the "after" scan).
+const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
+
+// Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
+// tracking the one in view, and deep links scroll to it. Old ids keep working.
+const SECTION_IDS = ['tree-map', 'tbl', 'over-time', 'marks', 'diff', 'mtime']
+const LEGACY_ANCHORS: Record<string, string> = {
+  'size-over-time': 'over-time', 'mark-history': 'marks', 'created-date': 'mtime', changes: 'diff',
+}
+// The last hash the scroll-spy itself wrote: the deep-link effect must ignore
+// it, or a router-driven location change would re-scroll to wherever the
+// reader already is.
+let spyHash = ''
 
 function AppContent() {
   // Which object store to render comes from the path (one store today; the
@@ -101,7 +115,7 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, dMatches, dP, setDP, scansQ } = useScan(store)
+  const { asof, scans, dMatches, dP, setDP, span, setSpan, scansQ } = useScan(store)
   const rulesQ = useQuery({
     queryKey: ['rules'],
     queryFn: async () => {
@@ -200,20 +214,47 @@ function AppContent() {
     retry: false,
   })
   const bakedDiff: DiffData | null = diffQ.data ?? null
-  // `?dp=` — the Changes section's "before" endpoint. Absent = the baked
-  // diff.json pair (previous scan → this scan, the batch job's exact walk).
-  // Any other earlier scan → client-side align of the two dates' pixel-budget
-  // subtrees (clientDiff). The "after" endpoint IS the page's scan (`?d=`).
-  const [dpP, setDpP] = useUrlState('dp', stringParam())
+  // The Diff section's "before" endpoint comes from the `?d=` span (see
+  // scan.ts): absent = the baked diff.json pair (previous scan → this scan,
+  // the batch job's exact walk); a span resolves to the scan *nearest* that
+  // far before "after" — scan times drift minutes past exact multiples, so
+  // "at least N days back" would skip half a cadence. The "after" endpoint IS
+  // the page's scan (`?d=`); a non-baked pair aligns client-side (clientDiff).
   const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
-  const dpValid = dpP && asof && dpP < asof && scans.includes(dpP) ? dpP : null
-  // client-align when the viewer picked a non-default "before", or when this
-  // scan has no baked diff.json at all (older scans; the default pair still
-  // deserves a diff) — but only once the baked fetch has actually answered.
+  const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
+  const bakedPrev = bakedDiff?.prev ?? prevScan
+  const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
+  // client-align when the span lands somewhere other than the baked pair, or
+  // when this scan has no baked diff.json at all (older scans; the default
+  // pair still deserves a diff) — but only once the baked fetch has answered.
   const diffPrev =
-    dpValid && dpValid !== bakedDiff?.prev ? dpValid
+    spanScan && spanScan !== bakedDiff?.prev ? spanScan
     : diffQ.isFetched && !bakedDiff && prevScan ? prevScan
     : null
+  const diffBefore = diffPrev ?? bakedPrev
+  // Pick a "before" scan by hand: the baked previous scan clears the span;
+  // anything else round-trips as its own hour-rounded span (nearest-scan
+  // resolution recovers it, and the link keeps following `latest`).
+  const pickBefore = (scan: string) => {
+    if (!asof) return
+    if (scan === bakedPrev) setSpan(undefined)
+    else setSpan(Math.max(3600_000, Math.round((scanTime(asof) - scanTime(scan)) / 3600_000) * 3600_000))
+  }
+  // Presets past the history's reach — nearest scan more than a quarter of
+  // the span off, or already claimed by a shorter preset — are dropped
+  // rather than mislabeled.
+  const spanPicks = useMemo(() => {
+    if (!asof) return []
+    const t0 = scanTime(asof)
+    const picks: { label: string; ms: number; scan: string }[] = []
+    for (const [label, days] of SPANS) {
+      const ms = days * DAY
+      const best = nearestScan(earlier, t0 - ms)
+      if (!best || Math.abs(scanTime(best) - (t0 - ms)) > ms / 4) continue
+      if (!picks.some(p => p.scan === best)) picks.push({ label, ms, scan: best })
+    }
+    return picks
+  }, [asof, earlier])
   const diffPair = useQueries({
     queries: (diffPrev ? [diffPrev, asof!] : []).map(d => ({
       queryKey: ['diff-side', store.key, d],
@@ -317,12 +358,13 @@ function AppContent() {
   const fMatches = useMemo(() => (tree && pred ? collectMatches(tree, pred) : []), [tree, pred])
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
-  // Deep-link to a section via `#hash` (e.g. `…/ego-dex#size-over-time`). Re-runs
+  // Deep-link to a section via `#hash` (e.g. `…/ego-dex#over-time`). Re-runs
   // as each data source lands (sections mount off different queries), and defers
   // to the next frame so the target exists and is laid out before we scroll.
   useEffect(() => {
-    if (!hash) return
-    const id = hash.slice(1)
+    if (!hash || hash === spyHash) return
+    const raw = hash.slice(1)
+    const id = LEGACY_ANCHORS[raw] ?? raw
     // The treemap/table lay out async and shift the page after first paint, so a
     // single deferred scroll lands in the wrong place (or a still-empty page).
     // Re-scroll over ~2s until the anchor's position stops moving.
@@ -337,6 +379,32 @@ function AppContent() {
     }, ms))
     return () => timers.forEach(clearTimeout)
   }, [hash, tree, meta, scans])
+  // Scroll-spy: keep the URL fragment tracking the section in view
+  // (replaceState — no history entries, no scroll jumps), so a copied URL
+  // reopens roughly where the reader was.
+  useEffect(() => {
+    let raf = 0
+    const onScroll = () => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        // Reference line near the top (not ⅓ viewport): a short section
+        // scrolled to the top should own the hash, not its taller successor.
+        const yRef = Math.min(window.innerHeight / 3, 150)
+        let cur = ''
+        for (const id of SECTION_IDS) {
+          const el = document.getElementById(id)
+          if (el && el.getBoundingClientRect().top <= yRef) cur = `#${id}`
+        }
+        if (window.scrollY < 40) cur = '' // parked at the top — no anchor
+        if (cur === window.location.hash) return
+        spyHash = cur
+        history.replaceState(history.state, '', window.location.pathname + window.location.search + cur)
+      })
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
+  }, [])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
   // The treemap's drill path now lives in the URL *path* (below the store's own
@@ -726,7 +794,7 @@ function AppContent() {
             pin it and mark from there. Marks are reversible until the sweep — the most recent mark
             covering a prefix wins: mark a child <em>after</em> its parent to carve an exception; a
             broad mark repaints older deeper ones (you'll be asked to confirm). Pick a <b>lens</b>{' '}
-            below to focus a slice (your files, unattributed) or the to-do list, scoped to
+            below to focus a slice (your files, unclaimed) or the to-do list, scoped to
             whatever you've drilled into.
           </p>
         </details>
@@ -854,7 +922,7 @@ function AppContent() {
           {/* Remount per store: the treemap's caches are tied to the tree it
               mounted with, and a switch can swap `tree` without ever passing
               through null once both payloads are cached. */}
-          <Treemap
+          <div id="tree-map"><Treemap
             key={store.key}
             root={mapTree}
             mode={effMode}
@@ -884,18 +952,18 @@ function AppContent() {
             }
             path={mapPath}
             onPathChange={onMapPath}
-          />
+          /></div>
           {/* The map's own listing — this node's children, narrowed to the active
               lens (to-do drops already-decided prefixes). */}
           {mapPath && (
-            <ChildrenTable
+            <div id="tbl"><ChildrenTable
               node={mapPath[mapPath.length - 1]}
               segs={mapPath.slice(1).map(n => n.n)}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
               todoOnly={markMode && markTab === 'todo'}
               onOpen={openPath}
-            />
+            /></div>
           )}
         </>
       ) : (
@@ -912,35 +980,57 @@ function AppContent() {
           scans={scans} prefix={drillPath} base={store.base} fate={markTab === 'todo'}
           user={markTab === 'mine' ? viewUser : hlUser || null}
           team={markTab === 'unclaimed' ? 'unattributed' : hlTeam || null}
+          onPickDate={setDP}
         />
       )}
 
       {markMode && <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} />}
 
       {asof && prevScan && (diff || diffPrev) && (
-        <section id="changes">
-          <h2>Changes</h2>
+        <section id="diff">
+          <h2>Diff</h2>
           <p className="sub">
             {/* both endpoints are pickable; "after" IS the page's scan, so
                 changing it moves the whole page (same as the header picker) */}
-            <select className="scanpick" value={diffPrev ?? bakedDiff?.prev ?? prevScan} aria-label="Diff from scan"
-              onChange={e => setDpP(e.target.value === (bakedDiff?.prev ?? prevScan) ? undefined : e.target.value)}>
-              {scans.filter(s => s < asof).map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+            <select className="scanpick" value={diffBefore ?? prevScan} aria-label="Diff from scan"
+              onChange={e => pickBefore(e.target.value)}>
+              {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
             </select>
             {' '}→{' '}
             <select className="scanpick" value={asof} aria-label="Diff to scan (moves the page)"
               onChange={e => setDP(e.target.value)}>
               {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
             </select>
+            {spanPicks.length > 0 && (
+              <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
+                {spanPicks.map(({ label, ms, scan }) => (
+                  <button key={label} role="radio" aria-checked={diffBefore === scan} className={diffBefore === scan ? 'on' : ''}
+                    title={`${fmtScan(scan)} → ${fmtScan(asof)}`}
+                    onClick={() => setSpan(scan === bakedPrev ? undefined : ms)}>
+                    {label}
+                  </button>
+                ))}
+              </span>
+            )}
             {diff ? (
               <>
                 {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
                   {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
                 </b>
                 {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
-                {diffPrev
-                  ? ' · aligned client-side from the two scans’ budget trees (approximate below the fold)'
-                  : diff.truncated && ' · (largest changes shown; walk was budget-capped)'}
+                {diffPrev ? (
+                  <>
+                    {' '}· <Tooltip content="Aligned client-side from the two scans’ budget trees: exact for the big prefixes, approximate below the fold (small dirs hide inside “(other)” tiles, whose combined delta is still truthful). The default previous→this pair uses the batch job’s exact walk instead.">
+                      <span className="dotted">≈ client-aligned</span>
+                    </Tooltip>
+                  </>
+                ) : diff.truncated && (
+                  <>
+                    {' '}· <Tooltip content="Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).">
+                      <span className="dotted">largest changes</span>
+                    </Tooltip>
+                  </>
+                )}
               </>
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev!)} → {fmtScan(asof)}…</span>
@@ -951,7 +1041,7 @@ function AppContent() {
       )}
 
       {!lensScoped && (
-      <section id="created-date">
+      <section id="mtime">
         {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
             the heading stays unit-free rather than lying about "month". */}
         <h2>Bytes by creation date</h2>

@@ -89,7 +89,9 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
       : userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx, mode === 'uteam'))
       : `var(${slotMap.get(k) ?? '--other'})`
     const labelOf = (k: string): string =>
-      mode === 'read' ? (k === String(NEVER) ? 'never read' : `read ${epochDaysToDate(Number(k))}`) : k
+      mode === 'read' ? (k === String(NEVER) ? 'never read' : `read ${epochDaysToDate(Number(k))}`)
+      : k === 'unattributed' ? 'unclaimed' // internal key; display name is standardized
+      : k
     // Stack order: categorical modes put the biggest slice at the base; the
     // read axis stacks by time instead (never-read base, then older → newer
     // reads), so the un-touched share of each vintage is one contiguous slab.
@@ -103,7 +105,7 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
       : userMode
         ? [
             ...[...userIdx.keys()].slice(0, 10).map((u): [string, string] => [u, userColor(u, userIdx, mode === 'uteam')]),
-            ['unattributed', 'var(--t-unattr)'],
+            ['unclaimed', 'var(--t-unattr)'],
           ]
         : [
             ...catOrder.slice(0, 8).map((k, i): [string, string] => [k, `var(${SLOTS[i]})`]),

@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
+import { stringParam, useUrlState } from 'use-prms'
 import { useUnits } from './units'
 
 const { abs, max, min, sign } = Math
@@ -130,7 +131,28 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[]; max
 export function DiffTreemap({ data, label }: { data: DiffData; label: string }) {
   const { fmtBytes } = useUnits()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
-  const [areaMode, setAreaMode] = useState<AreaMode>('max')
+  // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
+  // Δ (area = |delta|) is the default — the movement is what a diff view is
+  // for — and stays out of the URL.
+  const [dmP, setDmP] = useUrlState('dm', stringParam())
+  const areaMode: AreaMode = dmP === 'max' ? 'max' : 'delta'
+  const setAreaMode = (m: AreaMode) => setDmP(m === 'max' ? 'max' : undefined)
+  // Root arithmetic for the crumb: start − removed + added = end. Bytes move
+  // at the frontier (non-expanded rows; an expanded row's own Δ is carried by
+  // its children), so sum the frontier's signed deltas. A truncated walk (or a
+  // client-side alignment) can leave small movements unenumerated, in which
+  // case the two terms are approximate — the endpoints are always exact.
+  const { added, removed } = useMemo(() => {
+    let added = 0
+    let removed = 0
+    for (const r of data.rows) {
+      if (r.x) continue
+      const d = r.b - r.a
+      if (d > 0) added += d
+      else removed -= d
+    }
+    return { added, removed }
+  }, [data])
   const { root, maxAbsDelta } = useMemo(() => {
     const { cells, maxAbsDelta: maxAbs } = buildTree(data, areaMode)
     const root: DiffNode = {
@@ -158,6 +180,18 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
         getLabel={n => n.label}
         getId={(_n, p) => p.map(x => x.key).join('|')}
         formatSize={n => fmtBytes(n)}
+        // The core's default suffix is the node's *area weight* (Σ max(old,new),
+        // or Σ|Δ|), which reads as a nonsense total next to the header's scan
+        // size. Show the movement instead: start − removed + added = end.
+        renderCrumbSuffix={n => n.status === 'root'
+          ? <>
+              — {fmtBytes(n.size_old)}{' '}
+              <span className="shrank">− {fmtBytes(removed)}</span>{' '}
+              <span className="grew">+ {fmtBytes(added)}</span>{' '}
+              {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
+              <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
+            </>
+          : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span></>}
         collapseChains
         depthFade={1}
         rootFade={1}
