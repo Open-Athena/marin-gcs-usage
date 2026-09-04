@@ -454,9 +454,19 @@ function AppContent() {
                   {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
                 </b>
                 {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
-                {diffPrev
-                  ? ' · aligned client-side from the two scans’ budget trees (approximate below the fold)'
-                  : diff.truncated && ' · (largest changes shown; walk was budget-capped)'}
+                {diffPrev ? (
+                  <>
+                    {' '}· <Tooltip content="Aligned client-side from the two scans’ budget trees: exact for the big prefixes, approximate below the fold (small dirs hide inside “(other)” tiles, whose combined delta is still truthful). The default previous→this pair uses the batch job’s exact walk instead.">
+                      <span className="dotted">≈ client-aligned</span>
+                    </Tooltip>
+                  </>
+                ) : diff.truncated && (
+                  <>
+                    {' '}· <Tooltip content="Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).">
+                      <span className="dotted">largest changes</span>
+                    </Tooltip>
+                  </>
+                )}
               </>
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev!)} → {fmtScan(asof)}…</span>

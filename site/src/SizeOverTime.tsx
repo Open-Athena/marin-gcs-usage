@@ -1,4 +1,5 @@
 import { TimeSeries } from '@disk-tree/react'
+import type { Annotation } from '@disk-tree/react'
 import { useEffect, useMemo, useState } from 'react'
 import type { Meta } from './types'
 import { useUnits } from './units'
@@ -90,6 +91,24 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
     return points.length < 2 ? [] : [{ key: 'total', label: 'total', color: 'var(--s1)', points }]
   }, [scans, totals])
 
+  // Callouts at the points a reader looks for first: the ends of the series
+  // and its extremes. Coinciding roles (first is also max) share one label.
+  const annotations = useMemo((): Annotation[] => {
+    const pts = series[0]?.points ?? []
+    if (pts.length < 2) return []
+    let lo = pts[0]
+    let hi = pts[0]
+    for (const p of pts) {
+      if (p.y < lo.y) lo = p
+      if (p.y > hi.y) hi = p
+    }
+    const picks = new Map<Pt, boolean>() // point → below?
+    picks.set(hi, false)
+    picks.set(lo, true)
+    for (const p of [pts[0], pts[pts.length - 1]]) if (!picks.has(p)) picks.set(p, p.y < (lo.y + hi.y) / 2)
+    return [...picks].map(([p, below]) => ({ x: p.x, y: p.y, label: fmtBytes(p.y), below }))
+  }, [series, fmtBytes])
+
   const yTickValues = useMemo(() => {
     const ys = series.flatMap(s => s.points.map(p => p.y))
     const max = Math.max(0, ...ys)
@@ -112,6 +131,7 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
           formatY={fmtBytes}
           formatX={x => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
           yTickValues={yTickValues}
+          annotations={annotations}
           yFrom={yFrom}
           yLabel="stored bytes"
           height={220}

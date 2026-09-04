@@ -11,6 +11,7 @@
   --s5: #1baf7a; --s6: #eb6834; --s7: #4a3aa7; --s8: #e34948;
   --other: #a6a49b;
   --t-unknown: #eda100; --t-unattr: #c9c7be;
+  --grew: #1a8f3a; --shrank: #d7302f;
   // @disk-tree/react: opaque base under each cell's paint layer (gutters/title
   // bars) + shared-edge stroke; the core defaults are dark constants.
   --dt-treemap-container-bg: var(--panel);
@@ -28,6 +29,7 @@
     --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
     --other: #5d5c55;
     --t-unknown: #c98500; --t-unattr: #4a4943;
+    --grew: #4ade80; --shrank: #ff7b72;
   }
 }
 :root[data-theme='dark'] {
@@ -39,6 +41,7 @@
   --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
   --other: #5d5c55;
   --t-unknown: #c98500; --t-unattr: #4a4943;
+  --grew: #4ade80; --shrank: #ff7b72;
 }
 
 * { box-sizing: border-box; }
@@ -487,24 +490,30 @@ details.fold {
     .sw { width: 10px; height: 10px; border-radius: 3px; }
   }
   .ctl { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
-  .gran {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-    .lbl { color: var(--ink-3); font-size: 11.5px; margin-right: 2px; }
-    button {
-      background: var(--panel);
-      color: var(--ink-2);
-      border: 1px solid var(--line);
-      border-radius: 5px;
-      font-size: 11.5px;
-      padding: 1px 8px;
-      cursor: pointer;
-      &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
-      &:hover:not(.on) { filter: brightness(1.05); }
-    }
+}
+
+// Small radio-button strips (age-chart granularity, size-chart y-axis, the
+// Changes span presets): label + pills, the active one filled.
+.gran {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  .lbl { color: var(--ink-3); font-size: 11.5px; margin-right: 4px; }
+  button {
+    background: var(--panel);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    font: inherit;
+    font-size: 11.5px;
+    line-height: 1.4;
+    padding: 1px 8px;
+    cursor: pointer;
+    &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
+    &:hover:not(.on) { filter: brightness(1.05); }
   }
 }
+.sub .gran { margin-left: 10px; vertical-align: middle; }
 
 .classes {
   border-collapse: collapse;
@@ -601,8 +610,10 @@ details.fold {
   height: 380px;
   margin-top: 8px;
 }
-.grew { color: #3fb950; }
-.shrank { color: #f85149; }
+// Diff accents: brighter than the cell fills (they're read as 12px text on
+// the page background, not as a block of colour); light mode goes darker.
+.grew { color: var(--grew); }
+.shrank { color: var(--shrank); }
 .diff-mode {
   cursor: pointer;
   font-size: 0.75rem;
