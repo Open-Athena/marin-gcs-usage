@@ -26,6 +26,13 @@ export interface Series<T> {
   points: T[]
 }
 
+export interface Annotation {
+  x: number
+  y: number
+  label: string
+  below?: boolean
+}
+
 export interface TimeSeriesProps<T> {
   series: Series<T>[]
   getX: (p: T) => number
@@ -50,6 +57,13 @@ export interface TimeSeriesProps<T> {
   yTickValues?: number[]
   /** Show area fill under each line (default true). */
   area?: boolean
+  /** Point callouts (e.g. first/last/min/max): a short text beside the point
+   *  at (x, y), above it by default (`below` flips it). Anchored away from
+   *  the nearest plot edge so labels never run off the chart. */
+  annotations?: Annotation[]
+  /** Click handler for the snapped hover x (the crosshair position) — e.g.
+   *  jump the page to that scan date. Sets a pointer cursor on the plot. */
+  onPickX?: (x: number) => void
   /** Extra CSS on the outer wrapper. */
   className?: string
   style?: CSSProperties
@@ -96,6 +110,8 @@ export function TimeSeries<T>({
   yTicks = 4,
   yTickValues,
   area = true,
+  annotations,
+  onPickX,
   className,
   style,
   height,
@@ -203,7 +219,8 @@ export function TimeSeries<T>({
           height={dims.h}
           onMouseMove={onMove}
           onMouseLeave={() => setHoverX(null)}
-          style={{ display: 'block' }}
+          onClick={onPickX && (() => { if (hoverX != null) onPickX(hoverX) })}
+          style={{ display: 'block', cursor: onPickX ? 'pointer' : undefined }}
         >
           {/* Y grid + ticks */}
           {yTickVals.map((y, i) => (
@@ -300,6 +317,32 @@ export function TimeSeries<T>({
                   />
                 ))}
               </g>
+            )
+          })}
+          {/* Annotations: a haloed label beside the point, leaning away from
+              the nearest side edge */}
+          {annotations?.map((a, i) => {
+            const px = xToPx(a.x)
+            const py = yToPx(a.y)
+            const anchor = px < PAD.left + plotW * 0.15 ? 'start' : px > PAD.left + plotW * 0.85 ? 'end' : 'middle'
+            const dx = anchor === 'start' ? 5 : anchor === 'end' ? -5 : 0
+            const dy = a.below ? 14 : -7
+            return (
+              <text
+                key={`a${i}`}
+                x={px + dx}
+                y={py + dy}
+                textAnchor={anchor}
+                fontSize={10.5}
+                fontWeight={600}
+                fill="var(--dt-ts-anno-ink, #e6e6ea)"
+                stroke="var(--dt-ts-anno-halo, rgba(20,20,24,0.85))"
+                strokeWidth={3}
+                paintOrder="stroke"
+                pointerEvents="none"
+              >
+                {a.label}
+              </text>
             )
           })}
           {/* Hover crosshair */}
