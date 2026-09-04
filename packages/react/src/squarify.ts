@@ -127,3 +127,76 @@ export function foldSmall<T>(
   if (tiny.length < 2) return vis
   return [...kept, mergeSmall(tiny)]
 }
+
+/**
+ * Fold layout rects whose **short side** is below `minSide` px into one
+ * synthetic node, and return the new item list to re-`squarify` (or `null` when
+ * fewer than two qualify, i.e. nothing to do).
+ *
+ * Complements {@link foldSmall}, which folds by *area*: when one item dominates,
+ * the remainder is squeezed into a thin strip and its cells come out as tall,
+ * skinny slivers — enough area to escape the area fold, but too narrow to hover,
+ * label, or read. This catches those by their rendered geometry. Runs *after*
+ * squarify, since a cell's short side isn't known until it's laid out.
+ */
+export function foldThin<T>(
+  rects: Rect<T>[],
+  minSide: number,
+  mergeSmall: (small: T[]) => T,
+): T[] | null {
+  const keep: T[] = []
+  const thin: T[] = []
+  for (const r of rects) (Math.min(r.w, r.h) < minSide ? thin : keep).push(r.it)
+  if (thin.length < 2) return null
+  return [...keep, mergeSmall(thin)]
+}
+
+/**
+ * Squarify, but give a long tail of small items a legible 2D region instead of
+ * unhoverable slivers — the "side-by-side remainder" layout.
+ *
+ * When a dominant sibling squeezes the rest into sub-`minSide` slivers, split
+ * the container along its longer axis and lay the tail in its own block, over-
+ * allocated to at least `remainderFrac` of that axis so its cells stay wide
+ * enough to read. This trades exact area-proportionality (the tail is drawn
+ * larger than its share, the dominant items smaller) for legibility — the
+ * alternative to {@link foldThin}, which preserves area but hides the tail
+ * behind one `(+n)` tile. Returns a plain squarify when no tail qualifies.
+ */
+export function squarifyRemainder<T>(
+  items: T[],
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  getSize: (it: T) => number,
+  minSide = 7,
+  remainderFrac = 0.14,
+): Rect<T>[] {
+  const laid = squarify(items, x, y, w, h, getSize)
+  if (w <= 0 || h <= 0) return laid
+  const big: T[] = []
+  const tail: T[] = []
+  for (const r of laid) (Math.min(r.w, r.h) < minSide ? tail : big).push(r.it)
+  if (tail.length < 2 || big.length === 0) return laid
+
+  const sum = (arr: T[]) => arr.reduce((s, it) => s + Math.max(0, getSize(it)), 0)
+  const tailSum = sum(tail)
+  const total = tailSum + sum(big)
+  if (!total) return laid
+  // Over-allocate the tail band, but never past half the container.
+  const frac = Math.min(0.5, Math.max(tailSum / total, remainderFrac))
+
+  if (w >= h) {
+    const tw = w * frac
+    return [
+      ...squarify(big, x, y, w - tw, h, getSize),
+      ...squarify(tail, x + (w - tw), y, tw, h, getSize),
+    ]
+  }
+  const th = h * frac
+  return [
+    ...squarify(big, x, y, w, h - th, getSize),
+    ...squarify(tail, x, y + (h - th), w, th, getSize),
+  ]
+}

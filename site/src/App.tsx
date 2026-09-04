@@ -8,6 +8,7 @@ import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
+import { SizeOverTime } from './SizeOverTime'
 import type { DiffData } from './DiffTreemap'
 import { clientDiff } from './clientDiff'
 import { buildUserIndex } from './colors'
@@ -78,6 +79,14 @@ function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>)
   return [open, onToggle]
 }
 
+// Changes-section span presets (days back from the "after" scan).
+const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
+// Scan ids are UTC instants (`YYYY-MM-DDTHHMM`) or calendar dates.
+const scanTime = (d: string): number => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?/.exec(d)
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? '0'), +(m[5] ?? '0')) : NaN
+}
+
 type Theme = 'system' | 'dark' | 'light'
 const THEME_KEY = 'gcs-usage:theme'
 
@@ -119,6 +128,27 @@ function AppContent() {
     dpValid && dpValid !== bakedDiff?.prev ? dpValid
     : bakedDiff === null && prevScan ? prevScan
     : null
+  // Span presets for the "before" endpoint: the scan *nearest* to this far
+  // before "after". Scan times drift a few minutes past exact multiples
+  // (8:01a, 8:07a…), so "at least N days back" would skip half a cadence; the
+  // nearest scan is what a reader means by `1d`. Presets past the history's
+  // reach — nearest scan more than a quarter of the span off, or already
+  // claimed by a shorter preset — are dropped rather than mislabeled.
+  const diffBefore = diffPrev ?? bakedDiff?.prev ?? prevScan
+  const spanPicks = useMemo(() => {
+    if (!asof) return []
+    const t0 = scanTime(asof)
+    const earlier = scans.filter(s => s < asof)
+    const picks: { label: string; scan: string }[] = []
+    for (const [label, days] of SPANS) {
+      const cut = t0 - days * 86400_000
+      let best: string | null = null
+      for (const s of earlier) if (!best || Math.abs(scanTime(s) - cut) < Math.abs(scanTime(best) - cut)) best = s
+      if (!best || Math.abs(scanTime(best) - cut) > days * 21600_000) continue
+      if (!picks.some(p => p.scan === best)) picks.push({ label, scan: best })
+    }
+    return picks
+  }, [asof, scans])
   const prevTree = diffPrev ? trees[diffPrev] ?? null : null
   const diff: DiffData | null = useMemo(() => {
     if (!diffPrev) return bakedDiff ?? null
@@ -398,7 +428,7 @@ function AppContent() {
           <p className="sub">
             {/* both endpoints are pickable; "after" IS the page's scan, so
                 changing it moves the whole page (same as the header picker) */}
-            <select className="scanpick" value={diffPrev ?? bakedDiff?.prev ?? prevScan} aria-label="Diff from scan"
+            <select className="scanpick" value={diffBefore ?? prevScan} aria-label="Diff from scan"
               onChange={e => setDpP(e.target.value === (bakedDiff?.prev ?? prevScan) ? undefined : e.target.value)}>
               {scans.filter(s => s < asof).map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
             </select>
@@ -407,6 +437,17 @@ function AppContent() {
               onChange={e => setDP(e.target.value)}>
               {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
             </select>
+            {spanPicks.length > 0 && (
+              <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
+                {spanPicks.map(({ label, scan }) => (
+                  <button key={label} role="radio" aria-checked={diffBefore === scan} className={diffBefore === scan ? 'on' : ''}
+                    title={`${fmtScan(scan)} → ${fmtScan(asof)}`}
+                    onClick={() => setDpP(scan === (bakedDiff?.prev ?? prevScan) ? undefined : scan)}>
+                    {label}
+                  </button>
+                ))}
+              </span>
+            )}
             {diff ? (
               <>
                 {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
@@ -424,6 +465,8 @@ function AppContent() {
           {diff && diff.rows.length > 0 && <DiffTreemap data={diff} label="Marin CoreWeave usage" />}
         </section>
       )}
+
+      <SizeOverTime scans={scans} />
 
 
       <section>

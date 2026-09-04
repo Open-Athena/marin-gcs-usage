@@ -627,3 +627,20 @@ details.fold {
     &.on { background: var(--line); color: var(--ink); }
   }
 }
+
+// Hover affordance: the innermost hovered cell gets a crisp inked outline; each
+// ancestor under the pointer a fainter one, so the nesting you're inside reads
+// at a glance. `outline` (not box-shadow) so it doesn't fight the core's inline
+// shared-edge stroke.
+.treemap .dt-treemap-cell:hover {
+  outline: 1px solid color-mix(in oklab, var(--ink) 45%, transparent);
+  outline-offset: -1px;
+  &:not(:has(.dt-treemap-cell:hover)) {
+    outline: 2px solid var(--ink);
+    outline-offset: -2px;
+    z-index: 1;
+  }
+}
+
+// Size-over-time section: the y-axis toggle rides in the h2.
+#size-over-time h2 .gran { margin-left: 12px; font-weight: 400; vertical-align: middle; }

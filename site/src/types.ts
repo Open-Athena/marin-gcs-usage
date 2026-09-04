@@ -92,6 +92,7 @@ export type Units = 'si' | 'iec'
 
 export const fmtBytesSi = (b: number, suffixB = false): string => {
   const B = suffixB ? 'B' : ''
+  if (b === 0) return '0'
   if (b >= 1e12) return (b / 1e12).toFixed(b >= 1e13 ? 0 : 1) + ' T' + B
   if (b >= 1e9) return (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + ' G' + B
   if (b >= 1e6) return (b / 1e6).toFixed(0) + ' M' + B
@@ -101,6 +102,7 @@ export const fmtBytesSi = (b: number, suffixB = false): string => {
 const Ki = 1024, Mi = Ki ** 2, Gi = Ki ** 3, Ti = Ki ** 4
 export const fmtBytesIec = (b: number, suffixB = false): string => {
   const B = suffixB ? 'B' : ''
+  if (b === 0) return '0'
   if (b >= Ti) return (b / Ti).toFixed(b >= 10 * Ti ? 0 : 1) + ' Ti' + B
   if (b >= Gi) return (b / Gi).toFixed(b >= 10 * Gi ? 0 : 1) + ' Gi' + B
   if (b >= Mi) return (b / Mi).toFixed(0) + ' Mi' + B

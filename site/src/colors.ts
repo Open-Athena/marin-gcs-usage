@@ -78,3 +78,47 @@ export function inkFor(color: string): string {
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
   return lum > 0.62 ? '#1a1a19' : '#fff'
 }
+
+// ---- category slots (tree color mode) ----
+
+// Base hue/sat/light per category slot. These live here rather than as `--sN`
+// CSS vars because the treemap fans *hue* within a category (see `slotColor`),
+// which needs the components, not an opaque hex. Legend swatches call the same
+// function, so legend and cells can't drift apart.
+export const SLOT_HSL: [number, number, number][] = [
+  [212, 78, 52],  // blue
+  [128, 60, 38],  // green
+  [332, 72, 60],  // pink
+  [41, 92, 48],   // amber
+  [163, 74, 40],  // teal
+  [18, 88, 55],   // orange
+  [255, 64, 60],  // indigo
+  [2, 78, 57],    // red
+]
+
+// Degrees a category's children fan across. Bounded by how close the base hues
+// sit: the warm slots (red 2°, orange 18°, amber 41°) are only ~20° apart, so a
+// much wider fan makes a big `iris` child indistinguishable from a `marin/grug`
+// one. 46 buys clear intra-category structure without that collision.
+const HUE_SPREAD = 46
+const LIGHT_SPREAD = 20 // ...plus a lightness ramp, so near-identical hues still separate
+// Rank at which the fan reaches its far end. Spreading over *all* n children
+// makes the step 60/n degrees, so in a category with 30 children the handful
+// that actually own the pixels (ranks 0-5) come out nearly identical. Saturate
+// the ramp early instead: the visible children get the whole band, and the
+// long tail of slivers piles up at the far end where nobody can tell anyway.
+const FAN_RANKS = 6
+
+/**
+ * Color for category `slot`, optionally shaded by a child's rank within it.
+ *
+ * A single flat color per top-level prefix turns a lopsided store into one
+ * giant monochrome slab (`marin/datakit` alone is ~57% of the CoreWeave
+ * bucket). Fanning the second level across a hue *range* keeps the category
+ * legible at a glance while making its internal structure visible.
+ */
+export function slotColor(slot: number, i = 0, n = 1): string {
+  const [h, s, l] = SLOT_HSL[slot % SLOT_HSL.length]
+  const t = n > 1 ? Math.min(i / Math.min(n - 1, FAN_RANKS), 1) - 0.5 : 0
+  return `hsl(${(h + t * HUE_SPREAD + 360) % 360} ${s}% ${l + t * LIGHT_SPREAD}%)`
+}
