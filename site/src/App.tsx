@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { FaGithub } from 'react-icons/fa'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { MdBrightnessAuto, MdDarkMode, MdInfoOutline, MdLayers, MdLightMode } from 'react-icons/md'
 import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
@@ -38,7 +38,7 @@ function useIdentity(): Identity | null {
 }
 
 // Per-scan payloads are immutable once published — dedupe tree fetches so the
-// Changes section's "before" side, and a revisited scan, never re-download.
+// Diff section's "before" side, and a revisited scan, never re-download.
 const treeLoads = new Map<string, Promise<TreeNode>>()
 function loadTree(d: string): Promise<TreeNode> {
   let p = treeLoads.get(d)
@@ -79,8 +79,17 @@ function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>)
   return [open, onToggle]
 }
 
-// Changes-section span presets (days back from the "after" scan).
+// Diff-section span presets (days back from the "after" scan).
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
+
+// Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
+// tracking the one in view, and deep links scroll to it. Old ids keep working.
+const SECTION_IDS = ['tree-map', 'over-time', 'diff', 'mtime']
+const LEGACY_ANCHORS: Record<string, string> = { 'size-over-time': 'over-time', changes: 'diff', 'created-date': 'mtime' }
+// The last hash the scroll-spy itself wrote: the deep-link effect must ignore
+// it, or a router-driven location change would re-scroll to wherever the
+// reader already is.
+let spyHash = ''
 
 // Color-mode URL tokens: one letter each (`?c=a`, `?ac=t`); the older
 // spelled-out forms still decode so shared links keep working.
@@ -104,7 +113,7 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list; absent `?d` is a
   // first-class "latest", so a parked tab follows new scans.
   const { asof, scans, setDP, span, setSpan } = useScan()
-  // Loaded trees by scan id: the page's own (`asof`) plus, when the Changes
+  // Loaded trees by scan id: the page's own (`asof`) plus, when the Diff
   // section aligns client-side, its "before" scan.
   const [trees, setTrees] = useState<Record<string, TreeNode>>({})
   const tree = asof ? trees[asof] ?? null : null
@@ -114,7 +123,7 @@ function AppContent() {
   // Precomputed diff vs the previous scan (job/cw-diff.py): `undefined` while
   // the fetch is in flight, `null` once it has answered "none" (older scans).
   const [bakedDiff, setBakedDiff] = useState<DiffData | null | undefined>(undefined)
-  // The Changes section's "before" endpoint comes from the `?d=` span (see
+  // The Diff section's "before" endpoint comes from the `?d=` span (see
   // scan.ts): absent = the baked diff.json pair (previous scan → this scan,
   // the batch job's exact walk); a span resolves to the scan *nearest* that
   // far before "after" — scan times drift minutes past exact multiples
@@ -165,6 +174,54 @@ function AppContent() {
     return clientDiff(bucketOf(prevTree), bucketOf(tree), diffPrev, asof)
   }, [diffPrev, bakedDiff, prevTree, tree, asof])
   const [introOpen, onIntroToggle] = useFold('gcs-usage:fold2:intro')
+  const { hash } = useLocation()
+  // Deep-link to a section via `#hash` (e.g. `/#over-time`). Re-runs as each
+  // data source lands (sections mount off different fetches), and defers so
+  // the target exists and is laid out before we scroll.
+  useEffect(() => {
+    if (!hash || hash === spyHash) return
+    const raw = hash.slice(1)
+    const id = LEGACY_ANCHORS[raw] ?? raw
+    // The treemap lays out async and shifts the page after first paint, so a
+    // single deferred scroll lands in the wrong place (or a still-empty page).
+    // Re-scroll over ~2s until the anchor's position stops moving.
+    let last = NaN
+    const timers = [150, 400, 800, 1400, 2000].map(ms => setTimeout(() => {
+      const el = document.getElementById(id)
+      if (!el) return
+      const top = el.getBoundingClientRect().top
+      if (Math.abs(top) < 4 && top === last) return // already parked at the top
+      last = top
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, ms))
+    return () => timers.forEach(clearTimeout)
+  }, [hash, tree, meta, scans])
+  // Scroll-spy: keep the URL fragment tracking the section in view
+  // (replaceState — no history entries, no scroll jumps), so a copied URL
+  // reopens roughly where the reader was.
+  useEffect(() => {
+    let raf = 0
+    const onScroll = () => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        // Reference line near the top (not ⅓ viewport): a short section
+        // scrolled to the top should own the hash, not its taller successor.
+        const yRef = Math.min(window.innerHeight / 3, 150)
+        let cur = ''
+        for (const id of SECTION_IDS) {
+          const el = document.getElementById(id)
+          if (el && el.getBoundingClientRect().top <= yRef) cur = `#${id}`
+        }
+        if (window.scrollY < 40) cur = '' // parked at the top — no anchor
+        if (cur === window.location.hash) return
+        spyHash = cur
+        history.replaceState(history.state, '', window.location.pathname + window.location.search + cur)
+      })
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
+  }, [])
   // Map color-by (`?c=`): absent = the default (`user`); one-letter tokens.
   const [modeP, setModeP] = useUrlState('c', {
     encode: (v: string | undefined) => (v === 'user' || v === undefined ? undefined : modeToken(v as ColorMode)),
@@ -424,14 +481,17 @@ function AppContent() {
       )}
 
       {tree ? (
-        <Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens}
-          initialPath={tree.c?.length === 1 ? [tree, tree.c[0]] : undefined} />
+        <div id="tree-map"><Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens}
+          initialPath={tree.c?.length === 1 ? [tree, tree.c[0]] : undefined} /></div>
       ) : (
         <p className="loading">loading tree…</p>
       )}
+
+      <SizeOverTime scans={scans} onPickDate={setDP} />
+
       {asof && prevScan && (diff || diffPrev) && (
-        <section id="changes">
-          <h2>Changes</h2>
+        <section id="diff">
+          <h2>Diff</h2>
           <p className="sub">
             {/* both endpoints are pickable; "after" IS the page's scan, so
                 changing it moves the whole page (same as the header picker) */}
@@ -483,10 +543,7 @@ function AppContent() {
         </section>
       )}
 
-      <SizeOverTime scans={scans} />
-
-
-      <section>
+      <section id="mtime">
         <h2>Bytes by creation date</h2>
         <p className="sub">
           When today’s objects were written — created-time strata. The chart’s color axis is its own

@@ -1,6 +1,7 @@
 import { TimeSeries } from '@disk-tree/react'
 import type { Annotation } from '@disk-tree/react'
 import { useEffect, useMemo, useState } from 'react'
+import { boolParam, useUrlState } from 'use-prms'
 import { scanTime } from './scan'
 import type { Meta } from './types'
 import { useUnits } from './units'
@@ -31,14 +32,10 @@ const unitTicks = (min: number, max: number, base: number, count = 4): number[] 
 }
 
 type YFrom = 'data' | 'zero'
-const Y_KEY = 'gcs-usage:sot-y'
-const loadYFrom = (): YFrom => {
-  try { if (localStorage.getItem(Y_KEY) === 'zero') return 'zero' } catch { /* no storage */ }
-  return 'data'
-}
 
-// y-axis origin toggle: fit the data (default — a ~1% wiggle on 800 TiB is
-// invisible from zero) or anchor at zero (honest proportions).
+// y-axis origin toggle (`?y0` — from-zero on): fit the data (default — a ~1%
+// wiggle on 800 TiB is invisible from zero) or anchor at zero (honest
+// proportions).
 function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
   return (
     <span className="gran" role="radiogroup" aria-label="Y-axis range">
@@ -62,10 +59,17 @@ const loadMeta = (d: string): Promise<Meta | null> => {
   return p
 }
 
-export function SizeOverTime({ scans }: { scans: string[] }) {
+export function SizeOverTime({ scans, onPickDate }: {
+  scans: string[]
+  /** Click a point → view the page as of that scan (pins `?d=`). */
+  onPickDate?: (scan: string) => void
+}) {
   const { fmtBytes, units } = useUnits()
-  const [yFrom, setYFromState] = useState<YFrom>(loadYFrom)
-  const setYFrom = (y: YFrom) => { setYFromState(y); try { localStorage.setItem(Y_KEY, y) } catch { /* in-memory only */ } }
+  const [y0P, setY0P] = useUrlState('y0', boolParam)
+  const yFrom: YFrom = y0P ? 'zero' : 'data'
+  const setYFrom = (y: YFrom) => setY0P(y === 'zero')
+  // Points are scan instants; a click maps the snapped x back to its scan id.
+  const pickX = onPickDate && ((x: number) => { const s = scans.find(d => scanTime(d) === x); if (s) onPickDate(s) })
 
   const [totals, setTotals] = useState<Record<string, number>>({})
   useEffect(() => {
@@ -114,9 +118,9 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
 
   if (scans.length < 2) return null
   return (
-    <section id="size-over-time">
+    <section id="over-time">
       <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
-      <p className="sub">Total stored bytes per scan (whole bucket).</p>
+      <p className="sub">Total stored bytes per scan (whole bucket){onPickDate && ' — click a point to view the page as of that scan'}.</p>
       {series.length > 0 && (
         <TimeSeries<Pt>
           series={series}
@@ -129,6 +133,7 @@ export function SizeOverTime({ scans }: { scans: string[] }) {
           yFrom={yFrom}
           yLabel="stored bytes"
           height={220}
+          onPickX={pickX}
         />
       )}
     </section>

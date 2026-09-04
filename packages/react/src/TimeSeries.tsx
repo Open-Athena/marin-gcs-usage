@@ -61,6 +61,9 @@ export interface TimeSeriesProps<T> {
    *  at (x, y), above it by default (`below` flips it). Anchored away from
    *  the nearest plot edge so labels never run off the chart. */
   annotations?: Annotation[]
+  /** Click handler for the snapped hover x (the crosshair position) — e.g.
+   *  jump the page to that scan date. Sets a pointer cursor on the plot. */
+  onPickX?: (x: number) => void
   /** Extra CSS on the outer wrapper. */
   className?: string
   style?: CSSProperties
@@ -108,6 +111,7 @@ export function TimeSeries<T>({
   yTickValues,
   area = true,
   annotations,
+  onPickX,
   className,
   style,
   height,
@@ -215,7 +219,8 @@ export function TimeSeries<T>({
           height={dims.h}
           onMouseMove={onMove}
           onMouseLeave={() => setHoverX(null)}
-          style={{ display: 'block' }}
+          onClick={onPickX && (() => { if (hoverX != null) onPickX(hoverX) })}
+          style={{ display: 'block', cursor: onPickX ? 'pointer' : undefined }}
         >
           {/* Y grid + ticks */}
           {yTickVals.map((y, i) => (

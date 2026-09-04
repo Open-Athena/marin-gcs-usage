@@ -67,7 +67,11 @@ header .hrow {
   justify-content: flex-start;
   gap: 12px;
   flex-wrap: wrap;
-  .nav-links { margin-left: auto; }
+  // The row aligns by baseline (right for the h1), but the identity cluster's
+  // flex baseline is its 22px avatar, which floated the whole chip above the
+  // nav links — center those clusters on the row instead.
+  .nav-links { margin-left: auto; align-self: center; }
+  .units-btn, .whoami { align-self: center; }
 }
 .nav-links { display: inline-flex; gap: 1.2em; align-items: baseline; }
 // Nav links: quiet tabs, not underlined prose links; the current page reads
@@ -657,4 +661,4 @@ details.fold {
 }
 
 // Size-over-time section: the y-axis toggle rides in the h2.
-#size-over-time h2 .gran { margin-left: 12px; font-weight: 400; vertical-align: middle; }
+#over-time h2 .gran { margin-left: 12px; font-weight: 400; vertical-align: middle; }

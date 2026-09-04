@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
-import { boolParam, useUrlState } from 'use-prms'
+import { stringParam, useUrlState } from 'use-prms'
 import { useUnits } from './units'
 
 const { abs, max, min, sign } = Math
@@ -131,11 +131,12 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[]; max
 export function DiffTreemap({ data, label }: { data: DiffData; label: string }) {
   const { fmtBytes } = useUnits()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
-  // Area mode is shareable state: `?dd` (bare flag) = Δ mode; `max` is the
-  // default and stays out of the URL.
-  const [dd, setDd] = useUrlState('dd', boolParam)
-  const areaMode: AreaMode = dd ? 'delta' : 'max'
-  const setAreaMode = (m: AreaMode) => setDd(m === 'delta')
+  // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
+  // Δ (area = |delta|) is the default — the movement is what a diff view is
+  // for — and stays out of the URL.
+  const [dmP, setDmP] = useUrlState('dm', stringParam())
+  const areaMode: AreaMode = dmP === 'max' ? 'max' : 'delta'
+  const setAreaMode = (m: AreaMode) => setDmP(m === 'max' ? 'max' : undefined)
   // Root arithmetic for the crumb: start − removed + added = end. Bytes move
   // at the frontier (non-expanded rows; an expanded row's own Δ is carried by
   // its children), so sum the frontier's signed deltas. A truncated walk (or a
