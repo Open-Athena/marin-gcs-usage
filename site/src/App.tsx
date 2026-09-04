@@ -12,7 +12,7 @@ import { SizeOverTime } from './SizeOverTime'
 import type { DiffData } from './DiffTreemap'
 import { clientDiff } from './clientDiff'
 import { buildUserIndex } from './colors'
-import { fmtScan, useScan } from './scan'
+import { DAY, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
@@ -81,11 +81,11 @@ function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>)
 
 // Changes-section span presets (days back from the "after" scan).
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
-// Scan ids are UTC instants (`YYYY-MM-DDTHHMM`) or calendar dates.
-const scanTime = (d: string): number => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?/.exec(d)
-  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? '0'), +(m[5] ?? '0')) : NaN
-}
+
+// Color-mode URL tokens: one letter each (`?c=a`, `?ac=t`); the older
+// spelled-out forms still decode so shared links keep working.
+const MODE_TOKENS: Record<string, ColorMode> = { a: 'date', age: 'date', t: 'tree', tree: 'tree', u: 'user', user: 'user' }
+const modeToken = (m: ColorMode): string => (m === 'date' ? 'a' : m === 'tree' ? 't' : 'u')
 
 type Theme = 'system' | 'dark' | 'light'
 const THEME_KEY = 'gcs-usage:theme'
@@ -103,7 +103,7 @@ function useTheme(): [Theme, () => void] {
 function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list; absent `?d` is a
   // first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, setDP } = useScan()
+  const { asof, scans, setDP, span, setSpan } = useScan()
   // Loaded trees by scan id: the page's own (`asof`) plus, when the Changes
   // section aligns client-side, its "before" scan.
   const [trees, setTrees] = useState<Record<string, TreeNode>>({})
@@ -114,41 +114,47 @@ function AppContent() {
   // Precomputed diff vs the previous scan (job/cw-diff.py): `undefined` while
   // the fetch is in flight, `null` once it has answered "none" (older scans).
   const [bakedDiff, setBakedDiff] = useState<DiffData | null | undefined>(undefined)
-  // `?dp=` — the Changes section's "before" endpoint. Absent = the baked
-  // diff.json pair (previous scan → this scan, the batch job's exact walk).
-  // Any other earlier scan → client-side align of the two scans' trees
-  // (clientDiff). The "after" endpoint IS the page's scan (`?d=`).
-  const [dpP, setDpP] = useUrlState('dp', stringParam())
+  // The Changes section's "before" endpoint comes from the `?d=` span (see
+  // scan.ts): absent = the baked diff.json pair (previous scan → this scan,
+  // the batch job's exact walk); a span resolves to the scan *nearest* that
+  // far before "after" — scan times drift minutes past exact multiples
+  // (8:01a, 8:07a…), so "at least N days back" would skip half a cadence.
+  // The "after" endpoint IS the page's scan.
   const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
-  const dpValid = dpP && asof && dpP < asof && scans.includes(dpP) ? dpP : null
-  // client-align when the viewer picked a non-default "before", or when this
-  // scan has no baked diff.json at all (older scans; the default pair still
-  // deserves a diff) — but only once the baked fetch has actually answered.
+  const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
+  const bakedPrev = bakedDiff?.prev ?? prevScan
+  const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
+  // client-align when the span lands somewhere other than the baked pair, or
+  // when this scan has no baked diff.json at all (older scans; the default
+  // pair still deserves a diff) — but only once the baked fetch has answered.
   const diffPrev =
-    dpValid && dpValid !== bakedDiff?.prev ? dpValid
+    spanScan && spanScan !== bakedDiff?.prev ? spanScan
     : bakedDiff === null && prevScan ? prevScan
     : null
-  // Span presets for the "before" endpoint: the scan *nearest* to this far
-  // before "after". Scan times drift a few minutes past exact multiples
-  // (8:01a, 8:07a…), so "at least N days back" would skip half a cadence; the
-  // nearest scan is what a reader means by `1d`. Presets past the history's
-  // reach — nearest scan more than a quarter of the span off, or already
-  // claimed by a shorter preset — are dropped rather than mislabeled.
-  const diffBefore = diffPrev ?? bakedDiff?.prev ?? prevScan
+  const diffBefore = diffPrev ?? bakedPrev
+  // Pick a "before" scan by hand: the baked previous scan clears the span;
+  // anything else round-trips as its own hour-rounded span (nearest-scan
+  // resolution recovers it, and the link keeps following `latest`).
+  const pickBefore = (scan: string) => {
+    if (!asof) return
+    if (scan === bakedPrev) setSpan(undefined)
+    else setSpan(Math.max(3600_000, Math.round((scanTime(asof) - scanTime(scan)) / 3600_000) * 3600_000))
+  }
+  // Presets past the history's reach — nearest scan more than a quarter of
+  // the span off, or already claimed by a shorter preset — are dropped
+  // rather than mislabeled.
   const spanPicks = useMemo(() => {
     if (!asof) return []
     const t0 = scanTime(asof)
-    const earlier = scans.filter(s => s < asof)
-    const picks: { label: string; scan: string }[] = []
+    const picks: { label: string; ms: number; scan: string }[] = []
     for (const [label, days] of SPANS) {
-      const cut = t0 - days * 86400_000
-      let best: string | null = null
-      for (const s of earlier) if (!best || Math.abs(scanTime(s) - cut) < Math.abs(scanTime(best) - cut)) best = s
-      if (!best || Math.abs(scanTime(best) - cut) > days * 21600_000) continue
-      if (!picks.some(p => p.scan === best)) picks.push({ label, scan: best })
+      const ms = days * DAY
+      const best = nearestScan(earlier, t0 - ms)
+      if (!best || Math.abs(scanTime(best) - (t0 - ms)) > ms / 4) continue
+      if (!picks.some(p => p.scan === best)) picks.push({ label, ms, scan: best })
     }
     return picks
-  }, [asof, scans])
+  }, [asof, earlier])
   const prevTree = diffPrev ? trees[diffPrev] ?? null : null
   const diff: DiffData | null = useMemo(() => {
     if (!diffPrev) return bakedDiff ?? null
@@ -159,15 +165,16 @@ function AppContent() {
     return clientDiff(bucketOf(prevTree), bucketOf(tree), diffPrev, asof)
   }, [diffPrev, bakedDiff, prevTree, tree, asof])
   const [introOpen, onIntroToggle] = useFold('gcs-usage:fold2:intro')
-  // URL token matches the visible label ("age"), not the internal key ("date")
+  // Map color-by (`?c=`): absent = the default (`user`); one-letter tokens.
   const [modeP, setModeP] = useUrlState('c', {
-    encode: (v: string | undefined) => (v === 'user' || v === undefined ? undefined : v === 'date' ? 'age' : v),
-    decode: (e: string | undefined) => (e === undefined ? 'user' : e === 'age' ? 'date' : e),
+    encode: (v: string | undefined) => (v === 'user' || v === undefined ? undefined : modeToken(v as ColorMode)),
+    decode: (e: string | undefined) => (e === undefined ? 'user' : MODE_TOKENS[e] ?? 'user'),
   })
-  // The age chart's own color axis (`?ac=`); absent = follow the map.
+  // The age chart's own color axis (`?ac=`); absent = follow the map (so a
+  // pick equal to the map's effective mode is cleared, not serialized).
   const [ageModeP, setAgeModeP] = useUrlState('ac', {
-    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'age' : v),
-    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'age' ? 'date' : e),
+    encode: (v: string | undefined) => (v === undefined ? undefined : modeToken(v as ColorMode)),
+    decode: (e: string | undefined) => (e === undefined ? undefined : MODE_TOKENS[e]),
   })
   const [hlUser, setHlUser] = useUrlState('u', stringParam())
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
@@ -429,8 +436,8 @@ function AppContent() {
             {/* both endpoints are pickable; "after" IS the page's scan, so
                 changing it moves the whole page (same as the header picker) */}
             <select className="scanpick" value={diffBefore ?? prevScan} aria-label="Diff from scan"
-              onChange={e => setDpP(e.target.value === (bakedDiff?.prev ?? prevScan) ? undefined : e.target.value)}>
-              {scans.filter(s => s < asof).map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+              onChange={e => pickBefore(e.target.value)}>
+              {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
             </select>
             {' '}→{' '}
             <select className="scanpick" value={asof} aria-label="Diff to scan (moves the page)"
@@ -439,10 +446,10 @@ function AppContent() {
             </select>
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
-                {spanPicks.map(({ label, scan }) => (
+                {spanPicks.map(({ label, ms, scan }) => (
                   <button key={label} role="radio" aria-checked={diffBefore === scan} className={diffBefore === scan ? 'on' : ''}
                     title={`${fmtScan(scan)} → ${fmtScan(asof)}`}
-                    onClick={() => setDpP(scan === (bakedDiff?.prev ?? prevScan) ? undefined : scan)}>
+                    onClick={() => setSpan(scan === bakedPrev ? undefined : ms)}>
                     {label}
                   </button>
                 ))}
@@ -486,7 +493,7 @@ function AppContent() {
           (right); it follows the map’s until you pick one.
         </p>
         {age.length > 0 && (
-          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} />
+          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m === effMode ? undefined : m)} modes={ageModes} userIdx={userIdx} />
         )}
       </section>
 

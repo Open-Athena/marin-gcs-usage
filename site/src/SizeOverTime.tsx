@@ -1,6 +1,7 @@
 import { TimeSeries } from '@disk-tree/react'
 import type { Annotation } from '@disk-tree/react'
 import { useEffect, useMemo, useState } from 'react'
+import { scanTime } from './scan'
 import type { Meta } from './types'
 import { useUnits } from './units'
 
@@ -49,13 +50,6 @@ function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
       ))}
     </span>
   )
-}
-
-// Scan ids are UTC instants (`YYYY-MM-DDTHHMM`) or calendar dates.
-const scanTime = (d: string): number => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?/.exec(d)
-  if (!m) return NaN
-  return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? '0'), +(m[5] ?? '0'))
 }
 
 const metaLoads = new Map<string, Promise<Meta | null>>()
