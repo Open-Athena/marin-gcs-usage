@@ -15,7 +15,9 @@ export const WHOAMI_SOURCE: WhoamiSource = { kind: 'app' }
 const forceWall = new URLSearchParams(window.location.search).has('wall')
 const hasLocalSession = document.cookie.includes('oa_auth=')
 export const DEV_IDENTITY: Whoami | null | undefined =
-  import.meta.env.DEV && !hasLocalSession ? (forceWall ? null : { email: 'dev@example.test' }) : undefined
+  import.meta.env.DEV && !hasLocalSession
+    ? (forceWall ? null : { email: import.meta.env.VITE_DEV_EMAIL ?? 'dev@example.test' })
+    : undefined
 
 export const signInUrl = (): string =>
   `/auth/sso?next=${encodeURIComponent(window.location.pathname + window.location.search)}`

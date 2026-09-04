@@ -33,6 +33,9 @@ export interface Env {
   /** AUD tags of the Access apps whose edge JWTs we accept (gcs + cw). */
   ACCESS_AUD?: string
   STAFF_DOMAIN?: string
+  /** Local dev only (`.dev.vars`): email the localhost dev identity acts as.
+   *  Matters when the D1 binding is remote (writes land in the real ledger). */
+  DEV_EMAIL?: string
   GCS_HMAC_KEY_ID: string
   GCS_HMAC_SECRET: string
 }
@@ -120,7 +123,7 @@ export async function identify(ctx: Ctx): Promise<Identity | null> {
   // gcs.oa.dev request's URL host is never `localhost`/`127.0.0.1`.
   const host = new URL(ctx.request.url).hostname
   if (host === 'localhost' || host === '127.0.0.1') {
-    return { email: 'dev@example.test', name: null, scopes: DEV_SCOPES, via: 'session' }
+    return { email: ctx.env.DEV_EMAIL ?? 'dev@example.test', name: null, scopes: DEV_SCOPES, via: 'session' }
   }
   const edge = await edgeIdentity(ctx.request, ctx.env)
   if (edge) return edge

@@ -15,7 +15,12 @@ if [ "${1:-}" = "--refresh" ] || [ "${1:-}" = "--staging" ]; then
   ./refresh-db
 fi
 
-npx wrangler pages dev public --port 3254 --compatibility-date 2026-01-01 &
+# The D1 binding is `remote = true` (wrangler.toml): dev reads/writes the REAL
+# prod ledger, as `DEV_EMAIL` (.dev.vars). The remote session needs Workers
+# scopes the direnv CLOUDFLARE_API_TOKEN lacks — mask it so wrangler falls back
+# to the OAuth login (Ryan's OA user), and pin the OA account.
+env -u CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d \
+  npx wrangler pages dev public --port 3254 --compatibility-date 2026-01-01 &
 wpid=$!
 trap 'kill "$wpid" 2>/dev/null || true' EXIT INT TERM
 pnpm dev

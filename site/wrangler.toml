@@ -12,6 +12,9 @@ compatibility_date = "2026-06-01"
 binding = "DB"
 database_name = "oa-gcs-usage-auth"
 database_id = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"
+# Local dev runs against the REAL prod D1 (read-write) — dev-only: deploys
+# ignore `remote`. Needs CLOUDFLARE_API_TOKEN (direnv) + CLOUDFLARE_ACCOUNT_ID.
+remote = true
 
 [vars]
 # Zero Trust team domain whose JWTs the SSO hand-off + edge fallback accept.
