@@ -63,6 +63,28 @@ export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
   return out
 }
 
+/** Scope the tree to a lens's *bytes*: every node shrinks to the slice the
+ * lens assigns it (a team→bytes decomposition; its sum is the node's new
+ * size), descending the whole tree — unlike `applyNodeFilter`, which keeps
+ * ≥minFrac subtrees whole and so lets minority co-tenant bytes ride along.
+ * The result's attribution is the slice itself: no user bytes (`us` gone),
+ * `tm`/`sh` are the slice (all of it userless). Objects/read-bytes scale by
+ * the byte fraction (approximate). */
+export function applyLensScale(root: TreeNode, slice: (n: TreeNode) => Record<string, number>): TreeNode {
+  const walk = (n: TreeNode): TreeNode | null => {
+    const tm = slice(n)
+    const b = Object.values(tm).reduce((s, v) => s + v, 0)
+    if (b <= 0) return null
+    const kids = (n.c ?? []).map(walk).filter((c): c is TreeNode => c != null)
+    const frac = n.b > 0 ? Math.min(1, b / n.b) : 0
+    const out: TreeNode = { ...n, b, o: Math.round(n.o * frac), tm, sh: { ...tm }, us: undefined, c: kids.length ? kids : undefined }
+    if (n.rb != null) out.rb = Math.round(n.rb * frac)
+    return out
+  }
+  const kids = (root.c ?? []).map(walk).filter((c): c is TreeNode => c != null)
+  return reaggregate(root, kids)
+}
+
 export function filterTree(n: TreeNode, pred: NodePred): TreeNode | null {
   if (pred(n)) return n
   const kids = (n.c ?? []).map(c => filterTree(c, pred)).filter((c): c is TreeNode => c != null)

@@ -18,12 +18,12 @@ import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
-import { applyFilter, applyNodeFilter, collectMatches, parseQuery } from './filterTree'
+import { applyFilter, applyLensScale, applyNodeFilter, collectMatches, parseQuery } from './filterTree'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { LensBar, SCOPABLE } from './LensBar'
 import type { Lens } from './LensBar'
-import { applyTodoFilter, klcSplits, lensNodePred, teamLens, unattrLens, useMyUser, userLens } from './sweep'
+import { applyTodoFilter, communalSlice, klcSplits, lensNodePred, teamLens, unattrSlice, useMyUser, userLens } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SiteNav } from './SiteNav'
 import { encodeScan, fmtScan, useScan } from './scan'
@@ -402,15 +402,22 @@ function AppContent() {
     let t = shownTree
     if (todoActive) t = applyTodoFilter(t, markIdx)
     else if (scopedActive) {
-      const lens = markTab === 'mine'
-        ? userLens(viewUser!)
-        : markTab === 'unclaimed' ? unattrLens
-        : teamLens('communal')
-      t = applyNodeFilter(t, lensNodePred(lens))
+      // The user lens keeps maximal ≥60%-owned subtrees whole (that user's
+      // dirs, minority co-tenants dimmed by the highlight). The unowned-bytes
+      // lenses instead *slice*: every node shrinks to exactly its userless
+      // share — keeping whole subtrees let each one's claimed minority ride
+      // along (~0.5 PiB of user bytes leaked into "Unattributed").
+      t = markTab === 'mine'
+        ? applyNodeFilter(t, lensNodePred(userLens(viewUser!)))
+        : applyLensScale(t, markTab === 'unclaimed' ? unattrSlice : communalSlice)
     }
-    // A PINNED legend row scopes the map to what it owns (same maximal-subtree
-    // rule as the review lenses); a hovered row only fades the rest.
-    if (hl) t = applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : hl.team === 'unattributed' ? unattrLens : teamLens(hl.team!)))
+    // A PINNED legend row scopes the map to what it owns — same rules as the
+    // lenses above; a hovered row only fades the rest.
+    if (hl) {
+      t = hl.team === 'unattributed' ? applyLensScale(t, unattrSlice)
+        : hl.team === 'communal' ? applyLensScale(t, communalSlice)
+        : applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : teamLens(hl.team!)))
+    }
     return t
   }, [shownTree, activeLens, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
   // Controlled treemap drill path, resolved against the (possibly filtered/
@@ -896,11 +903,16 @@ function AppContent() {
       )}
 
       {/* Under the To-do lens the series chart flips to mark-progress (the
-          ledger replayed per scan — specs/lens-aware-time-series.md); other
-          lenses still hide it (their data can't scope), as does the age chart
-          below until /api/age lands. */}
-      {(!lensScoped || markTab === 'todo') && (
-        <SizeOverTime scans={scans} prefix={drillPath} base={store.base} fate={markTab === 'todo'} />
+          ledger replayed per scan — specs/lens-aware-time-series.md). A user
+          pin / My-files / Unattributed follow the scope: that user's (or the
+          nobody-pool's) bytes per scan, assembled from the per-scan metas.
+          Communal still hides, as does the age chart until /api/age lands. */}
+      {(!lensScoped || markTab === 'todo' || markTab === 'mine' || markTab === 'unclaimed') && (
+        <SizeOverTime
+          scans={scans} prefix={drillPath} base={store.base} fate={markTab === 'todo'}
+          user={markTab === 'mine' ? viewUser : hlUser || null}
+          team={markTab === 'unclaimed' ? 'unattributed' : hlTeam || null}
+        />
       )}
 
       {markMode && <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} />}

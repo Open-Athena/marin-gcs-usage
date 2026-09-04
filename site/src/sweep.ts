@@ -21,15 +21,23 @@ export type Lens = (n: TreeNode) => number
 export const userLens = (user: string): Lens => n => n.us?.find(([u]) => u === user)?.[1] ?? 0
 export const teamLens = (team: string): Lens => n => n.tm?.[team] ?? 0
 
-/** The user axis's "nobody" bucket: unattributed bytes plus every group's
- * shared (userless) subset — communal is entirely shared, so on per-user
- * rollups it folds in here instead of standing as its own class (the group
- * split mattered for early per-group ballparking, not for review). */
-export const unattrLens: Lens = n => {
-  let b = n.tm?.unattributed ?? 0
-  for (const [t, s] of Object.entries(n.sh ?? {})) if (t !== 'unattributed') b += s
-  return b
+/** The user axis's "nobody" bucket, as a team→bytes slice: unattributed
+ * bytes plus every group's shared (userless) subset — communal is entirely
+ * shared, so on per-user rollups it folds in here instead of standing as its
+ * own class (the group split mattered for early per-group ballparking, not
+ * for review). Feed to `applyLensScale` to scope a tree to just these bytes. */
+export const unattrSlice = (n: TreeNode): Record<string, number> => {
+  const out: Record<string, number> = {}
+  for (const [t, s] of Object.entries(n.sh ?? {})) if (t !== 'unattributed' && s > 0) out[t] = s
+  const u = n.tm?.unattributed ?? 0
+  if (u > 0) out.unattributed = u
+  return out
 }
+export const unattrLens: Lens = n => Object.values(unattrSlice(n)).reduce((s, v) => s + v, 0)
+
+/** The communal pool as a slice (it's all userless by construction). */
+export const communalSlice = (n: TreeNode): Record<string, number> =>
+  (n.tm?.communal ?? 0) > 0 ? { communal: n.tm!.communal } : {}
 
 /**
  * Treemap-scoping predicate for a lens: keep the maximal subtrees the lens
