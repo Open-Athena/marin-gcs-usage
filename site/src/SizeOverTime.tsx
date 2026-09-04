@@ -2,6 +2,8 @@ import { TimeSeries } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import type { Meta } from './types'
+import { groupLabel } from './types'
+import { shortName } from './UserChip'
 import { useUnits } from './units'
 
 // Stored bytes over the historical scans (specs/size-over-time.md, case 1),
@@ -58,7 +60,7 @@ function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
   )
 }
 
-export function SizeOverTime({ scans, prefix, base, fate = false }: {
+export function SizeOverTime({ scans, prefix, base, fate = false, user, team }: {
   scans: string[]
   prefix: string
   base: string
@@ -66,6 +68,12 @@ export function SizeOverTime({ scans, prefix, base, fate = false }: {
    * from the replayed ledger instead of stored-bytes. Renders nothing until
    * the index carries `fate`. */
   fate?: boolean
+  /** A pinned/lensed user: plot THEIR attributed bytes per scan (from each
+   * scan's meta.json — estate-wide; per-user series aren't prefix-scoped). */
+  user?: string | null
+  /** A pinned/lensed group — `unattributed` = total − Σ user bytes (the
+   * nobody-owns-it pool), others sum their `team_class_bytes`. `user` wins. */
+  team?: string | null
 }) {
   const { fmtBytes, units } = useUnits()
   const [yFrom, setYFromState] = useState<YFrom>(loadYFrom)
@@ -86,10 +94,11 @@ export function SizeOverTime({ scans, prefix, base, fate = false }: {
   // when the index is missing or the drilled prefix isn't in it.
   const idx = indexQ.data ?? null
   const scopedArr = prefix && idx?.bytes[prefix] ? idx.bytes[prefix] : null
+  const slice = user ? { kind: 'user' as const, key: user } : team ? { kind: 'team' as const, key: team } : null
   const needFleet = !scopedArr
   const metas = useQuery({
     queryKey: ['size-series', base, scans],
-    enabled: scans.length > 1 && needFleet,
+    enabled: scans.length > 1 && (needFleet || slice != null),
     staleTime: Infinity,
     queryFn: async () => {
       const rows = await Promise.all(scans.map(async d => {
@@ -116,6 +125,25 @@ export function SizeOverTime({ scans, prefix, base, fate = false }: {
         mk('sweep', 'sweep', 'var(--mk-del)'),
       ]
     }
+    if (slice) {
+      // Per-user / per-group series come from each scan's meta.json (older
+      // scans predate attribution → no point rather than a fake zero).
+      const points = (metas.data ?? [])
+        .map(({ date, m }) => {
+          const y = slice.kind === 'user'
+            ? m.users?.find(u => u.u === slice.key)?.b ?? null
+            : slice.key === 'unattributed'
+              ? (m.users ? m.total_bytes - m.users.reduce((s, u) => s + u.b, 0) : null)
+              : m.team_class_bytes?.[slice.key]
+                ? Object.values(m.team_class_bytes[slice.key]).reduce((s, b) => s + b, 0)
+                : null
+          return y == null ? null : { x: new Date(date).getTime(), y }
+        })
+        .filter((p): p is Pt => p != null)
+        .sort((a, b) => a.x - b.x)
+      if (points.length < 2) return []
+      return [{ key: `${slice.kind}:${slice.key}`, label: slice.key, color: 'var(--s1)', points }]
+    }
     if (scopedArr && idx) {
       const points = idx.dates
         .map((d, i) => ({ x: new Date(d).getTime(), y: scopedArr[i] }))
@@ -131,7 +159,7 @@ export function SizeOverTime({ scans, prefix, base, fate = false }: {
       color: 'var(--s1)',
       points: rows.map(r => ({ x: new Date(r.date).getTime(), y: r.m.total_bytes })).sort((a, b) => a.x - b.x),
     }]
-  }, [fate, scopedArr, idx, metas.data, prefix])
+  }, [fate, slice?.kind, slice?.key, scopedArr, idx, metas.data, prefix])
 
   const yTickValues = useMemo(() => {
     const ys = series.flatMap(s => s.points.map(p => p.y))
@@ -172,7 +200,13 @@ export function SizeOverTime({ scans, prefix, base, fate = false }: {
     <section id="size-over-time">
       <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
       <p className="sub">
-        {scoped
+        {slice
+          ? slice.kind === 'user'
+            ? <><b>{shortName(slice.key)}</b>’s attributed bytes per scan — whole estate (per-user series aren’t prefix-scoped).</>
+            : slice.key === 'unattributed'
+              ? <>Bytes no person owns, per scan — whole estate.</>
+              : <><b>{groupLabel(slice.key)}</b> bytes per scan — whole estate.</>
+          : scoped
           ? <>Stored bytes under <code>{prefix}</code> per scan — the drilled subtree, from the cross-scan index.</>
           : <>Total stored bytes per scan (fleet-wide).{' '}
               {belowFloor
