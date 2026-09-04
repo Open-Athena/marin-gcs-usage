@@ -23,7 +23,7 @@ import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { LensBar, SCOPABLE } from './LensBar'
 import type { Lens } from './LensBar'
-import { applyTodoFilter, klcSplits, lensNodePred, teamLens, useMyUser, userLens } from './sweep'
+import { applyTodoFilter, klcSplits, lensNodePred, teamLens, unattrLens, useMyUser, userLens } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SiteNav } from './SiteNav'
 import { encodeScan, fmtScan, useScan } from './scan'
@@ -157,17 +157,13 @@ function AppContent() {
   // Mark mode does NOT need it any more: the root keep/sweep/undecided rollup
   // and /users come from /api/marks/totals (ledger × floor-free index,
   // server-side); drilled rollups resolve on the loaded subtree and say ≈.
-  // `?ms=0` — scope-map-to-view toggled off (on is the default).
-  const [scopedP, setScopedP] = useUrlState('ms', stringParam())
-  const scoped = scopedP !== '0'
-  const setScoped = (v: boolean) => setScopedP(v ? undefined : '0')
   // Server-side USER lens: My files / a pinned user render as a treemap of that
   // user's bytes, served from the by-user index variant (`/api/subtree?lens=`)
   // — no tree.json. Team lenses (communal/unclaimed) and todo/name-filter stay
   // on tree.json (a big team overruns the floor-free lens; see
   // specs/path-agnostic-serving.md §2.3).
   const lensUser = markTab === 'mine' ? viewUser : hlUser || null
-  const subtreeLens = store.key === 'gcs' && scoped && lensUser && !fq ? `user:${lensUser}` : null
+  const subtreeLens = store.key === 'gcs' && lensUser && !fq ? `user:${lensUser}` : null
   // A scan whose by-user variant isn't synced (e.g. the daily ran on an image
   // predating it) makes the lens subtree 500; remember that (scan, lens) as
   // broken and fall back to tree.json + the client filter, rather than sticking
@@ -392,8 +388,10 @@ function AppContent() {
   // maximal-subtree rows don't coarsen); untoggled, fall back to dimming.
   // `todo` scopes by mark state instead of an attribution lens: prune every
   // subtree already covered by a keep/sweep decision, show what's undecided.
-  const scopedActive = markMode && scoped && SCOPABLE.includes(markTab) && (markTab !== 'mine' || !!viewUser)
-  const todoActive = markMode && scoped && markTab === 'todo'
+  // Lenses always scope the map (the highlight-instead-of-scope toggle never
+  // earned its keep and is gone).
+  const scopedActive = markMode && SCOPABLE.includes(markTab) && (markTab !== 'mine' || !!viewUser)
+  const todoActive = markMode && markTab === 'todo'
   // Any review lens narrower than "all" — sections whose data can't follow
   // the lens (series/age charts) hide rather than show fleet-wide numbers.
   const lensScoped = markMode && markTab !== 'all'
@@ -406,12 +404,13 @@ function AppContent() {
     else if (scopedActive) {
       const lens = markTab === 'mine'
         ? userLens(viewUser!)
-        : teamLens(markTab === 'unclaimed' ? 'unattributed' : 'communal')
+        : markTab === 'unclaimed' ? unattrLens
+        : teamLens('communal')
       t = applyNodeFilter(t, lensNodePred(lens))
     }
     // A PINNED legend row scopes the map to what it owns (same maximal-subtree
     // rule as the review lenses); a hovered row only fades the rest.
-    if (hl) t = applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : teamLens(hl.team!)))
+    if (hl) t = applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : hl.team === 'unattributed' ? unattrLens : teamLens(hl.team!)))
     return t
   }, [shownTree, activeLens, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
   // Controlled treemap drill path, resolved against the (possibly filtered/
@@ -720,7 +719,7 @@ function AppContent() {
             pin it and mark from there. Marks are reversible until the sweep — the most recent mark
             covering a prefix wins: mark a child <em>after</em> its parent to carve an exception; a
             broad mark repaints older deeper ones (you'll be asked to confirm). Pick a <b>lens</b>{' '}
-            below to focus a slice (your files, unclaimed, communal) or the to-do list, scoped to
+            below to focus a slice (your files, unattributed) or the to-do list, scoped to
             whatever you've drilled into.
           </p>
         </details>
@@ -770,7 +769,6 @@ function AppContent() {
           viewUser={viewUser} setViewUser={u => setUP(u ? shortUserKey(canonId(u)) : undefined)}
           users={mkUsers}
           lens={markTab} setLens={setMarkTab}
-          scoped={scoped} setScoped={setScoped}
         />
       )}
 
@@ -780,7 +778,7 @@ function AppContent() {
           slice or just highlighting it, and clears in one click. */}
       {(hlUser || hlTeam) && (
         <div className={`scope-chip${activeLens ? ' filtering' : ''}`}>
-          <span className="lbl">{activeLens ? 'showing only' : scoped ? 'scoped to' : 'highlighting'}</span>
+          <span className="lbl">{activeLens ? 'showing only' : 'scoped to'}</span>
           {hlUser
             ? <UserChip who={hlUser} size={16} />
             : <span className="team">{groupLabel(hlTeam!)}</span>}

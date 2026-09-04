@@ -7,7 +7,7 @@ import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, 
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
 import type { MarkIndex } from './marks'
-import { klcFateAt, klcKeptWithin, subtreeFateTotals } from './sweep'
+import { klcFateAt, klcKeptWithin, subtreeFateTotals, unattrLens } from './sweep'
 import type { Fate, KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
@@ -350,7 +350,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       let dim = false
       if (effHl && !ctx.hasKids) {
         if (effHl.user) dim = (kid.us?.find(([u]) => u === effHl.user)?.[1] ?? 0) < 0.5 * kid.b
-        else if (effHl.team) dim = (kid.tm?.[effHl.team] ?? 0) < 0.5 * kid.b
+        // team "unattributed" is the user axis's nobody-bucket: it includes
+        // every group's shared/userless subset (communal et al.), not just tm.
+        else if (effHl.team) dim = (effHl.team === 'unattributed' ? unattrLens(kid) : kid.tm?.[effHl.team] ?? 0) < 0.5 * kid.b
       }
       // Shared-edge stroke, per cell: each neighbor paints its own half of a
       // boundary, so the line can adapt to the face it borders. Top-level
@@ -376,14 +378,17 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     const userRate = (u: string) => pricing && (pricing.userRates?.[u] ?? pricing.blended)
     if (mode === 'user' || mode === 'uteam') {
       const us = node.us ?? []
-      const unattr = node.tm['unattributed'] ?? 0
       const attributed = Object.entries(node.tm)
         .filter(([t]) => t !== 'unattributed')
         .reduce((s, [, b]) => s + b, 0)
       const userTotal = us.reduce((s, [, b]) => s + b, 0)
-      // group/communal bytes with no individual owner (exact once `us` is
-      // uncapped; with legacy top-5 snapshots the tail users land here too)
-      const shared = attributed - userTotal
+      // On the user axis, "unattributed" is everything no person owns: the
+      // unattributed group PLUS group/communal bytes with no individual owner
+      // (exact once `us` is uncapped; with legacy top-5 snapshots the tail
+      // users land here too). The old separate "(shared/communal)" row made
+      // communal read as attributed-vs-not, which only mattered for early
+      // per-group ballparking.
+      const unattr = (node.tm['unattributed'] ?? 0) + Math.max(0, attributed - userTotal)
       // individual traces while they stay legible: everyone ≥1% of the node,
       // at least 5, at most 12; the rest roll into "(other users)"
       const shown = us.filter(([, b], i) => i < 5 || (i < 12 && b >= 0.01 * node.b))
@@ -391,8 +396,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       return [
         ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u), mix: pricing?.userMix?.[u], hl: { user: u } as Highlight | undefined })),
         ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
-        ...(shared > 0 ? [{ k: '(shared/communal)', b: shared, col: 'var(--shared)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
-        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: teamRate('unattributed'), mix: pricing?.teamMix?.['unattributed'], hl: { team: 'unattributed' } as Highlight | undefined }] : []),
+        ...(unattr > 0 ? [{ k: 'unattributed', b: unattr, col: 'var(--t-unattr)', rate: pricing?.blended, mix: undefined, hl: { team: 'unattributed' } as Highlight | undefined }] : []),
       ].sort((a, b) => b.b - a.b)
     }
     return Object.entries(node.tm)

@@ -21,9 +21,8 @@ const LENS_LABELS: Record<Lens, string> = {
   todo: 'To-do',
   mine: 'My files',
   // The lens key stays `unclaimed` (URLs), but the label matches what it
-  // actually selects: the *unattributed* slice of the group axis — no user,
-  // no group, no claim. "Unclaimed" read as the owner axis and collided with
-  // the user-legend's separate "unattributed" row.
+  // actually selects: everything no *person* owns — the unattributed slice
+  // plus the shared/communal pools (which have groups but no users).
   unclaimed: 'Unattributed',
   communal: 'Communal',
 }
@@ -34,21 +33,24 @@ const LENS_TIPS: Record<Lens, string> = {
   all: 'The whole estate under the current view — no lens. Browse and mark anywhere in the treemap or the table below.',
   todo: 'Untriaged — every prefix with no keep/sweep mark yet, whoever owns it. The map and table scope to just these.',
   mine: 'Prefixes attributed to you (or the user you pick). Scope the current subtree to just your share of it.',
-  unclaimed: 'Bytes attributed to nobody — no user, no group, no claim. Claim what’s yours to move it under "My files", then decide keep/sweep.',
+  unclaimed: 'Bytes no person owns — unattributed data plus the shared/communal pools (corpora, datakit). Claim what’s yours to move it under "My files", then decide keep/sweep.',
   communal: 'Shared corpora / datakit — the communal pool, not any one person’s.',
 }
 
 const LENS_NOTES: Partial<Record<Lens, string>> = {
   todo: 'Map + children table scoped to prefixes with no keep/sweep decision yet.',
-  unclaimed: 'Bytes attributed to nobody — claim what’s yours, then mark it.',
+  unclaimed: 'Bytes no person owns (incl. shared/communal pools) — claim what’s yours, then mark it.',
   communal: 'Shared corpora / datakit — Rav & Will sign off here.',
 }
 
 const PREFIX_RE = /^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/
 
-const LENSES: Lens[] = ['all', 'todo', 'mine', 'unclaimed', 'communal']
+// `communal` is retired from the tab row (its bytes fold into Unattributed on
+// the user axis) but still resolves via `?l=communal` links; group coloring
+// keeps the communal distinction for those who want it.
+const LENSES: Lens[] = ['all', 'todo', 'mine', 'unclaimed']
 
-export function LensBar({ idx, hasEmail, myUser, viewUser, setViewUser, users, lens, setLens, scoped, setScoped }: {
+export function LensBar({ idx, hasEmail, myUser, viewUser, setViewUser, users, lens, setLens }: {
   idx: MarkIndex
   /** Session has an email — gates the "My files" lens (no email = nothing to attribute). */
   hasEmail: boolean
@@ -61,9 +63,6 @@ export function LensBar({ idx, hasEmail, myUser, viewUser, setViewUser, users, l
   users: string[]
   lens: Lens
   setLens: (l: Lens) => void
-  /** Scope the map to the lens (vs highlight over the full estate). */
-  scoped: boolean
-  setScoped: (v: boolean) => void
 }) {
   const canMark = useCanMark()
   const [typed, setTyped] = useState('')
@@ -128,12 +127,6 @@ export function LensBar({ idx, hasEmail, myUser, viewUser, setViewUser, users, l
               <button type="button" onClick={() => { setUserDraft(null); setViewUser(undefined) }}>← back to my files</button>
             )}
           </span>
-        )}
-        {SCOPABLE.includes(lens) && (
-          <label className="scope-toggle" title="On: the map re-aggregates to just this lens's prefixes under the current view. Off: full estate, this lens's bytes highlighted.">
-            <input type="checkbox" checked={scoped} onChange={e => setScoped(e.target.checked)} />
-            scope map to this lens
-          </label>
         )}
       </div>
       {lens === 'mine' && !viewUser ? (

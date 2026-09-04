@@ -1279,16 +1279,6 @@ details.fold {
         padding: 4px 8px;
       }
     }
-    .scope-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      margin-left: auto;
-      color: var(--ink-2);
-      font-size: 12.5px;
-      cursor: pointer;
-      input { accent-color: var(--s1); }
-    }
   }
   .guest-note a { color: var(--s1); }
   .tab-note {

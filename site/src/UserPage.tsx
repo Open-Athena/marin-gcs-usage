@@ -191,8 +191,9 @@ function DollarCell({ b, mix, color }: { b: number; mix?: Record<string, number>
   )
 }
 
-// One-level treemap of the whole estate by owner: every user, plus the
-// ownerless pools (communal, shared-in-group, unattributed).
+// One-level treemap of the whole estate by owner: every user, plus one
+// "unattributed" pool for everything no person owns (incl. communal and
+// shared-in-group bytes — the group split isn't a per-user distinction).
 interface OwnerCell {
   n: string
   b: number
@@ -222,13 +223,9 @@ function ownerCells(meta: Meta, fates: Map<string, Record<Fate, number>> | null)
         .filter(x => x.b > 0)
     : metaUsers
   const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b, team: u.t }))
-  const teamTotal = (t: string) =>
-    Object.values(meta.team_class_bytes?.[t] ?? {}).reduce((s, b) => s + b, 0)
   const userSum = users.reduce((s, u) => s + u.b, 0)
-  const communal = teamTotal('communal')
-  const unattr = Math.max(0, meta.total_bytes - userSum - communal)
-  if (communal > 0) cells.push({ n: 'communal', b: communal, team: 'communal' })
-  if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, team: 'unattributed' })
+  const unattr = Math.max(0, meta.total_bytes - userSum)
+  if (unattr > 0) cells.push({ n: 'unattributed', b: unattr, team: 'unattributed' })
   return cells.sort((a, b) => b.b - a.b)
 }
 
@@ -248,7 +245,7 @@ function MapLegend({ cells, fates }: {
   return (
     <div className="map-legend">
       {groups.map(t => (
-        <span key={t}><i style={{ background: tileBg(t) }} />{t === 'unattributed' ? 'unclaimed' : GROUP_LABELS[t] ?? t}</span>
+        <span key={t}><i style={{ background: tileBg(t) }} />{GROUP_LABELS[t] ?? t}</span>
       ))}
       {(!fates || present.keep || present.sweep) && <span className="sep" />}
       {(!fates || present.keep) && <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>}
@@ -328,15 +325,13 @@ function UsersMap({ meta, fates, redact = false }: {
         // still route through the SPA below.
         cellHref={n =>
           n.id ? `/user/${n.id}`
-          : n.team === 'communal' ? '/?l=communal'
           : n.team === 'unattributed' ? '/?l=unclaimed'
           : undefined}
         onCellClick={(n) => {
           if (redact) return true
           // Every tile goes somewhere sane: users to their page, the
-          // ownerless pools to the matching home lens.
+          // unattributed pool to the matching home lens.
           if (n.id) navigate(`/user/${n.id}`)
-          else if (n.team === 'communal') navigate('/?l=communal')
           else if (n.team === 'unattributed') navigate('/?l=unclaimed')
           return true
         }}
