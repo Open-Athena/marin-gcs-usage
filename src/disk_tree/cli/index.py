@@ -16,6 +16,7 @@ from utz import err, iec
 @option('-g', '--gc', is_flag=True)
 @option('-m', '--mean-mtime', is_flag=True, help='Emit `mtime_mean` (size-weighted mean mtime over descendants) per path')
 @option('-M', '--measure-memory', is_flag=True)
+@option('-q', '--no-progress', is_flag=True, help='Suppress the tqdm scan progress bar (for scheduled/redirected runs — keeps logs small)')
 @option('-s', '--sudo', is_flag=True, help='Run `find` as sudo')
 @argument('url', required=False)
 def index(
@@ -23,6 +24,7 @@ def index(
     gc: bool,
     mean_mtime: bool,
     measure_memory: bool,
+    no_progress: bool,
     sudo: bool,
     url: str | None,
 ):
@@ -42,9 +44,9 @@ def index(
 
     with ctx, time("scan"):
         if no_cache_read:
-            scan, df = Scan.create(url, gc=gc, sudo=sudo, mean_mtime=mean_mtime)
+            scan, df = Scan.create(url, gc=gc, sudo=sudo, mean_mtime=mean_mtime, progress=not no_progress)
         else:
-            scan, df = Scan.load_or_create(url, gc=gc, sudo=sudo, mean_mtime=mean_mtime)
+            scan, df = Scan.load_or_create(url, gc=gc, sudo=sudo, mean_mtime=mean_mtime, progress=not no_progress)
 
     elapsed = time['scan']
     # Find root row: try 'path == "."', fallback to 'parent == ""'
