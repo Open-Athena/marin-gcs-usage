@@ -221,13 +221,16 @@ details.fold {
     padding: 0 !important;
     flex-wrap: wrap;
   }
+  // The path keeps its natural width (never squeezed into an x-scroller);
+  // the legend takes the remaining room and wraps its items, and the whole
+  // bar wraps the legend under a long path.
   .dt-treemap-crumbs {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12.5px;
     color: var(--ink-2);
     white-space: nowrap;
+    flex: 0 0 auto !important;
     flex-wrap: nowrap !important;
-    overflow-x: auto;
     a {
       color: var(--s1);
       cursor: pointer;
@@ -235,12 +238,16 @@ details.fold {
       &:hover, &:focus-visible { text-decoration: underline !important; outline: none; }
     }
   }
+  // Basis wide enough that a long path pushes the legend onto its own
+  // full-width row rather than squeezing it into a one-item-wide column.
+  .dt-treemap-legend { flex: 1 1 360px; min-width: 0; }
   .legend {
     display: flex;
-    gap: 10px;
+    gap: 6px 10px;
     flex-wrap: wrap;
+    align-items: center;
     .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
-    .sw { width: 10px; height: 10px; border-radius: 3px; }
+    .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
   }
   .dt-treemap-fs {
     background: var(--panel) !important;

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
@@ -10,9 +10,23 @@ import { UserChip } from './UserChip'
 import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
 
-// A top-level prefix holding more than this share of the store is split one
-// level deeper for colouring (see catSlot).
-const DOMINANT_FRAC = 0.4
+// Tree-mode colouring is relative to the *drilled* root: its direct children
+// (L1) take the distinct category hues, ranked by size — the macro axis — and
+// each L1's own children (L2) fan across shades of that hue — the micro axis;
+// deeper cells inherit their L2 ancestor's shade. Drilling re-keys both, so
+// whatever you're looking at gets the full palette.
+const MAX_SLOTS = 8
+const rankCache = new WeakMap<TreeNode, Map<string, [number, number]>>()
+/** name → [rank, count] over a node's real (non-fold) children, largest first. */
+function childRanks(node: TreeNode): Map<string, [number, number]> {
+  let m = rankCache.get(node)
+  if (!m) {
+    const kids = (node.c ?? []).filter(c => !c.n.startsWith('(')).sort((a, b) => b.b - a.b)
+    m = new Map(kids.map((c, i): [string, [number, number]] => [c.n, [i, kids.length]]))
+    rankCache.set(node, m)
+  }
+  return m
+}
 
 /** The `s3://…` path shown at the top of a pinned tooltip, with a copy-to-
  * clipboard button (eject the prefix to the CLI). Its own component so the copy
@@ -61,74 +75,22 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   const { fmtBytes } = useUnits()
   // Tiling is a user preference (header toggle): `shared` by default.
   const [tiling] = useTiling()
-  // Fixed category colors: global top-level dirs by total size. A single-bucket
-  // store can be lopsided enough that one prefix owns most of the map (`marin/`
-  // is ~87% of the CoreWeave bucket), which paints almost every cell the same
-  // hue — so any prefix over DOMINANT_FRAC hands its slot down to its own
-  // children, and they get the distinct hues instead. (CP'd from gcs.)
-  const { catSlot, splitCats, hueIdx } = useMemo(() => {
-    const tops: TreeNode[] = []
-    for (const bucket of root.c ?? []) tops.push(...(bucket.c ?? []))
-    const nameOf = (n: TreeNode) => (n.n.startsWith('(') ? '(other)' : n.n)
-    const total = root.b || 1
-    const splitCats = new Set(
-      tops.filter(d => nameOf(d) !== '(other)' && d.b / total > DOMINANT_FRAC).map(nameOf),
-    )
-    const bytes = new Map<string, number>()
-    const add = (k: string, b: number) => bytes.set(k, (bytes.get(k) ?? 0) + b)
-    for (const d of tops) {
-      const k = nameOf(d)
-      if (splitCats.has(k)) for (const c of d.c ?? []) add(nameOf(c) === '(other)' ? '(other)' : `${k}/${c.n}`, c.b)
-      else add(k, d.b)
-    }
-    const cats = [...bytes.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([k]) => k)
-      .filter(k => k !== '(other)')
-    const catSlot = new Map(cats.slice(0, 8).map((k, i): [string, number] => [k, i]))
-
-    // Rank each category's own children by size, so the hue fan is stable and
-    // orders large→small rather than by whatever order the tree happens to be
-    // in. Keyed by the child's full path so lookup from `kidPath` is exact —
-    // bare names collide (`store` appears under several prefixes).
-    const hueIdx = new Map<string, [number, number]>()
-    const rank = (catNode: TreeNode, prefix: string) => {
-      const kids = (catNode.c ?? []).filter(c => !c.n.startsWith('('))
-      const sorted = [...kids].sort((a, b) => b.b - a.b)
-      sorted.forEach((c, i) => hueIdx.set(`${prefix}/${c.n}`, [i, sorted.length]))
-    }
-    for (const bucket of root.c ?? []) {
-      for (const d of bucket.c ?? []) {
-        const k = nameOf(d)
-        if (splitCats.has(k)) for (const c of d.c ?? []) rank(c, `${bucket.n}/${k}/${c.n}`)
-        else rank(d, `${bucket.n}/${k}`)
-      }
-    }
-    return { catSlot, splitCats, hueIdx }
-  }, [root])
-
+  // Macro/micro hue for a cell, relative to the drilled root (see childRanks):
+  // `depth` counts from the view root, so kidPath[len-2-depth] is that root,
+  // the next entry the L1 category, the one after (if any) the L2 shade.
   const slotOf = useCallback(
-    (kidPath: TreeNode[]): { slot: number; i: number; n: number } | null => {
-      // kidPath: [root, bucket, d1, d2, …]
-      const top = kidPath[2]
-      if (!top) return null
-      const k = top.n.startsWith('(') ? '(other)' : top.n
-      const split = splitCats.has(k)
-      let slot: number | undefined
-      if (!split) slot = catSlot.get(k)
-      else {
-        const sub = kidPath[3]
-        slot = sub ? catSlot.get(sub.n.startsWith('(') ? '(other)' : `${k}/${sub.n}`) : undefined
-      }
-      if (slot == null) return null
-      // The node one level below whichever node owns the slot carries the hue
-      // offset; everything under it inherits that offset unchanged.
-      const catDepth = split ? 3 : 2
-      const hueNode = kidPath.slice(1, catDepth + 2)
-      const [i, n] = hueIdx.get(hueNode.map(x => x.n).join('/')) ?? [0, 1]
+    (kidPath: TreeNode[], depth: number): { slot: number; i: number; n: number } | null => {
+      const rootIdx = kidPath.length - 2 - depth
+      const viewRoot = kidPath[rootIdx]
+      const l1 = kidPath[rootIdx + 1]
+      if (!viewRoot || !l1 || l1.n.startsWith('(')) return null
+      const slot = childRanks(viewRoot).get(l1.n)?.[0]
+      if (slot == null || slot >= MAX_SLOTS) return null
+      const l2 = kidPath[rootIdx + 2]
+      const [i, n] = l2 && !l2.n.startsWith('(') ? childRanks(l1).get(l2.n) ?? [0, 1] : [0, 1]
       return { slot, i, n }
     },
-    [catSlot, splitCats, hueIdx],
+    [],
   )
 
   // this branch serves the CoreWeave (CAIOS) estate — object URLs are s3://
@@ -161,18 +123,9 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       let bg: string
       let ink: string
       if (mode === 'tree') {
-        const s = slotOf(kidPath)
-        if (!s && ctx.hasKids) {
-          // A container with no slot of its own — most importantly the split
-          // prefix itself (`marin/`, whose colour lives on its children). Cells
-          // are translucent, so painting it "(other)" grey would show through
-          // every child and mute them; stay neutral and let the kids carry it.
-          bg = 'var(--panel)'
-          ink = 'var(--ink)'
-        } else {
-          bg = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
-          ink = s ? inkFor(bg) : 'var(--ink)'
-        }
+        const s = slotOf(kidPath, depth)
+        bg = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
+        ink = s ? inkFor(bg) : 'var(--ink)'
       } else if (ctx.hasKids) {
         // container: neutral so the nested tiles carry the data colors
         bg = 'var(--panel)'
@@ -273,33 +226,21 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
               {epochDaysToMonth(dateRange.max)}
             </span>
           ) : (
-            // Only the categories in view: the drilled ancestry plus what's
-            // visible two levels down (split categories key by `top/child`).
+            // The macro axis: the drilled root's children, largest first, in
+            // their hue; anything past the palette (and folds) is "other".
             (() => {
-              const present = new Set<string>()
-              const anc = legendPath.slice(1).map(a => a.n)
-              for (let i = 0; i < anc.length; i++) {
-                present.add(anc[i])
-                if (i > 0) present.add(`${anc[i - 1]}/${anc[i]}`)
-              }
-              const top = legendNode.n
-              for (const c of legendNode.c ?? []) {
-                present.add(c.n)
-                present.add(`${top}/${c.n}`)
-                for (const g of c.c ?? []) {
-                  present.add(g.n)
-                  present.add(`${c.n}/${g.n}`)
-                }
-              }
+              const ranked = [...childRanks(legendNode).entries()].sort((a, b) => a[1][0] - b[1][0])
+              const shown = ranked.slice(0, MAX_SLOTS)
+              const hasOther = ranked.length > MAX_SLOTS || (legendNode.c ?? []).some(c => c.n.startsWith('('))
               return (
                 <>
-                  {[...catSlot.entries()].filter(([k]) => present.has(k)).map(([k, s]) => (
+                  {shown.map(([k, [i]]) => (
                     <span className="li" key={k}>
-                      <span className="sw" style={{ background: slotColor(s) }} />
+                      <span className="sw" style={{ background: slotColor(i) }} />
                       {k}
                     </span>
                   ))}
-                  <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>
+                  {hasOther && <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>}
                 </>
               )
             })()
