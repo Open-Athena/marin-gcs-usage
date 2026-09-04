@@ -159,3 +159,76 @@ interactive legend rows (hover = solo, click = pin) — CW has user rows only
 when attribution exists, so it's the group/tree-less subset; `SiteKbd`
 (site-wide SpeedDial/omnibar) — CW is a single page, so only the omnibar's
 page-link group matters there.
+
+### 2026-09-04 (cw-ward, `/cp dt/main gcs`) — first `git cp` pass against upstream
+
+Survey: `gcs` had nothing past the cursor (`8191de0` is its tip). `dt/main`
+had no cursor (146 unmarked since the 2023 merge-base); triaged by surface
+against this ledger. Landed on `cw-s3` (one commit, cursor `dt/main 25f3dc0`):
+
+- `packages/react`: upstream `93e24b0..25f3dc0^` (14 commits) applied as one
+  3-way patch, clean — `edgeContrast` (built-in luminance half-stroke for
+  shared tiling, `parseColor`/`contrastEdge` in `colors.ts`), textured
+  `(other)` dust tile (`DustHatch`), `foldControl`, `remainderTail`,
+  `renderer="canvas"` (`layout.ts`/`cellStyle.ts`/`TreemapCanvas.tsx`,
+  progressive paint, segments parity, bounded a11y/`cellHref` overlay),
+  `onCellHover`, `edgeEmphasis`, click-through tooltip, `:focus-visible` +
+  `.pinned` accent ring, `CellStyle.ring`. Tests 180 → 213 (upstream's count).
+  Also re-widened `renderCellExtra`/`renderCellSubtitle` to upstream's
+  `CellCtx` (was narrowed to `CellDims` here since the 8/28 sync).
+- `src/disk_tree`: `588c4bf` (`index -q/--no-progress`, `progress` threaded
+  through `backend.list`/`run_gfind`) — core-contract change, harmless here.
+- Repo tooling: `scripts/branch-audit` + this ledger now live on `cw-s3` too
+  (the `.claude/cp.yml` `audit:`/`ledger:` entries pointed at files only gcs
+  carried).
+
+Skipped, with reasons (so the cursor is trustworthy):
+- **`25f3dc0` — extract the treemap core into `@rdub/treemap`.** Structural:
+  moves `packages/react/src/{Treemap,…}` to `packages/treemap/`, changes CI
+  + dist builds, and wants `site/package.json` re-pinned and imports renamed
+  on *both* marin branches at once. Content parity is achieved via the
+  pre-extraction diff; the split itself is Ryan's call, gcs-first.
+- Upstream-only serving/local features (ledger: "upstream carries Flask
+  serving"): `server.py` compare/library routes, diff index (`diff_index.py`),
+  vocab sidecar, `storage/*` row-group + blob search path (depends on the
+  library `config.py`), `cli/{du,reclaim,repos,overcount,snapshots,scans,
+  vocab,diff_index}`, `extents.py`, `desktop.py`/macOS app, `library.py`.
+- `ui/` and `specs/` commits — different www arch / upstream's own specs.
+- The `⇒ disk-tree upstream`-tagged rows (stream engine, finalize, bulk-list
+  adaptive) originated here and are already on both marin branches.
+
+Queued:
+- **gcs-ward**: this same react + `progress` patch (audit `gcs cw-s3` now
+  shows `packages/react/*` and `src/disk_tree` differing until gcs CPs it).
+- **dt-ward** (manifest `~/c/disk-tree/specs/marin-cp-2026-09-04.md`):
+  `TimeSeries` `yFrom`/`annotations`/`onPickX` (gcs `974ee7c`, cw-s3
+  `6121e6f`/`00dd02b`/`f3c5a03`), `S3BulkLister` adaptive retries (`e018da3`);
+  the 8/28 Python manifest is still open upstream.
+
+### 2026-09-04 (gcs-ward, `/cp dt/main cw-s3`) — mirror of the cw-ward 9/4 pass
+
+Survey after backfilling the `cw-s3` cursor (`8191de0`'s prose marker wasn't
+in trailer form; `git cp set cw-s3 5160a18`): 2 cw-s3 commits, 81 dt/main
+(no prior gcs→dt cursor). Landed on `gcs` (one commit, cursors
+`dt/main 25f3dc0` + `cw-s3 fceb717`):
+
+- `packages/react` + `src/disk_tree`: `fceb717`'s exact patch (gcs was
+  byte-identical to `fceb717^` on both surfaces, so it applied clean and the
+  worktree is byte-identical to `fceb717` — i.e. to upstream's pre-extraction
+  react core + the `progress` flag engine change). Tests 180 → 213 react,
+  371 pytest, site `tsc` clean.
+- Ledger: adopted the cw-ward 9/4 scramble-log entry (parity of this file).
+- No `app.scss` adaptation needed: gcs dropped the dead cell box-shadows and
+  themed the core edge vars back on 8/28–29 (see the comment citing
+  `1e5ee40` at the `.dt-treemap-cell` block).
+
+Skipped (mirroring the cw-ward triage, same reasons): `25f3dc0` (the
+`@rdub/treemap` extraction — structural, gcs-first decision, still pending);
+upstream Flask/local serving + CLI features; `ui/` + upstream `specs/`;
+marin-originated rows upstream copied back (`DT_S3_ADDRESSING_STYLE` =
+our `168308a`, stream engine, adaptive bulk-list). `f3c5a03` on cw-s3 is
+their CP of our `8191de0` — nothing to port back.
+
+Queued dt-ward: `~/c/disk-tree/specs/marin-cp-2026-09-04.md` (written by the
+cw-s3 session) covers what both marin branches owe upstream; nothing new
+from this pass.

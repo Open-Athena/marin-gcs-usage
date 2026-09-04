@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { Treemap } from '../src/Treemap'
+import { resolveRing } from '../src/cellStyle'
 
 interface Node {
   n: string
@@ -223,7 +224,9 @@ describe('<Treemap>', () => {
     it('shared: exact rects, square corners, half of a depth-scaled stroke inset per cell', () => {
       const restore = withLayout()
       try {
-        const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} tiling="shared" />)
+        // edgeContrast off so the stroke stays the neutral gutter var — this
+        // test is about tiling geometry, not the adaptive-edge default (below).
+        const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} tiling="shared" edgeContrast={false} />)
         const [foo, bar] = rootCells(container)
         expect([foo, bar].map(el => [px(el.style.width), px(el.style.height), el.style.borderRadius])).toEqual([
           [266.67, 300, '0'],
@@ -250,6 +253,105 @@ describe('<Treemap>', () => {
           [263.67, 139.25, '1px', 'inset 0 0 0 1px var(--dt-treemap-edge, var(--dt-treemap-container-bg, #202024))'],
           [263.67, 139.25, '1px', 'inset 0 0 0 1px var(--dt-treemap-edge, var(--dt-treemap-container-bg, #202024))'],
         ])
+      } finally {
+        restore()
+      }
+    })
+
+    it('edgeContrast (default): each shared cell strokes to contrast with its own face', () => {
+      const restore = withLayout()
+      try {
+        const { container } = render(
+          <Treemap
+            root={tree}
+            {...accessors}
+            minCellArea={null}
+            tiling="shared"
+            colorForCell={n => (accessors.getLabel(n) === 'foo'
+              ? { bg: '#ffffff', ink: '#000' }
+              : { bg: '#000000', ink: '#fff' })}
+          />,
+        )
+        const [foo, bar] = rootCells(container)
+        // depth 0 → 1.5px half-stroke; white face gets a dark stroke, black a
+        // light one — grey-on-grey borders can't vanish because the color is
+        // derived from each cell's own face.
+        expect(foo.style.boxShadow).toBe('inset 0 0 0 1.5px rgba(0, 0, 0, 0.55)')
+        expect(bar.style.boxShadow).toBe('inset 0 0 0 1.5px rgba(255, 255, 255, 0.42)')
+      } finally {
+        restore()
+      }
+    })
+
+    it('foldControl slider scales the fold thresholds live', () => {
+      const restore = withLayout()
+      try {
+        // Dominant cell + 20 tiny siblings. At 400×300 (scale ≈ 11.54) each
+        // tiny cell is ~231px²: below minCellArea 300 by default (they fold
+        // into one dust tile — collectively wide enough to draw a hatch),
+        // above it at the finest slider setting (×0.25 → 75) so they render as
+        // their own cells.
+        const foldTree: Node = {
+          n: 'root',
+          size: 10_400,
+          children: [
+            { n: 'big', size: 10_000 },
+            ...Array.from({ length: 20 }, (_, i) => ({ n: `t${i}`, size: 20 })),
+          ],
+        }
+        const cells = (c: HTMLElement) => c.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')
+        // The dust tile carries a canvas; a real cell does not — so the canvas
+        // count is the number of folded tiles.
+        const dustTiles = (c: HTMLElement) => c.querySelectorAll('.dt-treemap-map > .dt-treemap-cell canvas')
+        const { container } = render(
+          <Treemap root={foldTree} {...accessors} foldControl minCellArea={300} minCellSide={null} />,
+        )
+        // Default (multiplier 1): the six tiny siblings fold into one dust tile.
+        expect(cells(container).length).toBe(2)
+        expect(dustTiles(container).length).toBe(1)
+        // Drag to the finest setting (value 1 → multiplier 0.25): the tiny
+        // siblings drop below the lowered threshold and render individually.
+        const slider = container.querySelector('.dt-treemap-fold input') as HTMLInputElement
+        fireEvent.change(slider, { target: { value: '1' } })
+        expect(cells(container).length).toBe(21)
+        expect(dustTiles(container).length).toBe(0)
+      } finally {
+        restore()
+      }
+    })
+
+    it('remainderTail widens a dominated tail vs. plain squarify', () => {
+      const restore = withLayout(400, 300)
+      try {
+        // One dominant child + a five-cell tail that plain squarify squeezes
+        // into thin full-height slivers. Folding off so both layouts keep all
+        // six cells (else foldThin would collapse the default's slivers).
+        const remTree: Node = {
+          n: 'root',
+          size: 10_000,
+          children: [
+            { n: 'big', size: 9_875 },
+            { n: 'a', size: 40 }, { n: 'b', size: 30 }, { n: 'c', size: 25 },
+            { n: 'd', size: 18 }, { n: 'e', size: 12 },
+          ],
+        }
+        const widths = (c: HTMLElement) =>
+          rootCells(c).map(el => px(el.style.width)).sort((x, y) => x - y)
+        const plain = render(
+          <Treemap root={remTree} {...accessors} minCellArea={null} minCellSide={null} />,
+        )
+        const rem = render(
+          <Treemap root={remTree} {...accessors} minCellArea={null} minCellSide={null} remainderTail />,
+        )
+        const wPlain = widths(plain.container)
+        const wRem = widths(rem.container)
+        // Same six cells either way.
+        expect(wPlain.length).toBe(6)
+        expect(wRem.length).toBe(6)
+        // The narrowest tail cell is wider under the remainder band…
+        expect(wRem[0]).toBeGreaterThan(wPlain[0])
+        // …and the dominant cell is a little narrower (area traded to the tail).
+        expect(wRem[5]).toBeLessThan(wPlain[5])
       } finally {
         restore()
       }
@@ -305,6 +407,107 @@ describe('<Treemap>', () => {
     })
   })
 
+  describe('resolveRing', () => {
+    it('normalizes every ring form and drops the empty ones', () => {
+      expect([
+        resolveRing(undefined),
+        resolveRing(''),
+        resolveRing('rgb(1, 2, 3)'),
+        resolveRing({ color: 'rgb(1, 2, 3)' }),
+        resolveRing({ color: 'rgb(1, 2, 3)', width: 4, inset: false }),
+        resolveRing({ color: '', width: 4 }),
+      ]).toEqual([
+        null,
+        null,
+        { color: 'rgb(1, 2, 3)', width: 2, inset: true },
+        { color: 'rgb(1, 2, 3)', width: 2, inset: true },
+        { color: 'rgb(1, 2, 3)', width: 4, inset: false },
+        null,
+      ])
+    })
+  })
+
+  describe('ring (brush emphasis)', () => {
+    const rootCells = (c: HTMLElement) =>
+      [...c.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')] as HTMLElement[]
+    const barRing = (props: Record<string, unknown>): string => {
+      const { container } = render(
+        <Treemap
+          root={tree}
+          {...accessors}
+          minCellArea={null}
+          colorForCell={n => (accessors.getLabel(n) === 'bar' ? { bg: '#123456', ...props } : { bg: '#654321' })}
+        />,
+      )
+      return (rootCells(container)[1] as HTMLElement).style.boxShadow
+    }
+
+    it('gaps: an object ring stacks first (on top of) the structural border', () => {
+      const restore = withLayout()
+      try {
+        expect(barRing({ ring: { color: 'rgb(255, 255, 255)', width: 3 } })).toBe(
+          'inset 0 0 0 3px rgb(255, 255, 255), 0 0 0 1px var(--dt-treemap-cell-border, transparent)',
+        )
+      } finally {
+        restore()
+      }
+    })
+
+    it('a bare-string ring is shorthand for that color at the default 2px, inset', () => {
+      const restore = withLayout()
+      try {
+        expect(barRing({ ring: 'rgb(0, 200, 0)' })).toBe(
+          'inset 0 0 0 2px rgb(0, 200, 0), 0 0 0 1px var(--dt-treemap-cell-border, transparent)',
+        )
+      } finally {
+        restore()
+      }
+    })
+
+    it('inset:false draws the ring outside the box (no `inset` keyword)', () => {
+      const restore = withLayout()
+      try {
+        expect(barRing({ ring: { color: 'rgb(0, 0, 0)', inset: false } })).toBe(
+          '0 0 0 2px rgb(0, 0, 0), 0 0 0 1px var(--dt-treemap-cell-border, transparent)',
+        )
+      } finally {
+        restore()
+      }
+    })
+
+    it('shared: the ring stacks over the half-stroke, honored in this mode too', () => {
+      const restore = withLayout()
+      try {
+        const { container } = render(
+          <Treemap
+            root={tree}
+            {...accessors}
+            minCellArea={null}
+            tiling="shared"
+            edgeContrast={false}
+            colorForCell={n => (accessors.getLabel(n) === 'bar'
+              ? { bg: '#123456', ring: { color: 'rgb(120, 170, 255)', width: 2 } }
+              : { bg: '#654321' })}
+          />,
+        )
+        expect((rootCells(container)[1] as HTMLElement).style.boxShadow).toBe(
+          'inset 0 0 0 2px rgb(120, 170, 255), inset 0 0 0 1.5px var(--dt-treemap-edge, var(--dt-treemap-container-bg, #202024))',
+        )
+      } finally {
+        restore()
+      }
+    })
+
+    it('no ring: box-shadow is the structural border alone (gaps unchanged)', () => {
+      const restore = withLayout()
+      try {
+        expect(barRing({})).toBe('0 0 0 1px var(--dt-treemap-cell-border, transparent)')
+      } finally {
+        restore()
+      }
+    })
+  })
+
   describe('cellHref', () => {
     it('leaf-rendered cells become anchors; cells with nested tiles stay divs', () => {
       const restore = withLayout()
@@ -343,6 +546,27 @@ describe('<Treemap>', () => {
         restore()
       }
     })
+  })
+
+  it('clicking a leaf marks that DOM cell .pinned (accent ring); re-click clears it', () => {
+    // The `.pinned` class carries the same accent ring the canvas renderer and
+    // the pinned tooltip use — committed on click (mouseup), not on the focus
+    // that a mousedown lands (`:focus-visible` handles keyboard focus only).
+    const restore = withLayout()
+    try {
+      const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} />)
+      const leaf = [...container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')]
+        .find(el => !el.classList.contains('branch')) as HTMLElement // `bar`
+      expect(leaf.classList.contains('pinned')).toBe(false)
+      fireEvent.click(leaf)
+      const pinned = [...container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell.pinned')]
+      expect(pinned.length).toBe(1)
+      expect(pinned[0].classList.contains('branch')).toBe(false)
+      fireEvent.click(pinned[0] as HTMLElement)
+      expect(container.querySelectorAll('.dt-treemap-cell.pinned').length).toBe(0)
+    } finally {
+      restore()
+    }
   })
 
   it('branch/chain chrome classes are size-gated (min dim ≥ 28px) unless children render', () => {
@@ -641,6 +865,194 @@ describe('<Treemap> depth fade', () => {
         <Treemap root={spine} {...accessors} minCellArea={null} depthFade={1} />,
       )
       expect(bgFades(container)).toEqual([0.92, 0.92, 0.92, 0.92])
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('<Treemap renderer>', () => {
+  it("default 'dom' renders DOM cells and no canvas", () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} />)
+      expect(container.querySelector('.dt-treemap-map canvas')).toBe(null)
+      expect(cellLabels(container)).toEqual(['foo', 'bar'])
+    } finally {
+      restore()
+    }
+  })
+
+  it("'canvas' renders one canvas and no DOM cells", () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(
+        <Treemap root={tree} {...accessors} minCellArea={null} renderer="canvas" />,
+      )
+      expect(container.querySelectorAll('.dt-treemap-map canvas')).toHaveLength(1)
+      expect(container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')).toHaveLength(0)
+    } finally {
+      restore()
+    }
+  })
+
+  it("'canvas' still renders the shared chrome (crumbs + size)", () => {
+    render(<Treemap root={tree} {...accessors} renderer="canvas" formatSize={n => `${n} B`} />)
+    expect(screen.getByText('root')).toBeInTheDocument()
+    expect(screen.getByText(/300 B/)).toBeInTheDocument()
+  })
+})
+
+describe('<Treemap onCellHover>', () => {
+  it('fires node+path on enter, once per cell, null on leave', () => {
+    vi.useFakeTimers()
+    const restore = withLayout()
+    try {
+      const calls: [string | null, string[]][] = []
+      const onCellHover = (n: Node | null, p: Node[]) => calls.push([n ? n.n : null, p.map(x => x.n)])
+      const { container } = render(
+        <Treemap root={tree} {...accessors} onCellHover={onCellHover} minCellArea={null} />,
+      )
+      const leaf = [...container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')]
+        .find(el => !el.classList.contains('branch'))!
+      fireEvent.mouseMove(leaf)
+      fireEvent.mouseMove(leaf) // same cell: no second enter
+      fireEvent.mouseLeave(container.querySelector('.dt-treemap-map')!)
+      vi.advanceTimersByTime(200) // past the 180ms leave grace
+      expect(calls).toEqual([['bar', ['root', 'bar']], [null, []]])
+    } finally {
+      restore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('is inert when absent (no throw on hover/leave)', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} />)
+      const leaf = [...container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')]
+        .find(el => !el.classList.contains('branch'))!
+      expect(() => fireEvent.mouseMove(leaf)).not.toThrow()
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('<Treemap a11yLinks> (canvas overlay)', () => {
+  const a11yTree: Node = {
+    n: 'root',
+    size: 100,
+    children: [
+      { n: 'big', size: 70 },
+      { n: 'mid', size: 20 },
+      { n: 'small', size: 10 },
+    ],
+  }
+  const base = { ...accessors, minCellArea: null as null, renderer: 'canvas' as const, formatSize: (n: number) => `${n}` }
+
+  it('builds a bounded anchor overlay (largest-first) with href + aria-label', () => {
+    const restore = withLayout(600, 400)
+    try {
+      const { container } = render(<Treemap root={a11yTree} {...base} a11yMaxCells={2} cellHref={n => `/f/${n.n}`} />)
+      const links = [...container.querySelectorAll('.dt-treemap-map a')]
+      expect(links.map(a => [a.getAttribute('href'), a.getAttribute('aria-label')])).toEqual([
+        ['/f/big', 'big, 70'],
+        ['/f/mid', 'mid, 20'],
+      ])
+    } finally {
+      restore()
+    }
+  })
+
+  it('renders buttons (not anchors) when no cellHref is given', () => {
+    const restore = withLayout(600, 400)
+    try {
+      const { container } = render(<Treemap root={a11yTree} {...base} a11yMaxCells={2} />)
+      expect(container.querySelectorAll('.dt-treemap-map a').length).toBe(0)
+      expect(container.querySelectorAll('.dt-treemap-map button').length).toBe(2)
+    } finally {
+      restore()
+    }
+  })
+
+  it('a11yLinks={false} builds no overlay', () => {
+    const restore = withLayout(600, 400)
+    try {
+      const { container } = render(<Treemap root={a11yTree} {...base} a11yLinks={false} cellHref={n => `/f/${n.n}`} />)
+      expect(container.querySelectorAll('.dt-treemap-map a, .dt-treemap-map button').length).toBe(0)
+    } finally {
+      restore()
+    }
+  })
+
+  it('a11yMinSide filters out cells below the short-side floor', () => {
+    const restore = withLayout(600, 400)
+    try {
+      const { container } = render(<Treemap root={a11yTree} {...base} a11yMinSide={100000} cellHref={n => `/f/${n.n}`} />)
+      expect(container.querySelectorAll('.dt-treemap-map a').length).toBe(0)
+    } finally {
+      restore()
+    }
+  })
+
+  it('the DOM renderer ignores a11y overlay props (no extra anchors)', () => {
+    const restore = withLayout(600, 400)
+    try {
+      // DOM cells are real elements already; a11yLinks adds nothing.
+      const { container } = render(<Treemap root={a11yTree} {...accessors} minCellArea={null} a11yMaxCells={2} />)
+      expect(container.querySelector('.dt-treemap-map canvas')).toBe(null)
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('<Treemap> canvas pin ring', () => {
+  const tree3: Node = {
+    n: 'root',
+    size: 100,
+    children: [
+      { n: 'big', size: 70 },
+      { n: 'mid', size: 20 },
+      { n: 'small', size: 10 },
+    ],
+  }
+
+  it('clicking a leaf pins it and rings the cell on the canvas', () => {
+    const restore = withLayout(600, 400)
+    try {
+      const { container } = render(<Treemap root={tree3} {...accessors} minCellArea={null} renderer="canvas" />)
+      const ringSel = '.dt-treemap-map div[style*="120, 170, 255"]'
+      expect(container.querySelector(ringSel)).toBe(null)
+      // A leaf isn't drillable → clicking pins it (via the a11y overlay button,
+      // which routes through the same click path as a canvas mouse click).
+      const bigBtn = [...container.querySelectorAll('.dt-treemap-map button')]
+        .find(b => b.getAttribute('aria-label')?.startsWith('big'))!
+      fireEvent.click(bigBtn)
+      expect(container.querySelector(ringSel)).not.toBe(null)
+    } finally {
+      restore()
+    }
+  })
+
+  it('the pinned tip is click-through (container none, × auto) so a covered cell still pins', () => {
+    // The tip anchors over a cell's top-left; if it caught clicks, a cell lying
+    // under an already-pinned tip could never be pinned. Container must pass
+    // clicks through to the canvas/cell; only its × takes pointer events.
+    const restore = withLayout(600, 400)
+    try {
+      const { container } = render(<Treemap root={tree3} {...accessors} minCellArea={null} renderer="canvas" />)
+      const bigBtn = [...container.querySelectorAll('.dt-treemap-map button')]
+        .find(b => b.getAttribute('aria-label')?.startsWith('big'))!
+      fireEvent.click(bigBtn)
+      const tip = container.querySelector('.dt-treemap-tip') as HTMLElement
+      expect(tip).not.toBe(null)
+      expect(tip.classList.contains('pinned')).toBe(true)
+      expect(tip.style.pointerEvents).toBe('none')
+      const closeBtn = tip.querySelector('button') as HTMLElement
+      expect(closeBtn.title).toBe('Unpin (Esc)')
+      expect(closeBtn.style.pointerEvents).toBe('auto')
     } finally {
       restore()
     }
