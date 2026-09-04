@@ -80,7 +80,7 @@ export function MarksPage() {
               </thead>
               <tbody>
                 {rows.map(e => (
-                  <tr key={`${e.id}-${e.prefix}`}>
+                  <tr key={`${e.id}-${e.kind}-${e.prefix}`}>
                     <td title={fmtMarkDate(e.ts)}>{fmtWhen(e.ts)}</td>
                     <td><WhoCell who={e.who} user={userByHandle.get(whoToHandle(e.who))} /></td>
                     <td><ActionChip e={e} /></td>

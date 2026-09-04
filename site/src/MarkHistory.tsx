@@ -45,7 +45,7 @@ export function MarkHistory({ prefix, scope }: { prefix: string; scope: string }
             // Show the prefix relative to the current view when it's inside it.
             const rel = e.prefix.startsWith(base) ? e.prefix.slice(base.length) || '(here)' : e.prefix
             return (
-              <tr key={`${e.id}-${e.prefix}`}>
+              <tr key={`${e.id}-${e.kind}-${e.prefix}`}>
                 <td title={fmtMarkDate(e.ts)}>{fmtWhen(e.ts)}</td>
                 <td><UserChip who={e.who} size={15} /></td>
                 <td><ActionChip e={e} /></td>

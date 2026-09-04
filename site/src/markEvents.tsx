@@ -18,6 +18,9 @@ export interface MarkEvent {
   who: string
   prefix: string
   id: number
+  /** Which axis the row came from — one action can emit both a keep and an
+   * owner event for the same prefix, so (id, prefix) alone isn't unique. */
+  kind: 'keep' | 'owner'
   label: string
   color: string
   glyph: string
@@ -37,14 +40,14 @@ export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; erro
     const evs: MarkEvent[] = []
     for (const r of data.keeps)
       evs.push({
-        ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, memo: r.memo,
+        ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, kind: 'keep', memo: r.memo,
         label: r.keep == null ? 'cleared' : ACTION_LABELS[r.keep],
         color: r.keep == null ? 'var(--line)' : ACTION_COLORS[r.keep],
         glyph: r.keep == null ? '○' : ACTION_GLYPH[r.keep],
       })
     for (const r of data.owners)
       evs.push({
-        ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, memo: r.memo,
+        ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, kind: 'owner', memo: r.memo,
         label: r.owner == null ? 'released' : `claimed${r.owner === r.who ? '' : ` for ${r.owner}`}`,
         color: 'var(--t-oa)',
         glyph: r.owner == null ? '◇' : '◆',
