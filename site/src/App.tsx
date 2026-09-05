@@ -81,6 +81,8 @@ let deepLinkPending = false
 // Sticky control bar height — anchored sections park this far down
 // (`scroll-margin-top` in app.scss).
 const SCROLL_MARGIN = 48
+// Reader-initiated scrolling (not the programmatic kind) — ends a deep link's pursuit.
+const USER_SCROLL_EVENTS = ['wheel', 'touchmove', 'keydown'] as const
 
 function AppContent() {
   // Which object store to render comes from the path (one store today; the
@@ -353,18 +355,31 @@ function AppContent() {
     // arrives — a lens's tree.json can take seconds), the scroll-spy must not
     // rewrite the hash: at scrollY 0 it would clear `#diff` before the
     // section exists.
+    // Keep nudging until the anchor sits still at the sticky bar's margin
+    // (cold loads shift the page for many seconds as the map, its table and
+    // the diff sides land); a reader's own scroll input ends the pursuit.
     deepLinkPending = true
     let last = NaN
-    const timers = [150, 400, 800, 1400, 2000, 4000, 7000].map(ms => setTimeout(() => {
+    let tries = 0
+    const stop = () => {
+      clearInterval(iv)
+      deepLinkPending = false
+      for (const ev of USER_SCROLL_EVENTS) window.removeEventListener(ev, stop)
+    }
+    const iv = setInterval(() => {
+      if (++tries > 120) { stop(); return }
       const el = document.getElementById(id)
       if (!el) return
       const top = el.getBoundingClientRect().top
-      if (Math.abs(top - SCROLL_MARGIN) < 4 && top === last) { deepLinkPending = false; return } // parked
+      if (Math.abs(top - SCROLL_MARGIN) < 4 && top === last) { stop(); return } // parked
       last = top
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }, ms))
-    const done = setTimeout(() => { deepLinkPending = false }, 7500)
-    return () => { timers.forEach(clearTimeout); clearTimeout(done) }
+      // Instant, not smooth: this is page-load positioning, not a navigation
+      // the reader watches — and a smooth animation restarted every nudge
+      // (or paused in a background tab) never gets there.
+      el.scrollIntoView({ behavior: 'instant', block: 'start' })
+    }, 500)
+    for (const ev of USER_SCROLL_EVENTS) window.addEventListener(ev, stop, { passive: true })
+    return stop
   }, [hash, tree, meta, scans])
   // Scroll-spy: keep the URL fragment tracking the section in view
   // (replaceState — no history entries, no scroll jumps), so a copied URL
