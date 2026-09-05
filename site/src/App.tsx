@@ -75,6 +75,12 @@ const LEGACY_ANCHORS: Record<string, string> = {
 // it, or a router-driven location change would re-scroll to wherever the
 // reader already is.
 let spyHash = ''
+// True while a `#hash` deep link is still scrolling into place (see the
+// deep-link effect); the scroll-spy holds off until then.
+let deepLinkPending = false
+// Sticky control bar height — anchored sections park this far down
+// (`scroll-margin-top` in app.scss).
+const SCROLL_MARGIN = 48
 
 function AppContent() {
   // Which object store to render comes from the path (one store today; the
@@ -343,16 +349,22 @@ function AppContent() {
     // The treemap/table lay out async and shift the page after first paint, so a
     // single deferred scroll lands in the wrong place (or a still-empty page).
     // Re-scroll over ~2s until the anchor's position stops moving.
+    // While the deep link is still trying to land (sections mount as data
+    // arrives — a lens's tree.json can take seconds), the scroll-spy must not
+    // rewrite the hash: at scrollY 0 it would clear `#diff` before the
+    // section exists.
+    deepLinkPending = true
     let last = NaN
-    const timers = [150, 400, 800, 1400, 2000].map(ms => setTimeout(() => {
+    const timers = [150, 400, 800, 1400, 2000, 4000, 7000].map(ms => setTimeout(() => {
       const el = document.getElementById(id)
       if (!el) return
       const top = el.getBoundingClientRect().top
-      if (Math.abs(top) < 4 && top === last) return // already parked at the top
+      if (Math.abs(top - SCROLL_MARGIN) < 4 && top === last) { deepLinkPending = false; return } // parked
       last = top
       el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }, ms))
-    return () => timers.forEach(clearTimeout)
+    const done = setTimeout(() => { deepLinkPending = false }, 7500)
+    return () => { timers.forEach(clearTimeout); clearTimeout(done) }
   }, [hash, tree, meta, scans])
   // Scroll-spy: keep the URL fragment tracking the section in view
   // (replaceState — no history entries, no scroll jumps), so a copied URL
@@ -360,7 +372,7 @@ function AppContent() {
   useEffect(() => {
     let raf = 0
     const onScroll = () => {
-      if (raf) return
+      if (raf || deepLinkPending) return
       raf = requestAnimationFrame(() => {
         raf = 0
         // Reference line near the top (not ⅓ viewport): a short section
