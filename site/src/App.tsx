@@ -1,13 +1,11 @@
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SyntheticEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { MdInfoOutline, MdLayers } from 'react-icons/md'
+import { MdLayers } from 'react-icons/md'
 import { useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
-import { Avatar } from './Avatar'
-import { UserChip, canonId, ghHandle, shortName, shortUserKey } from './UserChip'
+import { canonId, shortName, shortUserKey } from './UserChip'
 import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
@@ -21,49 +19,65 @@ import type { DateRange, Highlight } from './Treemap'
 import { applyFilter, applyLensScale, applyNodeFilter, collectMatches, parseQuery } from './filterTree'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
-import { LENS_LABELS, LensBar, SCOPABLE } from './LensBar'
-import type { Lens } from './LensBar'
-import { applyTodoFilter, communalSlice, klcSplits, lensNodePred, teamLens, unattrSlice, useMyUser, userLens } from './sweep'
+import { FATE_AXES, applyFateFilter, claimedSlice, communalSlice, klcSplits, lensNodePred, teamLens, unattrSlice, useMyUser, userLens } from './sweep'
+import type { FateAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
-import { SiteNav } from './SiteNav'
+import { SiteNav, TOPBAR_VAR } from './SiteNav'
+import type { MenuEntry } from './SiteNav'
 import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
+import { TypedPrefixModal } from './TypedPrefix'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, groupLabel, ratePerByte } from './types'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
-const MODES = Object.keys(MODE_LABELS) as ColorMode[]
-
-// Edu-fold state: open for the viewer's FIRST session (the copy is onboarding
-// — it earns its space once), collapsed by default ever after. An explicit
-// toggle wins forever (localStorage); sessionStorage marks the grace session
-// so a mid-session reload doesn't slam the fold shut on a first-time reader.
-function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>) => void] {
-  const [open, setOpen] = useState(() => {
-    try {
-      const chosen = localStorage.getItem(key)
-      if (chosen != null) return chosen !== '0'
-      if (localStorage.getItem(`${key}:seen`) == null) {
-        localStorage.setItem(`${key}:seen`, '1')
-        sessionStorage.setItem(`${key}:grace`, '1')
-        return true
-      }
-      return sessionStorage.getItem(`${key}:grace`) != null
-    } catch { return true }
-  })
-  const onToggle = (e: SyntheticEvent<HTMLDetailsElement>) => {
-    const o = e.currentTarget.open
-    if (o === open) return // browsers fire `toggle` when the attr is first set — not a choice
-    setOpen(o)
-    try { localStorage.setItem(key, o ? '1' : '0') } catch { /* in-memory only */ }
-  }
-  return [open, onToggle]
-}
+// The color axes on offer. Group and user·group still decode from `?c=` (and
+// appear in the picker while selected) but aren't offered: the per-group
+// split mattered for early ballparking, not for review.
+const MODES: ColorMode[] = ['fate', 'read', 'user', 'date', 'tree']
+const HIDDEN_MODES: ColorMode[] = ['team', 'uteam']
 
 // Diff-section span presets (days back from the "after" scan).
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
+
+// The mark-state axis chips (`?k=` letters), in bar order.
+const FATE_CHIPS: { f: FateAxis; key: string; glyph: string; color: string; tip: string }[] = [
+  { f: 'keep', key: 'k', glyph: '✓', color: 'var(--mk-keep)', tip: 'Bytes under a keep decision (keep-last-ckpt counts: it splits its subtree).' },
+  { f: 'sweep', key: 's', glyph: '✕', color: 'var(--mk-del)', tip: 'Bytes marked for the sweep (keep-last-ckpt counts: it splits its subtree).' },
+  { f: 'unmarked', key: 'u', glyph: '○', color: 'var(--ink-2)', tip: 'The review backlog — no keep/sweep decision on the prefix or any ancestor.' },
+]
+
+// The owner axis: `?o=` is `claimed`, `unclaimed`, `me`, or a user key
+// (`?o=rw`); absent = everything. Claimed = attributed to a person; unclaimed
+// = the nobody-owns-it pool (unattributed bytes plus the shared/communal
+// pools). A user narrows "claimed" to that person.
+type OwnerMode = 'all' | 'claimed' | 'unclaimed' | 'user'
+
+// Which of the bar's "diff window" controls to show: the start-scan picker
+// only while a section that reads the window (the Diff, the size chart with
+// its shaded band) is on screen.
+function useSectionsVisible(ids: string[], deps: unknown[]): boolean {
+  const [vis, setVis] = useState(false)
+  useEffect(() => {
+    const els = ids.map(id => document.getElementById(id)).filter((e): e is HTMLElement => e != null)
+    if (!els.length) { setVis(false); return }
+    const seen = new Map<Element, boolean>()
+    const io = new IntersectionObserver(entries => {
+      for (const e of entries) seen.set(e.target, e.isIntersecting)
+      setVis([...seen.values()].some(Boolean))
+    })
+    els.forEach(el => io.observe(el))
+    return () => io.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
+  return vis
+}
+
+/** The sticky bar's current height (px) — where anchored sections park. */
+const topbarH = (): number =>
+  parseFloat(getComputedStyle(document.documentElement).getPropertyValue(TOPBAR_VAR)) || 48
 
 // Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
 // tracking the one in view, and deep links scroll to it. Old ids keep working.
@@ -78,9 +92,6 @@ let spyHash = ''
 // True while a `#hash` deep link is still scrolling into place (see the
 // deep-link effect); the scroll-spy holds off until then.
 let deepLinkPending = false
-// Sticky control bar height — anchored sections park this far down
-// (`scroll-margin-top` in app.scss).
-const SCROLL_MARGIN = 48
 // Reader-initiated scrolling (not the programmatic kind) — ends a deep link's pursuit.
 const USER_SCROLL_EVENTS = ['wheel', 'touchmove', 'keydown'] as const
 
@@ -98,10 +109,7 @@ function AppContent() {
   const markMode = store.key === 'gcs' && canMark
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
-  // `fold2`: v1 keys recorded the browser's spurious initial toggle event as
-  // an explicit choice — retire them rather than inherit the bad state.
-  const [bannerOpen, onBannerToggle] = useFold('gcs-usage:fold2:banner')
-  const [introOpen, onIntroToggle] = useFold('gcs-usage:fold2:intro')
+  const [typedOpen, setTypedOpen] = useState(false)
   // Keep the tab title in sync with the store on client-side navigation.
   useEffect(() => {
     document.title = store.title
@@ -118,7 +126,9 @@ function AppContent() {
   const [modeP, setModeP] = useUrlState('c', modeCodec)
   // The age chart's own color axis (`?ac=`, same tokens); absent = follow the map.
   const [ageModeP, setAgeModeP] = useUrlState('ac', modeCodec)
-  const [hlUser, setHlUser] = useUrlState('u', stringParam())
+  // `?t=` — a pinned *group* (oa / stanford): reachable from ⌘K and old links
+  // now that group coloring (whose legend pinned it) is off the picker. The
+  // unclaimed/communal pools rewrite onto the owner axis below.
   const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
@@ -142,35 +152,48 @@ function AppContent() {
     enabled: !!asof,
     staleTime: Infinity,
   })
-  // `?f=` (name filter) and `?l=` (review lens) read early: they decide
-  // whether the full artifact tree is needed at all (see treeQ below).
-  // `?l=` replaces legacy `?mt=` (value `user` was `mine` — the lens views
-  // *a* user, not necessarily you); `?u=` replaces `?mu=`, encoded as the
-  // user's shortest registry alias. Old links normalize below.
+  // `?f=` (name filter), `?k=` (mark axis) and `?o=` (owner axis) read early:
+  // they decide whether the full artifact tree is needed at all (see treeQ
+  // below). The two axes replace the old review *lenses* (`?l=todo|user|
+  // unclaimed`, `?lu=`, and the `?u=` legend pin) — one orthogonal pair
+  // instead of a tab row, so "unmarked ∧ unclaimed" or "sweep ∧ one user"
+  // are plain combinations. Old links normalize below.
   const [fq, setFq] = useUrlState('f', stringParam())
-  const [markTabP, setMarkTabP] = useUrlState('l', stringParam())
+  const [kP, setKP] = useUrlState('k', stringParam())
+  const [oP, setOP] = useUrlState('o', stringParam())
   const ident = useIdentity()
   const myUser = useMyUser(ident?.email, markMode)
-  // `?mt=` (declared above, near treeQ) — active review lens over the map +
-  // children table (absent = no lens, the plain browse view). The lenses are
-  // presets on the normal view (LensBar), scoped to the current subtree —
-  // there's no separate /mark page.
-  // No email (anon / no-email session) → no "My files" lens to attribute to.
-  const hasEmail = !!ident?.email
-  const markTabRaw: Lens =
-    markTabP === 'user' || markTabP === 'mine' ? 'mine'
-    : markTabP === 'todo' || markTabP === 'unclaimed' || markTabP === 'communal' ? markTabP
-    : 'all'
-  const markTab: Lens = markTabRaw === 'mine' && !hasEmail ? 'all' : markTabRaw
-  const setMarkTab = (t: Lens) => {
-    setMarkTabP(t === 'all' ? undefined : t === 'mine' ? 'user' : t)
-    if (t !== 'mine') setUP(undefined) // `lu` is meaningless outside the user lens
+  // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
+  const fateSet = useMemo((): ReadonlySet<FateAxis> | null => {
+    const on = new Set(FATE_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
+    return on.size > 0 && on.size < FATE_AXES.length && markMode ? on : null
+  }, [kP, markMode])
+  const toggleFate = (f: FateAxis) => {
+    const next = new Set(fateSet ?? FATE_AXES)
+    if (next.has(f)) next.delete(f)
+    else next.add(f)
+    // Switching the last one off would show nothing: roll back to all.
+    setKP(next.size === FATE_AXES.length || next.size === 0 ? undefined : FATE_CHIPS.filter(c => next.has(c.f)).map(c => c.key).join(''))
   }
-  // `?lu=` — whose files the user lens shows (anyone's view is browsable;
-  // `?u=` is the highlight-user param). Only meaningful while that lens is
-  // active: an inactive lens must not redecorate its chip or the view.
-  const [uP, setUP] = useUrlState('lu', stringParam())
-  const viewUser = markTab === 'mine' ? ((uP ? canonId(uP) : null) ?? myUser) : null
+  // Owner axis. `me` resolves to the signed-in user's attribution id (a
+  // shared `?o=me` link shows each reader their own files); an unmapped
+  // email resolves to nothing, and the axis falls back to "all" with a note.
+  const ownerUser: string | null =
+    !markMode || !oP || oP === 'claimed' || oP === 'unclaimed' ? null
+    : oP === 'me' ? myUser
+    : canonId(oP)
+  const ownerMode: OwnerMode =
+    !markMode || !oP ? 'all' : oP === 'claimed' ? 'claimed' : oP === 'unclaimed' ? 'unclaimed' : ownerUser ? 'user' : 'all'
+  const meUnmapped = markMode && oP === 'me' && !myUser
+  const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
+  const toggleOwner = (which: 'claimed' | 'unclaimed') => {
+    // Two chips: both on = all; toggling the only-on chip off rolls back to all.
+    const on = ownerMode === 'all' ? new Set(['claimed', 'unclaimed']) : ownerMode === 'unclaimed' ? new Set(['unclaimed']) : new Set(['claimed'])
+    if (on.has(which)) on.delete(which)
+    else on.add(which)
+    setOP(on.size === 2 || on.size === 0 ? undefined : on.has('claimed') ? 'claimed' : 'unclaimed')
+  }
+  const viewUser = ownerUser
   // tree.json is ~29MB — the estate-wide walks (name filter's match set +
   // re-aggregation, lens scoping) still need its depth, but plain browsing
   // doesn't: the map seeds from the same pixel-budget /api/subtree that
@@ -184,7 +207,7 @@ function AppContent() {
   // — no tree.json. Team lenses (communal/unclaimed) and todo/name-filter stay
   // on tree.json (a big team overruns the floor-free lens; see
   // specs/path-agnostic-serving.md §2.3).
-  const lensUser = markTab === 'mine' ? viewUser : hlUser || null
+  const lensUser = viewUser
   const subtreeLens = store.key === 'gcs' && lensUser && !fq ? `user:${lensUser}` : null
   // A scan whose by-user variant isn't synced (e.g. the daily ran on an image
   // predating it) makes the lens subtree 500; remember that (scan, lens) as
@@ -193,18 +216,25 @@ function AppContent() {
   const [lensBrokenKey, setLensBrokenKey] = useState<string | null>(null)
   const lensKey = subtreeLens ? `${asof}:${subtreeLens}` : null
   const activeLens = subtreeLens && lensBrokenKey !== lensKey ? subtreeLens : null
-  const needFullTree = !activeLens && (store.key !== 'gcs' || fq != null || markTabP != null || hlUser != null || hlTeam != null)
-  // One-time legacy-param rewrite (`mt`/`mu` → `l`/`u`), so old links work
-  // and re-share in the golfed form.
+  const needFullTree = !activeLens && (store.key !== 'gcs' || fq != null || fateSet != null || ownerMode !== 'all' || hlTeam != null)
+  // One-time legacy-param rewrite onto the two axes, so old links (Slack
+  // digests, /user pages) work and re-share in the current form:
+  //   ?l=todo → ?k=u · ?l=unclaimed|communal, ?t=unattributed|communal → ?o=unclaimed
+  //   ?l=user[&lu=x] (and older ?mt=mine[&mu=x]) → ?o=x|me · ?u=x (legend pin) → ?o=x
   useEffect(() => {
     const sp = new URLSearchParams(search)
-    if (!sp.has('mt') && !sp.has('mu')) return
-    const mt = sp.get('mt')
-    const mu = sp.get('mu')
-    sp.delete('mt')
-    sp.delete('mu')
-    if (mt) sp.set('l', mt === 'mine' ? 'user' : mt)
-    if (mu) sp.set('lu', shortUserKey(canonId(mu)))
+    const legacy = ['l', 'lu', 'u', 'mt', 'mu']
+    const t = sp.get('t')
+    if (!legacy.some(k => sp.has(k)) && t !== 'unattributed' && t !== 'communal') return
+    const l = sp.get('l') ?? sp.get('mt')
+    const lu = sp.get('lu') ?? sp.get('mu')
+    const u = sp.get('u')
+    for (const k of legacy) sp.delete(k)
+    if (t === 'unattributed' || t === 'communal') { sp.delete('t'); sp.set('o', 'unclaimed') }
+    if (l === 'todo') sp.set('k', 'u')
+    else if (l === 'unclaimed' || l === 'communal') sp.set('o', 'unclaimed')
+    else if (l === 'user' || l === 'mine') sp.set('o', lu ? shortUserKey(canonId(lu)) : 'me')
+    if (u && !sp.has('o')) sp.set('o', shortUserKey(canonId(u)))
     navigate({ pathname, search: `?${sp.toString()}`, hash }, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search])
@@ -371,7 +401,7 @@ function AppContent() {
       const el = document.getElementById(id)
       if (!el) return
       const top = el.getBoundingClientRect().top
-      if (Math.abs(top - SCROLL_MARGIN) < 4 && top === last) { stop(); return } // parked
+      if (Math.abs(top - topbarH()) < 4 && top === last) { stop(); return } // parked
       last = top
       // Instant, not smooth: this is page-load positioning, not a navigation
       // the reader watches — and a smooth animation restarted every nudge
@@ -408,18 +438,10 @@ function AppContent() {
     return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
   }, [])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
-  // Is the sticky control bar stuck? A zero-height sentinel sits right above
-  // it; when the sentinel leaves the viewport, the bar is pinned.
-  const ctlSentinel = useRef<HTMLDivElement>(null)
-  const [stuck, setStuck] = useState(false)
-  useEffect(() => {
-    const el = ctlSentinel.current
-    if (!el) return
-    const io = new IntersectionObserver(([e]) => setStuck(!e.isIntersecting && e.boundingClientRect.top < 0))
-    io.observe(el)
-    return () => io.disconnect()
-  }, [])
-  const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
+  const { fmtBytes } = useUnits()
+  // The bar shows the diff window's start only while a section that reads it
+  // is on screen (re-observed as those sections mount with their data).
+  const rangeVisible = useSectionsVisible(['diff', 'over-time'], [asof, scans.length, tree != null, meta != null])
   // The treemap's drill path now lives in the URL *path* (below the store's own
   // route prefix), so a drilled prefix is a real shareable URL —
   // `/marin-us-central1/ego-dex`, not `/?p=marin-us-central1/ego-dex`. View
@@ -438,19 +460,19 @@ function AppContent() {
   const readRange = useMemo((): DateRange | null =>
     meta?.access ? { min: meta.access.from, max: meta.access.to } : null,
   [meta])
-  // No explicit `?c=` → a lens-appropriate default; an explicit pick always
+  // No explicit `?c=` → a scope-appropriate default; an explicit pick always
   // wins. During the cleanup sprint the primary axis is mark state ("marks"),
-  // so the fill and the keep/sweep decorations are ONE axis — group shading
-  // (with mark borders as a colliding second color axis) is opt-in, not the
-  // landing view. Per-owner lenses default to `user` instead (fate is useless
-  // on an all-undecided view; group is useless on a single-owner one).
+  // so the fill and the keep/sweep decorations are ONE axis. A single mark
+  // state or a single owner defaults to `user` instead (fate is useless on an
+  // all-undecided view; on a one-owner view the interesting axis is who else
+  // is in there).
   const lensDefaultMode: ColorMode =
-    markTab === 'todo' || markTab === 'mine' ? 'user' : markMode ? 'fate' : 'team'
-  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
+    fateSet?.size === 1 || ownerMode === 'user' ? 'user' : markMode ? 'fate' : 'user'
+  const mode: ColorMode = ([...MODES, ...HIDDEN_MODES] as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
   const hasAttr = !!tree?.tm
   const effMode: ColorMode =
-    (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'team' : hasAttr ? mode : 'tree'
+    (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'user' : hasAttr ? mode : 'tree'
   // The age chart's color axis: an explicit `?ac=` wins; otherwise it follows
   // the map, except marks (no per-stratum value in age.json) → written. The
   // read axis needs strata that carry `a` (scans published from 8/29 on) —
@@ -463,51 +485,38 @@ function AppContent() {
     const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'fate' ? 'date' : effMode
     return ageModes.includes(want) ? want : 'date'
   })()
-  const hl: Highlight | null = hlUser ? { user: hlUser } : hlTeam ? { team: hlTeam } : null
-  // In mark mode the active tab scopes the map to its lens (filter +
-  // re-aggregate — the worklists keep the unscoped tree, so their
-  // maximal-subtree rows don't coarsen); untoggled, fall back to dimming.
-  // `todo` scopes by mark state instead of an attribution lens: prune every
-  // subtree already covered by a keep/sweep decision, show what's undecided.
-  // Lenses always scope the map (the highlight-instead-of-scope toggle never
-  // earned its keep and is gone).
-  const scopedActive = markMode && SCOPABLE.includes(markTab) && (markTab !== 'mine' || !!viewUser)
-  const todoActive = markMode && markTab === 'todo'
-  // Any review lens narrower than "all" — sections whose data can't follow
-  // the lens (series/age charts) hide rather than show fleet-wide numbers.
-  const lensScoped = markMode && markTab !== 'all'
-  // The page scope, applied to a tree: the lens, then a pinned legend row.
+  // The pinned highlight the map dims to: the owner axis's user (a scoped
+  // subtree still contains minority co-tenants, and user coloring should dim
+  // them) or a `?t=` group; the pools are sliced exactly, nothing to dim.
+  const hl: Highlight | null = ownerUser ? { user: ownerUser } : hlTeam ? { team: hlTeam } : null
+  // Any scope narrower than "everything" — sections whose data can't follow
+  // it (the age chart) hide rather than show fleet-wide numbers.
+  const lensScoped = fateSet != null || ownerMode !== 'all' || hlTeam != null
+  // The page scope, applied to a tree: the owner axis, then the mark axis.
   // Shared by the map and the Diff section's two sides, so every widget
   // answers the same question. (The `?f=` name filter is applied before this
-  // — `shownTree` for the map, per side for the diff.)
-  const scopeTree = (t: TreeNode): TreeNode => {
-    if (todoActive) t = applyTodoFilter(t, markIdx)
-    else if (scopedActive) {
-      // The user lens keeps maximal ≥60%-owned subtrees whole (that user's
-      // dirs, minority co-tenants dimmed by the highlight). The unowned-bytes
-      // lenses instead *slice*: every node shrinks to exactly its userless
-      // share — keeping whole subtrees let each one's claimed minority ride
-      // along (~0.5 PiB of user bytes leaked into "Unattributed").
-      t = markTab === 'mine'
-        ? applyNodeFilter(t, lensNodePred(userLens(viewUser!)))
-        : applyLensScale(t, markTab === 'unclaimed' ? unattrSlice : communalSlice)
+  // — `shownTree` for the map, per side for the diff.) `ownerDone` = a server
+  // user-lens tree already IS that user's bytes; only the mark axis applies.
+  const scopeTree = (t: TreeNode, ownerDone = false): TreeNode => {
+    if (!ownerDone) {
+      // A user keeps maximal ≥60%-owned subtrees whole (their dirs, minority
+      // co-tenants dimmed by the highlight). The pools instead *slice*: every
+      // node shrinks to exactly its userless (or user-owned) share — keeping
+      // whole subtrees let each one's minority ride along (~0.5 PiB of user
+      // bytes leaked into "Unclaimed").
+      if (ownerMode === 'user') t = applyNodeFilter(t, lensNodePred(userLens(ownerUser!)))
+      else if (ownerMode === 'unclaimed') t = applyLensScale(t, unattrSlice)
+      else if (ownerMode === 'claimed') t = applyLensScale(t, claimedSlice)
+      else if (hlTeam) t = hlTeam === 'communal' ? applyLensScale(t, communalSlice) : applyNodeFilter(t, lensNodePred(teamLens(hlTeam)))
     }
-    // A PINNED legend row scopes the map to what it owns — same rules as the
-    // lenses above; a hovered row only fades the rest.
-    if (hl) {
-      t = hl.team === 'unattributed' ? applyLensScale(t, unattrSlice)
-        : hl.team === 'communal' ? applyLensScale(t, communalSlice)
-        : applyNodeFilter(t, lensNodePred(hl.user ? userLens(hl.user) : teamLens(hl.team!)))
-    }
+    if (fateSet) t = applyFateFilter(t, markIdx, fateSet)
     return t
   }
   const mapTree = useMemo(() => {
     if (!shownTree) return shownTree
-    // A server user-lens already scoped the tree (it IS that user's treemap).
-    if (activeLens) return shownTree
-    return scopeTree(shownTree)
+    return scopeTree(shownTree, !!activeLens)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shownTree, activeLens, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
+  }, [shownTree, activeLens, fateSet, markIdx, ownerMode, ownerUser, hlTeam])
   // Diff sides: the drilled subtree at each endpoint (the server user-lens
   // variant when the map uses it), name-filtered and scoped like the map.
   const diffPair = useQueries({
@@ -528,18 +537,18 @@ function AppContent() {
   const diff: DiffData | null = useMemo(() => {
     const [a, b] = [diffPair[0]?.data?.tree, diffPair[1]?.data?.tree]
     if (!a || !b || !diffPrev || !asof) return null
-    const side = (t: TreeNode) => (activeLens ? t : scopeTree(pred ? applyFilter(t, pred) : t))
+    const side = (t: TreeNode) => scopeTree(pred ? applyFilter(t, pred) : t, !!activeLens)
     return clientDiff(side(a), side(b), diffPrev, asof)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [diffPair[0]?.data, diffPair[1]?.data, diffPrev, asof, activeLens, pred, scopedActive, todoActive, markIdx, markTab, viewUser, hl])
+  }, [diffPair[0]?.data, diffPair[1]?.data, diffPrev, asof, activeLens, pred, fateSet, markIdx, ownerMode, ownerUser, hlTeam])
   const diffMissing = diffPair.find(q => q.isError)
-  // One-line description of the page scope, shared by the section subtitles
-  // and the stuck control strip: where, then which slice, then which names.
+  // One-line description of the page scope, for the section subtitles:
+  // where, then whose, then which mark states, then which names.
   const scopeParts: string[] = [
     drillPath || 'all buckets',
-    ...(markTab === 'mine' && viewUser ? [`${shortName(viewUser)}’s files`]
-      : markTab !== 'all' ? [LENS_LABELS[markTab].toLowerCase()] : []),
-    ...(hlUser ? [`only ${shortName(hlUser)}`] : hlTeam ? [`only ${groupLabel(hlTeam).toLowerCase()}`] : []),
+    ...(ownerUser ? [`${shortName(ownerUser)}’s files`] : ownerMode !== 'all' ? [ownerMode] : []),
+    ...(hlTeam ? [`only ${groupLabel(hlTeam).toLowerCase()}`] : []),
+    ...(fateSet ? [[...fateSet].join(' / ')] : []),
     ...(fq ? [`“${fq}”`] : []),
   ]
   const scopeDesc = scopeParts.join(' · ')
@@ -568,41 +577,32 @@ function AppContent() {
     drillTo(segs)
     document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
-  // A scopable lens highlights its slice even when "scope map" is off; with no
-  // lens (all / to-do) fall back to the manually-picked highlight.
-  const effHl: Highlight | null =
-    // A server user-lens map is already just that user's bytes — nothing to dim.
-    activeLens ? null
-    // The user lens highlights its user scoped or not: a scoped subtree still
-    // contains minority co-tenants, and user coloring should dim them.
-    : markTab === 'mine' && viewUser ? { user: viewUser }
-    : scopedActive ? null
-    : markTab === 'unclaimed' ? { team: 'unattributed' }
-    : markTab === 'communal' ? { team: 'communal' }
-    : hl
-
-  // The CoreWeave dashboard is a sibling deployment (`cw-s3` branch), not a
-  // store of this app — cross-link it.
-  const crossSite = { label: 'CoreWeave usage', href: 'https://cw-s3.oa.dev/' }
+  // A server user-lens map is already just that user's bytes — nothing to dim.
+  const effHl: Highlight | null = activeLens ? null : hl
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
-  const mkUsers = useMemo(() => (meta?.users ?? []).map(u => u.u).sort(), [meta])
+  const mkUsers = useMemo(
+    () => (meta?.users ?? []).map(u => u.u).sort((a, b) => shortName(a).localeCompare(shortName(b))),
+    [meta],
+  )
 
-  // `switchMode`: a ⌘K pick from any coloring jumps to an axis where the
-  // highlight is visible; a legend-row click is already on such an axis and
-  // must not move it (clicking "unattributed" in user mode stays in user mode).
+  // Legend-row pins land on the owner axis (a user, or the unclaimed pool);
+  // a group row pins `?t=`. `switchMode`: a ⌘K pick from any coloring jumps
+  // to an axis where the pick is visible; a legend-row click is already on
+  // such an axis and must not move it.
   const pickUser = (u: string, switchMode = true) => {
     setHlTeam(undefined)
-    setHlUser(u)
+    setOwnerUser(u)
     if (switchMode && mode !== 'user' && mode !== 'uteam') setMode('user')
   }
   const pickTeam = (t: string, switchMode = true) => {
-    setHlUser(undefined)
+    if (t === 'unattributed' || t === 'communal') { setHlTeam(undefined); setOP('unclaimed'); return }
+    setOP(undefined)
     setHlTeam(t)
     if (switchMode && mode !== 'team') setMode('team')
   }
   const clearHl = () => {
-    setHlUser(undefined)
+    setOP(undefined)
     setHlTeam(undefined)
   }
 
@@ -619,11 +619,16 @@ function AppContent() {
       ]),
     ),
     'highlight:clear': {
-      label: 'Clear user/group highlight',
-      group: 'Highlight',
+      label: 'Clear the owner axis (everyone)',
+      group: 'Scope',
       defaultBindings: ['x'],
       handler: clearHl,
     },
+    'owner:me': { label: 'Owner: my files', group: 'Scope', handler: () => setOP('me') },
+    'owner:claimed': { label: 'Owner: claimed only', group: 'Scope', handler: () => setOP('claimed') },
+    'owner:unclaimed': { label: 'Owner: unclaimed only', group: 'Scope', handler: () => setOP('unclaimed') },
+    'marks:unmarked': { label: 'Marks: unmarked only (the to-do backlog)', group: 'Scope', handler: () => setKP('u') },
+    'marks:all': { label: 'Marks: every state', group: 'Scope', handler: () => setKP(undefined) },
     'lens:classes': {
       label: 'Storage-class lens (hatch colder-class bytes)',
       group: 'View',
@@ -731,7 +736,7 @@ function AppContent() {
   if (baseTree?.c && seg0 && !baseTree.c.some(k => k.n === seg0)) {
     return (
       <main>
-        <header><div className="hrow"><h1>{store.title}</h1><SiteNav inline /></div></header>
+        <SiteNav />
         <p className="err">
           404 — <code>/{drillPath}</code> is not a bucket or page here.{' '}
           <Link to="/">home</Link> · <Link to="/sweep">sweep console</Link> · <Link to="/users">users</Link>
@@ -740,231 +745,132 @@ function AppContent() {
     )
   }
 
+  const segs = drillPath.split('/').filter(Boolean)
+  const scanTip = meta && (
+    <div className="scan-tip">
+      {asof && !/[T ]\d{2}/.test(asof) && meta.published && (
+        <div>published {new Date(meta.published).toISOString().replace('T', ' ').slice(0, 16)} UTC</div>
+      )}
+      <div><b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects across all buckets</div>
+      {estCost && (
+        <div>
+          est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b> at list price
+          <ClassMixTip mix={meta.class_bytes} note="GCS list prices (US regions) × scanned bytes; actual spend depends on the billing account's negotiated rates/credits" />
+        </div>
+      )}
+    </div>
+  )
+  const ownerSelect = (
+    <select className="tb-select" value={ownerMode === 'user' ? (oP === 'me' ? 'me' : ownerUser!) : ''}
+      aria-label="Owner"
+      onChange={e => setOwnerUser(e.target.value || undefined)}>
+      <option value="">anyone</option>
+      {myUser && <option value="me">me ({shortName(myUser)})</option>}
+      {mkUsers.filter(u => u !== myUser).map(u => <option key={u} value={u}>{shortName(u)}</option>)}
+      {ownerUser && !mkUsers.includes(ownerUser) && ownerUser !== myUser && <option value={ownerUser}>{shortName(ownerUser)}</option>}
+    </select>
+  )
+  const menu: MenuEntry[] = markMode ? [{ key: 'typed', label: 'Mark a typed prefix…', onClick: () => setTypedOpen(true) }] : []
+
   return (
     <main>
-      <header>
-        <div className="hrow">
-          <h1>{store.title}</h1>
-          {/* On the prod hostnames each store is its own site (own Access
-              audience), so the in-app switcher would be a nop or an auth
-              surprise — the CW deployment is cross-linked from the About fold
-              instead. Localhost and pages.dev previews keep the chips for dev
-              convenience. */}
-          {!crossSite && STORES.length > 1 && (
-            <div className="storectl" role="radiogroup" aria-label="Object store">
-              {STORES.map(s => (
-                <button
-                  key={s.key}
-                  role="radio"
-                  aria-checked={store.key === s.key}
-                  className={store.key === s.key ? 'on' : ''}
-                  // keep the view params (color mode, scan, highlight) across stores
-                  onClick={() => navigate({ pathname: s.path, search })}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          )}
-          <SiteNav inline />
-        </div>
-        {meta && (
-          <p className="sub">
-            scan{' '}
-            {scans.length > 1 && asof ? (
+      {typedOpen && <TypedPrefixModal idx={markIdx} onClose={() => setTypedOpen(false)} />}
+      {/* The page scope, all of it, in the sticky bar — the same bar at the
+          top of the page and mid-scroll, so every section reads against it:
+          where (drill path) · when (scan, and the diff window's start while
+          a section that shows it is on screen) · color axis · mark axis ·
+          owner axis · name filter. */}
+      <SiteNav menu={menu}>
+        <span className="tb-path" aria-label="Drilled path">
+          <button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])} title="all buckets">{segs.length ? '/' : 'all buckets'}</button>
+          {segs.map((sg, i) => (
+            <span key={i}>
+              {i > 0 && <span className="sep">/</span>}
+              <button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))} title={segs.slice(0, i + 1).join('/')}>{sg}</button>
+            </span>
+          ))}
+        </span>
+        {asof && scans.length > 1 && (
+          <span className="tb-scan">
+            {rangeVisible && diffPrev && (
               <>
-                <select className="scanpick" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
-                  {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
-                </select>
-                {/* A sub-daily id already carries its time; a date-only one
-                    (the daily GCS job) doesn't, so show when it was published. */}
-                {asof && !/[T ]\d{2}/.test(asof) && meta.published && (
-                  <Tooltip content={<>snapshot published {new Date(meta.published).toISOString().replace('T', ' ').slice(0, 16)} UTC</>}>
-                    <span className="pub dotted">
-                      {new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' }).format(new Date(meta.published))}
-                    </span>
-                  </Tooltip>
-                )}
-              </>
-            ) : (
-              <b>{meta.asof}</b>
-            )}
-            {' '}·{' '}
-            <Tooltip content={<>
-              {units === 'si' ? 'SI units (TB) — click for IEC (TiB)' : 'IEC units (TiB) — click for SI (TB)'}
-              {'; shift-click to '}{suffixB ? 'drop' : 'restore'} the “B”
-            </>}>
-              <b className="units-toggle" onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}>{fmtBytes(meta.total_bytes)}</b>
-            </Tooltip>
-            {' '}· <b>{fmtN(meta.total_objects)}</b> objects
-            {estCost && (
-              <>
-                {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>{' '}
-                <Tooltip content={<ClassMixTip mix={meta.class_bytes} note="GCS list prices (US regions) × scanned bytes; actual spend depends on the billing account's negotiated rates/credits" />}>
-                  <span className="dotted">at list price</span>
+                <Tooltip content={<>The diff window's start — the Diff and the size chart's shaded band read from here to the scan. Drag on the size chart to set both ends.</>}>
+                  <select className="tb-select" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
+                    {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+                  </select>
                 </Tooltip>
+                <span className="arrow">→</span>
               </>
             )}
+            <Tooltip content={scanTip ?? 'scan'}>
+              <select className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
+                {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+              </select>
+            </Tooltip>
             {diff && diff.rows.length > 0 && (
-              <>
-                {' '}·{' '}
-                <a className="changes-link" href="#changes">
-                  <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
-                    {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
-                  </b>{' '}
-                  since {diff.prev ? fmtScan(diff.prev) : 'prev'} ↓
+              <Tooltip content={<>{scopeDesc}: {fmtBytes(diff.total_a)} at {fmtScan(diffPrev!)} → {fmtBytes(diff.total_b)} at {fmtScan(asof)} — jump to the Diff</>}>
+                <a className={`tb-delta ${diff.total_b >= diff.total_a ? 'grew' : 'shrank'}`} href="#diff">
+                  {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
                 </a>
-              </>
+              </Tooltip>
             )}
-          </p>
+          </span>
         )}
-        {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
-            end) with a strip listing every candidate to pin one. */}
-        {dMatches.length > 1 && (
-          <p className="disambig">
-            <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
-            {dMatches.map(s => (
-              <button key={s} className={s === asof ? 'on' : ''} onClick={() => setDP(s)}>{fmtScan(s)}</button>
-            ))}
-          </p>
+        {hasAttr && (
+          <label className="tb-ctl">
+            <span className="lbl">color</span>
+            <Tooltip content={
+              effMode === 'date' ? <>Object <b>creation time</b>, from the bucket listings (each cell = the byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.</>
+              : effMode === 'read' ? <><b>Last read</b> — the most recent GET/HEAD/LIST anywhere under each cell, from the GCS usage logs (logging began {readRange ? epochDaysToDate(readRange.min) : '—'}). Brick-red = <b>never read</b> since then: prime sweep candidates.</>
+              : effMode === 'fate' ? <>Effective <b>keep / sweep / undecided</b> state of every cell (the most recent covering mark wins).</>
+              : effMode === 'user' ? <>Dominant <b>owner</b> of each cell; the legend lists the top users of the current view.</>
+              : <>Top-level directory each cell belongs to.</>
+            }>
+              <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
+                {[...MODES, ...HIDDEN_MODES.filter(m => m === effMode)]
+                  .filter(m => (m !== 'read' || readRange) && (m !== 'fate' || markMode))
+                  .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
+              </select>
+            </Tooltip>
+          </label>
         )}
-      </header>
-
-      <div className="edu">
-      {markMode && (
-        <details className="mark-banner fold" open={bannerOpen} onToggle={onBannerToggle}>
-          <summary>
-            <MdInfoOutline className="fold-icon warn" aria-hidden />
-            <span>
-              <b>Mark &amp; sweep</b> — mark data to <b>keep</b> or <b>sweep</b>
-              {markIdx.count > 0 && <> · <b>{markIdx.count}</b> mark{markIdx.count === 1 ? '' : 's'} so far</>}
-              {marksQ.error && <span className="err"> · marks unavailable: {marksQ.error.message}</span>}
-            </span>
-          </summary>
-          <p>
-            Nothing is deleted automatically: deletions happen only through reviewed sweep runs
-            (explicit <b>sweep</b> marks, human-approved band by band on <a href="/sweep">/sweep</a>,
-            executed with logs). Unmarked data is the review backlog.
-            Drill to a prefix and mark it with the controls above the map, or click a cell to
-            pin it and mark from there. Marks are reversible until the sweep — the most recent mark
-            covering a prefix wins: mark a child <em>after</em> its parent to carve an exception; a
-            broad mark repaints older deeper ones (you'll be asked to confirm). Pick a <b>lens</b>{' '}
-            below to focus a slice (your files, unclaimed) or the to-do list, scoped to
-            whatever you've drilled into.
-          </p>
-        </details>
-      )}
-
-      <details className="prose fold" open={introOpen} onToggle={onIntroToggle}>
-        <summary>
-          <MdInfoOutline className="fold-icon" aria-hidden />
-          <span><b>About</b> — the data, lenses &amp; color modes</span>
-        </summary>
-        <p>
-          Storage across the six <code>marin-*</code> GCS buckets — a full per-object listing
-          (deduped), snapshotted daily by the{' '}
-          <a href="https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/AGENTS.md#data-flow" target="_blank" rel="noreferrer"><code>marin-gcs-usage</code></a>{' '}
-          pipeline, which also ingests the buckets’ access logs and joins ownership onto every prefix
-          (W&B run/config matching, executor sidecars, manual curation). The treemap drills into
-          prefixes; “color by” recolors both plots — <b>marks</b> (keep / sweep / undecided; the
-          default), <b>read</b> (last-read recency — never-read bytes are the best sweep candidates,
-          though access logging only began {readRange ? epochDaysToDate(readRange.min) : '8/13'}, so
-          “never read” means “not since then”),
-          owning user or group (OA / Stanford / communal), written (older→newer), or top-level tree.
-          Marks and claims apply live on top of the latest snapshot. Hover a cell for its makeup and
-          top users, <kbd>⌘K</kbd> to jump to a user/group, or see the per-user breakdown at{' '}
-          <Link to="/users">/users</Link>.
-          {crossSite && (
-            <>
-              {' '}CoreWeave storage is tracked separately at{' '}
-              <a href={crossSite.href} target="_blank" rel="noreferrer">{new URL(crossSite.href).host}&nbsp;↗</a>.
-            </>
-          )}
-        </p>
-      </details>
-      </div>
-
-      {scansQ.isError && (
-        <p className="tab-note" style={{ color: 'var(--s3)' }}>
-          Couldn’t load snapshot data ({(scansQ.error as { status?: number })?.status === 401 ? 'not signed in — this dashboard is access-gated' : String(scansQ.error)}).
-          {' '}<a href={signInUrl()}>Sign in</a> or reload once your session is active.
-        </p>
-      )}
-
-      {markMode && (
-        <LensBar
-          idx={markIdx}
-          hasEmail={hasEmail}
-          myUser={myUser}
-          viewUser={viewUser} setViewUser={u => setUP(u ? shortUserKey(canonId(u)) : undefined)}
-          users={mkUsers}
-          lens={markTab} setLens={setMarkTab}
-        />
-      )}
-
-      {/* Active pin/highlight, shown in EVERY color mode (the user legend only
-          renders in user modes, so without this a pin was invisible + unclearable
-          after switching to "marks"). Says whether the map is filtered to the
-          slice or just highlighting it, and clears in one click. */}
-      {(hlUser || hlTeam) && (
-        <div className={`scope-chip${activeLens ? ' filtering' : ''}`}>
-          <span className="lbl">{activeLens ? 'showing only' : 'scoped to'}</span>
-          {hlUser
-            ? <UserChip who={hlUser} size={16} />
-            : <span className="team">{groupLabel(hlTeam!)}</span>}
-          <button type="button" className="clear" onClick={clearHl} title="Clear (x)">✕</button>
-        </div>
-      )}
-
-      {/* The control bar sticks to the viewport top; once it's stuck (the
-          sentinel has scrolled off), it also carries the page scope — scan,
-          diff window, drill, lens, pin, filter — so every section further
-          down reads against a visible statement of what it's scoped to. */}
-      <div ref={ctlSentinel} className="ctl-sentinel" aria-hidden />
-      {hasAttr && (
-        <div className={`colorctl${stuck ? ' stuck' : ''}`} role="radiogroup" aria-label="Color plots by">
-          {stuck && (
-            <span className="scope-strip">
-              <button type="button" className="top" title="Back to top" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>▲</button>
-              {asof && (
-                <span className="scan">
-                  {diffWindow ? <>{fmtScan(diffWindow[0])} → </> : null}<b>{fmtScan(asof)}</b>
-                </span>
-              )}
-              {scopeParts.map((p, i) => <span key={i} className="part">{p}</span>)}
-            </span>
-          )}
-          <span className="lbl">color by</span>
-          {MODES.filter(m => (m !== 'read' || readRange) && (m !== 'fate' || markMode)).map(m => {
-            const btn = (
-              <button
-                key={m}
-                role="radio"
-                aria-checked={effMode === m}
-                className={effMode === m ? 'on' : ''}
-                onClick={() => setMode(m)}
-              >
-                {MODE_LABELS[m]}
+        {markMode && (
+          <span className="tb-axis" role="group" aria-label="Mark states">
+            <span className="lbl">marks</span>
+            {FATE_CHIPS.map(c => {
+              const on = !fateSet || fateSet.has(c.f)
+              return (
+                <Tooltip key={c.f} content={c.tip}>
+                  <button type="button" className={`kind${on ? ' on' : ''}`} aria-pressed={on}
+                    style={{ '--kind': c.color } as React.CSSProperties} onClick={() => toggleFate(c.f)}>
+                    <span className="glyph">{c.glyph}</span>{c.f}
+                  </button>
+                </Tooltip>
+              )
+            })}
+          </span>
+        )}
+        {markMode && hasAttr && (
+          <span className="tb-axis" role="group" aria-label="Owner">
+            <span className="lbl">owner</span>
+            <Tooltip content="Bytes attributed to a person (W&B runs, executor sidecars, claims, curation). Pick someone below to narrow it to them.">
+              <button type="button" className={`kind${ownerMode === 'all' || ownerMode === 'claimed' || ownerMode === 'user' ? ' on' : ''}`}
+                aria-pressed={ownerMode !== 'unclaimed'} style={{ '--kind': 'var(--s1)' } as React.CSSProperties}
+                onClick={() => toggleOwner('claimed')}>
+                claimed
               </button>
-            )
-            return m === 'date' ? (
-              <Tooltip key={m} content={<>
-                colors by object <b>creation time</b>, from the bucket listings (each cell = the
-                byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.
-                For access time, see the <b>read</b> lens.
-              </>}>
-                {btn}
-              </Tooltip>
-            ) : m === 'read' ? (
-              <Tooltip key={m} content={<>
-                colors by <b>last read</b> — the most recent GET/HEAD/LIST anywhere under each cell,
-                from the GCS usage logs (logging began {readRange ? epochDaysToDate(readRange.min) : '—'}).
-                Brick-red = <b>never read</b> since then: prime sweep candidates.
-              </>}>
-                {btn}
-              </Tooltip>
-            ) : btn
-          })}
+            </Tooltip>
+            <Tooltip content="Bytes no person owns — unattributed data plus the shared/communal pools. Claim what's yours (table below, or a pinned cell), then decide keep/sweep.">
+              <button type="button" className={`kind${ownerMode === 'all' || ownerMode === 'unclaimed' ? ' on' : ''}`}
+                aria-pressed={ownerMode === 'all' || ownerMode === 'unclaimed'} style={{ '--kind': 'var(--ink-2)' } as React.CSSProperties}
+                onClick={() => toggleOwner('unclaimed')}>
+                unclaimed
+              </button>
+            </Tooltip>
+            {ownerSelect}
+          </span>
+        )}
+        {hasAttr && (
           <span className="filterbox">
             <input
               value={fq ?? ''}
@@ -982,10 +888,34 @@ function AppContent() {
               </span>
             )}
           </span>
-          {pred && fq && fMatches.length > 0 && (
-            <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
-          )}
-        </div>
+        )}
+        {pred && fq && fMatches.length > 0 && (
+          <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
+        )}
+      </SiteNav>
+
+      {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
+          end) with a strip listing every candidate to pin one. */}
+      {dMatches.length > 1 && (
+        <p className="disambig">
+          <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
+          {dMatches.map(s => (
+            <button key={s} className={s === asof ? 'on' : ''} onClick={() => setDP(s)}>{fmtScan(s)}</button>
+          ))}
+        </p>
+      )}
+      {marksQ.error && <p className="tab-note err">Marks unavailable: {marksQ.error.message}</p>}
+      {meUnmapped && (
+        <p className="tab-note">
+          Your email isn't mapped to an attribution user yet — ping Ryan (or an admin can add you at{' '}
+          <code>/admin/db/user_emails</code>); pick any user from the owner menu to view their files.
+        </p>
+      )}
+      {scansQ.isError && (
+        <p className="tab-note" style={{ color: 'var(--s3)' }}>
+          Couldn’t load snapshot data ({(scansQ.error as { status?: number })?.status === 401 ? 'not signed in — this dashboard is access-gated' : String(scansQ.error)}).
+          {' '}<a href={signInUrl()}>Sign in</a> or reload once your session is active.
+        </p>
       )}
 
       {mapTree ? (
@@ -1011,28 +941,28 @@ function AppContent() {
             klcIdx={markMode ? klcIdx : undefined}
             // Exact fate totals only when they describe THIS view: a server
             // user-lens map gets that user's totals; the unscoped estate gets
-            // the estate totals. Any client-side scoping (team lens, to-do,
-            // pinned legend row) has no server-sliced totals — pass null so
+            // the estate totals. Any client-side scoping (a pool, a mark
+            // state, a group pin) has no server-sliced totals — pass null so
             // the ≈ client walk over the scoped tree keeps numerator and
             // denominator on the same slice (estate totals over a 269 Ti
             // scope read as "undecided 777%").
             viewFates={
-              activeLens && lensUser ? totalsQ.data?.users?.[lensUser] ?? null
-              : scopedActive || todoActive || hl ? null
+              activeLens && lensUser && !fateSet ? totalsQ.data?.users?.[lensUser] ?? null
+              : lensScoped ? null
               : totalsQ.data?.total ?? null
             }
             path={mapPath}
             onPathChange={onMapPath}
           /></div>
-          {/* The map's own listing — this node's children, narrowed to the active
-              lens (to-do drops already-decided prefixes). */}
+          {/* The map's own listing — this node's children, narrowed to the
+              mark axis (`{unmarked}` drops already-decided prefixes). */}
           {mapPath && (
             <div id="tbl"><ChildrenTable
               node={mapPath[mapPath.length - 1]}
               segs={mapPath.slice(1).map(n => n.n)}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
-              todoOnly={markMode && markTab === 'todo'}
+              fates={markMode ? fateSet : null}
               onOpen={openPath}
             /></div>
           )}
@@ -1041,21 +971,19 @@ function AppContent() {
         <p className="loading">loading tree…</p>
       )}
 
-      {/* Under the To-do lens the series chart flips to mark-progress (the
-          ledger replayed per scan — specs/lens-aware-time-series.md). A user
-          pin / My-files / Unattributed follow the scope: that user's (or the
-          nobody-pool's) bytes per scan, assembled from the per-scan metas.
-          Communal still hides, as does the age chart until /api/age lands. */}
-      {(!lensScoped || markTab === 'todo' || markTab === 'mine' || markTab === 'unclaimed') && (
-        <SizeOverTime
-          scans={scans} prefix={drillPath} base={store.base} fate={markTab === 'todo'}
-          user={markTab === 'mine' ? viewUser : hlUser || null}
-          team={markTab === 'unclaimed' ? 'unattributed' : hlTeam || null}
-          onPickDate={setDP}
-          onBrush={brushRange}
-          window={diffWindow}
-        />
-      )}
+      {/* With the mark axis active the series chart flips to mark-progress
+          (the ledger replayed per scan — specs/lens-aware-time-series.md);
+          otherwise the owner axis picks the series: that user's (or the
+          claimed / unclaimed pool's) bytes per scan, from the per-scan metas.
+          The age chart still hides under any scope until /api/age lands. */}
+      <SizeOverTime
+        scans={scans} prefix={drillPath} base={store.base} fates={fateSet}
+        user={ownerUser}
+        team={ownerMode === 'unclaimed' ? 'unattributed' : ownerMode === 'claimed' ? 'claimed' : hlTeam || null}
+        onPickDate={setDP}
+        onBrush={brushRange}
+        window={diffWindow}
+      />
 
       {markMode && (
         <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} pred={pred} filterQ={fq} window={diffWindow} />
@@ -1065,17 +993,9 @@ function AppContent() {
         <section id="diff">
           <h2>Diff</h2>
           <p className="sub">
-            {/* both endpoints are pickable; "after" IS the page's scan, so
-                changing it moves the whole page (same as the header picker) */}
-            <select className="scanpick" value={diffPrev} aria-label="Diff from scan"
-              onChange={e => pickBefore(e.target.value)}>
-              {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
-            </select>
-            {' '}→{' '}
-            <select className="scanpick" value={asof} aria-label="Diff to scan (moves the page)"
-              onChange={e => setDP(e.target.value)}>
-              {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
-            </select>
+            {/* Both endpoints are the bar's pickers (the start one appears
+                while this section is on screen); the presets ride here. */}
+            <b>{fmtScan(diffPrev)}</b> → <b>{fmtScan(asof)}</b>
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (

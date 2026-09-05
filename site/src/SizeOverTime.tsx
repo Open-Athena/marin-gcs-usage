@@ -3,6 +3,7 @@ import type { Annotation } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { boolParam, useUrlState } from 'use-prms'
+import type { FateAxis } from './sweep'
 import type { Meta } from './types'
 import { groupLabel } from './types'
 import { shortName } from './UserChip'
@@ -64,19 +65,20 @@ const dateOfX = (x: number) => new Date(x).toISOString().slice(0, 10)
 const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const xOfScan = (d: string) => new Date(d.slice(0, 10)).getTime()
 
-export function SizeOverTime({ scans, prefix, base, fate = false, user, team, onPickDate, onBrush, window: win }: {
+export function SizeOverTime({ scans, prefix, base, fates, user, team, onPickDate, onBrush, window: win }: {
   scans: string[]
   prefix: string
   base: string
-  /** Mark-progress mode (the To-do lens): plot keep/sweep/undecided per scan
-   * from the replayed ledger instead of stored-bytes. Renders nothing until
-   * the index carries `fate`. */
-  fate?: boolean
-  /** A pinned/lensed user: plot THEIR attributed bytes per scan (from each
+  /** Mark-progress mode (the page's mark axis is active): plot the selected
+   * keep/sweep/undecided lines per scan from the replayed ledger instead of
+   * stored bytes. Renders nothing until the index carries `fate`. */
+  fates?: ReadonlySet<FateAxis> | null
+  /** The owner axis's user: plot THEIR attributed bytes per scan (from each
    * scan's meta.json — estate-wide; per-user series aren't prefix-scoped). */
   user?: string | null
-  /** A pinned/lensed group — `unattributed` = total − Σ user bytes (the
-   * nobody-owns-it pool), others sum their `team_class_bytes`. `user` wins. */
+  /** The owner axis's pool — `unattributed` = total − Σ user bytes (the
+   * nobody-owns-it pool), `claimed` = Σ user bytes, other groups sum their
+   * `team_class_bytes`. `user` wins. */
   team?: string | null
   /** Click a point → view the page as of that scan (pins `?d=`). */
   onPickDate?: (date: string) => void
@@ -121,8 +123,12 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
     },
   })
 
+  // Mark-progress only when the index carries the replayed ledger; until it
+  // does (it's optional), an active mark axis falls back to the byte series.
+  const fate = !!fates && idx?.fate != null
+  const fateKey = fate && fates ? [...fates].sort().join(',') : ''
   const series = useMemo(() => {
-    if (fate) {
+    if (fate && fates) {
       if (!idx?.fate) return []
       const mk = (k: 'keep' | 'sweep' | 'undecided', label: string, color: string) => ({
         key: k,
@@ -131,9 +137,9 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
         points: idx.dates.map((d, i) => ({ x: new Date(d).getTime(), y: idx.fate![k][i] })).sort((a, b) => a.x - b.x),
       })
       return [
-        mk('undecided', 'undecided', 'var(--ink-2)'),
-        mk('keep', 'keep', 'var(--mk-keep)'),
-        mk('sweep', 'sweep', 'var(--mk-del)'),
+        ...(fates.has('unmarked') ? [mk('undecided', 'undecided', 'var(--ink-2)')] : []),
+        ...(fates.has('keep') ? [mk('keep', 'keep', 'var(--mk-keep)')] : []),
+        ...(fates.has('sweep') ? [mk('sweep', 'sweep', 'var(--mk-del)')] : []),
       ]
     }
     if (slice) {
@@ -145,6 +151,8 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
             ? m.users?.find(u => u.u === slice.key)?.b ?? null
             : slice.key === 'unattributed'
               ? (m.users ? m.total_bytes - m.users.reduce((s, u) => s + u.b, 0) : null)
+              : slice.key === 'claimed'
+              ? (m.users ? m.users.reduce((s, u) => s + u.b, 0) : null)
               : m.team_class_bytes?.[slice.key]
                 ? Object.values(m.team_class_bytes[slice.key]).reduce((s, b) => s + b, 0)
                 : null
@@ -170,7 +178,8 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
       color: 'var(--s1)',
       points: rows.map(r => ({ x: new Date(r.date).getTime(), y: r.m.total_bytes })).sort((a, b) => a.x - b.x),
     }]
-  }, [fate, slice?.kind, slice?.key, scopedArr, idx, metas.data, prefix])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fateKey, slice?.kind, slice?.key, scopedArr, idx, metas.data, prefix])
 
   // Callouts at the points a reader looks for first: the ends of the series
   // and its extremes. Coinciding roles (first is also max) share one label.
@@ -208,8 +217,8 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
       <section id="over-time">
         <h2>Mark progress <YFromToggle v={yFrom} set={setYFrom} /></h2>
         <p className="sub">
-          Keep / sweep / undecided bytes per scan — the actions ledger replayed against each archived
-          scan, so the gray line is the review burn-down.
+          {series.map(s => s.label).join(' / ')} bytes per scan, whole estate — the actions ledger replayed
+          against each archived scan{fates?.has('unmarked') ? ', so the gray line is the review burn-down' : ''}.
         </p>
         <TimeSeries<Pt>
           series={series}
@@ -239,6 +248,8 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
             ? <><b>{shortName(slice.key)}</b>’s attributed bytes per scan — whole estate (per-user series aren’t prefix-scoped).</>
             : slice.key === 'unattributed'
               ? <>Bytes no person owns, per scan — whole estate.</>
+              : slice.key === 'claimed'
+              ? <>Bytes attributed to a person, per scan — whole estate.</>
               : <><b>{groupLabel(slice.key)}</b> bytes per scan — whole estate.</>
           : scoped
           ? <>Stored bytes under <code>{prefix}</code> per scan — the drilled subtree, from the cross-scan index.</>

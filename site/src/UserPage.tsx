@@ -11,6 +11,7 @@ import { DEFAULT_STORE } from './stores'
 import { applyFilter, applyNodeFilter } from './filterTree'
 import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex, type UserFates } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
+import { ScanPicker } from './ScanPicker'
 import { SiteNav } from './SiteNav'
 import { useScan, type Scan } from './scan'
 import { SiteKbd } from './SiteKbd'
@@ -325,14 +326,14 @@ function UsersMap({ meta, fates, redact = false }: {
         // still route through the SPA below.
         cellHref={n =>
           n.id ? `/user/${n.id}`
-          : n.team === 'unattributed' ? '/?l=unclaimed'
+          : n.team === 'unattributed' ? '/?o=unclaimed'
           : undefined}
         onCellClick={(n) => {
           if (redact) return true
           // Every tile goes somewhere sane: users to their page, the
           // unattributed pool to the matching home lens.
           if (n.id) navigate(`/user/${n.id}`)
-          else if (n.team === 'unattributed') navigate('/?l=unclaimed')
+          else if (n.team === 'unattributed') navigate('/?o=unclaimed')
           return true
         }}
       />
@@ -491,7 +492,7 @@ export function UsersPage() {
   )
   return (
     <main className="marks-page user-page">
-      <SiteNav scan={scan} />
+      <SiteNav><ScanPicker scan={scan} /></SiteNav>
       <header>
         <div className="hrow">
           <h1>Users</h1>
@@ -816,7 +817,7 @@ export function UserPage() {
 
   return (
     <main className="marks-page user-page">
-      <SiteNav scan={scan} />
+      <SiteNav><ScanPicker scan={scan} /></SiteNav>
       <header>
         <div className="hrow">
           <h1 className="user-head">
@@ -825,7 +826,7 @@ export function UserPage() {
             {team && <span className="uc-group" data-team={team}>{GROUP_LABELS[team] ?? team}</span>}
           </h1>
           <span style={{ display: 'inline-flex', gap: '1.2em' }}>
-            <Link className="nav-files" to={`/?l=user&lu=${shortUserKey(id)}`} style={{ fontSize: '0.9em' }}>Home,&nbsp;filtered&nbsp;to&nbsp;{shortName(id)}&nbsp;→</Link>
+            <Link className="nav-files" to={`/?o=${shortUserKey(id)}`} style={{ fontSize: '0.9em' }}>Home,&nbsp;filtered&nbsp;to&nbsp;{shortName(id)}&nbsp;→</Link>
             <Link className="nav-files" to="/users" style={{ fontSize: '0.9em' }}>All&nbsp;users</Link>
           </span>
         </div>

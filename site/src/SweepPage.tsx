@@ -180,7 +180,7 @@ export function SweepPage() {
               // the data an approval would actually delete — colored by read
               // recency (staleness is the case for deletion).
               const drill = '/' + c.prefix.replace(/^gs:\/\//, '').replace(/\/$/, '')
-                + '?c=read' + (c.sweepers.length === 1 ? `&u=${encodeURIComponent(c.sweepers[0])}` : '')
+                + '?c=read' + (c.sweepers.length === 1 ? `&o=${encodeURIComponent(c.sweepers[0])}` : '')
               return (
                 <tr key={c.prefix} className={a ? 'approved' : c.owner_match ? 'matched' : ''}>
                   <td><Link to={drill}><code>{c.prefix.replace('gs://', '')}</code></Link></td>

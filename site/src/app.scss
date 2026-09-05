@@ -59,9 +59,11 @@ body {
   font: 15px/1.5 -apple-system, 'Segoe UI', system-ui, sans-serif;
 }
 main {
+  --pad-t: 20px;
+  --pad-x: 24px;
   max-width: 1200px;
   margin: 0 auto;
-  padding: 20px 24px 48px;
+  padding: var(--pad-t) var(--pad-x) 48px;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -74,47 +76,111 @@ header .hrow {
   gap: 12px;
   flex-wrap: wrap;
 }
-.site-nav {
+// ---- The top bar (SiteNav): ☰ nav menu · page scope/controls · avatar menu.
+// Sticky, full-bleed across the page container (negative margins undo its
+// padding), the same chrome parked at the top and stuck mid-scroll.
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-  margin-bottom: 4px;
-  .brand { font-weight: 700; font-size: 17px; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; margin-right: auto; }
-  .whoami { margin-left: 8px; }
-}
-.nav-links { display: inline-flex; gap: 1.2em; align-items: baseline; }
-// Home header: h1 left, nav + identity flush right as one designed cluster.
-header .hrow {
-  justify-content: flex-start;
-  // The row aligns by baseline (right for the brand/h1), but the identity
-  // cluster's flex baseline is its 22px avatar, which floated the whole chip
-  // above the nav links — center these two clusters on the row instead.
-  .nav-links { margin-left: auto; align-self: center; }
-  .whoami { align-self: center; }
-}
-// Scan picker riding in the shared nav (SiteNav) on /users, /user/:id — the
-// home map has its own richer inline picker. Mirrors `.sub .scanpick`.
-.scan-nav {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 0.9em; color: var(--ink-2);
-  .scan-lbl { color: var(--ink-2); }
-  .scanpick {
+  gap: 4px 10px;
+  margin: calc(-1 * var(--pad-t, 20px)) calc(-1 * var(--pad-x, 24px)) 0;
+  padding: 6px var(--pad-x, 24px);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  .tb-menu-btn {
+    flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px;
+    background: transparent; color: var(--ink-2);
+    border: 1px solid transparent; border-radius: 6px;
+    font-size: 20px; cursor: pointer;
+    &:hover, &[aria-expanded='true'] { background: var(--panel); border-color: var(--line); color: var(--ink); }
+  }
+  .brand {
+    flex: none;
+    font-weight: 700; font-size: 14px; letter-spacing: -0.01em;
+    color: var(--ink); text-decoration: none; white-space: nowrap;
+    margin-right: 6px;
+  }
+  .tb-mid {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+  }
+  .tb-avatar {
+    flex: none;
+    display: inline-flex;
+    background: transparent; border: 2px solid transparent; border-radius: 50%;
+    padding: 0; cursor: pointer;
+    .user-avatar { display: block; }
+    &:hover, &[aria-expanded='true'] { border-color: var(--s1); }
+  }
+  .tb-signin { flex: none; color: var(--s1); font-weight: 600; text-decoration: none; }
+  .lbl { color: var(--ink-3); font-size: 12px; margin-right: 2px; }
+  .tb-ctl, .tb-axis, .tb-scan, .tb-path { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .tb-select {
     background: var(--panel); color: var(--ink);
     border: 1px solid var(--line); border-radius: 6px;
-    font: inherit; font-weight: 600; padding: 1px 4px; cursor: pointer;
+    font: inherit; font-size: 12.5px; font-weight: 600; padding: 2px 4px; cursor: pointer;
+    max-width: 16ch;
+    &.scan { font-variant-numeric: tabular-nums; }
   }
-  .disambig-inline {
-    display: inline-flex; gap: 4px; flex-wrap: wrap;
+  .tb-scan .arrow { color: var(--ink-3); }
+  .tb-delta { font-weight: 650; text-decoration: none; font-variant-numeric: tabular-nums; &:hover { text-decoration: underline; } }
+  // Drill-path crumbs: the deepest segment is inked; ancestors drill up.
+  .tb-path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    max-width: 34ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    gap: 0;
     button {
-      background: var(--panel); color: var(--ink-2);
-      border: 1px solid var(--line); border-radius: 6px;
-      font-size: 12px; padding: 1px 6px; cursor: pointer;
-      &.on { color: var(--ink); border-color: var(--ink-2); font-weight: 600; }
+      background: none; border: none; padding: 0 1px; font: inherit; color: var(--s1); cursor: pointer;
+      &:hover { text-decoration: underline; }
+      &.here { color: var(--ink); font-weight: 650; cursor: default; &:hover { text-decoration: none; } }
     }
+    .sep { color: var(--ink-3); }
   }
+  .filterbox { margin-left: 0; }
 }
-// Nav links: quiet tabs, not underlined prose links; the current page reads
+// Bar menus (floating): the ☰ page list and the avatar's session menu.
+.menu-pop {
+  z-index: 10000;
+  min-width: 190px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+  font-size: 13.5px;
+  display: flex;
+  flex-direction: column;
+  hr { border: none; border-top: 1px solid var(--line); margin: 5px 0; }
+  .mi {
+    display: flex; align-items: center; gap: 8px;
+    background: none; border: none; text-align: left;
+    font: inherit; color: var(--ink);
+    padding: 5px 10px; border-radius: 5px;
+    text-decoration: none; cursor: pointer;
+    &:hover, &:focus-visible { background: var(--line); outline: none; }
+    &[aria-current] { font-weight: 650; }
+    b { font-weight: 650; }
+  }
+  &.user-menu { min-width: 250px; .user-card { padding: 4px 6px 2px; } }
+}
+.scan-tip { display: grid; gap: 3px; b { color: inherit; } .classmix { margin-top: 4px; } }
+
+// Nav links: quiet tabs// Nav links: quiet tabs, not underlined prose links; the current page reads
 // bright + bold via aria-current.
 .nav-files {
   font-size: 14px;
@@ -130,44 +196,6 @@ header .hrow {
   code { margin-right: 4px; }
   .uc-warn { color: var(--s4); }
 }
-.whoami {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--ink-2);
-  .avatar {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    color: #fff;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 12px;
-    font-weight: 600;
-    align-self: center;
-  }
-  .logout {
-    color: var(--s1);
-    background: none;
-    border: none;
-    padding: 0;
-    font: inherit;
-    cursor: pointer;
-    text-decoration: underline;
-  }
-  .token-btn {
-    color: var(--s1);
-    background: none;
-    border: none;
-    padding: 0;
-    font: inherit;
-    cursor: pointer;
-    text-decoration: underline;
-  }
-}
-
 .token-backdrop {
   position: fixed;
   inset: 0;
@@ -176,6 +204,17 @@ header .hrow {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+.about-modal {
+  width: min(680px, calc(100vw - 32px));
+  font-size: 13.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); margin: 14px 0 4px; }
+  p { margin: 0; }
+  b { color: var(--ink); }
+  a { color: var(--s1); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
 }
 .token-modal {
   background: var(--panel);
@@ -289,35 +328,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     font-size: 0.92em;
   }
 }
-// Edu folds (the mark banner + the about paragraph): collapsed they're slim
-// info lines — icon + one sentence, no box; open they get their card chrome.
-// Open on a viewer's first session, collapsed after (App.tsx `useFold`).
-.edu {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-details.fold {
-  > summary {
-    cursor: pointer;
-    color: var(--ink-3);
-    font-size: 13.5px;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    list-style: none;
-    &::-webkit-details-marker { display: none; }
-    .fold-icon { flex: none; font-size: 16px; opacity: 0.8; }
-    .fold-icon.warn { color: var(--mk-del); opacity: 1; }
-    b { color: var(--ink-2); font-weight: 600; }
-    &:hover { color: var(--ink-2); b { color: var(--ink); } }
-  }
-  &[open] > summary {
-    color: var(--ink-2);
-    margin-bottom: 8px;
-    b { color: var(--ink); }
-  }
-}
 .loading { color: var(--ink-3); }
 
 // Cross-site link (prod hosts are one-store-each; see App's `crossSite`).
@@ -327,59 +337,6 @@ details.fold {
   text-decoration: none;
   white-space: nowrap;
   &:hover { color: var(--ink); text-decoration: underline; }
-}
-
-// Store switcher in the header — same button language as .colorctl, but inline
-// next to the <h1> rather than a sticky row of its own.
-.storectl {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  button {
-    background: var(--panel);
-    color: var(--ink-2);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    font-size: 12.5px;
-    padding: 3px 10px;
-    cursor: pointer;
-    &.on {
-      background: var(--s1);
-      border-color: var(--s1);
-      color: #fff;
-    }
-    &:hover:not(.on) { filter: brightness(1.05); }
-    &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
-  }
-}
-
-.colorctl {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  background: var(--surface);
-  padding: 8px 0;
-  margin: -8px 0;
-  .lbl { color: var(--ink-2); font-size: 13px; margin-right: 2px; }
-  button {
-    background: var(--panel);
-    color: var(--ink-2);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    font-size: 12.5px;
-    padding: 3px 10px;
-    cursor: pointer;
-    &.on {
-      background: var(--s1);
-      border-color: var(--s1);
-      color: #fff;
-    }
-    &:hover:not(.on) { filter: brightness(1.05); }
-    &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
-  }
 }
 
 // Treemap styling: the component is @disk-tree/react's generic <Treemap>
@@ -662,11 +619,6 @@ details.fold {
   cursor: help;
 }
 
-.units-toggle {
-  text-decoration: underline dotted;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
 
 // "Changes since previous scan" — diff treemap section.
 .diff-tm {
@@ -678,11 +630,6 @@ details.fold {
 .grew { color: var(--grew); }
 .shrank { color: var(--shrank); }
 // Header quick-link into the "Changes since previous scan" treemap section.
-.changes-link {
-  color: var(--ink-2);
-  text-decoration: none;
-  &:hover { text-decoration: underline; }
-}
 .diff-mode {
   cursor: pointer;
   font-size: 0.75rem;
@@ -821,29 +768,6 @@ details.fold {
   .ctl { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
 }
 
-// Active pin/highlight indicator (shown in every color mode).
-.scope-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 6px 0 2px;
-  padding: 3px 6px 3px 8px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  color: var(--ink-2);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  width: fit-content;
-  &.filtering { border-color: var(--s1); }
-  .lbl { color: var(--ink-3); }
-  .team { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); font-weight: 600; }
-  .clear {
-    margin-left: 2px; background: transparent; border: none; color: var(--ink-3);
-    cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 3px; border-radius: 4px;
-    &:hover { background: var(--line); color: var(--ink); }
-  }
-}
-
 // Small radio strips (age chart granularity/axis, size-chart y-range).
 .gran {
   display: inline-flex;
@@ -946,12 +870,6 @@ details.fold {
   }
 }
 
-// Publish time beside a date-only scan id (the daily GCS job's snapshots).
-.sub .pub {
-  margin-left: 6px;
-  font-size: 12px;
-  color: var(--ink-2);
-}
 
 .admin-page {
   max-width: 980px;
@@ -1090,30 +1008,6 @@ details.fold {
   --mk-del: #d3382f;
 }
 
-.mark-banner {
-  max-width: 68ch; // match .prose — the two intro blocks read as a pair
-  box-sizing: border-box;
-  // card chrome only when expanded; collapsed it's a bare info line
-  &[open] {
-    border: 1px solid var(--mk-del);
-    border-radius: 8px;
-    padding: 10px 14px;
-  }
-  p { margin: 0; color: var(--ink-2); }
-  b { color: var(--ink); }
-  .mk-key {
-    white-space: nowrap;
-    .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin: 0 4px 0 2px; }
-  }
-  .err { color: #d33; }
-  .backlog-link {
-    color: var(--s1);
-    font-weight: 600;
-    white-space: nowrap;
-    text-decoration: none;
-    &:hover { text-decoration: underline; }
-  }
-}
 
 // Micro-hue mark ring: frames an explicitly-marked cell in its fate color,
 // layered over the macro-hue fill. `borderColor` is set inline per action.
@@ -1290,48 +1184,6 @@ details.fold {
   border-top: 1px solid var(--line);
 }
 
-.lens-bar {
-  margin: 10px 0 -4px;
-  .tabrow {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    align-items: center;
-    .lbl { color: var(--ink-2); font-size: 13px; margin-right: 2px; }
-    button {
-      background: var(--panel);
-      color: var(--ink-2);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      font-size: 13px;
-      padding: 4px 12px;
-      cursor: pointer;
-      &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
-      &:hover:not(.on) { filter: brightness(1.05); }
-    }
-    .user-pick {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      input {
-        background: var(--panel);
-        color: var(--ink);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        font-size: 12.5px;
-        padding: 4px 8px;
-      }
-    }
-  }
-  .guest-note a { color: var(--s1); }
-  .tab-note {
-    color: var(--ink-2);
-    font-size: 13.5px;
-    margin: 8px 0;
-    b { color: var(--ink); }
-  }
-}
-
 // The treemap children table (was also shared with the /mark worklists).
 .children-tbl {
   .worklist {
@@ -1423,7 +1275,8 @@ details.fold {
 .dt-treemap-tip .tt-mark { margin-top: 6px; font-size: 12.5px; }
 .dt-treemap-tip .tt-mark code { font-size: 11px; opacity: 0.85; }
 
-.lens-bar {
+.typed-modal {
+  .sub { margin: 0 0 10px; font-size: 13px; }
   .typed-path {
     margin-top: 8px;
     display: flex;
@@ -1442,7 +1295,7 @@ details.fold {
   }
 }
 
-.colorctl .filterbox {
+.filterbox {
   display: inline-flex;
   gap: 6px;
   align-items: center;
@@ -1768,35 +1621,6 @@ details.fold {
   --dt-ts-window-edge: rgb(255 255 255 / 0.4);
 }
 
-.ctl-sentinel { height: 0; }
-.colorctl.stuck {
-  border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
-}
-.colorctl .scope-strip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: 10px;
-  padding-right: 10px;
-  border-right: 1px solid var(--line);
-  font-size: 12.5px;
-  color: var(--ink-2);
-  .top {
-    padding: 0 6px;
-    font-size: 10px;
-    line-height: 1.8;
-  }
-  .scan { font-variant-numeric: tabular-nums; white-space: nowrap; b { color: var(--ink); font-weight: 600; } }
-  .part {
-    white-space: nowrap;
-    max-width: 28ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    &::before { content: '·'; color: var(--ink-3); margin-right: 6px; }
-  }
-}
-
 .mark-filters {
   display: flex;
   flex-wrap: wrap;
@@ -1804,27 +1628,30 @@ details.fold {
   gap: 6px 14px;
   margin: 0 0 8px;
   .mark-kinds { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-  .kind {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: var(--panel);
-    color: var(--kind, var(--ink-2));
-    border: 1px solid var(--kind, var(--line));
-    border-radius: 999px;
-    font: inherit;
-    font-size: 11.5px;
-    line-height: 1.4;
-    padding: 1px 9px 1px 7px;
-    cursor: pointer;
-    opacity: 0.45;
-    filter: saturate(0.4);
-    .glyph { font-size: 10px; }
-    &.on { opacity: 1; filter: none; }
-    &:hover { opacity: 0.85; filter: none; }
-    &.window { color: var(--ink-2); border-color: var(--line); border-style: dashed; &.on { border-style: solid; color: var(--ink); } }
-  }
+}
+// Toggle chips (the bar's mark/owner axes, the mark feed's action types):
+// pill, tinted by `--kind`, dimmed when off.
+.kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--panel);
+  color: var(--kind, var(--ink-2));
+  border: 1px solid var(--kind, var(--line));
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 1px 9px 1px 7px;
+  cursor: pointer;
+  opacity: 0.45;
+  filter: saturate(0.4);
+  .glyph { font-size: 10px; }
+  &.on { opacity: 1; filter: none; background: color-mix(in oklab, var(--kind, var(--ink-2)) 16%, var(--panel)); }
+  &:hover { opacity: 0.85; filter: none; }
+  &.window { color: var(--ink-2); border-color: var(--line); border-style: dashed; &.on { border-style: solid; color: var(--ink); } }
 }
 
-// Anchored sections scroll in under the sticky control bar otherwise.
-#tree-map, #tbl, #over-time, #marks, #diff, #mtime { scroll-margin-top: 48px; }
+// Anchored sections scroll in under the sticky bar otherwise (its height is
+// published as --topbar-h; it wraps to more rows on narrow viewports).
+#tree-map, #tbl, #over-time, #marks, #diff, #mtime { scroll-margin-top: var(--topbar-h, 48px); }

@@ -11,7 +11,7 @@ const BUCKET_URI = 'gs://oa-gcs-usage-dvx'
 
 export function FilesPage() {
   return (
-    <main className="files-page" style={{ padding: '1rem', maxWidth: 1100, margin: '0 auto' }}>
+    <main className="files-page" style={{ padding: '1rem', '--pad-t': '1rem', '--pad-x': '1rem', maxWidth: 1100, margin: '0 auto' } as React.CSSProperties}>
       <SiteNav />
       <p className="sub" style={{ margin: '0 0 0.6em' }}>
         Raw scan store — <code>{BUCKET_URI}</code> (<code>listing/</code> + <code>snapshots/</code>), access-gated.

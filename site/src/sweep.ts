@@ -35,6 +35,18 @@ export const unattrSlice = (n: TreeNode): Record<string, number> => {
 }
 export const unattrLens: Lens = n => Object.values(unattrSlice(n)).reduce((s, v) => s + v, 0)
 
+/** The complement of `unattrSlice`: bytes some person owns, per group (each
+ * group's user-attributed share — `tm` minus its shared subset). */
+export const claimedSlice = (n: TreeNode): Record<string, number> => {
+  const out: Record<string, number> = {}
+  for (const [t, b] of Object.entries(n.tm ?? {})) {
+    if (t === 'unattributed') continue
+    const u = b - (n.sh?.[t] ?? 0)
+    if (u > 0) out[t] = u
+  }
+  return out
+}
+
 /** The communal pool as a slice (it's all userless by construction). */
 export const communalSlice = (n: TreeNode): Record<string, number> =>
   (n.tm?.communal ?? 0) > 0 ? { communal: n.tm!.communal } : {}
@@ -220,17 +232,28 @@ export const klcKeptWithin = (uri: string, split: KlcSplit): number => {
   return split.kept.reduce((s, k) => s + (k.uri.startsWith(u) ? k.b : 0), 0)
 }
 
+/** The mark-state axis the page filters on: `keep`/`sweep` are effective
+ * decisions (a `keep_last_ckpt` mark counts as both — it splits its subtree),
+ * `unmarked` is the review backlog. */
+export type FateAxis = 'keep' | 'sweep' | 'unmarked'
+export const FATE_AXES: FateAxis[] = ['keep', 'sweep', 'unmarked']
+
+/** Does a prefix's effective fate fall inside the page's mark-state axis? */
+export const fateAllowed = (fate: Fate, allowed: ReadonlySet<FateAxis>): boolean =>
+  fate === 'keep_last_ckpt' ? allowed.has('keep') || allowed.has('sweep') : allowed.has(fate)
+
 /**
- * Scope the map to the undecided estate (the To-do lens): prune any subtree
- * covered by a keep/sweep decision, keep fully-clean subtrees whole, recurse
- * into mixed ones and re-aggregate ancestors. Folded `(other)` tiles inside
- * mixed nodes are dropped — the tree can't say what's inside them.
+ * Scope the map to the mark states in `allowed` (the page's mark axis —
+ * `{unmarked}` is the old To-do lens): prune any subtree whose effective
+ * decision falls outside it, keep uniformly-fated subtrees whole, recurse into
+ * mixed ones and re-aggregate ancestors. Folded `(other)` tiles inside mixed
+ * nodes are dropped — the tree can't say what's inside them.
  */
-export function applyTodoFilter(root: TreeNode, idx: MarkIndex): TreeNode {
+export function applyFateFilter(root: TreeNode, idx: MarkIndex, allowed: ReadonlySet<FateAxis>): TreeNode {
   const ctx = fateWalkCtx(idx.keeps)
   const walk = (n: TreeNode, uri: string, inherited: KeepRow | null): TreeNode | null => {
     const win = winRow(ctx, uri, inherited)
-    if (!ctx.below(uri)) return fateOf(win) === 'unmarked' ? n : null
+    if (!ctx.below(uri)) return fateAllowed(fateOf(win), allowed) ? n : null
     const kids = (n.c ?? [])
       .filter(c => !c.n.startsWith('('))
       .map(c => walk(c, `${uri}/${c.n}`, win))

@@ -4,7 +4,8 @@ import { epochDaysToDate, epochDaysToMonth } from './colors'
 import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip, markProvenance } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
-import { looksCkpt } from './sweep'
+import { fateAllowed, looksCkpt } from './sweep'
+import type { FateAxis } from './sweep'
 import { Tooltip } from './Tooltip'
 import { UserChip } from './UserChip'
 import type { TreeNode } from './types'
@@ -18,15 +19,16 @@ type SortKey = 'n' | 'b' | 'o' | 'd' | 'a'
 
 const PAGE = 50
 
-export function ChildrenTable({ node, segs, scheme, markIdx, todoOnly = false, onOpen }: {
+export function ChildrenTable({ node, segs, scheme, markIdx, fates, onOpen }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
   segs: string[]
   scheme: string
   markIdx?: MarkIndex | null
-  /** To-do lens: drop children already settled by a keep/sweep decision. */
-  todoOnly?: boolean
+  /** The page's mark-state axis: list only children whose effective decision
+   * is in it (`{unmarked}` = the old To-do lens). Absent = every child. */
+  fates?: ReadonlySet<FateAxis> | null
   onOpen: (segs: string[]) => void
 }) {
   const { fmtBytes } = useUnits()
@@ -39,9 +41,9 @@ export function ChildrenTable({ node, segs, scheme, markIdx, todoOnly = false, o
 
   const kids = useMemo(() => {
     let ks = (node.c ?? []).slice()
-    // To-do: keep only real children with no covering keep/sweep decision.
-    if (todoOnly && markIdx) {
-      ks = ks.filter(k => !k.n.startsWith('(') && !markIdx.resolve(scheme + [...segs, k.n].join('/')).mark)
+    // Mark axis: keep only real children whose effective decision is in it.
+    if (fates && markIdx) {
+      ks = ks.filter(k => !k.n.startsWith('(') && fateAllowed(markIdx.resolve(scheme + [...segs, k.n].join('/')).mark?.action ?? 'unmarked', fates))
     }
     const dir = sort.asc ? 1 : -1
     const val = (n: TreeNode): number | string =>
@@ -55,11 +57,11 @@ export function ChildrenTable({ node, segs, scheme, markIdx, todoOnly = false, o
       const vb = val(b)
       return (typeof va === 'string' ? (va as string).localeCompare(vb as string) : (va as number) - (vb as number)) * dir
     })
-  }, [node, sort, todoOnly, markIdx, scheme, segs])
+  }, [node, sort, fates, markIdx, scheme, segs])
 
   if (!kids.length) {
-    return todoOnly
-      ? <section className="children-tbl"><p className="tab-note">Nothing untriaged here — every prefix under this view has a keep/sweep decision.</p></section>
+    return fates
+      ? <section className="children-tbl"><p className="tab-note">No prefix under this view is {[...fates].join(' / ')}.</p></section>
       : null
   }
   const th = (k: SortKey, label: string, num = true) => (

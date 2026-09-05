@@ -44,10 +44,9 @@ export function MarkHistory({ prefix, scope, pred, filterQ, window: win }: {
     const next = new Set(kinds)
     if (next.has(key)) next.delete(key)
     else next.add(key)
-    // Every kind on = the default (no param); none on would hide everything —
-    // treat it as "only this one" instead.
-    if (next.size === MARK_ACTS.length) setMkP(undefined)
-    else if (next.size === 0) setMkP(key)
+    // Every kind on = the default (no param); switching the last one off would
+    // hide everything, so it rolls back to all (same rule as the bar's axes).
+    if (next.size === MARK_ACTS.length || next.size === 0) setMkP(undefined)
     else setMkP(MARK_ACTS.filter(a => next.has(a.key)).map(a => a.key).join(''))
   }
   // Page size: `?mn=` (10 default).

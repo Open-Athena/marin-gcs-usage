@@ -35,7 +35,7 @@ export default function Root() {
       <Route path="/user/:id/og" element={<UserOgPage />} />
       <Route path="/users" element={<AuthGate><UsersPage /></AuthGate>} />
       <Route path="/user/:id" element={<AuthGate><UserPage /></AuthGate>} />
-      {/* The review lenses fold onto `/` now (LensBar) — /mark is just the map. */}
+      {/* The review lenses became the home page's mark/owner axes — /mark is just the map. */}
       <Route path="/mark" element={<Navigate to="/" replace />} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>
