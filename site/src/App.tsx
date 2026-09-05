@@ -1095,7 +1095,12 @@ function AppContent() {
                 )}
               </>
             ) : diffMissing ? (
-              <span className="tab-note"> · no path index for <code>{graftPath || '/'}</code> at {fmtScan(diffPair[0]?.isError ? diffPrev : asof)} ({String(diffMissing.error)}) — pick another scan or drill up.</span>
+              <span className="tab-note">
+                {' '}· {(diffMissing.error as { status?: number }).status === 404
+                  ? <>no path index for <code>{graftPath || '/'}</code> at {fmtScan(diffPair[0]?.isError ? diffPrev : asof)} — pick another scan or drill up.</>
+                  : <>couldn’t load {fmtScan(diffPair[0]?.isError ? diffPrev : asof)} ({String(diffMissing.error)}).</>}
+                {' '}<button type="button" className="linkish" onClick={() => diffPair.forEach(q => q.isError && q.refetch())}>retry</button>
+              </span>
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
             )}
