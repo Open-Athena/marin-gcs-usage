@@ -1745,3 +1745,86 @@ details.fold {
     .err { font-size: 13px; }
   }
 }
+
+// ---- page-scope consistency: stuck control strip, mark-feed filters, chart window ----
+
+// TimeSeries window band (the Diff range) + brush: the core defaults are
+// white-on-dark; give light mode ink-based values.
+:root {
+  --dt-ts-window: rgb(0 0 0 / 0.06);
+  --dt-ts-brush: rgb(0 0 0 / 0.12);
+  --dt-ts-window-edge: rgb(0 0 0 / 0.35);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    --dt-ts-window: rgb(255 255 255 / 0.07);
+    --dt-ts-brush: rgb(255 255 255 / 0.14);
+    --dt-ts-window-edge: rgb(255 255 255 / 0.4);
+  }
+}
+:root[data-theme='dark'] {
+  --dt-ts-window: rgb(255 255 255 / 0.07);
+  --dt-ts-brush: rgb(255 255 255 / 0.14);
+  --dt-ts-window-edge: rgb(255 255 255 / 0.4);
+}
+
+.ctl-sentinel { height: 0; }
+.colorctl.stuck {
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.colorctl .scope-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 10px;
+  padding-right: 10px;
+  border-right: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  .top {
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 1.8;
+  }
+  .scan { font-variant-numeric: tabular-nums; white-space: nowrap; b { color: var(--ink); font-weight: 600; } }
+  .part {
+    white-space: nowrap;
+    max-width: 28ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    &::before { content: '·'; color: var(--ink-3); margin-right: 6px; }
+  }
+}
+
+.mark-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin: 0 0 8px;
+  .mark-kinds { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+  .kind {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--panel);
+    color: var(--kind, var(--ink-2));
+    border: 1px solid var(--kind, var(--line));
+    border-radius: 999px;
+    font: inherit;
+    font-size: 11.5px;
+    line-height: 1.4;
+    padding: 1px 9px 1px 7px;
+    cursor: pointer;
+    opacity: 0.45;
+    filter: saturate(0.4);
+    .glyph { font-size: 10px; }
+    &.on { opacity: 1; filter: none; }
+    &:hover { opacity: 0.85; filter: none; }
+    &.window { color: var(--ink-2); border-color: var(--line); border-style: dashed; &.on { border-style: solid; color: var(--ink); } }
+  }
+}
+
+// Anchored sections scroll in under the sticky control bar otherwise.
+#tree-map, #tbl, #over-time, #marks, #diff, #mtime { scroll-margin-top: 48px; }

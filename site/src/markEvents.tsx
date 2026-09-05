@@ -13,6 +13,17 @@ export const LOCAL_TZ: string =
 export const fmtWhen = (ts: number): string =>
   new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
+export type MarkAct = 'keep' | 'keep_last_ckpt' | 'sweep' | 'clear' | 'claim' | 'release'
+/** Feed-filter letters (`?mk=`), in display order. */
+export const MARK_ACTS: { act: MarkAct; key: string; label: string; glyph: string; color: string }[] = [
+  { act: 'keep', key: 'k', label: 'keep', glyph: '✓', color: 'var(--mk-keep)' },
+  { act: 'keep_last_ckpt', key: 'l', label: 'keep last', glyph: '◐', color: 'var(--mk-keep)' },
+  { act: 'sweep', key: 's', label: 'sweep', glyph: '✕', color: 'var(--mk-del)' },
+  { act: 'clear', key: 'c', label: 'clear', glyph: '○', color: 'var(--line)' },
+  { act: 'claim', key: 'o', label: 'claim', glyph: '◆', color: 'var(--t-oa)' },
+  { act: 'release', key: 'r', label: 'release', glyph: '◇', color: 'var(--t-oa)' },
+]
+
 export interface MarkEvent {
   ts: number
   who: string
@@ -21,6 +32,8 @@ export interface MarkEvent {
   /** Which axis the row came from — one action can emit both a keep and an
    * owner event for the same prefix, so (id, prefix) alone isn't unique. */
   kind: 'keep' | 'owner'
+  /** The concrete action, for filtering the feed by type. */
+  act: MarkAct
   label: string
   color: string
   glyph: string
@@ -41,6 +54,7 @@ export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; erro
     for (const r of data.keeps)
       evs.push({
         ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, kind: 'keep', memo: r.memo,
+        act: r.keep == null ? 'clear' : r.keep,
         label: r.keep == null ? 'cleared' : ACTION_LABELS[r.keep],
         color: r.keep == null ? 'var(--line)' : ACTION_COLORS[r.keep],
         glyph: r.keep == null ? '○' : ACTION_GLYPH[r.keep],
@@ -48,6 +62,7 @@ export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; erro
     for (const r of data.owners)
       evs.push({
         ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, kind: 'owner', memo: r.memo,
+        act: r.owner == null ? 'release' : 'claim',
         label: r.owner == null ? 'released' : `claimed${r.owner === r.who ? '' : ` for ${r.owner}`}`,
         color: 'var(--t-oa)',
         glyph: r.owner == null ? '◇' : '◆',

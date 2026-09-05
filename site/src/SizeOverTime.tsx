@@ -58,7 +58,13 @@ function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
   )
 }
 
-export function SizeOverTime({ scans, prefix, base, fate = false, user, team, onPickDate }: {
+// Points sit at UTC midnight of each scan's calendar date, so labels format
+// in UTC too — a local-time render shows the 8/23 scan as “Aug 22” in the US.
+const dateOfX = (x: number) => new Date(x).toISOString().slice(0, 10)
+const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
+const xOfScan = (d: string) => new Date(d.slice(0, 10)).getTime()
+
+export function SizeOverTime({ scans, prefix, base, fate = false, user, team, onPickDate, onBrush, window: win }: {
   scans: string[]
   prefix: string
   base: string
@@ -74,6 +80,10 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
   team?: string | null
   /** Click a point → view the page as of that scan (pins `?d=`). */
   onPickDate?: (date: string) => void
+  /** Drag across the chart → make [from, to] the page's diff window. */
+  onBrush?: (from: string, to: string) => void
+  /** The page's current diff window (scan ids), shaded on the chart. */
+  window?: [string, string]
 }) {
   const { fmtBytes, units } = useUnits()
   const [y0P, setY0P] = useUrlState('y0', boolParam)
@@ -143,7 +153,7 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
         .filter((p): p is Pt => p != null)
         .sort((a, b) => a.x - b.x)
       if (points.length < 2) return []
-      return [{ key: `${slice.kind}:${slice.key}`, label: slice.key, color: 'var(--s1)', points }]
+      return [{ key: `${slice.kind}:${slice.key}`, label: slice.kind === 'user' ? shortName(slice.key) : groupLabel(slice.key).toLowerCase(), color: 'var(--s1)', points }]
     }
     if (scopedArr && idx) {
       const points = idx.dates
@@ -206,12 +216,14 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
           getX={p => p.x}
           getY={p => p.y}
           formatY={fmtBytes}
-          formatX={x => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+          formatX={fmtX}
           yTickValues={yTickValues}
           yFrom={yFrom}
           yLabel="bytes"
           height={220}
-          onPickX={onPickDate && (x => onPickDate(new Date(x).toISOString().slice(0, 10)))}
+          onPickX={onPickDate && (x => onPickDate(dateOfX(x)))}
+          onBrush={onBrush && ((x0, x1) => onBrush(dateOfX(x0), dateOfX(x1)))}
+          window={win && [xOfScan(win[0]), xOfScan(win[1])]}
         />
       </section>
     )
@@ -242,13 +254,15 @@ export function SizeOverTime({ scans, prefix, base, fate = false, user, team, on
           getX={p => p.x}
           getY={p => p.y}
           formatY={fmtBytes}
-          formatX={x => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+          formatX={fmtX}
           yTickValues={yTickValues}
           yFrom={yFrom}
           yLabel="stored bytes"
           height={220}
           annotations={annotations}
-          onPickX={onPickDate && (x => onPickDate(new Date(x).toISOString().slice(0, 10)))}
+          onPickX={onPickDate && (x => onPickDate(dateOfX(x)))}
+          onBrush={onBrush && ((x0, x1) => onBrush(dateOfX(x0), dateOfX(x1)))}
+          window={win && [xOfScan(win[0]), xOfScan(win[1])]}
         />
       )}
     </section>

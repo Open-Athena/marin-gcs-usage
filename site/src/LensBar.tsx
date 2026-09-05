@@ -16,7 +16,7 @@ export type Lens = 'all' | 'todo' | 'mine' | 'unclaimed' | 'communal'
 // narrows the children table instead), and `all` is the unfiltered view.
 export const SCOPABLE: Lens[] = ['mine', 'unclaimed', 'communal']
 
-const LENS_LABELS: Record<Lens, string> = {
+export const LENS_LABELS: Record<Lens, string> = {
   all: 'All',
   todo: 'To-do',
   mine: 'My files',
