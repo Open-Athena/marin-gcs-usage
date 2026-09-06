@@ -2288,13 +2288,39 @@ for _e in COARSE_EXPS:
     INDEX_VARIANTS[f"coarse{_e}-user"] = f"path-index-coarse{_e}-by-user.parquet"
 
 
+@main.command("index-tiers")
+@option("-m", "--mem", default="48GB", help="DuckDB memory limit")
+@option("-P", "--path-index", "path_index", type=Path, required=True, help="Local floor-free path-index.parquet; the coarse tiers are written beside it")
+@option("-t", "--threads", default=8, type=int, help="DuckDB threads")
+@option("-T", "--tmp", "tmp_dir", type=Path, default=None, help="DuckDB spill dir (default: beside the index)")
+@argument("date")
+def index_tiers(mem: str, path_index: Path, threads: int, tmp_dir: Path | None, date: str) -> None:
+    """Backfill the coarse index tiers for an archived scan from its floor-free
+    path index (specs/view-serving.md §1): the per-path subtree totals, then one
+    parquet per E in COARSE_EXPS × {by-path, by-user}, floors in the KV metadata.
+    Same code path `webdata` runs on a fresh scan; `index-sync` records the
+    floors in D1. An old index's `team` column is dropped on the way."""
+    import duckdb
+
+    from .viz import write_coarse_tiers
+
+    con = duckdb.connect()
+    con.execute(f"SET memory_limit='{mem}'; SET threads={threads}")
+    con.execute(f"SET temp_directory='{tmp_dir or path_index.parent / '.duckdb-tmp'}'")
+    src = f"read_parquet('{path_index}')"
+    con.execute(f"CREATE TEMP TABLE tot AS SELECT path, sum(b) AS pb FROM {src} GROUP BY path")
+    floors, counts = write_coarse_tiers(con, path_index, rows=src)
+    err(f"index-tiers {date}: {json.dumps({str(e): {'floor': floors[e], 'paths': counts[e]} for e in floors})}")
+
+
 @main.command("index-sync")
 @option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding listing/<date>/path-index*.parquet")
 @option("-d", "--dir", "listing_dir", default=None, help="Override the listing dir holding the parquets (default: <bucket>/listing/<date>)")
 @option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
+@option("-C", "--coarse-only", is_flag=True, help="Only the coarse tiers (a backfill; the floor-free variants are already synced)")
 @option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only sync these variants (default: all)")
 @argument("date")
-def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tuple[str, ...], date: str) -> None:
+def index_sync(bucket: str, listing_dir: str | None, local: bool, coarse_only: bool, variants: tuple[str, ...], date: str) -> None:
     """Sync a scan's path-index parquet footers into D1 (index_schema/index_groups)
     so the site's reader skips the cold-isolate footer parse. Syncs all three
     sort variants (path / user) — the drill index plus the by-user
@@ -2303,6 +2329,8 @@ def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tupl
     from .index_footer import sync_d1
 
     base = listing_dir or f"{bucket}/listing/{date}"
+    if coarse_only:
+        variants = tuple(v for v in (variants or INDEX_VARIANTS) if v.startswith("coarse"))
     for variant in (variants or tuple(INDEX_VARIANTS)):
         n = sync_d1(date, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, remote=not local)
         err(f"index-sync: {date} [{variant}] — schema + {n} row groups ({'local' if local else 'remote'})")

@@ -363,3 +363,32 @@ def test_dir_cache_roundtrip(tmp_path: Path, listing: str, attribution: str):
         assert (warm_out / name).read_bytes() == (cold_out / name).read_bytes()
     tree = json.loads((warm_out / "tree.json").read_text())
     assert tree["b"] == 380 * GB  # cache content won, bogus listing ignored
+
+
+def test_index_tiers_backfill_matches_webdata(tmp_path: Path, listing: str, attribution: str):
+    """`gcs-usage index-tiers` (the backfill for archived scans) derives the
+    coarse tiers from a floor-free path index and must produce byte-identical
+    files to the ones `webdata` writes on a fresh scan — same rows, same sort,
+    same KV floor. An index carrying the retired `team` column is accepted too."""
+    from click.testing import CliRunner
+
+    from gcs_usage.cli import main
+    from gcs_usage.viz import COARSE_EXPS
+
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    write_webdata((listing,), tmp_path / "out", "2026-07-20", (attribution,), identities_path, path_index=fresh / "path-index.parquet")
+    old = tmp_path / "old"
+    old.mkdir()
+    df = pd.read_parquet(fresh / "path-index.parquet")
+    df.insert(2, "team", "legacy")
+    df.to_parquet(old / "path-index.parquet", index=False)
+    res = CliRunner().invoke(main, ["index-tiers", "-m", "1GB", "-t", "2", "-P", str(old / "path-index.parquet"), "2026-07-20"])
+    assert res.exit_code == 0, res.output
+    names = [f"path-index-coarse{e}{sfx}.parquet" for e in COARSE_EXPS for sfx in ("", "-by-user")]
+    assert sorted(p.name for p in old.glob("path-index-coarse*.parquet")) == sorted(names)
+    for name in names:
+        pd.testing.assert_frame_equal(pd.read_parquet(old / name), pd.read_parquet(fresh / name))
+

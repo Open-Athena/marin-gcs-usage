@@ -42,6 +42,49 @@ ABS_FLOOR = int(float(os.environ.get("GCS_USAGE_TREE_ABS_FLOOR", "5e9")))  # byt
 TOP_K = int(os.environ.get("GCS_USAGE_TREE_TOP_K", "500"))  # kept children per parent
 
 
+def write_coarse_tiers(
+    con: "duckdb.DuckDBPyConnection",
+    path_index: Path,
+    rows: str,
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Write the coarse index tiers beside ``path_index`` (specs/view-serving.md §1).
+
+    ``rows`` is a table/relation holding the floor-free index rows
+    (``path, depth, usr, b, o, wts, wb, c2, c3, c4, a``) — ``ptu`` inside
+    ``webdata``, or ``read_parquet(...)`` of an archived path-index for a
+    backfill (``gcs-usage index-tiers``). A temp table ``tot`` (``path, pb`` =
+    per-path subtree bytes) must exist; the caller builds it since ``webdata``
+    reuses it for the fold.
+
+    Each tier E keeps the SAME rows, restricted to paths whose subtree clears
+    F_E = 2^(round(log2 fleet) - E), in the same two sort orders as the
+    floor-free tier. A tier, not a loss: every kept row's sums are exact, and
+    the reader only serves a query from a tier whose floor is <= the query's
+    threshold (then the tier's rows are a superset of what the query keeps).
+    F rides in the parquet key-value metadata so index-sync can record it
+    beside the footer. Returns ({E: floor}, {E: kept paths})."""
+    floors: dict[int, int] = {}
+    counts: dict[int, int] = {}
+    fleet = int(con.execute("SELECT coalesce(sum(pb), 0) FROM tot WHERE path NOT LIKE '%/%'").fetchone()[0])
+    n_paths = con.execute("SELECT count(*) FROM tot").fetchone()[0]
+    cols = "path, depth, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
+    for e in COARSE_EXPS:
+        floor = 2 ** (round(math.log2(fleet)) - e) if fleet > 0 else 1
+        floors[e] = floor
+        con.execute(f"CREATE TEMP TABLE coarse AS SELECT path FROM tot WHERE pb >= {floor}")
+        counts[e] = con.execute("SELECT count(*) FROM coarse").fetchone()[0]
+        kv = f"(FORMAT parquet, ROW_GROUP_SIZE 8192, KV_METADATA {{coarse_floor: '{floor}'}})"
+        for suffix, order in (
+            ("", "depth, path"),
+            ("-by-user", "usr NULLS LAST, depth, path"),
+        ):
+            out = path_index.with_name(f"path-index-coarse{e}{suffix}.parquet")
+            con.execute(f"COPY (SELECT {cols} FROM {rows} r JOIN coarse USING (path) ORDER BY {order}) TO '{out}' {kv}")
+        con.execute("DROP TABLE coarse")
+        err(f"coarse tier E={e}: floor {floor:,} B, {counts[e]:,} of {n_paths:,} paths")
+    return floors, counts
+
+
 def write_webdata(
     listings: tuple[str, ...],
     out_dir: Path,
@@ -353,30 +396,7 @@ def write_webdata(
     coarse_floors: dict[int, int] = {}
     coarse_counts: dict[int, int] = {}
     if path_index is not None:
-        # Coarse index tiers (specs/view-serving.md §1): the SAME rows,
-        # restricted to paths whose subtree clears an absolute floor F_E, in the
-        # same two sort orders as the floor-free tier. A tier, not a loss:
-        # every kept row's sums are exact, and the reader only serves a query
-        # from a tier whose floor is <= the query's threshold (then the tier's
-        # rows are a superset of what the query keeps). F rides in the parquet
-        # key-value metadata so index-sync can record it beside the footer.
-        fleet = int(con.execute("SELECT coalesce(sum(pb), 0) FROM tot WHERE path NOT LIKE '%/%'").fetchone()[0])
-        n_paths = con.execute("SELECT count(*) FROM tot").fetchone()[0]
-        cols = "path, depth, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
-        for e in COARSE_EXPS:
-            floor = 2 ** (round(math.log2(fleet)) - e) if fleet > 0 else 1
-            coarse_floors[e] = floor
-            con.execute(f"CREATE TEMP TABLE coarse AS SELECT path FROM tot WHERE pb >= {floor}")
-            coarse_counts[e] = con.execute("SELECT count(*) FROM coarse").fetchone()[0]
-            kv = f"(FORMAT parquet, ROW_GROUP_SIZE 8192, KV_METADATA {{coarse_floor: '{floor}'}})"
-            for suffix, order in (
-                ("", "depth, path"),
-                ("-by-user", "usr NULLS LAST, depth, path"),
-            ):
-                out = path_index.with_name(f"path-index-coarse{e}{suffix}.parquet")
-                con.execute(f"COPY (SELECT {cols} FROM ptu JOIN coarse USING (path) ORDER BY {order}) TO '{out}' {kv}")
-            con.execute("DROP TABLE coarse")
-            err(f"coarse tier E={e}: floor {floor:,} B, {coarse_counts[e]:,} of {n_paths:,} paths")
+        coarse_floors, coarse_counts = write_coarse_tiers(con, path_index, rows="ptu")
         _rss("coarse")
     con.execute(
         f"""

@@ -17,11 +17,11 @@ All parquet, one row schema, row groups of 8k, footers synced to D1 (`index_grou
 
 | tier | file | rows (9/4 fleet) | floor | sort | variants |
 |---|---|---|---|---|---|
-| **coarse** | `coarse.parquet` | ~2.0M paths (× slices) | `F = 2^(round(log2(fleet_bytes)) − 24)` = 256 MiB today; recomputed each scan from the listing total, rounded to a power of two | `(depth, path)` | by-path, by-user, by-team |
-| **dirs** | `dirs.parquet` (today's `path-index.parquet`) | 220M | none | `(depth, path)` | by-path, by-user, by-team |
+| **coarse** | `path-index-coarse<E>.parquet`, E ∈ {16, 20, 24} (48 GiB / 3 GiB / 256 MiB at today's fleet; ~40k / ~500k / ~2M paths) | `F_E = 2^(round(log2(fleet_bytes)) − E)`, recomputed each scan | `(depth, path)` | by-path, by-user |
+| **dirs** | `path-index.parquet` | 220M | none | `(depth, path)` | by-path, by-user |
 | **objects** | `objects.parquet` | 613M | none (leaf) | `(bucket, name)` = pre-order by path | by-path only |
 
-Row: `path, depth, kind ('d'|'f'), team, usr, b, o, wts, wb, c2, c3, c4, a` (+ `h`: the log2 size histogram vector, once wanted). Objects rows carry `o = 1`, `created`, `class`; `team/usr` come from the same deepest-prefix attribution the dirs get.
+Row: `path, depth, kind ('d'|'f'), usr, b, o, wts, wb, c2, c3, c4, a` (+ `h`: the log2 size histogram vector, once wanted). Objects rows carry `o = 1`, `created`, `class`; `usr` comes from the same deepest-prefix attribution the dirs get. **There is no group/team column** (excised 2026-09-06): ownership is a person or nobody, and unclaimed = `b` − Σ user slices.
 
 Why the coarse tier fixes the thing `tree.json` was papering over: a pixel-budget query prunes row groups by their `b` max, which works for a narrow path range but at the root the range is the whole file, so a floor-free index makes the root the *slowest* path. A 2M-row tier makes the root a handful of row groups. The threshold at the root is `fleet × minArea / (w·h)` ≈ 40 GB for a 1000×600 canvas, two orders above `F`, and it only drops below `F` several drills down, by which point the path range on the dirs tier is narrow. Bumping the floor exponent by ±1 changes the tier by ~1.5× rows either way (measured: 2.73M at 128 MiB, 1.97M at 256 MiB, 1.17M at 512 MiB); serving cost tracks rows, indexing cost doesn't (the full rollup runs regardless; the floor only gates emission).
 
@@ -29,7 +29,7 @@ Deleted: `snapshots/<date>/tree.json` (and `MIN_FRAC` / `ABS_FLOOR` / `TOP_K` / 
 
 Also deleted: **`snapshots/series.json`**. Today it is the size-over-time chart's input: every run re-folds *every* archived `tree.json` into one file of per-top-level-path bytes per scan (plus per-user/team from `meta.json`, plus a ledger replay for the mark burn-down). It is a `tree.json` consumer, it is O(scans × tree) per run, and it can only answer for paths that cleared the fold. Replacement: `GET /api/series?path&k&o&t` = one row lookup per scan in that scan's coarse tier (or dirs tier when the path is below `F`), plus the same per-scan ledger fold `k` uses — N scans × one range read, cached per (path, scope, latest scan). The chart then follows every drill and scope exactly like the map.
 
-**The "three index variants"** are the same rows sorted three ways: `(depth, path)` for drills, `(usr, depth, path)` for a user lens, `(team, depth, path)` for a group/unclaimed lens. Parquet has no secondary indexes, so a sorted copy *is* the index (row-group min/max = sparse index). They exist at both the coarse and dirs tiers; the objects tier only needs `(bucket, name)`.
+**The index variants** are the same rows sorted two ways: `(depth, path)` for drills, `(usr, depth, path)` for a user lens (the by-team sort went with the group facet). Parquet has no secondary indexes, so a sorted copy *is* the index (row-group min/max = sparse index). They exist at both the coarse and dirs tiers; the objects tier only needs `(bucket, name)`.
 
 ## 2. The one read: `GET /api/subtree`
 
@@ -37,10 +37,10 @@ Keeps its name and its shape (a nested node tree folded to the pixel budget), ga
 
 | param | meaning | how it's answered |
 |---|---|---|
-| `date, path, w, h, minArea` | scan, root of the view, budget (`/api/series` takes the same scope for a path over scans) | tier choice: `thr ≥ F` → coarse, else dirs; leaf files from objects when `thr` admits a single object (`b ≥ thr`) |
+| `date, path, w, h, minArea` | scan, root of the view, budget (`/api/series` takes the same scope for a path over scans) | tier choice: the coarsest tier whose `F_E ≤ thr`, else dirs; leaf files from objects when `thr` admits a single object (`b ≥ thr`) |
 | `o=<user>` | that user's bytes | by-user variant (shipped as `lens=user:`) |
-| `o=unclaimed` / `t=<group>` | the unattributed / a group's slice | by-team variant; exact because rows are attribution slices |
-| `o=claimed` | everything attributed | by-path rows minus by-team(`unattributed`) rows over the same `(depth, path)` ranges |
+| `o=unclaimed` | bytes no person owns | by-path rows minus Σ user slices over the same `(depth, path)` ranges (rows are owner slices, so this is exact) |
+| `o=claimed` | everything some person owns | Σ user slices per path (the NULL-`usr` slice is the unclaimed pool) |
 | `k=` ⊆ `ksu` | mark axis | the ledger fold (`_lib/marks.ts`, cached per `(scan, head)`) gives every live mark its net bytes; per returned node: `val_K(N) = [fate(cover N) ∈ K]·(b(N) − Σ b(m)) + Σ val_K(m)` over the marks directly under N; rows are read by `b` with the threshold computed from the filtered root, so the read is a superset and the fold exact |
 | `q=` | name filter | evaluated on the rows under `path` in the chosen tier (root: the 2M coarse rows); a node stays if it or a descendant matches, bytes = matched subtree bytes. From the root this finds matches down to `F`; a drill re-runs it on the dirs tier under that path. A fleet-wide deep search is a separate index (later), not a bigger download |
 | `marks=1` | marks under `path` | returned with the view; the client keeps no ledger trie |
@@ -74,11 +74,15 @@ Internal names stop being wire abbreviations: `read_ops`, `read_bytes`, `last_re
 ## 7. Order
 
 1. **AL as-of** (this commit) → rebuild `:latest` → REPROC 9/5 and 9/6 again so history is exact under the rule. *(Cron: point the daily body at the highmem-32 shape until step 5 lands, or the next daily fails the same way.)*
-2. **Coarse tier**: job writes `index/<date>/coarse{,-by-user,-by-team}.parquet` from the existing `ptu` + `tot` (absolute floor `F`), `index-sync` syncs them; `subtree.ts` tier 1 reads it (delete `treeFor`/`sliceTree`); `/api/todo` and the og page move onto `/api/subtree`; stop writing `tree.json`; delete `build_tree` and the fold constants. One REPROC to verify the root view is node-for-node what the old tier 1 produced above `F`.
+2. **Coarse tiers** — *shipped 2026-09-06* (`43b4b33`, `ca6ab5c`): the job writes `path-index-coarse{16,20,24}[-by-user].parquet` from `ptu` + `tot`, `index-sync` records each floor in D1 (`index_schema.floor_bytes`, migration 0018); `buildView` plans the tier per query; `subtree.ts`, `/api/todo` and the og page no longer read `tree.json` (`treeFor`/`sliceTree` deleted). Still writing `tree.json`/`age.json` until step 3 removes the client's last reads. **Group facet excised** the same day (`79e6ea5`, `99c60a3`).
 3. **Server-side scope** (`k`, `o`, `t`, `q`, `marks` on `/api/subtree`) and the client deletions in §2. Verify: `?k=u`, `?o=unclaimed`, `?o=claimed`, `?fq=` totals equal `/api/marks/totals?path=` and the old client numbers where those were exact.
 4. **Objects tier + object marks** (§3).
 5. **AL state** (§4) — `amap` and the 17 GB go with it.
 6. **Level-wise / partitioned rollup** (§5); drop the node to what the measured peak wants.
 7. **Naming pass** (§6).
+
+### Follow-ups found while implementing
+
+- **Index rewrite vs D1 footer** (2026-09-06): a REPROC rewrites `listing/<date>/path-index*.parquet` in place, but D1 keeps the *previous* file's row-group offsets until that job's `index-sync` runs ~10 min later — reads in the window decode garbage (`parquet unsupported page type`), and a cancelled job leaves it that way. Fix in the tier rewrite: write tiers to a content-addressed or job-stamped key and switch D1's pointer atomically after the sync (the schema row already is the completeness marker; add the file key to it), never overwrite a key D1 points at.
 
 Scratch for the numbers above: `tmp/subtree-floor-0904.txt` (per-path subtree histogram), `tmp/amap-growth2-0905.txt` (read dirs vs the 9/5 listing), `tmp/file-size-cdf-0905.txt`, `tmp/dir-size-cdf-0905.txt`.

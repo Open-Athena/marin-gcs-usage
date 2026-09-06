@@ -90,6 +90,29 @@ if [ "${ACCESS_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
+# TIERS_ONLY=1 (backfill): derive the coarse index tiers for an archived scan
+# from its floor-free path index, publish them beside it, sync their footers
+# to D1, exit — no listing, no webdata (specs/view-serving.md §1). Sized for a
+# highmem-8: the per-path totals agg over 220M rows wants ~20 GB.
+if [ "${TIERS_ONLY:-0}" = "1" ]; then
+  src="/gcs/$DATA/listing/$DATE/path-index.parquet"
+  [ -f "$src" ] || { echo "ERROR: no path index for $DATE at $src" >&2; exit 1; }
+  work="${STAGE_DIR:-/tmp}/tiers/$DATE"
+  mkdir -p "$work"
+  cp "$src" "$work/path-index.parquet"
+  gcs-usage index-tiers -m "${DUCKDB_MEM:-40GB}" -t "${DUCKDB_THREADS:-8}" -P "$work/path-index.parquet" "$DATE"
+  cp "$work"/path-index-coarse*.parquet "/gcs/$DATA/listing/$DATE/"
+  { set +x; } 2>/dev/null
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+    gcs-usage index-sync -C -d "/gcs/$DATA/listing/$DATE" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
+  else
+    echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced" >&2
+  fi
+  set -x
+  echo "TIERS-JOB-DONE $DATE"
+  exit 0
+fi
+
 # Scheduled retry attempts set NOP_IF_PUBLISHED=1: exit quietly when the
 # snapshot already exists (an earlier attempt won). Manual runs leave it
 # unset so intentional re-runs always proceed. A NOP retry still ingests access
