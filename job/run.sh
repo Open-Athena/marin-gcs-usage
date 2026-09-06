@@ -93,7 +93,10 @@ fi
 # TIERS_ONLY=1 (backfill): derive the coarse index tiers for an archived scan
 # from its floor-free path index, publish them beside it, sync their footers
 # to D1, exit — no listing, no webdata (specs/view-serving.md §1). Sized for a
-# highmem-8: the per-path totals agg over 220M rows wants ~20 GB.
+# highmem-8: the per-path totals agg over 220M rows wants ~20 GB. The sync
+# covers every variant (not just the coarse ones): a scan indexed before the
+# footer-in-D1 sync existed has no D1 rows at all, and the scan picker lists
+# only scans D1 knows.
 if [ "${TIERS_ONLY:-0}" = "1" ]; then
   src="/gcs/$DATA/listing/$DATE/path-index.parquet"
   [ -f "$src" ] || { echo "ERROR: no path index for $DATE at $src" >&2; exit 1; }
@@ -104,7 +107,7 @@ if [ "${TIERS_ONLY:-0}" = "1" ]; then
   cp "$work"/path-index-coarse*.parquet "/gcs/$DATA/listing/$DATE/"
   { set +x; } 2>/dev/null
   if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-    gcs-usage index-sync -C -d "/gcs/$DATA/listing/$DATE" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
+    gcs-usage index-sync -d "/gcs/$DATA/listing/$DATE" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
   else
     echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced" >&2
   fi
