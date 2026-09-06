@@ -158,6 +158,11 @@ def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
     import time
     import urllib.error
     import urllib.request
+# Per-request wall clock. A request that never answers (observed 2026-09-06:
+# the `[team]` sync of one REPROC went silent for an hour while a concurrent
+# job's syncs completed) must fail into the retry loop, not hang the job to
+# its maxRunDuration. 8-row INSERT chunks answer in ~1 s; 60 s is generous.
+D1_TIMEOUT = 60.0
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db_id}/query"
     for attempt in range(D1_RETRIES + 1):
@@ -168,7 +173,7 @@ def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
             method="POST",
         )
         try:
-            resp = json.loads(urllib.request.urlopen(req).read())
+            resp = json.loads(urllib.request.urlopen(req, timeout=D1_TIMEOUT).read())
         except urllib.error.HTTPError as e:
             if e.code in D1_RETRY_STATUSES and attempt < D1_RETRIES:
                 time.sleep(D1_RETRY_SLEEP * 2**attempt)
@@ -182,6 +187,11 @@ def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
 
 def _q(v) -> str:  # nullable string literal for SQL
     return "NULL" if v is None else f"'{_sql_escape(v)}'"
+        except (urllib.error.URLError, TimeoutError) as e:  # no answer / no route
+            if attempt < D1_RETRIES:
+                time.sleep(D1_RETRY_SLEEP * 2**attempt)
+                continue
+            raise RuntimeError(f"D1 query gave no answer after {D1_RETRIES + 1} tries: {e}") from None
 
 
 def sync_d1(
@@ -241,8 +251,9 @@ def sync_d1(
         _d1_query(stmt, acct, tok, db_id)  # drop any prior/partial rows first
     for i in range(0, len(rows), rows_per_insert):
         chunk = rows[i : i + rows_per_insert]
-        sql = f"INSERT INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
+        sql = f"INSERT OR REPLACE INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
         _d1_query(sql, acct, tok, db_id)
     _d1_query(schema_sql, acct, tok, db_id)  # schema row last = completeness marker
     return len(rows)
-    return len(rows)
+    # OR REPLACE: a chunk whose request timed out may or may not have landed;
+    # re-sending it must be a no-op, not a PK collision (date, variant, rg).
