@@ -22,6 +22,7 @@ import { setCurrentScan, useMarkIndex, useMarks } from './marks'
 import { FATE_AXES, klcSplits, useMyUser } from './sweep'
 import type { FateAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
+import { MultiSelect } from './MultiSelect'
 import { SiteNav, TOPBAR_VAR } from './SiteNav'
 import type { MenuEntry } from './SiteNav'
 import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
@@ -29,7 +30,7 @@ import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import { TypedPrefixModal } from './TypedPrefix'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, ratePerByte } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, fmtUsd, ratePerByte } from './types'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
@@ -51,33 +52,13 @@ const FATE_CHIPS: { f: FateAxis; key: string; glyph: string; color: string; tip:
 // = the nobody-owns-it pool. A user narrows "claimed" to that person.
 type OwnerMode = 'all' | 'claimed' | 'unclaimed' | 'user'
 
-// Which of the bar's "diff window" controls to show: the start-scan picker
-// only while a section that reads the window (the Diff, the size chart with
-// its shaded band) is on screen.
-function useSectionsVisible(ids: string[], deps: unknown[]): boolean {
-  const [vis, setVis] = useState(false)
-  useEffect(() => {
-    const els = ids.map(id => document.getElementById(id)).filter((e): e is HTMLElement => e != null)
-    if (!els.length) { setVis(false); return }
-    const seen = new Map<Element, boolean>()
-    const io = new IntersectionObserver(entries => {
-      for (const e of entries) seen.set(e.target, e.isIntersecting)
-      setVis([...seen.values()].some(Boolean))
-    })
-    els.forEach(el => io.observe(el))
-    return () => io.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps)
-  return vis
-}
-
 /** The sticky bar's current height (px) — where anchored sections park. */
 const topbarH = (): number =>
   parseFloat(getComputedStyle(document.documentElement).getPropertyValue(TOPBAR_VAR)) || 48
 
 // Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
 // tracking the one in view, and deep links scroll to it. Old ids keep working.
-const SECTION_IDS = ['tree-map', 'tbl', 'over-time', 'marks', 'diff', 'mtime']
+const SECTION_IDS = ['tree-map', 'tbl', 'marks', 'over-time', 'diff', 'mtime']
 const LEGACY_ANCHORS: Record<string, string> = {
   'size-over-time': 'over-time', 'mark-history': 'marks', 'created-date': 'mtime', changes: 'diff',
 }
@@ -161,13 +142,8 @@ function AppContent() {
     const on = new Set(FATE_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
     return on.size > 0 && on.size < FATE_AXES.length && markMode ? on : null
   }, [kP, markMode])
-  const toggleFate = (f: FateAxis) => {
-    const next = new Set(fateSet ?? FATE_AXES)
-    if (next.has(f)) next.delete(f)
-    else next.add(f)
-    // Switching the last one off would show nothing: roll back to all.
-    setKP(next.size === FATE_AXES.length || next.size === 0 ? undefined : FATE_CHIPS.filter(c => next.has(c.f)).map(c => c.key).join(''))
-  }
+  const setFates = (keep: FateAxis[]) =>
+    setKP(keep.length === FATE_AXES.length || keep.length === 0 ? undefined : FATE_CHIPS.filter(c => keep.includes(c.f)).map(c => c.key).join(''))
   // Owner axis. `me` resolves to the signed-in user's attribution id (a
   // shared `?o=me` link shows each reader their own files); an unmapped
   // email resolves to nothing, and the axis falls back to "all" with a note.
@@ -179,13 +155,11 @@ function AppContent() {
     !markMode || !oP ? 'all' : oP === 'claimed' ? 'claimed' : oP === 'unclaimed' ? 'unclaimed' : ownerUser ? 'user' : 'all'
   const meUnmapped = markMode && oP === 'me' && !myUser
   const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
-  const toggleOwner = (which: 'claimed' | 'unclaimed') => {
-    // Two chips: both on = all; toggling the only-on chip off rolls back to all.
-    const on = ownerMode === 'all' ? new Set(['claimed', 'unclaimed']) : ownerMode === 'unclaimed' ? new Set(['unclaimed']) : new Set(['claimed'])
-    if (on.has(which)) on.delete(which)
-    else on.add(which)
-    setOP(on.size === 2 || on.size === 0 ? undefined : on.has('claimed') ? 'claimed' : 'unclaimed')
-  }
+  // The owner pools as a checklist: both = all (a picked person is dropped
+  // too — they were narrowing "claimed"); one = that pool.
+  const pools: ('claimed' | 'unclaimed')[] = ownerMode === 'all' ? ['claimed', 'unclaimed'] : ownerMode === 'unclaimed' ? ['unclaimed'] : ['claimed']
+  const setPools = (keep: ('claimed' | 'unclaimed')[]) =>
+    setOP(keep.length !== 1 ? undefined : keep[0] === 'claimed' && ownerUser ? oP : keep[0])
   const viewUser = ownerUser
   // Every scope axis is applied server-side by /api/subtree (specs/
   // view-serving.md §2): a user (`lens=user:`), a pool (`o=`), the mark axis
@@ -292,7 +266,7 @@ function AppContent() {
           { credentials: 'include' },
         )
         if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
-        return r.json() as Promise<{ tree: TreeNode; matches?: string[] }>
+        return r.json() as Promise<{ tree: TreeNode; matches?: string[]; threshold?: number }>
       },
     })),
   })
@@ -413,9 +387,6 @@ function AppContent() {
   }, [])
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { fmtBytes } = useUnits()
-  // The bar shows the diff window's start only while a section that reads it
-  // is on screen (re-observed as those sections mount with their data).
-  const rangeVisible = useSectionsVisible(['diff', 'over-time'], [asof, scans.length, tree != null, meta != null])
   // The treemap's drill path now lives in the URL *path* (below the store's own
   // route prefix), so a drilled prefix is a real shareable URL —
   // `/marin-us-central1/ego-dex`, not `/?p=marin-us-central1/ego-dex`. View
@@ -690,7 +661,7 @@ function AppContent() {
   )
   const ownerSelect = (
     <select className="tb-select" value={ownerMode === 'user' ? (oP === 'me' ? 'me' : ownerUser!) : ''}
-      aria-label="Owner"
+      aria-label="Owner" disabled={ownerMode === 'unclaimed'}
       onChange={e => setOwnerUser(e.target.value || undefined)}>
       <option value="">anyone</option>
       {myUser && <option value="me">me ({shortName(myUser)})</option>}
@@ -699,6 +670,26 @@ function AppContent() {
     </select>
   )
   const menu: MenuEntry[] = markMode ? [{ key: 'typed', label: 'Mark a typed prefix…', onClick: () => setTypedOpen(true) }] : []
+  // The bar's first row: where the page is. The map's own crumb strip is
+  // hidden (app.scss) — this IS it, kept on screen mid-scroll; the deepest
+  // node's totals ride along as the suffix.
+  const here = mapPath?.[mapPath.length - 1]
+  const crumbs = (
+    <span className="tb-path" aria-label="Drilled path">
+      <button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])} title="all buckets">{mapTree?.n ?? 'all buckets'}</button>
+      {segs.map((sg, i) => (
+        <span key={i}>
+          <span className="sep">/</span>
+          <button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))} title={segs.slice(0, i + 1).join('/')}>{sg}</button>
+        </span>
+      ))}
+      {here && (
+        <span className="tb-suffix">
+          — {fmtBytes(here.b)} · {fmtN(here.o)} objects{pricing && <> · est. {fmtUsd(here.b * pricing.blended)}/mo</>}
+        </span>
+      )}
+    </span>
+  )
 
   return (
     <main>
@@ -708,40 +699,14 @@ function AppContent() {
           where (drill path) · when (scan, and the diff window's start while
           a section that shows it is on screen) · color axis · mark axis ·
           owner axis · name filter. */}
-      <SiteNav menu={menu}>
-        <span className="tb-path" aria-label="Drilled path">
-          <button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])} title="all buckets">{segs.length ? '/' : 'all buckets'}</button>
-          {segs.map((sg, i) => (
-            <span key={i}>
-              {i > 0 && <span className="sep">/</span>}
-              <button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))} title={segs.slice(0, i + 1).join('/')}>{sg}</button>
-            </span>
-          ))}
-        </span>
+      <SiteNav menu={menu} crumbs={crumbs}>
         {asof && scans.length > 1 && (
           <span className="tb-scan">
-            {rangeVisible && diffPrev && (
-              <>
-                <Tooltip content={<>The diff window's start — the Diff and the size chart's shaded band read from here to the scan. Drag on the size chart to set both ends.</>}>
-                  <select className="tb-select" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
-                    {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
-                  </select>
-                </Tooltip>
-                <span className="arrow">→</span>
-              </>
-            )}
             <Tooltip content={scanTip ?? 'scan'}>
               <select className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
                 {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
               </select>
             </Tooltip>
-            {diff && diff.rows.length > 0 && (
-              <Tooltip content={<>{scopeDesc}: {fmtBytes(diff.total_a)} at {fmtScan(diffPrev!)} → {fmtBytes(diff.total_b)} at {fmtScan(asof)} — jump to the Diff</>}>
-                <a className={`tb-delta ${diff.total_b >= diff.total_a ? 'grew' : 'shrank'}`} href="#diff">
-                  {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
-                </a>
-              </Tooltip>
-            )}
           </span>
         )}
         {hasAttr && (
@@ -763,38 +728,28 @@ function AppContent() {
           </label>
         )}
         {markMode && (
-          <span className="tb-axis" role="group" aria-label="Mark states">
+          <span className="tb-axis">
             <span className="lbl">marks</span>
-            {FATE_CHIPS.map(c => {
-              const on = !fateSet || fateSet.has(c.f)
-              return (
-                <Tooltip key={c.f} content={c.tip}>
-                  <button type="button" className={`kind${on ? ' on' : ''}`} aria-pressed={on}
-                    style={{ '--kind': c.color } as React.CSSProperties} onClick={() => toggleFate(c.f)}>
-                    <span className="glyph">{c.glyph}</span>{c.f}
-                  </button>
-                </Tooltip>
-              )
-            })}
+            <MultiSelect<FateAxis>
+              label="mark states"
+              options={FATE_CHIPS.map(c => ({ key: c.f, label: c.f, glyph: c.glyph, color: c.color, tip: c.tip }))}
+              selected={fateSet ? [...fateSet] : FATE_AXES}
+              onChange={setFates}
+            />
           </span>
         )}
         {markMode && hasAttr && (
-          <span className="tb-axis" role="group" aria-label="Owner">
+          <span className="tb-axis">
             <span className="lbl">owner</span>
-            <Tooltip content="Bytes attributed to a person (W&B runs, executor sidecars, claims, curation). Pick someone below to narrow it to them.">
-              <button type="button" className={`kind${ownerMode === 'all' || ownerMode === 'claimed' || ownerMode === 'user' ? ' on' : ''}`}
-                aria-pressed={ownerMode !== 'unclaimed'} style={{ '--kind': 'var(--s1)' } as React.CSSProperties}
-                onClick={() => toggleOwner('claimed')}>
-                claimed
-              </button>
-            </Tooltip>
-            <Tooltip content="Bytes no person owns. Claim what's yours (table below, or a pinned cell), then decide keep/sweep.">
-              <button type="button" className={`kind${ownerMode === 'all' || ownerMode === 'unclaimed' ? ' on' : ''}`}
-                aria-pressed={ownerMode === 'all' || ownerMode === 'unclaimed'} style={{ '--kind': 'var(--ink-2)' } as React.CSSProperties}
-                onClick={() => toggleOwner('unclaimed')}>
-                unclaimed
-              </button>
-            </Tooltip>
+            <MultiSelect<'claimed' | 'unclaimed'>
+              label="owner pools"
+              options={[
+                { key: 'claimed', label: 'claimed', glyph: '●', color: 'var(--s1)', tip: 'Bytes attributed to a person (W&B runs, executor sidecars, claims, curation). Pick someone beside this to narrow it to them.' },
+                { key: 'unclaimed', label: 'unclaimed', glyph: '○', color: 'var(--ink-2)', tip: "Bytes no person owns. Claim what's yours (table below, or a pinned cell), then decide keep/sweep." },
+              ]}
+              selected={pools}
+              onChange={setPools}
+            />
             {ownerSelect}
           </span>
         )}
@@ -849,7 +804,7 @@ function AppContent() {
           {/* Remount per store: the treemap's caches are tied to the tree it
               mounted with, and a switch can swap `tree` without ever passing
               through null once both payloads are cached. */}
-          <div id="tree-map"><Treemap
+          <div id="tree-map" className={mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length ? 'leaf' : undefined}><Treemap
             key={store.key}
             root={mapTree}
             mode={effMode}
@@ -880,6 +835,16 @@ function AppContent() {
             path={mapPath}
             onPathChange={onMapPath}
           /></div>
+          {/* A drilled directory with nothing drawable under it: only objects
+              (not in the index yet — specs/view-serving.md §3), or directories
+              under this view's floor. Say so rather than show a blank canvas. */}
+          {mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && subtreeQs[subtreeQs.length - 1]?.data && (
+            <p className="hint leaf-note">
+              <code>{mapPath[mapPath.length - 1].n}</code> holds {fmtN(mapPath[mapPath.length - 1].o)} objects and no directory of{' '}
+              {fmtBytes(subtreeQs[subtreeQs.length - 1]!.data!.threshold ?? 0)} or more. Objects aren’t listed yet — mark or claim this prefix from the
+              controls above, or press Backspace to go up.
+            </p>
+          )}
           {/* The map's own listing — this node's children, narrowed to the
               mark axis (`{unmarked}` drops already-decided prefixes). */}
           {mapPath && (
@@ -903,6 +868,10 @@ function AppContent() {
         </p>
       )}
 
+      {markMode && (
+        <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} pred={pred} filterQ={fq} window={diffWindow} />
+      )}
+
       {/* Bytes per scan under the drilled prefix, scoped like the map (a user
           or an owner pool) — one index row per scan via /api/series. The mark
           axis has no series yet (a per-scan ledger replay; view-serving.md).
@@ -916,17 +885,21 @@ function AppContent() {
         window={diffWindow}
       />
 
-      {markMode && (
-        <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} pred={pred} filterQ={fq} window={diffWindow} />
-      )}
-
       {asof && diffPrev && (
         <section id="diff">
           <h2>Diff</h2>
           <p className="sub">
-            {/* Both endpoints are the bar's pickers (the start one appears
-                while this section is on screen); the presets ride here. */}
-            <b>{fmtScan(diffPrev)}</b> → <b>{fmtScan(asof)}</b>
+            {/* Both endpoints: the window's start, and the page's scan again
+                (the bar's picker — one scan, stated where the diff reads). */}
+            <Tooltip content={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
+              <select className="tb-select scan" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
+                {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+              </select>
+            </Tooltip>
+            <span className="arrow"> → </span>
+            <select className="tb-select scan" value={asof} aria-label="Diff to scan (the page's scan)" onChange={e => setDP(e.target.value)}>
+              {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+            </select>
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (

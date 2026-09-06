@@ -41,11 +41,14 @@ const CW_URL = 'https://cw-s3.oa.dev/'
 // rows the controls wrap onto.
 export const TOPBAR_VAR = '--topbar-h'
 
-export function SiteNav({ children, menu }: {
+export function SiteNav({ children, menu, crumbs }: {
   /** Page controls for the middle of the bar. */
   children?: ReactNode
   /** Page-specific entries appended to the ☰ menu (after the site links). */
   menu?: MenuEntry[]
+  /** Where the page is (the drilled path): the first row, beside the brand;
+   * the controls then take a row of their own under it. */
+  crumbs?: ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -60,9 +63,12 @@ export function SiteNav({ children, menu }: {
   }, [])
   return (
     <div className="topbar" ref={ref}>
-      <NavMenu extra={menu} />
-      <div className="tb-mid">{children}</div>
-      <UserMenu />
+      <div className="tb-row">
+        <NavMenu extra={menu} />
+        {crumbs ? <div className="tb-crumbs">{crumbs}</div> : <div className="tb-mid">{children}</div>}
+        <UserMenu />
+      </div>
+      {crumbs && children && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
     </div>
   )
 }

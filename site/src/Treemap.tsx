@@ -606,6 +606,15 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       initialPath={initialPath}
       path={path}
       onPathChange={onPathChange}
+      // A directory whose children fell below this view's pixel budget
+      // arrives without `c` — the core would treat it as a leaf and pin its
+      // tooltip. It's still a branch: drilling fetches its own budget's
+      // children (the URL path drives the fetch). Only a lone object pins.
+      onCellClick={(n, p) => {
+        if (n.c?.length || n.o <= 1 || n.n.startsWith('(') || !onPathChange) return false
+        onPathChange(p)
+        return true
+      }}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
@@ -645,7 +654,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       )}
       renderFooter={redact
         ? undefined
-        : () => <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · small children fold into an expandable “(other)”</div>}
+        : () => <div className="hint">click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into an expandable “(other)”</div>}
       chrome={!redact}
       showLabels={!redact}
       // Per-store style hook: deliberate CW/GCS presentation differences live
