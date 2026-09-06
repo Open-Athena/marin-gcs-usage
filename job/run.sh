@@ -117,6 +117,31 @@ if [ "${TIERS_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
+# SWEEP=dry|real (+ SWEEP_BUCKETS="marin-us-east1 …", SWEEP_DATE=<scan>): the
+# sweep executor as a Batch job launched from the CLI — the same two steps the
+# /sweep console's dispatch bridge runs (functions/api/sweep/dispatch.ts):
+# build the object-level manifest from the console's sign-offs (`-S`), then
+# execute it — dry writes would-delete/ logs; real deletes (generation-matched,
+# ≥7d soft delete required). Both record the run in D1 (`deletion_runs`).
+# Size it as n2-standard-8 (MACHINE/MEMORY_MIB on batch-submit); tokens ride
+# in env and stay out of xtrace.
+if [ -n "${SWEEP:-}" ]; then
+  [ "$SWEEP" = dry ] || [ "$SWEEP" = real ] || { echo "ERROR: SWEEP must be dry|real" >&2; exit 1; }
+  sd=${SWEEP_DATE:-$DATE}
+  plan="gs://$DATA/sweep/runs/gcs-sweep-$SWEEP-$(date -u +%Y%m%d-%H%M%S)z"
+  bflags=()
+  for b in ${SWEEP_BUCKETS:-}; do bflags+=(-b "$b"); done
+  { set +x; } 2>/dev/null
+  gcs-usage sweep manifest -d "$sd" -S "${bflags[@]}" -o "$plan"
+  if [ "$SWEEP" = real ]; then
+    gcs-usage sweep execute "${bflags[@]}" --for-real "$plan"
+  else
+    gcs-usage sweep execute "${bflags[@]}" "$plan"
+  fi
+  echo "SWEEP-JOB-DONE $SWEEP $plan"
+  exit 0
+fi
+
 # Scheduled retry attempts set NOP_IF_PUBLISHED=1: exit quietly when the
 # snapshot already exists (an earlier attempt won). Manual runs leave it
 # unset so intentional re-runs always proceed. A NOP retry still ingests access
