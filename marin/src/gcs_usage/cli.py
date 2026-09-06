@@ -28,6 +28,7 @@ from .listing import prepare_listing
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
 from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows
+from .viz import COARSE_EXPS
 
 err = partial(print, file=sys.stderr)
 
@@ -2277,11 +2278,25 @@ def alert(
         err(f"posted GCS-usage alert for {date} (webhook; no per-message avatar)")
 
 
+# Index variants the site reads (functions/_lib/index.ts `fileFor` mirrors this):
+# the floor-free tier in three sort orders, and each coarse tier (viz.py
+# COARSE_EXPS) in the same three (specs/view-serving.md §1). D1 keys (date, variant).
+INDEX_VARIANTS: dict[str, str] = {
+    "path": "path-index.parquet",
+    "user": "path-index-by-user.parquet",
+    "team": "path-index-by-team.parquet",
+}
+for _e in COARSE_EXPS:
+    INDEX_VARIANTS[f"coarse{_e}"] = f"path-index-coarse{_e}.parquet"
+    INDEX_VARIANTS[f"coarse{_e}-user"] = f"path-index-coarse{_e}-by-user.parquet"
+    INDEX_VARIANTS[f"coarse{_e}-team"] = f"path-index-coarse{_e}-by-team.parquet"
+
+
 @main.command("index-sync")
 @option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding listing/<date>/path-index*.parquet")
 @option("-d", "--dir", "listing_dir", default=None, help="Override the listing dir holding the parquets (default: <bucket>/listing/<date>)")
 @option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
-@option("-v", "--variant", "variants", multiple=True, type=Choice(["path", "user", "team"]), help="Only sync these variants (default: all three)")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only sync these variants (default: all)")
 @argument("date")
 def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tuple[str, ...], date: str) -> None:
     """Sync a scan's path-index parquet footers into D1 (index_schema/index_groups)
@@ -2292,9 +2307,8 @@ def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tupl
     from .index_footer import sync_d1
 
     base = listing_dir or f"{bucket}/listing/{date}"
-    files = {"path": f"{base}/path-index.parquet", "user": f"{base}/path-index-by-user.parquet", "team": f"{base}/path-index-by-team.parquet"}
-    for variant in (variants or ("path", "user", "team")):
-        n = sync_d1(date, files[variant], variant=variant, remote=not local)
+    for variant in (variants or tuple(INDEX_VARIANTS)):
+        n = sync_d1(date, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, remote=not local)
         err(f"index-sync: {date} [{variant}] — schema + {n} row groups ({'local' if local else 'remote'})")
 
 

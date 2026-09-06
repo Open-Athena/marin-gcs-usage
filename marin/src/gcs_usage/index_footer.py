@@ -111,7 +111,14 @@ def extract(parquet_path: str) -> tuple[dict, list[dict]]:
     opener = gcsfs.GCSFileSystem().open if parquet_path.startswith(("gs://", "oa-")) else open
     with opener(parquet_path, "rb") as f:
         md = pq.ParquetFile(f).metadata
-    return _schema_json(md), _group_rows(md)
+    schema = _schema_json(md)
+    # A coarse tier records its absolute floor F in the parquet key-value
+    # metadata (viz.py COARSE_EXP); it lands in D1 beside the schema so the
+    # reader can plan tiers without touching the file (view-serving.md §1).
+    kv = md.metadata or {}
+    if b"coarse_floor" in kv:
+        schema["floor_bytes"] = int(kv[b"coarse_floor"])
+    return schema, _group_rows(md)
 
 
 def _sql_escape(s: str) -> str:
@@ -151,6 +158,11 @@ def _creds() -> tuple[str, str]:
 D1_RETRY_STATUSES = (401, 429, 500, 502, 503, 504)
 D1_RETRIES = 4
 D1_RETRY_SLEEP = 5.0
+# Per-request wall clock. A request that never answers (observed 2026-09-06:
+# the `[team]` sync of one REPROC went silent for an hour while a concurrent
+# job's syncs completed) must fail into the retry loop, not hang the job to
+# its maxRunDuration. 8-row INSERT chunks answer in ~1 s; 60 s is generous.
+D1_TIMEOUT = 60.0
 
 
 def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
@@ -158,11 +170,6 @@ def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
     import time
     import urllib.error
     import urllib.request
-# Per-request wall clock. A request that never answers (observed 2026-09-06:
-# the `[team]` sync of one REPROC went silent for an hour while a concurrent
-# job's syncs completed) must fail into the retry loop, not hang the job to
-# its maxRunDuration. 8-row INSERT chunks answer in ~1 s; 60 s is generous.
-D1_TIMEOUT = 60.0
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db_id}/query"
     for attempt in range(D1_RETRIES + 1):
@@ -180,6 +187,11 @@ D1_TIMEOUT = 60.0
                 continue
             # Surface D1's error body (scope/SQL) without echoing the token.
             raise RuntimeError(f"D1 query failed ({e.code}): {e.read().decode()[:300]}") from None
+        except (urllib.error.URLError, TimeoutError) as e:  # no answer / no route
+            if attempt < D1_RETRIES:
+                time.sleep(D1_RETRY_SLEEP * 2**attempt)
+                continue
+            raise RuntimeError(f"D1 query gave no answer after {D1_RETRIES + 1} tries: {e}") from None
         if not resp.get("success"):
             raise RuntimeError(f"D1 query error: {resp.get('errors')}")
         return
@@ -187,11 +199,6 @@ D1_TIMEOUT = 60.0
 
 def _q(v) -> str:  # nullable string literal for SQL
     return "NULL" if v is None else f"'{_sql_escape(v)}'"
-        except (urllib.error.URLError, TimeoutError) as e:  # no answer / no route
-            if attempt < D1_RETRIES:
-                time.sleep(D1_RETRY_SLEEP * 2**attempt)
-                continue
-            raise RuntimeError(f"D1 query gave no answer after {D1_RETRIES + 1} tries: {e}") from None
 
 
 def sync_d1(
@@ -222,9 +229,11 @@ def sync_d1(
         f"DELETE FROM index_groups WHERE date='{date}' AND variant='{variant}';",
     ]
     clear_sql = "".join(clear_stmts)  # local wrangler d1 execute runs multi-statement files fine
+    floor = schema.get("floor_bytes")
     schema_sql = (
-        "INSERT INTO index_schema (date, variant, version, schema_json) VALUES "
-        f"('{date}', '{variant}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}');"
+        "INSERT INTO index_schema (date, variant, version, schema_json, floor_bytes) VALUES "
+        f"('{date}', '{variant}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}', "
+        f"{'NULL' if floor is None else int(floor)});"
     )
 
     def group_values(r: dict) -> str:
@@ -249,11 +258,11 @@ def sync_d1(
     tok, acct = _creds()
     for stmt in clear_stmts:  # one per call — the HTTP API runs a single statement
         _d1_query(stmt, acct, tok, db_id)  # drop any prior/partial rows first
+    # OR REPLACE: a chunk whose request timed out may or may not have landed;
+    # re-sending it must be a no-op, not a PK collision (date, variant, rg).
     for i in range(0, len(rows), rows_per_insert):
         chunk = rows[i : i + rows_per_insert]
         sql = f"INSERT OR REPLACE INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
         _d1_query(sql, acct, tok, db_id)
     _d1_query(schema_sql, acct, tok, db_id)  # schema row last = completeness marker
     return len(rows)
-    # OR REPLACE: a chunk whose request timed out may or may not have landed;
-    # re-sending it must be a no-op, not a PK collision (date, variant, rg).

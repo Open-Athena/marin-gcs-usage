@@ -242,11 +242,49 @@ def test_path_index_carries_read_day(tmp_path: Path, listing: str, attribution: 
     assert a_by_path["b1/users"] == rd      # read subtree
     assert a_by_path["b1/users/rw/ckpt"] == rd
     assert pd.isna(a_by_path["b1/datasets"])  # never read → NULL
-    # by-user / by-team variants: same rows, re-sorted so a lens's row groups
-    # prune by usr / team (specs/path-agnostic-serving.md §2.3).
+
+
+def test_coarse_tiers_are_exact_subsets(tmp_path: Path, listing: str, attribution: str):
+    """Each coarse tier (E in COARSE_EXPS) holds exactly the floor-free rows of
+    paths whose subtree clears F_E = 2^(round(log2 fleet) - E), in the same
+    three sort orders, with F_E in the parquet key-value metadata and in
+    meta.json. The fixture fleet is 380 GB (2^38.5 → round → 38), so
+    E=16/20/24 floor at 2^22/2^18/2^14 bytes; every fixture path is >= 30 GB,
+    so all three tiers equal the full index — the test then plants a floor
+    via the metadata to check the subset math on a real cut."""
+    from gcs_usage.viz import COARSE_EXPS
+    import pyarrow.parquet as pq
+
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    out = tmp_path / "out"
+    pidx = tmp_path / "path-index.parquet"
+    meta = write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path, path_index=pidx)
+    full = pd.read_parquet(pidx)
+    fleet = int(full[full.depth == 1]["b"].sum())
+    assert fleet == 380 * GB
+    import math
+    floors = {e: 2 ** (round(math.log2(fleet)) - e) for e in COARSE_EXPS}
+    assert meta["index"] == {"coarse": {str(e): {"floor": floors[e], "paths": full["path"].nunique()} for e in COARSE_EXPS}}
+    subtree = full.groupby("path")["b"].sum()
+    for e in COARSE_EXPS:
+        keep = set(subtree[subtree >= floors[e]].index)
+        expect = full[full.path.isin(keep)]
+        for suffix, order in (("", ["depth", "path"]), ("-by-user", ["usr", "depth", "path"]), ("-by-team", ["team", "depth", "path"])):
+            f = tmp_path / f"path-index-coarse{e}{suffix}.parquet"
+            assert pq.read_metadata(f).metadata[b"coarse_floor"] == str(floors[e]).encode()
+            got = pd.read_parquet(f)
+            assert list(got.columns) == list(full.columns)
+            # same rows (as a set), sorted as declared (NULL usr last)
+            key = lambda d: d.sort_values(["path", "team", "usr"], na_position="last").reset_index(drop=True)
+            pd.testing.assert_frame_equal(key(got), key(expect))
+            srt = got.sort_values(order, na_position="last", kind="stable").reset_index(drop=True)
+            pd.testing.assert_frame_equal(got.reset_index(drop=True), srt)
+    # by-user / by-team variants of the floor-free tier: same rows, re-sorted
+    # so a lens's row groups prune by usr / team (specs/path-agnostic-serving.md §2.3).
     by_user = pd.read_parquet(pidx.with_name("path-index-by-user.parquet"))
     by_team = pd.read_parquet(pidx.with_name("path-index-by-team.parquet"))
-    assert len(by_user) == len(df) and len(by_team) == len(df)
+    assert len(by_user) == len(full) and len(by_team) == len(full)
     # by-user is sorted (usr NULLS LAST, depth, path)
     uk = by_user["usr"].fillna("\uffff").tolist()
     assert uk == sorted(uk)

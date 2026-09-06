@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import resource
 import sys
@@ -27,6 +28,12 @@ def _rss(tag: str) -> None:
     err(f"[rss] {tag}: peak {peak / (1024**2 if sys.platform == 'linux' else 1024**3):.1f} GB")
 
 MIN_FRAC = 0.0002  # fold children below this fraction of their PARENT into "(other)"
+# Coarse index tiers: one per exponent E, keeping paths whose subtree clears
+# F_E = 2^(round(log2 fleet_bytes) - E). At a 3 PiB fleet: E=16 → 48 GiB
+# (~40k paths, a root view's row groups), E=20 → 3 GiB, E=24 → 256 MiB
+# (~2M of 220M paths). The reader serves each query from the coarsest tier
+# whose floor is under the query's pixel threshold. specs/view-serving.md §1.
+COARSE_EXPS = (16, 20, 24)
 # Aggregate bounds on the kept set — parent-relative alone is unbounded (the
 # fleet has >100M dirs; 0.02%-of-parent keeps every child of an evenly-split
 # parent, recursively — OOM-killed the 8/26 attempt-4 REPROC). Values chosen
@@ -210,6 +217,9 @@ def write_webdata(
     # Access agg first (small): its per-dir last-read day joins into
     # `dir_agg` below so the path index carries a subtree-MAX `a`, and it
     # also decorates the built tree + age strata. Empty without logs.
+    # As-of rule: a scan dated D sees reads through the end of D-1 UTC
+    # (`day < D`), whatever shards exist when this runs — so a re-aggregation
+    # of an old date reproduces it instead of leaking later reads into it.
     access_window: tuple[int, int] | None = None
     con.execute("CREATE TEMP TABLE access_agg (bucket VARCHAR, dir VARCHAR, aday INTEGER, ro BIGINT, rb BIGINT)")
     if access:
@@ -221,9 +231,6 @@ def write_webdata(
               CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday,
               COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
               COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
-    # As-of rule: a scan dated D sees reads through the end of D-1 UTC
-    # (`day < D`), whatever shards exist when this runs — so a re-aggregation
-    # of an old date reproduces it instead of leaking later reads into it.
             FROM read_parquet({globs})
             WHERE op IN ('GET', 'HEAD', 'LIST') AND day < DATE '{asof}'
             GROUP BY 1, 2
@@ -351,6 +358,35 @@ def write_webdata(
     # OOM-killed (exit 137) on the daily's 128GB node, 2026-08-27.
     con.execute("CREATE TEMP TABLE tot AS SELECT path, sum(b) AS pb FROM ptu GROUP BY path")
     _rss("tot")
+    coarse_floors: dict[int, int] = {}
+    coarse_counts: dict[int, int] = {}
+    if path_index is not None:
+        # Coarse index tiers (specs/view-serving.md §1): the SAME rows,
+        # restricted to paths whose subtree clears an absolute floor F_E, in the
+        # same three sort orders as the floor-free tier. A tier, not a loss:
+        # every kept row's sums are exact, and the reader only serves a query
+        # from a tier whose floor is <= the query's threshold (then the tier's
+        # rows are a superset of what the query keeps). F rides in the parquet
+        # key-value metadata so index-sync can record it beside the footer.
+        fleet = int(con.execute("SELECT coalesce(sum(pb), 0) FROM tot WHERE path NOT LIKE '%/%'").fetchone()[0])
+        n_paths = con.execute("SELECT count(*) FROM tot").fetchone()[0]
+        cols = "path, depth, team, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
+        for e in COARSE_EXPS:
+            floor = 2 ** (round(math.log2(fleet)) - e) if fleet > 0 else 1
+            coarse_floors[e] = floor
+            con.execute(f"CREATE TEMP TABLE coarse AS SELECT path FROM tot WHERE pb >= {floor}")
+            coarse_counts[e] = con.execute("SELECT count(*) FROM coarse").fetchone()[0]
+            kv = f"(FORMAT parquet, ROW_GROUP_SIZE 8192, KV_METADATA {{coarse_floor: '{floor}'}})"
+            for suffix, order in (
+                ("", "depth, path"),
+                ("-by-user", "usr NULLS LAST, depth, path"),
+                ("-by-team", "team, depth, path"),
+            ):
+                out = path_index.with_name(f"path-index-coarse{e}{suffix}.parquet")
+                con.execute(f"COPY (SELECT {cols} FROM ptu JOIN coarse USING (path) ORDER BY {order}) TO '{out}' {kv}")
+            con.execute("DROP TABLE coarse")
+            err(f"coarse tier E={e}: floor {floor:,} B, {coarse_counts[e]:,} of {n_paths:,} paths")
+        _rss("coarse")
     con.execute(
         f"""
         CREATE TEMP TABLE keep AS
@@ -522,6 +558,8 @@ def write_webdata(
         # live under that parent's expandable (other) node.
         "fold_min_frac": MIN_FRAC,
     }
+    if coarse_floors:
+        meta["index"] = {"coarse": {str(e): {"floor": coarse_floors[e], "paths": int(coarse_counts[e])} for e in COARSE_EXPS}}
     if access_window:
         # Epoch days the access logs cover — the UI's "no reads since <from>"
         # is only meaningful relative to when logging began.
