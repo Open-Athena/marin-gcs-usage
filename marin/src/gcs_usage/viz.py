@@ -106,7 +106,11 @@ def write_webdata(
             )
             SELECT bucket, dir, fp,
               sum(size_bytes)::BIGINT AS b, count(*)::BIGINT AS o,
-              sum(CASE WHEN created IS NOT NULL THEN size_bytes * epoch(created) END)::DOUBLE AS wts,
+              -- exact (DECIMAL, not DOUBLE): a float sum's last bits depend on the
+              -- parallel aggregation order, which made re-runs differ in `wts`
+              -- (verified 2026-09-06 on a 9/4 re-aggregation); seconds resolution
+              -- is plenty for a byte-weighted mean written day.
+              sum(CASE WHEN created IS NOT NULL THEN size_bytes::DECIMAL(38,0) * epoch(created)::BIGINT END)::DECIMAL(38,0) AS wts,
               sum(CASE WHEN created IS NOT NULL THEN size_bytes END)::BIGINT AS wb,
               sum(CASE WHEN storage_class_id = 2 THEN size_bytes END)::BIGINT AS c2,
               sum(CASE WHEN storage_class_id = 3 THEN size_bytes END)::BIGINT AS c3,
@@ -302,7 +306,7 @@ def write_webdata(
         )
         SELECT path, depth, team, usr,
           sum(b)::BIGINT AS b, sum(o)::BIGINT AS o,
-          sum(wts)::DOUBLE AS wts, sum(wb)::BIGINT AS wb,
+          sum(wts)::DECIMAL(38,0) AS wts, sum(wb)::BIGINT AS wb,
           sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4,
           max(a) AS a  -- subtree-max last-read epoch day (NULL = never read)
         FROM exploded GROUP BY path, depth, team, usr
@@ -314,7 +318,7 @@ def write_webdata(
         # (path, team, usr), sorted (depth, path) — the engine's canonical
         # order for prefix-range + row-group pruning. Immutable per date.
         path_index.parent.mkdir(parents=True, exist_ok=True)
-        cols = "path, depth, team, usr, b, o, wts, wb, c2, c3, c4, a"
+        cols = "path, depth, team, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
         # 8k rows/group (~1 MB): a deep drill decodes ~8k rows/group, not 64k,
         # and the footer (now in D1 per index-sync) is never parsed on a cold
         # isolate, so the ~27k-group count costs nothing at read time
