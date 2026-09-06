@@ -53,18 +53,16 @@ def test_totals_503_and_slow_and_empty():
 
 def test_status_ok_codes():
     assert check_status("subtree", 200, (200,)) == Check("subtree", True, "HTTP 200 (want 200)")
-    assert check_status("data/tree.json", 206, (200, 206)) == Check("data/tree.json", True, "HTTP 206 (want 200/206)")
     assert check_status("subtree", 500, (200,)) == Check("subtree", False, "HTTP 500 (want 200)")
 
 
-def _fake_site(*, totals_body: dict, subtree=200, meta=200, tree=206, scans=("2026-08-31", "2026-08-30")):
+def _fake_site(*, totals_body: dict, subtree=200, meta=200, scans=("2026-08-31", "2026-08-30")):
     """A getter over a canned site: maps request URL → (status, body_bytes)."""
     routes = {
         "/data/scans.json": (200, json.dumps(list(scans)).encode()),
         "/api/marks/totals?date=2026-08-31": (200, json.dumps(totals_body).encode()),
         "/api/subtree?date=2026-08-31&w=128&h=128": (subtree, b"{}"),
         "/data/2026-08-31/meta.json": (meta, b"{}"),
-        "/data/2026-08-31/tree.json": (tree, b"x"),
     }
 
     def get(url: str, rng: str | None) -> tuple[int, bytes]:
@@ -83,21 +81,19 @@ def test_run_checks_all_green_resolves_latest_scan():
         Check("marks/totals", True, "200 · index=d1 · users=1 · 13319ms"),
         Check("subtree", True, "HTTP 200 (want 200)"),
         Check("data/meta.json", True, "HTTP 200 (want 200)"),
-        Check("data/tree.json", True, "HTTP 206 (want 200/206)"),
     ]
 
 
 def test_run_checks_flags_footer_fallback_and_missing_data():
-    # marks/totals on the footer path + a missing tree.json → two failed checks.
-    get = _fake_site(totals_body={"computed": {"index": "footer", "ms": 40000}, "users": {"a": {}}}, tree=404)
+    # marks/totals on the footer path + a missing meta.json → two failed checks.
+    get = _fake_site(totals_body={"computed": {"index": "footer", "ms": 40000}, "users": {"a": {}}}, meta=404)
     date, checks = run_checks("https://gcs.oa.dev", "tok", None, today=TODAY, get=get)
     assert date == "2026-08-31"
     assert [(c.name, c.ok) for c in checks] == [
         ("freshness", True),
         ("marks/totals", False),
         ("subtree", True),
-        ("data/meta.json", True),
-        ("data/tree.json", False),
+        ("data/meta.json", False),
     ]
 
 
@@ -125,7 +121,6 @@ def test_run_checks_retries_transport_blip_once(monkeypatch):
         Check("marks/totals", True, "200 · index=d1 · users=1 · 13319ms"),
         Check("subtree", True, "HTTP 200 (want 200)"),
         Check("data/meta.json", True, "HTTP 200 (want 200)"),
-        Check("data/tree.json", True, "HTTP 206 (want 200/206)"),
     ]
 
 

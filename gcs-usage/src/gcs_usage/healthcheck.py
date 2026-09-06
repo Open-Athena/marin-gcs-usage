@@ -150,11 +150,9 @@ def run_checks(
     st_status, _ = get(f"{base}/api/subtree?date={date}&w=128&h=128", None)
     checks.append(check_status("subtree", st_status, (200,)))
 
-    # 4. published data JSONs (meta small → full GET; tree big → 1-byte range).
+    # 4. the published scan meta.
     m_status, _ = get(f"{base}/data/{date}/meta.json", None)
     checks.append(check_status("data/meta.json", m_status, (200,)))
-    tr_status, _ = get(f"{base}/data/{date}/tree.json", "bytes=0-0")
-    checks.append(check_status("data/tree.json", tr_status, (200, 206)))
 
     return date, checks
 

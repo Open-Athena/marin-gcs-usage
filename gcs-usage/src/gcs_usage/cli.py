@@ -461,7 +461,7 @@ def webdata(
     if out_dir is None:
         out_dir = Path("site/public/data") / asof
     meta = write_webdata(listings, out_dir, asof, attributions, identities_path, access=access, dir_cache=dir_cache, path_index=path_index)
-    err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
+    err(f"wrote {out_dir}/: age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
     data_root = out_dir.parent
     dates = sorted(
         (
@@ -1590,261 +1590,56 @@ def _snapshot_dates(root: str) -> list[str]:
     return sorted(out)
 
 
-def _load_tree(root: str, date: str) -> dict:
-    import json
-
-    import fsspec
-
-    with fsspec.open(f"{root.rstrip('/')}/{date}/tree.json", "rt") as f:
-        return json.load(f)
-
-
-def _fate_totals(tree: dict, keep_rows: list[dict], cutoff_ts: int) -> dict[str, int]:
-    """Replay the actions ledger as of ``cutoff_ts`` against one archived tree.
-
-    Mirrors the site's fate resolution (``site/src/sweep.ts``): most recent
-    live mark on an ancestor-or-equal prefix wins; ``keep_last_ckpt``
-    decomposes into real keep/sweep via the newest step-child of every
-    checkpoint run under the mark (unresolvable KLC counts as keep, matching
-    the UI fold). Returns bytes per fate: keep / sweep / undecided.
-    """
-    import re as _re
-
-    live: dict[str, dict] = {}
-    for r in keep_rows:
-        if r["ts"] > cutoff_ts:
-            continue
-        cur = live.get(r["prefix"])
-        if cur is None or (r["ts"], r["action_id"]) > (cur["ts"], cur["action_id"]):
-            live[r["prefix"]] = r
-
-    def norm(u: str) -> str:
-        return u if u.endswith("/") else u + "/"
-
-    anc: set[str] = set()
-    for r in live.values():
-        if r["keep"] is None:
-            continue
-        segs = r["prefix"].rstrip("/").split("/")
-        for i in range(3, len(segs)):
-            anc.add("/".join(segs[:i]) + "/")
-    own = {norm(r["prefix"]): r for r in live.values()}
-
-    ckpt_re = _re.compile(r"^(?:step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?(\d+)", _re.I)
-
-    def node_at(prefix: str) -> dict | None:
-        node: dict | None = tree
-        for s in prefix.split("://", 1)[-1].rstrip("/").split("/"):
-            node = next((c for c in (node or {}).get("c", ()) if c["n"] == s), None)
-            if node is None:
-                return None
-        return node
-
-    splits: dict[str, tuple[list[tuple[str, int]], int, int]] = {}
-    for r in live.values():
-        if r["keep"] != "keep_last_ckpt":
-            continue
-        nd = node_at(r["prefix"])
-        if not nd:
-            continue
-        kept: list[tuple[str, int]] = []
-
-        def kw(n: dict, u: str) -> None:
-            steps = [(c, ckpt_re.match(c["n"])) for c in n.get("c", ())]
-            steps = [(c, m) for c, m in steps if m]
-            if steps:
-                best = max(steps, key=lambda x: int(x[1].group(1)))
-                kept.append((u + best[0]["n"] + "/", best[0]["b"]))
-                return
-            for c in n.get("c", ()):
-                if not c["n"].startswith("("):
-                    kw(c, u + c["n"] + "/")
-
-        kw(nd, norm(r["prefix"]))
-        if kept:
-            splits[norm(r["prefix"])] = (kept, sum(b for _, b in kept), nd["b"])
-
-    tot = {"keep": 0, "sweep": 0, "undecided": 0}
-
-    def newer(a: dict, b: dict) -> bool:
-        return (a["ts"], a["action_id"]) > (b["ts"], b["action_id"])
-
-    def win_of(uri: str, inh: dict | None) -> dict | None:
-        o = own.get(norm(uri))
-        return o if o and (inh is None or newer(o, inh)) else inh
-
-    def settle(uri: str, b: int, win: dict | None) -> None:
-        if b <= 0:
-            return
-        f = win["keep"] if win else None
-        if f is None:
-            tot["undecided"] += b
-            return
-        if f == "keep_last_ckpt":
-            sp = splits.get(norm(win["prefix"]))
-            if sp:
-                kept, _kept_b, _total_b = sp
-                u = norm(uri)
-                if any(u.startswith(k) for k, _ in kept):
-                    tot["keep"] += b
-                    return
-                inside = sum(kb for k, kb in kept if k.startswith(u))
-                if inside:
-                    kb = min(b, inside)
-                    tot["keep"] += kb
-                    tot["sweep"] += b - kb
-                    return
-                tot["sweep"] += b
-                return
-            tot["keep"] += b
-            return
-        tot["keep" if f == "keep" else "sweep"] += b
-
-    def fwalk(n: dict, uri: str, inh: dict | None) -> None:
-        win = win_of(uri, inh)
-        if norm(uri) not in anc:
-            settle(uri, n["b"], win)
-            return
-        rest = n["b"]
-        for c in n.get("c", ()):
-            if c["n"].startswith("("):
-                continue
-            rest -= c["b"]
-            fwalk(c, f"{uri}/{c['n']}", win)
-        settle(uri, rest, win)
-
-    for bkt in tree.get("c", ()):
-        fwalk(bkt, f"gs://{bkt['n']}", None)
-    return tot
-
-
 @main.command()
-@option("-a", "--actions", "actions_path", required=True, help="Actions-ledger export (the /api/actions JSON; path or URL)")
 @option("-o", "--out", type=Path, default=None, help="Write CSV here (default: stdout)")
-@option("-r", "--root", help="snapshots root (default $DATA_BUCKET)")
 @option("-s", "--sort", "sort", type=Choice(["undecided", "attributed", "user"]), default="undecided", help="row order: undecided desc (nag order, default), attributed desc (size, stable within a day), or user A-Z (stable identity)")
-@option("-u", "--site-url", default="https://gcs.oa.dev", help="Site base for per-user page links")
-def report(actions_path: str, out: Path | None, root: str | None, sort: str, site_url: str) -> None:
+@option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
+@option("-u", "--site-url", default="https://gcs.oa.dev", help="Site base: the API read from, and the per-user page links")
+def report(out: Path | None, sort: str, token: str | None, site_url: str) -> None:
     """Per-user mark-status CSV — the "who still needs to mark & sweep" list.
 
-    Mirrors the site's /users page: scan attribution + live claims applied as
-    a WAL, keep_last_ckpt decomposed, one row per user, with the ownerless pools
-    at the bottom. Default order is undecided-bytes desc (nag order); `-s` picks
-    a more diff-stable order for a synced mirror (a username tiebreaker keeps
-    equal-value rows from swapping seats regardless).
+    The site's `/users` numbers, verbatim: `/api/marks/totals` folds the live
+    ledger (claims applied, keep_last_ckpt decomposed) against the latest
+    scan's index; one row per person. Default order is undecided-bytes desc
+    (nag order); `-s` picks a more diff-stable order for a synced mirror (a
+    username tiebreaker keeps equal-value rows from swapping seats regardless).
     """
     import csv
     import io
-    import json
     import sys
 
-    import fsspec
-
     from .identity import load_identities
+    from .mark import creds, get_json
 
-    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
-    dates = _snapshot_dates(root)
-    if not dates:
-        raise SystemExit(f"no snapshots under {root}")
-    date = dates[-1]
-    tree = _load_tree(root, date)
-    meta = _load_meta(root, date)
-    with fsspec.open(actions_path, "rt") as f:
-        ledger = json.load(f)
-    idmap = load_identities()
+    base, tok = creds(token, site_url)
+    if not tok:
+        raise SystemExit("no token — set $GCS_USAGE_TOKEN or pass -t")
+    scans = get_json(base, tok, "/data/scans.json")
+    if not scans:
+        raise SystemExit("no published scans")
+    date = scans[0]
+    totals = get_json(base, tok, "/api/marks/totals", {"date": date, "marks": "1"}, timeout=120)
+    canon = load_identities().resolve
 
-    def canon(who: str) -> str:
-        return idmap.resolve(who)
-
-    def norm(u: str) -> str:
-        return u if u.endswith("/") else u + "/"
-
-    def latest(rows: list[dict]) -> dict[str, dict]:
-        live: dict[str, dict] = {}
-        for r in rows:
-            cur = live.get(r["prefix"])
-            if cur is None or (r["ts"], r["action_id"]) > (cur["ts"], cur["action_id"]):
-                live[r["prefix"]] = r
-        return live
-
-    keeps = latest(ledger["keeps"])
-    owners = latest(ledger["owners"])
-
-    anc: set[str] = set()
-    for r in keeps.values():
-        if r["keep"] is not None:
-            segs = r["prefix"].rstrip("/").split("/")
-            for i in range(3, len(segs)):
-                anc.add("/".join(segs[:i]) + "/")
-    for r in owners.values():
-        if r["owner"] is not None:
-            segs = r["prefix"].rstrip("/").split("/")
-            for i in range(3, len(segs)):
-                anc.add("/".join(segs[:i]) + "/")
-    own_keep = {norm(r["prefix"]): r for r in keeps.values()}
-    own_owner = {norm(r["prefix"]): r for r in owners.values()}
-
-    def newer(a: dict, b: dict) -> bool:
-        return (a["ts"], a["action_id"]) > (b["ts"], b["action_id"])
-
-    # user -> fate -> bytes; claims override scan `us` shares wholesale.
+    # user -> fate -> bytes (+ class mix), canonical ids merged.
     per_user: dict[str, dict[str, float]] = {}
-
-    def add(u: str, f: str, b: float) -> None:
-        per_user.setdefault(u, {"keep": 0.0, "sweep": 0.0, "undecided": 0.0})[f] += b
-
-    def fate_of(win: dict | None) -> str:
-        k = win["keep"] if win else None
-        if k is None:
-            return "undecided"
-        # keep_last_ckpt folds to keep here (its sweep share is small and the
-        # site strip does the exact split; a nag list doesn't need it).
-        return "sweep" if k == "sweep" else "keep"
-
-    def walk(n: dict, uri: str, inh_k: dict | None, inh_o: dict | None) -> None:
-        u = norm(uri)
-        ok = own_keep.get(u)
-        win_k = ok if ok and (inh_k is None or newer(ok, inh_k)) else inh_k
-        oo = own_owner.get(u)
-        win_o = oo if oo and (inh_o is None or newer(oo, inh_o)) else inh_o
-        claimant = canon(win_o["owner"]) if win_o and win_o["owner"] is not None else None
-        if u not in anc:
-            f = fate_of(win_k)
-            if claimant:
-                add(claimant, f, n["b"])
-            else:
-                for usr, b in n.get("us") or ():
-                    if b > 0:
-                        add(canon(usr), f, b)
-            return
-        rest_b = n["b"]
-        rest = {usr: b for usr, b in n.get("us") or ()}
-        for c in n.get("c", ()):
-            if c["n"].startswith("("):
-                continue
-            rest_b -= c["b"]
-            walk(c, f"{uri}/{c['n']}", win_k, win_o)
-            for usr, b in c.get("us") or ():
-                rest[usr] = rest.get(usr, 0) - b
-        f = fate_of(win_k)
-        if claimant:
-            if rest_b > 0:
-                add(claimant, f, rest_b)
-        else:
-            for usr, b in rest.items():
-                if b > 0:
-                    add(canon(usr), f, b)
-
-    for bkt in tree.get("c", ()):
-        walk(bkt, f"gs://{bkt['n']}", None, None)
+    mixes: dict[str, dict[str, float]] = {}
+    for who, f in (totals.get("users") or {}).items():
+        uid = canon(who)
+        pu = per_user.setdefault(uid, {"keep": 0.0, "sweep": 0.0, "undecided": 0.0})
+        pu["keep"] += (f.get("keep") or 0) + (f.get("keep_last_ckpt") or 0)
+        pu["sweep"] += f.get("sweep") or 0
+        pu["undecided"] += f.get("unmarked") or 0
+        mix = mixes.setdefault(uid, {})
+        for fate_mix in (f.get("mix") or {}).values():
+            for c, b in fate_mix.items():
+                mix[str(c)] = mix.get(str(c), 0) + b
 
     authored: dict[str, int] = {}
-    for r in keeps.values():
-        if r["keep"] is not None:
-            authored[canon(r["who"])] = authored.get(canon(r["who"]), 0) + 1
+    for m in totals.get("marks") or []:
+        if m.get("keep") and m.get("who"):
+            authored[canon(m["who"])] = authored.get(canon(m["who"]), 0) + 1
 
-    user_meta = {u["u"]: u for u in meta.get("users", ())}
-    mixes = meta.get("user_class_bytes", {})
     price = {"1": 0.02, "2": 0.01, "3": 0.004, "4": 0.0012}
 
     def usd_mo(uid: str, b: float) -> float:

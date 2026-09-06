@@ -81,6 +81,8 @@ Internal names stop being wire abbreviations: `read_ops`, `read_bytes`, `last_re
 6. **Level-wise / partitioned rollup** (§5); drop the node to what the measured peak wants.
 7. **Naming pass** (§6).
 
+**`tree.json` is gone** (2026-09-06): nothing on the site reads it (`/user/:id` moved onto `/api/estate`), the job no longer builds it (with it went the Python-side tree fold, the `amap` dict — the daily's only monotonic memory term — and the fold/`ABS_FLOOR`/`TOP_K` constants), the healthcheck probes the meta and a view instead, and `gcs-usage report` reads `/api/marks/totals`. `age.json` remains the one per-scan artifact besides `meta.json`, until `/api/age` (`path-agnostic-serving.md` §2.2).
+
 ### Follow-ups found while implementing
 
 - **Index rewrite vs D1 footer** (2026-09-06): a REPROC rewrites `listing/<date>/path-index*.parquet` in place, but D1 keeps the *previous* file's row-group offsets until that job's `index-sync` runs ~10 min later — reads in the window decode garbage (`parquet unsupported page type`), and a cancelled job leaves it that way. Fix in the tier rewrite: write tiers to a content-addressed or job-stamped key and switch D1's pointer atomically after the sync (the schema row already is the completeness marker; add the file key to it), never overwrite a key D1 points at.

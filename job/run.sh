@@ -2,7 +2,8 @@
 # Daily snapshot job (GCP Batch). Chain:
 #   1. DIY fan-out: list all 6 marin-* buckets ourselves (one Batch task per
 #      bucket) → canonical listing parquet under listing/<date>/<bucket>/
-#   2. webdata: aggregate the listings (+ attribution) into tree/age/meta JSONs
+#   2. webdata: aggregate the listings (+ attribution) into the path index (+
+#      its coarse tiers) and the age/meta JSONs
 #   3. publish snapshot JSONs to the data bucket (canonical store)
 #
 # The live site reads snapshots straight from the bucket (see

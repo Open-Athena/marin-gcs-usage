@@ -7,12 +7,10 @@ the heavy daily-snapshot job (`job/`, root `Dockerfile`): this image is just the
 
 ## Chain (`sync.sh`)
 
-1. `GET /api/actions` — the live actions ledger — with the read-only `gcs` grant
-   token (`GCS_USAGE_TOKEN`, from Secret Manager) + a real `User-Agent`
-   (Cloudflare edge-blocks bot UAs with `1010` before the Worker's auth runs).
-2. `gcs-usage report` → the per-user CSV (mirrors `/users`; reads the latest
-   snapshot `tree`/`meta` from `gs://$DATA_BUCKET` via the SA's ambient ADC).
-3. `gcs-usage sheet-push -w <tab> -D <footer>` → full-replaces one **named** tab
+1. `gcs-usage report` → the per-user CSV: the site's `/api/marks/totals` for
+   the latest scan (the ledger folded against the index, claims applied), with
+   the read-only `gcs` grant token (`GCS_USAGE_TOKEN`, from Secret Manager).
+2. `gcs-usage sheet-push -w <tab> -D <footer>` → full-replaces one **named** tab
    in place (values-only clear preserves header styling + freeze), stamping an
    "AUTO — regenerated hourly" disclaimer two rows below the table.
 

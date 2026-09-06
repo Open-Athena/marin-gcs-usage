@@ -4,8 +4,6 @@ export interface TreeNode {
   o: number
   d?: number                   // bytes-weighted mean created date, epoch days
   a?: number                   // last-read epoch day (access logs; MAX over the whole subtree)
-  ro?: number                  // read requests (GET/HEAD) over the access window; SUM over the subtree
-  rb?: number                  // bytes served (GET/HEAD) over the access window; SUM over the subtree
   us?: [string, number][]      // top users -> bytes
   cb?: Record<string, number>  // non-STANDARD class -> bytes ("2" NL, "3" CL, "4" AR); STANDARD = b - sum
   c?: TreeNode[]

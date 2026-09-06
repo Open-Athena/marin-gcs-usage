@@ -27,7 +27,6 @@ def _rss(tag: str) -> None:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     err(f"[rss] {tag}: peak {peak / (1024**2 if sys.platform == 'linux' else 1024**3):.1f} GB")
 
-MIN_FRAC = 0.0002  # fold children below this fraction of their PARENT into "(other)"
 # Coarse index tiers: one per exponent E, keeping paths whose subtree clears
 # F_E = 2^(round(log2 fleet_bytes) - E). At a 3 PiB fleet: E=16 → 48 GiB
 # (~40k paths, a root view's row groups), E=20 → 3 GiB, E=24 → 256 MiB
@@ -38,8 +37,6 @@ COARSE_EXPS = (16, 20, 24)
 # fleet has >100M dirs; 0.02%-of-parent keeps every child of an evenly-split
 # parent, recursively — OOM-killed the 8/26 attempt-4 REPROC). Values chosen
 # from the 8/26 full-listing estimate (see specs/dir-agg-cache.md).
-ABS_FLOOR = int(float(os.environ.get("GCS_USAGE_TREE_ABS_FLOOR", "5e9")))  # bytes
-TOP_K = int(os.environ.get("GCS_USAGE_TREE_TOP_K", "500"))  # kept children per parent
 
 
 def write_coarse_tiers(
@@ -95,7 +92,8 @@ def write_webdata(
     dir_cache: Path | None = None,
     path_index: Path | None = None,
 ) -> dict:
-    """Write tree.json / age.json / meta.json under ``out_dir``; returns meta.
+    """Write age.json / meta.json under ``out_dir`` (+ the path index and its
+    tiers at ``path_index``); returns meta.
 
     ``path_index`` writes the complete floor-free rolled-up path index
     (every ancestor path × attribution, sorted ``(depth, path)``) — the
@@ -109,10 +107,9 @@ def write_webdata(
     listing they derive from.
 
     With ``attributions``, every dir is attributed (deepest-prefix-wins, same
-    join as ``report``) and each tree node carries ``us`` (per-user bytes)
-    for the ownership overlay.
+    join as ``report``) and every index row is an owner slice (``usr``).
 
-    With ``access`` (layer-2a access-log agg parquet globs), every tree node
+    With ``access`` (layer-2a access-log agg parquet globs), every index row
     that has been read since logging began carries ``a`` — the epoch day of
     its most recent read (GET/HEAD/LIST anywhere under the prefix) — and meta
     gains the observation window (``meta.access = {from, to}``).
@@ -258,7 +255,7 @@ def write_webdata(
 
     # Access agg first (small): its per-dir last-read day joins into
     # `dir_agg` below so the path index carries a subtree-MAX `a`, and it
-    # also decorates the built tree + age strata. Empty without logs.
+    # also decorates the age strata. Empty without logs.
     # As-of rule: a scan dated D sees reads through the end of D-1 UTC
     # (`day < D`), whatever shards exist when this runs — so a re-aggregation
     # of an old date reproduces it instead of leaking later reads into it.
@@ -278,11 +275,6 @@ def write_webdata(
             GROUP BY 1, 2
             """
         )
-        amap: dict[str, tuple[int, int, int]] = {}
-        for bucket, path, aday, ro, rb in con.execute(
-            "SELECT bucket, dir, aday, ro, rb FROM access_agg"
-        ).fetchall():
-            amap[f"{bucket}/{path}" if path else bucket] = (aday, int(ro), int(rb))
         lo, hi = con.execute(
             f"SELECT CAST(floor(epoch(MIN(last_ts)) / 86400) AS INTEGER), "
             f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs}) "
@@ -292,12 +284,11 @@ def write_webdata(
             access_window = (int(lo), int(hi))
         _rss("access")
 
-    # --- arbitrary-depth tree (specs/tree-builder-unification.md) ---
+    # --- the path index: every ancestor path, every depth (specs/view-serving.md) ---
     # Roll every object up to *all* its ancestor prefixes (descendant-inclusive
     # totals at every depth), attribute per dir, keep only prefixes clearing the
     # fold floor so the Python side stays small regardless of object count, and
     # link them parent->child. No d1..d4 cap — the tree is as deep as the data.
-    from disk_tree.tree_build import DirRow, build_tree
 
     attr_join_s = "LEFT JOIN dir_attr t ON t.bucket = s.bucket AND t.dir = s.dir" if attr else ""
     user_sel = 't."user"' if attr else "CAST(NULL AS VARCHAR)"
@@ -332,7 +323,7 @@ def write_webdata(
 
     # The full rolled-up (path, user) relation — every ancestor path,
     # descendant-inclusive, attributed, NO floor. Materialized because three
-    # consumers share it: the floored tree query below, the (optional)
+    # consumers share it: the coarse tiers, the (optional)
     # path-index artifact, and — via that artifact — the pixel-budget subtree
     # API (specs/path-index-lazy-drill.md).
     con.execute(
@@ -382,15 +373,8 @@ def write_webdata(
         err(f"path-index: wrote {by_user}")
         _rss("path-index-variants")
 
-    # Pre-floor is **parent-relative** (matches build_tree): keep a path iff its
-    # rolled-up bytes clear MIN_FRAC of its parent's — so drilling stays useful
-    # at every depth (a fleet-relative cut deletes every small-but-drillable
-    # child everywhere; see build_tree's docstring for the grug regression).
-    # Staged (not one statement): each big operator — the per-path totals agg,
-    # then the ranking window — runs alone, so peak memory is one operator's
-    # working set instead of a stacked pipeline. The one-statement version put
-    # the whole stack on top of DuckDB's cap and got the container kernel-
-    # OOM-killed (exit 137) on the daily's 128GB node, 2026-08-27.
+    # Per-path subtree totals: the coarse tiers' floor test. Staged (its own
+    # statement) so the agg runs alone, not stacked under another operator.
     con.execute("CREATE TEMP TABLE tot AS SELECT path, sum(b) AS pb FROM ptu GROUP BY path")
     _rss("tot")
     coarse_floors: dict[int, int] = {}
@@ -398,112 +382,8 @@ def write_webdata(
     if path_index is not None:
         coarse_floors, coarse_counts = write_coarse_tiers(con, path_index, rows="ptu")
         _rss("coarse")
-    con.execute(
-        f"""
-        CREATE TEMP TABLE keep AS
-        WITH ranked AS (
-          SELECT t.path, t.pb, par.pb AS parent_pb,
-            row_number() OVER (
-              PARTITION BY CASE WHEN t.path LIKE '%/%' THEN regexp_replace(t.path, '/[^/]*$', '') END
-              ORDER BY t.pb DESC
-            ) AS rk
-          FROM tot t
-          LEFT JOIN tot par
-            ON par.path = CASE WHEN t.path LIKE '%/%' THEN regexp_replace(t.path, '/[^/]*$', '') END
-        )
-        SELECT path FROM ranked
-        WHERE parent_pb IS NULL
-           OR (pb >= greatest({MIN_FRAC} * parent_pb, {ABS_FLOOR}) AND rk <= {TOP_K})
-        """
-    )
     con.execute("DROP TABLE tot")
-    _rss("keep")
-    ptu_rows = con.execute(
-        """
-        SELECT p.path, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
-        FROM ptu p JOIN keep k USING (path)
-        """
-    ).fetchall()
-    con.execute("DROP TABLE keep")
     con.execute("DROP TABLE ptu")
-    # A path can clear its own parent while an ancestor failed (thin chains) —
-    # prune anything whose ancestry isn't fully kept, else build_tree would
-    # silently orphan it.
-    kept_paths = {p for p, *_ in ptu_rows}
-    def _rooted(path: str) -> bool:
-        while "/" in path:
-            path = path.rsplit("/", 1)[0]
-            if path not in kept_paths:
-                return False
-        return True
-    rooted = {p for p in kept_paths if _rooted(p)}
-    if len(rooted) < len(kept_paths):
-        err(f"pruned {len(kept_paths) - len(rooted)} orphaned sub-floor-ancestry paths")
-        ptu_rows = [r for r in ptu_rows if r[0] in rooted]
-    _rss("dir-rows")
-
-    def _new_add() -> dict:
-        return {"b": 0, "o": 0, "wts": 0.0, "wb": 0,
-                "cb": defaultdict(int), "ub": defaultdict(int)}
-
-    def _merge(a: dict, b: int, o: int, wts, wb, c2, c3, c4, usr) -> None:
-        a["b"] += int(b); a["o"] += int(o)
-        a["wts"] += float(wts or 0); a["wb"] += int(wb or 0)
-        for cid, cv in (("2", c2), ("3", c3), ("4", c4)):
-            if cv:
-                a["cb"][cid] += int(cv)
-        if usr:  # unclaimed bytes = b − Σ ub; no separate map
-            a["ub"][usr] += int(b)
-
-    def _add(a: dict) -> dict:
-        out: dict = {}
-        if a["wb"]:
-            out["wts"], out["wb"] = a["wts"], a["wb"]
-        for k in ("cb", "ub"):
-            if a[k]:
-                out[k] = dict(a[k])
-        return out
-
-    agg_by_path: dict[str, dict] = {}
-    root = _new_add()
-    for path, usr, b, o, wts, wb, c2, c3, c4 in ptu_rows:
-        a = agg_by_path.get(path)
-        if a is None:
-            a = agg_by_path[path] = _new_add()
-        _merge(a, b, o, wts, wb, c2, c3, c4, usr)
-        if "/" not in path:  # bucket-level rows partition the fleet → the root
-            _merge(root, b, o, wts, wb, c2, c3, c4, usr)
-
-    dir_rows = [DirRow(p, a["b"], a["o"], _add(a)) for p, a in agg_by_path.items()]
-    dir_rows.append(DirRow(".", total_b, total_o, _add(root)))
-    tree = build_tree(dir_rows, total_b, MIN_FRAC, abs_floor=ABS_FLOOR, max_children=TOP_K)
-    tree["n"] = "marin GCS"
-    roots = tree.get("c", [])
-
-    # Decorate the built tree with per-node read-recency/volume from `amap`
-    # (built above with access_agg). `a` = MAX(last_ts) over GET/HEAD/LIST
-    # (the deletion veto); `ro`/`rb` = GET/HEAD counts/bytes.
-    if access:
-        def _attach_access(node: dict, key: str) -> None:
-            hit = amap.get(key)
-            if hit is not None:
-                a, ro, rb = hit
-                node["a"] = a
-                if ro:  # omit zero-read nodes entirely (LIST-only prefixes)
-                    node["ro"], node["rb"] = ro, rb
-            for c in node.get("c") or []:
-                if not c["n"].startswith("("):
-                    _attach_access(c, f"{key}/{c['n']}" if key else c["n"])
-
-        for root_node in roots:
-            _attach_access(root_node, root_node["n"])
-        root_as = [n["a"] for n in roots if "a" in n]
-        if root_as:
-            tree["a"] = max(root_as)
-        root_ro = sum(n.get("ro", 0) for n in roots)
-        if root_ro:
-            tree["ro"] = root_ro
-            tree["rb"] = sum(n.get("rb", 0) for n in roots)
 
     # Age strata also carry `a` — the dir's last-read epoch day from the access
     # agg (subtree MAX, the same semantics as the tree's `a`) — so the site can
@@ -561,9 +441,6 @@ def write_webdata(
         "total_bytes": total_b,
         "total_objects": total_o,
         "class_bytes": {int(c): int(b) for c, b in classes},
-        # Fold floor as a fraction of each PARENT's bytes — children below it
-        # live under that parent's expandable (other) node.
-        "fold_min_frac": MIN_FRAC,
     }
     if coarse_floors:
         meta["index"] = {"coarse": {str(e): {"floor": coarse_floors[e], "paths": int(coarse_counts[e])} for e in COARSE_EXPS}}
@@ -576,7 +453,6 @@ def write_webdata(
         meta["user_class_bytes"] = {u: dict(sorted(c.items())) for u, c in sorted(user_class.items())}
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "tree.json").write_text(json.dumps(tree, separators=(",", ":")) + "\n")
     (out_dir / "age.json").write_text(json.dumps(age_rows, separators=(",", ":")) + "\n")
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     return meta

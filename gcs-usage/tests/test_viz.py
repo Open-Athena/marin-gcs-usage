@@ -81,7 +81,8 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
     identities_path.write_text(IDENTITIES_YAML)
     out = tmp_path / "out"
 
-    meta = write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path)
+    pidx = tmp_path / "path-index.parquet"
+    meta = write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path, path_index=pidx)
 
     assert meta == {
         "asof": "2026-07-20",
@@ -89,54 +90,26 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "total_bytes": 380 * GB,
         "total_objects": 4,
         "class_bytes": {1: 180 * GB, 2: 200 * GB},
-        "fold_min_frac": 0.0002,
+        "index": {"coarse": {"16": {"floor": 2 ** 22, "paths": 6}, "20": {"floor": 2 ** 18, "paths": 6}, "24": {"floor": 2 ** 14, "paths": 6}}},
         "users": [{"u": "data-team", "b": 200 * GB}, {"u": "ryan-williams", "b": 150 * GB}],
         "user_class_bytes": {"data-team": {2: 200 * GB}, "ryan-williams": {1: 150 * GB}},
     }
 
-    tree = json.loads((out / "tree.json").read_text())
-    ckpt = {
-        "n": "ckpt",
-        "b": 150 * GB,
-        "o": 2,
-        "d": wmean_day((100 * GB, TS["d0701"]), (50 * GB, TS["d0703"])),
-        "us": [["ryan-williams", 150 * GB]],
+    # The index: every ancestor path at every depth, one row per owner slice,
+    # descendant-inclusive and exact (the site folds views from it).
+    df = pd.read_parquet(pidx)
+    rows = {(r.path, r.usr if isinstance(r.usr, str) else None): (int(r.b), int(r.o)) for r in df.itertuples()}
+    assert rows == {
+        ("b1", "data-team"): (200 * GB, 1),
+        ("b1", "ryan-williams"): (150 * GB, 2),
+        ("b1", None): (30 * GB, 1),
+        ("b1/datasets", "data-team"): (200 * GB, 1),
+        ("b1/datasets/raw", "data-team"): (200 * GB, 1),
+        ("b1/users", "ryan-williams"): (150 * GB, 2),
+        ("b1/users/rw", "ryan-williams"): (150 * GB, 2),
+        ("b1/users/rw/ckpt", "ryan-williams"): (150 * GB, 2),
     }
-    rw = {**ckpt, "n": "rw", "c": [ckpt]}
-    users = {**ckpt, "n": "users", "c": [rw]}
-    datasets = {
-        "n": "datasets",
-        "b": 200 * GB,
-        "o": 1,
-        "d": epoch_day(TS["d0615"]),
-        "cb": {"2": 200 * GB},
-        "us": [["data-team", 200 * GB]],
-        "c": [
-            {"n": "raw", "b": 200 * GB, "o": 1, "d": epoch_day(TS["d0615"]), "cb": {"2": 200 * GB}, "us": [["data-team", 200 * GB]]},
-        ],
-    }
-    # top.bin is a direct file of b1: bytes the kept children (datasets, users)
-    # don't cover, surfaced as an expandable (other) with its subtracted
-    # attribution. f=0: no sub-floor dirs folded in, only the direct file.
-    other = {"n": "(other)", "b": 30 * GB, "o": 1, "f": 0, "d": epoch_day(TS["d0702"])}
-    b1 = {
-        "n": "b1",
-        "b": 380 * GB,
-        "o": 4,
-        "d": wmean_day(*zip([100 * GB, 50 * GB, 200 * GB, 30 * GB], [TS["d0701"], TS["d0703"], TS["d0615"], TS["d0702"]], strict=True)),
-        "cb": {"2": 200 * GB},
-        "us": [["data-team", 200 * GB], ["ryan-williams", 150 * GB]],
-        "c": [datasets, users, other],
-    }
-    assert tree == {
-        "n": "marin GCS",
-        "b": 380 * GB,
-        "o": 4,
-        "d": b1["d"],
-        "cb": {"2": 200 * GB},
-        "us": [["data-team", 200 * GB], ["ryan-williams", 150 * GB]],
-        "c": [b1],
-    }
+    assert sorted(df.depth.unique().tolist()) == [1, 2, 3, 4]
 
     age = json.loads((out / "age.json").read_text())
     assert sorted(age, key=lambda r: (r["d"], r["d1"])) == [
@@ -180,13 +153,6 @@ def test_access_rows_on_or_after_scan_date_are_excluded(tmp_path: Path, listing:
     meta = write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path, access=(access,), path_index=pidx)
     rd = epoch_day(TS["d0703"])
     assert meta["access"] == {"from": rd, "to": rd}
-    tree = json.loads((out / "tree.json").read_text())
-    b1 = tree["c"][0]
-    assert {c["n"]: (c.get("a"), c.get("ro"), c.get("rb")) for c in b1["c"]} == {
-        "datasets": (None, None, None),
-        "users": (rd, 3, 1000),
-        "(other)": (None, None, None),
-    }
     a_by_path = pd.read_parquet(pidx).groupby("path")["a"].max().to_dict()
     assert pd.isna(a_by_path["b1/datasets"])
     assert a_by_path["b1"] == rd
@@ -325,11 +291,11 @@ prefix_owners:
         }
     ).to_parquet(attribution_path)
     out = tmp_path / "out"
-    write_webdata((str(listing_path),), out, "2026-07-28", (str(attribution_path),), identities_path)
-    tree = json.loads((out / "tree.json").read_text())
-    b1 = tree["c"][0]
-    assert b1["b"] == 160 * GB
-    assert b1["us"] == [["ryan-williams", 100 * GB]]  # the 60 GB under shared/ is nobody's
+    pidx = tmp_path / "path-index.parquet"
+    write_webdata((str(listing_path),), out, "2026-07-28", (str(attribution_path),), identities_path, path_index=pidx)
+    df = pd.read_parquet(pidx)
+    b1 = {(r.usr if isinstance(r.usr, str) else None): int(r.b) for r in df[df.path == "b1"].itertuples()}
+    assert b1 == {"ryan-williams": 100 * GB, None: 60 * GB}  # the 60 GB under shared/ is nobody's
 
 
 def test_dir_cache_roundtrip(tmp_path: Path, listing: str, attribution: str):
@@ -359,10 +325,10 @@ def test_dir_cache_roundtrip(tmp_path: Path, listing: str, attribution: str):
     warm_out = tmp_path / "warm"
     write_webdata((str(bogus),), warm_out, "2026-07-20", (attribution,), identities_path, dir_cache=cache)
 
-    for name in ("tree.json", "age.json", "meta.json"):
+    for name in ("age.json", "meta.json"):
         assert (warm_out / name).read_bytes() == (cold_out / name).read_bytes()
-    tree = json.loads((warm_out / "tree.json").read_text())
-    assert tree["b"] == 380 * GB  # cache content won, bogus listing ignored
+    meta = json.loads((warm_out / "meta.json").read_text())
+    assert meta["total_bytes"] == 380 * GB  # cache content won, bogus listing ignored
 
 
 def test_index_tiers_backfill_matches_webdata(tmp_path: Path, listing: str, attribution: str):
