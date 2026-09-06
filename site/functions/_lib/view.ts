@@ -18,7 +18,10 @@
  * (or a scan without coarse tiers) reads the floor-free tier.
  */
 import type { Env } from './auth.js'
+import { type FateAxis, fateScope, type FateScope } from './fates.js'
 import { type IndexHandle, type Lens, openIndex, readRows, type Row } from './index.js'
+import { nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
+import { markTotals } from './totals.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -43,6 +46,13 @@ export interface ViewOpts {
   /** Absolute byte threshold instead of the pixel-budget one (e.g. the to-do
    * backlog's min bytes). Still attenuated per level by `atten`. */
   threshold?: number
+  // --- the page's scope axes (specs/view-serving.md §2) -------------------
+  /** `o=claimed|unclaimed`: the owner axis's pools (a user is `lens`). */
+  owner?: OwnerScope
+  /** `k=` ⊆ keep/sweep/unmarked: bytes under an allowed fate, per node. */
+  fates?: ReadonlySet<FateAxis>
+  /** `q=`: name filter over the read rows' paths (see `scope.ts`). */
+  query?: NamePred
 }
 
 export interface View {
@@ -54,6 +64,8 @@ export interface View {
   threshold: number
   nodes: number
   truncated: boolean
+  /** With `query`: the outermost matching paths (what a bulk action targets). */
+  matches?: string[]
 }
 
 export class NotFound extends Error {}
@@ -102,6 +114,21 @@ function subtract(parent: Agg, kids: Agg[]): Agg {
   return out
 }
 
+/** Scale an aggregate to `frac` of itself — a scope's share of a node: bytes
+ * exactly, the rest (objects, per-user/class splits, written-time weights)
+ * proportionally, which assumes the scope is spread like the node's mix. */
+function scale(a: Agg, frac: number): Agg {
+  if (frac >= 1) return a
+  const out = newAgg()
+  out.b = a.b * frac
+  out.o = a.o * frac
+  out.wts = a.wts * frac
+  out.wb = a.wb * frac
+  out.a = a.a
+  for (const key of ['cb', 'ub'] as const) for (const [k, v] of Object.entries(a[key])) out[key][k] = v * frac
+  return out
+}
+
 function display(a: Agg): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (a.wb) out.d = Math.round(a.wts / a.wb / 86400)
@@ -128,11 +155,24 @@ async function tryOpen(env: Env, date: string, variant: string): Promise<IndexHa
 const floorOf = (h: IndexHandle): number | null => (h.mode === 'd1' ? h.floor : null)
 
 export async function buildView(env: Env, o: ViewOpts): Promise<View> {
-  const { date, path, w, h, minArea, atten, lens } = o
+  const { date, path, w, h, minArea, atten, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const sort = lens ? 'user' : 'path'
   const readRoot = (idx: IndexHandle) =>
     path === '' ? readRows(idx, 1, 1, '', '￿', undefined, lens) : readRows(idx, dP, dP, path, path, undefined, lens)
+  // The mark axis needs the ledger folded against this scan (cached per
+  // (scan, head) by the totals machinery); per node it scales the aggregate
+  // to its allowed-fate share. Rows are read by TOTAL bytes at the scoped
+  // threshold, so the read is a superset of what the scope keeps.
+  const fs: FateScope | null = o.fates ? fateScope((await markTotals(env, date)).marks, o.fates) : null
+  // Owner pools filter rows (they are owner slices); the fate share is then
+  // computed on the node's total and applied to the pool's share — assumes
+  // fates are spread like ownership inside a node.
+  const scoped = (p: string, all: Agg, mine: Agg): Agg => {
+    if (!fs) return mine
+    const share = all.b > 0 ? fs.value(p, all.b) / all.b : 0
+    return scale(mine, share)
+  }
 
   // Root aggregate P.b (and P's own us for the response root) from the
   // coarsest tier that has P at all — the same numbers in every tier.
@@ -152,15 +192,33 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     rootRows = await readRoot(fine)
     if (!rootRows.length) throw new NotFound(path)
   }
-  const rootAgg = newAgg()
-  for (const r of rootRows) merge(rootAgg, r)
+  const rootAll = newAgg()
+  const rootMine = newAgg()
+  for (const r of rootRows) {
+    merge(rootAll, r)
+    if (ownerOk(r.usr, owner)) merge(rootMine, r)
+  }
+  let rootAgg = scoped(path, rootAll, rootMine)
+  // Nothing in scope under P: an empty view, not a zero threshold that would
+  // keep every row the tier holds.
+  if (rootAgg.b <= 0) {
+    const name = path === '' ? 'marin GCS' : path.split('/').pop()!
+    return { tree: { n: name, b: 0, o: 0 }, tier: 'none', index: 'none', threshold: 0, nodes: 0, truncated: false, ...(query ? { matches: [] } : {}) }
+  }
   const threshold = o.threshold ?? (rootAgg.b * minArea) / (w * h)
   const thrAt = (depth: number) => threshold * atten ** Math.max(0, depth - dP - 1)
 
-  // The coarsest tier whose floor the query can't see below.
+  // The coarsest tier whose floor the UNSCOPED query can't see below. A
+  // narrow scope lowers the node threshold (its root is smaller), but the
+  // tier is chosen by the view's total bytes: the same rows a plain view of
+  // P reads, scoped per node. Paths below that tier's floor fold into their
+  // parent's (other) — exactly, since (other) = parent − Σ kept kids on the
+  // scoped aggregates — instead of dragging the read onto the floor-free
+  // tier for every scoped root view.
+  const thrAll = o.threshold ?? (rootAll.b * minArea) / (w * h)
   let pick: { name: string; idx: IndexHandle } | null = null
   for (const t of tiers) {
-    if (threshold >= floorOf(t.idx)!) { pick = t; break }
+    if (thrAll >= floorOf(t.idx)!) { pick = t; break }
   }
   if (!pick) pick = { name: 'fine', idx: fine ?? await openFine(env, date, sort, lens) }
   const idx = pick.idx
@@ -170,16 +228,35 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const pLo = path === '' ? '' : path + '/'
   const pHi = path === '' ? '￿' : path + '0' // '0' sorts just past '/'
   const rows = await readRows(idx, dP + 1, 1e9, pLo, pHi, thrAt, lens)
-  const aggs = new Map<string, Agg>()
+  const allAggs = new Map<string, Agg>() // totals per path (the fate share's denominator)
+  let aggs = new Map<string, Agg>() // the scoped aggregate per path
   const aggDepth = new Map<string, number>()
   for (const r of rows) {
-    let a = aggs.get(r.path)
-    if (!a) {
-      aggs.set(r.path, (a = newAgg()))
+    let all = allAggs.get(r.path)
+    if (!all) {
+      allAggs.set(r.path, (all = newAgg()))
+      aggs.set(r.path, newAgg())
       aggDepth.set(r.path, r.depth)
     }
-    merge(a, r)
+    merge(all, r)
+    if (ownerOk(r.usr, owner)) merge(aggs.get(r.path)!, r)
   }
+  if (fs) for (const [p, a] of aggs) aggs.set(p, scoped(p, allAggs.get(p)!, a))
+  let matches: string[] | undefined
+  if (query) {
+    const f = nameFilter(
+      { path, agg: rootAgg },
+      new Map([...aggs].map(([p, agg]) => [p, { depth: aggDepth.get(p)!, agg }])),
+      query,
+      (into, from) => { for (const k of ['b', 'o', 'wts', 'wb'] as const) into[k] += from[k]; if (from.a != null) into.a = into.a == null ? from.a : Math.max(into.a, from.a); for (const key of ['cb', 'ub'] as const) for (const [k, v] of Object.entries(from[key])) into[key][k] = (into[key][k] ?? 0) + v },
+      newAgg,
+    )
+    rootAgg = f.root
+    aggs = new Map([...f.aggs].map(([p, e]) => [p, e.agg]))
+    matches = [...f.matches].sort()
+  }
+  // Nodes with nothing in scope fold away entirely.
+  for (const [p, a] of aggs) if (a.b <= 0) aggs.delete(p)
   const kept = [...aggs.entries()].filter(([p, a]) => a.b >= thrAt(aggDepth.get(p)!))
   const truncated = kept.length > HARD_CAP
   // Descendant-inclusive bytes are monotone (ancestor ≥ descendant), so the
@@ -217,8 +294,10 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     const key = keptMap.has(par) ? par : par === path || (path === '' && !p.includes('/')) ? path : null
     if (key !== null) foldedOf.set(key, (foldedOf.get(key) ?? 0) + 1)
   }
+  const matched = new Set(matches ?? [])
   const build = (p: string, a: Agg): ViewNode => {
     const node = nodeOf(p === path ? (path === '' ? 'marin GCS' : path.split('/').pop()!) : p.split('/').pop()!, a)
+    if (matched.has(p)) node.m = 1
     const childPaths = kidsOf.get(p) ?? []
     if (!childPaths.length) return node
     const kids = childPaths
@@ -233,7 +312,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     return node
   }
   const tree = build(path, rootAgg)
-  return { tree, tier: pick.name, index: idx.mode, threshold, nodes: keptMap.size, truncated }
+  return { tree, tier: pick.name, index: idx.mode, threshold, nodes: keptMap.size, truncated, ...(matches ? { matches } : {}) }
 }
 
 async function openFine(env: Env, date: string, sort: string, lens?: Lens): Promise<IndexHandle> {

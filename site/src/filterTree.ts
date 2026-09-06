@@ -64,20 +64,6 @@ export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
  * The result's attribution is the slice itself: no user bytes (`us` gone),
  * `tm`/`sh` are the slice (all of it userless). Objects/read-bytes scale by
  * the byte fraction (approximate). */
-export function applyLensScale(root: TreeNode, slice: (n: TreeNode) => Record<string, number>): TreeNode {
-  const walk = (n: TreeNode): TreeNode | null => {
-    const b = Object.values(slice(n)).reduce((s, v) => s + v, 0)
-    if (b <= 0) return null
-    const kids = (n.c ?? []).map(walk).filter((c): c is TreeNode => c != null)
-    const frac = n.b > 0 ? Math.min(1, b / n.b) : 0
-    const out: TreeNode = { ...n, b, o: Math.round(n.o * frac), us: undefined, c: kids.length ? kids : undefined }
-    if (n.rb != null) out.rb = Math.round(n.rb * frac)
-    return out
-  }
-  const kids = (root.c ?? []).map(walk).filter((c): c is TreeNode => c != null)
-  return reaggregate(root, kids)
-}
-
 export function filterTree(n: TreeNode, pred: NodePred): TreeNode | null {
   if (pred(n)) return n
   const kids = (n.c ?? []).map(c => filterTree(c, pred)).filter((c): c is TreeNode => c != null)
@@ -94,19 +80,6 @@ export function applyNodeFilter(root: TreeNode, pred: NodePred): TreeNode {
 /** The outermost matched prefixes (what a bulk action targets): every
  * non-fold node whose path matches, without descending inside matches —
  * exactly the roots `applyFilter` keeps whole. */
-export function collectMatches(root: TreeNode, pred: NamePred): { path: string; b: number }[] {
-  const out: { path: string; b: number }[] = []
-  const walk = (n: TreeNode, path: string) => {
-    if (!n.n.startsWith('(') && pred(path)) {
-      out.push({ path, b: n.b })
-      return
-    }
-    for (const c of n.c ?? []) walk(c, c.n.startsWith('(') ? path : `${path}/${c.n}`)
-  }
-  for (const b of root.c ?? []) walk(b, b.n)
-  return out
-}
-
 /** Filter below the root by *path* (fold nodes never match). Paths are the
  * node's segments below the root joined with `/` (`bucket/dir/sub`), built
  * during the walk so the predicate sees the whole ancestry. */
@@ -122,3 +95,20 @@ export function applyFilter(root: TreeNode, pred: NamePred): TreeNode {
   const kids = (root.c ?? []).map(b => walk(b, b.n)).filter((c): c is TreeNode => c != null)
   return reaggregate(root, kids)
 }
+
+/** The outermost prefixes a server-side name filter matched — nodes flagged
+ * `m` by `/api/subtree?q=` (their whole subtree came along, so descendants
+ * aren't flagged). Paths are segments below the root joined with `/`. */
+export function collectFlagged(root: TreeNode): { path: string; b: number }[] {
+  const out: { path: string; b: number }[] = []
+  const walk = (n: TreeNode, path: string) => {
+    if ((n as TreeNode & { m?: number }).m) {
+      out.push({ path, b: n.b })
+      return
+    }
+    for (const c of n.c ?? []) walk(c, c.n.startsWith('(') ? path : path ? `${path}/${c.n}` : c.n)
+  }
+  for (const b of root.c ?? []) walk(b, b.n)
+  return out
+}
+

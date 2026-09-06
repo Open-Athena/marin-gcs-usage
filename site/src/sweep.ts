@@ -4,7 +4,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { reaggregate, type NodePred } from './filterTree'
 import { newer, type KeepRow, type MarkAction, type MarkIndex, type OwnerRow } from './marks'
-import { classMix, unclaimedBytes, userBytes, type TreeNode } from './types'
+import { classMix, unclaimedBytes, type TreeNode } from './types'
 
 export interface SweepRow {
   uri: string
@@ -20,21 +20,9 @@ export type Lens = (n: TreeNode) => number
 
 export const userLens = (user: string): Lens => n => n.us?.find(([u]) => u === user)?.[1] ?? 0
 
-/** The owner axis's "nobody" bucket as a slice: bytes no person owns. Feed to
- * `applyLensScale` to scope a tree to just these bytes (a node shrinks to
- * exactly its unclaimed share; keeping whole subtrees let each one's minority
- * ride along — ~0.5 PiB of user bytes once leaked into "Unclaimed"). */
-export const unattrSlice = (n: TreeNode): Record<string, number> => {
-  const u = unclaimedBytes(n)
-  return u > 0 ? { unclaimed: u } : {}
-}
+/** Bytes no person owns under a node — the unclaimed pool's share (the
+ * map's unclaimed highlight dims cells that aren't majority-unclaimed). */
 export const unattrLens: Lens = unclaimedBytes
-
-/** The complement: bytes some person owns. */
-export const claimedSlice = (n: TreeNode): Record<string, number> => {
-  const c = userBytes(n)
-  return c > 0 ? { claimed: c } : {}
-}
 
 /**
  * Treemap-scoping predicate for a lens: keep the maximal subtrees the lens
@@ -234,23 +222,6 @@ export const fateAllowed = (fate: Fate, allowed: ReadonlySet<FateAxis>): boolean
  * mixed ones and re-aggregate ancestors. Folded `(other)` tiles inside mixed
  * nodes are dropped — the tree can't say what's inside them.
  */
-export function applyFateFilter(root: TreeNode, idx: MarkIndex, allowed: ReadonlySet<FateAxis>): TreeNode {
-  const ctx = fateWalkCtx(idx.keeps)
-  const walk = (n: TreeNode, uri: string, inherited: KeepRow | null): TreeNode | null => {
-    const win = winRow(ctx, uri, inherited)
-    if (!ctx.below(uri)) return fateAllowed(fateOf(win), allowed) ? n : null
-    const kids = (n.c ?? [])
-      .filter(c => !c.n.startsWith('('))
-      .map(c => walk(c, `${uri}/${c.n}`, win))
-      .filter((c): c is TreeNode => c != null)
-    return kids.length ? reaggregate(n, kids) : null
-  }
-  const buckets = (root.c ?? [])
-    .map(b => walk(b, `gs://${b.n}`, null))
-    .filter((c): c is TreeNode => c != null)
-  return reaggregate(root, buckets)
-}
-
 /**
  * Per-user bytes by fate across the whole tree, in one walk: descend only
  * while a subtree still holds deeper marks; at each settle point distribute

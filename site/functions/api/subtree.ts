@@ -1,14 +1,21 @@
 /** Pixel-budget subtree of any path, served from the index tiers
  * (specs/view-serving.md; the folding lives in `_lib/view.ts`).
  *
- *   GET /api/subtree?date=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>][&lens=user:<id>]
+ *   GET /api/subtree?date=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>]
+ *                    [&lens=user:<id>][&o=claimed|unclaimed][&k=<⊆ksu>][&q=<name filter>]
  *
- * Responses are immutable per (date, path, w₁₂₈, h₁₂₈, minArea, atten, lens)
- * — scans never change — and cached in the edge cache accordingly. w/h
- * arrive quantized-up to 128px so resizes mostly re-hit the cache.
+ * The page's scope axes (specs/view-serving.md §2) are applied server-side:
+ * the owner axis (`lens` for a user, `o` for the pools), the mark axis (`k`,
+ * folded from the live ledger), the name filter (`q`). Responses are
+ * immutable per (date, path, w₁₂₈, h₁₂₈, minArea, atten, scope) plus the
+ * ledger head when `k` is set — and cached in the edge cache accordingly.
+ * w/h arrive quantized-up to 128px so resizes mostly re-hit the cache.
  */
 import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { parseFates } from '../_lib/fates.js'
 import type { Lens } from '../_lib/index.js'
+import { ledgerHead } from '../_lib/ledger.js'
+import { parseOwner, parseQuery } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 
 const CACHE = 'private, max-age=86400' // immutable per scan; browser may hold it
@@ -38,20 +45,28 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     lens = { key: m[1] }
   }
 
+  const owner = parseOwner(url.searchParams.get('o'))
+  const fates = parseFates(url.searchParams.get('k'))
+  const qRaw = url.searchParams.get('q') ?? ''
+  const query = parseQuery(qRaw) ?? undefined
+
   // Data is gated (store-specific scope), like /data/*.
   const scope = path.startsWith('cw/') ? CW_SCOPE : GCS_SCOPE
   const gated = await requireScope(ctx as never, scope)
   if (gated instanceof Response) return gated
 
+  // The mark axis folds the live ledger: its cache key carries the head.
+  const head = fates && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
-    `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}`,
+    `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
+      `&o=${owner ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
 
   try {
-    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens })
+    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, fates, query })
     const body = JSON.stringify({
       date,
       path,
@@ -65,6 +80,9 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       threshold: Math.round(view.threshold),
       nodes: view.nodes,
       truncated: view.truncated,
+      ...(owner ? { owner } : {}),
+      ...(fates ? { fates: [...fates].sort() } : {}),
+      ...(query ? { q: qRaw, matches: view.matches } : {}),
       tree: view.tree,
     })
     const res = new Response(body, {

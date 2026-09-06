@@ -844,6 +844,8 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
 
     states: dict[str, dict] = {}
     for m in marks:
+        if not m.get("keep"):  # a clear (keep null) decides nothing — not a band to sweep
+            continue
         votes = vr.votes(m["prefix"])
         st = VoteResolver._agg(votes.values())
         if st == "keep" and votes and all(v == "keep_last_ckpt" for v in votes.values()):

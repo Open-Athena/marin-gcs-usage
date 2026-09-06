@@ -16,10 +16,10 @@ import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
-import { applyFilter, applyLensScale, applyNodeFilter, collectMatches, parseQuery } from './filterTree'
+import { collectFlagged, parseQuery } from './filterTree'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
-import { FATE_AXES, applyFateFilter, claimedSlice, klcSplits, lensNodePred, unattrSlice, useMyUser, userLens } from './sweep'
+import { FATE_AXES, klcSplits, useMyUser } from './sweep'
 import type { FateAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SiteNav, TOPBAR_VAR } from './SiteNav'
@@ -145,8 +145,8 @@ function AppContent() {
     enabled: !!asof,
     staleTime: Infinity,
   })
-  // `?f=` (name filter), `?k=` (mark axis) and `?o=` (owner axis) read early:
-  // they decide whether the full artifact tree is needed at all (see treeQ
+  // `?f=` (name filter), `?k=` (mark axis) and `?o=` (owner axis): the
+  // page's scope, sent to the server with every view (see `scopeQs`
   // below). The two axes replace the old review *lenses* (`?l=todo|user|
   // unclaimed`, `?lu=`, and the `?u=` legend pin) — one orthogonal pair
   // instead of a tab row, so "unmarked ∧ unclaimed" or "sweep ∧ one user"
@@ -187,29 +187,17 @@ function AppContent() {
     setOP(on.size === 2 || on.size === 0 ? undefined : on.has('claimed') ? 'claimed' : 'unclaimed')
   }
   const viewUser = ownerUser
-  // tree.json is ~29MB — the estate-wide walks (name filter's match set +
-  // re-aggregation, lens scoping) still need its depth, but plain browsing
-  // doesn't: the map seeds from the same pixel-budget /api/subtree that
-  // serves drills. So the full tree only downloads when a filter or lens is
-  // active (or for stores with no path index, where it's the only source).
-  // Mark mode does NOT need it any more: the root keep/sweep/undecided rollup
-  // and /users come from /api/marks/totals (ledger × floor-free index,
-  // server-side); drilled rollups resolve on the loaded subtree and say ≈.
-  // Server-side USER lens: My files / a pinned user render as a treemap of that
-  // user's bytes, served from the by-user index variant (`/api/subtree?lens=`)
-  // — no tree.json. Team lenses (communal/unclaimed) and todo/name-filter stay
-  // on tree.json (a broad pool overruns the floor-free lens; see
-  // specs/path-agnostic-serving.md §2.3).
+  // Every scope axis is applied server-side by /api/subtree (specs/
+  // view-serving.md §2): a user (`lens=user:`), a pool (`o=`), the mark axis
+  // (`k=`, folded from the live ledger), the name filter (`q=`). The client
+  // receives exactly the current view and only draws it.
   const lensUser = viewUser
-  const subtreeLens = store.key === 'gcs' && lensUser && !fq ? `user:${lensUser}` : null
-  // A scan whose by-user variant isn't synced (e.g. the daily ran on an image
-  // predating it) makes the lens subtree 500; remember that (scan, lens) as
-  // broken and fall back to tree.json + the client filter, rather than sticking
-  // on "loading tree…". Set by the effect after the subtree queries below.
-  const [lensBrokenKey, setLensBrokenKey] = useState<string | null>(null)
-  const lensKey = subtreeLens ? `${asof}:${subtreeLens}` : null
-  const activeLens = subtreeLens && lensBrokenKey !== lensKey ? subtreeLens : null
-  const needFullTree = !activeLens && (store.key !== 'gcs' || fq != null || fateSet != null || ownerMode !== 'all')
+  const activeLens = lensUser ? `user:${lensUser}` : null
+  const scopeQs =
+    (activeLens ? `&lens=${activeLens}` : '') +
+    (ownerMode === 'claimed' || ownerMode === 'unclaimed' ? `&o=${ownerMode}` : '') +
+    (fateSet ? `&k=${[...fateSet].map(f => f[0]).join('')}` : '') +
+    (fq ? `&q=${encodeURIComponent(fq)}` : '')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
   // digests, /user pages) work and re-share in the current form:
   //   ?l=todo → ?k=u · ?l=unclaimed|communal, ?t=unattributed|communal → ?o=unclaimed
@@ -232,7 +220,6 @@ function AppContent() {
     navigate({ pathname, search: `?${sp.toString()}`, hash }, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search])
-  const treeQ = useQuery({ ...scanQuery<TreeNode>('tree'), enabled: !!asof && needFullTree })
   const ageQ = useQuery(scanQuery<AgeRow[]>('age'))
   const metaQ = useQuery(scanQuery<Meta>('meta'))
   // The Diff section's "before" endpoint comes from the `?d=` span (see
@@ -283,45 +270,34 @@ function AppContent() {
   // source): the map's base is the pixel-budget subtree at the store root,
   // and every level of the drilled path gets its own subtree query, grafted
   // in depth order — interactive drills hit each level's cache as they go,
-  // and a cold deep link fans the whole chain out in parallel. tree.json is
-  // only the base when it's already needed (filter/lens) or the store has no
-  // path index (CW).
+  // and a cold deep link fans the whole chain out in parallel.
   const graftPath = pathname.slice((store.path === '/' ? '' : store.path).length).replace(/^\/+/, '')
   const canW = Math.ceil((typeof window === 'undefined' ? 1280 : window.innerWidth) / 128) * 128
   const subtreePaths = useMemo(() => {
-    if (store.key !== 'gcs') return []
     const segs = graftPath.split('/').filter(Boolean)
     return ['', ...segs.map((_, i) => segs.slice(0, i + 1).join('/'))]
-  }, [store.key, graftPath])
+  }, [graftPath])
   const subtreeQs = useQueries({
     queries: subtreePaths.map(p => ({
-      queryKey: ['subtree', store.key, asof, p, canW, activeLens],
+      queryKey: ['subtree', asof, p, canW, scopeQs],
       enabled: !!asof,
-      staleTime: Infinity,
-      // Retry (not `false`): a cold isolate can transiently 500 on a lens read;
-      // returning null-without-retry left the map stuck on "loading tree…".
-      // Retry transient failures, but NOT a 409 (lens variant not synced for
-      // this scan) — that's deterministic; fail fast so the effect below falls
-      // back to tree.json + the client filter.
-      retry: (n: number, e: Error) => !e.message.startsWith('409') && n < 3,
+      staleTime: fateSet ? 30_000 : Infinity, // the mark axis follows the live ledger
+      // Retry transient failures, but not the deterministic ones (409: no
+      // user index for this scan; 413: view too wide) — those surface as-is.
+      retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
       retryDelay: (n: number) => 400 * 2 ** n,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${activeLens ? `&lens=${activeLens}` : ''}`,
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
           { credentials: 'include' },
         )
         if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
-        return r.json() as Promise<{ tree: TreeNode }>
+        return r.json() as Promise<{ tree: TreeNode; matches?: string[] }>
       },
     })),
   })
-  const rootSub = subtreeQs[0]?.data?.tree ?? null
-  // Lens variant missing for this scan → the root sub errored; fall back.
-  const rootSubErr = subtreeQs[0]?.isError
-  useEffect(() => {
-    if (lensKey && rootSubErr) setLensBrokenKey(lensKey)
-  }, [lensKey, rootSubErr])
-  const baseTree: TreeNode | null = treeQ.data ?? (store.key === 'gcs' ? rootSub : null)
+  const baseTree: TreeNode | null = subtreeQs[0]?.data?.tree ?? null
+  const rootErr = subtreeQs[0]?.error as Error | undefined
   // useQueries returns a fresh array each render; stamp the data so the graft
   // memo re-runs exactly when a response lands.
   const subStamp = subtreeQs.map(q => q.dataUpdatedAt).join(',')
@@ -360,9 +336,13 @@ function AppContent() {
     () => (tree && markIdx.count ? klcSplits(tree, markIdx.keeps) : undefined),
     [tree, markIdx],
   )
+  // The marks feed filters its (small, client-held) rows by the same name
+  // query; the map's filtering is the server's.
   const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
-  const shownTree = useMemo(() => (tree && pred ? applyFilter(tree, pred) : tree), [tree, pred])
-  const fMatches = useMemo(() => (tree && pred ? collectMatches(tree, pred) : []), [tree, pred])
+  // Bulk actions target the outermost matched prefixes — the nodes the server
+  // flagged `m` (a match root's whole subtree comes along, so its descendants
+  // aren't flagged).
+  const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
   // Deep-link to a section via `#hash` (e.g. `…/ego-dex#over-time`). Re-runs
@@ -486,40 +466,16 @@ function AppContent() {
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
   const lensScoped = fateSet != null || ownerMode !== 'all'
-  // The page scope, applied to a tree: the owner axis, then the mark axis.
-  // Shared by the map and the Diff section's two sides, so every widget
-  // answers the same question. (The `?f=` name filter is applied before this
-  // — `shownTree` for the map, per side for the diff.) `ownerDone` = a server
-  // user-lens tree already IS that user's bytes; only the mark axis applies.
-  const scopeTree = (t: TreeNode, ownerDone = false): TreeNode => {
-    if (!ownerDone) {
-      // A user keeps maximal ≥60%-owned subtrees whole (their dirs, minority
-      // co-tenants dimmed by the highlight). The pools instead *slice*: every
-      // node shrinks to exactly its userless (or user-owned) share — keeping
-      // whole subtrees let each one's minority ride along (~0.5 PiB of user
-      // bytes leaked into "Unclaimed").
-      if (ownerMode === 'user') t = applyNodeFilter(t, lensNodePred(userLens(ownerUser!)))
-      else if (ownerMode === 'unclaimed') t = applyLensScale(t, unattrSlice)
-      else if (ownerMode === 'claimed') t = applyLensScale(t, claimedSlice)
-    }
-    if (fateSet) t = applyFateFilter(t, markIdx, fateSet)
-    return t
-  }
-  const mapTree = useMemo(() => {
-    if (!shownTree) return shownTree
-    return scopeTree(shownTree, !!activeLens)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shownTree, activeLens, fateSet, markIdx, ownerMode, ownerUser])
-  // Diff sides: the drilled subtree at each endpoint (the server user-lens
-  // variant when the map uses it), name-filtered and scoped like the map.
+  const mapTree = tree
+  // Diff sides: the drilled subtree at each endpoint, scoped like the map.
   const diffPair = useQueries({
     queries: (diffPrev && asof ? [diffPrev, asof] : []).map(d => ({
-      queryKey: ['diff-side', store.key, d, graftPath, activeLens],
+      queryKey: ['diff-side', d, graftPath, scopeQs],
       staleTime: Infinity,
       retry: 1,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${d}&path=${encodeURIComponent(graftPath)}&w=1200&h=720${activeLens ? `&lens=${activeLens}` : ''}`,
+          `/api/subtree?date=${d}&path=${encodeURIComponent(graftPath)}&w=1200&h=720${scopeQs}`,
           { credentials: 'include' },
         )
         if (!r.ok) throw Object.assign(new Error(`${r.status}`), { status: r.status })
@@ -530,10 +486,8 @@ function AppContent() {
   const diff: DiffData | null = useMemo(() => {
     const [a, b] = [diffPair[0]?.data?.tree, diffPair[1]?.data?.tree]
     if (!a || !b || !diffPrev || !asof) return null
-    const side = (t: TreeNode) => scopeTree(pred ? applyFilter(t, pred) : t, !!activeLens)
-    return clientDiff(side(a), side(b), diffPrev, asof)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [diffPair[0]?.data, diffPair[1]?.data, diffPrev, asof, activeLens, pred, fateSet, markIdx, ownerMode, ownerUser])
+    return clientDiff(a, b, diffPrev, asof)
+  }, [diffPair[0]?.data, diffPair[1]?.data, diffPrev, asof])
   const diffMissing = diffPair.find(q => q.isError)
   // One-line description of the page scope, for the section subtitles:
   // where, then whose, then which mark states, then which names.
@@ -850,17 +804,15 @@ function AppContent() {
               aria-label="Filter tree by segment name"
               size={22}
             />
-            {pred && shownTree && tree && (
+            {fq && tree && (
               <span className="fnote">
-                {shownTree.b > 0
-                  ? <>{fmtBytes(shownTree.b)} matched ({((100 * shownTree.b) / tree.b).toFixed(1)}%)</>
-                  : 'no matches'}
+                {tree.b > 0 ? <>{fmtBytes(tree.b)} matched</> : 'no matches'}
                 <button type="button" title="clear filter" onClick={() => setFq(undefined)}>✕</button>
               </span>
             )}
           </span>
         )}
-        {pred && fq && fMatches.length > 0 && (
+        {fq && fMatches.length > 0 && (
           <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
         )}
       </SiteNav>
@@ -939,7 +891,13 @@ function AppContent() {
           )}
         </>
       ) : (
-        <p className="loading">loading tree…</p>
+        <p className="loading">
+          {rootErr
+            ? rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
+            : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in, or narrow the scope'
+            : `view failed: ${rootErr.message}`
+            : 'loading tree…'}
+        </p>
       )}
 
       {/* With the mark axis active the series chart flips to mark-progress

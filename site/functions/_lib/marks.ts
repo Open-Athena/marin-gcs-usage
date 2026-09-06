@@ -85,7 +85,9 @@ export interface FateTotals { keep: number; keep_last_ckpt: number; sweep: numbe
 export interface UserTotals extends FateTotals { mix: Record<Fate, Record<string, number>> }
 export interface MarkRow {
   prefix: string
-  keep: MarkAction
+  /** null = a clear (an explicit "no decision" that repaints deeper marks
+   * as unmarked when newer) — carried so per-node folds see it. */
+  keep: MarkAction | null
   who?: string
   ts: number
   bytes: number
@@ -95,6 +97,12 @@ export interface MarkRow {
   net_objects: number
   /** Set when a newer ancestor mark repaints this one — it decides nothing. */
   repainted_by?: string
+  /** The fate this mark's band actually carries (its own keep, or the
+   * repainter's) — what a per-node fold applies. */
+  eff: Fate
+  /** The band's bytes by painted fate: a decomposed `keep_last_ckpt` splits
+   * into keep + sweep; anything else is all one fate. Sums to the band. */
+  net: Record<Fate, number>
 }
 export interface Totals {
   bytes: number
@@ -230,22 +238,27 @@ export function computeTotals(input: TotalsInput): Totals {
       }
     }
   }
+  const painted = new Map<Node, Record<Fate, number>>()
   for (const n of nodes.values()) {
     const f: Fate = n.effKeep?.keep ?? 'unmarked'
     const claimant = n.effOwner?.owner ?? null
+    const split: Record<Fate, number> = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
     if (f === 'keep_last_ckpt') {
       // Decompose where the step dirs are in view; the kept child's bytes are
       // keep, the rest of the band sweeps. Unresolvable → stays "last ckpt".
       const kPath = idxKey(n.effKeep!.prefix).path
       const kids = klcKids.get(kPath)
       const kept = kids?.length ? Math.min(n.band.b, klcKeptBytes(kPath, kids)) : null
-      if (kept == null) paint(n.band, 'keep_last_ckpt', 1, claimant)
+      if (kept == null) { paint(n.band, 'keep_last_ckpt', 1, claimant); split.keep_last_ckpt = n.band.b }
       else {
         const r = n.band.b > 0 ? kept / n.band.b : 0
         paint(n.band, 'keep', r, claimant)
         paint(n.band, 'sweep', 1 - r, claimant)
+        split.keep = n.band.b * r
+        split.sweep = n.band.b * (1 - r)
       }
-    } else paint(n.band, f, 1, claimant)
+    } else { paint(n.band, f, 1, claimant); split[f] = n.band.b }
+    painted.set(n, split)
   }
   // Undecided remainder: each bucket minus its top-level bands. A ledger row
   // exactly on the bucket is the sole top-level node and its band already
@@ -266,7 +279,7 @@ export function computeTotals(input: TotalsInput): Totals {
   }
   const marks: MarkRow[] = []
   for (const n of nodes.values()) {
-    if (!n.keep?.keep) continue
+    if (!n.keep) continue
     const live = n.effKeep === n.keep
     marks.push({
       prefix: n.prefix,
@@ -278,6 +291,8 @@ export function computeTotals(input: TotalsInput): Totals {
       net_bytes: live ? n.band.b : 0,
       net_objects: live ? n.band.o : 0,
       ...(live ? {} : { repainted_by: n.effKeep!.prefix }),
+      eff: n.effKeep?.keep ?? 'unmarked',
+      net: painted.get(n)!,
     })
   }
   marks.sort((a, b) => b.net_bytes - a.net_bytes)
