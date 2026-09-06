@@ -34,6 +34,7 @@ TS = {
     "d0701": dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc),
     "d0702": dt.datetime(2026, 7, 2, tzinfo=dt.timezone.utc),
     "d0703": dt.datetime(2026, 7, 3, tzinfo=dt.timezone.utc),
+    "d0720": dt.datetime(2026, 7, 20, 6, tzinfo=dt.timezone.utc),  # the scan date itself
 }
 
 epoch_day = lambda ts: int(ts.timestamp() // 86400)  # noqa: E731
@@ -162,19 +163,47 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
 
 @pytest.fixture
 def access(tmp_path: Path) -> str:
-    """Layer-2a access agg: one read prefix (plus its ancestor rollup row)."""
+    """Layer-2a access agg: one read prefix (plus its ancestor rollup row), and
+    a read of `datasets` dated ON the scan date — which the as-of rule
+    (`day < scan date`) must leave out, so `datasets` stays never-read."""
     path = tmp_path / "access.parquet"
     pd.DataFrame(
         {
-            "bucket": ["b1", "b1"],
-            "path": ["users/rw/ckpt", "users"],
-            "op": ["GET", "GET"],
-            "last_ts": [TS["d0703"], TS["d0703"]],
-            "n_ops": [3, 3],
-            "bytes_out": [1000, 1000],
+            "bucket": ["b1", "b1", "b1"],
+            "path": ["users/rw/ckpt", "users", "datasets"],
+            "day": [TS["d0703"].date(), TS["d0703"].date(), TS["d0720"].date()],
+            "op": ["GET", "GET", "GET"],
+            "last_ts": [TS["d0703"], TS["d0703"], TS["d0720"]],
+            "n_ops": [3, 3, 9],
+            "bytes_out": [1000, 1000, 9000],
         }
     ).to_parquet(path)
     return str(path)
+
+
+def test_access_rows_on_or_after_scan_date_are_excluded(tmp_path: Path, listing: str, attribution: str, access: str):
+    """A scan dated D aggregates access-log rows with `day < D` only, whatever
+    shards exist when it runs — so a re-aggregation of an old date reproduces
+    it rather than leaking later reads in. The fixture's `datasets` read is
+    dated on the scan date: the access window, the tree and the path index
+    all behave as if it never happened."""
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    out = tmp_path / "out"
+    pidx = tmp_path / "path-index.parquet"
+    meta = write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path, access=(access,), path_index=pidx)
+    rd = epoch_day(TS["d0703"])
+    assert meta["access"] == {"from": rd, "to": rd}
+    tree = json.loads((out / "tree.json").read_text())
+    b1 = tree["c"][0]
+    assert {c["n"]: (c.get("a"), c.get("ro"), c.get("rb")) for c in b1["c"]} == {
+        "datasets": (None, None, None),
+        "users": (rd, 3, 1000),
+        "(other)": (None, None, None),
+    }
+    a_by_path = pd.read_parquet(pidx).groupby("path")["a"].max().to_dict()
+    assert pd.isna(a_by_path["b1/datasets"])
+    assert a_by_path["b1"] == rd
 
 
 def test_age_rows_carry_last_read(tmp_path: Path, listing: str, attribution: str, access: str):

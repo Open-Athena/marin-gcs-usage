@@ -217,8 +217,11 @@ def write_webdata(
               CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday,
               COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
               COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
+    # As-of rule: a scan dated D sees reads through the end of D-1 UTC
+    # (`day < D`), whatever shards exist when this runs — so a re-aggregation
+    # of an old date reproduces it instead of leaking later reads into it.
             FROM read_parquet({globs})
-            WHERE op IN ('GET', 'HEAD', 'LIST')
+            WHERE op IN ('GET', 'HEAD', 'LIST') AND day < DATE '{asof}'
             GROUP BY 1, 2
             """
         )
@@ -229,7 +232,8 @@ def write_webdata(
             amap[f"{bucket}/{path}" if path else bucket] = (aday, int(ro), int(rb))
         lo, hi = con.execute(
             f"SELECT CAST(floor(epoch(MIN(last_ts)) / 86400) AS INTEGER), "
-            f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs})"
+            f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs}) "
+            f"WHERE day < DATE '{asof}'"
         ).fetchone()
         if lo is not None:
             access_window = (int(lo), int(hi))
