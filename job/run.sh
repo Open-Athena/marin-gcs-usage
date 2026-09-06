@@ -19,6 +19,13 @@ set -euxo pipefail
 DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
 SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
+# INDEX_PATH: where the floor-free path index (+ its by-user/by-team variants)
+# lands; default is colocated with the listing. SCRATCH=1 marks a verification
+# run: publish to SNAP_PATH/INDEX_PATH only, and skip every step that touches
+# live state (D1 index-sync, healthcheck, series.json, diff, digest) — so a
+# pipeline suffix can be re-run for an old date into a scratch location and
+# compared against what was published, without disturbing it.
+INDEX_PATH=${INDEX_PATH:-listing/$DATE/path-index.parquet}
 
 # Failure alerting: any command dying under `set -e` posts to Slack before the
 # job exits — otherwise silence is the only failure signal (the success digest
@@ -170,7 +177,7 @@ X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 # Colocated with the listing (immutable per date, same lifecycle).
 gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
   -c "/gcs/$DATA/listing/$DATE/dir-cache" \
-  -P "/gcs/$DATA/listing/$DATE/path-index.parquet"
+  -P "/gcs/$DATA/$INDEX_PATH"
 gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 echo "PHASE webdata+stage: ${SECONDS}s (wall)" >&2
 
@@ -178,6 +185,11 @@ echo "PHASE webdata+stage: ${SECONDS}s (wall)" >&2
 # (site/functions/data/[[path]].ts), so no site rebuild/deploy is needed.
 mkdir -p "/gcs/$DATA/$SNAP_PATH"
 cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
+if [ "${SCRATCH:-0}" = "1" ]; then
+  echo "SCRATCH — published to $SNAP_PATH + $INDEX_PATH; skipping index-sync/healthcheck/series/diff/digest" >&2
+  echo "PHASE total: ${SECONDS}s (wall)" >&2
+  exit 0
+fi
 # attribution rules: the single latest copy the /data/rules.json function serves
 cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 echo "PHASE publish: ${SECONDS}s (wall)" >&2

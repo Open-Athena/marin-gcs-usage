@@ -12,22 +12,25 @@ PROJECT=oa-internal-450019
 REGION=us-central1
 SA=gcs-usage-job@$PROJECT.iam.gserviceaccount.com
 IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:latest}
-# tree-rows aggregates 34M+ dir groups; its hash-agg state doesn't fully spill
-# and blows a 48GB DuckDB limit, so the job wants a highmem-16 (128G) machine
-MACHINE=${MACHINE:-n2-highmem-16}
-MEMORY_MIB=${MEMORY_MIB:-124000}
-LOCAL_SSD_GB=${LOCAL_SSD_GB:-750}  # n2 16-vCPU machines require >=2 local SSDs (375G each)
+# webdata's peak RSS is DuckDB at its cap plus ~40GB it doesn't account for
+# (the access dict + hash-agg overshoot on 179M dir groups): 124GB on a
+# highmem-16 was OOM-killed on 2026-09-05/06, so the daily runs on a highmem-32
+# (256G) until specs/view-serving.md §4–5 land and the peak comes back down.
+# Keep in sync with the Cloud Scheduler body (edited in place, not regenerated).
+MACHINE=${MACHINE:-n2-highmem-32}
+MEMORY_MIB=${MEMORY_MIB:-250000}
+LOCAL_SSD_GB=${LOCAL_SSD_GB:-1500}  # n2 32-vCPU machines require >=4 local SSDs (375G each)
 JOB_ID=${JOB_ID:-gcs-usage-snapshot-$(date -u +%Y%m%d-%H%M%S)}
 
 vars() {  # container env: defaults + optional passthroughs
   python3 - <<'EOF'
 import json, os
 v = {
-    # 86 (was 100, then 90): DuckDB at its cap plus process overhead must fit
-    # the container — 100GB inside 117GiB got kernel-OOM-killed (exit 137)
-    # twice, and 90GB tipped over the same way on 2026-09-01 as the dir-group
-    # count grew (the tree-rows hash agg overshoots DuckDB's own accounting)
-    "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "86GB"),
+    # 100 on the 256G node (was 86 on 128G: DuckDB at its cap plus ~40GB of
+    # unaccounted process memory must fit the container — 100 and 90 inside
+    # 124GB both got kernel-OOM-killed, exit 137, as the dir-group count grew).
+    # Measured 2026-09-06 REPROC on highmem-32: peak RSS 141.7GB at 100GB.
+    "DUCKDB_MEM": os.environ.get("DUCKDB_MEM", "100GB"),
     # access ingest runs before (not concurrent with) the webdata step, so
     # it can take a big slice of the 128G node; 24GB OOM'd on a row-heavy
     # 53GB chunk (2026-08-23)
@@ -44,7 +47,7 @@ v = {
     "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }
 v = {k: s for k, s in v.items() if s}
-for k in ["SNAPSHOT_DATE", "SNAP_PATH", "REPROC",
+for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC",
           "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
           "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
