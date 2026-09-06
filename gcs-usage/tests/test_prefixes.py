@@ -15,14 +15,11 @@ IDENTITIES_YAML = """\
 users:
   ryan-williams:
     aliases: [rw]
-    team: infra
-teams: [infra, data]
 prefix_owners:
   - prefix: gs://b*/datasets/
-    team: data
+    user: data-team
   - prefix: gs://b1/scratch/rw/
     user: ryan-williams
-    team: infra
 """
 
 
@@ -53,7 +50,6 @@ def attribution(tmp_path: Path) -> str:
         {
             "prefix": ["gs://b1/users/rw/", "gs://b1/datasets/finelog/"],
             "user": ["rw", None],
-            "team": ["unknown", "data"],
             "source": ["user-prefix", "manual"],
             "asof": [dt.date(2026, 7, 20)] * 2,
         }
@@ -67,34 +63,32 @@ def test_load_prefix_map(identities, listing: str, attribution: str):
     # parquet rows re-resolve raw users against current identities; wildcard
     # prefix_owners fan out over the listing's buckets (b* matches b1/b2, not c9)
     assert by_prefix == {
-        "gs://b1/users/rw/": ("ryan-williams", "infra", "user-prefix"),
-        "gs://b1/datasets/finelog/": (None, "data", "manual"),
-        "gs://b1/datasets/": (None, "data", "manual"),
-        "gs://b2/datasets/": (None, "data", "manual"),
-        "gs://b1/scratch/rw/": ("ryan-williams", "infra", "manual"),
+        "gs://b1/users/rw/": ("ryan-williams", "user-prefix"),
+        "gs://b1/datasets/finelog/": (None, "manual"),
+        "gs://b1/datasets/": ("data-team", "manual"),
+        "gs://b2/datasets/": ("data-team", "manual"),
+        "gs://b1/scratch/rw/": ("ryan-williams", "manual"),
     }
 
 
 def test_deepest_lookup_wins_and_misses(identities, listing: str, attribution: str):
     con = duckdb.connect()
     deepest = deepest_lookup(load_prefix_map(con, (attribution,), identities, prepare_listing(con, (listing,))))
-    # deepest ancestor wins over shallower manual rows
-    assert deepest("b1/datasets/finelog/part-0") == (None, "data", "manual")
-    assert deepest("b1/datasets/other") == (None, "data", "manual")
-    assert deepest("b1/users/rw/ckpt/step-1") == ("ryan-williams", "infra", "user-prefix")
+    # deepest ancestor wins over shallower manual rows (a deeper NULL-user row
+    # — explicit nobody — beats the shallower owner)
+    assert deepest("b1/datasets/finelog/part-0") == (None, "manual")
+    assert deepest("b1/datasets/other") == ("data-team", "manual")
+    assert deepest("b1/users/rw/ckpt/step-1") == ("ryan-williams", "user-prefix")
     assert deepest("b1/unrelated/dir") is None
     assert deepest("c9/datasets/x") is None
 
 
 GLOB_IDENTITIES_YAML = """\
 users:
-  calvin-xu:
-    team: data
-teams: [infra, data]
+  calvin-xu: {}
 prefix_owners:
   - prefix: gs://b1/grug/swarm_*/
     user: calvin-xu
-    team: data
 """
 
 
@@ -123,10 +117,10 @@ def test_path_glob_expands_against_listing(tmp_path: Path):
     con = duckdb.connect()
     by_prefix = load_prefix_map(con, (), identities, prepare_listing(con, (str(listing),)))
     assert by_prefix == {
-        "gs://b1/grug/swarm_fisher_000001-aa/": ("calvin-xu", "data", "manual"),
-        "gs://b1/grug/swarm_fisher_000002-bb/": ("calvin-xu", "data", "manual"),
-        "gs://b1/grug/swarm_deep/": ("calvin-xu", "data", "manual"),
+        "gs://b1/grug/swarm_fisher_000001-aa/": ("calvin-xu", "manual"),
+        "gs://b1/grug/swarm_fisher_000002-bb/": ("calvin-xu", "manual"),
+        "gs://b1/grug/swarm_deep/": ("calvin-xu", "manual"),
     }
     deepest = deepest_lookup(by_prefix)
-    assert deepest("b1/grug/swarm_fisher_000002-bb/opt") == ("calvin-xu", "data", "manual")
+    assert deepest("b1/grug/swarm_fisher_000002-bb/opt") == ("calvin-xu", "manual")
     assert deepest("b1/grug/moe_67b-cc") is None

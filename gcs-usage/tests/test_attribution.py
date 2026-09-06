@@ -24,14 +24,11 @@ IDENTITIES_YAML = """
 users:
   ryan-williams:
     aliases: [rw]
-    team: infra
   russell-power:
     aliases: [rpower]
-    team: infra
-teams: [infra, data]
 prefix_owners:
   - prefix: gs://b1/datasets/
-    team: data
+    user: data-team
 """
 
 
@@ -55,14 +52,14 @@ def test_sanitize_username_matches_rigging_rules():
 
 def test_resolve_via_alias_sanitization_and_fallthrough(identities):
     # Alias hit, direct sanitize-to-canonical hit, and the fallthrough contract:
-    # an unmapped spelling resolves to its own sanitized segment with team "unknown"
-    # (attributed, surfaced for curation — never dropped).
+    # an unmapped spelling resolves to its own sanitized segment (attributed,
+    # surfaced for curation as not-known — never dropped).
     assert identities.resolve("rw") == "ryan-williams"
     assert identities.resolve("Ryan.Williams@laptop") == "ryan-williams"
     assert identities.resolve("rpower") == "russell-power"
     assert identities.resolve("someone.new") == "someone-new"
-    assert identities.team_of("ryan-williams") == "infra"
-    assert identities.team_of("someone-new") == "unknown"
+    assert identities.known("ryan-williams")
+    assert not identities.known("someone-new")
 
 
 def test_alias_collision_raises(tmp_path: Path):
@@ -70,9 +67,8 @@ def test_alias_collision_raises(tmp_path: Path):
     path.write_text(
         """
 users:
-  ryan-williams: {aliases: [rw], team: infra}
-  russell-power: {aliases: [rw], team: infra}
-teams: [infra]
+  ryan-williams: {aliases: [rw]}
+  russell-power: {aliases: [rw]}
 """
     )
     with pytest.raises(ValueError):
@@ -95,7 +91,6 @@ def test_user_prefix_rows(identities):
         AttributionRow(
             prefix="gs://b1/users/rw/",
             user="ryan-williams",
-            team="infra",
             source="user-prefix",
             evidence=None,
             asof=ASOF,
@@ -103,7 +98,6 @@ def test_user_prefix_rows(identities):
         AttributionRow(
             prefix="gs://b1/users/someone.new/",
             user="someone-new",
-            team="unknown",
             source="user-prefix",
             evidence=None,
             asof=ASOF,
@@ -158,7 +152,6 @@ def test_mine_record_rows_local_files(tmp_path: Path, identities):
         AttributionRow(
             prefix=f"{owned}/",
             user="ryan-williams",
-            team="infra",
             source="artifact-record",
             evidence="built_by=rw",
             asof=ASOF,

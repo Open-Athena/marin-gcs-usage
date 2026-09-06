@@ -92,7 +92,6 @@ def run_name_rows(
             AttributionRow(
                 prefix=f"gs://{bucket}/{parent}/{leaf}/",
                 user=user,
-                team=identities.team_of(user),
                 source="wandb-run",
                 evidence=f"run_name~{leaf}",
                 asof=asof,
@@ -146,7 +145,6 @@ def executor_rows(
             AttributionRow(
                 prefix=prefix,
                 user=user,
-                team=identities.team_of(user),
                 source="executor-wandb",
                 evidence=f"executor_name~{candidates[0]}",
                 asof=asof,
@@ -185,7 +183,6 @@ def writer_path_rows(
             AttributionRow(
                 prefix=prefix,
                 user=user,
-                team=identities.team_of(user),
                 source="wandb-config",
                 evidence=evidence[prefix],
                 asof=asof,

@@ -20,11 +20,9 @@ IDENTITIES_YAML = """\
 users:
   ryan-williams:
     aliases: [rw]
-    team: infra
-teams: [infra, data]
 prefix_owners:
   - prefix: gs://b1/datasets/
-    team: data
+    user: data-team
 """
 
 GB = 10**9
@@ -71,7 +69,6 @@ def attribution(tmp_path: Path) -> str:
         {
             "prefix": ["gs://b1/users/rw/"],
             "user": ["rw"],
-            "team": ["unknown"],
             "source": ["user-prefix"],
             "asof": [dt.date(2026, 7, 20)],
         }
@@ -93,13 +90,8 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "total_objects": 4,
         "class_bytes": {1: 180 * GB, 2: 200 * GB},
         "fold_min_frac": 0.0002,
-        "users": [{"u": "ryan-williams", "t": "infra", "b": 150 * GB}],
-        "team_class_bytes": {
-            "data": {2: 200 * GB},
-            "infra": {1: 150 * GB},
-            "unattributed": {1: 30 * GB},
-        },
-        "user_class_bytes": {"ryan-williams": {1: 150 * GB}},
+        "users": [{"u": "data-team", "b": 200 * GB}, {"u": "ryan-williams", "b": 150 * GB}],
+        "user_class_bytes": {"data-team": {2: 200 * GB}, "ryan-williams": {1: 150 * GB}},
     }
 
     tree = json.loads((out / "tree.json").read_text())
@@ -108,7 +100,6 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "b": 150 * GB,
         "o": 2,
         "d": wmean_day((100 * GB, TS["d0701"]), (50 * GB, TS["d0703"])),
-        "tm": {"infra": 150 * GB},
         "us": [["ryan-williams", 150 * GB]],
     }
     rw = {**ckpt, "n": "rw", "c": [ckpt]}
@@ -119,25 +110,22 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "o": 1,
         "d": epoch_day(TS["d0615"]),
         "cb": {"2": 200 * GB},
-        "tm": {"data": 200 * GB},
-        "sh": {"data": 200 * GB},
+        "us": [["data-team", 200 * GB]],
         "c": [
-            {"n": "raw", "b": 200 * GB, "o": 1, "d": epoch_day(TS["d0615"]), "cb": {"2": 200 * GB}, "tm": {"data": 200 * GB}, "sh": {"data": 200 * GB}},
+            {"n": "raw", "b": 200 * GB, "o": 1, "d": epoch_day(TS["d0615"]), "cb": {"2": 200 * GB}, "us": [["data-team", 200 * GB]]},
         ],
     }
     # top.bin is a direct file of b1: bytes the kept children (datasets, users)
     # don't cover, surfaced as an expandable (other) with its subtracted
     # attribution. f=0: no sub-floor dirs folded in, only the direct file.
-    other = {"n": "(other)", "b": 30 * GB, "o": 1, "f": 0, "d": epoch_day(TS["d0702"]), "tm": {"unattributed": 30 * GB}}
+    other = {"n": "(other)", "b": 30 * GB, "o": 1, "f": 0, "d": epoch_day(TS["d0702"])}
     b1 = {
         "n": "b1",
         "b": 380 * GB,
         "o": 4,
         "d": wmean_day(*zip([100 * GB, 50 * GB, 200 * GB, 30 * GB], [TS["d0701"], TS["d0703"], TS["d0615"], TS["d0702"]], strict=True)),
         "cb": {"2": 200 * GB},
-        "tm": {"data": 200 * GB, "infra": 150 * GB, "unattributed": 30 * GB},
-        "sh": {"data": 200 * GB},
-        "us": [["ryan-williams", 150 * GB]],
+        "us": [["data-team", 200 * GB], ["ryan-williams", 150 * GB]],
         "c": [datasets, users, other],
     }
     assert tree == {
@@ -146,18 +134,16 @@ def test_write_webdata_attr(tmp_path: Path, listing: str, attribution: str):
         "o": 4,
         "d": b1["d"],
         "cb": {"2": 200 * GB},
-        "tm": {"data": 200 * GB, "infra": 150 * GB, "unattributed": 30 * GB},
-        "sh": {"data": 200 * GB},
-        "us": [["ryan-williams", 150 * GB]],
+        "us": [["data-team", 200 * GB], ["ryan-williams", 150 * GB]],
         "c": [b1],
     }
 
     age = json.loads((out / "age.json").read_text())
     assert sorted(age, key=lambda r: (r["d"], r["d1"])) == [
-        {"d": epoch_day(TS["d0615"]), "d1": "datasets", "t": "data", "b": 200 * GB, "o": 1},
-        {"d": epoch_day(TS["d0701"]), "d1": "users", "t": "infra", "u": "ryan-williams", "b": 100 * GB, "o": 1},
-        {"d": epoch_day(TS["d0702"]), "d1": "(files)", "t": "unattributed", "b": 30 * GB, "o": 1},
-        {"d": epoch_day(TS["d0703"]), "d1": "users", "t": "infra", "u": "ryan-williams", "b": 50 * GB, "o": 1},
+        {"d": epoch_day(TS["d0615"]), "d1": "datasets", "u": "data-team", "b": 200 * GB, "o": 1},
+        {"d": epoch_day(TS["d0701"]), "d1": "users", "u": "ryan-williams", "b": 100 * GB, "o": 1},
+        {"d": epoch_day(TS["d0702"]), "d1": "(files)", "b": 30 * GB, "o": 1},
+        {"d": epoch_day(TS["d0703"]), "d1": "users", "u": "ryan-williams", "b": 50 * GB, "o": 1},
     ]
 
 
@@ -217,10 +203,10 @@ def test_age_rows_carry_last_read(tmp_path: Path, listing: str, attribution: str
     # omit it — the site's read axis colors those "never read".
     age = json.loads((out / "age.json").read_text())
     assert sorted(age, key=lambda r: (r["d"], r["d1"])) == [
-        {"d": epoch_day(TS["d0615"]), "d1": "datasets", "t": "data", "b": 200 * GB, "o": 1},
-        {"d": epoch_day(TS["d0701"]), "d1": "users", "t": "infra", "u": "ryan-williams", "a": rd, "b": 100 * GB, "o": 1},
-        {"d": epoch_day(TS["d0702"]), "d1": "(files)", "t": "unattributed", "b": 30 * GB, "o": 1},
-        {"d": epoch_day(TS["d0703"]), "d1": "users", "t": "infra", "u": "ryan-williams", "a": rd, "b": 50 * GB, "o": 1},
+        {"d": epoch_day(TS["d0615"]), "d1": "datasets", "u": "data-team", "b": 200 * GB, "o": 1},
+        {"d": epoch_day(TS["d0701"]), "d1": "users", "u": "ryan-williams", "a": rd, "b": 100 * GB, "o": 1},
+        {"d": epoch_day(TS["d0702"]), "d1": "(files)", "b": 30 * GB, "o": 1},
+        {"d": epoch_day(TS["d0703"]), "d1": "users", "u": "ryan-williams", "a": rd, "b": 50 * GB, "o": 1},
     ]
 
 
@@ -235,8 +221,8 @@ def test_path_index_carries_read_day(tmp_path: Path, listing: str, attribution: 
     write_webdata((listing,), out, "2026-07-20", (attribution,), identities_path, access=(access,), path_index=pidx)
     rd = epoch_day(TS["d0703"])
     df = pd.read_parquet(pidx)
-    assert list(df.columns) == ["path", "depth", "team", "usr", "b", "o", "wts", "wb", "c2", "c3", "c4", "a"]
-    # `a` is per (path) — collapse the team/usr slices to the path's max.
+    assert list(df.columns) == ["path", "depth", "usr", "b", "o", "wts", "wb", "c2", "c3", "c4", "a"]
+    # `a` is per (path) — collapse the usr slices to the path's max.
     a_by_path = df.groupby("path")["a"].max().to_dict()
     assert a_by_path["b1"] == rd            # bucket: max over everything under it
     assert a_by_path["b1/users"] == rd      # read subtree
@@ -270,25 +256,24 @@ def test_coarse_tiers_are_exact_subsets(tmp_path: Path, listing: str, attributio
     for e in COARSE_EXPS:
         keep = set(subtree[subtree >= floors[e]].index)
         expect = full[full.path.isin(keep)]
-        for suffix, order in (("", ["depth", "path"]), ("-by-user", ["usr", "depth", "path"]), ("-by-team", ["team", "depth", "path"])):
+        for suffix, order in (("", ["depth", "path"]), ("-by-user", ["usr", "depth", "path"])):
             f = tmp_path / f"path-index-coarse{e}{suffix}.parquet"
             assert pq.read_metadata(f).metadata[b"coarse_floor"] == str(floors[e]).encode()
             got = pd.read_parquet(f)
             assert list(got.columns) == list(full.columns)
             # same rows (as a set), sorted as declared (NULL usr last)
-            key = lambda d: d.sort_values(["path", "team", "usr"], na_position="last").reset_index(drop=True)
+            key = lambda d: d.sort_values(["path", "usr"], na_position="last").reset_index(drop=True)
             pd.testing.assert_frame_equal(key(got), key(expect))
             srt = got.sort_values(order, na_position="last", kind="stable").reset_index(drop=True)
             pd.testing.assert_frame_equal(got.reset_index(drop=True), srt)
-    # by-user / by-team variants of the floor-free tier: same rows, re-sorted
-    # so a lens's row groups prune by usr / team (specs/path-agnostic-serving.md §2.3).
+    # by-user variant of the floor-free tier: same rows, re-sorted so a user
+    # lens's row groups prune by usr (specs/path-agnostic-serving.md §2.3).
     by_user = pd.read_parquet(pidx.with_name("path-index-by-user.parquet"))
-    by_team = pd.read_parquet(pidx.with_name("path-index-by-team.parquet"))
-    assert len(by_user) == len(full) and len(by_team) == len(full)
+    assert len(by_user) == len(full)
+    assert not pidx.with_name("path-index-by-team.parquet").exists()
     # by-user is sorted (usr NULLS LAST, depth, path)
     uk = by_user["usr"].fillna("\uffff").tolist()
     assert uk == sorted(uk)
-    assert by_team["team"].tolist() == sorted(by_team["team"].tolist())
 
 
 def test_write_webdata_plain(tmp_path: Path, listing: str):
@@ -305,21 +290,19 @@ def test_write_webdata_plain(tmp_path: Path, listing: str):
     ]
 
 
-def test_deeper_team_only_rule_overrides_user_prefix(tmp_path: Path):
-    # A team-only prefix nested INSIDE a user prefix must win for its subtree
-    # (deepest-prefix-wins is row-wise: the deeper row's NULL user must not be
-    # skipped in favor of the shallower row's user).
+def test_deeper_nobody_rule_overrides_user_prefix(tmp_path: Path):
+    # A `user: ~` (explicit nobody) prefix nested INSIDE a user prefix must win
+    # for its subtree (deepest-prefix-wins is row-wise: the deeper row's NULL
+    # user must not be skipped in favor of the shallower row's user).
     identities_path = tmp_path / "identities.yaml"
     identities_path.write_text(
         """\
 users:
   ryan-williams:
     aliases: [rw]
-    team: infra
-teams: [infra, data]
 prefix_owners:
   - prefix: gs://b1/users/rw/shared/
-    team: data
+    user: ~
 """
     )
     listing_path = tmp_path / "listing.parquet"
@@ -337,7 +320,6 @@ prefix_owners:
         {
             "prefix": ["gs://b1/users/rw/"],
             "user": ["rw"],
-            "team": ["unknown"],
             "source": ["user-prefix"],
             "asof": [dt.date(2026, 7, 20)],
         }
@@ -346,9 +328,8 @@ prefix_owners:
     write_webdata((str(listing_path),), out, "2026-07-28", (str(attribution_path),), identities_path)
     tree = json.loads((out / "tree.json").read_text())
     b1 = tree["c"][0]
-    assert b1["tm"] == {"infra": 100 * GB, "data": 60 * GB}
-    assert b1["sh"] == {"data": 60 * GB}
-    assert b1["us"] == [["ryan-williams", 100 * GB]]
+    assert b1["b"] == 160 * GB
+    assert b1["us"] == [["ryan-williams", 100 * GB]]  # the 60 GB under shared/ is nobody's
 
 
 def test_dir_cache_roundtrip(tmp_path: Path, listing: str, attribution: str):

@@ -21,7 +21,7 @@ import duckdb
 import pandas as pd
 from click import Choice, argument, group, option
 
-from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
+from .identity import DEFAULT_IDENTITIES, load_identities
 from .mark import DEFAULT_URL as MARK_DEFAULT_URL
 from .mark import KEEP_ACTIONS as MARK_KEEPS
 from .listing import prepare_listing
@@ -96,9 +96,9 @@ def build(
 
     by_source = Counter(row.source for row in rows)
     err(f"wrote {len(rows)} attribution rows to {out}: {dict(by_source)}")
-    unknown_users = sorted({row.user for row in rows if row.user is not None and row.team == UNKNOWN_TEAM})
+    unknown_users = sorted({row.user for row in rows if row.user is not None and not identities.known(row.user)})
     if unknown_users:
-        err(f"users with no team (add to {identities_path}): {unknown_users}")
+        err(f"users not in {identities_path} (add name/github/aliases): {unknown_users}")
 
 
 @main.command("executor-mine")
@@ -189,9 +189,9 @@ def attr_report(
     top: int,
     claim_user: str | None,
 ) -> None:
-    """Join listing × attribution (deepest-prefix-wins) → per-user/team bytes + coverage.
+    """Join listing × attribution (deepest-prefix-wins) → per-user bytes + coverage.
 
-    Users/teams are re-resolved against the *current* identities.yaml, so alias
+    Users are re-resolved against the *current* identities.yaml, so alias
     curation takes effect without rebuilding attribution parquets.
     """
     identities = load_identities(identities_path)
@@ -208,7 +208,7 @@ def attr_report(
 
     from collections import defaultdict
 
-    per_user: dict[tuple, list] = defaultdict(lambda: [0, 0])
+    per_user: dict[str | None, list] = defaultdict(lambda: [0, 0])
     per_source: dict[str, list] = defaultdict(lambda: [0, 0])
     claim: dict[str, list] = defaultdict(lambda: [0, 0])  # attributed-ancestor prefix -> [bytes, objects] for --user
     cache: dict[str, tuple | None] = {}
@@ -243,9 +243,9 @@ def attr_report(
     total_bytes = int(dirs["bytes"].sum())
     for dir_key, nbytes, objects in zip(dirs["dir"], dirs["bytes"], dirs["objects"]):
         row = deepest(dir_key)
-        user, team, source = row if row else (None, "unattributed", "none")
-        per_user[(user, team)][0] += int(nbytes)
-        per_user[(user, team)][1] += int(objects)
+        user, source = row if row else (None, "none")
+        per_user[user][0] += int(nbytes)
+        per_user[user][1] += int(objects)
         per_source[source][0] += int(nbytes)
         per_source[source][1] += int(objects)
         if claim_user is not None and user == claim_user:
@@ -257,10 +257,10 @@ def attr_report(
     for source, (nbytes, objects) in sorted(per_source.items(), key=lambda kv: -kv[1][0]):
         print(f"{source:>16}  {nbytes/1e12:10.2f} TB  {objects:>12,} objects  {100*nbytes/total_bytes:5.1f}%")
 
-    print(f"\n== top {top} users/teams by bytes ==")
+    print(f"\n== top {top} users by bytes ('-' = nobody) ==")
     rows = sorted(per_user.items(), key=lambda kv: -kv[1][0])[:top]
-    for (user, team), (nbytes, objects) in rows:
-        print(f"{user or '-':>24} {team:>14}  {nbytes/1e12:10.3f} TB  {objects:>12,} objects")
+    for user, (nbytes, objects) in rows:
+        print(f"{user or '-':>24}  {nbytes/1e12:10.3f} TB  {objects:>12,} objects")
 
     if claim_user is not None:
         print(f"\n== claim list: {claim_user} ({len(claim)} prefixes) ==")
@@ -430,7 +430,7 @@ def wandb_mine(
 
 
 @main.command()
-@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node team/user overlays")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node user overlays")
 @option("-c", "--dir-cache", "dir_cache", type=Path, default=None, help="Layer-2 cache dir (dir-stats/age-days parquet): attribution-independent rollups reused by re-attribution runs — see specs/dir-agg-cache.md")
 @option("-d", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
@@ -494,11 +494,11 @@ def stage(out_root: Path, workers: int, globs: tuple[str, ...]) -> None:
 
 @main.command()
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-o", "--out", type=Path, default=None, help="Write rules JSON (users/aliases/teams/prefix_owners + notes) for the site")
+@option("-o", "--out", type=Path, default=None, help="Write rules JSON (users/aliases/prefix_owners + notes) for the site")
 def rules(identities_path: Path, out: Path | None) -> None:
     """Validate identities.yaml; optionally export it as site JSON.
 
-    Checks alias collisions/shadowing, unknown teams, and prefix_owners rows
+    Checks alias collisions/shadowing and prefix_owners rows
     referencing unknown users or malformed/duplicate prefixes. Exits nonzero
     on findings (JSON is still written, so the site shows current state).
     """
@@ -1994,10 +1994,8 @@ def report(actions_path: str, out: Path | None, root: str | None, sort: str, sit
         total = f["keep"] + f["sweep"] + f["undecided"]
         if total < 1e9:
             continue
-        team = idmap.team_of(uid) or user_meta.get(uid, {}).get("t", "unknown")
         rows_out.append({
             "user": uid,
-            "group": team,
             "attributed_TiB": round(total / tib, 1),
             "est_usd_mo": round(usd_mo(uid, total)),
             "keep_TiB": round(f["keep"] / tib, 1),
@@ -2279,17 +2277,15 @@ def alert(
 
 
 # Index variants the site reads (functions/_lib/index.ts `fileFor` mirrors this):
-# the floor-free tier in three sort orders, and each coarse tier (viz.py
-# COARSE_EXPS) in the same three (specs/view-serving.md §1). D1 keys (date, variant).
+# the floor-free tier sorted by path and by user, and each coarse tier (viz.py
+# COARSE_EXPS) in the same two (specs/view-serving.md §1). D1 keys (date, variant).
 INDEX_VARIANTS: dict[str, str] = {
     "path": "path-index.parquet",
     "user": "path-index-by-user.parquet",
-    "team": "path-index-by-team.parquet",
 }
 for _e in COARSE_EXPS:
     INDEX_VARIANTS[f"coarse{_e}"] = f"path-index-coarse{_e}.parquet"
     INDEX_VARIANTS[f"coarse{_e}-user"] = f"path-index-coarse{_e}-by-user.parquet"
-    INDEX_VARIANTS[f"coarse{_e}-team"] = f"path-index-coarse{_e}-by-team.parquet"
 
 
 @main.command("index-sync")
@@ -2301,7 +2297,7 @@ for _e in COARSE_EXPS:
 def index_sync(bucket: str, listing_dir: str | None, local: bool, variants: tuple[str, ...], date: str) -> None:
     """Sync a scan's path-index parquet footers into D1 (index_schema/index_groups)
     so the site's reader skips the cold-isolate footer parse. Syncs all three
-    sort variants (path / user / team) — the drill index plus the by-user/by-team
+    sort variants (path / user) — the drill index plus the by-user
     lens indexes (specs/path-agnostic-serving.md §2.1/§2.3). Needs
     CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the env."""
     from .index_footer import sync_d1

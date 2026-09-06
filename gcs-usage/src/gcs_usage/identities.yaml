@@ -5,7 +5,7 @@
 # collapses to '-'). A raw spelling that sanitizes directly to a canonical id
 # needs no alias entry; `aliases` cover everything else (short handles,
 # initials) as observed in Iris job owners, provenance `built_by`, and
-# `users/<seg>/` path segments. The attribution job reports unknown-team users
+# `users/<seg>/` path segments. The attribution job reports unmapped users
 # — curate them into this file rather than letting them accumulate.
 #
 # Optional display fields (consumed by the web UI via `scripts/gen-identities-ts`
@@ -17,237 +17,147 @@
 #            this we'd guess the login from the id and silently show the wrong
 #            face; leave it unset rather than guess. Fill one per person as
 #            confirmed — Will = Helw150, not the guessed `will-held`.
-# Groups (the storage-attribution axis; "group" in the UI) — by employer, plus a
-# shared bucket, since employer is the unambiguous split:
-#   oa        — Open Athena employees (incl. everyone on the Marin core team)
-#   stanford  — Percy's students' research (Percy manages)
-#   communal  — shared data/infra used across orgs (raw -> normalized ->
-#               tokenized corpora, datakit, shared sweep checkpoints); no single
-#               user/org owner. Both Stanford and OA train on it (verified via
-#               W&B run configs, 2026-08-11).
+# Ownership has ONE axis: a person. There is no group/team facet — it let most
+# of the fleet sit under a "communal" label with nobody to sign off on keeping
+# or deleting it (excised 2026-09-06; specs/view-serving.md). Bytes no person
+# owns are simply unclaimed.
 users:
   ryan-williams:
     aliases: [ryan, rw]
     github: ryan-williams
-    team: oa
   russell-power:
     github: rjpower
     aliases: [rpower, russell, power]  # `power` observed as `built_by` in 2026-07-13 scan records
-    team: oa
-  # W&B usernames below observed in the 2026-07-22 full API mine (148,670 runs);
   # display names come from the W&B user profile.
   david-hall:
     aliases: [dlwh]  # David Leo Wright Hall
     github: dlwh
-    team: oa
   will-held:
     aliases: [held]
     github: Helw150
-    team: oa
   rafal-wojdyla:
     aliases: [ravwojdyla, rav]
     github: ravwojdyla
-    team: oa
   yael-elmatad:
     github: yaelelmatad
-    team: oa
   matt-wittmann:
     aliases: [mcwitt]
     github: mcwitt
-    team: oa
   eric-czech:
     aliases: [eczech]
     github: eczech
-    team: oa
   romain-yon:
     github: yonromai
-    team: oa
   moojin-kim:
     aliases: [moojink]  # Moo Jin Kim
     github: moojink
-    team: stanford
   calvin-xu:
     github: Calvin-Xu
     aliases: [pinlinxu, calvinxu, calvinxu806]  # two W&B accounts + gmail login (display: Calvin Xu)
-    team: stanford
   rohith-kuditipudi:
     github: RohithKuditipudi
     aliases: [rohithk]
-    team: stanford
   michael-ryan:
     aliases: [michaeljryan, michaelryan, mryan0]  # `mryan0` = ledger sign-in
     github: XenonMolecule
-    team: stanford
   kaiyue-wen:
     github: WhenWen
     aliases: [when, kaiyuew, kaiyue, kaiyuewen3]  # kaiyuewen3: gmail login on gcs.oa.dev marks
-    team: stanford
   pranshu-chaturvedi:
     github: pc0618
     aliases: [pranshu-01-c]
-    team: stanford
   ziqing-huang:
     github: ziqing-huang
     aliases: [ziqingh]
-    team: stanford
   christopher-chou:
     github: BabyChouSr
     aliases: [babychousr]
-    team: stanford
   percy-liang:
     aliases: [percyliang]
     github: percyliang
-    team: stanford
   ahmed-ahmed:
     github: ahmeda14960
     aliases: [ahmedah, ahmed, ahmedsqred]  # Ahmed Mohamed Ahmed; `ahmedsqred` = ledger sign-in
-    team: stanford
   kevin-li:
     github: AlienKevin
     aliases: [kevinxli]
-    team: stanford
   chi-heem-wong:
     github: chiheem
     aliases: [chiheem]  # display "CHW"
     name: Chi-Heem
-    team: stanford
   nikil-ravi:
     github: nikil-ravi
-    team: stanford
   suhas-kotha:
     aliases: [kothasuhas]
     github: kothasuhas
-    team: stanford
   elyas-obbad:
     github: eobbad
     aliases: [eobbad]
-    team: stanford
   herumb-shandilya:
     github: krypticmouse
     aliases: [herumb-stanford]
-    team: stanford
   jason-wang:
     github: blahBlahhhJ
     aliases: [blahblahhhj]
-    team: stanford
   julian:
     aliases: [julian-q, julianq]
     github: julian-q  # Julian Quevedo (Discord jujujulian) — earlier misread as Julian Humml (hummlj)
-    team: stanford  # non-OA marin contributor → Stanford access group
   tony-lee:
     aliases: [tony, teetone]
     github: teetone  # Tony Lee (Stanford; Discord tonyatstanford); owns the selfinstill SFT sweeps (path rule below)
-    team: stanford
   alex-merose:
     aliases: [alxmrs]
     github: alxmrs
-    team: oa
   benjamin-feuer:
     name: Ben
     aliases: [benjaminfeuer]
-    team: oa
   gonzalo-benegas:
     aliases: [gonzalo, gonzalobenegas]  # Iris owner; GitHub/W&B username
     github: gonzalobenegas
-    team: oa
   larry-dial:
     github: ClassicLarry
     aliases: [larrydial, larry]
-    team: oa  # TODO confirm — joined 2026-02, active daily
   exedev:
-    team: oa  # TODO confirm — CI/automation account?
   runner:
-    team: oa  # TODO confirm — CI/automation account
 
-teams: [oa, stanford, communal]
 
-# Manual owners for big shared prefixes that no per-user signal covers
-# (datasets, ferry checkpoints, ...). `user` is optional; team-only rows are
-# expected here. A `*` in the bucket position fans out over the listing's
-# buckets at report time. Deepest-prefix-wins still applies, so per-user
-# signals inside these trees override the team row.
+# Manual owners for prefixes no per-user signal covers. Deepest-prefix-wins
+# still applies, so per-user signals inside these trees override a row here.
+# A `*` in the bucket position fans out over the listing's buckets at report
+# time. `user: ~` (no user) is an explicit "nobody" for a subtree of a user
+# prefix. Shared corpora / infra trees (raw, tokenized, datakit, tmp, ...) are
+# deliberately NOT listed: with no person they are unclaimed, which is the
+# state that asks someone to claim or sweep them.
 prefix_owners:
-  # Shared data-pipeline trees — `communal`: the raw -> normalized -> tokenized
-  # corpora + datakit infra that every org's experiments train on.
-  - prefix: gs://marin-*/raw/
-    team: communal
-  - prefix: gs://marin-*/normalized/
-    team: communal
-  - prefix: gs://marin-*/tokenized/
-    team: communal
-  - prefix: gs://marin-*/datakit/
-    team: communal
-  - prefix: gs://marin-*/data/
-    team: communal
-  - prefix: gs://marin-*/documents/
-    team: communal
-  - prefix: gs://marin-*/processed/
-    team: communal
-  # Shared dataset dirs outside the standard trees
-  - prefix: gs://marin-us-central2/datasets/
-    team: communal
-  - prefix: gs://marin-us-central1/finetranslations-0d9d50/
-    team: communal
-  - prefix: gs://marin-us-east5/finetranslations-0d9d50/
-    team: communal
-  - prefix: gs://marin-us-east5/finepdfs_eng_Latn/
-    team: communal
-  # Ephemeral TTL trees (auto-expiring; keep them out of the gap list)
-  - prefix: gs://marin-*/tmp/
-    team: communal
-  # Centrally-run sweep namespaces (many configs have no matching W&B run
-  # name; per-user signals inside still win via deepest-prefix)
-  - prefix: gs://marin-*/checkpoints/isoflop/
-    team: communal  # scaling-law ladders; runs by held/rohithk/larrydial et al.
-  - prefix: gs://marin-*/checkpoints/isoflop-curation/
-    team: communal  # curation runs for the isoflop ladders (per-user signals inside still win)
-  - prefix: gs://marin-*/grug/chunked_perf/
-    team: communal  # TODO confirm owner (grug infra sweeps)
-  - prefix: gs://marin-*/grug/moe_depth_mup_lr/
-    team: communal  # TODO confirm owner (MoE muP LR sweeps)
   # scratch/<user>/ segments (not definitionally per-user like users/, so
   # only known-user segments are mapped)
   - prefix: gs://marin-*/scratch/ahmed/
     user: ahmed-ahmed
-    team: stanford
   - prefix: gs://marin-*/scratch/kaiyue/
     user: kaiyue-wen
-    team: stanford
   - prefix: gs://marin-*/scratch/michaelryan/
     user: michael-ryan
-    team: stanford
   - prefix: gs://marin-*/scratch/rav/
     user: rafal-wojdyla
-    team: oa
-  # Personal top-level dirs predating users/<name>/ convention
   - prefix: gs://marin-us-east5/pinlin_calvin_xu/
     user: calvin-xu
-    team: stanford
   - prefix: gs://marin-*/julian/
     user: julian
-    team: stanford  # Julian Quevedo (julian-q); julian/experiments/causal-diffusion across buckets (~23 TB)
   # Calvin's data-mixture swarms (Percy, 8/18 call). Only ~350 of the ~1,060
   # swarm dirs ever logged a W&B run (all his), so run-matching can't cover the
   # rest — the name pattern can. Path-glob: `*` matches within one segment.
   - prefix: gs://marin-*/grug/swarm_*/
     user: calvin-xu
-    team: stanford
-  # Tony's self-instill SFT sweeps (Percy, 8/28: "everything selfinstill is
   # Tony Lee") — 123 `checkpoints/exp_sft_qwen3_*_selfinstill_*` dirs across
   # east5/central1/central2, ~92 TiB, none logged W&B runs. Segment glob catches
   # the one `exp_fzzhang_sft_…_selfinstill_…` variant too.
   - prefix: gs://marin-*/checkpoints/*selfinstill*/
     user: tony-lee
-    team: stanford
   - prefix: gs://marin-*/checkpoints/olmix-swarm/
     user: calvin-xu
-    team: stanford  # olmix naming matches his pinlin_calvin_xu/data_mixture experiments
   - prefix: gs://marin-*/user/rav/
     user: rafal-wojdyla
-    team: oa  # `user/` (singular) tree is ~all rav
   - prefix: gs://marin-us-central1/ttl=30d/dlwh/
     user: david-hall
-    team: oa
   - prefix: gs://marin-eu-west4/tomat/
     user: ryan-williams
-    team: oa  # tomat is Ryan's CLI (confirmed: Ryan = OA)

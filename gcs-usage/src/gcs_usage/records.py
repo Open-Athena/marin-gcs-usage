@@ -64,7 +64,6 @@ def mine_record_rows(
         return AttributionRow(
             prefix=f"{posixpath.dirname(path)}/",
             user=user,
-            team=identities.team_of(user),
             source="artifact-record",
             evidence=f"built_by={built_by}",
             asof=asof,

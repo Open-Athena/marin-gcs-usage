@@ -28,8 +28,7 @@ class AttributionRow:
     """One sparse dir-level ownership assertion (see specs/storage-cost-attribution.md)."""
 
     prefix: str  # gs://bucket/dir/ (trailing slash)
-    user: str | None  # canonical id; None for team-only manual rows
-    team: str
+    user: str | None  # canonical id; None = explicitly nobody (manual un-own rule)
     source: str  # user-prefix | artifact-record | manual
     evidence: str | None
     asof: dt.date
@@ -49,7 +48,6 @@ def user_prefix_rows(listing: pd.DataFrame, identities: IdentityMap, asof: dt.da
             AttributionRow(
                 prefix=f"gs://{bucket}/users/{segment}/",
                 user=user,
-                team=identities.team_of(user),
                 source="user-prefix",
                 evidence=None,
                 asof=asof,
@@ -72,7 +70,6 @@ def manual_rows(identities: IdentityMap, asof: dt.date) -> list[AttributionRow]:
         AttributionRow(
             prefix=owner.prefix,
             user=owner.user,
-            team=owner.team,
             source="manual",
             evidence=None,
             asof=asof,

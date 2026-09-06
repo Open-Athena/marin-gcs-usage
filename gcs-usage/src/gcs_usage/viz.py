@@ -66,8 +66,8 @@ def write_webdata(
     listing they derive from.
 
     With ``attributions``, every dir is attributed (deepest-prefix-wins, same
-    join as ``report``) and each tree node carries ``tm`` (team-bytes map) and
-    ``us`` (per-user bytes) for ownership overlays.
+    join as ``report``) and each tree node carries ``us`` (per-user bytes)
+    for the ownership overlay.
 
     With ``access`` (layer-2a access-log agg parquet globs), every tree node
     that has been read since logging began carries ``a`` — the epoch day of
@@ -164,8 +164,8 @@ def write_webdata(
         _rss("prefix-map")
         pfx_df = pd.DataFrame(
             [
-                {"key": k.removeprefix("gs://").rstrip("/"), "user": u, "team": t}
-                for k, (u, t, _source) in by_prefix.items()
+                {"key": k.removeprefix("gs://").rstrip("/"), "user": u}
+                for k, (u, _source) in by_prefix.items()
             ]
         )
         pfx_df["depth"] = pfx_df["key"].str.count("/") + 1
@@ -190,13 +190,13 @@ def write_webdata(
         # JOIN single-pass variant planned pathologically (~100× slower);
         # per-depth INSERTs give the planner 12 trivial queries instead.
         depths = sorted({int(d) for d in pfx_df["depth"]}, reverse=True)
-        con.execute('CREATE TEMP TABLE dir_attr (bucket VARCHAR, dir VARCHAR, "user" VARCHAR, team VARCHAR)')
+        con.execute('CREATE TEMP TABLE dir_attr (bucket VARCHAR, dir VARCHAR, "user" VARCHAR)')
         dk = "CASE WHEN s.dir = '' THEN s.bucket ELSE s.bucket || '/' || s.dir END"
         for k in depths:
             con.execute(
                 f"""
                 INSERT INTO dir_attr
-                SELECT s.bucket, s.dir, p."user", p.team
+                SELECT s.bucket, s.dir, p."user"
                 FROM dir_stats s
                 JOIN pfx p ON p.depth = {k}
                   AND p.key = array_to_string(str_split({dk}, '/')[1:{k}], '/')
@@ -207,12 +207,11 @@ def write_webdata(
                 """
             )
         _rss("dir_attr")
-        # per-(team|user) storage-class byte mixes (site prices group roll-ups
-        # with class-aware rates) + the per-(user,team) leaderboard meta.users
-        # needs — both derived from `dir_agg` below, so no separate object scan.
-        team_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        # per-user storage-class byte mixes (the site prices per-user roll-ups
+        # with class-aware rates) + the per-user leaderboard meta.users needs —
+        # both derived from `dir_agg` below, so no separate object scan.
         user_class: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
-        user_bytes: dict[tuple, int] = defaultdict(int)
+        user_bytes: dict[str, int] = defaultdict(int)
 
     # Access agg first (small): its per-dir last-read day joins into
     # `dir_agg` below so the path index carries a subtree-MAX `a`, and it
@@ -258,7 +257,6 @@ def write_webdata(
     from disk_tree.tree_build import DirRow, build_tree
 
     attr_join_s = "LEFT JOIN dir_attr t ON t.bucket = s.bucket AND t.dir = s.dir" if attr else ""
-    team_sel = "coalesce(t.team, 'unattributed')" if attr else "'unattributed'"
     user_sel = 't."user"' if attr else "CAST(NULL AS VARCHAR)"
     # Attribution is a join over the cached per-dir rollups — a few million
     # rows — never over objects. dir_agg also feeds the class-mix and
@@ -266,7 +264,7 @@ def write_webdata(
     con.execute(
         f"""
         CREATE TEMP TABLE dir_agg AS
-        SELECT s.fp, {team_sel} AS team, {user_sel} AS usr,
+        SELECT s.fp, {user_sel} AS usr,
           s.b, s.o, s.wts, s.wb, s.c2, s.c3, s.c4, xa.aday AS a
         FROM dir_stats s {attr_join_s}
         LEFT JOIN access_agg xa ON xa.bucket = s.bucket AND xa.dir = s.dir
@@ -280,19 +278,16 @@ def write_webdata(
     if attr:
         # class-mix + leaderboard straight off dir_agg (class 1/STANDARD =
         # total minus the non-standard classes we track explicitly).
-        for team, usr, b, c2, c3, c4 in con.execute(
-            "SELECT team, usr, sum(b), sum(c2), sum(c3), sum(c4) FROM dir_agg GROUP BY team, usr"
+        for usr, b, c2, c3, c4 in con.execute(
+            "SELECT usr, sum(b), sum(c2), sum(c3), sum(c4) FROM dir_agg WHERE usr IS NOT NULL GROUP BY usr"
         ).fetchall():
             c1 = int(b) - int(c2 or 0) - int(c3 or 0) - int(c4 or 0)
             for cid, cv in ((1, c1), (2, c2), (3, c3), (4, c4)):
                 if cv:
-                    team_class[team][cid] += int(cv)
-                    if usr:
-                        user_class[usr][cid] += int(cv)
-            if usr:
-                user_bytes[(usr, team)] += int(b)
+                    user_class[usr][cid] += int(cv)
+            user_bytes[usr] += int(b)
 
-    # The full rolled-up (path, team, user) relation — every ancestor path,
+    # The full rolled-up (path, user) relation — every ancestor path,
     # descendant-inclusive, attributed, NO floor. Materialized because three
     # consumers share it: the floored tree query below, the (optional)
     # path-index artifact, and — via that artifact — the pixel-budget subtree
@@ -307,25 +302,25 @@ def write_webdata(
         ),
         exploded AS (
           SELECT array_to_string(segs[1:r.k], '/') AS path, r.k AS depth,
-            b, o, wts, wb, c2, c3, c4, a, team, usr
+            b, o, wts, wb, c2, c3, c4, a, usr
           FROM da, range(1, {maxseg} + 1) r(k)
           WHERE len(segs) >= r.k
         )
-        SELECT path, depth, team, usr,
+        SELECT path, depth, usr,
           sum(b)::BIGINT AS b, sum(o)::BIGINT AS o,
           sum(wts)::DECIMAL(38,0) AS wts, sum(wb)::BIGINT AS wb,
           sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4,
           max(a) AS a  -- subtree-max last-read epoch day (NULL = never read)
-        FROM exploded GROUP BY path, depth, team, usr
+        FROM exploded GROUP BY path, depth, usr
         """
     )
     _rss("ptu")
     if path_index is not None:
         # The complete, floor-free index the subtree API serves: one row per
-        # (path, team, usr), sorted (depth, path) — the engine's canonical
+        # (path, usr), sorted (depth, path) — the engine's canonical
         # order for prefix-range + row-group pruning. Immutable per date.
         path_index.parent.mkdir(parents=True, exist_ok=True)
-        cols = "path, depth, team, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
+        cols = "path, depth, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
         # 8k rows/group (~1 MB): a deep drill decodes ~8k rows/group, not 64k,
         # and the footer (now in D1 per index-sync) is never parsed on a cold
         # isolate, so the ~27k-group count costs nothing at read time
@@ -334,17 +329,14 @@ def write_webdata(
         con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY depth, path) TO '{path_index}' {rg}")
         err(f"path-index: wrote {path_index}")
         _rss("path-index")
-        # `by-user` / `by-team` copies: the SAME rows re-sorted so a user/team
-        # lens's row groups prune by `usr`/`team` (the `by-path` copy's stats
-        # are on `b`, useless for a lens). `b` in a usr=X row is X's bytes under
-        # `path`, so the lens read pixel-budgets on it directly. NULL usr sorts
-        # last (the unattributed pool). specs/path-agnostic-serving.md §2.3.
+        # `by-user` copy: the SAME rows re-sorted so a user lens's row groups
+        # prune by `usr` (the `by-path` copy's stats are on `b`, useless for a
+        # lens). `b` in a usr=X row is X's bytes under `path`, so the lens read
+        # pixel-budgets on it directly. NULL usr sorts last (the unclaimed
+        # pool). specs/path-agnostic-serving.md §2.3.
         by_user = path_index.with_name("path-index-by-user.parquet")
-        by_team = path_index.with_name("path-index-by-team.parquet")
         con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY usr NULLS LAST, depth, path) TO '{by_user}' {rg}")
         err(f"path-index: wrote {by_user}")
-        con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY team, depth, path) TO '{by_team}' {rg}")
-        err(f"path-index: wrote {by_team}")
         _rss("path-index-variants")
 
     # Pre-floor is **parent-relative** (matches build_tree): keep a path iff its
@@ -363,14 +355,14 @@ def write_webdata(
     if path_index is not None:
         # Coarse index tiers (specs/view-serving.md §1): the SAME rows,
         # restricted to paths whose subtree clears an absolute floor F_E, in the
-        # same three sort orders as the floor-free tier. A tier, not a loss:
+        # same two sort orders as the floor-free tier. A tier, not a loss:
         # every kept row's sums are exact, and the reader only serves a query
         # from a tier whose floor is <= the query's threshold (then the tier's
         # rows are a superset of what the query keeps). F rides in the parquet
         # key-value metadata so index-sync can record it beside the footer.
         fleet = int(con.execute("SELECT coalesce(sum(pb), 0) FROM tot WHERE path NOT LIKE '%/%'").fetchone()[0])
         n_paths = con.execute("SELECT count(*) FROM tot").fetchone()[0]
-        cols = "path, depth, team, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
+        cols = "path, depth, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
         for e in COARSE_EXPS:
             floor = 2 ** (round(math.log2(fleet)) - e) if fleet > 0 else 1
             coarse_floors[e] = floor
@@ -380,7 +372,6 @@ def write_webdata(
             for suffix, order in (
                 ("", "depth, path"),
                 ("-by-user", "usr NULLS LAST, depth, path"),
-                ("-by-team", "team, depth, path"),
             ):
                 out = path_index.with_name(f"path-index-coarse{e}{suffix}.parquet")
                 con.execute(f"COPY (SELECT {cols} FROM ptu JOIN coarse USING (path) ORDER BY {order}) TO '{out}' {kv}")
@@ -409,7 +400,7 @@ def write_webdata(
     _rss("keep")
     ptu_rows = con.execute(
         """
-        SELECT p.path, p.team, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
+        SELECT p.path, p.usr, p.b, p.o, p.wts, p.wb, p.c2, p.c3, p.c4
         FROM ptu p JOIN keep k USING (path)
         """
     ).fetchall()
@@ -433,39 +424,35 @@ def write_webdata(
 
     def _new_add() -> dict:
         return {"b": 0, "o": 0, "wts": 0.0, "wb": 0,
-                "cb": defaultdict(int), "tm": defaultdict(int),
-                "ub": defaultdict(int), "sh": defaultdict(int)}
+                "cb": defaultdict(int), "ub": defaultdict(int)}
 
-    def _merge(a: dict, b: int, o: int, wts, wb, c2, c3, c4, team: str, usr) -> None:
+    def _merge(a: dict, b: int, o: int, wts, wb, c2, c3, c4, usr) -> None:
         a["b"] += int(b); a["o"] += int(o)
         a["wts"] += float(wts or 0); a["wb"] += int(wb or 0)
         for cid, cv in (("2", c2), ("3", c3), ("4", c4)):
             if cv:
                 a["cb"][cid] += int(cv)
-        a["tm"][team] += int(b)
-        if usr:
+        if usr:  # unclaimed bytes = b − Σ ub; no separate map
             a["ub"][usr] += int(b)
-        elif team != "unattributed":
-            a["sh"][team] += int(b)
 
     def _add(a: dict) -> dict:
         out: dict = {}
         if a["wb"]:
             out["wts"], out["wb"] = a["wts"], a["wb"]
-        for k in ("cb", "tm", "ub", "sh"):
+        for k in ("cb", "ub"):
             if a[k]:
                 out[k] = dict(a[k])
         return out
 
     agg_by_path: dict[str, dict] = {}
     root = _new_add()
-    for path, team, usr, b, o, wts, wb, c2, c3, c4 in ptu_rows:
+    for path, usr, b, o, wts, wb, c2, c3, c4 in ptu_rows:
         a = agg_by_path.get(path)
         if a is None:
             a = agg_by_path[path] = _new_add()
-        _merge(a, b, o, wts, wb, c2, c3, c4, team, usr)
+        _merge(a, b, o, wts, wb, c2, c3, c4, usr)
         if "/" not in path:  # bucket-level rows partition the fleet → the root
-            _merge(root, b, o, wts, wb, c2, c3, c4, team, usr)
+            _merge(root, b, o, wts, wb, c2, c3, c4, usr)
 
     dir_rows = [DirRow(p, a["b"], a["o"], _add(a)) for p, a in agg_by_path.items()]
     dir_rows.append(DirRow(".", total_b, total_o, _add(root)))
@@ -504,14 +491,14 @@ def write_webdata(
     # Absent = no read observed. Multiplies rows by at most the number of
     # distinct read days (a few weeks of logs), not by dirs.
     if attr:
-        # (day, d1, team, user, a) strata: the cached per-(day, dir) rollup
+        # (day, d1, user, a) strata: the cached per-(day, dir) rollup
         # joined to the same dir attribution. Day keys are epoch days; the site
         # aggregates to day/week/month.
         age = con.execute(
             """
             SELECT d.day,
               CASE WHEN d.dir = '' THEN '(files)' ELSE regexp_extract(d.dir, '^([^/]+)', 1) END AS d1,
-              coalesce(t.team, 'unattributed') AS team, t."user" AS user, x.aday AS a,
+              t."user" AS user, x.aday AS a,
               sum(d.bytes)::BIGINT AS bytes, sum(d.objects)::BIGINT AS objects
             FROM age_days d
             LEFT JOIN dir_attr t ON t.bucket = d.bucket AND t.dir = d.dir
@@ -520,8 +507,8 @@ def write_webdata(
             """
         ).fetchall()
         age_rows = [
-            {"d": day, "d1": d1, "t": t, **({"u": u} if u else {}), **({"a": a} if a is not None else {}), "b": b, "o": o}
-            for day, d1, t, u, a, b, o in age
+            {"d": day, "d1": d1, **({"u": u} if u else {}), **({"a": a} if a is not None else {}), "b": b, "o": o}
+            for day, d1, u, a, b, o in age
         ]
         _rss("age")
     else:
@@ -541,7 +528,7 @@ def write_webdata(
         ]
 
     # Storage-class mix from the dir rollups (class 1/STANDARD = total minus
-    # the explicitly-tracked classes — same derivation the team mix uses).
+    # the explicitly-tracked classes — same derivation the per-user mix uses).
     s_b, s_c2, s_c3, s_c4 = con.execute(
         "SELECT coalesce(sum(b), 0)::BIGINT, coalesce(sum(c2), 0)::BIGINT,"
         " coalesce(sum(c3), 0)::BIGINT, coalesce(sum(c4), 0)::BIGINT FROM dir_stats"
@@ -565,11 +552,7 @@ def write_webdata(
         # is only meaningful relative to when logging began.
         meta["access"] = {"from": access_window[0], "to": access_window[1]}
     if attr:
-        meta["users"] = [
-            {"u": u, "t": t, "b": b}
-            for (u, t), b in sorted(user_bytes.items(), key=lambda kv: -kv[1])
-        ]
-        meta["team_class_bytes"] = {t: dict(sorted(c.items())) for t, c in sorted(team_class.items())}
+        meta["users"] = [{"u": u, "b": b} for u, b in sorted(user_bytes.items(), key=lambda kv: -kv[1])]
         meta["user_class_bytes"] = {u: dict(sorted(c.items())) for u, c in sorted(user_class.items())}
 
     out_dir.mkdir(parents=True, exist_ok=True)

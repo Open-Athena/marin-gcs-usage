@@ -2,10 +2,14 @@
 
 Loads ``identities.yaml`` and resolves raw username spellings (Iris job
 owners, provenance ``built_by``, ``users/<seg>/`` path segments) to canonical
-user ids and teams. The canonical spelling is
+user ids. The canonical spelling is
 :func:`gcs_usage.usernames.sanitize_username` output, so a raw spelling that
 sanitizes directly to a canonical id needs no alias entry; aliases cover
 everything else.
+
+Ownership has one axis: a person. There is no group/team facet (excised
+2026-09-06 — it let most of the fleet sit under a "communal" label with nobody
+to sign off on keeping or deleting it).
 """
 
 from __future__ import annotations
@@ -18,23 +22,21 @@ import yaml
 from .usernames import sanitize_username
 
 DEFAULT_IDENTITIES = Path(__file__).resolve().parent / "identities.yaml"
-UNKNOWN_TEAM = "unknown"
 
 
 @dataclass(frozen=True)
 class PrefixOwner:
-    """Manual owner for a shared prefix no per-user signal covers."""
+    """Manual owner for a prefix no per-user signal covers. ``user=None`` is an
+    explicit "nobody" — a deeper rule that un-owns a subtree of a user prefix."""
 
     prefix: str
-    team: str
     user: str | None = None
 
 
 @dataclass(frozen=True)
 class IdentityMap:
-    user_teams: dict[str, str]
+    users: frozenset[str]
     alias_to_user: dict[str, str]
-    teams: tuple[str, ...]
     prefix_owners: tuple[PrefixOwner, ...]
 
     def resolve(self, raw: str) -> str:
@@ -42,35 +44,30 @@ class IdentityMap:
 
         An unaliased spelling resolves to its own sanitized segment: a
         ``users/<seg>/`` prefix is definitionally owned by ``<seg>``, so an
-        unmapped user is still attributed (with team ``unknown``) rather than
-        dropped. Unknown-team users are surfaced by reports to drive map
-        curation.
+        unmapped user is still attributed rather than dropped. Unmapped users
+        are surfaced by reports to drive map curation.
         """
         segment = sanitize_username(raw)
         return self.alias_to_user.get(segment, segment)
 
-    def team_of(self, user: str) -> str:
-        return self.user_teams.get(user, UNKNOWN_TEAM)
+    def known(self, user: str) -> bool:
+        return user in self.users
 
 
 def load_identities(path: Path = DEFAULT_IDENTITIES) -> IdentityMap:
     """Load and validate the identity map; raises ``ValueError`` on a bad map."""
     with open(path) as f:
         doc = yaml.safe_load(f)
-    teams = tuple(doc.get("teams") or ())
-    user_teams: dict[str, str] = {}
+    users: set[str] = set()
     alias_to_user: dict[str, str] = {}
-    for user, entry in (doc.get("users") or {}).items():
+    for user in (doc.get("users") or {}):
         if sanitize_username(user) != user:
             raise ValueError(f"canonical user id {user!r} is not in sanitized form")
-        team = entry.get("team")
-        if team not in teams:
-            raise ValueError(f"user {user!r}: team {team!r} not in teams {list(teams)}")
-        user_teams[user] = team
+        users.add(user)
     for user, entry in (doc.get("users") or {}).items():
-        for alias in entry.get("aliases") or ():
+        for alias in (entry or {}).get("aliases") or ():
             segment = sanitize_username(alias)
-            if segment in user_teams and segment != user:
+            if segment in users and segment != user:
                 raise ValueError(f"alias {alias!r} of {user!r} collides with canonical user {segment!r}")
             existing = alias_to_user.get(segment)
             if existing is not None and existing != user:
@@ -78,13 +75,11 @@ def load_identities(path: Path = DEFAULT_IDENTITIES) -> IdentityMap:
             alias_to_user[segment] = user
     prefix_owners = []
     for row in doc.get("prefix_owners") or ():
-        team = row.get("team")
-        if team not in teams:
-            raise ValueError(f"prefix_owner {row.get('prefix')!r}: team {team!r} not in teams {list(teams)}")
-        prefix_owners.append(PrefixOwner(prefix=row["prefix"], team=team, user=row.get("user")))
+        if "prefix" not in row:
+            raise ValueError(f"prefix_owner row without a prefix: {row!r}")
+        prefix_owners.append(PrefixOwner(prefix=row["prefix"], user=row.get("user")))
     return IdentityMap(
-        user_teams=user_teams,
+        users=frozenset(users),
         alias_to_user=alias_to_user,
-        teams=teams,
         prefix_owners=tuple(prefix_owners),
     )

@@ -237,7 +237,7 @@ def test_key_state_per_user_granularity():
 def test_classify_dir_policy_b():
     from gcs_usage.identity import IdentityMap
     from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
-    idmap = IdentityMap(user_teams={}, alias_to_user={"kaiyuewen3": "kaiyue"}, teams=(), prefix_owners=())
+    idmap = IdentityMap(users=frozenset(), alias_to_user={"kaiyuewen3": "kaiyue"}, prefix_owners=())
     rows = [
         KeepRow(prefix=f"{B}grug/", keep="sweep", ts=100, action_id=1, who="kaiyuewen3@gmail.com"),
         KeepRow(prefix=f"{B}other/", keep="sweep", ts=100, action_id=2, who="kaiyuewen3@gmail.com"),
@@ -265,7 +265,7 @@ def test_classify_dir_policy_b():
 def test_classify_dir_approved_bands_replace_owner_check():
     from gcs_usage.identity import IdentityMap
     from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
-    idmap = IdentityMap(user_teams={}, alias_to_user={}, teams=(), prefix_owners=())
+    idmap = IdentityMap(users=frozenset(), alias_to_user={}, prefix_owners=())
     rows = [
         KeepRow(prefix=f"{B}rl_testing/", keep="sweep", ts=100, action_id=1, who="ahmed@x"),
         KeepRow(prefix=f"{B}grug/", keep="sweep", ts=100, action_id=2, who="k@x"),
@@ -285,7 +285,7 @@ def test_classify_dir_attr_gate():
     attributed to someone else, unattributed, or minority-share defer."""
     from gcs_usage.identity import IdentityMap
     from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
-    idmap = IdentityMap(user_teams={}, alias_to_user={"k": "kaiyue"}, teams=(), prefix_owners=())
+    idmap = IdentityMap(users=frozenset(), alias_to_user={"k": "kaiyue"}, prefix_owners=())
     rows = [KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=100, action_id=1, who="k@x")]
     vr = VoteResolver(rows)
     own = owners_resolver({"owners": []})
@@ -379,7 +379,7 @@ def test_classify_dir_attr_exempt_full_mode():
     eligible even where dirs are attributed to others."""
     from gcs_usage.identity import IdentityMap
     from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
-    idmap = IdentityMap(user_teams={}, alias_to_user={"k": "kaiyue"}, teams=(), prefix_owners=())
+    idmap = IdentityMap(users=frozenset(), alias_to_user={"k": "kaiyue"}, prefix_owners=())
     rows = [KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=100, action_id=1, who="k@x")]
     vr = VoteResolver(rows)
     own = owners_resolver({"owners": []})

@@ -28,21 +28,21 @@ def load_prefix_map(
     identities: "IdentityMap",
     listing_src: str,
 ) -> dict[str, tuple]:
-    """prefix -> (user, team, source); parquet rows win over manual rows."""
+    """prefix -> (user, source); parquet rows win over manual rows."""
     by_prefix: dict[str, tuple] = {}
     for attribution in attributions:
-        for prefix, user, team, source in con.execute(
-            "SELECT prefix, user, team, source FROM read_parquet(?)", [attribution]
+        for prefix, user, source in con.execute(
+            "SELECT prefix, user, source FROM read_parquet(?)", [attribution]
         ).fetchall():
             user = identities.resolve(user) if user else user
-            by_prefix.setdefault(prefix, (user, identities.team_of(user) if user else team, source))
+            by_prefix.setdefault(prefix, (user, source))
     buckets = [b for (b,) in con.execute(f"SELECT DISTINCT bucket FROM {listing_src}").fetchall()]
     n_glob = 0
     for owner in identities.prefix_owners:
         bucket, _, rest = owner.prefix.removeprefix("gs://").partition("/")
         expanded = (f"gs://{b}/{rest}" for b in buckets if fnmatch(b, bucket))
         for prefix in expanded if "*" in bucket else (owner.prefix,):
-            attr = (owner.user, owner.team, "manual")
+            attr = (owner.user, "manual")
             # A glob in the *path* part (gs://…/grug/swarm_*/) expands against
             # the listing's actual dirs at that depth — so the rule covers dirs
             # that appear later too (expansion reruns on every day's listing),

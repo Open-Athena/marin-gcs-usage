@@ -9,7 +9,7 @@ its nearest indexed ancestor IS one of its sweepers, with a majority
 (``MIN_SHARE``) of that subtree's bytes.
 
 The path index has one row per rolled-up path × attribution slice
-``(path, depth, team, usr, b, …)``, sorted ``(depth, path)`` — so a band's
+``(path, depth, usr, b, …)``, sorted ``(depth, path)`` — so a band's
 rows are cheap to pull via row-group statistics, and attribution is resolved
 at run-dir depth (rules + W&B mining assign there), letting deep ``step-N``
 dirs inherit via the ancestor walk.

@@ -57,7 +57,6 @@ def _group_rows(md: "pq.FileMetaData") -> list[dict]:
     pi = md.schema.names.index("path")
     bi = md.schema.names.index("b")
     ui = md.schema.names.index("usr")
-    ti = md.schema.names.index("team")
 
     def _srange(stats) -> tuple:
         # (min, max) of a string column's stats, or (None, None) when absent
@@ -90,7 +89,7 @@ def _group_rows(md: "pq.FileMetaData") -> list[dict]:
         rg_json = {"columns": cols, "total_byte_size": str(rg.total_byte_size), "num_rows": str(n)}
         ds, ps, bs = rg.column(di).statistics, rg.column(pi).statistics, rg.column(bi).statistics
         u_min, u_max = _srange(rg.column(ui).statistics)
-        t_min, t_max = _srange(rg.column(ti).statistics)
+        t_min, t_max = None, None  # no group facet (excised 2026-09-06); columns kept in D1
         rows.append({
             "rg": g,
             "d_min": int(ds.min), "d_max": int(ds.max),
@@ -213,7 +212,7 @@ def sync_d1(
     """Extract the footer for ``date`` and upsert it into D1
     (index_schema/index_groups) over the Cloudflare **HTTP API** — pure Python,
     so it runs in the Node-less Batch image. Returns #row groups written.
-    ``variant`` is the sort order ('path' | 'user' | 'team'); each is a separate
+    ``variant`` is the sort order ('path' | 'user', optionally tiered); each is a separate
     parquet (path-index[-by-<variant>].parquet). ``remote=False`` uses the local
     wrangler D1 (dev only, via `d1 execute`)."""
     schema, rows = extract(parquet_path)
