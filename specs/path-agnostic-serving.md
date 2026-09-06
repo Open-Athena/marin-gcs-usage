@@ -1,5 +1,7 @@
 # Path-agnostic serving: retire `tree.json` / `age.json`, fold the WAL server-side
 
+> Superseded 2026-09-06 by `view-serving.md`: same target, restated from scratch (index *tiers* replace the `tree.json` coarse tier, objects become leaves, the scope axes `k`/`o`/`t`/`q` move server-side, AL as-of + state). §1's audit and the shipped mechanics in §2.1/§2.3 remain the reference for what exists.
+
 Ryan, 2026-08-29: "I want a design that is fast no matter the path. No min-blob floors, no depth floors. These are big tries and should be used as such, not shipped as one big JSON to the client. Serving up-to-date requests means replaying a WAL of online actions on top of the daily index — is that hooked up?"
 
 This spec answers that with the current state (audited, not from memory), the target design, and the order to get there. It supersedes the totals half of `exact-fate-totals.md` (same algorithm, renamed: the API is `marks`, not `fates`) and finishes `path-index-lazy-drill.md` step 4.

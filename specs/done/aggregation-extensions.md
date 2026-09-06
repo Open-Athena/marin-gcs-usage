@@ -1,5 +1,7 @@
 # Import aggregation extensions: class-pivot sums + weighted-mean mtime
 
+> **Shipped DT-side** (`disk-tree import --pivot-sum <col>` / `--mean-mtime`, `find/aggregate_duckdb.py`); moved to done 2026-09-06. mgu's `webdata` has not yet been rebased onto it — that rebase is `specs/view-serving.md` §5 and the DT-side asks in `~/c/disk-tree/specs/mgu-scale-unification.md`.
+
 Written 2026-08-14 from the marin session (spec workflow; follow-on to
 `done/import-a2a-findings.md`). Context: marin's Batch job now runs `disk-tree bulk-list` for
 listings (swapped 2026-08-14; `bucket_list.py` deleted), and the next retirement target is its
