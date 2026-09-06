@@ -10,7 +10,8 @@
  */
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { type Ctx, type Env, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
-import { keepSets, type Node, todoItems } from '../_lib/todo.js'
+import { keepSets, todoItems } from '../_lib/todo.js'
+import { buildView } from '../_lib/view.js'
 
 const BUCKET = 'oa-gcs-usage-dvx'
 const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
@@ -56,21 +57,22 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const scan = await latestScan(store)
   if (!scan) return json({ error: 'no published scan' }, 404)
 
-  const [{ bytes }, decidedRows] = await Promise.all([
-    store.get(`snapshots/${scan}/tree.json`),
-    env.DB.prepare(
-      `SELECT prefix FROM (
-         SELECT prefix, keep,
-           ROW_NUMBER() OVER (PARTITION BY prefix ORDER BY ts DESC, action_id DESC) AS rn
-         FROM keep_prefixes WHERE tombstoned IS NULL
-       ) WHERE rn = 1 AND keep IS NOT NULL`,
-    ).all<{ prefix: string }>(),
-  ])
-
-  const tree = JSON.parse(new TextDecoder().decode(bytes)) as Node & { b: number }
-  const minBytes = Math.floor(tree.b * minFrac)
+  // The fleet folded at min_bytes, straight from the index tiers (no
+  // tree.json): every path with >= min_bytes under it is a node, the rest is
+  // exact (other) remainders the walk ignores. Fleet bytes first (one row per
+  // bucket), then the fold at that absolute threshold.
+  const decidedRows = await env.DB.prepare(
+    `SELECT prefix FROM (
+       SELECT prefix, keep,
+         ROW_NUMBER() OVER (PARTITION BY prefix ORDER BY ts DESC, action_id DESC) AS rn
+       FROM keep_prefixes WHERE tombstoned IS NULL
+     ) WHERE rn = 1 AND keep IS NOT NULL`,
+  ).all<{ prefix: string }>()
+  const fleet = await buildView(env, { date: scan, path: '', w: 1, h: 1, minArea: 1, atten: 1, threshold: Number.MAX_SAFE_INTEGER })
+  const minBytes = Math.floor(fleet.tree.b * minFrac)
+  const view = await buildView(env, { date: scan, path: '', w: 1, h: 1, minArea: 1, atten: 1, threshold: minBytes })
   const { decided, hasBelow } = keepSets((decidedRows.results ?? []).map(r => r.prefix))
-  const items = todoItems(tree.c ?? [], decided, hasBelow, minBytes, limit)
+  const items = todoItems(view.tree.c ?? [], decided, hasBelow, minBytes, limit)
 
   return json({ scan, min_bytes: minBytes, count: items.length, items })
 }

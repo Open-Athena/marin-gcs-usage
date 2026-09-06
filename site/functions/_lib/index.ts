@@ -58,6 +58,9 @@ interface D1Handle {
   variant: string
   schema: unknown[]
   version: number
+  /** A coarse tier's absolute byte floor (every path with subtree bytes >= floor
+   * is present); null for the floor-free tier. */
+  floor: number | null
 }
 
 /** A user/team lens filter: `usr`/`team` column = `key`, applied on the
@@ -87,9 +90,20 @@ export function makeStore(env: Env) {
   })
 }
 
+/** Index variant → parquet key. Variants are `<tier>[-<sort>]`: tier `''`
+ * (floor-free) or `coarse<E>`; sort `path` (default), `user`, `team`. Mirrors
+ * `INDEX_VARIANTS` in the gcs-usage CLI (specs/view-serving.md §1). */
+export function indexKey(date: string, variant: string): string {
+  const m = /^(?:(coarse\d+)(?:-(user|team))?|(path|user|team))$/.exec(variant)
+  if (!m) throw new Error(`bad index variant '${variant}'`)
+  const tier = m[1] ? `-${m[1]}` : ''
+  const sort = m[2] ?? (m[3] === 'path' ? undefined : m[3])
+  return `listing/${date}/path-index${tier}${sort ? `-by-${sort}` : ''}.parquet`
+}
+
 function fileFor(env: Env, date: string, variant: string): FileSlice {
   const store = makeStore(env)
-  const key = `listing/${date}/path-index${variant === 'path' ? '' : `-by-${variant}`}.parquet`
+  const key = indexKey(date, variant)
   let size: Promise<number> | null = null
   const byteLengthP = () => (size ??= store.get(key, { offset: 0, length: 1 }).then(r => {
     if (!r.totalSize) throw new Error('index size unknown (no Content-Range)')
@@ -117,8 +131,8 @@ export async function openIndex(env: Env, date: string, variant = 'path'): Promi
   const p = (async (): Promise<IndexHandle> => {
     // Prefer D1 (no footer parse). Only the schema row is fetched here.
     if (env.DB) {
-      const s = await env.DB.prepare('SELECT version, schema_json FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string }>()
-      if (s) return { mode: 'd1', file: fileFor(env, date, variant), env, date, variant, schema: JSON.parse(s.schema_json), version: s.version }
+      const s = await env.DB.prepare('SELECT version, schema_json, floor_bytes FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string; floor_bytes: number | null }>()
+      if (s) return { mode: 'd1', file: fileFor(env, date, variant), env, date, variant, schema: JSON.parse(s.schema_json), version: s.version, floor: s.floor_bytes == null ? null : num(s.floor_bytes) }
     }
     // Only the default 'path' variant has a parsed-footer fallback (the by-user/
     // by-team lens variants are D1-only — no footer path serves them).

@@ -55,9 +55,12 @@ export function OgPage({ store = DEFAULT_STORE }: { store?: Store }) {
       .then(r => r.json())
       .then((scans: string[]) => {
         const asof = scans[0]
-        return asof ? fetch(`${store.base}/${asof}/tree.json`).then(r => r.json()) : null
+        // The same pixel-budget view the map draws (og card is 1200×630).
+        return asof
+          ? fetch(`/api/subtree?date=${asof}&path=&w=1200&h=630`, { credentials: 'include' }).then(r => r.json())
+          : null
       })
-      .then((t: TreeNode | null) => t && !cancel && setTree(t))
+      .then((v: { tree: TreeNode } | null) => v && !cancel && setTree(v.tree))
     return () => { cancel = true }
   }, [store])
 
