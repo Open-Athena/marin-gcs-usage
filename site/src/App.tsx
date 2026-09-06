@@ -10,7 +10,6 @@ import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
-import { clientDiff } from './clientDiff'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
@@ -442,27 +441,26 @@ function AppContent() {
   const lensScoped = fateSet != null || ownerMode !== 'all'
   const mapTree = tree
   // Diff sides: the drilled subtree at each endpoint, scoped like the map.
-  const diffPair = useQueries({
-    queries: (diffPrev && asof ? [diffPrev, asof] : []).map(d => ({
-      queryKey: ['diff-side', d, graftPath, scopeQs],
-      staleTime: Infinity,
-      retry: 1,
-      queryFn: async () => {
-        const r = await fetch(
-          `/api/subtree?date=${d}&path=${encodeURIComponent(graftPath)}&w=1200&h=720${scopeQs}`,
-          { credentials: 'include' },
-        )
-        if (!r.ok) throw Object.assign(new Error(`${r.status}`), { status: r.status })
-        return r.json() as Promise<{ tree: TreeNode }>
-      },
-    })),
+  // The diff is read server-side (`/api/diff`): both scans' index tiers at
+  // one shared byte floor, point lookups for names that crossed it, the
+  // page scope applied to both sides (specs/view-serving.md §2).
+  const diffQ = useQuery<DiffData, Error>({
+    queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs],
+    enabled: !!asof && !!diffPrev,
+    staleTime: fateSet ? 30_000 : Infinity,
+    retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
+    retryDelay: (n: number) => 400 * 2 ** n,
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
+        { credentials: 'include' },
+      )
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      return r.json() as Promise<DiffData>
+    },
   })
-  const diff: DiffData | null = useMemo(() => {
-    const [a, b] = [diffPair[0]?.data?.tree, diffPair[1]?.data?.tree]
-    if (!a || !b || !diffPrev || !asof) return null
-    return clientDiff(a, b, diffPrev, asof)
-  }, [diffPair[0]?.data, diffPair[1]?.data, diffPrev, asof])
-  const diffMissing = diffPair.find(q => q.isError)
+  const diff: DiffData | null = diffQ.data ?? null
+  const diffErr = diffQ.error
   // One-line description of the page scope, for the section subtitles:
   // where, then whose, then which mark states, then which names.
   const scopeParts: string[] = [
@@ -918,10 +916,11 @@ function AppContent() {
                 </b>
                 {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
                 {' '}· <Tooltip content={<>
-                  <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, pinned row, name filter), so in a lens
+                  <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
                   a subtree that left the slice (e.g. got claimed) shows as shrunk even if its bytes didn’t move.
-                  Aligned client-side from the two scans’ budget trees: exact for the big prefixes, approximate below the fold
-                  (small dirs hide inside “(other)” tiles, whose combined delta is still truthful).
+                  Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
+                  “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
+                  {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
                 </>}>
                   <span className="dotted">≈ {scopeDesc}</span>
                 </Tooltip>
@@ -933,12 +932,14 @@ function AppContent() {
                   </>
                 )}
               </>
-            ) : diffMissing ? (
+            ) : diffErr ? (
               <span className="tab-note">
-                {' '}· {(diffMissing.error as { status?: number }).status === 404
-                  ? <>no path index for <code>{graftPath || '/'}</code> at {fmtScan(diffPair[0]?.isError ? diffPrev : asof)} — pick another scan or drill up.</>
-                  : <>couldn’t load {fmtScan(diffPair[0]?.isError ? diffPrev : asof)} ({String(diffMissing.error)}).</>}
-                {' '}<button type="button" className="linkish" onClick={() => diffPair.forEach(q => q.isError && q.refetch())}>retry</button>
+                {' '}· {diffErr.message.startsWith('404')
+                  ? <><code>{graftPath || '/'}</code> is in neither scan’s index — pick other scans or drill up.</>
+                  : diffErr.message.startsWith('409')
+                    ? <>no per-user index for one of these scans — pick newer scans, or clear the user.</>
+                    : <>couldn’t diff {fmtScan(diffPrev)} → {fmtScan(asof)} ({diffErr.message}).</>}
+                {' '}<button type="button" className="linkish" onClick={() => diffQ.refetch()}>retry</button>
               </span>
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
