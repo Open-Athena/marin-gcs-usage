@@ -3,9 +3,17 @@ column metadata) and sync it to the site's D1, so the Cloudflare reader can buil
 a subset ``FileMetaData`` for a prefix query without parsing the whole footer on a
 cold isolate (specs/path-agnostic-serving.md §2.1 — the footer-in-D1 seam).
 
-Only the fields a *read* needs are kept (offsets/sizes/codec/encodings/type), plus
-per-group (depth, path, bytes) min/max for row-group pruning. BigInts serialize as
-strings; the reader revives them.
+Only the fields a *read* needs are kept, in the compact form the reader revives
+(`reviveRowGroup` in `site/functions/_lib/index.ts`):
+
+    rg_json = [num_rows, codec, [[data_page_offset, total_compressed_size, dictionary_page_offset|0], …]]
+
+one triple per leaf column in schema order — hyparquet reads nothing else from a
+column chunk (physical type and `path_in_schema` come from `index_schema`). Per
+group, the (depth, path, bytes, usr) min/max sit in their own columns for the
+row-group pruning SQL. ~250 B per group: D1 holds every scan's every tier (2M+
+groups) under its 10 GB cap, where the verbose thrift-shaped JSON (~3 KB) hit
+8.4 GB at 38 scans (2026-09-06).
 """
 from __future__ import annotations
 
@@ -70,34 +78,23 @@ def _group_rows(md: "pq.FileMetaData") -> list[dict]:
     for g in range(md.num_row_groups):
         rg = md.row_group(g)
         n = rg.num_rows
-        cols = []
-        for c in range(rg.num_columns):
-            cc = rg.column(c)
-            m = {
-                "type": cc.physical_type,
-                "encodings": list(cc.encodings),
-                "path_in_schema": cc.path_in_schema.split("."),
-                "codec": cc.compression,
-                "num_values": str(cc.num_values),
-                "total_uncompressed_size": str(cc.total_uncompressed_size),
-                "total_compressed_size": str(cc.total_compressed_size),
-                "data_page_offset": str(cc.data_page_offset),
-            }
-            if cc.dictionary_page_offset is not None:
-                m["dictionary_page_offset"] = str(cc.dictionary_page_offset)
-            cols.append({"file_offset": str(cc.file_offset), "meta_data": m})
-        rg_json = {"columns": cols, "total_byte_size": str(rg.total_byte_size), "num_rows": str(n)}
+        codecs = {rg.column(c).compression for c in range(rg.num_columns)}
+        if len(codecs) != 1:
+            raise ValueError(f"row group {g}: mixed codecs {sorted(codecs)} (one codec per group assumed)")
+        cols = [
+            [cc.data_page_offset, cc.total_compressed_size, cc.dictionary_page_offset or 0]
+            for cc in (rg.column(c) for c in range(rg.num_columns))
+        ]
         ds, ps, bs = rg.column(di).statistics, rg.column(pi).statistics, rg.column(bi).statistics
         u_min, u_max = _srange(rg.column(ui).statistics)
-        t_min, t_max = None, None  # no group facet (excised 2026-09-06); columns kept in D1
         rows.append({
             "rg": g,
             "d_min": int(ds.min), "d_max": int(ds.max),
             "p_min": ps.min, "p_max": ps.max,
             "b_max": int(bs.max),
-            "u_min": u_min, "u_max": u_max, "t_min": t_min, "t_max": t_max,
+            "u_min": u_min, "u_max": u_max,
             "row_start": row_start, "row_end": row_start + n,
-            "rg_json": json.dumps(rg_json, separators=(",", ":")),
+            "rg_json": json.dumps([n, codecs.pop(), cols], separators=(",", ":")),
         })
         row_start += n
     return rows
@@ -164,8 +161,10 @@ D1_RETRY_SLEEP = 5.0
 D1_TIMEOUT = 60.0
 
 
-def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
-    """Run one SQL string against D1 over the HTTP API (no Node/wrangler)."""
+def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> list[dict]:
+    """Run one SQL string against D1 over the HTTP API (no Node/wrangler).
+    Returns the statement's result rows (`[]` for writes); `meta` per row batch
+    is dropped."""
     import time
     import urllib.error
     import urllib.request
@@ -193,7 +192,8 @@ def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> None:
             raise RuntimeError(f"D1 query gave no answer after {D1_RETRIES + 1} tries: {e}") from None
         if not resp.get("success"):
             raise RuntimeError(f"D1 query error: {resp.get('errors')}")
-        return
+        return [row for r in resp.get("result", []) for row in r.get("results", [])]
+    raise AssertionError("unreachable")
 
 
 def _q(v) -> str:  # nullable string literal for SQL
@@ -239,11 +239,11 @@ def sync_d1(
         return (
             f"('{date}', '{variant}', {r['rg']}, {r['d_min']}, {r['d_max']}, "
             f"'{_sql_escape(r['p_min'])}', '{_sql_escape(r['p_max'])}', {r['b_max']}, "
-            f"{_q(r['u_min'])}, {_q(r['u_max'])}, {_q(r['t_min'])}, {_q(r['t_max'])}, "
+            f"{_q(r['u_min'])}, {_q(r['u_max'])}, "
             f"{r['row_start']}, {r['row_end']}, '{_sql_escape(r['rg_json'])}')"
         )
 
-    cols = "(date, variant, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, t_min, t_max, row_start, row_end, rg_json)"
+    cols = "(date, variant, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, row_start, row_end, rg_json)"
     if not remote:  # dev: local wrangler D1
         stmts = [clear_sql] + [f"INSERT INTO index_groups {cols} VALUES {group_values(r)};" for r in rows] + [schema_sql]
         site = _site_dir()
@@ -265,3 +265,38 @@ def sync_d1(
         _d1_query(sql, acct, tok, db_id)
     _d1_query(schema_sql, acct, tok, db_id)  # schema row last = completeness marker
     return len(rows)
+
+
+# In-place rewrite of rows still holding the verbose (pre-2026-09-06) thrift-shaped
+# `rg_json` object into the compact array form, with SQLite's JSON1 — no parquet
+# read, one statement per (date, variant). Old rows start with `{`.
+COMPACT_SQL = (
+    "UPDATE index_groups SET rg_json = json_array("
+    "CAST(json_extract(rg_json, '$.num_rows') AS INTEGER), "
+    "json_extract(rg_json, '$.columns[0].meta_data.codec'), "
+    "(SELECT json_group_array(json_array("
+    "CAST(json_extract(value, '$.meta_data.data_page_offset') AS INTEGER), "
+    "CAST(json_extract(value, '$.meta_data.total_compressed_size') AS INTEGER), "
+    "CAST(coalesce(json_extract(value, '$.meta_data.dictionary_page_offset'), '0') AS INTEGER))) "
+    "FROM json_each(index_groups.rg_json, '$.columns'))"
+    ") WHERE date = '{date}' AND variant = '{variant}' AND rg_json LIKE '{{%';"
+)
+
+
+def synced_variants(db_id: str = D1_DB_ID) -> list[tuple[str, str]]:
+    """Every (date, variant) with a schema row in D1 (= a complete sync)."""
+    tok, acct = _creds()
+    rows = _d1_query("SELECT date, variant FROM index_schema ORDER BY date, variant;", acct, tok, db_id)
+    return [(r["date"], r["variant"]) for r in rows]
+
+
+def compact_d1(date: str, variant: str, db_id: str = D1_DB_ID) -> int:
+    """Compact one (date, variant)'s verbose `rg_json` rows in place; returns the
+    number of rows left in the old form afterwards (0 = done)."""
+    tok, acct = _creds()
+    _d1_query(COMPACT_SQL.format(date=date, variant=variant), acct, tok, db_id)
+    rows = _d1_query(
+        f"SELECT count(*) AS n FROM index_groups WHERE date = '{date}' AND variant = '{variant}' AND rg_json LIKE '{{%';",
+        acct, tok, db_id,
+    )
+    return int(rows[0]["n"])

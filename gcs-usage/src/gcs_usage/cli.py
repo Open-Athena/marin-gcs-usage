@@ -1998,6 +1998,24 @@ def index_sync(bucket: str, listing_dir: str | None, local: bool, coarse_only: b
         err(f"index-sync: {date} [{variant}] — schema + {n} row groups ({'local' if local else 'remote'})")
 
 
+@main.command("index-compact")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all synced)")
+@argument("dates", nargs=-1)
+def index_compact(variants: tuple[str, ...], dates: tuple[str, ...]) -> None:
+    """Rewrite D1's verbose pre-2026-09-06 `rg_json` rows into the compact form
+    `index-sync` now writes (index_footer.py), in place via JSON1 — one statement
+    per (date, variant), no parquet read. All synced scans by default; DATES
+    restrict it. Idempotent (only rows still in the old form change)."""
+    from .index_footer import compact_d1, synced_variants
+
+    todo = [(d, v) for d, v in synced_variants() if (not dates or d in dates) and (not variants or v in variants)]
+    for d, v in todo:
+        left = compact_d1(d, v)
+        err(f"index-compact: {d} [{v}] — {'done' if left == 0 else f'{left} rows still verbose'}")
+    if not todo:
+        err("index-compact: nothing synced matches")
+
+
 @main.command()
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
 @option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so Slack keeps per-reply sender chrome)")

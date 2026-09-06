@@ -10,15 +10,19 @@
  * Two ways to get the footer stats (specs/path-agnostic-serving.md §2.1):
  *   - **D1** (preferred): `index_schema` / `index_groups`, populated per scan
  *     by `gcs-usage index-sync`. Row-group selection is a SQL query and we
- *     fetch the metadata only for the groups a query actually reads, so the
- *     ~5 MB thrift footer is never parsed on a cold isolate (that parse scales
- *     with row-group count and blew the Worker CPU budget at 8k-row groups).
+ *     fetch the (compact, ~250 B) metadata only for the groups a query
+ *     actually reads, so the ~5 MB thrift footer is never parsed on a cold
+ *     isolate (that parse scales with row-group count and blew the Worker CPU
+ *     budget at 8k-row groups).
  *   - **Parsed footer** (fallback): `parquetMetadataAsync` when D1 has no rows
  *     for the date — back-compatible, works on any index.
  */
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import type { Env } from './auth.js'
+
+/** A leaf of the stored parquet schema (`index_schema.schema_json`). */
+interface SchemaElement { type: string; name: string; repetition_type: string; converted_type?: string }
 
 export const BUCKET = 'oa-gcs-usage-dvx'
 
@@ -55,7 +59,7 @@ interface D1Handle {
   env: Env
   date: string
   variant: string
-  schema: unknown[]
+  schema: SchemaElement[]
   version: number
   /** A coarse tier's absolute byte floor (every path with subtree bytes >= floor
    * is present); null for the floor-free tier. */
@@ -200,8 +204,34 @@ const toRow = (r: Record<string, unknown>): Row => ({
 
 // --- D1 metadata: revive stored RowGroup JSON into hyparquet's shape ---------
 
+/** The compact form `index-sync` stores (index_footer.py): `[num_rows, codec,
+ * [[data_page_offset, total_compressed_size, dictionary_page_offset|0], …]]`,
+ * one triple per leaf column in schema order — the only column-chunk fields
+ * hyparquet reads (plus `type`/`path_in_schema`, taken from the schema). */
+type CompactGroup = [number, string, [number, number, number][]]
+
 const bi = (v: unknown): bigint | undefined => (v == null ? undefined : BigInt(v as string))
-function reviveRowGroup(json: string): Record<string, unknown> {
+export function reviveRowGroup(json: string, schema: SchemaElement[]): Record<string, unknown> {
+  if (json[0] === '[') {
+    const [numRows, codec, cols] = JSON.parse(json) as CompactGroup
+    const leaves = schema.slice(1) // [0] is the root element
+    if (cols.length !== leaves.length) throw new Error(`row group has ${cols.length} columns, schema ${leaves.length}`)
+    return {
+      num_rows: BigInt(numRows),
+      columns: cols.map(([dpo, size, dict], i) => ({
+        meta_data: {
+          type: leaves[i].type,
+          path_in_schema: [leaves[i].name],
+          codec,
+          data_page_offset: BigInt(dpo),
+          total_compressed_size: BigInt(size),
+          ...(dict ? { dictionary_page_offset: BigInt(dict) } : {}),
+        },
+      })),
+    }
+  }
+  // Verbose thrift-shaped rows written before 2026-09-06; `gcs-usage
+  // index-compact` rewrites them in place — drop this branch once it has.
   const g = JSON.parse(json) as { columns: { file_offset: string; meta_data: Record<string, unknown> }[]; total_byte_size: string; num_rows: string; file_offset?: string }
   return {
     num_rows: bi(g.num_rows),
@@ -226,7 +256,7 @@ function reviveRowGroup(json: string): Record<string, unknown> {
 
 /** Read one row group (given its stored metadata JSON) via a subset FileMetaData. */
 async function readGroup(h: D1Handle, rgJson: string, columns?: string[]): Promise<Row[]> {
-  const rg = reviveRowGroup(rgJson)
+  const rg = reviveRowGroup(rgJson, h.schema)
   const metadata = { version: h.version, schema: h.schema, num_rows: rg.num_rows, row_groups: [rg], metadata_length: 0 } as unknown as Awaited<ReturnType<typeof parquetMetadataAsync>>
   const rows = (await parquetReadObjects({ file: h.file, metadata, columns })) as Record<string, unknown>[]
   return rows.map(toRow)
