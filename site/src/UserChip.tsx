@@ -51,24 +51,17 @@ export const shortName = (who: string): string => {
 /** Explicit GitHub handle for the real avatar, or undefined (never guessed). */
 export const ghHandle = (who: string): string | undefined => IDENTITIES[canonId(who)]?.github
 
-export const teamOf = (who: string): string | undefined => IDENTITIES[canonId(who)]?.team
-
 /** All known users (canonical id + short name), sorted by name — for pickers. */
 export const allUsers = (): { id: string; name: string }[] =>
   Object.entries(IDENTITIES)
     .map(([id, rec]) => ({ id, name: rec.name }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
-const GROUP_LABELS: Record<string, string> = {
-  oa: 'Open Athena', stanford: 'Stanford', communal: 'Communal', unknown: 'Unknown',
-}
-
-/** The GitHub-style identity card shown on hover — avatar, name, group, links. */
+/** The GitHub-style identity card shown on hover — avatar, name, links. */
 export function UserCard({ who, extra }: { who: string; extra?: React.ReactNode }) {
   const id = canonId(who)
   const name = shortName(who)
   const gh = ghHandle(who)
-  const team = teamOf(who)
   const showsRaw = who !== name && who !== id
   return (
     <div className="user-card">
@@ -76,7 +69,6 @@ export function UserCard({ who, extra }: { who: string; extra?: React.ReactNode 
         <Avatar github={gh} name={name} size={38} />
         <div className="uc-id">
           <b>{name}</b>
-          {team && <span className="uc-group" data-team={team}>{GROUP_LABELS[team] ?? team}</span>}
         </div>
       </div>
       {showsRaw && <div className="uc-sub">{who}</div>}

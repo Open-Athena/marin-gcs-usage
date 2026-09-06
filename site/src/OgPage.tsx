@@ -3,7 +3,6 @@ import { Treemap } from './Treemap'
 import type { Store } from './stores'
 import { DEFAULT_STORE } from './stores'
 import type { TreeNode } from './types'
-import { TEAM_VARS, groupLabel, sharedColor } from './types'
 import type { UserIndexEntry } from './colors'
 
 // `<store>/og` — a redacted, fixed-size (1200×630) render of that store's
@@ -13,16 +12,8 @@ import type { UserIndexEntry } from './colors'
 const EMPTY_USERS = new Map<string, UserIndexEntry>()
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
-// communal is all-shared (washed-out swatch, matching its cells); the rest solid.
-const TEAM_LEGEND: [string, string][] = [
-  [groupLabel('communal'), sharedColor(TEAM_VARS.communal)],
-  [groupLabel('oa'), `var(${TEAM_VARS.oa})`],
-  [groupLabel('stanford'), `var(${TEAM_VARS.stanford})`],
-  [groupLabel('unattributed'), `var(${TEAM_VARS.unattributed})`],
-]
-
-// Stores with no ownership overlay colour by top-level prefix instead, so their
-// legend is the same slot assignment <Treemap> derives internally.
+// The og image colours by top-level prefix (no user names, no ownership), so
+// its legend is the same slot assignment <Treemap> derives internally.
 const treeLegend = (root: TreeNode): [string, string][] => {
   const bytes = new Map<string, number>()
   for (const bucket of root.c ?? [])
@@ -64,11 +55,7 @@ export function OgPage({ store = DEFAULT_STORE }: { store?: Store }) {
     return () => { cancel = true }
   }, [store])
 
-  const attributed = !!tree?.tm
-  const legend = useMemo(
-    () => (!tree ? [] : attributed ? TEAM_LEGEND : treeLegend(tree)),
-    [tree, attributed],
-  )
+  const legend = useMemo(() => (tree ? treeLegend(tree) : []), [tree])
 
   return (
     <div className="og">
@@ -80,7 +67,7 @@ export function OgPage({ store = DEFAULT_STORE }: { store?: Store }) {
         {tree && (
           <Treemap
             root={tree}
-            mode={attributed ? 'team' : 'tree'}
+            mode="tree"
             userIdx={EMPTY_USERS}
             dateRange={null}
             scheme={store.scheme}

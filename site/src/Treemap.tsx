@@ -12,7 +12,7 @@ import { klcFateAt, klcKeptWithin, subtreeFateTotals, unattrLens } from './sweep
 import type { Fate, KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
-import { CLASS_NAMES, TEAM_VARS, classMix, domTeamSeg, fmtN, fmtUsd, groupLabel, ratePerByte, sharedColor } from './types'
+import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
 import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
 
@@ -67,28 +67,28 @@ function childRanks(node: TreeNode): Map<string, [number, number]> {
   }
   return m
 }
-const TEAM_WHITE_INK = ['--t-stanford', '--t-oa', '--t-communal']
 
 export interface DateRange { min: number; max: number }
 
 export interface Highlight {
   user?: string
-  team?: string
+  /** The unclaimed pool (bytes no person owns). */
+  unclaimed?: boolean
 }
 
 // Domain wrapper over @disk-tree/react's generic <Treemap>: all layout,
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-// Scale a group's fleet-wide class-byte mix down to `b` bytes, so the rollup
+// Scale a user's fleet-wide class-byte mix down to `b` bytes, so the rollup
 // tooltip's table totals the $ figure it explains (rate × this view's bytes)
-// rather than showing the group's whole-fleet Ti/$ next to a small slice.
+// rather than showing their whole-fleet Ti/$ next to a small slice.
 const scaleMix = (mix: Record<string, number>, b: number): Record<string, number> => {
   const tot = Object.values(mix).reduce((s, x) => s + x, 0)
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickTeam, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -104,7 +104,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
    *  fade, map dims to it), click = pin (sticky `hl`; click again, any empty
    *  spot, or `x` clears). Absent → rows are inert. */
   onPickUser?: (u: string) => void
-  onPickTeam?: (t: string) => void
+  onPickUnclaimed?: () => void
   onClearHl?: () => void
   pricing?: Pricing | null
   lens?: boolean
@@ -152,18 +152,16 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
 
   const uriOf = (path: TreeNode[]) => scheme + path.slice(1).map(n => n.n).join('/')
 
-  // Fold merger: first-class TreeNode aggregating tm/us/d so folded tiles keep
+  // Fold merger: first-class TreeNode aggregating us/d so folded tiles keep
   // real tooltips (upstream calls this at every nesting level).
   const mergeSmall = useCallback((tiny: TreeNode[]): TreeNode => {
     const b = tiny.reduce((s, it) => s + it.b, 0)
     const o = tiny.reduce((s, it) => s + it.o, 0)
-    const tm: Record<string, number> = {}
     const us: Record<string, number> = {}
     let wd = 0
     let wdb = 0
     let ma = -1
     for (const it of tiny) {
-      for (const [t, tb] of Object.entries(it.tm ?? {})) tm[t] = (tm[t] ?? 0) + tb
       for (const [u, ub] of it.us ?? []) us[u] = (us[u] ?? 0) + ub
       if (it.d != null) {
         wd += it.d * it.b
@@ -174,7 +172,6 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     const folded: TreeNode = { n: `(+${tiny.length})`, b, o }
     if (wdb) folded.d = Math.round(wd / wdb)
     if (ma >= 0) folded.a = ma
-    if (Object.keys(tm).length) folded.tm = tm
     const topUs = Object.entries(us).sort((a, c) => c[1] - a[1]).slice(0, 5)
     if (topUs.length) folded.us = topUs as [string, number][]
     return folded
@@ -247,24 +244,6 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         // container: neutral so the nested tiles carry the data colors
         bg = 'var(--panel)'
         ink = 'var(--ink)'
-      } else if (mode === 'team') {
-        // Mixed leaf/fold: render the group makeup as proportional stripes
-        // (≥6% shares, up to 4) instead of letting the dominant group paint
-        // the whole blob — an 88/11 stanford/oa fold reads as both.
-        const shares = Object.entries(kid.tm ?? {})
-          .filter(([, b]) => b >= 0.06 * kid.b)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 4)
-        if (shares.length > 1) {
-          segments = shares.map(([t, b]) => ({ color: `var(${TEAM_VARS[t] ?? '--t-unattr'})`, frac: b / kid.b }))
-          bg = 'var(--panel)'
-          ink = 'var(--ink)'
-        } else {
-          const seg = domTeamSeg(kid)
-          const tv = (seg && TEAM_VARS[seg.team]) || '--t-unattr'
-          bg = seg?.shared ? sharedColor(tv) : `var(${tv})`
-          ink = !seg?.shared && TEAM_WHITE_INK.includes(tv) ? '#fff' : 'var(--ink)'
-        }
       } else if (mode === 'date') {
         if (kid.d != null && dateRange && dateRange.max > dateRange.min) {
           bg = dateColor((kid.d - dateRange.min) / (dateRange.max - dateRange.min))
@@ -283,29 +262,29 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           ink = 'var(--ink)'
         }
       } else {
-        // user / uteam: a wholly-owned (~100%) cell takes its user's color;
-        // a mixed cell renders its top users as proportional stripes (with a
-        // gray remainder for unattributed/shared bytes) instead of one blob.
+        // user: a wholly-owned (~100%) cell takes its user's color; a mixed
+        // cell renders its top users as proportional stripes (with a gray
+        // remainder for unclaimed bytes) instead of one blob.
         const [u, ub] = kid.us?.[0] ?? [null, 0]
         if (ub >= 0.98 * kid.b) {
-          bg = userColor(u, userIdx, mode === 'uteam')
+          bg = userColor(u, userIdx)
           ink = inkFor(bg)
         } else {
           const us = (kid.us ?? []).filter(([, b]) => b >= 0.06 * kid.b).slice(0, 4)
           const rem = kid.b - us.reduce((s, [, b]) => s + b, 0)
           if (us.length && (us.length > 1 || rem >= 0.06 * kid.b)) {
-            segments = us.map(([uu, b]) => ({ color: userColor(uu, userIdx, mode === 'uteam'), frac: b / kid.b }))
-            if (rem >= 0.06 * kid.b) segments.push({ color: userColor(null, userIdx, false), frac: rem / kid.b })
+            segments = us.map(([uu, b]) => ({ color: userColor(uu, userIdx), frac: b / kid.b }))
+            if (rem >= 0.06 * kid.b) segments.push({ color: userColor(null, userIdx), frac: rem / kid.b })
             bg = 'var(--panel)'
             ink = 'var(--ink)'
           } else if (us.length === 1) {
             // One dominant user, remainder too small to stripe (<6%): their
             // color, not unattributed gray — covers the 94–98% window the
             // wholly-owned fast path above misses.
-            bg = userColor(us[0][0], userIdx, mode === 'uteam')
+            bg = userColor(us[0][0], userIdx)
             ink = inkFor(bg)
           } else {
-            bg = userColor(null, userIdx, mode === 'uteam')
+            bg = userColor(null, userIdx)
             ink = inkFor(bg)
           }
         }
@@ -317,13 +296,12 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       const hatch = coldFrac > 0.01
         ? `repeating-linear-gradient(135deg, rgb(120 170 255 / ${(0.18 + 0.5 * coldFrac).toFixed(2)}) 0 4px, transparent 4px 9px)`
         : undefined
-      // highlight mode: leaf cells not majority-owned by the selected user/team fade back
+      // highlight mode: leaf cells not majority-owned by the selected user
+      // (or, for the unclaimed pin, not majority-unclaimed) fade back
       let dim = false
       if (effHl && !ctx.hasKids) {
         if (effHl.user) dim = (kid.us?.find(([u]) => u === effHl.user)?.[1] ?? 0) < 0.5 * kid.b
-        // team "unattributed" is the user axis's nobody-bucket: it includes
-        // every group's shared/userless subset (communal et al.), not just tm.
-        else if (effHl.team) dim = (effHl.team === 'unattributed' ? unattrLens(kid) : kid.tm?.[effHl.team] ?? 0) < 0.5 * kid.b
+        else if (effHl.unclaimed) dim = unattrLens(kid) < 0.5 * kid.b
       }
       // Shared-edge stroke, per cell: each neighbor paints its own half of a
       // boundary, so the line can adapt to the face it borders. Top-level
@@ -341,53 +319,23 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     [mode, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx, klcIdx],
   )
 
-  // group roll-up for the current view: users in user modes, teams otherwise;
-  // $ figures use class-aware per-group rates when the snapshot carries them
+  // owner roll-up for the current view (user coloring only): everyone ≥1% of
+  // the node, at least 5, at most 12; the rest roll into "(other users)";
+  // what no person owns is the unclaimed pool. $ figures use class-aware
+  // per-user rates when the snapshot carries them.
   const rollupFor = (node: TreeNode) => {
-    if (!node.tm) return []
-    const teamRate = (t: string) => pricing && (pricing.teamRates?.[t] ?? pricing.blended)
+    if (mode !== 'user' || !node.us) return []
     const userRate = (u: string) => pricing && (pricing.userRates?.[u] ?? pricing.blended)
-    if (mode === 'user' || mode === 'uteam') {
-      const us = node.us ?? []
-      const attributed = Object.entries(node.tm)
-        .filter(([t]) => t !== 'unattributed')
-        .reduce((s, [, b]) => s + b, 0)
-      const userTotal = us.reduce((s, [, b]) => s + b, 0)
-      // On the user axis, "unattributed" is everything no person owns: the
-      // unattributed group PLUS group/communal bytes with no individual owner
-      // (exact once `us` is uncapped; with legacy top-5 snapshots the tail
-      // users land here too). The old separate "(shared/communal)" row made
-      // communal read as attributed-vs-not, which only mattered for early
-      // per-group ballparking.
-      const unattr = (node.tm['unattributed'] ?? 0) + Math.max(0, attributed - userTotal)
-      // individual traces while they stay legible: everyone ≥1% of the node,
-      // at least 5, at most 12; the rest roll into "(other users)"
-      const shown = us.filter(([, b], i) => i < 5 || (i < 12 && b >= 0.01 * node.b))
-      const otherUsers = userTotal - shown.reduce((s, [, b]) => s + b, 0)
-      return [
-        ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx, mode === 'uteam'), rate: userRate(u), mix: pricing?.userMix?.[u], hl: { user: u } as Highlight | undefined })),
-        ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
-        ...(unattr > 0 ? [{ k: 'unclaimed', b: unattr, col: 'var(--t-unattr)', rate: pricing?.blended, mix: undefined, hl: { team: 'unattributed' } as Highlight | undefined }] : []),
-      ].sort((a, b) => b.b - a.b)
-    }
-    return Object.entries(node.tm)
-      .flatMap(([t, b]) => {
-        const tv = TEAM_VARS[t] ?? '--t-unattr'
-        const s = node.sh?.[t] ?? 0
-        const rate = teamRate(t)
-        const mix = pricing?.teamMix?.[t]
-        const gl = groupLabel(t)
-        const hl: Highlight | undefined = { team: t }
-        return s > 0 && b - s > 0
-          ? [
-              { k: `${gl} (users)`, b: b - s, col: `var(${tv})`, rate, mix, hl },
-              { k: `${gl} (shared)`, b: s, col: sharedColor(tv), rate, mix, hl },
-            ]
-          : s > 0
-            ? [{ k: gl, b: s, col: sharedColor(tv), rate, mix, hl }]  // all-shared group (communal): no redundant "(shared)"
-            : [{ k: gl, b, col: `var(${tv})`, rate, mix, hl }]
-      })
-      .sort((a, b) => b.b - a.b)
+    const us = node.us
+    const userTotal = us.reduce((s, [, b]) => s + b, 0)
+    const unattr = Math.max(0, node.b - userTotal)
+    const shown = us.filter(([, b], i) => i < 5 || (i < 12 && b >= 0.01 * node.b))
+    const otherUsers = userTotal - shown.reduce((s, [, b]) => s + b, 0)
+    return [
+      ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx), rate: userRate(u), mix: pricing?.userMix?.[u], hl: { user: u } as Highlight | undefined })),
+      ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
+      ...(unattr > 0 ? [{ k: 'unclaimed', b: unattr, col: 'var(--t-unattr)', rate: pricing?.blended, mix: undefined, hl: { unclaimed: true } as Highlight | undefined }] : []),
+    ].sort((a, b) => b.b - a.b)
   }
 
   // Mark decoration is state-as-*border* (keep green / keep-last-ckpt amber /
@@ -447,12 +395,11 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
 
   const renderRollup = (node: TreeNode, path: TreeNode[]) => {
     if (redact) return null
-    // The rollup follows the ACTIVE color axis: group/user breakdowns render
-    // only when the map is colored by them (tree/written/read/marks each key
-    // their own legend — a groups row there is a second axis nobody asked
-    // for). The fate row keys the mark overlay, which is active whenever
-    // markIdx is (mark mode), in every coloring.
-    const rollup = mode === 'team' || mode === 'user' || mode === 'uteam' ? rollupFor(node) : []
+    // The rollup follows the ACTIVE color axis: the owner breakdown renders
+    // only when the map is colored by user (tree/written/read/marks each key
+    // their own legend). The fate row keys the mark overlay, which is active
+    // whenever markIdx is (mark mode), in every coloring.
+    const rollup = rollupFor(node)
     if (!markIdx && !rollup.length) return null
     // Fate totals for the current view: of the drilled subtree's bytes, how
     // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
@@ -493,11 +440,11 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           </span>
         )}
         {rollup.filter(r => r.b >= 0.001 * node.b).map(r => {
-          // Real per-user rows (user modes, not synthetic "(shared)"/"unattributed")
-          // get a GitHub avatar next to the color swatch.
-          const isUser = (mode === 'user' || mode === 'uteam') && !r.k.startsWith('(') && r.k !== 'unclaimed'
-          const pickable = !!r.hl && !!(r.hl.user ? onPickUser : onPickTeam)
-          const same = (a: Highlight | null | undefined, b: Highlight | undefined) => !!a && !!b && a.user === b.user && a.team === b.team
+          // Real per-user rows (not "(other users)"/"unclaimed") get a GitHub
+          // avatar next to the color swatch.
+          const isUser = mode === 'user' && !r.k.startsWith('(') && r.k !== 'unclaimed'
+          const pickable = !!r.hl && !!(r.hl.user ? onPickUser : onPickUnclaimed)
+          const same = (a: Highlight | null | undefined, b: Highlight | undefined) => !!a && !!b && a.user === b.user && !!a.unclaimed === !!b.unclaimed
           const pinned = same(hl, r.hl)
           // Hover-solo fades the other rows; a pin (the map is scoped to the
           // pinned row's bytes) hides them.
@@ -507,7 +454,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
             if (!r.hl) return
             if (pinned) onClearHl?.()
             else if (r.hl.user) onPickUser?.(r.hl.user)
-            else if (r.hl.team) onPickTeam?.(r.hl.team)
+            else if (r.hl.unclaimed) onPickUnclaimed?.()
           }
           return (
           <span
@@ -525,7 +472,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
             {liMetrics.has('p') && <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>}
             {r.rate != null && liMetrics.has('c') && (
               r.mix ? (
-                <Tooltip content={<ClassMixTip mix={scaleMix(r.mix, r.b)} note="assumes this slice mirrors the group's fleet-wide class mix — the table is that mix scaled to this view's bytes" />}>
+                <Tooltip content={<ClassMixTip mix={scaleMix(r.mix, r.b)} note="assumes this slice mirrors the user's fleet-wide class mix — the table is that mix scaled to this view's bytes" />}>
                   <span className="usd dotted">{fmtUsd(r.b * r.rate)}/mo</span>
                 </Tooltip>
               ) : (
@@ -549,7 +496,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   }
 
   /* One keying strip per view: any CATEGORICAL axis keys through the roll-up
-     bar (swatch + label + size + %, presence-filtered) — team, user, uteam,
+     bar (swatch + label + size + %, presence-filtered) — user,
      and fate all render there, so a separate legend for them would be a
      strict-subset duplicate. This legend exists only for encodings the
      roll-up can't key: date gradients (written/read) and the tree prefix
@@ -608,7 +555,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
     const uri = uriOf(path)
-    const userMode = mode === 'user' || mode === 'uteam'
+    const userMode = mode === 'user'
     // The mark decision covering this cell — so provenance (who/when, inherited
     // or own) is always legible in the tooltip, even on cells too small for the
     // corner badge or when not in fate coloring.
@@ -624,27 +571,11 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         {pricing && <span className="usd">{fmtUsd(n.b * ratePerByte(mix))}/mo</span>}
       </div>
     )
-    const teams = n.tm && (
-      <div className="teams">
-        {Object.entries(n.tm)
-          .filter(([, b]) => b >= 0.005 * n.b)
-          .map(([t, b]) => {
-            const s = n.sh?.[t] ?? 0
-            return (
-              <span className="tt-team" key={t}>
-                <span className="sw" style={{ background: `var(${TEAM_VARS[t] ?? '--t-unattr'})` }} />
-                {t} {((100 * b) / n.b).toFixed(0)}%
-                {s >= 0.01 * b && <span className="shr"> ({((100 * s) / b).toFixed(0)}% shared)</span>}
-              </span>
-            )
-          })}
-      </div>
-    )
     const users = n.us && n.us.length > 0 && (
       <div className="users">
         {n.us.map(([u, b]) => (
           <div className="tt-user" key={u}>
-            {userMode && <span className="sw" style={{ background: userColor(u, userIdx, mode === 'uteam') }} />}
+            {userMode && <span className="sw" style={{ background: userColor(u, userIdx) }} />}
             <Avatar github={ghHandle(u)} name={shortName(u)} size={13} /> {shortName(u)} · {fmtBytes(b)}
           </div>
         ))}
@@ -662,7 +593,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         </div>
         {st?.mark && <div className="tt-mark">{markProvenance(st.mark, st.own)}</div>}
         {classes}
-        {userMode ? <>{users}{teams}</> : <>{teams}{users}</>}
+        {users}
         {/* interactive only when the tooltip is pinned; CSS hides it on hover */}
         {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} />}
       </>

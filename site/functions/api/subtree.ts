@@ -1,7 +1,7 @@
 /** Pixel-budget subtree of any path, served from the index tiers
  * (specs/view-serving.md; the folding lives in `_lib/view.ts`).
  *
- *   GET /api/subtree?date=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>][&lens=user:<id>|team:<name>]
+ *   GET /api/subtree?date=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>][&lens=user:<id>]
  *
  * Responses are immutable per (date, path, w₁₂₈, h₁₂₈, minArea, atten, lens)
  * — scans never change — and cached in the edge cache accordingly. w/h
@@ -28,14 +28,14 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
 
-  // Optional lens: `lens=user:<id>` / `lens=team:<name>` — treemap of that
-  // user's / team's bytes, read from the matching by-user/by-team sort.
+  // Optional lens: `lens=user:<id>` — a treemap of that user's bytes, read
+  // from the by-user sort.
   const lensRaw = url.searchParams.get('lens')
   let lens: Lens | undefined
   if (lensRaw) {
-    const m = /^(user|team):(.+)$/.exec(lensRaw)
-    if (!m) return new Response('bad lens (want user:<id> or team:<name>)', { status: 400 })
-    lens = { col: m[1] === 'user' ? 'u' : 't', key: m[2] }
+    const m = /^user:(.+)$/.exec(lensRaw)
+    if (!m) return new Response('bad lens (want user:<id>)', { status: 400 })
+    lens = { key: m[1] }
   }
 
   // Data is gated (store-specific scope), like /data/*.

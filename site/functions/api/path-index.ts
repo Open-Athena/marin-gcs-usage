@@ -14,7 +14,7 @@
 //   WHERE depth = 2 ORDER BY b DESC LIMIT 20;
 //
 // Schema: one row per rolled-up path × attribution slice —
-// (path, depth, team, usr, b, o, wts, wb, c2, c3, c4), sorted (depth, path).
+// (path, depth, usr, b, o, wts, wb, c2, c3, c4, a), sorted (depth, path).
 //
 // A Workers isolate buffers each range in memory, so ranges are capped; a
 // bare GET would mean buffering the whole multi-GB file and is refused with

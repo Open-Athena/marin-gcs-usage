@@ -9,7 +9,7 @@ import type { FateAxis } from './sweep'
 import { Tooltip } from './Tooltip'
 import { UserChip } from './UserChip'
 import type { TreeNode } from './types'
-import { domTeamSeg, fmtN, groupLabel } from './types'
+import { fmtN } from './types'
 import { useUnits } from './units'
 
 // Sortable/paginated listing of the treemap's current node's children — the
@@ -85,7 +85,6 @@ export function ChildrenTable({ node, segs, scheme, markIdx, fates, onOpen }: {
             {th('o', 'objects')}
             {th('d', 'created')}
             {th('a', 'read', false)}
-            <th>group</th>
             <th>top user</th>
             {markIdx && <th>state</th>}
             {showActions && <th>actions</th>}
@@ -96,7 +95,6 @@ export function ChildrenTable({ node, segs, scheme, markIdx, fates, onOpen }: {
             const synthetic = k.n.startsWith('(')
             const kidSegs = [...segs, k.n]
             const uri = scheme + kidSegs.join('/')
-            const seg = domTeamSeg(k)
             const [u] = k.us?.[0] ?? [null]
             const mk = markIdx && !synthetic ? markIdx.resolve(uri) : null
             return (
@@ -115,7 +113,6 @@ export function ChildrenTable({ node, segs, scheme, markIdx, fates, onOpen }: {
                 <td title={k.a != null ? 'most recent GET/HEAD/LIST under this prefix (access logs)' : undefined}>
                   {k.a != null ? epochDaysToDate(k.a) : '—'}
                 </td>
-                <td>{seg ? groupLabel(seg.team) : '—'}</td>
                 <td>{u ? <UserChip who={u} size={15} /> : '—'}</td>
                 {markIdx && (
                   <td>

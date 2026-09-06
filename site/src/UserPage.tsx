@@ -17,9 +17,9 @@ import { useScan, type Scan } from './scan'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { Tooltip } from './Tooltip'
-import { UserChip, canonId, ghHandle, shortName, shortUserKey, teamOf } from './UserChip'
+import { UserChip, canonId, ghHandle, shortName, shortUserKey } from './UserChip'
 import {
-  CLASS_NAMES, CLASS_PRICE_US, GROUP_LABELS, TEAM_VARS,
+  CLASS_NAMES, CLASS_PRICE_US,
   ratePerByte, fmtBytesIec, fmtN, fmtUsd,
   type Meta, type TreeNode, type UserInfo,
 } from './types'
@@ -148,21 +148,6 @@ function useScanFile<T>(name: string, asof: string | null) {
   })
 }
 
-// Group badge: real logo glyphs (block-S / OA branch mark, cropped from the
-// www site's brand SVGs into `public/groups/`) with the full name on hover;
-// unknown renders as a plain dash.
-const GROUP_ICONS: Record<string, string> = { stanford: '/groups/su.png', oa: '/groups/oa.svg' }
-
-function GroupBadge({ team, tip = true }: { team: string; tip?: boolean }) {
-  const icon = GROUP_ICONS[team]
-  const el = icon
-    ? <img className="grp-icon" src={icon} alt={GROUP_LABELS[team] ?? team} />
-    : <span className="grp-none">–</span>
-  // tip=false when the badge sits inside a UserChip's hover target — a nested
-  // tooltip there would fight the user card.
-  return tip ? <Tooltip content={GROUP_LABELS[team] ?? team}>{el}</Tooltip> : el
-}
-
 // Est. $/mo with the storage-class mix behind it on hover.
 function DollarCell({ b, mix, color }: { b: number; mix?: Record<string, number>; color?: string }) {
   if (!mix || !b) return <>—</>
@@ -193,40 +178,34 @@ function DollarCell({ b, mix, color }: { b: number; mix?: Record<string, number>
 }
 
 // One-level treemap of the whole estate by owner: every user, plus one
-// "unattributed" pool for everything no person owns (incl. communal and
-// shared-in-group bytes — the group split isn't a per-user distinction).
+// "unclaimed" pool for everything no person owns.
 interface OwnerCell {
   n: string
   b: number
-  team?: string
+  pool?: boolean   // the unclaimed pool (no user)
   id?: string      // canonical user id → /user/:id
   c?: OwnerCell[]
 }
 
-// Tile background: the group color pulled well toward dark, so the full-
-// strength keep/sweep stripes read as *marks on* the tile, not more of it.
-const tileBg = (team: string): string =>
-  `color-mix(in oklab, var(${TEAM_VARS[team] ?? '--t-unknown'}) 48%, #131311)`
+// The pool tile: the unclaimed gray pulled toward dark, so the full-strength
+// keep/sweep stripes on user tiles read as *marks on* a tile, not more of it.
+const POOL_TILE_BG = 'color-mix(in oklab, var(--t-unattr) 48%, #131311)'
 const USER_TILE_BG = 'color-mix(in oklab, var(--ink) 7%, var(--panel))'
 
-/** The owner tiles (users + ownerless pools) — ONE derivation shared by the
- * map and its legend, so the legend can never key a group absent from the
- * tiles. Live fates (claims applied) win over scan meta when loaded. */
+/** The owner tiles (users + the unclaimed pool) — ONE derivation shared by
+ * the map and its legend. Live fates (claims applied) win over scan meta when
+ * loaded. */
 function ownerCells(meta: Meta, fates: Map<string, Record<Fate, number>> | null): OwnerCell[] {
   const metaUsers: UserInfo[] = meta.users ?? []
-  const users: { u: string; t: string; b: number }[] = fates
+  const users: { u: string; b: number }[] = fates
     ? [...fates.entries()]
-        .map(([u, f]) => ({
-          u,
-          t: teamOf(u) ?? metaUsers.find(m => m.u === u)?.t ?? 'unknown',
-          b: FATE_ORDER_TOTAL(f),
-        }))
+        .map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f) }))
         .filter(x => x.b > 0)
     : metaUsers
-  const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b, team: u.t }))
+  const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b }))
   const userSum = users.reduce((s, u) => s + u.b, 0)
   const unattr = Math.max(0, meta.total_bytes - userSum)
-  if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, team: 'unattributed' })
+  if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, pool: true })
   return cells.sort((a, b) => b.b - a.b)
 }
 
@@ -234,8 +213,8 @@ function MapLegend({ cells, fates }: {
   cells: OwnerCell[]
   fates: Map<string, Record<Fate, number>> | null
 }) {
-  // Only the POOL tiles carry group colors now — user tiles are fate-striped.
-  const groups = [...new Set(cells.filter(c => !c.id).map(c => c.team).filter((t): t is string => !!t))]
+  // Only the pool tile carries its own color — user tiles are fate-striped.
+  const hasPool = cells.some(c => c.pool)
   const present: Record<ShownFate, boolean> = { keep: false, sweep: false, unmarked: false }
   if (fates) {
     for (const f of fates.values()) {
@@ -245,9 +224,7 @@ function MapLegend({ cells, fates }: {
   }
   return (
     <div className="map-legend">
-      {groups.map(t => (
-        <span key={t}><i style={{ background: tileBg(t) }} />{GROUP_LABELS[t] ?? t}</span>
-      ))}
+      {hasPool && <span><i style={{ background: POOL_TILE_BG }} />unclaimed</span>}
       {(!fates || present.keep || present.sweep) && <span className="sep" />}
       {(!fates || present.keep) && <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>}
       {(!fates || present.sweep) && <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>}
@@ -279,11 +256,9 @@ function UsersMap({ meta, fates, redact = false }: {
         fullscreen={false}
         colorForCell={(n): CellStyle | null => {
           // ONE categorical axis per tile: user tiles carry their fate makeup
-          // (neutral base + full-strength keep/sweep/undecided stripes —
-          // group would be a second axis fighting the same channel); the
-          // ownerless pools, which have no fate stripes, keep their own
-          // colors.
-          if (!n.id) return n.team ? { bg: tileBg(n.team) } : null
+          // (neutral base + full-strength keep/sweep/undecided stripes); the
+          // unclaimed pool, which has no fate stripes, keeps its own color.
+          if (!n.id) return n.pool ? { bg: POOL_TILE_BG } : null
           const style: CellStyle = { bg: USER_TILE_BG }
           const raw = fates?.get(n.id)
           const f = raw ? foldFates(raw) : undefined
@@ -308,7 +283,7 @@ function UsersMap({ meta, fates, redact = false }: {
           const total = f ? SHOWN_FATES.reduce((s, k) => s + f[k], 0) : 0
           return (
             <div>
-              <b>{n.n}</b>{n.team && <> · {GROUP_LABELS[n.team] ?? n.team}</>}
+              <b>{n.n}</b>
               <div>{fmtBytesIec(n.b, true)} · {meta.total_bytes ? ((100 * n.b) / meta.total_bytes).toFixed(1) : 0}%</div>
               {f && total > 0 && (
                 <div>
@@ -326,14 +301,14 @@ function UsersMap({ meta, fates, redact = false }: {
         // still route through the SPA below.
         cellHref={n =>
           n.id ? `/user/${n.id}`
-          : n.team === 'unattributed' ? '/?o=unclaimed'
+          : n.pool ? '/?o=unclaimed'
           : undefined}
         onCellClick={(n) => {
           if (redact) return true
           // Every tile goes somewhere sane: users to their page, the
           // unattributed pool to the matching home lens.
           if (n.id) navigate(`/user/${n.id}`)
-          else if (n.team === 'unattributed') navigate('/?o=unclaimed')
+          else if (n.pool) navigate('/?o=unclaimed')
           return true
         }}
       />
@@ -404,11 +379,7 @@ export function UsersPage() {
     const metaUsers = metaQ.data?.users ?? []
     if (!fates) return [...metaUsers].sort((a, b) => b.b - a.b)
     return [...fates.entries()]
-      .map(([u, f]) => ({
-        u,
-        t: teamOf(u) ?? metaUsers.find(m => m.u === u)?.t ?? 'unknown',
-        b: FATE_ORDER_TOTAL(f),
-      }))
+      .map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f) }))
       .filter(x => x.b > 1e9)
       .sort((a, b) => b.b - a.b)
   }, [metaQ.data, fates])
@@ -420,13 +391,12 @@ export function UsersPage() {
     const usd = (mix: ClassMix | undefined, b: number) => (mix && b ? Math.round(ratePerByte(mix) * b) : '')
     const tib = 1024 ** 4
     const lines = [
-      ['user', 'group', 'attributed_TiB', 'est_usd_mo', 'keep_TiB', 'keep_usd_mo', 'sweep_TiB', 'sweep_usd_mo', 'undecided_TiB', 'undecided_usd_mo', 'undecided_pct', 'page'],
+      ['user', 'attributed_TiB', 'est_usd_mo', 'keep_TiB', 'keep_usd_mo', 'sweep_TiB', 'sweep_usd_mo', 'undecided_TiB', 'undecided_usd_mo', 'undecided_pct', 'page'],
       ...rowsIter
         .filter(r => r.b > 1e9)
         .sort((a, b) => (b.f?.unmarked ?? b.b) - (a.f?.unmarked ?? a.b))
         .map(r => [
           r.u,
-          teamOf(r.u) ?? users.find(m => m.u === r.u)?.t ?? 'unknown',
           (r.b / tib).toFixed(1),
           usd(r.mix, r.b),
           ((r.f?.keep ?? 0) / tib).toFixed(1),
@@ -532,7 +502,7 @@ export function UsersPage() {
               <tr key={u.u}>
                 <td className="user-td">
                   <Link className="user-link" to={`/user/${u.u}`}>
-                    <UserChip who={u.u} before={<GroupBadge team={teamOf(u.u) ?? u.t} tip={false} />} />
+                    <UserChip who={u.u} />
                   </Link>
                 </td>
                 <td className="num">{fmtBytesIec(u.b)}</td>
@@ -640,7 +610,6 @@ export function UserOgPage() {
   const raw = fates?.get(id)
   const f = raw ? foldFates(raw) : null
   const total = f ? SHOWN_FATES.reduce((s, k) => s + f[k], 0) : 0
-  const team = teamOf(id)
   const pct = (k: ShownFate): number => (f && total ? (100 * f[k]) / total : 0)
   const barColor = (k: ShownFate): string => (k === 'unmarked' ? 'var(--other)' : fateColor(k))
   const barLabel: Record<ShownFate, string> = { keep: 'keep', sweep: 'sweep', unmarked: 'undecided' }
@@ -649,10 +618,7 @@ export function UserOgPage() {
       <div className="og-head ogu-head">
         <Avatar github={ghHandle(id)} name={shortName(id)} size={110} />
         <div>
-          <h1>
-            {shortName(id)}
-            {team && GROUP_ICONS[team] && <img className="ogu-glyph" src={GROUP_ICONS[team]} alt={GROUP_LABELS[team] ?? team} />}
-          </h1>
+          <h1>{shortName(id)}</h1>
           <p>Marin GCS usage — where their bytes stand.</p>
         </div>
       </div>
@@ -812,7 +778,6 @@ export function UserPage() {
     }
     return path
   }, [scopedTree, pP])
-  const team = teamOf(id)
   const loading = !asof || treeQ.isLoading || marksQ.isLoading
 
   return (
@@ -823,7 +788,6 @@ export function UserPage() {
           <h1 className="user-head">
             <Avatar github={ghHandle(id)} name={shortName(id)} size={36} />
             {shortName(id)}
-            {team && <span className="uc-group" data-team={team}>{GROUP_LABELS[team] ?? team}</span>}
           </h1>
           <span style={{ display: 'inline-flex', gap: '1.2em' }}>
             <Link className="nav-files" to={`/?o=${shortUserKey(id)}`} style={{ fontSize: '0.9em' }}>Home,&nbsp;filtered&nbsp;to&nbsp;{shortName(id)}&nbsp;→</Link>

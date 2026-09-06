@@ -25,7 +25,6 @@ export const BUCKET = 'oa-gcs-usage-dvx'
 export interface Row {
   path: string
   depth: number
-  team: string | null
   usr: string | null
   b: number
   o: number
@@ -63,9 +62,9 @@ interface D1Handle {
   floor: number | null
 }
 
-/** A user/team lens filter: `usr`/`team` column = `key`, applied on the
- * matching by-user/by-team index variant. */
-export type Lens = { col: 'u' | 't'; key: string }
+/** A user lens filter: `usr` column = `key`, applied on the by-user index
+ * variant (the only sort besides path — ownership has no group facet). */
+export type Lens = { key: string }
 // Footer-parse fallback: the classic in-memory metadata + spans.
 interface FooterHandle {
   mode: 'footer'
@@ -91,10 +90,10 @@ export function makeStore(env: Env) {
 }
 
 /** Index variant → parquet key. Variants are `<tier>[-<sort>]`: tier `''`
- * (floor-free) or `coarse<E>`; sort `path` (default), `user`, `team`. Mirrors
+ * (floor-free) or `coarse<E>`; sort `path` (default) or `user`. Mirrors
  * `INDEX_VARIANTS` in the gcs-usage CLI (specs/view-serving.md §1). */
 export function indexKey(date: string, variant: string): string {
-  const m = /^(?:(coarse\d+)(?:-(user|team))?|(path|user|team))$/.exec(variant)
+  const m = /^(?:(coarse\d+)(?:-(user))?|(path|user))$/.exec(variant)
   if (!m) throw new Error(`bad index variant '${variant}'`)
   const tier = m[1] ? `-${m[1]}` : ''
   const sort = m[2] ?? (m[3] === 'path' ? undefined : m[3])
@@ -134,8 +133,8 @@ export async function openIndex(env: Env, date: string, variant = 'path'): Promi
       const s = await env.DB.prepare('SELECT version, schema_json, floor_bytes FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string; floor_bytes: number | null }>()
       if (s) return { mode: 'd1', file: fileFor(env, date, variant), env, date, variant, schema: JSON.parse(s.schema_json), version: s.version, floor: s.floor_bytes == null ? null : num(s.floor_bytes) }
     }
-    // Only the default 'path' variant has a parsed-footer fallback (the by-user/
-    // by-team lens variants are D1-only — no footer path serves them).
+    // Only the default 'path' variant has a parsed-footer fallback (the by-user
+    // lens variant and the coarse tiers are D1-only — no footer path serves them).
     if (variant !== 'path') throw new Error(`index variant '${variant}' not synced for ${date}`)
     return openFooter(env, date)
   })()
@@ -188,7 +187,6 @@ async function openFooter(env: Env, date: string): Promise<FooterHandle> {
 const toRow = (r: Record<string, unknown>): Row => ({
   path: str(r.path),
   depth: num(r.depth),
-  team: r.team == null ? null : str(r.team),
   usr: r.usr == null ? null : str(r.usr),
   b: num(r.b),
   o: num(r.o),
@@ -244,14 +242,13 @@ async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: 
   const where: string[] = []
   const binds: unknown[] = []
   // The (depth, path) rect; valid within a single primary-key group only
-  // (single-depth for the path index, single-user/team for a lens index).
+  // (single-depth for the path index, single-user for the lens index).
   const rectSql = '(d_max >= ? AND d_min <= ? AND (d_min <> d_max OR (p_max >= ? AND p_min <= ?)))'
   for (const r of rects) {
     if (lens) {
-      // Prune to groups whose usr/team range covers the lens key; the rect is a
+      // Prune to groups whose usr range covers the lens key; the rect is a
       // secondary test that only holds inside a single-key group.
-      const c = lens.col
-      where.push(`(${c}_min <= ? AND ${c}_max >= ? AND (${c}_min <> ${c}_max OR ${rectSql}))`)
+      where.push(`(u_min <= ? AND u_max >= ? AND (u_min <> u_max OR ${rectSql}))`)
       binds.push(lens.key, lens.key, r.dLo, r.dHi, r.pLo, r.pHi)
     } else {
       where.push(rectSql)
@@ -294,14 +291,14 @@ export async function readRows(
   thrAt?: (depth: number) => number,
   lens?: Lens,
 ): Promise<Row[]> {
-  // A row passes the lens iff its usr/team equals the key.
-  const lensOk = (r: Row) => !lens || (lens.col === 'u' ? r.usr === lens.key : r.team === lens.key)
+  // A row passes the lens iff its usr equals the key.
+  const lensOk = (r: Row) => !lens || r.usr === lens.key
   if (h.mode === 'd1') {
     const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 4000, thrAt ? thrAt(dLo) : 0, lens)
     const kept = thrAt ? spans.filter(s => s.bMax >= thrAt(Math.max(s.dMin, dLo))) : spans
     if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
     // Bound the decode too, not just the group count — a broad lens (a big
-    // team spread across the estate) can select few-enough groups but still
+    // user spread across the estate) can select few-enough groups but still
     // decode millions of rows and blow the Worker CPU. Error cleanly instead.
     const totalRows = kept.reduce((n, s) => n + (s.rowEnd - s.rowStart), 0)
     if (totalRows > 700_000) throw new Error('query too wide: drill deeper or raise minArea')

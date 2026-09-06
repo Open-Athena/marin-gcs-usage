@@ -1,15 +1,15 @@
 // Tree walks behind the /mark tabs: collect the maximal subtrees that a
-// review lens cares about (mine / unattributed / communal), so each tab is a
+// review lens cares about (mine / unclaimed), so each tab is a
 // ranked worklist of prefixes rather than a hunt through the treemap.
 import { useQuery } from '@tanstack/react-query'
 import { reaggregate, type NodePred } from './filterTree'
 import { newer, type KeepRow, type MarkAction, type MarkIndex, type OwnerRow } from './marks'
-import { classMix, type TreeNode } from './types'
+import { classMix, unclaimedBytes, userBytes, type TreeNode } from './types'
 
 export interface SweepRow {
   uri: string
   node: TreeNode
-  /** Bytes the lens attributes here (mine / unattributed / communal). */
+  /** Bytes the lens attributes here (mine / unclaimed). */
   b: number
   /** Share of the node the lens owns. */
   frac: number
@@ -19,37 +19,22 @@ export interface SweepRow {
 export type Lens = (n: TreeNode) => number
 
 export const userLens = (user: string): Lens => n => n.us?.find(([u]) => u === user)?.[1] ?? 0
-export const teamLens = (team: string): Lens => n => n.tm?.[team] ?? 0
 
-/** The user axis's "nobody" bucket, as a team→bytes slice: unattributed
- * bytes plus every group's shared (userless) subset — communal is entirely
- * shared, so on per-user rollups it folds in here instead of standing as its
- * own class (the group split mattered for early per-group ballparking, not
- * for review). Feed to `applyLensScale` to scope a tree to just these bytes. */
+/** The owner axis's "nobody" bucket as a slice: bytes no person owns. Feed to
+ * `applyLensScale` to scope a tree to just these bytes (a node shrinks to
+ * exactly its unclaimed share; keeping whole subtrees let each one's minority
+ * ride along — ~0.5 PiB of user bytes once leaked into "Unclaimed"). */
 export const unattrSlice = (n: TreeNode): Record<string, number> => {
-  const out: Record<string, number> = {}
-  for (const [t, s] of Object.entries(n.sh ?? {})) if (t !== 'unattributed' && s > 0) out[t] = s
-  const u = n.tm?.unattributed ?? 0
-  if (u > 0) out.unattributed = u
-  return out
+  const u = unclaimedBytes(n)
+  return u > 0 ? { unclaimed: u } : {}
 }
-export const unattrLens: Lens = n => Object.values(unattrSlice(n)).reduce((s, v) => s + v, 0)
+export const unattrLens: Lens = unclaimedBytes
 
-/** The complement of `unattrSlice`: bytes some person owns, per group (each
- * group's user-attributed share — `tm` minus its shared subset). */
+/** The complement: bytes some person owns. */
 export const claimedSlice = (n: TreeNode): Record<string, number> => {
-  const out: Record<string, number> = {}
-  for (const [t, b] of Object.entries(n.tm ?? {})) {
-    if (t === 'unattributed') continue
-    const u = b - (n.sh?.[t] ?? 0)
-    if (u > 0) out[t] = u
-  }
-  return out
+  const c = userBytes(n)
+  return c > 0 ? { claimed: c } : {}
 }
-
-/** The communal pool as a slice (it's all userless by construction). */
-export const communalSlice = (n: TreeNode): Record<string, number> =>
-  (n.tm?.communal ?? 0) > 0 ? { communal: n.tm!.communal } : {}
 
 /**
  * Treemap-scoping predicate for a lens: keep the maximal subtrees the lens

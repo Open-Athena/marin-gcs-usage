@@ -1,9 +1,9 @@
 import { useEffect } from 'react'
-import type { TreeNode } from './types'
+import { userBytes, type TreeNode } from './types'
 
 const GROUP_EMAIL = 'marin-gcs-usage@openathena.ai'
 const DISCORD_URL = 'https://discord.com/channels/1354881461060243556/1412294350645493840'
-const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/marin/src/gcs_usage/identities.yaml'
+const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/gcs-usage/src/gcs_usage/identities.yaml'
 
 /** Where owners come from, and where to go with questions. Claims are the
  *  source of truth; inferred attribution is only the bootstrap for whatever
@@ -15,9 +15,7 @@ export function AttributionRules({ tree }: { tree: TreeNode }) {
     if (location.hash === '#attribution') document.getElementById('attribution')?.scrollIntoView()
   }, [])
 
-  const attributed = Object.entries(tree.tm ?? {})
-    .filter(([t]) => t !== 'unattributed')
-    .reduce((s, [, b]) => s + b, 0)
+  const attributed = userBytes(tree)
   const pct = ((100 * attributed) / tree.b).toFixed(1)
   return (
     <section className="attrib" id="attribution">
@@ -29,9 +27,10 @@ export function AttributionRules({ tree }: { tree: TreeNode }) {
           <b> inferred</b> ownership (W&amp;B run configs, <code>.executor_info</code> sidecars, provenance records,
           and a short list of manual prefix rules in{' '}
           <a href={YAML_URL} target="_blank" rel="noreferrer"><code>identities.yaml</code></a>): “this user's runs
-          wrote these bytes” — a starting point for finding your data, not a bill. Shared datasets and infra sit
-          with a group, not a person. <b>{pct}%</b> of bytes have an owner today; the rest shows as{' '}
-          <i>unattributed</i> (gray) until someone claims it.
+          wrote these bytes” — a starting point for finding your data, not a bill. Ownership has one axis: a
+          person, or nobody. <b>{pct}%</b> of bytes have an owner today; the rest shows as{' '}
+          <i>unclaimed</i> (gray) until someone claims it — shared corpora and infra included, because a
+          keep/sweep decision needs a person to sign off.
         </p>
         <p className="feedback">
           Questions, a wrong owner, access for a teammate:{' '}

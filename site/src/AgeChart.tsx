@@ -2,14 +2,14 @@ import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, epochDaysToDate, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
-import { MODE_LABELS, SHARED_GROUPS, TEAM_VARS, groupLabel, sharedColor } from './types'
+import { MODE_LABELS } from './types'
 import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
 /** Color axes the chart can stratify by — every mode with a per-row value.
  *  Marks are absent on purpose: age.json strata predate the ledger. */
-export const AGE_MODES: ColorMode[] = ['date', 'read', 'team', 'user', 'uteam', 'tree']
+export const AGE_MODES: ColorMode[] = ['date', 'read', 'user', 'tree']
 
 // Read-mode key for "no read observed in the logging window"; sorts first so
 // the never-read slab is the base of every stack (the sweep-interesting part).
@@ -61,11 +61,9 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
 
   const { buckets, byBucket, colorOf, labelOf, segOrder, legend } = useMemo(() => {
     const slotMap = new Map(catOrder.slice(0, 8).map((k, i) => [k, SLOTS[i]]))
-    const userMode = mode === 'user' || mode === 'uteam'
+    const userMode = mode === 'user'
     const keyOf = (r: AgeRow) =>
       mode === 'read' ? String(r.a ?? NEVER)
-      : mode === 'team'
-        ? (!r.t || r.t === 'unattributed' ? 'unattributed' : r.u ? r.t : `${r.t} (shared)`)
       : userMode ? (r.u ?? 'unattributed')
       : slotMap.has(r.d1) ? r.d1 : '(other)'
     const byBucket = new Map<number, Map<string, number>>()
@@ -82,11 +80,7 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
     const colorOf = (k: string): string =>
       mode === 'read'
         ? (k === String(NEVER) || !rr ? 'var(--never-read)' : dateColor((Number(k) - rr.min) / (rr.max - rr.min)))
-      : mode === 'team'
-        ? (k.endsWith(' (shared)')
-            ? sharedColor(TEAM_VARS[k.slice(0, -' (shared)'.length)] ?? '--t-unattr')
-            : `var(${TEAM_VARS[k] ?? '--t-unattr'})`)
-      : userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx, mode === 'uteam'))
+      : userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx))
       : `var(${slotMap.get(k) ?? '--other'})`
     const labelOf = (k: string): string =>
       mode === 'read' ? (k === String(NEVER) ? 'never read' : `read ${epochDaysToDate(Number(k))}`)
@@ -98,13 +92,9 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
     const segOrder = (a: [string, number], b: [string, number]): number =>
       mode === 'read' ? Number(a[0]) - Number(b[0]) : b[1] - a[1]
     const legend: [string, string][] =
-      mode === 'team'
-        ? Object.entries(TEAM_VARS).flatMap(([t, v]): [string, string][] =>
-            [[groupLabel(t), SHARED_GROUPS.has(t) ? sharedColor(v) : `var(${v})`]],
-          )
-      : userMode
+      userMode
         ? [
-            ...[...userIdx.keys()].slice(0, 10).map((u): [string, string] => [u, userColor(u, userIdx, mode === 'uteam')]),
+            ...[...userIdx.keys()].slice(0, 10).map((u): [string, string] => [u, userColor(u, userIdx)]),
             ['unclaimed', 'var(--t-unattr)'],
           ]
         : [

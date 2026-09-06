@@ -19,7 +19,7 @@ import type { DateRange, Highlight } from './Treemap'
 import { applyFilter, applyLensScale, applyNodeFilter, collectMatches, parseQuery } from './filterTree'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
-import { FATE_AXES, applyFateFilter, claimedSlice, communalSlice, klcSplits, lensNodePred, teamLens, unattrSlice, useMyUser, userLens } from './sweep'
+import { FATE_AXES, applyFateFilter, claimedSlice, klcSplits, lensNodePred, unattrSlice, useMyUser, userLens } from './sweep'
 import type { FateAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { SiteNav, TOPBAR_VAR } from './SiteNav'
@@ -29,15 +29,12 @@ import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import { TypedPrefixModal } from './TypedPrefix'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, groupLabel, ratePerByte } from './types'
+import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, ratePerByte } from './types'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
-// The color axes on offer. Group and user·group still decode from `?c=` (and
-// appear in the picker while selected) but aren't offered: the per-group
-// split mattered for early ballparking, not for review.
+// The color axes on offer.
 const MODES: ColorMode[] = ['fate', 'read', 'user', 'date', 'tree']
-const HIDDEN_MODES: ColorMode[] = ['team', 'uteam']
 
 // Diff-section span presets (days back from the "after" scan).
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
@@ -51,8 +48,7 @@ const FATE_CHIPS: { f: FateAxis; key: string; glyph: string; color: string; tip:
 
 // The owner axis: `?o=` is `claimed`, `unclaimed`, `me`, or a user key
 // (`?o=rw`); absent = everything. Claimed = attributed to a person; unclaimed
-// = the nobody-owns-it pool (unattributed bytes plus the shared/communal
-// pools). A user narrows "claimed" to that person.
+// = the nobody-owns-it pool. A user narrows "claimed" to that person.
 type OwnerMode = 'all' | 'claimed' | 'unclaimed' | 'user'
 
 // Which of the bar's "diff window" controls to show: the start-scan picker
@@ -114,22 +110,19 @@ function AppContent() {
   useEffect(() => {
     document.title = store.title
   }, [store])
-  // URL token matches the visible label ("written"/"group"/"mark"), not the
-  // internal key ("date"/"team"/"fate"); old ?c=age / ?c=fate links still decode.
+  // URL token matches the visible label ("written"/"mark"), not the internal
+  // key ("date"/"fate"); old ?c=age / ?c=fate links still decode (the retired
+  // group axes decode to the default).
   // ABSENT is meaningful: it means "the lens-appropriate default" (see `mode`
   // below), so switching lenses re-defaults the coloring — but an explicit
-  // pick (any `?c=`, including group) survives every lens change.
+  // pick (any `?c=`) survives every lens change.
   const modeCodec = {
-    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'written' : v === 'team' ? 'group' : v === 'fate' ? 'mark' : v),
-    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'written' || e === 'age' ? 'date' : e === 'group' ? 'team' : e === 'mark' || e === 'fate' ? 'fate' : e),
+    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'written' : v === 'fate' ? 'mark' : v),
+    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'written' || e === 'age' ? 'date' : e === 'mark' || e === 'fate' ? 'fate' : e),
   }
   const [modeP, setModeP] = useUrlState('c', modeCodec)
   // The age chart's own color axis (`?ac=`, same tokens); absent = follow the map.
   const [ageModeP, setAgeModeP] = useUrlState('ac', modeCodec)
-  // `?t=` — a pinned *group* (oa / stanford): reachable from ⌘K and old links
-  // now that group coloring (whose legend pinned it) is off the picker. The
-  // unclaimed/communal pools rewrite onto the owner axis below.
-  const [hlTeam, setHlTeam] = useUrlState('t', stringParam())
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
@@ -205,7 +198,7 @@ function AppContent() {
   // Server-side USER lens: My files / a pinned user render as a treemap of that
   // user's bytes, served from the by-user index variant (`/api/subtree?lens=`)
   // — no tree.json. Team lenses (communal/unclaimed) and todo/name-filter stay
-  // on tree.json (a big team overruns the floor-free lens; see
+  // on tree.json (a broad pool overruns the floor-free lens; see
   // specs/path-agnostic-serving.md §2.3).
   const lensUser = viewUser
   const subtreeLens = store.key === 'gcs' && lensUser && !fq ? `user:${lensUser}` : null
@@ -216,21 +209,22 @@ function AppContent() {
   const [lensBrokenKey, setLensBrokenKey] = useState<string | null>(null)
   const lensKey = subtreeLens ? `${asof}:${subtreeLens}` : null
   const activeLens = subtreeLens && lensBrokenKey !== lensKey ? subtreeLens : null
-  const needFullTree = !activeLens && (store.key !== 'gcs' || fq != null || fateSet != null || ownerMode !== 'all' || hlTeam != null)
+  const needFullTree = !activeLens && (store.key !== 'gcs' || fq != null || fateSet != null || ownerMode !== 'all')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
   // digests, /user pages) work and re-share in the current form:
   //   ?l=todo → ?k=u · ?l=unclaimed|communal, ?t=unattributed|communal → ?o=unclaimed
   //   ?l=user[&lu=x] (and older ?mt=mine[&mu=x]) → ?o=x|me · ?u=x (legend pin) → ?o=x
+  //   any other ?t= (the retired group pin) → dropped
   useEffect(() => {
     const sp = new URLSearchParams(search)
-    const legacy = ['l', 'lu', 'u', 'mt', 'mu']
+    const legacy = ['l', 'lu', 'u', 'mt', 'mu', 't']
     const t = sp.get('t')
-    if (!legacy.some(k => sp.has(k)) && t !== 'unattributed' && t !== 'communal') return
+    if (!legacy.some(k => sp.has(k))) return
     const l = sp.get('l') ?? sp.get('mt')
     const lu = sp.get('lu') ?? sp.get('mu')
     const u = sp.get('u')
     for (const k of legacy) sp.delete(k)
-    if (t === 'unattributed' || t === 'communal') { sp.delete('t'); sp.set('o', 'unclaimed') }
+    if (t === 'unattributed' || t === 'communal') sp.set('o', 'unclaimed')
     if (l === 'todo') sp.set('k', 'u')
     else if (l === 'unclaimed' || l === 'communal') sp.set('o', 'unclaimed')
     else if (l === 'user' || l === 'mine') sp.set('o', lu ? shortUserKey(canonId(lu)) : 'me')
@@ -468,9 +462,9 @@ function AppContent() {
   // is in there).
   const lensDefaultMode: ColorMode =
     fateSet?.size === 1 || ownerMode === 'user' ? 'user' : markMode ? 'fate' : 'user'
-  const mode: ColorMode = ([...MODES, ...HIDDEN_MODES] as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
+  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
-  const hasAttr = !!tree?.tm
+  const hasAttr = !!tree?.us?.length
   const effMode: ColorMode =
     (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'user' : hasAttr ? mode : 'tree'
   // The age chart's color axis: an explicit `?ac=` wins; otherwise it follows
@@ -479,7 +473,7 @@ function AppContent() {
   // without them it's offered disabled and the chart falls back to written.
   const ageReadRange = age.some(r => r.a != null) ? readRange : null
   // Only axes this scan can actually color by are offered (no dead buttons):
-  // `read` needs `a` strata, the attribution axes need `tm`.
+  // `read` needs `a` strata, the user axis needs `us`.
   const ageModes = AGE_MODES.filter(m => (m !== 'read' || ageReadRange) && (hasAttr || m === 'date' || m === 'tree'))
   const ageMode: ColorMode = (() => {
     const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'fate' ? 'date' : effMode
@@ -487,11 +481,11 @@ function AppContent() {
   })()
   // The pinned highlight the map dims to: the owner axis's user (a scoped
   // subtree still contains minority co-tenants, and user coloring should dim
-  // them) or a `?t=` group; the pools are sliced exactly, nothing to dim.
-  const hl: Highlight | null = ownerUser ? { user: ownerUser } : hlTeam ? { team: hlTeam } : null
+  // them); the pools are sliced exactly, nothing to dim.
+  const hl: Highlight | null = ownerUser ? { user: ownerUser } : null
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
-  const lensScoped = fateSet != null || ownerMode !== 'all' || hlTeam != null
+  const lensScoped = fateSet != null || ownerMode !== 'all'
   // The page scope, applied to a tree: the owner axis, then the mark axis.
   // Shared by the map and the Diff section's two sides, so every widget
   // answers the same question. (The `?f=` name filter is applied before this
@@ -507,7 +501,6 @@ function AppContent() {
       if (ownerMode === 'user') t = applyNodeFilter(t, lensNodePred(userLens(ownerUser!)))
       else if (ownerMode === 'unclaimed') t = applyLensScale(t, unattrSlice)
       else if (ownerMode === 'claimed') t = applyLensScale(t, claimedSlice)
-      else if (hlTeam) t = hlTeam === 'communal' ? applyLensScale(t, communalSlice) : applyNodeFilter(t, lensNodePred(teamLens(hlTeam)))
     }
     if (fateSet) t = applyFateFilter(t, markIdx, fateSet)
     return t
@@ -516,7 +509,7 @@ function AppContent() {
     if (!shownTree) return shownTree
     return scopeTree(shownTree, !!activeLens)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shownTree, activeLens, fateSet, markIdx, ownerMode, ownerUser, hlTeam])
+  }, [shownTree, activeLens, fateSet, markIdx, ownerMode, ownerUser])
   // Diff sides: the drilled subtree at each endpoint (the server user-lens
   // variant when the map uses it), name-filtered and scoped like the map.
   const diffPair = useQueries({
@@ -540,14 +533,13 @@ function AppContent() {
     const side = (t: TreeNode) => scopeTree(pred ? applyFilter(t, pred) : t, !!activeLens)
     return clientDiff(side(a), side(b), diffPrev, asof)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [diffPair[0]?.data, diffPair[1]?.data, diffPrev, asof, activeLens, pred, fateSet, markIdx, ownerMode, ownerUser, hlTeam])
+  }, [diffPair[0]?.data, diffPair[1]?.data, diffPrev, asof, activeLens, pred, fateSet, markIdx, ownerMode, ownerUser])
   const diffMissing = diffPair.find(q => q.isError)
   // One-line description of the page scope, for the section subtitles:
   // where, then whose, then which mark states, then which names.
   const scopeParts: string[] = [
     drillPath || 'all buckets',
     ...(ownerUser ? [`${shortName(ownerUser)}’s files`] : ownerMode !== 'all' ? [ownerMode] : []),
-    ...(hlTeam ? [`only ${groupLabel(hlTeam).toLowerCase()}`] : []),
     ...(fateSet ? [[...fateSet].join(' / ')] : []),
     ...(fq ? [`“${fq}”`] : []),
   ]
@@ -586,25 +578,16 @@ function AppContent() {
     [meta],
   )
 
-  // Legend-row pins land on the owner axis (a user, or the unclaimed pool);
-  // a group row pins `?t=`. `switchMode`: a ⌘K pick from any coloring jumps
-  // to an axis where the pick is visible; a legend-row click is already on
-  // such an axis and must not move it.
+  // Legend-row pins land on the owner axis (a user, or the unclaimed pool).
+  // `switchMode`: a ⌘K pick from any coloring jumps to an axis where the pick
+  // is visible; a legend-row click is already on such an axis and must not
+  // move it.
   const pickUser = (u: string, switchMode = true) => {
-    setHlTeam(undefined)
     setOwnerUser(u)
-    if (switchMode && mode !== 'user' && mode !== 'uteam') setMode('user')
+    if (switchMode && mode !== 'user') setMode('user')
   }
-  const pickTeam = (t: string, switchMode = true) => {
-    if (t === 'unattributed' || t === 'communal') { setHlTeam(undefined); setOP('unclaimed'); return }
-    setOP(undefined)
-    setHlTeam(t)
-    if (switchMode && mode !== 'team') setMode('team')
-  }
-  const clearHl = () => {
-    setOP(undefined)
-    setHlTeam(undefined)
-  }
+  const pickUnclaimed = () => setOP('unclaimed')
+  const clearHl = () => setOP(undefined)
 
   useActions({
     ...Object.fromEntries(
@@ -639,19 +622,9 @@ function AppContent() {
       (meta?.users ?? []).map(u => [
         `user:${u.u}`,
         {
-          label: `${u.u} · ${u.t} · ${fmtBytes(u.b)}`,
+          label: `${u.u} · ${fmtBytes(u.b)}`,
           group: 'Users',
           handler: () => pickUser(u.u),
-        },
-      ]),
-    ),
-    ...Object.fromEntries(
-      (rules?.teams ?? []).map(t => [
-        `group:${t}`,
-        {
-          label: `group: ${t}`,
-          group: 'Groups',
-          handler: () => pickTeam(t),
         },
       ]),
     ),
@@ -722,9 +695,7 @@ function AppContent() {
       m && Object.fromEntries(Object.entries(m).map(([k, cb]) => [k, ratePerByte(cb)]))
     return {
       blended: ratePerByte(meta.class_bytes),
-      teamRates: rates(meta.team_class_bytes),
       userRates: rates(meta.user_class_bytes),
-      teamMix: meta.team_class_bytes,
       userMix: meta.user_class_bytes,
     }
   }, [meta, store])
@@ -827,7 +798,7 @@ function AppContent() {
               : <>Top-level directory each cell belongs to.</>
             }>
               <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
-                {[...MODES, ...HIDDEN_MODES.filter(m => m === effMode)]
+                {MODES
                   .filter(m => (m !== 'read' || readRange) && (m !== 'fate' || markMode))
                   .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
               </select>
@@ -860,7 +831,7 @@ function AppContent() {
                 claimed
               </button>
             </Tooltip>
-            <Tooltip content="Bytes no person owns — unattributed data plus the shared/communal pools. Claim what's yours (table below, or a pinned cell), then decide keep/sweep.">
+            <Tooltip content="Bytes no person owns. Claim what's yours (table below, or a pinned cell), then decide keep/sweep.">
               <button type="button" className={`kind${ownerMode === 'all' || ownerMode === 'unclaimed' ? ' on' : ''}`}
                 aria-pressed={ownerMode === 'all' || ownerMode === 'unclaimed'} style={{ '--kind': 'var(--ink-2)' } as React.CSSProperties}
                 onClick={() => toggleOwner('unclaimed')}>
@@ -932,7 +903,7 @@ function AppContent() {
             readRange={readRange}
             hl={effHl}
             onPickUser={u => pickUser(u, false)}
-            onPickTeam={t => pickTeam(t, false)}
+            onPickUnclaimed={pickUnclaimed}
             onClearHl={clearHl}
             pricing={pricing}
             lens={lens}
@@ -979,7 +950,7 @@ function AppContent() {
       <SizeOverTime
         scans={scans} prefix={drillPath} base={store.base} fates={fateSet}
         user={ownerUser}
-        team={ownerMode === 'unclaimed' ? 'unattributed' : ownerMode === 'claimed' ? 'claimed' : hlTeam || null}
+        pool={ownerMode === 'unclaimed' ? 'unclaimed' : ownerMode === 'claimed' ? 'claimed' : null}
         onPickDate={setDP}
         onBrush={brushRange}
         window={diffWindow}
@@ -1103,10 +1074,10 @@ function AppContent() {
 
       {/* Static attribution reference — how ownership is inferred + the rule tables.
           Reference material, so it sits last rather than sandwiched mid-page. */}
-      {tree?.tm && <AttributionRules tree={tree} />}
+      {hasAttr && tree && <AttributionRules tree={tree} />}
 
       <SiteKbd
-        placeholder="Users, groups, color modes, scans, pages…"
+        placeholder="Users, color modes, scans, pages…"
         extra={[{ key: 'lens', label: `Class lens: ${lens ? 'on' : 'off'} (s)`, icon: <MdLayers />, onClick: () => setLens(v => !v) }]}
       />
     </main>

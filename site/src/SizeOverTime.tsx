@@ -5,7 +5,6 @@ import { useMemo } from 'react'
 import { boolParam, useUrlState } from 'use-prms'
 import type { FateAxis } from './sweep'
 import type { Meta } from './types'
-import { groupLabel } from './types'
 import { shortName } from './UserChip'
 import { useUnits } from './units'
 
@@ -65,7 +64,7 @@ const dateOfX = (x: number) => new Date(x).toISOString().slice(0, 10)
 const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const xOfScan = (d: string) => new Date(d.slice(0, 10)).getTime()
 
-export function SizeOverTime({ scans, prefix, base, fates, user, team, onPickDate, onBrush, window: win }: {
+export function SizeOverTime({ scans, prefix, base, fates, user, pool, onPickDate, onBrush, window: win }: {
   scans: string[]
   prefix: string
   base: string
@@ -76,10 +75,9 @@ export function SizeOverTime({ scans, prefix, base, fates, user, team, onPickDat
   /** The owner axis's user: plot THEIR attributed bytes per scan (from each
    * scan's meta.json — estate-wide; per-user series aren't prefix-scoped). */
   user?: string | null
-  /** The owner axis's pool — `unattributed` = total − Σ user bytes (the
-   * nobody-owns-it pool), `claimed` = Σ user bytes, other groups sum their
-   * `team_class_bytes`. `user` wins. */
-  team?: string | null
+  /** The owner axis's pool — `unclaimed` = total − Σ user bytes (the
+   * nobody-owns-it pool), `claimed` = Σ user bytes. `user` wins. */
+  pool?: 'unclaimed' | 'claimed' | null
   /** Click a point → view the page as of that scan (pins `?d=`). */
   onPickDate?: (date: string) => void
   /** Drag across the chart → make [from, to] the page's diff window. */
@@ -107,7 +105,7 @@ export function SizeOverTime({ scans, prefix, base, fates, user, team, onPickDat
   // when the index is missing or the drilled prefix isn't in it.
   const idx = indexQ.data ?? null
   const scopedArr = prefix && idx?.bytes[prefix] ? idx.bytes[prefix] : null
-  const slice = user ? { kind: 'user' as const, key: user } : team ? { kind: 'team' as const, key: team } : null
+  const slice = user ? { kind: 'user' as const, key: user } : pool ? { kind: 'pool' as const, key: pool } : null
   const needFleet = !scopedArr
   const metas = useQuery({
     queryKey: ['size-series', base, scans],
@@ -143,25 +141,22 @@ export function SizeOverTime({ scans, prefix, base, fates, user, team, onPickDat
       ]
     }
     if (slice) {
-      // Per-user / per-group series come from each scan's meta.json (older
-      // scans predate attribution → no point rather than a fake zero).
+      // Per-user / pool series come from each scan's meta.json (older scans
+      // predate attribution → no point rather than a fake zero).
       const points = (metas.data ?? [])
         .map(({ date, m }) => {
+          const claimed = m.users ? m.users.reduce((s, u) => s + u.b, 0) : null
           const y = slice.kind === 'user'
             ? m.users?.find(u => u.u === slice.key)?.b ?? null
-            : slice.key === 'unattributed'
-              ? (m.users ? m.total_bytes - m.users.reduce((s, u) => s + u.b, 0) : null)
-              : slice.key === 'claimed'
-              ? (m.users ? m.users.reduce((s, u) => s + u.b, 0) : null)
-              : m.team_class_bytes?.[slice.key]
-                ? Object.values(m.team_class_bytes[slice.key]).reduce((s, b) => s + b, 0)
-                : null
+            : slice.key === 'unclaimed'
+              ? (claimed == null ? null : m.total_bytes - claimed)
+              : claimed
           return y == null ? null : { x: new Date(date).getTime(), y }
         })
         .filter((p): p is Pt => p != null)
         .sort((a, b) => a.x - b.x)
       if (points.length < 2) return []
-      return [{ key: `${slice.kind}:${slice.key}`, label: slice.kind === 'user' ? shortName(slice.key) : groupLabel(slice.key).toLowerCase(), color: 'var(--s1)', points }]
+      return [{ key: `${slice.kind}:${slice.key}`, label: slice.kind === 'user' ? shortName(slice.key) : slice.key, color: 'var(--s1)', points }]
     }
     if (scopedArr && idx) {
       const points = idx.dates
@@ -246,11 +241,9 @@ export function SizeOverTime({ scans, prefix, base, fates, user, team, onPickDat
         {slice
           ? slice.kind === 'user'
             ? <><b>{shortName(slice.key)}</b>’s attributed bytes per scan — whole estate (per-user series aren’t prefix-scoped).</>
-            : slice.key === 'unattributed'
+            : slice.key === 'unclaimed'
               ? <>Bytes no person owns, per scan — whole estate.</>
-              : slice.key === 'claimed'
-              ? <>Bytes attributed to a person, per scan — whole estate.</>
-              : <><b>{groupLabel(slice.key)}</b> bytes per scan — whole estate.</>
+              : <>Bytes attributed to a person, per scan — whole estate.</>
           : scoped
           ? <>Stored bytes under <code>{prefix}</code> per scan — the drilled subtree, from the cross-scan index.</>
           : <>Total stored bytes per scan (fleet-wide).{' '}

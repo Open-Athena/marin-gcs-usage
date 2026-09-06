@@ -4,8 +4,8 @@
  *
  * Treemap area is proportional to bytes, so "everything this canvas can draw
  * under P" is one predicate: b ≥ P.b · minArea / (w·h), attenuated per level.
- * Every tier holds rows `(path, depth, team, usr, b, o, …)`, descendant-
- * inclusive, sorted `(depth, path)` (or by usr/team for a lens), so a query
+ * Every tier holds rows `(path, depth, usr, b, o, …)`, descendant-
+ * inclusive, sorted `(depth, path)` (or by usr for a user lens), so a query
  * is row-group-pruned range reads, a threshold filter, and a nested-tree
  * assembly with `(other)` = parent − Σ kept children (exact by subtraction).
  *
@@ -68,12 +68,10 @@ interface Agg {
   wb: number
   a: number | null // subtree-max last-read epoch day (read lens); null = never read
   cb: Record<string, number>
-  tm: Record<string, number>
-  ub: Record<string, number>
-  sh: Record<string, number>
+  ub: Record<string, number>  // per-user bytes; unclaimed = b − Σ ub
 }
 
-const newAgg = (): Agg => ({ b: 0, o: 0, wts: 0, wb: 0, a: null, cb: {}, tm: {}, ub: {}, sh: {} })
+const newAgg = (): Agg => ({ b: 0, o: 0, wts: 0, wb: 0, a: null, cb: {}, ub: {} })
 
 function merge(a: Agg, r: Row): void {
   a.b += r.b
@@ -84,10 +82,7 @@ function merge(a: Agg, r: Row): void {
   for (const [k, v] of [['2', r.c2], ['3', r.c3], ['4', r.c4]] as [string, number][]) {
     if (v) a.cb[k] = (a.cb[k] ?? 0) + v
   }
-  const team = r.team ?? 'unattributed'
-  a.tm[team] = (a.tm[team] ?? 0) + r.b
   if (r.usr) a.ub[r.usr] = (a.ub[r.usr] ?? 0) + r.b
-  else if (team !== 'unattributed') a.sh[team] = (a.sh[team] ?? 0) + r.b
 }
 
 function subtract(parent: Agg, kids: Agg[]): Agg {
@@ -98,7 +93,7 @@ function subtract(parent: Agg, kids: Agg[]): Agg {
   out.o = Math.max(0, parent.o - sum(a => a.o))
   out.wts = parent.wts - sum(a => a.wts)
   out.wb = Math.max(0, parent.wb - sum(a => a.wb))
-  for (const key of ['cb', 'tm', 'ub', 'sh'] as const) {
+  for (const key of ['cb', 'ub'] as const) {
     for (const [k, v] of Object.entries(parent[key])) {
       const r = v - kids.reduce((s, kid) => s + (kid[key][k] ?? 0), 0)
       if (r > 0) out[key][k] = r
@@ -114,8 +109,6 @@ function display(a: Agg): Record<string, unknown> {
   const desc = (m: Record<string, number>) =>
     Object.fromEntries(Object.entries(m).sort((x, y) => y[1] - x[1]))
   if (Object.keys(a.cb).length) out.cb = desc(a.cb)
-  if (Object.keys(a.tm).length) out.tm = desc(a.tm)
-  if (Object.keys(a.sh).length) out.sh = desc(a.sh)
   if (Object.keys(a.ub).length) {
     out.us = Object.entries(a.ub).sort((x, y) => y[1] - x[1]).map(([u, b]) => [u, b])
   }
@@ -137,11 +130,11 @@ const floorOf = (h: IndexHandle): number | null => (h.mode === 'd1' ? h.floor : 
 export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const { date, path, w, h, minArea, atten, lens } = o
   const dP = path === '' ? 0 : path.split('/').length
-  const sort = lens ? (lens.col === 'u' ? 'user' : 'team') : 'path'
+  const sort = lens ? 'user' : 'path'
   const readRoot = (idx: IndexHandle) =>
     path === '' ? readRows(idx, 1, 1, '', '￿', undefined, lens) : readRows(idx, dP, dP, path, path, undefined, lens)
 
-  // Root aggregate P.b (and P's own tm/us for the response root) from the
+  // Root aggregate P.b (and P's own us for the response root) from the
   // coarsest tier that has P at all — the same numbers in every tier.
   const tiers: { name: string; idx: IndexHandle }[] = []
   for (const e of COARSE_EXPS) {

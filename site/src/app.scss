@@ -10,8 +10,7 @@
   --s1: #2a78d6; --s2: #008300; --s3: #e87ba4; --s4: #eda100;
   --s5: #1baf7a; --s6: #eb6834; --s7: #4a3aa7; --s8: #e34948;
   --other: #a6a49b; --shared: #8f9aa6;
-  --t-communal: #1baf7a; --t-stanford: #b1040e; --t-oa: #9d6a3c;  // oa = OA brand brown
-  --t-unknown: #eda100; --t-unattr: #c9c7be;
+  --t-unattr: #c9c7be;  // the unclaimed pool (bytes no person owns)
   --grew: #1a8f3a; --shrank: #d7302f;
   --mk-del-ink: #c4302a;  // sweep as TEXT (the fill token reads too dark/light for type)
   --never-read: #b0685e;  // read lens: no GET/HEAD/LIST since logging began
@@ -29,8 +28,7 @@
     --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500;
     --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
     --other: #5d5c55; --shared: #4c565f;
-    --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
-    --t-unknown: #c98500; --t-unattr: #4a4943;
+    --t-unattr: #4a4943;
     --grew: #4ade80; --shrank: #ff7b72;
     --mk-del-ink: #f2635a;
     --never-read: #6e332b;
@@ -44,8 +42,7 @@
   --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500;
   --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
   --other: #5d5c55; --shared: #4c565f;
-  --t-communal: #199e70; --t-stanford: #d24855; --t-oa: #ab7845;
-  --t-unknown: #c98500; --t-unattr: #4a4943;
+  --t-unattr: #4a4943;
   --grew: #4ade80; --shrank: #ff7b72;
   --mk-del-ink: #f2635a;
   --never-read: #6e332b;
@@ -547,7 +544,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     align-items: center;
     gap: 28px;
     h1 { display: flex; align-items: center; gap: 18px; font-size: 54px; }
-    .ogu-glyph { width: 44px; height: 44px; object-fit: contain; }
     p { font-size: 22px; }
   }
   .ogu-bar {
@@ -734,15 +730,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     }
   }
   .nums { color: var(--ink-2); font-variant-numeric: tabular-nums; margin-top: 2px; }
-  .teams {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-top: 4px;
-    .tt-team { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
-    .shr { color: var(--ink-3); }
-    .sw { width: 9px; height: 9px; border-radius: 2px; }
-  }
   .users {
     margin-top: 3px;
     color: var(--ink-2);
@@ -828,7 +815,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
   .note { color: var(--ink-2); font-size: 12.5px; }
   .todo {
-    background: var(--t-unknown);
+    background: var(--s4);
     color: #1a1a19;
     border-radius: 4px;
     font-size: 11px;
@@ -1351,12 +1338,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    .uc-group {
-      font-size: 0.5em; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.03em;
-      &[data-team="oa"] { color: var(--t-oa); }
-      &[data-team="stanford"] { color: var(--t-stanford); }
-      &[data-team="communal"] { color: var(--t-communal); }
-    }
   }
   .user-link {
     color: inherit;
@@ -1378,8 +1359,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     padding: 3px 10px;
     &:hover { filter: brightness(1.08); }
   }
-  .grp-icon { width: 16px; height: 16px; object-fit: contain; vertical-align: middle; }
-  .grp-none { color: var(--ink-2); opacity: 0.6; display: inline-block; width: 16px; text-align: center; }
   .user-cell { display: inline-flex; align-items: center; gap: 8px; }
   // Full-height, vertically-flush hover targets down the user column: the td
   // sheds its padding into the chip, so scanning the list never crosses a
@@ -1389,19 +1368,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     padding-bottom: 0 !important;
     .user-link { display: block; }
     .user-chip { display: flex; width: 100%; padding: 6px 4px; gap: 8px; }
-  }
-  .grp-badge {
-    display: inline-block;
-    padding: 1px 7px;
-    border-radius: 9px;
-    font-size: 0.78em;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    border: 1px solid var(--line);
-    color: var(--ink-2);
-    &[data-team="oa"] { color: var(--t-oa); border-color: color-mix(in oklab, var(--t-oa) 55%, transparent); }
-    &[data-team="stanford"] { color: var(--t-stanford); border-color: color-mix(in oklab, var(--t-stanford) 55%, transparent); }
-    &[data-team="communal"] { color: var(--t-communal); border-color: color-mix(in oklab, var(--t-communal) 55%, transparent); }
   }
   .has-tt { text-decoration: underline dotted color-mix(in oklab, var(--ink-2) 60%, transparent); text-underline-offset: 3px; cursor: help; }
   .class-tt {
@@ -1481,12 +1447,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   min-width: 150px;
   .uc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; b { font-size: 1.05em; } }
   .uc-id { display: flex; flex-direction: column; gap: 1px; line-height: 1.2; }
-  .uc-group {
-    font-size: 0.78em; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.03em;
-    &[data-team="oa"] { color: var(--t-oa); }
-    &[data-team="stanford"] { color: var(--t-stanford); }
-    &[data-team="communal"] { color: var(--t-communal); }
-  }
   .uc-sub { color: var(--ink-2); font-size: 0.9em; word-break: break-all; }
   .uc-link { font-size: 0.9em; color: var(--link, #6ea8fe); text-decoration: none; &:hover { text-decoration: underline; } }
 }

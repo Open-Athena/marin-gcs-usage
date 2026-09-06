@@ -35,8 +35,6 @@ export function parseQuery(q: string): NamePred | null {
 
 /** Re-aggregate a node's stats (b/o/tm/sh/us/d) from a filtered kid set. */
 export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
-  const tm: Record<string, number> = {}
-  const sh: Record<string, number> = {}
   const us: Record<string, number> = {}
   let b = 0
   let o = 0
@@ -45,8 +43,6 @@ export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
   for (const k of kids) {
     b += k.b
     o += k.o
-    for (const [t, tb] of Object.entries(k.tm ?? {})) tm[t] = (tm[t] ?? 0) + tb
-    for (const [t, tb] of Object.entries(k.sh ?? {})) sh[t] = (sh[t] ?? 0) + tb
     for (const [u, ub] of k.us ?? []) us[u] = (us[u] ?? 0) + ub
     if (k.d != null) {
       wd += k.d * k.b
@@ -54,8 +50,6 @@ export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
     }
   }
   const out: TreeNode = { ...n, b, o, c: kids }
-  out.tm = Object.keys(tm).length ? tm : undefined
-  out.sh = Object.keys(sh).length ? sh : undefined
   out.us = Object.keys(us).length
     ? (Object.entries(us).sort((a, c) => c[1] - a[1]) as [string, number][])
     : undefined
@@ -64,7 +58,7 @@ export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
 }
 
 /** Scope the tree to a lens's *bytes*: every node shrinks to the slice the
- * lens assigns it (a team→bytes decomposition; its sum is the node's new
+ * lens assigns it (a key→bytes decomposition; its sum is the node's new
  * size), descending the whole tree — unlike `applyNodeFilter`, which keeps
  * ≥minFrac subtrees whole and so lets minority co-tenant bytes ride along.
  * The result's attribution is the slice itself: no user bytes (`us` gone),
@@ -72,12 +66,11 @@ export function reaggregate(n: TreeNode, kids: TreeNode[]): TreeNode {
  * the byte fraction (approximate). */
 export function applyLensScale(root: TreeNode, slice: (n: TreeNode) => Record<string, number>): TreeNode {
   const walk = (n: TreeNode): TreeNode | null => {
-    const tm = slice(n)
-    const b = Object.values(tm).reduce((s, v) => s + v, 0)
+    const b = Object.values(slice(n)).reduce((s, v) => s + v, 0)
     if (b <= 0) return null
     const kids = (n.c ?? []).map(walk).filter((c): c is TreeNode => c != null)
     const frac = n.b > 0 ? Math.min(1, b / n.b) : 0
-    const out: TreeNode = { ...n, b, o: Math.round(n.o * frac), tm, sh: { ...tm }, us: undefined, c: kids.length ? kids : undefined }
+    const out: TreeNode = { ...n, b, o: Math.round(n.o * frac), us: undefined, c: kids.length ? kids : undefined }
     if (n.rb != null) out.rb = Math.round(n.rb * frac)
     return out
   }
