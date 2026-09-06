@@ -160,3 +160,34 @@ def test_compact_sql_rewrites_verbose_rows_to_the_synced_form(tmp_path):
     # Idempotent: compact rows don't match the verbose-form predicate.
     con.execute(COMPACT_SQL.format(date="2026-09-01", variant="path"))
     assert con.execute("SELECT rg_json FROM index_groups WHERE date='2026-09-01' ORDER BY rg").fetchall() == [(fresh[0],), (fresh[1],)]
+
+
+def test_sync_d1_packs_inserts_greedily_under_the_byte_limit(tmp_path, monkeypatch):
+    from gcs_usage.index_footer import sync_d1
+
+    md = _write_index(tmp_path / "i.parquet")
+    rows = [dict(r) for r in _group_rows(md) * 6]  # 12 group rows (copies; packing only cares about size)
+    for i, r in enumerate(rows):
+        r["rg"] = i
+    monkeypatch.setattr(index_footer, "extract", lambda _p: ({"version": 1, "schema": []}, rows))
+    monkeypatch.setattr(index_footer, "_creds", lambda: ("tok", "acct"))
+    sent: list[str] = []
+    monkeypatch.setattr(index_footer, "_d1_query", lambda sql, acct, tok, db_id: sent.append(sql) or [])
+    limit = 900
+    n = sync_d1("2026-09-01", "x.parquet", variant="path", insert_bytes=limit)
+    assert n == 12
+    assert sent[:2] == [
+        "DELETE FROM index_schema WHERE date='2026-09-01' AND variant='path';",
+        "DELETE FROM index_groups WHERE date='2026-09-01' AND variant='path';",
+    ]
+    assert sent[-1] == "INSERT INTO index_schema (date, variant, version, schema_json, floor_bytes) VALUES ('2026-09-01', 'path', 1, '[]', NULL);"
+    inserts = sent[2:-1]
+    head = "INSERT OR REPLACE INTO index_groups (date, variant, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, row_start, row_end, rg_json) VALUES "
+    tuples = [stmt[len(head):-1].split("),(") for stmt in inserts]
+    assert all(stmt.startswith(head) and stmt.endswith(";") and len(stmt) <= limit for stmt in inserts)
+    assert [len(t) for t in tuples] == [5, 5, 2]  # 12 rows, five ~150-byte tuples per 900-byte statement
+    # Greedy: no statement could have taken the next one's first tuple.
+    for stmt, nxt in zip(inserts, inserts[1:]):
+        first = nxt[len(head):].split("),(")[0] + ")"
+        assert len(stmt) + 1 + len(first) > limit
+    assert [t.split(", ")[2] for stmt in tuples for t in stmt] == [str(i) for i in range(12)]

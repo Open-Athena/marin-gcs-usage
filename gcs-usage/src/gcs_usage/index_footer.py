@@ -157,8 +157,11 @@ D1_RETRY_SLEEP = 5.0
 # Per-request wall clock. A request that never answers (observed 2026-09-06:
 # the `[team]` sync of one REPROC went silent for an hour while a concurrent
 # job's syncs completed) must fail into the retry loop, not hang the job to
-# its maxRunDuration. 8-row INSERT chunks answer in ~1 s; 60 s is generous.
+# its maxRunDuration. A ~64 KB INSERT answers in ~1 s; 60 s is generous.
 D1_TIMEOUT = 60.0
+# Bytes of SQL per multi-row INSERT (D1 caps a statement at 100 KB): ~100
+# compact group rows per request, so a 27k-group tier syncs in ~270 requests.
+INSERT_BYTES = 64_000
 
 
 def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> list[dict]:
@@ -207,7 +210,7 @@ def sync_d1(
     variant: str = "path",
     db_id: str = D1_DB_ID,
     remote: bool = True,
-    rows_per_insert: int = 8,
+    insert_bytes: int = INSERT_BYTES,
 ) -> int:
     """Extract the footer for ``date`` and upsert it into D1
     (index_schema/index_groups) over the Cloudflare **HTTP API** — pure Python,
@@ -259,12 +262,28 @@ def sync_d1(
         _d1_query(stmt, acct, tok, db_id)  # drop any prior/partial rows first
     # OR REPLACE: a chunk whose request timed out may or may not have landed;
     # re-sending it must be a no-op, not a PK collision (date, variant, rg).
-    for i in range(0, len(rows), rows_per_insert):
-        chunk = rows[i : i + rows_per_insert]
-        sql = f"INSERT OR REPLACE INTO index_groups {cols} VALUES " + ",".join(group_values(r) for r in chunk) + ";"
-        _d1_query(sql, acct, tok, db_id)
+    head = f"INSERT OR REPLACE INTO index_groups {cols} VALUES "
+    for chunk in _pack(head, [group_values(r) for r in rows], insert_bytes):
+        _d1_query(chunk, acct, tok, db_id)
     _d1_query(schema_sql, acct, tok, db_id)  # schema row last = completeness marker
     return len(rows)
+
+
+def _pack(head: str, values: list[str], limit: int) -> list[str]:
+    """Greedy multi-row INSERT statements: `head` + comma-joined `values` + `;`,
+    each as long as fits in `limit` bytes (a lone oversized tuple still ships)."""
+    out: list[str] = []
+    cur: list[str] = []
+    size = len(head) + 1
+    for v in values:
+        if cur and size + len(v) + 1 > limit:
+            out.append(head + ",".join(cur) + ";")
+            cur, size = [], len(head) + 1
+        cur.append(v)
+        size += len(v) + 1
+    if cur:
+        out.append(head + ",".join(cur) + ";")
+    return out
 
 
 # In-place rewrite of rows still holding the verbose (pre-2026-09-06) thrift-shaped
