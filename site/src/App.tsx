@@ -444,7 +444,10 @@ function AppContent() {
     fateSet?.size === 1 || ownerMode === 'user' ? 'user' : markMode ? 'fate' : 'user'
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
-  const hasAttr = !!tree?.us?.length
+  // The scan carries attribution (the owner axis and user coloring apply) —
+  // from the scan's meta, not the current view, which may hold no user bytes
+  // at all (e.g. `?o=unclaimed`).
+  const hasAttr = !!meta?.users?.length
   const effMode: ColorMode =
     (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'user' : hasAttr ? mode : 'tree'
   // The age chart's color axis: an explicit `?ac=` wins; otherwise it follows
