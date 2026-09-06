@@ -3,25 +3,16 @@ import type { Annotation } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { boolParam, useUrlState } from 'use-prms'
-import type { FateAxis } from './sweep'
-import type { Meta } from './types'
 import { shortName } from './UserChip'
 import { useUnits } from './units'
 
-// Stored bytes over the historical scans (specs/size-over-time.md, case 1),
-// scoped to the currently-drilled prefix. The cross-scan index `series.json`
-// (precomputed by `gcs-usage series`) carries per-prefix bytes per date for
-// every prefix above a fold floor; the client just looks up the current `?p=`.
-// Below-floor / not-yet-published → fall back to the fleet total from meta.json.
+// Stored bytes over the historical scans, scoped exactly like the map: the
+// drilled prefix, a user, or an owner pool (`/api/series` — one row read per
+// scan in that scan's index tiers; specs/view-serving.md §1). Nothing is
+// precomputed per prefix and nothing is floored.
 
 interface Pt { x: number; y: number }
-interface SeriesIndex {
-  dates: string[]
-  prefixes: string[]
-  bytes: Record<string, (number | null)[]>
-  /** Ledger replayed per scan date (gcs-usage series -a) — the burn-down. */
-  fate?: Record<'keep' | 'sweep' | 'undecided', number[]>
-}
+interface Series { path: string; points: { date: string; b: number; o: number }[] }
 
 // Nice y-ticks aligned to the *display* unit: a base-10-nice byte value (1e15)
 // is an ugly binary label (909 TiB), so nice-tick in the unit's own base
@@ -64,19 +55,13 @@ const dateOfX = (x: number) => new Date(x).toISOString().slice(0, 10)
 const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const xOfScan = (d: string) => new Date(d.slice(0, 10)).getTime()
 
-export function SizeOverTime({ scans, prefix, base, fates, user, pool, onPickDate, onBrush, window: win }: {
+export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win }: {
   scans: string[]
   prefix: string
-  base: string
-  /** Mark-progress mode (the page's mark axis is active): plot the selected
-   * keep/sweep/undecided lines per scan from the replayed ledger instead of
-   * stored bytes. Renders nothing until the index carries `fate`. */
-  fates?: ReadonlySet<FateAxis> | null
-  /** The owner axis's user: plot THEIR attributed bytes per scan (from each
-   * scan's meta.json — estate-wide; per-user series aren't prefix-scoped). */
+  /** The owner axis's user: their bytes under `prefix`, per scan. */
   user?: string | null
-  /** The owner axis's pool — `unclaimed` = total − Σ user bytes (the
-   * nobody-owns-it pool), `claimed` = Σ user bytes. `user` wins. */
+  /** The owner axis's pool — `unclaimed` = bytes no person owns, `claimed`
+   * = bytes some person owns — under `prefix`, per scan. `user` wins. */
   pool?: 'unclaimed' | 'claimed' | null
   /** Click a point → view the page as of that scan (pins `?d=`). */
   onPickDate?: (date: string) => void
@@ -90,97 +75,31 @@ export function SizeOverTime({ scans, prefix, base, fates, user, pool, onPickDat
   const yFrom: YFrom = y0P ? 'zero' : 'data'
   const setYFrom = (y: YFrom) => setY0P(y === 'zero')
 
-  // The cross-scan index (one small file); optional — 404 until it's published.
-  const indexQ = useQuery<SeriesIndex | null>({
-    queryKey: ['size-index', base],
-    staleTime: Infinity,
-    retry: false,
+  const scope = user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : ''
+  const seriesQ = useQuery<Series>({
+    queryKey: ['series', prefix, scope, scans.length],
+    enabled: scans.length > 1,
+    staleTime: 5 * 60_000,
     queryFn: async () => {
-      const r = await fetch(`${base}/series.json`)
-      return r.ok ? (r.json() as Promise<SeriesIndex>) : null
+      const r = await fetch(`/api/series?path=${encodeURIComponent(prefix)}${scope}`, { credentials: 'include' })
+      if (!r.ok) throw new Error(`series: ${r.status}`)
+      return r.json()
     },
   })
 
-  // Fleet-total fallback: per-date meta.json (~4 KB each) — only fetched/used
-  // when the index is missing or the drilled prefix isn't in it.
-  const idx = indexQ.data ?? null
-  const scopedArr = prefix && idx?.bytes[prefix] ? idx.bytes[prefix] : null
-  const slice = user ? { kind: 'user' as const, key: user } : pool ? { kind: 'pool' as const, key: pool } : null
-  const needFleet = !scopedArr
-  const metas = useQuery({
-    queryKey: ['size-series', base, scans],
-    enabled: scans.length > 1 && (needFleet || slice != null),
-    staleTime: Infinity,
-    queryFn: async () => {
-      const rows = await Promise.all(scans.map(async d => {
-        const r = await fetch(`${base}/${d}/meta.json`)
-        if (!r.ok) return null
-        return { date: d, m: (await r.json()) as Meta }
-      }))
-      return rows.filter((r): r is { date: string; m: Meta } => r != null)
-    },
-  })
-
-  // Mark-progress only when the index carries the replayed ledger; until it
-  // does (it's optional), an active mark axis falls back to the byte series.
-  const fate = !!fates && idx?.fate != null
-  const fateKey = fate && fates ? [...fates].sort().join(',') : ''
+  const label = user ? shortName(user) : pool ?? (prefix || 'total')
   const series = useMemo(() => {
-    if (fate && fates) {
-      if (!idx?.fate) return []
-      const mk = (k: 'keep' | 'sweep' | 'undecided', label: string, color: string) => ({
-        key: k,
-        label,
-        color,
-        points: idx.dates.map((d, i) => ({ x: new Date(d).getTime(), y: idx.fate![k][i] })).sort((a, b) => a.x - b.x),
-      })
-      return [
-        ...(fates.has('unmarked') ? [mk('undecided', 'undecided', 'var(--ink-2)')] : []),
-        ...(fates.has('keep') ? [mk('keep', 'keep', 'var(--mk-keep)')] : []),
-        ...(fates.has('sweep') ? [mk('sweep', 'sweep', 'var(--mk-del)')] : []),
-      ]
-    }
-    if (slice) {
-      // Per-user / pool series come from each scan's meta.json (older scans
-      // predate attribution → no point rather than a fake zero).
-      const points = (metas.data ?? [])
-        .map(({ date, m }) => {
-          const claimed = m.users ? m.users.reduce((s, u) => s + u.b, 0) : null
-          const y = slice.kind === 'user'
-            ? m.users?.find(u => u.u === slice.key)?.b ?? null
-            : slice.key === 'unclaimed'
-              ? (claimed == null ? null : m.total_bytes - claimed)
-              : claimed
-          return y == null ? null : { x: new Date(date).getTime(), y }
-        })
-        .filter((p): p is Pt => p != null)
-        .sort((a, b) => a.x - b.x)
-      if (points.length < 2) return []
-      return [{ key: `${slice.kind}:${slice.key}`, label: slice.kind === 'user' ? shortName(slice.key) : slice.key, color: 'var(--s1)', points }]
-    }
-    if (scopedArr && idx) {
-      const points = idx.dates
-        .map((d, i) => ({ x: new Date(d).getTime(), y: scopedArr[i] }))
-        .filter((p): p is Pt => p.y != null)
-        .sort((a, b) => a.x - b.x)
-      return [{ key: 'scoped', label: prefix, color: 'var(--s1)', points }]
-    }
-    const rows = metas.data ?? []
-    if (rows.length < 2) return []
-    return [{
-      key: 'total',
-      label: 'total',
-      color: 'var(--s1)',
-      points: rows.map(r => ({ x: new Date(r.date).getTime(), y: r.m.total_bytes })).sort((a, b) => a.x - b.x),
-    }]
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fateKey, slice?.kind, slice?.key, scopedArr, idx, metas.data, prefix])
+    const pts = (seriesQ.data?.points ?? [])
+      .map(p => ({ x: xOfScan(p.date), y: p.b }))
+      .sort((a, b) => a.x - b.x)
+    if (pts.length < 2) return []
+    return [{ key: 'scoped', label, color: 'var(--s1)', points: pts }]
+  }, [seriesQ.data, label])
 
   // Callouts at the points a reader looks for first: the ends of the series
   // and its extremes. Coinciding roles (first is also max) share one label.
-  // Single-series views only (the fate burn-down would triple-label).
   const annotations = useMemo((): Annotation[] => {
-    if (fate || series.length !== 1) return []
+    if (series.length !== 1) return []
     const pts = series[0].points
     if (pts.length < 2) return []
     let lo = pts[0]
@@ -194,7 +113,7 @@ export function SizeOverTime({ scans, prefix, base, fates, user, pool, onPickDat
     picks.set(lo, true)
     for (const p of [pts[0], pts[pts.length - 1]]) if (!picks.has(p)) picks.set(p, p.y < (lo.y + hi.y) / 2)
     return [...picks].map(([p, below]) => ({ x: p.x, y: p.y, label: fmtBytes(p.y), below }))
-  }, [fate, series, fmtBytes])
+  }, [series, fmtBytes])
 
   const yTickValues = useMemo(() => {
     const ys = series.flatMap(s => s.points.map(p => p.y))
@@ -206,53 +125,23 @@ export function SizeOverTime({ scans, prefix, base, fates, user, pool, onPickDat
   }, [series, units, yFrom])
 
   if (scans.length < 2) return null
-  if (fate) {
-    if (!series.length) return null
-    return (
-      <section id="over-time">
-        <h2>Mark progress <YFromToggle v={yFrom} set={setYFrom} /></h2>
-        <p className="sub">
-          {series.map(s => s.label).join(' / ')} bytes per scan, whole estate — the actions ledger replayed
-          against each archived scan{fates?.has('unmarked') ? ', so the gray line is the review burn-down' : ''}.
-        </p>
-        <TimeSeries<Pt>
-          series={series}
-          getX={p => p.x}
-          getY={p => p.y}
-          formatY={fmtBytes}
-          formatX={fmtX}
-          yTickValues={yTickValues}
-          yFrom={yFrom}
-          yLabel="bytes"
-          height={220}
-          onPickX={onPickDate && (x => onPickDate(dateOfX(x)))}
-          onBrush={onBrush && ((x0, x1) => onBrush(dateOfX(x0), dateOfX(x1)))}
-          window={win && [xOfScan(win[0]), xOfScan(win[1])]}
-        />
-      </section>
-    )
-  }
-  const scoped = !!scopedArr
-  const belowFloor = !!prefix && !!idx && !scopedArr
   return (
     <section id="over-time">
       <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
       <p className="sub">
-        {slice
-          ? slice.kind === 'user'
-            ? <><b>{shortName(slice.key)}</b>’s attributed bytes per scan — whole estate (per-user series aren’t prefix-scoped).</>
-            : slice.key === 'unclaimed'
-              ? <>Bytes no person owns, per scan — whole estate.</>
-              : <>Bytes attributed to a person, per scan — whole estate.</>
-          : scoped
-          ? <>Stored bytes under <code>{prefix}</code> per scan — the drilled subtree, from the cross-scan index.</>
-          : <>Total stored bytes per scan (fleet-wide).{' '}
-              {belowFloor
-                ? <><code>{prefix}</code> is below the size-index floor, so no scoped series — showing the fleet total.</>
-                : <>Drill in to scope this to a subpath.</>}</>}
+        {user
+          ? <><b>{shortName(user)}</b>’s bytes{prefix ? <> under <code>{prefix}</code></> : ''} per scan.</>
+          : pool === 'unclaimed'
+            ? <>Bytes no person owns{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
+            : pool === 'claimed'
+              ? <>Bytes attributed to a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
+              : prefix
+                ? <>Stored bytes under <code>{prefix}</code> per scan.</>
+                : <>Total stored bytes per scan (fleet-wide).</>}
+        {' '}Each point is that scan’s own index row — exact, at any depth.
+        {seriesQ.isError && <> <i>(series unavailable)</i></>}
       </p>
-      {indexQ.isError && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load the size index.</p>}
-      {series.length > 0 && (
+      {series.length > 0 ? (
         <TimeSeries<Pt>
           series={series}
           getX={p => p.x}
@@ -268,6 +157,8 @@ export function SizeOverTime({ scans, prefix, base, fates, user, pool, onPickDat
           onBrush={onBrush && ((x0, x1) => onBrush(dateOfX(x0), dateOfX(x1)))}
           window={win && [xOfScan(win[0]), xOfScan(win[1])]}
         />
+      ) : (
+        <p className="loading">{seriesQ.isLoading ? 'loading series…' : 'fewer than two scans hold this path'}</p>
       )}
     </section>
   )

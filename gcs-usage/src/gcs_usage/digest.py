@@ -189,13 +189,20 @@ def _err(*a) -> None:
 def load_month(root: str, month: dt.date) -> list[Scan]:
     """Per-scan ``Scan`` rows for ``month`` (UTC), read from ``root`` snapshots.
 
-    ``root`` = ``gs://<bucket>/snapshots``. Reads ``series.json`` for scan dates,
-    keeps the month's dates plus one lead-in scan for the first delta, reads each
-    scan's ``meta.json``, then slices the lead-in off."""
+    ``root`` = ``gs://<bucket>/snapshots``. Lists the scan dates (one
+    ``meta.json`` per published scan), keeps the month's dates plus one lead-in
+    scan for the first delta, reads each scan's ``meta.json``, then slices the
+    lead-in off."""
+    import re
+
     import fsspec
 
-    with fsspec.open(f"{root}/series.json", "rt") as f:
-        dates = json.load(f)["dates"]
+    fs, _, _ = fsspec.get_fs_token_paths(root)
+    dates = sorted(
+        m.group(1)
+        for p in fs.glob(f"{root.split('://', 1)[-1]}/*/meta.json")
+        if (m := re.search(r"/(\d{4}-\d{2}-\d{2})/meta\.json$", p))
+    )
     pfx = f"{month:%Y-%m}-"
     in_month = [d for d in dates if d.startswith(pfx)]
     if not in_month:

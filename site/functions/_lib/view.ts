@@ -154,6 +154,33 @@ async function tryOpen(env: Env, date: string, variant: string): Promise<IndexHa
 
 const floorOf = (h: IndexHandle): number | null => (h.mode === 'd1' ? h.floor : null)
 
+/** Just P's scoped aggregate for one scan — the size-over-time chart's point
+ * (`/api/series`): the root read of a view, from the coarsest tier that has
+ * P, without folding anything under it. */
+export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope }): Promise<{ b: number; o: number } | null> {
+  const { date, path, lens, owner } = o
+  const dP = path === '' ? 0 : path.split('/').length
+  const sort = lens ? 'user' : 'path'
+  const readRoot = (idx: IndexHandle) =>
+    path === '' ? readRows(idx, 1, 1, '', '￿', undefined, lens) : readRows(idx, dP, dP, path, path, undefined, lens)
+  let rows: Row[] = []
+  for (const e of COARSE_EXPS) {
+    const idx = await tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`)
+    if (!idx) continue
+    rows = await readRoot(idx)
+    if (rows.length) break
+  }
+  if (!rows.length) {
+    const fine = await tryOpen(env, date, sort)
+    if (!fine) return null
+    rows = await readRoot(fine)
+    if (!rows.length) return null
+  }
+  const agg = newAgg()
+  for (const r of rows) if (ownerOk(r.usr, owner)) merge(agg, r)
+  return { b: agg.b, o: agg.o }
+}
+
 export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const { date, path, w, h, minArea, atten, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length

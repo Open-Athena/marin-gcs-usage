@@ -253,42 +253,6 @@ if [ -n "${GCS_USAGE_TOKEN:-}" ] && [ "${REPROC:-0}" != "1" ]; then
   fi
 fi
 
-# Cross-scan size index for the site's per-subpath "size over time" chart
-# (specs/size-over-time.md case 1). Re-folds every archived tree into a single
-# snapshots/series.json — scans are immutable, so this is effectively
-# append-only (only the new date's column changes). Reads/writes over the same
-# FUSE mount as the snapshot cp above. A failure never blocks the snapshot: the
-# chart just falls back to the fleet total, and the next run self-heals (it
-# always regenerates the whole index).
-# Ledger export for the fate-over-time replay (specs/lens-aware-time-series.md):
-# needs an agent token (GCS_USAGE_TOKEN, e.g. via Secret Manager); without one
-# the series omits `fate` and the To-do burn-down chart hides.
-SER_A=()
-if [ -n "${GCS_USAGE_TOKEN:-}" ]; then
-  # subshell +x: the Authorization header must not hit the xtrace log. python3
-  # (not curl — absent from the slim image; bit the 2026-09-01 run).
-  if ( { set +x; } 2>/dev/null; python3 -c '
-import os, urllib.request
-req = urllib.request.Request(
-    os.environ.get("GCS_USAGE_URL", "https://gcs.oa.dev") + "/api/actions",
-    headers={"Authorization": "Bearer " + os.environ["GCS_USAGE_TOKEN"],
-             "User-Agent": "gcs-usage-job/1.0"},
-)
-open("/tmp/actions.json", "wb").write(urllib.request.urlopen(req, timeout=60).read())
-' ); then
-    SER_A=(-a /tmp/actions.json)
-  else
-    echo "WARN: actions export failed — series omits fate" >&2
-  fi
-fi
-gcs-usage series "${SER_A[@]}" -r "/gcs/$DATA/snapshots" -o "/gcs/$DATA/snapshots/series.json" \
-  || echo "WARN: series-index step failed (size chart falls back to fleet total)" >&2
-
-# Scan-over-scan diff → snapshots/$DATE/diff.json (the site's "Changes since
-# previous scan" treemap; the section hides itself when the file is absent).
-gcs-usage diff -r "/gcs/$DATA" \
-  || echo "WARN: diff step failed (Changes section hidden for this scan)" >&2
-
 # Converge the monthly Shape-C digest thread in Slack (specs/done/slack-digest-
 # shape-c.md): the OP + one reply per scan. Only when SLACK_BOT_TOKEN +
 # SLACK_CHANNEL are set — Shape C needs the Web API's per-message sender/avatar

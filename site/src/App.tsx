@@ -903,13 +903,12 @@ function AppContent() {
         </p>
       )}
 
-      {/* With the mark axis active the series chart flips to mark-progress
-          (the ledger replayed per scan — specs/lens-aware-time-series.md);
-          otherwise the owner axis picks the series: that user's (or the
-          claimed / unclaimed pool's) bytes per scan, from the per-scan metas.
+      {/* Bytes per scan under the drilled prefix, scoped like the map (a user
+          or an owner pool) — one index row per scan via /api/series. The mark
+          axis has no series yet (a per-scan ledger replay; view-serving.md).
           The age chart still hides under any scope until /api/age lands. */}
       <SizeOverTime
-        scans={scans} prefix={drillPath} base={store.base} fates={fateSet}
+        scans={scans} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unclaimed' ? 'unclaimed' : ownerMode === 'claimed' ? 'claimed' : null}
         onPickDate={setDP}

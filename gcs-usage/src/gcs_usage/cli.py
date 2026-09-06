@@ -731,49 +731,6 @@ def healthcheck(date: str | None, max_age_days: int, as_json: bool, max_ms: int,
         raise SystemExit(1)
 
 
-@main.command("diff")
-@option("-b", "--budget", default=400, type=int, help="Max directory expansions for the best-first walk")
-@option("-c", "--curr", default=None, help="Curr scan date YYYY-MM-DD (default: latest with a path-index)")
-@option("-D", "--max-depth", default=8, type=int, help="Deepest level to descend to")
-@option("-o", "--out", default=None, help="Output (default <root>/snapshots/<curr>/diff.json; '-' = stdout)")
-@option("-p", "--prev", default=None, help="Prev scan date (default: nearest earlier date with a path-index)")
-@option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Data bucket root (gs:// or a local mount)")
-@option("-t", "--top", default=500, type=int, help="Max rows kept in the JSON (by |Δsize|)")
-def diff_cmd(budget: int, curr: str | None, max_depth: int, out: str | None, prev: str | None, root: str, top: int) -> None:
-    """Scan-over-scan diff → the site's `diff.json` ("Changes since previous
-    scan" treemap). Runs disk-tree's best-first `recursive_diff` over two
-    dates' `listing/<date>/path-index.parquet`, so a delta N levels deep
-    surfaces as its own row instead of an undifferentiated blob at depth 1."""
-    import fsspec
-
-    from .diff import compute_diff, write_json
-
-    fs, rootpath = fsspec.core.url_to_fs(root)
-    idxs = sorted(fs.glob(f"{rootpath}/listing/*/path-index.parquet"))
-    dates = [p.rsplit("/", 2)[-2] for p in idxs]
-    if curr is None:
-        curr = dates[-1] if dates else None
-    if curr is None or curr not in dates:
-        raise SystemExit(f"no path-index for curr={curr!r} under {root}/listing/ (have {dates[-3:]})")
-    if prev is None:
-        earlier = [d for d in dates if d < curr]
-        if not earlier:
-            raise SystemExit(f"no scan earlier than {curr} has a path-index — nothing to diff against")
-        prev = earlier[-1]
-    if prev not in dates:
-        raise SystemExit(f"no path-index for prev={prev!r} under {root}/listing/")
-    idx = lambda d: f"{rootpath}/listing/{d}/path-index.parquet"  # noqa: E731
-    err(f"diff {prev} → {curr} (budget {budget}, max-depth {max_depth})")
-    payload = compute_diff(idx(prev), idx(curr), prev_id=prev, curr_id=curr, budget=budget, max_depth=max_depth, top=top, fs=fs)
-    if out == "-":
-        print(json.dumps(payload))
-    else:
-        out = out or f"{root.rstrip('/')}/snapshots/{curr}/diff.json"
-        write_json(payload, out)
-        err(f"{len(payload['rows'])} delta rows, {payload['expansions']} expansions, "
-            f"Δtotal {payload['total_b'] - payload['total_a']:+,} bytes -> {out}")
-
-
 @main.group()
 def sweep() -> None:
     """Sweep-executor phases — plan / review / execute (specs/sweep-executor.md)."""
@@ -1642,7 +1599,6 @@ def _load_tree(root: str, date: str) -> dict:
         return json.load(f)
 
 
-
 def _fate_totals(tree: dict, keep_rows: list[dict], cutoff_ts: int) -> dict[str, int]:
     """Replay the actions ledger as of ``cutoff_ts`` against one archived tree.
 
@@ -1760,97 +1716,6 @@ def _fate_totals(tree: dict, keep_rows: list[dict], cutoff_ts: int) -> dict[str,
     for bkt in tree.get("c", ()):
         fwalk(bkt, f"gs://{bkt['n']}", None)
     return tot
-
-
-@main.command()
-@option("-a", "--actions", "actions_path", help="Actions-ledger export (the /api/actions JSON; path or URL). When given, replays marks as of each scan date and emits per-date keep/sweep/undecided totals")
-@option("-D", "--max-depth", default=4, help="Deepest prefix level to index (path segments below the bucket root)")
-@option("-f", "--min-frac", default=0.002, help="Chart a prefix if its bytes reach this fraction of the fleet total in any scan")
-@option("-F", "--full-depth", default=2, help="Always index prefixes this many segments deep (bucket + one dir), whatever their size, so common drill targets are covered")
-@option("-o", "--out", type=Path, default=None, help="Write the series JSON here (default: stdout)")
-@option("-r", "--root", help="snapshots root: gs://bucket/snapshots, an http base (the dev proxy), or a local dir (default $DATA_BUCKET)")
-def series(actions_path: str | None, max_depth: int, min_frac: float, full_depth: int, out: Path | None, root: str | None) -> None:
-    """Cross-scan size index for the site's per-subpath "size over time" chart.
-
-    Folds every archived ``tree.json`` into one compact file: for each prefix
-    whose bytes clear a fraction-of-fleet floor in any scan (mirrors the treemap
-    fold), its stored bytes at every scan date. Scans are immutable, so this is
-    effectively append-only — re-run after each new snapshot. See
-    ``specs/size-over-time.md`` (case 1); below-floor / deeper prefixes fall back
-    to the fleet total in the UI.
-    """
-    import json
-
-    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
-    dates = _snapshot_dates(root)
-    if not dates:
-        raise SystemExit(f"no snapshots under {root}")
-
-    def walk(node: dict, segs: tuple[str, ...], depth: int, flat: dict[str, int]) -> None:
-        for c in node.get("c", ()):  # children
-            n = c["n"]
-            if n.startswith("("):  # synthetic "(other …)" fold, not a real prefix
-                continue
-            key = "/".join((*segs, n))
-            flat[key] = c["b"]
-            if depth + 1 < max_depth:
-                walk(c, (*segs, n), depth + 1, flat)
-
-    keep_rows: list[dict] | None = None
-    if actions_path:
-        import fsspec
-
-        with fsspec.open(actions_path, "rt") as f:
-            keep_rows = json.load(f)["keeps"]
-        err(f"ledger: {len(keep_rows):,} keep rows from {actions_path}")
-
-    import time as _time
-    from datetime import datetime, timezone
-
-    now_ts = int(_time.time())
-    per_date: dict[str, dict[str, int]] = {}
-    fate_by_date: dict[str, dict[str, int]] = {}
-    peak = 0
-    for d in dates:
-        tree = _load_tree(root, d)
-        peak = max(peak, tree.get("b", 0))
-        flat: dict[str, int] = {}
-        walk(tree, (), 0, flat)
-        per_date[d] = flat
-        note = ""
-        if keep_rows is not None:
-            # Marks made *during* scan day D count as of D (end-of-day UTC,
-            # capped at now for the latest scan).
-            y, mo, dd = map(int, d.split("-"))
-            cutoff = min(now_ts, int(datetime(y, mo, dd, tzinfo=timezone.utc).timestamp()) + 86400)
-            fate_by_date[d] = _fate_totals(tree, keep_rows, cutoff)
-            f = fate_by_date[d]
-            note = f" · keep {f['keep'] / 1e12:.0f} / sweep {f['sweep'] / 1e12:.0f} / undecided {f['undecided'] / 1e12:.0f} TB"
-        err(f"  {d}: {len(flat):>6,} prefixes, {tree.get('b', 0) / 1e12:>6.0f} TB{note}")
-
-    floor = peak * min_frac
-    keep = sorted({
-        p for flat in per_date.values() for p, b in flat.items()
-        if b >= floor or p.count("/") < full_depth
-    })
-    payload: dict = {
-        "dates": dates,
-        "prefixes": keep,
-        "bytes": {p: [per_date[d].get(p) for d in dates] for p in keep},
-    }
-    if fate_by_date:
-        payload["fate"] = {
-            k: [fate_by_date[d][k] for d in dates] for k in ("keep", "sweep", "undecided")
-        }
-    text = json.dumps(payload, separators=(",", ":")) + "\n"
-    err(f"{len(keep)} prefixes ≥ {min_frac:.2%} of {peak / 1e12:.0f} TB across {len(dates)} scans ({len(text):,} bytes)")
-    if out is not None:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text)
-        err(f"wrote {out}")
-    else:
-        print(text, end="")
-
 
 
 @main.command()
