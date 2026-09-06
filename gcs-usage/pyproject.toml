@@ -14,7 +14,7 @@ dependencies = [
     "pyyaml>=6.0",
     # `gcs-usage digest` drives Slack via thrds; pinned to the `py` branch (has
     # editable image blocks + per-message sender). GitHub tarball (not git+…) so
-    # `pip install ./marin` works in the git-less python:slim image. Bump the
+    # `pip install ./gcs-usage` works in the git-less python:slim image. Bump the
     # SHA to update.
     "thrds @ https://github.com/runsascoded/thrds/archive/200e1fd94d51832b872d30b4604e101afe429711.tar.gz",
 ]

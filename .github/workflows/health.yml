@@ -28,8 +28,8 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Sync marin
-        run: cd marin && uv sync
+      - name: Sync gcs-usage
+        run: cd gcs-usage && uv sync
 
       - name: Run healthcheck
         run: |
@@ -37,4 +37,4 @@ jobs:
             echo "GCS_USAGE_TOKEN secret not set — skipping live healthcheck"
             exit 0
           fi
-          cd marin && uv run --no-sync gcs-usage healthcheck
+          cd gcs-usage && uv run --no-sync gcs-usage healthcheck

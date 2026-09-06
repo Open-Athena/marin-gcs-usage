@@ -151,7 +151,7 @@ GitHub handle max); sizes and $ stay behind the site's auth.
   (`functions/` — auth gating, actions ledger, `/api/subtree`, `/api/path-index`,
   `/data/*` GCS proxy, `/v1/files/*` raw-store browser), D1 migrations
   (`migrations/`), `wrangler.toml`.
-- `marin/` — the `gcs-usage` Python CLI (own `pyproject.toml`/venv): attribution
+- `gcs-usage/` — the `gcs-usage` Python CLI (own `pyproject.toml`/venv): attribution
   (`identities.yaml`, rules, W&B mining), `webdata` aggregation, access-log
   ingest, `mark`/`status`/`todo`, `series`, `report`. Runtime-imports the
   `disk_tree` engine below.
@@ -178,7 +178,7 @@ GitHub handle max); sizes and $ stay behind the site's auth.
   compares deployed vs HEAD.
 - D1 schema: `wrangler d1 migrations apply oa-gcs-usage-auth --remote` (separate
   from deploy; needs `CLOUDFLARE_ACCOUNT_ID` inline).
-- Python: `cd marin && uv sync && uv run pytest` (viz tests need the root
+- Python: `cd gcs-usage && uv sync && uv run pytest` (viz tests need the root
   `disk_tree` package importable).
 
 ### Data flow

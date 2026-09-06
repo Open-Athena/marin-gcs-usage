@@ -17,10 +17,10 @@ site/public/data/20*
 wt
 gh
 specs
-marin/.venv
+gcs-usage/.venv
 ui/node_modules
 packages/react/node_modules
-marin/tmp
+gcs-usage/tmp
 thrds
 screenshots
 site/screenshots

@@ -4,7 +4,7 @@ Storage-usage attribution and cleanup for the Marin GCS buckets: **who is using
 what**, and a **mark & sweep** workflow to reclaim space. Browse it at
 **[gcs.oa.dev]** (Open-Athena-gated).
 
-The identity map (`marin/src/gcs_usage/identities.yaml`: handles, teams, login
+The identity map (`gcs-usage/src/gcs_usage/identities.yaml`: handles, teams, login
 aliases) is curated in-repo; it maps already-public GitHub / W&B handles to a
 team bucket (`oa` / `stanford` / `communal`) and carries no emails or private
 contact info.
@@ -74,7 +74,7 @@ The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at 
 
 Monorepo — a shared engine plus the Marin-specific app and site:
 
-- **`marin/`** — the `marin-gcs-usage` package (the `gcs-usage` CLI: attribution
+- **`gcs-usage/`** — the `marin-gcs-usage` package (the `gcs-usage` CLI: attribution
   builders, reporting, the mark & sweep ledger client, access-log ingest).
 - **`src/disk_tree/`** — the [disk-tree] engine (indexing, tree aggregation,
   storage backends) this repo is built on; installed as the root `disk-tree`
@@ -84,10 +84,10 @@ Monorepo — a shared engine plus the Marin-specific app and site:
 
 ## Development
 
-The `gcs-usage` CLI lives in `marin/`:
+The `gcs-usage` CLI lives in `gcs-usage/`:
 
 ```bash
-cd marin
+cd gcs-usage
 uv sync
 uv run pytest
 ```
@@ -95,9 +95,9 @@ uv run pytest
 Two marin contracts are deliberately mirrored (not imported) to keep this repo
 standalone; if either changes upstream, update in lockstep:
 
-- `marin/src/gcs_usage/usernames.py` — `sanitize_username` rules, mirror of
+- `gcs-usage/src/gcs_usage/usernames.py` — `sanitize_username` rules, mirror of
   `rigging.provenance.username_segment`
-- `marin/src/gcs_usage/records.py` — the `.artifact.json` shape
+- `gcs-usage/src/gcs_usage/records.py` — the `.artifact.json` shape
   (`marin.execution.artifact.ArtifactRecord`), of which only
   `provenance.built_by` is read
 

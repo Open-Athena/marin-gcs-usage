@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build + push the daily-snapshot Batch image via Cloud Build (offloaded — no
-# local Docker). Bakes `job/run.sh`, the `gcs-usage` package (marin/src), and the
+# local Docker). Bakes `job/run.sh`, the `gcs-usage` package (gcs-usage/src), and the
 # disk-tree engine per the root Dockerfile; `.gcloudignore` trims the context.
 #
 # The scheduled job (batch-submit.sh) runs `IMAGE:latest`, so a rebuild is how
