@@ -191,7 +191,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   // (scan, head) by the totals machinery); per node it scales the aggregate
   // to its allowed-fate share. Rows are read by TOTAL bytes at the scoped
   // threshold, so the read is a superset of what the scope keeps.
-  const fs: FateScope | null = o.fates ? fateScope((await markTotals(env, date)).marks, o.fates) : null
+  const fs: FateScope | null = o.fates ? fateScope((await markTotals(env, date)).marks, o.fates, lens?.key) : null
   // Owner pools filter rows (they are owner slices); the fate share is then
   // computed on the node's total and applied to the pool's share — assumes
   // fates are spread like ownership inside a node.

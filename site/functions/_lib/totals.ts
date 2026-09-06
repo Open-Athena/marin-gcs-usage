@@ -21,8 +21,8 @@ const COLUMNS = ['path', 'depth', 'usr', 'b', 'o', 'c2', 'c3', 'c4']
 const MAX_GROUPS = 400
 
 /** Bump when the manifest's shape changes: cached bodies with another
- * version are recomputed (2: rows carry `eff`/`net`, clears included). */
-export const MANIFEST_VERSION = 2
+ * version are recomputed (2: rows carry `eff`/`net`, clears included; 3: `us` per band + `claims`). */
+export const MANIFEST_VERSION = 3
 
 export interface TotalsBody extends Totals {
   v: number

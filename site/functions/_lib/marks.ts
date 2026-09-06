@@ -103,6 +103,19 @@ export interface MarkRow {
   /** The band's bytes by painted fate: a decomposed `keep_last_ckpt` splits
    * into keep + sweep; anything else is all one fate. Sums to the band. */
   net: Record<Fate, number>
+  /** The band's bytes per person — the claimant takes the whole band when a
+   * live claim covers it, else the scan's per-user slices. */
+  us: Record<string, number>
+}
+/** A live owner claim, sized from the index (bytes under its prefix). */
+export interface ClaimRow {
+  prefix: string
+  owner: string | null
+  ts: number
+  bytes: number
+  objects: number
+  /** Set when a newer ancestor claim overrides this one. */
+  repainted_by?: string
 }
 export interface Totals {
   bytes: number
@@ -110,6 +123,7 @@ export interface Totals {
   total: FateTotals
   users: Record<string, UserTotals>
   marks: MarkRow[]
+  claims: ClaimRow[]
 }
 
 export interface TotalsInput {
@@ -239,9 +253,11 @@ export function computeTotals(input: TotalsInput): Totals {
     }
   }
   const painted = new Map<Node, Record<Fate, number>>()
+  const bandUs = new Map<Node, Record<string, number>>()
   for (const n of nodes.values()) {
     const f: Fate = n.effKeep?.keep ?? 'unmarked'
     const claimant = n.effOwner?.owner ?? null
+    bandUs.set(n, claimant ? (n.band.b > 0 ? { [claimant]: n.band.b } : {}) : Object.fromEntries(Object.entries(n.band.us).filter(([, b]) => b > 0)))
     const split: Record<Fate, number> = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
     if (f === 'keep_last_ckpt') {
       // Decompose where the step dirs are in view; the kept child's bytes are
@@ -293,10 +309,24 @@ export function computeTotals(input: TotalsInput): Totals {
       ...(live ? {} : { repainted_by: n.effKeep!.prefix }),
       eff: n.effKeep?.keep ?? 'unmarked',
       net: painted.get(n)!,
+      us: bandUs.get(n)!,
     })
   }
   marks.sort((a, b) => b.net_bytes - a.net_bytes)
+  const claims: ClaimRow[] = []
+  for (const n of nodes.values()) {
+    if (!n.owner) continue
+    claims.push({
+      prefix: n.prefix,
+      owner: n.owner.owner,
+      ts: n.owner.ts,
+      bytes: n.agg.b,
+      objects: n.agg.o,
+      ...(n.effOwner === n.owner ? {} : { repainted_by: n.effOwner!.prefix }),
+    })
+  }
+  claims.sort((a, b) => b.bytes - a.bytes)
   for (const k of FATES) total[k] = Math.round(total[k])
   for (const u of Object.values(users)) for (const k of FATES) u[k] = Math.round(u[k])
-  return { bytes, objects, total, users, marks }
+  return { bytes, objects, total, users, marks, claims }
 }

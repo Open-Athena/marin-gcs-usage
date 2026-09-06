@@ -6,10 +6,9 @@ import { useActions } from 'use-kbd'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
-import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkIndex } from './marks'
+import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkAction } from './marks'
 import { DEFAULT_STORE } from './stores'
-import { applyFilter, applyNodeFilter } from './filterTree'
-import { allUserFates, klcFateAt, klcKeptWithin, klcSplits, lensNodePred, userLens, type Fate, type KlcIndex, type UserFates } from './sweep'
+import { type Fate, type UserFates } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
 import { ScanPicker } from './ScanPicker'
 import { SiteNav } from './SiteNav'
@@ -29,13 +28,10 @@ import {
 // N TiB, what's keep-marked, what's sweep-marked, and what's still undecided?"
 // — the fate rollup the map's per-prefix chips never total up.
 //
-// Fate is computed the same way the treemap overlay resolves it (most recent
-// live mark on an ancestor-or-equal prefix wins): walk the scan tree, carry
-// the user's attributed share (`us` is additive and untruncated, so a zero
-// share prunes the subtree), and stop at any node whose subtree holds no
-// deeper marks — every byte there shares one resolved fate. Residual bytes at
-// mixed nodes (folded `(other)` tiles, share not covered by kept children)
-// take the node's own resolved fate.
+// Everything here is folded server-side from the index tiers and the live
+// ledger (`/api/estate`, `/api/marks/totals`, the user lens of
+// `/api/subtree`): the same numbers the map's rollup and `/users` show, with
+// no scan tree on the client (specs/view-serving.md §2).
 
 interface FateRow {
   uri: string          // marked prefix (decided) or maximal clean subtree (unmarked)
@@ -44,47 +40,10 @@ interface FateRow {
   mark: Mark | null
 }
 
-const share = (n: TreeNode, uid: string): number => n.us?.find(([u]) => u === uid)?.[1] ?? 0
-
-function userFates(root: TreeNode, uid: string, idx: MarkIndex): FateRow[] {
-  const decided = new Map<string, { mark: Mark; b: number }>()
-  const undecided = new Map<string, number>()
-  const settle = (uri: string, ub: number, mark: Mark | null) => {
-    if (mark) {
-      const cur = decided.get(mark.prefix)
-      if (cur) cur.b += ub
-      else decided.set(mark.prefix, { mark, b: ub })
-    } else undecided.set(uri, (undecided.get(uri) ?? 0) + ub)
-  }
-  const walk = (n: TreeNode, uri: string, ub: number) => {
-    if (ub <= 0) return
-    const { mark, under } = idx.resolve(uri)
-    if (under === 0) return settle(uri, ub, mark)
-    let rest = ub
-    for (const c of n.c ?? []) {
-      if (c.n.startsWith('(')) continue
-      const cb = share(c, uid)
-      if (cb <= 0) continue
-      rest -= cb
-      walk(c, `${uri}/${c.n}`, cb)
-    }
-    // Folded tiles + share past the tree's floor stay here, under this
-    // node's own resolved fate — deeper marks may exist inside, but the
-    // tree can't see past its own truncation.
-    if (rest > 0) settle(uri, rest, mark)
-  }
-  for (const bucket of root.c ?? []) walk(bucket, `gs://${bucket.n}`, share(bucket, uid))
-  const rows: FateRow[] = []
-  for (const [, { mark, b }] of decided) rows.push({ uri: mark.prefix, fate: mark.action, b, mark })
-  for (const [uri, b] of undecided) rows.push({ uri, fate: 'unmarked', b, mark: null })
-  return rows.sort((a, b) => b.b - a.b)
-}
-
-// `keep_last_ckpt` decomposes into real keep/sweep proportions wherever
-// possible (`klcSplits` — last-ckpt children kept, siblings swept); the
-// walkers do that themselves when handed a KlcIndex, so only bytes under
-// *unresolvable* KLC marks reach this fold, where they count as keep.
-// Individual mark rows still show the first-class amber "keep last ckpt".
+// `keep_last_ckpt` decomposes into real keep/sweep proportions server-side
+// wherever the step dirs are in view; only bytes under *unresolvable* KLC
+// marks reach this fold, where they count as keep. Individual mark rows still
+// show the first-class amber "keep last ckpt".
 export type ShownFate = 'keep' | 'sweep' | 'unmarked'
 const SHOWN_FATES: ShownFate[] = ['keep', 'sweep', 'unmarked']
 const ALL_FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
@@ -316,9 +275,24 @@ function UsersMap({ meta, fates, redact = false }: {
   )
 }
 
-/** KLC keep/sweep decomposition index for the loaded tree + live marks. */
-function useKlcIdx(tree: TreeNode | undefined, idx: MarkIndex): KlcIndex | undefined {
-  return useMemo(() => (tree && idx.count ? klcSplits(tree, idx.keeps) : undefined), [tree, idx])
+/** Per-user keep / sweep / undecided (claims applied) from
+ * `/api/marks/totals`, keyed by canonical id. */
+function useUserFates(asof: string | null): Map<string, UserFates> | null {
+  const totalsQ = useMarkTotals(asof)
+  return useMemo(
+    () => (totalsQ.data ? new Map(Object.entries(totalsQ.data.users).map(([u, f]) => [canonId(u), f])) : null),
+    [totalsQ.data],
+  )
+}
+
+interface Estate {
+  user: string
+  date: string
+  head: number
+  fates: UserFates | null
+  marks: { prefix: string; keep: MarkAction; eff: Fate; who: string | null; ts: number; bytes: number; b: number; authored: boolean; repainted_by?: string }[]
+  claims: { prefix: string; ts: number; bytes: number; objects: number; repainted_by?: string }[]
+  undecided: { prefix: string; b: number }[]
 }
 
 /** `/users/og` — fixed 1200×630 unfurl render of the owner map: names + fate
@@ -326,14 +300,7 @@ function useKlcIdx(tree: TreeNode | undefined, idx: MarkIndex): KlcIndex | undef
 export function UsersOgPage() {
   const asof = useLatestScan()
   const metaQ = useScanFile<Meta>('meta', asof)
-  const treeQ = useScanFile<TreeNode>('tree', asof)
-  const marksQ = useMarks(true)
-  const idx = useMarkIndex(marksQ.data)
-  const klcIdx = useKlcIdx(treeQ.data, idx)
-  const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
-    [treeQ.data, idx, klcIdx],
-  )
+  const fates = useUserFates(asof)
   useEffect(() => {
     const prev = document.documentElement.dataset.theme
     document.documentElement.dataset.theme = 'dark'
@@ -364,11 +331,7 @@ export function UsersPage() {
   // Per-user keep / sweep / undecided from /api/marks/totals — the ledger
   // folded server-side against the floor-free index (claims applied), so the
   // table, the map's root rollup and the digest agree, and no tree.json.
-  const totalsQ = useMarkTotals(asof)
-  const fates = useMemo(
-    () => (totalsQ.data ? new Map(Object.entries(totalsQ.data.users).map(([u, f]) => [canonId(u), f])) : null),
-    [totalsQ.data],
-  )
+  const fates = useUserFates(asof)
   // ONE basis for every column: once the fate walk has run, Attributed is
   // its claims-applied total (same numbers as the tiles, the fate columns,
   // and the CSV) — a scan-only Attributed next to walk-based Keep let a
@@ -557,7 +520,7 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
         </thead>
         <tbody>
           {slice.map(r => (
-            <tr key={r.uri}>
+            <tr key={`${r.fate}:${r.uri}`}>
               <td>
                 <span className="chip" style={{ borderColor: fateColor(r.fate), color: fateColor(r.fate) }}>
                   {fateLabel(r.fate)}
@@ -591,14 +554,7 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
 export function UserOgPage() {
   const { id = '' } = useParams()
   const asof = useLatestScan()
-  const treeQ = useScanFile<TreeNode>('tree', asof)
-  const marksQ = useMarks(true)
-  const idx = useMarkIndex(marksQ.data)
-  const klcIdx = useKlcIdx(treeQ.data, idx)
-  const fates = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
-    [treeQ.data, idx, klcIdx],
-  )
+  const fates = useUserFates(asof)
   useEffect(() => {
     const prev = document.documentElement.dataset.theme
     document.documentElement.dataset.theme = 'dark'
@@ -647,120 +603,88 @@ export function UserPage() {
   const { id = '' } = useParams()
   const scan = useScan(store)
   const asof = scan.asof
-  const treeQ = useScanFile<TreeNode>('tree', asof)
   const metaQ = useScanFile<Meta>('meta', asof)
   const marksQ = useMarks(true)
   const idx = useMarkIndex(marksQ.data)
-  const klcIdx = useKlcIdx(treeQ.data, idx)
-  // Scan attribution + live-claim overlay ("committed + WAL") — the page's
-  // headline totals come from here, so a claim reshapes them immediately.
-  const fatesAll = useMemo(
-    () => (treeQ.data ? allUserFates(treeQ.data, idx, klcIdx, canonId) : null),
-    [treeQ.data, idx, klcIdx],
-  )
-  const mine = fatesAll?.get(id) ?? null
+  // The estate, folded server-side: fates (claims applied), the marks that
+  // govern their bytes, their claims, and their undecided subtrees.
+  const estateQ = useQuery<Estate>({
+    queryKey: ['estate', asof, id],
+    enabled: !!asof && !!id,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const r = await fetch(`/api/estate?date=${asof}&user=${encodeURIComponent(id)}`, { credentials: 'include' })
+      if (!r.ok) throw new Error(`estate: ${r.status}`)
+      return r.json()
+    },
+  })
+  const estate = estateQ.data ?? null
+  const mine = estate?.fates ?? null
   // Drill state lives in `?p=` so deep views are shareable and the back
   // button walks back out (same contract as the homepage map).
   const [pP, setPP] = useUrlState('p', stringParam())
-  // The user's slice of the estate as a drillable map (same scoping as the
-  // homepage's "My files" lens: maximal subtrees ≥60% theirs), colored by
+  // The user's bytes as a drillable map (the homepage's user lens), colored by
   // mark state.
-  const scopedTree = useMemo(() => {
-    if (!treeQ.data) return null
-    const base = applyNodeFilter(treeQ.data, lensNodePred(userLens(id)))
-    if (base.b > 0) return base
-    // No scan-attributed subtrees (fresh identity / claims-only): scope the
-    // map to the claimed prefixes instead.
-    const claims = new Set(
-      [...idx.owners.values()]
-        .filter(r => r.owner != null && canonId(r.owner) === id)
-        .map(r => prefixToPath(r.prefix)),
-    )
-    if (!claims.size) return null
-    const claimed = applyFilter(treeQ.data, path => claims.has(path))
-    return claimed.b > 0 ? claimed : null
-  }, [treeQ.data, id, idx])
+  const mapQ = useQuery<{ tree: TreeNode }>({
+    queryKey: ['user-map', asof, id],
+    enabled: !!asof && !!id,
+    staleTime: Infinity,
+    retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
+    queryFn: async () => {
+      const r = await fetch(`/api/subtree?date=${asof}&path=&w=1200&h=720&lens=user:${encodeURIComponent(id)}`, { credentials: 'include' })
+      if (!r.ok) throw new Error(`${r.status}`)
+      return r.json()
+    },
+  })
+  const scopedTree = mapQ.data?.tree && mapQ.data.tree.b > 0 ? mapQ.data.tree : null
 
-  const rows = useMemo(
-    () => (treeQ.data ? userFates(treeQ.data, id, idx) : []),
-    [treeQ.data, id, idx],
-  )
+  // Decided rows: every mark whose band holds some of their bytes (under its
+  // effective fate); undecided rows: their outermost mark-free subtrees.
+  const rows = useMemo((): FateRow[] => {
+    if (!estate) return []
+    // A mark repainted to unmarked (a newer clear above it) decides nothing —
+    // its bytes are in the undecided rows.
+    const decided: FateRow[] = estate.marks
+      .filter(m => m.b > 0 && m.eff !== 'unmarked')
+      .map(m => ({ uri: m.prefix, fate: m.eff, b: m.b, mark: { prefix: m.prefix, action: m.keep, who: m.who ?? '', ts: m.ts, note: null } }))
+    const undecided: FateRow[] = estate.undecided.map(u => ({ uri: u.prefix, fate: 'unmarked', b: u.b, mark: null }))
+    return [...decided, ...undecided].sort((a, b) => b.b - a.b)
+  }, [estate])
   const totals = useMemo(() => {
     const t = new Map<ShownFate, { b: number; n: number }>(SHOWN_FATES.map(f => [f, { b: 0, n: 0 }]))
     for (const r of rows) {
-      // KLC rows split into their real keep/sweep proportions (the prefix
-      // itself counts under keep); unresolvable KLC counts whole as keep.
-      if (r.fate === 'keep_last_ckpt' && klcIdx && r.mark) {
-        const pfx = r.mark.prefix.endsWith('/') ? r.mark.prefix : r.mark.prefix + '/'
-        const split = klcIdx.get(pfx)
-        if (split && split.totalB > 0) {
-          const rel = klcFateAt(r.uri, split)
-          const ratio = rel === 'keep' ? 1 : rel === 'sweep' ? 0 : Math.min(1, klcKeptWithin(r.uri, split) / split.totalB)
-          const keep = t.get('keep')!
-          keep.b += r.b * ratio
-          keep.n++
-          t.get('sweep')!.b += r.b * (1 - ratio)
-          continue
-        }
-      }
       const cur = t.get(r.fate === 'keep_last_ckpt' ? 'keep' : r.fate)!
       cur.b += r.b
       cur.n++
     }
     return t
-  }, [rows, klcIdx])
+  }, [rows])
   const attributed = mine ? FATE_ORDER_TOTAL(mine) : rows.reduce((s, r) => s + r.b, 0)
   const stripBytes = mine ? foldFates(mine) : null
   const metaB = metaQ.data?.users?.find(u => u.u === id)?.b
   const mix = metaQ.data?.user_class_bytes?.[id]
-  const authored = useMemo(
-    () => new Set((marksQ.data?.keeps ?? []).filter(r => r.keep != null && canonId(r.who) === id).map(r => r.prefix)).size,
-    [marksQ.data, id],
-  )
+  const authored = estate ? estate.marks.filter(m => m.authored).length : 0
   // Fallback content for a user with ledger activity but no attributed bytes
   // yet (fresh identity, or claims the attribution pipeline hasn't mapped):
-  // their own latest live marks, sized from the tree (each prefix's total
-  // bytes — 0 when it sits below the tree's floors).
+  // their own latest live marks, sized from the index (each prefix's total
+  // bytes, whoever owns them).
   const authoredRows = useMemo((): FateRow[] => {
-    if (rows.length > 0 || !treeQ.data) return []
-    const root = treeQ.data
-    const nodeAt = (prefix: string): TreeNode | undefined => {
-      let node: TreeNode | undefined = root
-      for (const s of prefix.replace(/^[a-z0-9]+:\/\//, '').replace(/\/+$/, '').split('/')) {
-        node = node?.c?.find(c => c.n === s)
-      }
-      return node
-    }
-    const out: FateRow[] = []
-    for (const r of idx.keeps.values()) {
-      if (r.keep == null || canonId(r.who) !== id) continue
-      out.push({
-        uri: r.prefix,
-        fate: r.keep,
-        b: nodeAt(r.prefix)?.b ?? 0,
-        mark: { prefix: r.prefix, action: r.keep, who: r.who, ts: r.ts, note: r.memo },
-      })
-    }
-    return out.sort((a, b) => b.b - a.b)
-  }, [rows.length, treeQ.data, idx, id])
+    if (rows.length > 0 || !estate) return []
+    return estate.marks
+      .filter(m => m.authored)
+      .map(m => ({ uri: m.prefix, fate: m.keep, b: m.bytes, mark: { prefix: m.prefix, action: m.keep, who: m.who ?? '', ts: m.ts, note: null } }))
+      .sort((a, b) => b.b - a.b)
+  }, [rows.length, estate])
   const claimedRows = useMemo((): FateRow[] => {
-    if (!treeQ.data) return []
-    const root = treeQ.data
-    const nodeAt = (prefix: string): TreeNode | undefined => {
-      let node: TreeNode | undefined = root
-      for (const s of prefix.replace(/^[a-z0-9]+:\/\//, '').replace(/\/+$/, '').split('/')) {
-        node = node?.c?.find(c => c.n === s)
-      }
-      return node
-    }
-    const out: FateRow[] = []
-    for (const r of idx.owners.values()) {
-      if (r.owner == null || canonId(r.owner) !== id) continue
-      const st = idx.resolve(r.prefix)
-      out.push({ uri: r.prefix, fate: st.mark?.action ?? 'unmarked', b: nodeAt(r.prefix)?.b ?? 0, mark: st.mark })
-    }
-    return out.sort((a, b) => b.b - a.b)
-  }, [treeQ.data, idx, id])
+    if (!estate) return []
+    return estate.claims
+      .map(c => {
+        const st = idx.resolve(c.prefix)
+        return { uri: c.prefix, fate: (st.mark?.action ?? 'unmarked') as Fate, b: c.bytes, mark: st.mark }
+      })
+      .sort((a, b) => b.b - a.b)
+  }, [estate, idx])
   const claimed = claimedRows.length
   const decidedRows = rows.filter(r => r.fate !== 'unmarked')
   const undecidedRows = rows.filter(r => r.fate === 'unmarked')
@@ -778,7 +702,7 @@ export function UserPage() {
     }
     return path
   }, [scopedTree, pP])
-  const loading = !asof || treeQ.isLoading || marksQ.isLoading
+  const loading = !asof || estateQ.isLoading || marksQ.isLoading
 
   return (
     <main className="marks-page user-page">
@@ -804,6 +728,7 @@ export function UserPage() {
 
       {loading && <p className="loading">loading…</p>}
       {marksQ.error && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load marks: {marksQ.error.message}</p>}
+      {estateQ.error && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load the estate: {estateQ.error.message}</p>}
       {!loading && !rows.length && attributed === 0 && (
         <>
           <p className="tab-note">
@@ -846,7 +771,6 @@ export function UserPage() {
                 dateRange={null}
                 scheme={store.scheme}
                 markIdx={idx}
-                klcIdx={klcIdx}
                 path={mapPath}
                 onPathChange={pth => setPP(pth.slice(1).map(n => n.n).join('/') || undefined)}
               />

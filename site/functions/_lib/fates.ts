@@ -18,6 +18,7 @@
  * band carries the repainter's). Bands partition the subtree, so this is
  * exact; `keep_last_ckpt` counts as keep ∧ sweep where it can't be split,
  * matching the client's `fateAllowed`. */
+import { canonId } from './identity.js'
 import type { Fate, MarkRow } from './marks.js'
 import { idxKey } from './marks.js'
 
@@ -39,18 +40,30 @@ interface Mark {
   path: string // index key (`marin-b/x/y`)
   ts: number
   eff: Fate // effective fate of its band (own keep, a repainter's, or unmarked for a clear)
-  bytes: number
-  net: Record<Fate, number>
+  bytes: number // subtree bytes (all owners)
+  net: Record<Fate, number> // band bytes by painted fate
+  /** The lens user's share of the band, and of the whole subtree (Σ over
+   * marks at-or-under this one) — a lens view's rows are that user's slices,
+   * so the fold has to subtract and add the user's bytes, not everyone's. */
+  ub: number
+  ubUnder: number
 }
 
 export interface FateScope {
-  /** Bytes of `path`'s subtree (total `b`) that sit under an allowed fate. */
+  /** Bytes of `path`'s subtree (`b` = the view's bytes there: everyone's, or
+   * the lens user's) that sit under an allowed fate. */
   value(path: string, b: number): number
 }
 
-export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>): FateScope {
+export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>, user?: string): FateScope {
+  const userShare = (us: Record<string, number>): number => {
+    if (!user) return 0
+    let b = 0
+    for (const [k, v] of Object.entries(us)) if (canonId(k) === user) b += v
+    return b
+  }
   const all: Mark[] = marks
-    .map(m => ({ path: idxKey(m.prefix).path, ts: m.ts, eff: m.eff, bytes: m.bytes, net: m.net }))
+    .map(m => ({ path: idxKey(m.prefix).path, ts: m.ts, eff: m.eff, bytes: m.bytes, net: m.net, ub: userShare(m.us), ubUnder: 0 }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   const byPath = new Map(all.map(m => [m.path, m]))
   const parentOf = (p: string): string => {
@@ -69,11 +82,24 @@ export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>): Fat
     }
     anc.set(m.path, a)
   }
+  // The user's bytes under each mark = its band share plus every nested
+  // mark's (bands partition the subtree).
+  if (user) {
+    for (const m of all) {
+      for (let a: Mark | null = m; a; a = anc.get(a.path) ?? null) a.ubUnder += m.ub
+    }
+  }
+  const bandOf = (m: Mark): number => Object.values(m.net).reduce((s, v) => s + v, 0)
+  // Allowed bytes of a band: all of it, or the lens user's share of it (the
+  // share is assumed spread across a decomposed keep_last_ckpt's halves).
   const netAllowed = (m: Mark): number => {
     let s = 0
     for (const f of Object.keys(m.net) as Fate[]) if (m.net[f] > 0 && fateAllowed(f, allowed)) s += m.net[f]
-    return s
+    if (!user) return s
+    const band = bandOf(m)
+    return band > 0 ? (s * m.ub) / band : 0
   }
+  const bytesUnder = (m: Mark): number => (user ? m.ubUnder : m.bytes)
   // First index in the sorted list whose path is >= `key`.
   const lowerBound = (key: string): number => {
     let lo = 0
@@ -104,7 +130,7 @@ export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>): Fat
         if (m.path === path) continue
         sumNet += netAllowed(m)
         const a = anc.get(m.path) ?? null
-        if (!a || a.path.length <= path.length) topBytes += m.bytes
+        if (!a || a.path.length <= path.length) topBytes += bytesUnder(m)
       }
       const residual = Math.max(0, b - topBytes)
       const coverFate: Fate = cover?.eff ?? 'unmarked'
@@ -112,3 +138,22 @@ export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>): Fat
     },
   }
 }
+
+/** "Does any live mark sit strictly under `path`?" over a sorted mark list —
+ * the per-user worklist settles at the outermost subtrees with no marks
+ * inside (the review backlog's unit). */
+export function marksUnder(marks: MarkRow[]): (path: string) => boolean {
+  const paths = marks.map(m => idxKey(m.prefix).path).sort()
+  return (path: string) => {
+    const pfx = path === '' ? '' : path + '/'
+    let lo = 0
+    let hi = paths.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (paths[mid] < pfx) lo = mid + 1
+      else hi = mid
+    }
+    return lo < paths.length && (pfx === '' || paths[lo].startsWith(pfx))
+  }
+}
+
