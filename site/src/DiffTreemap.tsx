@@ -60,7 +60,7 @@ interface DiffNode {
  * Under-filled parents get a grey `(unchanged)` filler cell so areas stay
  * truthful without shipping every unchanged row.
  */
-function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[]; maxAbsDelta: number } {
+function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
   const byPath = new Map<string, DiffNode>()
   const roots: DiffNode[] = []
   const attach = (node: DiffNode, path: string) => {
@@ -98,9 +98,7 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[]; max
     }, r.p)
   }
 
-  let maxAbs = 0
   const finalize = (node: DiffNode): number => {
-    maxAbs = max(maxAbs, abs(node.delta))
     const own = areaMode === 'max' ? max(node.size_old, node.size_new) : abs(node.delta)
     if (!node.children?.length) {
       node.weight = own
@@ -125,7 +123,7 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[]; max
   cells.sort(areaMode === 'max'
     ? (a, b) => (b.delta - a.delta) || (b.weight - a.weight)
     : (a, b) => b.weight - a.weight)
-  return { cells, maxAbsDelta: maxAbs }
+  return { cells }
 }
 
 export function DiffTreemap({ data, label }: { data: DiffData; label: string }) {
@@ -153,8 +151,8 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
     }
     return { added, removed }
   }, [data])
-  const { root, maxAbsDelta } = useMemo(() => {
-    const { cells, maxAbsDelta: maxAbs } = buildTree(data, areaMode)
+  const root = useMemo(() => {
+    const { cells } = buildTree(data, areaMode)
     const root: DiffNode = {
       key: label,
       label,
@@ -166,7 +164,7 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
       n_desc_delta: data.objects_b - data.objects_a,
       children: cells,
     }
-    return { root, maxAbsDelta: maxAbs }
+    return root
   }, [data, areaMode, label])
 
   if (!root.children?.length) return null
@@ -210,7 +208,12 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
               ink: divergingInk(f > 0.85 ? 1 : 0),
             }
           }
-          const t = maxAbsDelta === 0 ? 0 : n.delta / maxAbsDelta
+          // Δ mode: area already says how much moved; color says how much of
+          // the node that was — a wholly added / removed directory is full
+          // green / red however small, a 5% shrink is a faint red, a
+          // net-zero churn is grey (its tooltip shows the churn).
+          const base = max(n.size_old, n.size_new)
+          const t = base === 0 ? 0 : n.delta / base
           return { bg: deltaColor(t), ink: divergingInk(t) }
         }}
         renderCellExtra={areaMode === 'max' ? (n, _path, { w, h }) => {
