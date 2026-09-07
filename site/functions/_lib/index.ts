@@ -254,8 +254,27 @@ export function reviveRowGroup(json: string, schema: SchemaElement[]): Record<st
 async function readGroup(h: D1Handle, rgJson: string, columns?: string[]): Promise<Row[]> {
   const rg = reviveRowGroup(rgJson, h.schema)
   const metadata = { version: h.version, schema: h.schema, num_rows: rg.num_rows, row_groups: [rg], metadata_length: 0 } as unknown as Awaited<ReturnType<typeof parquetMetadataAsync>>
-  const rows = (await parquetReadObjects({ file: h.file, metadata, columns })) as Record<string, unknown>[]
+  const rows = (await withSlot(() => parquetReadObjects({ file: h.file, metadata, columns }))) as Record<string, unknown>[]
   return rows.map(toRow)
+}
+
+/** Row groups decoding at once, isolate-wide. Each is a range fetch plus a
+ * few MB of decoded rows, and one request can fan out over a dozen scans
+ * (`/api/series`) each reading a group or two: the Worker's 128 MB is the
+ * bound, not any one read's group count — a claims-only user's series hit
+ * it at 12 scans in flight. */
+const DECODE_SLOTS = 4
+let decoding = 0
+const decodeQueue: (() => void)[] = []
+async function withSlot<T>(f: () => Promise<T>): Promise<T> {
+  if (decoding >= DECODE_SLOTS) await new Promise<void>(r => decodeQueue.push(r))
+  decoding++
+  try {
+    return await f()
+  } finally {
+    decoding--
+    decodeQueue.shift()?.()
+  }
 }
 
 interface Span extends GroupSpan { rg: number }
@@ -390,7 +409,7 @@ export async function readRects(
     if (!hit) continue
     if (thrAt && g.bMax < thrAt(Math.max(g.dMin, dMin))) continue
     if (++selected > 250) throw new Error('query too wide: drill deeper or raise minArea')
-    const rows = (await parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd })) as Record<string, unknown>[]
+    const rows = (await withSlot(() => parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd }))) as Record<string, unknown>[]
     for (const r of rows) {
       const row = toRow(r)
       if (inRect(row) && lensOk(row)) out.push(row)
@@ -452,7 +471,7 @@ export async function readAsks(
   const selected = h.groups.filter(g => asks.some(a => groupMayHold(g, a)))
   if (selected.length > maxGroups) throw new Error(`lookup too wide: ${selected.length} row groups (cap ${maxGroups})`)
   for (const g of selected) {
-    const rows = (await parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd, columns })) as Record<string, unknown>[]
+    const rows = (await withSlot(() => parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd, columns }))) as Record<string, unknown>[]
     for (const r of rows) {
       const row = toRow(r)
       if (keep(row)) out.push(row)
