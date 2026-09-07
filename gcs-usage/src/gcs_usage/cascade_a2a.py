@@ -15,7 +15,11 @@ pivot DT's file lacks (the bucket has no bytes in that class, or no `-p`)
 is compared against 0, and said so; mgu leaves an empty pivot NULL. DT's
 root is `.`; mgu's is the bucket. `o` also reports Σ(mgu − DT): GCS folder
 placeholders (zero-byte objects named `…/`) are objects to mgu and dir
-markers to DT, so the sum should equal their count.
+markers to DT, so the sum should equal their count. Two one-sided classes
+are counted apart and don't fail the gate: DT emits a dir's own slice even
+when it holds nothing (`size` 0, `n_files` 0 — mgu has no row for an empty
+slice), and mgu keeps a dir row for an `a//b` name's empty component (DT
+collapses `//`).
 """
 from __future__ import annotations
 
@@ -63,8 +67,12 @@ def compare(bucket: str, index_path: str, dt_path: str, top: int = 10) -> dict:
             "dt": rows("SELECT usr, size AS b, n_files AS o FROM d WHERE path = '' ORDER BY usr NULLS FIRST"),
         },
         "only": {
-            "mgu": {"n": n("SELECT count(*) FROM j WHERE NOT in_d"), "examples": rows(f"SELECT path, usr, b, o FROM j WHERE NOT in_d ORDER BY b DESC LIMIT {top}")},
-            "dt": {"n": n("SELECT count(*) FROM j WHERE NOT in_m"), "examples": rows(f"SELECT path, usr, size AS b, n_files AS o FROM j WHERE NOT in_m ORDER BY size DESC LIMIT {top}")},
+            "mgu": {"n": n("SELECT count(*) FROM j WHERE NOT in_d AND NOT (path LIKE '%//%' OR path LIKE '%/')"), "examples": rows(f"SELECT path, usr, b, o FROM j WHERE NOT in_d AND NOT (path LIKE '%//%' OR path LIKE '%/') ORDER BY b DESC LIMIT {top}")},
+            "dt": {"n": n("SELECT count(*) FROM j WHERE NOT in_m AND NOT (size = 0 AND n_files = 0)"), "examples": rows(f"SELECT path, usr, size AS b, n_files AS o FROM j WHERE NOT in_m AND NOT (size = 0 AND n_files = 0) ORDER BY size DESC LIMIT {top}")},
+        },
+        "known": {
+            "double_slash_dirs": n("SELECT count(*) FROM j WHERE NOT in_d AND (path LIKE '%//%' OR path LIKE '%/')"),
+            "empty_slices": n("SELECT count(*) FROM j WHERE NOT in_m AND size = 0 AND n_files = 0"),
         },
         "mismatch": {},
         "against_zero": [m for m, dc in CLASS_COLS.items() if dc not in dt_cols],
@@ -97,6 +105,8 @@ def render(r: dict) -> str:
         out.append(f"  only {side}: {o['n']:,}" + "".join(f"\n    {e['path'] or '(root)'} [{e['usr'] or '∅'}] b={e['b']:,} o={e['o']:,}" for e in o["examples"]))
     for col, m in r["mismatch"].items():
         out.append(f"  {col} mismatches: {m['n']:,}" + (f" (Σ mgu−dt = {m['delta_sum']:,})" if "delta_sum" in m else "") + "".join(f"\n    {e['path'] or '(root)'} [{e['usr'] or '∅'}] mgu={e['mgu']} dt={e['dt']}" for e in m["examples"]))
+    k = r["known"]
+    out.append(f"  known one-sided: {k['double_slash_dirs']:,} mgu `a//b` dir rows, {k['empty_slices']:,} DT empty slices")
     if r["against_zero"]:
         out.append(f"  class pivots absent from the DT file, compared against 0: {', '.join(r['against_zero'])}")
     if r["skipped"]:
