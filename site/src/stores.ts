@@ -1,5 +1,5 @@
 // Object stores the dashboard can render. Each one publishes the same layer-3
-// trio (`<base>/scans.json`, `<base>/<scan>/{tree,age,meta}.json`) and lives at
+// pair (`<base>/scans.json`, `<base>/<scan>/{age,meta}.json`) and lives at
 // its own URL path, so adding a store is a row here plus data in the bucket.
 //
 // Data comes from the snapshot bucket via `functions/data/[[path]].ts`, not

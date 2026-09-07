@@ -1,6 +1,6 @@
 // CF Pages Function: serve the treemap's snapshot data live from the bucket.
 //
-// The app fetches /data/scans.json, /data/<date>/{tree,age,meta}.json, and
+// The app fetches /data/scans.json, /data/<date>/{age,meta}.json, and
 // /data/rules.json. These used to be static assets baked into every deploy —
 // so the dashboard went stale whenever the daily job's `wrangler pages deploy`
 // step failed (it had been broken since ~07-30). Now they're read live from
