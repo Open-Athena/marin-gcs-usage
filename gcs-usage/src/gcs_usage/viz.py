@@ -22,6 +22,74 @@ import duckdb
 err = partial(print, file=sys.stderr)
 
 
+def prefix_labels(
+    con: "duckdb.DuckDBPyConnection",
+    attributions: tuple[str, ...],
+    identities_path: "Path | None",
+    listing_src: str,
+) -> "pd.DataFrame":
+    """The attribution prefix map as rows ``(key, user, depth)`` — ``key`` is
+    ``<bucket>[/<dir>…]`` (no ``gs://``, no trailing slash), deepest-prefix
+    semantics applied by the caller (``webdata``'s per-depth joins, or DT's
+    ``import --label``). Path-glob rules expand against ``listing_src``'s dirs
+    (``(bucket, name)``); identities resolve to canonical users.
+
+    Prefixes deeper than ``GCS_USAGE_ATTR_MAX_DEPTH`` (12) are dropped: the
+    ancestor join is dirs × max depth, so a handful of ultra-deep prefixes
+    inflate memory for everything (the 2026-08-26 wandb re-mine's 231
+    depth-14+ config paths pushed it 13 → 16 and OOMed the 100GB REPROC); a
+    truncated prefix would over-attribute whole parent dirs, so they go."""
+    import pandas as pd
+
+    from .identity import DEFAULT_IDENTITIES, load_identities
+    from .prefixes import load_prefix_map
+
+    identities = load_identities(identities_path or DEFAULT_IDENTITIES)
+    by_prefix = load_prefix_map(con, attributions, identities, listing_src)
+    pfx_df = pd.DataFrame(
+        [{"key": k.removeprefix("gs://").rstrip("/"), "user": u} for k, (u, _source) in by_prefix.items()],
+        columns=["key", "user"],
+    )
+    pfx_df["depth"] = pfx_df["key"].str.count("/") + 1
+    attr_max_depth = int(os.environ.get("GCS_USAGE_ATTR_MAX_DEPTH", "12"))
+    deep = pfx_df["depth"] > attr_max_depth
+    if deep.any():
+        err(f"dropping {int(deep.sum())} attribution prefixes deeper than {attr_max_depth}")
+        pfx_df = pfx_df[~deep]
+    return pfx_df
+
+
+def write_labels(
+    con: "duckdb.DuckDBPyConnection",
+    listings: tuple[str, ...],
+    attributions: tuple[str, ...],
+    identities_path: "Path | None",
+    out_dir: "Path",
+) -> dict[str, int]:
+    """DT's label tables (``import --label``, spec mgu-scale-unification.md
+    §B) from mgu's attribution: one ``labels-<bucket>.parquet`` per bucket in
+    the listings, rows ``(prefix, usr)`` with ``prefix`` relative to the
+    bucket (``''`` = the bucket-wide rule). Returns bucket → row count."""
+    from disk_tree.listing import prepare_listing
+
+    src = prepare_listing(con, listings)
+    fp_dir = "CASE WHEN name LIKE '%/%' THEN regexp_replace(name, '/[^/]*$', '') ELSE '' END"
+    con.execute(f"CREATE OR REPLACE TEMP VIEW listing_dirs AS SELECT DISTINCT bucket, {fp_dir} AS name FROM {src}")
+    pfx_df = prefix_labels(con, attributions, identities_path, "listing_dirs")
+    buckets = [b for (b,) in con.execute("SELECT DISTINCT bucket FROM listing_dirs ORDER BY 1").fetchall()]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    counts: dict[str, int] = {}
+    for bucket in buckets:
+        rows = pfx_df[(pfx_df["key"] == bucket) | pfx_df["key"].str.startswith(bucket + "/")]
+        table = rows.assign(prefix=rows["key"].str.slice(len(bucket) + 1)).rename(columns={"user": "usr"})[["prefix", "usr"]]
+        table = table.sort_values("prefix").reset_index(drop=True)
+        con.register("labels_out", table)
+        con.execute(f"COPY labels_out TO '{out_dir / f'labels-{bucket}.parquet'}' (FORMAT parquet)")
+        con.unregister("labels_out")
+        counts[bucket] = len(table)
+    return counts
+
+
 def _rss(tag: str) -> None:
     """Log peak RSS so OOM autopsies can name the phase (linux: KB, mac: B)."""
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -193,32 +261,9 @@ def write_webdata(
     con.execute("CREATE TEMP VIEW listing_dirs AS SELECT bucket, dir AS name FROM dir_stats")
 
     if attr:
-        import pandas as pd
-
-        from .identity import DEFAULT_IDENTITIES, load_identities
-        from .prefixes import load_prefix_map
-
-        identities = load_identities(identities_path or DEFAULT_IDENTITIES)
         _rss("start")
-        by_prefix = load_prefix_map(con, attributions, identities, "listing_dirs")
+        pfx_df = prefix_labels(con, attributions, identities_path, "listing_dirs")
         _rss("prefix-map")
-        pfx_df = pd.DataFrame(
-            [
-                {"key": k.removeprefix("gs://").rstrip("/"), "user": u}
-                for k, (u, _source) in by_prefix.items()
-            ]
-        )
-        pfx_df["depth"] = pfx_df["key"].str.count("/") + 1
-        # Cap attribution depth: the ancestor explosion below is dirs × maxd, so
-        # a handful of ultra-deep prefixes inflate memory for *everything* (the
-        # 2026-08-26 wandb re-mine's 231 depth-14+ config paths pushed maxd
-        # 13 → 16 and OOMed the 100GB REPROC). Deeper-than-cap rows are dropped
-        # (a truncated prefix would over-attribute whole parent dirs).
-        attr_max_depth = int(os.environ.get("GCS_USAGE_ATTR_MAX_DEPTH", "12"))
-        deep = pfx_df["depth"] > attr_max_depth
-        if deep.any():
-            err(f"dropping {int(deep.sum())} attribution prefixes deeper than {attr_max_depth}")
-            pfx_df = pfx_df[~deep]
         con.register("pfx", pfx_df)
         # Deepest-prefix-wins, one INSERT per prefix depth (deepest first):
         # inner hash join (build side = that depth's prefixes — thousands) plus

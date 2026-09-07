@@ -124,3 +124,27 @@ def test_path_glob_expands_against_listing(tmp_path: Path):
     deepest = deepest_lookup(by_prefix)
     assert deepest("b1/grug/swarm_fisher_000002-bb/opt") == ("calvin-xu", "manual")
     assert deepest("b1/grug/moe_67b-cc") is None
+
+
+def test_write_labels_one_table_per_bucket_prefixes_relative(tmp_path: Path, identities, listing: str, attribution: str):
+    """DT's `import --label` tables: `(prefix, usr)` per bucket — the bucket-
+    wide glob rule lands as `''`, deeper rules lose the bucket, users resolve
+    to canonical ids, and a bucket with no rule gets an empty table."""
+    from gcs_usage.viz import write_labels
+
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    out = tmp_path / "labels"
+    con = duckdb.connect()
+    counts = write_labels(con, (listing,), (attribution,), identities_path, out)
+    assert counts == {"b1": 4, "b2": 1, "c9": 0}
+    assert sorted(p.name for p in out.iterdir()) == ["labels-b1.parquet", "labels-b2.parquet", "labels-c9.parquet"]
+    read = lambda b: [dict(zip(["prefix", "usr"], r)) for r in con.execute(f"SELECT prefix, usr FROM read_parquet('{out / f'labels-{b}.parquet'}')").fetchall()]
+    assert read("b1") == [
+        {"prefix": "datasets", "usr": "data-team"},
+        {"prefix": "datasets/finelog", "usr": None},
+        {"prefix": "scratch/rw", "usr": "ryan-williams"},
+        {"prefix": "users/rw", "usr": "ryan-williams"},
+    ]
+    assert read("b2") == [{"prefix": "datasets", "usr": "data-team"}]
+    assert read("c9") == []

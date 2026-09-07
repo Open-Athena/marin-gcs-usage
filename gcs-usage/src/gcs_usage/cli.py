@@ -1937,6 +1937,26 @@ def index_sync(
         err(f"index-sync: {date} [{variant}] gen {gen} @ {key} — {n} row groups ({'local' if local else 'remote'})")
 
 
+@main.command("labels")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `webdata -a`)")
+@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s) — path-glob rules expand against their dirs")
+@option("-o", "--out", "out_dir", type=Path, required=True, help="Output dir: one labels-<bucket>.parquet per bucket")
+def labels(attributions: tuple[str, ...], identities_path: Path, listings: tuple[str, ...], out_dir: Path) -> None:
+    """Export mgu's attribution as DT label tables — `(prefix, usr)` per bucket,
+    prefix relative to the bucket — for `disk-tree import -e duckdb -L
+    labels-<bucket>.parquet -c usr` (spec mgu-scale-unification.md §B): the
+    same prefix map `webdata` attributes with, so the two cascades can be
+    compared slice for slice."""
+    import duckdb
+
+    from .viz import write_labels
+
+    con = duckdb.connect()
+    for bucket, n in write_labels(con, listings, attributions, identities_path, out_dir).items():
+        err(f"labels: {bucket}: {n} prefixes → {out_dir / f'labels-{bucket}.parquet'}")
+
+
 @main.command("index-blob")
 @option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
 @option("-d", "--dir", "listing_dir", default=None, help="Local/mounted/gs:// dir holding the parquets (default: gs://<bucket>/<key>)")
