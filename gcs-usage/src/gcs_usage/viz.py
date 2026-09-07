@@ -114,7 +114,7 @@ def write_webdata(
     its most recent read (GET/HEAD/LIST anywhere under the prefix) — and meta
     gains the observation window (``meta.access = {from, to}``).
     """
-    from .listing import prepare_listing
+    from disk_tree.listing import prepare_listing
 
     attr = bool(attributions)
     con = duckdb.connect()

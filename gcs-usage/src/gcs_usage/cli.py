@@ -24,7 +24,7 @@ from click import Choice, argument, group, option
 from .identity import DEFAULT_IDENTITIES, load_identities
 from .mark import DEFAULT_URL as MARK_DEFAULT_URL
 from .mark import KEEP_ACTIONS as MARK_KEEPS
-from .listing import prepare_listing
+from disk_tree.listing import prepare_listing
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
 from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows

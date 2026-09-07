@@ -7,7 +7,7 @@ import duckdb
 import pandas as pd
 import pytest
 
-from gcs_usage.listing import prepare_listing
+from disk_tree.listing import prepare_listing
 
 TS1 = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
 TS2 = dt.datetime(2026, 7, 27, tzinfo=dt.timezone.utc)

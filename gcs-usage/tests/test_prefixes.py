@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from gcs_usage.identity import load_identities
-from gcs_usage.listing import prepare_listing
+from disk_tree.listing import prepare_listing
 from gcs_usage.prefixes import deepest_lookup, load_prefix_map
 
 IDENTITIES_YAML = """\

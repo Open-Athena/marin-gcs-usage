@@ -84,3 +84,7 @@ vs upstream `main` diverge **in both directions** (22 files, +646/−1388 at
 
 Needs a Python CP manifest from the disk-tree session (which side wants what);
 the react lib is the only surface currently kept at parity on every sync.
+
+## 2026-09-07 — full engine audit
+
+`~/c/disk-tree/specs/mgu-engine-audit-2026-09-07.md`: every `gcs_usage` module and `job/` step classed as product / engine-shaped / already upstream, the engine modules mgu vendors but doesn't use (`find/aggregate_stream.py` chief among them), and a ranked list of what should move with what blocks each. Done from it today: mgu imports `disk_tree.listing.prepare_listing` instead of its own copy. mgu uses exactly four engine symbols (the access plane) plus `bulk-list`; `tree_build` no longer has a caller here.
