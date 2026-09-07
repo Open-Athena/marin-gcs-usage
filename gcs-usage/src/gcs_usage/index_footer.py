@@ -14,6 +14,15 @@ group, the (depth, path, bytes, usr) min/max sit in their own columns for the
 row-group pruning SQL. ~250 B per group: D1 holds every scan's every tier (2M+
 groups) under its 10 GB cap, where the verbose thrift-shaped JSON (~3 KB) hit
 8.4 GB at 38 scans (2026-09-06).
+
+Generations (specs/view-serving.md, "Index rewrite vs D1 footer"): a run never
+overwrites a parquet D1 points at. Each run writes its tiers under a fresh
+``listing/<date>/index/<gen>/`` and syncs them tagged with that ``gen``
+(``index_row_groups`` PK is (date, variant, gen, rg), so two generations
+coexist); the ``index_schema`` row — (gen, dir) per (date, variant) — is the
+pointer, written last as one ``INSERT OR REPLACE`` so readers flip from the old
+complete set to the new complete set with no window. Stale generations are
+swept by ``gc_d1`` (end of the job) and at the start of the next sync.
 """
 from __future__ import annotations
 
@@ -208,47 +217,53 @@ def sync_d1(
     parquet_path: str,
     *,
     variant: str = "path",
+    gen: str,
+    key: str,
     db_id: str = D1_DB_ID,
     remote: bool = True,
     insert_bytes: int = INSERT_BYTES,
 ) -> int:
-    """Extract the footer for ``date`` and upsert it into D1
-    (index_schema/index_groups) over the Cloudflare **HTTP API** — pure Python,
-    so it runs in the Node-less Batch image. Returns #row groups written.
-    ``variant`` is the sort order ('path' | 'user', optionally tiered); each is a separate
-    parquet (path-index[-by-<variant>].parquet). ``remote=False`` uses the local
-    wrangler D1 (dev only, via `d1 execute`)."""
+    """Extract the footer of ``parquet_path`` (one tier/sort ``variant`` of
+    scan ``date``, generation ``gen``, living under the bucket-relative dir
+    ``key``) and publish it to D1 (index_row_groups + index_schema) over the
+    Cloudflare **HTTP API** — pure Python, so it runs in the Node-less Batch
+    image. Returns #row groups written. ``remote=False`` uses the local wrangler
+    D1 (dev only, via `d1 execute`).
+
+    Order matters for atomicity: every group row (tagged ``gen``) lands first;
+    the schema row — the pointer readers key off — is written LAST, as one
+    ``INSERT OR REPLACE``, so a reader sees either the previous complete
+    generation or this one, never a half-written set. A mid-run failure leaves
+    the pointer untouched (still serving the previous generation) and orphan
+    rows the next sync/gc sweeps. Nothing is deleted before the flip."""
     schema, rows = extract(parquet_path)
-    # Order matters for crash-safety: `openIndex` keys off index_schema, so the
-    # schema row is written LAST (after every group). A mid-run failure then
-    # leaves no schema → the reader falls back to the parsed footer, rather than
-    # taking the D1 path over a half-written group set (silent partial reads).
-    # Two separate statements: the D1 `/query` HTTP API runs only ONE statement
-    # per call, so a semicolon-joined pair silently skips the second — which
-    # left partial group rows on a re-sync and collided on the PK.
-    clear_stmts = [
-        f"DELETE FROM index_schema WHERE date='{date}' AND variant='{variant}';",
-        f"DELETE FROM index_groups WHERE date='{date}' AND variant='{variant}';",
-    ]
-    clear_sql = "".join(clear_stmts)  # local wrangler d1 execute runs multi-statement files fine
     floor = schema.get("floor_bytes")
+    # Leftovers from earlier flips (any gen that is neither the current pointer's
+    # nor this one) go first — they are unreachable by construction.
+    gc_sql = (
+        f"DELETE FROM index_row_groups WHERE date='{date}' AND variant='{variant}' AND gen <> '{_sql_escape(gen)}' "
+        f"AND gen <> COALESCE((SELECT gen FROM index_schema WHERE date='{date}' AND variant='{variant}'), '');"
+    )
     schema_sql = (
-        "INSERT INTO index_schema (date, variant, version, schema_json, floor_bytes) VALUES "
+        "INSERT OR REPLACE INTO index_schema (date, variant, version, schema_json, floor_bytes, gen, dir) VALUES "
         f"('{date}', '{variant}', {schema['version']}, '{_sql_escape(json.dumps(schema['schema'], separators=(',', ':')))}', "
-        f"{'NULL' if floor is None else int(floor)});"
+        f"{'NULL' if floor is None else int(floor)}, '{_sql_escape(gen)}', '{_sql_escape(key)}');"
     )
 
     def group_values(r: dict) -> str:
         return (
-            f"('{date}', '{variant}', {r['rg']}, {r['d_min']}, {r['d_max']}, "
+            f"('{date}', '{variant}', '{_sql_escape(gen)}', {r['rg']}, {r['d_min']}, {r['d_max']}, "
             f"'{_sql_escape(r['p_min'])}', '{_sql_escape(r['p_max'])}', {r['b_max']}, "
             f"{_q(r['u_min'])}, {_q(r['u_max'])}, "
             f"{r['row_start']}, {r['row_end']}, '{_sql_escape(r['rg_json'])}')"
         )
 
-    cols = "(date, variant, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, row_start, row_end, rg_json)"
+    cols = "(date, variant, gen, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, row_start, row_end, rg_json)"
+    # OR REPLACE: a chunk whose request timed out may or may not have landed;
+    # re-sending it must be a no-op, not a PK collision (date, variant, gen, rg).
+    head = f"INSERT OR REPLACE INTO index_row_groups {cols} VALUES "
     if not remote:  # dev: local wrangler D1
-        stmts = [clear_sql] + [f"INSERT INTO index_groups {cols} VALUES {group_values(r)};" for r in rows] + [schema_sql]
+        stmts = [gc_sql] + [f"{head}{group_values(r)};" for r in rows] + [schema_sql]
         site = _site_dir()
         for i in range(0, len(stmts), 300):
             with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as tf:
@@ -258,15 +273,39 @@ def sync_d1(
         return len(rows)
 
     tok, acct = _creds()
-    for stmt in clear_stmts:  # one per call — the HTTP API runs a single statement
-        _d1_query(stmt, acct, tok, db_id)  # drop any prior/partial rows first
-    # OR REPLACE: a chunk whose request timed out may or may not have landed;
-    # re-sending it must be a no-op, not a PK collision (date, variant, rg).
-    head = f"INSERT OR REPLACE INTO index_groups {cols} VALUES "
+    _d1_query(gc_sql, acct, tok, db_id)
     for chunk in _pack(head, [group_values(r) for r in rows], insert_bytes):
         _d1_query(chunk, acct, tok, db_id)
-    _d1_query(schema_sql, acct, tok, db_id)  # schema row last = completeness marker
+    _d1_query(schema_sql, acct, tok, db_id)  # the pointer flip: schema row last
     return len(rows)
+
+
+def gc_d1(date: str, db_id: str = D1_DB_ID) -> int:
+    """Delete every row group of ``date`` whose generation is not the one its
+    variant's schema row points at (leftovers of a flip, or of a sync that
+    failed before flipping). Returns rows deleted. Safe any time: readers only
+    ever query the pointer's generation, and a handle outlives the pointer by
+    at most its cache TTL (`_lib/index.ts`), which the end-of-job call clears."""
+    tok, acct = _creds()
+    rows = _d1_query(
+        "DELETE FROM index_row_groups WHERE date = '{d}' AND gen <> COALESCE("
+        "(SELECT s.gen FROM index_schema s WHERE s.date = index_row_groups.date AND s.variant = index_row_groups.variant), '') "
+        "RETURNING 1 AS n;".format(d=_sql_escape(date)),
+        acct, tok, db_id,
+    )
+    return len(rows)
+
+
+def index_dir(date: str, variant: str = "path", db_id: str = D1_DB_ID) -> str | None:
+    """Bucket-relative dir holding ``date``'s ``variant`` parquet — the D1
+    pointer (``index_schema.dir``); None when that (date, variant) was never
+    synced. The parquet is ``<dir>/<INDEX_VARIANTS[variant]>``."""
+    tok, acct = _creds()
+    rows = _d1_query(
+        f"SELECT dir FROM index_schema WHERE date = '{_sql_escape(date)}' AND variant = '{_sql_escape(variant)}';",
+        acct, tok, db_id,
+    )
+    return rows[0]["dir"] if rows else None
 
 
 def _pack(head: str, values: list[str], limit: int) -> list[str]:
@@ -290,14 +329,14 @@ def _pack(head: str, values: list[str], limit: int) -> list[str]:
 # `rg_json` object into the compact array form, with SQLite's JSON1 — no parquet
 # read, one statement per (date, variant). Old rows start with `{`.
 COMPACT_SQL = (
-    "UPDATE index_groups SET rg_json = json_array("
+    "UPDATE index_row_groups SET rg_json = json_array("
     "CAST(json_extract(rg_json, '$.num_rows') AS INTEGER), "
     "json_extract(rg_json, '$.columns[0].meta_data.codec'), "
     "(SELECT json_group_array(json_array("
     "CAST(json_extract(value, '$.meta_data.data_page_offset') AS INTEGER), "
     "CAST(json_extract(value, '$.meta_data.total_compressed_size') AS INTEGER), "
     "CAST(coalesce(json_extract(value, '$.meta_data.dictionary_page_offset'), '0') AS INTEGER))) "
-    "FROM json_each(index_groups.rg_json, '$.columns'))"
+    "FROM json_each(index_row_groups.rg_json, '$.columns'))"
     ") WHERE date = '{date}' AND variant = '{variant}' AND rg_json LIKE '{{%';"
 )
 
@@ -315,7 +354,7 @@ def compact_d1(date: str, variant: str, db_id: str = D1_DB_ID) -> int:
     tok, acct = _creds()
     _d1_query(COMPACT_SQL.format(date=date, variant=variant), acct, tok, db_id)
     rows = _d1_query(
-        f"SELECT count(*) AS n FROM index_groups WHERE date = '{date}' AND variant = '{variant}' AND rg_json LIKE '{{%';",
+        f"SELECT count(*) AS n FROM index_row_groups WHERE date = '{date}' AND variant = '{variant}' AND rg_json LIKE '{{%';",
         acct, tok, db_id,
     )
     return int(rows[0]["n"])

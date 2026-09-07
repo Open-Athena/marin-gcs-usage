@@ -26,7 +26,13 @@ SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 # live state (D1 index-sync, healthcheck, series.json, diff, digest) — so a
 # pipeline suffix can be re-run for an old date into a scratch location and
 # compared against what was published, without disturbing it.
-INDEX_PATH=${INDEX_PATH:-listing/$DATE/path-index.parquet}
+# GEN: this run's index generation. Its tiers live under
+# listing/$DATE/index/$GEN/ and D1 points at that dir once the footers are
+# synced — a run never overwrites a parquet the site is reading
+# (specs/view-serving.md, "Index rewrite vs D1 footer").
+GEN=${GEN:-$(date -u +%Y%m%dT%H%M%SZ)}
+INDEX_DIR=listing/$DATE/index/$GEN
+INDEX_PATH=${INDEX_PATH:-$INDEX_DIR/path-index.parquet}
 
 # Failure alerting: any command dying under `set -e` posts to Slack before the
 # job exits — otherwise silence is the only failure signal (the success digest
@@ -99,16 +105,34 @@ fi
 # footer-in-D1 sync existed has no D1 rows at all, and the scan picker lists
 # only scans D1 knows.
 if [ "${TIERS_ONLY:-0}" = "1" ]; then
-  src="/gcs/$DATA/listing/$DATE/path-index.parquet"
+  # The floor-free index lives wherever D1 points (`index-dir`; the pre-
+  # generation layout for a scan never synced). The coarse tiers go to this
+  # run's own generation dir, and only they are synced under it: the
+  # floor-free variants keep their existing pointer.
+  { set +x; } 2>/dev/null
+  srckey=$(gcs-usage index-dir "$DATE" || true)
+  sync_ff=0
+  if [ -z "$srckey" ]; then srckey="listing/$DATE"; sync_ff=1; fi  # pre-generation layout, never synced
+  set -x
+  srcdir="/gcs/$DATA/$srckey"
+  src="$srcdir/path-index.parquet"
   [ -f "$src" ] || { echo "ERROR: no path index for $DATE at $src" >&2; exit 1; }
   work="${STAGE_DIR:-/tmp}/tiers/$DATE"
   mkdir -p "$work"
   cp "$src" "$work/path-index.parquet"
   gcs-usage index-tiers -m "${DUCKDB_MEM:-40GB}" -t "${DUCKDB_THREADS:-8}" -P "$work/path-index.parquet" "$DATE"
-  cp "$work"/path-index-coarse*.parquet "/gcs/$DATA/listing/$DATE/"
+  mkdir -p "/gcs/$DATA/$INDEX_DIR"
+  cp "$work"/path-index-coarse*.parquet "/gcs/$DATA/$INDEX_DIR/"
   { set +x; } 2>/dev/null
   if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-    gcs-usage index-sync -d "/gcs/$DATA/listing/$DATE" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
+    # A scan indexed before the footer-in-D1 sync existed has no D1 rows at
+    # all (the scan picker lists only scans D1 knows): sync its floor-free
+    # variants from where they are, then the fresh coarse tiers.
+    if [ "$sync_ff" = "1" ]; then
+      gcs-usage index-sync -F -d "$srcdir" -g legacy -k "$srckey" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
+    fi
+    gcs-usage index-sync -C -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
+    gcs-usage index-gc "$DATE" || echo "WARN: index-gc failed" >&2
   else
     echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced" >&2
   fi
@@ -254,10 +278,10 @@ echo "PHASE publish: ${SECONDS}s (wall)" >&2
 # even the `[ -n "$CLOUDFLARE_API_TOKEN" ]` test echoes the token under `set -x`.
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  gcs-usage index-sync -d "/gcs/$DATA/listing/$DATE" "$DATE" \
-    || echo "WARN: index-sync failed (site falls back to footer parse)" >&2
+  gcs-usage index-sync -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" \
+    || echo "WARN: index-sync failed (the site keeps serving the previous generation)" >&2
 else
-  echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (site parses the footer)" >&2
+  echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (scan stays unlisted)" >&2
 fi
 set -x
 
@@ -294,6 +318,14 @@ elif [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
 else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
 fi
+
+# Sweep row groups of generations the pointer no longer names (a REPROC's
+# previous generation; every reader handle has expired by now).
+{ set +x; } 2>/dev/null
+if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  gcs-usage index-gc "$DATE" || echo "WARN: index-gc failed" >&2
+fi
+set -x
 
 echo "PHASE total: ${SECONDS}s (wall)" >&2
 echo "SNAPSHOT-JOB-DONE $DATE"

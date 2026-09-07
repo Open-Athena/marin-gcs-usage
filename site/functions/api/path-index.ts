@@ -21,6 +21,7 @@
 // a pointer to Range requests instead.
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { indexDir } from '../_lib/index.js'
 
 const BUCKET = 'oa-gcs-usage-dvx'
 const MAX_RANGE = 64 * 1024 * 1024 // 64MB per request — plenty for parquet pages
@@ -49,7 +50,11 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
     accessKeyId: env.GCS_HMAC_KEY_ID,
     secretAccessKey: env.GCS_HMAC_SECRET,
   })
-  const key = `listing/${date}/path-index.parquet`
+  // The file lives under the generation dir D1 points at (a run never
+  // overwrites the file being served; specs/view-serving.md).
+  const dir = await indexDir(env, date)
+  if (!dir) return new Response(`no path index synced for ${date}`, { status: 404 })
+  const key = `${dir}/path-index.parquet`
 
   // Size via a 1-byte ranged probe's Content-Range (as /api/subtree does).
   let size: number

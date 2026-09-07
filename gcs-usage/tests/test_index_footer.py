@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 import urllib.error
 import urllib.request
 
@@ -145,12 +146,12 @@ def _verbose_rg_json(md: "pq.FileMetaData", g: int) -> str:
 def test_compact_sql_rewrites_verbose_rows_to_the_synced_form(tmp_path):
     md = _write_index(tmp_path / "i.parquet")
     con = sqlite3.connect(":memory:")
-    con.execute("CREATE TABLE index_groups (date TEXT, variant TEXT, rg INTEGER, rg_json TEXT)")
+    con.execute("CREATE TABLE index_row_groups (date TEXT, variant TEXT, rg INTEGER, rg_json TEXT)")
     for g in range(md.num_row_groups):
-        con.execute("INSERT INTO index_groups VALUES ('2026-09-01', 'path', ?, ?)", (g, _verbose_rg_json(md, g)))
-    con.execute("INSERT INTO index_groups VALUES ('2026-09-02', 'path', 0, ?)", (_verbose_rg_json(md, 0),))
+        con.execute("INSERT INTO index_row_groups VALUES ('2026-09-01', 'path', ?, ?)", (g, _verbose_rg_json(md, g)))
+    con.execute("INSERT INTO index_row_groups VALUES ('2026-09-02', 'path', 0, ?)", (_verbose_rg_json(md, 0),))
     con.execute(COMPACT_SQL.format(date="2026-09-01", variant="path"))
-    got = con.execute("SELECT date, rg, rg_json FROM index_groups ORDER BY date, rg").fetchall()
+    got = con.execute("SELECT date, rg, rg_json FROM index_row_groups ORDER BY date, rg").fetchall()
     fresh = {r["rg"]: r["rg_json"] for r in _group_rows(md)}
     assert got == [
         ("2026-09-01", 0, fresh[0]),
@@ -159,7 +160,7 @@ def test_compact_sql_rewrites_verbose_rows_to_the_synced_form(tmp_path):
     ]
     # Idempotent: compact rows don't match the verbose-form predicate.
     con.execute(COMPACT_SQL.format(date="2026-09-01", variant="path"))
-    assert con.execute("SELECT rg_json FROM index_groups WHERE date='2026-09-01' ORDER BY rg").fetchall() == [(fresh[0],), (fresh[1],)]
+    assert con.execute("SELECT rg_json FROM index_row_groups WHERE date='2026-09-01' ORDER BY rg").fetchall() == [(fresh[0],), (fresh[1],)]
 
 
 def test_sync_d1_packs_inserts_greedily_under_the_byte_limit(tmp_path, monkeypatch):
@@ -173,21 +174,71 @@ def test_sync_d1_packs_inserts_greedily_under_the_byte_limit(tmp_path, monkeypat
     monkeypatch.setattr(index_footer, "_creds", lambda: ("tok", "acct"))
     sent: list[str] = []
     monkeypatch.setattr(index_footer, "_d1_query", lambda sql, acct, tok, db_id: sent.append(sql) or [])
-    limit = 900
-    n = sync_d1("2026-09-01", "x.parquet", variant="path", insert_bytes=limit)
+    limit = 1000
+    n = sync_d1("2026-09-01", "x.parquet", variant="path", gen="20260901T070000Z", key="listing/2026-09-01/index/20260901T070000Z", insert_bytes=limit)
     assert n == 12
-    assert sent[:2] == [
-        "DELETE FROM index_schema WHERE date='2026-09-01' AND variant='path';",
-        "DELETE FROM index_groups WHERE date='2026-09-01' AND variant='path';",
-    ]
-    assert sent[-1] == "INSERT INTO index_schema (date, variant, version, schema_json, floor_bytes) VALUES ('2026-09-01', 'path', 1, '[]', NULL);"
-    inserts = sent[2:-1]
-    head = "INSERT OR REPLACE INTO index_groups (date, variant, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, row_start, row_end, rg_json) VALUES "
+    # Generation protocol: sweep unreachable gens, land every group under this
+    # gen, then flip the pointer — nothing is deleted before the flip.
+    assert sent[0] == (
+        "DELETE FROM index_row_groups WHERE date='2026-09-01' AND variant='path' AND gen <> '20260901T070000Z' "
+        "AND gen <> COALESCE((SELECT gen FROM index_schema WHERE date='2026-09-01' AND variant='path'), '');"
+    )
+    assert sent[-1] == (
+        "INSERT OR REPLACE INTO index_schema (date, variant, version, schema_json, floor_bytes, gen, dir) VALUES "
+        "('2026-09-01', 'path', 1, '[]', NULL, '20260901T070000Z', 'listing/2026-09-01/index/20260901T070000Z');"
+    )
+    inserts = sent[1:-1]
+    head = "INSERT OR REPLACE INTO index_row_groups (date, variant, gen, rg, d_min, d_max, p_min, p_max, b_max, u_min, u_max, row_start, row_end, rg_json) VALUES "
     tuples = [stmt[len(head):-1].split("),(") for stmt in inserts]
     assert all(stmt.startswith(head) and stmt.endswith(";") and len(stmt) <= limit for stmt in inserts)
-    assert [len(t) for t in tuples] == [5, 5, 2]  # 12 rows, five ~150-byte tuples per 900-byte statement
+    assert [len(t) for t in tuples] == [5, 5, 2]  # 12 rows, five ~165-byte tuples per 1000-byte statement
     # Greedy: no statement could have taken the next one's first tuple.
     for stmt, nxt in zip(inserts, inserts[1:]):
         first = nxt[len(head):].split("),(")[0] + ")"
         assert len(stmt) + 1 + len(first) > limit
-    assert [t.split(", ")[2] for stmt in tuples for t in stmt] == [str(i) for i in range(12)]
+    assert [t.split(", ")[3] for stmt in tuples for t in stmt] == [str(i) for i in range(12)]
+
+
+def test_gc_d1_deletes_only_generations_no_pointer_names(monkeypatch):
+    """The gc statement against a real SQLite: rows of the pointer's gen stay,
+    every other gen of that date goes, other dates untouched."""
+    import re
+    import sqlite3
+
+    from gcs_usage.index_footer import gc_d1
+
+    con = sqlite3.connect(":memory:")
+    ddl = (Path(__file__).parents[2] / "site/migrations/0020_index_generations.sql").read_text()
+    con.executescript("CREATE TABLE index_schema (date TEXT, variant TEXT, version INTEGER, schema_json TEXT, floor_bytes INTEGER, PRIMARY KEY (date, variant));")
+    con.executescript(ddl)
+    row = "(?, ?, ?, ?, 1, 1, 'a', 'b', 1, NULL, NULL, 0, 1, '[]')"
+    con.executemany(f"INSERT INTO index_row_groups VALUES {row}", [
+        ("2026-09-01", "path", "g1", 0), ("2026-09-01", "path", "g1", 1),
+        ("2026-09-01", "path", "g2", 0),  # the pointer's gen
+        ("2026-09-01", "user", "g1", 0),  # user variant still points at g1
+        ("2026-09-01", "user", "orphan", 0),
+        ("2026-09-02", "path", "g1", 0),  # another date: a dangling gen, but not asked
+    ])
+    con.executemany("INSERT INTO index_schema (date, variant, version, schema_json, gen, dir) VALUES (?, ?, 1, '[]', ?, ?)", [
+        ("2026-09-01", "path", "g2", "listing/2026-09-01/index/g2"),
+        ("2026-09-01", "user", "g1", "listing/2026-09-01"),
+    ])
+    sent: list[str] = []
+
+    def fake_query(sql, acct, tok, db_id):
+        sent.append(sql)
+        cur = con.execute(sql)
+        return [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
+
+    monkeypatch.setattr(index_footer, "_d1_query", fake_query)
+    monkeypatch.setattr(index_footer, "_creds", lambda: ("tok", "acct"))
+    assert gc_d1("2026-09-01") == 3
+    assert re.sub(r"\s+", " ", sent[0]) == (
+        "DELETE FROM index_row_groups WHERE date = '2026-09-01' AND gen <> COALESCE("
+        "(SELECT s.gen FROM index_schema s WHERE s.date = index_row_groups.date AND s.variant = index_row_groups.variant), '') RETURNING 1 AS n;"
+    )
+    assert con.execute("SELECT date, variant, gen, rg FROM index_row_groups ORDER BY 1, 2, 3, 4").fetchall() == [
+        ("2026-09-01", "path", "g2", 0),
+        ("2026-09-01", "user", "g1", 0),
+        ("2026-09-02", "path", "g1", 0),
+    ]

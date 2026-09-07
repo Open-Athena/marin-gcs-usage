@@ -843,9 +843,10 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
 
         from .attr_index import AttrIndex
         from .identity import load_identities
+        from .index_footer import index_dir
 
         idmap = load_identities()
-        aidx = AttrIndex(f"gs://oa-gcs-usage-dvx/listing/{date}/path-index.parquet")
+        aidx = AttrIndex(f"gs://oa-gcs-usage-dvx/{index_dir(date)}/path-index.parquet")
         bands = sorted(states.get("sweep", {}).get("rows", []), key=lambda r: -(r.get("net_bytes") or 0))[:150]
         cands = []
         for r in bands:
@@ -929,7 +930,8 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
     attr = None
     if approved and not no_attr_check:
         from .attr_index import AttrIndex
-        aidx = AttrIndex(f"{root}/listing/{date}/path-index.parquet")
+        from .index_footer import index_dir
+        aidx = AttrIndex(f"{root}/{index_dir(date)}/path-index.parquet")
         attr = aidx.lookup
         err("attr gate ON: approved-band dirs must be majority-attributed to their sweeper")
 
@@ -1976,26 +1978,73 @@ def index_tiers(mem: str, path_index: Path, threads: int, tmp_dir: Path | None, 
 
 
 @main.command("index-sync")
-@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding listing/<date>/path-index*.parquet")
-@option("-d", "--dir", "listing_dir", default=None, help="Override the listing dir holding the parquets (default: <bucket>/listing/<date>)")
+@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
+@option("-C", "--coarse-only", is_flag=True, help="Only the coarse tiers (a backfill; the floor-free variants keep their pointer)")
+@option("-d", "--dir", "listing_dir", default=None, help="Local/mounted dir holding the parquets (default: <bucket>/<key>)")
+@option("-F", "--floor-free-only", is_flag=True, help="Only the floor-free variants (path, user)")
+@option("-g", "--gen", required=True, help="Generation stamp these files belong to (the run's GEN; `legacy` for the pre-generation listing/<date>/ layout)")
+@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under — what the site reads (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
 @option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
-@option("-C", "--coarse-only", is_flag=True, help="Only the coarse tiers (a backfill; the floor-free variants are already synced)")
 @option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only sync these variants (default: all)")
 @argument("date")
-def index_sync(bucket: str, listing_dir: str | None, local: bool, coarse_only: bool, variants: tuple[str, ...], date: str) -> None:
-    """Sync a scan's path-index parquet footers into D1 (index_schema/index_groups)
-    so the site's reader skips the cold-isolate footer parse. Syncs all three
-    sort variants (path / user) — the drill index plus the by-user
-    lens indexes (specs/path-agnostic-serving.md §2.1/§2.3). Needs
+def index_sync(
+    bucket: str,
+    coarse_only: bool,
+    listing_dir: str | None,
+    floor_free_only: bool,
+    gen: str,
+    key: str | None,
+    local: bool,
+    variants: tuple[str, ...],
+    date: str,
+) -> None:
+    """Publish a scan's index-tier footers to D1 (index_row_groups + the
+    index_schema pointer) — one generation of files under one bucket dir.
+    Per variant the row groups land first, tagged with the generation, and the
+    pointer (gen, dir) flips last, so the site moves from the previous complete
+    generation to this one with no window (specs/view-serving.md). Needs
     CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the env."""
     from .index_footer import sync_d1
 
-    base = listing_dir or f"{bucket}/listing/{date}"
+    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
+    base = listing_dir or f"{bucket}/{key}"
+    todo = variants or tuple(INDEX_VARIANTS)
     if coarse_only:
-        variants = tuple(v for v in (variants or INDEX_VARIANTS) if v.startswith("coarse"))
-    for variant in (variants or tuple(INDEX_VARIANTS)):
-        n = sync_d1(date, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, remote=not local)
-        err(f"index-sync: {date} [{variant}] — schema + {n} row groups ({'local' if local else 'remote'})")
+        todo = tuple(v for v in todo if v.startswith("coarse"))
+    if floor_free_only:
+        todo = tuple(v for v in todo if not v.startswith("coarse"))
+    for variant in todo:
+        n = sync_d1(date, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, gen=gen, key=key, remote=not local)
+        err(f"index-sync: {date} [{variant}] gen {gen} @ {key} — {n} row groups ({'local' if local else 'remote'})")
+
+
+@main.command("index-gc")
+@argument("dates", nargs=-1)
+def index_gc(dates: tuple[str, ...]) -> None:
+    """Delete row groups of index generations no pointer names — a REPROC's
+    previous generation, or a sync that died before flipping. All synced
+    scans by default; DATES to restrict."""
+    from .index_footer import gc_d1, synced_variants
+
+    todo = dates or sorted({d for d, _ in synced_variants()})
+    for d in todo:
+        n = gc_d1(d)
+        err(f"index-gc: {d} — {n} stale row groups deleted")
+
+
+@main.command("index-dir")
+@option("-v", "--variant", default="path", type=Choice(list(INDEX_VARIANTS)), help="Which variant's dir")
+@argument("date")
+def index_dir_cmd(variant: str, date: str) -> None:
+    """Print the bucket-relative dir holding a scan's index variant (the D1
+    pointer). Exits 1, printing nothing, when that (date, variant) was never
+    synced."""
+    from .index_footer import index_dir
+
+    d = index_dir(date, variant)
+    if d is None:
+        raise SystemExit(1)
+    print(d)
 
 
 @main.command("index-compact")

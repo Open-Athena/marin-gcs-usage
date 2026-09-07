@@ -1,21 +1,25 @@
 /**
- * The floor-free path index (`listing/<date>/path-index.parquet`) as a
- * row-group-pruned range reader — shared by `/api/subtree` (pixel-budget
- * drill) and `/api/marks/totals` (exact keep / sweep bytes per live mark).
+ * A scan's index tiers (`<dir>/path-index[-coarse<E>][-by-user].parquet`) as
+ * a row-group-pruned range reader — shared by `/api/subtree` (pixel-budget
+ * drill), `/api/diff`, `/api/series` and `/api/marks/totals` (exact keep /
+ * sweep bytes per live mark).
  *
- * The file is sorted (depth, path): the descendants of P at each depth are
- * one contiguous run, so any prefix query is a few row-group selections on
- * the footer stats plus ranged reads of just those groups.
+ * Each file is sorted (depth, path) (or (usr, depth, path)): the descendants
+ * of P at each depth are one contiguous run, so any prefix query is a few
+ * row-group selections on the footer stats plus ranged reads of just those
+ * groups.
  *
- * Two ways to get the footer stats (specs/path-agnostic-serving.md §2.1):
- *   - **D1** (preferred): `index_schema` / `index_groups`, populated per scan
- *     by `gcs-usage index-sync`. Row-group selection is a SQL query and we
- *     fetch the (compact, ~250 B) metadata only for the groups a query
- *     actually reads, so the ~5 MB thrift footer is never parsed on a cold
- *     isolate (that parse scales with row-group count and blew the Worker CPU
- *     budget at 8k-row groups).
- *   - **Parsed footer** (fallback): `parquetMetadataAsync` when D1 has no rows
- *     for the date — back-compatible, works on any index.
+ * The footer stats live in D1 (specs/path-agnostic-serving.md §2.1):
+ * `index_schema` is the per-(date, variant) **pointer** — the generation
+ * `gen` and bucket dir `dir` of the file set a run published — and
+ * `index_row_groups` holds every group's stats + compact (~250 B) metadata,
+ * keyed by that gen. Row-group selection is a SQL query scoped to the
+ * handle's gen, and we fetch metadata only for the groups a query actually
+ * reads, so the ~5 MB thrift footer is never parsed on a cold isolate. A run
+ * never overwrites a file the pointer names: it lands a new generation and
+ * flips the pointer last (specs/view-serving.md, "Index rewrite vs D1
+ * footer"). The parsed-footer path (`parquetMetadataAsync`) remains for a
+ * pointer whose row groups were retired.
  */
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
@@ -52,13 +56,16 @@ interface GroupSpan {
 
 type FileSlice = { byteLength: number; slice: (s: number, e?: number) => Promise<ArrayBuffer> }
 
-// D1-backed: metadata comes from index_schema/index_groups per query.
+// D1-backed: metadata comes from index_schema/index_row_groups per query.
 interface D1Handle {
   mode: 'd1'
   file: FileSlice
   env: Env
   date: string
   variant: string
+  /** The generation the schema row pointed at when this handle opened; every
+   * row-group query is scoped to it, so a flip mid-handle is invisible. */
+  gen: string
   schema: SchemaElement[]
   version: number
   /** A coarse tier's absolute byte floor (every path with subtree bytes >= floor
@@ -93,20 +100,31 @@ export function makeStore(env: Env) {
   })
 }
 
-/** Index variant → parquet key. Variants are `<tier>[-<sort>]`: tier `''`
- * (floor-free) or `coarse<E>`; sort `path` (default) or `user`. Mirrors
- * `INDEX_VARIANTS` in the gcs-usage CLI (specs/view-serving.md §1). */
-export function indexKey(date: string, variant: string): string {
+/** Index variant → parquet key under the generation dir D1 points at
+ * (`index_schema.dir`, e.g. `listing/<date>/index/<gen>`). Variants are
+ * `<tier>[-<sort>]`: tier `''` (floor-free) or `coarse<E>`; sort `path`
+ * (default) or `user`. Mirrors `INDEX_VARIANTS` in the gcs-usage CLI
+ * (specs/view-serving.md §1). */
+export function indexKey(dir: string, variant: string): string {
   const m = /^(?:(coarse\d+)(?:-(user))?|(path|user))$/.exec(variant)
   if (!m) throw new Error(`bad index variant '${variant}'`)
   const tier = m[1] ? `-${m[1]}` : ''
   const sort = m[2] ?? (m[3] === 'path' ? undefined : m[3])
-  return `listing/${date}/path-index${tier}${sort ? `-by-${sort}` : ''}.parquet`
+  return `${dir}/path-index${tier}${sort ? `-by-${sort}` : ''}.parquet`
 }
 
-function fileFor(env: Env, date: string, variant: string): FileSlice {
+/** Where a scan's floor-free path index lives (the D1 pointer); null when
+ * the scan was never synced. For the raw-parquet proxy and other readers
+ * outside the D1 row-group path. */
+export async function indexDir(env: Env, date: string, variant = 'path'): Promise<string | null> {
+  if (!env.DB) return null
+  const r = await env.DB.prepare('SELECT dir FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ dir: string | null }>()
+  return r?.dir ?? null
+}
+
+function fileFor(env: Env, dir: string, variant: string): FileSlice {
   const store = makeStore(env)
-  const key = indexKey(date, variant)
+  const key = indexKey(dir, variant)
   let size: Promise<number> | null = null
   const byteLengthP = () => (size ??= store.get(key, { offset: 0, length: 1 }).then(r => {
     if (!r.totalSize) throw new Error('index size unknown (no Content-Range)')
@@ -124,32 +142,35 @@ function fileFor(env: Env, date: string, variant: string): FileSlice {
   }
 }
 
-// Per-isolate cache — cheap (D1 schema row, or parsed footer) and immutable per date.
-const handles = new Map<string, Promise<IndexHandle>>()
+// Per-isolate cache of the pointer read (one D1 row). A generation is
+// immutable, but the pointer can flip (a REPROC), so entries expire: after
+// HANDLE_TTL a handle re-reads the schema row and follows the new generation.
+// `index-gc` runs at the end of the job, well past the TTL, so a live handle
+// never outlives its generation's rows.
+const HANDLE_TTL = 60_000
+const handles = new Map<string, { p: Promise<IndexHandle>; at: number }>()
 
 export async function openIndex(env: Env, date: string, variant = 'path'): Promise<IndexHandle> {
   const ck = `${date}:${variant}`
   const cached = handles.get(ck)
-  if (cached) return cached
+  if (cached && Date.now() - cached.at < HANDLE_TTL) return cached.p
   const p = (async (): Promise<IndexHandle> => {
-    // Prefer D1 (no footer parse). Only the schema row is fetched here.
-    if (env.DB) {
-      const s = await env.DB.prepare('SELECT version, schema_json, floor_bytes FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string; floor_bytes: number | null }>()
-      if (s) return { mode: 'd1', file: fileFor(env, date, variant), env, date, variant, schema: JSON.parse(s.schema_json), version: s.version, floor: s.floor_bytes == null ? null : num(s.floor_bytes) }
-    }
-    // Only the default 'path' variant has a parsed-footer fallback (the by-user
-    // lens variant and the coarse tiers are D1-only — no footer path serves them).
-    if (variant !== 'path') throw new Error(`index variant '${variant}' not synced for ${date}`)
-    return openFooter(env, date)
+    if (!env.DB) throw new Error('index reader not configured (DB)')
+    const s = await env.DB.prepare('SELECT version, schema_json, floor_bytes, gen, dir FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string; floor_bytes: number | null; gen: string | null; dir: string | null }>()
+    if (!s || !s.gen || !s.dir) throw new Error(`index variant '${variant}' not synced for ${date}`)
+    // A pointer whose row groups were retired (retention) still names the
+    // file: serve it from its footer, the slow path.
+    const any = await env.DB.prepare('SELECT 1 AS x FROM index_row_groups WHERE date = ? AND variant = ? AND gen = ? LIMIT 1').bind(date, variant, s.gen).first<{ x: number }>()
+    if (!any) return openFooter(env, indexKey(s.dir, variant))
+    return { mode: 'd1', file: fileFor(env, s.dir, variant), env, date, variant, gen: s.gen, schema: JSON.parse(s.schema_json), version: s.version, floor: s.floor_bytes == null ? null : num(s.floor_bytes) }
   })()
-  handles.set(ck, p)
+  handles.set(ck, { p, at: Date.now() })
   p.catch(() => handles.delete(ck))
   return p
 }
 
-async function openFooter(env: Env, date: string): Promise<FooterHandle> {
+async function openFooter(env: Env, key: string): Promise<FooterHandle> {
   const store = makeStore(env)
-  const key = `listing/${date}/path-index.parquet`
   const probe = await store.get(key, { offset: 0, length: 1 })
   const byteLength = probe.totalSize
   if (!byteLength) throw new Error('index size unknown (no Content-Range)')
@@ -264,9 +285,9 @@ async function selectSpans(h: D1Handle, rects: { dLo: number; dHi: number; pLo: 
   // footer path prunes by b_max during its scan, so without this a large
   // subtree returns far more candidate groups than it can draw and hits `cap`.
   const bFloor = bMin > 0 ? ' AND b_max >= ?' : ''
-  const sql = `SELECT rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end FROM index_groups WHERE date = ? AND variant = ? AND (${where.join(' OR ')})${bFloor} ORDER BY rg LIMIT ${cap + 1}`
+  const sql = `SELECT rg, d_min, d_max, p_min, p_max, b_max, row_start, row_end FROM index_row_groups WHERE date = ? AND variant = ? AND gen = ? AND (${where.join(' OR ')})${bFloor} ORDER BY rg LIMIT ${cap + 1}`
   if (bMin > 0) binds.push(Math.floor(bMin))
-  const res = await h.env.DB!.prepare(sql).bind(h.date, h.variant, ...binds).all<{ rg: number; d_min: number; d_max: number; p_min: string; p_max: string; b_max: number; row_start: number; row_end: number }>()
+  const res = await h.env.DB!.prepare(sql).bind(h.date, h.variant, h.gen, ...binds).all<{ rg: number; d_min: number; d_max: number; p_min: string; p_max: string; b_max: number; row_start: number; row_end: number }>()
   if (res.results.length > cap) throw new Error(`query too wide: >${cap} row groups (drill deeper or raise minArea)`)
   return res.results.map(r => ({ rg: r.rg, dMin: num(r.d_min), dMax: num(r.d_max), pMin: r.p_min, pMax: r.p_max, bMax: num(r.b_max), rowStart: num(r.row_start), rowEnd: num(r.row_end) }))
 }
@@ -276,8 +297,8 @@ async function fetchGroupJson(h: D1Handle, rgs: number[]): Promise<Map<number, s
   const out = new Map<number, string>()
   for (let i = 0; i < rgs.length; i += 80) {
     const chunk = rgs.slice(i, i + 80)
-    const sql = `SELECT rg, rg_json FROM index_groups WHERE date = ? AND variant = ? AND rg IN (${chunk.map(() => '?').join(',')})`
-    const res = await h.env.DB!.prepare(sql).bind(h.date, h.variant, ...chunk).all<{ rg: number; rg_json: string }>()
+    const sql = `SELECT rg, rg_json FROM index_row_groups WHERE date = ? AND variant = ? AND gen = ? AND rg IN (${chunk.map(() => '?').join(',')})`
+    const res = await h.env.DB!.prepare(sql).bind(h.date, h.variant, h.gen, ...chunk).all<{ rg: number; rg_json: string }>()
     for (const r of res.results) out.set(r.rg, r.rg_json)
   }
   return out

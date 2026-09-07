@@ -95,7 +95,7 @@ need `Authorization: Bearer $GCS_USAGE_TOKEN`.
 | `GET /data/scans.json`, `/data/<scan>/{tree,age,meta}.json`, `/data/rules.json` | The published per-scan artifacts the UI renders (tree = size-floored rollup; meta = totals + per-user/class bytes). |
 | `GET /api/subtree?date=&path=&w=&h=` | Pixel-budget subtree of any path — UI-shaped `TreeNode`s (`{n,b,o,d,a,us,cb,c}`; unclaimed = `b` − Σ `us`), folded to what a w×h canvas can draw. What the treemap drills with. |
 | `GET/HEAD /api/path-index?date=` | The **floor-free** path index behind `/api/subtree`, as raw parquet with HTTP Range support — bring your own query engine (see below). One row per rolled-up path × owner slice: `(path, depth, usr, b, o, wts, wb, c2, c3, c4, a)`, sorted `(depth, path)`; `usr` NULL = unclaimed. |
-| `GET /v1/files/<path>` | Raw scan-store proxy (range-supporting) over `listing/` + `snapshots/` — the per-object listing parquets, `dir-cache/`, `path-index.parquet`, and published snapshot JSONs, addressed by bucket path. |
+| `GET /v1/files/<path>` | Raw scan-store proxy (range-supporting) over `listing/` + `snapshots/` — the per-object listing parquets, `dir-cache/`, the index tiers (`index/<gen>/path-index*.parquet`; older scans have them at `listing/<date>/` directly), and published snapshot JSONs, addressed by bucket path. |
 
 Human-facing pages, same data: [`/files`](https://gcs.oa.dev/files) browses the
 raw store with an in-browser parquet viewer (e.g.
@@ -184,7 +184,8 @@ GitHub handle max); sizes and $ stay behind the site's auth.
 ### Data flow
 
 Daily Batch job: per-bucket DIY listings → `gs://oa-gcs-usage-dvx/listing/<date>/`
-(+ `dir-cache/`, `path-index.parquet`) → `webdata` aggregation →
+(+ `dir-cache/`, and the index tiers under `index/<gen>/` — one generation per
+run, never overwritten; D1's `index_schema` row is the pointer) → `webdata` aggregation →
 `snapshots/<date>/{tree,age,meta}.json` (+ `series.json`, `rules.json`). The site
 reads the bucket directly via `functions/data/[[path]].ts` — no site rebuild on
 new data. Marks/claims live in D1 (actions ledger) and apply on top of the latest
