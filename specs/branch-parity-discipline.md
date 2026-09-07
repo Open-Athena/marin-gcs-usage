@@ -309,3 +309,38 @@ gcs writes through gcsfs / the `/gcs` mount.
 Queued dt-ward: `~/c/disk-tree/specs/marin-cp-2026-09-07.md` — `TimeSeries`
 `onBrush`/`window` (gcs `f30230c`), the one shared-surface change since
 their last manifest.
+
+Same day, second commit (`e9a3cce`): upstream's `25f3dc0` treemap-core
+extraction landed — `packages/treemap` (`@rdub/treemap`) taken verbatim,
+`packages/react` trimmed to the disk widgets + `export *`. `packages/` now
+differs from upstream only by `TimeSeries`'s `onBrush`/`window`; the
+`gcs ↔ dt/main` audit rows for `packages/react/src` should read `parity`
+once that ports. The "structural gap" row above is closed.
+
+### 2026-09-07 (gcs-ward, `/cp dt/main`, third pass) — the unification spec landed upstream
+
+`7d9f7b9..01b5e19`: DT implemented `mgu-scale-unification.md` A–E in five
+engine commits. Landed on `gcs` (one commit, cursor `dt/main 01b5e19`), as
+upstream's final file versions (our pre-change divergence in
+`aggregate_duckdb.py` / `import_listing.py` was only the `canonical()` /
+`BLOB_ROW_GROUP_SIZE` / `--to` hunks skipped on the first pass — taken now):
+
+- A `bcbe063` file-backed `--db`, `--partition-depth`; B `f746bce` `--label`
+  slices as cascade group keys; C `bdf621f` `find/tiers.py` (`--tiers
+  dirs,objects,coarse`, `--sort-variant`, KV floors) + `_SUCCESS.json`
+  `started`/`finished`; E `01b5e19` `--size-hist`. Plus `blobfs.py` and
+  upstream's `storage/base.py` (the writer imports `BLOB_ROW_GROUP_SIZE`;
+  `storage/base` imports `blobfs`). `config.py` stays stripped, so
+  `import --to <url>` (`config.set_write_target`) is not wired here — mgu
+  writes tiers to the NVMe dir and uploads.
+- **D held** (`16c621a`: hour-grained layer-2a, `--as-of`, `access state`,
+  `--side/--max-col`): `access/aggregate.py` renames `day → hour` and the
+  stats key `days → hours`; mgu's ingest (`access.py`, `reactive.py`
+  compaction keyed `(bucket, path, day, op)`) and its retained 2a shards are
+  day-grained. Adopting D is a migration (re-aggregate the retained raw
+  shards at hour grain, repoint the compaction), scheduled with the A.3 gate.
+  `aggregate_duckdb.py`'s `_Side` (the cascade half of D) is in, unused.
+
+Tests: 104 in the ported files, 405 root, 144 gcs-usage. Next: the A.3
+gate (DT's cascade on the 9/7 listing with `--db --partition-depth
+--label usr --tiers --size-hist`, a2a against mgu's `path-index`) on Batch.

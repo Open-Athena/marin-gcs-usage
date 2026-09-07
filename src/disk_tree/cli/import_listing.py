@@ -15,6 +15,7 @@ All produce byte-identical canonical layer-2 output.
 
 import os
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from click import Choice, argument, option
@@ -25,30 +26,56 @@ from disk_tree.cli.base import cli
 
 
 @cli.command('import')
+@option('-E', '--coarse-exp', default=24, help='Tiers: the `coarse` floor exponent — F = 2^(round(log2 total_size) − E) (default 24: 256 MiB at 3 PiB)')
 @option('-e', '--engine', type=Choice(['pandas', 'duckdb', 'stream']), default='pandas', help='Aggregation engine: `pandas` (in-memory; small), `duckdb` (out-of-core; big), or `stream` (O(depth) over sorted listings; biggest)')
 @option('-l', '--listing', 'listings', required=True, multiple=True, help='Listing parquet glob(s) — raw / SII / S3-Inventory; repeatable, earlier sources win per bucket')
+@option('-A', '--max-col', 'max_cols', multiple=True, help='DuckDB engine only: a `--side` column folded through the cascade as a subtree MAX (e.g. `last_ts`); repeatable')
+@option('-a', '--side', default=None, help='DuckDB engine only: side parquet keyed by `path` (`.` = root; optional `bucket`), e.g. `disk-tree access state` output, joined onto every row by exact path for `--max-col`')
 @option('-b', '--bucket', 'buckets', multiple=True, help='Bucket to import as one scan; repeatable. Default: every distinct bucket in the listings')
+@option('-d', '--db', 'db_path', default=None, help='DuckDB engine only: run the cascade in a file-backed database (a `.duckdb` path, kept; or a directory, e.g. the spill disk, to create a temporary one in) so the level tables page to disk under `--memory-limit` instead of pinning RAM. Default: in-memory.')
+@option('-H', '--size-hist', is_flag=True, help='DuckDB engine only: emit `size_hist_n` / `size_hist_bytes` — per path, a log2 histogram (41 bins) of descendant files by size, counts and bytes per bin')
+@option('-i', '--tiers', default=None, help='Also write layer-2 as index tiers (`dirs,objects,coarse`, any subset) under `--tiers-dir` as `<scheme>-<bucket>.<tier>.parquet`: sorted, small row groups, floor in the parquet metadata (spec mgu-scale-unification.md C). duckdb/stream engines only.')
 @option('-j', '--jobs', default=1, help='Stream engine only: partition the keyspace into N ranges streamed by parallel worker processes (0 = all cores). Output is byte-identical for any value.')
+@option('-L', '--label', default=None, help='DuckDB engine only: attribution label parquet (`prefix` + label columns). Every row is labeled by its deepest matching prefix and the labels become extra group keys — one output row per (path, labels); rows under no prefix get NULLs. Default: none (one row per path).')
+@option('-c', '--label-cols', default=None, help='Comma-separated label columns to carry from `--label` (default: every column but `prefix`)')
+@option('-k', '--partition-depth', default=0, help='DuckDB engine only: cascade each distinct depth-K path prefix separately (peak memory ∝ the largest partition, not the listing); 0 = one cascade. Output is byte-identical for any value.')
 @option('-M', '--memory-limit', default='8GB', help='DuckDB memory cap (duckdb engine only). Excess spills to `--temp-dir`.')
 @option('-o', '--out-dir', default=None, help="Aggregate into `<DIR>/<scheme>-<bucket>.parquet` instead of a fresh temp file. Stream engine: makes the `<out>.parts` resume token reachable across invocations, so a run that died in the finalize resumes at the merge instead of re-streaming.")
 @option('-m', '--mean-mtime', is_flag=True, help='Emit `mtime_mean` (size-weighted mean mtime over descendant files) per path')
+@option('-O', '--tiers-dir', default=None, help='Where `--tiers` go (default: `--out-dir`)')
 @option('-p', '--pivot-sum', 'pivot_sums', multiple=True, help='Emit per-value byte-sum columns `sum_<col>_<v>` for this layer-1 column (e.g. storage_class_id); repeatable')
+@option('-r', '--row-group-rows', default=8192, help='Tiers: max rows per parquet row group (the HTTP range-read unit)')
+@option('-S', '--sort-variant', 'sort_variants', multiple=True, help='Tiers: extra sorted copies of the dirs/coarse tiers led by these comma-separated columns (e.g. `usr` → `(usr, depth, path)`, file `…dirs-by-usr.parquet`); repeatable')
 @option('-s', '--scheme', default='gcs', help='URI scheme for the scan root (gcs / s3 / r2)')
 @option('-T', '--temp-dir', default=None, help='DuckDB spill directory (duckdb engine only; the stream engine is sort-free). Default: fresh per-invocation temp dir (safe under concurrent imports).')
 @option('-t', '--time', 'time_str', default=None, help='Snapshot time (ISO 8601) recorded on each Scan; default: now')
+@option('-w', '--to', default=None, help='Write the scan blob(s) to a dir or fsspec URL (`r2://bucket/prefix`) instead of the configured write dir — same as `index --to`')
 @option('-x', '--max-temp-size', default=None, help="DuckDB `max_temp_directory_size` (duckdb engine only; e.g. `500GiB`). Default: DuckDB's auto-cap = free disk at launch, a stale snapshot under concurrent writers.")
 def import_cmd(
+    max_cols: tuple[str, ...],
+    side: str | None,
+    coarse_exp: int,
     engine: str,
     listings: tuple[str, ...],
     buckets: tuple[str, ...],
+    db_path: str | None,
+    size_hist: bool,
+    tiers: str | None,
     jobs: int,
+    label: str | None,
+    label_cols: str | None,
+    partition_depth: int,
     memory_limit: str,
     mean_mtime: bool,
     out_dir: str | None,
+    tiers_dir: str | None,
     pivot_sums: tuple[str, ...],
+    row_group_rows: int,
+    sort_variants: tuple[str, ...],
     scheme: str,
     temp_dir: str | None,
     time_str: str | None,
+    to: str | None,
     max_temp_size: str | None,
 ):
     """Import one or more buckets from listing parquet(s) as canonical scans."""
@@ -57,6 +84,9 @@ def import_cmd(
     from disk_tree.sqla.db import init
     from disk_tree.storage import get_backend
 
+    if to:
+        from disk_tree import config as _config
+        err(f"--to: writing blobs to {_config.set_write_target(to)}")
     db = init()
     db.create_all()
 
@@ -69,6 +99,17 @@ def import_cmd(
         buckets = tuple(list_buckets(listings, con=con))
         err(f"discovered {len(buckets)} bucket(s): {', '.join(buckets)}")
 
+    tier_opts = None
+    if tiers:
+        from disk_tree.find.tiers import parse_tiers
+        if not (tiers_dir or out_dir):
+            raise ValueError("--tiers needs --tiers-dir (or --out-dir)")
+        tier_opts = TierOpts(
+            tiers=parse_tiers(tiers), out_dir=tiers_dir or out_dir, coarse_exp=coarse_exp,
+            row_group_rows=row_group_rows,
+            sort_variants=tuple(tuple(c for c in v.split(',') if c) for v in sort_variants),
+        )
+
     storage = get_backend()
     for bucket in buckets:
         err(f"importing {bucket} (engine={engine})…")
@@ -78,7 +119,20 @@ def import_cmd(
             snap_time=snap_time, memory_limit=memory_limit, temp_dir=temp_dir,
             max_temp_size=max_temp_size, jobs=jobs, out_dir=out_dir,
             pivot_sums=pivot_sums, mean_mtime=mean_mtime,
+            duckdb_path=db_path, partition_depth=partition_depth,
+            label=label, label_cols=tuple(c for c in (label_cols or '').split(',') if c),
+            tier_opts=tier_opts, side=side, max_cols=max_cols, size_hist=size_hist,
         )
+
+
+@dataclass(frozen=True)
+class TierOpts:
+    """`--tiers` and friends, resolved (see `find/tiers.py`)."""
+    tiers: tuple[str, ...]
+    out_dir: str
+    coarse_exp: int = 24
+    row_group_rows: int = 8192
+    sort_variants: tuple[tuple[str, ...], ...] = ()
 
 
 def import_bucket(
@@ -97,6 +151,14 @@ def import_bucket(
     out_dir: str | None = None,
     pivot_sums: tuple[str, ...] = (),
     mean_mtime: bool = False,
+    duckdb_path: str | None = None,
+    partition_depth: int = 0,
+    label: str | None = None,
+    label_cols: tuple[str, ...] = (),
+    tier_opts: TierOpts | None = None,
+    side: str | None = None,
+    max_cols: tuple[str, ...] = (),
+    size_hist: bool = False,
     replace=None,
 ):
     """Aggregate one bucket's listing → blob + Scan row.
@@ -106,11 +168,28 @@ def import_bucket(
     `out_dir`: aggregate into a deterministic `<out_dir>/<scheme>-<bucket>.parquet`
     rather than a fresh temp name, so the stream engine's `<out>.parts` resume
     token is findable on a rerun (a per-invocation temp name never is).
+    `duckdb_path` / `partition_depth`: the duckdb engine's fleet-scale knobs
+    (file-backed cascade database; per-prefix partitioned cascade).
+    `label` / `label_cols`: attribution slices as extra group keys (duckdb only).
+    `tier_opts`: also cut the finished blob into index tiers (duckdb/stream).
+    `side` / `max_cols`: subtree-MAX columns from a path-keyed side table (duckdb only).
+    `size_hist`: per-path log2 size histogram columns (duckdb only).
     Returns the Scan.
     """
     from disk_tree.sqla.model import Scan
 
-    scan_path = f'{scheme}://{bucket}'
+    from disk_tree.backends.url import canonical
+    if label and engine != 'duckdb':
+        raise ValueError(f"--label is a duckdb-engine feature; got engine={engine!r}")
+    if (side or max_cols) and engine != 'duckdb':
+        raise ValueError(f"--side/--max-col is a duckdb-engine feature; got engine={engine!r}")
+    if size_hist and engine != 'duckdb':
+        raise ValueError(f"--size-hist is a duckdb-engine feature; got engine={engine!r}")
+    if tier_opts is not None and engine == 'pandas':
+        raise ValueError("--tiers needs a blob on disk: use the duckdb or stream engine")
+    # A `file` root collapses to the bare path, so a reduced capture's
+    # `Scan.path` is byte-identical to what `index` records for the same dir.
+    scan_path = canonical(f'{scheme}://{bucket}')
 
     if engine == 'pandas':
         from disk_tree.find.import_listing import import_listing
@@ -143,6 +222,9 @@ def import_bucket(
                     con=con, memory_limit=memory_limit, temp_dir=temp_dir,
                     max_temp_size=max_temp_size,
                     pivot_sums=pivot_sums, mean_mtime=mean_mtime,
+                    db=duckdb_path, partition_depth=partition_depth,
+                    label=label, label_cols=label_cols,
+                    side=side, max_cols=max_cols, size_hist=size_hist,
                 )
             else:  # stream
                 from disk_tree.find.aggregate_stream import aggregate_stream
@@ -152,6 +234,17 @@ def import_bucket(
                     max_temp_size=max_temp_size, jobs=jobs,
                     pivot_sums=pivot_sums, mean_mtime=mean_mtime,
                 )
+            if tier_opts is not None:
+                from disk_tree.find.tiers import write_tiers
+                os.makedirs(tier_opts.out_dir, exist_ok=True)
+                written = write_tiers(
+                    out_parquet, stem=os.path.join(tier_opts.out_dir, f'{scheme}-{bucket}'),
+                    tiers=tier_opts.tiers, coarse_exp=tier_opts.coarse_exp,
+                    row_group_rows=tier_opts.row_group_rows, sort_variants=tier_opts.sort_variants,
+                    con=con,
+                )
+                for path, n in written.items():
+                    err(f"  tier {os.path.basename(path)}: {n:,} rows")
             # Hand the file itself to the storage backend — reading a
             # 92.7M-object bucket's layer-2 (185M rows) back into pandas
             # here OOM-killed a 64GB node after the aggregation had
