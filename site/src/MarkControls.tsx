@@ -142,10 +142,13 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
               <input className="note" value={note} onChange={e => setNote(e.target.value)} placeholder="note on this mark (optional)" size={20} />
             </Tooltip>
           </span>
-          {/* Owner — claim for yourself, or assign to anyone (avatar + name). */}
+          {/* The claim on this prefix — the ownership ledger, not attribution
+              (the page bar's "owner" axis counts both): claim for yourself, or
+              assign to anyone (avatar + name). Labeled "claim" so it can't read
+              as a verdict on what the view shows. */}
           <span className="owner">
-            <span className="lbl">owner</span>
-            {cl ? <UserChip who={cl.who} size={15} /> : <span className="none">unclaimed</span>}
+            <span className="lbl">claim</span>
+            {cl ? <UserChip who={cl.who} size={15} /> : <span className="none">none</span>}
             <input
               list="mk-assign-users" className="assign" value={assign}
               onChange={e => setAssign(e.target.value)}
