@@ -26,6 +26,7 @@
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import type { Env } from './auth.js'
+import { shared } from './shared.js'
 
 /** A leaf of the stored parquet schema (`index_schema.schema_json`). */
 interface SchemaElement { type: string; name: string; repetition_type: string; converted_type?: string }
@@ -157,13 +158,17 @@ function fileFor(env: Env, dir: string, variant: string): FileSlice {
 // `index-gc` runs at the end of the job, well past the TTL, so a live handle
 // never outlives its generation's rows.
 const HANDLE_TTL = 60_000
-const handles = new Map<string, { p: Promise<IndexHandle>; at: number }>()
+const handles = new Map<string, Promise<IndexHandle>>()
+const handleAt = new Map<string, number>()
 
 export async function openIndex(env: Env, date: string, variant = 'path'): Promise<IndexHandle> {
   const ck = `${date}:${variant}`
-  const cached = handles.get(ck)
-  if (cached && Date.now() - cached.at < HANDLE_TTL) return cached.p
-  const p = (async (): Promise<IndexHandle> => {
+  const at = handleAt.get(ck)
+  if (at == null || Date.now() - at >= HANDLE_TTL) {
+    handles.delete(ck)
+    handleAt.set(ck, Date.now())
+  }
+  return shared(handles, ck, async (): Promise<IndexHandle> => {
     if (!env.DB) throw new Error('index reader not configured (DB)')
     const s = await env.DB.prepare('SELECT version, schema_json, floor_bytes, gen, dir FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string; floor_bytes: number | null; gen: string | null; dir: string | null }>()
     if (!s || !s.gen || !s.dir) throw new Error(`index variant '${variant}' not synced for ${date}`)
@@ -174,10 +179,7 @@ export async function openIndex(env: Env, date: string, variant = 'path'): Promi
     const any = await env.DB.prepare('SELECT 1 AS x FROM index_row_groups WHERE date = ? AND variant = ? AND gen = ? LIMIT 1').bind(date, variant, s.gen).first<{ x: number }>()
     if (!any) return openBlob(env, date, variant, s.gen, s.dir)
     return { mode: 'd1', file: fileFor(env, s.dir, variant), env, date, variant, gen: s.gen, schema: JSON.parse(s.schema_json), version: s.version, floor: s.floor_bytes == null ? null : num(s.floor_bytes) }
-  })()
-  handles.set(ck, { p, at: Date.now() })
-  p.catch(() => handles.delete(ck))
-  return p
+  }, 30_000) // a blob open is a ~15 MB fetch + parse
 }
 
 /** The blob's on-disk shape (index_footer.py `groups_blob`): groups are
@@ -266,27 +268,8 @@ export function reviveRowGroup(json: string, schema: SchemaElement[]): Record<st
 async function readGroup(h: IndexHandle, rgJson: string, columns?: string[]): Promise<Row[]> {
   const rg = reviveRowGroup(rgJson, h.schema)
   const metadata = { version: h.version, schema: h.schema, num_rows: rg.num_rows, row_groups: [rg], metadata_length: 0 } as unknown as Awaited<ReturnType<typeof parquetMetadataAsync>>
-  const rows = (await withSlot(() => parquetReadObjects({ file: h.file, metadata, columns }))) as Record<string, unknown>[]
+  const rows = (await parquetReadObjects({ file: h.file, metadata, columns })) as Record<string, unknown>[]
   return rows.map(toRow)
-}
-
-/** Row groups decoding at once, isolate-wide. Each is a range fetch plus a
- * few MB of decoded rows, and one request can fan out over a dozen scans
- * (`/api/series`) each reading a group or two: the Worker's 128 MB is the
- * bound, not any one read's group count — a claims-only user's series hit
- * it at 12 scans in flight. */
-const DECODE_SLOTS = 4
-let decoding = 0
-const decodeQueue: (() => void)[] = []
-async function withSlot<T>(f: () => Promise<T>): Promise<T> {
-  if (decoding >= DECODE_SLOTS) await new Promise<void>(r => decodeQueue.push(r))
-  decoding++
-  try {
-    return await f()
-  } finally {
-    decoding--
-    decodeQueue.shift()?.()
-  }
 }
 
 interface Span extends GroupSpan { rg: number }

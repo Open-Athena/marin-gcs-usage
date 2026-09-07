@@ -12,6 +12,7 @@
 import type { Env } from './auth.js'
 import { openIndex, readAsks, type Ask, type Row } from './index.js'
 import { loadLedger } from './ledger.js'
+import { shared } from './shared.js'
 import {
   addAgg, computeTotals, foldLatest, idxKey, newAgg, newer,
   type ClaimRow, type KeepRow, type OwnerRow, type PathAgg, type Totals,
@@ -33,8 +34,10 @@ export interface TotalsBody extends Totals {
   computed: { at: number; ms: number; groups: number; prefixes: number; index: string }
 }
 
-// Per-isolate memo on top of D1 (the body is a few hundred KB).
+// Per-isolate memo on top of D1 (the body is a few MB). A fresh estate
+// manifest is a ~15 s compute; the watchdog gives it four times that.
 const memo = new Map<string, Promise<TotalsBody>>()
+const MEMO_WAIT = 60_000
 
 /** Newest live keep/owner on a STRICT ancestor of `pfx` (what P inherits). */
 function inheritedCovering<R extends { prefix: string; ts: number; action_id: number }>(map: Map<string, R>, pfx: string): R | null {
@@ -124,9 +127,7 @@ async function compute(env: Env, date: string, keeps: Map<string, KeepRow>, owne
 export async function markTotals(env: Env, date: string, scopePfx?: string): Promise<TotalsBody> {
   const { keepRows, ownerRows, head } = await loadLedger(env)
   const key = `${date}:${head}:${scopePfx ?? ''}`
-  let bodyP = memo.get(key)
-  if (!bodyP) {
-    bodyP = (async () => {
+  return shared(memo, key, async () => {
       // Only the estate total is worth persisting in D1 (it's the ~200 MB
       // read); a drilled subtree is cheap to recompute per isolate.
       if (!scopePfx) {
@@ -149,11 +150,7 @@ export async function markTotals(env: Env, date: string, scopePfx?: string): Pro
         ])
       }
       return body
-    })()
-    memo.set(key, bodyP)
-    bodyP.catch(() => memo.delete(key))
-  }
-  return bodyP
+  }, MEMO_WAIT)
 }
 
 // Claims alone, per (scan, head): a tenth of the manifest.
@@ -169,15 +166,9 @@ export async function markClaims(env: Env, date: string): Promise<ClaimRow[]> {
   const full = memo.get(`${date}:${head}:`)
   if (full) return (await full).claims
   const key = `${date}:${head}`
-  let p = claimsMemo.get(key)
-  if (!p) {
-    p = (async () => {
-      const row = await env.DB!.prepare('SELECT claims FROM mark_totals WHERE scan = ? AND head = ?').bind(date, head).first<{ claims: string | null }>()
-      if (row?.claims) return JSON.parse(row.claims) as ClaimRow[]
-      return (await markTotals(env, date)).claims
-    })()
-    claimsMemo.set(key, p)
-    p.catch(() => claimsMemo.delete(key))
-  }
-  return p
+  return shared(claimsMemo, key, async () => {
+    const row = await env.DB!.prepare('SELECT claims FROM mark_totals WHERE scan = ? AND head = ?').bind(date, head).first<{ claims: string | null }>()
+    if (row?.claims) return JSON.parse(row.claims) as ClaimRow[]
+    return (await markTotals(env, date)).claims
+  }, MEMO_WAIT)
 }
