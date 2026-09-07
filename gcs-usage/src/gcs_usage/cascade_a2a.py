@@ -8,9 +8,14 @@ paths are relative to the bucket (`''` = root) where mgu's carry it
   mgu   b     o        c2 c3 c4                       wts / wb
   DT    size  n_files  sum_storage_class_id_{2,3,4}   mtime_mean
 
-`mtime_mean` is compared to `wts / wb` within a second (DT keeps the exact
-weighted sum and divides once; mgu stores the DECIMAL sum). A column DT's
-file lacks (no `-p storage_class_id`, no `-m`) is skipped, and said so.
+`mtime_mean` is compared to `wts / wb` within two seconds: DT weights the
+exact epoch, mgu weights `epoch(created)::BIGINT` per object (rounded), so
+a subtree of same-fraction timestamps drifts by up to a second. A class
+pivot DT's file lacks (the bucket has no bytes in that class, or no `-p`)
+is compared against 0, and said so; mgu leaves an empty pivot NULL. DT's
+root is `.`; mgu's is the bucket. `o` also reports Σ(mgu − DT): GCS folder
+placeholders (zero-byte objects named `…/`) are objects to mgu and dir
+markers to DT, so the sum should equal their count.
 """
 from __future__ import annotations
 
@@ -36,7 +41,10 @@ def compare(bucket: str, index_path: str, dt_path: str, top: int = 10) -> dict:
         WHERE path = '{b_esc}' OR path LIKE '{b_esc}/%'
         """
     )
-    con.execute(f"CREATE TEMP TABLE d AS SELECT * FROM read_parquet('{dt_path}')")
+    con.execute(f"CREATE TEMP TABLE d AS SELECT * REPLACE (CASE WHEN path = '.' THEN '' ELSE path END AS path) FROM read_parquet('{dt_path}')")
+    for m, dc in CLASS_COLS.items():
+        if dc not in dt_cols:
+            con.execute(f"ALTER TABLE d ADD COLUMN {dc} BIGINT DEFAULT 0")
     con.execute(
         """
         CREATE TEMP TABLE j AS
@@ -59,17 +67,19 @@ def compare(bucket: str, index_path: str, dt_path: str, top: int = 10) -> dict:
             "dt": {"n": n("SELECT count(*) FROM j WHERE NOT in_m"), "examples": rows(f"SELECT path, usr, size AS b, n_files AS o FROM j WHERE NOT in_m ORDER BY size DESC LIMIT {top}")},
         },
         "mismatch": {},
-        "skipped": [c for c in ("c2", "c3", "c4") if c not in classes] + ([] if has_mtime else ["mtime"]),
+        "against_zero": [m for m, dc in CLASS_COLS.items() if dc not in dt_cols],
+        "skipped": [] if has_mtime else ["mtime"],
     }
-    checks = {"b": ("b", "size"), "o": ("o", "n_files"), **{m: (m, d) for m, d in classes.items()}}
+    checks = {"b": ("b", "size"), "o": ("o", "n_files"), **{m: (f"COALESCE({m}, 0)", f"COALESCE({d}, 0)") for m, d in CLASS_COLS.items()}}
     for name, (mc, dc) in checks.items():
         where = f"in_m AND in_d AND {mc} IS DISTINCT FROM {dc}"
         report["mismatch"][name] = {
             "n": n(f"SELECT count(*) FROM j WHERE {where}"),
             "examples": rows(f"SELECT path, usr, {mc} AS mgu, {dc} AS dt FROM j WHERE {where} ORDER BY abs({mc} - {dc}) DESC LIMIT {top}"),
         }
+    report["mismatch"]["o"]["delta_sum"] = n("SELECT COALESCE(sum(o - n_files), 0) FROM j WHERE in_m AND in_d")
     if has_mtime:
-        where = "in_m AND in_d AND (wb > 0 OR mtime_mean IS NOT NULL) AND abs(COALESCE(wts / NULLIF(wb, 0), 0) - COALESCE(mtime_mean, 0)) > 1"
+        where = "in_m AND in_d AND (wb > 0 OR mtime_mean IS NOT NULL) AND abs(COALESCE(wts / NULLIF(wb, 0), 0) - COALESCE(mtime_mean, 0)) > 2"
         report["mismatch"]["mtime"] = {
             "n": n(f"SELECT count(*) FROM j WHERE {where}"),
             "examples": rows(f"SELECT path, usr, wts / NULLIF(wb, 0) AS mgu, mtime_mean AS dt FROM j WHERE {where} ORDER BY abs(COALESCE(wts / NULLIF(wb, 0), 0) - COALESCE(mtime_mean, 0)) DESC LIMIT {top}"),
@@ -86,7 +96,9 @@ def render(r: dict) -> str:
         o = r["only"][side]
         out.append(f"  only {side}: {o['n']:,}" + "".join(f"\n    {e['path'] or '(root)'} [{e['usr'] or '∅'}] b={e['b']:,} o={e['o']:,}" for e in o["examples"]))
     for col, m in r["mismatch"].items():
-        out.append(f"  {col} mismatches: {m['n']:,}" + "".join(f"\n    {e['path'] or '(root)'} [{e['usr'] or '∅'}] mgu={e['mgu']} dt={e['dt']}" for e in m["examples"]))
+        out.append(f"  {col} mismatches: {m['n']:,}" + (f" (Σ mgu−dt = {m['delta_sum']:,})" if "delta_sum" in m else "") + "".join(f"\n    {e['path'] or '(root)'} [{e['usr'] or '∅'}] mgu={e['mgu']} dt={e['dt']}" for e in m["examples"]))
+    if r["against_zero"]:
+        out.append(f"  class pivots absent from the DT file, compared against 0: {', '.join(r['against_zero'])}")
     if r["skipped"]:
         out.append(f"  skipped (not in DT file): {', '.join(r['skipped'])}")
     out.append("  OK: exact" if r["ok"] else "  DIFFERENT")
