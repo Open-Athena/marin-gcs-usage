@@ -19,3 +19,25 @@ Findings and asks written to `~/c/disk-tree/specs/mgu-scale-a3-gate.md`: directo
 ## Round 2 — the fleet on Batch (submitted 2026-09-07 15:31 UTC)
 
 `job/run.sh` `GATE=1` (with `REPROC=1`): stages the date's listing + attribution, writes labels, runs `import` per bucket under `/usr/bin/time -v` (`GATE_K` partition depth, batching at 4M files, the job's `DUCKDB_MEM`), runs `cascade-a2a` per bucket against the date's published path index, copies logs + reports to `gs://oa-gcs-usage-dvx/gate/<date>/`. Submitted as `gcs-usage-gate-20260907-153058` (`GATE_K=3`, `DUCKDB_MEM` 100GB, n2-highmem-32 / 250 GiB, 1.5 TB local SSD) on the 2026-09-07 listing. To read: peak RSS per bucket against `webdata`'s 141.7 GB, wall against the daily's webdata phase, and six `OK: exact` lines.
+
+### Round 2 results (job `gcs-usage-gate-20260907-153058`, 3h52m total, n2-highmem-32, `-k 3`, batch 4M files, `-M 100GB`)
+
+| bucket | objects | keys → cascades (largest key) | wall | peak RSS | a2a |
+|---|---|---|---|---|---|
+| marin-us-central2 | 290M | 42,457 → 35 (71.2M files) | 1:28:27 | 100.9 GB | **failed**: DuckDB `Out of Memory Error … 93.1 GiB/93.1 GiB used` |
+| marin-eu-west4 | 163M | 24,595 → 17 (84.4M files) | 1:30:06 | 135.2 GB | 719 mgu-only rows (one dropped subtree, see below); else exact |
+| marin-us-central1 | 64M | 52,771 → 7 (13.3M) | 15:27 | 58.0 GB | one dropped subtree; `//` rows; else exact |
+| marin-us-east5 | 47M | 49,055 → 13 (3.8M) | 14:26 | 48.1 GB | only `//`-collapse rows (`tokenized/gs:/…`); else exact |
+| marin-us-east1 | 9M | 19,144 → 3 (1.5M) | 2:21 | 10.5 GB | one dropped subtree; `//` rows; else exact |
+| marin-us-west4 | 7.5M | 5,766 → 3 (2.2M) | 1:40 | 8.7 GB | **exact** |
+
+The same day's `webdata` did the whole fleet in **~25 min at 99.1 GB peak** (daily `gcs-usage-snapshot`, PHASE webdata+stage 4103 s minus the 2604 s listing).
+
+Two findings for DT, both in `~/c/disk-tree/specs/mgu-scale-a3-gate.md` round 2:
+
+1. **Dropped subtrees.** In three buckets DT's output lacks a whole subtree and the *bucket root* is short by exactly its bytes, so the rows were lost, not relocated: `datakit/store/_smoke_v0` (677 objects), `sam/results/gpt2-fwe-top50-finetune-cfx-ds-2-url-3/None` (2,001), `julian/datasets/re10k-train-r128-fps30-gop30-crf18-hand21-v2` (143,438 objects, 18 GB). All three are depth-3 directory keys under `--partition-depth 3` in buckets whose partitioning produced a standalone oversized key or many batches — the batching is the suspect.
+2. **Oversized keys.** A depth-3 key of 71M (central2) or 84M (eu-west4) files stands alone above the 4M batch and either exhausts DuckDB's cap or spills for 1.5 h. Keys over the batch size need to partition again at depth K+1, recursively.
+
+Everything else agrees: bytes, objects, pivots, mean mtime — the remaining one-sided rows are the `//` policy (DT collapses `…/gs://marin-…/…` names into `gs:/`, mgu keeps the empty component; both ways are internally consistent).
+
+**Verdict:** correctness is one fix away; performance is not there — per-bucket cascades total 3h52m with a failure against `webdata`'s 25 min for the fleet at the same memory. Until partitioning recurses and the per-cascade overhead drops, `viz.py` stays the producer.
