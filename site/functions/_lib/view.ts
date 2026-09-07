@@ -19,7 +19,8 @@
  */
 import type { Env } from './auth.js'
 import { type FateAxis, fateScope, type FateScope } from './fates.js'
-import { type IndexHandle, type Lens, openIndex, readRows, type Row } from './index.js'
+import { type IndexHandle, type Lens, openIndex, readRects, readRows, type Rect, type Row } from './index.js'
+import { ownerLens, type OwnerLens } from './owners.js'
 import { nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { markTotals } from './totals.js'
 
@@ -118,7 +119,7 @@ function subtract(parent: Agg, kids: Agg[]): Agg {
  * exactly, the rest (objects, per-user/class splits, written-time weights)
  * proportionally, which assumes the scope is spread like the node's mix. */
 function scale(a: Agg, frac: number): Agg {
-  if (frac >= 1) return a
+  if (frac === 1) return a
   const out = newAgg()
   out.b = a.b * frac
   out.o = a.o * frac
@@ -160,25 +161,54 @@ const floorOf = (h: IndexHandle): number | null => (h.mode === 'd1' ? h.floor : 
 export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope }): Promise<{ b: number; o: number } | null> {
   const { date, path, lens, owner } = o
   const dP = path === '' ? 0 : path.split('/').length
-  const sort = lens ? 'user' : 'path'
-  const readRoot = (idx: IndexHandle) =>
-    path === '' ? readRows(idx, 1, 1, '', '￿', undefined, lens) : readRows(idx, dP, dP, path, path, undefined, lens)
-  let rows: Row[] = []
-  for (const e of COARSE_EXPS) {
-    const idx = await tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`)
-    if (!idx) continue
-    rows = await readRoot(idx)
-    if (rows.length) break
-  }
-  if (!rows.length) {
+  const readRoot = (idx: IndexHandle, l?: Lens) =>
+    path === '' ? readRows(idx, 1, 1, '', '￿', undefined, l) : readRows(idx, dP, dP, path, path, undefined, l)
+  // P's row from the coarsest tier of `sort` that has it; null = no tier.
+  const rootRows = async (sort: string, l?: Lens): Promise<Row[] | null> => {
+    for (const e of COARSE_EXPS) {
+      const idx = await tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`)
+      if (!idx) continue
+      const rows = await readRoot(idx, l)
+      if (rows.length) return rows
+    }
     const fine = await tryOpen(env, date, sort)
-    if (!fine) return null
-    rows = await readRoot(fine)
-    if (!rows.length) return null
+    return fine ? readRoot(fine, l) : null
   }
-  const agg = newAgg()
-  for (const r of rows) if (ownerOk(r.usr, owner)) merge(agg, r)
+  const ol = lens ? await ownerLensFor(env, date, lens) : null
+  const rows = await rootRows(lens ? 'user' : 'path', lens)
+  if (rows == null) return null
+  const mine = newAgg()
+  for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, r)
+  if (!ol) return { b: mine.b, o: mine.o }
+  let all: Agg | null = null
+  if (ol.needsTotal(path)) {
+    const allRows = await rootRows('path')
+    if (allRows?.length) { all = newAgg(); for (const r of allRows) merge(all, r) }
+  }
+  const agg = lensAgg(ol, lens!.key, path, all, mine)
   return { b: agg.b, o: agg.o }
+}
+
+/** The owner lens for a scan: the live claims folded against it (cached per
+ * (scan, ledger head) by the totals machinery) — null when nobody claims. */
+async function ownerLensFor(env: Env, date: string, lens: Lens): Promise<OwnerLens | null> {
+  return ownerLens((await markTotals(env, date)).claims, lens.key)
+}
+
+/** A node under a user lens once claims apply: U's bytes there (`ol.value`),
+ * shaped like the subtree total when that was read (a claimed band is all
+ * of the node's mix), else like U's attributed slice — stretched when U's
+ * claims below add bytes that slice never had. Every byte is U's, so the
+ * per-user split is U alone. `mine` null = the node was not read (an unread
+ * ancestor of a claimed region): its bytes are its bands below. */
+function lensAgg(ol: OwnerLens, user: string, path: string, all: Agg | null, mine: Agg | null): Agg {
+  const v = ol.value(path, all?.b ?? null, mine?.b ?? null)
+  if (v <= 0) return newAgg()
+  const shape = all ?? mine
+  const out = shape && shape.b > 0 ? scale(shape, v / shape.b) : newAgg()
+  if (!shape || shape.b <= 0) out.b = v
+  out.ub = { [user]: out.b }
+  return out
 }
 
 /** Everything a view needs before assembly: the scoped root, the kept
@@ -196,8 +226,13 @@ interface Read {
   idx: IndexHandle
   truncated: boolean
   matches?: string[]
-  /** A path's scoped share of its total (owner pool and mark axis applied). */
-  scoped: (p: string, all: Agg, mine: Agg) => Agg
+  /** The claims fold behind a user lens (null: no lens, or no claims). */
+  ownerLens: OwnerLens | null
+  /** A path's scoped share of its total (owner pool / lens and mark axis
+   * applied). `all` = the subtree total (null under a lens where the path's
+   * cover isn't U's); `mine` = the rows the sort's lens/pool kept (null =
+   * unread, lens only). */
+  scoped: (p: string, all: Agg | null, mine: Agg | null) => Agg
 }
 
 async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
@@ -211,21 +246,45 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // to its allowed-fate share. Rows are read by TOTAL bytes at the scoped
   // threshold, so the read is a superset of what the scope keeps.
   const fs: FateScope | null = o.fates ? fateScope((await markTotals(env, date)).marks, o.fates, lens?.key) : null
+  // A user lens applies the ownership ledger: claims repaint attribution, so
+  // U's bytes under a path can include other people's slices (a band U
+  // claimed) or lose U's own (a band someone else claimed). Where the former
+  // can happen the by-path tier is read too, so every node's total is known.
+  const ol = lens ? await ownerLensFor(env, date, lens) : null
+  // Where the by-path tier is read for a lens: P itself when U's claim
+  // covers it, else the largest REGION_READS of U's claimed regions under P,
+  // to draw inside them. The rest are nodes valued exactly from the manifest
+  // (a claim's total is known without a read) — leaf tiles until drilled,
+  // like a fold; a user with hundreds of scattered claims would otherwise
+  // touch more row groups at the root than one view may.
+  const rootTotal = !!ol && ol.needsTotal(path)
+  const allRegions = ol && !rootTotal ? ol.regions(path) : []
+  const regions: { path: string; depth: number }[] = rootTotal
+    ? [{ path, depth: dP }]
+    : [...allRegions].sort((a, b) => b.all - a.all).slice(0, REGION_READS)
   // Owner pools filter rows (they are owner slices); the fate share is then
   // computed on the node's total and applied to the pool's share — assumes
-  // fates are spread like ownership inside a node.
-  const scoped = (p: string, all: Agg, mine: Agg): Agg => {
-    if (!fs) return mine
-    const share = all.b > 0 ? fs.value(p, all.b) / all.b : 0
-    return scale(mine, share)
+  // fates are spread like ownership inside a node. Under a lens the fate
+  // fold already works in U's bytes (per-band `us`), so its share is taken
+  // of U's lens bytes.
+  const scoped = (p: string, all: Agg | null, mine: Agg | null): Agg => {
+    const base = ol ? lensAgg(ol, lens!.key, p, all, mine) : mine!
+    if (!fs) return base
+    const denom = lens ? base : all!
+    const share = denom.b > 0 ? fs.value(p, denom.b) / denom.b : 0
+    return scale(base, share)
   }
 
   // Root aggregate P.b (and P's own us for the response root) from the
-  // coarsest tier that has P at all — the same numbers in every tier.
-  const tiers: { name: string; idx: IndexHandle }[] = []
+  // coarsest tier that has P at all — the same numbers in every tier. The
+  // by-path tier of the same name serves the lens's region reads.
+  const tiers: { name: string; idx: IndexHandle; all?: IndexHandle }[] = []
   for (const e of COARSE_EXPS) {
     const idx = await tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`)
-    if (idx && floorOf(idx) != null) tiers.push({ name: `coarse${e}`, idx })
+    if (idx && floorOf(idx) != null) {
+      const allIdx = regions.length ? await tryOpen(env, date, `coarse${e}`) : null
+      tiers.push({ name: `coarse${e}`, idx, ...(allIdx ? { all: allIdx } : {}) })
+    }
   }
   let rootRows: Row[] = []
   let fine: IndexHandle | null = null
@@ -236,7 +295,9 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   if (!rootRows.length) {
     fine = await openFine(env, date, sort, lens)
     rootRows = await readRoot(fine)
-    if (!rootRows.length) throw new NotFound(path)
+    // A lens user the scan attributes nothing to under P may still own it
+    // all by claim: an empty attribution root is a zero, not a miss.
+    if (!rootRows.length && !ol) throw new NotFound(path)
   }
   const rootAll = newAgg()
   const rootMine = newAgg()
@@ -244,7 +305,13 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
     merge(rootAll, r)
     if (ownerOk(r.usr, owner)) merge(rootMine, r)
   }
-  let rootAgg = scoped(path, rootAll, rootMine)
+  // P's total, when U's claim covers P (one point read on the by-path tier).
+  let rootTot: Agg | null = null
+  if (rootTotal) {
+    rootTot = newAgg()
+    for (const r of await readRootAllRows(env, date, path, dP)) merge(rootTot, r)
+  }
+  let rootAgg = scoped(path, ol ? rootTot : rootAll, rootMine)
   // Nothing in scope under P: an empty view, not a zero threshold that would
   // keep every row the tier holds.
   if (rootAgg.b <= 0) return null
@@ -263,7 +330,7 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   for (const t of tiers) {
     if (thrAll >= floorOf(t.idx)!) { pick = t; break }
   }
-  if (!pick) pick = { name: 'fine', idx: fine ?? await openFine(env, date, sort, lens) }
+  if (!pick) pick = { name: 'fine', idx: fine ?? await openFine(env, date, sort, lens), ...(regions.length ? { all: await openFine(env, date, 'path') } : {}) }
   const idx = pick.idx
 
   // Everything under P that this canvas can draw. Depth is unbounded — the
@@ -271,20 +338,66 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   const pLo = path === '' ? '' : path + '/'
   const pHi = path === '' ? '￿' : path + '0' // '0' sorts just past '/'
   const rows = await readRows(idx, dP + 1, 1e9, pLo, pHi, thrAt, lens)
-  const allAggs = new Map<string, Agg>() // totals per path (the fate share's denominator)
-  let aggs = new Map<string, Agg>() // the scoped aggregate per path
+  // The lens's claimed regions from the by-path tier (their own rows and
+  // everything under them): every path there whose U-share can clear the
+  // threshold is present, since all ≥ U's share. P itself as a region means
+  // U's claim covers the whole view: the full range.
+  const regionRects: Rect[] = regions.map(r => r.path === path
+    ? { dLo: dP + 1, dHi: 1e9, pLo, pHi }
+    : { dLo: r.depth, dHi: 1e9, pLo: r.path, pHi: r.path + '0' })
+  const allRows = regionRects.length ? await readRects(pick.all!, regionRects, thrAt) : []
+  const allAggs = new Map<string, Agg>() // totals per path (the fate share's denominator; a lens: only inside its regions)
+  const mineAggs = new Map<string, Agg | null>() // the sort's own rows per path (U's slice, or the pool's); null = unread
   const aggDepth = new Map<string, number>()
   for (const r of rows) {
-    let all = allAggs.get(r.path)
-    if (!all) {
-      allAggs.set(r.path, (all = newAgg()))
-      aggs.set(r.path, newAgg())
-      aggDepth.set(r.path, r.depth)
+    let m = mineAggs.get(r.path)
+    if (!m) { mineAggs.set(r.path, (m = newAgg())); aggDepth.set(r.path, r.depth) }
+    if (ownerOk(r.usr, owner)) merge(m, r)
+    if (!ol) {
+      let all = allAggs.get(r.path)
+      if (!all) allAggs.set(r.path, (all = newAgg()))
+      merge(all, r)
     }
-    merge(all, r)
-    if (ownerOk(r.usr, owner)) merge(aggs.get(r.path)!, r)
   }
-  if (fs) for (const [p, a] of aggs) aggs.set(p, scoped(p, allAggs.get(p)!, a))
+  for (const r of allRows) {
+    let all = allAggs.get(r.path)
+    if (!all) { allAggs.set(r.path, (all = newAgg())); aggDepth.set(r.path, r.depth) }
+    merge(all, r)
+  }
+  // Every region is a node — read ones from their rows, the rest valued
+  // from the manifest — and so is each region's ancestor between P and it
+  // (the kept set is ancestor-closed by construction); an ancestor whose U
+  // slice never reached the threshold is unread and valued as its bands.
+  for (const r of allRegions) {
+    for (let q = r.path; q.length > path.length; q = parentOf(q)) {
+      if (!aggDepth.has(q)) { aggDepth.set(q, q.split('/').length); mineAggs.set(q, null) }
+    }
+  }
+  // Nothing is drawn inside an unread region (its total is a leaf until a
+  // drill reads it), so U's attributed rows under one are not nodes.
+  const unread = allRegions.filter(r => !regions.some(q => q.path === r.path)).map(r => r.path + '/')
+  const insideUnread = (p: string) => unread.some(u => p.startsWith(u))
+  let aggs = new Map<string, Agg>() // the scoped aggregate per path
+  for (const p of aggDepth.keys()) {
+    if (unread.length && insideUnread(p)) continue
+    const mine = mineAggs.get(p) ?? null
+    const all = allAggs.get(p) ?? null
+    // Reads return whole row groups, so U's attributed rows inside a read
+    // region can sit below the threshold; the by-path read would have held
+    // any path whose total clears it. One it didn't is under the fold.
+    if (ol && !all && ol.needsTotal(p) && !ol.isClaim(p)) continue
+    aggs.set(p, fs || ol ? scoped(p, ol ? (ol.needsTotal(p) ? all : null) : all, mine) : mine!)
+  }
+  // Unread regions know their object counts from the manifest; an unread
+  // ancestor's count is the sum of the regions under it (its own attributed
+  // objects, below the threshold, are not known).
+  for (const r of allRegions) {
+    if (regions.some(q => q.path === r.path)) continue
+    for (let q = r.path; q.length > path.length; q = parentOf(q)) {
+      const a = aggs.get(q)
+      if (a && mineAggs.get(q) == null && !allAggs.has(q)) a.o += r.objects
+    }
+  }
   let matches: string[] | undefined
   if (query) {
     const f = nameFilter(
@@ -319,8 +432,24 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
     const key = kept.has(par) ? par : par === path || (path === '' && !p.includes('/')) ? path : null
     if (key !== null) foldedOf.set(key, (foldedOf.get(key) ?? 0) + 1)
   }
-  return { rootAll, rootAgg, kept, aggDepth, foldedOf, threshold, thrAt, tier: pick.name, idx, truncated, ...(matches ? { matches } : {}), scoped }
+  return { rootAll, rootAgg, kept, aggDepth, foldedOf, threshold, thrAt, tier: pick.name, idx, truncated, ...(matches ? { matches } : {}), ownerLens: ol, scoped }
 }
+
+/** P's own row(s) from the by-path tiers — coarsest that has it, else fine. */
+async function readRootAllRows(env: Env, date: string, path: string, dP: number): Promise<Row[]> {
+  const read = (idx: IndexHandle) => (path === '' ? readRows(idx, 1, 1, '', '￿') : readRows(idx, dP, dP, path, path))
+  for (const e of COARSE_EXPS) {
+    const idx = await tryOpen(env, date, `coarse${e}`)
+    if (!idx) continue
+    const rows = await read(idx)
+    if (rows.length) return rows
+  }
+  return read(await openFine(env, date, 'path'))
+}
+
+/** Claimed regions read (largest first) per lens view; the rest are
+ * manifest-valued leaves. Two span queries' worth of rects. */
+const REGION_READS = 24
 
 const parentOf = (p: string): string => {
   const cut = p.lastIndexOf('/')
@@ -453,6 +582,12 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     if (!h) fineOf.set(date, (h = openFine(env, date, sort, lens)))
     return h
   }
+  const fineAllOf = new Map<string, Promise<IndexHandle>>()
+  const fineAll = (date: string) => {
+    let h = fineAllOf.get(date)
+    if (!h) fineAllOf.set(date, (h = openFine(env, date, 'path')))
+    return h
+  }
   let lookups = 0
   let capped = false
   const inQuery = (p: string, v: Read): boolean =>
@@ -462,14 +597,14 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     if (lookups >= LOOKUP_CAP) { capped = true; return null }
     lookups++
     const rows = await readRows(await fine(date), depth, depth, p, p, undefined, lens)
-    if (!rows.length) return null
+    const needTot = !!v.ownerLens?.needsTotal(p)
+    const allRows = needTot ? await readRows(await fineAll(date), depth, depth, p, p) : rows
+    if (!rows.length && !allRows.length) return null
     const all = newAgg()
     const mine = newAgg()
-    for (const r of rows) {
-      merge(all, r)
-      if (ownerOk(r.usr, owner)) merge(mine, r)
-    }
-    const a = v.scoped(p, all, mine)
+    for (const r of allRows) merge(all, r)
+    for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, r)
+    const a = v.scoped(p, v.ownerLens && !needTot ? null : all, mine)
     return a.b > 0 ? a : null
   }
 

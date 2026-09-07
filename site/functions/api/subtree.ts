@@ -56,7 +56,8 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   if (gated instanceof Response) return gated
 
   // The mark axis folds the live ledger: its cache key carries the head.
-  const head = fates && ctx.env.DB ? await ledgerHead(ctx.env) : 0
+  // …and so does a user lens (claims repaint attribution).
+  const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
       `&o=${owner ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,

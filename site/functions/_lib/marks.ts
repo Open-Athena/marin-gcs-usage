@@ -112,8 +112,12 @@ export interface ClaimRow {
   prefix: string
   owner: string | null
   ts: number
+  action_id: number
   bytes: number
   objects: number
+  /** The subtree's bytes per scan-attributed user (what the claim
+   * repaints) — the owner lens subtracts and adds these per band. */
+  us: Record<string, number>
   /** Set when a newer ancestor claim overrides this one. */
   repainted_by?: string
 }
@@ -320,8 +324,10 @@ export function computeTotals(input: TotalsInput): Totals {
       prefix: n.prefix,
       owner: n.owner.owner,
       ts: n.owner.ts,
+      action_id: n.owner.action_id,
       bytes: n.agg.b,
       objects: n.agg.o,
+      us: Object.fromEntries(Object.entries(n.agg.us).filter(([, b]) => b > 0)),
       ...(n.effOwner === n.owner ? {} : { repainted_by: n.effOwner!.prefix }),
     })
   }

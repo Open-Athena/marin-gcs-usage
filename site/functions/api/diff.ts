@@ -53,7 +53,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const gated = await requireScope(ctx as never, scope)
   if (gated instanceof Response) return gated
 
-  const head = fates && ctx.env.DB ? await ledgerHead(ctx.env) : 0
+  const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://diff.cache/${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
       `&o=${owner ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,

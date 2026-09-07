@@ -317,11 +317,34 @@ export async function readRows(
   thrAt?: (depth: number) => number,
   lens?: Lens,
 ): Promise<Row[]> {
+  return readRects(h, [{ dLo, dHi, pLo, pHi }], thrAt, lens)
+}
+
+export interface Rect { dLo: number; dHi: number; pLo: string; pHi: string }
+
+/** Rows in any of several (depth, path-range) rectangles — one read: the
+ * candidate groups of all rects come from a few span queries (rects batched
+ * per statement), each group is decoded once, and a row passes if some rect
+ * holds it. What a lens's scattered claimed regions need. */
+export async function readRects(
+  h: IndexHandle,
+  rects: Rect[],
+  thrAt?: (depth: number) => number,
+  lens?: Lens,
+): Promise<Row[]> {
+  if (!rects.length) return []
   // A row passes the lens iff its usr equals the key.
   const lensOk = (r: Row) => !lens || r.usr === lens.key
+  const inRect = (r: Row) => rects.some(q => r.depth >= q.dLo && r.depth <= q.dHi && r.path >= q.pLo && r.path <= q.pHi)
+  const dMin = Math.min(...rects.map(q => q.dLo))
   if (h.mode === 'd1') {
-    const spans = await selectSpans(h, [{ dLo, dHi, pLo, pHi }], 4000, thrAt ? thrAt(dLo) : 0, lens)
-    const kept = thrAt ? spans.filter(s => s.bMax >= thrAt(Math.max(s.dMin, dLo))) : spans
+    const RECTS_PER_QUERY = 20 // D1 binds: 4 per rect (+2 with a lens)
+    const byRg = new Map<number, Span>()
+    for (let i = 0; i < rects.length; i += RECTS_PER_QUERY) {
+      const spans = await selectSpans(h, rects.slice(i, i + RECTS_PER_QUERY), 4000, thrAt ? thrAt(dMin) : 0, lens)
+      for (const s of spans) byRg.set(s.rg, s)
+    }
+    const kept = [...byRg.values()].sort((a, b) => a.rg - b.rg).filter(s => !thrAt || s.bMax >= thrAt(Math.max(s.dMin, dMin)))
     if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
     // Bound the decode too, not just the group count — a broad lens (a big
     // user spread across the estate) can select few-enough groups but still
@@ -334,26 +357,24 @@ export async function readRows(
       const j = jsons.get(s.rg)
       if (!j) continue
       for (const r of await readGroup(h, j)) {
-        if (r.depth < dLo || r.depth > dHi || r.path < pLo || r.path > pHi || !lensOk(r)) continue
+        if (!inRect(r) || !lensOk(r)) continue
         out.push(r)
       }
     }
     return out
   }
-  // footer mode (path variant only)
+  // footer mode
   const out: Row[] = []
   let selected = 0
   for (const g of h.groups) {
-    if (g.dMax < dLo || g.dMin > dHi) continue
-    if (g.dMin === g.dMax && (g.pMax < pLo || g.pMin > pHi)) continue
-    if (thrAt && g.bMax < thrAt(Math.max(g.dMin, dLo))) continue
+    const hit = rects.some(q => !(g.dMax < q.dLo || g.dMin > q.dHi) && !(g.dMin === g.dMax && (g.pMax < q.pLo || g.pMin > q.pHi)))
+    if (!hit) continue
+    if (thrAt && g.bMax < thrAt(Math.max(g.dMin, dMin))) continue
     if (++selected > 250) throw new Error('query too wide: drill deeper or raise minArea')
     const rows = (await parquetReadObjects({ file: h.file, metadata: h.metadata, rowStart: g.rowStart, rowEnd: g.rowEnd })) as Record<string, unknown>[]
     for (const r of rows) {
-      const depth = num(r.depth)
-      const path = str(r.path)
-      if (depth < dLo || depth > dHi || path < pLo || path > pHi) continue
-      out.push(toRow(r))
+      const row = toRow(r)
+      if (inRect(row) && lensOk(row)) out.push(row)
     }
   }
   return out
