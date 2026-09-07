@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { SiteNav } from './SiteNav'
 import { Tooltip } from './Tooltip'
-import { UserChip } from './UserChip'
+import { shortName, UserChip } from './UserChip'
 import { useUnits } from './units'
 
 // /sweep — the sweep console (specs/sweep-executor.md § Phase 2): review the
@@ -160,7 +160,7 @@ export function SweepPage() {
 
       {latestQ.isError && <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>}
       {candsQ.data && (
-        <table className="sweep-table">
+        <div className="table-scroll"><table className="sweep-table">
           <thead>
             <tr>
               <th>band</th>
@@ -215,7 +215,7 @@ export function SweepPage() {
                           : <Tooltip content={<>Approved in <b>slice</b> mode: only directories majority-owned by the sweeper ({c.sweepers.join(', ')}) are deletable{attrCap(c) != null && <> — ≈{tb(attrCap(c)!)} of {tb(c.net_bytes)}</>}. Everyone else's data in this band stays.</>}>
                               <span className="ok">approved</span>
                             </Tooltip>}
-                        {' '}<span className="dim">by {a.who.split('@')[0]}</span>
+                        {' '}<span className="dim">by {shortName(a.who)}</span>
                         {canWrite && <button className="mini" onClick={() => revoke.mutate(c.prefix)}>revoke</button>}
                       </>
                     ) : canWrite ? (
@@ -237,7 +237,7 @@ export function SweepPage() {
               )
             })}
           </tbody>
-        </table>
+        </table></div>
       )}
       {candsQ.data && hidden.length > 0 && (
         <p className="dim table-fold">
@@ -249,8 +249,31 @@ export function SweepPage() {
       )}
       {(approve.error || revoke.error) && <p className="err">{String(approve.error ?? revoke.error)}</p>}
 
-      {canWrite && candsQ.data && (
-        <div className="dispatch">
+      {canWrite && candsQ.data && (() => {
+        // What a dispatch operates on: every approved band, whoever approved
+        // it — spelled out here so "dispatch" is never a leap of faith.
+        const ap = bands.filter(c => approvals.has(c.prefix))
+        const objs = ap.reduce((n, c) => n + c.net_objects, 0)
+        const bySweeper = new Map<string, number>()
+        for (const c of ap) for (const sw of c.sweepers) bySweeper.set(sw, (bySweeper.get(sw) ?? 0) + 1)
+        const full = ap.filter(c => approvals.get(c.prefix)!.mode === 'full').length
+        return (
+          <div className="dispatch">
+            <p className="dispatch-sum">
+              {ap.length === 0 ? <>Nothing approved yet — a dispatch would plan nothing.</> : (
+                <>
+                  <b>{ap.length}</b> approved band{ap.length === 1 ? '' : 's'} · <b>≈{tb(approvedAttrBytes)}</b> deletable
+                  {approvedAttrBytes !== approvedBytes && <span className="dim"> (of {tb(approvedBytes)} in the bands; the rest is other users' or unowned data, deferred)</span>}
+                  {' '}· {objs.toLocaleString()} objects in the bands
+                  {full > 0 && <> · <span className="warn-tag">{full} in FULL mode</span></>}
+                  {' '}· swept by {[...bySweeper].sort((x, y) => y[1] - x[1]).map(([sw, n], i) => <span key={sw}>{i > 0 && ', '}<UserChip who={sw} size={14} /> ×{n}</span>)}
+                </>
+              )}
+            </p>
+            <p className="dim dispatch-note">
+              A dry-run re-lists each approved band, plans the deletions under the ownership gate, and records the run below — it deletes nothing. The real run takes the same plan and deletes.
+            </p>
+            <div className="dispatch-btns">
           {/* Dispatches a GCP Batch executor run: `sweep manifest -S` (reads
               the approvals above) → `sweep execute` — the run records itself
               into the table below. Dry-run is the default posture; "real"
@@ -277,13 +300,15 @@ export function SweepPage() {
             </span>
           )}
           {dispatch.error != null && <span className="err">{String(dispatch.error)}</span>}
-        </div>
-      )}
+            </div>
+          </div>
+        )
+      })()}
 
       <h2>Deletion runs</h2>
       {!runsQ.data?.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here.</p>}
       {!!runsQ.data?.rows.length && (
-        <table className="sweep-table">
+        <div className="table-scroll"><table className="sweep-table">
           <thead>
             <tr><th>run</th><th>mode</th><th>started</th><th className="num">{'∑'} deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>undo by</th><th>logs</th></tr>
           </thead>
@@ -302,7 +327,7 @@ export function SweepPage() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </main>
   )
