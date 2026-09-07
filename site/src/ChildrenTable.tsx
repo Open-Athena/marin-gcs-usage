@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useCanMark } from './auth'
 import { epochDaysToDate, epochDaysToMonth } from './colors'
-import { ACTION_COLORS, CLAIM_TIP, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip, markProvenance } from './MarkControls'
+import { ACTION_COLORS, ASSIGN_TIP, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip, markProvenance } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { fateAllowed, looksCkpt } from './sweep'
@@ -149,8 +149,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, fates, onOpen }: {
                           </Tooltip>
                         )}
                         {!markIdx!.claimOf(uri) && (
-                          <Tooltip content={CLAIM_TIP}>
-                            <button type="button" onClick={() => claim.mutate({ prefix: uri + '/' })}>claim</button>
+                          <Tooltip content={ASSIGN_TIP}>
+                            <button type="button" onClick={() => claim.mutate({ prefix: uri + '/' })}>assign to me</button>
                           </Tooltip>
                         )}
                       </>

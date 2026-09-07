@@ -197,7 +197,7 @@ function SessionLines({ email, user, emails }: { email: string; user: string | n
           {others.length > 0 && <div>also signs in as: {others.map(e => <code key={e}>{e}</code>)}</div>}
         </>
       ) : (
-        <div className="uc-warn">not mapped to an attribution user — the “me” owner filter won't resolve; ping Ryan.</div>
+        <div className="uc-warn">not mapped to a user in the identity registry — the “me” owner filter won't resolve; ping Ryan.</div>
       )}
     </div>
   )

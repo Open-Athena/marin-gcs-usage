@@ -151,11 +151,11 @@ export function SweepPage() {
       <p className="sub">
         Candidate bands are <b>sweep-only under the vote model</b> (no keep votes anywhere). Two ways to sign one off:{' '}
         <b>approve</b> (slice) lets the executor delete only the <i>sweeper's own slice</i> — each directory must be
-        majority-attributed to its sweeper, so other users' data inside a broad sweep is deferred to their own votes;{' '}
-        <b>all</b> signs off the entire band regardless of attribution (for bands verified out-of-band). Approved bands
+        majority-owned by its sweeper, so other users' data inside a broad sweep is deferred to their own votes;{' '}
+        <b>all</b> signs off the entire band regardless of ownership (for bands verified out-of-band). Approved bands
         feed <code>sweep manifest --approved-from-site</code>; runs land below with their logs.
         {plan && <> Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>} · approved <b>{tb(approvedBytes)}</b>
-          {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the attr gate)</>}</>}
+          {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the ownership gate)</>}</>}
       </p>
 
       {latestQ.isError && <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>}
@@ -166,11 +166,11 @@ export function SweepPage() {
               <th>band</th>
               <th className="num">size</th>
               <th className="num">
-                <Tooltip content={<>What an <b>approve slice</b> on this band would actually delete: the executor's attribution gate only deletes directories <b>majority-attributed to the band's sweeper</b> (per the scan's path index). Other users' and unattributed/mixed directories are deferred to their own votes. Estimate is gross (kept data inside still counts toward it), capped at the band's net size; the dry-run gives exact numbers.</>}>
+                <Tooltip content={<>What an <b>approve slice</b> on this band would actually delete: the executor's ownership gate only deletes directories <b>majority-owned by the band's sweeper</b> (per the scan's path index). Other users' and unowned/mixed directories are deferred to their own votes. Estimate is gross (kept data inside still counts toward it), capped at the band's net size; the dry-run gives exact numbers.</>}>
                   <span className="hashelp">≈ deletable</span>
                 </Tooltip>
               </th>
-              <th className="num">objects</th><th>swept by</th><th>attributed top user</th><th>status</th>
+              <th className="num">objects</th><th>swept by</th><th>top owner</th><th>status</th>
             </tr>
           </thead>
           <tbody>
@@ -185,7 +185,7 @@ export function SweepPage() {
                 <tr key={c.prefix} className={a ? 'approved' : c.owner_match ? 'matched' : ''}>
                   <td><Link to={drill}><code>{c.prefix.replace('gs://', '')}</code></Link></td>
                   <td className="num">{tb(c.net_bytes)}</td>
-                  <td className="num" title={c.attr_other_bytes ? `${tb(c.attr_other_bytes)} attributed to other users + ${tb(c.attr_unattr_bytes ?? 0)} unattributed/mixed are deferred, not deleted` : undefined}>
+                  <td className="num" title={c.attr_other_bytes ? `${tb(c.attr_other_bytes)} owned by other users + ${tb(c.attr_unattr_bytes ?? 0)} unowned/mixed are deferred, not deleted` : undefined}>
                     {attrCap(c) == null ? <span className="dim">—</span> : (
                       <>
                         {tb(attrCap(c)!)}
@@ -203,16 +203,16 @@ export function SweepPage() {
                         {c.share != null && <span className="pct"> {(c.share * 100).toFixed(0)}%</span>}
                         {c.owner_match && <span className="match-tag">= sweeper</span>}
                       </>
-                    ) : <span className="dim">unattributed</span>}
+                    ) : <span className="dim">unowned</span>}
                   </td>
                   <td>
                     {a ? (
                       <>
                         {a.mode === 'full'
-                          ? <Tooltip content={<>Approved in <b>full</b> mode: the ENTIRE band is deletable — including data attributed to other users or unattributed. The attribution gate is skipped for this band.</>}>
+                          ? <Tooltip content={<>Approved in <b>full</b> mode: the ENTIRE band is deletable — including data owned by other users or unowned. The ownership gate is skipped for this band.</>}>
                               <span className="warn-tag">approved · FULL</span>
                             </Tooltip>
-                          : <Tooltip content={<>Approved in <b>slice</b> mode: only directories majority-attributed to the sweeper ({c.sweepers.join(', ')}) are deletable{attrCap(c) != null && <> — ≈{tb(attrCap(c)!)} of {tb(c.net_bytes)}</>}. Everyone else's data in this band stays.</>}>
+                          : <Tooltip content={<>Approved in <b>slice</b> mode: only directories majority-owned by the sweeper ({c.sweepers.join(', ')}) are deletable{attrCap(c) != null && <> — ≈{tb(attrCap(c)!)} of {tb(c.net_bytes)}</>}. Everyone else's data in this band stays.</>}>
                               <span className="ok">approved</span>
                             </Tooltip>}
                         {' '}<span className="dim">by {a.who.split('@')[0]}</span>
@@ -220,12 +220,12 @@ export function SweepPage() {
                       </>
                     ) : canWrite ? (
                       <>
-                        <Tooltip content={<>Sign off the <b>sweeper's slice</b>: the executor deletes only directories majority-attributed to {c.sweepers.join(', ')}{attrCap(c) != null && <> — ≈<b>{tb(attrCap(c)!)}</b> of {tb(c.net_bytes)}</>}. Data attributed to other users, or unattributed, is deferred to their own votes — never deleted by this approval.</>}>
+                        <Tooltip content={<>Sign off the <b>sweeper's slice</b>: the executor deletes only directories majority-owned by {c.sweepers.join(', ')}{attrCap(c) != null && <> — ≈<b>{tb(attrCap(c)!)}</b> of {tb(c.net_bytes)}</>}. Data owned by other users, or unowned, is deferred to their own votes — never deleted by this approval.</>}>
                           <button className="mini go" onClick={() => approve.mutate({ c, mode: 'slice' })}>
                             approve{attrCap(c) != null && <span className="btn-sub"> ≈{tb(attrCap(c)!)}</span>}
                           </button>
                         </Tooltip>
-                        <Tooltip content={<>Sign off the <b>ENTIRE band</b> — all {tb(c.net_bytes)}, including data attributed to other users or unattributed. Skips the attribution gate. Use only after confirming out-of-band (e.g. with the affected users) that everything under this prefix can go.</>}>
+                        <Tooltip content={<>Sign off the <b>ENTIRE band</b> — all {tb(c.net_bytes)}, including data owned by other users or unowned. Skips the ownership gate. Use only after confirming out-of-band (e.g. with the affected users) that everything under this prefix can go.</>}>
                           <button className="mini warn" onClick={() => approve.mutate({ c, mode: 'full' })}>all</button>
                         </Tooltip>
                       </>

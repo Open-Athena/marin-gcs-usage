@@ -183,7 +183,7 @@ function MapLegend({ cells, fates }: {
   }
   return (
     <div className="map-legend">
-      {hasPool && <span><i style={{ background: POOL_TILE_BG }} />unclaimed</span>}
+      {hasPool && <span><i style={{ background: POOL_TILE_BG }} />unowned</span>}
       {(!fates || present.keep || present.sweep) && <span className="sep" />}
       {(!fates || present.keep) && <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>}
       {(!fates || present.sweep) && <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>}
@@ -260,14 +260,14 @@ function UsersMap({ meta, fates, redact = false }: {
         // still route through the SPA below.
         cellHref={n =>
           n.id ? `/user/${n.id}`
-          : n.pool ? '/?o=unclaimed'
+          : n.pool ? '/?o=unowned'
           : undefined}
         onCellClick={(n) => {
           if (redact) return true
           // Every tile goes somewhere sane: users to their page, the
           // unattributed pool to the matching home lens.
           if (n.id) navigate(`/user/${n.id}`)
-          else if (n.pool) navigate('/?o=unclaimed')
+          else if (n.pool) navigate('/?o=unowned')
           return true
         }}
       />
@@ -382,7 +382,7 @@ export function UsersPage() {
   // Each fate is a (bytes, est. $/mo) pair; the $ prices that fate's own
   // storage-class mix from the walk (a cold sweep is cheap, a hot one isn't).
   useActions({
-    'users:csv': { label: 'Download CSV (this table, claims applied)', group: 'Users page', handler: downloadCsv },
+    'users:csv': { label: 'Download CSV (this table, assignments applied)', group: 'Users page', handler: downloadCsv },
     'users:sheet': { label: 'Google Sheet mirror ↗', group: 'Users page', handler: () => window.open(SHEET_URL, '_blank', 'noreferrer') },
   })
   const cell = (u: string, f: ShownFate) => {
@@ -434,7 +434,7 @@ export function UsersPage() {
             <a className="nav-files" href={SHEET_URL} target="_blank" rel="noreferrer">Google&nbsp;Sheet&nbsp;↗</a>
           </span>
         </div>
-        <p className="sub">Everyone with attributed storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
+        <p className="sub">Everyone who owns storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
       </header>
       {metaQ.isLoading && <p className="loading">loading…</p>}
       {metaQ.data && (
@@ -448,7 +448,7 @@ export function UsersPage() {
           <thead>
             <tr className="groups">
               <th />
-              <th className="num" colSpan={2}>Attributed</th>
+              <th className="num" colSpan={2}>Owned</th>
               <th className="num" colSpan={2}>Keep</th>
               <th className="num" colSpan={2}>Sweep</th>
               <th className="num" colSpan={2}>Unmarked</th>
@@ -479,7 +479,7 @@ export function UsersPage() {
           <tfoot>
             <tr className="total-row">
               <td>
-                <Tooltip content="Sum of the rows above — bytes attributed to (or claimed by) some user. Unclaimed bytes (no owner: shared datasets, communal pools) are in no row, so this is less than the estate-wide keep / sweep rollup on the map.">
+                <Tooltip content="Sum of the rows above — bytes owned by some user (inferred from the scan, or assigned in the ledger). Unowned bytes (no owner: shared datasets, communal pools) are in no row, so this is less than the estate-wide keep / sweep rollup on the map.">
                   <span className="dotted">Total</span>
                 </Tooltip>
                 {' '}<span style={{ fontWeight: 400, opacity: 0.7 }}>· {users.length} users</span>
@@ -719,7 +719,7 @@ export function UserPage() {
           </span>
         </div>
         <p className="sub">
-          {fmtBytesIec(attributed, true)} attributed ({asof ?? '…'} scan + live claims)
+          {fmtBytesIec(attributed, true)} owned ({asof ?? '…'} scan + live assignments)
           {mix != null && metaB != null && <> · est. {fmtUsd(ratePerByte(mix) * metaB)}/mo</>}
           {authored > 0 && <> · {fmtN(authored)} prefixes marked by {shortName(id)}</>}.
           Where every byte stands, resolved the way the map does it (most recent mark on an ancestor-or-equal prefix wins).
@@ -732,7 +732,7 @@ export function UserPage() {
       {!loading && !rows.length && attributed === 0 && (
         <>
           <p className="tab-note">
-            No attributed or claimed data for “{id}”
+            No data owned by or assigned to “{id}”
             {authoredRows.length > 0 ? <>{' '}— but their marks are below.</> : '.'}
           </p>
           {authoredRows.length > 0 && (
@@ -785,14 +785,14 @@ export function UserPage() {
 
               <h2>Undecided</h2>
               <p className="tab-note">Your largest subtrees with no keep / sweep decision anywhere above or below — the review backlog.</p>
-              <FateTable rows={undecidedRows} empty="Every attributed byte has a decision. 🎉" />
+              <FateTable rows={undecidedRows} empty="Every owned byte has a decision. 🎉" />
             </>
           )}
 
           {claimedRows.length > 0 && (
             <>
-              <h2>Claimed</h2>
-              <p className="tab-note">Prefixes claimed in the ledger — counted in the totals above immediately; the scan pipeline formalizes the attribution on its next run.</p>
+              <h2>Assigned</h2>
+              <p className="tab-note">Prefixes assigned in the ledger — counted in the totals above immediately; the scan pipeline formalizes the ownership on its next run.</p>
               <FateTable rows={claimedRows} empty="" />
             </>
           )}

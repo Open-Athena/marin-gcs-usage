@@ -76,7 +76,7 @@ gcs-usage todo -p | gcs-usage mark -k keep -f -
 
 Keep actions (`-k`): `keep`, `keep_last_ckpt`, `sweep` (or `none` to leave the
 keep axis untouched and only set ownership). Other options: `-o/--owner`
-(`@me` by default — claims the prefix as yours; `""` leaves ownership untouched),
+(`@me` by default — assigns the prefix to you; `""` leaves ownership untouched),
 `-m/--memo` (note stored with every action), `-n/--dry-run` (print, send
 nothing), `-t/--token`, `-u/--url`.
 
@@ -93,8 +93,8 @@ need `Authorization: Bearer $GCS_USAGE_TOKEN`.
 | `POST /api/actions` | Append one action, or an array. Body: `{ pattern, keep?, set_keep?, owner?, set_owner?, memo?, scan? }`. |
 | `GET/POST/DELETE /api/token` | Manage your own token (browser SSO session only). |
 | `GET /data/scans.json`, `/data/<scan>/{tree,age,meta}.json`, `/data/rules.json` | The published per-scan artifacts the UI renders (tree = size-floored rollup; meta = totals + per-user/class bytes). |
-| `GET /api/subtree?date=&path=&w=&h=` | Pixel-budget subtree of any path — UI-shaped `TreeNode`s (`{n,b,o,d,a,us,cb,c}`; unclaimed = `b` − Σ `us`), folded to what a w×h canvas can draw. What the treemap drills with. |
-| `GET/HEAD /api/path-index?date=` | The **floor-free** path index behind `/api/subtree`, as raw parquet with HTTP Range support — bring your own query engine (see below). One row per rolled-up path × owner slice: `(path, depth, usr, b, o, wts, wb, c2, c3, c4, a)`, sorted `(depth, path)`; `usr` NULL = unclaimed. |
+| `GET /api/subtree?date=&path=&w=&h=` | Pixel-budget subtree of any path — UI-shaped `TreeNode`s (`{n,b,o,d,a,us,cb,c}`; unowned = `b` − Σ `us`), folded to what a w×h canvas can draw. What the treemap drills with. |
+| `GET/HEAD /api/path-index?date=` | The **floor-free** path index behind `/api/subtree`, as raw parquet with HTTP Range support — bring your own query engine (see below). One row per rolled-up path × owner slice: `(path, depth, usr, b, o, wts, wb, c2, c3, c4, a)`, sorted `(depth, path)`; `usr` NULL = unowned. |
 | `GET /v1/files/<path>` | Raw scan-store proxy (range-supporting) over `listing/` + `snapshots/` — the per-object listing parquets, `dir-cache/`, the index tiers (`index/<gen>/path-index*.parquet`; older scans have them at `listing/<date>/` directly), and published snapshot JSONs, addressed by bucket path. |
 
 Human-facing pages, same data: [`/files`](https://gcs.oa.dev/files) browses the
@@ -189,6 +189,6 @@ run, never overwritten, each with a `<tier>.groups.json` group manifest the
 site opens once D1 retires the tier's rows; D1's `index_schema` row is the pointer) → `webdata` aggregation →
 `snapshots/<date>/{tree,age,meta}.json` (+ `series.json`, `rules.json`). The site
 reads the bucket directly via `functions/data/[[path]].ts` — no site rebuild on
-new data. Marks/claims live in D1 (actions ledger) and apply on top of the latest
+new data. Marks and owner assignments live in D1 (actions ledger) and apply on top of the latest
 scan ("scan ≈ committed, actions ≈ WAL"). Access logs ingest on the same job for
 the read-recency lens.

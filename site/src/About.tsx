@@ -23,7 +23,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
           (deduped), snapshotted daily by the{' '}
           <a href="https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/AGENTS.md#data-flow" target="_blank" rel="noreferrer"><code>marin-gcs-usage</code></a>{' '}
           pipeline, which also ingests the buckets’ access logs and joins ownership onto every prefix
-          (W&amp;B run/config matching, executor sidecars, manual curation). Marks and claims apply live on
+          (W&amp;B run/config matching, executor sidecars, manual curation). Marks and assignments apply live on
           top of the latest snapshot.
         </p>
         <h3>Mark &amp; sweep</h3>
@@ -40,8 +40,8 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
         <p>
           Everything on the page reads the same scope, stated in the top bar: the <b>scan</b> (and, while
           the Diff or size chart is in view, the diff window’s start), the drilled <b>path</b>, the{' '}
-          <b>marks</b> axis (keep / sweep / unmarked — any subset), the <b>owner</b> axis (claimed /
-          unclaimed, or one person), and a <b>path filter</b>. “Color by” recolors the map: <b>marks</b>{' '}
+          <b>marks</b> axis (keep / sweep / unmarked — any subset), the <b>owner</b> axis (owned /
+          unowned, or one person), and a <b>path filter</b>. “Color by” recolors the map: <b>marks</b>{' '}
           (keep / sweep / undecided), <b>read</b> (last-read recency — never-read bytes are the best sweep
           candidates; access logging began 8/13, so “never read” means “not since then”), owning{' '}
           <b>user</b>, <b>written</b> (older→newer), or top-level <b>tree</b>. Hover a cell for its makeup

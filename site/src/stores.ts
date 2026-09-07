@@ -29,7 +29,7 @@ export const STORES: Store[] = [
     key: 'gcs',
     label: 'GCS',
     title: 'Marin GCS usage',
-    desc: 'Per-group storage attribution across the six marin-* GCS buckets.',
+    desc: 'Per-user storage ownership across the six marin-* GCS buckets.',
     path: '/',
     scheme: 'gs://',
     base: '/data',

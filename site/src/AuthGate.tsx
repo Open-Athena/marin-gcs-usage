@@ -20,7 +20,7 @@ function LoginWall() {
     <div className="authwall">
       <div className="card">
         <h1>Marin GCS usage</h1>
-        <p>Storage attribution + cleanup across the six <code>marin-*</code> GCS buckets.</p>
+        <p>Storage ownership + cleanup across the six <code>marin-*</code> GCS buckets.</p>
         <p className="restrict">Access is limited to marin contributors and invited collaborators.</p>
         <a className="signin" href={signInUrl()}>Sign in</a>
         <p className="signin-how">

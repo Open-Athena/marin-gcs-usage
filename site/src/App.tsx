@@ -46,8 +46,9 @@ const FATE_CHIPS: { f: FateAxis; key: string; glyph: string; color: string; tip:
   { f: 'unmarked', key: 'u', glyph: '○', color: 'var(--ink-2)', tip: 'The review backlog — no keep/sweep decision on the prefix or any ancestor.' },
 ]
 
-// The owner axis: `?o=` is `claimed`, `unclaimed`, `me`, or a user key
-// (`?o=rw`); absent = everything. Claimed = attributed to a person; unclaimed
+// The owner axis: `?o=` is `owned`, `unowned`, `me`, or a user key
+// (`?o=rw`); absent = everything. Owned = a person owns it (inferred from
+// paths/runs, or assigned); unowned
 // = the nobody-owns-it pool. A user narrows "owned" to that person.
 type OwnerMode = 'all' | 'owned' | 'unowned' | 'user'
 
@@ -537,8 +538,8 @@ function AppContent() {
       handler: clearHl,
     },
     'owner:me': { label: 'Owner: my files', group: 'Scope', handler: () => setOP('me') },
-    'owner:claimed': { label: 'Owner: claimed only', group: 'Scope', handler: () => setOP('owned') },
-    'owner:unclaimed': { label: 'Owner: unclaimed only', group: 'Scope', handler: () => setOP('unowned') },
+    'owner:claimed': { label: 'Owner: owned only', group: 'Scope', handler: () => setOP('owned') },
+    'owner:unclaimed': { label: 'Owner: unowned only', group: 'Scope', handler: () => setOP('unowned') },
     'marks:unmarked': { label: 'Marks: unmarked only (the to-do backlog)', group: 'Scope', handler: () => setKP('u') },
     'marks:all': { label: 'Marks: every state', group: 'Scope', handler: () => setKP(undefined) },
     'lens:classes': {
@@ -745,8 +746,8 @@ function AppContent() {
             <MultiSelect<'owned' | 'unowned'>
               label="owner pools"
               options={[
-                { key: 'owned', label: 'owned', glyph: '●', color: 'var(--s1)', tip: 'Bytes attributed to a person (W&B runs, executor sidecars, claims, curation). Pick someone beside this to narrow it to them.' },
-                { key: 'unowned', label: 'unowned', glyph: '○', color: 'var(--ink-2)', tip: "Bytes no person owns. Claim what's yours (table below, or a pinned cell), then decide keep/sweep." },
+                { key: 'owned', label: 'owned', glyph: '●', color: 'var(--s1)', tip: 'Bytes some person owns — inferred from paths, W&B runs and sidecars, or assigned. Pick someone beside this to narrow it to them.' },
+                { key: 'unowned', label: 'unowned', glyph: '○', color: 'var(--ink-2)', tip: "Bytes no person owns. Assign what's yours (table below, or a pinned cell), then decide keep/sweep." },
               ]}
               selected={pools}
               onChange={setPools}
@@ -789,7 +790,7 @@ function AppContent() {
       {marksQ.error && <p className="tab-note err">Marks unavailable: {marksQ.error.message}</p>}
       {meUnmapped && (
         <p className="tab-note">
-          Your email isn't mapped to an attribution user yet — ping Ryan (or an admin can add you at{' '}
+          Your email isn't mapped to an owner id yet — ping Ryan (or an admin can add you at{' '}
           <code>/admin/db/user_emails</code>); pick any user from the owner menu to view their files.
         </p>
       )}
@@ -807,6 +808,7 @@ function AppContent() {
               through null once both payloads are cached. */}
           <div id="tree-map" className={mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length ? 'leaf' : undefined}><Treemap
             key={store.key}
+            ownerLensed={ownerMode === 'user'}
             root={mapTree}
             mode={effMode}
             userIdx={userIdx}
@@ -842,7 +844,7 @@ function AppContent() {
           {mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && subtreeQs[subtreeQs.length - 1]?.data && (
             <p className="hint leaf-note">
               <code>{mapPath[mapPath.length - 1].n}</code> holds {fmtN(mapPath[mapPath.length - 1].o)} objects and no directory of{' '}
-              {fmtBytes(subtreeQs[subtreeQs.length - 1]!.data!.threshold ?? 0)} or more. Objects aren’t listed yet — mark or claim this prefix from the
+              {fmtBytes(subtreeQs[subtreeQs.length - 1]!.data!.threshold ?? 0)} or more. Objects aren’t listed yet — mark or assign this prefix from the
               controls above, or press Backspace to go up.
             </p>
           )}
@@ -920,7 +922,7 @@ function AppContent() {
                 {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
                 {' '}· <Tooltip content={<>
                   <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
-                  a subtree that left the slice (e.g. got claimed) shows as shrunk even if its bytes didn’t move.
+                  a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
                   Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
                   “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
                   {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}

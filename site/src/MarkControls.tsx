@@ -34,8 +34,8 @@ export const KEEP_TIP =
   'Keep this prefix — protect everything under it from the sweep. Takes no immediate action; nothing is deleted.'
 export const SWEEP_TIP =
   'Mark this prefix for the sweep. Takes no immediate action — deletions happen only through reviewed sweep runs (approved band by band on /sweep).'
-export const CLAIM_TIP =
-  'Claim this prefix — assign an owner (you by default, or pick someone). Pulls it out of the “Unclaimed” pool so it shows up as that person’s data.'
+export const ASSIGN_TIP =
+  'Assign this prefix an owner — you by default, or anyone you name. Overrides the inferred owner (paths, W&B runs, sidecars) and pulls it out of the “Unowned” pool so it counts as that person’s data.'
 export const NOTE_TIP =
   'Optional memo stored on the keep/sweep/clear action you take next — a reason others (and future you) can see in the mark history. Not the same as the owner.'
 export const clearTip = (own: boolean): string =>
@@ -65,7 +65,9 @@ export function markProvenance(mark: Mark, own: boolean): ReactNode {
  * `keep_last_ckpt` button to checkpoint-shaped dirs. Omit (typed prefixes,
  * below the depth cap) and the button stays available.
  */
-export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; node?: TreeNode }) {
+/** `lensed`: the view is already filtered to one owner, so `node`'s user
+ * split is that person alone — the inferred owner shows without a share. */
+export function MarkControls({ uri, idx, node, lensed }: { uri: string; idx: MarkIndex; node?: TreeNode; lensed?: boolean }) {
   const { put, claim } = useMarkMutations()
   const canMark = useCanMark()
   const [note, setNote] = useState('')
@@ -78,6 +80,10 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
   const prefix = uri.endsWith('/') ? uri : uri + '/'
   const { mark, own, under } = idx.resolve(uri)
   const cl = idx.claimOf(uri)
+  // Inferred owner: the node's top user by bytes (the scan's attribution),
+  // shown when nobody has assigned the prefix.
+  const top = !cl && node?.us?.length && node.b > 0 ? [...node.us].sort((x, y) => y[1] - x[1])[0] : null
+  const topPct = top && !lensed ? Math.round((100 * top[1]) / node!.b) : null
   const klcOk = node ? looksCkpt(node, uri) : true
   const ov = idx.overridesOf(uri)
 
@@ -142,24 +148,27 @@ export function MarkControls({ uri, idx, node }: { uri: string; idx: MarkIndex; 
               <input className="note" value={note} onChange={e => setNote(e.target.value)} placeholder="note on this mark (optional)" size={20} />
             </Tooltip>
           </span>
-          {/* The claim on this prefix — the ownership ledger, not attribution
-              (the page bar's "owner" axis counts both): claim for yourself, or
-              assign to anyone (avatar + name). Labeled "claim" so it can't read
-              as a verdict on what the view shows. */}
+          {/* Who owns this prefix — an assignment (the ownership ledger) if
+              there is one, else the inferred owner from the scan — and the
+              controls to assign it to yourself or anyone (avatar + name). */}
           <span className="owner">
-            <span className="lbl">claim</span>
-            {cl ? <UserChip who={cl.who} size={15} /> : <span className="none">none</span>}
+            <span className="lbl">owner</span>
+            {cl
+              ? <><UserChip who={cl.who} size={15} /><span className="prov">assigned {fmtMarkDate(cl.ts)}</span></>
+              : top
+                ? <><UserChip who={top[0]} size={15} /><span className="prov">{topPct != null ? `${topPct}% · ` : ''}inferred</span></>
+                : <span className="none">none</span>}
             <input
               list="mk-assign-users" className="assign" value={assign}
               onChange={e => setAssign(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') doClaim() }}
-              placeholder={cl ? 'reassign to…' : 'you'} size={12} spellCheck={false}
+              placeholder={cl ? 'reassign to…' : 'assign to… (you)'} size={14} spellCheck={false}
             />
             <datalist id="mk-assign-users">{allUsers().map(u => <option key={u.id} value={u.name} />)}</datalist>
-            <Tooltip content={CLAIM_TIP}>
-              <button type="button" onClick={doClaim}>{cl ? 'reassign' : 'claim'}</button>
+            <Tooltip content={ASSIGN_TIP}>
+              <button type="button" onClick={doClaim}>{cl ? 'reassign' : 'assign'}</button>
             </Tooltip>
-            {cl && <button type="button" onClick={() => claim.mutate({ prefix, release: true })}>release</button>}
+            {cl && <button type="button" onClick={() => claim.mutate({ prefix, release: true })}>unassign</button>}
           </span>
         </>
       ) : (

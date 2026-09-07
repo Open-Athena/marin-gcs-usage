@@ -8,7 +8,7 @@ import type { NamePred } from './filterTree'
 import { ActionChip, LOCAL_TZ, MARK_ACTS, eventsUnder, fmtWhen, useMarkEvents } from './markEvents'
 import { fmtScan, scanTime } from './scan'
 
-// Path-scoped slice of the mark ledger: every keep/sweep/clear/claim under the
+// Path-scoped slice of the mark ledger: every keep/sweep/clear/assignment under the
 // currently-drilled prefix, newest first. The map shows *current* fate; this
 // shows how it got there (and, when size-over-time can't, the change story).
 // It reads the same page scope as the widgets around it: the drilled prefix,

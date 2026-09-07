@@ -59,7 +59,7 @@ export function MarksPage() {
           <h1>Recent marks</h1>
         </div>
         <p className="sub">
-          Every keep / sweep / claim in the ledger, newest first. Click a prefix to open it on the map.
+          Every keep / sweep / assignment in the ledger, newest first. Click a prefix to open it on the map.
           {events.length > 0 && <> {events.length} action{events.length === 1 ? '' : 's'}.</>}
         </p>
       </header>

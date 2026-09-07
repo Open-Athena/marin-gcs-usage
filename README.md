@@ -42,9 +42,9 @@ gcs-usage wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l 
 Reporting and the site consume any number of attribution parquets (`-a`, repeatable):
 
 ```bash
-gcs-usage attr-report -l <listing> -a <attr...>       # per-user/team bytes + coverage; -u <user> prints their claim list
+gcs-usage attr-report -l <listing> -a <attr...>       # per-user/team bytes + coverage; -u <user> prints their prefixes
 gcs-usage report -a <actions.json>                    # per-user mark-status CSV (the "who still needs to mark" nag list)
-gcs-usage gaps -l <listing> -a <attr...> -d 2         # largest unattributed prefixes (curation queue)
+gcs-usage gaps -l <listing> -a <attr...> -d 2         # largest unowned prefixes (curation queue)
 gcs-usage webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
 gcs-usage rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
 ```

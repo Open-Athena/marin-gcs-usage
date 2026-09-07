@@ -88,7 +88,7 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   userIdx: Map<string, UserIndexEntry>
@@ -108,6 +108,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   onClearHl?: () => void
   pricing?: Pricing | null
   lens?: boolean
+  /** The view is filtered to one owner (`?o=<user>`): nodes carry that
+   * person's slice alone, so the mark panel's inferred owner shows no share. */
+  ownerLensed?: boolean
   // URI scheme for cell paths — `gs://` for GCS, `s3://` for CoreWeave.
   scheme?: string
   // OG-image mode: hide every text detail (cell labels, crumb/rollup bars, hint)
@@ -424,7 +427,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       : []
     return (
       <>
-        {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} />}
+        {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} lensed={ownerLensed} />}
         {fateRows.length > 0 && (
           <span
             className={`fate-rollup${exact ? '' : ' approx'}`}
@@ -598,7 +601,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         {classes}
         {users}
         {/* interactive only when the tooltip is pinned; CSS hides it on hover */}
-        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} />}
+        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} lensed={ownerLensed} />}
       </>
     )
   }

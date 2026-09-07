@@ -58,9 +58,9 @@ export function BulkBar({ matches, scheme, query }: {
         onClick={() => {
           const v = assign.trim()
           const owner = v ? (allUsers().find(u => u.name.toLowerCase() === v.toLowerCase())?.id ?? v) : '@me'
-          setPending({ label: v ? `assign→${v}` : 'claim', make: pattern => ({ pattern, owner }) })
+          setPending({ label: v ? `assign→${v}` : 'assign→me', make: pattern => ({ pattern, owner }) })
         }}>
-        {assign.trim() ? 'assign' : 'claim'}
+        {assign.trim() ? 'assign' : 'assign to me'}
       </button>
       <input list="bb-assign-users" value={assign} onChange={e => setAssign(e.target.value)}
         placeholder="you" size={7} aria-label="Assign matches to user" />

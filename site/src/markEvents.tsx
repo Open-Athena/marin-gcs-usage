@@ -20,8 +20,8 @@ export const MARK_ACTS: { act: MarkAct; key: string; label: string; glyph: strin
   { act: 'keep_last_ckpt', key: 'l', label: 'keep last', glyph: '◐', color: 'var(--mk-keep)' },
   { act: 'sweep', key: 's', label: 'sweep', glyph: '✕', color: 'var(--mk-del)' },
   { act: 'clear', key: 'c', label: 'clear', glyph: '○', color: 'var(--line)' },
-  { act: 'claim', key: 'o', label: 'claim', glyph: '◆', color: 'var(--t-oa)' },
-  { act: 'release', key: 'r', label: 'release', glyph: '◇', color: 'var(--t-oa)' },
+  { act: 'claim', key: 'o', label: 'assign', glyph: '◆', color: 'var(--t-oa)' },
+  { act: 'release', key: 'r', label: 'unassign', glyph: '◇', color: 'var(--t-oa)' },
 ]
 
 export interface MarkEvent {
@@ -63,7 +63,7 @@ export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; erro
       evs.push({
         ts: r.ts, who: r.who, prefix: r.prefix, id: r.action_id, kind: 'owner', memo: r.memo,
         act: r.owner == null ? 'release' : 'claim',
-        label: r.owner == null ? 'released' : `claimed${r.owner === r.who ? '' : ` for ${r.owner}`}`,
+        label: r.owner == null ? 'unassigned' : `assigned to ${r.owner === r.who ? 'self' : r.owner}`,
         color: 'var(--t-oa)',
         glyph: r.owner == null ? '◇' : '◆',
       })

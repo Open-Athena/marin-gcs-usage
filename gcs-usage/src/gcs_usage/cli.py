@@ -181,7 +181,7 @@ def wandb_attr(
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-n", "--top", default=30, help="Rows in the per-user table")
-@option("-u", "--user", "claim_user", default=None, help="Print this user's claim list (their attributed prefixes by bytes)")
+@option("-u", "--user", "claim_user", default=None, help="Print this user's prefixes (inferred ownership, by bytes)")
 def attr_report(
     attributions: tuple[str, ...],
     identities_path: Path,
@@ -882,7 +882,7 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
 
 
 @sweep.command("manifest")
-@option("-A", "--approve", "approved", multiple=True, help="Approved band prefix (gs://…/); given ≥1, approval REPLACES the owner-claim check")
+@option("-A", "--approve", "approved", multiple=True, help="Approved band prefix (gs://…/); given ≥1, approval REPLACES the ownership check")
 @option("-S", "--approved-from-site", is_flag=True, help="Load approved bands from the site's sweep_approvals table (the /sweep console's sign-offs)")
 @option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets (default: all six)")
 @option("-d", "--date", required=True, help="Scan date whose listing to plan from (pinned)")
@@ -890,7 +890,7 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
 @option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Listing root (gs:// or local mount)")
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
-@option("-X", "--no-attr-check", is_flag=True, help="Skip the per-dir sweeper-vs-attribution gate on approved bands (default ON: approval deletes only the sweeper's own slice)")
+@option("-X", "--no-attr-check", is_flag=True, help="Skip the per-dir sweeper-vs-owner gate on approved bands (default ON: approval deletes only the sweeper's own slice)")
 def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None, no_attr_check: bool) -> None:
     """Object-level sweep manifest under the vote model + policy (b): stream
     the pinned listing, classify every directory (specs/sweep-executor.md,

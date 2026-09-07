@@ -60,7 +60,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   prefix: string
   /** The owner axis's user: their bytes under `prefix`, per scan. */
   user?: string | null
-  /** The owner axis's pool — `unclaimed` = bytes no person owns, `claimed`
+  /** The owner axis's pool — `unowned` = bytes no person owns, `owned`
    * = bytes some person owns — under `prefix`, per scan. `user` wins. */
   pool?: 'unowned' | 'owned' | null
   /** Click a point → view the page as of that scan (pins `?d=`). */
@@ -134,7 +134,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
           : pool === 'unowned'
             ? <>Bytes no person owns{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
             : pool === 'owned'
-              ? <>Bytes attributed to a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
+              ? <>Bytes owned by a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
               : prefix
                 ? <>Stored bytes under <code>{prefix}</code> per scan.</>
                 : <>Total stored bytes per scan (fleet-wide).</>}

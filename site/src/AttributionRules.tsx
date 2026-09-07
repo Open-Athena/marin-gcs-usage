@@ -5,9 +5,9 @@ const GROUP_EMAIL = 'marin-gcs-usage@openathena.ai'
 const DISCORD_URL = 'https://discord.com/channels/1354881461060243556/1412294350645493840'
 const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/gcs-usage/src/gcs_usage/identities.yaml'
 
-/** Where owners come from, and where to go with questions. Claims are the
- *  source of truth; inferred attribution is only the bootstrap for whatever
- *  nobody has claimed yet — so this stays short and points at people, not at
+/** Where owners come from, and where to go with questions. Assignments are the
+ *  source of truth; inferred ownership is only the bootstrap for whatever
+ *  nobody has assigned yet — so this stays short and points at people, not at
  *  the rule tables (those live in identities.yaml for whoever wants them). */
 export function AttributionRules({ tree }: { tree: TreeNode }) {
   // deep-linkable: the section mounts after data loads, so honor #attribution then
@@ -22,14 +22,15 @@ export function AttributionRules({ tree }: { tree: TreeNode }) {
       <h2>Ownership</h2>
       <div className="prose">
         <p>
-          An owner comes from one of two places. A <b>claim</b> — someone marking a prefix as theirs, from the
-          map, the CLI, or the API — is the source of truth and always wins. Everything unclaimed falls back to
+          An owner comes from one of two places. An <b>assignment</b> — someone assigning a prefix to a person
+          (themselves or anyone else) from the map, the CLI, or the API — is the source of truth and always wins.
+          Everything unassigned falls back to
           <b> inferred</b> ownership (W&amp;B run configs, <code>.executor_info</code> sidecars, provenance records,
           and a short list of manual prefix rules in{' '}
           <a href={YAML_URL} target="_blank" rel="noreferrer"><code>identities.yaml</code></a>): “this user's runs
           wrote these bytes” — a starting point for finding your data, not a bill. Ownership has one axis: a
           person, or nobody. <b>{pct}%</b> of bytes have an owner today; the rest shows as{' '}
-          <i>unclaimed</i> (gray) until someone claims it — shared corpora and infra included, because a
+          <i>unowned</i> (gray) until someone assigns it — shared corpora and infra included, because a
           keep/sweep decision needs a person to sign off.
         </p>
         <p className="feedback">
