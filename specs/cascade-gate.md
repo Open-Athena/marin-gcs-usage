@@ -14,6 +14,8 @@ The acceptance for `~/c/disk-tree/specs/mgu-scale-unification.md` (DT landed A�
 
 Findings and asks written to `~/c/disk-tree/specs/mgu-scale-a3-gate.md`: directory-only partition keys with batching (blocks the fleet run), a placeholder policy (mgu's), the `//` policy, an absolute `--coarse-floor`, and the memory projection.
 
-## Round 2 — the fleet on Batch (pending ask 1)
+**Rerun on DT's fix (`46ff7b4`, vendored in `60b734a`)** — `-k 2 --partition-files 4M -F <fleet floor>`: 3,182 directory keys → 4 cascades, 4:06 wall, 22.0 GB peak RSS. `cascade-a2a`: **exact** — bytes, objects, class pivots and mean mtime on all 690,894 shared rows; the only one-sided rows are the two `a//b` names (mgu keeps the empty component) and nine DT empty slices (a dir's own slice with nothing in it), both counted apart.
 
-Rebuild the job image (it vendors the engine), add a `GATE=1` mode to `job/run.sh` that stages the listing + attribution, writes labels, runs `import` per bucket with `--partition-depth` and the fleet coarse floor, runs `cascade-a2a` per bucket against that day's path index, and reports `max_rss_mb` and wall time beside `webdata`'s.
+## Round 2 — the fleet on Batch (submitted 2026-09-07 15:31 UTC)
+
+`job/run.sh` `GATE=1` (with `REPROC=1`): stages the date's listing + attribution, writes labels, runs `import` per bucket under `/usr/bin/time -v` (`GATE_K` partition depth, batching at 4M files, the job's `DUCKDB_MEM`), runs `cascade-a2a` per bucket against the date's published path index, copies logs + reports to `gs://oa-gcs-usage-dvx/gate/<date>/`. Submitted as `gcs-usage-gate-20260907-153058` (`GATE_K=3`, `DUCKDB_MEM` 100GB, n2-highmem-32 / 250 GiB, 1.5 TB local SSD) on the 2026-09-07 listing. To read: peak RSS per bucket against `webdata`'s 141.7 GB, wall against the daily's webdata phase, and six `OK: exact` lines.
