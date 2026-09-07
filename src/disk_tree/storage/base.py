@@ -1,10 +1,25 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from os.path import exists, join
+from os import remove
 from shutil import move
 from uuid import uuid4
 
 import pandas as pd
+
+from .. import blobfs
+
+# Rows are sorted (depth, path), so bounded row groups give parquet min/max
+# stats real pruning power for both the depth and path-prefix pushdowns — a
+# single whole-file row group (pandas' default at these sizes) makes every
+# pushdown a full read. Also the grain of the vocab sidecar's block index
+# (`sidecar.py`): 1e9 rows / 262k ≈ 4k groups, so a selective name reads a
+# handful of groups instead of the file.
+# Read-side granularity: a directory listing (`load(min_depth=max_depth=d,
+# path_prefix=…)`) decodes every row group whose stats overlap, so this is the
+# unit of work per browse/diff expansion. 64K rows ≈ 4 ms per listing vs
+# ~40 ms at 1M (measured 2026-08-28, 4.5M-row home scan); footer cost is
+# negligible either way. `disk-tree migrate-row-groups` rewrites older blobs.
+BLOB_ROW_GROUP_SIZE = 65_536
 
 
 def path_prefix_bounds(prefix: str) -> tuple[str, str]:
@@ -70,10 +85,15 @@ class StorageBackend(ABC):
         if scans_dir is None:
             raise NotImplementedError(f"{self.name} backend cannot adopt parquet files")
         blob_ref = f'{uuid4()}.parquet'
-        blob_path = join(scans_dir, blob_ref)
-        if exists(blob_path):
+        blob_path = blobfs.join(scans_dir, blob_ref)
+        if blobfs.exists(blob_path):
             raise RuntimeError(f"Blob path already exists: {blob_path}")
-        move(parquet_path, blob_path)
+        if blobfs.is_url(scans_dir):
+            # No cross-store rename: upload, then drop the local file.
+            blobfs.put(parquet_path, blob_path)
+            remove(parquet_path)
+        else:
+            move(parquet_path, blob_path)
         return blob_ref
 
     @abstractmethod
