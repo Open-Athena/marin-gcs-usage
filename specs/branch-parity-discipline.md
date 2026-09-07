@@ -261,3 +261,10 @@ gcs writes through gcsfs / the `/gcs` mount.
 Queued dt-ward: `~/c/disk-tree/specs/marin-cp-2026-09-07.md` — `TimeSeries`
 `onBrush`/`window` (gcs `f30230c`), the one shared-surface change since
 their last manifest.
+
+Same day, second commit (`e9a3cce`): upstream's `25f3dc0` treemap-core
+extraction landed — `packages/treemap` (`@rdub/treemap`) taken verbatim,
+`packages/react` trimmed to the disk widgets + `export *`. `packages/` now
+differs from upstream only by `TimeSeries`'s `onBrush`/`window`; the
+`gcs ↔ dt/main` audit rows for `packages/react/src` should read `parity`
+once that ports. The "structural gap" row above is closed.
