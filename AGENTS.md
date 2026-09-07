@@ -185,7 +185,8 @@ GitHub handle max); sizes and $ stay behind the site's auth.
 
 Daily Batch job: per-bucket DIY listings → `gs://oa-gcs-usage-dvx/listing/<date>/`
 (+ `dir-cache/`, and the index tiers under `index/<gen>/` — one generation per
-run, never overwritten; D1's `index_schema` row is the pointer) → `webdata` aggregation →
+run, never overwritten, each with a `<tier>.groups.json` group manifest the
+site opens once D1 retires the tier's rows; D1's `index_schema` row is the pointer) → `webdata` aggregation →
 `snapshots/<date>/{tree,age,meta}.json` (+ `series.json`, `rules.json`). The site
 reads the bucket directly via `functions/data/[[path]].ts` — no site rebuild on
 new data. Marks/claims live in D1 (actions ledger) and apply on top of the latest

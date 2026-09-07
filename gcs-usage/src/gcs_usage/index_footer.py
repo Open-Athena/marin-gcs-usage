@@ -126,6 +126,48 @@ def extract(parquet_path: str) -> tuple[dict, list[dict]]:
     return schema, _group_rows(md)
 
 
+GROUPS_BLOB_SUFFIX = ".groups.json"
+GROUPS_BLOB_VERSION = 1
+
+
+def groups_blob_path(parquet_path: str) -> str:
+    """The group-manifest blob beside a tier: `…/path-index-by-user.parquet` →
+    `…/path-index-by-user.groups.json`."""
+    if not parquet_path.endswith(".parquet"):
+        raise ValueError(f"not a parquet path: {parquet_path}")
+    return parquet_path[: -len(".parquet")] + GROUPS_BLOB_SUFFIX
+
+
+def groups_blob(schema: dict, rows: list[dict]) -> str:
+    """The blob's JSON: what `sync_d1` puts in `index_schema` + `index_row_groups`
+    for one tier, as one document — the site's fallback for a scan whose row
+    groups retention retired from D1 (`_lib/index.ts` `openBlob`). Groups are
+    compact arrays in `index_row_groups` column order; `rg_json` stays the
+    string the reader revives."""
+    groups = [
+        [r["rg"], r["d_min"], r["d_max"], r["p_min"], r["p_max"], r["b_max"], r["u_min"], r["u_max"], r["row_start"], r["row_end"], r["rg_json"]]
+        for r in rows
+    ]
+    body = {"v": GROUPS_BLOB_VERSION, "version": schema["version"], "schema": schema["schema"], "floor_bytes": schema.get("floor_bytes"), "groups": groups}
+    return json.dumps(body, separators=(",", ":"))
+
+
+def write_groups_blob(parquet_path: str, schema: dict, rows: list[dict]) -> tuple[str, int]:
+    """Write the group-manifest blob beside ``parquet_path`` (local, mounted,
+    or `gs://`); returns (path, bytes)."""
+    out = groups_blob_path(parquet_path)
+    text = groups_blob(schema, rows)
+    if out.startswith(("gs://", "oa-")):
+        import gcsfs
+
+        with gcsfs.GCSFileSystem().open(out, "w") as f:
+            f.write(text)
+    else:
+        with open(out, "w") as f:
+            f.write(text)
+    return out, len(text)
+
+
 def _sql_escape(s: str) -> str:
     return s.replace("'", "''")
 
@@ -222,6 +264,7 @@ def sync_d1(
     db_id: str = D1_DB_ID,
     remote: bool = True,
     insert_bytes: int = INSERT_BYTES,
+    blob: bool = True,
 ) -> int:
     """Extract the footer of ``parquet_path`` (one tier/sort ``variant`` of
     scan ``date``, generation ``gen``, living under the bucket-relative dir
@@ -235,8 +278,14 @@ def sync_d1(
     ``INSERT OR REPLACE``, so a reader sees either the previous complete
     generation or this one, never a half-written set. A mid-run failure leaves
     the pointer untouched (still serving the previous generation) and orphan
-    rows the next sync/gc sweeps. Nothing is deleted before the flip."""
+    rows the next sync/gc sweeps. Nothing is deleted before the flip.
+
+    The same rows also land as the group-manifest blob beside the parquet
+    (``write_groups_blob``) first — the durable copy the site opens once
+    retention retires this tier's rows from D1."""
     schema, rows = extract(parquet_path)
+    if blob:
+        write_groups_blob(parquet_path, schema, rows)
     floor = schema.get("floor_bytes")
     # Leftovers from earlier flips (any gen that is neither the current pointer's
     # nor this one) go first — they are unreachable by construction.

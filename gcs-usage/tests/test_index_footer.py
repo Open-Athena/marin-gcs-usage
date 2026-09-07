@@ -172,11 +172,15 @@ def test_sync_d1_packs_inserts_greedily_under_the_byte_limit(tmp_path, monkeypat
         r["rg"] = i
     monkeypatch.setattr(index_footer, "extract", lambda _p: ({"version": 1, "schema": []}, rows))
     monkeypatch.setattr(index_footer, "_creds", lambda: ("tok", "acct"))
+    blobs: list[tuple] = []
+    monkeypatch.setattr(index_footer, "write_groups_blob", lambda path, schema, rs: blobs.append((path, schema, rs)) or (path, 0))
     sent: list[str] = []
     monkeypatch.setattr(index_footer, "_d1_query", lambda sql, acct, tok, db_id: sent.append(sql) or [])
     limit = 1000
     n = sync_d1("2026-09-01", "x.parquet", variant="path", gen="20260901T070000Z", key="listing/2026-09-01/index/20260901T070000Z", insert_bytes=limit)
     assert n == 12
+    # The blob beside the parquet is written before any D1 row: the durable copy.
+    assert blobs == [("x.parquet", {"version": 1, "schema": []}, rows)]
     # Generation protocol: sweep unreachable gens, land every group under this
     # gen, then flip the pointer — nothing is deleted before the flip.
     assert sent[0] == (
@@ -275,3 +279,26 @@ def test_retire_d1_drops_floor_free_groups_of_scans_past_the_retention_window(mo
     ]
     assert con.execute("SELECT count(*) FROM index_schema").fetchone() == (12,)
     assert retire_d1(2) == []  # idempotent
+
+
+def test_groups_blob_is_the_synced_rows_as_one_document(tmp_path):
+    from gcs_usage.index_footer import groups_blob_path, write_groups_blob
+
+    md = _write_index(tmp_path / "i.parquet")
+    schema = {**_schema_json(md), "floor_bytes": 4096}
+    rows = _group_rows(md)
+    out, n = write_groups_blob(str(tmp_path / "i.parquet"), schema, rows)
+    assert out == str(tmp_path / "i.groups.json") == groups_blob_path(str(tmp_path / "i.parquet"))
+    text = (tmp_path / "i.groups.json").read_text()
+    assert n == len(text)
+    assert json.loads(text) == {
+        "v": 1,
+        "version": schema["version"],
+        "schema": schema["schema"],
+        "floor_bytes": 4096,
+        "groups": [
+            [r["rg"], r["d_min"], r["d_max"], r["p_min"], r["p_max"], r["b_max"], r["u_min"], r["u_max"], r["row_start"], r["row_end"], r["rg_json"]]
+            for r in rows
+        ],
+    }
+    assert [g[0] for g in json.loads(text)["groups"]] == [0, 1]

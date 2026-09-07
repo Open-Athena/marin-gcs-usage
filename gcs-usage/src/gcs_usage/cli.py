@@ -2018,6 +2018,29 @@ def index_sync(
         err(f"index-sync: {date} [{variant}] gen {gen} @ {key} — {n} row groups ({'local' if local else 'remote'})")
 
 
+@main.command("index-blob")
+@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
+@option("-d", "--dir", "listing_dir", default=None, help="Local/mounted/gs:// dir holding the parquets (default: gs://<bucket>/<key>)")
+@option("-g", "--gen", required=True, help="Generation the files belong to (`legacy` for listing/<date>/)")
+@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all)")
+@argument("date")
+def index_blob(bucket: str, listing_dir: str | None, gen: str, key: str | None, variants: tuple[str, ...], date: str) -> None:
+    """Write each tier's group-manifest blob (`<tier>.groups.json`, the rows
+    `index-sync` puts in D1) beside its parquet — the backfill for scans synced
+    before `index-sync` wrote blobs; the site opens the blob once retention
+    retires a tier's rows from D1 (specs/view-serving.md)."""
+    from .index_footer import extract, write_groups_blob
+
+    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
+    base = listing_dir or f"gs://{bucket}/{key}"
+    for variant in variants or tuple(INDEX_VARIANTS):
+        path = f"{base}/{INDEX_VARIANTS[variant]}"
+        schema, rows = extract(path)
+        out, n = write_groups_blob(path, schema, rows)
+        err(f"index-blob: {date} [{variant}] {len(rows)} groups → {out} ({n:,} B)")
+
+
 @main.command("index-gc")
 @option("-r", "--retain", type=int, default=None, help="Retention: also retire the floor-free variants' row groups of every scan older than the newest N (their pointers stay; the reader falls back to the parquet footer)")
 @argument("dates", nargs=-1)

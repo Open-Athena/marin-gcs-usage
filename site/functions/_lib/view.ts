@@ -153,7 +153,7 @@ async function tryOpen(env: Env, date: string, variant: string): Promise<IndexHa
   }
 }
 
-const floorOf = (h: IndexHandle): number | null => (h.mode === 'd1' ? h.floor : null)
+const floorOf = (h: IndexHandle): number | null => h.floor
 
 /** Just P's scoped aggregate for one scan — the size-over-time chart's point
  * (`/api/series`): the root read of a view, from the coarsest tier that has
