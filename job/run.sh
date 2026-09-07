@@ -323,10 +323,13 @@ fi
 # previous generation; every reader handle has expired by now), and retire
 # the floor-free row groups of scans older than the newest INDEX_RETAIN —
 # D1's 10 GB cap (specs/view-serving.md follow-ups): the coarse tiers stay
-# for every scan; a deep drill into an old scan takes the footer path.
+# for every scan. A retired scan's deep drill falls to the footer path,
+# which exceeds the Worker's memory on a 27k-group footer (2026-09-07), so
+# the window is wide (~40 MB of D1 per scan: 120 ≈ 5 GB) until retired
+# scans read a group manifest blob instead.
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  gcs-usage index-gc -r "${INDEX_RETAIN:-30}" "$DATE" || echo "WARN: index-gc failed" >&2
+  gcs-usage index-gc -r "${INDEX_RETAIN:-120}" "$DATE" || echo "WARN: index-gc failed" >&2
 fi
 set -x
 

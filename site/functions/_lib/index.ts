@@ -158,10 +158,14 @@ export async function openIndex(env: Env, date: string, variant = 'path'): Promi
     if (!env.DB) throw new Error('index reader not configured (DB)')
     const s = await env.DB.prepare('SELECT version, schema_json, floor_bytes, gen, dir FROM index_schema WHERE date = ? AND variant = ?').bind(date, variant).first<{ version: number; schema_json: string; floor_bytes: number | null; gen: string | null; dir: string | null }>()
     if (!s || !s.gen || !s.dir) throw new Error(`index variant '${variant}' not synced for ${date}`)
-    // A pointer whose row groups were retired (retention) still names the
-    // file: serve it from its footer, the slow path.
+    // A pointer whose row groups were retired (`index-gc -r`) still names
+    // the file, but parsing a floor-free tier's ~27k-group footer exceeds the
+    // Worker's memory (2026-09-07: every such read was a 503), so a retired
+    // tier reads as unsynced — callers fold to the coarse tiers or skip the
+    // scan — until retired scans get a group-manifest blob to open instead
+    // (`openFooter` is the handle shape that will take).
     const any = await env.DB.prepare('SELECT 1 AS x FROM index_row_groups WHERE date = ? AND variant = ? AND gen = ? LIMIT 1').bind(date, variant, s.gen).first<{ x: number }>()
-    if (!any) return openFooter(env, indexKey(s.dir, variant))
+    if (!any) throw new Error(`index variant '${variant}' not synced for ${date} (retired from D1)`)
     return { mode: 'd1', file: fileFor(env, s.dir, variant), env, date, variant, gen: s.gen, schema: JSON.parse(s.schema_json), version: s.version, floor: s.floor_bytes == null ? null : num(s.floor_bytes) }
   })()
   handles.set(ck, { p, at: Date.now() })
@@ -169,7 +173,7 @@ export async function openIndex(env: Env, date: string, variant = 'path'): Promi
   return p
 }
 
-async function openFooter(env: Env, key: string): Promise<FooterHandle> {
+export async function openFooter(env: Env, key: string): Promise<FooterHandle> {
   const store = makeStore(env)
   const probe = await store.get(key, { offset: 0, length: 1 })
   const byteLength = probe.totalSize
