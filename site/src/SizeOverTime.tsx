@@ -62,7 +62,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   user?: string | null
   /** The owner axis's pool — `unclaimed` = bytes no person owns, `claimed`
    * = bytes some person owns — under `prefix`, per scan. `user` wins. */
-  pool?: 'unclaimed' | 'claimed' | null
+  pool?: 'unowned' | 'owned' | null
   /** Click a point → view the page as of that scan (pins `?d=`). */
   onPickDate?: (date: string) => void
   /** Drag across the chart → make [from, to] the page's diff window. */
@@ -131,9 +131,9 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
       <p className="sub">
         {user
           ? <><b>{shortName(user)}</b>’s bytes{prefix ? <> under <code>{prefix}</code></> : ''} per scan.</>
-          : pool === 'unclaimed'
+          : pool === 'unowned'
             ? <>Bytes no person owns{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
-            : pool === 'claimed'
+            : pool === 'owned'
               ? <>Bytes attributed to a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
               : prefix
                 ? <>Stored bytes under <code>{prefix}</code> per scan.</>

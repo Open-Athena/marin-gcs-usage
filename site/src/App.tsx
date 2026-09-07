@@ -48,8 +48,8 @@ const FATE_CHIPS: { f: FateAxis; key: string; glyph: string; color: string; tip:
 
 // The owner axis: `?o=` is `claimed`, `unclaimed`, `me`, or a user key
 // (`?o=rw`); absent = everything. Claimed = attributed to a person; unclaimed
-// = the nobody-owns-it pool. A user narrows "claimed" to that person.
-type OwnerMode = 'all' | 'claimed' | 'unclaimed' | 'user'
+// = the nobody-owns-it pool. A user narrows "owned" to that person.
+type OwnerMode = 'all' | 'owned' | 'unowned' | 'user'
 
 /** The sticky bar's current height (px) — where anchored sections park. */
 const topbarH = (): number =>
@@ -147,18 +147,18 @@ function AppContent() {
   // shared `?o=me` link shows each reader their own files); an unmapped
   // email resolves to nothing, and the axis falls back to "all" with a note.
   const ownerUser: string | null =
-    !markMode || !oP || oP === 'claimed' || oP === 'unclaimed' ? null
+    !markMode || !oP || oP === 'owned' || oP === 'unowned' ? null
     : oP === 'me' ? myUser
     : canonId(oP)
   const ownerMode: OwnerMode =
-    !markMode || !oP ? 'all' : oP === 'claimed' ? 'claimed' : oP === 'unclaimed' ? 'unclaimed' : ownerUser ? 'user' : 'all'
+    !markMode || !oP ? 'all' : oP === 'owned' ? 'owned' : oP === 'unowned' ? 'unowned' : ownerUser ? 'user' : 'all'
   const meUnmapped = markMode && oP === 'me' && !myUser
   const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
   // The owner pools as a checklist: both = all (a picked person is dropped
-  // too — they were narrowing "claimed"); one = that pool.
-  const pools: ('claimed' | 'unclaimed')[] = ownerMode === 'all' ? ['claimed', 'unclaimed'] : ownerMode === 'unclaimed' ? ['unclaimed'] : ['claimed']
-  const setPools = (keep: ('claimed' | 'unclaimed')[]) =>
-    setOP(keep.length !== 1 ? undefined : keep[0] === 'claimed' && ownerUser ? oP : keep[0])
+  // too — they were narrowing "owned"); one = that pool.
+  const pools: ('owned' | 'unowned')[] = ownerMode === 'all' ? ['owned', 'unowned'] : ownerMode === 'unowned' ? ['unowned'] : ['owned']
+  const setPools = (keep: ('owned' | 'unowned')[]) =>
+    setOP(keep.length !== 1 ? undefined : keep[0] === 'owned' && ownerUser ? oP : keep[0])
   const viewUser = ownerUser
   // Every scope axis is applied server-side by /api/subtree (specs/
   // view-serving.md §2): a user (`lens=user:`), a pool (`o=`), the mark axis
@@ -168,7 +168,7 @@ function AppContent() {
   const activeLens = lensUser ? `user:${lensUser}` : null
   const scopeQs =
     (activeLens ? `&lens=${activeLens}` : '') +
-    (ownerMode === 'claimed' || ownerMode === 'unclaimed' ? `&o=${ownerMode}` : '') +
+    (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
     (fateSet ? `&k=${[...fateSet].map(f => f[0]).join('')}` : '') +
     (fq ? `&q=${encodeURIComponent(fq)}` : '')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
@@ -180,14 +180,17 @@ function AppContent() {
     const sp = new URLSearchParams(search)
     const legacy = ['l', 'lu', 'u', 'mt', 'mu', 't']
     const t = sp.get('t')
-    if (!legacy.some(k => sp.has(k))) return
+    // The owner pools were `claimed` / `unclaimed` until 2026-09-07.
+    const oldPool = sp.get('o') === 'claimed' ? 'owned' : sp.get('o') === 'unclaimed' ? 'unowned' : null
+    if (!legacy.some(k => sp.has(k)) && !oldPool) return
+    if (oldPool) sp.set('o', oldPool)
     const l = sp.get('l') ?? sp.get('mt')
     const lu = sp.get('lu') ?? sp.get('mu')
     const u = sp.get('u')
     for (const k of legacy) sp.delete(k)
-    if (t === 'unattributed' || t === 'communal') sp.set('o', 'unclaimed')
+    if (t === 'unattributed' || t === 'communal') sp.set('o', 'unowned')
     if (l === 'todo') sp.set('k', 'u')
-    else if (l === 'unclaimed' || l === 'communal') sp.set('o', 'unclaimed')
+    else if (l === 'unclaimed' || l === 'communal') sp.set('o', 'unowned')
     else if (l === 'user' || l === 'mine') sp.set('o', lu ? shortUserKey(canonId(lu)) : 'me')
     if (u && !sp.has('o')) sp.set('o', shortUserKey(canonId(u)))
     navigate({ pathname, search: `?${sp.toString()}`, hash }, { replace: true })
@@ -512,7 +515,7 @@ function AppContent() {
     setOwnerUser(u)
     if (switchMode && mode !== 'user') setMode('user')
   }
-  const pickUnclaimed = () => setOP('unclaimed')
+  const pickUnclaimed = () => setOP('unowned')
   const clearHl = () => setOP(undefined)
 
   useActions({
@@ -534,8 +537,8 @@ function AppContent() {
       handler: clearHl,
     },
     'owner:me': { label: 'Owner: my files', group: 'Scope', handler: () => setOP('me') },
-    'owner:claimed': { label: 'Owner: claimed only', group: 'Scope', handler: () => setOP('claimed') },
-    'owner:unclaimed': { label: 'Owner: unclaimed only', group: 'Scope', handler: () => setOP('unclaimed') },
+    'owner:claimed': { label: 'Owner: claimed only', group: 'Scope', handler: () => setOP('owned') },
+    'owner:unclaimed': { label: 'Owner: unclaimed only', group: 'Scope', handler: () => setOP('unowned') },
     'marks:unmarked': { label: 'Marks: unmarked only (the to-do backlog)', group: 'Scope', handler: () => setKP('u') },
     'marks:all': { label: 'Marks: every state', group: 'Scope', handler: () => setKP(undefined) },
     'lens:classes': {
@@ -659,7 +662,7 @@ function AppContent() {
   )
   const ownerSelect = (
     <select className="tb-select" value={ownerMode === 'user' ? (oP === 'me' ? 'me' : ownerUser!) : ''}
-      aria-label="Owner" disabled={ownerMode === 'unclaimed'}
+      aria-label="Owner" disabled={ownerMode === 'unowned'}
       onChange={e => setOwnerUser(e.target.value || undefined)}>
       <option value="">anyone</option>
       {myUser && <option value="me">me ({shortName(myUser)})</option>}
@@ -739,11 +742,11 @@ function AppContent() {
         {markMode && hasAttr && (
           <span className="tb-axis">
             <span className="lbl">owner</span>
-            <MultiSelect<'claimed' | 'unclaimed'>
+            <MultiSelect<'owned' | 'unowned'>
               label="owner pools"
               options={[
-                { key: 'claimed', label: 'claimed', glyph: '●', color: 'var(--s1)', tip: 'Bytes attributed to a person (W&B runs, executor sidecars, claims, curation). Pick someone beside this to narrow it to them.' },
-                { key: 'unclaimed', label: 'unclaimed', glyph: '○', color: 'var(--ink-2)', tip: "Bytes no person owns. Claim what's yours (table below, or a pinned cell), then decide keep/sweep." },
+                { key: 'owned', label: 'owned', glyph: '●', color: 'var(--s1)', tip: 'Bytes attributed to a person (W&B runs, executor sidecars, claims, curation). Pick someone beside this to narrow it to them.' },
+                { key: 'unowned', label: 'unowned', glyph: '○', color: 'var(--ink-2)', tip: "Bytes no person owns. Claim what's yours (table below, or a pinned cell), then decide keep/sweep." },
               ]}
               selected={pools}
               onChange={setPools}
@@ -877,7 +880,7 @@ function AppContent() {
       <SizeOverTime
         scans={scans} prefix={drillPath}
         user={ownerUser}
-        pool={ownerMode === 'unclaimed' ? 'unclaimed' : ownerMode === 'claimed' ? 'claimed' : null}
+        pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}
         onPickDate={setDP}
         onBrush={brushRange}
         window={diffWindow}

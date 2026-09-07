@@ -137,7 +137,7 @@ function DollarCell({ b, mix, color }: { b: number; mix?: Record<string, number>
 }
 
 // One-level treemap of the whole estate by owner: every user, plus one
-// "unclaimed" pool for everything no person owns.
+// "unowned" pool for everything no person owns.
 interface OwnerCell {
   n: string
   b: number
@@ -164,7 +164,7 @@ function ownerCells(meta: Meta, fates: Map<string, Record<Fate, number>> | null)
   const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b }))
   const userSum = users.reduce((s, u) => s + u.b, 0)
   const unattr = Math.max(0, meta.total_bytes - userSum)
-  if (unattr > 0) cells.push({ n: 'unclaimed', b: unattr, pool: true })
+  if (unattr > 0) cells.push({ n: 'unowned', b: unattr, pool: true })
   return cells.sort((a, b) => b.b - a.b)
 }
 

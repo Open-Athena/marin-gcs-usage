@@ -8,13 +8,15 @@
 /** `o=`: `claimed` = rows some person owns (`usr` set), `unclaimed` = the
  * NULL-`usr` slices (ownership has one axis: a person or nobody). Index rows
  * are owner slices, so this is exact per path. */
-export type OwnerScope = 'claimed' | 'unclaimed'
+export type OwnerScope = 'owned' | 'unowned'
 
+// `claimed` / `unclaimed` were the pools' names until 2026-09-07; old links
+// and cached clients still send them.
 export const parseOwner = (raw: string | null): OwnerScope | undefined =>
-  raw === 'claimed' || raw === 'unclaimed' ? raw : undefined
+  raw === 'owned' || raw === 'claimed' ? 'owned' : raw === 'unowned' || raw === 'unclaimed' ? 'unowned' : undefined
 
 export const ownerOk = (usr: string | null, o: OwnerScope | undefined): boolean =>
-  !o || (o === 'claimed' ? usr != null : usr == null)
+  !o || (o === 'owned' ? usr != null : usr == null)
 
 /** `q=`: `/…/` = regex (case-insensitive); anything else = substring (ci),
  * with `|` splitting alternatives. Predicates receive the index path

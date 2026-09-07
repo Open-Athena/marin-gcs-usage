@@ -334,7 +334,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     return [
       ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx), rate: userRate(u), mix: pricing?.userMix?.[u], hl: { user: u } as Highlight | undefined })),
       ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
-      ...(unattr > 0 ? [{ k: 'unclaimed', b: unattr, col: 'var(--t-unattr)', rate: pricing?.blended, mix: undefined, hl: { unclaimed: true } as Highlight | undefined }] : []),
+      ...(unattr > 0 ? [{ k: 'unowned', b: unattr, col: 'var(--t-unattr)', rate: pricing?.blended, mix: undefined, hl: { unclaimed: true } as Highlight | undefined }] : []),
     ].sort((a, b) => b.b - a.b)
   }
 
@@ -443,9 +443,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           </span>
         )}
         {rollup.filter(r => r.b >= 0.001 * node.b).map(r => {
-          // Real per-user rows (not "(other users)"/"unclaimed") get a GitHub
+          // Real per-user rows (not "(other users)"/"unowned") get a GitHub
           // avatar next to the color swatch.
-          const isUser = mode === 'user' && !r.k.startsWith('(') && r.k !== 'unclaimed'
+          const isUser = mode === 'user' && !r.k.startsWith('(') && r.k !== 'unowned'
           const pickable = !!r.hl && !!(r.hl.user ? onPickUser : onPickUnclaimed)
           const same = (a: Highlight | null | undefined, b: Highlight | undefined) => !!a && !!b && a.user === b.user && !!a.unclaimed === !!b.unclaimed
           const pinned = same(hl, r.hl)
