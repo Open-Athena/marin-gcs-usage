@@ -160,13 +160,13 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
         dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
       }
       // Shared-edge stroke, per cell: each neighbor paints its own half of a
-      // boundary, so the line can adapt to the face it borders. Top-level
-      // rects take the page background — the strongest seam the theme has —
-      // and deeper cells pull their own fill toward it, so even grey-on-grey
-      // siblings show a visible edge.
-      const edge = depth === 0
-        ? 'var(--surface)'
-        : `color-mix(in oklab, ${bg} ${depth === 1 ? 40 : 62}%, var(--surface))`
+      // boundary. Top-level rects take the page background — the strongest
+      // seam the theme has. Below that the edge is left to the core's
+      // `edgeContrast` default: a luminance-adaptive stroke (light on dark
+      // fills, dark on light ones; `contrastEdge`), which only applies when
+      // the consumer doesn't pin one. `var()` container faces fall through to
+      // the neutral `--dt-treemap-edge` gutter.
+      const edge = depth === 0 ? 'var(--surface)' : undefined
       return { bg, ink, hatch, edge, opacity: dim ? 0.22 : undefined }
     },
     [mode, slotOf, userIdx, dateRange, hl, lens],
@@ -301,8 +301,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       // Depth-emphasized seams: the core default (max(1, 3-depth)) tops out
       // at 1.5px painted per side — invisible between same-grey siblings.
       // Give the top level a fat gutter (3px per side → 6px between cells),
-      // one step down a clear line, leaves a hairline. Colors come from
-      // `colorForCell`'s `edge` (page-bg at depth 0, fill-adaptive below).
+      // one step down a clear line, leaves a hairline. Colors: page-bg at
+      // depth 0 (`colorForCell`'s `edge`), the core's contrast edge below.
       // Capped by cell size: drilling into a flat dir puts hundreds of small
       // cells at depth 0, where the 6px seam eats the area shared-edges mode
       // exists to preserve.

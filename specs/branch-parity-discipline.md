@@ -246,5 +246,9 @@ Deferred (portable, but a design decision for cw-s3): **`7ab2d25` +
 menu; Diff header holds both scan endpoints). cw-s3 has one page and no
 `SiteNav`; adopting the bar is a layout change to decide on, not a CP.
 
-Queued gcs-ward: nothing (gcs CP'd `fceb717` as `628635c`; the Δ-color fix
-originated there).
+Queued gcs-ward (same-day follow-up on cw-s3): **the main map never showed
+the core's adaptive edge** — `site/src/Treemap.tsx`'s `colorForCell` pinned a
+per-cell `edge` (fill mixed toward the page bg) below depth 0, and the core's
+`edgeContrast` default only applies when the consumer leaves `edge` unset;
+gcs's wrapper has the identical lines. Also the Diff map now carries the
+`gaps` tiling chip (`TilingToggle` + `tiling=`); gcs's `DiffTreemap` lacks it.

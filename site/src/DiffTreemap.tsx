@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
 import { stringParam, useUrlState } from 'use-prms'
+import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
 
 const { abs, max, min, sign } = Math
@@ -128,6 +129,7 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
 
 export function DiffTreemap({ data, label }: { data: DiffData; label: string }) {
   const { fmtBytes } = useUnits()
+  const [tiling] = useTiling()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
   // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
   // Δ (area = |delta|) is the default — the movement is what a diff view is
@@ -173,6 +175,7 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
     <div className="diff-tm">
       <DtTreemap<DiffNode>
         root={root}
+        tiling={tiling}
         getSize={n => n.weight}
         getChildren={n => n.children}
         getLabel={n => n.label}
@@ -269,6 +272,7 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
             <span style={{ opacity: 0.6, marginLeft: 4 }}>
               {areaMode === 'max' ? 'area = max(old, new), band = |Δ|' : 'area = |Δ|'}
             </span>
+            <TilingToggle />
             <span style={{ display: 'inline-flex', gap: 2, marginLeft: 6 }}>
               {(['max', 'delta'] as const).map(m => (
                 <button
