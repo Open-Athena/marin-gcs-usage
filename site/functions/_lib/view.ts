@@ -312,6 +312,9 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
     for (const r of await readRootAllRows(env, date, path, dP)) merge(rootTot, r)
   }
   let rootAgg = scoped(path, ol ? rootTot : rootAll, rootMine)
+  // A claims-only root (no attributed row) has bytes from its bands but no
+  // object count of its own: take the regions' manifest counts.
+  if (ol && rootAgg.b > 0 && rootAgg.o === 0) rootAgg.o = allRegions.reduce((n, r) => n + r.objects, 0)
   // Nothing in scope under P: an empty view, not a zero threshold that would
   // keep every row the tier holds.
   if (rootAgg.b <= 0) return null
