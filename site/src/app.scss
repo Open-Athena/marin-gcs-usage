@@ -1585,10 +1585,13 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     tr.approved td { background: #3fb95012; }
     tr.matched td:first-child { box-shadow: inset 2px 0 0 #3fb95088; }
     code { font-size: 12.5px; }
-    // Only `band` wraps: the numbers, chips and status stay on one line and
-    // the path column takes whatever width is left.
-    th:not(:first-child), td:not(:first-child) { white-space: nowrap; }
-    td:first-child { overflow-wrap: anywhere; }
+    // Cells wrap between atoms, never inside one: `106 Ti`, `of 106 Ti`,
+    // `by Ryan`, `= sweeper`, a user chip. The path column may break anywhere.
+    .nb, .user-chip { white-space: nowrap; display: inline-block; }
+    // The path column may break anywhere, but never below a readable width:
+    // past that the table scrolls in its box instead of crushing the path.
+    td:first-child { overflow-wrap: anywhere; min-width: 16em; }
+    @media (max-width: 720px) { .col-objects { display: none; } }
   }
   // A wide table scrolls inside its own box; the page never scrolls sideways.
   .table-scroll { overflow-x: auto; max-width: 100%; }

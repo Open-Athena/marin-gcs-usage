@@ -170,7 +170,7 @@ export function SweepPage() {
                   <span className="hashelp">≈ deletable</span>
                 </Tooltip>
               </th>
-              <th className="num">objects</th><th>swept by</th><th>top owner</th><th>status</th>
+              <th className="num col-objects">objects</th><th>swept by</th><th>top owner</th><th>status</th>
             </tr>
           </thead>
           <tbody>
@@ -184,24 +184,24 @@ export function SweepPage() {
               return (
                 <tr key={c.prefix} className={a ? 'approved' : c.owner_match ? 'matched' : ''}>
                   <td><Link to={drill}><code>{c.prefix.replace('gs://', '')}</code></Link></td>
-                  <td className="num">{tb(c.net_bytes)}</td>
+                  <td className="num"><span className="nb">{tb(c.net_bytes)}</span></td>
                   <td className="num" title={c.attr_other_bytes ? `${tb(c.attr_other_bytes)} owned by other users + ${tb(c.attr_unattr_bytes ?? 0)} unowned/mixed are deferred, not deleted` : undefined}>
                     {attrCap(c) == null ? <span className="dim">—</span> : (
                       <>
-                        {tb(attrCap(c)!)}
+                        <span className="nb">{tb(attrCap(c)!)}</span>
                         {(c.attr_other_bytes ?? 0) + (c.attr_unattr_bytes ?? 0) > 0 && tb(attrCap(c)!) !== tb(c.net_bytes)
-                          ? <span className="dim"> of {tb(c.net_bytes)}</span> : null}
+                          ? <> <span className="dim nb">of {tb(c.net_bytes)}</span></> : null}
                       </>
                     )}
                   </td>
-                  <td className="num">{c.net_objects.toLocaleString()}</td>
+                  <td className="num col-objects"><span className="nb">{c.net_objects.toLocaleString()}</span></td>
                   <td>{c.sweepers.map(s => <UserChip key={s} who={s} size={16} />)}</td>
                   <td>
                     {c.top_user ? (
                       <>
                         <UserChip who={c.top_user} size={16} />
-                        {c.share != null && <span className="pct"> {(c.share * 100).toFixed(0)}%</span>}
-                        {c.owner_match && <span className="match-tag">= sweeper</span>}
+                        {c.share != null && <span className="pct nb"> {(c.share * 100).toFixed(0)}%</span>}
+                        {c.owner_match && <> <span className="match-tag nb">= sweeper</span></>}
                       </>
                     ) : <span className="dim">unowned</span>}
                   </td>
@@ -215,7 +215,7 @@ export function SweepPage() {
                           : <Tooltip content={<>Approved in <b>slice</b> mode: only directories majority-owned by the sweeper ({c.sweepers.join(', ')}) are deletable{attrCap(c) != null && <> — ≈{tb(attrCap(c)!)} of {tb(c.net_bytes)}</>}. Everyone else's data in this band stays.</>}>
                               <span className="ok">approved</span>
                             </Tooltip>}
-                        {' '}<span className="dim">by {shortName(a.who)}</span>
+                        {' '}<span className="dim nb">by {shortName(a.who)}</span>
                         {canWrite && <button className="mini" onClick={() => revoke.mutate(c.prefix)}>revoke</button>}
                       </>
                     ) : canWrite ? (
