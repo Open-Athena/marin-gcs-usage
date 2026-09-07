@@ -346,13 +346,19 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   // to its whole subtree, so decorating every cell is redundant noise — we mark
   // only the top-most rendered cell that carries each mark:
   //   - `own`  (the mark sits exactly here), or
-  //   - the drill root's direct children (a mark at/above the root surfaces here
-  //     first; its deeper descendants share it and stay undecorated).
+  //   - the drill root's direct children, when their mark is NOT the one the
+  //     header already shows for the root (a mark from above the root repeats
+  //     on every tile otherwise — a wall of edges saying nothing new).
   // Skipped in `fate` mode, where the fill already *is* the fate. Bigger cells
   // also get a corner badge: the actor's avatar + the state glyph. Full-opacity
   // (inherited marks are no longer faded — they read as active). Provenance
   // (who/when/inherited-from) lives in the cell tooltip.
   const drillDepth = (path ?? initialPath)?.length ?? 1
+  // The mark covering the drill root itself is already the header's
+  // headline ("sweep set by …"); tiles that merely inherit it stay
+  // undecorated, so an edge means "this one differs from what you see above".
+  const drillPath = path ?? initialPath
+  const rootMark = markIdx && drillPath?.length ? markIdx.resolve(uriOf(drillPath)).mark : null
   const renderCellExtra = markIdx
     ? (n: TreeNode, cellPath: TreeNode[], { w, h, chain = 0 }: { w: number; h: number; chain?: number }) => {
         if (mode === 'fate') {
@@ -377,6 +383,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         // the drill root is a top-level tile like any other.
         const topLevel = cellPath.length - chain === drillDepth + 1 || isFold
         if (!own && !topLevel) return null
+        if (!own && rootMark && mark.prefix === rootMark.prefix && mark.ts === rootMark.ts) return null
         const color = ACTION_COLORS[mark.action]
         const glyph = mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'
         // Low floor so a *thin* top-level tile still reads as marked (a bare
