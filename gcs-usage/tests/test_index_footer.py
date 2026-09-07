@@ -242,3 +242,36 @@ def test_gc_d1_deletes_only_generations_no_pointer_names(monkeypatch):
         ("2026-09-01", "user", "g1", 0),
         ("2026-09-02", "path", "g1", 0),
     ]
+
+
+def test_retire_d1_drops_floor_free_groups_of_scans_past_the_retention_window(monkeypatch):
+    """Newest `retain` scans keep everything; older scans lose only path/user
+    row groups (the coarse tiers stay); pointers are untouched."""
+    import sqlite3
+
+    from gcs_usage.index_footer import retire_d1
+
+    con = sqlite3.connect(":memory:")
+    con.executescript("CREATE TABLE index_schema (date TEXT, variant TEXT, version INTEGER, schema_json TEXT, floor_bytes INTEGER, gen TEXT, dir TEXT, PRIMARY KEY (date, variant));")
+    con.executescript("""
+      CREATE TABLE index_row_groups (date TEXT, variant TEXT, gen TEXT, rg INTEGER, PRIMARY KEY (date, variant, gen, rg));
+    """)
+    for d in ("2026-09-01", "2026-09-02", "2026-09-03"):
+        for v in ("path", "user", "coarse24", "coarse24-user"):
+            con.execute("INSERT INTO index_schema VALUES (?, ?, 1, '[]', NULL, 'legacy', ?)", (d, v, f"listing/{d}"))
+            con.executemany("INSERT INTO index_row_groups VALUES (?, ?, 'legacy', ?)", [(d, v, i) for i in range(2)])
+
+    def fake_query(sql, acct, tok, db_id):
+        cur = con.execute(sql)
+        return [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()] if cur.description else []
+
+    monkeypatch.setattr(index_footer, "_d1_query", fake_query)
+    monkeypatch.setattr(index_footer, "_creds", lambda: ("tok", "acct"))
+    assert retire_d1(2) == [("2026-09-01", "path", 2), ("2026-09-01", "user", 2)]
+    assert con.execute("SELECT date, variant, count(*) FROM index_row_groups GROUP BY 1, 2 ORDER BY 1, 2").fetchall() == [
+        ("2026-09-01", "coarse24", 2), ("2026-09-01", "coarse24-user", 2),
+        ("2026-09-02", "coarse24", 2), ("2026-09-02", "coarse24-user", 2), ("2026-09-02", "path", 2), ("2026-09-02", "user", 2),
+        ("2026-09-03", "coarse24", 2), ("2026-09-03", "coarse24-user", 2), ("2026-09-03", "path", 2), ("2026-09-03", "user", 2),
+    ]
+    assert con.execute("SELECT count(*) FROM index_schema").fetchone() == (12,)
+    assert retire_d1(2) == []  # idempotent

@@ -296,6 +296,31 @@ def gc_d1(date: str, db_id: str = D1_DB_ID) -> int:
     return len(rows)
 
 
+FLOOR_FREE_VARIANTS = ("path", "user")
+
+
+def retire_d1(retain: int, db_id: str = D1_DB_ID) -> list[tuple[str, str, int]]:
+    """Retention (specs/view-serving.md follow-ups): drop the floor-free
+    variants' row groups for every synced scan older than the newest
+    ``retain`` — they are 95 % of D1's index bytes (~27k groups per variant per
+    scan) and a deep drill into an old scan is rare. The pointer stays, so the
+    reader serves those from the parquet footer (slow path); the coarse tiers,
+    which answer everything above the floor, are kept for every scan. Returns
+    (date, variant, rows deleted) per retired variant."""
+    tok, acct = _creds()
+    dates = sorted({d for d, _ in synced_variants(db_id)})
+    out: list[tuple[str, str, int]] = []
+    for d in dates[:-retain] if retain > 0 else dates:
+        for v in FLOOR_FREE_VARIANTS:
+            rows = _d1_query(
+                f"DELETE FROM index_row_groups WHERE date = '{_sql_escape(d)}' AND variant = '{v}' RETURNING 1 AS n;",
+                acct, tok, db_id,
+            )
+            if rows:
+                out.append((d, v, len(rows)))
+    return out
+
+
 def index_dir(date: str, variant: str = "path", db_id: str = D1_DB_ID) -> str | None:
     """Bucket-relative dir holding ``date``'s ``variant`` parquet — the D1
     pointer (``index_schema.dir``); None when that (date, variant) was never

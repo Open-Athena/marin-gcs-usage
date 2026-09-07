@@ -320,10 +320,13 @@ else
 fi
 
 # Sweep row groups of generations the pointer no longer names (a REPROC's
-# previous generation; every reader handle has expired by now).
+# previous generation; every reader handle has expired by now), and retire
+# the floor-free row groups of scans older than the newest INDEX_RETAIN —
+# D1's 10 GB cap (specs/view-serving.md follow-ups): the coarse tiers stay
+# for every scan; a deep drill into an old scan takes the footer path.
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  gcs-usage index-gc "$DATE" || echo "WARN: index-gc failed" >&2
+  gcs-usage index-gc -r "${INDEX_RETAIN:-30}" "$DATE" || echo "WARN: index-gc failed" >&2
 fi
 set -x
 

@@ -2019,17 +2019,21 @@ def index_sync(
 
 
 @main.command("index-gc")
+@option("-r", "--retain", type=int, default=None, help="Retention: also retire the floor-free variants' row groups of every scan older than the newest N (their pointers stay; the reader falls back to the parquet footer)")
 @argument("dates", nargs=-1)
-def index_gc(dates: tuple[str, ...]) -> None:
+def index_gc(retain: int | None, dates: tuple[str, ...]) -> None:
     """Delete row groups of index generations no pointer names — a REPROC's
     previous generation, or a sync that died before flipping. All synced
-    scans by default; DATES to restrict."""
-    from .index_footer import gc_d1, synced_variants
+    scans by default; DATES to restrict. With -r, the retention pass too."""
+    from .index_footer import gc_d1, retire_d1, synced_variants
 
     todo = dates or sorted({d for d, _ in synced_variants()})
     for d in todo:
         n = gc_d1(d)
         err(f"index-gc: {d} — {n} stale row groups deleted")
+    if retain is not None:
+        for d, v, n in retire_d1(retain):
+            err(f"index-gc: retired {d} [{v}] — {n} row groups (footer path serves it now)")
 
 
 @main.command("index-dir")
