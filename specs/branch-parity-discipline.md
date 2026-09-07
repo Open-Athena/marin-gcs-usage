@@ -344,3 +344,55 @@ upstream's final file versions (our pre-change divergence in
 Tests: 104 in the ported files, 405 root, 144 gcs-usage. Next: the A.3
 gate (DT's cascade on the 9/7 listing with `--db --partition-depth
 --label usr --tiers --size-hist`, a2a against mgu's `path-index`) on Batch.
+
+### 2026-09-07 (cw-ward, `/cp dt/main`) — mirror of gcs's 9/7 upstream pass
+
+Survey `25f3dc0..46ff7b4`: 36 upstream commits. gcs had already assessed
+the same range (four commits, cursor `dt/main 46ff7b4`), so the shared
+surfaces land here as `cherry-pick -x` of gcs's adapted CPs — parity by
+construction — plus what gcs left for this branch:
+
+- `75f0dfd` ← gcs `5b65b06`: upstream's `TimeSeries` tests for
+  `yFrom`/`annotations`/`onPickX` (`3d48a20`); `LocalBackend` falls back to
+  `find` (`3663e39`).
+- `82f1b95` ← gcs `e9a3cce`: **the `@rdub/treemap` extraction** (`25f3dc0`,
+  skipped on 9/4 as "gcs-first" — gcs went first). `packages/treemap` holds
+  the core; `@disk-tree/react` re-exports it, so `site/` imports are
+  unchanged. The ledger's "split NOT mirrored" caveat is retired.
+- `38d2a56` ← gcs `73d57ab`: DT's fleet-scale cascade (`--db`,
+  `--partition-depth`), `--label` slices, index tiers, `--size-hist`
+  (`bcbe063`, `f746bce`, `bdf621f`, `01b5e19`); `16c621a` (hour-grained
+  access plane) held, as on gcs.
+- `180e786` ← gcs `60b734a`: dir partition keys + batching, placeholder
+  objects, `--coarse-floor`, `find/groups.py`, `index r2://` (`46ff7b4`,
+  `ada2964`, `c3d1b7f`).
+- On top (this branch's commit): `c6f3255` — shared strokes no wider than
+  gaps (`defaultBorderWidth` 2/1/1), canvas labels mirror the DOM rules,
+  `sizeAlign` (gcs's `packages/treemap` already carried it; cw-s3's copy was
+  renamed from the pre-`c6f3255` files). cw-s3's main-map wrapper keeps its
+  own `borderWidth`, so only the Diff map picks up the new default.
+  `8c04b74`'s brush/window tests (80 lines; their CP of our `f30230c` — the
+  props were here, the tests weren't). `268ddb7`'s `s3fs>=2024.10` pin
+  (queued for cw-s3 by gcs): re-lock moves s3fs 0.4.2 → 2026.7 via
+  aiobotocore 3.9, boto3/botocore 1.43.64 → 1.43.56. CI gains upstream's
+  `treemap-widget` job (typecheck + test for `packages/treemap`).
+
+Skipped (same reasons as gcs's entries above): `5be454c`, `8c0628d` (their
+CPs of our engine work); `bce974e`, `642bd38`, `6a4a2e4`, `58a2845`,
+`fd509b9`, `5ec7f86`, `646e455` (remote scan targets, capture/reduce, R2
+serving, manifests — upstream's laptop→cloud pipeline; the CW job lists in
+Batch and bakes its own `diff.json`); `0e14ae8`, `41978ca`, `7cd5405`,
+`7d9f7b9` (Pages auth for upstream's `ui/`; cw-s3 is edge-gated by Access);
+`16c621a` (held with gcs); the specs commits (`6d83409`, `fbd0334`,
+`f521a3a`, `7561e4f`, `3515534`, `6888340`, `bfa0bfd`, `3c9cde7`, `ca451e6`,
+`ddd43fc`). `build-dist.yml` stays as is: it fires on `main` only and this
+repo publishes no dist branch — upstream's `dist/treemap` rewrite is
+repo-specific.
+
+Tests: treemap 130, react 91, root 421 (gcs's counts + `c6f3255` and the
+brush tests). Site type-checks and builds.
+
+Queued gcs-ward: the 80-line brush/window test block
+(`packages/react/tests/TimeSeries.test.tsx`, from `8c04b74`) and the
+`treemap-widget` CI job — `packages/` otherwise matches gcs and upstream
+exactly. The `s3fs` pin is cw-s3-only by gcs's choice (gcsfs path).

@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 command -v git-didi >/dev/null || { echo "git-didi missing: uv tool install git-didi" >&2; exit 1; }
 
 PAIRS=("gcs cw-s3" "gcs dt/main")
-SURFACES=(packages/react/src packages/react/tests src/disk_tree job marin/src site/functions site/src)
+SURFACES=(packages/treemap/src packages/treemap/tests packages/react/src packages/react/tests src/disk_tree job marin/src site/functions site/src)
 if [ $# -ge 2 ]; then PAIRS=("$1 $2"); [ $# -ge 3 ] && SURFACES=("${@:3}"); fi
 
 for pair in "${PAIRS[@]}"; do
