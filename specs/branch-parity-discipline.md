@@ -204,3 +204,47 @@ Queued:
   `TimeSeries` `yFrom`/`annotations`/`onPickX` (gcs `974ee7c`, cw-s3
   `6121e6f`/`00dd02b`/`f3c5a03`), `S3BulkLister` adaptive retries (`e018da3`);
   the 8/28 Python manifest is still open upstream.
+
+### 2026-09-07 (cw-ward, `/cp gcs`) — gcs `8191de0..8ac1beb` (39 unmarked)
+
+Landed on `cw-s3` (two commits; cursor `gcs 8ac1beb`):
+
+- `f196e66` (ahead of the pass): Diff Δ-mode color by the node's own changed
+  fraction, from `f2d0a8d`'s `colorForCell` — a wholly removed 1 Ti dir is
+  full red beside a 25 Ti one (was normalised by the page's max delta).
+- `packages/react`: `TimeSeries` `onBrush` + `window` (the core hunk of
+  `f30230c`, applied verbatim) — parity restored.
+- `src/disk_tree`: `tree_build.py` docstring path from the `marin/` →
+  `gcs-usage/` rename (`f59162957`) — parity; the rename itself is not
+  mirrored (cw-s3's `marin/` is only built into the job image).
+- `site/src`, adapted: chart brush → `?d=<after>-<span>` via
+  `useScan.setRange` (`f30230c`; cw-s3's points are scan instants, so the
+  brush maps x back to scan ids and the window shades `[diffBefore, asof]`;
+  no UTC-date fix needed — cw-s3 already renders instants in local time);
+  deep links pursue their anchor until it parks and hold the scroll-spy off
+  meanwhile (`8cf2b33` + `7f56d02`; cw-s3 has no sticky top bar, so the park
+  margin is read from the anchor's computed `scroll-margin-top`, which the
+  color-by bar sets only on attributed scans; and "parked" also waits for
+  the map, since the baked `diff.json` mounts `#diff` before the tree lands).
+- `site/dev`: wrangler relaunch loop (`e3bab91`) — memory pressure kills it
+  here, not a D1 tunnel; the 500-vs-404 Diff note has no counterpart (cw-s3
+  aligns client-side, no `/api/subtree`).
+- Already here: `628635c` (gcs's CP of `fceb717`), `7f911c6` (`hasAttr`
+  from meta — cw-s3 always did).
+
+Skipped as gcs-only (ledger: index tiers / D1 / marks & sweep / lenses /
+team axis / `job/` + `gcs-usage/` are intended deltas): `86b1b97`, `b14118b`,
+`988103b`, `85a7592`, `888737b`, `528564c`, `43b4b33`, `ca6ab5c`, `f59162957`
+(the rename; docstring taken), `79e6ea5`, `99c60a3`, `17e47f7`, `e4a43d7`,
+`42c044c`, `7cfa124`, `2bae18c`, `2bd99af`, `42b3757`, `654eb00`, `f5d1868`,
+`0f84f3d`, `e7135b2`, `53921c9`, `8a1b7f4`, `ca059a7`, `0841cd2`, `206c5e9`,
+`c02a4b6`, `e9e1261`, `cbd5572`, `8ac1beb`; the rest of `f30230c`/`f2d0a8d`
+(scope strip, lens-scoped Diff, mark-feed filters, server-side diff).
+
+Deferred (portable, but a design decision for cw-s3): **`7ab2d25` +
+`c24632a` — the sticky page bar** (☰ nav · crumbs · scan picker · avatar
+menu; Diff header holds both scan endpoints). cw-s3 has one page and no
+`SiteNav`; adopting the bar is a layout change to decide on, not a CP.
+
+Queued gcs-ward: nothing (gcs CP'd `fceb717` as `628635c`; the Δ-color fix
+originated there).

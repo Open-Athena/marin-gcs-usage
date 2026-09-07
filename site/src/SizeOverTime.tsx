@@ -59,17 +59,23 @@ const loadMeta = (d: string): Promise<Meta | null> => {
   return p
 }
 
-export function SizeOverTime({ scans, onPickDate }: {
+export function SizeOverTime({ scans, onPickDate, onBrush, window: win }: {
   scans: string[]
   /** Click a point → view the page as of that scan (pins `?d=`). */
   onPickDate?: (scan: string) => void
+  /** Drag across the chart → make [from, to] the page's diff window. */
+  onBrush?: (from: string, to: string) => void
+  /** The page's current diff window (scan ids), shaded on the chart. */
+  window?: [string, string]
 }) {
   const { fmtBytes, units } = useUnits()
   const [y0P, setY0P] = useUrlState('y0', boolParam)
   const yFrom: YFrom = y0P ? 'zero' : 'data'
   const setYFrom = (y: YFrom) => setY0P(y === 'zero')
-  // Points are scan instants; a click maps the snapped x back to its scan id.
-  const pickX = onPickDate && ((x: number) => { const s = scans.find(d => scanTime(d) === x); if (s) onPickDate(s) })
+  // Points are scan instants; a click or brush maps the snapped x back to its scan id.
+  const scanAt = (x: number) => scans.find(d => scanTime(d) === x)
+  const pickX = onPickDate && ((x: number) => { const s = scanAt(x); if (s) onPickDate(s) })
+  const brushX = onBrush && ((x0: number, x1: number) => { const a = scanAt(x0); const b = scanAt(x1); if (a && b) onBrush(a, b) })
 
   const [totals, setTotals] = useState<Record<string, number>>({})
   useEffect(() => {
@@ -120,7 +126,7 @@ export function SizeOverTime({ scans, onPickDate }: {
   return (
     <section id="over-time">
       <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
-      <p className="sub">Total stored bytes per scan (whole bucket){onPickDate && ' — click a point to view the page as of that scan'}.</p>
+      <p className="sub">Total stored bytes per scan (whole bucket){onPickDate && ' — click a point to view the page as of that scan'}{onBrush && ', drag to set the diff window'}.</p>
       {series.length > 0 && (
         <TimeSeries<Pt>
           series={series}
@@ -134,6 +140,8 @@ export function SizeOverTime({ scans, onPickDate }: {
           yLabel="stored bytes"
           height={220}
           onPickX={pickX}
+          onBrush={brushX}
+          window={win && [scanTime(win[0]), scanTime(win[1])]}
         />
       )}
     </section>

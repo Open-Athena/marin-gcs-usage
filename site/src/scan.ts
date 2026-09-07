@@ -137,9 +137,11 @@ export interface Scan {
   dP: string | undefined
   /** Pin the "after" scan; the latest scan (or undefined) clears the pin. */
   setDP: (v: string | undefined) => void
-  /** Changes look-back in ms; undefined = the baked previous scan. */
+  /** Diff look-back in ms; undefined = the baked previous scan. */
   span: number | undefined
   setSpan: (ms: number | undefined) => void
+  /** Pin + look-back in one URL write (a chart brush sets both). */
+  setRange: (d: string | undefined, ms: number | undefined) => void
 }
 
 // Shared scan resolution: `?d=YYMMDD` (a prefix of a scan id) pins a scan;
@@ -162,11 +164,11 @@ export function useScan(): Scan {
   const span = sel?.span
   const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
   const asof = dMatches[0] ?? scans[0] ?? null
-  const setDP = (v: string | undefined) => {
+  const setRange = (v: string | undefined, ms: number | undefined) => {
     const d = v && v !== scans[0] ? v : undefined
-    setSel(d || span ? { ...(d ? { d } : {}), ...(span ? { span } : {}) } : undefined)
+    setSel(d || ms ? { ...(d ? { d } : {}), ...(ms ? { span: ms } : {}) } : undefined)
   }
-  const setSpan = (ms: number | undefined) =>
-    setSel(dP || ms ? { ...(dP ? { d: dP } : {}), ...(ms ? { span: ms } : {}) } : undefined)
-  return { asof, scans, dMatches, dP, setDP, span, setSpan }
+  const setDP = (v: string | undefined) => setRange(v, span)
+  const setSpan = (ms: number | undefined) => setRange(dP, ms)
+  return { asof, scans, dMatches, dP, setDP, span, setSpan, setRange }
 }

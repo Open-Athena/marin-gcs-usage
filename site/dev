@@ -10,7 +10,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-npx wrangler pages dev public --port 3264 --compatibility-date 2026-01-01 &
+# wrangler dies now and then (memory pressure, a dropped tunnel) and takes
+# /data with it — relaunch it until this script is stopped.
+(
+  while :; do
+    npx wrangler pages dev public --port 3264 --compatibility-date 2026-01-01 || true
+    echo "wrangler exited; restarting in 3s (ctrl-c to stop)" >&2
+    sleep 3
+  done
+) &
 wpid=$!
-trap 'kill "$wpid" 2>/dev/null || true' EXIT INT TERM
+trap 'kill "$wpid" 2>/dev/null || true; pkill -P "$wpid" 2>/dev/null || true' EXIT INT TERM
 pnpm dev

@@ -1,6 +1,6 @@
 """One arbitrary-depth tree builder for the site's layer-3 JSON.
 
-Both the GCS (`marin/gcs_usage/viz.py`) and CoreWeave (`job/cw-webdata.py`)
+Both the GCS (`gcs-usage/src/gcs_usage/viz.py`) and CoreWeave (`job/cw-webdata.py`)
 paths produce the same `{n, b, o, c?, …}` `TreeNode`; they differed only in that
 CW linked rolled-up dir rows parent→child (any depth) while GCS flattened to
 four fixed path components — a cardinality hack for a 595M-row object listing,

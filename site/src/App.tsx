@@ -90,6 +90,11 @@ const LEGACY_ANCHORS: Record<string, string> = { 'size-over-time': 'over-time', 
 // it, or a router-driven location change would re-scroll to wherever the
 // reader already is.
 let spyHash = ''
+// True while a `#hash` deep link is still scrolling into place (see the
+// deep-link effect); the scroll-spy holds off until then.
+let deepLinkPending = false
+// Reader-initiated scrolling (not the programmatic kind) — ends a deep link's pursuit.
+const USER_SCROLL_EVENTS = ['wheel', 'touchmove', 'keydown'] as const
 
 // Color-mode URL tokens: one letter each (`?c=a`, `?ac=t`); the older
 // spelled-out forms still decode so shared links keep working.
@@ -112,7 +117,7 @@ function useTheme(): [Theme, () => void] {
 function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list; absent `?d` is a
   // first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, setDP, span, setSpan } = useScan()
+  const { asof, scans, setDP, span, setSpan, setRange } = useScan()
   // Loaded trees by scan id: the page's own (`asof`) plus, when the Diff
   // section aligns client-side, its "before" scan.
   const [trees, setTrees] = useState<Record<string, TreeNode>>({})
@@ -149,6 +154,15 @@ function AppContent() {
     if (scan === bakedPrev) setSpan(undefined)
     else setSpan(Math.max(3600_000, Math.round((scanTime(asof) - scanTime(scan)) / 3600_000) * 3600_000))
   }
+  // A brush on the size chart picks both endpoints at once: "after" becomes
+  // the page's scan and "before" round-trips as its hour-rounded span (the
+  // scan right before "after" is the baked pair, so no span). A zero-width
+  // brush is a click (TimeSeries hands those to `onPickDate`).
+  const brushRange = (from: string, to: string) => {
+    const prevOf = scans[scans.indexOf(to) + 1]
+    setRange(to, from === prevOf ? undefined : Math.max(3600_000, Math.round((scanTime(to) - scanTime(from)) / 3600_000) * 3600_000))
+  }
+  const diffWindow: [string, string] | undefined = asof && diffBefore ? [diffBefore, asof] : undefined
   // Presets past the history's reach — nearest scan more than a quarter of
   // the span off, or already claimed by a shorter preset — are dropped
   // rather than mislabeled.
@@ -184,17 +198,40 @@ function AppContent() {
     const id = LEGACY_ANCHORS[raw] ?? raw
     // The treemap lays out async and shifts the page after first paint, so a
     // single deferred scroll lands in the wrong place (or a still-empty page).
-    // Re-scroll over ~2s until the anchor's position stops moving.
+    // While the deep link is still trying to land (sections mount as data
+    // arrives), the scroll-spy must not rewrite the hash: at scrollY 0 it
+    // would clear `#diff` before the section exists.
+    // Keep nudging until the anchor sits still at its parking spot (cold
+    // loads shift the page for seconds as the map, the chart and both diff
+    // trees land); a reader's own scroll input ends the pursuit.
+    deepLinkPending = true
     let last = NaN
-    const timers = [150, 400, 800, 1400, 2000].map(ms => setTimeout(() => {
+    let tries = 0
+    const stop = () => {
+      clearInterval(iv)
+      deepLinkPending = false
+      for (const ev of USER_SCROLL_EVENTS) window.removeEventListener(ev, stop)
+    }
+    const iv = setInterval(() => {
+      if (++tries > 120) { stop(); return }
       const el = document.getElementById(id)
       if (!el) return
       const top = el.getBoundingClientRect().top
-      if (Math.abs(top) < 4 && top === last) return // already parked at the top
+      // Where the anchor parks: under the sticky color-by bar when the scan
+      // has one (`scroll-margin-top`, app.scss), else the viewport top.
+      const margin = parseFloat(getComputedStyle(el).scrollMarginTop) || 0
+      // Parked — but not before the map has landed: the baked diff.json
+      // arrives first, so `#diff` exists (and sits still) while the tree
+      // above it is still a one-line placeholder.
+      if (tree && Math.abs(top - margin) < 4 && top === last) { stop(); return }
       last = top
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }, ms))
-    return () => timers.forEach(clearTimeout)
+      // Instant, not smooth: this is page-load positioning, not a navigation
+      // the reader watches — and a smooth animation restarted every nudge
+      // (or paused in a background tab) never gets there.
+      el.scrollIntoView({ behavior: 'instant', block: 'start' })
+    }, 500)
+    for (const ev of USER_SCROLL_EVENTS) window.addEventListener(ev, stop, { passive: true })
+    return stop
   }, [hash, tree, meta, scans])
   // Scroll-spy: keep the URL fragment tracking the section in view
   // (replaceState — no history entries, no scroll jumps), so a copied URL
@@ -202,7 +239,7 @@ function AppContent() {
   useEffect(() => {
     let raf = 0
     const onScroll = () => {
-      if (raf) return
+      if (raf || deepLinkPending) return
       raf = requestAnimationFrame(() => {
         raf = 0
         // Reference line near the top (not ⅓ viewport): a short section
@@ -487,7 +524,7 @@ function AppContent() {
         <p className="loading">loading tree…</p>
       )}
 
-      <SizeOverTime scans={scans} onPickDate={setDP} />
+      <SizeOverTime scans={scans} onPickDate={setDP} onBrush={brushRange} window={diffWindow} />
 
       {asof && prevScan && (diff || diffPrev) && (
         <section id="diff">

@@ -12,6 +12,10 @@
   --other: #a6a49b;
   --t-unknown: #eda100; --t-unattr: #c9c7be;
   --grew: #1a8f3a; --shrank: #d7302f;
+  // TimeSeries window / brush bands: the core defaults are white-on-dark.
+  --dt-ts-window: rgb(0 0 0 / 0.06);
+  --dt-ts-brush: rgb(0 0 0 / 0.12);
+  --dt-ts-window-edge: rgb(0 0 0 / 0.35);
   // @disk-tree/react: opaque base under each cell's paint layer (gutters/title
   // bars) + shared-edge stroke; the core defaults are dark constants.
   --dt-treemap-container-bg: var(--panel);
@@ -30,6 +34,9 @@
     --other: #5d5c55;
     --t-unknown: #c98500; --t-unattr: #4a4943;
     --grew: #4ade80; --shrank: #ff7b72;
+    --dt-ts-window: rgb(255 255 255 / 0.07);
+    --dt-ts-brush: rgb(255 255 255 / 0.14);
+    --dt-ts-window-edge: rgb(255 255 255 / 0.4);
   }
 }
 :root[data-theme='dark'] {
@@ -42,6 +49,9 @@
   --other: #5d5c55;
   --t-unknown: #c98500; --t-unattr: #4a4943;
   --grew: #4ade80; --shrank: #ff7b72;
+  --dt-ts-window: rgb(255 255 255 / 0.07);
+  --dt-ts-brush: rgb(255 255 255 / 0.14);
+  --dt-ts-window-edge: rgb(255 255 255 / 0.4);
 }
 
 * { box-sizing: border-box; }
@@ -662,3 +672,8 @@ details.fold {
 
 // Size-over-time section: the y-axis toggle rides in the h2.
 #over-time h2 .gran { margin-left: 12px; font-weight: 400; vertical-align: middle; }
+
+// With a color-by bar (attributed scans only; it's sticky), anchored sections
+// would scroll in under it — the deep-link effect (App.tsx) reads this margin
+// back to know where an anchor parks.
+.colorctl ~ :is(#tree-map, #over-time, #diff, #mtime) { scroll-margin-top: 48px; }
