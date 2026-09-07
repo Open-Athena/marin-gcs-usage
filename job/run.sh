@@ -247,6 +247,35 @@ L=(); for g in "${G[@]}"; do L+=(-l "$(loc "$g")"); done
 A=(); for a in "${AG[@]}"; do A+=(-a "$(loc "$a")"); done
 X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 
+# GATE=1 (with REPROC=1: the date's listing is archived): the A.3 gate of
+# specs/cascade-gate.md instead of the snapshot — DT's `import -e duckdb
+# --label usr` per bucket on the same staged inputs, `cascade-a2a` against the
+# date's published path index, peak RSS + wall per bucket. Reports go to
+# gs://$DATA/gate/$DATE/; nothing is published. GATE_K = --partition-depth
+# (default 2), GATE_HIST=1 adds --size-hist.
+if [ "${GATE:-0}" = "1" ]; then
+  GD="${STAGE_DIR:-/tmp}/gate"
+  mkdir -p "$GD/labels" "$GD/tiers" "$GD/l2" "$GD/db" "$GD/root"
+  export DISK_TREE_ROOT="$GD/root"
+  gcs-usage labels "${L[@]}" "${A[@]}" -o "$GD/labels"
+  srckey=$(gcs-usage index-dir "$DATE") || { echo "ERROR: no synced path index for $DATE to compare against" >&2; exit 1; }
+  for b in "${FLEET[@]}"; do
+    echo "GATE $b: import (k=${GATE_K:-2}, mem=${DUCKDB_MEM:-100GB})" >&2
+    /usr/bin/time -v disk-tree import -e duckdb -l "$(loc "/gcs/$DATA/listing/$DATE/$b/*.parquet")" -b "$b" -s gcs \
+      -d "$GD/db" -k "${GATE_K:-2}" -L "$GD/labels/labels-$b.parquet" -c usr -p storage_class_id -m ${GATE_HIST:+-H} \
+      -i dirs -O "$GD/tiers" -r 8192 -S usr -M "${DUCKDB_MEM:-100GB}" -T "${DUCKDB_TMP:-/tmp}" \
+      -t "${DATE}T00:00:00Z" -o "$GD/l2" > "$GD/import-$b.log" 2>&1 || echo "GATE $b: import FAILED (see import-$b.log)" >&2
+    grep -E "partition depth|Elapsed|Maximum resident" "$GD/import-$b.log" >&2 || true
+    gcs-usage cascade-a2a -b "$b" -i "/gcs/$DATA/$srckey/path-index.parquet" "$GD/tiers/gcs-$b.dirs.parquet" > "$GD/a2a-$b.txt" 2>&1 \
+      && echo "GATE $b: a2a exact" >&2 || echo "GATE $b: a2a DIFFERENT (see a2a-$b.txt)" >&2
+    rm -rf "$GD/db"/* "$GD/l2"/*
+  done
+  mkdir -p "/gcs/$DATA/gate/$DATE"
+  cp "$GD"/import-*.log "$GD"/a2a-*.txt "/gcs/$DATA/gate/$DATE/"
+  echo "PHASE gate: ${SECONDS}s (wall); reports at gs://$DATA/gate/$DATE/" >&2
+  exit 0
+fi
+
 # Layer-2 dir-cache: attribution-independent per-dir rollups, written on the
 # first aggregation of a date and reused by any re-attribution run (REPROC,
 # ledger refreshes) — those then skip the 595M-row object scans entirely.
