@@ -95,6 +95,9 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
     if (pts.length < 2) return []
     return [{ key: 'scoped', label, color: 'var(--s1)', points: pts }]
   }, [seriesQ.data, label])
+  // A scope that owns nothing here in any scan is a flat zero line — say so
+  // instead of drawing an empty axis.
+  const allZero = series.length === 1 && series[0].points.every(p => p.y === 0)
 
   // Callouts at the points a reader looks for first: the ends of the series
   // and its extremes. Coinciding roles (first is also max) share one label.
@@ -141,7 +144,13 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
         {' '}Each point is that scan’s own index row — exact, at any depth.
         {seriesQ.isError && <> <i>(series unavailable)</i></>}
       </p>
-      {series.length > 0 ? (
+      {allZero ? (
+        <p className="loading">
+          {user ? <><b>{shortName(user)}</b> owns nothing{prefix ? <> under <code>{prefix}</code></> : ''} in any scan</>
+            : pool === 'unowned' ? <>nothing{prefix ? <> under <code>{prefix}</code></> : ''} is unowned in any scan</>
+              : <>nothing{prefix ? <> under <code>{prefix}</code></> : ''} in any scan</>}
+        </p>
+      ) : series.length > 0 ? (
         <TimeSeries<Pt>
           series={series}
           getX={p => p.x}

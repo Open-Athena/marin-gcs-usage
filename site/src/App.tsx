@@ -842,11 +842,26 @@ function AppContent() {
               (not in the index yet — specs/view-serving.md §3), or directories
               under this view's floor. Say so rather than show a blank canvas. */}
           {mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && subtreeQs[subtreeQs.length - 1]?.data && (
-            <p className="hint leaf-note">
-              <code>{mapPath[mapPath.length - 1].n}</code> holds {fmtN(mapPath[mapPath.length - 1].o)} objects and no directory of{' '}
-              {fmtBytes(subtreeQs[subtreeQs.length - 1]!.data!.threshold ?? 0)} or more. Objects aren’t listed yet — mark or assign this prefix from the
-              controls above, or press Backspace to go up.
-            </p>
+            mapPath[mapPath.length - 1].b === 0 && (ownerMode !== 'all' || fateSet) ? (
+              // The scope, not the directory, is what's empty here: say whose
+              // filter came up dry rather than describe a 0-byte directory.
+              <p className="hint leaf-note">
+                {ownerMode === 'user' && lensUser
+                  ? <><b>{shortName(lensUser)}</b> owns nothing under <code>{mapPath[mapPath.length - 1].n}</code> in this scan</>
+                  : ownerMode === 'unowned'
+                    ? <>Nothing under <code>{mapPath[mapPath.length - 1].n}</code> is unowned in this scan</>
+                    : ownerMode === 'owned'
+                      ? <>Nothing under <code>{mapPath[mapPath.length - 1].n}</code> is owned in this scan</>
+                      : <>Nothing under <code>{mapPath[mapPath.length - 1].n}</code> matches the marks filter</>}
+                {' '}— widen the scope in the bar above, or press Backspace to go up.
+              </p>
+            ) : (
+              <p className="hint leaf-note">
+                <code>{mapPath[mapPath.length - 1].n}</code> holds {fmtN(mapPath[mapPath.length - 1].o)} objects and no directory of{' '}
+                {fmtBytes(subtreeQs[subtreeQs.length - 1]!.data!.threshold ?? 0)} or more. Objects aren’t listed yet — mark or assign this prefix from the
+                controls above, or press Backspace to go up.
+              </p>
+            )
           )}
           {/* The map's own listing — this node's children, narrowed to the
               mark axis (`{unmarked}` drops already-decided prefixes). */}

@@ -157,7 +157,11 @@ export function MarkControls({ uri, idx, node, lensed }: { uri: string; idx: Mar
               ? <><UserChip who={cl.who} size={15} /><span className="prov">assigned {fmtMarkDate(cl.ts)}</span></>
               : top
                 ? <><UserChip who={top[0]} size={15} /><span className="prov">{topPct != null ? `${topPct}% · ` : ''}inferred</span></>
-                : <span className="none">none</span>}
+                : lensed
+                  // The lens keeps only one person's bytes: with none here, the
+                  // inferred owner is someone the lens hides — not "none".
+                  ? <span className="none" title="the owner filter hides other people's bytes here">—</span>
+                  : <span className="none">none</span>}
             <input
               list="mk-assign-users" className="assign" value={assign}
               onChange={e => setAssign(e.target.value)}
