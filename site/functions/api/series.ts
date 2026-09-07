@@ -44,18 +44,24 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   if (hit) return hit
 
   const points: { date: string; b: number; o: number }[] = []
-  // Scans are independent reads; a handful at a time keeps the range-request
-  // fan-out polite without serializing a 40-scan history.
-  for (let i = 0; i < dates.length; i += 6) {
-    const chunk = dates.slice(i, i + 6)
-    const got = await Promise.all(chunk.map(async date => {
-      try {
-        const a = await readRootAgg(env, { date, path, lens, owner })
-        return a ? { date, ...a } : null
-      } catch {
-        return null // an unreadable scan is a missing point, not a failed chart
-      }
-    }))
+  // One scan's point; a D1 hiccup ("internal error") gets one more try, and
+  // anything else unreadable is a missing point, not a failed chart — logged,
+  // since a silently absent point looks like a gap in the data.
+  const point = async (date: string, tries = 2): Promise<{ date: string; b: number; o: number } | null> => {
+    try {
+      const a = await readRootAgg(env, { date, path, lens, owner })
+      return a ? { date, ...a } : null
+    } catch (e) {
+      const msg = (e as Error).message
+      if (tries > 1 && /internal error/i.test(msg)) return point(date, tries - 1)
+      console.log(`series ${path || '/'} ${lensRaw ?? owner ?? ''}: no point for ${date}: ${msg}`)
+      return null
+    }
+  }
+  // Scans are independent reads (each a few D1 round trips and one range
+  // GET); a dozen at a time keeps a 40-scan history to ~4 rounds.
+  for (let i = 0; i < dates.length; i += 12) {
+    const got = await Promise.all(dates.slice(i, i + 12).map(d => point(d)))
     for (const g of got) if (g) points.push(g)
   }
   const res = json({ path, ...(lensRaw ? { lens: lensRaw } : {}), ...(owner ? { owner } : {}), points }, 200, { 'cache-control': 'private, max-age=300' })

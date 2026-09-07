@@ -7,14 +7,14 @@
  * Cost model: one point lookup per live ledger prefix + a one/two-level
  * range under each keep_last_ckpt prefix. Marks cluster, so ~8k prefixes
  * touch ~25 row groups (~200 MB of parquet, read once per (scan, ledger
- * head) and cached in D1 — `mark_totals`). A new action invalidates by
+ * head) and cached in D1 — `mark_totals`, one head at a time). A new action invalidates by
  * changing the head; the recompute happens on the next request. */
 import type { Env } from './auth.js'
 import { openIndex, readAsks, type Ask, type Row } from './index.js'
 import { loadLedger } from './ledger.js'
 import {
   addAgg, computeTotals, foldLatest, idxKey, newAgg, newer,
-  type KeepRow, type OwnerRow, type PathAgg, type Totals,
+  type ClaimRow, type KeepRow, type OwnerRow, type PathAgg, type Totals,
 } from './marks.js'
 
 const COLUMNS = ['path', 'depth', 'usr', 'b', 'o', 'c2', 'c3', 'c4']
@@ -138,8 +138,15 @@ export async function markTotals(env: Env, date: string, scopePfx?: string): Pro
       }
       const body = await compute(env, date, foldLatest(keepRows), foldLatest(ownerRows), head, scopePfx)
       if (!scopePfx) {
-        await env.DB!.prepare('INSERT OR REPLACE INTO mark_totals (scan, head, body, computed_ts, ms) VALUES (?, ?, ?, ?, ?)')
-          .bind(date, head, JSON.stringify(body), body.computed.at, body.computed.ms).run()
+        // Every reader keys by the live head, so bodies of older heads are
+        // dead weight (a few MB per scan, per head): drop them as this one
+        // lands, or a lens series under each new head would grow D1 by the
+        // whole history's worth of manifests.
+        await env.DB!.batch([
+          env.DB!.prepare('INSERT OR REPLACE INTO mark_totals (scan, head, body, claims, computed_ts, ms) VALUES (?, ?, ?, ?, ?, ?)')
+            .bind(date, head, JSON.stringify(body), JSON.stringify(body.claims), body.computed.at, body.computed.ms),
+          env.DB!.prepare('DELETE FROM mark_totals WHERE head < ?').bind(head),
+        ])
       }
       return body
     })()
@@ -147,4 +154,30 @@ export async function markTotals(env: Env, date: string, scopePfx?: string): Pro
     bodyP.catch(() => memo.delete(key))
   }
   return bodyP
+}
+
+// Claims alone, per (scan, head): a tenth of the manifest.
+const claimsMemo = new Map<string, Promise<ClaimRow[]>>()
+
+/** The live claims priced against `date` — what a user lens folds. The
+ * manifest carries them, but a lens series reads one per scan, so they are
+ * stored beside the body (`mark_totals.claims`) and fetched alone: ~250 KB
+ * instead of ~3 MB per scan. Falls back to the whole manifest for a row
+ * written before the column existed (or none yet). */
+export async function markClaims(env: Env, date: string): Promise<ClaimRow[]> {
+  const { head } = await loadLedger(env)
+  const full = memo.get(`${date}:${head}:`)
+  if (full) return (await full).claims
+  const key = `${date}:${head}`
+  let p = claimsMemo.get(key)
+  if (!p) {
+    p = (async () => {
+      const row = await env.DB!.prepare('SELECT claims FROM mark_totals WHERE scan = ? AND head = ?').bind(date, head).first<{ claims: string | null }>()
+      if (row?.claims) return JSON.parse(row.claims) as ClaimRow[]
+      return (await markTotals(env, date)).claims
+    })()
+    claimsMemo.set(key, p)
+    p.catch(() => claimsMemo.delete(key))
+  }
+  return p
 }

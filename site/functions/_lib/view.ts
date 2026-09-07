@@ -22,7 +22,7 @@ import { type FateAxis, fateScope, type FateScope } from './fates.js'
 import { type IndexHandle, type Lens, openIndex, readRects, readRows, type Rect, type Row } from './index.js'
 import { ownerLens, type OwnerLens } from './owners.js'
 import { nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
-import { markTotals } from './totals.js'
+import { markClaims, markTotals } from './totals.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -163,12 +163,14 @@ export async function readRootAgg(env: Env, o: { date: string; path: string; len
   const dP = path === '' ? 0 : path.split('/').length
   const readRoot = (idx: IndexHandle, l?: Lens) =>
     path === '' ? readRows(idx, 1, 1, '', '￿', undefined, l) : readRows(idx, dP, dP, path, path, undefined, l)
-  // P's row from the coarsest tier of `sort` that has it; null = no tier.
+  // P's row from the coarsest tier of `sort`, else the floor-free one; null
+  // = no tier. Two hops at most: a point read costs the same few round trips
+  // on any tier, so walking every coarse tier down only made a small user's
+  // (or a claims-only user's) series four hops per scan.
   const rootRows = async (sort: string, l?: Lens): Promise<Row[] | null> => {
-    for (const e of COARSE_EXPS) {
-      const idx = await tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`)
-      if (!idx) continue
-      const rows = await readRoot(idx, l)
+    const top = await tryOpen(env, date, `coarse${COARSE_EXPS[0]}${sort === 'path' ? '' : `-${sort}`}`)
+    if (top) {
+      const rows = await readRoot(top, l)
       if (rows.length) return rows
     }
     const fine = await tryOpen(env, date, sort)
@@ -192,7 +194,7 @@ export async function readRootAgg(env: Env, o: { date: string; path: string; len
 /** The owner lens for a scan: the live claims folded against it (cached per
  * (scan, ledger head) by the totals machinery) — null when nobody claims. */
 async function ownerLensFor(env: Env, date: string, lens: Lens): Promise<OwnerLens | null> {
-  return ownerLens((await markTotals(env, date)).claims, lens.key)
+  return ownerLens(await markClaims(env, date), lens.key)
 }
 
 /** A node under a user lens once claims apply: U's bytes there (`ol.value`),
@@ -278,14 +280,14 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // Root aggregate P.b (and P's own us for the response root) from the
   // coarsest tier that has P at all — the same numbers in every tier. The
   // by-path tier of the same name serves the lens's region reads.
-  const tiers: { name: string; idx: IndexHandle; all?: IndexHandle }[] = []
-  for (const e of COARSE_EXPS) {
-    const idx = await tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`)
-    if (idx && floorOf(idx) != null) {
-      const allIdx = regions.length ? await tryOpen(env, date, `coarse${e}`) : null
-      tiers.push({ name: `coarse${e}`, idx, ...(allIdx ? { all: allIdx } : {}) })
-    }
-  }
+  const tiers = (await Promise.all(COARSE_EXPS.map(async e => {
+    const [idx, allIdx] = await Promise.all([
+      tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`),
+      regions.length ? tryOpen(env, date, `coarse${e}`) : null,
+    ])
+    if (!idx || floorOf(idx) == null) return null
+    return { name: `coarse${e}`, idx, ...(allIdx ? { all: allIdx } : {}) }
+  }))).filter((t): t is { name: string; idx: IndexHandle; all?: IndexHandle } => t != null)
   let rootRows: Row[] = []
   let fine: IndexHandle | null = null
   for (const t of tiers) {
@@ -327,8 +329,14 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // P reads, scoped per node. Paths below that tier's floor fold into their
   // parent's (other) — exactly, since (other) = parent − Σ kept kids on the
   // scoped aggregates — instead of dragging the read onto the floor-free
-  // tier for every scoped root view.
-  const thrAll = o.threshold ?? (rootAll.b * minArea) / (w * h)
+  // tier for every scoped root view. Under a lens the view's total is U's
+  // bytes once claims apply — it can exceed U's attributed root (`rootAll`)
+  // many times over for a claims-heavy user — so plan by the larger: claims
+  // are read from the same tier's by-path file, whose floor bounds a claimed
+  // node's total the way the by-user floor bounds an attributed slice, and
+  // a root that dropped to the floor-free tier would read every region there.
+  const lensRoot = ol ? lensAgg(ol, lens!.key, path, rootTot, rootMine).b : 0
+  const thrAll = o.threshold ?? (Math.max(rootAll.b, lensRoot) * minArea) / (w * h)
   let pick: { name: string; idx: IndexHandle } | null = null
   for (const t of tiers) {
     if (thrAll >= floorOf(t.idx)!) { pick = t; break }

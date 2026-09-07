@@ -260,6 +260,27 @@ async function readGroup(h: D1Handle, rgJson: string, columns?: string[]): Promi
 
 interface Span extends GroupSpan { rg: number }
 
+/** Row groups in flight at once per read. Each group is its own range
+ * fetch + decode (~150 ms); a claims-heavy lens root touches ~80 of them
+ * and the estate manifest ~400, so serial reads were the whole latency. */
+const GROUP_READS = 8
+
+/** `Promise.all(items.map(f))` with at most `limit` in flight; results in
+ * input order. */
+async function mapLimit<T, R>(items: T[], limit: number, f: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    for (;;) {
+      const i = next++
+      if (i >= items.length) return
+      out[i] = await f(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
 /** Candidate row groups for a set of (depth, path-range) rectangles — one SQL
  * pass (no rg_json yet), carrying each group's stats so the caller can apply a
  * finer per-ask test. A group spanning a depth boundary resets path order, so
@@ -352,16 +373,14 @@ export async function readRects(
     const totalRows = kept.reduce((n, s) => n + (s.rowEnd - s.rowStart), 0)
     if (totalRows > 700_000) throw new Error('query too wide: drill deeper or raise minArea')
     const jsons = await fetchGroupJson(h, kept.map(s => s.rg))
-    const out: Row[] = []
-    for (const s of kept) {
+    const perGroup = await mapLimit(kept, GROUP_READS, async s => {
       const j = jsons.get(s.rg)
-      if (!j) continue
-      for (const r of await readGroup(h, j)) {
-        if (!inRect(r) || !lensOk(r)) continue
-        out.push(r)
-      }
-    }
-    return out
+      if (!j) return []
+      const out: Row[] = []
+      for (const r of await readGroup(h, j)) if (inRect(r) && lensOk(r)) out.push(r)
+      return out
+    })
+    return perGroup.flat()
   }
   // footer mode
   const out: Row[] = []
@@ -423,12 +442,11 @@ export async function readAsks(
     const spans = cand.filter(s => asks.some(a => groupMayHold(s, a)))
     if (spans.length > maxGroups) throw new Error(`lookup too wide: ${spans.length} row groups (cap ${maxGroups})`)
     const jsons = await fetchGroupJson(h, spans.map(s => s.rg))
-    for (const s of spans) {
+    const perGroup = await mapLimit(spans, GROUP_READS, async s => {
       const j = jsons.get(s.rg)
-      if (!j) continue
-      for (const r of await readGroup(h, j, columns)) if (keep(r)) out.push(r)
-    }
-    return { rows: out, groups: spans.length }
+      return j ? (await readGroup(h, j, columns)).filter(keep) : []
+    })
+    return { rows: perGroup.flat(), groups: spans.length }
   }
   // footer mode
   const selected = h.groups.filter(g => asks.some(a => groupMayHold(g, a)))
