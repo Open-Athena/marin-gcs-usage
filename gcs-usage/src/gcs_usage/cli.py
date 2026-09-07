@@ -1957,6 +1957,26 @@ def labels(attributions: tuple[str, ...], identities_path: Path, listings: tuple
         err(f"labels: {bucket}: {n} prefixes → {out_dir / f'labels-{bucket}.parquet'}")
 
 
+@main.command("cascade-a2a")
+@option("-b", "--bucket", required=True, help="Bucket the DT tier was imported as (its rows are relative to it)")
+@option("-i", "--index", "index_path", required=True, help="mgu floor-free path-index parquet (`path, depth, usr, b, o, wts, wb, c2, c3, c4, a`)")
+@option("-j", "--json", "as_json", is_flag=True, help="Machine-readable report on stdout")
+@option("-n", "--top", default=10, help="Examples per mismatch class")
+@argument("dirs_tier")
+def cascade_a2a(bucket: str, index_path: str, as_json: bool, top: int, dirs_tier: str) -> None:
+    """The A.3 gate (spec mgu-scale-unification.md): DT's `import -e duckdb
+    --label usr` dirs tier against mgu's path index for one bucket, joined on
+    `(path, usr)` — rows only one side has, and per-column disagreements
+    (`b`↔`size`, `o`↔`n_files`, `c2..c4`↔`sum_storage_class_id_*`,
+    `wts/wb`↔`mtime_mean`). Exit 1 on any difference."""
+    from .cascade_a2a import compare, render
+
+    report = compare(bucket, index_path, dirs_tier, top)
+    print(json.dumps(report, indent=1, default=str) if as_json else render(report))
+    if not report["ok"]:
+        raise SystemExit(1)
+
+
 @main.command("index-blob")
 @option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
 @option("-d", "--dir", "listing_dir", default=None, help="Local/mounted/gs:// dir holding the parquets (default: gs://<bucket>/<key>)")
