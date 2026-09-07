@@ -76,6 +76,8 @@ def write_tiers(
     row_group_rows: int = DEFAULT_ROW_GROUP_ROWS,
     sort_variants: tuple[tuple[str, ...], ...] = (),
     con: "duckdb.DuckDBPyConnection | None" = None,
+    groups: bool = False,
+    coarse_floor_bytes: int | None = None,
 ) -> dict[str, int]:
     """Cut `tiers` (+ `sort_variants` of the dirs/coarse tiers) from the layer-2
     parquet at `layer2` into `<stem>.<tier>[-by-<cols>].parquet`.
@@ -83,7 +85,16 @@ def write_tiers(
     Returns `{output path: row count}` in write order. Each file carries
     `tier` / `sort` (and, for coarse, `floor_bytes` / `coarse_exp` /
     `total_size`) in its parquet key-value metadata so a planner can read the
-    floor without a sidecar.
+    floor without a sidecar. With `groups`, each tier also gets its group
+    manifest `<tier>.groups.json` beside it (:mod:`disk_tree.find.groups`) —
+    the precomputed footer a serverless reader plans range reads from.
+
+    `coarse_floor_bytes` pins the coarse floor absolutely instead of deriving
+    it from *this* layer-2's total: a fleet imports one bucket at a time but
+    its tier planner assumes every bucket's coarse tier shares one floor
+    (spec `mgu-scale-a3-gate.md` ask 4) — pass `coarse_floor(fleet_total)`.
+    The metadata then says `floor_source = 'explicit'` (else `'derived'`);
+    `total_size` is always this import's.
     """
     import duckdb as _duckdb
     if con is None:
@@ -108,7 +119,9 @@ def write_tiers(
     total_size = con.execute(
         f"SELECT COALESCE(SUM(size), 0)::BIGINT FROM read_parquet('{layer2}') WHERE path = '.'"
     ).fetchone()[0]
-    floor = coarse_floor(int(total_size), coarse_exp)
+    if coarse_floor_bytes is not None and coarse_floor_bytes < 0:
+        raise ValueError(f"coarse_floor_bytes must be >= 0; got {coarse_floor_bytes}")
+    floor = coarse_floor_bytes if coarse_floor_bytes is not None else coarse_floor(int(total_size), coarse_exp)
 
     def order(lead: tuple[str, ...], base: tuple[str, ...]) -> tuple[str, ...]:
         out: list[str] = []
@@ -134,8 +147,14 @@ def write_tiers(
         """)
         os.replace(tmp, out)
         written[out] = int(con.execute(f"SELECT COUNT(*) FROM read_parquet('{out}')").fetchone()[0])
+        if groups:
+            from disk_tree.find.groups import write_groups
+            write_groups(out)
 
-    coarse_kv = {'floor_bytes': floor, 'coarse_exp': coarse_exp, 'total_size': int(total_size)}
+    coarse_kv = {
+        'floor_bytes': floor, 'coarse_exp': coarse_exp, 'total_size': int(total_size),
+        'floor_source': 'explicit' if coarse_floor_bytes is not None else 'derived',
+    }
     for tier in tiers:
         if tier == 'dirs':
             copy(tier, "kind = 'dir'", order((), ('depth', 'path')), (), {})
