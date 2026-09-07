@@ -20,6 +20,7 @@ specs
 gcs-usage/.venv
 ui/node_modules
 packages/react/node_modules
+packages/treemap/node_modules
 gcs-usage/tmp
 thrds
 screenshots

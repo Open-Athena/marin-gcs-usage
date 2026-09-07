@@ -8,6 +8,7 @@ FROM node:22-slim AS site
 WORKDIR /repo
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY ui ./ui
+COPY packages/treemap ./packages/treemap
 COPY packages/react ./packages/react
 COPY site ./site
 RUN corepack enable && pnpm install --frozen-lockfile
