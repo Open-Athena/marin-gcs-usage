@@ -351,7 +351,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   // (who/when/inherited-from) lives in the cell tooltip.
   const drillDepth = (path ?? initialPath)?.length ?? 1
   const renderCellExtra = markIdx
-    ? (n: TreeNode, cellPath: TreeNode[], { w, h }: { w: number; h: number }) => {
+    ? (n: TreeNode, cellPath: TreeNode[], { w, h, chain = 0 }: { w: number; h: number; chain?: number }) => {
         if (mode === 'fate') {
           // The fills already ARE the fate — only the KLC "both fates live
           // inside" barber-pole ring adds information here.
@@ -369,7 +369,10 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         if (isFold && cellPath.length !== drillDepth) return null
         const { mark, own } = markIdx.resolve(uriOf(cellPath))
         if (!mark) return null
-        const topLevel = cellPath.length === drillDepth + 1 || isFold
+        // A collapsed single-child chain's path ends at its deepest node;
+        // the cell's own top node is `chain` levels up — a chain hanging off
+        // the drill root is a top-level tile like any other.
+        const topLevel = cellPath.length - chain === drillDepth + 1 || isFold
         if (!own && !topLevel) return null
         const color = ACTION_COLORS[mark.action]
         const glyph = mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'

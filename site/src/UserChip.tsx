@@ -27,9 +27,12 @@ import { IDENTITIES } from './identities.gen'
 /** Shortest registry key that canonicalizes to `id` — for golfed URLs
  * (`?u=rw`, `?u=gonzalo`). Falls back to the id itself. */
 export const shortUserKey = (id: string): string => {
+  // The shortest alias that is a *prefix* of the canonical id (`kaiyue` for
+  // `kaiyue-wen`) — a first name reads as the person in a URL; an unrelated
+  // handle-derived alias (`when`) reads as a word.
   let best = id
   for (const [k, rec] of Object.entries(IDENTITIES)) {
-    if (rec.u === id && k.length < best.length) best = k
+    if (rec.u === id && id.startsWith(k) && k.length < best.length) best = k
   }
   return best
 }
