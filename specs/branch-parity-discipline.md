@@ -232,3 +232,32 @@ their CP of our `8191de0` — nothing to port back.
 Queued dt-ward: `~/c/disk-tree/specs/marin-cp-2026-09-04.md` (written by the
 cw-s3 session) covers what both marin branches owe upstream; nothing new
 from this pass.
+
+### 2026-09-07 (gcs-ward, `/cp dt/main`) — upstream's cloud-reduce / remote-target run
+
+Survey `25f3dc0..41978ca`: 21 upstream commits. Landed on `gcs` (one
+commit, cursor `dt/main 41978ca`):
+
+- `packages/react/tests/TimeSeries.test.tsx`: upstream's tests for the
+  `yFrom`/`annotations`/`onPickX` props (`3d48a20`, their CP of our
+  `974ee7c`/`00dd02b`/`f3c5a03`) — the props were ours, the tests weren't.
+  React suite 213 → 217.
+- `src/disk_tree/backends/local.py`: `find` when `gfind` is absent
+  (`3663e39`, clean `cherry-pick -x`).
+
+Skipped: `5be454c` + `8c0628d` (their CPs of our `tree_build`/access-plane
+and adaptive bulk-list work — already here, tests included); `bce974e`,
+`642bd38`, `6a4a2e4`, `58a2845`, `fd509b9`, `268ddb7`, `5ec7f86`, `646e455`
+(remote scan targets + capture/reduce + R2 serving: upstream's blob search
+path, `capture`/`reduce`/`scans register`, `ui/cfn` Pages Functions,
+manifests — a laptop→cloud pipeline; gcs lists buckets in Batch and serves
+its own path index. The two engine touches inside them — `canonical()` on
+`file` scan roots, 64K duckdb row groups — sit in `aggregate_*`, which
+gcs-usage doesn't call); `0e14ae8`, `41978ca` (Pages auth for `ui/`; gcs has
+its own); the specs commits. `268ddb7`'s `s3fs>=2024.10` pin (0.4.2 sends an
+empty `x-amz-acl` on multipart, R2 rejects) is queued for the cw-s3 pass —
+gcs writes through gcsfs / the `/gcs` mount.
+
+Queued dt-ward: `~/c/disk-tree/specs/marin-cp-2026-09-07.md` — `TimeSeries`
+`onBrush`/`window` (gcs `f30230c`), the one shared-surface change since
+their last manifest.
