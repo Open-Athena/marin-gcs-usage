@@ -210,47 +210,22 @@ const toRow = (r: Record<string, unknown>): Row => ({
  * hyparquet reads (plus `type`/`path_in_schema`, taken from the schema). */
 type CompactGroup = [number, string, [number, number, number][]]
 
-const bi = (v: unknown): bigint | undefined => (v == null ? undefined : BigInt(v as string))
 export function reviveRowGroup(json: string, schema: SchemaElement[]): Record<string, unknown> {
-  if (json[0] === '[') {
-    const [numRows, codec, cols] = JSON.parse(json) as CompactGroup
-    const leaves = schema.slice(1) // [0] is the root element
-    if (cols.length !== leaves.length) throw new Error(`row group has ${cols.length} columns, schema ${leaves.length}`)
-    return {
-      num_rows: BigInt(numRows),
-      columns: cols.map(([dpo, size, dict], i) => ({
-        meta_data: {
-          type: leaves[i].type,
-          path_in_schema: [leaves[i].name],
-          codec,
-          data_page_offset: BigInt(dpo),
-          total_compressed_size: BigInt(size),
-          ...(dict ? { dictionary_page_offset: BigInt(dict) } : {}),
-        },
-      })),
-    }
-  }
-  // Verbose thrift-shaped rows written before 2026-09-06; `gcs-usage
-  // index-compact` rewrites them in place — drop this branch once it has.
-  const g = JSON.parse(json) as { columns: { file_offset: string; meta_data: Record<string, unknown> }[]; total_byte_size: string; num_rows: string; file_offset?: string }
+  const [numRows, codec, cols] = JSON.parse(json) as CompactGroup
+  const leaves = schema.slice(1) // [0] is the root element
+  if (cols.length !== leaves.length) throw new Error(`row group has ${cols.length} columns, schema ${leaves.length}`)
   return {
-    num_rows: bi(g.num_rows),
-    total_byte_size: bi(g.total_byte_size),
-    ...(g.file_offset != null ? { file_offset: bi(g.file_offset) } : {}),
-    columns: g.columns.map(c => {
-      const m = c.meta_data
-      return {
-        file_offset: bi(c.file_offset),
-        meta_data: {
-          ...m,
-          num_values: bi(m.num_values),
-          total_uncompressed_size: bi(m.total_uncompressed_size),
-          total_compressed_size: bi(m.total_compressed_size),
-          data_page_offset: bi(m.data_page_offset),
-          ...(m.dictionary_page_offset != null ? { dictionary_page_offset: bi(m.dictionary_page_offset) } : {}),
-        },
-      }
-    }),
+    num_rows: BigInt(numRows),
+    columns: cols.map(([dpo, size, dict], i) => ({
+      meta_data: {
+        type: leaves[i].type,
+        path_in_schema: [leaves[i].name],
+        codec,
+        data_page_offset: BigInt(dpo),
+        total_compressed_size: BigInt(size),
+        ...(dict ? { dictionary_page_offset: BigInt(dict) } : {}),
+      },
+    })),
   }
 }
 
