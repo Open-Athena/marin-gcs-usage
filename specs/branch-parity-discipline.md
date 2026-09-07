@@ -205,6 +205,34 @@ Queued:
   `6121e6f`/`00dd02b`/`f3c5a03`), `S3BulkLister` adaptive retries (`e018da3`);
   the 8/28 Python manifest is still open upstream.
 
+### 2026-09-04 (gcs-ward, `/cp dt/main cw-s3`) — mirror of the cw-ward 9/4 pass
+
+Survey after backfilling the `cw-s3` cursor (`8191de0`'s prose marker wasn't
+in trailer form; `git cp set cw-s3 5160a18`): 2 cw-s3 commits, 81 dt/main
+(no prior gcs→dt cursor). Landed on `gcs` (one commit, cursors
+`dt/main 25f3dc0` + `cw-s3 fceb717`):
+
+- `packages/react` + `src/disk_tree`: `fceb717`'s exact patch (gcs was
+  byte-identical to `fceb717^` on both surfaces, so it applied clean and the
+  worktree is byte-identical to `fceb717` — i.e. to upstream's pre-extraction
+  react core + the `progress` flag engine change). Tests 180 → 213 react,
+  371 pytest, site `tsc` clean.
+- Ledger: adopted the cw-ward 9/4 scramble-log entry (parity of this file).
+- No `app.scss` adaptation needed: gcs dropped the dead cell box-shadows and
+  themed the core edge vars back on 8/28–29 (see the comment citing
+  `1e5ee40` at the `.dt-treemap-cell` block).
+
+Skipped (mirroring the cw-ward triage, same reasons): `25f3dc0` (the
+`@rdub/treemap` extraction — structural, gcs-first decision, still pending);
+upstream Flask/local serving + CLI features; `ui/` + upstream `specs/`;
+marin-originated rows upstream copied back (`DT_S3_ADDRESSING_STYLE` =
+our `168308a`, stream engine, adaptive bulk-list). `f3c5a03` on cw-s3 is
+their CP of our `8191de0` — nothing to port back.
+
+Queued dt-ward: `~/c/disk-tree/specs/marin-cp-2026-09-04.md` (written by the
+cw-s3 session) covers what both marin branches owe upstream; nothing new
+from this pass.
+
 ### 2026-09-07 (cw-ward, `/cp gcs`) — gcs `8191de0..8ac1beb` (39 unmarked)
 
 Landed on `cw-s3` (two commits; cursor `gcs 8ac1beb`):
@@ -252,3 +280,32 @@ per-cell `edge` (fill mixed toward the page bg) below depth 0, and the core's
 `edgeContrast` default only applies when the consumer leaves `edge` unset;
 gcs's wrapper has the identical lines. Also the Diff map now carries the
 `gaps` tiling chip (`TilingToggle` + `tiling=`); gcs's `DiffTreemap` lacks it.
+
+### 2026-09-07 (gcs-ward, `/cp dt/main`) — upstream's cloud-reduce / remote-target run
+
+Survey `25f3dc0..41978ca`: 21 upstream commits. Landed on `gcs` (one
+commit, cursor `dt/main 41978ca`):
+
+- `packages/react/tests/TimeSeries.test.tsx`: upstream's tests for the
+  `yFrom`/`annotations`/`onPickX` props (`3d48a20`, their CP of our
+  `974ee7c`/`00dd02b`/`f3c5a03`) — the props were ours, the tests weren't.
+  React suite 213 → 217.
+- `src/disk_tree/backends/local.py`: `find` when `gfind` is absent
+  (`3663e39`, clean `cherry-pick -x`).
+
+Skipped: `5be454c` + `8c0628d` (their CPs of our `tree_build`/access-plane
+and adaptive bulk-list work — already here, tests included); `bce974e`,
+`642bd38`, `6a4a2e4`, `58a2845`, `fd509b9`, `268ddb7`, `5ec7f86`, `646e455`
+(remote scan targets + capture/reduce + R2 serving: upstream's blob search
+path, `capture`/`reduce`/`scans register`, `ui/cfn` Pages Functions,
+manifests — a laptop→cloud pipeline; gcs lists buckets in Batch and serves
+its own path index. The two engine touches inside them — `canonical()` on
+`file` scan roots, 64K duckdb row groups — sit in `aggregate_*`, which
+gcs-usage doesn't call); `0e14ae8`, `41978ca` (Pages auth for `ui/`; gcs has
+its own); the specs commits. `268ddb7`'s `s3fs>=2024.10` pin (0.4.2 sends an
+empty `x-amz-acl` on multipart, R2 rejects) is queued for the cw-s3 pass —
+gcs writes through gcsfs / the `/gcs` mount.
+
+Queued dt-ward: `~/c/disk-tree/specs/marin-cp-2026-09-07.md` — `TimeSeries`
+`onBrush`/`window` (gcs `f30230c`), the one shared-surface change since
+their last manifest.
