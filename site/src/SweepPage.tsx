@@ -311,8 +311,9 @@ export function SweepPage() {
       </details>
       {plan && (
         <p className="plan-line">
-          Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>} · approved <b>{tb(approvedBytes)}</b>
-          {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the ownership gate)</>}
+          Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>}
+          {candsQ.data && apprQ.data && <> · approved <b>{tb(approvedBytes)}</b>
+            {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the ownership gate)</>}</>}
         </p>
       )}
 
