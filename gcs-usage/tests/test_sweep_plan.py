@@ -392,3 +392,18 @@ def test_classify_dir_attr_exempt_full_mode():
     gated = classify_dir("marin-us-east5", "checkpoints/llama/x", vr, own, idmap, ever, (band,), attr)
     exempt = classify_dir("marin-us-east5", "checkpoints/llama/x", vr, own, idmap, ever, (band,), attr, frozenset({band}))
     assert (gated[0], exempt[0]) == ("deferred_attr", "eligible")
+
+
+def test_bands_for_bucket() -> None:
+    from gcs_usage.sweep_plan import bands_for_bucket
+
+    approved = (
+        "gs://marin-us-east5/grug/",
+        "gs://marin-us-central2/scratch/kaiyue/checkpoints/",
+        "gs://marin-us-east5/checkpoints/dpo/",
+        "gs://marin-eu-west4/",
+    )
+    assert bands_for_bucket("marin-us-east5", approved) == ("checkpoints/dpo/", "grug/")
+    assert bands_for_bucket("marin-us-central2", approved) == ("scratch/kaiyue/checkpoints/",)
+    assert bands_for_bucket("marin-eu-west4", approved) == ("",)  # the whole bucket
+    assert bands_for_bucket("marin-us-east1", approved) == ()

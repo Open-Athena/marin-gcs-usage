@@ -488,7 +488,7 @@ export function SweepPage() {
               )}
             </p>
             <p className="dim dispatch-note">
-              A dry-run re-lists each approved band, plans the deletions under the ownership gate, and records the run below — it deletes nothing. The real run takes the same plan and deletes.
+              A dry-run walks the pinned scan listing under each approved band, plans the deletions under the ownership gate, and records the run below — it deletes nothing. The real run takes the same plan and deletes.
             </p>
             <div className="dispatch-btns">
           {/* Dispatches a GCP Batch executor run: `sweep manifest -S` (reads

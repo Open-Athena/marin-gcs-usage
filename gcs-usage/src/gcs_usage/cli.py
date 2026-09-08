@@ -911,7 +911,7 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
     from .identity import load_identities
     from .mark import creds, get_json
     from .sweep_plan import (
-        CATEGORIES, VoteResolver, classify_dir, ever_kept_prefixes, load_keeps, owners_resolver,
+        CATEGORIES, VoteResolver, bands_for_bucket, classify_dir, ever_kept_prefixes, load_keeps, owners_resolver,
     )
 
     base, tok = creds(token, url)
@@ -959,6 +959,11 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
             raise SystemExit(f"no listing shards for {bucket} under {root}/listing/{date}/")
         cache: dict[str, tuple[str, str | None, tuple[str, ...]]] = {}
         cats = {c: [0, 0] for c in CATEGORIES}  # bytes, objects
+        bands = bands_for_bucket(bucket, approved) if approved else None
+        if bands is not None and not bands:
+            err(f"  {bucket}: no approved band on this bucket — skipped")
+            summary["buckets"][bucket] = {"objects": 0, "dirs": 0, "skipped": "no approved band"}
+            continue
         writer = None
         out_path = f"{out}/manifest/{bucket}.parquet"
         ofs, opath = fsspec.core.url_to_fs(out_path)
@@ -967,6 +972,15 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
             pf = pq.ParquetFile(shard, filesystem=fs)
             for batch in pf.iter_batches(columns=["name", "size_bytes", "storage_class_id", "created"], batch_size=1 << 17):
                 df = batch.to_pandas()
+                n += len(df)
+                if bands is not None:
+                    inb = df["name"].str.startswith(bands)
+                    if not inb.all():
+                        cats["outside_bands"][0] += int(df["size_bytes"][~inb].sum())
+                        cats["outside_bands"][1] += int((~inb).sum())
+                        df = df[inb]
+                        if df.empty:
+                            continue
                 dirs = df["name"].str.rpartition("/")[0]
                 for dn in dirs.unique():
                     if dn not in cache:
@@ -986,7 +1000,6 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
                     if writer is None:
                         writer = pq.ParquetWriter(opath, schema, filesystem=ofs)
                     writer.write_table(t)
-                n += len(df)
         if writer is not None:
             writer.close()
         summary["buckets"][bucket] = {"objects": n, "dirs": len(cache), **{c: {"bytes": b, "objects": o} for c, (b, o) in cats.items() if o}}

@@ -241,6 +241,7 @@ CATEGORIES = (
     "deferred_attr",    # approved band, but the dir's attributed top user isn't the sweeper (or is unattributed / minority-share)
     "ever_kept",        # sweep-only but some ancestor once carried a keep (belt+suspenders)
     "conflict",         # keep and sweep votes both present → triage
+    "outside_bands",    # not under any approved band — never classified (approved-bands manifests only)
     "klc_pending",      # keep_last_ckpt only — needs the object-level split (later phase)
     "keep",             # keep votes only
     "unmarked",         # no votes — waits for the deadline
@@ -262,6 +263,16 @@ def owners_resolver(actions_payload: dict) -> FateResolver:
         for r in actions_payload["owners"]
     ]
     return FateResolver(rows)
+
+
+def bands_for_bucket(bucket: str, approved: Iterable[str]) -> tuple[str, ...]:
+    """The approved band prefixes that live on ``bucket``, relative to it
+    (``''`` = the whole bucket). With approved bands only objects under one of
+    these can be eligible, so the manifest reads the pinned listing but skips
+    everything else before the per-directory classification (the Python-bound
+    part: ~180k keys/s, which made a 289M-key bucket a 27-minute pass)."""
+    root = f"gs://{bucket}/"
+    return tuple(sorted(a[len(root):] for a in approved if a.startswith(root)))
 
 
 def classify_dir(
