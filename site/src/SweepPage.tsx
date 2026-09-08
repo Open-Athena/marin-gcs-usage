@@ -147,6 +147,9 @@ export function SweepPage() {
     refetchInterval: 30_000,
   })
   const canWrite = apprQ.data?.spec.canWrite ?? false
+  // Orientation text: open until the reader closes it once (per browser).
+  const [introOpen, setIntroOpenRaw] = useState(() => { try { return localStorage.getItem('sweep-intro') !== 'closed' } catch { return true } })
+  const setIntroOpen = (v: boolean) => { setIntroOpenRaw(v); try { localStorage.setItem('sweep-intro', v ? 'open' : 'closed') } catch { /* private mode */ } }
   const approvals = new Map((apprQ.data?.rows ?? []).map(r => [r.prefix, r]))
 
   // One row per approval on the wire (the /api/db route inserts one row per
@@ -294,15 +297,24 @@ export function SweepPage() {
     <main className="sweep-page">
       <SiteNav />
       <h1>Sweep console</h1>
-      <p className="sub">
-        Candidate bands are <b>sweep-only under the vote model</b> (no keep votes anywhere). Two ways to sign one off:{' '}
-        <b>approve</b> (slice) lets the executor delete only the <i>sweeper's own slice</i> — each directory must be
-        majority-owned by its sweeper, so other users' data inside a broad sweep is deferred to their own votes;{' '}
-        <b>all</b> signs off the entire band regardless of ownership (for bands verified out-of-band). Approved bands
-        feed <code>sweep manifest --approved-from-site</code>; runs land below with their logs.
-        {plan && <> Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>} · approved <b>{tb(approvedBytes)}</b>
-          {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the ownership gate)</>}</>}
-      </p>
+      {/* First-visit orientation: open until dismissed once, then a one-line
+          summary. The live plan/approved numbers are their own line below. */}
+      <details className="intro" open={introOpen} onToggle={e => setIntroOpen((e.target as HTMLDetailsElement).open)}>
+        <summary>How approvals work</summary>
+        <p className="sub">
+          Candidate bands are <b>sweep-only under the vote model</b> (no keep votes anywhere). Two ways to sign one off:{' '}
+          <b>approve</b> (slice) lets the executor delete only the <i>sweeper's own slice</i> — each directory must be
+          majority-owned by its sweeper, so other users' data inside a broad sweep is deferred to their own votes;{' '}
+          <b>all</b> signs off the entire band regardless of ownership (for bands verified out-of-band). Approved bands
+          feed <code>sweep manifest --approved-from-site</code>; runs land below with their logs.
+        </p>
+      </details>
+      {plan && (
+        <p className="plan-line">
+          Plan <b>{plan}</b>{candsQ.data && <> · head {candsQ.data.head}</>} · approved <b>{tb(approvedBytes)}</b>
+          {approvedAttrBytes !== approvedBytes && <> (≈<b>{tb(approvedAttrBytes)}</b> after the ownership gate)</>}
+        </p>
+      )}
 
       {latestQ.isError && <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>}
       {candsQ.data && (<>

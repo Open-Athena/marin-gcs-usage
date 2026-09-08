@@ -1617,6 +1617,12 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .sweep-table .approver { display: inline-block; vertical-align: middle; margin: 0 4px 0 2px; line-height: 0; cursor: default; }
   .go-ink { color: #3fb950; font-weight: 650; }
   .warn-ink { color: #d29922; font-weight: 650; }
+  details.intro {
+    margin: 6px 0 0;
+    summary { cursor: pointer; color: var(--ink-2); font-size: 13px; user-select: none; &::marker { color: var(--ink-3); } }
+    .sub { margin: 6px 0 0; }
+  }
+  .plan-line { margin: 10px 0 0; font-size: 13.5px; }
   .sweep-tools {
     display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 12px; font-size: 13px;
     // Rides under the sticky page bar while the table scrolls, so the
