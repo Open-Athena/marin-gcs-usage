@@ -337,7 +337,7 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // a root that dropped to the floor-free tier would read every region there.
   const lensRoot = ol ? lensAgg(ol, lens!.key, path, rootTot, rootMine).b : 0
   const thrAll = o.threshold ?? (Math.max(rootAll.b, lensRoot) * minArea) / (w * h)
-  let pick: { name: string; idx: IndexHandle } | null = null
+  let pick: { name: string; idx: IndexHandle; all?: IndexHandle } | null = null
   for (const t of tiers) {
     if (thrAll >= floorOf(t.idx)!) { pick = t; break }
   }

@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "dev:full": "./dev",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && tsc -p functions && vite build",
     "preview": "vite preview",
     "shots": "scrns",
     "clean": "rm -rf node_modules/.vite dist",

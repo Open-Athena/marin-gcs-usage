@@ -417,6 +417,20 @@ export async function readRects(
   return perGroup.flat()
 }
 
+/** A point lookup `(depth, path)` or a one-level range under a prefix. */
+export type Ask = { depth: number; path: string } | { depth: number; under: string }
+
+const askRect = (a: Ask): Rect =>
+  'path' in a
+    ? { dLo: a.depth, dHi: a.depth, pLo: a.path, pHi: a.path }
+    : { dLo: a.depth, dHi: a.depth, pLo: a.under + '/', pHi: a.under + '0' } // '0' sorts just past '/'
+
+const groupMayHold = (g: Span, a: Ask): boolean => {
+  if (g.dMax < a.depth || g.dMin > a.depth) return false
+  if (g.dMin !== g.dMax) return true
+  return 'path' in a ? !(g.pMax < a.path || g.pMin > a.path) : !(g.pMax < a.under + '/' || g.pMin > a.under + '0')
+}
+
 /** Point lookups: exact `(depth, path)` rows or `(depth, under-prefix)`
  * ranges, many at once (the totals manifest's ~8k prefixes) — `keep` is the
  * caller's exact test over the rows of the candidate groups. */
