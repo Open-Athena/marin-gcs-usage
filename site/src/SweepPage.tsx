@@ -70,7 +70,26 @@ interface DeletionRun {
   log_dir: string
 }
 
+/** A `gcs-sweep-*` Batch job as `/api/sweep/jobs` reports it (live state). */
+interface SweepJob {
+  job_id: string
+  mode: 'dry' | 'real'
+  state: string
+  created: string
+  updated: string | null
+  run_secs: number | null
+  by: string | null
+  date: string | null
+  plan: string
+  last_event: string | null
+  logs: string
+}
+
 const when = (ts: number | null) => (ts ? new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—')
+const fmtDur = (s: number): string => {
+  const m = Math.floor(s / 60)
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+}
 
 /** Run `fn` over `xs` with at most `n` in flight; rejects on the first failure. */
 const mapLimit = async <T,>(xs: T[], n: number, fn: (x: T) => Promise<void>): Promise<void> => {
@@ -113,6 +132,13 @@ export function SweepPage() {
   const runsQ = useQuery({
     queryKey: ['deletion-runs'],
     queryFn: () => jfetch<{ rows: DeletionRun[] }>('/api/db/deletion_runs'),
+    refetchInterval: 30_000,
+  })
+  // Live Batch state for every sweep job — visible from the moment it is
+  // queued, hours before the executor writes its `deletion_runs` row.
+  const jobsQ = useQuery({
+    queryKey: ['sweep-jobs'],
+    queryFn: () => jfetch<{ jobs: SweepJob[]; configured: boolean }>('/api/sweep/jobs'),
     refetchInterval: 30_000,
   })
   const canWrite = apprQ.data?.spec.canWrite ?? false
@@ -167,7 +193,12 @@ export function SweepPage() {
   // select a range from the cursor; j/k move the cursor without touching the
   // selection; the checkbox column is the touch/mouse equivalent.
   const [q, setQ] = useState('')
-  const rows = q.trim() ? shown.filter(c => matchRow(c, approvals.has(c.prefix), q)) : shown
+  const [st, setSt] = useState<'all' | 'approved' | 'todo'>('all')
+  const nApproved = shown.filter(c => approvals.has(c.prefix)).length
+  const rows = shown.filter(c => {
+    const a = approvals.has(c.prefix)
+    return (st === 'all' || (st === 'approved') === a) && (!q.trim() || matchRow(c, a, q))
+  })
   const [pageSize, setPageSize] = useState(PAGE_SIZES[0])
   const [pageRaw, setPage] = useState(0)
   const pages = Math.max(1, Math.ceil(rows.length / pageSize))
@@ -179,7 +210,7 @@ export function SweepPage() {
   const selRows = bands.filter(b => selected.has(b.prefix))
   const rowRefs = useRef<(HTMLTableRowElement | null)[]>([])
   useEffect(() => { rowRefs.current[cursor]?.scrollIntoView({ block: 'nearest' }) }, [cursor, page])
-  useEffect(() => { setCursor(-1); setPage(0) }, [pageSize, showAll, q])
+  useEffect(() => { setCursor(-1); setPage(0) }, [pageSize, showAll, q, st])
 
   const toggle = useCallback((prefixes: string[], on?: boolean) => setSelected(prev => {
     const next = new Set(prev)
@@ -269,9 +300,14 @@ export function SweepPage() {
       {latestQ.isError && <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>}
       {candsQ.data && (<>
         <div className="sweep-tools">
+          <span className="chips nb">
+            {([['all', shown.length], ['approved', nApproved], ['todo', shown.length - nApproved]] as const).map(([k, n]) => (
+              <button key={k} className={`chip${st === k ? ' on' : ''}`} onClick={() => setSt(k)}>{k} <span className="dim">{n}</span></button>
+            ))}
+          </span>
           <input className="filter" type="search" value={q} onChange={e => setQ(e.target.value)}
-                 placeholder="filter: path · user · owner:x · sweeper:x · is:approved|todo|unowned" />
-          {q.trim() && <span className="dim nb">{rows.length} of {shown.length} match</span>}
+                 placeholder="filter: path · user · owner:x · sweeper:x · is:unowned" />
+          {(q.trim() || st !== 'all') && <span className="dim nb">{rows.length} of {shown.length} match</span>}
           {selected.size > 0 && (
             <span className="sel-bar">
               <b>{selRows.length}</b> selected · ≈<b>{tb(selCap)}</b> deletable{selCap !== selBytes && <span className="dim"> of {tb(selBytes)}</span>}
@@ -457,8 +493,43 @@ export function SweepPage() {
         )
       })()}
 
+      <h2>Dispatches</h2>
+      {jobsQ.data?.configured === false && <p className="dim">Dispatch isn't configured on this deployment (no <code>GCP_SA_KEY</code>), so there is nothing to list.</p>}
+      {jobsQ.isError && <p className="err">{String(jobsQ.error)}</p>}
+      {jobsQ.data?.configured && !jobsQ.data.jobs.length && <p className="dim">None yet — every job the console (or the CLI) submits to Batch shows here from the moment it is queued.</p>}
+      {!!jobsQ.data?.jobs.length && (
+        <div className="table-scroll"><table className="sweep-table jobs">
+          <thead>
+            <tr><th>job</th><th>mode</th><th>state</th><th>by</th><th>started</th><th className="num">elapsed</th><th>plan</th><th>logs</th></tr>
+          </thead>
+          <tbody>
+            {jobsQ.data.jobs.map(j => {
+              const live = j.state === 'RUNNING' || j.state === 'QUEUED' || j.state === 'SCHEDULED'
+              const secs = j.run_secs ?? (live ? (Date.now() - Date.parse(j.created)) / 1000 : null)
+              const recorded = runsQ.data?.rows.some(r => r.log_dir.includes(j.job_id))
+              return (
+                <tr key={j.job_id} className={j.state === 'FAILED' ? 'failed' : live ? 'live' : ''}>
+                  <td><code>{j.job_id}</code></td>
+                  <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry'}</td>
+                  <td>
+                    <span className={j.state === 'SUCCEEDED' ? 'ok' : j.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'}>{j.state.toLowerCase()}</span>
+                    {recorded && <span className="dim nb"> · run recorded ↓</span>}
+                    {j.state === 'FAILED' && j.last_event && <div className="dim small">{j.last_event}</div>}
+                  </td>
+                  <td>{j.by ? shortName(j.by) : '—'}</td>
+                  <td><span className="nb">{when(Date.parse(j.created) / 1000)}</span></td>
+                  <td className="num"><span className="nb">{secs == null ? '—' : fmtDur(secs)}</span></td>
+                  <td><Link to={`/files/${j.plan.replace('gs://oa-gcs-usage-dvx/', '')}/`}>{j.date ?? 'plan'} →</Link></td>
+                  <td><a href={j.logs} target="_blank" rel="noreferrer">Cloud Logging ↗</a></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table></div>
+      )}
+
       <h2>Deletion runs</h2>
-      {!runsQ.data?.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here.</p>}
+      {!runsQ.data?.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here, once its manifest step is done.</p>}
       {!!runsQ.data?.rows.length && (
         <div className="table-scroll"><table className="sweep-table">
           <thead>

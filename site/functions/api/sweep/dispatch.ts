@@ -9,59 +9,21 @@
 // run surfaces in the console within its refetch window), and for `real`
 // requires ≥7d soft delete on every bucket before deleting anything.
 //
-// Auth to GCP: a dedicated SA key (`gcs-usage-dispatch@…`, Batch-submit +
-// actAs-job-SA ONLY — it cannot read or delete bucket data itself) stored as
-// the `GCP_SA_KEY` Pages secret; we self-sign a JWT and exchange it for an
-// access token (no SDK — Workers-compatible WebCrypto).
+// Auth to GCP: `_lib/gcp.ts` (the `GCP_SA_KEY` Pages secret — a dedicated SA
+// that can submit Batch jobs and act as the job SA, and nothing else).
 import { ADMIN_SCOPE, type Env as AuthEnv, json, requireScope } from '../../_lib/auth.js'
+import { BATCH_JOBS, BATCH_REGION, GCP_PROJECT, gcpToken } from '../../_lib/gcp.js'
 
 interface Env extends AuthEnv {
   GCP_SA_KEY?: string
 }
 
-const PROJECT = 'oa-internal-450019'
-const REGION = 'us-central1'
+const PROJECT = GCP_PROJECT
+const REGION = BATCH_REGION
 const IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/cloud-run-source-deploy/gcs-usage-snapshot:latest`
 const JOB_SA = `gcs-usage-job@${PROJECT}.iam.gserviceaccount.com`
 const CF_ACCOUNT_ID = '74981a43be0de7712369306c7b19133d'
 const SECRET = (name: string) => `projects/${PROJECT}/secrets/${name}/versions/latest`
-
-const b64url = (buf: ArrayBuffer | Uint8Array): string => {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
-  let s = ''
-  for (const b of bytes) s += String.fromCharCode(b)
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-/** Service-account JWT → OAuth access token (cloud-platform scope). */
-async function gcpToken(saKey: string): Promise<string> {
-  const sa = JSON.parse(saKey) as { client_email: string; private_key: string }
-  const pem = sa.private_key.replace(/-----[A-Z ]+-----|\s/g, '')
-  const der = Uint8Array.from(atob(pem), c => c.charCodeAt(0))
-  const key = await crypto.subtle.importKey(
-    'pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'],
-  )
-  const now = Math.floor(Date.now() / 1000)
-  const enc = new TextEncoder()
-  const unsigned = `${b64url(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })))}.${b64url(enc.encode(JSON.stringify({
-    iss: sa.client_email,
-    scope: 'https://www.googleapis.com/auth/cloud-platform',
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600,
-  })))}`
-  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(unsigned))
-  const r = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: `${unsigned}.${b64url(sig)}`,
-    }),
-  })
-  if (!r.ok) throw new Error(`token exchange: ${r.status} ${await r.text()}`)
-  return ((await r.json()) as { access_token: string }).access_token
-}
 
 export const onRequestPost = async (ctx: { request: Request; env: Env }): Promise<Response> => {
   const gated = await requireScope(ctx, ADMIN_SCOPE)
@@ -119,7 +81,7 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
 
   const token = await gcpToken(ctx.env.GCP_SA_KEY)
   const r = await fetch(
-    `https://batch.googleapis.com/v1/projects/${PROJECT}/locations/${REGION}/jobs?job_id=${jobId}`,
+    `${BATCH_JOBS}?job_id=${jobId}`,
     { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(spec) },
   )
   const out = await r.json().catch(() => ({}))
