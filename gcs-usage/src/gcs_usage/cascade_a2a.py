@@ -19,7 +19,11 @@ markers to DT, so the sum should equal their count. Two one-sided classes
 are counted apart and don't fail the gate: DT emits a dir's own slice even
 when it holds nothing (`size` 0, `n_files` 0 — mgu has no row for an empty
 slice), and mgu keeps a dir row for an `a//b` name's empty component (DT
-collapses `//`).
+collapses `//`). A third class follows from the second: DT folds every
+`a//b…` name into `a/b…`, so where a bucket holds both spellings DT's
+`a/b` rows carry both sets of bytes and mgu's only the single-slash ones —
+every row at or under the collapse of an mgu `//` path is counted apart
+(`collapsed_rows`) and compared on neither side.
 """
 from __future__ import annotations
 
@@ -49,12 +53,21 @@ def compare(bucket: str, index_path: str, dt_path: str, top: int = 10) -> dict:
     for m, dc in CLASS_COLS.items():
         if dc not in dt_cols:
             con.execute(f"ALTER TABLE d ADD COLUMN {dc} BIGINT DEFAULT 0")
+    # Collapse points: every mgu `//` path with its slashes folded the way DT
+    # folds them; rows at or under one are the `//` class. (A trailing-`/`
+    # row — the empty component alone — folds onto its parent, which both
+    # sides agree on, so it defines no collapse point.)
+    con.execute("CREATE TEMP TABLE cc AS SELECT DISTINCT regexp_replace(path, '/+', '/', 'g') AS cp FROM m WHERE path LIKE '%//%'")
     con.execute(
         """
         CREATE TEMP TABLE j AS
-        SELECT COALESCE(m.path, d.path) AS path, COALESCE(m.usr, d.usr) AS usr,
-               m.path IS NOT NULL AS in_m, d.path IS NOT NULL AS in_d, m.*, d.* EXCLUDE (path, usr)
-        FROM m FULL OUTER JOIN d ON m.path = d.path AND m.usr IS NOT DISTINCT FROM d.usr
+        SELECT *, (path LIKE '%//%' OR path LIKE '%/') AS dsl,
+               EXISTS (SELECT 1 FROM cc WHERE jj.path = cc.cp OR starts_with(jj.path, cc.cp || '/')) AS coll
+        FROM (
+            SELECT COALESCE(m.path, d.path) AS path, COALESCE(m.usr, d.usr) AS usr,
+                   m.path IS NOT NULL AS in_m, d.path IS NOT NULL AS in_d, m.*, d.* EXCLUDE (path, usr)
+            FROM m FULL OUTER JOIN d ON m.path = d.path AND m.usr IS NOT DISTINCT FROM d.usr
+        ) jj
         """
     )
     n = lambda sql: con.execute(sql).fetchone()[0]
@@ -67,12 +80,13 @@ def compare(bucket: str, index_path: str, dt_path: str, top: int = 10) -> dict:
             "dt": rows("SELECT usr, size AS b, n_files AS o FROM d WHERE path = '' ORDER BY usr NULLS FIRST"),
         },
         "only": {
-            "mgu": {"n": n("SELECT count(*) FROM j WHERE NOT in_d AND NOT (path LIKE '%//%' OR path LIKE '%/')"), "examples": rows(f"SELECT path, usr, b, o FROM j WHERE NOT in_d AND NOT (path LIKE '%//%' OR path LIKE '%/') ORDER BY b DESC LIMIT {top}")},
-            "dt": {"n": n("SELECT count(*) FROM j WHERE NOT in_m AND NOT (size = 0 AND n_files = 0)"), "examples": rows(f"SELECT path, usr, size AS b, n_files AS o FROM j WHERE NOT in_m AND NOT (size = 0 AND n_files = 0) ORDER BY size DESC LIMIT {top}")},
+            "mgu": {"n": n("SELECT count(*) FROM j WHERE NOT in_d AND NOT dsl AND NOT coll"), "examples": rows(f"SELECT path, usr, b, o FROM j WHERE NOT in_d AND NOT dsl AND NOT coll ORDER BY b DESC LIMIT {top}")},
+            "dt": {"n": n("SELECT count(*) FROM j WHERE NOT in_m AND NOT (size = 0 AND n_files = 0) AND NOT coll"), "examples": rows(f"SELECT path, usr, size AS b, n_files AS o FROM j WHERE NOT in_m AND NOT (size = 0 AND n_files = 0) AND NOT coll ORDER BY size DESC LIMIT {top}")},
         },
         "known": {
-            "double_slash_dirs": n("SELECT count(*) FROM j WHERE NOT in_d AND (path LIKE '%//%' OR path LIKE '%/')"),
-            "empty_slices": n("SELECT count(*) FROM j WHERE NOT in_m AND size = 0 AND n_files = 0"),
+            "double_slash_dirs": n("SELECT count(*) FROM j WHERE NOT in_d AND dsl"),
+            "empty_slices": n("SELECT count(*) FROM j WHERE NOT in_m AND size = 0 AND n_files = 0 AND NOT coll"),
+            "collapsed_rows": n("SELECT count(*) FROM j WHERE coll AND NOT (NOT in_d AND dsl)"),
         },
         "mismatch": {},
         "against_zero": [m for m, dc in CLASS_COLS.items() if dc not in dt_cols],
@@ -80,14 +94,14 @@ def compare(bucket: str, index_path: str, dt_path: str, top: int = 10) -> dict:
     }
     checks = {"b": ("b", "size"), "o": ("o", "n_files"), **{m: (f"COALESCE({m}, 0)", f"COALESCE({d}, 0)") for m, d in CLASS_COLS.items()}}
     for name, (mc, dc) in checks.items():
-        where = f"in_m AND in_d AND {mc} IS DISTINCT FROM {dc}"
+        where = f"in_m AND in_d AND NOT coll AND {mc} IS DISTINCT FROM {dc}"
         report["mismatch"][name] = {
             "n": n(f"SELECT count(*) FROM j WHERE {where}"),
             "examples": rows(f"SELECT path, usr, {mc} AS mgu, {dc} AS dt FROM j WHERE {where} ORDER BY abs({mc} - {dc}) DESC LIMIT {top}"),
         }
-    report["mismatch"]["o"]["delta_sum"] = n("SELECT COALESCE(sum(o - n_files), 0) FROM j WHERE in_m AND in_d")
+    report["mismatch"]["o"]["delta_sum"] = n("SELECT COALESCE(sum(o - n_files), 0) FROM j WHERE in_m AND in_d AND NOT coll")
     if has_mtime:
-        where = "in_m AND in_d AND (wb > 0 OR mtime_mean IS NOT NULL) AND abs(COALESCE(wts / NULLIF(wb, 0), 0) - COALESCE(mtime_mean, 0)) > 2"
+        where = "in_m AND in_d AND NOT coll AND (wb > 0 OR mtime_mean IS NOT NULL) AND abs(COALESCE(wts / NULLIF(wb, 0), 0) - COALESCE(mtime_mean, 0)) > 2"
         report["mismatch"]["mtime"] = {
             "n": n(f"SELECT count(*) FROM j WHERE {where}"),
             "examples": rows(f"SELECT path, usr, wts / NULLIF(wb, 0) AS mgu, mtime_mean AS dt FROM j WHERE {where} ORDER BY abs(COALESCE(wts / NULLIF(wb, 0), 0) - COALESCE(mtime_mean, 0)) DESC LIMIT {top}"),
@@ -106,7 +120,7 @@ def render(r: dict) -> str:
     for col, m in r["mismatch"].items():
         out.append(f"  {col} mismatches: {m['n']:,}" + (f" (Σ mgu−dt = {m['delta_sum']:,})" if "delta_sum" in m else "") + "".join(f"\n    {e['path'] or '(root)'} [{e['usr'] or '∅'}] mgu={e['mgu']} dt={e['dt']}" for e in m["examples"]))
     k = r["known"]
-    out.append(f"  known one-sided: {k['double_slash_dirs']:,} mgu `a//b` dir rows, {k['empty_slices']:,} DT empty slices")
+    out.append(f"  known one-sided: {k['double_slash_dirs']:,} mgu `a//b` dir rows, {k['empty_slices']:,} DT empty slices, {k['collapsed_rows']:,} rows at/under a `//`-collapsed path")
     if r["against_zero"]:
         out.append(f"  class pivots absent from the DT file, compared against 0: {', '.join(r['against_zero'])}")
     if r["skipped"]:

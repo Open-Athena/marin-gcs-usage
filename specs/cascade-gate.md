@@ -41,3 +41,22 @@ Two findings for DT, both in `~/c/disk-tree/specs/mgu-scale-a3-gate.md` round 2:
 Everything else agrees: bytes, objects, pivots, mean mtime — the remaining one-sided rows are the `//` policy (DT collapses `…/gs://marin-…/…` names into `gs:/`, mgu keeps the empty component; both ways are internally consistent).
 
 **Verdict:** correctness is one fix away; performance is not there — per-bucket cascades total 3h52m with a failure against `webdata`'s 25 min for the fleet at the same memory. Until partitioning recurses and the per-cascade overhead drops, `viz.py` stays the producer.
+
+### Round 3 results (job `gcs-usage-gate-20260908-110444`, 52m36s total, n2-highmem-32, `-k 3 -P 4000000 -n 16`, `-M 100GB`; DT `bd98e10` = asks 6–9)
+
+Same 2026-09-07 listing as round 2, so a2a and timings are like for like.
+
+| bucket | import wall | peak RSS | cascades | a2a |
+|---|---|---|---|---|
+| us-east1 | 0:28 | 13.0 GB | 3 | exact (after the `//` class, below) |
+| us-east5 | 2:11 | 52.5 GB | 13 | exact (after the `//` class) |
+| us-central1 | 2:24 | 59.9 GB | 11 (2 keys split) | exact (after the `//` class) |
+| us-central2 | 8:26 → **OOM** | 101.1 GB | 52 (36 keys split, depths 3–7) | no tier written |
+| eu-west4 | 20:39 | **168.8 GB** | 74 (2 split) | exact |
+| us-west4 | 0:18 | 10.4 GB | 3 | exact |
+
+- **Correctness: the dropped subtrees are gone.** Round 2's three missing subtrees don't recur; every row that both sides emit matches on bytes, objects, class pivots and mtime. The only remaining differences are the `//`-in-name class (ask 9): DT folds `a//b` into `a/b`, so where a bucket holds *both* spellings (`tokenized/gs://marin-us-east5/…` beside `tokenized/gs:/marin-us-east5/…` on east5, 27 rows; `ego-dex/,gs://…` on east1/central1) DT's single-slash rows carry both sets of bytes and mgu's only one. `cascade-a2a` now sets those rows aside (`collapsed_rows`, every row at or under the collapse of an mgu `//` path) instead of failing on them, and the three buckets read exact. One row is still unexplained and tiny: a directory named a single space (`podcast_audio/The_Home_Service_Expert_Podcast/ `, 89 MB, central1) that DT has and mgu doesn't.
+- **Speed: 3h52m → 52m for the fleet**, and the per-bucket shape flipped: eu-west4 1:30 → 20:39, central2 from OOM-at-the-first-key to all 52 cascades done in 8 minutes. `webdata`'s 25 min for the same six buckets is now within reach.
+- **Two new asks (10, 11 in DT's spec).** central2 finishes every cascade (`dirs_final: 25,374,050 dirs`) and then dies in the final `COPY` — the global sort + parquet write over the union with all 289M file rows — with DuckDB's "failed to allocate 2.0 MiB (93.1 GiB/93.1 GiB used)" at the `-M 100GB` cap, spill dir on the 1.5 TB local SSD. And eu-west4's peak RSS is 169 GB against a 100 GB cap: ~70 GB of process memory DuckDB doesn't account for (the same overshoot `webdata` shows at 141.7 GB), which on the 250 GB node leaves no room to raise `-M`.
+
+Verdict unchanged: `viz.py` stays the producer until central2 completes and the overshoot is understood; the next port is a re-run away.
