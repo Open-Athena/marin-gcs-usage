@@ -252,7 +252,9 @@ X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 # --label usr` per bucket on the same staged inputs, `cascade-a2a` against the
 # date's published path index, peak RSS + wall per bucket. Reports go to
 # gs://$DATA/gate/$DATE/; nothing is published. GATE_K = --partition-depth
-# (default 2), GATE_HIST=1 adds --size-hist.
+# (default 2), GATE_P = --partition-files (default 4M; keys over it split
+# recursively), GATE_THREADS = DuckDB threads (default 8), GATE_HIST=1 adds
+# --size-hist.
 if [ "${GATE:-0}" = "1" ]; then
   GD="${STAGE_DIR:-/tmp}/gate"
   mkdir -p "$GD/labels" "$GD/tiers" "$GD/l2" "$GD/db" "$GD/root"
@@ -260,9 +262,9 @@ if [ "${GATE:-0}" = "1" ]; then
   gcs-usage labels "${L[@]}" "${A[@]}" -o "$GD/labels"
   srckey=$(gcs-usage index-dir "$DATE") || { echo "ERROR: no synced path index for $DATE to compare against" >&2; exit 1; }
   for b in "${FLEET[@]}"; do
-    echo "GATE $b: import (k=${GATE_K:-2}, mem=${DUCKDB_MEM:-100GB})" >&2
+    echo "GATE $b: import (k=${GATE_K:-2}, P=${GATE_P:-4000000}, n=${GATE_THREADS:-8}, mem=${DUCKDB_MEM:-100GB})" >&2
     /usr/bin/time -v disk-tree import -e duckdb -l "$(loc "/gcs/$DATA/listing/$DATE/$b/*.parquet")" -b "$b" -s gcs \
-      -d "$GD/db" -k "${GATE_K:-2}" -L "$GD/labels/labels-$b.parquet" -c usr -p storage_class_id -m ${GATE_HIST:+-H} \
+      -d "$GD/db" -k "${GATE_K:-2}" -P "${GATE_P:-4000000}" -n "${GATE_THREADS:-8}" -L "$GD/labels/labels-$b.parquet" -c usr -p storage_class_id -m ${GATE_HIST:+-H} \
       -i dirs -O "$GD/tiers" -r 8192 -S usr -M "${DUCKDB_MEM:-100GB}" -T "${DUCKDB_TMP:-/tmp}" \
       -t "${DATE}T00:00:00Z" -o "$GD/l2" > "$GD/import-$b.log" 2>&1 || echo "GATE $b: import FAILED (see import-$b.log)" >&2
     grep -E "partition depth|Elapsed|Maximum resident" "$GD/import-$b.log" >&2 || true

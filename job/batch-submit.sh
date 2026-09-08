@@ -48,7 +48,7 @@ v = {
 }
 v = {k: s for k, s in v.items() if s}
 for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "TIERS_ONLY", "SWEEP", "SWEEP_DATE", "SWEEP_BUCKETS", "USER",
-          "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS", "GATE", "GATE_K", "GATE_HIST",
+          "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS", "GATE", "GATE_K", "GATE_P", "GATE_THREADS", "GATE_HIST",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
           "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:
