@@ -24,11 +24,18 @@ from click import Choice, argument, group, option
 from .identity import DEFAULT_IDENTITIES, load_identities
 from .mark import DEFAULT_URL as MARK_DEFAULT_URL
 from .mark import KEEP_ACTIONS as MARK_KEEPS
-from disk_tree.listing import prepare_listing
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
 from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows
 from .viz import COARSE_EXPS
+
+
+def prepare_listing(con, listings):
+    """The `disk_tree` engine is a runtime dependency of the listing-aggregating
+    commands only — imported here, not at module load, so `gcs-usage healthcheck`
+    (and the CLI's `--help`) run from a bare `gcs-usage` venv (Healthcheck GHA)."""
+    from disk_tree.listing import prepare_listing as _prepare_listing
+    return _prepare_listing(con, listings)
 
 err = partial(print, file=sys.stderr)
 
