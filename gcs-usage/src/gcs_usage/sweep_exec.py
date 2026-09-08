@@ -31,6 +31,32 @@ DECISIONS = (
 BATCH = 100  # GCS JSON batch limit per request
 
 
+def list_roots(dirs: set[str], approved: tuple[str, ...], bucket: str) -> list[str]:
+    """Prefix-free listing roots covering every manifest dir: each dir cut to
+    one segment below its band (its top-level segment when no band covers
+    it), so a band fans out into its children's listings; a dir that *is* its
+    band (or a root's ancestor) becomes the root itself and swallows the
+    deeper ones. `''` = the whole bucket."""
+    root_of_band: dict[str, int] = {}
+    for a in approved:
+        pre = f"gs://{bucket}/"
+        if a.startswith(pre):
+            rel = a[len(pre):].rstrip("/")
+            root_of_band[rel] = (rel.count("/") + 1) if rel else 0
+    roots: set[str] = set()
+    for dn in dirs:
+        hit = max((r for r in root_of_band if dn == r or (dn.startswith(r + "/") if r else True)), key=len, default=None)
+        depth = root_of_band[hit] if hit is not None else 0
+        roots.add("/".join(dn.split("/")[: depth + 1]) if dn else "")
+    out = sorted(roots)
+    pruned: list[str] = []
+    for r in out:
+        if any(r == p or (r.startswith(p + "/") if p else True) for p in pruned):
+            continue
+        pruned.append(r)
+    return pruned
+
+
 def execute_plan(
     plan_dir: str,
     for_real: bool = False,
@@ -75,7 +101,8 @@ def execute_plan(
         mpath = f"{ppath}/manifest/{bucket}.parquet"
         if not fs.exists(mpath):
             raise SystemExit(f"plan says {bucket} has eligible keys but {mpath} is missing")
-        mf = pq.read_table(mpath, filesystem=fs).to_pandas()
+        with fs.open(mpath, "rb") as fh:  # deterministic close: see `sweep manifest`
+            mf = pq.read_table(fh).to_pandas()
         if for_real:
             _require_soft_delete(client, bucket, min_soft_delete_days)
         by_dir = {dn: g for dn, g in mf.groupby("dir")}
@@ -95,63 +122,111 @@ def execute_plan(
         drift_dirs: list[dict] = []
         rows: list[dict] = []
 
-        def do_dir(item):
-            dn, g = item  # returns (dn, decisions, drift-record, deleted-bytes)
-            want = {r.name: r for r in g.itertuples()}
-            live: dict = {}
-            extra_b = extra_o = 0
-            for blob in client.list_blobs(bucket, prefix=f"{dn}/" if dn else "", delimiter="/"):
-                if blob.name in want:
-                    live[blob.name] = blob
-                else:
-                    extra_b += blob.size or 0
-                    extra_o += 1
-            out: list[dict] = []
-            gone = set(want) - set(live)
-            for name in gone:
-                out.append({"name": name, "size_bytes": int(want[name].size_bytes), "generation": 0, "decision": "skipped_gone", "dir": dn})
-            todo = []
-            for name, blob in live.items():
-                created = blob.time_created.replace(tzinfo=dt.timezone.utc) if blob.time_created.tzinfo is None else blob.time_created
-                if abs((created - want[name].created.to_pydatetime()).total_seconds()) > 1:
-                    out.append({"name": name, "size_bytes": int(want[name].size_bytes), "generation": int(blob.generation), "decision": "skipped_overwritten", "dir": dn})
-                else:
-                    todo.append(blob)
-            drifted = extra_o > 0
-            if drifted and drift == "skip":
-                return dn, out, {"dir": dn, "new_objects": extra_o, "new_bytes": extra_b, "skipped_deletes": len(todo)}, 0
-            if for_real:
-                for i in range(0, len(todo), BATCH):
-                    # raise on failure: a 412 (generation moved) or transient
-                    # error aborts loudly; a re-run resumes via skipped_gone
-                    with client.batch():
-                        for blob in todo[i : i + BATCH]:
-                            bkt.delete_blob(blob.name, if_generation_match=blob.generation)
-            deleted_b = 0
-            for blob in todo:
-                out.append({"name": blob.name, "size_bytes": int(blob.size or 0), "generation": int(blob.generation), "decision": "delete", "dir": dn})
-                deleted_b += blob.size or 0
-            return dn, out, ({"dir": dn, "new_objects": extra_o, "new_bytes": extra_b, "skipped_deletes": 0} if drifted else None), deleted_b
+        # One recursive listing per *root* (a band's child directory, or the
+        # band itself when it is directly eligible) instead of one per
+        # directory: 1.4M eligible dirs would be 1.4M list calls; the roots are
+        # a few thousand, each a streamed page walk. GCS lists names in
+        # lexicographic order and the manifest is sorted the same way, so each
+        # root is a merge: manifest-only → gone, both → created check, live-only
+        # under a manifest dir → drift for that dir. A directory's decisions are
+        # buffered until the listing has moved past it (its keys are contiguous
+        # under `dn/`, nested dirs form a stack), and only then deleted — drift
+        # discovered late still gates the whole directory.
+        dirs_all = set(by_dir)
+        mf_sorted = mf[mf["dir"].isin(dirs_all)].sort_values("name", kind="stable")
+        roots = list_roots(dirs_all, approved, bucket)
+
+        def do_root(root: str):
+            prefix = f"{root}/" if root else ""
+            sub = mf_sorted[(mf_sorted["dir"] == root) | mf_sorted["dir"].str.startswith(prefix)] if root else mf_sorted
+            want = iter(sub[["name", "size_bytes", "created", "dir"]].itertuples(index=False, name=None))
+            w = next(want, None)
+            pend: dict[str, dict] = {}
+            stack: list[str] = []
+            done: list[tuple] = []
+
+            def flush(dn: str) -> None:
+                p = pend.pop(dn)
+                todo, out = p["todo"], p["out"]
+                drifted = p["extra_o"] > 0
+                if drifted and drift == "skip":
+                    done.append((dn, out, {"dir": dn, "new_objects": p["extra_o"], "new_bytes": p["extra_b"], "skipped_deletes": len(todo)}, 0))
+                    return
+                if for_real:
+                    for i in range(0, len(todo), BATCH):
+                        # raise on failure: a 412 (generation moved) or transient
+                        # error aborts loudly; a re-run resumes via skipped_gone
+                        with client.batch():
+                            for blob in todo[i : i + BATCH]:
+                                bkt.delete_blob(blob.name, if_generation_match=blob.generation)
+                deleted_b = 0
+                for blob in todo:
+                    out.append({"name": blob.name, "size_bytes": int(blob.size or 0), "generation": int(blob.generation), "decision": "delete", "dir": dn})
+                    deleted_b += blob.size or 0
+                done.append((dn, out, ({"dir": dn, "new_objects": p["extra_o"], "new_bytes": p["extra_b"], "skipped_deletes": 0} if drifted else None), deleted_b))
+
+            def settle(name: str) -> None:
+                # close every open dir the listing has moved past
+                while stack and stack[-1] != "" and not name.startswith(stack[-1] + "/"):
+                    flush(stack.pop())
+
+            def ensure(dn: str) -> dict:
+                if dn not in pend:
+                    pend[dn] = {"todo": [], "out": [], "extra_o": 0, "extra_b": 0}
+                    stack.append(dn)
+                return pend[dn]
+
+            def gone(row) -> None:
+                name, size, _created, dn = row
+                settle(name)
+                ensure(dn)["out"].append({"name": name, "size_bytes": int(size), "generation": 0, "decision": "skipped_gone", "dir": dn})
+
+            for blob in client.list_blobs(bucket, prefix=prefix):
+                n = blob.name
+                while w is not None and w[0] < n:
+                    gone(w)
+                    w = next(want, None)
+                settle(n)
+                dn = n.rpartition("/")[0]
+                if w is not None and w[0] == n:
+                    p = ensure(w[3])
+                    created = blob.time_created.replace(tzinfo=dt.timezone.utc) if blob.time_created.tzinfo is None else blob.time_created
+                    if abs((created - w[2].to_pydatetime()).total_seconds()) > 1:
+                        p["out"].append({"name": n, "size_bytes": int(w[1]), "generation": int(blob.generation), "decision": "skipped_overwritten", "dir": w[3]})
+                    else:
+                        p["todo"].append(blob)
+                    w = next(want, None)
+                elif dn in dirs_all:
+                    p = ensure(dn)
+                    p["extra_o"] += 1
+                    p["extra_b"] += blob.size or 0
+            while w is not None:
+                gone(w)
+                w = next(want, None)
+            while stack:
+                flush(stack.pop())
+            return done
 
         total_deleted_b = 0
         bands: dict[str, Counter] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for dn, out, drifted, dbytes in pool.map(do_dir, by_dir.items()):
-                rows.extend(out)
-                band = bands.setdefault(band_of(bucket, dn), Counter())
-                if drifted:
-                    drift_dirs.append(drifted)
-                    band["drift_new_objects"] += drifted["new_objects"]
-                total_deleted_b += dbytes
-                for r in out:
-                    counts[r["decision"]] += 1
-                    if r["decision"] == "delete":
-                        band["bytes"] += r["size_bytes"]
-                        band["objects"] += 1
-                    elif r["decision"] == "skipped_gone":
-                        band["gone"] += 1
-                    else:
-                        band["overwritten"] += 1
+            for done in pool.map(do_root, roots):
+                for dn, out, drifted, dbytes in done:
+                    rows.extend(out)
+                    band = bands.setdefault(band_of(bucket, dn), Counter())
+                    if drifted:
+                        drift_dirs.append(drifted)
+                        band["drift_new_objects"] += drifted["new_objects"]
+                    total_deleted_b += dbytes
+                    for r in out:
+                        counts[r["decision"]] += 1
+                        if r["decision"] == "delete":
+                            band["bytes"] += r["size_bytes"]
+                            band["objects"] += 1
+                        elif r["decision"] == "skipped_gone":
+                            band["gone"] += 1
+                        else:
+                            band["overwritten"] += 1
 
         log_path = f"{plan_dir}/{mode}/{bucket}.parquet"
         lfs, lpath = fsspec.core.url_to_fs(log_path)
@@ -176,6 +251,28 @@ def execute_plan(
     return summary
 
 
+def run_id_for(plan: dict, started_ts: int) -> str:
+    return f"{plan['date']}-h{plan['head']}/{dt.datetime.fromtimestamp(started_ts, dt.timezone.utc):%Y%m%dT%H%M%SZ}"
+
+
+def record_run_start(plan: dict, plan_dir: str, exec_head: int, actor: str, started_ts: int, for_real: bool) -> str:
+    """Insert the run's D1 row as soon as it starts (`finished_ts` NULL, zero
+    totals) so the console lists it while it runs; `record_run` fills it in."""
+    from .index_footer import _creds, _d1_query, _q
+
+    run_id = run_id_for(plan, started_ts)
+    tok, acct = _creds()
+    _d1_query(
+        "INSERT INTO deletion_runs (run_id, plan, scan, head, exec_head, actor, mode, started_ts, finished_ts, "
+        "deleted_bytes, deleted_objects, skipped_gone, skipped_overwritten, drift_dirs, ledger_drift_dirs, "
+        "undo_deadline, log_dir) VALUES ("
+        f"{_q(run_id)}, {_q(plan_dir)}, {_q(plan['date'])}, {plan['head']}, {exec_head}, {_q(actor)}, "
+        f"{_q('real' if for_real else 'dry')}, {started_ts}, NULL, 0, 0, 0, 0, 0, 0, NULL, {_q(plan_dir)})",
+        acct, tok,
+    )
+    return run_id
+
+
 def record_run(
     summary: dict,
     plan: dict,
@@ -186,11 +283,13 @@ def record_run(
     soft_delete_days: int = 7,
 ) -> str:
     """Persist the run + per-band rows to D1 (migration 0015) — deletions as
-    first-class records the site can surface per path. Returns the run_id."""
+    first-class records the site can surface per path. Returns the run_id.
+    Completes the row `record_run_start` opened (or inserts it, for a run that
+    skipped the start record)."""
     from .index_footer import _creds, _d1_query, _q
 
     mode = "real" if summary["for_real"] else "dry"
-    run_id = f"{plan['date']}-h{plan['head']}/{dt.datetime.fromtimestamp(started_ts, dt.timezone.utc):%Y%m%dT%H%M%SZ}"
+    run_id = run_id_for(plan, started_ts)
     tot = Counter()
     band_rows = []
     for bucket, b in summary["buckets"].items():
@@ -215,7 +314,11 @@ def record_run(
         f"{_q(run_id)}, {_q(summary['plan'])}, {_q(plan['date'])}, {plan['head']}, {exec_head}, {_q(actor)}, "
         f"{_q(mode)}, {started_ts}, {finished_ts}, {tot['deleted_bytes']}, {tot['deleted_objects']}, "
         f"{tot['skipped_gone']}, {tot['skipped_overwritten']}, {tot['drift_dirs']}, {tot['ledger_drift_dirs']}, "
-        f"{undo}, {_q(summary['plan'])})",
+        f"{undo}, {_q(summary['plan'])}) "
+        "ON CONFLICT (run_id) DO UPDATE SET finished_ts = excluded.finished_ts, deleted_bytes = excluded.deleted_bytes, "
+        "deleted_objects = excluded.deleted_objects, skipped_gone = excluded.skipped_gone, "
+        "skipped_overwritten = excluded.skipped_overwritten, drift_dirs = excluded.drift_dirs, "
+        "ledger_drift_dirs = excluded.ledger_drift_dirs, undo_deadline = excluded.undo_deadline",
         acct, tok,
     )
     if band_rows:

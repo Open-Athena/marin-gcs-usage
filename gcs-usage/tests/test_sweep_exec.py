@@ -34,12 +34,14 @@ class FakeBucketHandle:
 
 @dataclass
 class FakeClient:
-    blobs: dict  # (bucket, prefix) -> [FakeBlob]
+    blobs: dict  # bucket -> [FakeBlob] (any order; listed sorted by name, recursively, like GCS)
     handle: FakeBucketHandle = field(default_factory=FakeBucketHandle)
     soft_days: int = 7
+    listed: list = field(default_factory=list)  # prefixes asked for, in order
 
-    def list_blobs(self, bucket, prefix="", delimiter="/"):
-        return list(self.blobs.get((bucket, prefix), []))
+    def list_blobs(self, bucket, prefix=""):
+        self.listed.append(prefix)
+        return sorted((b for b in self.blobs.get(bucket, []) if b.name.startswith(prefix)), key=lambda b: b.name)
 
     def bucket(self, name):
         return self.handle
@@ -76,18 +78,14 @@ def _plan_dir(tmp_path):
 
 
 def _client():
-    return FakeClient(blobs={
+    return FakeClient(blobs={"b1": [
         # a/x live+matching; a/y gone; a/z overwritten (created moved)
-        ("b1", "a/"): [
-            FakeBlob("a/x", 10, 111, T0),
-            FakeBlob("a/z", 33, 333, T1),
-        ],
+        FakeBlob("a/x", 10, 111, T0),
+        FakeBlob("a/z", 33, 333, T1),
         # b/w live+matching, plus a NEW key → drift
-        ("b1", "b/"): [
-            FakeBlob("b/w", 40, 444, T0),
-            FakeBlob("b/new", 5, 555, T1),
-        ],
-    })
+        FakeBlob("b/w", 40, 444, T0),
+        FakeBlob("b/new", 5, 555, T1),
+    ]})
 
 
 def _decisions(plan, mode):
@@ -170,3 +168,49 @@ def test_reclassify_receives_plan_approved_bands(tmp_path):
     ]
     assert s["buckets"]["b1"]["ledger_drift_dirs"] == []
     assert s["buckets"]["b1"]["decisions"] == {"delete": 1, "skipped_gone": 1, "skipped_overwritten": 1}
+
+
+def test_roots_are_band_children_and_prefix_free():
+    from gcs_usage.sweep_exec import list_roots
+
+    dirs = {"ckpt/r1/step-1", "ckpt/r1/step-2", "ckpt/r2", "scratch/k/a/b", "scratch/k", "raw/x/y"}
+    # bands: ckpt/ (children r1, r2 become roots), scratch/k/ (eligible itself → one root), raw/x/y uncovered → its top segment
+    roots = list_roots(dirs, ("gs://b1/ckpt/", "gs://b1/scratch/k/"), "b1")
+    assert roots == ["ckpt/r1", "ckpt/r2", "raw", "scratch/k"]
+    assert list_roots({""}, (), "b1") == [""]  # the bucket root itself: list everything
+    assert list_roots({"a/b", "a"}, ("gs://b1/a/",), "b1") == ["a"]  # the band itself is eligible → swallows its children
+
+
+def test_streamed_merge_buffers_nested_dirs_until_the_listing_passes_them(tmp_path):
+    """Manifest dirs `a` and `a/c` under one root: `a`'s keys interleave with
+    `a/c`'s in the listing; `a/c` gains a new key (drift → skipped) while `a`
+    is clean and deletes; gone keys are found wherever the merge passes them."""
+    d = tmp_path / "plan"
+    (d / "manifest").mkdir(parents=True)
+    (d / "plan-summary.json").write_text(json.dumps({
+        "date": "2026-09-01", "head": 1, "approved": ["gs://b1/a/"],
+        "buckets": {"b1": {"eligible": {"bytes": 1, "objects": 1}}},
+    }))
+    row = lambda name, dn, size=1: {"name": name, "size_bytes": size, "storage_class_id": 1, "created": T0, "dir": dn, "owner": None, "sweepers": "k"}
+    pd.DataFrame([row("a/b.txt", "a"), row("a/c/q", "a/c"), row("a/c/r", "a/c"), row("a/d.txt", "a", 7), row("a/zz", "a")]).to_parquet(d / "manifest" / "b1.parquet")
+    client = FakeClient(blobs={"b1": [
+        FakeBlob("a/b.txt", 1, 11, T0),
+        FakeBlob("a/c/new", 9, 99, T1),  # drift in a/c
+        FakeBlob("a/c/q", 1, 12, T0),
+        FakeBlob("a/c/r", 1, 13, T0),
+        FakeBlob("a/d.txt", 7, 14, T0),
+        FakeBlob("a/e/other", 3, 15, T1),  # a dir not in the manifest: ignored
+    ]})
+    s = execute_plan(str(d), for_real=True, client=client)
+    assert client.listed == ["a/"]  # one recursive listing for the band
+    assert sorted(client.handle.deletes) == [("a/b.txt", 11), ("a/d.txt", 14)]
+    assert _decisions(d, "deleted") == [
+        ("a/b.txt", "delete", 11),
+        ("a/d.txt", "delete", 14),
+        ("a/zz", "skipped_gone", 0),
+    ]
+    b = s["buckets"]["b1"]
+    assert b["decisions"] == {"delete": 2, "skipped_gone": 1}
+    assert b["delete_bytes"] == 8
+    assert b["drift_dirs"] == [{"dir": "a/c", "new_objects": 1, "new_bytes": 9, "skipped_deletes": 2}]
+    assert b["bands"] == {"gs://b1/a/": {"bytes": 8, "objects": 2, "gone": 1, "drift_new_objects": 1}}

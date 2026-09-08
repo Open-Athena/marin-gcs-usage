@@ -37,6 +37,17 @@ def prepare_listing(con, listings):
     from disk_tree.listing import prepare_listing as _prepare_listing
     return _prepare_listing(con, listings)
 
+
+def _hard_exit() -> None:
+    """Exit without interpreter teardown. The batch commands that stream GCS
+    parquet through gcsfs hung at exit once (2026-09-08: last line printed,
+    0% CPU for an hour) — fsspec's event loop being finalized while a file
+    object's `__del__` still needs it. Every file is closed explicitly now;
+    this is the guarantee."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
 err = partial(print, file=sys.stderr)
 
 
@@ -969,7 +980,13 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
         ofs, opath = fsspec.core.url_to_fs(out_path)
         n = 0
         for shard in shards:
-            pf = pq.ParquetFile(shard, filesystem=fs)
+          # Open/close each shard deterministically: a gcsfs file left for the
+          # interpreter's exit to finalize calls into fsspec's event loop while
+          # it is tearing down and can hang the process forever (observed
+          # 2026-09-08: the manifest step's last line printed, then 0% CPU for
+          # an hour and `sweep execute` never started).
+          with fs.open(shard, "rb") as fh:
+            pf = pq.ParquetFile(fh)
             for batch in pf.iter_batches(columns=["name", "size_bytes", "storage_class_id", "created"], batch_size=1 << 17):
                 df = batch.to_pandas()
                 n += len(df)
@@ -1020,7 +1037,7 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
         if o:
             err(f"  {c:16s} {b / 1e12:10.2f} TB  {o:>13,} objects")
     err(f"\nwrote {out}/plan-summary.json")
-
+    _hard_exit()
 
 @sweep.command("execute")
 @option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets")
@@ -1060,6 +1077,18 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
         return classify_dir(bucket, dn, vr, own, idmap, ever, approved)[0]
 
     started = int(dt.datetime.now(dt.timezone.utc).timestamp())
+    actor = os.environ.get("USER", "?")
+    if not no_record:
+        # The run's D1 row goes in now (finished NULL) so /sweep lists it while
+        # the re-list runs — hours, on the big bands; completed at the end.
+        import fsspec
+        from .sweep_exec import record_run_start
+        try:
+            with fsspec.open(f"{plan_dir}/plan-summary.json") as fh:
+                run_id = record_run_start(json.load(fh), plan_dir, exec_head=head, actor=actor, started_ts=started, for_real=for_real)
+            err(f"recorded deletion run {run_id} (in progress)")
+        except Exception as e:  # recording must never block the run
+            err(f"WARN: deletion-run start record failed: {e}")
     summary = execute_plan(
         plan_dir,
         for_real=for_real,
@@ -1074,10 +1103,11 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
     if not no_record:
         from .sweep_exec import record_run
         try:
-            run_id = record_run(summary, summary["_plan"], exec_head=head, actor=os.environ.get("USER", "?"), started_ts=started, finished_ts=finished)
+            run_id = record_run(summary, summary["_plan"], exec_head=head, actor=actor, started_ts=started, finished_ts=finished)
             err(f"recorded deletion run {run_id}")
         except Exception as e:  # recording must never mask a completed run
             err(f"WARN: deletion-run record failed: {e}")
+    _hard_exit()
 
 
 @main.group()

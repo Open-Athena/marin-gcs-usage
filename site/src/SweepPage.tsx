@@ -558,7 +558,7 @@ export function SweepPage() {
       )}
 
       <h2>Deletion runs</h2>
-      {!runsQ.data?.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here, once its manifest step is done.</p>}
+      {!runsQ.data?.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here as soon as it starts, and fills in the totals when it finishes.</p>}
       {!!runsQ.data?.rows.length && (
         <div className="table-scroll"><table className="sweep-table">
           <thead>
