@@ -1614,6 +1614,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .live-tag { color: #58a6ff; font-weight: 600; }
     .small { font-size: 12px; max-width: 28em; }
   }
+  .sweep-table .approver { display: inline-block; vertical-align: middle; margin: 0 4px 0 2px; line-height: 0; cursor: default; }
   .go-ink { color: #3fb950; font-weight: 650; }
   .warn-ink { color: #d29922; font-weight: 650; }
   .sweep-tools {
@@ -1622,14 +1623,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     // status chips, filter and selection bar stay in reach.
     position: sticky; top: var(--topbar-h, 48px); z-index: 3;
     padding: 6px 0; background: var(--surface);
-    .chips { display: inline-flex; gap: 4px; }
-    .chip {
-      font: inherit; font-size: 12.5px; padding: 2px 10px; cursor: pointer;
-      background: var(--panel); color: var(--ink-2); border: 1px solid var(--line); border-radius: 999px;
-      .dim { margin-left: 2px; }
-      &:hover { border-color: var(--ink-2); }
-      &.on { color: var(--ink); border-color: var(--ink-2); font-weight: 650; background: var(--surface); }
-    }
+    .tb-axis { display: inline-flex; align-items: center; gap: 6px; .lbl { color: var(--ink-3); font-size: 12px; } }
     input.filter {
       flex: 1 1 18em; max-width: 34em; font: inherit; padding: 3px 8px;
       background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;

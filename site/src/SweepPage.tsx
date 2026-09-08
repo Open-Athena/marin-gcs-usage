@@ -4,7 +4,9 @@ import { Link } from 'react-router-dom'
 import { useActions } from 'use-kbd'
 import { SiteNav } from './SiteNav'
 import { Tooltip } from './Tooltip'
-import { shortName, UserChip } from './UserChip'
+import { Avatar } from './Avatar'
+import { MultiSelect } from './MultiSelect'
+import { ghHandle, shortName, UserChip } from './UserChip'
 import { useUnits } from './units'
 
 // /sweep — the sweep console (specs/sweep-executor.md § Phase 2): review the
@@ -97,6 +99,9 @@ const mapLimit = async <T,>(xs: T[], n: number, fn: (x: T) => Promise<void>): Pr
   const worker = async () => { while (i < xs.length) await fn(xs[i++]) }
   await Promise.all(Array.from({ length: Math.min(n, xs.length) }, worker))
 }
+
+type Status = 'approved' | 'todo'
+const STATUSES: Status[] = ['approved', 'todo']
 
 const PAGE_SIZES = [25, 50, 100, Infinity]
 const fmtPageSize = (n: number) => (n === Infinity ? 'all' : String(n))
@@ -193,7 +198,9 @@ export function SweepPage() {
   // select a range from the cursor; j/k move the cursor without touching the
   // selection; the checkbox column is the touch/mouse equivalent.
   const [q, setQ] = useState('')
-  const [st, setSt] = useState<'all' | 'approved' | 'todo'>('all')
+  // Status axis: a multi-select over approved / todo; both (or neither) = all.
+  const [stSel, setStSel] = useState<Status[]>(STATUSES)
+  const st: 'all' | Status = stSel.length === 1 ? stSel[0] : 'all'
   const nApproved = shown.filter(c => approvals.has(c.prefix)).length
   const rows = shown.filter(c => {
     const a = approvals.has(c.prefix)
@@ -300,10 +307,17 @@ export function SweepPage() {
       {latestQ.isError && <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>}
       {candsQ.data && (<>
         <div className="sweep-tools">
-          <span className="chips nb">
-            {([['all', shown.length], ['approved', nApproved], ['todo', shown.length - nApproved]] as const).map(([k, n]) => (
-              <button key={k} className={`chip${st === k ? ' on' : ''}`} onClick={() => setSt(k)}>{k} <span className="dim">{n}</span></button>
-            ))}
+          <span className="tb-axis nb">
+            <span className="lbl">status</span>
+            <MultiSelect<Status>
+              label="approval status"
+              options={[
+                { key: 'approved', label: `approved ${nApproved}`, glyph: '✓', color: '#3fb950', tip: 'Bands somebody has signed off (slice or full) — what a dispatch would plan.' },
+                { key: 'todo', label: `todo ${shown.length - nApproved}`, glyph: '○', color: 'var(--ink-2)', tip: 'Bands still waiting for a decision.' },
+              ]}
+              selected={stSel}
+              onChange={keys => setStSel(keys.length === 0 ? STATUSES : keys)}
+            />
           </span>
           <input className="filter" type="search" value={q} onChange={e => setQ(e.target.value)}
                  placeholder="filter: path · user · owner:x · sweeper:x · is:unowned" />
@@ -402,7 +416,9 @@ export function SweepPage() {
                           : <Tooltip content={<>Approved in <b>slice</b> mode: only directories majority-owned by the sweeper ({c.sweepers.join(', ')}) are deletable{cap != null && <> — ≈{tb(cap)} of {tb(c.net_bytes)}</>}. Everyone else's data in this band stays.</>}>
                               <span className="ok">approved</span>
                             </Tooltip>}
-                        {' '}<span className="dim nb">by {shortName(a.who)}</span>
+                        {' '}<Tooltip content={<>approved by <b>{shortName(a.who)}</b> · {when(a.ts)} UTC · {a.mode === 'full' ? 'full band' : 'slice'}</>}>
+                          <span className="approver"><Avatar github={ghHandle(a.who)} name={shortName(a.who)} size={16} /></span>
+                        </Tooltip>
                         {canWrite && <button className="mini" disabled={busy} onClick={() => revoke.mutate([c.prefix])}>revoke</button>}
                       </>
                     ) : (
