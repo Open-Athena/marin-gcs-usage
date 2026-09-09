@@ -12,7 +12,7 @@
 import { type Ctx, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
-import { parseOwner } from '../_lib/scope.js'
+import { classKey, parseClasses, parseOwner } from '../_lib/scope.js'
 import { readRootAgg } from '../_lib/view.js'
 
 export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
@@ -32,13 +32,14 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
     lens = { key: m[1] }
   }
   const owner = parseOwner(url.searchParams.get('o'))
+  const classes = parseClasses(url.searchParams.get('cl'))
 
   // Every scan with a synced floor-free index, oldest first.
   const rows = await env.DB.prepare("SELECT DISTINCT date FROM index_schema WHERE variant = 'path' ORDER BY date").all<{ date: string }>()
   const dates = rows.results.map(r => r.date)
   // A user lens applies the live claims, so its key carries the ledger head.
   const head = lens ? await ledgerHead(env) : 0
-  const cacheKey = new Request(`https://series.cache/${encodeURIComponent(path)}?l=${lensRaw ?? ''}&o=${owner ?? ''}&d=${dates.join(',')}&head=${head}`)
+  const cacheKey = new Request(`https://series.cache/${encodeURIComponent(path)}?l=${lensRaw ?? ''}&o=${owner ?? ''}&cl=${classKey(classes)}&d=${dates.join(',')}&head=${head}`)
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
@@ -49,7 +50,7 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   // since a silently absent point looks like a gap in the data.
   const point = async (date: string, tries = 2): Promise<{ date: string; b: number; o: number } | null> => {
     try {
-      const a = await readRootAgg(env, { date, path, lens, owner })
+      const a = await readRootAgg(env, { date, path, lens, owner, classes })
       return a ? { date, ...a } : null
     } catch (e) {
       const msg = (e as Error).message

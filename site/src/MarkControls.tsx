@@ -2,6 +2,7 @@ import { type ReactNode, useState } from 'react'
 import { Avatar } from './Avatar'
 import { UserChip, ghHandle, shortName } from './UserChip'
 import { AssignSelect } from './AssignSelect'
+import { OwnerFactChip } from './OwnerFactChip'
 import { signInUrl, useCanMark } from './auth'
 import type { Mark, MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
@@ -189,9 +190,9 @@ export function MarkControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
       <span className="owner">
         <span className="lbl">{mixed ? 'owners' : 'owner'}</span>
         {cl
-          ? <><UserChip who={cl.who} size={15} /><span className="prov">assigned {fmtMarkDate(cl.ts)}</span></>
+          ? <><OwnerFactChip who={cl.who} assigned={{ by: cl.by, ts: cl.ts, memo: cl.memo }} /><span className="prov">assigned {fmtMarkDate(cl.ts)}</span></>
           : soleOwner
-            ? <UserChip who={soleOwner} size={15} />
+            ? <OwnerFactChip who={soleOwner} inferred={node?.pv ?? null} />
             : mixed
               ? <OwnerBar node={node!} userIdx={userIdx} onPickUser={onPickUser} note="Nobody has assigned this prefix. The scan attributes its bytes to:" />
               // The lens keeps only one person's bytes: with none here, the

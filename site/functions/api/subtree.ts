@@ -15,7 +15,7 @@ import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
 import { parseFates } from '../_lib/fates.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
-import { parseOwner, parseQuery } from '../_lib/scope.js'
+import { parseOwner, parseQuery, classKey, parseClasses } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 
 const CACHE = 'private, max-age=86400' // immutable per scan; browser may hold it
@@ -51,6 +51,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   // `depth=N`: cap the read N levels below the root (see ViewOpts.maxDepth).
   const depth = Number(url.searchParams.get('depth')) || undefined
   const fates = parseFates(url.searchParams.get('k'))
+  const classes = parseClasses(url.searchParams.get('cl'))
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
 
@@ -64,14 +65,14 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
-      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
 
   try {
-    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, fates, query })
+    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, fates, query, classes })
     const body = JSON.stringify({
       date,
       path,

@@ -8,6 +8,24 @@ export interface TreeNode {
   cb?: Record<string, number>  // non-STANDARD class -> bytes ("2" NL, "3" CL, "4" AR); STANDARD = b - sum
   c?: TreeNode[]
   f?: number                   // an `(other)` fold: how many children it stands in for (drives the dust hatch density)
+  k?: 1                        // checkpoint-shaped dir, decided at index time over the FULL child list (specs/index-extras.md)
+  pv?: Provenance              // provenance of the top owner's inferred attribution (absent when assigned, or no extras for the scan)
+}
+
+/** Where an inferred owner came from: the pipeline signal that attributed
+ * `prefix` (an ancestor-or-self of the node) to the user, and its evidence
+ * (a W&B `entity/project/run_id`, a record path, the matched rule; null when
+ * the signal recorded none). */
+export type Provenance = [source: string, evidence: string | null, prefix: string]
+export const SOURCE_LABELS: Record<string, string> = {
+  'user-prefix': 'a users/ path segment',
+  'artifact-record': 'an artifact record',
+  rule: 'a rule in identities.yaml',
+  manual: 'a rule in identities.yaml',
+  'wandb-run': 'a W&B run',
+  'wandb-config': 'a W&B run config',
+  'executor-wandb': 'the executor\'s W&B metadata',
+  'iris-path': 'an iris job path',
 }
 
 /** Full class mix of a node: cb plus the implied STANDARD remainder. */

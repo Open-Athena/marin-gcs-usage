@@ -13,7 +13,7 @@ import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
 import { parseFates } from '../_lib/fates.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
-import { parseOwner, parseQuery } from '../_lib/scope.js'
+import { classKey, parseClasses, parseOwner, parseQuery } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 
 const CACHE = 'private, max-age=86400'
@@ -47,6 +47,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const rawOwner = url.searchParams.get('o')
   const owner = parseOwner(rawOwner)
   const fates = parseFates(url.searchParams.get('k'))
+  const classes = parseClasses(url.searchParams.get('cl'))
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
 
@@ -57,14 +58,14 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://diff.cache/${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
-      `&o=${rawOwner ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
 
   try {
-    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, fates, query })
+    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, fates, query, classes })
     const body = JSON.stringify({
       prev: from,
       curr: to,

@@ -30,7 +30,7 @@ import { STORES, storeForPath } from './stores'
 import { useDocTitle } from './title'
 import { TypedPrefixModal } from './TypedPrefix'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, fmtUsd, ratePerByte } from './types'
+import { CLASS_COLORS, CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, fmtUsd, ratePerByte } from './types'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
@@ -78,6 +78,11 @@ function useCanonicalParams(codecs: [string, { encode: (v: string | undefined) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 }
+
+// The storage-class axis (`?cl=`): one letter per class, in class order.
+type ClassAxis = 's' | 'n' | 'c' | 'a'
+const CLASS_AXES: ClassAxis[] = ['s', 'n', 'c', 'a']
+const CLASS_OF: Record<ClassAxis, string> = { s: '1', n: '2', c: '3', a: '4' }
 
 // Diff-section span presets (days back from the "after" scan).
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
@@ -183,6 +188,14 @@ function AppContent() {
   // primary color (`ShadeMode`). Absent = none: the primary axis unchanged.
   const [sP, setSP] = useUrlState('s', shadeCodec)
   const shade: ShadeMode = sP === 'class' ? 'class' : 'none'
+  // `?cl=` ⊆ snca — the storage-class axis (server-side, like `?k=`): the
+  // view's bytes are cut to the allowed classes. All four = no scope.
+  const [clP, setClP] = useUrlState('cl', stringParam(), true)
+  const classSet = useMemo((): ReadonlySet<ClassAxis> | null => {
+    const on = new Set(CLASS_AXES.filter(c => (clP ?? '').includes(c)))
+    return on.size > 0 && on.size < CLASS_AXES.length ? on : null
+  }, [clP])
+  const setClasses = (ks: ClassAxis[]) => setClP(ks.length === 0 || ks.length === CLASS_AXES.length ? undefined : CLASS_AXES.filter(c => ks.includes(c)).join(''))
   const ident = useIdentity()
   const myUser = useMyUser(ident?.email, markMode)
   // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
@@ -230,6 +243,7 @@ function AppContent() {
     (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
     (notUsers.length ? `&o=!${notUsers.map(encodeURIComponent).join(',')}` : '') +
     (fateSet ? `&k=${[...fateSet].map(f => f[0]).join('')}` : '') +
+    (classSet ? `&cl=${CLASS_AXES.filter(c => classSet.has(c)).join('')}` : '') +
     (fq ? `&q=${encodeURIComponent(fq)}` : '')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
   // digests, /user pages) work and re-share in the current form:
@@ -543,7 +557,7 @@ function AppContent() {
   const hl: Highlight | null = ownerUser ? { user: ownerUser } : null
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
-  const lensScoped = fateSet != null || ownerMode !== 'all'
+  const lensScoped = fateSet != null || ownerMode !== 'all' || classSet != null
   // Hold the last tree that rendered while the next one loads — whole, so it
   // is self-consistent (it already laid out fine). The map never flashes to
   // nothing across a scope, scan, or drill change, and the page below never
@@ -878,6 +892,17 @@ function AppContent() {
             </Tooltip>
           </label>
         </>)}
+        {hasAttr && (
+          <span className="tb-axis">
+            <span className="lbl">class</span>
+            <MultiSelect<ClassAxis>
+              label="storage classes"
+              options={CLASS_AXES.map(c => ({ key: c, label: CLASS_NAMES[CLASS_OF[c]], glyph: '●', color: CLASS_COLORS[CLASS_OF[c]], tip: `Only bytes in ${CLASS_NAMES[CLASS_OF[c]]} storage — every size on the page shrinks to that share (objects pro-rated).` }))}
+              selected={classSet ? [...classSet] : CLASS_AXES}
+              onChange={setClasses}
+            />
+          </span>
+        )}
         {markMode && (
           <span className="tb-axis">
             <span className="lbl">marks</span>

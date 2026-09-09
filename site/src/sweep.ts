@@ -376,6 +376,7 @@ const CKPT_SEG_RE = /^(step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?\d+/i
 // index row (specs/children-table-selection.md § later).
 const CKPT_NAME_RE = /(^|[-_.])(ckpts?|checkpoints?)([-_.]|$)/i
 export const looksCkpt = (n: TreeNode, _uri?: string): boolean =>
+  n.k === 1 ||
   CKPT_NAME_RE.test(n.n) ||
   (n.c ?? []).some(c => CKPT_NAME_RE.test(c.n)) ||
   (n.c ?? []).filter(c => CKPT_SEG_RE.test(c.n)).length >= 2

@@ -10,8 +10,8 @@ import { OwnerBar, ownerShares } from './OwnerBar'
 import { fateAllowed, looksCkpt, subtreeFateTotals } from './sweep'
 import type { Fate, FateAxis, KlcIndex } from './sweep'
 import { Tooltip } from './Tooltip'
-import { UserChip } from './UserChip'
 import { AssignSelect } from './AssignSelect'
+import { OwnerFactChip } from './OwnerFactChip'
 import { useRowSelection, useRowSelectionKeys } from './rowSelection'
 import type { TreeNode } from './types'
 import { fmtN } from './types'
@@ -219,8 +219,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
                 {/* An assignee, or a single attributed owner, by name; a mix
                     as a bar (names and shares on hover). */}
                 <td className="owners">
-                  {cl ? <UserChip who={cl.who} size={15} />
-                    : shares.length === 1 && shares[0][1] >= 0.98 * k.b ? <UserChip who={shares[0][0]} size={15} />
+                  {cl ? <OwnerFactChip who={cl.who} assigned={{ by: cl.by, ts: cl.ts, memo: cl.memo }} />
+                    : shares.length === 1 && shares[0][1] >= 0.98 * k.b ? <OwnerFactChip who={shares[0][0]} inferred={k.pv ?? null} />
                     // Picking a person from a ROW's bar means "this directory,
                     // theirs only": drill into the row, then apply the lens.
                     : shares.length ? <OwnerBar node={k} userIdx={userIdx} width={70} onPickUser={onPickUser && !synthetic ? u => { onOpen(kidSegs); onPickUser(u) } : undefined} />

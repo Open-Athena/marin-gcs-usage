@@ -21,9 +21,10 @@ import type { Env } from './auth.js'
 import { type FateAxis, fateScope, type FateScope } from './fates.js'
 import { type IndexHandle, type Lens, openIndex, readRects, readRows, type Rect, type Row } from './index.js'
 import { ownerLens, type OwnerLens } from './owners.js'
-import { nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
+import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { markClaims, markTotals } from './totals.js'
 import { shared } from './shared.js'
+import { extras } from './extras.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -51,6 +52,9 @@ export interface ViewOpts {
   // --- the page's scope axes (specs/view-serving.md §2) -------------------
   /** `o=claimed|unclaimed`: the owner axis's pools (a user is `lens`). */
   owner?: OwnerScope
+  /** `cl=` ⊆ snca: keep only these storage classes' bytes (rows are scaled,
+   * not picked — see `classRow`). */
+  classes?: ClassScope
   /** `by=<assigner>`: with a user `lens`, fold only the claims that assigner
    * made (the `/assignments` heatmap's cell → "the part of <to>'s estate that
    * <by> assigned"). A canonical user id; kept off `Lens` so index tier reads
@@ -170,8 +174,8 @@ const floorOf = (h: IndexHandle): number | null => h.floor
 /** Just P's scoped aggregate for one scan — the size-over-time chart's point
  * (`/api/series`): the root read of a view, from the coarsest tier that has
  * P, without folding anything under it. */
-export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope ; by?: string }): Promise<{ b: number; o: number } | null> {
-  const { date, path, lens, owner } = o
+export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
+  const { date, path, lens, owner, classes } = o
   const dP = path === '' ? 0 : path.split('/').length
   const readRoot = (idx: IndexHandle, l?: Lens) =>
     path === '' ? readRows(idx, 1, 1, '', '￿', undefined, l) : readRows(idx, dP, dP, path, path, undefined, l)
@@ -192,7 +196,7 @@ export async function readRootAgg(env: Env, o: { date: string; path: string; len
   const rows = await rootRows(lens ? 'user' : 'path', lens)
   if (rows == null) return null
   const mine = newAgg()
-  for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, r)
+  for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, classRow(r, classes))
   if (!ol) return { b: mine.b, o: mine.o }
   let all: Agg | null = null
   if (ol.needsTotal(path)) {
@@ -266,7 +270,7 @@ interface Read {
 }
 
 async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
-  const { date, path, w, h, minArea, atten, lens, owner, query, maxDepth } = o
+  const { date, path, w, h, minArea, atten, lens, owner, query, maxDepth, classes } = o
   const dP = path === '' ? 0 : path.split('/').length
   const sort = lens ? 'user' : 'path'
   const readRoot = (idx: IndexHandle) =>
@@ -331,7 +335,8 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   }
   const rootAll = newAgg()
   const rootMine = newAgg()
-  for (const r of rootRows) {
+  for (const r0 of rootRows) {
+    const r = classRow(r0, classes)
     merge(rootAll, r)
     if (ownerOk(r.usr, owner)) merge(rootMine, r)
   }
@@ -391,7 +396,8 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   const allAggs = new Map<string, Agg>() // totals per path (the fate share's denominator; a lens: only inside its regions)
   const mineAggs = new Map<string, Agg | null>() // the sort's own rows per path (U's slice, or the pool's); null = unread
   const aggDepth = new Map<string, number>()
-  for (const r of rows) {
+  for (const r0 of rows) {
+    const r = classRow(r0, classes)
     let m = mineAggs.get(r.path)
     if (!m) { mineAggs.set(r.path, (m = newAgg())); aggDepth.set(r.path, r.depth) }
     if (ownerOk(r.usr, owner)) merge(m, r)
@@ -515,7 +521,7 @@ const rootName = (path: string) => (path === '' ? 'marin GCS' : path.split('/').
 export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
-  const v = await readView(env, o)
+  const [v, ex] = await Promise.all([readView(env, o), extras(env, o.date)])
   if (!v) {
     return { tree: { n: rootName(path), b: 0, o: 0 }, tier: 'none', index: 'none', threshold: 0, nodes: 0, truncated: false, ...(query ? { matches: [] } : {}) }
   }
@@ -531,6 +537,16 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const build = (p: string, a: Agg): ViewNode => {
     const node = nodeOf(p === path ? rootName(path) : p.split('/').pop()!, a)
     if (matched.has(p)) node.m = 1
+    // Index extras (specs/index-extras.md): the checkpoint-shape verdict and
+    // the top owner's provenance, when the scan's generation carries them.
+    if (ex) {
+      if (ex.ck.has(p)) node.k = 1
+      let top: string | null = null
+      let topB = 0
+      for (const [u, b] of Object.entries(a.ub)) if (b > topB) { top = u; topB = b }
+      const pv = top ? ex.provenance(p, top) : null
+      if (pv) node.pv = pv
+    }
     const childPaths = kidsOf.get(p) ?? []
     if (!childPaths.length) return node
     const kids = childPaths
@@ -644,8 +660,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     if (!rows.length && !allRows.length) return null
     const all = newAgg()
     const mine = newAgg()
-    for (const r of allRows) merge(all, r)
-    for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, r)
+    for (const r of allRows) merge(all, classRow(r, classes))
+    for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, classRow(r, classes))
     const a = v.scoped(p, v.ownerLens && !needTot ? null : all, mine)
     return a.b > 0 ? a : null
   }

@@ -47,8 +47,8 @@ def prefix_labels(
     identities = load_identities(identities_path or DEFAULT_IDENTITIES)
     by_prefix = load_prefix_map(con, attributions, identities, listing_src)
     pfx_df = pd.DataFrame(
-        [{"key": k.removeprefix("gs://").rstrip("/"), "user": u} for k, (u, _source) in by_prefix.items()],
-        columns=["key", "user"],
+        [{"key": k.removeprefix("gs://").rstrip("/"), "user": u, "source": source} for k, (u, source) in by_prefix.items()],
+        columns=["key", "user", "source"],
     )
     pfx_df["depth"] = pfx_df["key"].str.count("/") + 1
     attr_max_depth = int(os.environ.get("GCS_USAGE_ATTR_MAX_DEPTH", "12"))
@@ -417,6 +417,11 @@ def write_webdata(
         con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY usr NULLS LAST, depth, path) TO '{by_user}' {rg}")
         err(f"path-index: wrote {by_user}")
         _rss("path-index-variants")
+        # Sidecars (specs/index-extras.md): checkpoint-shaped dirs over the
+        # FULL dir list, and the attributing prefixes' provenance.
+        from .extras import write_extras
+        write_extras(con, "dir_agg", pfx_df if attr else None, path_index.parent)
+        _rss("extras")
 
     # Per-path subtree totals: the coarse tiers' floor test. Staged (its own
     # statement) so the agg runs alone, not stacked under another operator.

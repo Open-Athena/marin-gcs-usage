@@ -43,6 +43,9 @@ export interface Owner {
   /** Canonical user id (or email, for pre-mapping claims). */
   who: string
   ts: number
+  /** The assigner (`actions.actor`) and their memo — provenance. */
+  by: string
+  memo: string | null
 }
 
 export const ACTION_LABELS: Record<MarkAction, string> = {
@@ -212,7 +215,7 @@ export function useMarkIndex(data: { keeps: KeepRow[]; owners: OwnerRow[] } | un
         const r = owners.get(a)
         if (r && (!win || newer(r, win))) win = r
       }
-      return win?.owner != null ? { prefix: win.prefix, who: win.owner, ts: win.ts } : null
+      return win?.owner != null ? { prefix: win.prefix, who: win.owner, ts: win.ts, by: win.who, memo: win.memo } : null
     }
     const overridesOf = (uri: string) => {
       const b = below.get(norm(uri))
