@@ -45,7 +45,11 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     lens = { key: m[1] }
   }
 
-  const owner = parseOwner(url.searchParams.get('o'))
+  const rawOwner = url.searchParams.get('o')
+  const owner = parseOwner(rawOwner)
+  const by = url.searchParams.get('by') ?? undefined
+  // `depth=N`: cap the read N levels below the root (see ViewOpts.maxDepth).
+  const depth = Number(url.searchParams.get('depth')) || undefined
   const fates = parseFates(url.searchParams.get('k'))
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
@@ -60,14 +64,14 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
-      `&o=${owner ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
 
   try {
-    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, fates, query })
+    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, fates, query })
     const body = JSON.stringify({
       date,
       path,

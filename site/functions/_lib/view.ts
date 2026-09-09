@@ -23,6 +23,7 @@ import { type IndexHandle, type Lens, openIndex, readRects, readRows, type Rect,
 import { ownerLens, type OwnerLens } from './owners.js'
 import { nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { markClaims, markTotals } from './totals.js'
+import { shared } from './shared.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -50,6 +51,17 @@ export interface ViewOpts {
   // --- the page's scope axes (specs/view-serving.md §2) -------------------
   /** `o=claimed|unclaimed`: the owner axis's pools (a user is `lens`). */
   owner?: OwnerScope
+  /** `by=<assigner>`: with a user `lens`, fold only the claims that assigner
+   * made (the `/assignments` heatmap's cell → "the part of <to>'s estate that
+   * <by> assigned"). A canonical user id; kept off `Lens` so index tier reads
+   * (keyed by the lens user) are unaffected — only the claims fold narrows. */
+  by?: string
+  /** `depth=N`: read only N levels below the root (rows at the cap arrive
+   * without children — still drillable branches). The same pixel budget, so
+   * the top level is *identical* to the uncapped view's; a `depth=1` fetch is
+   * one depth-band read that the client shows while the full tree loads, and
+   * the full tree then fills in under tiles that don't move. */
+  maxDepth?: number
   /** `k=` ⊆ keep/sweep/unmarked: bytes under an allowed fate, per node. */
   fates?: ReadonlySet<FateAxis>
   /** `q=`: name filter over the read rows' paths (see `scope.ts`). */
@@ -158,7 +170,7 @@ const floorOf = (h: IndexHandle): number | null => h.floor
 /** Just P's scoped aggregate for one scan — the size-over-time chart's point
  * (`/api/series`): the root read of a view, from the coarsest tier that has
  * P, without folding anything under it. */
-export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope }): Promise<{ b: number; o: number } | null> {
+export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope ; by?: string }): Promise<{ b: number; o: number } | null> {
   const { date, path, lens, owner } = o
   const dP = path === '' ? 0 : path.split('/').length
   const readRoot = (idx: IndexHandle, l?: Lens) =>
@@ -176,7 +188,7 @@ export async function readRootAgg(env: Env, o: { date: string; path: string; len
     const fine = await tryOpen(env, date, sort)
     return fine ? readRoot(fine, l) : null
   }
-  const ol = lens ? await ownerLensFor(env, date, lens) : null
+  const ol = lens ? await ownerLensFor(env, date, lens, o.by) : null
   const rows = await rootRows(lens ? 'user' : 'path', lens)
   if (rows == null) return null
   const mine = newAgg()
@@ -193,8 +205,24 @@ export async function readRootAgg(env: Env, o: { date: string; path: string; len
 
 /** The owner lens for a scan: the live claims folded against it (cached per
  * (scan, ledger head) by the totals machinery) — null when nobody claims. */
-async function ownerLensFor(env: Env, date: string, lens: Lens): Promise<OwnerLens | null> {
-  return ownerLens(await markClaims(env, date), lens.key)
+const assignerMemo = new Map<string, Promise<Map<string, string>>>()
+/** email → canonical user id (`user_emails`), memoized per isolate — to match
+ * a claim's assigner (`actions.actor`, an email) against a `by=` (canonical). */
+async function assignerMap(env: Env): Promise<Map<string, string>> {
+  return shared(assignerMemo, 'ue', async () => {
+    const m = new Map<string, string>()
+    const ue = await env.DB!.prepare('SELECT email, user FROM user_emails').all<{ email: string; user: string }>()
+    for (const r of ue.results) m.set(r.email.toLowerCase(), r.user)
+    return m
+  }, 10_000)
+}
+async function ownerLensFor(env: Env, date: string, lens: Lens, by?: string): Promise<OwnerLens | null> {
+  let claims = await markClaims(env, date)
+  if (by) {
+    const emap = await assignerMap(env)
+    claims = claims.filter(c => c.who != null && (emap.get(c.who.toLowerCase()) ?? c.who) === by)
+  }
+  return ownerLens(claims, lens.key)
 }
 
 /** A node under a user lens once claims apply: U's bytes there (`ol.value`),
@@ -238,7 +266,7 @@ interface Read {
 }
 
 async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
-  const { date, path, w, h, minArea, atten, lens, owner, query } = o
+  const { date, path, w, h, minArea, atten, lens, owner, query, maxDepth } = o
   const dP = path === '' ? 0 : path.split('/').length
   const sort = lens ? 'user' : 'path'
   const readRoot = (idx: IndexHandle) =>
@@ -252,7 +280,7 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // U's bytes under a path can include other people's slices (a band U
   // claimed) or lose U's own (a band someone else claimed). Where the former
   // can happen the by-path tier is read too, so every node's total is known.
-  const ol = lens ? await ownerLensFor(env, date, lens) : null
+  const ol = lens ? await ownerLensFor(env, date, lens, o.by) : null
   // Where the by-path tier is read for a lens: P itself when U's claim
   // covers it, else the largest REGION_READS of U's claimed regions under P,
   // to draw inside them. The rest are nodes valued exactly from the manifest
@@ -348,7 +376,10 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // attenuated threshold bounds both row count and depth by construction.
   const pLo = path === '' ? '' : path + '/'
   const pHi = path === '' ? '￿' : path + '0' // '0' sorts just past '/'
-  const rows = await readRows(idx, dP + 1, 1e9, pLo, pHi, thrAt, lens)
+  // `maxDepth` caps the band read at dP + N: the rows at the cap come back
+  // childless (the client treats a `c`-less branch as drillable), and the
+  // deeper bands — the bulk of the work — are never touched.
+  const rows = await readRows(idx, dP + 1, maxDepth != null ? dP + maxDepth : 1e9, pLo, pHi, thrAt, lens)
   // The lens's claimed regions from the by-path tier (their own rows and
   // everything under them): every path there whose U-share can clear the
   // threshold is present, since all ≥ U's share. P itself as a region means

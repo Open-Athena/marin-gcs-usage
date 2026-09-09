@@ -5,18 +5,28 @@
  * Both are pure functions over index rows / per-path aggregates so `buildView`
  * stays one pipeline: read a superset by total bytes, narrow per row, fold. */
 
-/** `o=`: `claimed` = rows some person owns (`usr` set), `unclaimed` = the
- * NULL-`usr` slices (ownership has one axis: a person or nobody). Index rows
- * are owner slices, so this is exact per path. */
-export type OwnerScope = 'owned' | 'unowned'
+/** `o=`: `owned` = rows some person owns (`usr` set), `unowned` = the
+ * NULL-`usr` slices (ownership has one axis: a person or nobody). `{not}` =
+ * owned, but by nobody in the excluded set — the "owned by someone other than
+ * these users" pool (`o=!<id>,<id>`), used to surface the paths a sweep would
+ * touch that its sweeper does NOT own. Index rows are owner slices, so all
+ * three are exact per path. */
+export type OwnerScope = 'owned' | 'unowned' | { not: string[] }
 
 // `claimed` / `unclaimed` were the pools' names until 2026-09-07; old links
-// and cached clients still send them.
+// and cached clients still send them. `!a,b` = owned-except-{a,b}.
 export const parseOwner = (raw: string | null): OwnerScope | undefined =>
-  raw === 'owned' || raw === 'claimed' ? 'owned' : raw === 'unowned' || raw === 'unclaimed' ? 'unowned' : undefined
+  raw === 'owned' || raw === 'claimed' ? 'owned'
+  : raw === 'unowned' || raw === 'unclaimed' ? 'unowned'
+  : raw?.startsWith('!') ? { not: raw.slice(1).split(',').filter(Boolean) }
+  : undefined
 
-export const ownerOk = (usr: string | null, o: OwnerScope | undefined): boolean =>
-  !o || (o === 'owned' ? usr != null : usr == null)
+export const ownerOk = (usr: string | null, o: OwnerScope | undefined): boolean => {
+  if (!o) return true
+  if (o === 'owned') return usr != null
+  if (o === 'unowned') return usr == null
+  return usr != null && !o.not.includes(usr) // owned, excluding o.not
+}
 
 /** `q=`: `/…/` = regex (case-insensitive); anything else = substring (ci),
  * with `|` splitting alternatives. Predicates receive the index path

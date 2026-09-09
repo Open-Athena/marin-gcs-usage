@@ -24,7 +24,7 @@ const MAX_GROUPS = 400
 /** Bump when the manifest's shape changes: cached bodies with another
  * version are recomputed (2: rows carry `eff`/`net`, clears included; 3: `us`
  * per band + `claims`; 4: claims carry `us` + `action_id` for the owner lens). */
-export const MANIFEST_VERSION = 4
+export const MANIFEST_VERSION = 5 // v5: claims carry `who` (the assigner) — /api/assignments
 
 export interface TotalsBody extends Totals {
   v: number

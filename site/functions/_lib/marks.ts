@@ -19,7 +19,7 @@ export const FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
 
 export interface LedgerRow { prefix: string; ts: number; action_id: number }
 export interface KeepRow extends LedgerRow { keep: MarkAction | null; who?: string }
-export interface OwnerRow extends LedgerRow { owner: string | null }
+export interface OwnerRow extends LedgerRow { owner: string | null; who?: string }
 
 /** Per-path aggregate from the index: bytes, objects, per-user bytes, and
  * non-STANDARD class bytes ("2" NL, "3" CL, "4" AR; STANDARD = b − Σ). */
@@ -111,6 +111,8 @@ export interface MarkRow {
 export interface ClaimRow {
   prefix: string
   owner: string | null
+  /** The assigner (`actions.actor`) — always a person today. */
+  who?: string
   ts: number
   action_id: number
   bytes: number
@@ -323,6 +325,7 @@ export function computeTotals(input: TotalsInput): Totals {
     claims.push({
       prefix: n.prefix,
       owner: n.owner.owner,
+      who: n.owner.who,
       ts: n.owner.ts,
       action_id: n.owner.action_id,
       bytes: n.agg.b,

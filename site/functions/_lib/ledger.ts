@@ -31,7 +31,7 @@ async function loadRows(env: Env, head: number): Promise<Ledger> {
       'FROM keep_prefixes k JOIN actions a ON a.id = k.action_id WHERE k.tombstoned IS NULL',
     ).all<KeepRow>(),
     env.DB!.prepare(
-      'SELECT o.prefix, o.owner, o.ts, a.id AS action_id ' +
+      'SELECT o.prefix, o.owner, o.ts, a.actor AS who, a.id AS action_id ' +
       'FROM owner_prefixes o JOIN actions a ON a.id = o.action_id WHERE o.tombstoned IS NULL',
     ).all<OwnerRow>(),
   ])

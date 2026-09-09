@@ -44,7 +44,8 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     if (!m) return new Response('bad lens (want user:<id>)', { status: 400 })
     lens = { key: m[1] }
   }
-  const owner = parseOwner(url.searchParams.get('o'))
+  const rawOwner = url.searchParams.get('o')
+  const owner = parseOwner(rawOwner)
   const fates = parseFates(url.searchParams.get('k'))
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
@@ -56,7 +57,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://diff.cache/${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
-      `&o=${owner ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
