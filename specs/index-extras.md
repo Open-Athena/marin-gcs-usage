@@ -39,3 +39,7 @@ Keys are index paths (bucket-relative, no `gs://`, no trailing slash) — the sa
 
 - Structured W&B evidence (`entity/project/run_id`) needs the attribution rows to carry it; the next `wandb-mine` writes it, and `extras.json`'s third slot is null until then.
 - `/api/assignments` signal rows (Phase 2's `by_source` rollup) — once `extras` is on every scan, the rollup is a fold over `attr` × the tiers; separate change.
+
+## Status (2026-09-09)
+
+Landed (`dfc4734`, `e8ede57`, `f0af501`, `4aa30bde`) and deployed. Sidecars backfilled for scans 2026-09-02 … 2026-09-09 (the five pre-generation scans at `listing/<date>/`, the rest under their generation dir); new scans get them from `webdata`. Older scans: run `tmp/extras/backfill-extras.sh <date>` on the `mgu` node when wanted.
