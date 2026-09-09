@@ -3,6 +3,12 @@ import { FileTree } from '@rdub/file-tree/react'
 import { HttpStore } from '@rdub/file-tree/stores/http'
 import { makeParquetViewer } from '@rdub/file-tree/renderers/parquet'
 import type { ElideCtx } from '@rdub/file-tree/renderers/table'
+import { renderJsonTree } from '@rdub/file-tree/renderers/json'
+import { CsvViewer } from '@rdub/file-tree/renderers/csv'
+import { renderMarkdown } from '@rdub/file-tree/renderers/markdown'
+import { renderCode } from '@rdub/file-tree/renderers/code'
+import NotebookViewer from '@rdub/file-tree/renderers/notebook'
+import { useUrlPersistedState } from '@rdub/file-tree/url-state'
 import { Tooltip } from './Tooltip'
 
 // Same-origin proxy (CF Pages Function, behind CF Access) → the raw scan bucket.
@@ -29,6 +35,16 @@ export function FilesPage() {
         routeBase="/files"
         title="Scan data — raw listings + snapshots"
         parquetRenderer={parquetViewer}
+        // Rich viewers instead of plaintext `<pre>`: JSON/YAML as a collapsible
+        // tree with search + jq (`?jq=`), CSV/TSV as a paginated table, Markdown
+        // + notebooks rendered, code syntax-highlighted. `useUrlPersistedState`
+        // threads their search / pagination / jq state into the URL.
+        jsonRenderer={renderJsonTree}
+        csvRenderer={CsvViewer}
+        markdownRenderer={renderMarkdown}
+        codeRenderer={renderCode}
+        notebookRenderer={NotebookViewer}
+        usePersistedState={useUrlPersistedState}
       />
     </div>
   )
