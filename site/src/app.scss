@@ -424,6 +424,11 @@ details.fold {
       max-width: 300px;
     }
   }
+
+  code.elide-full {
+    display: block; max-width: 60ch; font-size: 12px; line-height: 1.35;
+    white-space: normal; overflow-wrap: anywhere; word-break: break-all;
+  }
 }
 
 .tip, .dt-treemap-tip {

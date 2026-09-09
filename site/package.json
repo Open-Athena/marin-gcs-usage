@@ -15,7 +15,8 @@
   "dependencies": {
     "@disk-tree/react": "workspace:*",
     "@floating-ui/react": "^0.27.20",
-    "@rdub/file-tree": "https://github.com/runsascoded/file-tree#5709d4e4e3eef252baa1e8cc94f82c116d329673",
+    "@rdub/file-tree": "https://github.com/runsascoded/file-tree#b64278c27d45479fe09507dabc0e16dd0a4b8b87",
+    "@rdub/treemap": "workspace:*",
     "hyparquet": "^1.27.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
