@@ -494,3 +494,31 @@ Audit: `packages/treemap/{src,tests}`, `packages/react/src`, `src/disk_tree`
 all parity. `site/src` (74), `site/functions` (48), `job` (54), `marin/src`
 (18) differ = the port-pending user/sweep + S3-vs-GCS pipeline axes;
 `packages/react/tests` (3) = the `TimeSeries` brush tests cw-s3 owes gcs.
+
+### 2026-09-09 (cw-ward) — general-FE catch-up (de-entangling `site/src`)
+
+Ryan flagged that commit-level `/cp` had left cw-s3 behind gcs on **general**
+FE, because gcs ships it entangled with the sweep/ownership axis in mixed
+commits (`a2f0103` header redesign, `839f4b4` children table) — so a
+commit-level pass skips the whole thing as "port-pending user axis" and loses
+the portable half with it. The `classify.py` file-level buckets have the same
+blind spot (`ChildrenTable`/`SiteNav`/`theme` → `marks`; floating controls →
+`residual`); the entanglement is at the *hunk* level. So this pass ports the
+general slices directly, adapting the user/sweep columns out:
+
+- `2b98209` — **children table under the treemap** (the tabular twin), + the
+  general **controlled-drill lift**: `Treemap` gains `path`/`onPathChange`
+  (App owns `?path=`), which the table needs to mirror the drilled node and to
+  drill the map from a row. Owner/fate/mark/bulk columns dropped (sweep axis).
+- `9c179f3` — **table under the diff treemap** (the long-standing cross-branch
+  ask), over cw-s3's own `DiffData` frontier.
+- `3f55157` — **grouped legend**: prefix clustering (`legendGroups`), name
+  head/tail elision + copy, "+N more" count. Owner/user legend rows dropped.
+- `e9e4b09` (earlier this session) — `/files` FT JSON/CSV/MD/code/notebook
+  renderers.
+
+All CIC'd. Deferred: the "floating page-scoped controls" half — cw-s3 already
+has the use-kbd SpeedDial + ⌘K, so which gcs control is meant is unclear
+(flagged to Ryan). **Still TODO: refresh `factored/cw-s3-gcs-*` to verify the
+residual shrank** (the "port directly, verify after" plan's verify step).
+These are gcs-ward too — general FE gcs already has; cw-s3 catching up.
