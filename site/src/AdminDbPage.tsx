@@ -1,12 +1,14 @@
 import { Link, useParams } from 'react-router-dom'
 import { DbTable } from './DbTable'
 import { useTables } from './db'
+import { useDocTitle } from './title'
 
 // /admin/db/:table — one registry table, editable for admins, read-only for
 // anyone whose scopes cover its readScope (e.g. share the allowed_emails URL
 // instead of a gist). /admin/db (no table) lists what the caller can see.
 export function AdminDbPage() {
   const { table } = useParams()
+  useDocTitle(table, 'DB', 'Admin')
   const { data: tables, error } = useTables()
 
   if (error) {

@@ -8,6 +8,7 @@ import { UserChip } from './UserChip'
 import { fmtMarkDate } from './MarkControls'
 import { ActionChip, LOCAL_TZ, fmtWhen, useMarkEvents } from './markEvents'
 import { type RuleUser, type Rules } from './types'
+import { useDocTitle } from './title'
 
 // Recent-marks activity feed (specs/actions-ledger.md): the ledger's keep +
 // owner rows, newest first — who decided what, when. Read-only; the map is
@@ -31,6 +32,7 @@ function WhoCell({ who, user }: { who: string; user?: RuleUser }) {
 }
 
 export function MarksPage() {
+  useDocTitle('Marks')
   const { events, isLoading, error } = useMarkEvents()
   const [page, setPage] = useState(0)
   const { data: rules } = useQuery<Rules>({

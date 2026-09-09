@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useDocTitle } from './title'
 
 // Share-link console (staff-only; the backend enforces the `admin` scope on
 // every /api/auth/grants route — this page just renders the 403 politely).
@@ -27,6 +28,7 @@ const fmtTs = (ts: number | null): string => (ts ? new Date(ts * 1000).toLocaleS
 const linkFor = (token: string): string => `${window.location.origin}/?key=${token}`
 
 export function AdminPage() {
+  useDocTitle('Admin')
   const qc = useQueryClient()
   const [memo, setMemo] = useState('')
   const [user, setUser] = useState('')

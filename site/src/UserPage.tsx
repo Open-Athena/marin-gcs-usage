@@ -15,6 +15,7 @@ import { SiteNav } from './SiteNav'
 import { useScan, type Scan } from './scan'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
+import { useDocTitle } from './title'
 import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, shortUserKey } from './UserChip'
 import {
@@ -324,6 +325,7 @@ export function UsersOgPage() {
 }
 
 export function UsersPage() {
+  useDocTitle('Users')
   const scan = useScan(store)
   const asof = scan.asof
   const metaQ = useScanFile<Meta>('meta', asof)
@@ -601,6 +603,7 @@ export function UserOgPage() {
 
 export function UserPage() {
   const { id = '' } = useParams()
+  useDocTitle(shortName(id))
   const scan = useScan(store)
   const asof = scan.asof
   const metaQ = useScanFile<Meta>('meta', asof)

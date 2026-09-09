@@ -6,6 +6,7 @@ import App from './App'
 import { AuthGate } from './AuthGate'
 import { FilesPage } from './FilesPage'
 import { MarksPage } from './MarksPage'
+import { AssignmentsPage } from './AssignmentsPage'
 import { SweepPage } from './SweepPage'
 import { OgPage } from './OgPage'
 import { UserOgPage, UserPage, UsersOgPage, UsersPage } from './UserPage'
@@ -30,6 +31,7 @@ export default function Root() {
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
       <Route path="/marks" element={<AuthGate><MarksPage /></AuthGate>} />
+      <Route path="/assignments" element={<AuthGate><AssignmentsPage /></AuthGate>} />
       <Route path="/sweep" element={<AuthGate><SweepPage /></AuthGate>} />
       <Route path="/users/og" element={<UsersOgPage />} />
       <Route path="/user/:id/og" element={<UserOgPage />} />
