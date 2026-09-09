@@ -177,18 +177,36 @@ details.fold {
 }
 .loading { color: var(--ink-3); }
 
-.colorctl {
+// Page-scoped controls (scan / units / color-by): a full-bleed sticky bar with
+// a bottom border + backdrop, so it parks at the top and stays there mid-scroll
+// over the long page of map + tables.
+.pagebar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 6px 14px;
+  flex-wrap: wrap;
   position: sticky;
   top: 0;
-  z-index: 5;
-  background: var(--surface);
-  padding: 8px 0;
-  margin: -8px 0;
+  z-index: 6;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+  // full-bleed across main's horizontal padding (20px 24px 48px)
+  margin: -22px -24px 0;
+  padding: 9px 24px;
   .lbl { color: var(--ink-2); font-size: 13px; margin-right: 2px; }
-  button {
+  .pb-grp { display: inline-flex; align-items: center; gap: 6px; }
+  .scanpick {
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; font: inherit; font-weight: 600; font-size: 13px;
+    padding: 1px 4px; cursor: pointer;
+  }
+  .units-btn {
+    color: var(--s1); background: none; border: none; padding: 0; font: inherit;
+    font-size: 13px; cursor: pointer; text-decoration: underline;
+  }
+  .colorby button {
     background: var(--panel);
     color: var(--ink-2);
     border: 1px solid var(--line);
@@ -196,11 +214,7 @@ details.fold {
     font-size: 12.5px;
     padding: 3px 10px;
     cursor: pointer;
-    &.on {
-      background: var(--s1);
-      border-color: var(--s1);
-      color: #fff;
-    }
+    &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
     &:hover:not(.on) { filter: brightness(1.05); }
     &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
   }

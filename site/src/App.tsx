@@ -468,18 +468,12 @@ function AppContent() {
       <header>
         <div className="hrow">
           <h1>Marin CoreWeave usage</h1>
-          {/* Nav + units + identity flush right as one designed cluster
-              (CP'd from gcs `5c50fa3` / `9fe605b`; no SiteNav here — one page). */}
+          {/* Nav + identity flush right as one designed cluster (no SiteNav
+              here — one page). Page-scoped controls (scan/units/color-by) live
+              in the sticky `.pagebar` below, not the h1 line. */}
           <span className="nav-links">
             <Link className="nav-files" to="/files">Scans</Link>
           </span>
-          <button
-            className="units-btn" type="button"
-            onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
-            title="Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B"
-          >
-            {(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}
-          </button>
           {ident && (
             <div className="whoami">
               <UserChip who={ident.email} size={22} extra={<div className="uc-session"><div>signed in as <code>{ident.email}</code></div></div>} />
@@ -489,15 +483,7 @@ function AppContent() {
         </div>
         {meta && (
           <p className="sub">
-            scan{' '}
-            {scans.length > 1 && asof ? (
-              <select className="scanpick" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
-                {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
-              </select>
-            ) : (
-              <b>{meta.asof}</b>
-            )}
-            {' '}· <Tooltip content={`${units === 'si' ? 'SI' : 'IEC'} units${suffixB ? '' : ', bare suffix'} — click to toggle (i / b)`}><b className="dotted" style={{ cursor: 'pointer' }} onClick={toggleUnits}>{fmtBytes(meta.total_bytes)}</b></Tooltip> · <b>{fmtN(meta.total_objects)}</b> objects
+            <Tooltip content={`${units === 'si' ? 'SI' : 'IEC'} units${suffixB ? '' : ', bare suffix'} — click to toggle (i / b)`}><b className="dotted" style={{ cursor: 'pointer' }} onClick={toggleUnits}>{fmtBytes(meta.total_bytes)}</b></Tooltip> · <b>{fmtN(meta.total_objects)}</b> objects
             {estCost && (
               <>
                 {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>{' '}
@@ -524,24 +510,41 @@ function AppContent() {
         </p>
       </details>
 
-      {hasAttr && (
-        <div className="colorctl" role="radiogroup" aria-label="Color plots by">
-          <span className="lbl">color by</span>
-          {MODES.map(m => (
-            <button
-              key={m}
-              role="radio"
-              aria-checked={effMode === m}
-              className={effMode === m ? 'on' : ''}
-              onClick={() => setMode(m)}
-            >
-              {MODE_LABELS[m]}
-            </button>
-          ))}
-          {hl && (
-            <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">
-              {hlUser} ✕
-            </button>
+      {/* Page-scoped controls, sticky under the top edge as you scroll the
+          long page: which scan, byte units, and (when the scan has
+          attribution) the color-by axis. Full-bleed with a bottom border so it
+          reads as a stuck bar. */}
+      {meta && (
+        <div className="pagebar">
+          <span className="pb-grp">
+            <span className="lbl">scan</span>
+            {scans.length > 1 && asof ? (
+              <select className="scanpick" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
+                {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+              </select>
+            ) : (
+              <b>{meta.asof}</b>
+            )}
+          </span>
+          <button
+            className="units-btn" type="button"
+            onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
+            title="Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B"
+          >
+            {(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}
+          </button>
+          {hasAttr && (
+            <span className="pb-grp colorby" role="radiogroup" aria-label="Color plots by">
+              <span className="lbl">color by</span>
+              {MODES.map(m => (
+                <button key={m} role="radio" aria-checked={effMode === m} className={effMode === m ? 'on' : ''} onClick={() => setMode(m)}>
+                  {MODE_LABELS[m]}
+                </button>
+              ))}
+              {hl && (
+                <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">{hlUser} ✕</button>
+              )}
+            </span>
           )}
         </div>
       )}
