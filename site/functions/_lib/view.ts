@@ -196,7 +196,7 @@ export async function readRootAgg(env: Env, o: { date: string; path: string; len
   const rows = await rootRows(lens ? 'user' : 'path', lens)
   if (rows == null) return null
   const mine = newAgg()
-  for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, classRow(r, classes))
+  for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, classRow(r, o.classes))
   if (!ol) return { b: mine.b, o: mine.o }
   let all: Agg | null = null
   if (ol.needsTotal(path)) {
@@ -662,8 +662,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     if (!rows.length && !allRows.length) return null
     const all = newAgg()
     const mine = newAgg()
-    for (const r of allRows) merge(all, classRow(r, classes))
-    for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, classRow(r, classes))
+    for (const r of allRows) merge(all, classRow(r, o.classes))
+    for (const r of rows) if (ownerOk(r.usr, owner)) merge(mine, classRow(r, o.classes))
     const a = v.scoped(p, v.ownerLens && !needTot ? null : all, mine)
     return a.b > 0 ? a : null
   }
