@@ -17,6 +17,7 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { ChildrenTable } from './ChildrenTable'
+import { DiffTable } from './DiffTable'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
 import { UserChip, shortName } from './UserChip'
@@ -617,6 +618,12 @@ function AppContent() {
             )}
           </p>
           {diff && diff.rows.length > 0 && <DiffTreemap data={diff} label="Marin CoreWeave usage" />}
+          {diff && diff.rows.length > 0 && (
+            <details className="tbl-fold" open>
+              <summary><b>Changes</b> — the diff’s largest movements, row by row</summary>
+              <DiffTable data={diff} />
+            </details>
+          )}
         </section>
       )}
 
