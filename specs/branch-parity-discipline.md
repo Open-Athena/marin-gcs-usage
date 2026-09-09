@@ -451,3 +451,46 @@ dt/main (`git cp set` to `af23c4c`, ported nothing new):
   (`server.py`, `diff_index`, `extents`, `desktop`, `library`, `capture`, `du`,
   `reclaim`, `repos`, `snapshots`, `vocab`, `sidecar`, `config`, `storage/*`) —
   intended delta (ledger: "upstream carries Flask serving").
+
+### 2026-09-09 (cw-ward, `/cp gcs` + `/cp dt`) — treemap core + ft bump
+
+gcs ran a large seven-commit batch (`ab02e73..dfc473453`): the dt treemap CP,
+assignment/provenance serving, ft bump, `/assignments` page, sweep-log row
+groups, the treemap header redesign, and the children-table owner/fate/bulk
+work — plus index sidecars. Almost all of it is the **user + sweep axis**, still
+port-pending on cw-s3 (2026-09-08 ledger: blocked on cw-s3 having no
+owner/writer attribution). Two commits are genuinely cross-cloud and landed.
+
+Landed on `cw-s3`:
+- `0a18858` — `@rdub/treemap` core to parity with gcs (its `e76f01e`, itself a
+  CP of dt `1bd3546`+`48060e5`): `outlineGroups` grouped-outline overlay
+  (`OutlineOverlay.tsx`/`outlines.ts`), diff treemap+table widgets (`diff/*`),
+  and gcs's core fixes (float-epsilon seam quantization, `var()` color
+  resolution, DOM-renderer geometry, canvas parity). Copied the 14 core files;
+  `e76f01e`'s `tiling.tsx→prefs.tsx` rename is gcs site wiring, not core.
+  `packages/treemap/{src,tests}` now byte-identical to gcs. The *outline
+  capability* is here; the mark/fate *wiring* that consumes it is not (sweep
+  axis). Tests: 140 pass.
+- `25261a3` (cursor gcs `dfc473453`) — `@rdub/file-tree` → dist `b64278c`
+  (`40b75bd`) + `/files` parquet viewer upgraded to `makeParquetViewer` with
+  `resizableColumns: { scope: 'schema' }` and an `elide` tooltip (adapted CP of
+  gcs `c5a33b5`). ft's new `@rdub/treemap` peer dep satisfied from the
+  workspace. Kept cw-s3's minimal `/files` chrome (no `SiteNav`/`SiteKbd`/
+  `useDocTitle`). CIC'd on a coarse24 path-index parquet: viewer renders, 11
+  resize handles present, elide tooltip fires on a clipped cell.
+
+Skipped as gcs-only / port-pending (user + sweep axes): `4eaa75a` assignment
+provenance serving, `ede9270` `/assignments` heatmap, `e0cd358` sweep-log 64k
+row groups, `a2f0103` treemap header redesign (MARK ALL / owner-class bars /
+mark outlines — the outline *capability* landed via `0a18858`), `839f4b4`
+children owner/fate/bulk-select, `dfc473453` `ck.json`/`attr.json` sidecars.
+
+dt/main (`git cp set` to `48060e5`, ported nothing directly): `1bd3546`+
+`48060e5` arrived via gcs `e76f01e`; `168fb4c` (r2.rbw.sh open demo) and
+`56f0917` (desktop WKWebView inspector) are dt-only; `63a0a0f`/`c0ebcaa` are
+specs. cw-s3 flows dt through gcs.
+
+Audit: `packages/treemap/{src,tests}`, `packages/react/src`, `src/disk_tree`
+all parity. `site/src` (74), `site/functions` (48), `job` (54), `marin/src`
+(18) differ = the port-pending user/sweep + S3-vs-GCS pipeline axes;
+`packages/react/tests` (3) = the `TimeSeries` brush tests cw-s3 owes gcs.
