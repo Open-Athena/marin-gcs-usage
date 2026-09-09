@@ -1,20 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { stringParam, useUrlState } from 'use-prms'
-import { Treemap as DtTreemap } from '@disk-tree/react'
-import type { CellCtx, CellStyle } from '@disk-tree/react'
+import { DustHatch, Treemap as DtTreemap } from '@disk-tree/react'
+import type { CellCtx, CellStyle, OutlineGroups } from '@disk-tree/react'
 import { Avatar } from './Avatar'
-import { UserChip, ghHandle, shortName } from './UserChip'
+import { canonId, UserChip, ghHandle, shortName } from './UserChip'
 import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
-import type { MarkIndex } from './marks'
+import type { Mark, MarkAction, MarkIndex } from './marks'
 import { klcFateAt, klcKeptWithin, subtreeFateTotals, unattrLens } from './sweep'
 import type { Fate, KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
-import { TilingToggle, useTiling } from './tiling'
+import { SettingsMenu, useRenderer, useTiling } from './prefs'
 import { useUnits } from './units'
+
+const OUTLINE_LABELS: Record<MarkAction, string> = { keep: 'keep', keep_last_ckpt: 'last ckpt', sweep: 'sweep' }
+const OUTLINE_TIP =
+  'Keep/sweep marks draw as outlines: a colored frame traces a region whose decision differs from the directory around it (amber = keep last checkpoint only). Nested frames are flips inside flips. Hover a cell for who set it; switch color to “marks” to see fates as fills.'
 
 // Legend rows inline only the metrics toggled on (swatch + name always show).
 // URL param `?li=` — a subset of "spc" (size / percent / cost); absent = "s"
@@ -55,7 +60,80 @@ function PathBar({ uri, onOpen }: { uri: string; onOpen?: () => void }) {
 // each L1's own children (L2) fan across shades of that hue — the micro axis;
 // deeper cells inherit their L2 ancestor's shade. Drilling re-keys both, so
 // whatever you're looking at gets the full palette.
-const MAX_SLOTS = 8
+const MAX_SLOTS = 8 // legend entries; the map colours every child (slotHsl)
+
+/**
+ * Legend names in one directory tend to share a long run-name prefix
+ * (`exp5611_sft_qwen3_1_7b_swe_zero_…` × 4) that carries no information
+ * *within* the legend and, on a phone, is the whole first fold. Cluster names
+ * whose token-aligned common prefix is long enough, render the prefix once,
+ * and give the swatches to the parts that differ. Rank order is kept: a
+ * cluster sits where its first member would.
+ */
+const MIN_PFX = 12
+function tokenPrefix(a: string, b: string): string {
+  let i = 0
+  while (i < a.length && i < b.length && a[i] === b[i]) i++
+  const cut = a.slice(0, i).search(/[_\-./][^_\-./]*$/)
+  return cut < 0 ? '' : a.slice(0, cut + 1)
+}
+export function legendGroups(names: string[]): { prefix: string; names: string[] }[] {
+  const parent = names.map((_, i) => i)
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])))
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      if (tokenPrefix(names[i], names[j]).length >= MIN_PFX) parent[find(j)] = find(i)
+    }
+  }
+  const members = new Map<number, string[]>()
+  names.forEach((n, i) => { const r = find(i); members.set(r, [...(members.get(r) ?? []), n]) })
+  const out: { prefix: string; names: string[] }[] = []
+  for (const ms of members.values()) {
+    const pfx = ms.length > 1 ? ms.slice(1).reduce((p, n) => tokenPrefix(p, n), ms[0]) : ''
+    if (ms.length > 1 && pfx.length >= MIN_PFX) out.push({ prefix: pfx, names: ms })
+    else for (const n of ms) out.push({ prefix: '', names: [n] })
+  }
+  return out
+}
+
+/** An elided name's full text on hover; click copies it to the clipboard. */
+function CopyName({ text, note, children }: { text: string; note?: string; children: ReactNode }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    copyText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })
+  }
+  return (
+    <Tooltip content={<><code className="elide-full">{text}</code><span className="copy-hint">{copied ? 'copied ✓' : note ? `${note} · click to copy` : 'click to copy'}</span></>}>
+      <span onClick={copy} role="button" tabIndex={-1}>{children}</span>
+    </Tooltip>
+  )
+}
+
+/** Clipboard write that also works off a secure origin (a tailnet dev
+ *  server): `navigator.clipboard` is undefined there, so fall back to the
+ *  selection-based copy. */
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard) return navigator.clipboard.writeText(text)
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  document.execCommand('copy')
+  ta.remove()
+}
+
+/** Nesting levels of tiles a subtree renders as (see `viewLevels`). */
+function tileLevels(node: TreeNode): number {
+  const kids = node.c ?? []
+  if (kids.length === 0) return 0
+  const real = kids.filter(c => !c.n.startsWith('('))
+  if (real.length === 1 && kids.length === 1) return tileLevels(real[0])
+  let deepest = 0
+  for (const k of kids) if (!k.n.startsWith('(')) deepest = Math.max(deepest, tileLevels(k))
+  return 1 + deepest
+}
 const rankCache = new WeakMap<TreeNode, Map<string, [number, number]>>()
 /** name → [rank, count] over a node's real (non-fold) children, largest first. */
 function childRanks(node: TreeNode): Map<string, [number, number]> {
@@ -68,7 +146,22 @@ function childRanks(node: TreeNode): Map<string, [number, number]> {
   return m
 }
 
+// Micro-hue for the user axis: a cell's owner sets the hue (macro), and its
+// storage-class mix nudges the shade (micro) — colder classes (Nearline /
+// Coldline / Archive) pull the owner's color toward black, up to ~35% at 100%
+// cold. Same hue family, so the legend swatch still identifies the person;
+// within one person's band, darker just means colder. `color-mix` keeps this a
+// string op that works for any color the palette hands back (hex, hsl, var()).
+const coldShade = (color: string, cold: number): string =>
+  cold > 0.01 ? `color-mix(in srgb, ${color} ${Math.round(100 - 35 * Math.min(1, cold))}%, black)` : color
+
 export interface DateRange { min: number; max: number }
+
+/** The secondary color axis ("shade by"): a perturbation *within* each cell's
+ * primary color. `none` = the primary color as-is; `class` = darker for a
+ * larger share of cold storage classes (`coldShade`). Opt-in — the primary
+ * axis reads the same as before unless a shade is picked. */
+export type ShadeMode = 'none' | 'class'
 
 export interface Highlight {
   user?: string
@@ -88,9 +181,11 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
+  /** Secondary color axis — see `ShadeMode`. Default `none`. */
+  shade?: ShadeMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
   // Access-log observation window (epoch days) — domain of the read lens.
@@ -127,7 +222,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   path?: TreeNode[]
   onPathChange?: (p: TreeNode[]) => void
 }) {
-  const { fmtBytes } = useUnits()
+  const { fmtBytes, fmtBytesLike } = useUnits()
   const [liP, setLiP] = useUrlState('li', stringParam('s'))
   const liMetrics = useMemo(() => new Set([...(liP ?? 's')].filter((m): m is LiMetric => m === 's' || m === 'p' || m === 'c')), [liP])
   // Toggling rebuilds the value in canonical "spc" order, so equal selections
@@ -135,22 +230,27 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
   const liToggle = (m: LiMetric) => setLiP(LI_METRIC_CHIPS.map(([k]) => k).filter(k => liMetrics.has(k) !== (k === m)).join(''))
   // Tiling is a user preference (header toggle): `shared` by default.
   const [tiling] = useTiling()
-  // Macro/micro hue for a cell, relative to the drilled root (see childRanks):
-  // `depth` counts from the view root, so kidPath[len-2-depth] is that root,
-  // the next entry the L1 category, the one after (if any) the L2 shade.
+  const [renderer] = useRenderer()
+  // Macro/micro hue for a cell, relative to the drilled root (see childRanks).
+  // Every cell path starts with the drilled path, so the view root sits at a
+  // fixed index — NOT `len - 2 - depth`: a collapsed chain (`run/…/checkpoints`
+  // drawn as one tile) lengthens the path by the chain without adding depth,
+  // and that arithmetic then walked past the root and colored by the *bucket's*
+  // ranking (every chained run dir came out slot-0 blue).
+  const drillLen = (path ?? initialPath)?.length ?? 1
   const slotOf = useCallback(
-    (kidPath: TreeNode[], depth: number): { slot: number; i: number; n: number } | null => {
-      const rootIdx = kidPath.length - 2 - depth
+    (kidPath: TreeNode[]): { slot: number; i: number; n: number } | null => {
+      const rootIdx = drillLen - 1
       const viewRoot = kidPath[rootIdx]
       const l1 = kidPath[rootIdx + 1]
       if (!viewRoot || !l1 || l1.n.startsWith('(')) return null
       const slot = childRanks(viewRoot).get(l1.n)?.[0]
-      if (slot == null || slot >= MAX_SLOTS) return null
+      if (slot == null) return null
       const l2 = kidPath[rootIdx + 2]
       const [i, n] = l2 && !l2.n.startsWith('(') ? childRanks(l1).get(l2.n) ?? [0, 1] : [0, 1]
       return { slot, i, n }
     },
-    [],
+    [drillLen],
   )
 
   const uriOf = (path: TreeNode[]) => scheme + path.slice(1).map(n => n.n).join('/')
@@ -201,10 +301,15 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       let bg: string
       let ink: string
       let segments: CellStyle['segments']
+      // Cold-class share of the cell (NL/CL/AR bytes over all bytes) — the
+      // "shade by" micro axis, applied to whichever base color the primary
+      // axis picks. Ink is chosen from the base so labels stay legible.
+      const cold = shade === 'class' && kid.b ? Object.values(kid.cb ?? {}).reduce((a, b) => a + b, 0) / kid.b : 0
       if (mode === 'tree') {
-        const s = slotOf(kidPath, depth)
-        bg = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
-        ink = s ? inkFor(bg) : 'var(--ink)'
+        const s = slotOf(kidPath)
+        const base = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
+        bg = s ? coldShade(base, cold) : base
+        ink = s ? inkFor(base) : 'var(--ink)'
       } else if (mode === 'fate') {
         // Keep-axis fate: paint kept (green) / swept (red); undecided cells
         // stay grey — the review to-do, visible at a glance. A
@@ -270,13 +375,14 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         // remainder for unclaimed bytes) instead of one blob.
         const [u, ub] = kid.us?.[0] ?? [null, 0]
         if (ub >= 0.98 * kid.b) {
-          bg = userColor(u, userIdx)
-          ink = inkFor(bg)
+          const base = userColor(u, userIdx)
+          bg = coldShade(base, cold)
+          ink = inkFor(base)
         } else {
           const us = (kid.us ?? []).filter(([, b]) => b >= 0.06 * kid.b).slice(0, 4)
           const rem = kid.b - us.reduce((s, [, b]) => s + b, 0)
           if (us.length && (us.length > 1 || rem >= 0.06 * kid.b)) {
-            segments = us.map(([uu, b]) => ({ color: userColor(uu, userIdx), frac: b / kid.b }))
+            segments = us.map(([uu, b]) => ({ color: coldShade(userColor(uu, userIdx), cold), frac: b / kid.b }))
             if (rem >= 0.06 * kid.b) segments.push({ color: userColor(null, userIdx), frac: rem / kid.b })
             bg = 'var(--panel)'
             ink = 'var(--ink)'
@@ -284,8 +390,9 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
             // One dominant user, remainder too small to stripe (<6%): their
             // color, not unattributed gray — covers the 94–98% window the
             // wholly-owned fast path above misses.
-            bg = userColor(us[0][0], userIdx)
-            ink = inkFor(bg)
+            const base = userColor(us[0][0], userIdx)
+            bg = coldShade(base, cold)
+            ink = inkFor(base)
           } else {
             bg = userColor(null, userIdx)
             ink = inkFor(bg)
@@ -312,14 +419,16 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       // theme has — and deeper cells pull their own fill toward it, so even
       // grey-on-grey siblings show a visible edge. Gradient fills (stripe
       // segments paint over bg anyway) keep the themed default.
+      // (`--surface` is the page ground; there is no `--bg` token, and an
+      // undefined var here silently dropped the whole seam color.)
       const edge = depth === 0
-        ? 'var(--bg)'
+        ? 'var(--surface)'
         : bg.includes('gradient')
           ? undefined
-          : `color-mix(in oklab, ${bg} ${depth === 1 ? 40 : 62}%, var(--bg))`
+          : `color-mix(in oklab, ${bg} ${depth === 1 ? 40 : 62}%, var(--surface))`
       return { bg, ink, hatch, segments, edge, opacity: dim ? 0.22 : undefined }
     },
-    [mode, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx, klcIdx],
+    [mode, shade, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx, klcIdx],
   )
 
   // owner roll-up for the current view (user coloring only): everyone ≥1% of
@@ -341,25 +450,85 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     ].sort((a, b) => b.b - a.b)
   }
 
-  // Mark decoration is state-as-*border* (keep green / keep-last-ckpt amber /
+  // Mark decoration is state-as-*outline* (keep green / keep-last-ckpt amber /
   // sweep red), NOT an ✕ stamped on every descendant. A marked prefix inherits
-  // to its whole subtree, so decorating every cell is redundant noise — we mark
-  // only the top-most rendered cell that carries each mark:
-  //   - `own`  (the mark sits exactly here), or
-  //   - the drill root's direct children, when their mark is NOT the one the
-  //     header already shows for the root (a mark from above the root repeats
-  //     on every tile otherwise — a wall of edges saying nothing new).
-  // Skipped in `fate` mode, where the fill already *is* the fate. Bigger cells
-  // also get a corner badge: the actor's avatar + the state glyph. Full-opacity
-  // (inherited marks are no longer faded — they read as active). Provenance
-  // (who/when/inherited-from) lives in the cell tooltip.
-  const drillDepth = (path ?? initialPath)?.length ?? 1
-  // The mark covering the drill root itself is already the header's
-  // headline ("sweep set by …"); tiles that merely inherit it stay
-  // undecorated, so an edge means "this one differs from what you see above".
+  // to its whole subtree, so decorating every cell is redundant noise — an
+  // outline goes only where a cell's fate DIFFERS from the fate its parent cell
+  // already conveys: a kept (or swept) parent is outlined once, and same-fate
+  // descendants (inheriting it or re-stating it with their own mark) drop out,
+  // so a uniformly-marked subtree is one frame, not a wall of edges. The drill
+  // root's own mark is the header's headline ("sweep set by …"), so tiles that
+  // merely inherit it stay undecorated too. Adjacent siblings that differ from
+  // the parent the same way share ONE outline: the core strokes the perimeter
+  // of their union (`outlineGroups`), so a grid of kept run dirs reads as one
+  // bordered region, not a chain-link fence. Skipped in `fate` mode, where the
+  // fill already *is* the fate. Bigger cells also get a corner badge: the
+  // actor's avatar + the state glyph. Provenance (who/when/inherited-from)
+  // lives in the cell tooltip.
+  const drillDepth = drillLen
+  // $/mo from the node's own storage-class mix at list price — the same
+  // arithmetic as the Storage-classes table — not the store-wide blended
+  // rate, which over-charged a Coldline-heavy directory by ~2×.
+  const estUsd = (n: TreeNode) => n.b * (n.cb ? ratePerByte(classMix(n)) : pricing?.blended ?? 0)
   const drillPath = path ?? initialPath
+  // Levels of tiles the view will draw (the loaded subtree is already
+  // pixel-budgeted, so its depth ≈ what renders). Lone-child chains collapse
+  // into one tile and don't count; folds are leaves. Drives the seam widths:
+  // the fat gutter belongs to a level with two more under it — a flat
+  // directory of step dirs is one level and gets hairlines, not the
+  // bucket-grade 6px frame around every cell.
+  const viewLevels = drillPath?.length ? tileLevels(drillPath[drillPath.length - 1]) : 1
   const rootMark = markIdx && drillPath?.length ? markIdx.resolve(uriOf(drillPath)).mark : null
-  const renderCellExtra = markIdx
+  // The mark a cell's edge conveys, or null when its parent cell already shows
+  // the same fate. `chain` = single-child levels the core collapsed into this
+  // cell (`collapseChains`): the chain's top node is that many levels up, so
+  // the parent cell is one above that.
+  const edgeMark = (cellPath: TreeNode[], chain: number): { mark: Mark; parent: TreeNode[] } | null => {
+    if (!markIdx) return null
+    const { mark } = markIdx.resolve(uriOf(cellPath))
+    if (!mark) return null
+    const parent = cellPath.slice(0, cellPath.length - chain - 1)
+    const parentMark = parent.length > drillDepth ? markIdx.resolve(uriOf(parent)).mark
+      : parent.length === drillDepth ? rootMark : null
+    if (parentMark && parentMark.action === mark.action) return null
+    return { mark, parent }
+  }
+  // The core's chain collapse, replayed from a placed cell's path: it folds a
+  // tile's single-child descendants into the tile, so climbing from the cell's
+  // (deepest) node through lone-child parents finds the tile's own node. Stops
+  // at the drill root's direct children.
+  const chainOf = (cellPath: TreeNode[]): number => {
+    let i = cellPath.length - 1
+    while (i > drillDepth && cellPath[i - 1].c?.length === 1) i--
+    return cellPath.length - 1 - i
+  }
+  // Group key = the fate + the parent cell it differs from: siblings that
+  // flip the same way merge into one region, while a deeper flip back to an
+  // ancestor's fate (keep → sweep → keep) stays its own group, so the core's
+  // nesting rule (an open key's descendants are covered) can't swallow it.
+  const [outlined, setOutlined] = useState<MarkAction[]>([])
+  const onDrawn = useCallback((keys: string[]) => {
+    const acts = (['keep', 'keep_last_ckpt', 'sweep'] as MarkAction[]).filter(a => keys.some(k => k.startsWith(a + '|')))
+    setOutlined(prev => (prev.length === acts.length && prev.every((a, i) => a === acts[i]) ? prev : acts))
+  }, [])
+  const markOutlines = useMemo<OutlineGroups<TreeNode> | undefined>(
+    () => markIdx && mode !== 'fate'
+      ? {
+          key: (n, cellPath) => {
+            if (n.n.startsWith('(')) return null
+            const e = edgeMark(cellPath, chainOf(cellPath))
+            return e ? `${e.mark.action}|${uriOf(e.parent)}` : null
+          },
+          color: key => ACTION_COLORS[key.slice(0, key.indexOf('|')) as MarkAction],
+          width: 2,
+          onDrawn,
+        }
+      : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [markIdx, mode, rootMark, drillDepth],
+  )
+  useEffect(() => { if (!markOutlines) setOutlined([]) }, [markOutlines])
+  const markExtra = markIdx
     ? (n: TreeNode, cellPath: TreeNode[], { w, h, chain = 0 }: { w: number; h: number; chain?: number }) => {
         if (mode === 'fate') {
           // The fills already ARE the fate — only the KLC "both fates live
@@ -370,41 +539,42 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           }
           return null
         }
-        // Folded "(other)" tiles reuse their *parent's* path, so the top-level
-        // fold has the drill root's path length. Decorate only that one — it
-        // shares its siblings' fate and should share their border, not read as
-        // an un-bordered gap; nested folds stay clean.
-        const isFold = n.n.startsWith('(')
-        if (isFold && cellPath.length !== drillDepth) return null
-        const { mark, own } = markIdx.resolve(uriOf(cellPath))
-        if (!mark) return null
-        // A collapsed single-child chain's path ends at its deepest node;
-        // the cell's own top node is `chain` levels up — a chain hanging off
-        // the drill root is a top-level tile like any other.
-        const topLevel = cellPath.length - chain === drillDepth + 1 || isFold
-        if (!own && !topLevel) return null
-        if (!own && rootMark && mark.prefix === rootMark.prefix && mark.ts === rootMark.ts) return null
-        const color = ACTION_COLORS[mark.action]
+        // Actor badge (who marked it) only when it adds information: the marker
+        // is NOT the cell's own top owner — an "off-diagonal" mark, someone
+        // sweeping/keeping another person's data. A person marking their own
+        // data (the common case) is noise, so no avatar there. Never on a fold.
+        if (n.n.startsWith('(') || w < 44 || h < 24) return null
+        const e = edgeMark(cellPath, chain)
+        if (!e) return null
+        const { mark } = e
+        const topOwner = n.us?.[0]?.[0] ?? null
+        const offDiagonal = !!mark.who && (topOwner == null || canonId(mark.who) !== topOwner)
+        if (!offDiagonal) return null
         const glyph = mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'
-        // Low floor so a *thin* top-level tile still reads as marked (a bare
-        // sliver among bordered siblings looked like a gap); on a very narrow
-        // cell the inset border just fills it with the fate color.
-        const border = w >= 4 && h >= 5
-          ? (mark.action === 'keep_last_ckpt'
-            ? <span className="mark-edge klc" />
-            : <span className="mark-edge" style={{ borderColor: color }} />)
-          : null
-        // No actor badge on an aggregate fold — it's many prefixes, not one.
-        const badge = !isFold && w >= 44 && h >= 24 ? (
+        return (
           <span className="mark-badge">
             <Avatar github={ghHandle(mark.who)} name={shortName(mark.who)} size={14} />
-            <span className="mk" style={{ background: color }}>{glyph}</span>
+            <span className="mk" style={{ background: ACTION_COLORS[mark.action] }}>{glyph}</span>
           </span>
-        ) : null
-        if (!border && !badge) return null
-        return <>{border}{badge}</>
+        )
       }
     : undefined
+
+  // Per-cell overlay. Two layers, independent of each other:
+  //   1. Dust hatch on every `(other)` fold, at ANY depth. The server builds
+  //      these tiles (view.ts: parent − Σ kept kids, with `f` = how many
+  //      children they stand in for), so they're plain nodes to the core and
+  //      never hit its own fold hatch — draw the core's `DustHatch` here so a
+  //      fold reads as "many small things", not a flat grey block.
+  //   2. The mark decoration (`markExtra`), only in mark mode.
+  const renderCellExtra = (n: TreeNode, cellPath: TreeNode[], box: { w: number; h: number; fade?: number; hasKids?: boolean; chain?: number }) => {
+    const dust = n.n.startsWith('(') && box.w >= 8 && box.h >= 8
+      ? <DustHatch w={box.w} h={box.h} count={Math.max(1, n.f ?? 1)} />
+      : null
+    const mark = markExtra?.(n, cellPath, box) ?? null
+    if (!dust && !mark) return null
+    return <>{dust}{mark}</>
+  }
 
   const renderRollup = (node: TreeNode, path: TreeNode[]) => {
     if (redact) return null
@@ -434,7 +604,14 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       : []
     return (
       <>
-        {markIdx && <MarkControls uri={uriOf(path)} idx={markIdx} node={node} lensed={ownerLensed} />}
+        {/* A bucket itself isn't markable (MarkControls renders nothing there) —
+            no panel for an empty box. */}
+        {hasPanel && (
+          <div className="root-marks">
+            <MarkControls uri={uriOf(path)} idx={markIdx!} node={node} lensed={ownerLensed} userIdx={userIdx} onPickUser={onPickUser} />
+            {keys}
+          </div>
+        )}
         {fateRows.length > 0 && (
           <span
             className={`fate-rollup${exact ? '' : ' approx'}`}
@@ -481,7 +658,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           >
             <span className="sw" style={{ background: r.col }} />
             {isUser ? <UserChip who={r.k} size={15} /> : r.k}
-            {liMetrics.has('s') && <> <b>{fmtBytes(r.b)}</b></>}
+            {liMetrics.has('s') && <> <b>{fmtBytesLike(r.b, rollup[0]?.b ?? r.b)}</b></>}
             {liMetrics.has('p') && <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>}
             {r.rate != null && liMetrics.has('c') && (
               r.mix ? (
@@ -537,18 +714,48 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
           ) : (
             // The macro axis: the drilled root's children, largest first, in
             // their hue; anything past the palette (and folds) is "other".
+            // Names cluster on a shared prefix (rendered once, muted) and
+            // elide from the middle when the row is narrow — the tail (a hash
+            // or step number) is usually the part that tells them apart. The
+            // full name is in each item's tooltip.
             (() => {
               const ranked = [...childRanks(legendNode).entries()].sort((a, b) => a[1][0] - b[1][0])
               const shown = ranked.slice(0, MAX_SLOTS)
-              const hasOther = ranked.length > MAX_SLOTS || (legendNode.c ?? []).some(c => c.n.startsWith('('))
+              // Every real child has its own hue (see `slotHsl`); the legend
+              // lists the largest MAX_SLOTS and counts the rest. "other" is
+              // only the fold tile.
+              const more = ranked.length - shown.length
+              const hasOther = (legendNode.c ?? []).some(c => c.n.startsWith('('))
+              const slot = new Map(shown.map(([k, [i]]) => [k, i]))
+              const li = (name: string, shownAs: string) => {
+                const tail = shownAs.length > 16 ? shownAs.slice(-7) : ''
+                const head = tail ? shownAs.slice(0, -7) : shownAs
+                return (
+                  <CopyName text={name} key={name}>
+                    <span className="li copyable">
+                      <span className="sw" style={{ background: slotColor(slot.get(name)!) }} />
+                      <span className="nm"><span className="head">{head}</span>{tail && <span className="tail">{tail}</span>}</span>
+                    </span>
+                  </CopyName>
+                )
+              }
               return (
                 <>
-                  {shown.map(([k, [i]]) => (
-                    <span className="li" key={k}>
-                      <span className="sw" style={{ background: slotColor(i) }} />
-                      {k}
-                    </span>
-                  ))}
+                  {legendGroups(shown.map(([k]) => k)).map(g => g.prefix
+                    ? (
+                      <span className="li-group" key={g.prefix}>
+                        <CopyName text={g.prefix} note={`shared by the ${g.names.length} items that follow`}>
+                          <span className="pfx copyable">{g.prefix}…</span>
+                        </CopyName>
+                        {g.names.map(n => li(n, n.slice(g.prefix.length)))}
+                      </span>
+                    )
+                    : li(g.names[0], g.names[0]))}
+                  {more > 0 && (
+                    <Tooltip content={<>{more} smaller {more === 1 ? 'directory' : 'directories'}, each in its own hue (hover a cell for its name)</>}>
+                      <span className="li more">+{more} more</span>
+                    </Tooltip>
+                  )}
                   {hasOther && <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>}
                 </>
               )
@@ -559,10 +766,55 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
     : null
   // The tiling toggle rides in the same slot (right of the crumbs, left of ⛶)
   // in every mode: a map-level preference belongs on the map, not in the nav.
+  // The outline key: whenever marks draw as outlines (every coloring but
+  // `fate`), say what a colored frame means — the map otherwise shows an
+  // unexplained amber/red/blue border with no swatch anywhere. Hollow
+  // swatches, so it reads as "outline", not another fill. Lists only the
+  // fates whose outlines are actually on screen: the overlay reports what it
+  // drew (`onDrawn`), so a view with one red frame gets a one-entry key.
+  const outlineActions = outlined
+  const outlineLegend = outlineActions.length > 0 && (
+    <Tooltip content={OUTLINE_TIP}>
+      <span className="li outl has-tt">
+        <span className="olbl">outline</span>
+        {outlineActions.map(a => (
+          <span className="oli" key={a}>
+            <span className="sw" style={{ borderColor: ACTION_COLORS[a] }} />
+            {OUTLINE_LABELS[a]}
+          </span>
+        ))}
+      </span>
+    </Tooltip>
+  )
+  // The keys (outline key + ⚙) are the last flex items with `margin-left:
+  // auto`: they take the free end of the LIs' last line, or wrap to a line of
+  // their own only when there's no room — never a mostly-empty row.
+  // The map's keys and knobs — outline key, ⚙, fullscreen — as one group.
+  // They sit at the right edge of the mark panel (its head-matter row has
+  // the room); without a panel (bucket level, no marks) they take the free
+  // end of the legend's last line instead. The core's own ⛶ is hidden.
+  const hasPanel = !!markIdx && (path?.length ?? 0) > 2
+  const keys = (
+    <span className="keys">
+      {outlineLegend}
+      <SettingsMenu />
+      <Tooltip content="Fullscreen (Esc to leave)">
+        <button
+          type="button" className="fs-btn" aria-label="Fullscreen"
+          onClick={e => {
+            const el = (e.currentTarget as HTMLElement).closest('.treemap') as HTMLElement | null
+            if (!el) return
+            if (document.fullscreenElement) void document.exitFullscreen()
+            else void el.requestFullscreen()
+          }}
+        >⛶</button>
+      </Tooltip>
+    </span>
+  )
   const legend = (legendNode: TreeNode, legendPath: TreeNode[]) => (
     <div className="legend">
       {modeLegend?.(legendNode, legendPath)}
-      <TilingToggle />
+      {!hasPanel && keys}
     </div>
   )
 
@@ -608,7 +860,7 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
         {classes}
         {users}
         {/* interactive only when the tooltip is pinned; CSS hides it on hover */}
-        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} lensed={ownerLensed} />}
+        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} lensed={ownerLensed} userIdx={userIdx} onPickUser={onPickUser} />}
       </>
     )
   }
@@ -651,28 +903,49 @@ export function Treemap({ root, mode, userIdx, dateRange, readRange, hl, onPickU
       // cells at depth 0, where the bucket-grade 6px seam eats the area
       // shared-edges mode exists to preserve.
       borderWidth={(depth, { w, h }) => {
-        const base = depth === 0 ? 6 : depth === 1 ? 2.5 : 1
+        const below = Math.max(0, viewLevels - 1 - depth)
+        // Width alone is a blunt cue: the top seam gets 3px and one step down
+        // 2px, the rest hairlines — nesting reads from the edge color (page
+        // background at the top, fill-tinted deeper) and the header bars.
+        const base = below >= 2 ? 3 : below === 1 ? 2 : 1
         return Math.min(base, Math.max(1, Math.min(w, h) / 16))
       }}
       tiling={tiling}
+      renderer={renderer}
       renderTooltip={renderTooltip}
       renderCellExtra={renderCellExtra}
+      outlineGroups={markOutlines}
       renderRollup={renderRollup}
       renderLegend={redact ? undefined : legend}
       renderCrumbSuffix={node => (
         <>
           — {fmtBytes(node.b)} · {fmtN(node.o)} objects
-          {pricing && <> · est. {fmtUsd(node.b * pricing.blended)}/mo</>}
+          {pricing && <> · est. {fmtUsd(estUsd(node))}/mo</>}
         </>
       )}
       renderFooter={redact
         ? undefined
-        : () => <div className="hint">click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into an expandable “(other)”</div>}
+        : node => (
+          <div className="hint">
+            <span className="stats">{fmtBytes(node.b)} · {fmtN(node.o)} objects{pricing && <> · est. {fmtUsd(estUsd(node))}/mo</>}</span>
+            <Tooltip content={<>Click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into “(other)” · j/k/x select rows in the table below</>}>
+              <span className="info" aria-label="how to use the map">ⓘ</span>
+            </Tooltip>
+          </div>
+        )}
       chrome={!redact}
       showLabels={!redact}
+      // Names over sizes: a cell narrower than this shows only its (often
+      // long) path segment; the size waits in the tooltip / a tall leaf's 2nd
+      // line. The core's default (90px) let a 3-char stub sit beside "694 GiB".
+      inlineSizeMinWidth={150}
       // Per-store style hook: deliberate CW/GCS presentation differences live
       // under these classes in app.scss (one codebase, no branches).
-      className={`treemap store-${scheme === 's3://' ? 'cw' : 'gcs'}`}
+      // `root-marked-<action>`: the drill root itself carries a mark (the panel's
+      // headline), so the map area gets ONE frame in that fate's color — every
+      // tile inherits it, and per-tile borders are suppressed (fate boundaries
+      // only), so without this the view read as unmarked.
+      className={`treemap store-${scheme === 's3://' ? 'cw' : 'gcs'} tiling-${tiling}${rootMark ? ` root-marked root-marked-${rootMark.action}` : ''}`}
     />
   )
 }

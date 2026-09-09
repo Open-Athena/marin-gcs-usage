@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { MdLayers } from 'react-icons/md'
 import { useActions } from 'use-kbd'
@@ -14,7 +14,7 @@ import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
-import type { DateRange, Highlight } from './Treemap'
+import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, parseQuery } from './filterTree'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
@@ -27,6 +27,7 @@ import type { MenuEntry } from './SiteNav'
 import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
+import { useDocTitle } from './title'
 import { TypedPrefixModal } from './TypedPrefix'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, fmtUsd, ratePerByte } from './types'
@@ -35,6 +36,48 @@ import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
 // The color axes on offer.
 const MODES: ColorMode[] = ['fate', 'read', 'user', 'date', 'tree']
+
+/**
+ * URL value codecs. Values are ONE letter on the wire (`?c=t`); every older
+ * spelling still decodes (`tree`, `written`/`age`, `mark`/`fate`, `class`…)
+ * so old links keep working, and `useCanonicalParams` rewrites them to the
+ * short form on load. `use-prms` has no alias support of its own — a codec's
+ * `decode` accepts the legacy forms and the rewrite is ours.
+ */
+const MODE_CODES: Record<string, string> = { tree: 't', date: 'w', read: 'r', user: 'u', fate: 'm' }
+const MODE_ALIASES: Record<string, string> = {
+  t: 'tree', tree: 'tree',
+  w: 'date', written: 'date', age: 'date', date: 'date',
+  r: 'read', read: 'read',
+  u: 'user', user: 'user',
+  m: 'fate', mark: 'fate', fate: 'fate',
+}
+const modeCodec = {
+  encode: (v: string | undefined) => (v === undefined ? undefined : MODE_CODES[v] ?? v),
+  decode: (e: string | undefined) => (e === undefined ? undefined : MODE_ALIASES[e] ?? e),
+}
+const shadeCodec = {
+  encode: (v: string | undefined) => (v === 'class' ? 'c' : undefined),
+  decode: (e: string | undefined): string | undefined => (e === 'c' || e === 'class' ? 'class' : undefined),
+}
+/** Rewrite legacy param spellings to their canonical encoding, once, on load. */
+function useCanonicalParams(codecs: [string, { encode: (v: string | undefined) => string | undefined; decode: (e: string | undefined) => string | undefined }][]) {
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search)
+    let changed = false
+    for (const [k, codec] of codecs) {
+      const raw = q.get(k)
+      if (raw === null) continue
+      const canon = codec.encode(codec.decode(raw))
+      if (canon === raw) continue
+      changed = true
+      if (canon === undefined) q.delete(k)
+      else q.set(k, canon)
+    }
+    if (changed) window.history.replaceState(window.history.state, '', `${window.location.pathname}${q.size ? `?${q}` : ''}${window.location.hash}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+}
 
 // Diff-section span presets (days back from the "after" scan).
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
@@ -50,7 +93,7 @@ const FATE_CHIPS: { f: FateAxis; key: string; glyph: string; color: string; tip:
 // (`?o=rw`); absent = everything. Owned = a person owns it (inferred from
 // paths/runs, or assigned); unowned
 // = the nobody-owns-it pool. A user narrows "owned" to that person.
-type OwnerMode = 'all' | 'owned' | 'unowned' | 'user'
+type OwnerMode = 'all' | 'owned' | 'unowned' | 'user' | 'others'
 
 /** The sticky bar's current height (px) — where anchored sections park. */
 const topbarH = (): number =>
@@ -88,22 +131,17 @@ function AppContent() {
   const markIdx = useMarkIndex(marksQ.data)
   const [typedOpen, setTypedOpen] = useState(false)
   // Keep the tab title in sync with the store on client-side navigation.
-  useEffect(() => {
-    document.title = store.title
-  }, [store])
+  useDocTitle(store.key === 'gcs' ? undefined : store.title)
   // URL token matches the visible label ("written"/"mark"), not the internal
   // key ("date"/"fate"); old ?c=age / ?c=fate links still decode (the retired
   // group axes decode to the default).
   // ABSENT is meaningful: it means "the lens-appropriate default" (see `mode`
   // below), so switching lenses re-defaults the coloring — but an explicit
   // pick (any `?c=`) survives every lens change.
-  const modeCodec = {
-    encode: (v: string | undefined) => (v === undefined ? undefined : v === 'date' ? 'written' : v === 'fate' ? 'mark' : v),
-    decode: (e: string | undefined) => (e === undefined ? undefined : e === 'written' || e === 'age' ? 'date' : e === 'mark' || e === 'fate' ? 'fate' : e),
-  }
   const [modeP, setModeP] = useUrlState('c', modeCodec)
   // The age chart's own color axis (`?ac=`, same tokens); absent = follow the map.
   const [ageModeP, setAgeModeP] = useUrlState('ac', modeCodec)
+  useCanonicalParams([['c', modeCodec], ['ac', modeCodec], ['s', shadeCodec]])
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
@@ -133,8 +171,18 @@ function AppContent() {
   // instead of a tab row, so "unmarked ∧ unclaimed" or "sweep ∧ one user"
   // are plain combinations. Old links normalize below.
   const [fq, setFq] = useUrlState('f', stringParam())
-  const [kP, setKP] = useUrlState('k', stringParam())
-  const [oP, setOP] = useUrlState('o', stringParam())
+  // Lens changes push history (they change WHAT you're looking at, like a
+  // drill); cosmetics (`?c=`, `?s=`, `?n=`) replace.
+  const [kP, setKP] = useUrlState('k', stringParam(), true)
+  const [oP, setOP] = useUrlState('o', stringParam(), true)
+  // `?by=<assigner>` — the /assignments heatmap cell lens: with a user owner
+  // lens, fold only the claims that assigner made. Only meaningful alongside a
+  // person in `?o=`.
+  const [byP] = useUrlState('by', stringParam())
+  // `?s=` — the secondary "shade by" axis, a perturbation within each cell's
+  // primary color (`ShadeMode`). Absent = none: the primary axis unchanged.
+  const [sP, setSP] = useUrlState('s', shadeCodec)
+  const shade: ShadeMode = sP === 'class' ? 'class' : 'none'
   const ident = useIdentity()
   const myUser = useMyUser(ident?.email, markMode)
   // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
@@ -147,19 +195,27 @@ function AppContent() {
   // Owner axis. `me` resolves to the signed-in user's attribution id (a
   // shared `?o=me` link shows each reader their own files); an unmapped
   // email resolves to nothing, and the axis falls back to "all" with a note.
+  // `?o=!<key>,<key>` — the "owned by someone OTHER than these people" pool
+  // (the sweep console's "show me the conflicts under this band" link). The
+  // excluded users resolve to canonical ids for the server's row filter.
+  const notUsers: string[] =
+    markMode && oP?.startsWith('!') ? oP.slice(1).split(',').filter(Boolean).map(k => canonId(k)) : []
   const ownerUser: string | null =
-    !markMode || !oP || oP === 'owned' || oP === 'unowned' ? null
+    !markMode || !oP || oP === 'owned' || oP === 'unowned' || oP.startsWith('!') ? null
     : oP === 'me' ? myUser
     : canonId(oP)
   const ownerMode: OwnerMode =
-    !markMode || !oP ? 'all' : oP === 'owned' ? 'owned' : oP === 'unowned' ? 'unowned' : ownerUser ? 'user' : 'all'
+    !markMode || !oP ? 'all'
+    : notUsers.length ? 'others'
+    : oP === 'owned' ? 'owned' : oP === 'unowned' ? 'unowned' : ownerUser ? 'user' : 'all'
   const meUnmapped = markMode && oP === 'me' && !myUser
   const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
-  // The owner pools as a checklist: both = all (a picked person is dropped
-  // too — they were narrowing "owned"); one = that pool.
-  const pools: ('owned' | 'unowned')[] = ownerMode === 'all' ? ['owned', 'unowned'] : ownerMode === 'unowned' ? ['unowned'] : ['owned']
-  const setPools = (keep: ('owned' | 'unowned')[]) =>
-    setOP(keep.length !== 1 ? undefined : keep[0] === 'owned' && ownerUser ? oP : keep[0])
+  // Flip a picked person between their own bytes (`?o=<key>`) and everyone
+  // else's under the current view (`?o=!<key>`) — the ≠ toggle beside the picker.
+  const negateOwner = (on: boolean) => {
+    const key = ownerUser ? shortUserKey(ownerUser) : notUsers.length ? shortUserKey(notUsers[0]) : null
+    if (key) setOP(on ? `!${key}` : key)
+  }
   const viewUser = ownerUser
   // Every scope axis is applied server-side by /api/subtree (specs/
   // view-serving.md §2): a user (`lens=user:`), a pool (`o=`), the mark axis
@@ -167,9 +223,12 @@ function AppContent() {
   // receives exactly the current view and only draws it.
   const lensUser = viewUser
   const activeLens = lensUser ? `user:${lensUser}` : null
+  const assigner = markMode && byP ? canonId(byP) : null
   const scopeQs =
     (activeLens ? `&lens=${activeLens}` : '') +
+    (activeLens && assigner ? `&by=${encodeURIComponent(assigner)}` : '') +
     (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
+    (notUsers.length ? `&o=!${notUsers.map(encodeURIComponent).join(',')}` : '') +
     (fateSet ? `&k=${[...fateSet].map(f => f[0]).join('')}` : '') +
     (fq ? `&q=${encodeURIComponent(fq)}` : '')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
@@ -273,11 +332,53 @@ function AppContent() {
       },
     })),
   })
-  const baseTree: TreeNode | null = subtreeQs[0]?.data?.tree ?? null
+  // Progressive fill: a companion `depth=1` fetch per path — the same pixel
+  // budget, capped one level below the root, so it returns the *identical*
+  // top-level children (branches arrive without `c`, already drillable) from
+  // a single depth-band read. It stands in until the full tree lands; because
+  // the top level matches, the fill-in adds children under tiles that don't
+  // move. `keepPreviousData` above outranks it on later loads, so a scope
+  // change never downgrades a held full tree to a coarse one.
+  const coarseQs = useQueries({
+    queries: subtreePaths.map((p, i) => ({
+      queryKey: ['subtree', asof, p, canW, scopeQs, 'depth1'],
+      // Deepest path only — see `dataFor`; ancestors never use it.
+      enabled: !!asof && i === subtreePaths.length - 1,
+      staleTime: fateSet ? 30_000 : Infinity,
+      retry: false,
+      queryFn: async () => {
+        const r = await fetch(
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}&depth=1${scopeQs}`,
+          { credentials: 'include' },
+        )
+        if (!r.ok) throw new Error(`${r.status}`)
+        return r.json() as Promise<{ tree: TreeNode }>
+      },
+    })),
+  })
+  /** The full tree for path i once it's here; for the DEEPEST path only, the
+   * depth-1 one while it isn't. An ancestor must be full or absent: `mapPath`
+   * walks the spine by segment and truncates at the first node without
+   * children, so a depth-1 ancestor would collapse the drill to itself and
+   * the controlled path would thrash until the full spine landed. The
+   * deepest node's children are the visible map — the walk never descends
+   * through them, and that's the level whose speed matters. */
+  // Full > depth-1 (deepest only). Never a *held* previous tree here: a graft
+  // must receive a node's own subtree. Holding, say, the previous sibling's
+  // tree under a new name puts this node's totals over that node's children,
+  // and children that don't sum to their parent send the core's fold
+  // arithmetic (`(other)` = parent − Σ kids) negative — its layout then never
+  // converges until a consistent tree lands. The previous *rendered* tree is
+  // held whole instead, below (`mapTree`).
+  const dataFor = (i: number): TreeNode | null =>
+    subtreeQs[i]?.data?.tree ?? (i === subtreePaths.length - 1 ? coarseQs[i]?.data?.tree ?? null : null)
+  const baseTree: TreeNode | null = dataFor(0)
   const rootErr = subtreeQs[0]?.error as Error | undefined
   // useQueries returns a fresh array each render; stamp the data so the graft
   // memo re-runs exactly when a response lands.
-  const subStamp = subtreeQs.map(q => q.dataUpdatedAt).join(',')
+  // Both tiers stamp the graft: a depth-1 tree landing must re-run it just
+  // as a full one does.
+  const subStamp = [...subtreeQs, ...coarseQs].map(q => q.dataUpdatedAt).join(',')
   const tree = useMemo((): TreeNode | null => {
     if (!baseTree) return null
     const graftAt = (t: TreeNode, segs: string[], sub: TreeNode): TreeNode => {
@@ -300,7 +401,7 @@ function AppContent() {
     }
     let t = baseTree
     subtreePaths.forEach((p, i) => {
-      const sub = subtreeQs[i]?.data?.tree
+      const sub = dataFor(i)
       if (p && sub) t = graftAt(t, p.split('/'), sub)
     })
     return t
@@ -415,7 +516,7 @@ function AppContent() {
   // all-undecided view; on a one-owner view the interesting axis is who else
   // is in there).
   const lensDefaultMode: ColorMode =
-    fateSet?.size === 1 || ownerMode === 'user' ? 'user' : markMode ? 'fate' : 'user'
+    fateSet?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : markMode ? 'fate' : 'user'
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
   // The scan carries attribution (the owner axis and user coloring apply) —
@@ -443,7 +544,14 @@ function AppContent() {
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
   const lensScoped = fateSet != null || ownerMode !== 'all'
-  const mapTree = tree
+  // Hold the last tree that rendered while the next one loads — whole, so it
+  // is self-consistent (it already laid out fine). The map never flashes to
+  // nothing across a scope, scan, or drill change, and the page below never
+  // reflows; at worst `mapPath` truncates the new drill to an ancestor this
+  // tree still has, until the new tree (depth-1 first, then full) replaces it.
+  const lastTree = useRef<TreeNode | null>(null)
+  if (tree) lastTree.current = tree
+  const mapTree = tree ?? lastTree.current
   // Diff sides: the drilled subtree at each endpoint, scoped like the map.
   // The diff is read server-side (`/api/diff`): both scans' index tiers at
   // one shared byte floor, point lookups for names that crossed it, the
@@ -469,7 +577,9 @@ function AppContent() {
   // where, then whose, then which mark states, then which names.
   const scopeParts: string[] = [
     drillPath || 'all buckets',
-    ...(ownerUser ? [`${shortName(ownerUser)}’s files`] : ownerMode !== 'all' ? [ownerMode] : []),
+    ...(ownerUser ? [`${shortName(ownerUser)}’s files${assigner ? `, assigned by ${shortName(assigner)}` : ''}`]
+      : ownerMode === 'others' && notUsers[0] ? [`not ${shortName(notUsers[0])}`]
+      : ownerMode !== 'all' ? [ownerMode] : []),
     ...(fateSet ? [[...fateSet].join(' / ')] : []),
     ...(fq ? [`“${fq}”`] : []),
   ]
@@ -534,7 +644,9 @@ function AppContent() {
     'highlight:clear': {
       label: 'Clear the owner axis (everyone)',
       group: 'Scope',
-      defaultBindings: ['x'],
+      // `x` belongs to row selection (toggle the cursor row) in every table;
+      // the owner axis has its own × button beside the picker.
+      defaultBindings: ['alt+x'],
       handler: clearHl,
     },
     'owner:me': { label: 'Owner: my files', group: 'Scope', handler: () => setOP('me') },
@@ -661,15 +773,46 @@ function AppContent() {
       )}
     </div>
   )
+  // One owner control (was two: an owned/unowned checklist + a person picker).
+  // A single select — anyone / owned / unowned / a person — plus a `≠` toggle
+  // that flips a picked person between their bytes and everyone-else's (the
+  // negated `?o=!key` pool). `me` and any person the view already scopes to
+  // stay selectable even if they haven't marked anything.
+  const negated = ownerMode === 'others'
+  const selPerson = ownerMode === 'user' ? (oP === 'me' ? 'me' : ownerUser)
+    : negated ? (myUser && notUsers[0] === myUser ? 'me' : notUsers[0])
+    : null
+  const ownerSelVal = ownerMode === 'owned' ? 'owned' : ownerMode === 'unowned' ? 'unowned' : selPerson ?? ''
+  const pickOwner = (v: string) =>
+    v === '' ? setOP(undefined)
+    : v === 'owned' || v === 'unowned' ? setOP(v)
+    : v === 'me' ? setOP(negated ? (myUser ? `!${shortUserKey(myUser)}` : undefined) : 'me')
+    : setOP(negated ? `!${shortUserKey(canonId(v))}` : shortUserKey(canonId(v)))
   const ownerSelect = (
-    <select className="tb-select" value={ownerMode === 'user' ? (oP === 'me' ? 'me' : ownerUser!) : ''}
-      aria-label="Owner" disabled={ownerMode === 'unowned'}
-      onChange={e => setOwnerUser(e.target.value || undefined)}>
-      <option value="">anyone</option>
-      {myUser && <option value="me">me ({shortName(myUser)})</option>}
-      {mkUsers.filter(u => u !== myUser).map(u => <option key={u} value={u}>{shortName(u)}</option>)}
-      {ownerUser && !mkUsers.includes(ownerUser) && ownerUser !== myUser && <option value={ownerUser}>{shortName(ownerUser)}</option>}
-    </select>
+    <>
+      <select className="tb-select" value={ownerSelVal} aria-label="Owner"
+        onChange={e => pickOwner(e.target.value)}>
+        <option value="">anyone</option>
+        <option value="owned">owned</option>
+        <option value="unowned">unowned</option>
+        {myUser && <option value="me">me ({shortName(myUser)})</option>}
+        {mkUsers.filter(u => u !== myUser).map(u => <option key={u} value={u}>{shortName(u)}</option>)}
+        {ownerUser && !mkUsers.includes(ownerUser) && ownerUser !== myUser && <option value={ownerUser}>{shortName(ownerUser)}</option>}
+        {negated && notUsers[0] && notUsers[0] !== myUser && !mkUsers.includes(notUsers[0]) && <option value={notUsers[0]}>{shortName(notUsers[0])}</option>}
+      </select>
+      {selPerson && (
+        <Tooltip content={negated
+          ? <>Showing everyone <b>except</b> this person. Click for just theirs.</>
+          : <>Invert: show everyone <b>else's</b> data under this view instead of this person's.</>}>
+          <button type="button" className={`mini neg${negated ? ' on' : ''}`} aria-pressed={negated} onClick={() => negateOwner(!negated)}>not</button>
+        </Tooltip>
+      )}
+      {ownerSelVal !== '' && (
+        <Tooltip content="Clear the owner filter (back to anyone)">
+          <button type="button" className="mini clear" aria-label="clear owner filter" onClick={() => setOP(undefined)}>×</button>
+        </Tooltip>
+      )}
+    </>
   )
   const menu: MenuEntry[] = markMode ? [{ key: 'typed', label: 'Mark a typed prefix…', onClick: () => setTypedOpen(true) }] : []
   // The bar's first row: where the page is. The map's own crumb strip is
@@ -685,11 +828,6 @@ function AppContent() {
           <button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))} title={segs.slice(0, i + 1).join('/')}>{sg}</button>
         </span>
       ))}
-      {here && (
-        <span className="tb-suffix">
-          — {fmtBytes(here.b)} · {fmtN(here.o)} objects{pricing && <> · est. {fmtUsd(here.b * pricing.blended)}/mo</>}
-        </span>
-      )}
     </span>
   )
 
@@ -711,7 +849,7 @@ function AppContent() {
             </Tooltip>
           </span>
         )}
-        {hasAttr && (
+        {hasAttr && (<>
           <label className="tb-ctl">
             <span className="lbl">color</span>
             <Tooltip content={
@@ -728,7 +866,18 @@ function AppContent() {
               </select>
             </Tooltip>
           </label>
-        )}
+          {/* Secondary color axis: a shade *within* each cell's primary color.
+              Opt-in (default none), so the primary axis reads as it always has. */}
+          <label className="tb-ctl">
+            <span className="lbl">shade</span>
+            <Tooltip content={<>A perturbation <i>within</i> each cell's color, on top of the primary axis. <b>storage class</b>: darker = a larger share of cold classes (Nearline / Coldline / Archive), so within one owner's band you can see what's already cold. Off by default.</>}>
+              <select className="tb-select" value={shade} aria-label="Shade cells by" onChange={e => setSP(e.target.value === 'none' ? undefined : e.target.value)}>
+                <option value="none">none</option>
+                <option value="class">storage class</option>
+              </select>
+            </Tooltip>
+          </label>
+        </>)}
         {markMode && (
           <span className="tb-axis">
             <span className="lbl">marks</span>
@@ -743,15 +892,6 @@ function AppContent() {
         {markMode && hasAttr && (
           <span className="tb-axis">
             <span className="lbl">owner</span>
-            <MultiSelect<'owned' | 'unowned'>
-              label="owner pools"
-              options={[
-                { key: 'owned', label: 'owned', glyph: '●', color: 'var(--s1)', tip: 'Bytes some person owns — inferred from paths, W&B runs and sidecars, or assigned. Pick someone beside this to narrow it to them.' },
-                { key: 'unowned', label: 'unowned', glyph: '○', color: 'var(--ink-2)', tip: "Bytes no person owns. Assign what's yours (table below, or a pinned cell), then decide keep/sweep." },
-              ]}
-              selected={pools}
-              onChange={setPools}
-            />
             {ownerSelect}
           </span>
         )}
@@ -806,11 +946,19 @@ function AppContent() {
           {/* Remount per store: the treemap's caches are tied to the tree it
               mounted with, and a switch can swap `tree` without ever passing
               through null once both payloads are cached. */}
-          <div id="tree-map" className={mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length ? 'leaf' : undefined}><Treemap
+          {/* `leaf` folds the canvas away (height 0): a genuine single object,
+              or a directory its own subtree fetch confirmed has nothing
+              drawable (objects only, or dirs under the floor) — the note below
+              says which. Never before that fetch answers: a childless dir may
+              be a branch whose kids fell below the parent's pixel budget, and
+              a zero-height canvas sends the core's squarify into a
+              non-terminating loop on degenerate aspect ratios once they land. */}
+          <div id="tree-map" className={mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && (mapPath[mapPath.length - 1].o <= 1 || subtreeQs[subtreeQs.length - 1]?.data) ? 'leaf' : undefined}><Treemap
             key={store.key}
             ownerLensed={ownerMode === 'user'}
             root={mapTree}
             mode={effMode}
+            shade={shade}
             userIdx={userIdx}
             dateRange={dateRange}
             readRange={readRange}
@@ -871,19 +1019,25 @@ function AppContent() {
               segs={mapPath.slice(1).map(n => n.n)}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
+              klcIdx={markMode ? klcIdx : undefined}
               fates={markMode ? fateSet : null}
+              userIdx={userIdx}
+              onPickUser={u => pickUser(u, false)}
               onOpen={openPath}
             /></div>
           )}
         </>
-      ) : (
+      ) : rootErr ? (
         <p className="loading">
-          {rootErr
-            ? rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
+          {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
             : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in, or narrow the scope'
-            : `view failed: ${rootErr.message}`
-            : 'loading tree…'}
+            : `view failed: ${rootErr.message}`}
         </p>
+      ) : (
+        // First paint only — before even the depth-1 tree has landed (later
+        // loads hold the previous tree instead): reserve the map's slot at its
+        // fetch aspect (w : 0.6w), so nothing below it jumps when it arrives.
+        <div id="tree-map" className="tm-skel" aria-busy="true" aria-label="loading tree" />
       )}
 
       {markMode && (

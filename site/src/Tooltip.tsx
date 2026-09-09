@@ -3,6 +3,7 @@ import {
   autoUpdate,
   flip,
   offset,
+  safePolygon,
   shift,
   useDismiss,
   useFloating,
@@ -13,38 +14,51 @@ import {
 } from '@floating-ui/react'
 import { useState } from 'react'
 import type { Placement } from '@floating-ui/react'
-import { CLASS_NAMES, CLASS_PRICE_US, fmtUsd } from './types'
+import { CLASS_COLORS, CLASS_NAMES, CLASS_PRICE_US, fmtUsd } from './types'
 import { useUnits } from './units'
 
 /** Generic hover/focus tooltip (@floating-ui/react); replaces native title=. */
-export function Tooltip({ content, children, placement = 'top' }: {
+export function Tooltip({ content, children, placement = 'top', pinnable }: {
   content: React.ReactNode
   children: React.ReactNode
   placement?: Placement
+  /** Click the reference to PIN the tip open (interact with it; Esc or a
+   * click elsewhere releases). Click again to release. */
+  pinnable?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [hoverOpen, setHoverOpen] = useState(false)
+  const [pinned, setPinned] = useState(false)
+  const open = hoverOpen || pinned
   const { refs, floatingStyles, context } = useFloating({
     open,
-    onOpenChange: setOpen,
+    onOpenChange: (o, _e, reason) => {
+      // A dismiss (outside press / Esc) releases a pin; hover changes never do.
+      if (!o && pinned && (reason === 'outside-press' || reason === 'escape-key')) setPinned(false)
+      setHoverOpen(o)
+    },
     placement,
     middleware: [offset(6), flip(), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
   })
+  // `safePolygon`: the tip stays while the pointer travels into it, so its
+  // contents (copy buttons, names) are reachable.
   const { getReferenceProps, getFloatingProps } = useInteractions([
-    useHover(context, { move: false, delay: { open: 80 } }),
+    useHover(context, { move: false, delay: { open: 80 }, handleClose: safePolygon() }),
     useFocus(context),
-    useDismiss(context),
+    useDismiss(context, { outsidePress: true }),
     useRole(context, { role: 'tooltip' }),
   ])
+  const refProps = getReferenceProps(pinnable ? { onClick: () => setPinned(p => !p) } : {})
   return (
     <>
-      <span className="tt-ref" ref={refs.setReference} tabIndex={0} {...getReferenceProps()}>
+      <span className={`tt-ref${pinnable ? ' pinnable' : ''}${pinned ? ' pinned' : ''}`} ref={refs.setReference} tabIndex={0} {...refProps}>
         {children}
       </span>
       {open && (
         <FloatingPortal>
-          <div className="tooltip-content" ref={refs.setFloating} style={floatingStyles} {...getFloatingProps()}>
+          <div className={`tooltip-content${pinned ? ' pinned' : ''}`} ref={refs.setFloating} style={floatingStyles} {...getFloatingProps()}>
             {content}
+            {pinnable && <div className="pin-hint">{pinned ? 'pinned · Esc or click away to close' : 'click to pin'}</div>}
           </div>
         </FloatingPortal>
       )}
@@ -65,7 +79,7 @@ export function ClassMixTip({ mix, note }: { mix: Record<string, number>; note?:
         <tbody>
           {rows.map(([c, b]) => (
             <tr key={c}>
-              <td>{CLASS_NAMES[c] ?? c}</td>
+              <td><i className="sw" style={{ background: CLASS_COLORS[c] ?? 'var(--other)' }} />{CLASS_NAMES[c] ?? c}</td>
               <td className="num">{fmtBytes(b)}</td>
               <td className="num">${CLASS_PRICE_US[c] ?? 0.02}/GiB</td>
               <td className="num">{fmtUsd((b / 1024 ** 3) * (CLASS_PRICE_US[c] ?? 0.02))}/mo</td>

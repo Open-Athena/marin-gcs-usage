@@ -58,6 +58,9 @@ interface DiffNode {
   size_old: number
   size_new: number
   n_desc_delta: number
+  /** Object counts on each side (net only — the diff rows don't carry per-node adds/removes). */
+  n_old: number
+  n_new: number
   lookup?: 1 | 2
   children?: DiffNode[]
 }
@@ -85,7 +88,7 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
       // Expanded-but-net-zero dir whose children were emitted without it.
       parent = {
         key: parentPath, label: parentPath.split('/').pop()!, weight: 0, delta: 0, added: 0, removed: 0,
-        status: 'unchanged', size_old: 0, size_new: 0, n_desc_delta: 0, children: [],
+        status: 'unchanged', size_old: 0, size_new: 0, n_desc_delta: 0, n_old: 0, n_new: 0, children: [],
       }
       attach(parent, parentPath)
     }
@@ -105,6 +108,8 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
       size_old: r.a,
       size_new: r.b,
       n_desc_delta: r.ob - r.oa,
+      n_old: r.oa,
+      n_new: r.ob,
       lookup: r.l,
     }, r.p)
   }
@@ -126,7 +131,7 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
     if (areaMode === 'max' && gap > max(1_000_000, node.weight * 0.002)) {
       node.children.push({
         key: `${node.key}/__unchanged__`, label: '(unchanged)', weight: gap, delta: 0, added: 0, removed: 0,
-        status: 'filler', size_old: gap, size_new: gap, n_desc_delta: 0,
+        status: 'filler', size_old: gap, size_new: gap, n_desc_delta: 0, n_old: 0, n_new: 0,
       })
     }
     node.children.sort((a, b) => (b.delta - a.delta) || (b.weight - a.weight))
@@ -168,6 +173,8 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
       size_old: data.total_a,
       size_new: data.total_b,
       n_desc_delta: data.objects_b - data.objects_a,
+      n_old: data.objects_a,
+      n_new: data.objects_b,
       children: cells,
     }
   }, [data, areaMode, label])
@@ -255,9 +262,10 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
               {' '}= {fmtBytes(n.size_new)}{' '}
               <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
             </div>
-            {n.n_desc_delta !== 0 && (
-              <div style={{ opacity: 0.6, fontSize: '0.8em' }}>
-                Δobjects: {n.n_desc_delta > 0 ? '+' : ''}{n.n_desc_delta.toLocaleString('en-US')}
+            {n.status !== 'filler' && (
+              <div style={{ opacity: 0.75, fontSize: '0.85em', fontVariantNumeric: 'tabular-nums' }}>
+                {n.n_old.toLocaleString('en-US')} → {n.n_new.toLocaleString('en-US')} objects{' '}
+                <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({n.n_desc_delta > 0 ? '+' : ''}{n.n_desc_delta.toLocaleString('en-US')})</span>
               </div>
             )}
             <div style={{ opacity: 0.5, fontSize: '0.75em', marginTop: 2 }}>

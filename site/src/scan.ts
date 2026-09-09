@@ -154,7 +154,7 @@ export interface Scan {
 // page-independent dimension. `scans` is newest-first, so the first prefix match
 // is the newest. See specs/scan-param-all-pages.md.
 export function useScan(store: Store): Scan {
-  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel })
+  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel }, true)
   const scansQ = useQuery<string[]>({
     // The scan list polls so an unpinned tab discovers new scans on its own; the
     // per-scan payloads are immutable once published, so they never refetch.

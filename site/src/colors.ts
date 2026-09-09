@@ -28,6 +28,14 @@ export const epochDaysToMonth = (d: number): string => {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`
 }
 
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** Compact month for tight table cells: `May ’26` (no wrap, unambiguous year). */
+export const epochDaysToMonthShort = (d: number): string => {
+  const dt = new Date(d * 86400_000)
+  const y = dt.getUTCFullYear()
+  return y === new Date().getUTCFullYear() ? MON[dt.getUTCMonth()] : `${MON[dt.getUTCMonth()]} ’${String(y).slice(2)}`
+}
+
 /** Day-precision variant (`8/21`, year-qualified when not the current year) —
  * read-recency spans days, not the months the created-age lens works in. */
 export const epochDaysToDate = (d: number, now = new Date()): string => {
@@ -57,8 +65,8 @@ export const SLOT_HSL: [number, number, number][] = [
 // sit: the warm slots (red 2°, orange 18°, amber 41°) are only ~20° apart, so a
 // much wider fan makes a big `iris` child indistinguishable from a `marin/grug`
 // one. 46 buys clear intra-category structure without that collision.
-const HUE_SPREAD = 46
-const LIGHT_SPREAD = 20 // ...plus a lightness ramp, so near-identical hues still separate
+const HUE_SPREAD = 22
+const LIGHT_SPREAD = 14 // ...plus a lightness ramp, so near-identical hues still separate
 // Rank at which the fan reaches its far end. Spreading over *all* n children
 // makes the step 60/n degrees, so in a category with 30 children the handful
 // that actually own the pixels (ranks 0-5) come out nearly identical. Saturate
@@ -74,8 +82,18 @@ const FAN_RANKS = 6
  * bucket). Fanning the second level across a hue *range* keeps the category
  * legible at a glance while making its internal structure visible.
  */
+// Past the curated eight, hues step by the golden angle from the last curated
+// one: consecutive ranks land ~137° apart, so neighbours in rank (and, with
+// squarify's rank-ordered layout, usually on the map) stay high-contrast for
+// any number of children — no "other" grey for the ninth-largest directory.
+const GOLDEN = 137.508
+export function slotHsl(slot: number): [number, number, number] {
+  if (slot < SLOT_HSL.length) return SLOT_HSL[slot]
+  const k = slot - SLOT_HSL.length + 1
+  return [(SLOT_HSL[SLOT_HSL.length - 1][0] + k * GOLDEN) % 360, 68, 50]
+}
 export function slotColor(slot: number, i = 0, n = 1): string {
-  const [h, s, l] = SLOT_HSL[slot % SLOT_HSL.length]
+  const [h, s, l] = slotHsl(slot)
   const t = n > 1 ? Math.min(i / Math.min(n - 1, FAN_RANKS), 1) - 0.5 : 0
   return `hsl(${(h + t * HUE_SPREAD + 360) % 360} ${s}% ${l + t * LIGHT_SPREAD}%)`
 }

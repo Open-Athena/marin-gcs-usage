@@ -23,7 +23,7 @@
   :root:where(:not([data-theme='light'])) {
     color-scheme: dark;
     --surface: #1a1a19; --panel: #232322; --line: #33332f;
-    --ink: #fff; --ink-2: #c3c2b7; --ink-3: #807e74;
+    --ink: #fff; --ink-2: #c3c2b7; --ink-3: #aaa89c;
     --cell-ink: #1a1a19;
     --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500;
     --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
@@ -37,7 +37,7 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
   --surface: #1a1a19; --panel: #232322; --line: #33332f;
-  --ink: #fff; --ink-2: #c3c2b7; --ink-3: #807e74;
+  --ink: #fff; --ink-2: #c3c2b7; --ink-3: #aaa89c;
   --cell-ink: #1a1a19;
   --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500;
   --s5: #199e70; --s6: #d95926; --s7: #9085e9; --s8: #e66767;
@@ -93,10 +93,11 @@ header .hrow {
   // Row 1: ☰ · brand · where the page is (crumbs) · avatar. Row 2 (home
   // page): the controls, indented under the brand.
   .tb-row { display: flex; align-items: center; gap: 4px 10px; min-width: 0; }
-  .tb-row2 { padding-left: 40px; }
-  .tb-crumbs { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+  .tb-row2 { padding-left: 0; }
+  .tb-crumbs { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; overflow-x: auto; scrollbar-width: none; &::-webkit-scrollbar { display: none; } }
   .tb-menu-btn {
     flex: none;
+    margin-left: calc(-1 * var(--pad-x, 24px) + 4px);
     display: inline-flex; align-items: center; justify-content: center;
     width: 30px; height: 30px;
     background: transparent; color: var(--ink-2);
@@ -134,7 +135,7 @@ header .hrow {
   // Drill-path crumbs: the deepest segment is inked; ancestors drill up.
   .tb-path {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px;
+    font-size: 13.5px;
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -142,11 +143,12 @@ header .hrow {
     gap: 0;
     .tb-suffix { color: var(--ink-3); margin-left: 8px; font-family: inherit; }
     button {
-      background: none; border: none; padding: 0 1px; font: inherit; color: var(--s1); cursor: pointer;
-      &:hover { text-decoration: underline; }
-      &.here { color: var(--ink); font-weight: 650; cursor: default; &:hover { text-decoration: none; } }
+      background: none; border: none; padding: 0 1px; font: inherit; color: var(--ink); cursor: pointer;
+      text-decoration: underline; text-decoration-color: var(--ink-3); text-underline-offset: 3px;
+      &:hover { text-decoration-color: var(--ink); }
+      &.here { font-weight: 700; text-decoration: none; cursor: default; }
     }
-    .sep { color: var(--ink-3); }
+    .sep { color: var(--ink-3); padding: 0 2px; }
   }
   .filterbox { margin-left: 0; }
   // The axis checklists' trigger: states the selection like a select would.
@@ -185,6 +187,16 @@ header .hrow {
 // legend / tiling chip / ⛶ keep the map's own bar. Fullscreen has no page
 // bar, so the strip comes back there.
 .treemap .dt-treemap-bar { justify-content: flex-end; }
+// The drill root itself is marked: one frame around the map area in that
+// fate's color (per-tile borders only mark fate *boundaries*, so a uniformly
+// marked view has none — this frame is what says "all of this is swept").
+.treemap.root-marked .dt-treemap-map::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 5;
+  border: 3px solid var(--mk-frame); border-radius: 4px;
+}
+.treemap.root-marked-keep { --mk-frame: var(--mk-keep); }
+.treemap.root-marked-keep_last_ckpt { --mk-frame: var(--mk-klc); }
+.treemap.root-marked-sweep { --mk-frame: var(--mk-del); }
 .treemap .dt-treemap-crumbs { display: none !important; }
 .dt-treemap:fullscreen .dt-treemap-crumbs { display: flex !important; }
 // The bar's pickers — also the Diff header's two scan endpoints.
@@ -194,6 +206,16 @@ header .hrow {
   font: inherit; font-size: 12.5px; font-weight: 600; padding: 2px 4px; cursor: pointer;
   max-width: 16ch;
   &.scan { font-variant-numeric: tabular-nums; }
+}
+// The `≠` owner-negate toggle beside the owner select: off = outline, on
+// (showing everyone-but-this-person) = filled accent.
+button.mini.clear { margin-left: 2px; padding: 0 5px; }
+button.mini.neg {
+  font: inherit; font-size: 13px; font-weight: 700; line-height: 1; cursor: pointer;
+  padding: 2px 6px; border-radius: 6px; background: var(--panel); color: var(--ink-2);
+  border: 1px solid var(--line);
+  &:hover { border-color: var(--ink-2); color: var(--ink); }
+  &.on { background: var(--accent, #58a6ff); border-color: var(--accent, #58a6ff); color: #fff; }
 }
 #diff .sub .arrow { color: var(--ink-3); }
 // Bar menus (floating): the ☰ page list and the avatar's session menu.
@@ -425,14 +447,42 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   // Basis wide enough that a long path pushes the legend onto its own
   // full-width row rather than squeezing it into a one-item-wide column.
   .dt-treemap-legend { flex: 1 1 360px; min-width: 0; }
+  .keys { display: inline-flex; gap: 10px; align-items: center; }
+  // The mark-outline key: hollow swatches (the marks are frames, not fills).
+  .li.more { color: var(--ink-3); cursor: help; }
+  .li.outl {
+    gap: 8px;
+    .olbl { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+    .oli { display: inline-flex; align-items: center; gap: 4px; }
+    .sw { background: transparent; border: 2px solid; box-sizing: border-box; }
+  }
+  .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; max-width: 100%; min-width: 0; }
+  .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
   .legend {
     display: flex;
-    gap: 6px 10px;
+    gap: 6px 14px;
     flex-wrap: wrap;
     align-items: center;
-    .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
-    .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+    .keys { flex: 0 0 auto; margin-left: auto; }
+    .copyable { cursor: pointer; }
+    // Middle elision: the head gives way, the tail (hash / step number) stays.
+    .nm { display: inline-flex; min-width: 0; max-width: 100%; }
+    .head { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .tail { flex: none; white-space: nowrap; }
+    // A run of names sharing a long prefix: the prefix once, muted, then the
+    // distinguishing parts with their swatches, tied together by a rule.
+    .li-group {
+      display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+      max-width: 100%; padding: 2px 8px 2px 7px; border-radius: 5px;
+      border: 1px solid color-mix(in oklab, var(--ink-3) 45%, var(--line));
+      .pfx { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--ink-2); cursor: help; }
+    }
   }
+  .hint .stats { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .hint .info { margin-left: 8px; color: var(--ink-3); cursor: help; font-size: 13px; &:hover { color: var(--ink); } }
+  // Gaps tiling: the gutters are the page ground, not the parent's fill —
+  // a 2px gap in the parent's own blue is invisible.
+  &.tiling-gaps .dt-treemap-inner { background: var(--bg, var(--surface)); border-radius: 3px; }
   .dt-treemap-fs {
     background: var(--panel) !important;
     border: 1px solid var(--line) !important;
@@ -450,6 +500,30 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     margin-right: 2px;
     border-right: 1px solid var(--line);
     &.pending { color: var(--ink-3); font-style: italic; }
+  }
+  // The drilled directory's own status / mark / owner: boxed and headed by
+  // its name, so it can't be read as more legend (it sat bare under the LIs).
+  .dt-treemap-fs { display: none !important; }
+  .fs-btn {
+    font: inherit; font-size: 15px; line-height: 20px; padding: 0 4px; border-radius: 4px; cursor: pointer;
+    background: transparent; border: none; color: var(--ink-3);
+    &:hover { color: var(--ink); background: var(--line); }
+  }
+  .root-marks {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    width: 100%;
+    padding: 6px 10px;
+    .keys { margin-left: auto; align-self: flex-start; }
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    .rm-head {
+      flex: none;
+      padding-top: 1px;
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--ink); }
+    }
   }
   .dt-treemap-rollup {
     display: flex;
@@ -685,12 +759,31 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 
 .tt-ref { display: inline; }
+// The treemap's slot before any tree has landed: full width at the fetch's
+// aspect (w : 0.6w), pulsing quietly — so the page below doesn't reflow
+// when the map arrives. First paint only; later loads hold the previous tree.
+.tm-skel {
+  width: 100%; aspect-ratio: 1 / 0.6; border-radius: 6px;
+  background: var(--panel); animation: tm-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tm-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.9; } }
+// The full value behind a clipped table cell (/files parquet viewer, via
+// file-tree's `elide.tooltip`): a long GCS path, wrapped so it fits the panel.
+.tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
+.tooltip-content.pinned { border-color: var(--ink-3); }
+.tt-ref.pinnable { cursor: pointer; }
+.tooltip-content .copy-hint { display: block; color: var(--ink-3); font-size: 11px; margin-top: 3px; }
+.tooltip-content code.elide-full {
+  display: block; max-width: 60ch; font-size: 12px; line-height: 1.35;
+  white-space: normal; overflow-wrap: anywhere; word-break: break-all;
+}
 
 .tooltip-content {
   z-index: 10000;
   background: var(--panel);
   color: var(--ink);
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in oklab, var(--ink-3) 55%, var(--line));
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
   border-radius: 6px;
   padding: 7px 10px;
   font-size: 12px;
@@ -766,7 +859,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.18) !important;
   .path {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    .dirname { color: var(--ink-3); word-break: break-all; font-size: 11.5px; }
+    .dirname { color: var(--ink-2); word-break: break-all; font-size: 11.5px; }
     .basename { display: block; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .path-acts {
       display: inline-flex; gap: 6px; margin-top: 4px;
@@ -799,8 +892,32 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
     .sw { width: 10px; height: 10px; border-radius: 3px; }
   }
-  .ctl { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
+  .ctl { margin-left: auto; display: inline-flex; gap: 8px 14px; align-items: center; flex-wrap: wrap; }
 }
+
+// Mark-provenance tooltip body (inherited-from + the marker's memo).
+.prov-tip { display: flex; flex-direction: column; gap: 4px; code { color: var(--ink); } .memo { font-style: italic; } }
+// Attribution as a distribution (OwnerBar): who holds the bytes, in the
+// color-by-owner palette; names + shares in the tooltip.
+.own-bar {
+  display: inline-flex; height: 9px; border-radius: 3px; overflow: hidden; vertical-align: middle;
+  background: var(--t-unattr); cursor: help;
+  i { display: block; height: 100%; }
+}
+.fate-tip { display: flex; flex-direction: column; gap: 5px; max-width: 360px; b { margin-right: 2px; } }
+.own-tip {
+  display: flex; flex-direction: column; gap: 3px; min-width: 220px;
+  .row { display: flex; align-items: center; gap: 5px; }
+  .row i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .row .n { margin-left: auto; color: var(--ink-2); font-variant-numeric: tabular-nums; padding-left: 10px; }
+  .row.pick { cursor: pointer; border-radius: 3px; margin: 0 -4px; padding: 0 4px; &:hover { background: var(--line); } }
+  .more { color: var(--s1); cursor: pointer; font-size: 11.5px; &:hover { text-decoration: underline; } }
+  .how { color: var(--ink-3); font-size: 11px; margin-top: 3px; }
+}
+// Placeholders: the default (50% of the text color) vanished on the dark ground.
+input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
+// Anything with a tooltip behind it: a dotted underline says "hover me".
+.has-tt { text-decoration: underline dotted color-mix(in oklab, var(--ink-2) 60%, transparent); text-underline-offset: 3px; cursor: help; }
 
 // Small radio strips (age chart granularity/axis, size-chart y-range).
 .gran {
@@ -1096,55 +1213,54 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   gap: 7px;
   width: 100%;
   font-size: 12.5px;
+  .lbl { color: var(--ink-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.03em; min-width: 52px; }
   .fate {
     display: inline-flex;
     gap: 6px;
     align-items: center;
     flex-wrap: wrap;
-    .chip {
-      width: 17px; height: 17px; border-radius: 4px; flex: none;
-      display: inline-flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
-    }
     .prov { color: var(--ink-2); display: inline-flex; align-items: center; gap: 4px; }
+    .memo-tag {
+      margin-left: 4px; padding: 0 4px; border-radius: 3px; font-size: 10px;
+      text-transform: uppercase; letter-spacing: 0.03em;
+      border: 1px solid var(--line); color: var(--ink-3);
+    }
     .under {
       color: var(--ink-2);
       border: 1px solid var(--line);
       border-radius: 4px;
       padding: 0 5px;
       font-size: 11.5px;
+      i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
     }
   }
-  // Set-decision buttons, colored by fate — active one filled, others outlined.
-  .buttons {
-    display: inline-flex;
-    gap: 5px;
-    align-items: center;
-    flex-wrap: wrap;
-    button.act {
-      background: transparent;
-      border: 1px solid var(--act, var(--line));
-      color: var(--act, var(--ink-2));
-      border-radius: 5px;
-      font-size: 12px;
-      padding: 2px 9px;
-      cursor: pointer;
-      &.keep { --act: var(--mk-keep); }
-      &.keep_last_ckpt { --act: var(--mk-klc); }
-      &.sweep { --act: var(--mk-del); }
-      &.clear { --act: var(--ink-2); }
-      &.on { background: var(--act); color: #fff; }
-      &.on.inh { background: color-mix(in oklab, var(--act) 42%, transparent); color: var(--ink); border-style: dashed; }
-      &:hover:not(.on) { background: color-mix(in oklab, var(--act) 16%, transparent); }
-    }
-    input.note {
-      padding: 2px 6px;
-      background: var(--surface);
-      color: inherit;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      font-size: 12px;
-    }
+  // The decision as one select, colored by the fate it currently holds
+  // (dashed border = inherited from an ancestor). Read-only viewers get the
+  // word in the same color.
+  select.fate-sel, .fate-word {
+    --act: var(--ink-2);
+    &.keep { --act: var(--mk-keep); }
+    &.keep_last_ckpt { --act: var(--mk-klc); }
+    &.sweep { --act: var(--mk-del-ink); }
+  }
+  select.fate-sel {
+    font: inherit; font-size: 12.5px; font-weight: 600;
+    color: var(--act); background: var(--surface);
+    border: 1px solid var(--act); border-radius: 5px; padding: 2px 6px;
+    cursor: pointer;
+    &.none { font-weight: 500; }
+    &.inh { border-style: dashed; }
+    &.dirty { box-shadow: 0 0 0 2px color-mix(in oklab, var(--act) 35%, transparent); }
+  }
+  button.save {
+    font: inherit; font-size: 12px; padding: 2px 9px; border-radius: 5px; cursor: pointer;
+    background: var(--s1); color: #fff; border: 1px solid var(--s1);
+    &:disabled { background: transparent; color: var(--ink-3); border-color: var(--line); cursor: default; }
+  }
+  .fate-word { color: var(--act); }
+  input.note {
+    padding: 2px 6px; background: var(--surface); color: inherit;
+    border: 1px solid var(--line); border-radius: 4px; font-size: 12px;
   }
   // Owner row — claim for yourself, or assign to anyone via the name picker.
   .owner {
@@ -1153,8 +1269,9 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     align-items: center;
     flex-wrap: wrap;
     font-size: 12px;
-    .lbl { color: var(--ink-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.03em; }
     .none { color: var(--ink-2); font-style: italic; }
+    button.quiet { color: var(--ink-3); border-color: transparent; }
+    .classes { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; .lbl { min-width: 0; } }
     input.assign {
       padding: 2px 6px;
       background: var(--surface);
@@ -1218,13 +1335,19 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   border-top: 1px solid var(--line);
 }
 
+// The children table is wider than a phone: it scrolls inside its own box
+// rather than widening the page (which dragged the whole header off-screen).
+#tbl { overflow-x: auto; }
 // The treemap children table (was also shared with the /mark worklists).
 .children-tbl {
   .worklist {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+    th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    // The path column is the one that wraps/ellipsizes; every other cell
+    // (size, share, created month, read, owner) stays on one line.
+    td.prefix, th:first-child { white-space: normal; }
     th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
     th.sortable {
       cursor: pointer;
@@ -1255,20 +1378,30 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
       &.unmarked { color: var(--ink-2); }
     }
     .never { color: var(--never-read); font-weight: 600; filter: brightness(1.4); }
+    .none { color: var(--ink-3); }
+    td.created {
+      white-space: nowrap;
+      .cm { display: inline-grid; grid-template-columns: 7px 3ch 3ch; gap: 0 5px; align-items: center; justify-items: end; }
+      i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+      .yr { color: var(--ink-3); font-size: 11px; }
+    }
+    td.owners, td.fate { white-space: nowrap; }
+    // One dot per decision: hollow = available, filled = this row's own mark.
     .actions {
       white-space: nowrap;
-      button {
-        background: var(--panel);
-        color: var(--ink-2);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        font-size: 11.5px;
-        padding: 1px 7px;
-        margin-right: 3px;
-        cursor: pointer;
-        &.on { background: var(--s1); border-color: var(--s1); color: #fff; }
-        &:hover:not(.on) { filter: brightness(1.08); }
+      display: grid; grid-template-columns: 14px 14px 14px auto; align-items: center; gap: 4px;
+      .dot-gap { width: 14px; height: 14px; }
+      .tail { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; }
+      button.dot {
+        width: 14px; height: 14px; padding: 0; border-radius: 50%; cursor: pointer;
+        background: transparent; border: 2px solid var(--act, var(--ink-3)); color: var(--act, var(--ink-3));
+        font-size: 11px; line-height: 1;
+        &.on { background: var(--act); }
+        &.inh { border-style: dashed; background: color-mix(in oklab, var(--act) 30%, transparent); }
+        &.clear { border-color: var(--line); color: var(--ink-3); &:hover { color: var(--ink); border-color: var(--ink-3); } }
+        &:hover:not(.on):not(.clear) { background: color-mix(in oklab, var(--act) 30%, transparent); }
       }
+
     }
   }
   .more {
@@ -1302,6 +1435,42 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 
 .children-tbl { margin-top: 10px; }
+// Row selection (rowSelection.ts) on the children table: the checkbox
+// column, the cursor / selected row tints, and the bulk bar above the table.
+.worklist.selectable {
+  tbody tr { cursor: default; }
+  tr.sel td { background: color-mix(in oklab, var(--s1) 14%, transparent); }
+  tr.cur td { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--s1) 55%, transparent); }
+  .col-sel { width: 22px; padding-right: 0 !important; input { vertical-align: middle; } }
+}
+.children-tbl .sel-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 6px 0; padding: 5px 10px; border-radius: 6px;
+  background: color-mix(in oklab, var(--s1) 12%, var(--panel)); border: 1px solid color-mix(in oklab, var(--s1) 35%, var(--line));
+  font-size: 12.5px; color: var(--ink-2);
+  b { color: var(--ink); }
+  .acts { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+  .lbl { color: var(--ink-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.03em; margin-right: 2px; }
+  button.dot {
+    width: 14px; height: 14px; padding: 0; border-radius: 50%; cursor: pointer;
+    background: transparent; border: 2px solid var(--act, var(--ink-3)); color: var(--ink-3); font-size: 11px; line-height: 1;
+    &:hover { background: color-mix(in oklab, var(--act, var(--ink-3)) 35%, transparent); }
+    &.clear { border-color: var(--line); &:hover { color: var(--ink); border-color: var(--ink-3); } }
+  }
+  button.quiet { font: inherit; font-size: 12px; background: transparent; color: var(--ink-3); border: 1px solid transparent; border-radius: 4px; padding: 1px 6px; cursor: pointer; &:hover { color: var(--ink); } }
+}
+.children-tbl .pager {
+  display: flex; align-items: center; gap: 4px; margin: 6px 0; font-size: 12px; color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  span { padding: 0 6px; }
+  select.psize { margin-left: 8px; font: inherit; font-size: 11.5px; background: var(--panel); color: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
+  button {
+    font: inherit; font-size: 13px; line-height: 1; padding: 2px 8px; border-radius: 4px; cursor: pointer;
+    background: var(--panel); color: var(--ink-2); border: 1px solid var(--line);
+    &:disabled { opacity: 0.35; cursor: default; }
+    &:hover:not(:disabled) { color: var(--ink); }
+  }
+}
 
 // "no reads since …" callout in treemap tooltips (dark tip bg → soft red tint)
 .dt-treemap-tip .never-read { color: #e0917f; }
@@ -1416,7 +1585,6 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .user-link { display: block; }
     .user-chip { display: flex; width: 100%; padding: 6px 4px; gap: 8px; }
   }
-  .has-tt { text-decoration: underline dotted color-mix(in oklab, var(--ink-2) 60%, transparent); text-underline-offset: 3px; cursor: help; }
   .class-tt {
     border-collapse: collapse;
     td { padding: 1px 6px 1px 0; &:last-child { padding-right: 0; } }
@@ -1548,12 +1716,36 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 
 // `gaps` treemap-tiling chip — sits in the crumbs bar beside ⛶, so it stays
 // quiet: small, muted, only a touch inked when on.
-.tiling-toggle {
-  font: inherit; font-size: 11px; margin-left: 8px; opacity: 0.7;
-  background: transparent; color: var(--ink-3); border: 1px solid var(--line);
-  border-radius: 4px; padding: 0 6px; line-height: 16px; cursor: pointer;
-  &:hover { opacity: 1; }
-  &.on { background: var(--line); color: var(--ink); opacity: 1; }
+// ⚙ map-display prefs (prefs.tsx): a native <details> whose menu floats
+// below-right of the gear, so opening it shifts nothing in the key line.
+.map-settings {
+  position: relative;
+  summary {
+    list-style: none; cursor: pointer; color: var(--ink-3); font-size: 19px; line-height: 20px;
+    padding: 0 3px; border-radius: 4px; user-select: none;
+    &::-webkit-details-marker { display: none; }
+    &:hover { color: var(--ink); background: var(--line); }
+  }
+  &[open] summary { color: var(--ink); }
+  .menu {
+    position: absolute; right: 0; top: 22px; z-index: 30;
+    display: flex; flex-direction: column; gap: 8px;
+    min-width: 190px; padding: 8px 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    font-size: 12px; color: var(--ink-2); white-space: nowrap;
+  }
+  .row { display: flex; align-items: center; gap: 8px; cursor: default; }
+  label.row { cursor: pointer; }
+  .seg {
+    margin-left: auto; display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
+    button {
+      font: inherit; font-size: 11px; padding: 1px 7px; cursor: pointer;
+      background: transparent; color: var(--ink-3); border: none;
+      &.on { background: var(--line); color: var(--ink); }
+      & + button { border-left: 1px solid var(--line); }
+    }
+  }
 }
 
 // /sweep console (specs/sweep-executor.md § Phase 2)
@@ -1597,16 +1789,40 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     th.col-sel, td.col-sel { width: 1.6em; padding-right: 0; input { margin: 0; vertical-align: middle; cursor: pointer; } }
     td:first-child { min-width: 0; overflow-wrap: normal; }
     td:nth-child(2) { overflow-wrap: anywhere; min-width: 16em; }
-    // Status holds `approved · by X · revoke` on ≤2 lines; the path column
-    // is the one that gives.
-    td:last-child { min-width: 11em; }
+    // Status holds `approved [avatar] [↩]` on one line (revoke is a compact
+    // icon, not the wrapping word it used to be); the path column gets the room.
+    td:last-child { min-width: 8.5em; white-space: nowrap; }
     tbody tr { cursor: default; }
     tr.sel td { background: color-mix(in srgb, var(--accent, #58a6ff) 14%, transparent); }
-    tr.cur td { box-shadow: inset 0 -2px 0 var(--accent, #58a6ff); }
-    tr.cur td:first-child { box-shadow: inset 2px -2px 0 var(--accent, #58a6ff); }
+    // The cursor is the keyboard row (j/k target) and the anchor a shift-click
+    // or shift+j/k extends *from* — a distinct concept from what's selected. A
+    // full inset ring reads as "the active row" without colliding with the
+    // green owner-match bar (`tr.matched td:first-child`) or looking like a
+    // stray corner at the top of a multi-row selection.
+    tr.cur td { box-shadow: inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
+    tr.cur td:first-child { box-shadow: inset 2px 0 0 var(--accent, #58a6ff), inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
+    tr.cur td:last-child { box-shadow: inset -2px 0 0 var(--accent, #58a6ff), inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
     // The approve marks live beside the size they approve: yellow ✓ on the
     // band's whole size, green ✓ on the sweeper's slice estimate.
     button.mini.ico { padding: 0 5px; margin-left: 5px; line-height: 1.25; font-size: 11.5px; }
+    // Band expand caret + its detail row (the non-sweeper residue, on demand).
+    button.caret {
+      background: none; border: 0; color: var(--ink-3); cursor: pointer; padding: 0 5px 0 0;
+      font-size: 10px; transition: transform 0.12s; display: inline-block;
+      &.open { transform: rotate(90deg); color: var(--ink); }
+      &:hover { color: var(--ink); }
+    }
+    tr.band-detail td { padding: 4px 8px 8px 8px; border-bottom: 1px solid var(--line); }
+    .band-conflicts {
+      font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+      .conflict-owner { display: inline-flex; align-items: center; gap: 3px; text-decoration: none; color: var(--ink);
+        padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px;
+        &:hover { border-color: var(--ink-2); } .user-chip { vertical-align: middle; } }
+      .conflict-all { margin-left: auto; color: var(--accent, #58a6ff); }
+    }
+    // Revoke: a compact undo glyph riding beside the approver avatar, so the
+    // status cell stays one line (was the wrapping word "revoke").
+    button.mini.ico.revoke { display: inline-flex; align-items: center; padding: 2px 4px; vertical-align: middle; svg { width: 12px; height: 12px; } }
   }
   .sweep-table.jobs {
     tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
@@ -1614,6 +1830,11 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     .live-tag { color: #58a6ff; font-weight: 600; }
     .small { font-size: 12px; max-width: 28em; }
   }
+  // Approved indicator: a ✓ glyph (green = slice, amber = full band), the same
+  // colour language as the ✓ approve buttons and the ↩ revoke — the status cell
+  // reads as three compact tokens: [✓ approved] [avatar who] [↩ revoke].
+  .sweep-table .appr-ico { font-weight: 700; font-size: 14px; vertical-align: middle; cursor: default;
+    &.go { color: #3fb950; } &.warn { color: #d29922; } }
   .sweep-table .approver { display: inline-block; vertical-align: middle; margin: 0 4px 0 2px; line-height: 0; cursor: default; }
   .go-ink { color: #3fb950; font-weight: 650; }
   .warn-ink { color: #d29922; font-weight: 650; }
@@ -1728,3 +1949,54 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 // Nothing drawable under the drilled node: the canvas folds away (the mark
 // controls / rollup above it stay).
 #tree-map.leaf .dt-treemap-map { flex-basis: 0 !important; height: 0; }
+#tree-map.leaf .hint { display: none; }  // "click a directory to drill in" — nothing to click
+#tree-map.leaf .dt-treemap-map::after { display: none; }  // the root-mark frame would draw as a bare bar
+
+// Assignments heatmap (/assignments): assigner rows × assignee columns.
+.assignments-page {
+  padding: 1rem; max-width: 1100px; margin: 0 auto;
+  header h1 { margin: 0 0 4px; }
+  .hrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .mode-toggle { display: inline-flex; gap: 4px;
+    button.mini.on { border-color: var(--accent, #58a6ff); color: var(--accent, #58a6ff); font-weight: 650; } }
+  // A sweeper marked data someone else owns — the conflict to vet.
+  table.heatmap td.cell.conflict { outline: 2px solid var(--mk-del); outline-offset: -2px; }
+  .sub { color: var(--ink-2); font-size: 13.5px; max-width: 70ch; margin: 0 0 14px; }
+  .err { color: var(--mk-del); }
+  table.heatmap {
+    border-collapse: collapse; font-size: 12.5px;
+    th, td { border: 1px solid var(--line); padding: 3px 6px; text-align: center; white-space: nowrap; }
+    th.corner { text-align: left; font-weight: 500; .dim { font-size: 11px; } }
+    th.row-head { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; }
+    th.col-head { vertical-align: bottom; }
+    td.cell { font-variant-numeric: tabular-nums; min-width: 4.5em; }
+    .cell-link { color: var(--ink); text-decoration: none; display: block; }
+    .cell-link:hover { text-decoration: underline; }
+    .empty { color: var(--ink-3); }
+  }
+}
+
+// Phones: the path is the header. The brand and the size suffix cede the
+// row to the crumbs (which scroll, tail-first); the map's fullscreen button
+// and the mark panel's fixed-width labels go too.
+@media (max-width: 640px) {
+  .topbar .brand { display: none; }
+  .topbar .tb-suffix { display: none; }
+  // The path clips itself with an ellipsis on wide screens; on a phone the
+  // crumbs box scrolls instead (tail-first), so let it overflow.
+  .topbar .tb-path { white-space: nowrap; overflow: visible; text-overflow: clip; }
+  .treemap .dt-treemap-fs { display: none; }
+  .mark-controls .lbl { min-width: 0; }
+  .root-marks { flex-direction: column; gap: 4px; padding: 6px 8px; .keys { margin-left: auto; } }
+}
+
+// Ownership assignment select (panel + table rows): sized to its placeholder
+// ("assign…"), not the longest name in it.
+select.assign-sel {
+  font: inherit; font-size: 12px; padding: 1px 4px; border-radius: 4px; cursor: pointer; width: 7.5em;
+  background: var(--panel); color: var(--ink-2); border: 1px solid var(--line);
+  &:hover { color: var(--ink); border-color: var(--ink-3); }
+  &.compact { font-size: 10.5px; padding: 0 2px; width: 6.5em; background: transparent; color: var(--ink-3); }
+}
+// Storage-class swatches in the class-mix table (same palette as the CLASS bar).
+.classmix td .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }

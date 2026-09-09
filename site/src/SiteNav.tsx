@@ -11,7 +11,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { FaGithub } from 'react-icons/fa'
 import { MdMenu } from 'react-icons/md'
@@ -61,11 +61,20 @@ export function SiteNav({ children, menu, crumbs }: {
     ro.observe(el)
     return () => { ro.disconnect(); root.style.removeProperty(TOPBAR_VAR) }
   }, [])
+  // The crumbs scroll horizontally when they don't fit (a phone), and snap
+  // to their END on every path change so the basename — the one segment the
+  // reader needs — is what shows, not `marin GCS/marin-us-…`.
+  const crumbsRef = useRef<HTMLDivElement | null>(null)
+  const { pathname } = useLocation()
+  useLayoutEffect(() => {
+    const el = crumbsRef.current
+    if (el) el.scrollLeft = el.scrollWidth
+  }, [pathname])
   return (
     <div className="topbar" ref={ref}>
       <div className="tb-row">
         <NavMenu extra={menu} />
-        {crumbs ? <div className="tb-crumbs">{crumbs}</div> : <div className="tb-mid">{children}</div>}
+        {crumbs ? <div className="tb-crumbs" ref={crumbsRef}>{crumbs}</div> : <div className="tb-mid">{children}</div>}
         <UserMenu />
       </div>
       {crumbs && children && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
@@ -114,7 +123,6 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
       <button type="button" className="tb-menu-btn" ref={m.refs.setReference} {...m.getReferenceProps()} aria-label="Site menu" title="Site menu">
         <MdMenu aria-hidden />
       </button>
-      <Link className="brand" to="/">Marin GCS usage</Link>
       {m.open && (
         <FloatingPortal>
           <FloatingFocusManager context={m.context} modal={false}>
@@ -123,6 +131,7 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
               {link('/files', 'Scans')}
               {canMark && link('/users', 'Users')}
               {canMark && link('/marks', 'Marks')}
+              {canMark && link('/assignments', 'Assignments')}
               {canMark && link('/sweep', 'Sweep')}
               <hr />
               <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setAboutOpen(true) }}>About — the data, axes &amp; colors</button>
@@ -163,9 +172,13 @@ function UserMenu() {
             <div className="menu-pop user-menu" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
               <UserCard who={who} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />
               <hr />
-              <button type="button" role="menuitem" className="mi" onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
-                title="Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B">
+              <button type="button" role="menuitem" className="mi" onClick={() => toggleUnits()}
+                title="Byte units, site-wide: binary (TiB) ↔ decimal (TB)">
                 units: <b>{(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}</b> → {(units === 'iec' ? 'T' : 'Ti') + (suffixB ? 'B' : '')}
+              </button>
+              <button type="button" role="menuitem" className="mi" onClick={() => toggleSuffixB()}
+                title="Show or hide the trailing B (Ti vs TiB), site-wide">
+                trailing B: <b>{suffixB ? 'on' : 'off'}</b> <span className="dim">({units === 'iec' ? 'Ti' : 'T'}{suffixB ? 'B' : ''})</span>
               </button>
               {canMark && (
                 <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setTokenOpen(true) }}>

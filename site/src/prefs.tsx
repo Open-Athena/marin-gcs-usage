@@ -1,46 +1,89 @@
-import { useSyncExternalStore } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import type { Tiling } from '@disk-tree/react'
 import { Tooltip } from './Tooltip'
 
-// Treemap tiling preference: `shared` (cells share edges — one stroke per
-// boundary, exact areas; the default) vs `gaps` (2px gutters, rounded). Same
-// module-store + useSyncExternalStore shape as upstream disk-tree's
-// `ui/src/utils/tiling.ts`; persisted in localStorage; every treemap reads it.
-const KEY = 'gcs-usage:tiling'
-const load = (): Tiling => {
-  try {
-    const v = localStorage.getItem(KEY)
-    if (v === 'gaps' || v === 'shared') return v
-  } catch { /* no storage */ }
-  return 'shared'
-}
-let current: Tiling = load()
-const listeners = new Set<() => void>()
-const get = () => current
-export const setTiling = (t: Tiling): void => {
-  if (t === current) return
-  current = t
-  try { localStorage.setItem(KEY, t) } catch { /* in-memory only */ }
-  listeners.forEach(l => l())
-}
-const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l) } }
-export const useTiling = (): [Tiling, (t: Tiling) => void] => [useSyncExternalStore(subscribe, get, get), setTiling]
+// Treemap rendering preferences — per-browser, persisted in localStorage,
+// read by every treemap on the site. Same module-store + useSyncExternalStore
+// shape as upstream disk-tree's `ui/src/utils/tiling.ts`.
+//
+// - `tiling`: `shared` (cells share edges — one stroke per boundary, exact
+//   areas; the default) vs `gaps` (2px gutters, rounded corners).
+// - `renderer`: `dom` (one element per cell; the default, full feature
+//   parity) vs `canvas` (one paint loop for the whole map — for the 1e3–1e6
+//   cell views the DOM renderer bogs down on; per-cell React extras — the
+//   actor badges, the KLC ring — don't draw there yet).
+export type Renderer = 'dom' | 'canvas'
 
-/** Single `gaps` toggle chip (off by default → shared-edge tiling) — lives in
- * the treemap's crumbs bar. */
-export function TilingToggle() {
-  const [t, set] = useTiling()
-  const on = t === 'gaps'
+function pref<T extends string>(key: string, ok: readonly T[], dflt: T) {
+  const KEY = `gcs-usage:${key}`
+  const load = (): T => {
+    try {
+      const v = localStorage.getItem(KEY)
+      if (v && (ok as readonly string[]).includes(v)) return v as T
+    } catch { /* no storage */ }
+    return dflt
+  }
+  let current: T = load()
+  const listeners = new Set<() => void>()
+  const get = () => current
+  const set = (t: T): void => {
+    if (t === current) return
+    current = t
+    try { localStorage.setItem(KEY, t) } catch { /* in-memory only */ }
+    listeners.forEach(l => l())
+  }
+  const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l) } }
+  const use = (): [T, (t: T) => void] => [useSyncExternalStore(subscribe, get, get), set]
+  return { use, set }
+}
+
+const tiling = pref<Tiling>('tiling', ['shared', 'gaps'], 'shared')
+const renderer = pref<Renderer>('renderer', ['dom', 'canvas'], 'dom')
+export const useTiling = tiling.use
+export const setTiling = tiling.set
+export const useRenderer = renderer.use
+
+const TILING_TIP = 'Cell gutters. Off (default): cells share edges — one stroke per boundary, areas stay exact. On: gaps and rounded corners between cells.'
+const RENDERER_TIP = 'DOM (default): one element per cell — every feature, keyboard focus on every cell. Canvas: the whole map painted in one pass, for views of thousands of cells that make the DOM renderer crawl; outlines, tooltips and drilling work the same, but the marker avatars and the last-ckpt ring on cells don’t draw there yet.'
+
+/** Map-display preferences behind a ⚙ (in the treemap's key line): tiling
+ * gutters and the renderer. A native `<details>`, so it closes on Esc /
+ * toggle and needs no outside-click plumbing. */
+export function SettingsMenu() {
+  const [t, setT] = useTiling()
+  const [r, setR] = useRenderer()
+  // A native <details> only closes on its own summary; close it on any click
+  // outside too, like a menu.
+  const ref = useRef<HTMLDetailsElement | null>(null)
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      const el = ref.current
+      if (el?.open && !el.contains(e.target as Node)) el.open = false
+    }
+    document.addEventListener('click', onDoc)
+    return () => document.removeEventListener('click', onDoc)
+  }, [])
   return (
-    <Tooltip content="Cell gutters. Off (default): cells share edges — one stroke per boundary, areas stay exact. On: gaps and rounded corners between cells.">
-      <button
-        type="button"
-        className={`tiling-toggle${on ? ' on' : ''}`}
-        aria-pressed={on}
-        onClick={() => set(on ? 'shared' : 'gaps')}
-      >
-        gaps
-      </button>
-    </Tooltip>
+    <details className="map-settings" ref={ref}>
+      <summary title="Map display settings" aria-label="Map display settings">⚙</summary>
+      <div className="menu" onClick={e => e.stopPropagation()}>
+        <Tooltip content={TILING_TIP} placement="left">
+          <label className="row has-tt">
+            <input type="checkbox" checked={t === 'gaps'} onChange={e => setT(e.target.checked ? 'gaps' : 'shared')} />
+            gaps between cells
+          </label>
+        </Tooltip>
+        <Tooltip content={RENDERER_TIP} placement="left">
+          <span className="row has-tt">
+            renderer
+            <span className="seg">
+              {(['dom', 'canvas'] as const).map(k => (
+                <button key={k} type="button" className={r === k ? 'on' : ''} onClick={() => setR(k)}>{k === 'dom' ? 'DOM' : 'canvas'}</button>
+              ))}
+            </span>
+          </span>
+        </Tooltip>
+      </div>
+    </details>
   )
 }

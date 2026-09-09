@@ -366,9 +366,18 @@ const CKPT_SEG_RE = /^(step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?\d+/i
  * it on arbitrary dirs was confusing. (Scan post-proc will flag this
  * properly per specs/actions-ledger.md; these heuristics cover the interim.)
  */
-export const looksCkpt = (n: TreeNode, uri?: string): boolean =>
-  (!!uri && /\/(ckpts?|checkpoints?)(\/|$)/i.test(uri)) ||
-  /(^|[-_.])(ckpts?|checkpoints?)([-_.]|$)/i.test(n.n) ||
+// A dir is checkpoint-shaped when IT is the checkpoints dir (its own name),
+// or it directly holds one (a run dir with `checkpoints/` under it), or it
+// holds ≥ 2 step-numbered children. Being *somewhere under* a `checkpoints/`
+// ancestor is not enough — that offered "keep last ckpt" on every leaf of a
+// bucket's `checkpoints/` tree. Children below the pixel budget aren't
+// loaded, so a dir whose shape is unknown is not offered (the CLI still
+// accepts KLC anywhere). Better still would be an ahead-of-time flag on each
+// index row (specs/children-table-selection.md § later).
+const CKPT_NAME_RE = /(^|[-_.])(ckpts?|checkpoints?)([-_.]|$)/i
+export const looksCkpt = (n: TreeNode, _uri?: string): boolean =>
+  CKPT_NAME_RE.test(n.n) ||
+  (n.c ?? []).some(c => CKPT_NAME_RE.test(c.n)) ||
   (n.c ?? []).filter(c => CKPT_SEG_RE.test(c.n)).length >= 2
 
 /** Reviewed = covered by any mark (deepest-wins ancestor or own). */

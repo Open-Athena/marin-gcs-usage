@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, useState } from 'react'
 import { boolParam, useUrlState } from 'use-prms'
-import { fmtBytesIec, fmtBytesSi } from './types'
+import { fmtBytesIec, fmtBytesLike, fmtBytesSi } from './types'
 import type { Units } from './types'
 
 // Byte-unit display preference. IEC (TiB) is the default — quotas are binary
@@ -28,6 +28,8 @@ interface UnitsCtx {
   units: Units
   suffixB: boolean
   fmtBytes: (b: number) => string
+  /** `b` rendered at the unit `ref` would take — one unit across a list. */
+  fmtBytesLike: (b: number, ref: number) => string
   toggleUnits: () => void
   toggleSuffixB: () => void
 }
@@ -36,6 +38,7 @@ const Ctx = createContext<UnitsCtx>({
   units: 'iec',
   suffixB: false,
   fmtBytes: (b: number) => fmtBytesIec(b, false),
+  fmtBytesLike: (b: number, ref: number) => fmtBytesLike(b, ref, 'iec', false),
   toggleUnits: () => {},
   toggleSuffixB: () => {},
 })
@@ -52,6 +55,7 @@ export function UnitsProvider({ children }: { children: React.ReactNode }) {
       units,
       suffixB,
       fmtBytes: (b: number) => (units === 'iec' ? fmtBytesIec : fmtBytesSi)(b, suffixB),
+      fmtBytesLike: (b: number, ref: number) => fmtBytesLike(b, ref, units, suffixB),
       toggleUnits: () => {
         const next: Units = units === 'si' ? 'iec' : 'si'
         localStorage.setItem(KEY, next)
