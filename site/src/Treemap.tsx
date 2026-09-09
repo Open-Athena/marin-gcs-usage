@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react'
+import type { ReactNode } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
@@ -16,6 +17,49 @@ import { useUnits } from './units'
 // deeper cells inherit their L2 ancestor's shade. Drilling re-keys both, so
 // whatever you're looking at gets the full palette.
 const MAX_SLOTS = 8
+
+// Legend names in one directory often share a long run-name prefix
+// (`open-athena_snowball-67b-a2b-base-262k-…` × 5) that carries no information
+// *within* the legend and, on a phone, is the whole first fold. Cluster names
+// whose token-aligned common prefix is long enough, render the prefix once, and
+// give the swatches to the parts that differ. Rank order is kept.
+const MIN_PFX = 12
+function tokenPrefix(a: string, b: string): string {
+  let i = 0
+  while (i < a.length && i < b.length && a[i] === b[i]) i++
+  const cut = a.slice(0, i).search(/[_\-./][^_\-./]*$/)
+  return cut < 0 ? '' : a.slice(0, cut + 1)
+}
+export function legendGroups(names: string[]): { prefix: string; names: string[] }[] {
+  const parent = names.map((_, i) => i)
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])))
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      if (tokenPrefix(names[i], names[j]).length >= MIN_PFX) parent[find(j)] = find(i)
+    }
+  }
+  const members = new Map<number, string[]>()
+  names.forEach((n, i) => { const r = find(i); members.set(r, [...(members.get(r) ?? []), n]) })
+  const out: { prefix: string; names: string[] }[] = []
+  for (const ms of members.values()) {
+    const pfx = ms.length > 1 ? ms.slice(1).reduce((p, n) => tokenPrefix(p, n), ms[0]) : ''
+    if (ms.length > 1 && pfx.length >= MIN_PFX) out.push({ prefix: pfx, names: ms })
+    else for (const n of ms) out.push({ prefix: '', names: [n] })
+  }
+  return out
+}
+
+// An elided name's full text on hover; click copies it.
+function CopyName({ text, note, children }: { text: string; note?: string; children: ReactNode }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => { navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) }) }
+  return (
+    <Tooltip content={<><code className="elide-full">{text}</code><span className="copy-hint">{copied ? 'copied ✓' : note ? `${note} · click to copy` : 'click to copy'}</span></>}>
+      <span onClick={copy} role="button" tabIndex={-1}>{children}</span>
+    </Tooltip>
+  )
+}
+
 const rankCache = new WeakMap<TreeNode, Map<string, [number, number]>>()
 /** name → [rank, count] over a node's real (non-fold) children, largest first. */
 function childRanks(node: TreeNode): Map<string, [number, number]> {
@@ -233,19 +277,47 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
             </span>
           ) : (
             // The macro axis: the drilled root's children, largest first, in
-            // their hue; anything past the palette (and folds) is "other".
+            // their hue. Names sharing a long run-name prefix cluster under it
+            // (rendered once, muted); long names elide to head + tail (the tail
+            // — a hash or step number — usually tells them apart); the full
+            // name is in each row's tooltip, click to copy. Every real child
+            // has its own hue, so past MAX_SLOTS is a "+N more" count, and
+            // "other" is only the fold tile.
             (() => {
               const ranked = [...childRanks(legendNode).entries()].sort((a, b) => a[1][0] - b[1][0])
               const shown = ranked.slice(0, MAX_SLOTS)
-              const hasOther = ranked.length > MAX_SLOTS || (legendNode.c ?? []).some(c => c.n.startsWith('('))
+              const more = ranked.length - shown.length
+              const hasOther = (legendNode.c ?? []).some(c => c.n.startsWith('('))
+              const slot = new Map(shown.map(([k, [i]]) => [k, i]))
+              const li = (name: string, shownAs: string) => {
+                const tail = shownAs.length > 16 ? shownAs.slice(-7) : ''
+                const head = tail ? shownAs.slice(0, -7) : shownAs
+                return (
+                  <CopyName text={name} key={name}>
+                    <span className="li copyable">
+                      <span className="sw" style={{ background: slotColor(slot.get(name)!) }} />
+                      <span className="nm"><span className="head">{head}</span>{tail && <span className="tail">{tail}</span>}</span>
+                    </span>
+                  </CopyName>
+                )
+              }
               return (
                 <>
-                  {shown.map(([k, [i]]) => (
-                    <span className="li" key={k}>
-                      <span className="sw" style={{ background: slotColor(i) }} />
-                      {k}
-                    </span>
-                  ))}
+                  {legendGroups(shown.map(([k]) => k)).map(g => g.prefix
+                    ? (
+                      <span className="li-group" key={g.prefix}>
+                        <CopyName text={g.prefix} note={`shared by the ${g.names.length} items that follow`}>
+                          <span className="pfx copyable">{g.prefix}…</span>
+                        </CopyName>
+                        {g.names.map(n => li(n, n.slice(g.prefix.length)))}
+                      </span>
+                    )
+                    : li(g.names[0], g.names[0]))}
+                  {more > 0 && (
+                    <Tooltip content={<>{more} smaller {more === 1 ? 'directory' : 'directories'}, each in its own hue (hover a cell for its name)</>}>
+                      <span className="li more">+{more} more</span>
+                    </Tooltip>
+                  )}
                   {hasOther && <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>}
                 </>
               )
