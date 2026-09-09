@@ -163,6 +163,9 @@ importers:
       '@mui/material':
         specifier: ^7.3.6
         version: 7.3.11(@emotion/react@11.14.0(@types/react@19.2.18)(react@19.2.8))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@rdub/treemap':
+        specifier: workspace:*
+        version: link:../packages/treemap
       '@tanstack/react-query':
         specifier: ^5.90.12
         version: 5.101.4(react@19.2.8)

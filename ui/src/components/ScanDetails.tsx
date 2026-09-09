@@ -4,7 +4,7 @@ import { Alert, Box, Button, Checkbox, CircularProgress, Collapse, TextField, To
 import { FaChevronDown, FaChevronRight, FaExclamationTriangle, FaExchangeAlt, FaFileAlt, FaFolder, FaFolderOpen, FaSync, FaSortUp, FaSortDown, FaTrash, FaSearch } from 'react-icons/fa'
 import { useAction } from 'use-kbd'
 import { BytesOverTime, Treemap as DTTreemap } from '@disk-tree/react'
-import '@disk-tree/react/styles.css'
+import '@rdub/treemap/styles.css'
 import { useQuery } from '@tanstack/react-query'
 import { fetchScanDetails, fetchScanHistory, startScan, fetchScanStatus, deletePath, revealPath, fetchFilePreview, DEFAULT_MAX_ROWS } from '../api'
 import type { Row, ScanJob, ScanProgress, CollapsedRow } from '../api'
