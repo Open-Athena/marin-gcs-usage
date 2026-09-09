@@ -16,6 +16,7 @@ import { DAY, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
+import { ChildrenTable } from './ChildrenTable'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
 import { UserChip, shortName } from './UserChip'
@@ -290,6 +291,33 @@ function AppContent() {
 
   const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
 
+  // Controlled treemap drill path in `?path=`, resolved against the tree each
+  // render so it survives scan switches (a vanished path truncates to its
+  // deepest surviving ancestor). The children table below the map mirrors this
+  // node, and a table row drills the map by pushing onto it.
+  const [drillPath, setDrillPath] = useUrlState('path', stringParam())
+  const mapPath = useMemo((): TreeNode[] | undefined => {
+    if (!tree) return undefined
+    const path = [tree]
+    let cur: TreeNode = tree
+    for (const s of (drillPath ?? '').split('/').filter(Boolean)) {
+      const next = cur.c?.find(c => c.n === s)
+      if (!next) break
+      path.push(next)
+      cur = next
+    }
+    // A store with one bucket (CoreWeave today) opens inside it — the bucket
+    // level is a single full-width box otherwise.
+    if (path.length === 1 && tree.c?.length === 1) return [tree, tree.c[0]]
+    return path
+  }, [tree, drillPath])
+  const onMapPath = (p: TreeNode[]) => setDrillPath(p.slice(1).map(n => n.n).join('/') || undefined)
+  // Table row → drill the map to that prefix and scroll it into view.
+  const openPath = (segs: string[]) => {
+    setDrillPath(segs.join('/') || undefined)
+    document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   const pickUser = (u: string) => {
     setHlUser(u)
     if (mode !== 'user') setMode('user')
@@ -519,9 +547,21 @@ function AppContent() {
 
       {tree ? (
         <div id="tree-map"><Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens}
-          initialPath={tree.c?.length === 1 ? [tree, tree.c[0]] : undefined} /></div>
+          path={mapPath} onPathChange={onMapPath} /></div>
       ) : (
         <p className="loading">loading tree…</p>
+      )}
+
+      {/* The map's tabular twin: this node's children, sortable/paged, clicking
+          a row drills the map into it. Foldable; open by default. */}
+      {mapPath && (mapPath[mapPath.length - 1].c?.length ?? 0) > 0 && (
+        <details className="tbl-fold" open>
+          <summary>
+            <b>Contents</b> of <code>{mapPath[mapPath.length - 1].n}</code>
+            {' '}· {fmtN((mapPath[mapPath.length - 1].c ?? []).length)} entries
+          </summary>
+          <ChildrenTable node={mapPath[mapPath.length - 1]} segs={mapPath.slice(1).map(n => n.n)} onOpen={openPath} />
+        </details>
       )}
 
       <SizeOverTime scans={scans} onPickDate={setDP} onBrush={brushRange} window={diffWindow} />

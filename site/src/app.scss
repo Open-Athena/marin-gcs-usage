@@ -682,3 +682,79 @@ details.fold {
 // would scroll in under it — the deep-link effect (App.tsx) reads this margin
 // back to know where an anchor parks.
 .colorctl ~ :is(#tree-map, #over-time, #diff, #mtime) { scroll-margin-top: 48px; }
+
+// Children table — the treemap's tabular twin (ChildrenTable), foldable.
+.tbl-fold {
+  max-width: 1100px;
+  margin: 0.75rem auto 0;
+  padding: 0 1rem;
+  > summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--ink-2);
+    padding: 4px 0;
+    b { color: var(--ink); }
+    code { font-size: 12px; }
+  }
+}
+.children-tbl {
+  margin-top: 0.4rem;
+  overflow-x: auto;
+  table.worklist {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    th, td {
+      padding: 4px 10px 4px 0;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+    th {
+      color: var(--ink-2);
+      font-weight: 600;
+      &.sortable { cursor: pointer; user-select: none; }
+      &.sortable:hover, &.on { color: var(--ink); }
+    }
+    td.num, th.num { text-align: right; }
+    td.prefix {
+      max-width: 44ch;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      a { cursor: pointer; color: var(--s1); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+    }
+    td.created .cm {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      justify-content: flex-end;
+      i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+    }
+    tfoot .total-row td {
+      border-top: 2px solid var(--line);
+      border-bottom: none;
+      font-weight: 600;
+      color: var(--ink-2);
+    }
+  }
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+    padding: 6px 0;
+    button {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-radius: 4px;
+      padding: 1px 7px;
+      cursor: pointer;
+      &:disabled { opacity: 0.4; cursor: default; }
+    }
+    .psize { margin-left: auto; background: var(--panel); border: 1px solid var(--line); color: var(--ink); border-radius: 4px; padding: 1px 4px; }
+  }
+}
