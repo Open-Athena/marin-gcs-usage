@@ -36,9 +36,12 @@ export interface ExtrasView {
 
 const idxMemo = new Map<string, Promise<{ dir: string; ck: BlockIndex | null; attr: BlockIndex | null } | null>>()
 const TTL_MS = 10 * 60_000
-// A scan WITHOUT sidecars is re-probed sooner: a backfill should show up
-// within a minute, not after the isolate's next recycle.
+// A scan WITHOUT sidecars is re-probed after a minute, so a backfill shows
+// up promptly rather than after the isolate's next recycle. Tracked by
+// timestamp, not a timer: a `setTimeout` armed inside a request can be
+// dropped once that request's context ends.
 const MISS_TTL_MS = 60_000
+const missAt = new Map<string, number>()
 
 async function readJson(env: Env, key: string): Promise<unknown | null> {
   try {
@@ -55,12 +58,15 @@ async function indexes(env: Env, date: string) {
   const r = await env.DB.prepare('SELECT dir FROM index_schema WHERE date = ? AND variant = ?').bind(date, 'path').first<{ dir: string | null }>()
   const dir = r?.dir ?? `listing/${date}`
   const key = `${date}|${dir}`
+  const miss = missAt.get(key)
+  if (miss != null && Date.now() - miss > MISS_TTL_MS) { idxMemo.delete(key); missAt.delete(key) }
   const got = await shared(idxMemo, key, async () => {
     const [ck, attr] = await Promise.all([readJson(env, `${dir}/ck.txt.idx.json`), readJson(env, `${dir}/attr.tsv.idx.json`)])
     if (!ck && !attr) return null
     return { dir, ck: ck as BlockIndex | null, attr: attr as BlockIndex | null }
   }, TTL_MS)
-  if (!got) setTimeout(() => idxMemo.delete(key), MISS_TTL_MS)
+  if (!got) missAt.set(key, missAt.get(key) ?? Date.now())
+  else missAt.delete(key)
   return got
 }
 
