@@ -418,3 +418,36 @@ Queued gcs-ward: the 80-line brush/window test block
 (`packages/react/tests/TimeSeries.test.tsx`, from `8c04b74`) and the
 `treemap-widget` CI job — `packages/` otherwise matches gcs and upstream
 exactly. The `s3fs` pin is cw-s3-only by gcs's choice (gcsfs path).
+
+### 2026-09-08 (cw-ward, `/cp gcs` + `/cp dt`) — engine parity catch-up
+
+gcs had run one more engine CP since the 9/7 pass, so cw-s3 had fallen behind
+on the `src/disk_tree` / `packages/treemap` parity surfaces (surfaced by the
+`factored/cw-s3-gcs-2026-09-08` reconstruction's parity-pending bucket).
+
+Landed on `cw-s3` (`b691bcf`; cursor gcs `ab02e73`):
+- `01fc0b8` (engine, dt `46ff7b4..bd98e10`, upstream's final files): `key/`-ordered
+  batch ranges (prefix-sibling keys no longer dropped from a batch's pushdown
+  range), recursive key splitting over `--partition-files`, prune-friendly
+  cascade scans (`substr` not regex, TEMP tables), `import -n/--threads`.
+- `packages/treemap` `CellCtx.chain` (gcs `726e54f`'s core hunk, `[CP→dt/main]`):
+  collapsed single-child count passed to `renderCellExtra`. @rdub/treemap parity.
+
+Skipped as gcs-only / port-pending (2026-09-08 direction — converge later, whole
+subsystem not ported in one pass): the sweep console + `/api/sweep`, ownership
+`own`/`assign` vocabulary, mark UI, the Worker index-tier / group-manifest
+serving, `gcs-usage` attribution/labels, `job/run.sh` GATE, `ui/` treemap import,
+and the spec commits.
+
+dt/main (`git cp set` to `af23c4c`, ported nothing new):
+- `2ac8572`/`bf3fc28`/`509f324`/`bd98e10` (a3-gate asks 6–9): already here via
+  `01fc0b8` above.
+- **`af23c4c` (round-3 asks 10–11: `_write_ranged` range-partitioned final sort
+  to dodge the global-COPY OOM at fleet scale + RSS instrumentation) — HELD.**
+  Only dt has it; gcs does not yet. The shared engine flows gcs→cw-s3, so taking
+  it now would put cw-s3 ahead of gcs. It arrives when the gcs session CPs
+  round-3 from dt.
+- The rest of `46ff7b4..af23c4c` is dt-only Flask serving / local features
+  (`server.py`, `diff_index`, `extents`, `desktop`, `library`, `capture`, `du`,
+  `reclaim`, `repos`, `snapshots`, `vocab`, `sidecar`, `config`, `storage/*`) —
+  intended delta (ledger: "upstream carries Flask serving").
