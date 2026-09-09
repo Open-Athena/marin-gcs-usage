@@ -4,10 +4,12 @@
 
 **One deployment = one long-lived branch**, cherry-picking between them, no
 base branch: `gcs` (gcs.oa.dev), `cw-s3` (cw-s3.oa.dev), and future R2 / AWS-S3
-deployments. Separate deployments have separate auth lists and significantly
-customized FEs (cw-s3 has no team axis, different branding/scheme); baking
-user-groups and mark+sweep into each one wants per-deployment customization
-that config flags would only contort. Each branch owns its copy of the FE core
+deployments. Separate deployments have separate auth lists and their own branding/scheme.
+(This first read "cw-s3 has no team axis" and treated per-deployment
+user-groups + mark & sweep as intended deltas; the team/group axis was excised
+everywhere on 2026-09-06 — ownership is a person or unclaimed on every branch —
+and the 2026-09-08 update below reverses the mark+sweep stance: it is now slated
+to port to every deployment.) Each branch owns its copy of the FE core
 (`@disk-tree/react`) and the Python engine (`src/disk_tree`) and may do whatever
 it wants with them. A large stream of CP-analogous commits across branches is
 the *intended* workflow, not drift to be engineered away.
@@ -22,6 +24,26 @@ serving questions natively — no LCD abstractions across archs.
 (A 2026-08-28 spec proposing to collapse cw-s3 into gcs and pin the engines
 as dependencies re-litigated this and was withdrawn.)
 
+### 2026-09-08 update — toward one cross-cloud impl
+
+The per-deployment-customization premise above is softening. Direction (Ryan):
+mark & sweep and user/owner views are to be **ported to every deployment**
+(cw-s3, plus the R2 / AWS-S3 reference deploys upstream is adding), not kept as
+per-branch deltas — dogfooding sweep on Ryan's own S3/R2 clouds is wanted. The
+likely end state is ~one shared cross-cloud impl. A read-only, user-excised
+deploy is still a plausible durable fork worth a branch, but it becomes the
+exception, not the rule.
+
+What stays intrinsic per deployment: the store engine (GCS vs S3 listing +
+creds), branding / domain / Access app, and any data a given cloud can't
+produce. The last is the live blocker for user views on cw-s3: gcs derives
+ownership from GCS access logs (write principals) + rules + wandb signals;
+CoreWeave/CAIOS has no access logs, so cw-s3 has **no owner/writer attribution
+today** — its `TreeNode`s omit the `tm/sh/us` fields and `cw-webdata.py` renders
+the raw bucket. Marin's CW bucket does encode users in path prefixes
+(`users/<name>/`), so path-rule attribution (no access logs) is the likely CW
+route. Deciding that signal is the prerequisite for the user/sweep port.
+
 ## What today's audit actually showed
 
 Not that branches are wrong — that the model's verification half was missing.
@@ -35,7 +57,7 @@ architecture.
 
 1. **Ledger of intended divergences** — per branch pair, per surface, a short
    list of the deltas that are *supposed* to exist (cw-s3: branding + `s3://`
-   scheme, users-only axis, own auth list/Access app; vs upstream: Flask server
+   scheme, own auth list/Access app; vs upstream: Flask server
    + `ui/` vs `site/`; …). Kept in this file (below). Everything not on the
    list is a CP candidate or a mistake.
 2. **[git-didi](https://github.com/runsascoded/git-didi)** as the checker —
@@ -55,7 +77,7 @@ architecture.
 
 | pair | surface | intended delta |
 |---|---|---|
-| gcs ↔ cw-s3 | `site/` | own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA-only, edge identity); branding, `s3://` scheme, no team/group axis, no mark & sweep (for now); no `/user/:id` pages |
+| gcs ↔ cw-s3 | `site/` | **Intrinsic:** own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA + CoreWeave domains, edge identity); branding, `s3://` scheme. **Port-pending, not deltas** (2026-09-08): mark & sweep, `/user/:id` + user/owner views, server-side diff/subtree — cw-s3 lacks them but they are slated to converge. Blocked on a CW ownership signal (no access logs; path-prefix rules the likely route). |
 | gcs ↔ cw-s3 | `job/` | `run.sh`+`batch-submit.sh` (GCS) vs `cw-*` (CW: S3-compat listing, precomputed `diff.json`); restore `cw-*` onto cw-s3 from `053cc33^` |
 | gcs ↔ cw-s3 | `packages/react`, `src/disk_tree` | **none** — keep at parity (synced 8/28) |
 | marin ↔ dt/main | `src/disk_tree` | upstream carries Flask serving (`server.py`, diff index, vocab sidecar, compare perf); marin carries nothing server-side. Shared core must be a superset upstream: fork→upstream manifest `~/c/disk-tree/specs/marin-python-cp-2026-08-28.md` |
