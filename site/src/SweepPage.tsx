@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { MdUndo } from 'react-icons/md'
 import { useActions } from 'use-kbd'
+import { useRowSelection, useRowSelectionKeys } from './rowSelection'
 import { SiteNav } from './SiteNav'
 import { Tooltip } from './Tooltip'
 import { Avatar } from './Avatar'
 import { MultiSelect } from './MultiSelect'
-import { ghHandle, shortName, UserChip } from './UserChip'
+import { ghHandle, shortName, shortUserKey, UserChip } from './UserChip'
 import { useUnits } from './units'
+import { useDocTitle } from './title'
 
 // /sweep — the sweep console (specs/sweep-executor.md § Phase 2): review the
 // candidate sweep-only bands with their ownership evidence, sign bands off
@@ -113,7 +116,49 @@ const jfetch = async <T,>(url: string): Promise<T> => {
   return r.json() as Promise<T>
 }
 
+/** The other-owner residue inside a band, fetched on demand when a row is
+ * expanded: the users (besides the sweepers) whose data sits under the band,
+ * and the unowned remainder — each a link to the homepage scoped to just their
+ * paths here, plus one "inspect all" link to everything the sweepers don't own
+ * (`?o=!<sweepers>`). This is what a *full* approval would additionally delete;
+ * a slice approval defers it. */
+function BandConflicts({ prefix, scan, sweepers }: { prefix: string; scan: string | undefined; sweepers: string[] }) {
+  const { fmtBytes: tb } = useUnits()
+  const path = prefix.replace('gs://', '').replace(/\/$/, '')
+  const q = useQuery({
+    queryKey: ['band-conflicts', scan, prefix],
+    enabled: !!scan,
+    staleTime: 60_000,
+    queryFn: () => jfetch<{ tree: { b: number; us?: [string, number][] } }>(
+      `/api/subtree?date=${scan}&path=${encodeURIComponent(path)}&w=600&h=360`),
+  })
+  if (q.isLoading) return <span className="dim">loading…</span>
+  if (q.error || !q.data?.tree) return <span className="dim">—</span>
+  const tree = q.data.tree
+  const sw = new Set(sweepers)
+  const others = (tree.us ?? []).filter(([u]) => !sw.has(u)).sort((a, b) => b[1] - a[1])
+  const owned = (tree.us ?? []).reduce((s, [, b]) => s + b, 0)
+  const unowned = Math.max(0, tree.b - owned)
+  const bandPath = '/' + path
+  const notQ = `?o=!${sweepers.map(s => encodeURIComponent(shortUserKey(s))).join(',')}`
+  if (!others.length && unowned <= 0)
+    return <span className="go-ink">clean — everything here is {sweepers.map(shortName).join(', ')}'s.</span>
+  return (
+    <div className="band-conflicts">
+      <span className="dim">Not the sweeper's (deferred unless a <b>full</b> approval):</span>{' '}
+      {others.map(([u, b]) => (
+        <Link key={u} to={`${bandPath}?o=${encodeURIComponent(shortUserKey(u))}`} className="conflict-owner">
+          <UserChip who={u} size={14} /> {tb(b)}
+        </Link>
+      ))}
+      {unowned > 0 && <Link to={`${bandPath}?o=unowned`} className="conflict-owner dim">unowned {tb(unowned)}</Link>}
+      <Link to={`${bandPath}${notQ}`} className="conflict-all">inspect all →</Link>
+    </div>
+  )
+}
+
 export function SweepPage() {
+  useDocTitle('Sweep')
   const qc = useQueryClient()
   // Site-wide byte-unit preference (IEC TiB default; header toggle / `?si`) —
   // the treemap pages use the same formatter, so sizes agree across pages.
@@ -214,37 +259,19 @@ export function SweepPage() {
   const pages = Math.max(1, Math.ceil(rows.length / pageSize))
   const page = clamp(pageRaw, 0, pages - 1)
   const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize)
-  const [cursor, setCursor] = useState(-1)
-  const [selected, setSelected] = useState<Set<string>>(() => new Set())
-  const cursorRow = pageRows[cursor] as Candidate | undefined
-  const selRows = bands.filter(b => selected.has(b.prefix))
-  const rowRefs = useRef<(HTMLTableRowElement | null)[]>([])
-  useEffect(() => { rowRefs.current[cursor]?.scrollIntoView({ block: 'nearest' }) }, [cursor, page])
-  useEffect(() => { setCursor(-1); setPage(0) }, [pageSize, showAll, q, st])
-
-  const toggle = useCallback((prefixes: string[], on?: boolean) => setSelected(prev => {
+  const sel = useRowSelection(pageRows, r => r.prefix)
+  const { selected, cursor, setCursor, toggle } = sel
+  // Which bands are expanded to show their non-sweeper residue (on-demand fetch).
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const toggleExpand = (prefix: string) => setExpanded(prev => {
     const next = new Set(prev)
-    const add = on ?? !prefixes.every(p => prev.has(p))
-    for (const p of prefixes) add ? next.add(p) : next.delete(p)
+    next.has(prefix) ? next.delete(prefix) : next.add(prefix)
     return next
-  }), [])
-  const clearSel = () => { setSelected(new Set()); setCursor(-1) }
-  const moveCursor = (d: number, extend: boolean) => {
-    if (!pageRows.length) return
-    const from = cursor < 0 ? (d > 0 ? -1 : pageRows.length) : cursor
-    const to = clamp(from + d, 0, pageRows.length - 1)
-    if (extend) {
-      const a = cursor < 0 ? to : cursor
-      toggle(pageRows.slice(Math.min(a, to), Math.max(a, to) + 1).map(r => r.prefix), true)
-    }
-    setCursor(to)
-  }
-  const rowClick = (i: number, e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('a, button, input')) return
-    if (e.shiftKey && cursor >= 0) toggle(pageRows.slice(Math.min(cursor, i), Math.max(cursor, i) + 1).map(r => r.prefix), true)
-    else toggle([pageRows[i].prefix])
-    setCursor(i)
-  }
+  })
+  const cursorRow = sel.cursorRow as Candidate | undefined
+  const selRows = bands.filter(b => selected.has(b.prefix))
+  useEffect(() => { setCursor(-1); setPage(0) }, [pageSize, showAll, q, st, setCursor])
+  const clearSel = sel.clear
   const gotoPage = (p: number) => { setPage(clamp(p, 0, pages - 1)); setCursor(-1) }
 
   // Bulk targets: the selection, else the cursor row. Approve skips bands
@@ -257,14 +284,8 @@ export function SweepPage() {
   const selCap = selRows.reduce((s, b) => s + (attrCap(b) ?? 0), 0)
 
   const G = 'Sweep console'
+  useRowSelectionKeys(sel, 'sweep', G, r => r.prefix)
   useActions({
-    'sweep:down': { label: 'Cursor down', group: G, defaultBindings: ['j', 'arrowdown'], handler: () => moveCursor(1, false) },
-    'sweep:up': { label: 'Cursor up', group: G, defaultBindings: ['k', 'arrowup'], handler: () => moveCursor(-1, false) },
-    'sweep:extend-down': { label: 'Select down (extend from the cursor)', group: G, defaultBindings: ['shift+j', 'shift+arrowdown'], handler: () => moveCursor(1, true) },
-    'sweep:extend-up': { label: 'Select up (extend from the cursor)', group: G, defaultBindings: ['shift+k', 'shift+arrowup'], handler: () => moveCursor(-1, true) },
-    'sweep:toggle': { label: 'Select / deselect the cursor row', group: G, defaultBindings: ['x', 'space'], handler: e => { e?.preventDefault(); if (cursorRow) toggle([cursorRow.prefix]) } },
-    'sweep:toggle-page': { label: 'Select / deselect every row on this page', group: G, defaultBindings: ['shift+x'], handler: () => toggle(pageRows.map(r => r.prefix)) },
-    'sweep:clear': { label: 'Clear the selection', group: G, defaultBindings: ['escape'], handler: clearSel },
     'sweep:next-page': { label: 'Next page', group: G, defaultBindings: [']'], handler: () => gotoPage(page + 1) },
     'sweep:prev-page': { label: 'Previous page', group: G, defaultBindings: ['['], handler: () => gotoPage(page - 1) },
     'sweep:approve': { label: 'Approve (slice) the selected bands', group: G, defaultBindings: ['a'], enabled: canWrite, handler: () => { if (toApprove.length && !busy) approve.mutate({ cs: toApprove, mode: 'slice' }) } },
@@ -303,10 +324,10 @@ export function SweepPage() {
         <summary>How approvals work</summary>
         <p className="sub">
           Candidate bands are <b>sweep-only under the vote model</b> (no keep votes anywhere). Two ways to sign one off:{' '}
-          <b>approve</b> (slice) lets the executor delete only the <i>sweeper's own slice</i> — each directory must be
-          majority-owned by its sweeper, so other users' data inside a broad sweep is deferred to their own votes;{' '}
-          <b>all</b> signs off the entire band regardless of ownership (for bands verified out-of-band). Approved bands
-          feed <code>sweep manifest --approved-from-site</code>; runs land below with their logs.
+          <b>approve</b> (slice) deletes only the <i>sweeper's own data</i> — other users' data caught in a broad sweep is
+          deferred to their own votes (expand a band to see whose); <b>all</b> signs off the entire band regardless of
+          ownership (for bands verified out-of-band). Approved bands feed <code>sweep manifest --approved-from-site</code>;
+          runs land below with their logs.
         </p>
       </details>
       {plan && (
@@ -356,7 +377,7 @@ export function SweepPage() {
         <div className="table-scroll"><table className="sweep-table">
           <thead>
             <tr>
-              <th className="col-sel"><input type="checkbox" title="select / deselect this page (⇧x)" checked={pageRows.length > 0 && pageRows.every(r => selected.has(r.prefix))} onChange={() => toggle(pageRows.map(r => r.prefix))} /></th>
+              <th className="col-sel"><input type="checkbox" title="select / deselect this page (⇧x)" checked={sel.pageAll} onChange={sel.togglePage} /></th>
               <th>band</th>
               <th className="num">
                 <Tooltip content={<>The band's net size. The <span className="warn-ink">yellow ✓</span> approves the <b>whole band</b> for deletion — other users' and unowned data included (skips the ownership gate).</>}>
@@ -364,7 +385,7 @@ export function SweepPage() {
                 </Tooltip>
               </th>
               <th className="num">
-                <Tooltip content={<>What an <b>approve slice</b> on this band would actually delete: the executor's ownership gate only deletes directories <b>majority-owned by the band's sweeper</b> (per the scan's path index). Other users' and unowned/mixed directories are deferred to their own votes. Estimate is gross (kept data inside still counts toward it), capped at the band's net size; the dry-run gives exact numbers. The <span className="go-ink">green ✓</span> approves this slice.</>}>
+                <Tooltip content={<>What an <b>approve slice</b> would delete: the <i>sweeper's own data</i> under the band (other users' and unowned data is deferred — expand a band to see whose). A gross estimate capped at the band size; the dry run gives exact numbers. The <span className="go-ink">green ✓</span> approves this slice.</>}>
                   <span className="hashelp">≈ deletable</span>
                 </Tooltip>
               </th>
@@ -380,12 +401,17 @@ export function SweepPage() {
               // recency (staleness is the case for deletion).
               const drill = '/' + c.prefix.replace(/^gs:\/\//, '').replace(/\/$/, '')
                 + '?c=read' + (c.sweepers.length === 1 ? `&o=${encodeURIComponent(c.sweepers[0])}` : '')
-              const cls = [a ? 'approved' : c.owner_match ? 'matched' : '', selected.has(c.prefix) ? 'sel' : '', i === cursor ? 'cur' : ''].filter(Boolean).join(' ')
+              const cls = [a ? 'approved' : c.owner_match ? 'matched' : '', sel.rowClass(c, i)].filter(Boolean).join(' ')
               return (
-                <tr key={c.prefix} ref={el => { rowRefs.current[i] = el }} className={cls} onClick={e => rowClick(i, e)}
+                <Fragment key={c.prefix}>
+                <tr ref={sel.rowRef(i)} className={cls} onClick={e => sel.rowClick(i, e)}
                     onMouseDown={e => { if (e.shiftKey) e.preventDefault() }}>
                   <td className="col-sel"><input type="checkbox" checked={selected.has(c.prefix)} onChange={() => toggle([c.prefix])} /></td>
-                  <td><Link to={drill}><code>{c.prefix.replace('gs://', '')}</code></Link></td>
+                  <td>
+                    <button type="button" className={`caret${expanded.has(c.prefix) ? ' open' : ''}`} aria-expanded={expanded.has(c.prefix)}
+                      title="show the non-sweeper data inside this band" onClick={e => { e.stopPropagation(); toggleExpand(c.prefix) }}>▸</button>
+                    <Link to={drill}><code>{c.prefix.replace('gs://', '')}</code></Link>
+                  </td>
                   <td className="num">
                     <span className="nb">
                       {tb(c.net_bytes)}
@@ -400,7 +426,7 @@ export function SweepPage() {
                     <span className="nb">
                       {cap == null ? <span className="dim">—</span> : tb(cap)}
                       {canWrite && !a && (
-                        <Tooltip content={<>Approve the <b>sweeper's slice</b>: the executor deletes only directories majority-owned by {c.sweepers.join(', ')}{cap != null && <> — ≈<b>{tb(cap)}</b> of {tb(c.net_bytes)}</>}. Data owned by other users, or unowned, is deferred to their own votes — never deleted by this approval.</>}>
+                        <Tooltip content={<>Approve <b>{c.sweepers.map(shortName).join(', ')}</b>'s slice{cap != null && <> — ≈<b>{tb(cap)}</b> of {tb(c.net_bytes)}</>}. Everyone else's data is deferred. Click the band to see exactly what's inside.</>}>
                           <button className="mini ico go" disabled={busy} onClick={() => approve.mutate({ cs: [c], mode: 'slice' })}>✓</button>
                         </Tooltip>
                       )}
@@ -411,34 +437,53 @@ export function SweepPage() {
                   <td>
                     {c.owner_match ? (
                       // The sweeper owns the band: one chip (in "swept by") is enough.
-                      <span className="match-tag nb">= sweeper{c.share != null && c.share < 0.995 && <> · {(c.share * 100).toFixed(0)}%</>}</span>
+                      <Tooltip content={<><b>{c.sweepers.map(shortName).join(', ')}</b> is the top owner here. Slice deletes ≈<b>{cap != null ? tb(cap) : tb(c.net_bytes)}</b> of {tb(c.net_bytes)}; the rest is deferred. Click the band to inspect what's inside.</>}>
+                        <span className="match-tag nb">= sweeper{c.share != null && c.share < 0.995 && <> · {(c.share * 100).toFixed(0)}%</>}</span>
+                      </Tooltip>
                     ) : c.top_user ? (
-                      <>
-                        <UserChip who={c.top_user} size={16} />
-                        {c.share != null && <span className="pct nb"> {(c.share * 100).toFixed(0)}%</span>}
-                      </>
-                    ) : <span className="dim">unowned</span>}
+                      <Tooltip content={<>Top owner here is <b>{shortName(c.top_user)}</b>{c.share != null && <> ({(c.share * 100).toFixed(0)}% of the band)</>}, <b>not</b> the sweeper — so slice deletes little or none{cap != null && cap > 0 && <> (≈{tb(cap)})</>}. Deleting the rest needs a <b>full</b> approval (everyone's data). Click the band to inspect.</>}>
+                        <span className="nb">
+                          <UserChip who={c.top_user} size={16} />
+                          {c.share != null && <span className="pct"> {(c.share * 100).toFixed(0)}%</span>}
+                        </span>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip content={<>No attributed owner for this band's bytes — nothing is slice-deletable; it would only go under a <b>full</b> approval.</>}>
+                        <span className="dim">unowned</span>
+                      </Tooltip>
+                    )}
                   </td>
                   <td>
                     {a ? (
                       <>
                         {a.mode === 'full'
-                          ? <Tooltip content={<>Approved in <b>full</b> mode: the ENTIRE band is deletable — including data owned by other users or unowned. The ownership gate is skipped for this band.</>}>
-                              <span className="warn-tag">approved · FULL</span>
+                          ? <Tooltip content={<>Approved · <b>FULL</b> band: the ENTIRE band is deletable — including data owned by other users or unowned. The ownership gate is skipped for this band.</>}>
+                              <span className="appr-ico warn" aria-label="Approved — full band">✓</span>
                             </Tooltip>
-                          : <Tooltip content={<>Approved in <b>slice</b> mode: only directories majority-owned by the sweeper ({c.sweepers.join(', ')}) are deletable{cap != null && <> — ≈{tb(cap)} of {tb(c.net_bytes)}</>}. Everyone else's data in this band stays.</>}>
-                              <span className="ok">approved</span>
+                          : <Tooltip content={<>Approved · <b>slice</b>: deletes {c.sweepers.map(shortName).join(', ')}'s data{cap != null && <> (≈{tb(cap)} of {tb(c.net_bytes)})</>}; everyone else's stays. Expand the band to see whose.</>}>
+                              <span className="appr-ico go" aria-label="Approved — slice">✓</span>
                             </Tooltip>}
                         {' '}<Tooltip content={<>approved by <b>{shortName(a.who)}</b> · {when(a.ts)} UTC · {a.mode === 'full' ? 'full band' : 'slice'}</>}>
                           <span className="approver"><Avatar github={ghHandle(a.who)} name={shortName(a.who)} size={16} /></span>
                         </Tooltip>
-                        {canWrite && <button className="mini" disabled={busy} onClick={() => revoke.mutate([c.prefix])}>revoke</button>}
+                        {canWrite && (
+                          <Tooltip content={<>Revoke this approval — the band goes back to the todo backlog.</>}>
+                            <button className="mini ico danger revoke" disabled={busy} aria-label="Revoke approval" onClick={() => revoke.mutate([c.prefix])}><MdUndo /></button>
+                          </Tooltip>
+                        )}
                       </>
                     ) : (
                       <span className="dim">—</span>
                     )}
                   </td>
                 </tr>
+                {expanded.has(c.prefix) && (
+                  <tr className="band-detail">
+                    <td />
+                    <td colSpan={7}><BandConflicts prefix={c.prefix} scan={candsQ.data?.scan} sweepers={c.sweepers} /></td>
+                  </tr>
+                )}
+                </Fragment>
               )
             })}
           </tbody>
@@ -575,7 +620,7 @@ export function SweepPage() {
                 <td className="num">{r.skipped_overwritten.toLocaleString()}</td>
                 <td className="num">{r.drift_dirs + r.ledger_drift_dirs}</td>
                 <td>{r.mode === 'real' ? when(r.undo_deadline) : '—'}</td>
-                <td><Link to={`/files/${r.log_dir.replace('gs://oa-gcs-usage-dvx/', '')}${r.mode === 'real' ? 'deleted' : 'would-delete'}/`}>parquet →</Link></td>
+                <td><Link to={`/files/${r.log_dir.replace('gs://oa-gcs-usage-dvx/', '').replace(/\/?$/, '/')}${r.mode === 'real' ? 'deleted' : 'would-delete'}/`}>parquet →</Link></td>
               </tr>
             ))}
           </tbody>
