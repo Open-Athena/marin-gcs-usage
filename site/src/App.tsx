@@ -397,7 +397,9 @@ function AppContent() {
     if (!baseTree) return null
     const graftAt = (t: TreeNode, segs: string[], sub: TreeNode): TreeNode => {
       const rec = (n: TreeNode, i: number): TreeNode => {
-        if (i === segs.length) return { ...n, c: sub.c } // keep own totals; adopt finer children
+        // Keep own totals; adopt the finer children — and the response root's
+        // extras (`k`, `pv`), which a parent-level view may have skipped.
+        if (i === segs.length) return { ...n, c: sub.c, ...(sub.k != null ? { k: sub.k } : {}), ...(sub.pv ? { pv: sub.pv } : {}) }
         const seg = segs[i]
         const kids = n.c ?? []
         if (kids.some(k => k.n === seg)) return { ...n, c: kids.map(k => (k.n === seg ? rec(k, i + 1) : k)) }

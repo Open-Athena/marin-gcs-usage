@@ -375,10 +375,13 @@ const CKPT_SEG_RE = /^(step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?\d+/i
 // accepts KLC anywhere). Better still would be an ahead-of-time flag on each
 // index row (specs/children-table-selection.md § later).
 const CKPT_NAME_RE = /(^|[-_.])(ckpts?|checkpoints?)([-_.]|$)/i
+// The child must BE a checkpoints dir, not merely mention one: eval-output
+// dirs are named after checkpoint paths (`gs__…__checkpoints__…__step-600`).
+const CKPT_DIR_RE = /^(ckpts?|checkpoints?)$/i
 export const looksCkpt = (n: TreeNode, _uri?: string): boolean =>
   n.k === 1 ||
   CKPT_NAME_RE.test(n.n) ||
-  (n.c ?? []).some(c => CKPT_NAME_RE.test(c.n)) ||
+  (n.c ?? []).some(c => CKPT_DIR_RE.test(c.n)) ||
   (n.c ?? []).filter(c => CKPT_SEG_RE.test(c.n)).length >= 2
 
 /** Reviewed = covered by any mark (deepest-wins ancestor or own). */

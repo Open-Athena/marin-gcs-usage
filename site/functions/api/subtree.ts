@@ -16,6 +16,7 @@ import { parseFates } from '../_lib/fates.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, parseQuery, classKey, parseClasses } from '../_lib/scope.js'
+import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 
 const CACHE = 'private, max-age=86400' // immutable per scan; browser may hold it
@@ -62,10 +63,10 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
 
   // The mark axis folds the live ledger: its cache key carries the head.
   // …and so does a user lens (claims repaint attribution).
-  const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
+  const [head, xtra] = await Promise.all([(fates || lens) && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date)])
   const cacheKey = new Request(
     `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
-      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)

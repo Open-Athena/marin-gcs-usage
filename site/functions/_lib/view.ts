@@ -24,7 +24,7 @@ import { ownerLens, type OwnerLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { markClaims, markTotals } from './totals.js'
 import { shared } from './shared.js'
-import { extras } from './extras.js'
+import { CKPT_NAME_RE, extrasFor } from './extras.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -521,7 +521,7 @@ const rootName = (path: string) => (path === '' ? 'marin GCS' : path.split('/').
 export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
-  const [v, ex] = await Promise.all([readView(env, o), extras(env, o.date)])
+  const [v, ex] = await Promise.all([readView(env, o), extrasFor(env, o.date, path)])
   if (!v) {
     return { tree: { n: rootName(path), b: 0, o: 0 }, tier: 'none', index: 'none', threshold: 0, nodes: 0, truncated: false, ...(query ? { matches: [] } : {}) }
   }
@@ -540,7 +540,9 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     // Index extras (specs/index-extras.md): the checkpoint-shape verdict and
     // the top owner's provenance, when the scan's generation carries them.
     if (ex) {
-      if (ex.ck.has(p)) node.k = 1
+      // The sidecar carries the child-based verdicts; a dir whose own name
+      // says checkpoint is decided here (same rule as the client's).
+      if (ex.ck.has(p) || CKPT_NAME_RE.test(p.slice(p.lastIndexOf('/') + 1))) node.k = 1
       let top: string | null = null
       let topB = 0
       for (const [u, b] of Object.entries(a.ub)) if (b > topB) { top = u; topB = b }
