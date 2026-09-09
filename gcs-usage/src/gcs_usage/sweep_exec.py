@@ -231,7 +231,11 @@ def execute_plan(
         log_path = f"{plan_dir}/{mode}/{bucket}.parquet"
         lfs, lpath = fsspec.core.url_to_fs(log_path)
         lfs.makedirs(lpath.rsplit("/", 1)[0], exist_ok=True)
-        pq.write_table(pa.Table.from_pylist(rows, schema=log_schema), lpath, filesystem=lfs)
+        # Small row groups: the site's parquet viewer pages *within* a row
+        # group, so a 1M-row group (~27 MB) is fetched to show 100 rows. 64k
+        # rows (~1.7 MB) keeps a page cheap; the file is written once, read
+        # many times.
+        pq.write_table(pa.Table.from_pylist(rows, schema=log_schema), lpath, filesystem=lfs, row_group_size=65_536)
         summary["buckets"][bucket] = {
             "decisions": dict(counts),
             "delete_bytes": total_deleted_b,
