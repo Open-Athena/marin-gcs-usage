@@ -108,6 +108,10 @@ def execute_plan(
         # search — no per-root scans, no per-dir DataFrame dict.
         with fs.open(mpath, "rb") as fh:  # deterministic close: see `sweep manifest`
             mt = pq.read_table(fh, columns=["name", "size_bytes", "created", "dir"])
+        # `string` columns carry 32-bit offsets: `take` over 35M ~100-byte names
+        # concatenates past 2 GB and fails ("offset overflow") — widen first.
+        for col in ("name", "dir"):
+            mt = mt.set_column(mt.schema.get_field_index(col), col, pc.cast(mt[col], pa.large_string()))
         mt = mt.take(pc.sort_indices(mt, sort_keys=[("name", "ascending")]))
         if for_real:
             _require_soft_delete(client, bucket, min_soft_delete_days)
