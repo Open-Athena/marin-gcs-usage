@@ -54,7 +54,7 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
       taskCount: 1,
       taskSpec: {
         runnables: [{ container: { imageUri: IMAGE, entrypoint: '/bin/bash', commands: ['-c', script] } }],
-        computeResource: { cpuMilli: 8000, memoryMib: 28000 },
+        computeResource: { cpuMilli: 8000, memoryMib: 60000 },
         maxRetryCount: 0,
         maxRunDuration: '14400s',
         environment: {
@@ -72,7 +72,7 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
       },
     }],
     allocationPolicy: {
-      instances: [{ policy: { machineType: 'n2-standard-8', bootDisk: { type: 'pd-balanced', sizeGb: '100' } } }],
+      instances: [{ policy: { machineType: 'n2-highmem-8', bootDisk: { type: 'pd-balanced', sizeGb: '100' } } }],
       serviceAccount: { email: JOB_SA },
       location: { allowedLocations: [`regions/${REGION}`] },
     },
