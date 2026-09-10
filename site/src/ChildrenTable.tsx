@@ -8,8 +8,8 @@ import { ACTION_COLORS, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip } from './MarkCon
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { OwnerBar, ownerShares } from './OwnerBar'
-import { fateAllowed, looksCkpt, subtreeFateTotals } from './sweep'
-import type { Fate, FateAxis, KlcIndex } from './sweep'
+import { markAllowed, looksCkpt, subtreeStateTotals } from './sweep'
+import type { MarkState, MarkAxis, KlcIndex } from './sweep'
 import { Tooltip } from './Tooltip'
 import { elideMid } from './CopyName'
 import { AssignSelect } from './AssignSelect'
@@ -32,7 +32,7 @@ const PAGE_SIZES = [20, 50, 100, 200]
  *  tooltip); ~60 chars fills the column's 480px at 12px mono. */
 const NAME_MAX = 60
 
-export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, userIdx, onPickUser, onOpen }: {
+export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, userIdx, onPickUser, onOpen }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
@@ -43,7 +43,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
   klcIdx?: KlcIndex
   /** The page's mark-state axis: list only children whose effective decision
    * is in it (`{unmarked}` = the old To-do lens). Absent = every child. */
-  fates?: ReadonlySet<FateAxis> | null
+  states?: ReadonlySet<MarkAxis> | null
   userIdx?: Map<string, UserIndexEntry>
   onPickUser?: (u: string) => void
   onOpen: (segs: string[]) => void
@@ -61,8 +61,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
   const kids = useMemo(() => {
     let ks = (node.c ?? []).slice()
     // Mark axis: keep only real children whose effective decision is in it.
-    if (fates && markIdx) {
-      ks = ks.filter(k => !k.n.startsWith('(') && fateAllowed(markIdx.resolve(scheme + [...segs, k.n].join('/')).mark?.action ?? 'unmarked', fates))
+    if (states && markIdx) {
+      ks = ks.filter(k => !k.n.startsWith('(') && markAllowed(markIdx.resolve(scheme + [...segs, k.n].join('/')).mark?.action ?? 'unmarked', states))
     }
     const dir = sort.asc ? 1 : -1
     const val = (n: TreeNode): number | string =>
@@ -76,9 +76,9 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
       const vb = val(b)
       return (typeof va === 'string' ? (va as string).localeCompare(vb as string) : (va as number) - (vb as number)) * dir
     })
-  }, [node, sort, fates, markIdx, scheme, segs])
+  }, [node, sort, states, markIdx, scheme, segs])
   // A new listing (drill, sort, lens) starts on page 1.
-  useEffect(() => setPage(0), [node, sort, fates])
+  useEffect(() => setPage(0), [node, sort, states])
 
   // Created-month ink: an age gradient over the listed rows' range, so a
   // column of "May / Jun / Apr" also reads at a glance as older ↔ newer.
@@ -89,8 +89,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
   const ageInk = (d: number) => dateColor(dMax > dMin ? (d - dMin) / (dMax - dMin) : 1)
 
   if (!kids.length) {
-    return fates
-      ? <section className="children-tbl"><p className="tab-note">No prefix under this view is {[...fates].join(' / ')}.</p></section>
+    return states
+      ? <section className="children-tbl"><p className="tab-note">No prefix under this view is {[...states].join(' / ')}.</p></section>
       : null
   }
   const th = (k: SortKey, label: string, num = true) => (
@@ -156,31 +156,31 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
   const clearOnDeadClick = (e: MouseEvent) => {
     if (sel.selected.size && !(e.target as HTMLElement).closest('tr, button, input, select, a, .sel-bar')) sel.clear()
   }
-  // One small dot per decision, colored by fate: filled = this row's OWN
+  // One small dot per decision, colored by state: filled = this row's OWN
   // mark, dashed = the mark it inherits from above, hollow = available.
   const dot = (uri: string, a: MarkAction, st: 'own' | 'inh' | null, tip: string) => (
     <Tooltip content={<>{st === 'own' ? 'Marked ' : st === 'inh' ? 'Inherits ' : 'Mark '}<b>{ACTION_LABELS[a]}</b>{st === 'inh' ? ' from a directory above (click to set it here)' : ''}<div className="how">{tip}</div></>} key={a}>
       <button type="button" className={`dot ${a}${st === 'own' ? ' on' : st === 'inh' ? ' inh' : ''}`} style={{ ['--act' as string]: ACTION_COLORS[a] }} onClick={() => mark(uri, a)} aria-label={ACTION_LABELS[a]} />
     </Tooltip>
   )
-  // Fate of the bytes UNDER a row: keep / last-ckpt / sweep / undecided, as a
+  // MarkState of the bytes UNDER a row: keep / last-ckpt / sweep / undecided, as a
   // bar — a directory is rarely one thing (an inherited keep with swept
   // subtrees, a KLC with its kept step), and a single word hid that.
-  const FATE_COLORS: Record<Fate, string> = { keep: ACTION_COLORS.keep, keep_last_ckpt: ACTION_COLORS.keep_last_ckpt, sweep: ACTION_COLORS.sweep, unmarked: 'var(--other)' }
-  const FATE_LABELS: Record<Fate, string> = { keep: 'keep', keep_last_ckpt: 'last ckpt', sweep: 'sweep', unmarked: 'undecided' }
-  const fateBar = (k: TreeNode, uri: string) => {
+  const STATE_COLORS: Record<MarkState, string> = { keep: ACTION_COLORS.keep, keep_last_ckpt: ACTION_COLORS.keep_last_ckpt, sweep: ACTION_COLORS.sweep, unmarked: 'var(--other)' }
+  const STATE_LABELS: Record<MarkState, string> = { keep: 'keep', keep_last_ckpt: 'last ckpt', sweep: 'sweep', unmarked: 'undecided' }
+  const stateBar = (k: TreeNode, uri: string) => {
     if (!markIdx || !k.b) return <span className="none">—</span>
-    const f = subtreeFateTotals(k, uri, markIdx, klcIdx)
-    const parts = (Object.keys(f) as Fate[]).filter(x => f[x] > 0)
+    const f = subtreeStateTotals(k, uri, markIdx, klcIdx)
+    const parts = (Object.keys(f) as MarkState[]).filter(x => f[x] > 0)
     return (
       <Tooltip content={
         <span className="own-tip">
           <div>Bytes under this directory by decision:</div>
-          {parts.map(x => <div className="row" key={x}><i style={{ background: FATE_COLORS[x] }} />{FATE_LABELS[x]}<span className="n">{fmtBytes(f[x])} · {Math.round((100 * f[x]) / k.b)}%</span></div>)}
+          {parts.map(x => <div className="row" key={x}><i style={{ background: STATE_COLORS[x] }} />{STATE_LABELS[x]}<span className="n">{fmtBytes(f[x])} · {Math.round((100 * f[x]) / k.b)}%</span></div>)}
         </span>
       }>
-        <span className="own-bar fate-bar" style={{ width: 70 }} aria-label="marks distribution">
-          {parts.map(x => <i key={x} style={{ width: `${(100 * f[x]) / k.b}%`, background: FATE_COLORS[x] }} />)}
+        <span className="own-bar state-bar" style={{ width: 70 }} aria-label="marks distribution">
+          {parts.map(x => <i key={x} style={{ width: `${(100 * f[x]) / k.b}%`, background: STATE_COLORS[x] }} />)}
         </span>
       </Tooltip>
     )
@@ -244,7 +244,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
                     : shares.length ? <OwnerBar node={k} userIdx={userIdx} width={70} onPickUser={onPickUser && !synthetic ? u => { onOpen(kidSegs); onPickUser(u) } : undefined} />
                     : <span className="none">—</span>}
                 </td>
-                {markIdx && <td className="fate">{synthetic ? <span className="none">—</span> : fateBar(k, uri)}</td>}
+                {markIdx && <td className="state">{synthetic ? <span className="none">—</span> : stateBar(k, uri)}</td>}
                 {showActions && (
                   <td className="actions">
                     {synthetic ? null : (

@@ -1,47 +1,47 @@
 /** The mark axis (`k=` ⊆ `ksu`) applied per view node, server-side
  * (specs/view-serving.md §2): of a path's subtree bytes, how many sit under
- * an allowed fate.
+ * an allowed state.
  *
  * Inputs: the per-mark manifest the estate totals already compute per
  * `(scan, ledger head)` (`_lib/totals.ts`): every live mark's subtree bytes,
- * its *band* (bytes minus deeper marks) split by painted fate, and whether a
+ * its *band* (bytes minus deeper marks) split by painted state, and whether a
  * newer ancestor repaints it. From that, any path N's allowed bytes are:
  *
- *   value(N) = [fate(cover N) allowed] · (b(N) − Σ_{m ∈ top(N)} bytes(m))
+ *   value(N) = [state(cover N) allowed] · (b(N) − Σ_{m ∈ top(N)} bytes(m))
  *            + Σ_{m strictly under N} Σ_{f allowed} net_f(m)
  *
  * where cover(N) is the newest ledger row at-or-above N — a mark or a clear
- * (its *effective* fate is N's residual's fate — recency beats specificity;
+ * (its *effective* state is N's residual's state — recency beats specificity;
  * a newer clear above a mark repaints it unmarked), top(N) the outermost rows
  * strictly under N (their subtrees are not N's residual), and every mark
- * under N contributes its band under its *effective* fate (a repainted mark's
+ * under N contributes its band under its *effective* state (a repainted mark's
  * band carries the repainter's). Bands partition the subtree, so this is
  * exact; `keep_last_ckpt` counts as keep ∧ sweep where it can't be split,
- * matching the client's `fateAllowed`. */
+ * matching the client's `markAllowed`. */
 import { canonId } from './identity.js'
-import type { Fate, MarkRow } from './marks.js'
+import type { MarkState, MarkRow } from './marks.js'
 import { idxKey } from './marks.js'
 
-export type FateAxis = 'keep' | 'sweep' | 'unmarked'
-const LETTERS: Record<string, FateAxis> = { k: 'keep', s: 'sweep', u: 'unmarked' }
+export type MarkAxis = 'keep' | 'sweep' | 'unmarked'
+const LETTERS: Record<string, MarkAxis> = { k: 'keep', s: 'sweep', u: 'unmarked' }
 
 /** `k=ksu` letters → the allowed set; all/none/absent → undefined (no scope). */
-export function parseFates(raw: string | null): Set<FateAxis> | undefined {
+export function parseMarkAxes(raw: string | null): Set<MarkAxis> | undefined {
   if (!raw) return undefined
-  const out = new Set<FateAxis>()
+  const out = new Set<MarkAxis>()
   for (const ch of raw) if (LETTERS[ch]) out.add(LETTERS[ch])
   return out.size === 0 || out.size === 3 ? undefined : out
 }
 
-export const fateAllowed = (fate: Fate, allowed: ReadonlySet<FateAxis>): boolean =>
-  fate === 'keep_last_ckpt' ? allowed.has('keep') || allowed.has('sweep') : allowed.has(fate as FateAxis)
+export const markAllowed = (state: MarkState, allowed: ReadonlySet<MarkAxis>): boolean =>
+  state === 'keep_last_ckpt' ? allowed.has('keep') || allowed.has('sweep') : allowed.has(state as MarkAxis)
 
 interface Mark {
   path: string // index key (`marin-b/x/y`)
   ts: number
-  eff: Fate // effective fate of its band (own keep, a repainter's, or unmarked for a clear)
+  eff: MarkState // effective state of its band (own keep, a repainter's, or unmarked for a clear)
   bytes: number // subtree bytes (all owners)
-  net: Record<Fate, number> // band bytes by painted fate
+  net: Record<MarkState, number> // band bytes by painted state
   /** The lens user's share of the band, and of the whole subtree (Σ over
    * marks at-or-under this one) — a lens view's rows are that user's slices,
    * so the fold has to subtract and add the user's bytes, not everyone's. */
@@ -49,13 +49,13 @@ interface Mark {
   ubUnder: number
 }
 
-export interface FateScope {
+export interface MarkScope {
   /** Bytes of `path`'s subtree (`b` = the view's bytes there: everyone's, or
-   * the lens user's) that sit under an allowed fate. */
+   * the lens user's) that sit under an allowed state. */
   value(path: string, b: number): number
 }
 
-export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>, user?: string): FateScope {
+export function markScope(marks: MarkRow[], allowed: ReadonlySet<MarkAxis>, user?: string): MarkScope {
   const userShare = (us: Record<string, number>): number => {
     if (!user) return 0
     let b = 0
@@ -94,7 +94,7 @@ export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>, user
   // share is assumed spread across a decomposed keep_last_ckpt's halves).
   const netAllowed = (m: Mark): number => {
     let s = 0
-    for (const f of Object.keys(m.net) as Fate[]) if (m.net[f] > 0 && fateAllowed(f, allowed)) s += m.net[f]
+    for (const f of Object.keys(m.net) as MarkState[]) if (m.net[f] > 0 && markAllowed(f, allowed)) s += m.net[f]
     if (!user) return s
     const band = bandOf(m)
     return band > 0 ? (s * m.ub) / band : 0
@@ -133,8 +133,8 @@ export function fateScope(marks: MarkRow[], allowed: ReadonlySet<FateAxis>, user
         if (!a || a.path.length <= path.length) topBytes += bytesUnder(m)
       }
       const residual = Math.max(0, b - topBytes)
-      const coverFate: Fate = cover?.eff ?? 'unmarked'
-      return (fateAllowed(coverFate, allowed) ? residual : 0) + sumNet
+      const coverState: MarkState = cover?.eff ?? 'unmarked'
+      return (markAllowed(coverState, allowed) ? residual : 0) + sumNet
     },
   }
 }

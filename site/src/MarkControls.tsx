@@ -13,16 +13,16 @@ import type { UserIndexEntry } from './colors'
 import { ClassBar, OwnerBar, ownerShares } from './OwnerBar'
 
 // Marking UI for one prefix — rendered inside the pinned treemap tooltip and
-// above the map for the current drill root. Shows the node's effective fate
+// above the map for the current drill root. Shows the node's effective state
 // (most-recent-wins over ancestor marks) with provenance, and buttons to
 // set/clear its mark. "No mark" is *undecided* (the review backlog) and
 // renders neutral — never in sweep red, which reads as a sweep decision
-// (the fate chips and rollup use the same ○ / gray). Marking a prefix that
+// (the state chips and rollup use the same ○ / gray). Marking a prefix that
 // has deeper marks inside repaints them (recency beats specificity) — hence
 // the inline override confirm.
 
 // KLC stays amber wherever it renders *as itself* (chips, buttons, history) —
-// green made it indistinguishable from keep. Aggregations (fate cells,
+// green made it indistinguishable from keep. Aggregations (state cells,
 // stripes, rollups) instead *decompose* it into real keep/sweep proportions
 // via `klcSplits` (sweep.ts): last-ckpt child kept, siblings swept.
 export const ACTION_COLORS: Record<MarkAction, string> = {
@@ -105,7 +105,7 @@ export function MarkControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
   // Confirm before doing that to a subtree someone already reviewed.
   const set = (action: MarkAction | null) => (ov.n > 0 ? setPending({ action }) : write(action))
 
-  // The decision as ONE control: a select colored by the current fate.
+  // The decision as ONE control: a select colored by the current state.
   // `keep_last_ckpt` is offered on checkpoint-shaped dirs (and kept visible
   // when it's the current value, so the select never shows a phantom).
   const cur: MarkAction | 'none' = mark?.action ?? 'none'
@@ -115,8 +115,8 @@ export function MarkControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
     ...(klcOk || cur === 'keep_last_ckpt' ? [{ v: 'keep_last_ckpt' as const, label: 'keep last ckpt', tip: KLC_TIP }] : []),
     { v: 'sweep', label: 'sweep', tip: SWEEP_TIP },
   ]
-  const fateTip = (
-    <span className="fate-tip">
+  const stateTip = (
+    <span className="state-tip">
       <div>The keep/sweep decision covering this <b>whole</b> directory — its own mark, or one inherited from a directory above. Usually there is none: decisions live on deeper prefixes (see “marked inside”). Saving one here repaints everything under it.</div>
       {options.map(o => <div key={o.v}><b>{o.label}</b> — {o.tip}</div>)}
       {mark && !own && <div>Saving <b>—</b> explicitly unmarks this subtree, overriding the inherited mark.</div>}
@@ -134,12 +134,12 @@ export function MarkControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
     <div className="mark-controls" onClick={e => e.stopPropagation()}>
       {/* The decision: one select (or, read-only, the word), then where the
           decision came from and what it covers. */}
-      <span className="fate">
-        <Tooltip content={fateTip}><span className="lbl has-tt">mark all</span></Tooltip>
+      <span className="state">
+        <Tooltip content={stateTip}><span className="lbl has-tt">mark all</span></Tooltip>
         {canMark ? (
           <>
             <select
-              className={`fate-sel ${sel}${mark && !own && sel === cur ? ' inh' : ''}${draft && draft !== cur ? ' dirty' : ''}`}
+              className={`state-sel ${sel}${mark && !own && sel === cur ? ' inh' : ''}${draft && draft !== cur ? ' dirty' : ''}`}
               value={sel}
               aria-label="Keep / sweep decision for this whole directory"
               onChange={e => setDraft(e.target.value as MarkAction | 'none')}
@@ -155,7 +155,7 @@ export function MarkControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
             >save</button>
           </>
         ) : (
-          <b className={`fate-word ${cur}`}>{mark ? ACTION_LABELS[mark.action] : '—'}</b>
+          <b className={`state-word ${cur}`}>{mark ? ACTION_LABELS[mark.action] : '—'}</b>
         )}
         {/* Provenance stays one short line; the inherited-from prefix and the
             marker's memo (often a sentence of boilerplate) live in its tooltip,

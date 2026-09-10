@@ -84,16 +84,16 @@ export function collectTodo(root: TreeNode, idx: MarkIndex, minBytes = 20e9): Sw
   return rows.sort((a, b) => b.b - a.b)
 }
 
-// ---- Fast fate walks -------------------------------------------------------
+// ---- Fast state walks -------------------------------------------------------
 // `MarkIndex.resolve` is O(marked prefixes) per call — fine per rendered cell,
 // quadratic-feeling over a whole-tree walk. These walkers instead thread the
 // winning row down the DFS (newest ancestor-or-equal row, same semantics as
 // `resolve`) and answer "any live mark strictly below?" from a precomputed
 // ancestor set, so each node costs O(1).
 
-export type Fate = MarkAction | 'unmarked'
+export type MarkState = MarkAction | 'unmarked'
 
-interface FateWalkCtx {
+interface StateWalkCtx {
   /** Latest live row exactly on this (trailing-`/`) prefix. */
   own: (uri: string) => KeepRow | undefined
   /** Latest live claim exactly on this prefix (when claims are threaded). */
@@ -102,7 +102,7 @@ interface FateWalkCtx {
   below: (uri: string) => boolean
 }
 
-function fateWalkCtx(keeps: Map<string, KeepRow>, owners?: Map<string, OwnerRow>): FateWalkCtx {
+function stateWalkCtx(keeps: Map<string, KeepRow>, owners?: Map<string, OwnerRow>): StateWalkCtx {
   const anc = new Set<string>()
   const addAnc = (prefix: string) => {
     // gs://bucket/a/b/ → ancestors gs://bucket/, gs://bucket/a/
@@ -123,19 +123,19 @@ function fateWalkCtx(keeps: Map<string, KeepRow>, owners?: Map<string, OwnerRow>
 
 /** Newest of the inherited claim and this prefix's own (a newer null-owner
  * row releases inherited claims). */
-const winOwner = (ctx: FateWalkCtx, uri: string, inherited: OwnerRow | null): OwnerRow | null => {
+const winOwner = (ctx: StateWalkCtx, uri: string, inherited: OwnerRow | null): OwnerRow | null => {
   const own = ctx.ownOwner(uri)
   return own && (!inherited || newer(own, inherited)) ? own : inherited
 }
 
 /** Newest of the inherited winner and this prefix's own row (clears count:
  * a newer `keep: null` row repaints inherited marks back to unmarked). */
-const winRow = (ctx: FateWalkCtx, uri: string, inherited: KeepRow | null): KeepRow | null => {
+const winRow = (ctx: StateWalkCtx, uri: string, inherited: KeepRow | null): KeepRow | null => {
   const own = ctx.own(uri)
   return own && (!inherited || newer(own, inherited)) ? own : inherited
 }
 
-const fateOf = (win: KeepRow | null): Fate => win?.keep ?? 'unmarked'
+const stateOf = (win: KeepRow | null): MarkState => win?.keep ?? 'unmarked'
 
 // ---- keep_last_ckpt decomposition -----------------------------------------
 // A KLC mark means "within each checkpoint run under this prefix, keep the
@@ -190,9 +190,9 @@ export function klcSplits(root: TreeNode, keeps: Map<string, KeepRow>): KlcIndex
   return out
 }
 
-/** A klc-governed uri's concrete fate: inside a kept subtree → keep; contains
+/** A klc-governed uri's concrete state: inside a kept subtree → keep; contains
  * kept subtrees → mixed (caller splits by `klcKeptWithin`); else sweep. */
-export const klcFateAt = (uri: string, split: KlcSplit): 'keep' | 'sweep' | 'mixed' => {
+export const klcStateAt = (uri: string, split: KlcSplit): 'keep' | 'sweep' | 'mixed' => {
   const u = normUri(uri)
   if (split.kept.some(k => u.startsWith(k.uri))) return 'keep'
   if (split.kept.some(k => k.uri.startsWith(u))) return 'mixed'
@@ -208,35 +208,35 @@ export const klcKeptWithin = (uri: string, split: KlcSplit): number => {
 /** The mark-state axis the page filters on: `keep`/`sweep` are effective
  * decisions (a `keep_last_ckpt` mark counts as both — it splits its subtree),
  * `unmarked` is the review backlog. */
-export type FateAxis = 'keep' | 'sweep' | 'unmarked'
-export const FATE_AXES: FateAxis[] = ['keep', 'sweep', 'unmarked']
+export type MarkAxis = 'keep' | 'sweep' | 'unmarked'
+export const MARK_AXES: MarkAxis[] = ['keep', 'sweep', 'unmarked']
 
-/** Does a prefix's effective fate fall inside the page's mark-state axis? */
-export const fateAllowed = (fate: Fate, allowed: ReadonlySet<FateAxis>): boolean =>
-  fate === 'keep_last_ckpt' ? allowed.has('keep') || allowed.has('sweep') : allowed.has(fate)
+/** Does a prefix's effective state fall inside the page's mark-state axis? */
+export const markAllowed = (state: MarkState, allowed: ReadonlySet<MarkAxis>): boolean =>
+  state === 'keep_last_ckpt' ? allowed.has('keep') || allowed.has('sweep') : allowed.has(state)
 
 /**
  * Scope the map to the mark states in `allowed` (the page's mark axis —
  * `{unmarked}` is the old To-do lens): prune any subtree whose effective
- * decision falls outside it, keep uniformly-fated subtrees whole, recurse into
+ * decision falls outside it, keep uniformly-decided subtrees whole, recurse into
  * mixed ones and re-aggregate ancestors. Folded `(other)` tiles inside mixed
  * nodes are dropped — the tree can't say what's inside them.
  */
 /**
- * Per-user bytes by fate across the whole tree, in one walk: descend only
+ * Per-user bytes by state across the whole tree, in one walk: descend only
  * while a subtree still holds deeper marks; at each settle point distribute
  * the node's `us` shares (minus what descended into recursed children — so
- * folded tiles and floor residue take the node's own fate).
+ * folded tiles and floor residue take the node's own state).
  */
-/** One user's bytes by fate, plus the storage-class mix behind each fate
+/** One user's bytes by state, plus the storage-class mix behind each state
  * (class id → bytes; STANDARD = "1") so keep / sweep / undecided can be priced
  * like Attributed is. A user's share of a node is assumed to carry the node's
  * class mix (the tree has no per-user class split). */
-export interface UserFates extends Record<Fate, number> {
-  mix: Record<Fate, Record<string, number>>
+export interface UserStates extends Record<MarkState, number> {
+  mix: Record<MarkState, Record<string, number>>
 }
 
-export function allUserFates(
+export function allUserStates(
   root: TreeNode,
   idx: MarkIndex,
   klc?: KlcIndex,
@@ -244,13 +244,13 @@ export function allUserFates(
    * ownership WAL — a claimed subtree attributes wholly to its claimant,
    * overriding scan attribution until the pipeline catches up. */
   canon: (who: string) => string = w => w,
-): Map<string, UserFates> {
-  const ctx = fateWalkCtx(idx.keeps, idx.owners)
-  const out = new Map<string, UserFates>()
+): Map<string, UserStates> {
+  const ctx = stateWalkCtx(idx.keeps, idx.owners)
+  const out = new Map<string, UserStates>()
   // `mix` is the class mix of the bytes being settled at this point (the
   // node's, or the residue left after recursed children); the user's `b` is
   // spread over it pro rata.
-  const add = (u: string, f: Fate, b: number, mix: Record<string, number>, mixB: number) => {
+  const add = (u: string, f: MarkState, b: number, mix: Record<string, number>, mixB: number) => {
     let rec = out.get(u)
     if (!rec) out.set(u, (rec = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0, mix: { keep: {}, keep_last_ckpt: {}, sweep: {}, unmarked: {} } }))
     rec[f] += b
@@ -258,12 +258,12 @@ export function allUserFates(
   }
   // Settle `each(f, frac)` bytes at `uri` under `win` — KLC decomposes into
   // its real keep/sweep proportions when the split is resolvable.
-  const settle = (uri: string, nodeB: number, win: KeepRow | null, each: (f: Fate, frac: number) => void) => {
-    const f = fateOf(win)
+  const settle = (uri: string, nodeB: number, win: KeepRow | null, each: (f: MarkState, frac: number) => void) => {
+    const f = stateOf(win)
     if (f !== 'keep_last_ckpt' || !klc) return each(f, 1)
     const split = klc.get(win!.prefix.endsWith('/') ? win!.prefix : win!.prefix + '/')
     if (!split) return each(f, 1)
-    const rel = klcFateAt(uri, split)
+    const rel = klcStateAt(uri, split)
     if (rel !== 'mixed') return each(rel, 1)
     const ratio = nodeB > 0 ? Math.min(1, klcKeptWithin(uri, split) / nodeB) : 0
     each('keep', ratio)
@@ -302,27 +302,27 @@ export function allUserFates(
 }
 
 /**
- * Fate totals (bytes) for one subtree — the "of the current view, how much is
+ * MarkState totals (bytes) for one subtree — the "of the current view, how much is
  * keep / sweep / undecided" rollup. `uri` is the node's full URI (`''` for
  * the artifact root, whose children are buckets); marks inherited from
  * ancestors of `uri` are folded in. KLC decomposes via `klc` when given —
  * bytes under an unresolvable KLC mark stay in `keep_last_ckpt`.
  */
-export function subtreeFateTotals(
+export function subtreeStateTotals(
   node: TreeNode,
   uri: string,
   idx: MarkIndex,
   klc?: KlcIndex,
-): Record<Fate, number> {
-  const ctx = fateWalkCtx(idx.keeps)
-  const out: Record<Fate, number> = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
+): Record<MarkState, number> {
+  const ctx = stateWalkCtx(idx.keeps)
+  const out: Record<MarkState, number> = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
   const settle = (u: string, b: number, win: KeepRow | null) => {
     if (b <= 0) return
-    const f = fateOf(win)
+    const f = stateOf(win)
     if (f !== 'keep_last_ckpt' || !klc) { out[f] += b; return }
     const split = klc.get(win!.prefix.endsWith('/') ? win!.prefix : win!.prefix + '/')
     if (!split) { out[f] += b; return }
-    const rel = klcFateAt(u, split)
+    const rel = klcStateAt(u, split)
     if (rel === 'keep') out.keep += b
     else if (rel === 'sweep') out.sweep += b
     else {

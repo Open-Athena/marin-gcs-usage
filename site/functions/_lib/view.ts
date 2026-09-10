@@ -18,7 +18,7 @@
  * (or a scan without coarse tiers) reads the floor-free tier.
  */
 import type { Env } from './auth.js'
-import { type FateAxis, fateScope, type FateScope } from './fates.js'
+import { type MarkAxis, markScope, type MarkScope } from './markAxes.js'
 import { type IndexHandle, type Lens, openIndex, readRects, readRows, type Rect, type Row } from './index.js'
 import { ownerLens, type OwnerLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
@@ -66,8 +66,8 @@ export interface ViewOpts {
    * one depth-band read that the client shows while the full tree loads, and
    * the full tree then fills in under tiles that don't move. */
   maxDepth?: number
-  /** `k=` ⊆ keep/sweep/unmarked: bytes under an allowed fate, per node. */
-  fates?: ReadonlySet<FateAxis>
+  /** `k=` ⊆ keep/sweep/unmarked: bytes under an allowed state, per node. */
+  states?: ReadonlySet<MarkAxis>
   /** `q=`: name filter over the read rows' paths (see `scope.ts`). */
   query?: NamePred
 }
@@ -277,9 +277,9 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
     path === '' ? readRows(idx, 1, 1, '', '￿', undefined, lens) : readRows(idx, dP, dP, path, path, undefined, lens)
   // The mark axis needs the ledger folded against this scan (cached per
   // (scan, head) by the totals machinery); per node it scales the aggregate
-  // to its allowed-fate share. Rows are read by TOTAL bytes at the scoped
+  // to its allowed-state share. Rows are read by TOTAL bytes at the scoped
   // threshold, so the read is a superset of what the scope keeps.
-  const fs: FateScope | null = o.fates ? fateScope((await markTotals(env, date)).marks, o.fates, lens?.key) : null
+  const fs: MarkScope | null = o.states ? markScope((await markTotals(env, date)).marks, o.states, lens?.key) : null
   // A user lens applies the ownership ledger: claims repaint attribution, so
   // U's bytes under a path can include other people's slices (a band U
   // claimed) or lose U's own (a band someone else claimed). Where the former
@@ -296,9 +296,9 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   const regions: { path: string; depth: number }[] = rootTotal
     ? [{ path, depth: dP }]
     : [...allRegions].sort((a, b) => b.all - a.all).slice(0, REGION_READS)
-  // Owner pools filter rows (they are owner slices); the fate share is then
+  // Owner pools filter rows (they are owner slices); the state share is then
   // computed on the node's total and applied to the pool's share — assumes
-  // fates are spread like ownership inside a node. Under a lens the fate
+  // states are spread like ownership inside a node. Under a lens the state
   // fold already works in U's bytes (per-band `us`), so its share is taken
   // of U's lens bytes.
   const scoped = (p: string, all: Agg | null, mine: Agg | null): Agg => {
@@ -393,7 +393,7 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
     ? { dLo: dP + 1, dHi: 1e9, pLo, pHi }
     : { dLo: r.depth, dHi: 1e9, pLo: r.path, pHi: r.path + '0' })
   const allRows = regionRects.length ? await readRects(pick.all!, regionRects, thrAt) : []
-  const allAggs = new Map<string, Agg>() // totals per path (the fate share's denominator; a lens: only inside its regions)
+  const allAggs = new Map<string, Agg>() // totals per path (the state share's denominator; a lens: only inside its regions)
   const mineAggs = new Map<string, Agg | null>() // the sort's own rows per path (U's slice, or the pool's); null = unread
   const aggDepth = new Map<string, number>()
   for (const r0 of rows) {

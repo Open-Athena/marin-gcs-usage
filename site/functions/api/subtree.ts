@@ -12,7 +12,7 @@
  * w/h arrive quantized-up to 128px so resizes mostly re-hit the cache.
  */
 import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
-import { parseFates } from '../_lib/fates.js'
+import { parseMarkAxes } from '../_lib/markAxes.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, parseQuery, classKey, parseClasses } from '../_lib/scope.js'
@@ -51,7 +51,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const by = url.searchParams.get('by') ?? undefined
   // `depth=N`: cap the read N levels below the root (see ViewOpts.maxDepth).
   const depth = Number(url.searchParams.get('depth')) || undefined
-  const fates = parseFates(url.searchParams.get('k'))
+  const states = parseMarkAxes(url.searchParams.get('k'))
   const classes = parseClasses(url.searchParams.get('cl'))
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
@@ -63,17 +63,17 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
 
   // The mark axis folds the live ledger: its cache key carries the head.
   // …and so does a user lens (claims repaint attribution).
-  const [head, xtra] = await Promise.all([(fates || lens) && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date)])
+  const [head, xtra] = await Promise.all([(states || lens) && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date)])
   const cacheKey = new Request(
     `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
-      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
 
   try {
-    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, fates, query, classes })
+    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, states, query, classes })
     const body = JSON.stringify({
       date,
       path,
@@ -88,7 +88,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       nodes: view.nodes,
       truncated: view.truncated,
       ...(owner ? { owner } : {}),
-      ...(fates ? { fates: [...fates].sort() } : {}),
+      ...(states ? { states: [...states].sort() } : {}),
       ...(query ? { q: qRaw, matches: view.matches } : {}),
       tree: view.tree,
     })

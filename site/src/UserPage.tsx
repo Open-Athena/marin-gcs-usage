@@ -8,7 +8,7 @@ import { Avatar } from './Avatar'
 import { ACTION_COLORS, fmtMarkDate } from './MarkControls'
 import { ACTION_LABELS, useMarkIndex, useMarks, type Mark, type MarkAction } from './marks'
 import { DEFAULT_STORE } from './stores'
-import { type Fate, type UserFates } from './sweep'
+import { type MarkState, type UserStates } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
 import { ScanPicker } from './ScanPicker'
 import { SiteNav } from './SiteNav'
@@ -27,16 +27,16 @@ import {
 // Per-user estate pages (the view Ahmed went looking for and couldn't find):
 // `/users` ranks everyone by attributed bytes; `/user/:id` answers "of my
 // N TiB, what's keep-marked, what's sweep-marked, and what's still undecided?"
-// — the fate rollup the map's per-prefix chips never total up.
+// — the state rollup the map's per-prefix chips never total up.
 //
 // Everything here is folded server-side from the index tiers and the live
 // ledger (`/api/estate`, `/api/marks/totals`, the user lens of
 // `/api/subtree`): the same numbers the map's rollup and `/users` show, with
 // no scan tree on the client (specs/view-serving.md §2).
 
-interface FateRow {
+interface StateRow {
   uri: string          // marked prefix (decided) or maximal clean subtree (unmarked)
-  fate: Fate
+  state: MarkState
   b: number            // this user's bytes governed by the row
   mark: Mark | null
 }
@@ -45,11 +45,11 @@ interface FateRow {
 // wherever the step dirs are in view; only bytes under *unresolvable* KLC
 // marks reach this fold, where they count as keep. Individual mark rows still
 // show the first-class amber "keep last ckpt".
-export type ShownFate = 'keep' | 'sweep' | 'unmarked'
-const SHOWN_FATES: ShownFate[] = ['keep', 'sweep', 'unmarked']
-const ALL_FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
-const FATE_ORDER_TOTAL = (f: Record<Fate, number>): number => ALL_FATES.reduce((s, k) => s + f[k], 0)
-const foldFates = (f: Record<Fate, number>): Record<ShownFate, number> => ({
+export type ShownState = 'keep' | 'sweep' | 'unmarked'
+const SHOWN_STATES: ShownState[] = ['keep', 'sweep', 'unmarked']
+const ALL_STATES: MarkState[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
+const STATE_ORDER_TOTAL = (f: Record<MarkState, number>): number => ALL_STATES.reduce((s, k) => s + f[k], 0)
+const foldStates = (f: Record<MarkState, number>): Record<ShownState, number> => ({
   keep: f.keep + f.keep_last_ckpt,
   sweep: f.sweep,
   unmarked: f.unmarked,
@@ -59,19 +59,19 @@ const addMix = (into: ClassMix, m: ClassMix): ClassMix => {
   for (const [c, b] of Object.entries(m)) into[c] = (into[c] ?? 0) + b
   return into
 }
-// Same fold for the storage-class mixes behind each fate (KLC's kept bytes
+// Same fold for the storage-class mixes behind each state (KLC's kept bytes
 // price as keep).
-const foldMixes = (f: UserFates): Record<ShownFate, ClassMix> => ({
+const foldMixes = (f: UserStates): Record<ShownState, ClassMix> => ({
   keep: addMix({ ...f.mix.keep }, f.mix.keep_last_ckpt),
   sweep: f.mix.sweep,
   unmarked: f.mix.unmarked,
 })
-// Every fate's mix together = the user's whole (claims-applied) estate mix.
-const wholeMix = (f: UserFates): ClassMix => ALL_FATES.reduce((m, k) => addMix(m, f.mix[k]), {} as ClassMix)
-const fateLabel = (f: Fate): string => (f === 'unmarked' ? 'unmarked' : ACTION_LABELS[f])
+// Every state's mix together = the user's whole (claims-applied) estate mix.
+const wholeMix = (f: UserStates): ClassMix => ALL_STATES.reduce((m, k) => addMix(m, f.mix[k]), {} as ClassMix)
+const stateLabel = (f: MarkState): string => (f === 'unmarked' ? 'unmarked' : ACTION_LABELS[f])
 // `unmarked` gets the regular secondary ink, not the unattributed-gray — as
 // the most common column value it has to be readable, not washed out.
-const fateColor = (f: Fate): string => (f === 'unmarked' ? 'var(--ink-2)' : f === 'sweep' ? 'var(--mk-del-ink)' : ACTION_COLORS[f])
+const stateColor = (f: MarkState): string => (f === 'unmarked' ? 'var(--ink-2)' : f === 'sweep' ? 'var(--mk-del-ink)' : ACTION_COLORS[f])
 
 // `gs://marin-<bucket>/<path>/` → the treemap's URL path.
 const prefixToPath = (prefix: string): string => {
@@ -153,13 +153,13 @@ const POOL_TILE_BG = 'color-mix(in oklab, var(--t-unattr) 48%, #131311)'
 const USER_TILE_BG = 'color-mix(in oklab, var(--ink) 7%, var(--panel))'
 
 /** The owner tiles (users + the unclaimed pool) — ONE derivation shared by
- * the map and its legend. Live fates (claims applied) win over scan meta when
+ * the map and its legend. Live states (claims applied) win over scan meta when
  * loaded. */
-function ownerCells(meta: Meta, fates: Map<string, Record<Fate, number>> | null): OwnerCell[] {
+function ownerCells(meta: Meta, states: Map<string, Record<MarkState, number>> | null): OwnerCell[] {
   const metaUsers: UserInfo[] = meta.users ?? []
-  const users: { u: string; b: number }[] = fates
-    ? [...fates.entries()]
-        .map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f) }))
+  const users: { u: string; b: number }[] = states
+    ? [...states.entries()]
+        .map(([u, f]) => ({ u, b: STATE_ORDER_TOTAL(f) }))
         .filter(x => x.b > 0)
     : metaUsers
   const cells: OwnerCell[] = users.map(u => ({ n: shortName(u.u), id: u.u, b: u.b }))
@@ -169,40 +169,40 @@ function ownerCells(meta: Meta, fates: Map<string, Record<Fate, number>> | null)
   return cells.sort((a, b) => b.b - a.b)
 }
 
-function MapLegend({ cells, fates }: {
+function MapLegend({ cells, states }: {
   cells: OwnerCell[]
-  fates: Map<string, Record<Fate, number>> | null
+  states: Map<string, Record<MarkState, number>> | null
 }) {
-  // Only the pool tile carries its own color — user tiles are fate-striped.
+  // Only the pool tile carries its own color — user tiles are state-striped.
   const hasPool = cells.some(c => c.pool)
-  const present: Record<ShownFate, boolean> = { keep: false, sweep: false, unmarked: false }
-  if (fates) {
-    for (const f of fates.values()) {
-      const s = foldFates(f)
-      for (const k of SHOWN_FATES) if (s[k] > 0) present[k] = true
+  const present: Record<ShownState, boolean> = { keep: false, sweep: false, unmarked: false }
+  if (states) {
+    for (const f of states.values()) {
+      const s = foldStates(f)
+      for (const k of SHOWN_STATES) if (s[k] > 0) present[k] = true
     }
   }
   return (
     <div className="map-legend">
       {hasPool && <span><i style={{ background: POOL_TILE_BG }} />unowned</span>}
-      {(!fates || present.keep || present.sweep) && <span className="sep" />}
-      {(!fates || present.keep) && <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>}
-      {(!fates || present.sweep) && <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>}
-      {(!fates || present.unmarked) && <span><i style={{ background: 'var(--other)' }} />undecided</span>}
+      {(!states || present.keep || present.sweep) && <span className="sep" />}
+      {(!states || present.keep) && <span><i style={{ background: 'var(--mk-keep)' }} />keep</span>}
+      {(!states || present.sweep) && <span><i style={{ background: 'var(--mk-del)' }} />sweep</span>}
+      {(!states || present.unmarked) && <span><i style={{ background: 'var(--other)' }} />undecided</span>}
     </div>
   )
 }
 
-function UsersMap({ meta, fates, redact = false }: {
+function UsersMap({ meta, states, redact = false }: {
   meta: Meta
-  fates: Map<string, Record<Fate, number>> | null
+  states: Map<string, Record<MarkState, number>> | null
   /** og:image mode — names + stripes only: no sizes, no tooltips, no drill. */
   redact?: boolean
 }) {
   const navigate = useNavigate()
   const root = useMemo(
-    (): OwnerCell => ({ n: '', b: meta.total_bytes, c: ownerCells(meta, fates) }),
-    [meta, fates],
+    (): OwnerCell => ({ n: '', b: meta.total_bytes, c: ownerCells(meta, states) }),
+    [meta, states],
   )
   return (
     <div className="users-map">
@@ -215,19 +215,19 @@ function UsersMap({ meta, fates, redact = false }: {
         chrome={false}
         fullscreen={false}
         colorForCell={(n): CellStyle | null => {
-          // ONE categorical axis per tile: user tiles carry their fate makeup
+          // ONE categorical axis per tile: user tiles carry their state makeup
           // (neutral base + full-strength keep/sweep/undecided stripes); the
-          // unclaimed pool, which has no fate stripes, keeps its own color.
+          // unclaimed pool, which has no state stripes, keeps its own color.
           if (!n.id) return n.pool ? { bg: POOL_TILE_BG } : null
           const style: CellStyle = { bg: USER_TILE_BG }
-          const raw = fates?.get(n.id)
-          const f = raw ? foldFates(raw) : undefined
+          const raw = states?.get(n.id)
+          const f = raw ? foldStates(raw) : undefined
           if (f) {
-            const total = SHOWN_FATES.reduce((s, k) => s + f[k], 0)
+            const total = SHOWN_STATES.reduce((s, k) => s + f[k], 0)
             if (total > 0) {
-              const segs = SHOWN_FATES.filter(k => f[k] > 0)
+              const segs = SHOWN_STATES.filter(k => f[k] > 0)
                 .map(k => ({
-                  color: k === 'unmarked' ? 'var(--other)' : fateColor(k),
+                  color: k === 'unmarked' ? 'var(--other)' : stateColor(k),
                   frac: f[k] / total,
                 }))
               if (segs.length > 1) style.segments = segs
@@ -238,17 +238,17 @@ function UsersMap({ meta, fates, redact = false }: {
         }}
         renderTooltip={(n) => {
           if (redact) return null
-          const raw = n.id ? fates?.get(n.id) : undefined
-          const f = raw ? foldFates(raw) : undefined
-          const total = f ? SHOWN_FATES.reduce((s, k) => s + f[k], 0) : 0
+          const raw = n.id ? states?.get(n.id) : undefined
+          const f = raw ? foldStates(raw) : undefined
+          const total = f ? SHOWN_STATES.reduce((s, k) => s + f[k], 0) : 0
           return (
             <div>
               <b>{n.n}</b>
               <div>{fmtBytesIec(n.b, true)} · {meta.total_bytes ? ((100 * n.b) / meta.total_bytes).toFixed(1) : 0}%</div>
               {f && total > 0 && (
                 <div>
-                  {SHOWN_FATES.filter(k => f[k] > 0).map(k => (
-                    <span key={k} style={{ color: fateColor(k), marginRight: 8 }}>{fateLabel(k)} {fmtBytesIec(f[k])}</span>
+                  {SHOWN_STATES.filter(k => f[k] > 0).map(k => (
+                    <span key={k} style={{ color: stateColor(k), marginRight: 8 }}>{stateLabel(k)} {fmtBytesIec(f[k])}</span>
                   ))}
                 </div>
               )}
@@ -278,7 +278,7 @@ function UsersMap({ meta, fates, redact = false }: {
 
 /** Per-user keep / sweep / undecided (claims applied) from
  * `/api/marks/totals`, keyed by canonical id. */
-function useUserFates(asof: string | null): Map<string, UserFates> | null {
+function useUserStates(asof: string | null): Map<string, UserStates> | null {
   const totalsQ = useMarkTotals(asof)
   return useMemo(
     () => (totalsQ.data ? new Map(Object.entries(totalsQ.data.users).map(([u, f]) => [canonId(u), f])) : null),
@@ -290,18 +290,18 @@ interface Estate {
   user: string
   date: string
   head: number
-  fates: UserFates | null
-  marks: { prefix: string; keep: MarkAction; eff: Fate; who: string | null; ts: number; bytes: number; b: number; authored: boolean; repainted_by?: string }[]
+  states: UserStates | null
+  marks: { prefix: string; keep: MarkAction; eff: MarkState; who: string | null; ts: number; bytes: number; b: number; authored: boolean; repainted_by?: string }[]
   claims: { prefix: string; ts: number; bytes: number; objects: number; repainted_by?: string }[]
   undecided: { prefix: string; b: number }[]
 }
 
-/** `/users/og` — fixed 1200×630 unfurl render of the owner map: names + fate
+/** `/users/og` — fixed 1200×630 unfurl render of the owner map: names + state
  * stripes only (no sizes, no $, no tooltips). Screenshot via `pnpm shots`. */
 export function UsersOgPage() {
   const asof = useLatestScan()
   const metaQ = useScanFile<Meta>('meta', asof)
-  const fates = useUserFates(asof)
+  const states = useUserStates(asof)
   useEffect(() => {
     const prev = document.documentElement.dataset.theme
     document.documentElement.dataset.theme = 'dark'
@@ -317,9 +317,9 @@ export function UsersOgPage() {
         <p>Who owns what, and where every user’s bytes stand: keep / sweep / undecided.</p>
       </div>
       <div className="og-map">
-        {metaQ.data && fates && <UsersMap meta={metaQ.data} fates={fates} redact />}
+        {metaQ.data && states && <UsersMap meta={metaQ.data} states={states} redact />}
       </div>
-      {metaQ.data && <MapLegend cells={ownerCells(metaQ.data, fates)} fates={fates} />}
+      {metaQ.data && <MapLegend cells={ownerCells(metaQ.data, states)} states={states} />}
     </div>
   )
 }
@@ -333,26 +333,26 @@ export function UsersPage() {
   // Per-user keep / sweep / undecided from /api/marks/totals — the ledger
   // folded server-side against the floor-free index (claims applied), so the
   // table, the map's root rollup and the digest agree, and no tree.json.
-  const fates = useUserFates(asof)
-  // ONE basis for every column: once the fate walk has run, Attributed is
-  // its claims-applied total (same numbers as the tiles, the fate columns,
+  const states = useUserStates(asof)
+  // ONE basis for every column: once the state walk has run, Attributed is
+  // its claims-applied total (same numbers as the tiles, the state columns,
   // and the CSV) — a scan-only Attributed next to walk-based Keep let a
   // user's keep exceed their "attributed" (Percy caught Michael at 67>41:
   // his claims added 40 Ti the old column ignored). Scan meta is only the
   // pre-load fallback.
   const users = useMemo(() => {
     const metaUsers = metaQ.data?.users ?? []
-    if (!fates) return [...metaUsers].sort((a, b) => b.b - a.b)
-    return [...fates.entries()]
-      .map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f) }))
+    if (!states) return [...metaUsers].sort((a, b) => b.b - a.b)
+    return [...states.entries()]
+      .map(([u, f]) => ({ u, b: STATE_ORDER_TOTAL(f) }))
       .filter(x => x.b > 1e9)
       .sort((a, b) => b.b - a.b)
-  }, [metaQ.data, fates])
+  }, [metaQ.data, states])
   // Client-side CSV of exactly what the table shows (claims applied).
   const downloadCsv = () => {
-    const rowsIter = fates
-      ? [...fates.entries()].map(([u, f]) => ({ u, b: FATE_ORDER_TOTAL(f), f: foldFates(f), m: foldMixes(f), mix: wholeMix(f) }))
-      : users.map(u => ({ u: u.u, b: u.b, f: null as Record<ShownFate, number> | null, m: null as Record<ShownFate, ClassMix> | null, mix: mixes?.[u.u] }))
+    const rowsIter = states
+      ? [...states.entries()].map(([u, f]) => ({ u, b: STATE_ORDER_TOTAL(f), f: foldStates(f), m: foldMixes(f), mix: wholeMix(f) }))
+      : users.map(u => ({ u: u.u, b: u.b, f: null as Record<ShownState, number> | null, m: null as Record<ShownState, ClassMix> | null, mix: mixes?.[u.u] }))
     const usd = (mix: ClassMix | undefined, b: number) => (mix && b ? Math.round(ratePerByte(mix) * b) : '')
     const tib = 1024 ** 4
     const lines = [
@@ -381,23 +381,23 @@ export function UsersPage() {
     a.click()
     URL.revokeObjectURL(a.href)
   }
-  // Each fate is a (bytes, est. $/mo) pair; the $ prices that fate's own
+  // Each state is a (bytes, est. $/mo) pair; the $ prices that state's own
   // storage-class mix from the walk (a cold sweep is cheap, a hot one isn't).
   useActions({
     'users:csv': { label: 'Download CSV (this table, assignments applied)', group: 'Users page', handler: downloadCsv },
     'users:sheet': { label: 'Google Sheet mirror ↗', group: 'Users page', handler: () => window.open(SHEET_URL, '_blank', 'noreferrer') },
   })
-  const cell = (u: string, f: ShownFate) => {
-    const raw = fates?.get(u)
-    const b = raw ? foldFates(raw)[f] : 0
+  const cell = (u: string, f: ShownState) => {
+    const raw = states?.get(u)
+    const b = raw ? foldStates(raw)[f] : 0
     const dim = { color: 'var(--ink-2)', opacity: 0.5 }
     return (
       <>
-        <td className="num" style={b ? { color: fateColor(f) } : dim}>
-          {fates ? (b ? fmtBytesIec(b) : '—') : '…'}
+        <td className="num" style={b ? { color: stateColor(f) } : dim}>
+          {states ? (b ? fmtBytesIec(b) : '—') : '…'}
         </td>
         <td className="num usd" style={b ? undefined : dim}>
-          {fates ? <DollarCell b={b} mix={raw ? foldMixes(raw)[f] : undefined} color={fateColor(f)} /> : '…'}
+          {states ? <DollarCell b={b} mix={raw ? foldMixes(raw)[f] : undefined} color={stateColor(f)} /> : '…'}
         </td>
       </>
     )
@@ -408,21 +408,21 @@ export function UsersPage() {
     const t = { b: 0, usd: 0, priced: 0, keep: 0, sweep: 0, unmarked: 0, mix: { keep: {} as ClassMix, sweep: {} as ClassMix, unmarked: {} as ClassMix } }
     for (const u of users) {
       t.b += u.b
-      const raw = fates?.get(u.u)
+      const raw = states?.get(u.u)
       const mix = raw ? wholeMix(raw) : mixes?.[u.u]
       if (mix) { t.usd += ratePerByte(mix) * u.b; t.priced++ }
       if (raw) {
-        const f = foldFates(raw); t.keep += f.keep; t.sweep += f.sweep; t.unmarked += f.unmarked
+        const f = foldStates(raw); t.keep += f.keep; t.sweep += f.sweep; t.unmarked += f.unmarked
         const m = foldMixes(raw)
-        for (const k of SHOWN_FATES) addMix(t.mix[k], m[k])
+        for (const k of SHOWN_STATES) addMix(t.mix[k], m[k])
       }
     }
     return t
-  }, [users, mixes, fates])
-  const totalCell = (f: ShownFate) => (
+  }, [users, mixes, states])
+  const totalCell = (f: ShownState) => (
     <>
-      <td className="num" style={{ color: fateColor(f) }}>{fates ? fmtBytesIec(totals[f]) : '…'}</td>
-      <td className="num usd">{fates ? <DollarCell b={totals[f]} mix={totals.mix[f]} color={fateColor(f)} /> : '…'}</td>
+      <td className="num" style={{ color: stateColor(f) }}>{states ? fmtBytesIec(totals[f]) : '…'}</td>
+      <td className="num usd">{states ? <DollarCell b={totals[f]} mix={totals.mix[f]} color={stateColor(f)} /> : '…'}</td>
     </>
   )
   return (
@@ -441,8 +441,8 @@ export function UsersPage() {
       {metaQ.isLoading && <p className="loading">loading…</p>}
       {metaQ.data && (
         <>
-          <UsersMap meta={metaQ.data} fates={fates} />
-          <MapLegend cells={ownerCells(metaQ.data, fates)} fates={fates} />
+          <UsersMap meta={metaQ.data} states={states} />
+          <MapLegend cells={ownerCells(metaQ.data, states)} states={states} />
         </>
       )}
       {users.length > 0 && (
@@ -457,7 +457,7 @@ export function UsersPage() {
             </tr>
             <tr className="subs">
               <th>User</th>
-              {['attributed', ...SHOWN_FATES].map(k => (
+              {['attributed', ...SHOWN_STATES].map(k => (
                 <Fragment key={k}><th className="num">bytes</th><th className="num usd">est. $/mo</th></Fragment>
               ))}
             </tr>
@@ -471,7 +471,7 @@ export function UsersPage() {
                   </Link>
                 </td>
                 <td className="num">{fmtBytesIec(u.b)}</td>
-                <td className="num usd"><DollarCell b={u.b} mix={fates?.get(u.u) ? wholeMix(fates.get(u.u)!) : mixes?.[u.u]} /></td>
+                <td className="num usd"><DollarCell b={u.b} mix={states?.get(u.u) ? wholeMix(states.get(u.u)!) : mixes?.[u.u]} /></td>
                 {cell(u.u, 'keep')}
                 {cell(u.u, 'sweep')}
                 {cell(u.u, 'unmarked')}
@@ -508,7 +508,7 @@ export function UsersPage() {
 
 const PAGE = 25
 
-function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
+function StateTable({ rows, empty }: { rows: StateRow[]; empty: string }) {
   const [page, setPage] = useState(0)
   if (!rows.length) return <p className="tab-note">{empty}</p>
   const pages = Math.ceil(rows.length / PAGE)
@@ -522,10 +522,10 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
         </thead>
         <tbody>
           {slice.map(r => (
-            <tr key={`${r.fate}:${r.uri}`}>
+            <tr key={`${r.state}:${r.uri}`}>
               <td>
-                <span className="chip" style={{ borderColor: fateColor(r.fate), color: fateColor(r.fate) }}>
-                  {fateLabel(r.fate)}
+                <span className="chip" style={{ borderColor: stateColor(r.state), color: stateColor(r.state) }}>
+                  {stateLabel(r.state)}
                 </span>
               </td>
               <td className="num">{fmtBytesIec(r.b)}</td>
@@ -556,7 +556,7 @@ function FateTable({ rows, empty }: { rows: FateRow[]; empty: string }) {
 export function UserOgPage() {
   const { id = '' } = useParams()
   const asof = useLatestScan()
-  const fates = useUserFates(asof)
+  const states = useUserStates(asof)
   useEffect(() => {
     const prev = document.documentElement.dataset.theme
     document.documentElement.dataset.theme = 'dark'
@@ -565,12 +565,12 @@ export function UserOgPage() {
       else delete document.documentElement.dataset.theme
     }
   }, [])
-  const raw = fates?.get(id)
-  const f = raw ? foldFates(raw) : null
-  const total = f ? SHOWN_FATES.reduce((s, k) => s + f[k], 0) : 0
-  const pct = (k: ShownFate): number => (f && total ? (100 * f[k]) / total : 0)
-  const barColor = (k: ShownFate): string => (k === 'unmarked' ? 'var(--other)' : fateColor(k))
-  const barLabel: Record<ShownFate, string> = { keep: 'keep', sweep: 'sweep', unmarked: 'undecided' }
+  const raw = states?.get(id)
+  const f = raw ? foldStates(raw) : null
+  const total = f ? SHOWN_STATES.reduce((s, k) => s + f[k], 0) : 0
+  const pct = (k: ShownState): number => (f && total ? (100 * f[k]) / total : 0)
+  const barColor = (k: ShownState): string => (k === 'unmarked' ? 'var(--other)' : stateColor(k))
+  const barLabel: Record<ShownState, string> = { keep: 'keep', sweep: 'sweep', unmarked: 'undecided' }
   return (
     <div className="og og-user">
       <div className="og-head ogu-head">
@@ -583,12 +583,12 @@ export function UserOgPage() {
       {f && total > 0 && (
         <>
           <div className="ogu-bar">
-            {SHOWN_FATES.filter(k => f[k] > 0).map(k => (
+            {SHOWN_STATES.filter(k => f[k] > 0).map(k => (
               <div key={k} style={{ width: `${pct(k)}%`, background: barColor(k) }} />
             ))}
           </div>
           <div className="ogu-legend">
-            {SHOWN_FATES.filter(k => f[k] > 0).map(k => (
+            {SHOWN_STATES.filter(k => f[k] > 0).map(k => (
               <span key={k}>
                 <i style={{ background: barColor(k) }} />
                 {barLabel[k]} <b>{Math.round(pct(k))}%</b>
@@ -609,7 +609,7 @@ export function UserPage() {
   const metaQ = useScanFile<Meta>('meta', asof)
   const marksQ = useMarks(true)
   const idx = useMarkIndex(marksQ.data)
-  // The estate, folded server-side: fates (claims applied), the marks that
+  // The estate, folded server-side: states (claims applied), the marks that
   // govern their bytes, their claims, and their undecided subtrees.
   const estateQ = useQuery<Estate>({
     queryKey: ['estate', asof, id],
@@ -623,7 +623,7 @@ export function UserPage() {
     },
   })
   const estate = estateQ.data ?? null
-  const mine = estate?.fates ?? null
+  const mine = estate?.states ?? null
   // Drill state lives in `?p=` so deep views are shareable and the back
   // button walks back out (same contract as the homepage map).
   const [pP, setPP] = useUrlState('p', stringParam())
@@ -643,28 +643,28 @@ export function UserPage() {
   const scopedTree = mapQ.data?.tree && mapQ.data.tree.b > 0 ? mapQ.data.tree : null
 
   // Decided rows: every mark whose band holds some of their bytes (under its
-  // effective fate); undecided rows: their outermost mark-free subtrees.
-  const rows = useMemo((): FateRow[] => {
+  // effective state); undecided rows: their outermost mark-free subtrees.
+  const rows = useMemo((): StateRow[] => {
     if (!estate) return []
     // A mark repainted to unmarked (a newer clear above it) decides nothing —
     // its bytes are in the undecided rows.
-    const decided: FateRow[] = estate.marks
+    const decided: StateRow[] = estate.marks
       .filter(m => m.b > 0 && m.eff !== 'unmarked')
-      .map(m => ({ uri: m.prefix, fate: m.eff, b: m.b, mark: { prefix: m.prefix, action: m.keep, who: m.who ?? '', ts: m.ts, note: null } }))
-    const undecided: FateRow[] = estate.undecided.map(u => ({ uri: u.prefix, fate: 'unmarked', b: u.b, mark: null }))
+      .map(m => ({ uri: m.prefix, state: m.eff, b: m.b, mark: { prefix: m.prefix, action: m.keep, who: m.who ?? '', ts: m.ts, note: null } }))
+    const undecided: StateRow[] = estate.undecided.map(u => ({ uri: u.prefix, state: 'unmarked', b: u.b, mark: null }))
     return [...decided, ...undecided].sort((a, b) => b.b - a.b)
   }, [estate])
   const totals = useMemo(() => {
-    const t = new Map<ShownFate, { b: number; n: number }>(SHOWN_FATES.map(f => [f, { b: 0, n: 0 }]))
+    const t = new Map<ShownState, { b: number; n: number }>(SHOWN_STATES.map(f => [f, { b: 0, n: 0 }]))
     for (const r of rows) {
-      const cur = t.get(r.fate === 'keep_last_ckpt' ? 'keep' : r.fate)!
+      const cur = t.get(r.state === 'keep_last_ckpt' ? 'keep' : r.state)!
       cur.b += r.b
       cur.n++
     }
     return t
   }, [rows])
-  const attributed = mine ? FATE_ORDER_TOTAL(mine) : rows.reduce((s, r) => s + r.b, 0)
-  const stripBytes = mine ? foldFates(mine) : null
+  const attributed = mine ? STATE_ORDER_TOTAL(mine) : rows.reduce((s, r) => s + r.b, 0)
+  const stripBytes = mine ? foldStates(mine) : null
   const metaB = metaQ.data?.users?.find(u => u.u === id)?.b
   const mix = metaQ.data?.user_class_bytes?.[id]
   const authored = estate ? estate.marks.filter(m => m.authored).length : 0
@@ -672,25 +672,25 @@ export function UserPage() {
   // yet (fresh identity, or claims the attribution pipeline hasn't mapped):
   // their own latest live marks, sized from the index (each prefix's total
   // bytes, whoever owns them).
-  const authoredRows = useMemo((): FateRow[] => {
+  const authoredRows = useMemo((): StateRow[] => {
     if (rows.length > 0 || !estate) return []
     return estate.marks
       .filter(m => m.authored)
-      .map(m => ({ uri: m.prefix, fate: m.keep, b: m.bytes, mark: { prefix: m.prefix, action: m.keep, who: m.who ?? '', ts: m.ts, note: null } }))
+      .map(m => ({ uri: m.prefix, state: m.keep, b: m.bytes, mark: { prefix: m.prefix, action: m.keep, who: m.who ?? '', ts: m.ts, note: null } }))
       .sort((a, b) => b.b - a.b)
   }, [rows.length, estate])
-  const claimedRows = useMemo((): FateRow[] => {
+  const claimedRows = useMemo((): StateRow[] => {
     if (!estate) return []
     return estate.claims
       .map(c => {
         const st = idx.resolve(c.prefix)
-        return { uri: c.prefix, fate: (st.mark?.action ?? 'unmarked') as Fate, b: c.bytes, mark: st.mark }
+        return { uri: c.prefix, state: (st.mark?.action ?? 'unmarked') as MarkState, b: c.bytes, mark: st.mark }
       })
       .sort((a, b) => b.b - a.b)
   }, [estate, idx])
   const claimed = claimedRows.length
-  const decidedRows = rows.filter(r => r.fate !== 'unmarked')
-  const undecidedRows = rows.filter(r => r.fate === 'unmarked')
+  const decidedRows = rows.filter(r => r.state !== 'unmarked')
+  const undecidedRows = rows.filter(r => r.state === 'unmarked')
   // Resolve `?p=` against the scoped tree each render; a vanished segment
   // truncates to its deepest surviving ancestor.
   const mapPath = useMemo((): TreeNode[] | undefined => {
@@ -742,7 +742,7 @@ export function UserPage() {
             <>
               <h2>Marked by {shortName(id)}</h2>
               <p className="tab-note">Their keep / sweep decisions (sizes are each prefix’s total bytes, whoever owns them).</p>
-              <FateTable rows={authoredRows} empty="No marks yet." />
+              <StateTable rows={authoredRows} empty="No marks yet." />
             </>
           )}
         </>
@@ -750,16 +750,16 @@ export function UserPage() {
 
       {(rows.length > 0 || attributed > 0) && (
         <>
-          <div className="fate-strip">
-            {SHOWN_FATES.map(f => {
+          <div className="state-strip">
+            {SHOWN_STATES.map(f => {
               const { b: rowB, n } = totals.get(f)!
               const b = stripBytes ? stripBytes[f] : rowB
               if (!b) return null
               return (
-                <div className="fate-cell" key={f} style={{ borderColor: fateColor(f) }}>
-                  <b style={{ color: fateColor(f) }}>{fateLabel(f)}</b>
-                  <span className="fate-b">{fmtBytesIec(b)}</span>
-                  <span className="fate-n">{n > 0 && <>{fmtN(n)} prefix{n === 1 ? '' : 'es'} · </>}{attributed ? Math.round((b / attributed) * 100) : 0}%</span>
+                <div className="state-cell" key={f} style={{ borderColor: stateColor(f) }}>
+                  <b style={{ color: stateColor(f) }}>{stateLabel(f)}</b>
+                  <span className="state-b">{fmtBytesIec(b)}</span>
+                  <span className="state-n">{n > 0 && <>{fmtN(n)} prefix{n === 1 ? '' : 'es'} · </>}{attributed ? Math.round((b / attributed) * 100) : 0}%</span>
                 </div>
               )
             })}
@@ -769,7 +769,7 @@ export function UserPage() {
             <div className="user-mini-map">
               <MarkTreemap
                 root={scopedTree}
-                mode="fate"
+                mode="marks"
                 userIdx={new Map()}
                 dateRange={null}
                 scheme={store.scheme}
@@ -784,11 +784,11 @@ export function UserPage() {
             <>
               <h2>Decided</h2>
               <p className="tab-note">Prefixes whose mark governs your bytes — yours and anyone else’s marks both count.</p>
-              <FateTable rows={decidedRows} empty="Nothing marked yet." />
+              <StateTable rows={decidedRows} empty="Nothing marked yet." />
 
               <h2>Undecided</h2>
               <p className="tab-note">Your largest subtrees with no keep / sweep decision anywhere above or below — the review backlog.</p>
-              <FateTable rows={undecidedRows} empty="Every owned byte has a decision. 🎉" />
+              <StateTable rows={undecidedRows} empty="Every owned byte has a decision. 🎉" />
             </>
           )}
 
@@ -796,7 +796,7 @@ export function UserPage() {
             <>
               <h2>Assigned</h2>
               <p className="tab-note">Prefixes assigned in the ledger — counted in the totals above immediately; the scan pipeline formalizes the ownership on its next run.</p>
-              <FateTable rows={claimedRows} empty="" />
+              <StateTable rows={claimedRows} empty="" />
             </>
           )}
         </>

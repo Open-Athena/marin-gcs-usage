@@ -2,9 +2,9 @@
  * server-side from the index tiers and the live ledger (no `tree.json`):
  *
  *   GET /api/estate?date=<scan>&user=<canonical id>
- *   → { user, date, head, fates, marks, claims, undecided }
+ *   → { user, date, head, states, marks, claims, undecided }
  *
- * - `fates`: their keep / last-ckpt / sweep / undecided bytes (+ class mixes),
+ * - `states`: their keep / last-ckpt / sweep / undecided bytes (+ class mixes),
  *   claims applied — the same numbers `/users` and the map's rollup use.
  * - `marks`: every live mark whose band holds some of their bytes (`b` = that
  *   share), plus every mark they authored — the "decided" rows.
@@ -14,7 +14,7 @@
  *   scoped to unmarked bytes, walked down only while marks sit inside.
  */
 import { type Ctx, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
-import { marksUnder } from '../_lib/fates.js'
+import { marksUnder } from '../_lib/markAxes.js'
 import { canonId } from '../_lib/identity.js'
 import { markTotals } from '../_lib/totals.js'
 import { buildView, type ViewNode } from '../_lib/view.js'
@@ -47,8 +47,8 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
       .filter(m => m.b > 0 || m.authored)
       .sort((a, b) => b.b - a.b || b.bytes - a.bytes)
     const claims = totals.claims.filter(c => mine(c.owner)).map(c => ({ prefix: c.prefix, ts: c.ts, bytes: c.bytes, objects: c.objects, ...(c.repainted_by ? { repainted_by: c.repainted_by } : {}) }))
-    const fates = Object.entries(totals.users).find(([k]) => mine(k))?.[1] ?? null
-    const userBytes = fates ? fates.keep + fates.keep_last_ckpt + fates.sweep + fates.unmarked : 0
+    const states = Object.entries(totals.users).find(([k]) => mine(k))?.[1] ?? null
+    const userBytes = states ? states.keep + states.keep_last_ckpt + states.sweep + states.unmarked : 0
 
     // Undecided: the user lens scoped to unmarked bytes, at a byte threshold
     // that keeps the walk to the sizes worth a decision.
@@ -58,7 +58,7 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
       const view = await buildView(env, {
         date, path: '', w: 1, h: 1, minArea: 1, atten: 1,
         threshold: Math.max(1e9, userBytes * 0.0005),
-        lens: { key: user }, fates: new Set(['unmarked']),
+        lens: { key: user }, states: new Set(['unmarked']),
       })
       const walk = (n: ViewNode, path: string) => {
         if (!under(path)) { if (n.b > 0) undecided.push({ prefix: `gs://${path}/`, b: n.b }); return }
@@ -74,7 +74,7 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
       for (const bucket of view.tree.c ?? []) if (!bucket.n.startsWith('(')) walk(bucket, bucket.n)
       undecided.sort((a, b) => b.b - a.b)
     }
-    return json({ user, date, head: totals.head, fates, marks, claims, undecided }, 200, { 'cache-control': 'private, no-store' })
+    return json({ user, date, head: totals.head, states, marks, claims, undecided }, 200, { 'cache-control': 'private, no-store' })
   } catch (e) {
     return json({ error: (e as Error).message }, 503)
   }

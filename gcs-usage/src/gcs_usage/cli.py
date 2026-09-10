@@ -759,7 +759,7 @@ def sweep() -> None:
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
 def sweep_clobbers(as_json: bool, token: str | None, url: str | None) -> None:
-    """Keeps whose effective fate is now sweep — a newer covering sweep
+    """Keeps whose effective state is now sweep — a newer covering sweep
     repainted them (recency beats specificity). The review list for reverting
     accidental broad sweeps; the planner independently refuses to delete
     anything with keep history (`ever_kept_prefixes`)."""
@@ -1592,7 +1592,7 @@ def report(out: Path | None, sort: str, token: str | None, site_url: str) -> Non
     totals = get_json(base, tok, "/api/marks/totals", {"date": date, "marks": "1"}, timeout=120)
     canon = load_identities().resolve
 
-    # user -> fate -> bytes (+ class mix), canonical ids merged.
+    # user -> state -> bytes (+ class mix), canonical ids merged.
     per_user: dict[str, dict[str, float]] = {}
     mixes: dict[str, dict[str, float]] = {}
     for who, f in (totals.get("users") or {}).items():
@@ -1602,8 +1602,8 @@ def report(out: Path | None, sort: str, token: str | None, site_url: str) -> Non
         pu["sweep"] += f.get("sweep") or 0
         pu["undecided"] += f.get("unmarked") or 0
         mix = mixes.setdefault(uid, {})
-        for fate_mix in (f.get("mix") or {}).values():
-            for c, b in fate_mix.items():
+        for state_mix in (f.get("mix") or {}).values():
+            for c, b in state_mix.items():
                 mix[str(c)] = mix.get(str(c), 0) + b
 
     authored: dict[str, int] = {}

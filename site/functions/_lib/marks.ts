@@ -1,7 +1,7 @@
 /**
  * Exact keep / sweep / undecided totals from the ledger + the floor-free path
  * index (specs/path-agnostic-serving.md §2.3; algorithm from
- * specs/exact-fate-totals.md). Pure: callers supply the folded ledger and the
+ * specs/exact-state-totals.md). Pure: callers supply the folded ledger and the
  * index aggregates for the prefixes involved; nothing here does I/O.
  *
  * Model. Every live ledger prefix (a mark or a claim) is a node of a trie
@@ -14,8 +14,8 @@
  */
 
 export type MarkAction = 'keep' | 'sweep' | 'keep_last_ckpt'
-export type Fate = MarkAction | 'unmarked'
-export const FATES: Fate[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
+export type MarkState = MarkAction | 'unmarked'
+export const STATES: MarkState[] = ['keep', 'keep_last_ckpt', 'sweep', 'unmarked']
 
 export interface LedgerRow { prefix: string; ts: number; action_id: number }
 export interface KeepRow extends LedgerRow { keep: MarkAction | null; who?: string }
@@ -81,8 +81,8 @@ const parentOf = (path: string): string => {
 
 export const CKPT_NUM_RE = /^(?:step|checkpoint|ckpt|iter|epoch|global_?step)[-_]?(\d+)/i
 
-export interface FateTotals { keep: number; keep_last_ckpt: number; sweep: number; unmarked: number }
-export interface UserTotals extends FateTotals { mix: Record<Fate, Record<string, number>> }
+export interface StateTotals { keep: number; keep_last_ckpt: number; sweep: number; unmarked: number }
+export interface UserTotals extends StateTotals { mix: Record<MarkState, Record<string, number>> }
 export interface MarkRow {
   prefix: string
   /** null = a clear (an explicit "no decision" that repaints deeper marks
@@ -97,12 +97,12 @@ export interface MarkRow {
   net_objects: number
   /** Set when a newer ancestor mark repaints this one — it decides nothing. */
   repainted_by?: string
-  /** The fate this mark's band actually carries (its own keep, or the
+  /** The state this mark's band actually carries (its own keep, or the
    * repainter's) — what a per-node fold applies. */
-  eff: Fate
-  /** The band's bytes by painted fate: a decomposed `keep_last_ckpt` splits
-   * into keep + sweep; anything else is all one fate. Sums to the band. */
-  net: Record<Fate, number>
+  eff: MarkState
+  /** The band's bytes by painted state: a decomposed `keep_last_ckpt` splits
+   * into keep + sweep; anything else is all one state. Sums to the band. */
+  net: Record<MarkState, number>
   /** The band's bytes per person — the claimant takes the whole band when a
    * live claim covers it, else the scan's per-user slices. */
   us: Record<string, number>
@@ -126,7 +126,7 @@ export interface ClaimRow {
 export interface Totals {
   bytes: number
   objects: number
-  total: FateTotals
+  total: StateTotals
   users: Record<string, UserTotals>
   marks: MarkRow[]
   claims: ClaimRow[]
@@ -145,7 +145,7 @@ export interface TotalsInput {
   klcKids: Map<string, { path: string; b: number }[]>
   /** Scope the totals to one subtree P instead of the whole estate: `buckets`
    * is `[P]`, `keeps`/`owners` hold only the marks under-or-at P, and P's
-   * residual (bytes under no deeper mark) takes P's *inherited* fate — the
+   * residual (bytes under no deeper mark) takes P's *inherited* state — the
    * newest mark/claim on an ancestor-or-self of P. Absent = whole estate
    * (buckets are the depth-1 roots, residual is unmarked). */
   scope?: {
@@ -154,7 +154,7 @@ export interface TotalsInput {
   }
 }
 
-const fateOf = (r: KeepRow | null): Fate => r?.keep ?? 'unmarked'
+const stateOf = (r: KeepRow | null): MarkState => r?.keep ?? 'unmarked'
 
 interface Node {
   prefix: string
@@ -234,15 +234,15 @@ export function computeTotals(input: TotalsInput): Totals {
   }
   for (const n of nodes.values()) n.band = subAgg(n.agg, n.kids.map(k => k.agg))
 
-  const total: FateTotals = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
+  const total: StateTotals = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
   const users: Record<string, UserTotals> = {}
   const userRec = (u: string): UserTotals => (users[u] ??= { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0, mix: { keep: {}, keep_last_ckpt: {}, sweep: {}, unmarked: {} } })
   const addMix = (into: Record<string, number>, mix: Record<string, number>, f: number) => {
     for (const [c, b] of Object.entries(mix)) if (b * f > 0) into[c] = (into[c] ?? 0) + b * f
   }
-  // Paint `frac` of a band with fate `f`: the band's bytes to the total, and
+  // Paint `frac` of a band with state `f`: the band's bytes to the total, and
   // to its claimant (whole band) or its scan-attributed users (their slices).
-  const paint = (band: PathAgg, f: Fate, frac: number, claimant: string | null) => {
+  const paint = (band: PathAgg, f: MarkState, frac: number, claimant: string | null) => {
     if (frac <= 0 || band.b <= 0) return
     total[f] += band.b * frac
     const mix = mixOf(band, band.b)
@@ -258,13 +258,13 @@ export function computeTotals(input: TotalsInput): Totals {
       }
     }
   }
-  const painted = new Map<Node, Record<Fate, number>>()
+  const painted = new Map<Node, Record<MarkState, number>>()
   const bandUs = new Map<Node, Record<string, number>>()
   for (const n of nodes.values()) {
-    const f: Fate = n.effKeep?.keep ?? 'unmarked'
+    const f: MarkState = n.effKeep?.keep ?? 'unmarked'
     const claimant = n.effOwner?.owner ?? null
     bandUs.set(n, claimant ? (n.band.b > 0 ? { [claimant]: n.band.b } : {}) : Object.fromEntries(Object.entries(n.band.us).filter(([, b]) => b > 0)))
-    const split: Record<Fate, number> = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
+    const split: Record<MarkState, number> = { keep: 0, keep_last_ckpt: 0, sweep: 0, unmarked: 0 }
     if (f === 'keep_last_ckpt') {
       // Decompose where the step dirs are in view; the kept child's bytes are
       // keep, the rest of the band sweeps. Unresolvable → stays "last ckpt".
@@ -287,7 +287,7 @@ export function computeTotals(input: TotalsInput): Totals {
   // covers the whole remainder.
   let bytes = 0
   let objects = 0
-  const residualFate = fateOf(input.scope?.inheritedKeep ?? null)
+  const residualState = stateOf(input.scope?.inheritedKeep ?? null)
   const residualClaimant = input.scope?.inheritedOwner?.owner ?? null
   for (const bp of buckets) {
     const agg = aggs.get(bp) ?? newAgg()
@@ -297,7 +297,7 @@ export function computeTotals(input: TotalsInput): Totals {
     // already painted the remainder; nothing left to attribute to inheritance.
     if (nodes.has(`gs://${bp}/`)) continue
     const top = [...nodes.values()].filter(n => !n.parent && n.path.startsWith(bp + '/'))
-    paint(subAgg(agg, top.map(n => n.agg)), residualFate, 1, residualClaimant)
+    paint(subAgg(agg, top.map(n => n.agg)), residualState, 1, residualClaimant)
   }
   const marks: MarkRow[] = []
   for (const n of nodes.values()) {
@@ -335,7 +335,7 @@ export function computeTotals(input: TotalsInput): Totals {
     })
   }
   claims.sort((a, b) => b.bytes - a.bytes)
-  for (const k of FATES) total[k] = Math.round(total[k])
-  for (const u of Object.values(users)) for (const k of FATES) u[k] = Math.round(u[k])
+  for (const k of STATES) total[k] = Math.round(total[k])
+  for (const u of Object.values(users)) for (const k of STATES) u[k] = Math.round(u[k])
   return { bytes, objects, total, users, marks, claims }
 }

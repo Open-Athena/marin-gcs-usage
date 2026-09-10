@@ -44,11 +44,11 @@ export function BulkBar({ matches, scheme, query }: {
     setMemo('')
   }
 
-  const fates: [string, MarkAction | null][] = [['keep', 'keep'], ['sweep', 'sweep'], ['clear', null]]
+  const states: [string, MarkAction | null][] = [['keep', 'keep'], ['sweep', 'sweep'], ['clear', null]]
   return (
     <span className="bulkbar">
       <span className="bb-scope">{matches.length.toLocaleString()} prefixes:</span>
-      {fates.map(([label, keep]) => (
+      {states.map(([label, keep]) => (
         <button key={label} type="button" className={`act ${label}`} disabled={over || progress != null}
           onClick={() => setPending({ label, make: pattern => ({ pattern, keep }) })}>
           {label}

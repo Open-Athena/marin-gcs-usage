@@ -10,8 +10,8 @@ import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, 
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
 import type { Mark, MarkAction, MarkIndex } from './marks'
-import { klcFateAt, klcKeptWithin, subtreeFateTotals, unattrLens } from './sweep'
-import type { Fate, KlcIndex } from './sweep'
+import { klcStateAt, klcKeptWithin, subtreeStateTotals, unattrLens } from './sweep'
+import type { MarkState, KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
@@ -20,7 +20,7 @@ import { useUnits } from './units'
 
 const OUTLINE_LABELS: Record<MarkAction, string> = { keep: 'keep', keep_last_ckpt: 'last ckpt', sweep: 'sweep' }
 const OUTLINE_TIP =
-  'Keep/sweep marks draw as outlines: a colored frame traces a region whose decision differs from the directory around it (amber = keep last checkpoint only). Nested frames are flips inside flips. Hover a cell for who set it; switch color to “marks” to see fates as fills.'
+  'Keep/sweep marks draw as outlines: a colored frame traces a region whose decision differs from the directory around it (amber = keep last checkpoint only). Nested frames are flips inside flips. Hover a cell for who set it; switch color to “marks” to see states as fills.'
 
 // Legend rows inline only the metrics toggled on (swatch + name always show).
 // URL param `?li=` — a subset of "spc" (size / percent / cost); absent = "s"
@@ -154,7 +154,7 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, klcIdx, viewFates, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, klcIdx, viewMarkAxes, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   /** Secondary color axis — see `ShadeMode`. Default `none`. */
@@ -166,7 +166,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   /** Exact keep / sweep totals for the CURRENT view (`/api/marks/totals`,
    *  estate at the root or the drilled subtree via `?path=`). Used at any
    *  depth; the client walk is the instant fallback while it loads (shown ≈). */
-  viewFates?: Record<Fate, number> | null
+  viewMarkAxes?: Record<MarkState, number> | null
   hl?: Highlight | null
   /** Legend-row interactions (plotly-style): hover a row = solo it (others
    *  fade, map dims to it), click = pin (sticky `hl`; click again, any empty
@@ -283,8 +283,8 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
         const base = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
         bg = s ? coldShade(base, cold) : base
         ink = s ? inkFor(base) : 'var(--ink)'
-      } else if (mode === 'fate') {
-        // Keep-axis fate: paint kept (green) / swept (red); undecided cells
+      } else if (mode === 'marks') {
+        // Keep-axis state: paint kept (green) / swept (red); undecided cells
         // stay grey — the review to-do, visible at a glance. A
         // keep_last_ckpt mark decomposes into its *actual* keep/sweep: the
         // kept step-child subtrees are green, siblings red, and a mixed cell
@@ -299,7 +299,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
             const split = klcIdx.get(m.prefix.endsWith('/') ? m.prefix : m.prefix + '/')
             if (split) {
               const uri = uriOf(kidPath)
-              const rel = klcFateAt(uri, split)
+              const rel = klcStateAt(uri, split)
               if (rel === 'mixed') {
                 const frac = kid.b > 0 ? Math.min(1, klcKeptWithin(uri, split) / kid.b) : 0
                 segments = [
@@ -315,7 +315,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
             }
           }
         } else if (ctx.hasKids) {
-          bg = 'var(--panel)' // container without its own mark: children carry the fate
+          bg = 'var(--panel)' // container without its own mark: children carry the state
           ink = 'var(--ink)'
         } else {
           bg = 'var(--other)' // undecided leaf
@@ -426,16 +426,16 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   // Mark decoration is state-as-*outline* (keep green / keep-last-ckpt amber /
   // sweep red), NOT an ✕ stamped on every descendant. A marked prefix inherits
   // to its whole subtree, so decorating every cell is redundant noise — an
-  // outline goes only where a cell's fate DIFFERS from the fate its parent cell
-  // already conveys: a kept (or swept) parent is outlined once, and same-fate
+  // outline goes only where a cell's state DIFFERS from the state its parent cell
+  // already conveys: a kept (or swept) parent is outlined once, and same-state
   // descendants (inheriting it or re-stating it with their own mark) drop out,
   // so a uniformly-marked subtree is one frame, not a wall of edges. The drill
   // root's own mark is the header's headline ("sweep set by …"), so tiles that
   // merely inherit it stay undecorated too. Adjacent siblings that differ from
   // the parent the same way share ONE outline: the core strokes the perimeter
   // of their union (`outlineGroups`), so a grid of kept run dirs reads as one
-  // bordered region, not a chain-link fence. Skipped in `fate` mode, where the
-  // fill already *is* the fate. Bigger cells also get a corner badge: the
+  // bordered region, not a chain-link fence. Skipped in `state` mode, where the
+  // fill already *is* the state. Bigger cells also get a corner badge: the
   // actor's avatar + the state glyph. Provenance (who/when/inherited-from)
   // lives in the cell tooltip.
   const drillDepth = drillLen
@@ -453,7 +453,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   const viewLevels = drillPath?.length ? tileLevels(drillPath[drillPath.length - 1]) : 1
   const rootMark = markIdx && drillPath?.length ? markIdx.resolve(uriOf(drillPath)).mark : null
   // The mark a cell's edge conveys, or null when its parent cell already shows
-  // the same fate. `chain` = single-child levels the core collapsed into this
+  // the same state. `chain` = single-child levels the core collapsed into this
   // cell (`collapseChains`): the chain's top node is that many levels up, so
   // the parent cell is one above that.
   const edgeMark = (cellPath: TreeNode[], chain: number): { mark: Mark; parent: TreeNode[] } | null => {
@@ -475,9 +475,9 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     while (i > drillDepth && cellPath[i - 1].c?.length === 1) i--
     return cellPath.length - 1 - i
   }
-  // Group key = the fate + the parent cell it differs from: siblings that
+  // Group key = the state + the parent cell it differs from: siblings that
   // flip the same way merge into one region, while a deeper flip back to an
-  // ancestor's fate (keep → sweep → keep) stays its own group, so the core's
+  // ancestor's state (keep → sweep → keep) stays its own group, so the core's
   // nesting rule (an open key's descendants are covered) can't swallow it.
   const [outlined, setOutlined] = useState<MarkAction[]>([])
   const onDrawn = useCallback((keys: string[]) => {
@@ -485,7 +485,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     setOutlined(prev => (prev.length === acts.length && prev.every((a, i) => a === acts[i]) ? prev : acts))
   }, [])
   const markOutlines = useMemo<OutlineGroups<TreeNode> | undefined>(
-    () => markIdx && mode !== 'fate'
+    () => markIdx && mode !== 'marks'
       ? {
           key: (n, cellPath) => {
             if (n.n.startsWith('(')) return null
@@ -503,8 +503,8 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   useEffect(() => { if (!markOutlines) setOutlined([]) }, [markOutlines])
   const markExtra = markIdx
     ? (n: TreeNode, cellPath: TreeNode[], { w, h, chain = 0 }: { w: number; h: number; chain?: number }) => {
-        if (mode === 'fate') {
-          // The fills already ARE the fate — only the KLC "both fates live
+        if (mode === 'marks') {
+          // The fills already ARE the state — only the KLC "both states live
           // inside" barber-pole ring adds information here.
           const { mark, own } = markIdx.resolve(uriOf(cellPath))
           if (own && mark?.action === 'keep_last_ckpt' && w >= 8 && h >= 8) {
@@ -553,26 +553,26 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     if (redact) return null
     // The rollup follows the ACTIVE color axis: the owner breakdown renders
     // only when the map is colored by user (tree/written/read/marks each key
-    // their own legend). The fate row keys the mark overlay, which is active
+    // their own legend). The state row keys the mark overlay, which is active
     // whenever markIdx is (mark mode), in every coloring.
     const rollup = rollupFor(node)
     if (!markIdx && !rollup.length) return null
-    // Fate totals for the current view: of the drilled subtree's bytes, how
+    // MarkState totals for the current view: of the drilled subtree's bytes, how
     // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
     // amber "last ckpt" appears only for marks the tree can't split).
-    const fateWanted = !!markIdx && mode === 'fate'
+    const stateWanted = !!markIdx && mode === 'marks'
     const atRoot = path.length <= 1
     // Exact server-side total for this exact view (root or drilled); the client
     // walk over the loaded (floored) tree is the instant fallback while the
     // exact fetch is in flight, marked ≈.
-    const exact = fateWanted && viewFates ? viewFates : null
-    const fate = fateWanted ? (exact ?? subtreeFateTotals(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
-    const fateRows = fate
+    const exact = stateWanted && viewMarkAxes ? viewMarkAxes : null
+    const state = stateWanted ? (exact ?? subtreeStateTotals(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
+    const stateRows = state
       ? ([
-          ['keep', fate.keep, ACTION_COLORS.keep],
-          ['last ckpt', fate.keep_last_ckpt, ACTION_COLORS.keep_last_ckpt],
-          ['sweep', fate.sweep, ACTION_COLORS.sweep],
-          ['undecided', fate.unmarked, 'var(--other)'],
+          ['keep', state.keep, ACTION_COLORS.keep],
+          ['last ckpt', state.keep_last_ckpt, ACTION_COLORS.keep_last_ckpt],
+          ['sweep', state.sweep, ACTION_COLORS.sweep],
+          ['undecided', state.unmarked, 'var(--other)'],
         ] as [string, number, string][]).filter(([, b]) => b > 0)
       : []
     return (
@@ -585,15 +585,15 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
             {keys}
           </div>
         )}
-        {fateRows.length > 0 && (
+        {stateRows.length > 0 && (
           <span
-            className={`fate-rollup${exact ? '' : ' approx'}`}
+            className={`state-rollup${exact ? '' : ' approx'}`}
             title={exact
               ? 'exact: the live ledger priced against the floor-free path index'
-              : 'approximate: resolved at this view’s resolution — marks folded below it settle as their ancestor’s fate; the root total is exact'}
+              : 'approximate: resolved at this view’s resolution — marks folded below it settle as their ancestor’s state; the root total is exact'}
           >
             {!exact && <span className="approx-mark">≈</span>}
-            {fateRows.map(([k, b, col]) => (
+            {stateRows.map(([k, b, col]) => (
               <span className="ri" key={k}>
                 <span className="sw" style={{ background: col }} />
                 {k} <b>{fmtBytes(b)}</b>
@@ -660,7 +660,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
 
   /* One keying strip per view: any CATEGORICAL axis keys through the roll-up
      bar (swatch + label + size + %, presence-filtered) — user,
-     and fate all render there, so a separate legend for them would be a
+     and state all render there, so a separate legend for them would be a
      strict-subset duplicate. This legend exists only for encodings the
      roll-up can't key: date gradients (written/read) and the tree prefix
      palette. A new mode should default into the roll-up, not here. */
@@ -740,10 +740,10 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   // The tiling toggle rides in the same slot (right of the crumbs, left of ⛶)
   // in every mode: a map-level preference belongs on the map, not in the nav.
   // The outline key: whenever marks draw as outlines (every coloring but
-  // `fate`), say what a colored frame means — the map otherwise shows an
+  // `state`), say what a colored frame means — the map otherwise shows an
   // unexplained amber/red/blue border with no swatch anywhere. Hollow
   // swatches, so it reads as "outline", not another fill. Lists only the
-  // fates whose outlines are actually on screen: the overlay reports what it
+  // states whose outlines are actually on screen: the overlay reports what it
   // drew (`onDrawn`), so a view with one red frame gets a one-entry key.
   const outlineActions = outlined
   const outlineLegend = outlineActions.length > 0 && (
@@ -796,7 +796,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     const userMode = mode === 'user'
     // The mark decision covering this cell — so provenance (who/when, inherited
     // or own) is always legible in the tooltip, even on cells too small for the
-    // corner badge or when not in fate coloring.
+    // corner badge or when not in state coloring.
     const st = markIdx && !n.n.startsWith('(') ? markIdx.resolve(uri) : null
     const mix = classMix(n)
     const classes = n.cb && (
@@ -915,8 +915,8 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
       // Per-store style hook: deliberate CW/GCS presentation differences live
       // under these classes in app.scss (one codebase, no branches).
       // `root-marked-<action>`: the drill root itself carries a mark (the panel's
-      // headline), so the map area gets ONE frame in that fate's color — every
-      // tile inherits it, and per-tile borders are suppressed (fate boundaries
+      // headline), so the map area gets ONE frame in that state's color — every
+      // tile inherits it, and per-tile borders are suppressed (state boundaries
       // only), so without this the view read as unmarked.
       className={`treemap store-${scheme === 's3://' ? 'cw' : 'gcs'} tiling-${tiling}${rootMark ? ` root-marked root-marked-${rootMark.action}` : ''}`}
     />

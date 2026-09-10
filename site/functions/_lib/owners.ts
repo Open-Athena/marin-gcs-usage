@@ -1,5 +1,5 @@
 /** The ownership ledger applied to a user lens, server-side — the claims
- * counterpart of `fates.ts` (specs/view-serving.md §2, "claims applied to the
+ * counterpart of `states.ts` (specs/view-serving.md §2, "claims applied to the
  * user lens"): of a path's bytes, how many are U's once claims repaint
  * attribution.
  *

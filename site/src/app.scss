@@ -188,7 +188,7 @@ header .hrow {
 // bar, so the strip comes back there.
 .treemap .dt-treemap-bar { justify-content: flex-end; }
 // The drill root itself is marked: one frame around the map area in that
-// fate's color (per-tile borders only mark fate *boundaries*, so a uniformly
+// state's color (per-tile borders only mark state *boundaries*, so a uniformly
 // marked view has none — this frame is what says "all of this is swept").
 .treemap.root-marked .dt-treemap-map::after {
   content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 5;
@@ -492,8 +492,8 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     &:hover { filter: brightness(1.05); }
     &:focus-visible { outline: 2px solid var(--s1); }
   }
-  // Fate totals for the current view — leads the rollup bar in mark mode.
-  .fate-rollup {
+  // MarkState totals for the current view — leads the rollup bar in mark mode.
+  .state-rollup {
     display: inline-flex;
     gap: 14px;
     padding-right: 12px;
@@ -656,7 +656,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .map-legend { margin: 0; font-size: 14px; }
 }
 
-// Per-user unfurl card: avatar + name + fate proportion bar (percent only).
+// Per-user unfurl card: avatar + name + state proportion bar (percent only).
 .og-user {
   justify-content: center;
   gap: 44px;
@@ -904,7 +904,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   background: var(--t-unattr); cursor: help;
   i { display: block; height: 100%; }
 }
-.fate-tip { display: flex; flex-direction: column; gap: 5px; max-width: 360px; b { margin-right: 2px; } }
+.state-tip { display: flex; flex-direction: column; gap: 5px; max-width: 360px; b { margin-right: 2px; } }
 .own-tip {
   display: flex; flex-direction: column; gap: 3px; min-width: 220px;
   .row { display: flex; align-items: center; gap: 5px; }
@@ -1173,7 +1173,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 }
 
 
-// Micro-hue mark ring: frames an explicitly-marked cell in its fate color,
+// Micro-hue mark ring: frames an explicitly-marked cell in its state color,
 // layered over the macro-hue fill. `borderColor` is set inline per action.
 .mark-edge {
   position: absolute;
@@ -1182,7 +1182,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   border-radius: 3px;
   box-sizing: border-box;
   pointer-events: none;
-  // keep_last_ckpt: a keep+sweep barber-pole ring — "both fates live inside
+  // keep_last_ckpt: a keep+sweep barber-pole ring — "both states live inside
   // this rect" (border-image can't round corners; the straight ring is the
   // trade for a real two-color edge).
   &.klc {
@@ -1227,7 +1227,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   width: 100%;
   font-size: 12.5px;
   .lbl { color: var(--ink-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.03em; min-width: 52px; }
-  .fate {
+  .state {
     display: inline-flex;
     gap: 6px;
     align-items: center;
@@ -1247,16 +1247,16 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
     }
   }
-  // The decision as one select, colored by the fate it currently holds
+  // The decision as one select, colored by the state it currently holds
   // (dashed border = inherited from an ancestor). Read-only viewers get the
   // word in the same color.
-  select.fate-sel, .fate-word {
+  select.state-sel, .state-word {
     --act: var(--ink-2);
     &.keep { --act: var(--mk-keep); }
     &.keep_last_ckpt { --act: var(--mk-klc); }
     &.sweep { --act: var(--mk-del-ink); }
   }
-  select.fate-sel {
+  select.state-sel {
     font: inherit; font-size: 12.5px; font-weight: 600;
     color: var(--act); background: var(--surface);
     border: 1px solid var(--act); border-radius: 5px; padding: 2px 6px;
@@ -1270,7 +1270,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     background: var(--s1); color: #fff; border: 1px solid var(--s1);
     &:disabled { background: transparent; color: var(--ink-3); border-color: var(--line); cursor: default; }
   }
-  .fate-word { color: var(--act); }
+  .state-word { color: var(--act); }
   input.note {
     padding: 2px 6px; background: var(--surface); color: inherit;
     border: 1px solid var(--line); border-radius: 4px; font-size: 12px;
@@ -1399,7 +1399,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
       .yr { color: var(--ink-3); font-size: 11px; }
     }
-    td.owners, td.fate { white-space: nowrap; }
+    td.owners, td.state { white-space: nowrap; }
     // One dot per decision: hollow = available, filled = this row's own mark.
     .actions {
       white-space: nowrap;
@@ -1556,7 +1556,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 }
 
 // `/users` table: (bytes, est. $/mo) column pairs under one group header per
-// fate; the $ sub-columns read as annotations of the bytes, not peers.
+// state; the $ sub-columns read as annotations of the bytes, not peers.
 .user-page .worklist thead {
   .groups th { text-align: center; border-bottom: none; padding-bottom: 0; }
   .groups th:first-child { border-bottom: none; }
@@ -1564,7 +1564,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 }
 .user-page .worklist .usd { padding-left: 0; }
 
-// Per-user estate pages (`/users`, `/user/:id`): fate rollup strip + tables.
+// Per-user estate pages (`/users`, `/user/:id`): state rollup strip + tables.
 .user-page {
   .user-head {
     display: inline-flex;
@@ -1617,12 +1617,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   h2 { margin: 1.2em 0 0.2em; font-size: 1.1em; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
   .user-mini-map { margin: 1em 0 0.4em; }
-  .fate-strip {
+  .state-strip {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
     margin: 0.8em 0 0.4em;
-    .fate-cell {
+    .state-cell {
       display: grid;
       gap: 2px;
       border: 1px solid var(--line);
@@ -1631,8 +1631,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       padding: 8px 14px;
       min-width: 120px;
       b { font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
-      .fate-b { font-size: 1.25em; font-weight: 600; }
-      .fate-n { font-size: 0.85em; color: var(--ink-2); }
+      .state-b { font-size: 1.25em; font-weight: 600; }
+      .state-n { font-size: 0.85em; color: var(--ink-2); }
     }
   }
 }

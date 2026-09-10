@@ -40,7 +40,7 @@ export interface MarkEvent {
   memo: string | null
 }
 
-// Action glyph — matches the treemap's fate marks (✓ keep / ◐ keep-last-ckpt /
+// Action glyph — matches the treemap's state marks (✓ keep / ◐ keep-last-ckpt /
 // ✕ sweep), with distinct marks for clear and ownership changes.
 const ACTION_GLYPH: Record<string, string> = {
   keep: '✓', keep_last_ckpt: '◐', sweep: '✕',

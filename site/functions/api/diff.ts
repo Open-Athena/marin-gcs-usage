@@ -10,7 +10,7 @@
  * `k` is set, and edge-cached accordingly.
  */
 import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
-import { parseFates } from '../_lib/fates.js'
+import { parseMarkAxes } from '../_lib/markAxes.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, parseQuery } from '../_lib/scope.js'
@@ -46,7 +46,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   }
   const rawOwner = url.searchParams.get('o')
   const owner = parseOwner(rawOwner)
-  const fates = parseFates(url.searchParams.get('k'))
+  const states = parseMarkAxes(url.searchParams.get('k'))
   const classes = parseClasses(url.searchParams.get('cl'))
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
@@ -55,24 +55,24 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const gated = await requireScope(ctx as never, scope)
   if (gated instanceof Response) return gated
 
-  const head = (fates || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
+  const head = (states || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://diff.cache/${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
-      `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${fates ? [...fates].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
 
   try {
-    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, fates, query, classes })
+    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes })
     const body = JSON.stringify({
       prev: from,
       curr: to,
       path,
       ...(lensRaw ? { lens: lensRaw } : {}),
       ...(owner ? { owner } : {}),
-      ...(fates ? { fates: [...fates].sort() } : {}),
+      ...(states ? { states: [...states].sort() } : {}),
       ...(query ? { q: qRaw } : {}),
       ...diff,
       threshold: Math.round(diff.threshold),

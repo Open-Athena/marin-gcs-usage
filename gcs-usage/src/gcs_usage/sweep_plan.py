@@ -1,13 +1,13 @@
-"""Object-level fate resolution for the sweep executor (specs/sweep-executor.md).
+"""Object-level state resolution for the sweep executor (specs/sweep-executor.md).
 
 Python port of the site's ledger semantics, kept deliberately tiny and pure so
 it can be property-tested against `/api/resolve` and reconciled against
 `/api/marks/totals` before anything is allowed to delete:
 
-- **Effective fate of a prefix** — the most-recent live keep row on an
+- **Effective state of a prefix** — the most-recent live keep row on an
   ancestor-or-equal prefix wins (`ts DESC, action_id DESC`); a NULL keep on the
   winner is an explicit unmark. Mirrors `site/functions/api/resolve.ts`.
-- **Fate of an object key** — the effective fate of its *deepest marked
+- **MarkState of an object key** — the effective state of its *deepest marked
   ancestor*: the object's covering rows are exactly that ancestor's covering
   rows, so the winner is the same. Unmarked if no ancestor is in the ledger.
 - **KLC expansion** — mirrors `site/src/sweep.ts` `klcSplits`, at object level:
@@ -72,8 +72,8 @@ def key_to_prefixes(bucket: str, name: str) -> list[str]:
     return out
 
 
-class FateResolver:
-    """Ledger snapshot → effective fates, for prefixes and object keys."""
+class StateResolver:
+    """Ledger snapshot → effective states, for prefixes and object keys."""
 
     def __init__(self, rows: Iterable[KeepRow]):
         # Winner per exact prefix first: the overall winner over a covering set
@@ -102,14 +102,14 @@ class FateResolver:
             return None
         return max(cands, key=lambda r: (r.ts, r.action_id))
 
-    def fate(self, prefix: str) -> Optional[str]:
+    def state(self, prefix: str) -> Optional[str]:
         """Effective keep-state of a prefix: keep/keep_last_ckpt/sweep, or None
         (unmarked — no covering row, or the winner is an explicit unmark)."""
         w = self.winner(prefix)
         return w.keep if w else None
 
-    def key_fate(self, bucket: str, name: str) -> tuple[Optional[str], Optional[KeepRow]]:
-        """(fate, winning row) for one object key. The deepest marked ancestor
+    def key_state(self, bucket: str, name: str) -> tuple[Optional[str], Optional[KeepRow]]:
+        """(state, winning row) for one object key. The deepest marked ancestor
         carries the answer; we still return the *winning* row (which may sit on
         a shallower prefix) for provenance."""
         deepest = None
@@ -136,14 +136,14 @@ class VoteResolver:
         by_actor: dict[str, list[KeepRow]] = {}
         for r in rows:
             by_actor.setdefault(r.who, []).append(r)
-        self.by_actor = {who: FateResolver(rs) for who, rs in by_actor.items()}
+        self.by_actor = {who: StateResolver(rs) for who, rs in by_actor.items()}
 
     def votes(self, prefix: str) -> dict[str, str]:
         """Live votes at `prefix`: actor → keep|keep_last_ckpt|sweep. Actors
         whose latest covering row is a retract (NULL) are absent."""
         out: dict[str, str] = {}
         for who, fr in self.by_actor.items():
-            v = fr.fate(prefix)
+            v = fr.state(prefix)
             if v is not None:
                 out[who] = v
         return out
@@ -155,7 +155,7 @@ class VoteResolver:
     def key_votes(self, bucket: str, name: str) -> dict[str, str]:
         out: dict[str, str] = {}
         for who, fr in self.by_actor.items():
-            v, _ = fr.key_fate(bucket, name)
+            v, _ = fr.key_state(bucket, name)
             if v is not None:
                 out[who] = v
         return out
@@ -179,7 +179,7 @@ class VoteResolver:
 
 @dataclass(frozen=True)
 class Clobber:
-    """A prefix somebody marked keep whose *effective* fate is now sweep — a
+    """A prefix somebody marked keep whose *effective* state is now sweep — a
     newer covering sweep repainted it (recency beats specificity). The
     2026-09-01 case: a whole-`checkpoints/` sweep clobbering earlier keeps."""
 
@@ -197,7 +197,7 @@ def clobbered_keeps(rows: Iterable[KeepRow]) -> list[Clobber]:
     """Every prefix with a live keep-valued row that currently resolves to
     sweep. Reports the *latest* keep-valued row per prefix as the victim."""
     rows = list(rows)
-    fr = FateResolver(rows)
+    fr = StateResolver(rows)
     latest_keep: dict[str, KeepRow] = {}
     for r in rows:
         if r.keep in ("keep", "keep_last_ckpt"):
@@ -248,9 +248,9 @@ CATEGORIES = (
 )
 
 
-def owners_resolver(actions_payload: dict) -> FateResolver:
+def owners_resolver(actions_payload: dict) -> StateResolver:
     """Effective-owner resolution (single-value axis, actor-blind most-recent-
-    wins — unchanged by the vote model). ``fate()`` returns the owner user id
+    wins — unchanged by the vote model). ``state()`` returns the owner user id
     (or None = unclaimed); rides the keep-slot of :class:`KeepRow`."""
     rows = [
         KeepRow(
@@ -262,7 +262,7 @@ def owners_resolver(actions_payload: dict) -> FateResolver:
         )
         for r in actions_payload["owners"]
     ]
-    return FateResolver(rows)
+    return StateResolver(rows)
 
 
 def bands_for_bucket(bucket: str, approved: Iterable[str]) -> tuple[str, ...]:
@@ -279,7 +279,7 @@ def classify_dir(
     bucket: str,
     dirname: str,  # '' for bucket-root files, else 'a/b'
     vr: "VoteResolver",
-    own: FateResolver,
+    own: StateResolver,
     idmap,
     ever_kept: frozenset[str],
     approved: tuple[str, ...] = (),
@@ -318,14 +318,14 @@ def classify_dir(
     if approved:
         band = next((a for a in approved if prefix.startswith(a)), None)
         if band is None:
-            return "deferred_owner", own.fate(prefix), sweepers
+            return "deferred_owner", own.state(prefix), sweepers
         if attr is not None and band not in attr_exempt:
             from .attr_index import MIN_SHARE
             hit = attr(band, bucket, dirname)
             if hit is None or hit[0] is None or hit[0] not in sweepers or hit[1] < MIN_SHARE:
-                return "deferred_attr", own.fate(prefix), sweepers
-        return "eligible", own.fate(prefix), sweepers
-    owner = own.fate(prefix)
+                return "deferred_attr", own.state(prefix), sweepers
+        return "eligible", own.state(prefix), sweepers
+    owner = own.state(prefix)
     if owner is None:
         return "deferred_unowned", None, sweepers
     if idmap.resolve(owner) not in sweepers:
@@ -372,8 +372,8 @@ def klc_split(rel_names: Iterable[str], prefix: str = "") -> KlcSplit:
     return KlcSplit(prefix=prefix, kept=tuple(kept), resolved=bool(kept))
 
 
-def klc_key_fate(rel_name: str, split: KlcSplit) -> str:
-    """Fate of one key (relative to the KLC prefix) under a resolved split."""
+def klc_key_state(rel_name: str, split: KlcSplit) -> str:
+    """MarkState of one key (relative to the KLC prefix) under a resolved split."""
     if not split.resolved:
         return "keep"  # unresolved band: conservative, flagged upstream
     u = rel_name if rel_name.endswith("/") else rel_name + "/"

@@ -1,5 +1,5 @@
 // `/users` unfurl: its own title/desc + the redacted owner-map og:image
-// (names + fate stripes; no sizes or $ — see src/UserPage.tsx UsersOgPage).
+// (names + state stripes; no sizes or $ — see src/UserPage.tsx UsersOgPage).
 import { unfurlShell } from './_lib/unfurl.js'
 
 interface Env {

@@ -18,8 +18,8 @@ import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, parseQuery } from './filterTree'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
-import { FATE_AXES, klcSplits, useMyUser } from './sweep'
-import type { FateAxis } from './sweep'
+import { MARK_AXES, klcSplits, useMyUser } from './sweep'
+import type { MarkAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { MultiSelect } from './MultiSelect'
 import { SiteNav, TOPBAR_VAR } from './SiteNav'
@@ -35,22 +35,22 @@ import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
 // The color axes on offer.
-const MODES: ColorMode[] = ['fate', 'read', 'user', 'date', 'tree']
+const MODES: ColorMode[] = ['marks', 'read', 'user', 'date', 'tree']
 
 /**
  * URL value codecs. Values are ONE letter on the wire (`?c=t`); every older
- * spelling still decodes (`tree`, `written`/`age`, `mark`/`fate`, `class`…)
+ * spelling still decodes (`tree`, `written`/`age`, `mark`/`state`, `class`…)
  * so old links keep working, and `useCanonicalParams` rewrites them to the
  * short form on load. `use-prms` has no alias support of its own — a codec's
  * `decode` accepts the legacy forms and the rewrite is ours.
  */
-const MODE_CODES: Record<string, string> = { tree: 't', date: 'w', read: 'r', user: 'u', fate: 'm' }
+const MODE_CODES: Record<string, string> = { tree: 't', date: 'w', read: 'r', user: 'u', marks: 'm' }
 const MODE_ALIASES: Record<string, string> = {
   t: 'tree', tree: 'tree',
   w: 'date', written: 'date', age: 'date', date: 'date',
   r: 'read', read: 'read',
   u: 'user', user: 'user',
-  m: 'fate', mark: 'fate', fate: 'fate',
+  m: 'marks', mark: 'marks', marks: 'marks', fate: 'marks',
 }
 const modeCodec = {
   encode: (v: string | undefined) => (v === undefined ? undefined : MODE_CODES[v] ?? v),
@@ -88,7 +88,7 @@ const CLASS_OF: Record<ClassAxis, string> = { s: '1', n: '2', c: '3', a: '4' }
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
 
 // The mark-state axis chips (`?k=` letters), in bar order.
-const FATE_CHIPS: { f: FateAxis; key: string; glyph: string; color: string; tip: string }[] = [
+const MARK_CHIPS: { f: MarkAxis; key: string; glyph: string; color: string; tip: string }[] = [
   { f: 'keep', key: 'k', glyph: '✓', color: 'var(--mk-keep)', tip: 'Bytes under a keep decision (keep-last-ckpt counts: it splits its subtree).' },
   { f: 'sweep', key: 's', glyph: '✕', color: 'var(--mk-del)', tip: 'Bytes marked for the sweep (keep-last-ckpt counts: it splits its subtree).' },
   { f: 'unmarked', key: 'u', glyph: '○', color: 'var(--ink-2)', tip: 'The review backlog — no keep/sweep decision on the prefix or any ancestor.' },
@@ -138,7 +138,7 @@ function AppContent() {
   // Keep the tab title in sync with the store on client-side navigation.
   useDocTitle(store.key === 'gcs' ? undefined : store.title)
   // URL token matches the visible label ("written"/"mark"), not the internal
-  // key ("date"/"fate"); old ?c=age / ?c=fate links still decode (the retired
+  // key ("date"/"marks"); old ?c=age / ?c=fate links still decode (the retired
   // group axes decode to the default).
   // ABSENT is meaningful: it means "the lens-appropriate default" (see `mode`
   // below), so switching lenses re-defaults the coloring — but an explicit
@@ -199,12 +199,12 @@ function AppContent() {
   const ident = useIdentity()
   const myUser = useMyUser(ident?.email, markMode)
   // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
-  const fateSet = useMemo((): ReadonlySet<FateAxis> | null => {
-    const on = new Set(FATE_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
-    return on.size > 0 && on.size < FATE_AXES.length && markMode ? on : null
+  const markAxes = useMemo((): ReadonlySet<MarkAxis> | null => {
+    const on = new Set(MARK_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
+    return on.size > 0 && on.size < MARK_AXES.length && markMode ? on : null
   }, [kP, markMode])
-  const setFates = (keep: FateAxis[]) =>
-    setKP(keep.length === FATE_AXES.length || keep.length === 0 ? undefined : FATE_CHIPS.filter(c => keep.includes(c.f)).map(c => c.key).join(''))
+  const setMarkAxes = (keep: MarkAxis[]) =>
+    setKP(keep.length === MARK_AXES.length || keep.length === 0 ? undefined : MARK_CHIPS.filter(c => keep.includes(c.f)).map(c => c.key).join(''))
   // Owner axis. `me` resolves to the signed-in user's attribution id (a
   // shared `?o=me` link shows each reader their own files); an unmapped
   // email resolves to nothing, and the axis falls back to "all" with a note.
@@ -242,7 +242,7 @@ function AppContent() {
     (activeLens && assigner ? `&by=${encodeURIComponent(assigner)}` : '') +
     (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
     (notUsers.length ? `&o=!${notUsers.map(encodeURIComponent).join(',')}` : '') +
-    (fateSet ? `&k=${[...fateSet].map(f => f[0]).join('')}` : '') +
+    (markAxes ? `&k=${[...markAxes].map(f => f[0]).join('')}` : '') +
     (classSet ? `&cl=${CLASS_AXES.filter(c => classSet.has(c)).join('')}` : '') +
     (fq ? `&q=${encodeURIComponent(fq)}` : '')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
@@ -331,7 +331,7 @@ function AppContent() {
     queries: subtreePaths.map(p => ({
       queryKey: ['subtree', asof, p, canW, scopeQs],
       enabled: !!asof,
-      staleTime: fateSet ? 30_000 : Infinity, // the mark axis follows the live ledger
+      staleTime: markAxes ? 30_000 : Infinity, // the mark axis follows the live ledger
       // Retry transient failures, but not the deterministic ones (409: no
       // user index for this scan; 413: view too wide) — those surface as-is.
       retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
@@ -358,7 +358,7 @@ function AppContent() {
       queryKey: ['subtree', asof, p, canW, scopeQs, 'depth1'],
       // Deepest path only — see `dataFor`; ancestors never use it.
       enabled: !!asof && i === subtreePaths.length - 1,
-      staleTime: fateSet ? 30_000 : Infinity,
+      staleTime: markAxes ? 30_000 : Infinity,
       retry: false,
       queryFn: async () => {
         const r = await fetch(
@@ -425,7 +425,7 @@ function AppContent() {
   }, [baseTree, subtreePaths, subStamp])
 
   // keep_last_ckpt → concrete keep/sweep split, resolved against the loaded
-  // tree (fate cells, stripes, and the fate rollup all decompose through it).
+  // tree (state cells, stripes, and the state rollup all decompose through it).
   const klcIdx = useMemo(
     () => (tree && markIdx.count ? klcSplits(tree, markIdx.keeps) : undefined),
     [tree, markIdx],
@@ -528,11 +528,11 @@ function AppContent() {
   // No explicit `?c=` → a scope-appropriate default; an explicit pick always
   // wins. During the cleanup sprint the primary axis is mark state ("marks"),
   // so the fill and the keep/sweep decorations are ONE axis. A single mark
-  // state or a single owner defaults to `user` instead (fate is useless on an
+  // state or a single owner defaults to `user` instead (state is useless on an
   // all-undecided view; on a one-owner view the interesting axis is who else
   // is in there).
   const lensDefaultMode: ColorMode =
-    fateSet?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : markMode ? 'fate' : 'user'
+    markAxes?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : markMode ? 'marks' : 'user'
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
   // The scan carries attribution (the owner axis and user coloring apply) —
@@ -540,7 +540,7 @@ function AppContent() {
   // at all (e.g. `?o=unclaimed`).
   const hasAttr = !!meta?.users?.length
   const effMode: ColorMode =
-    (mode === 'read' && !readRange) || (mode === 'fate' && !markMode) ? 'user' : hasAttr ? mode : 'tree'
+    (mode === 'read' && !readRange) || (mode === 'marks' && !markMode) ? 'user' : hasAttr ? mode : 'tree'
   // The age chart's color axis: an explicit `?ac=` wins; otherwise it follows
   // the map, except marks (no per-stratum value in age.json) → written. The
   // read axis needs strata that carry `a` (scans published from 8/29 on) —
@@ -550,7 +550,7 @@ function AppContent() {
   // `read` needs `a` strata, the user axis needs `us`.
   const ageModes = AGE_MODES.filter(m => (m !== 'read' || ageReadRange) && (hasAttr || m === 'date' || m === 'tree'))
   const ageMode: ColorMode = (() => {
-    const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'fate' ? 'date' : effMode
+    const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'marks' ? 'date' : effMode
     return ageModes.includes(want) ? want : 'date'
   })()
   // The pinned highlight the map dims to: the owner axis's user (a scoped
@@ -559,7 +559,7 @@ function AppContent() {
   const hl: Highlight | null = ownerUser ? { user: ownerUser } : null
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
-  const lensScoped = fateSet != null || ownerMode !== 'all' || classSet != null
+  const lensScoped = markAxes != null || ownerMode !== 'all' || classSet != null
   // Hold the last tree that rendered while the next one loads — whole, so it
   // is self-consistent (it already laid out fine). The map never flashes to
   // nothing across a scope, scan, or drill change, and the page below never
@@ -575,7 +575,7 @@ function AppContent() {
   const diffQ = useQuery<DiffData, Error>({
     queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs],
     enabled: !!asof && !!diffPrev,
-    staleTime: fateSet ? 30_000 : Infinity,
+    staleTime: markAxes ? 30_000 : Infinity,
     retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
     retryDelay: (n: number) => 400 * 2 ** n,
     queryFn: async () => {
@@ -596,7 +596,7 @@ function AppContent() {
     ...(ownerUser ? [`${shortName(ownerUser)}’s files${assigner ? `, assigned by ${shortName(assigner)}` : ''}`]
       : ownerMode === 'others' && notUsers[0] ? [`not ${shortName(notUsers[0])}`]
       : ownerMode !== 'all' ? [ownerMode] : []),
-    ...(fateSet ? [[...fateSet].join(' / ')] : []),
+    ...(markAxes ? [[...markAxes].join(' / ')] : []),
     ...(fq ? [`“${fq}”`] : []),
   ]
   const scopeDesc = scopeParts.join(' · ')
@@ -871,13 +871,13 @@ function AppContent() {
             <Tooltip content={
               effMode === 'date' ? <>Object <b>creation time</b>, from the bucket listings (each cell = the byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.</>
               : effMode === 'read' ? <><b>Last read</b> — the most recent GET/HEAD/LIST anywhere under each cell, from the GCS usage logs (logging began {readRange ? epochDaysToDate(readRange.min) : '—'}). Brick-red = <b>never read</b> since then: prime sweep candidates.</>
-              : effMode === 'fate' ? <>Effective <b>keep / sweep / undecided</b> state of every cell (the most recent covering mark wins).</>
+              : effMode === 'marks' ? <>Effective <b>keep / sweep / undecided</b> state of every cell (the most recent covering mark wins).</>
               : effMode === 'user' ? <>Dominant <b>owner</b> of each cell; the legend lists the top users of the current view.</>
               : <>Top-level directory each cell belongs to.</>
             }>
               <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
                 {MODES
-                  .filter(m => (m !== 'read' || readRange) && (m !== 'fate' || markMode))
+                  .filter(m => (m !== 'read' || readRange) && (m !== 'marks' || markMode))
                   .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
               </select>
             </Tooltip>
@@ -908,11 +908,11 @@ function AppContent() {
         {markMode && (
           <span className="tb-axis">
             <span className="lbl">marks</span>
-            <MultiSelect<FateAxis>
+            <MultiSelect<MarkAxis>
               label="mark states"
-              options={FATE_CHIPS.map(c => ({ key: c.f, label: c.f, glyph: c.glyph, color: c.color, tip: c.tip }))}
-              selected={fateSet ? [...fateSet] : FATE_AXES}
-              onChange={setFates}
+              options={MARK_CHIPS.map(c => ({ key: c.f, label: c.f, glyph: c.glyph, color: c.color, tip: c.tip }))}
+              selected={markAxes ? [...markAxes] : MARK_AXES}
+              onChange={setMarkAxes}
             />
           </span>
         )}
@@ -998,15 +998,15 @@ function AppContent() {
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
             klcIdx={markMode ? klcIdx : undefined}
-            // Exact fate totals only when they describe THIS view: a server
+            // Exact state totals only when they describe THIS view: a server
             // user-lens map gets that user's totals; the unscoped estate gets
             // the estate totals. Any client-side scoping (a pool, a mark
             // state, a group pin) has no server-sliced totals — pass null so
             // the ≈ client walk over the scoped tree keeps numerator and
             // denominator on the same slice (estate totals over a 269 Ti
             // scope read as "undecided 777%").
-            viewFates={
-              activeLens && lensUser && !fateSet ? totalsQ.data?.users?.[lensUser] ?? null
+            viewMarkAxes={
+              activeLens && lensUser && !markAxes ? totalsQ.data?.users?.[lensUser] ?? null
               : lensScoped ? null
               : totalsQ.data?.total ?? null
             }
@@ -1017,7 +1017,7 @@ function AppContent() {
               (not in the index yet — specs/view-serving.md §3), or directories
               under this view's floor. Say so rather than show a blank canvas. */}
           {mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && subtreeQs[subtreeQs.length - 1]?.data && (
-            mapPath[mapPath.length - 1].b === 0 && (ownerMode !== 'all' || fateSet) ? (
+            mapPath[mapPath.length - 1].b === 0 && (ownerMode !== 'all' || markAxes) ? (
               // The scope, not the directory, is what's empty here: say whose
               // filter came up dry rather than describe a 0-byte directory.
               <p className="hint leaf-note">
@@ -1047,7 +1047,7 @@ function AppContent() {
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
               klcIdx={markMode ? klcIdx : undefined}
-              fates={markMode ? fateSet : null}
+              states={markMode ? markAxes : null}
               userIdx={userIdx}
               onPickUser={u => pickUser(u, false)}
               onOpen={openPath}

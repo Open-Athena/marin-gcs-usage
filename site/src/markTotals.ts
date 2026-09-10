@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import type { Fate, UserFates } from './sweep'
+import type { MarkState, UserStates } from './sweep'
 
 // Exact keep / sweep / undecided totals from `/api/marks/totals`: the ledger
 // folded server-side and priced against the floor-free path index
@@ -10,8 +10,8 @@ export interface MarkTotals {
   head: number
   bytes: number
   objects: number
-  total: Record<Fate, number>
-  users: Record<string, UserFates>
+  total: Record<MarkState, number>
+  users: Record<string, UserStates>
   mark_count: number
   computed: { at: number; ms: number; groups: number; prefixes: number }
 }

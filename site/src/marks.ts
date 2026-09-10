@@ -4,7 +4,7 @@
 // expanded prefix rows per axis (keep / owner), and this module folds them:
 // for a path, the effective value per axis is the most recent live row on an
 // ancestor-or-equal prefix (recency beats specificity — a newer broad mark
-// repaints older deeper ones). `sweep` is the default fate (absence of a
+// repaints older deeper ones). `sweep` is the default state (absence of a
 // mark) — explicit rows record affirmative decisions, incl. clears.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo } from 'react'
@@ -123,8 +123,8 @@ export function useMarkMutations() {
   return { put, claim, post }
 }
 
-export interface MarkState {
-  /** Effective fate: most recent live row on an ancestor-or-equal prefix. */
+export interface ResolvedMark {
+  /** Effective state: most recent live row on an ancestor-or-equal prefix. */
   mark: Mark | null
   /** The winning mark sits exactly on this prefix (vs inherited). */
   own: boolean
@@ -133,7 +133,7 @@ export interface MarkState {
 }
 
 export interface MarkIndex {
-  resolve: (uri: string) => MarkState
+  resolve: (uri: string) => ResolvedMark
   claimOf: (uri: string) => Owner | null
   /** Live set-marks strictly under a prefix — what a broad mark would repaint. */
   overridesOf: (uri: string) => { n: number; keeps: number }
@@ -161,7 +161,7 @@ function foldLatest<R extends { prefix: string; ts: number; action_id: number }>
 }
 
 /**
- * Lookups are O(depth): a prefix's fate is decided by the newest live row on
+ * Lookups are O(depth): a prefix's state is decided by the newest live row on
  * one of its ancestors-or-self, so `resolve` walks the ~6 ancestor prefixes
  * and probes a Map — not a scan over every mark. (The original brute-force
  * scan was fine at hundreds of marks; at ~7k marks × ~1k rendered cells ×
@@ -196,7 +196,7 @@ export function useMarkIndex(data: { keeps: KeepRow[]; owners: OwnerRow[] } | un
         below.set(a, b)
       }
     }
-    const resolve = (uri: string): MarkState => {
+    const resolve = (uri: string): ResolvedMark => {
       const p = norm(uri)
       let win: KeepRow | null = null
       for (const a of ancestors(p)) {
