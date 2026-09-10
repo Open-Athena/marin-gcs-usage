@@ -1,101 +1,64 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useActions } from 'use-kbd'
+import { useEffect, useRef } from 'react'
+import { useRowSelection as useKbdRowSelection, useRowSelectionKeys as useKbdRowSelectionKeys, useActions } from 'use-kbd'
+import type { RowSelectionRowProps, UseRowSelectionResult } from 'use-kbd'
 
-// Headless multi-row selection, shared by every table on the site (the
-// /sweep console, the treemap's children table). One model, the use-kbd
-// table demo's: a `selected` set keyed by a stable row key (so it survives
-// paging / sort / filter), and a `cursor` — a row index within the current
-// page. Click selects just that row; ⌘/ctrl-click toggles one; shift-click
-// and shift+j/k extend a range from the cursor; j/k move the cursor without
-// touching the selection; `x` toggles the cursor row, ⇧x the page, Esc
-// clears. Checkboxes are the additive mouse path.
-//
-// Slated to move upstream to use-kbd as `useRowSelection` (the file-tree
-// session's read of this, 2026-09-09); keep the API shaped for that.
+// Multi-row selection for every table on the site (the /sweep console, the
+// treemap's children table): use-kbd's `useRowSelection` — an anchor/cursor
+// range plus pinned keys, resolved against `key(row)` so the selection
+// survives paging and sort (the range freezes into pins when the page's rows
+// change) — with the site's few conventions on top: rows are `.sel` / `.cur`,
+// a click on a link, button or input inside a row doesn't select the row, the
+// cursor row scrolls into view, and the header checkbox toggles the page
+// without dropping rows pinned on other pages.
 
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
-
-export interface RowSelection<T> {
-  selected: ReadonlySet<string>
-  isSelected: (row: T) => boolean
-  /** Toggle (or set, with `on`) a batch of keys. */
-  toggle: (keys: string[], on?: boolean) => void
-  /** Replace the selection. */
-  set: (keys: string[]) => void
-  clear: () => void
-  cursor: number
-  setCursor: (i: number) => void
+export interface RowSelection<T> extends UseRowSelectionResult<T> {
   cursorRow: T | undefined
-  /** Move the cursor by `d` rows; `extend` selects the range crossed. */
-  moveCursor: (d: number, extend: boolean) => void
-  /** `<tr onClick>` handler implementing plain / shift / ⌘ clicks. */
-  rowClick: (i: number, e: React.MouseEvent) => void
   /** `<tr ref>` collector so the cursor row scrolls into view. */
   rowRef: (i: number) => (el: HTMLTableRowElement | null) => void
-  /** Row class names for the current state. */
-  rowClass: (row: T, i: number) => string
   /** Every row on the page is selected (the header checkbox). */
   pageAll: boolean
   togglePage: () => void
 }
 
-export function useRowSelection<T>(pageRows: T[], key: (row: T) => string): RowSelection<T> {
-  const [selected, setSelected] = useState<Set<string>>(() => new Set())
-  const [cursor, setCursor] = useState(-1)
+export function useRowSelection<T>(pageRows: readonly T[], key: (row: T) => string): RowSelection<T> {
+  const sel = useKbdRowSelection(pageRows, key, { cursorClassName: 'cur', selectedClassName: 'sel' })
   const rowRefs = useRef<(HTMLTableRowElement | null)[]>([])
-  useEffect(() => { rowRefs.current[cursor]?.scrollIntoView({ block: 'nearest' }) }, [cursor])
-
-  const toggle = useCallback((keys: string[], on?: boolean) => setSelected(prev => {
-    const next = new Set(prev)
-    const add = on ?? !keys.every(k => prev.has(k))
-    for (const k of keys) add ? next.add(k) : next.delete(k)
-    return next
-  }), [])
-  const set = useCallback((keys: string[]) => setSelected(new Set(keys)), [])
-  const clear = useCallback(() => { setSelected(new Set()); setCursor(-1) }, [])
-  const moveCursor = (d: number, extend: boolean) => {
-    if (!pageRows.length) return
-    const from = cursor < 0 ? (d > 0 ? -1 : pageRows.length) : cursor
-    const to = clamp(from + d, 0, pageRows.length - 1)
-    if (extend) {
-      const a = cursor < 0 ? to : cursor
-      toggle(pageRows.slice(Math.min(a, to), Math.max(a, to) + 1).map(key), true)
-    }
-    setCursor(to)
+  useEffect(() => { rowRefs.current[sel.cursor]?.scrollIntoView({ block: 'nearest' }) }, [sel.cursor])
+  const pageAll = pageRows.length > 0 && pageRows.every(sel.isSelected)
+  const rowProps = (i: number): RowSelectionRowProps => {
+    const p = sel.rowProps(i)
+    return { ...p, onClick: e => { if (!(e.target as HTMLElement).closest('a, button, input, select')) p.onClick(e) } }
   }
-  const rowClick = (i: number, e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('a, button, input, select')) return
-    if (e.shiftKey && cursor >= 0) toggle(pageRows.slice(Math.min(cursor, i), Math.max(cursor, i) + 1).map(key), true)
-    else if (e.metaKey || e.ctrlKey) toggle([key(pageRows[i])])
-    else set([key(pageRows[i])])
-    setCursor(i)
-  }
-  const pageKeys = pageRows.map(key)
-  const pageAll = pageRows.length > 0 && pageKeys.every(k => selected.has(k))
   return {
-    selected,
-    isSelected: row => selected.has(key(row)),
-    toggle, set, clear,
-    cursor, setCursor,
-    cursorRow: pageRows[cursor],
-    moveCursor, rowClick,
+    ...sel,
+    rowProps,
+    cursorRow: pageRows[sel.cursor],
     rowRef: i => el => { rowRefs.current[i] = el },
-    rowClass: (row, i) => [selected.has(key(row)) ? 'sel' : '', i === cursor ? 'cur' : ''].filter(Boolean).join(' '),
     pageAll,
-    togglePage: () => toggle(pageKeys),
+    // Per-row toggles rather than `selectPage`, which replaces the pinned set
+    // (and so would forget rows selected on other pages); the commit pins the
+    // result and drops the cursor the last toggle left behind.
+    togglePage: () => {
+      pageRows.forEach((r, i) => { if (sel.isSelected(r) === pageAll) sel.toggle(i) })
+      sel.commit()
+    },
   }
 }
 
-/** The standard key bindings for a selection, under a use-kbd group. `id`
- *  namespaces the action ids (`sweep`, `tbl`, …). */
-export function useRowSelectionKeys<T>(sel: RowSelection<T>, id: string, group: string, key: (row: T) => string) {
+/** use-kbd's selection bindings (j/k move, ⇧j/⇧k extend, …) under a
+ *  ShortcutsModal group, with the site's page toggle on ⇧x in place of
+ *  use-kbd's ⌃a select-page (which drops other pages' rows). Esc clears only
+ *  while something is selected: the action exists only then, so otherwise the
+ *  key falls through to the treemap, whose Esc / Backspace drills up — and
+ *  when it does clear, use-kbd's preventDefault tells the treemap to stay put.
+ *  `id` namespaces the action ids (`sweep`, `tbl`, …). */
+export function useRowSelectionKeys<T>(sel: RowSelection<T>, id: string, group: string) {
+  useKbdRowSelectionKeys(sel, { idPrefix: id, group, bindings: { all: false, clear: false } })
+  // Registered only while selected (not `enabled: false`): use-kbd
+  // preventDefaults a matched key before it checks `enabled`, which would
+  // still swallow the Esc the treemap wants.
   useActions({
-    [`${id}:down`]: { label: 'Cursor down', group, defaultBindings: ['j', 'arrowdown'], handler: () => sel.moveCursor(1, false) },
-    [`${id}:up`]: { label: 'Cursor up', group, defaultBindings: ['k', 'arrowup'], handler: () => sel.moveCursor(-1, false) },
-    [`${id}:extend-down`]: { label: 'Select down (extend from the cursor)', group, defaultBindings: ['shift+j', 'shift+arrowdown'], handler: () => sel.moveCursor(1, true) },
-    [`${id}:extend-up`]: { label: 'Select up (extend from the cursor)', group, defaultBindings: ['shift+k', 'shift+arrowup'], handler: () => sel.moveCursor(-1, true) },
-    [`${id}:toggle`]: { label: 'Select / deselect the cursor row', group, defaultBindings: ['x', 'space'], handler: e => { e?.preventDefault(); if (sel.cursorRow) sel.toggle([key(sel.cursorRow)]) } },
     [`${id}:toggle-page`]: { label: 'Select / deselect every row on this page', group, defaultBindings: ['shift+x'], handler: sel.togglePage },
-    [`${id}:clear`]: { label: 'Clear the selection', group, defaultBindings: ['escape'], handler: sel.clear },
+    ...(sel.count > 0 ? { [`${id}:clear`]: { label: 'Clear the selection', group, defaultBindings: ['escape'], handler: sel.clear } } : {}),
   })
 }

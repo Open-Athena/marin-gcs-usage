@@ -660,8 +660,8 @@ function AppContent() {
     'highlight:clear': {
       label: 'Clear the owner axis (everyone)',
       group: 'Scope',
-      // `x` belongs to row selection (toggle the cursor row) in every table;
-      // the owner axis has its own × button beside the picker.
+      // `⇧x` belongs to row selection (toggle the page) in every table; the
+      // owner axis has its own × button beside the picker.
       defaultBindings: ['alt+x'],
       handler: clearHl,
     },

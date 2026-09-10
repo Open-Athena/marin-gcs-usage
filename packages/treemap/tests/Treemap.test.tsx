@@ -130,6 +130,27 @@ describe('<Treemap>', () => {
     }
   })
 
+  it('a consumed Escape (defaultPrevented by an earlier listener) does not pop', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} />)
+      fireEvent.click(container.querySelector('.dt-treemap-map > .dt-treemap-cell.branch')!)
+      expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])
+      const consume = (e: KeyboardEvent) => e.preventDefault()
+      document.addEventListener('keydown', consume)
+      try {
+        fireEvent.keyDown(document.body, { key: 'Escape' })
+        expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])  // still drilled
+      } finally {
+        document.removeEventListener('keydown', consume)
+      }
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(cellLabels(container)).toEqual(['foo', 'bar'])        // popped
+    } finally {
+      restore()
+    }
+  })
+
   it('Backspace is inert while typing in an input', () => {
     const restore = withLayout()
     try {

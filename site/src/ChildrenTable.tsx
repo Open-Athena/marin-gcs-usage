@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { MouseEvent } from 'react'
 import { intParam, useUrlState } from 'use-prms'
 import { useCanMark } from './auth'
 import { dateColor, epochDaysToDate, epochDaysToMonthShort } from './colors'
@@ -25,6 +26,7 @@ type SortKey = 'n' | 'b' | 'o' | 'd' | 'a'
 
 // Rows per page: `?n=` (default 20); the pager offers the usual sizes.
 const PAGE_SIZES = [20, 50, 100, 200]
+
 
 export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, userIdx, onPickUser, onOpen }: {
   /** The treemap's currently-viewed node. */
@@ -100,16 +102,21 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
   const pg = Math.min(page, pages - 1)
   const shown = kids.slice(pg * PAGE, (pg + 1) * PAGE)
   const uriOfKid = (k: TreeNode) => scheme + [...segs, k.n].join('/')
-  // Rows select (click / shift / ⌘, checkboxes, j/k/x) into one set keyed by
+  // Rows select (click / shift / ⌘, checkboxes, j/k) into one set keyed by
   // uri; the bar above the table marks or assigns the whole selection at once.
   const selectable = shown.filter(k => !k.n.startsWith('('))
   const sel = useRowSelection(selectable, uriOfKid)
-  useRowSelectionKeys(sel, 'tbl', 'Children table', uriOfKid)
-  const selUris = [...sel.selected].filter(u => selectable.some(k => uriOfKid(k) === u) || true)
+  useRowSelectionKeys(sel, 'tbl', 'Children table')
+  // Selection survives paging and sort by key, but not a drill: the rows
+  // picked under one path aren't candidates for a bulk mark under another.
+  const path = segs.join('/')
+  const clearSel = sel.clear
+  useEffect(() => clearSel(), [path, clearSel])
+  const selUris = [...sel.selected]
   const bulkMark = (action: MarkAction | null) => { if (selUris.length) post.mutate(selUris.map(u => ({ pattern: u + '/', keep: action })), { onSuccess: () => sel.clear() }) }
   const selBytes = kids.filter(k => sel.selected.has(uriOfKid(k))).reduce((s, k) => s + k.b, 0)
   const selBar = showActions && sel.selected.size > 0 && (
-    <div className="sel-bar">
+    <span className="sel-bar">
       <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}
       <span className="acts">
         <span className="lbl">mark all</span>
@@ -124,10 +131,10 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
         <AssignSelect prefix={selUris.map(u => u + '/')} label={`assign ${sel.selected.size}…`} />
         <button type="button" className="quiet" onClick={sel.clear}>deselect</button>
       </span>
-    </div>
+    </span>
   )
   const pager = pages > 1 && (
-    <div className="pager">
+    <span className="pg">
       <button type="button" disabled={pg === 0} onClick={() => setPage(0)} aria-label="first page">«</button>
       <button type="button" disabled={pg === 0} onClick={() => setPage(pg - 1)} aria-label="previous page">‹</button>
       <span>{pg * PAGE + 1}–{Math.min(kids.length, (pg + 1) * PAGE)} of {kids.length.toLocaleString('en-US')}</span>
@@ -136,8 +143,15 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
       <select className="psize" value={PAGE} onChange={e => { setNP(+e.target.value); setPage(0) }} aria-label="rows per page">
         {PAGE_SIZES.map(n => <option key={n} value={n}>{n} / page</option>)}
       </select>
-    </div>
+    </span>
   )
+  // The top bar holds the pager on the left and the selection on the right;
+  // it's always there once rows are selectable, so a selection appearing
+  // doesn't push the row that was just clicked out from under the pointer.
+  // A click on the section's own dead space (not a row / control) deselects.
+  const clearOnDeadClick = (e: MouseEvent) => {
+    if (sel.selected.size && !(e.target as HTMLElement).closest('tr, button, input, select, a, .sel-bar')) sel.clear()
+  }
   // One small dot per decision, colored by fate: filled = this row's OWN
   // mark, dashed = the mark it inherits from above, hollow = available.
   const dot = (uri: string, a: MarkAction, st: 'own' | 'inh' | null, tip: string) => (
@@ -161,16 +175,15 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
           {parts.map(x => <div className="row" key={x}><i style={{ background: FATE_COLORS[x] }} />{FATE_LABELS[x]}<span className="n">{fmtBytes(f[x])} · {Math.round((100 * f[x]) / k.b)}%</span></div>)}
         </span>
       }>
-        <span className="own-bar fate-bar" style={{ width: 70 }} aria-label="fate distribution">
+        <span className="own-bar fate-bar" style={{ width: 70 }} aria-label="marks distribution">
           {parts.map(x => <i key={x} style={{ width: `${(100 * f[x]) / k.b}%`, background: FATE_COLORS[x] }} />)}
         </span>
       </Tooltip>
     )
   }
   return (
-    <section className="children-tbl">
-      {pager}
-      {selBar}
+    <section className="children-tbl" onClick={clearOnDeadClick}>
+      {(pager || showActions) && <div className="pager top">{pager}{selBar}</div>}
       <table className="worklist selectable">
         <thead>
           <tr>
@@ -182,7 +195,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
             {th('d', 'created')}
             {th('a', 'read', false)}
             <th>owner(s)</th>
-            {markIdx && <th>fate</th>}
+            {markIdx && <th>marks</th>}
             {showActions && <th>actions</th>}
           </tr>
         </thead>
@@ -196,9 +209,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
             const mk = markIdx && !synthetic ? markIdx.resolve(uri) : null
             const si = selectable.indexOf(k)
             return (
-              <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} className={si >= 0 ? sel.rowClass(k, si) : undefined} onClick={si >= 0 && showActions ? e => sel.rowClick(si, e) : undefined}
-                  onMouseDown={e => { if (e.shiftKey) e.preventDefault() }}>
-                {showActions && <td className="col-sel">{!synthetic && <input type="checkbox" checked={sel.isSelected(k)} onChange={() => sel.toggle([uri])} />}</td>}
+              <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} {...(si >= 0 && showActions ? sel.rowProps(si) : {})}>
+                {showActions && <td className="col-sel">{!synthetic && <input type="checkbox" checked={sel.isSelected(k)} onChange={() => sel.toggle(si)} />}</td>}
                 <td className="prefix" title={uri}>
                   {synthetic || !k.c?.length ? (
                     k.n
@@ -265,7 +277,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, fates, user
           </tr>
         </tfoot>
       </table>
-      {pager}
+      {pager && <div className="pager">{pager}</div>}
     </section>
   )
 }

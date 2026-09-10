@@ -242,9 +242,9 @@ export function SweepPage() {
   // ---- paging + selection ----
   // Selection is keyed by prefix (so it survives paging and the show-all
   // toggle); the cursor is a row index within the current page, as in the
-  // use-kbd table demo. Click / `x` toggle a row; shift+click and shift+j/k
-  // select a range from the cursor; j/k move the cursor without touching the
-  // selection; the checkbox column is the touch/mouse equivalent.
+  // use-kbd table demo. Click / j / k select a row; shift+click and shift+j/k
+  // extend a range from the anchor; ⌘-click and the checkbox column add or
+  // drop single rows; ⇧x toggles the page.
   const [q, setQ] = useState('')
   // Status axis: a multi-select over approved / todo; both (or neither) = all.
   const [stSel, setStSel] = useState<Status[]>(STATUSES)
@@ -260,7 +260,7 @@ export function SweepPage() {
   const page = clamp(pageRaw, 0, pages - 1)
   const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize)
   const sel = useRowSelection(pageRows, r => r.prefix)
-  const { selected, cursor, setCursor, toggle } = sel
+  const { selected, toggle } = sel
   // Which bands are expanded to show their non-sweeper residue (on-demand fetch).
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const toggleExpand = (prefix: string) => setExpanded(prev => {
@@ -270,9 +270,11 @@ export function SweepPage() {
   })
   const cursorRow = sel.cursorRow as Candidate | undefined
   const selRows = bands.filter(b => selected.has(b.prefix))
-  useEffect(() => { setCursor(-1); setPage(0) }, [pageSize, showAll, q, st, setCursor])
+  // A page turn or filter change swaps `pageRows`; the selection hook freezes
+  // the active range into pins and drops the cursor by itself.
+  useEffect(() => setPage(0), [pageSize, showAll, q, st])
   const clearSel = sel.clear
-  const gotoPage = (p: number) => { setPage(clamp(p, 0, pages - 1)); setCursor(-1) }
+  const gotoPage = (p: number) => setPage(clamp(p, 0, pages - 1))
 
   // Bulk targets: the selection, else the cursor row. Approve skips bands
   // already approved; revoke skips the rest.
@@ -284,7 +286,7 @@ export function SweepPage() {
   const selCap = selRows.reduce((s, b) => s + (attrCap(b) ?? 0), 0)
 
   const G = 'Sweep console'
-  useRowSelectionKeys(sel, 'sweep', G, r => r.prefix)
+  useRowSelectionKeys(sel, 'sweep', G)
   useActions({
     'sweep:next-page': { label: 'Next page', group: G, defaultBindings: [']'], handler: () => gotoPage(page + 1) },
     'sweep:prev-page': { label: 'Previous page', group: G, defaultBindings: ['['], handler: () => gotoPage(page - 1) },
@@ -338,7 +340,12 @@ export function SweepPage() {
         </p>
       )}
 
-      {latestQ.isError && <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>}
+      {latestQ.isError && (
+        // Only a 404 means there's no plan; anything else is the backend.
+        /: 404$/.test(String(latestQ.error))
+          ? <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>
+          : <p className="err">Error loading the latest plan: {String(latestQ.error)}</p>
+      )}
       {candsQ.data && (<>
         <div className="sweep-tools">
           <span className="tb-axis nb">
@@ -401,12 +408,12 @@ export function SweepPage() {
               // recency (staleness is the case for deletion).
               const drill = '/' + c.prefix.replace(/^gs:\/\//, '').replace(/\/$/, '')
                 + '?c=read' + (c.sweepers.length === 1 ? `&o=${encodeURIComponent(c.sweepers[0])}` : '')
-              const cls = [a ? 'approved' : c.owner_match ? 'matched' : '', sel.rowClass(c, i)].filter(Boolean).join(' ')
+              const rp = sel.rowProps(i)
+              const cls = [a ? 'approved' : c.owner_match ? 'matched' : '', rp.className].filter(Boolean).join(' ')
               return (
                 <Fragment key={c.prefix}>
-                <tr ref={sel.rowRef(i)} className={cls} onClick={e => sel.rowClick(i, e)}
-                    onMouseDown={e => { if (e.shiftKey) e.preventDefault() }}>
-                  <td className="col-sel"><input type="checkbox" checked={selected.has(c.prefix)} onChange={() => toggle([c.prefix])} /></td>
+                <tr ref={sel.rowRef(i)} {...rp} className={cls}>
+                  <td className="col-sel"><input type="checkbox" checked={selected.has(c.prefix)} onChange={() => toggle(i)} /></td>
                   <td>
                     <button type="button" className={`caret${expanded.has(c.prefix) ? ' open' : ''}`} aria-expanded={expanded.has(c.prefix)}
                       title="show the non-sweeper data inside this band" onClick={e => { e.stopPropagation(); toggleExpand(c.prefix) }}>▸</button>
@@ -498,7 +505,7 @@ export function SweepPage() {
             </span>
           )}
           <span className="nb"><span className="dim">per page</span>{PAGE_SIZES.map(n => <button key={n} className={`mini${n === pageSize ? ' on' : ''}`} onClick={() => setPageSize(n)}>{fmtPageSize(n)}</button>)}</span>
-          <span className="dim kbd-hint"><kbd>j</kbd>/<kbd>k</kbd> move · <kbd>x</kbd> select · <kbd>⇧j</kbd>/<kbd>⇧k</kbd> range · <kbd>⇧x</kbd> page{canWrite && <> · <kbd>a</kbd> approve · <kbd>r</kbd> revoke</>} · <kbd>[</kbd>/<kbd>]</kbd> prev/next</span>
+          <span className="dim kbd-hint"><kbd>j</kbd>/<kbd>k</kbd> select · <kbd>⇧j</kbd>/<kbd>⇧k</kbd> range · <kbd>⌘</kbd>-click add · <kbd>⇧x</kbd> page{canWrite && <> · <kbd>a</kbd> approve · <kbd>r</kbd> revoke</>} · <kbd>[</kbd>/<kbd>]</kbd> prev/next</span>
         </div>
       </>)}
       {candsQ.data && hidden.length > 0 && (
