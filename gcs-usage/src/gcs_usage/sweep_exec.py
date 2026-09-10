@@ -106,13 +106,21 @@ def execute_plan(
         # biggest bucket: ~8 GB as Arrow strings, vs ~25 GB as two pandas
         # copies), and each listing root takes its contiguous slice by binary
         # search — no per-root scans, no per-dir DataFrame dict.
+        # `dir` repeats each object's directory (5 GB of strings on the 35M-key
+        # bucket, ~500k distinct): keep it dictionary-encoded. `name` gets
+        # 64-bit offsets — `take` over 35M ~150-byte names concatenates past
+        # `string`'s 2 GB limit ("offset overflow", the 2026-09-10 dry run).
         with fs.open(mpath, "rb") as fh:  # deterministic close: see `sweep manifest`
-            mt = pq.read_table(fh, columns=["name", "size_bytes", "created", "dir"])
-        # `string` columns carry 32-bit offsets: `take` over 35M ~100-byte names
-        # concatenates past 2 GB and fails ("offset overflow") — widen first.
-        for col in ("name", "dir"):
-            mt = mt.set_column(mt.schema.get_field_index(col), col, pc.cast(mt[col], pa.large_string()))
-        mt = mt.take(pc.sort_indices(mt, sort_keys=[("name", "ascending")]))
+            mt = pq.read_table(fh, columns=["name", "size_bytes", "created", "dir"], read_dictionary=["dir"]).unify_dictionaries()
+        mt = mt.set_column(mt.schema.get_field_index("name"), "name", pc.cast(mt["name"], pa.large_string()))
+        # One chunk per column (a `take` over a 438-chunk column concatenates
+        # it on every call — seconds per root), then sort an index (8
+        # bytes/row), not the table: the bisection reads names through it and
+        # only each root's slice is ever materialized, so the 35M-key bucket
+        # peaks near the ~8 GB read instead of twice that.
+        mt = mt.combine_chunks()
+        names = mt["name"]
+        order = pc.sort_indices(mt, sort_keys=[("name", "ascending")])
         if for_real:
             _require_soft_delete(client, bucket, min_soft_delete_days)
         dirs_all = set(pc.unique(mt["dir"]).to_pylist())
@@ -127,33 +135,38 @@ def execute_plan(
         bkt = client.bucket(bucket)
         counts: Counter = Counter()
         drift_dirs: list[dict] = []
-        names_sorted = mt["name"]
 
         def _lower_bound(key: str) -> int:
-            # first index whose name >= key, by binary search over the sorted
-            # Arrow column (~25 scalar reads per probe; never a column scan)
-            lo, hi = 0, len(names_sorted)
+            # first sorted position whose name >= key, by binary search through
+            # the index (~25 × 2 scalar reads per probe; never a column scan)
+            lo, hi = 0, len(order)
             while lo < hi:
                 mid = (lo + hi) // 2
-                if names_sorted[mid].as_py() < key:
+                if names[order[mid].as_py()].as_py() < key:
                     lo = mid + 1
                 else:
                     hi = mid
             return lo
 
         def _bisect(prefix: str) -> tuple[int, int]:
-            # [lo, hi) of names starting with `prefix`
+            # [lo, hi) sorted positions of names starting with `prefix`
             return _lower_bound(prefix), _lower_bound(prefix + "\x7f")
 
-        def root_slice(root: str):
-            """The manifest rows under `root/` (every row for the bucket root),
-            minus dirs dropped by ledger drift, as a pandas frame of just
-            that slice."""
-            lo, hi = _bisect(root + "/") if root else (0, len(mt))
-            sub = mt.slice(lo, hi - lo).to_pandas()
-            if ledger_drift:
-                sub = sub[~sub["dir"].isin(ledger_drift)]
-            return sub
+        BATCH_ROWS = 262_144
+        dropped = pa.array(ledger_drift, pa.string()) if ledger_drift else None
+
+        def root_rows(root: str):
+            """The manifest rows under `root/` (every row for the bucket root)
+            in name order, minus dirs dropped by ledger drift, as
+            `(name, size, created, dir)` tuples — materialized 256k rows at a
+            time, so a root holding most of the bucket never becomes one frame."""
+            lo, hi = _bisect(root + "/") if root else (0, len(order))
+            sl = order.slice(lo, hi - lo)
+            for start in range(0, len(sl), BATCH_ROWS):
+                t = mt.take(sl.slice(start, BATCH_ROWS))
+                if dropped is not None:
+                    t = t.filter(pc.invert(pc.is_in(pc.cast(t["dir"], pa.string()), value_set=dropped)))
+                yield from zip(*(t[c].to_pylist() for c in ("name", "size_bytes", "created", "dir")))
 
         # One recursive listing per *root* (a band's child directory, or the
         # band itself when it is directly eligible) instead of one per
@@ -169,8 +182,7 @@ def execute_plan(
 
         def do_root(root: str):
             prefix = f"{root}/" if root else ""
-            sub = root_slice(root)
-            want = iter(sub[["name", "size_bytes", "created", "dir"]].itertuples(index=False, name=None))
+            want = root_rows(root)
             w = next(want, None)
             pend: dict[str, dict] = {}
             stack: list[str] = []
@@ -222,7 +234,7 @@ def execute_plan(
                 if w is not None and w[0] == n:
                     p = ensure(w[3])
                     created = blob.time_created.replace(tzinfo=dt.timezone.utc) if blob.time_created.tzinfo is None else blob.time_created
-                    if abs((created - w[2].to_pydatetime()).total_seconds()) > 1:
+                    if abs((created - w[2]).total_seconds()) > 1:
                         p["out"].append((n, int(w[1]), int(blob.generation), "skipped_overwritten", w[3]))
                     else:
                         p["todo"].append(blob)
