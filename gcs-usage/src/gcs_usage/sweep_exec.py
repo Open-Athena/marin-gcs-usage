@@ -69,6 +69,7 @@ def execute_plan(
 ) -> dict:
     import fsspec
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
     from google.cloud import storage
 
@@ -101,26 +102,54 @@ def execute_plan(
         mpath = f"{ppath}/manifest/{bucket}.parquet"
         if not fs.exists(mpath):
             raise SystemExit(f"plan says {bucket} has eligible keys but {mpath} is missing")
+        # The manifest stays an Arrow table sorted by name (35M keys on the
+        # biggest bucket: ~8 GB as Arrow strings, vs ~25 GB as two pandas
+        # copies), and each listing root takes its contiguous slice by binary
+        # search — no per-root scans, no per-dir DataFrame dict.
         with fs.open(mpath, "rb") as fh:  # deterministic close: see `sweep manifest`
-            mf = pq.read_table(fh).to_pandas()
+            mt = pq.read_table(fh, columns=["name", "size_bytes", "created", "dir"])
+        mt = mt.take(pc.sort_indices(mt, sort_keys=[("name", "ascending")]))
         if for_real:
             _require_soft_delete(client, bucket, min_soft_delete_days)
-        by_dir = {dn: g for dn, g in mf.groupby("dir")}
+        dirs_all = set(pc.unique(mt["dir"]).to_pylist())
         ledger_drift: list[str] = []
         if reclassify is not None:
-            still = {}
-            for dn, g in by_dir.items():
-                if reclassify(bucket, dn, approved) == "eligible":
-                    still[dn] = g
-                else:
+            for dn in sorted(dirs_all):
+                if reclassify(bucket, dn, approved) != "eligible":
                     ledger_drift.append(dn)
-            by_dir = still
-        err(f"{bucket}: {len(mf):,} manifest keys in {len(by_dir):,} dirs ({mode})"
+            dirs_all -= set(ledger_drift)
+        err(f"{bucket}: {len(mt):,} manifest keys in {len(dirs_all):,} dirs ({mode})"
             + (f" — {len(ledger_drift):,} dirs dropped by newer marks" if ledger_drift else ""))
         bkt = client.bucket(bucket)
         counts: Counter = Counter()
         drift_dirs: list[dict] = []
-        rows: list[dict] = []
+        names_sorted = mt["name"]
+
+        def _lower_bound(key: str) -> int:
+            # first index whose name >= key, by binary search over the sorted
+            # Arrow column (~25 scalar reads per probe; never a column scan)
+            lo, hi = 0, len(names_sorted)
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if names_sorted[mid].as_py() < key:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            return lo
+
+        def _bisect(prefix: str) -> tuple[int, int]:
+            # [lo, hi) of names starting with `prefix`
+            return _lower_bound(prefix), _lower_bound(prefix + "\x7f")
+
+        def root_slice(root: str):
+            """The manifest rows under `root/` (every row for the bucket root),
+            minus dirs dropped by ledger drift, as a pandas frame of just
+            that slice."""
+            lo, hi = _bisect(root + "/") if root else (0, len(mt))
+            sub = mt.slice(lo, hi - lo).to_pandas()
+            if ledger_drift:
+                sub = sub[~sub["dir"].isin(ledger_drift)]
+            return sub
 
         # One recursive listing per *root* (a band's child directory, or the
         # band itself when it is directly eligible) instead of one per
@@ -132,13 +161,11 @@ def execute_plan(
         # buffered until the listing has moved past it (its keys are contiguous
         # under `dn/`, nested dirs form a stack), and only then deleted — drift
         # discovered late still gates the whole directory.
-        dirs_all = set(by_dir)
-        mf_sorted = mf[mf["dir"].isin(dirs_all)].sort_values("name", kind="stable")
         roots = list_roots(dirs_all, approved, bucket)
 
         def do_root(root: str):
             prefix = f"{root}/" if root else ""
-            sub = mf_sorted[(mf_sorted["dir"] == root) | mf_sorted["dir"].str.startswith(prefix)] if root else mf_sorted
+            sub = root_slice(root)
             want = iter(sub[["name", "size_bytes", "created", "dir"]].itertuples(index=False, name=None))
             w = next(want, None)
             pend: dict[str, dict] = {}
@@ -161,7 +188,7 @@ def execute_plan(
                                 bkt.delete_blob(blob.name, if_generation_match=blob.generation)
                 deleted_b = 0
                 for blob in todo:
-                    out.append({"name": blob.name, "size_bytes": int(blob.size or 0), "generation": int(blob.generation), "decision": "delete", "dir": dn})
+                    out.append((blob.name, int(blob.size or 0), int(blob.generation), "delete", dn))
                     deleted_b += blob.size or 0
                 done.append((dn, out, ({"dir": dn, "new_objects": p["extra_o"], "new_bytes": p["extra_b"], "skipped_deletes": 0} if drifted else None), deleted_b))
 
@@ -179,7 +206,7 @@ def execute_plan(
             def gone(row) -> None:
                 name, size, _created, dn = row
                 settle(name)
-                ensure(dn)["out"].append({"name": name, "size_bytes": int(size), "generation": 0, "decision": "skipped_gone", "dir": dn})
+                ensure(dn)["out"].append((name, int(size), 0, "skipped_gone", dn))
 
             for blob in client.list_blobs(bucket, prefix=prefix):
                 n = blob.name
@@ -192,7 +219,7 @@ def execute_plan(
                     p = ensure(w[3])
                     created = blob.time_created.replace(tzinfo=dt.timezone.utc) if blob.time_created.tzinfo is None else blob.time_created
                     if abs((created - w[2].to_pydatetime()).total_seconds()) > 1:
-                        p["out"].append({"name": n, "size_bytes": int(w[1]), "generation": int(blob.generation), "decision": "skipped_overwritten", "dir": w[3]})
+                        p["out"].append((n, int(w[1]), int(blob.generation), "skipped_overwritten", w[3]))
                     else:
                         p["todo"].append(blob)
                     w = next(want, None)
@@ -209,33 +236,46 @@ def execute_plan(
 
         total_deleted_b = 0
         bands: dict[str, Counter] = {}
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        log_path = f"{plan_dir}/{mode}/{bucket}.parquet"
+        lfs, lpath = fsspec.core.url_to_fs(log_path)
+        lfs.makedirs(lpath.rsplit("/", 1)[0], exist_ok=True)
+        # Decisions stream to the log as roots complete (35M of them on the
+        # biggest bucket — never all in memory at once). Small row groups: the
+        # site's parquet viewer pages *within* a row group, so a 1M-row group
+        # (~27 MB) is fetched to show 100 rows; 64k rows (~1.7 MB) keeps a page
+        # cheap. The file is written once, read many times.
+        ROWS_PER_GROUP = 65_536
+        buf: list[tuple] = []
+        n_written = 0
+
+        def flush_log(writer, final: bool = False) -> None:
+            nonlocal buf, n_written
+            while len(buf) >= ROWS_PER_GROUP or (final and buf):
+                chunk, buf = buf[:ROWS_PER_GROUP], buf[ROWS_PER_GROUP:]
+                cols = list(zip(*chunk))
+                writer.write_table(pa.table(dict(zip(log_schema.names, cols)), schema=log_schema), row_group_size=ROWS_PER_GROUP)
+                n_written += len(chunk)
+
+        with pq.ParquetWriter(lpath, log_schema, filesystem=lfs) as writer, ThreadPoolExecutor(max_workers=workers) as pool:
             for done in pool.map(do_root, roots):
                 for dn, out, drifted, dbytes in done:
-                    rows.extend(out)
                     band = bands.setdefault(band_of(bucket, dn), Counter())
                     if drifted:
                         drift_dirs.append(drifted)
                         band["drift_new_objects"] += drifted["new_objects"]
                     total_deleted_b += dbytes
-                    for r in out:
-                        counts[r["decision"]] += 1
-                        if r["decision"] == "delete":
-                            band["bytes"] += r["size_bytes"]
+                    for _name, size, _gen, decision, _dn in out:
+                        counts[decision] += 1
+                        if decision == "delete":
+                            band["bytes"] += size
                             band["objects"] += 1
-                        elif r["decision"] == "skipped_gone":
+                        elif decision == "skipped_gone":
                             band["gone"] += 1
                         else:
                             band["overwritten"] += 1
-
-        log_path = f"{plan_dir}/{mode}/{bucket}.parquet"
-        lfs, lpath = fsspec.core.url_to_fs(log_path)
-        lfs.makedirs(lpath.rsplit("/", 1)[0], exist_ok=True)
-        # Small row groups: the site's parquet viewer pages *within* a row
-        # group, so a 1M-row group (~27 MB) is fetched to show 100 rows. 64k
-        # rows (~1.7 MB) keeps a page cheap; the file is written once, read
-        # many times.
-        pq.write_table(pa.Table.from_pylist(rows, schema=log_schema), lpath, filesystem=lfs, row_group_size=65_536)
+                    buf.extend(out)
+                    flush_log(writer)
+            flush_log(writer, final=True)
         summary["buckets"][bucket] = {
             "decisions": dict(counts),
             "delete_bytes": total_deleted_b,
