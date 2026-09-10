@@ -407,3 +407,93 @@ def test_bands_for_bucket() -> None:
     assert bands_for_bucket("marin-us-central2", approved) == ("scratch/kaiyue/checkpoints/",)
     assert bands_for_bucket("marin-eu-west4", approved) == ("",)  # the whole bucket
     assert bands_for_bucket("marin-us-east1", approved) == ()
+
+
+def test_classify_dir_residue_rule():
+    """Passing the majority gate isn't deletion authority: the attribution
+    *rule* covering a dir must name the sweeper. Another user's rule →
+    `deferred_residue`; no rule, or an explicit nobody → `deferred_unattr`;
+    a full-mode band skips both (specs/sweep-coowned-residue.md)."""
+    from gcs_usage.identity import IdentityMap
+    from gcs_usage.sweep_plan import VoteResolver, classify_dir, ever_kept_prefixes, owners_resolver
+    idmap = IdentityMap(users=frozenset(), alias_to_user={"k": "kaiyue"}, prefix_owners=())
+    rows = [KeepRow(prefix=f"{B}checkpoints/", keep="sweep", ts=100, action_id=1, who="k@x")]
+    vr = VoteResolver(rows)
+    own = owners_resolver({"owners": []})
+    ever = ever_kept_prefixes(rows)
+    band = f"{B}checkpoints/"
+    # the majority gate says the whole band is kaiyue's (0.9) …
+    attr = lambda b, bucket, dirname: ("kaiyue", 0.9)
+    # … but the rules know better inside it
+    rules = {
+        "marin-us-east5/checkpoints/isoflop": ("kaiyue", "wandb"),
+        "marin-us-east5/checkpoints/isoflop/percy-eval": ("percy", "manual"),
+        "marin-us-east5/checkpoints/isoflop/nobody": (None, "manual"),
+    }
+
+    def rule(bucket, dirname):
+        path = f"{bucket}/{dirname}"
+        while path:
+            if path in rules:
+                return rules[path]
+            path = path.rsplit("/", 1)[0] if "/" in path else ""
+        return None
+
+    def cat(dn, exempt=frozenset()):
+        return classify_dir("marin-us-east5", dn, vr, own, idmap, ever, (band,), attr, exempt, rule)[0]
+
+    assert cat("checkpoints/isoflop/run1/step-100") == "eligible"          # ruled to the sweeper (inherited)
+    assert cat("checkpoints/isoflop/percy-eval/x") == "deferred_residue"   # a deeper rule names someone else
+    assert cat("checkpoints/isoflop/nobody/y") == "deferred_unattr"        # explicit nobody
+    assert cat("checkpoints/orphan/z") == "deferred_unattr"                # no rule at all, majority notwithstanding
+    assert cat("checkpoints/isoflop/percy-eval/x", frozenset({band})) == "eligible"  # full mode: verified out of band
+    # without a rule lookup the majority gate alone decides (pre-residue behavior)
+    assert classify_dir("marin-us-east5", "checkpoints/orphan/z", vr, own, idmap, ever, (band,), attr)[0] == "eligible"
+
+
+def test_attr_index_dirs(tmp_path):
+    """`dirs()` = the indexed paths at or above a depth as (bucket, name)
+    rows — the listing stand-in for expanding path-glob rules."""
+    import pandas as pd
+    from gcs_usage.attr_index import AttrIndex
+    df = pd.DataFrame([
+        {"path": "marin-us-east5", "depth": 1, "usr": None, "b": 1},
+        {"path": "marin-us-east5/grug", "depth": 2, "usr": "kaiyue", "b": 1},
+        {"path": "marin-us-east5/grug", "depth": 2, "usr": None, "b": 1},
+        {"path": "marin-us-east5/grug/swarm_a", "depth": 3, "usr": "kaiyue", "b": 1},
+        {"path": "marin-us-east5/grug/swarm_a/run/step-9", "depth": 5, "usr": "kaiyue", "b": 1},
+    ])
+    p = tmp_path / "path-index.parquet"
+    df.to_parquet(p, index=False)
+    got = AttrIndex(str(p)).dirs(max_depth=3)
+    assert got.to_dict("records") == [
+        {"bucket": "marin-us-east5", "name": ""},
+        {"bucket": "marin-us-east5", "name": "grug"},
+        {"bucket": "marin-us-east5", "name": "grug/swarm_a"},
+    ]
+
+
+def test_rule_attr_expands_path_globs(tmp_path):
+    """`_rule_attr`: parquet rules + identities' prefix owners, path-glob rules
+    expanded against the index's dirs, deepest prefix wins."""
+    import pandas as pd
+    from gcs_usage.attr_index import AttrIndex
+    from gcs_usage.cli import _rule_attr
+    from gcs_usage.identity import IdentityMap, PrefixOwner
+    pd.DataFrame([
+        {"path": "marin-us-east5", "depth": 1, "usr": None, "b": 1},
+        {"path": "marin-us-east5/grug", "depth": 2, "usr": None, "b": 1},
+        {"path": "marin-us-east5/grug/swarm_a", "depth": 3, "usr": None, "b": 1},
+        {"path": "marin-us-east5/grug/other", "depth": 3, "usr": None, "b": 1},
+    ]).to_parquet(tmp_path / "path-index.parquet", index=False)
+    pd.DataFrame([
+        {"prefix": "gs://marin-us-east5/grug/", "user": "k", "source": "wandb"},
+        {"prefix": "gs://marin-us-east5/grug/other/percy-eval/", "user": "percy", "source": "wandb"},
+    ]).to_parquet(tmp_path / "attribution.parquet", index=False)
+    idmap = IdentityMap(users=frozenset(), alias_to_user={"k": "kaiyue"},
+                        prefix_owners=(PrefixOwner("gs://marin-*/grug/swarm_*/", "pranshu"),))
+    rule = _rule_attr(AttrIndex(str(tmp_path / "path-index.parquet")), (str(tmp_path / "attribution.parquet"),), idmap, str(tmp_path))
+    assert rule("marin-us-east5", "grug/run/step-1") == ("kaiyue", "wandb")                 # resolved alias
+    assert rule("marin-us-east5", "grug/swarm_a/x") == ("pranshu", "manual")                # path-glob rule, expanded
+    assert rule("marin-us-east5", "grug/other/percy-eval/x") == ("percy", "wandb")          # deepest wins
+    assert rule("marin-us-east5", "scratch/y") is None                                      # nothing covers it

@@ -899,21 +899,66 @@ def sweep_plan_cmd(bake_candidates: bool, date: str | None, as_json: bool, top: 
         err(f"candidates: {len(cands)} bands → {root}/{plan_id}/candidates.json (+ latest.json)")
 
 
+#: The daily job's attribution parquets (`job/run.sh` AG), under `--root`.
+DEFAULT_ATTRIBUTIONS = ("attr/attribution-2026-07-20.parquet", "attr/attribution-wandb.parquet")
+
+
+def _rule_attr(aidx, attributions: tuple[str, ...], idmap, root: str):
+    """``(bucket, dirname) -> (user, source) | None`` from the deepest
+    attribution rule covering the dir — the same prefix map the path index is
+    built from (:func:`~gcs_usage.prefixes.load_prefix_map`), so the manifest
+    and the site agree on whose data a directory is. Path-glob rules expand
+    against the index's shallow dirs; the parquets are fetched to a temp dir
+    (DuckDB reads them locally)."""
+    import shutil
+    import tempfile
+
+    import duckdb
+    import fsspec
+
+    from .prefixes import deepest_lookup, load_prefix_map
+
+    # Path-glob rules (`gs://marin-*/grug/swarm_*/`) expand against real dirs
+    # at their own depth, so read the index only that deep (bucket = depth 1).
+    glob_depth = max(
+        (o.prefix.removeprefix("gs://").partition("/")[2].rstrip("/").count("/") + 2
+         for o in idmap.prefix_owners if "*" in o.prefix.removeprefix("gs://").partition("/")[2]),
+        default=1,
+    )
+    con = duckdb.connect()
+    con.register("listing_dirs", aidx.dirs(max_depth=glob_depth))
+    tmp = tempfile.mkdtemp(prefix="gcs-usage-attr-")
+    local = []
+    for i, a in enumerate(attributions):
+        src = a if "://" in a or a.startswith("/") else f"{root.rstrip('/')}/{a}"
+        dst = f"{tmp}/{i}-{src.rsplit('/', 1)[1]}"
+        with fsspec.open(src, "rb") as fi, open(dst, "wb") as fo:
+            shutil.copyfileobj(fi, fo)
+        local.append(dst)
+    deepest = deepest_lookup(load_prefix_map(con, tuple(local), idmap, "listing_dirs"))
+    return lambda bucket, dirname: deepest(f"{bucket}/{dirname}" if dirname else bucket)
+
+
 @sweep.command("manifest")
+@option("-a", "--attribution", "attributions", multiple=True, help=f"Attribution parquet(s) whose deepest rule decides each dir's user (default: {', '.join(DEFAULT_ATTRIBUTIONS)} under --root); an eligible dir must be ruled to its sweeper — others' and unruled dirs defer as residue")
 @option("-A", "--approve", "approved", multiple=True, help="Approved band prefix (gs://…/); given ≥1, approval REPLACES the ownership check")
 @option("-S", "--approved-from-site", is_flag=True, help="Load approved bands from the site's sweep_approvals table (the /sweep console's sign-offs)")
 @option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets (default: all six)")
 @option("-d", "--date", required=True, help="Scan date whose listing to plan from (pinned)")
 @option("-o", "--out", default=None, help="Output dir (default gs://oa-gcs-usage-dvx/sweep/<date>-h<head>)")
 @option("-r", "--root", default="gs://oa-gcs-usage-dvx", help="Listing root (gs:// or local mount)")
+@option("-R", "--no-residue-check", is_flag=True, help="Skip the per-dir rule check (pre-2026-09-10 behavior: a sweeper-majority dir deletes whole, other users' and unattributed data inside it included)")
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
 @option("-X", "--no-attr-check", is_flag=True, help="Skip the per-dir sweeper-vs-owner gate on approved bands (default ON: approval deletes only the sweeper's own slice)")
-def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buckets: tuple[str, ...], date: str, out: str | None, root: str, token: str | None, url: str | None, no_attr_check: bool) -> None:
+def sweep_manifest(attributions: tuple[str, ...], approved: tuple[str, ...], approved_from_site: bool, only_buckets: tuple[str, ...], date: str, out: str | None, root: str, no_residue_check: bool, token: str | None, url: str | None, no_attr_check: bool) -> None:
     """Object-level sweep manifest under the vote model + policy (b): stream
     the pinned listing, classify every directory (specs/sweep-executor.md,
     specs/vote-model.md), and write per-bucket parquets of the ELIGIBLE keys
     (sweep-only, sweeper-owned, no keep history) plus a category summary.
+    Co-located residue — dirs inside an approved band that pass the majority
+    gate but are ruled to another user or to nobody — is deferred and listed
+    in ``residue/<bucket>.parquet`` (specs/sweep-coowned-residue.md).
     Pure read + artifact write — deletes nothing."""
     import fsspec
     import pyarrow as pa
@@ -952,6 +997,11 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
         aidx = AttrIndex(f"{root}/{index_dir(date)}/path-index.parquet")
         attr = aidx.lookup
         err("attr gate ON: approved-band dirs must be majority-attributed to their sweeper")
+    rule_attr = None
+    if attr is not None and not no_residue_check:
+        rule_attr = _rule_attr(aidx, attributions or DEFAULT_ATTRIBUTIONS, idmap, root)
+        err("residue check ON: an eligible dir must also be ruled to its sweeper (others' / unruled dirs defer)")
+    RESIDUE = ("deferred_residue", "deferred_unattr")
 
     fs, rootpath = fsspec.core.url_to_fs(root)
     buckets = list(only_buckets) or [
@@ -978,6 +1028,7 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
         writer = None
         out_path = f"{out}/manifest/{bucket}.parquet"
         ofs, opath = fsspec.core.url_to_fs(out_path)
+        residue: dict[str, list[int]] = {}  # dir -> [bytes, objects] for the two residue categories
         n = 0
         for shard in shards:
           # Open/close each shard deterministically: a gcsfs file left for the
@@ -1001,12 +1052,18 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
                 dirs = df["name"].str.rpartition("/")[0]
                 for dn in dirs.unique():
                     if dn not in cache:
-                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever, approved, attr, attr_exempt)
+                        cache[dn] = classify_dir(bucket, dn, vr, own, idmap, ever, approved, attr, attr_exempt, rule_attr)
                 cat = dirs.map(lambda dn: cache[dn][0])
                 sizes = df["size_bytes"]
                 for c, g in sizes.groupby(cat):
                     cats[c][0] += int(g.sum())
                     cats[c][1] += len(g)
+                res = cat.isin(RESIDUE)
+                if res.any():
+                    for dn, g in sizes[res].groupby(dirs[res]):
+                        r = residue.setdefault(dn, [0, 0])
+                        r[0] += int(g.sum())
+                        r[1] += len(g)
                 elig = cat == "eligible"
                 if elig.any():
                     sel = df[elig].copy()
@@ -1019,7 +1076,23 @@ def sweep_manifest(approved: tuple[str, ...], approved_from_site: bool, only_buc
                     writer.write_table(t)
         if writer is not None:
             writer.close()
-        summary["buckets"][bucket] = {"objects": n, "dirs": len(cache), **{c: {"bytes": b, "objects": o} for c, (b, o) in cats.items() if o}}
+        if residue:
+            # The surfaced residue, one row per deferred dir, largest first —
+            # what a human inspects (and what an owner's own vote could later
+            # include) before any real run.
+            rrows = sorted(residue.items(), key=lambda kv: -kv[1][0])
+            rt = pa.table({
+                "dir": [dn for dn, _ in rrows],
+                "category": [cache[dn][0] for dn, _ in rrows],
+                "user": [(rule_attr(bucket, dn) or (None,))[0] for dn, _ in rrows],
+                "sweepers": [",".join(cache[dn][2]) for dn, _ in rrows],
+                "bytes": pa.array([v[0] for _, v in rrows], pa.int64()),
+                "objects": pa.array([v[1] for _, v in rrows], pa.int64()),
+            })
+            rfs, rpath = fsspec.core.url_to_fs(f"{out}/residue/{bucket}.parquet")
+            rfs.makedirs(rpath.rsplit("/", 1)[0], exist_ok=True)
+            pq.write_table(rt, rpath, filesystem=rfs, row_group_size=65_536)
+        summary["buckets"][bucket] = {"objects": n, "dirs": len(cache), "residue_dirs": len(residue), **{c: {"bytes": b, "objects": o} for c, (b, o) in cats.items() if o}}
         eb, eo = cats["eligible"]
         err(f"  {bucket}: {n:,} keys, {len(cache):,} dirs — eligible {eb / 1e12:.2f} TB / {eo:,} objects")
 

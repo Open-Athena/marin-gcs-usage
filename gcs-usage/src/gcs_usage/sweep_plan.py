@@ -239,6 +239,8 @@ CATEGORIES = (
     "deferred_owner",   # sweep-only but the sweeper isn't the effective owner
     "deferred_unowned", # sweep-only but nobody claimed it
     "deferred_attr",    # approved band, but the dir's attributed top user isn't the sweeper (or is unattributed / minority-share)
+    "deferred_residue", # approved band, majority gate passed, but the attribution *rule* covering the dir names someone else — co-located residue (specs/sweep-coowned-residue.md)
+    "deferred_unattr",  # approved band, majority gate passed, but no rule covers the dir (or an explicit "nobody") — unattributed data is nobody's to sweep on a byte-majority
     "ever_kept",        # sweep-only but some ancestor once carried a keep (belt+suspenders)
     "conflict",         # keep and sweep votes both present → triage
     "outside_bands",    # not under any approved band — never classified (approved-bands manifests only)
@@ -285,6 +287,7 @@ def classify_dir(
     approved: tuple[str, ...] = (),
     attr=None,  # (band, bucket, dirname) -> (top_user, share) | None
     attr_exempt: frozenset[str] = frozenset(),  # bands approved in 'full' mode: whole band, gate skipped
+    rule_attr=None,  # (bucket, dirname) -> (user, source) | None: the deepest attribution *rule* covering the dir
 ) -> tuple[str, Optional[str], tuple[str, ...]]:
     """(category, owner, sweeper ids) for one directory. Policy (b): a
     sweep-only dir is deletable tonight only when its effective owner is one
@@ -299,7 +302,13 @@ def classify_dir(
     otherwise ``deferred_attr`` (a broad sweep over a shared dir is a
     nomination for the other users' slices, not a decision). Bands in
     ``attr_exempt`` were approved in 'full' mode (verified out-of-band) and
-    skip the gate."""
+    skip the gate. A byte-majority is a heuristic, not deletion authority
+    (specs/sweep-coowned-residue.md): with ``rule_attr`` (the deepest
+    attribution rule covering a dir — the prefix map the index is built
+    from), a dir that passes the majority gate must also be *ruled* to one
+    of its sweepers; a dir ruled to someone else is ``deferred_residue`` and
+    one no rule covers is ``deferred_unattr`` — surfaced, never swept on the
+    strength of the surrounding majority."""
     prefix = f"gs://{bucket}/" + (dirname + "/" if dirname else "")
     votes = vr.votes(prefix)
     if not votes:
@@ -324,6 +333,12 @@ def classify_dir(
             hit = attr(band, bucket, dirname)
             if hit is None or hit[0] is None or hit[0] not in sweepers or hit[1] < MIN_SHARE:
                 return "deferred_attr", own.state(prefix), sweepers
+        if rule_attr is not None and band not in attr_exempt:
+            rule = rule_attr(bucket, dirname)
+            if rule is None or rule[0] is None:
+                return "deferred_unattr", own.state(prefix), sweepers
+            if rule[0] not in sweepers:
+                return "deferred_residue", own.state(prefix), sweepers
         return "eligible", own.state(prefix), sweepers
     owner = own.state(prefix)
     if owner is None:

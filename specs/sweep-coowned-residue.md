@@ -91,7 +91,13 @@ Wherever an approved band is shown, and in the dry-run output:
 Add a `decision` value (`residue_deferred`) to the executor logs so the residue
 is browsable in `/files` alongside `delete` / `skipped_*`.
 
-## Open questions
+## Status — shipped 2026-09-10 (planner side)
+
+`sweep manifest` now applies the rule: a dir inside an approved band that passes the majority gate must also be **ruled** to one of its sweepers by the deepest attribution rule covering it (`prefixes.load_prefix_map` — the same prefix map the index is built from, so the manifest and the site agree on whose data a dir is). Otherwise it defers as one of two new categories: `deferred_residue` (ruled to another user) or `deferred_unattr` (no rule, or an explicit nobody). Both are counted in `plan-summary.json` and listed per dir in `residue/<bucket>.parquet` (dir, category, user, sweepers, bytes, objects — largest first), browsable in `/files` beside the manifest. `-R/--no-residue-check` restores the old behavior; full-mode bands skip the check as they skip the gate. Because attribution is per directory (deepest prefix rule), the "below index granularity" residue needs no re-attribution pass: a deeper rule for another user is exactly what the lookup finds, index row or not.
+
+Decisions taken: (1) unattributed defers by default; (2) nothing re-includes residue yet — an owner's own sweep vote on it is the only path we'd accept, and that is not built; (3) covered by the rule lookup, see above. Still open: the console's per-band residue include/exclude control (§2 "Decide") — today the residue is surfaced and excluded, not decidable.
+
+## Open questions (as posed)
 
 1. **Unattributed bytes**: defer by default (conservative, proposed) or treat as
    the sweeper's within their majority dir? Deferring 5.8 GB costs almost

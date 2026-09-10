@@ -95,6 +95,23 @@ class AttrIndex:
             path = path.rsplit("/", 1)[0]
         return None
 
+    def dirs(self, max_depth: int = 6) -> "pd.DataFrame":
+        """``(bucket, name)`` rows for every indexed path at depth ≤ ``max_depth``
+        (``name`` = the path below the bucket, ``''`` for the bucket row): a
+        stand-in for a listing's directories where only shallow structure is
+        needed — expanding path-glob attribution rules
+        (:func:`~gcs_usage.prefixes.load_prefix_map`) without streaming the
+        listing twice."""
+        import pandas as pd
+
+        rgs = [i for i, dmin, dmax, pmin, pmax in self.rg_stats if dmin <= max_depth]
+        if not rgs:
+            return pd.DataFrame({"bucket": pd.Series(dtype=str), "name": pd.Series(dtype=str)})
+        t = self.pf.read_row_groups(rgs, columns=["path", "depth"]).to_pandas()
+        t = t[t.depth <= max_depth].drop_duplicates("path").sort_values("path")
+        parts = t.path.str.partition("/")
+        return pd.DataFrame({"bucket": parts[0].to_numpy(), "name": parts[2].to_numpy()})
+
     def child_split(self, band: str, sweepers: set[str]) -> tuple[int, int, int]:
         """Gross byte split of the band's immediate children:
         (attributed to a sweeper with ≥ MIN_SHARE, attributed to others,
