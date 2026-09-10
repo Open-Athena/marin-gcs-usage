@@ -24,10 +24,10 @@
     "typecheck": "tsc -b --noEmit"
   },
   "peerDependencies": {
-    "react": ">=18",
-    "react-dom": ">=18",
     "d3-hierarchy": ">=3",
-    "d3-voronoi-treemap": ">=1.1"
+    "d3-voronoi-treemap": ">=1.1",
+    "react": ">=18",
+    "react-dom": ">=18"
   },
   "peerDependenciesMeta": {
     "d3-hierarchy": {
@@ -48,6 +48,6 @@
     "d3-voronoi-treemap": "^1.1.2",
     "jsdom": "^25.0.1",
     "typescript": "~5.9.3",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.11"
   }
 }
