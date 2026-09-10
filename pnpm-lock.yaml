@@ -127,8 +127,8 @@ importers:
         specifier: ^6.30.4
         version: 6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       use-kbd:
-        specifier: ^0.13.0
-        version: 0.13.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: https://github.com/runsascoded/use-kbd#dc80b3f0d54d0eabca432d5909edae63cb495c73
+        version: https://codeload.github.com/runsascoded/use-kbd/tar.gz/dc80b3f0d54d0eabca432d5909edae63cb495c73(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       use-prms:
         specifier: ^0.4.1
         version: 0.4.1(react@19.2.8)
@@ -2961,15 +2961,16 @@ packages:
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
 
-  use-kbd@0.13.0:
-    resolution: {integrity: sha512-36/ALKDhSTtwAc0luTXwA3pGlmIvb505XJ2aRkOKB3cevDyaiHbvW126XuPgfiLzya8r3B6E2qm6H/tS6RyKEQ==}
+  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2:
+    resolution: {tarball: https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2}
+    version: 0.10.0-dist.bf02e9e
     peerDependencies:
       react: '>=18.0.0'
       react-dom: '>=18.0.0'
 
-  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2:
-    resolution: {tarball: https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2}
-    version: 0.10.0-dist.bf02e9e
+  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/dc80b3f0d54d0eabca432d5909edae63cb495c73:
+    resolution: {tarball: https://codeload.github.com/runsascoded/use-kbd/tar.gz/dc80b3f0d54d0eabca432d5909edae63cb495c73}
+    version: 0.13.0-dist.78090d5
     peerDependencies:
       react: '>=18.0.0'
       react-dom: '>=18.0.0'
@@ -6147,12 +6148,15 @@ snapshots:
     dependencies:
       punycode: 2.3.1
 
-  use-kbd@0.13.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
+      debug: 4.4.3
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
+    transitivePeerDependencies:
+      - supports-color
 
-  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/dc80b3f0d54d0eabca432d5909edae63cb495c73(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       debug: 4.4.3
       react: 19.2.8

@@ -28,7 +28,7 @@
     "react-dom": "^19.1.0",
     "react-icons": "^5.7.0",
     "react-router-dom": "^6.30.4",
-    "use-kbd": "^0.13.0",
+    "use-kbd": "https://github.com/runsascoded/use-kbd#dc80b3f0d54d0eabca432d5909edae63cb495c73",
     "use-prms": "^0.4.1"
   },
   "devDependencies": {
