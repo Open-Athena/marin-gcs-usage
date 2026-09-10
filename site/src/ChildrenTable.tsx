@@ -104,11 +104,11 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   )
   const pages = Math.max(1, Math.ceil(kids.length / PAGE))
   const pg = Math.min(page, pages - 1)
-  const shown = kids.slice(pg * PAGE, (pg + 1) * PAGE)
+  const shown = useMemo(() => kids.slice(pg * PAGE, (pg + 1) * PAGE), [kids, pg, PAGE])
   const uriOfKid = (k: TreeNode) => scheme + [...segs, k.n].join('/')
   // Rows select (click / shift / ⌘, checkboxes, j/k) into one set keyed by
   // uri; the bar above the table marks or assigns the whole selection at once.
-  const selectable = shown.filter(k => !k.n.startsWith('('))
+  const selectable = useMemo(() => shown.filter(k => !k.n.startsWith('(')), [shown])
   const sel = useRowSelection(selectable, uriOfKid)
   useRowSelectionKeys(sel, 'tbl', 'Children table')
   // Selection survives paging and sort by key, but not a drill: the rows
@@ -119,6 +119,20 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   const selUris = [...sel.selected]
   const bulkMark = (action: MarkAction | null) => { if (selUris.length) post.mutate(selUris.map(u => ({ pattern: u + '/', keep: action })), { onSuccess: () => sel.clear() }) }
   const selBytes = kids.filter(k => sel.selected.has(uriOfKid(k))).reduce((s, k) => s + k.b, 0)
+  // Everything a row derives from the tree and the ledger — owner shares, the
+  // resolved mark and claim, the state bar's subtree walk, the last-ckpt
+  // offer — computed once per page of rows × ledger, so a selection change
+  // (which re-renders the table) rebuilds only the JSX.
+  const rowData = useMemo(() => shown.map(k => {
+    const synthetic = k.n.startsWith('(')
+    const kidSegs = [...segs, k.n]
+    const uri = scheme + kidSegs.join('/')
+    const cl = markIdx && !synthetic ? markIdx.claimOf(uri) : null
+    const mk = markIdx && !synthetic ? markIdx.resolve(uri) : null
+    const totals = markIdx && !synthetic && k.b ? subtreeStateTotals(k, uri, markIdx, klcIdx) : null
+    return { k, synthetic, kidSegs, uri, shares: ownerShares(k), cl, mk, totals, ckpt: !synthetic && looksCkpt(k, uri), si: selectable.indexOf(k) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [shown, path, scheme, markIdx, klcIdx, selectable])
   const selBar = showActions && sel.selected.size > 0 && (
     <span className="sel-bar">
       <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}
@@ -168,9 +182,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   // subtrees, a KLC with its kept step), and a single word hid that.
   const STATE_COLORS: Record<MarkState, string> = { keep: ACTION_COLORS.keep, keep_last_ckpt: ACTION_COLORS.keep_last_ckpt, sweep: ACTION_COLORS.sweep, unmarked: 'var(--other)' }
   const STATE_LABELS: Record<MarkState, string> = { keep: 'keep', keep_last_ckpt: 'last ckpt', sweep: 'sweep', unmarked: 'undecided' }
-  const stateBar = (k: TreeNode, uri: string) => {
-    if (!markIdx || !k.b) return <span className="none">—</span>
-    const f = subtreeStateTotals(k, uri, markIdx, klcIdx)
+  const stateBar = (k: TreeNode, f: Record<MarkState, number> | null) => {
+    if (!f) return <span className="none">—</span>
     const parts = (Object.keys(f) as MarkState[]).filter(x => f[x] > 0)
     return (
       <Tooltip content={
@@ -204,14 +217,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
           </tr>
         </thead>
         <tbody>
-          {shown.map(k => {
-            const synthetic = k.n.startsWith('(')
-            const kidSegs = [...segs, k.n]
-            const uri = scheme + kidSegs.join('/')
-            const shares = ownerShares(k)
-            const cl = markIdx && !synthetic ? markIdx.claimOf(uri) : null
-            const mk = markIdx && !synthetic ? markIdx.resolve(uri) : null
-            const si = selectable.indexOf(k)
+          {rowData.map(({ k, synthetic, kidSegs, uri, shares, cl, mk, totals, ckpt, si }) => {
             return (
               <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} {...(si >= 0 && showActions ? sel.rowProps(si) : {})}>
                 {showActions && <td className="col-sel">{!synthetic && <input type="checkbox" checked={sel.isSelected(k)} onChange={() => sel.toggle(si)} />}</td>}
@@ -244,7 +250,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
                     : shares.length ? <OwnerBar node={k} userIdx={userIdx} width={70} onPickUser={onPickUser && !synthetic ? u => { onOpen(kidSegs); onPickUser(u) } : undefined} />
                     : <span className="none">—</span>}
                 </td>
-                {markIdx && <td className="state">{synthetic ? <span className="none">—</span> : stateBar(k, uri)}</td>}
+                {markIdx && <td className="state">{stateBar(k, totals)}</td>}
                 {showActions && (
                   <td className="actions">
                     {synthetic ? null : (
@@ -253,7 +259,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
                         {dot(uri, 'sweep', mk?.mark?.action === 'sweep' ? (mk.own ? 'own' : 'inh') : null, SWEEP_TIP)}
                         {/* Last-ckpt keeps its column whether or not it's offered, so
                             the row of dots doesn't shift between rows. */}
-                        {looksCkpt(k, uri) ? dot(uri, 'keep_last_ckpt', mk?.mark?.action === 'keep_last_ckpt' ? (mk.own ? 'own' : 'inh') : null, KLC_TIP) : <span className="dot-gap" />}
+                        {ckpt ? dot(uri, 'keep_last_ckpt', mk?.mark?.action === 'keep_last_ckpt' ? (mk.own ? 'own' : 'inh') : null, KLC_TIP) : <span className="dot-gap" />}
                         <span className="tail">
                           {mk?.own && (
                             <Tooltip content={clearTip(true)}>

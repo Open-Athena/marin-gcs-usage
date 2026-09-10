@@ -47,18 +47,33 @@ export function useRowSelection<T>(pageRows: readonly T[], key: (row: T) => stri
 
 /** use-kbd's selection bindings (j/k move, ⇧j/⇧k extend, …) under a
  *  ShortcutsModal group, with the site's page toggle on ⇧x in place of
- *  use-kbd's ⌃a select-page (which drops other pages' rows). Esc clears only
- *  while something is selected: the action exists only then, so otherwise the
- *  key falls through to the treemap, whose Esc / Backspace drills up — and
- *  when it does clear, use-kbd's preventDefault tells the treemap to stay put.
- *  `id` namespaces the action ids (`sweep`, `tbl`, …). */
+ *  use-kbd's ⌃a select-page (which drops other pages' rows). `id` namespaces
+ *  the action ids (`sweep`, `tbl`, …).
+ *
+ *  Esc clears the selection, but outside use-kbd: a capture-phase listener
+ *  that acts only while something is selected and preventDefaults, so the
+ *  treemap's Esc/Backspace drill-up (which skips a consumed key) stays put;
+ *  with nothing selected the key falls through and drills up as usual.
+ *  use-kbd can't express that — it preventDefaults a matched key before it
+ *  checks `enabled`, and registering the action only while selected would
+ *  re-render the whole app (registry version bump) on every empty ↔ non-empty
+ *  transition. */
 export function useRowSelectionKeys<T>(sel: RowSelection<T>, id: string, group: string) {
   useKbdRowSelectionKeys(sel, { idPrefix: id, group, bindings: { all: false, clear: false } })
-  // Registered only while selected (not `enabled: false`): use-kbd
-  // preventDefaults a matched key before it checks `enabled`, which would
-  // still swallow the Esc the treemap wants.
   useActions({
     [`${id}:toggle-page`]: { label: 'Select / deselect every row on this page', group, defaultBindings: ['shift+x'], handler: sel.togglePage },
-    ...(sel.count > 0 ? { [`${id}:clear`]: { label: 'Clear the selection', group, defaultBindings: ['escape'], handler: sel.clear } } : {}),
   })
+  const selRef = useRef(sel)
+  selRef.current = sel
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || selRef.current.count === 0) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      e.preventDefault()
+      selRef.current.clear()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
 }
