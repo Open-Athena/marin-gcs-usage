@@ -18,7 +18,7 @@ export async function shared<T>(map: Map<string, Promise<T>>, key: string, make:
   }
   const p = map.get(key) ?? start()
   const race = (q: Promise<T>, ms: number): Promise<T> => {
-    let timer: ReturnType<typeof setTimeout> | undefined
+    let timer: ReturnType<typeof setTimeout> | null = null
     const stall = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Stall(key, ms)), ms) })
     return Promise.race([q, stall]).finally(() => clearTimeout(timer))
   }
