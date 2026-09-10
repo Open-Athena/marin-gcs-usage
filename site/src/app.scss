@@ -1358,9 +1358,10 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     border-collapse: collapse;
     font-size: 13px;
     th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
-    // The path column is the one that wraps/ellipsizes; every other cell
-    // (size, share, created month, read, owner) stays on one line.
-    td.prefix, th:first-child { white-space: normal; }
+    // Names elide from the middle in JS (`elideMid`) and never wrap; the
+    // CSS ellipsis below is the fallback for columns narrower than the
+    // character budget (phones).
+    th:first-child { white-space: normal; }
     th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
     th.sortable {
       cursor: pointer;

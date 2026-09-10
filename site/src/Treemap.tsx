@@ -4,6 +4,7 @@ import { stringParam, useUrlState } from 'use-prms'
 import { DustHatch, Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle, OutlineGroups } from '@disk-tree/react'
 import { Avatar } from './Avatar'
+import { CopyName } from './CopyName'
 import { canonId, UserChip, ghHandle, shortName } from './UserChip'
 import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
@@ -94,34 +95,6 @@ export function legendGroups(names: string[]): { prefix: string; names: string[]
     else for (const n of ms) out.push({ prefix: '', names: [n] })
   }
   return out
-}
-
-/** An elided name's full text on hover; click copies it to the clipboard. */
-function CopyName({ text, note, children }: { text: string; note?: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    copyText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })
-  }
-  return (
-    <Tooltip content={<><code className="elide-full">{text}</code><span className="copy-hint">{copied ? 'copied ✓' : note ? `${note} · click to copy` : 'click to copy'}</span></>}>
-      <span onClick={copy} role="button" tabIndex={-1}>{children}</span>
-    </Tooltip>
-  )
-}
-
-/** Clipboard write that also works off a secure origin (a tailnet dev
- *  server): `navigator.clipboard` is undefined there, so fall back to the
- *  selection-based copy. */
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard) return navigator.clipboard.writeText(text)
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.style.position = 'fixed'
-  ta.style.opacity = '0'
-  document.body.appendChild(ta)
-  ta.select()
-  document.execCommand('copy')
-  ta.remove()
 }
 
 /** Nesting levels of tiles a subtree renders as (see `viewLevels`). */
