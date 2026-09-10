@@ -17,6 +17,10 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 30_000 },
   fullyParallel: true,
+  // Two at a time: every page load pulls a subtree through the local wrangler
+  // → prod path, and five parallel loads starve it (rows never appear inside
+  // the 30 s expect window; late data commits leak into the render specs).
+  workers: 2,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: [['list'], ['html', { open: 'never' }]],

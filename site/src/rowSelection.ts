@@ -50,30 +50,13 @@ export function useRowSelection<T>(pageRows: readonly T[], key: (row: T) => stri
  *  use-kbd's ⌃a select-page (which drops other pages' rows). `id` namespaces
  *  the action ids (`sweep`, `tbl`, …).
  *
- *  Esc clears the selection, but outside use-kbd: a capture-phase listener
- *  that acts only while something is selected and preventDefaults, so the
- *  treemap's Esc/Backspace drill-up (which skips a consumed key) stays put;
- *  with nothing selected the key falls through and drills up as usual.
- *  use-kbd can't express that — it preventDefaults a matched key before it
- *  checks `enabled`, and registering the action only while selected would
- *  re-render the whole app (registry version bump) on every empty ↔ non-empty
- *  transition. */
+ *  Esc is use-kbd's own `clear`, enabled only while something is selected
+ *  (use-kbd ≥ dist `ef820a1`: a disabled binding no longer consumes its key,
+ *  and toggling `enabled` doesn't re-register), so with nothing selected the
+ *  key falls through to the treemap's Esc/Backspace drill-up. */
 export function useRowSelectionKeys<T>(sel: RowSelection<T>, id: string, group: string) {
-  useKbdRowSelectionKeys(sel, { idPrefix: id, group, bindings: { all: false, clear: false } })
+  useKbdRowSelectionKeys(sel, { idPrefix: id, group, bindings: { all: false } })
   useActions({
     [`${id}:toggle-page`]: { label: 'Select / deselect every row on this page', group, defaultBindings: ['shift+x'], handler: sel.togglePage },
   })
-  const selRef = useRef(sel)
-  selRef.current = sel
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || selRef.current.count === 0) return
-      const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-      e.preventDefault()
-      selRef.current.clear()
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [])
 }

@@ -82,4 +82,20 @@ test.describe('children table selection', () => {
     await expect(page.locator('#tbl tr.sel')).toHaveCount(0)
     expect(new URL(page.url()).pathname).toBe('/marin-us-east5/checkpoints')
   })
+
+  test('j moves the cursor in one table-only commit (no hotkey-state fan-out)', async ({ page }) => {
+    await click(page.locator('#tbl .worklist tbody tr').nth(2).locator('td.num').first())
+    await settle(page)
+    await reset(page)
+    await page.keyboard.press('j')
+    await settle(page)
+    expect(await shape(page)).toEqual([TABLE_ONLY])
+    await expect(page.locator('#tbl tr.cur')).toHaveCount(1)
+    await expect(page.locator('#tbl .worklist tbody tr').nth(3)).toHaveClass(/\bcur\b/)
+  })
+
+  test('Esc with nothing selected falls through to the treemap drill-up', async ({ page }) => {
+    await page.keyboard.press('Escape')
+    await page.waitForURL(url => new URL(url).pathname === '/marin-us-east5')
+  })
 })
