@@ -113,11 +113,21 @@ Marks are intent; deletions are fact, and they deserve their own table + UI
   `idx_deletion_bands_prefix`; paginate descendants by keyset).
 - The executor records both by default (`--no-record` to skip); recording
   failure warns and never masks a completed run.
-- **Undo**: soft-delete restore is per-object `objects.restore` with the
-  generation from the `deleted/` log — `gcs-usage sweep undo <run> [prefix]`
-  (to build), valid until `undo_deadline`. The web UI shows the window and
-  per-band undo state; the *trigger* stays a CLI/Batch job in v1 — a Worker
-  cannot restore millions of objects in-request (the button can enqueue).
+- **Undo** — built 2026-09-10: `gcs-usage sweep undo <run_id | gs://log-dir>
+  [-p gs://bucket/dir/ …] [-b bucket …] [-n]` restores every `delete` row of
+  the run's `deleted/<bucket>.parquet` by its logged generation
+  (`objects.restore` with `ifGenerationMatch=0`, so a name that is live again
+  is left alone: re-runnable, never clobbers a rewrite), per object on a
+  thread pool (a partial failure must be attributable per key — restores
+  aren't batched; ~50 ms/object, so a 30M-object bucket is hours, not
+  minutes). Refuses dry runs and anything past `undo_deadline` up front.
+  Outcomes per key — `restored` / `already_live` / `unrestorable` (no
+  soft-deleted copy left) / `failed` (+ error) — go to
+  `restored/<bucket>-<stamp>.parquet` + `undo-<stamp>-summary.json` beside
+  the run's logs, and D1 gets `undo_state` (`full` when every deleted object is
+  live again, else `partial`) + per-band `undone_objects`. The web UI shows
+  the window and per-band undo state; the *trigger* stays a CLI/Batch job — a
+  Worker cannot restore millions of objects in-request.
 - **UI (to build)**: `/api/deletions?path=` (covering + descendant bands,
   paginated) feeding a "deletions here" panel on the drill/pin view; later a
   distinct "swept (executed)" surface in the fate coloring.

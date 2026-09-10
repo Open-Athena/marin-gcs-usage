@@ -255,6 +255,160 @@ def execute_plan(
     return summary
 
 
+#: Per-key outcomes of an undo (the `restored/` log's `decision` column).
+UNDO_DECISIONS = (
+    "restored",        # soft-deleted generation restored as a new live generation
+    "would_restore",   # dry run: the restore that would be issued
+    "already_live",    # a live object exists under that name (an earlier undo, or a rewrite) — untouched
+    "unrestorable",    # GCS has no soft-deleted copy any more (window elapsed, or never soft-deleted)
+    "failed",          # any other error, message in `error`
+)
+
+
+def undo_run(
+    log_dir: str,
+    only_buckets: tuple[str, ...] = (),
+    prefixes: tuple[str, ...] = (),
+    dry_run: bool = False,
+    workers: int = 16,
+    client=None,
+    deadline: int | None = None,
+    now: int | None = None,
+) -> dict:
+    """Restore what a real run deleted: every `decision == 'delete'` row of its
+    `deleted/<bucket>.parquet` logs (optionally only under `prefixes`,
+    `gs://bucket/dir/` or bare `bucket/dir/`), via the GCS soft-delete
+    restore of exactly the logged generation. `if_generation_match=0` makes it
+    safe to re-run and safe against rewrites: a name that is live again is
+    left alone (`already_live`), not clobbered. Per-object calls on a thread
+    pool (restores aren't batched: a partial failure must be attributable per
+    key). Writes `restored/<bucket>-<stamp>.parquet` + `undo-<stamp>-summary.json`
+    beside the run's own logs; returns the summary. `deadline` (the run's
+    `undo_deadline`) refuses a late undo up front — GCS would just answer 404
+    per object, slowly."""
+    import fsspec
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    now = now or int(dt.datetime.now(dt.timezone.utc).timestamp())
+    if deadline is not None and now > deadline:
+        raise SystemExit(
+            f"undo window closed {dt.datetime.fromtimestamp(deadline, dt.timezone.utc):%Y-%m-%d %H:%MZ} "
+            f"(soft-delete retention elapsed) — nothing can be restored"
+        )
+    fs, ppath = fsspec.core.url_to_fs(log_dir)
+    with fs.open(f"{ppath}/deleted-summary.json") as fh:
+        dsum = json.load(fh)
+    if not dsum.get("for_real"):
+        raise SystemExit(f"{log_dir} is a dry run — it deleted nothing")
+    with fs.open(f"{ppath}/plan-summary.json") as fh:
+        plan = json.load(fh)
+    approved = tuple(plan.get("approved") or ())
+    if client is None:
+        from google.cloud import storage
+        client = storage.Client()
+    from google.api_core.exceptions import NotFound, PreconditionFailed
+
+    def band_of(bucket: str, dn: str) -> str:
+        p = f"gs://{bucket}/{dn}/" if dn else f"gs://{bucket}/"
+        hits = [a for a in approved if p.startswith(a)]
+        if hits:
+            return max(hits, key=len)
+        top = dn.split("/", 1)[0] if dn else ""
+        return f"gs://{bucket}/{top}/" if top else f"gs://{bucket}/"
+
+    def wanted(bucket: str, name: str) -> bool:
+        if not prefixes:
+            return True
+        full = f"gs://{bucket}/{name}"
+        for p in prefixes:
+            q = p if p.startswith("gs://") else f"gs://{p}"
+            if full.startswith(q):
+                return True
+        return False
+
+    stamp = f"{dt.datetime.fromtimestamp(now, dt.timezone.utc):%Y%m%dT%H%M%SZ}"
+    schema = pa.schema([
+        ("name", pa.string()), ("size_bytes", pa.int64()), ("generation", pa.int64()),
+        ("new_generation", pa.int64()), ("decision", pa.string()), ("error", pa.string()), ("dir", pa.string()),
+    ])
+    summary: dict = {"log_dir": log_dir, "stamp": stamp, "dry_run": dry_run, "prefixes": list(prefixes), "buckets": {}}
+    for bucket in dsum["buckets"]:
+        if only_buckets and bucket not in only_buckets:
+            continue
+        lpath = f"{ppath}/deleted/{bucket}.parquet"
+        if not fs.exists(lpath):
+            continue
+        with fs.open(lpath, "rb") as fh:
+            t = pq.read_table(fh, columns=["name", "size_bytes", "generation", "decision", "dir"]).to_pandas()
+        t = t[t["decision"] == "delete"]
+        t = t[[wanted(bucket, n) for n in t["name"]]]
+        todo = list(t[["name", "size_bytes", "generation", "dir"]].itertuples(index=False, name=None))
+        err(f"{bucket}: {len(todo):,} deleted object(s) to restore{' (dry run)' if dry_run else ''}")
+        bkt = client.bucket(bucket)
+
+        def one(row) -> dict:
+            name, size, gen, dn = row
+            base = {"name": name, "size_bytes": int(size), "generation": int(gen), "new_generation": 0, "error": None, "dir": dn}
+            if dry_run:
+                return {**base, "decision": "would_restore"}
+            try:
+                blob = bkt.restore_blob(name, generation=int(gen), if_generation_match=0)
+                return {**base, "decision": "restored", "new_generation": int(getattr(blob, "generation", 0) or 0)}
+            except PreconditionFailed:
+                return {**base, "decision": "already_live"}
+            except NotFound:
+                return {**base, "decision": "unrestorable"}
+            except Exception as e:  # keep going: the log names every failure, the summary counts them
+                return {**base, "decision": "failed", "error": f"{type(e).__name__}: {e}"[:500]}
+
+        rows: list[dict] = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            rows.extend(pool.map(one, todo))
+        counts: Counter = Counter(r["decision"] for r in rows)
+        bands: dict[str, Counter] = {}
+        restored_b = 0
+        for r in rows:
+            band = bands.setdefault(band_of(bucket, r["dir"]), Counter())
+            band[r["decision"]] += 1
+            if r["decision"] == "restored":
+                restored_b += r["size_bytes"]
+                band["bytes"] += r["size_bytes"]
+        if rows:
+            rpath = f"{ppath}/restored/{bucket}-{stamp}.parquet"
+            fs.makedirs(rpath.rsplit("/", 1)[0], exist_ok=True)
+            pq.write_table(pa.Table.from_pylist(rows, schema=schema), rpath, filesystem=fs, row_group_size=65_536)
+        summary["buckets"][bucket] = {
+            "decisions": dict(counts), "restored_bytes": restored_b,
+            "bands": {b: dict(c) for b, c in bands.items()},
+        }
+        err(f"  {bucket}: " + ", ".join(f"{n:,} {d}" for d, n in sorted(counts.items())) + f" ({restored_b / 1e12:.2f} TB restored)")
+    with fsspec.open(f"{log_dir}/undo-{stamp}-summary.json", "w") as fh:
+        json.dump(summary, fh, indent=2)
+    return summary
+
+
+def record_undo(run_id: str, summary: dict, deleted_objects: int) -> str:
+    """Persist an undo to D1: `deletion_runs.undo_state` ('full' when every
+    object the run deleted is live again — restored now or already — else
+    'partial') and `deletion_bands.undone_objects` per band."""
+    from .index_footer import _creds, _d1_query, _q
+
+    tok, acct = _creds()
+    live = sum(b["decisions"].get("restored", 0) + b["decisions"].get("already_live", 0) for b in summary["buckets"].values())
+    state = "full" if deleted_objects and live >= deleted_objects else "partial"
+    stmts = [f"UPDATE deletion_runs SET undo_state = {_q(state)} WHERE run_id = {_q(run_id)}"]
+    for b in summary["buckets"].values():
+        for prefix, c in b["bands"].items():
+            if c.get("restored"):
+                stmts.append(
+                    f"UPDATE deletion_bands SET undone_objects = undone_objects + {int(c['restored'])} "
+                    f"WHERE run_id = {_q(run_id)} AND prefix = {_q(prefix)}"
+                )
+    _d1_query("; ".join(stmts), acct, tok)
+    return state
+
+
 def run_id_for(plan: dict, started_ts: int) -> str:
     return f"{plan['date']}-h{plan['head']}/{dt.datetime.fromtimestamp(started_ts, dt.timezone.utc):%Y%m%dT%H%M%SZ}"
 

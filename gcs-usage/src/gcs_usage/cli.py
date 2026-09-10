@@ -1183,6 +1183,52 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
     _hard_exit()
 
 
+@sweep.command("undo")
+@option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets")
+@option("-n", "--dry-run", is_flag=True, help="List what would be restored; call nothing")
+@option("-p", "--prefix", "prefixes", multiple=True, help="Only objects under these prefixes (gs://bucket/dir/); default: everything the run deleted")
+@option("-w", "--workers", default=16, type=int, help="Concurrent restore calls")
+@option("--no-record", is_flag=True, help="Skip the D1 undo_state / undone_objects update")
+@argument("run")
+def sweep_undo(only_buckets: tuple[str, ...], dry_run: bool, prefixes: tuple[str, ...], workers: int, no_record: bool, run: str) -> None:
+    """Restore what a real sweep run deleted, from its `deleted/` logs — the
+    soft-delete restore of exactly the logged generations, valid until the
+    run's `undo_deadline` (finish + the buckets' 7-day window). RUN is the D1
+    run id (`<scan>-h<head>/<utc stamp>`, as /sweep lists it) or the run's
+    gs:// log dir. Re-runnable: names already live again are left alone."""
+    from .index_footer import _creds, _d1_query, _q
+    from .sweep_exec import record_undo, undo_run
+
+    row = None
+    try:
+        tok, acct = _creds()
+        rows = _d1_query(
+            "SELECT run_id, mode, undo_deadline, undo_state, log_dir, deleted_objects FROM deletion_runs "
+            f"WHERE run_id = {_q(run)} OR log_dir = {_q(run)}", acct, tok,
+        )
+        row = rows[0] if rows else None
+    except Exception as e:
+        if not run.startswith("gs://"):
+            raise SystemExit(f"D1 lookup failed and RUN is not a gs:// log dir: {e}")
+        err(f"WARN: D1 lookup failed ({e}); proceeding on the log dir alone (no deadline check, no record)")
+    if row is None and not run.startswith("gs://"):
+        raise SystemExit(f"no deletion run {run!r} in D1 (see /sweep for run ids)")
+    if row is not None and row["mode"] != "real":
+        raise SystemExit(f"{row['run_id']} was a dry run — nothing to undo")
+    log_dir = row["log_dir"] if row is not None else run
+    deadline = row.get("undo_deadline") if row is not None else None
+    if row is not None:
+        err(f"undo {row['run_id']}: {row['deleted_objects']:,} deleted objects, undo_state={row['undo_state']}, "
+            f"window until {dt.datetime.fromtimestamp(deadline, dt.timezone.utc):%Y-%m-%d %H:%MZ}" if deadline else f"undo {row['run_id']}")
+    summary = undo_run(log_dir, only_buckets=only_buckets, prefixes=prefixes, dry_run=dry_run, workers=workers, deadline=deadline)
+    if row is not None and not no_record and not dry_run:
+        try:
+            err(f"recorded undo_state={record_undo(row['run_id'], summary, int(row['deleted_objects'] or 0))}")
+        except Exception as e:  # recording must never mask a completed undo
+            err(f"WARN: undo record failed: {e}")
+    _hard_exit()
+
+
 @main.group()
 def access() -> None:
     """GCS usage-log (access-log) ingest — layer-1a/2a parquet + watermarks."""

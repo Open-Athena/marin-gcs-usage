@@ -214,3 +214,101 @@ def test_streamed_merge_buffers_nested_dirs_until_the_listing_passes_them(tmp_pa
     assert b["delete_bytes"] == 8
     assert b["drift_dirs"] == [{"dir": "a/c", "new_objects": 1, "new_bytes": 9, "skipped_deletes": 2}]
     assert b["bands"] == {"gs://b1/a/": {"bytes": 8, "objects": 2, "gone": 1, "drift_new_objects": 1}}
+
+
+# ---- undo: restore what a real run deleted, from its logs ------------------
+
+class _UndoHandle:
+    """restore_blob stub: `live` names answer 412 (a live object exists),
+    `expired` names 404 (no soft-deleted copy), `broken` names blow up."""
+
+    def __init__(self, live=(), expired=(), broken=()):
+        self.live, self.expired, self.broken = set(live), set(expired), set(broken)
+        self.calls: list[tuple] = []
+
+    def restore_blob(self, name, generation=None, if_generation_match=None):
+        from google.api_core.exceptions import NotFound, PreconditionFailed
+        self.calls.append((name, generation, if_generation_match))
+        if name in self.live:
+            raise PreconditionFailed("live")
+        if name in self.expired:
+            raise NotFound("gone")
+        if name in self.broken:
+            raise RuntimeError("boom")
+        return FakeBlob(name=name, size=0, generation=generation + 1000, time_created=T1)
+
+
+@dataclass
+class _UndoClient:
+    handle: _UndoHandle
+
+    def bucket(self, name):
+        return self.handle
+
+
+def _real_run_dir(tmp_path, for_real=True):
+    d = tmp_path / "run"
+    (d / "deleted").mkdir(parents=True)
+    (d / "plan-summary.json").write_text(json.dumps({"date": "2026-09-01", "head": 7686, "approved": ["gs://b1/a/"], "buckets": {}}))
+    (d / "deleted-summary.json").write_text(json.dumps({"plan": str(d), "for_real": for_real, "buckets": {"b1": {}}}))
+    pd.DataFrame([
+        {"name": "a/x", "size_bytes": 10, "generation": 11, "decision": "delete", "dir": "a"},
+        {"name": "a/y", "size_bytes": 20, "generation": 12, "decision": "delete", "dir": "a"},
+        {"name": "a/z", "size_bytes": 30, "generation": 13, "decision": "delete", "dir": "a"},
+        {"name": "b/w", "size_bytes": 40, "generation": 14, "decision": "delete", "dir": "b"},
+        {"name": "b/v", "size_bytes": 50, "generation": 0, "decision": "skipped_gone", "dir": "b"},
+    ]).to_parquet(d / "deleted" / "b1.parquet")
+    return d
+
+
+def _restored_rows(d):
+    files = sorted((d / "restored").glob("b1-*.parquet"))
+    assert len(files) == 1
+    t = pq.read_table(files[0], columns=["name", "generation", "new_generation", "decision", "error"])
+    return [tuple(r.values()) for r in t.to_pylist()]
+
+
+def test_undo_restores_logged_generations_and_classifies_outcomes(tmp_path):
+    """Every `delete` row is restored by its logged generation with
+    if_generation_match=0; a live name, an expired copy and an error each get
+    their own decision; skipped rows are never touched."""
+    from gcs_usage.sweep_exec import undo_run
+    d = _real_run_dir(tmp_path)
+    h = _UndoHandle(live={"a/y"}, expired={"a/z"}, broken={"b/w"})
+    s = undo_run(str(d), client=_UndoClient(h), workers=2, now=1_800_000_000)
+    assert sorted(h.calls) == [("a/x", 11, 0), ("a/y", 12, 0), ("a/z", 13, 0), ("b/w", 14, 0)]
+    assert _restored_rows(d) == [
+        ("a/x", 11, 1011, "restored", None),
+        ("a/y", 12, 0, "already_live", None),
+        ("a/z", 13, 0, "unrestorable", None),
+        ("b/w", 14, 0, "failed", "RuntimeError: boom"),
+    ]
+    assert s["buckets"]["b1"] == {
+        "decisions": {"restored": 1, "already_live": 1, "unrestorable": 1, "failed": 1},
+        "restored_bytes": 10,
+        "bands": {"gs://b1/a/": {"restored": 1, "already_live": 1, "unrestorable": 1, "bytes": 10}, "gs://b1/b/": {"failed": 1}},
+    }
+    assert json.loads((d / f"undo-{s['stamp']}-summary.json").read_text())["buckets"] == s["buckets"]
+
+
+def test_undo_prefix_filter_and_dry_run(tmp_path):
+    """`prefixes` narrows to gs://bucket/dir/ (bare form accepted); a dry run
+    logs `would_restore` and calls nothing."""
+    from gcs_usage.sweep_exec import undo_run
+    d = _real_run_dir(tmp_path)
+    h = _UndoHandle()
+    s = undo_run(str(d), client=_UndoClient(h), prefixes=("b1/b/",), dry_run=True, now=1_800_000_000)
+    assert h.calls == []
+    assert _restored_rows(d) == [("b/w", 14, 0, "would_restore", None)]
+    assert s["buckets"]["b1"]["decisions"] == {"would_restore": 1}
+
+
+def test_undo_refuses_dry_runs_and_closed_windows(tmp_path):
+    import pytest
+    from gcs_usage.sweep_exec import undo_run
+    d = _real_run_dir(tmp_path, for_real=False)
+    with pytest.raises(SystemExit, match="dry run"):
+        undo_run(str(d), client=_UndoClient(_UndoHandle()), now=1_800_000_000)
+    d = _real_run_dir(tmp_path / "real")
+    with pytest.raises(SystemExit, match="undo window closed"):
+        undo_run(str(d), client=_UndoClient(_UndoHandle()), deadline=1_700_000_000, now=1_800_000_000)
