@@ -263,6 +263,10 @@ export function SweepPage() {
     ...jobList.map((j): RunRow => ({ key: j.job_id, job: j, run: runRows.find(r => r.log_dir.includes(j.job_id)) })),
     ...runRows.filter(r => !jobList.some(j => r.log_dir.includes(j.job_id))).map((r): RunRow => ({ key: r.run_id, run: r })),
   ].sort((a, b) => (b.run?.started_ts ?? Date.parse(b.job!.created) / 1000) - (a.run?.started_ts ?? Date.parse(a.job!.created) / 1000))
+  const [runPage, setRunPage] = useState(0)
+  const [runPageSize, setRunPageSize] = useState(PAGE_SIZES[0])
+  const runPages = Math.max(1, Math.ceil(runList.length / runPageSize))
+  const runPageRows = runList.slice(Math.min(runPage, runPages - 1) * runPageSize, (Math.min(runPage, runPages - 1) + 1) * runPageSize)
   const [stopped, setStopped] = useState<ReadonlySet<string>>(new Set())
   const stop = useMutation({
     mutationFn: async (job_id: string) => {
@@ -718,7 +722,7 @@ export function SweepPage() {
             <tr><th>run</th><th>mode</th><th>buckets</th><th className="num">planned</th><th className="num">deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>state</th><th>started</th><th className="num">elapsed</th><th>undo by</th><th>links</th>{canWrite && <th></th>}</tr>
           </thead>
           <tbody>
-            {runList.map(({ key, job, run }) => {
+            {runPageRows.map(({ key, job, run }) => {
               const mode = job?.mode ?? run!.mode
               const live = !!job && LIVE_STATES.has(job.state)
               const startedTs = run?.started_ts ?? (job ? Date.parse(job.created) / 1000 : 0)
@@ -730,7 +734,7 @@ export function SweepPage() {
               const stateCls = job?.state === 'SUCCEEDED' ? 'ok' : job?.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'
               const logDir = (run?.log_dir ?? job?.plan ?? '').replace('gs://oa-gcs-usage-dvx/', '').replace(/\/?$/, '/')
               return (
-                <tr key={key} id={run ? `run-${run.run_id.replace('/', '-')}` : undefined} className={[`mode-${mode}`, job?.state === 'FAILED' ? 'failed' : live ? 'live' : ''].filter(Boolean).join(' ')}>
+                <tr key={key} id={run ? `run-${run.run_id.replace('/', '-')}` : undefined} className={[`mode-${mode}`, job?.state === 'FAILED' ? 'failed' : live ? 'live' : job?.state === 'SUCCEEDED' || run?.finished_ts ? 'ok' : ''].filter(Boolean).join(' ')}>
                   <td><code>{job?.job_id ?? run!.run_id}</code>{run && <span className="dim"> by {shortName(run.actor)}</span>}{!run && job?.by && <span className="dim"> by {shortName(job.by)}</span>}</td>
                   <td>{mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
                   <td><span className="nb">{shortBuckets(bucketsOf)}{job && job.region !== 'us-central1' && <span className="dim"> · {job.region}</span>}</span></td>
@@ -749,7 +753,9 @@ export function SweepPage() {
                   <td className="num">{run ? run.drift_dirs + run.ledger_drift_dirs : '—'}</td>
                   <td>
                     <span className={stateCls}>{state}</span>
-                    {job?.state === 'FAILED' && job.last_event && <div className="dim small">{job.last_event}</div>}
+                    {job?.state === 'FAILED' && job.last_event && (
+                      <details className="why"><summary className="dim small">why</summary><div className="dim small">{job.last_event}</div></details>
+                    )}
                   </td>
                   <td><span className="nb">{when(startedTs)}</span></td>
                   <td className="num"><span className="nb">{secs == null ? '—' : fmtDur(secs)}</span></td>
@@ -774,6 +780,16 @@ export function SweepPage() {
             })}
           </tbody>
         </table></div>
+      )}
+      {runList.length > PAGE_SIZES[0] && (
+        <div className="sweep-tools runs-pager">
+          <span className="dim nb">{`${Math.min(runPage, runPages - 1) * runPageSize + 1}–${Math.min(runList.length, (Math.min(runPage, runPages - 1) + 1) * runPageSize)} of ${runList.length}`}</span>
+          <span className="nb">
+            <button className="mini" disabled={runPage <= 0} onClick={() => setRunPage(p => Math.max(0, p - 1))}>‹</button>
+            {' '}<button className="mini" disabled={runPage >= runPages - 1} onClick={() => setRunPage(p => Math.min(runPages - 1, p + 1))}>›</button>
+          </span>
+          <span className="nb"><span className="dim">per page</span>{PAGE_SIZES.map(n => <button key={n} className={`mini${n === runPageSize ? ' on' : ''}`} onClick={() => { setRunPageSize(n); setRunPage(0) }}>{fmtPageSize(n)}</button>)}</span>
+        </div>
       )}
       {stop.error != null && <p className="err">{String(stop.error)}</p>}
     </main>

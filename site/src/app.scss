@@ -1866,6 +1866,19 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   // already the red word).
   .sweep-table tr.mode-dry { background: rgba(128, 128, 128, 0.09); }
   .sweep-table .prog progress { width: 90px; height: 8px; vertical-align: middle; margin-right: 4px; }
+  // Runs: live rows blue, failed rows a faint red, finished rows a faint
+  // green; dry runs keep their grey underneath. A failed job's last Batch
+  // event folds into a "why" details so the row stays one line tall.
+  .sweep-table.runs {
+    tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
+    tr.failed td { background: color-mix(in srgb, var(--mk-del) 9%, transparent); }
+    tr.ok td { background: color-mix(in srgb, var(--mk-keep, #3fb950) 5%, transparent); }
+    details.why summary { cursor: pointer; list-style: none; }
+    details.why summary::before { content: '▸ '; }
+    details.why[open] summary::before { content: '▾ '; }
+    details.why div { max-width: 28em; white-space: normal; }
+  }
+  .runs-pager { margin-top: 6px; }
   .sweep-table.jobs {
     tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
     tr.failed td { background: color-mix(in srgb, var(--mk-del) 10%, transparent); }
