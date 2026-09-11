@@ -53,7 +53,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     const { jobs = [] } = (await r.json()) as { jobs?: BatchJob[] }
     return jobs.map(j => ({ ...j, region }))
   })).catch(e => e as Error)
-  if (lists instanceof Error) return json({ error: lists.message }, 502)
+  if (lists instanceof Error) { console.error('batch list failed', lists.message); return json({ error: lists.message }, 500) }
   const jobs = lists.flat().sort((a, b) => (a.createTime < b.createTime ? 1 : -1))
   const out: SweepJob[] = jobs
     .filter(j => /\/jobs\/gcs-sweep-(dry|real)-/.test(j.name))

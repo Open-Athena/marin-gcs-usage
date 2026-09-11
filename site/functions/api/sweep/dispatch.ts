@@ -86,7 +86,14 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
     `${batchJobsUrl(region)}?job_id=${jobId}`,
     { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(spec) },
   )
-  const out = await r.json().catch(() => ({}))
-  if (!r.ok) return json({ error: 'batch submit failed', status: r.status, detail: out }, 502)
+  const text = await r.text()
+  let out: unknown = {}
+  try { out = JSON.parse(text) } catch { out = { body: text.slice(0, 1000) } }
+  // 500, not 502: Cloudflare swaps an origin 502 for its own branded error
+  // page, which threw away this detail on the 2026-09-11 17:20Z dispatch.
+  if (!r.ok) {
+    console.error('batch submit failed', r.status, text.slice(0, 2000))
+    return json({ error: `batch submit failed (${r.status})`, status: r.status, detail: out }, 500)
+  }
   return json({ job_id: jobId, mode, date, plan, region, by: gated.email })
 }
