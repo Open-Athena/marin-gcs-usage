@@ -97,6 +97,11 @@ Three east5-only real dispatches failed in a row, each one layer deeper, before 
 
 **Rehearsal (do this before a real dispatch after any executor change):** ~250 scratch objects under `gs://oa-gcs-usage-dvx/sweep-rehearsal/<stamp>/` (same 7 d soft delete), a plan dir with `approved` = that prefix and a manifest built from the live listing, `execute_plan(plan, for_real=True)` (the CLI's reclassify drops dvx dirs — no sweep votes), then `sweep undo --no-record gs://…`; expect every object deleted, logged, and restored. Verified 2026-09-11: 250/250/250.
 
+## Colocation and clean stops (2026-09-11, during the first big-bucket runs)
+
+- **Run the executor in the bucket's region.** The eu-west4 run dispatched from us-central1 listed at 0.6 pages/s and deleted at ~200/s while central2 (same VM shape, colocated) did 1,750/s: every listing page and every delete sub-request is a round trip to the bucket. `/api/sweep/dispatch` now places a one-bucket cut in that bucket's region (`BUCKET_REGION` in `_lib/gcp.ts`); an uncut run stays in us-central1. `/api/sweep/jobs` lists every region. **Open:** the daily listing job (`job/batch-submit.sh`, one task per bucket in one us-central1 job) has the same geometry; per-bucket jobs in each region would cut its 2 h too.
+- **`gcs-usage sweep stop PLAN_DIR`** drops `PLAN_DIR/STOP`; the executor polls it every 10 s (and handles SIGTERM the same way): roots not yet started are skipped and counted in `interrupted`, everything done is logged and recorded, the CLI exits 130 so the Batch job ends red. A re-run of the same plan finishes the rest (done keys resolve as `skipped_gone`). A job killed from outside (`gcloud batch jobs delete`) gets no such courtesy — its log parquet has no footer — and needs `sweep reconstruct-log`.
+
 ## Non-goals (v1)
 
 - User self-serve deletion (v2, above). — Regex mark patterns (don't exist). — Ledger tombstoning (follow-up). — CW/S3 sweep (separate estate, no marks yet).
