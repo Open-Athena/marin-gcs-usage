@@ -25,6 +25,6 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
     headers: { authorization: `Bearer ${token}`, 'content-type': 'text/plain' },
     body: `${new Date().toISOString()} by ${gated.email ?? 'sweep-console'}\n`,
   })
-  if (!r.ok) return json({ error: 'STOP write failed', status: r.status, detail: (await r.text()).slice(0, 300) }, 502)
+  if (!r.ok) return json({ error: 'STOP write failed', status: r.status, detail: (await r.text()).slice(0, 300) }, 500)
   return json({ job_id: jobId, stopped_by: gated.email, note: 'the executor polls STOP every 10 s; roots already listing finish first' })
 }
