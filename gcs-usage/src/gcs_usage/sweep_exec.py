@@ -111,6 +111,12 @@ def execute_plan(
             if for_real:
                 raise SystemExit(msg)
             err(f"WARNING {msg.replace('refusing', 'a real run would be refused:')}")
+        soft_delete_days = _soft_delete_days(client, bucket)
+        if soft_delete_days < min_soft_delete_days:
+            msg = f"{bucket}: soft delete retention {soft_delete_days:.0f}d < required {min_soft_delete_days}d — refusing --for-real"
+            if for_real:
+                raise SystemExit(msg)
+            err(f"WARNING {msg.replace('refusing', 'a real run would be refused:')}")
         # The manifest stays an Arrow table sorted by name (35M keys on the
         # biggest bucket: ~8 GB as Arrow strings, vs ~25 GB as two pandas
         # copies), and each listing root takes its contiguous slice by binary
@@ -130,8 +136,6 @@ def execute_plan(
         mt = mt.combine_chunks()
         names = mt["name"]
         order = pc.sort_indices(mt, sort_keys=[("name", "ascending")])
-        if for_real:
-            _require_soft_delete(client, bucket, min_soft_delete_days)
         dirs_all = set(pc.unique(mt["dir"]).to_pylist())
         ledger_drift: list[str] = []
         if reclassify is not None:
@@ -303,6 +307,7 @@ def execute_plan(
             flush_log(writer, final=True)
         summary["buckets"][bucket] = {
             "missing_perms": missing_perms,
+            "soft_delete_days": soft_delete_days,
             "decisions": dict(counts),
             "delete_bytes": total_deleted_b,
             "drift_dirs": drift_dirs,
@@ -568,11 +573,9 @@ def _missing_perms(bkt) -> list[str]:
     return [p for p in REAL_PERMS if p not in granted]
 
 
-def _require_soft_delete(client, bucket: str, min_days: int) -> None:
-    b = client.get_bucket(bucket)
-    pol = b.soft_delete_policy
-    secs = (pol.retention_duration_millis or 0) / 1000 if pol else 0
-    if secs < min_days * 86400:
-        raise SystemExit(
-            f"{bucket}: soft delete retention {secs / 86400:.0f}d < required {min_days}d — refusing --for-real"
-        )
+def _soft_delete_days(client, bucket: str) -> float:
+    """The bucket's soft-delete window in days (0 = off) — what `sweep undo`
+    has to work with. Read in every mode, so a dry run exercises the same
+    bucket GET and parse a real run's guard does."""
+    pol = client.get_bucket(bucket).soft_delete_policy
+    return (pol.retention_duration_seconds or 0) / 86400 if pol else 0

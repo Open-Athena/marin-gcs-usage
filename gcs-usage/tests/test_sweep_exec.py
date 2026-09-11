@@ -53,13 +53,14 @@ class FakeClient:
         return self.handle
 
     def get_bucket(self, name):
-        @dataclass
-        class Pol:
-            retention_duration_millis: int
+        # The library's own policy object: the 2026-09-11 real run died on a
+        # guard reading an attribute a hand-rolled stand-in had invented.
+        from google.cloud.storage.bucket import SoftDeletePolicy
+
         @dataclass
         class B:
-            soft_delete_policy: Pol
-        return B(Pol(self.soft_days * 86400 * 1000))
+            soft_delete_policy: SoftDeletePolicy
+        return B(SoftDeletePolicy(bucket=None, retention_duration_seconds=self.soft_days * 86400))
 
     @contextmanager
     def batch(self):
@@ -141,6 +142,17 @@ def test_for_real_refuses_without_soft_delete(tmp_path):
     with pytest.raises(SystemExit) as ei:
         execute_plan(str(plan), for_real=True, client=client)
     assert "soft delete retention 0d < required 7d" in str(ei.value)
+
+
+def test_dry_run_reads_the_soft_delete_window(tmp_path):
+    # The rehearsal reads the bucket's soft-delete policy like a real run
+    # would (same call, same parse) and records the window; a short one warns
+    # here and refuses there.
+    plan = _plan_dir(tmp_path)
+    client = _client()
+    assert execute_plan(str(plan), client=client)["buckets"]["b1"]["soft_delete_days"] == 7
+    client.soft_days = 0
+    assert execute_plan(str(plan), client=client)["buckets"]["b1"]["soft_delete_days"] == 0
 
 
 def test_for_real_refuses_without_real_permissions(tmp_path):
