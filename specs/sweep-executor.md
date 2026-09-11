@@ -87,6 +87,16 @@ Batch job (same image/infra as the snapshot). **Dry-run is the default**; `--for
 4. **End-to-end on a scratch bucket**: synthetic tree + synthetic ledger → plan → dry-run → `--for-real` → verify; includes overwrite-race and written-after-scan cases proving they survive.
 5. **Prod dry-runs**: full plan + `execute` (dry) on the real estate; review the would-delete log; sit on it ≥ 1 day; re-plan to catch late marks; then the real thing, **one bucket first** (smallest: marin-us-west4), verify, then the rest.
 
+## First real runs — what the dry runs never exercised (2026-09-11)
+
+Three east5-only real dispatches failed in a row, each one layer deeper, before any deletes of consequence; the dry runs (three of them, all green) share none of these layers. Each is now covered by a check the rehearsal runs:
+
+1. **IAM.** The job SA had `roles/storage.objectViewer` only — listing works, `storage.buckets.get` (the soft-delete guard) and `storage.objects.delete` don't. A real run needs `roles/storage.objectUser` (delete + restore) and `roles/storage.legacyBucketReader` (bucket GET) per bucket; Ryan grants them (the classifier won't let Claude). `sweep execute` now preflights all three permissions per bucket before any listing: a real run refuses naming the whole gap, a dry run warns and records `missing_perms`.
+2. **The soft-delete guard** read `retention_duration_millis`; the library's `SoftDeletePolicy` has `retention_duration_seconds`. The test fake had invented the attribute. The fake now returns the library's own class; the guard runs in every mode (`soft_delete_days` per bucket) and `record_run`'s `undo_deadline` uses the narrowest measured window.
+3. **The first delete batch got a whole-request 503** ("server(s) are not responding") with no retry; 241 deletes had already landed and the log had 0 rows (it flushed at 64k rows or the end). Now `delete_batch` settles each item from its own sub-response (2xx delete, 404 skipped_gone, 412 skipped_overwritten), retries transient answers with backoff (8 attempts), and reports the rest as `delete_failed` in `failed_dirs` — the run continues, the CLI exits 2 after logging and recording. Workers write the log as dirs finish (8k-row chunks on a real run), flushed in `finally`. `sweep reconstruct-log` rebuilt the third run's log from the bucket's soft-deleted listing (241 objects, all in its manifest).
+
+**Rehearsal (do this before a real dispatch after any executor change):** ~250 scratch objects under `gs://oa-gcs-usage-dvx/sweep-rehearsal/<stamp>/` (same 7 d soft delete), a plan dir with `approved` = that prefix and a manifest built from the live listing, `execute_plan(plan, for_real=True)` (the CLI's reclassify drops dvx dirs — no sweep votes), then `sweep undo --no-record gs://…`; expect every object deleted, logged, and restored. Verified 2026-09-11: 250/250/250.
+
 ## Non-goals (v1)
 
 - User self-serve deletion (v2, above). — Regex mark patterns (don't exist). — Ledger tombstoning (follow-up). — CW/S3 sweep (separate estate, no marks yet).
