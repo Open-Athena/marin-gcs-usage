@@ -397,6 +397,36 @@ def test_reclassify_receives_plan_approved_bands(tmp_path):
     assert s["buckets"]["b1"]["decisions"] == {"delete": 1, "skipped_gone": 1, "skipped_overwritten": 1}
 
 
+def _sized_plan(tmp_path, dirs: dict[str, int], **summary):
+    """A plan whose manifest holds `dirs[dn]` objects under each dir."""
+    d = tmp_path / "plan"
+    (d / "manifest").mkdir(parents=True)
+    (d / "plan-summary.json").write_text(json.dumps({"date": "2026-09-01", "head": 1, "buckets": {"b1": {"eligible": {"bytes": 1, "objects": sum(dirs.values())}}}, **summary}))
+    rows = [{"name": f"{dn}/o{i}", "size_bytes": 1, "storage_class_id": 1, "created": T0, "dir": dn, "owner": "k", "sweepers": "k"} for dn, n in dirs.items() for i in range(n)]
+    pd.DataFrame(rows).to_parquet(d / "manifest" / "b1.parquet")
+    return d
+
+
+def test_roots_run_largest_first(tmp_path):
+    # Longest-processing-time first: the pool starts on the big root and the
+    # small ones fill the tail (alphabetical order left central2's last hours
+    # to a single huge listing).
+    plan = _sized_plan(tmp_path, {"a": 1, "b": 3, "c": 2})
+    client = FakeClient(blobs={"b1": []})
+    execute_plan(str(plan), client=client, workers=1)
+    assert client.listed == ["b/", "c/", "a/"]
+
+
+def test_oversized_root_splits_into_its_children(tmp_path):
+    # A root over `max_root_objects` lists per child instead (one thread each);
+    # a root with an object directly in it stays whole — splitting would skip
+    # that object.
+    plan = _sized_plan(tmp_path, {"big/x": 3, "big/y": 3, "flat": 5, "flat/z": 4})
+    client = FakeClient(blobs={"b1": []})
+    execute_plan(str(plan), client=client, workers=1, max_root_objects=4)
+    assert client.listed == ["flat/", "big/x/", "big/y/"]
+
+
 def test_roots_are_band_children_and_prefix_free():
     from gcs_usage.sweep_exec import list_roots
 

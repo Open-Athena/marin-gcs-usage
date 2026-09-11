@@ -153,6 +153,7 @@ def execute_plan(
     drift: str = "skip",  # skip | proceed — dirs that gained NEW keys since the scan
     workers: int = 8,
     delete_workers: int = 32,
+    max_root_objects: int = 250_000,  # a listing root bigger than this splits into its children (one listing thread per root)
     min_soft_delete_days: int = 7,
     client=None,
     reclassify=None,  # (bucket, dir, approved) -> category at the CURRENT ledger head; non-eligible dirs are skipped (ledger drift). `approved` is the plan's approved bands — without them, band-approved dirs would all reclassify as deferred and be dropped.
@@ -290,6 +291,48 @@ def execute_plan(
         # under `dn/`, nested dirs form a stack), and only then deleted — drift
         # discovered late still gates the whole directory.
         roots = list_roots(dirs_all, approved, bucket)
+
+        def root_count(root: str) -> int:
+            lo, hi = _bisect(root + "/") if root else (0, len(order))
+            return hi - lo
+
+        # Each root is one listing thread. Two things keep the pool busy to the
+        # end: an oversized root splits into its children (when no manifest
+        # object sits directly in it — those would be missed), repeatedly, and
+        # the roots run largest first (longest-processing-time first), so the
+        # tail is small roots filling in, not one big listing everyone waits
+        # on (central2 on 2026-09-11: 1,750 → 400 deletes/s over its last
+        # two hours, alphabetical order, one huge root left).
+        from bisect import bisect_right
+        for _ in range(6):
+            big = [r for r in roots if root_count(r) > max_root_objects]
+            if not big:
+                break
+            srt = sorted(roots)
+            kids: dict[str, set[str]] = {r: set() for r in big}
+            direct: set[str] = set()
+            for dn in dirs_all:
+                i = bisect_right(srt, dn)
+                r = srt[i - 1] if i else None
+                if r is None or not (dn == r or (dn.startswith(r + "/") if r else True)):
+                    continue
+                if r not in kids:
+                    continue
+                if dn == r:
+                    direct.add(r)
+                else:
+                    rel = dn[len(r) + 1:] if r else dn
+                    kids[r].add(rel.split("/", 1)[0])
+            out: list[str] = []
+            for r in roots:
+                if r in kids and r not in direct and len(kids[r]) > 1:
+                    out.extend(f"{r}/{k}" if r else k for k in sorted(kids[r]))
+                else:
+                    out.append(r)
+            if len(out) == len(roots):
+                break
+            roots = out
+        roots = sorted(roots, key=root_count, reverse=True)
 
         def do_root(root: str):
             if stop is not None and stop.is_set():
