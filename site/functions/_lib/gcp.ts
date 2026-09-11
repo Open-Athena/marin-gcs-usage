@@ -16,7 +16,11 @@ export const BATCH_JOBS = batchJobsUrl(BATCH_REGION)
 export const BUCKET_REGION: Record<string, string> = {
   'marin-us-east5': 'us-east5',
   'marin-us-central1': 'us-central1',
-  'marin-us-central2': 'us-central2',
+  // The bucket sits in us-central2, but Batch has no us-central2 location
+  // (`GET /v1/projects/…/locations` omits it, and the 2026-09-11 17:20Z
+  // dispatch there failed): its nearest Batch region, where the first
+  // central2 run reached the bucket's write ceiling anyway.
+  'marin-us-central2': 'us-central1',
   'marin-eu-west4': 'europe-west4',
   'marin-us-west4': 'us-west4',
   'marin-us-east1': 'us-east1',
