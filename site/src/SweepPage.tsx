@@ -746,7 +746,11 @@ export function SweepPage() {
                       <span className="prog nb" title={`${prog.deletes.toLocaleString()} of ${(p?.objects ?? 0).toLocaleString()} · ${prog.rate.toLocaleString()}/s · ${prog.roots_done.toLocaleString()} / ${prog.roots.toLocaleString()} roots`}>
                         <progress max={p?.objects || undefined} value={prog.deletes} /> {tb(prog.bytes)} · {prog.deletes.toLocaleString()} · {prog.rate.toLocaleString()}/s
                       </span>
-                    ) : live ? <span className="dim">listing…</span> : '—'}
+                    ) : live && !p ? (
+                      <span className="dim" title="The manifest step is still streaming the scan listing; deletes start once it lands.">planning…</span>
+                    ) : live ? (
+                      <span className="dim" title="The job's image predates progress reporting (images built before 2026-09-11 12:00Z); deletes are landing, but only the final log will say how many.">no progress file</span>
+                    ) : '—'}
                   </td>
                   <td className="num">{run ? run.skipped_gone.toLocaleString() : prog ? prog.gone.toLocaleString() : '—'}</td>
                   <td className="num">{run ? run.skipped_overwritten.toLocaleString() : '—'}</td>
