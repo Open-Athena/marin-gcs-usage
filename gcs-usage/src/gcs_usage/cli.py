@@ -1118,10 +1118,11 @@ def sweep_manifest(attributions: tuple[str, ...], approved: tuple[str, ...], app
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {MARK_DEFAULT_URL})")
 @option("-w", "--workers", default=8, type=int, help="Concurrent directory re-lists")
+@option("-W", "--delete-workers", default=32, type=int, help="Concurrent delete batches (100 objects each), shared by every re-list; the bucket's ~1000 writes/s is the ceiling")
 @option("--for-real", is_flag=True, help="Actually delete (default: dry-run writes would-delete/)")
 @option("--no-record", is_flag=True, help="Skip the D1 deletion_runs/bands record (recorded by default)")
 @argument("plan_dir")
-def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, url: str | None, workers: int, for_real: bool, no_record: bool, plan_dir: str) -> None:
+def sweep_execute(only_buckets: tuple[str, ...], drift: str, delete_workers: int, token: str | None, url: str | None, workers: int, for_real: bool, no_record: bool, plan_dir: str) -> None:
     """Execute (default: DRY-RUN) a `sweep manifest` plan: fresh re-list per
     eligible dir, generation-matched deletes of manifest∩live keys whose
     timeCreated is unchanged. Every manifest dir is re-classified at the
@@ -1169,6 +1170,7 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
         only_buckets=only_buckets,
         drift=drift,
         workers=workers,
+        delete_workers=delete_workers,
         reclassify=reclassify,
     )
     finished = int(dt.datetime.now(dt.timezone.utc).timestamp())

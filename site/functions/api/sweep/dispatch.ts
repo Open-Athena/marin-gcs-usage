@@ -56,7 +56,9 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
         runnables: [{ container: { imageUri: IMAGE, entrypoint: '/bin/bash', commands: ['-c', script] } }],
         computeResource: { cpuMilli: 8000, memoryMib: 60000 },
         maxRetryCount: 0,
-        maxRunDuration: '14400s',
+        // 72 h: the 35M-object bucket needs ~10 h of deletes at the bucket's
+        // write ceiling on top of its listing; 4 h (the old cap) fit only east5.
+        maxRunDuration: '259200s',
         environment: {
           variables: {
             SWEEP_DATE: date,

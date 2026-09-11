@@ -149,6 +149,7 @@ def execute_plan(
     only_buckets: tuple[str, ...] = (),
     drift: str = "skip",  # skip | proceed — dirs that gained NEW keys since the scan
     workers: int = 8,
+    delete_workers: int = 32,
     min_soft_delete_days: int = 7,
     client=None,
     reclassify=None,  # (bucket, dir, approved) -> category at the CURRENT ledger head; non-eligible dirs are skipped (ledger drift). `approved` is the plan's approved bands — without them, band-approved dirs would all reclassify as deferred and be dropped.
@@ -175,6 +176,11 @@ def execute_plan(
 
     mode = "deleted" if for_real else "would-delete"
     summary: dict = {"plan": plan_dir, "for_real": for_real, "drift": drift, "buckets": {}}
+    # Deletes run on their own pool, fed by every listing root: a batch of 100
+    # is ~1–2 s of sequential server work, so a lopsided root (east5's
+    # largest held 31% of the objects) no longer serializes a third of the run
+    # on one thread — the bucket's ~1000 writes/s is the ceiling instead.
+    dpool = ThreadPoolExecutor(max_workers=delete_workers) if for_real else None
     log_schema = pa.schema([
         ("name", pa.string()), ("size_bytes", pa.int64()), ("generation", pa.int64()),
         ("decision", pa.string()), ("dir", pa.string()),
@@ -299,8 +305,9 @@ def execute_plan(
                 deleted_b = 0
                 if for_real:
                     n_failed = 0
-                    for i in range(0, len(todo), BATCH):
-                        for blob, decision in delete_batch(client, bkt, todo[i : i + BATCH]):
+                    futs = [dpool.submit(delete_batch, client, bkt, todo[i : i + BATCH]) for i in range(0, len(todo), BATCH)]
+                    for fut in futs:
+                        for blob, decision in fut.result():
                             out.append((blob.name, int(blob.size or 0), int(blob.generation), decision, dn))
                             if decision == "delete":
                                 deleted_b += blob.size or 0
@@ -435,6 +442,8 @@ def execute_plan(
             + (f", {counts['delete_failed']:,} deletes UNANSWERED in {len(failed_dirs):,} dir(s)" if failed_dirs else "")
         )
 
+    if dpool is not None:
+        dpool.shutdown(wait=True)
     with fsspec.open(f"{plan_dir}/{mode}-summary.json", "w") as fh:
         json.dump(summary, fh, indent=2)
     summary["_plan"] = plan
