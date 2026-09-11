@@ -435,9 +435,8 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   // the parent the same way share ONE outline: the core strokes the perimeter
   // of their union (`outlineGroups`), so a grid of kept run dirs reads as one
   // bordered region, not a chain-link fence. Skipped in `state` mode, where the
-  // fill already *is* the state. Bigger cells also get a corner badge: the
-  // actor's avatar + the state glyph. Provenance (who/when/inherited-from)
-  // lives in the cell tooltip.
+  // fill already *is* the state. No corner badges: the border is the signal,
+  // and provenance (who/when/inherited-from) lives in the cell tooltip.
   const drillDepth = drillLen
   // $/mo from the node's own storage-class mix at list price — the same
   // arithmetic as the Storage-classes table — not the store-wide blended
@@ -512,24 +511,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
           }
           return null
         }
-        // Actor badge (who marked it) only when it adds information: the marker
-        // is NOT the cell's own top owner — an "off-diagonal" mark, someone
-        // sweeping/keeping another person's data. A person marking their own
-        // data (the common case) is noise, so no avatar there. Never on a fold.
-        if (n.n.startsWith('(') || w < 44 || h < 24) return null
-        const e = edgeMark(cellPath, chain)
-        if (!e) return null
-        const { mark } = e
-        const topOwner = n.us?.[0]?.[0] ?? null
-        const offDiagonal = !!mark.who && (topOwner == null || canonId(mark.who) !== topOwner)
-        if (!offDiagonal) return null
-        const glyph = mark.action === 'keep' ? '✓' : mark.action === 'keep_last_ckpt' ? '◐' : '✕'
-        return (
-          <span className="mark-badge">
-            <Avatar github={ghHandle(mark.who)} name={shortName(mark.who)} size={14} />
-            <span className="mk" style={{ background: ACTION_COLORS[mark.action] }}>{glyph}</span>
-          </span>
-        )
+        return null
       }
     : undefined
 
@@ -845,6 +827,10 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
         {users}
         {/* interactive only when the tooltip is pinned; CSS hides it on hover */}
         {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} lensed={ownerLensed} userIdx={userIdx} onPickUser={onPickUser} />}
+        {/* The passive preview says where the controls are: any cell, at any
+            depth, marks and assigns from its pinned box (the table below only
+            lists the drilled node's children). Gone once pinned or hovered into. */}
+        {markIdx && !n.n.startsWith('(') && <div className="tt-hint tt-pin-hint">{n.c?.length ? '⌥-click' : 'click'} to pin · mark or assign it here</div>}
       </>
     )
   }

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MdUndo } from 'react-icons/md'
@@ -198,6 +198,26 @@ export function SweepPage() {
     queryKey: ['sweep-jobs'],
     queryFn: () => jfetch<{ jobs: SweepJob[]; configured: boolean }>('/api/sweep/jobs'),
     refetchInterval: 30_000,
+  })
+  // What each dispatch planned: its manifest step's `plan-summary.json`,
+  // summed over the buckets it was cut to (absent until that step ran).
+  const jobList = jobsQ.data?.jobs ?? []
+  const planQs = useQueries({
+    queries: jobList.map(j => ({
+      queryKey: ['sweep-plan-summary', j.job_id],
+      staleTime: Infinity,
+      retry: false,
+      queryFn: () => jfetch<{ buckets: Record<string, { eligible?: { bytes: number; objects: number } }> }>(`/v1/files/get?path=${encodeURIComponent(`sweep/runs/${j.job_id}/plan-summary.json`)}`),
+    })),
+  })
+  const planned = new Map<string, { bytes: number; objects: number }>()
+  jobList.forEach((j, i) => {
+    const b = planQs[i]?.data?.buckets
+    if (!b) return
+    const want = j.buckets.length ? j.buckets : Object.keys(b)
+    const tot = { bytes: 0, objects: 0 }
+    for (const k of want) { tot.bytes += b[k]?.eligible?.bytes ?? 0; tot.objects += b[k]?.eligible?.objects ?? 0 }
+    planned.set(j.job_id, tot)
   })
   const canWrite = apprQ.data?.spec.canWrite ?? false
   // Orientation text: open until the reader closes it once (per browser).
@@ -632,7 +652,7 @@ export function SweepPage() {
       {!!jobsQ.data?.jobs.length && (
         <div className="table-scroll busy-host">{jobsQ.isFetching && <Busy corner label="refreshing…" />}<table className="sweep-table jobs">
           <thead>
-            <tr><th>job</th><th>mode</th><th>buckets</th><th>state</th><th>by</th><th>started</th><th className="num">elapsed</th><th>plan</th><th>logs</th></tr>
+            <tr><th>job</th><th>mode</th><th>buckets</th><th className="num">planned</th><th>state</th><th>by</th><th>started</th><th className="num">elapsed</th><th>plan</th><th>logs</th></tr>
           </thead>
           <tbody>
             {jobsQ.data.jobs.map(j => {
@@ -640,10 +660,11 @@ export function SweepPage() {
               const secs = j.run_secs ?? (live ? (Date.now() - Date.parse(j.created)) / 1000 : null)
               const run = runsQ.data?.rows.find(r => r.log_dir.includes(j.job_id))
               return (
-                <tr key={j.job_id} className={j.state === 'FAILED' ? 'failed' : live ? 'live' : ''}>
+                <tr key={j.job_id} className={[j.mode, j.state === 'FAILED' ? 'failed' : live ? 'live' : ''].filter(Boolean).join(' ')}>
                   <td><code>{j.job_id}</code></td>
                   <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
                   <td><span className="nb">{shortBuckets(j.buckets)}</span></td>
+                  <td className="num"><span className="nb">{(() => { const p = planned.get(j.job_id); return p ? `${tb(p.bytes)} · ${p.objects.toLocaleString()}` : '—' })()}</span></td>
                   <td>
                     <span className={j.state === 'SUCCEEDED' ? 'ok' : j.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'}>{j.state.toLowerCase()}</span>
                     {run && <span className="dim nb"> · <a href={`#run-${run.run_id.replace('/', '-')}`}>run recorded ↓</a></span>}
@@ -672,7 +693,7 @@ export function SweepPage() {
           </thead>
           <tbody>
             {runsQ.data.rows.map(r => (
-              <tr key={r.run_id} id={`run-${r.run_id.replace('/', '-')}`}>
+              <tr key={r.run_id} id={`run-${r.run_id.replace('/', '-')}`} className={r.mode}>
                 <td><code>{r.run_id}</code> <span className="dim">by {r.actor}</span></td>
                 <td>{r.mode === 'real' ? <b className="real">real</b> : 'dry-run'}</td>
                 <td><span className="nb">{shortBuckets(r.buckets?.split(','))}</span></td>

@@ -853,7 +853,9 @@ export function Treemap<T>({
     node: T, path: T[], key: string, drillable: boolean, x: number, y: number, e: React.MouseEvent,
   ) => {
     if (onCellClick && onCellClick(node, path, e)) return
-    if (drillable) { pin.clearPin(); go(path) }
+    // A branch drills; ⌥-click pins it instead (its tip carries the
+    // per-cell controls), so a deep cell can be acted on without drilling.
+    if (drillable && !e.altKey) { pin.clearPin(); go(path) }
     else activatePin(node, path, key, x, y)
   }
 

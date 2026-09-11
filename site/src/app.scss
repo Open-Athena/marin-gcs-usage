@@ -1361,6 +1361,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 // you move onto the tip (or pin it) — the tip is interactive + anchored now, so
 // hovering into it to mark is a supported gesture, not only click-to-pin.
 .dt-treemap-tip:not(.pinned):not(:hover) .mark-controls { display: none; }
+.dt-treemap-tip.pinned .tt-pin-hint, .dt-treemap-tip:hover .tt-pin-hint { display: none; }
 .dt-treemap-tip:not(.pinned):not(:hover) .path-acts { display: none; }
 .dt-treemap-tip.pinned .mark-controls,
 .dt-treemap-tip:hover .mark-controls {
@@ -1861,6 +1862,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     // status cell stays one line (was the wrapping word "revoke").
     button.mini.ico.revoke { display: inline-flex; align-items: center; padding: 2px 4px; vertical-align: middle; svg { width: 12px; height: 12px; } }
   }
+  // Real runs carry a faint warm tint in both tables; dry runs stay plain.
+  .sweep-table tr.real { background: rgba(255, 150, 50, 0.06); }
   .sweep-table.jobs {
     tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
     tr.failed td { background: color-mix(in srgb, var(--mk-del) 10%, transparent); }
