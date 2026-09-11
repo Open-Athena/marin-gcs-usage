@@ -94,8 +94,8 @@ interface SweepJob {
   buckets: string[]
   /** The Batch region it runs in (its bucket's, for a one-bucket cut). */
   region: string
-  /** A one-bucket cut running away from its bucket (Batch has no location there). */
-  remote: boolean
+  /** The bucket's own region, for a one-bucket cut (null: several buckets). */
+  bucket_region: string | null
   plan: string
   last_event: string | null
   logs: string
@@ -755,8 +755,10 @@ export function SweepPage() {
                       <span className="approver"><Avatar github={ghHandle(actor)} name={shortName(actor)} size={16} /></span>
                     </Tooltip>
                   )}</td>
-                  <td>{mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
-                  <td><span className="nb">{shortBuckets(bucketsOf)}{job?.remote && <span className="dim" title={`Runs in ${job.region}: Batch has no ${job.buckets[0].replace(/^marin-/, '')} location`}> · {job.region}</span>}</span></td>
+                  <td className="mode">{mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
+                  <td><span className="nb">{shortBuckets(bucketsOf)}{job?.bucket_region && job.bucket_region !== job.region && (
+                    <span className="dim" title={`Ran in ${job.region}, not the bucket's ${job.bucket_region}${job.bucket_region === 'us-central2' ? ' (Batch has no us-central2 location)' : ' (dispatched before jobs were colocated with their bucket)'}`}> · {job.region}</span>
+                  )}</span></td>
                   <td className="num"><span className="nb">{p ? `${tb(p.bytes)} · ${p.objects.toLocaleString()}` : '—'}</span></td>
                   <td className="num">
                     {run?.finished_ts ? (

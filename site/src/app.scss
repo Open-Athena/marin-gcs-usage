@@ -1870,10 +1870,10 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   // green; dry runs keep their grey underneath. A failed job's last Batch
   // event folds into a "why" details so the row stays one line tall.
   .sweep-table.runs {
-    // Column 2 is `mode`, not the bands table's path: undo that column's
-    // 16em floor, and keep the job id whole (only ` by <name>` may wrap).
+    // Column 2 is the actor's avatar, not the bands table's path: undo that
+    // column's 16em floor; the job id and the mode stay whole.
     td:nth-child(2) { min-width: 0; overflow-wrap: normal; white-space: nowrap; }
-    td:first-child code { white-space: nowrap; }
+    td:first-child code, td.mode { white-space: nowrap; }
     tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
     tr.failed td { background: color-mix(in srgb, var(--mk-del) 9%, transparent); }
     tr.ok td { background: color-mix(in srgb, var(--mk-keep, #3fb950) 5%, transparent); }

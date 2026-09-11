@@ -33,8 +33,8 @@ export interface SweepJob {
   buckets: string[]
   /** The Batch region it runs in (its bucket's, for a one-bucket cut). */
   region: string
-  /** A one-bucket cut running away from its bucket (Batch has no location there). */
-  remote: boolean
+  /** The bucket's own region, for a one-bucket cut (null: several buckets). */
+  bucket_region: string | null
   plan: string
   last_event: string | null
   logs: string
@@ -79,7 +79,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
         date: vars.SWEEP_DATE ?? null,
         buckets,
         region: j.region,
-        remote: buckets.length === 1 && BUCKET_REGION[buckets[0]] !== j.region,
+        bucket_region: buckets.length === 1 ? BUCKET_REGION[buckets[0]] ?? null : null,
         plan: `gs://oa-gcs-usage-dvx/sweep/runs/${job_id}`,
         last_event: last?.description ?? null,
         logs: `https://console.cloud.google.com/logs/query;query=${encodeURIComponent(`labels.job_uid="${j.uid}"`)}?project=${GCP_PROJECT}`,
