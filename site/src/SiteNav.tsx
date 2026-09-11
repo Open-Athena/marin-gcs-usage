@@ -40,6 +40,9 @@ const CW_URL = 'https://cw-s3.oa.dev/'
 // anchored sections park just under it (`scroll-margin-top`) however many
 // rows the controls wrap onto.
 export const TOPBAR_VAR = '--topbar-h'
+/** The bar's current height (px) — where anchored sections park. */
+export const topbarH = (): number =>
+  parseFloat(getComputedStyle(document.documentElement).getPropertyValue(TOPBAR_VAR)) || 48
 
 export function SiteNav({ children, menu, crumbs }: {
   /** Page controls for the middle of the bar. */

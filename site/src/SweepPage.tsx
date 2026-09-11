@@ -1,16 +1,18 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { MdUndo } from 'react-icons/md'
 import { useActions } from 'use-kbd'
 import { useRowSelection, useRowSelectionKeys } from './rowSelection'
-import { SiteNav } from './SiteNav'
+import { SiteNav, topbarH } from './SiteNav'
+
+const SWEEP_SECTIONS = ['bands', 'dispatch', 'runs'] as const
 import { Tooltip } from './Tooltip'
 import { Avatar } from './Avatar'
 import { MultiSelect } from './MultiSelect'
 import { ghHandle, shortName, shortUserKey, UserChip } from './UserChip'
 import { useUnits } from './units'
-import { useSectionHash } from './sectionHash'
+import { useHashSpy } from './hashSpy'
 import { Busy, Skeleton } from './Busy'
 import { useDocTitle } from './title'
 
@@ -280,7 +282,7 @@ export function SweepPage() {
   const canWrite = apprQ.data?.spec.canWrite ?? false
   // `#bands` / `#dispatch` / `#dispatches` / `#runs` (and a run row's own id):
   // a reload or a shared link lands where the reader was.
-  useSectionHash(['bands', 'dispatch', 'runs'], [candsQ.data, jobsQ.data, runsQ.data])
+  useHashSpy({ ids: SWEEP_SECTIONS, hash: useLocation().hash, deps: [candsQ.data, jobsQ.data, runsQ.data], offset: topbarH })
   // Orientation text: open until the reader closes it once (per browser).
   const [introOpen, setIntroOpenRaw] = useState(() => { try { return localStorage.getItem('sweep-intro') !== 'closed' } catch { return true } })
   const setIntroOpen = (v: boolean) => { setIntroOpenRaw(v); try { localStorage.setItem('sweep-intro', v ? 'open' : 'closed') } catch { /* private mode */ } }

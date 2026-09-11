@@ -14,7 +14,7 @@ import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
-import { useSectionHash } from './sectionHash'
+import { useHashSpy } from './hashSpy'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
@@ -25,7 +25,7 @@ import { MARK_AXES, klcSplits, useMyUser } from './sweep'
 import type { MarkAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { MultiSelect } from './MultiSelect'
-import { SiteNav } from './SiteNav'
+import { SiteNav, topbarH } from './SiteNav'
 import type { MenuEntry } from './SiteNav'
 import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
@@ -442,7 +442,7 @@ function AppContent() {
   // Section `#hash` both ways (deep link in, scroll-spy out) — shared with
   // /sweep. Re-armed as the map, meta and scans land (sections mount off
   // different queries).
-  useSectionHash(SECTION_IDS, [mapTree, meta, scans], LEGACY_ANCHORS)
+  useHashSpy({ ids: SECTION_IDS, hash, deps: [mapTree, meta, scans], legacy: LEGACY_ANCHORS, offset: topbarH })
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { fmtBytes } = useUnits()
   // The treemap's drill path now lives in the URL *path* (below the store's own
