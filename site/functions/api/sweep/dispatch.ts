@@ -12,14 +12,13 @@
 // Auth to GCP: `_lib/gcp.ts` (the `GCP_SA_KEY` Pages secret — a dedicated SA
 // that can submit Batch jobs and act as the job SA, and nothing else).
 import { ADMIN_SCOPE, type Env as AuthEnv, json, requireScope } from '../../_lib/auth.js'
-import { BATCH_JOBS, BATCH_REGION, GCP_PROJECT, gcpToken } from '../../_lib/gcp.js'
+import { GCP_PROJECT, batchJobsUrl, batchRegionFor, gcpToken } from '../../_lib/gcp.js'
 
 interface Env extends AuthEnv {
   GCP_SA_KEY?: string
 }
 
 const PROJECT = GCP_PROJECT
-const REGION = BATCH_REGION
 const IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/cloud-run-source-deploy/gcs-usage-snapshot:latest`
 const JOB_SA = `gcs-usage-job@${PROJECT}.iam.gserviceaccount.com`
 const CF_ACCOUNT_ID = '74981a43be0de7712369306c7b19133d'
@@ -38,6 +37,7 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: 'date must be YYYY-MM-DD (the plan scan)' }, 400)
   const buckets = body?.buckets ?? []
   if (buckets.some(b => !/^marin-[a-z0-9-]+$/.test(b))) return json({ error: 'bad bucket name' }, 400)
+  const region = batchRegionFor(buckets)
 
   const ts = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15).replace('T', '-').toLowerCase()
   const jobId = `gcs-sweep-${mode}-${ts}z`
@@ -76,17 +76,17 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
     allocationPolicy: {
       instances: [{ policy: { machineType: 'n2-highmem-8', bootDisk: { type: 'pd-balanced', sizeGb: '100' } } }],
       serviceAccount: { email: JOB_SA },
-      location: { allowedLocations: [`regions/${REGION}`] },
+      location: { allowedLocations: [`regions/${region}`] },
     },
     logsPolicy: { destination: 'CLOUD_LOGGING' },
   }
 
   const token = await gcpToken(ctx.env.GCP_SA_KEY)
   const r = await fetch(
-    `${BATCH_JOBS}?job_id=${jobId}`,
+    `${batchJobsUrl(region)}?job_id=${jobId}`,
     { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(spec) },
   )
   const out = await r.json().catch(() => ({}))
   if (!r.ok) return json({ error: 'batch submit failed', status: r.status, detail: out }, 502)
-  return json({ job_id: jobId, mode, date, plan, by: gated.email })
+  return json({ job_id: jobId, mode, date, plan, region, by: gated.email })
 }

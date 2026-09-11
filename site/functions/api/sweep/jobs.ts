@@ -5,7 +5,7 @@
 // `dispatch.ts` (`batch.jobsEditor` covers list). Any signed-in viewer of the
 // console may read this; the payload holds no bucket data.
 import { type Env as AuthEnv, GCS_SCOPE, json, requireScope } from '../../_lib/auth.js'
-import { BATCH_JOBS, GCP_PROJECT, gcpToken } from '../../_lib/gcp.js'
+import { BATCH_REGIONS, GCP_PROJECT, batchJobsUrl, gcpToken } from '../../_lib/gcp.js'
 
 interface Env extends AuthEnv {
   GCP_SA_KEY?: string
@@ -31,6 +31,8 @@ export interface SweepJob {
   date: string | null
   /** The `-b` cut the job was dispatched with (empty = every bucket). */
   buckets: string[]
+  /** The Batch region it runs in (its bucket's, for a one-bucket cut). */
+  region: string
   plan: string
   last_event: string | null
   logs: string
@@ -41,11 +43,18 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   if (gated instanceof Response) return gated
   if (!ctx.env.GCP_SA_KEY) return json({ jobs: [], configured: false })
   const token = await gcpToken(ctx.env.GCP_SA_KEY)
-  const r = await fetch(`${BATCH_JOBS}?pageSize=100&orderBy=${encodeURIComponent('create_time desc')}`, {
-    headers: { authorization: `Bearer ${token}` },
-  })
-  if (!r.ok) return json({ error: 'batch list failed', status: r.status, detail: await r.text() }, 502)
-  const { jobs = [] } = (await r.json()) as { jobs?: BatchJob[] }
+  // Jobs live in their bucket's region: list every region a sweep can be
+  // dispatched to and merge, newest first.
+  const lists = await Promise.all(BATCH_REGIONS.map(async region => {
+    const r = await fetch(`${batchJobsUrl(region)}?pageSize=100&orderBy=${encodeURIComponent('create_time desc')}`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    if (!r.ok) throw new Error(`batch list ${region} failed: ${r.status} ${(await r.text()).slice(0, 200)}`)
+    const { jobs = [] } = (await r.json()) as { jobs?: BatchJob[] }
+    return jobs.map(j => ({ ...j, region }))
+  })).catch(e => e as Error)
+  if (lists instanceof Error) return json({ error: lists.message }, 502)
+  const jobs = lists.flat().sort((a, b) => (a.createTime < b.createTime ? 1 : -1))
   const out: SweepJob[] = jobs
     .filter(j => /\/jobs\/gcs-sweep-(dry|real)-/.test(j.name))
     .slice(0, 20)
@@ -67,6 +76,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
         by: vars.USER ?? null,
         date: vars.SWEEP_DATE ?? null,
         buckets,
+        region: j.region,
         plan: `gs://oa-gcs-usage-dvx/sweep/runs/${job_id}`,
         last_event: last?.description ?? null,
         logs: `https://console.cloud.google.com/logs/query;query=${encodeURIComponent(`labels.job_uid="${j.uid}"`)}?project=${GCP_PROJECT}`,

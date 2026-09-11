@@ -153,6 +153,7 @@ def execute_plan(
     min_soft_delete_days: int = 7,
     client=None,
     reclassify=None,  # (bucket, dir, approved) -> category at the CURRENT ledger head; non-eligible dirs are skipped (ledger drift). `approved` is the plan's approved bands — without them, band-approved dirs would all reclassify as deferred and be dropped.
+    stop: threading.Event | None = None,  # set → roots not yet started are skipped; the log and summary still land (`interrupted`)
 ) -> dict:
     import fsspec
     import pyarrow as pa
@@ -241,6 +242,7 @@ def execute_plan(
         counts: Counter = Counter()
         drift_dirs: list[dict] = []
         failed_dirs: list[dict] = []
+        roots_skipped = 0
 
         def _lower_bound(key: str) -> int:
             # first sorted position whose name >= key, by binary search through
@@ -287,6 +289,8 @@ def execute_plan(
         roots = list_roots(dirs_all, approved, bucket)
 
         def do_root(root: str):
+            if stop is not None and stop.is_set():
+                return None  # asked to stop: leave this root for a re-run
             prefix = f"{root}/" if root else ""
             want = root_rows(root)
             w = next(want, None)
@@ -402,6 +406,9 @@ def execute_plan(
         try:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 for done in pool.map(do_root, roots):
+                    if done is None:
+                        roots_skipped += 1
+                        continue
                     for dn, out, drifted, dbytes in done:
                         band = bands.setdefault(band_of(bucket, dn), Counter())
                         if drifted:
@@ -434,12 +441,14 @@ def execute_plan(
             "ledger_drift_dirs": ledger_drift,
             "failed_dirs": failed_dirs,
             "bands": {b: dict(c) for b, c in bands.items()},
+            **({"interrupted": {"roots_skipped": roots_skipped, "roots": len(roots)}} if roots_skipped else {}),
         }
         err(
             f"  {bucket}: {counts['delete']:,} {mode} ({total_deleted_b / 1e12:.2f} TB), "
             f"{counts['skipped_gone']:,} gone, {counts['skipped_overwritten']:,} overwritten, "
             f"{len(drift_dirs):,} drifted dir(s){' (skipped)' if drift == 'skip' else ''}"
             + (f", {counts['delete_failed']:,} deletes UNANSWERED in {len(failed_dirs):,} dir(s)" if failed_dirs else "")
+            + (f" — STOPPED with {roots_skipped:,} of {len(roots):,} roots not started" if roots_skipped else "")
         )
 
     if dpool is not None:
@@ -448,6 +457,30 @@ def execute_plan(
         json.dump(summary, fh, indent=2)
     summary["_plan"] = plan
     return summary
+
+
+def stop_file_watch(plan_dir: str, stop: threading.Event, every: float = 10.0) -> threading.Thread:
+    """Set `stop` once `PLAN_DIR/STOP` exists (`sweep stop`); a daemon thread
+    polling every `every` seconds."""
+    import fsspec
+
+    fs, ppath = fsspec.core.url_to_fs(plan_dir)
+    flag = f"{ppath}/STOP"
+
+    def poll() -> None:
+        while not stop.is_set():
+            try:
+                if fs.exists(flag):
+                    err(f"STOP file present ({plan_dir}/STOP) — finishing started roots, skipping the rest")
+                    stop.set()
+                    return
+            except Exception as e:  # a flaky HEAD must not end the run
+                err(f"WARN: STOP poll failed: {e}")
+            stop.wait(every)
+
+    t = threading.Thread(target=poll, name="stop-file-watch", daemon=True)
+    t.start()
+    return t
 
 
 def reconstruct_deleted_log(

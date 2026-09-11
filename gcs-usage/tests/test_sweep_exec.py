@@ -271,6 +271,23 @@ def test_log_keeps_finished_roots_when_another_root_raises(tmp_path):
     assert _decisions(plan, "would-delete") == [("a/x", "delete", 111), ("a/y", "skipped_gone", 0), ("a/z", "skipped_overwritten", 333)]
 
 
+def test_stop_leaves_unstarted_roots_for_a_rerun(tmp_path):
+    # `sweep stop` (or SIGTERM) mid-run: roots already listing finish and log;
+    # the rest are skipped and reported, so a re-run picks them up.
+    import threading
+    plan = _plan_dir(tmp_path)
+    client = _client()
+    stop = threading.Event()
+    listed = client.list_blobs
+    def list_then_stop(bucket, prefix="", **kw):
+        stop.set()  # asked to stop while the first root is listing
+        return listed(bucket, prefix, **kw)
+    client.list_blobs = list_then_stop
+    s = execute_plan(str(plan), client=client, workers=1, stop=stop)
+    assert s["buckets"]["b1"]["interrupted"] == {"roots_skipped": 1, "roots": 2}
+    assert _decisions(plan, "would-delete") == [("a/x", "delete", 111), ("a/y", "skipped_gone", 0), ("a/z", "skipped_overwritten", 333)]
+
+
 def test_reconstruct_deleted_log_from_the_soft_deleted_listing(tmp_path):
     # A real run that died before writing its log (2026-09-11: 241 deletes, 0
     # rows): the bucket's soft-deleted objects in the run's window, matched to

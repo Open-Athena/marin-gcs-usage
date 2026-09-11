@@ -1164,6 +1164,15 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, delete_workers: int
             err(f"recorded deletion run {run_id} (in progress)")
         except Exception as e:  # recording must never block the run
             err(f"WARN: deletion-run start record failed: {e}")
+    # A clean stop: `sweep stop PLAN` drops PLAN/STOP (polled every 10 s), or
+    # SIGTERM — roots not yet started are left for a re-run, everything done
+    # is logged and recorded, and the job ends red (exit 130).
+    import signal
+    import threading
+    from .sweep_exec import stop_file_watch
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    stop_file_watch(plan_dir, stop)
     summary = execute_plan(
         plan_dir,
         for_real=for_real,
@@ -1172,6 +1181,7 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, delete_workers: int
         workers=workers,
         delete_workers=delete_workers,
         reclassify=reclassify,
+        stop=stop,
     )
     finished = int(dt.datetime.now(dt.timezone.utc).timestamp())
     total = sum(b.get("delete_bytes", 0) for b in summary["buckets"].values())
@@ -1187,6 +1197,12 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, delete_workers: int
             err(f"recorded deletion run {run_id}")
         except Exception as e:  # recording must never mask a completed run
             err(f"WARN: deletion-run record failed: {e}")
+    if stop.is_set():
+        skipped = sum(v.get("interrupted", {}).get("roots_skipped", 0) for v in summary["buckets"].values())
+        err(f"STOPPED: {skipped:,} listing root(s) not started — re-run the plan to finish (done keys resolve as skipped_gone)")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(130)
     if failed:
         # Logged and recorded above; the job still ends red so nobody reads
         # "succeeded" over deletes GCS never answered for.
@@ -1195,6 +1211,19 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, delete_workers: int
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(2)
+    _hard_exit()
+
+
+@sweep.command("stop")
+@argument("plan_dir")
+def sweep_stop(plan_dir: str) -> None:
+    """Ask a running `sweep execute` on PLAN_DIR to stop cleanly: drops
+    PLAN_DIR/STOP, which the executor polls every 10 s — roots not yet
+    started are left for a re-run, everything done is logged and recorded."""
+    import fsspec
+    with fsspec.open(f"{plan_dir}/STOP", "w") as fh:
+        fh.write(dt.datetime.now(dt.timezone.utc).isoformat())
+    err(f"wrote {plan_dir}/STOP")
     _hard_exit()
 
 
