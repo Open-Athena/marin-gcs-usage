@@ -113,6 +113,13 @@ Three east5-only real dispatches failed in a row, each one layer deeper, before 
 
 Listing roots are the unit of parallelism (one thread each, `-w`), and they were run alphabetically. Central2 fell from 1,750 to 400 deletes/s over its last two hours: the roots left at the end were a few huge ones, each a single-threaded listing the delete pool waited on. Now: roots run **largest first** (object counts come from the sorted manifest index, a bisection each), and a root over `max_root_objects` (250k) **splits into its children**, repeatedly, unless a manifest object sits directly in it (splitting would skip it). Ryan's framing: a task queue with uneven tasks should be descending by size.
 
+### Beyond roots (not built; on record 2026-09-11)
+
+A root is one sequential listing (GCS pages by continuation token), so a huge *flat* directory can't be split by children and pins a thread. Not the case in this data — largest dirs: 3,335 objects (central2), 365 (eu-west4); p99 a few hundred — and with the child split a root is ≤ 250k objects, ~4 min at a colocated ~1,000 keys/s. If a future round shows a real tail, in order:
+
+1. **Key-range shards.** The manifest is sorted; cut any prefix into equal-sized name ranges and list them in parallel with `startOffset`/`endOffset`. Uniform work units, no tail. Drift ("a dir gained keys → skip the dir") must then be aggregated per directory across shards before that dir's deletes fire. ~a day with tests + rehearsal.
+2. **No re-list.** Capture generations in the daily listing and delete straight from the manifest with `if_generation_match`; drift needs a cheaper probe. Belongs with colocating the daily listing job per bucket.
+
 ## Non-goals (v1)
 
 - User self-serve deletion (v2, above). — Regex mark patterns (don't exist). — Ledger tombstoning (follow-up). — CW/S3 sweep (separate estate, no marks yet).
