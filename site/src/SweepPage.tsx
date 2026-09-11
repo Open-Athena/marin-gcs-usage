@@ -643,7 +643,7 @@ export function SweepPage() {
                 <tr key={j.job_id} className={j.state === 'FAILED' ? 'failed' : live ? 'live' : ''}>
                   <td><code>{j.job_id}</code></td>
                   <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
-                  <td className="nb">{shortBuckets(j.buckets)}</td>
+                  <td><span className="nb">{shortBuckets(j.buckets)}</span></td>
                   <td>
                     <span className={j.state === 'SUCCEEDED' ? 'ok' : j.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'}>{j.state.toLowerCase()}</span>
                     {run && <span className="dim nb"> · <a href={`#run-${run.run_id.replace('/', '-')}`}>run recorded ↓</a></span>}
@@ -675,7 +675,7 @@ export function SweepPage() {
               <tr key={r.run_id} id={`run-${r.run_id.replace('/', '-')}`}>
                 <td><code>{r.run_id}</code> <span className="dim">by {r.actor}</span></td>
                 <td>{r.mode === 'real' ? <b className="real">real</b> : 'dry-run'}</td>
-                <td className="nb">{shortBuckets(r.buckets?.split(','))}</td>
+                <td><span className="nb">{shortBuckets(r.buckets?.split(','))}</span></td>
                 <td>{when(r.started_ts)}</td>
                 <td className="num">{tb(r.deleted_bytes)} · {r.deleted_objects.toLocaleString()}</td>
                 <td className="num">{r.skipped_gone.toLocaleString()}</td>
