@@ -181,6 +181,7 @@ export const TABLES: TableSpec[] = [
       { name: 'undo_deadline', type: 'int' },
       { name: 'undo_state', type: 'text' },
       { name: 'log_dir', type: 'text' },
+      { name: 'buckets', type: 'text' },
     ],
     readScope: 'gcs',
     writeScope: null,
