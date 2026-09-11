@@ -109,6 +109,10 @@ Three east5-only real dispatches failed in a row, each one layer deeper, before 
 - **Stop from the console.** `POST /api/sweep/stop {job_id}` writes `sweep/runs/<job>/STOP` with the dispatch route's identity; the executor's watcher does the rest. A `stop…` button sits on live rows for admins.
 - **One runs table.** A dispatch is a run's pre-record state, so `/sweep` shows one row per run: the Batch job (state, region, buckets, elapsed, logs link) joined to the D1 run (totals, undo window) by the job id in the run's log dir; live rows carry a progress bar; D1 runs without a job (CLI, or older than Batch's list) still list.
 
+## Root scheduling (2026-09-11, from central2's tail)
+
+Listing roots are the unit of parallelism (one thread each, `-w`), and they were run alphabetically. Central2 fell from 1,750 to 400 deletes/s over its last two hours: the roots left at the end were a few huge ones, each a single-threaded listing the delete pool waited on. Now: roots run **largest first** (object counts come from the sorted manifest index, a bisection each), and a root over `max_root_objects` (250k) **splits into its children**, repeatedly, unless a manifest object sits directly in it (splitting would skip it). Ryan's framing: a task queue with uneven tasks should be descending by size.
+
 ## Non-goals (v1)
 
 - User self-serve deletion (v2, above). — Regex mark patterns (don't exist). — Ledger tombstoning (follow-up). — CW/S3 sweep (separate estate, no marks yet).
