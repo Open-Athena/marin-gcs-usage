@@ -197,13 +197,31 @@ def test_delete_batch_settles_each_item_and_retries_transients(monkeypatch):
     monkeypatch.setattr(se, "_sleep", sleeps.append)
     client = FakeClient(blobs={})
     blobs = [FakeBlob(n, 1, g, T0) for n, g in (("a/1", 11), ("a/2", 22), ("a/3", 33), ("a/4", 44))]
-    # attempt 1: the request itself fails (the 2026-09-11 503); attempt 2: one
-    # item still 503; attempt 3: it lands.
+    # attempt 1: the request itself fails (the 2026-09-11 503) — the server may
+    # have applied any of them, so a/2's 404 on attempt 2 is our delete;
+    # attempt 2: one item still 503; attempt 3: it lands.
     client.batch_script = [ServiceUnavailable("server(s) are not responding"), [204, 404, 412, 503], [204]]
     out = se.delete_batch(client, client.handle, blobs)
-    assert [(b.name, d) for b, d in out] == [("a/1", "delete"), ("a/2", "skipped_gone"), ("a/3", "skipped_overwritten"), ("a/4", "delete")]
+    assert [(b.name, d) for b, d in out] == [("a/1", "delete"), ("a/2", "delete"), ("a/3", "skipped_overwritten"), ("a/4", "delete")]
     assert client.handle.deletes == [("a/1", 11), ("a/2", 22), ("a/3", 33), ("a/4", 44)] * 2 + [("a/4", 44)]
     assert len(sleeps) == 2
+
+
+def test_delete_batch_owns_a_404_after_an_unanswered_attempt(monkeypatch):
+    # Run 4 on east5 (2026-09-11): the request failed after the server had
+    # applied two deletes; the retry saw 404 — ours, not "already gone".
+    from google.api_core.exceptions import ServiceUnavailable
+    import gcs_usage.sweep_exec as se
+    monkeypatch.setattr(se, "_sleep", lambda _s: None)
+    client = FakeClient(blobs={})
+    blobs = [FakeBlob("a/1", 1, 11, T0), FakeBlob("a/2", 1, 22, T0)]
+    client.batch_script = [ServiceUnavailable("lost reply"), [404, 204]]
+    out = se.delete_batch(client, client.handle, blobs)
+    assert [(b.name, d) for b, d in out] == [("a/1", "delete"), ("a/2", "delete")]
+    # but a 404 after the server answered "not applied" (per-item 503) is someone else's delete
+    client.batch_script = [[503], [404]]
+    out = se.delete_batch(client, client.handle, [FakeBlob("a/3", 1, 33, T0)])
+    assert [(b.name, d) for b, d in out] == [("a/3", "skipped_gone")]
 
 
 def test_delete_batch_gives_up_as_delete_failed(monkeypatch):

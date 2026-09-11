@@ -74,6 +74,12 @@ def delete_batch(client, bkt, blobs: list) -> list[tuple[object, str]]:
 
     remaining = list(blobs)
     settled: dict[int, str] = {}
+    # Items whose last attempt got no per-item answer: the server may have
+    # applied the delete and lost the reply, so a 404 on the retry is ours
+    # (run 4 on east5, 2026-09-11: two deletes landed at 06:19–06:20 at their
+    # manifest generation and came back "gone"). A 404 after a per-item
+    # transient (the server answered: not applied) is someone else's.
+    unanswered: set[int] = set()
     for attempt in range(DELETE_ATTEMPTS):
         responses = None
         try:
@@ -96,11 +102,17 @@ def delete_batch(client, bkt, blobs: list) -> list[tuple[object, str]]:
                 raise RuntimeError(f"delete {blob.name}@{blob.generation}: unexpected HTTP {code}")
             if decision is None:
                 retry.append(blob)
+                unanswered.discard(id(blob))
             else:
-                settled[id(blob)] = decision
-        remaining = retry if responses is not None else remaining
+                settled[id(blob)] = "delete" if decision == "skipped_gone" and id(blob) in unanswered else decision
+                unanswered.discard(id(blob))
+        if responses is None:
+            unanswered.update(id(b) for b in remaining)
+        else:
+            remaining = retry
         if not remaining:
             break
+        err(f"delete batch: {len(remaining)} of {len(blobs)} unsettled after attempt {attempt + 1}/{DELETE_ATTEMPTS} — retrying")
         _sleep(min(DELETE_BACKOFF_CAP, 2.0 ** attempt) + random.uniform(0, 1))
     return [(blob, settled.get(id(blob), "delete_failed")) for blob in blobs]
 
