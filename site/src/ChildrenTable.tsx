@@ -88,11 +88,6 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   }, [kids])
   const ageInk = (d: number) => dateColor(dMax > dMin ? (d - dMin) / (dMax - dMin) : 1)
 
-  if (!kids.length) {
-    return states
-      ? <section className="children-tbl"><p className="tab-note">No prefix under this view is {[...states].join(' / ')}.</p></section>
-      : null
-  }
   const th = (k: SortKey, label: string, num = true) => (
     <th
       className={(num ? 'num ' : '') + 'sortable' + (sort.k === k ? ' on' : '')}
@@ -133,6 +128,14 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
     return { k, synthetic, kidSegs, uri, shares: ownerShares(k), cl, mk, totals, ckpt: !synthetic && looksCkpt(k, uri), si: selectable.indexOf(k) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [shown, path, scheme, markIdx, klcIdx, selectable])
+  // Every hook above runs on every render: an empty page (the mark axis or
+  // a drill can leave no children) must not shorten the hook list, or React
+  // throws "Rendered fewer hooks than expected" on the way in.
+  if (!kids.length) {
+    return states
+      ? <section className="children-tbl"><p className="tab-note">No prefix under this view is {[...states].join(' / ')}.</p></section>
+      : null
+  }
   const selBar = showActions && sel.selected.size > 0 && (
     <span className="sel-bar">
       <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}
