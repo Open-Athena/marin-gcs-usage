@@ -1,4 +1,4 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { MdLayers } from 'react-icons/md'
@@ -12,6 +12,7 @@ import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
+import { Busy } from './Busy'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
@@ -351,8 +352,8 @@ function AppContent() {
   // top-level children (branches arrive without `c`, already drillable) from
   // a single depth-band read. It stands in until the full tree lands; because
   // the top level matches, the fill-in adds children under tiles that don't
-  // move. `keepPreviousData` above outranks it on later loads, so a scope
-  // change never downgrades a held full tree to a coarse one.
+  // move. The whole held tree (`mapTree`, below) outranks it on later loads,
+  // so a scope change never downgrades a held full tree to a coarse one.
   const coarseQs = useQueries({
     queries: subtreePaths.map((p, i) => ({
       queryKey: ['subtree', asof, p, canW, scopeQs, 'depth1'],
@@ -423,12 +424,29 @@ function AppContent() {
     return t
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseTree, subtreePaths, subStamp])
+  // Hold the last tree that rendered while the next one loads — whole, so it
+  // is self-consistent (it already laid out fine). The map never flashes to
+  // nothing across a scope, scan, or drill change, and the page below never
+  // reflows; at worst `mapPath` truncates the new drill to an ancestor this
+  // tree still has, until the new tree (depth-1 first, then full) replaces it.
+  // Everything derived for the drawn map (`klcIdx`, `dateRange`, `catOrder`,
+  // the rules section) follows `mapTree`, not `tree`, so a hold doesn't
+  // empty the decorations under a map that is still showing.
+  const lastTree = useRef<TreeNode | null>(null)
+  if (tree) lastTree.current = tree
+  const mapTree = tree ?? lastTree.current
+  // What the map shows vs. what the page asked for: a held previous tree
+  // (`mapStale` — dimmed, with a centered marker), or the asked-for tree with
+  // a fetch still in flight (`mapBusy` — the full tree filling in behind the
+  // depth-1 one, or a refresh; a corner marker, nothing dimmed).
+  const mapStale = !tree && !!lastTree.current
+  const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
 
-  // keep_last_ckpt → concrete keep/sweep split, resolved against the loaded
+  // keep_last_ckpt → concrete keep/sweep split, resolved against the drawn
   // tree (state cells, stripes, and the state rollup all decompose through it).
   const klcIdx = useMemo(
-    () => (tree && markIdx.count ? klcSplits(tree, markIdx.keeps) : undefined),
-    [tree, markIdx],
+    () => (mapTree && markIdx.count ? klcSplits(mapTree, markIdx.keeps) : undefined),
+    [mapTree, markIdx],
   )
   // The marks feed filters its (small, client-held) rows by the same name
   // query; the map's filtering is the server's.
@@ -560,14 +578,6 @@ function AppContent() {
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
   const lensScoped = markAxes != null || ownerMode !== 'all' || classSet != null
-  // Hold the last tree that rendered while the next one loads — whole, so it
-  // is self-consistent (it already laid out fine). The map never flashes to
-  // nothing across a scope, scan, or drill change, and the page below never
-  // reflows; at worst `mapPath` truncates the new drill to an ancestor this
-  // tree still has, until the new tree (depth-1 first, then full) replaces it.
-  const lastTree = useRef<TreeNode | null>(null)
-  if (tree) lastTree.current = tree
-  const mapTree = tree ?? lastTree.current
   // Diff sides: the drilled subtree at each endpoint, scoped like the map.
   // The diff is read server-side (`/api/diff`): both scans' index tiers at
   // one shared byte floor, point lookups for names that crossed it, the
@@ -575,6 +585,10 @@ function AppContent() {
   const diffQ = useQuery<DiffData, Error>({
     queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs],
     enabled: !!asof && !!diffPrev,
+    // A new pair of scans (or scope) keeps the last diff drawn, dimmed, until
+    // the new one lands — the section holds its height instead of collapsing
+    // for the 10–20 s an alignment can take.
+    placeholderData: keepPreviousData,
     staleTime: markAxes ? 30_000 : Infinity,
     retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
     retryDelay: (n: number) => 400 * 2 ** n,
@@ -589,6 +603,10 @@ function AppContent() {
   })
   const diff: DiffData | null = diffQ.data ?? null
   const diffErr = diffQ.error
+  // The shown diff is the previous pair's (placeholder) or the pair is still
+  // aligning: its numbers describe another pair, so the subtitle says
+  // "aligning" instead, and the drawn treemap dims under a marker.
+  const diffStale = diffQ.isPlaceholderData || (!diff && diffQ.isFetching)
   // One-line description of the page scope, for the section subtitles:
   // where, then whose, then which mark states, then which names.
   const scopeParts: string[] = [
@@ -619,6 +637,9 @@ function AppContent() {
     if (path.length === 1 && mapTree.c?.length === 1) return [mapTree, mapTree.c[0]]
     return path
   }, [mapTree, drillPath])
+  // The table's path segments, stable while `mapPath` is (a fresh array per
+  // render defeated every memo keyed on it).
+  const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
   const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
   // Worklist rows / children table → drill the map to a prefix and show it.
   const openPath = (segs: string[]) => {
@@ -709,7 +730,7 @@ function AppContent() {
   })
 
   const dateRange = useMemo((): DateRange | null => {
-    if (!tree) return null
+    if (!mapTree) return null
     let min = Infinity
     let max = -Infinity
     const walk = (n: TreeNode) => {
@@ -719,20 +740,20 @@ function AppContent() {
       }
       n.c?.forEach(walk)
     }
-    walk(tree)
+    walk(mapTree)
     return min < max ? { min, max } : null
-  }, [tree])
+  }, [mapTree])
 
   const catOrder = useMemo(() => {
-    if (!tree) return []
+    if (!mapTree) return []
     const catBytes = new Map<string, number>()
-    for (const bucket of tree.c ?? [])
+    for (const bucket of mapTree.c ?? [])
       for (const d of bucket.c ?? []) {
         const k = d.n.startsWith('(') ? '(other)' : d.n
         catBytes.set(k, (catBytes.get(k) ?? 0) + d.b)
       }
     return [...catBytes.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k).filter(k => k !== '(other)')
-  }, [tree])
+  }, [mapTree])
 
   // $ figures are GCS list prices per storage class, so they're only meaningful
   // for stores that have those classes — a CoreWeave bucket priced at GCS rates
@@ -980,7 +1001,11 @@ function AppContent() {
               be a branch whose kids fell below the parent's pixel budget, and
               a zero-height canvas sends the core's squarify into a
               non-terminating loop on degenerate aspect ratios once they land. */}
-          <div id="tree-map" className={mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && (mapPath[mapPath.length - 1].o <= 1 || subtreeQs[subtreeQs.length - 1]?.data) ? 'leaf' : undefined}><Treemap
+          <div id="tree-map" className={[
+            'busy-host',
+            mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && (mapPath[mapPath.length - 1].o <= 1 || subtreeQs[subtreeQs.length - 1]?.data) ? 'leaf' : '',
+            mapStale ? 'stale' : '',
+          ].filter(Boolean).join(' ')} aria-busy={mapBusy || undefined}><Treemap
             key={store.key}
             ownerLensed={ownerMode === 'user'}
             root={mapTree}
@@ -1012,7 +1037,7 @@ function AppContent() {
             }
             path={mapPath}
             onPathChange={onMapPath}
-          /></div>
+          />{mapStale ? <Busy label="loading view…" /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
           {/* A drilled directory with nothing drawable under it: only objects
               (not in the index yet — specs/view-serving.md §3), or directories
               under this view's floor. Say so rather than show a blank canvas. */}
@@ -1043,7 +1068,7 @@ function AppContent() {
           {mapPath && (
             <div id="tbl"><ChildrenTable
               node={mapPath[mapPath.length - 1]}
-              segs={mapPath.slice(1).map(n => n.n)}
+              segs={tblSegs}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
               klcIdx={markMode ? klcIdx : undefined}
@@ -1110,7 +1135,7 @@ function AppContent() {
                 ))}
               </span>
             )}
-            {diff ? (
+            {diff && !diffStale ? (
               <>
                 {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
                   {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
@@ -1133,7 +1158,7 @@ function AppContent() {
                   </>
                 )}
               </>
-            ) : diffErr ? (
+            ) : diffErr && !diffStale ? (
               <span className="tab-note">
                 {' '}· {diffErr.message.startsWith('404')
                   ? <><code>{graftPath || '/'}</code> is in neither scan’s index — pick other scans or drill up.</>
@@ -1146,8 +1171,18 @@ function AppContent() {
               <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
             )}
           </p>
-          {diff && diff.rows.length > 0 && <DiffTreemap data={diff} label={scopeDesc} />}
-          {diff && diff.rows.length === 0 && <p className="hint">No changes in this scope between the two scans.</p>}
+          {/* The slot keeps the treemap's height through a reload: the last
+              diff dims under the marker, or (first load) a skeleton stands in. */}
+          {diff && diff.rows.length > 0 && (
+            <div className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'}>
+              <DiffTreemap data={diff} label={scopeDesc} />
+              {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
+            </div>
+          )}
+          {diff && diff.rows.length === 0 && !diffStale && <p className="hint">No changes in this scope between the two scans.</p>}
+          {!diff && diffStale && (
+            <div className="diff-tm tm-skel busy-host stale" aria-busy="true"><Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} /></div>
+          )}
         </section>
       )}
 
@@ -1209,7 +1244,7 @@ function AppContent() {
 
       {/* Static attribution reference — how ownership is inferred + the rule tables.
           Reference material, so it sits last rather than sandwiched mid-page. */}
-      {hasAttr && tree && <AttributionRules tree={tree} />}
+      {hasAttr && mapTree && <AttributionRules tree={mapTree} />}
 
       <SiteKbd
         placeholder="Users, color modes, scans, pages…"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { stringParam, useUrlState } from 'use-prms'
 import { DustHatch, Treemap as DtTreemap } from '@disk-tree/react'
@@ -549,6 +549,17 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     return <>{dust}{mark}</>
   }
 
+  // The client-side state walk below runs from a render callback (no hook
+  // memo possible); cache its last answer by inputs so a hover or outline
+  // re-render doesn't re-walk the drilled subtree.
+  const stateWalk = useRef<{ node: TreeNode; uri: string; idx: MarkIndex; klc: KlcIndex | undefined; val: Record<MarkState, number> } | null>(null)
+  const walkState = (node: TreeNode, uri: string, idx: MarkIndex, klc: KlcIndex | undefined): Record<MarkState, number> => {
+    const c = stateWalk.current
+    if (c && c.node === node && c.uri === uri && c.idx === idx && c.klc === klc) return c.val
+    const val = subtreeStateTotals(node, uri, idx, klc)
+    stateWalk.current = { node, uri, idx, klc, val }
+    return val
+  }
   const renderRollup = (node: TreeNode, path: TreeNode[]) => {
     if (redact) return null
     // The rollup follows the ACTIVE color axis: the owner breakdown renders
@@ -566,7 +577,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     // walk over the loaded (floored) tree is the instant fallback while the
     // exact fetch is in flight, marked ≈.
     const exact = stateWanted && viewMarkAxes ? viewMarkAxes : null
-    const state = stateWanted ? (exact ?? subtreeStateTotals(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
+    const state = stateWanted ? (exact ?? walkState(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
     const stateRows = state
       ? ([
           ['keep', state.keep, ACTION_COLORS.keep],

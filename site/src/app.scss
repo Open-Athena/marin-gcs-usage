@@ -767,6 +767,26 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   background: var(--panel); animation: tm-pulse 1.4s ease-in-out infinite;
 }
 @keyframes tm-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.9; } }
+// A widget that keeps its last content while the next loads (`Busy`): the
+// host dims under a centered marker when what it shows is stale, or carries
+// a corner pill when the content is current and a fill-in/refresh is pending.
+.busy-host { position: relative; }
+.busy-host.stale > :not(.busy-overlay) { opacity: 0.45; transition: opacity 0.15s; }
+.busy-overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  pointer-events: none; z-index: 2;
+  &.corner { align-items: flex-start; justify-content: flex-end; padding: 8px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; border-radius: 999px;
+    background: var(--panel); color: var(--ink-2); font-size: 12.5px; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+  }
+  .spin {
+    width: 11px; height: 11px; border-radius: 50%; flex: none;
+    border: 2px solid var(--ink-3); border-top-color: transparent; animation: busy-spin 0.8s linear infinite;
+  }
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+.diff-slot { min-height: 380px; }
 // The full value behind a clipped table cell (/files parquet viewer, via
 // file-tree's `elide.tooltip`): a long GCS path, wrapped so it fits the panel.
 .tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
