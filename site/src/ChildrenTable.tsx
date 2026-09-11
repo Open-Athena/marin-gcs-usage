@@ -8,7 +8,7 @@ import { ACTION_COLORS, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip } from './MarkCon
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { OwnerBar, ownerShares } from './OwnerBar'
-import { markAllowed, looksCkpt, subtreeStateTotals } from './sweep'
+import { looksCkpt, subtreeStateTotals } from './sweep'
 import type { MarkState, MarkAxis, KlcIndex } from './sweep'
 import { Tooltip } from './Tooltip'
 import { elideMid } from './CopyName'
@@ -60,10 +60,12 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
 
   const kids = useMemo(() => {
     let ks = (node.c ?? []).slice()
-    // Mark axis: keep only real children whose effective decision is in it.
-    if (states && markIdx) {
-      ks = ks.filter(k => !k.n.startsWith('(') && markAllowed(markIdx.resolve(scheme + [...segs, k.n].join('/')).mark?.action ?? 'unmarked', states))
-    }
+    // Mark axis: the server already cut every node's bytes to the selected
+    // states (`/api/subtree?k=`), so a child with bytes left holds some — by
+    // its own decision or a deeper mark's. Judging children by their own
+    // effective decision here was wrong: the marks that keep bytes alive
+    // under a swept band usually sit below the pixel-budgeted tree.
+    if (states) ks = ks.filter(k => !k.n.startsWith('(') && k.b > 0)
     const dir = sort.asc ? 1 : -1
     const val = (n: TreeNode): number | string =>
       sort.k === 'n' ? n.n
@@ -76,7 +78,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
       const vb = val(b)
       return (typeof va === 'string' ? (va as string).localeCompare(vb as string) : (va as number) - (vb as number)) * dir
     })
-  }, [node, sort, states, markIdx, scheme, segs])
+  }, [node, sort, states])
   // A new listing (drill, sort, lens) starts on page 1.
   useEffect(() => setPage(0), [node, sort, states])
 
