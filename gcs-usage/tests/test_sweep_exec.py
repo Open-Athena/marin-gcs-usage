@@ -27,9 +27,15 @@ class FakeBlob:
 @dataclass
 class FakeBucketHandle:
     deletes: list = field(default_factory=list)
+    # What the job identity holds on the bucket (GCS answers testIamPermissions
+    # with the granted subset of what was asked).
+    perms: set = field(default_factory=lambda: {"storage.buckets.get", "storage.objects.delete", "storage.objects.restore"})
 
     def delete_blob(self, name, if_generation_match=None):
         self.deletes.append((name, if_generation_match))
+
+    def test_iam_permissions(self, permissions):
+        return [p for p in permissions if p in self.perms]
 
 
 @dataclass
@@ -135,6 +141,35 @@ def test_for_real_refuses_without_soft_delete(tmp_path):
     with pytest.raises(SystemExit) as ei:
         execute_plan(str(plan), for_real=True, client=client)
     assert "soft delete retention 0d < required 7d" in str(ei.value)
+
+
+def test_for_real_refuses_without_real_permissions(tmp_path):
+    # The 2026-09-11 real run died on the soft-delete guard's bucket GET: the job
+    # identity had objectViewer only. Every real-run permission is checked up
+    # front, before any listing, so the refusal names the whole gap at once.
+    import pytest
+    plan = _plan_dir(tmp_path)
+    client = _client()
+    client.handle.perms = {"storage.objects.list", "storage.objects.get"}
+    with pytest.raises(SystemExit) as ei:
+        execute_plan(str(plan), for_real=True, client=client)
+    assert str(ei.value) == (
+        "b1: the job identity lacks storage.buckets.get, storage.objects.delete, storage.objects.restore"
+        " — refusing --for-real (grant roles/storage.objectUser + roles/storage.legacyBucketReader on the bucket)"
+    )
+    assert client.listed == []
+    assert client.handle.deletes == []
+
+
+def test_dry_run_reports_missing_real_permissions(tmp_path):
+    # A dry run is the rehearsal: it lists what a real run would be refused for.
+    plan = _plan_dir(tmp_path)
+    client = _client()
+    client.handle.perms = {"storage.buckets.get", "storage.objects.list"}
+    s = execute_plan(str(plan), client=client)
+    assert s["buckets"]["b1"]["missing_perms"] == ["storage.objects.delete", "storage.objects.restore"]
+    ok = execute_plan(str(plan), client=_client())
+    assert ok["buckets"]["b1"]["missing_perms"] == []
 
 
 def test_ledger_drift_reclassify_drops_dirs(tmp_path):

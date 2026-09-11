@@ -102,6 +102,15 @@ def execute_plan(
         mpath = f"{ppath}/manifest/{bucket}.parquet"
         if not fs.exists(mpath):
             raise SystemExit(f"plan says {bucket} has eligible keys but {mpath} is missing")
+        missing_perms = _missing_perms(client.bucket(bucket))
+        if missing_perms:
+            msg = (
+                f"{bucket}: the job identity lacks {', '.join(missing_perms)}"
+                " — refusing --for-real (grant roles/storage.objectUser + roles/storage.legacyBucketReader on the bucket)"
+            )
+            if for_real:
+                raise SystemExit(msg)
+            err(f"WARNING {msg.replace('refusing', 'a real run would be refused:')}")
         # The manifest stays an Arrow table sorted by name (35M keys on the
         # biggest bucket: ~8 GB as Arrow strings, vs ~25 GB as two pandas
         # copies), and each listing root takes its contiguous slice by binary
@@ -293,6 +302,7 @@ def execute_plan(
                     flush_log(writer)
             flush_log(writer, final=True)
         summary["buckets"][bucket] = {
+            "missing_perms": missing_perms,
             "decisions": dict(counts),
             "delete_bytes": total_deleted_b,
             "drift_dirs": drift_dirs,
@@ -542,6 +552,20 @@ def record_run(
             acct, tok,
         )
     return run_id
+
+
+# What a real run exercises beyond the listing's read access: the bucket GET
+# behind the soft-delete guard, the deletes, and the restores `sweep undo`
+# needs. Checked before any listing — the 2026-09-11 real run got as far as
+# the guard on `objectViewer` alone.
+REAL_PERMS = ("storage.buckets.get", "storage.objects.delete", "storage.objects.restore")
+
+
+def _missing_perms(bkt) -> list[str]:
+    """Real-run permissions the job identity lacks on `bkt` (GCS answers
+    testIamPermissions with the granted subset; no permission is needed to ask)."""
+    granted = set(bkt.test_iam_permissions(list(REAL_PERMS)))
+    return [p for p in REAL_PERMS if p not in granted]
 
 
 def _require_soft_delete(client, bucket: str, min_days: int) -> None:
