@@ -19,6 +19,9 @@ const queryClient = new QueryClient({
     },
   },
 })
+// Dev / `?spy=1`: the cache on `window.__qc`, so a console session can watch
+// which queries refetch (the render spy says what re-rendered; this says why).
+if (import.meta.env.DEV || location.search.includes('spy=1')) (window as unknown as { __qc?: QueryClient }).__qc = queryClient
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

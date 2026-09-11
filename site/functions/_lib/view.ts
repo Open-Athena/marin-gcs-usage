@@ -573,6 +573,9 @@ export interface DiffOpts extends Omit<ViewOpts, 'date'> {
   to: string
   /** Frontier rows kept (largest |Δ| first); the expanded skeleton always ships. */
   top: number
+  /** Totals only: both sides' scoped root reads, no walk (`rows` empty) —
+   * what the diff section's headline shows while the full diff aligns. */
+  summary?: boolean
 }
 
 export interface DiffRow {
@@ -632,6 +635,15 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     ra ? readView(env, { ...o, date: from, threshold }) : null,
     rb ? readView(env, { ...o, date: to, threshold }) : null,
   ])
+  const totals = {
+    total_a: Math.round(va?.rootAgg.b ?? 0),
+    total_b: Math.round(vb?.rootAgg.b ?? 0),
+    objects_a: Math.round(va?.rootAgg.o ?? 0),
+    objects_b: Math.round(vb?.rootAgg.o ?? 0),
+    threshold,
+    tier: (vb ?? va)!.tier,
+  }
+  if (o.summary) return { rows: [], ...totals, expansions: 0, truncated: false, lookups: 0, lookups_capped: false }
   const kidsA = va ? kidsIndex(va.kept, path) : new Map<string, string[]>()
   const kidsB = vb ? kidsIndex(vb.kept, path) : new Map<string, string[]>()
 
@@ -752,14 +764,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     .sort((r1, r2) => Math.abs(r2.b - r2.a) - Math.abs(r1.b - r1.a))
   return {
     rows: [...skeleton, ...frontier.slice(0, o.top)],
-    total_a: Math.round(va?.rootAgg.b ?? 0),
-    total_b: Math.round(vb?.rootAgg.b ?? 0),
-    objects_a: Math.round(va?.rootAgg.o ?? 0),
-    objects_b: Math.round(vb?.rootAgg.o ?? 0),
+    ...totals,
     expansions,
     truncated: frontier.length > o.top,
-    threshold,
-    tier: (vb ?? va)!.tier,
     lookups,
     lookups_capped: capped,
   }

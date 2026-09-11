@@ -12,7 +12,8 @@ import { type MarkState, type UserStates } from './sweep'
 import { Treemap as MarkTreemap } from './Treemap'
 import { ScanPicker } from './ScanPicker'
 import { SiteNav } from './SiteNav'
-import { useScan, type Scan } from './scan'
+import { useScan, useScans, type Scan } from './scan'
+import { Skeleton } from './Busy'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
 import { useDocTitle } from './title'
@@ -88,15 +89,7 @@ const store = DEFAULT_STORE
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1k_11LA21g8uqMckPhkKvwrnRENVKF8yHxbW5NnUiRFc/edit'
 
 function useLatestScan() {
-  const scansQ = useQuery<string[]>({
-    queryKey: ['scans', store.key],
-    queryFn: async () => {
-      const r = await fetch(`${store.base}/scans.json`)
-      if (!r.ok) throw Object.assign(new Error(`scans: ${r.status}`), { status: r.status })
-      return r.json()
-    },
-  })
-  return scansQ.data?.[0] ?? null
+  return useScans(store).data?.[0] ?? null
 }
 
 function useScanFile<T>(name: string, asof: string | null) {
@@ -438,7 +431,7 @@ export function UsersPage() {
         </div>
         <p className="sub">Everyone who owns storage{asof && <> in the {asof} scan</>}, largest first — and where their bytes stand (keep / sweep / no decision yet). Click a user (row or tile) for the per-prefix breakdown.</p>
       </header>
-      {metaQ.isLoading && <p className="loading">loading…</p>}
+      {metaQ.isLoading && <Skeleton height={300} label="loading users…" />}
       {metaQ.data && (
         <>
           <UsersMap meta={metaQ.data} states={states} />
@@ -729,7 +722,7 @@ export function UserPage() {
         </p>
       </header>
 
-      {loading && <p className="loading">loading…</p>}
+      {loading && <Skeleton height={200} label="loading estate…" />}
       {marksQ.error && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load marks: {marksQ.error.message}</p>}
       {estateQ.error && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load the estate: {estateQ.error.message}</p>}
       {!loading && !rows.length && attributed === 0 && (
@@ -765,6 +758,7 @@ export function UserPage() {
             })}
           </div>
 
+          {mapQ.isPending && !!asof && <Skeleton height={320} className="user-mini-map" label="loading map…" />}
           {scopedTree && scopedTree.b > 0 && (
             <div className="user-mini-map">
               <MarkTreemap

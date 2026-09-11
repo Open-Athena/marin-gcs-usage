@@ -153,12 +153,13 @@ export interface Scan {
 // page (home map, /users, /user/:id) uses this so a scan pin is one shareable,
 // page-independent dimension. `scans` is newest-first, so the first prefix match
 // is the newest. See specs/scan-param-all-pages.md.
-export function useScan(store: Store): Scan {
-  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel }, true)
-  const scansQ = useQuery<string[]>({
-    // The scan list polls so an unpinned tab discovers new scans on its own; the
-    // per-scan payloads are immutable once published, so they never refetch.
-    // Store-scoped key, so switching stores swaps the whole payload set.
+/** The store's scan list (newest first) — the one definition every page
+ * shares, so the poll and error handling are the same wherever it mounts.
+ * The list polls so an unpinned tab discovers new scans on its own; the
+ * per-scan payloads are immutable once published, so they never refetch.
+ * Store-scoped key, so switching stores swaps the whole payload set. */
+export function useScans(store: Store): UseQueryResult<string[]> {
+  return useQuery<string[]>({
     queryKey: ['scans', store.key],
     // Throw on non-OK (e.g. a 401 from the data proxy with no session) so
     // react-query holds it as an error rather than handing the error body
@@ -171,6 +172,11 @@ export function useScan(store: Store): Scan {
     },
     refetchInterval: SCANS_POLL_MS,
   })
+}
+
+export function useScan(store: Store): Scan {
+  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel }, true)
+  const scansQ = useScans(store)
   const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
   const dP = sel?.d
   const span = sel?.span

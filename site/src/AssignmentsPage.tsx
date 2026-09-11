@@ -10,6 +10,7 @@ import { DEFAULT_STORE } from './stores'
 import { useScan } from './scan'
 import { useUnits } from './units'
 import { useDocTitle } from './title'
+import { Busy, Skeleton } from './Busy'
 
 interface Cell { by: string; to: string; bytes: number; prefixes: string[] }
 
@@ -87,11 +88,12 @@ export function AssignmentsPage() {
           {mode === 'sweep' && ' Inferred attribution (W&B, path shapes) is a separate axis — not here yet.'}
         </p>
       </header>
-      {q.isLoading && <p className="dim">loading…</p>}
+      {q.isLoading && <Skeleton height={320} label="loading matrix…" />}
       {q.error && <p className="err">{(q.error as Error).message}</p>}
       {q.data && !q.data.cells.length && <p className="dim">{mode === 'sweep' ? 'No live sweep marks.' : 'No owner assignments in the ledger yet.'}</p>}
       {!!q.data?.cells.length && (
-        <div className="table-scroll">
+        <div className="table-scroll busy-host">
+          {q.isFetching && <Busy corner label="refreshing…" />}
           <table className="heatmap">
             <thead>
               <tr>

@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { useRules } from './rules'
+import { Skeleton } from './Busy'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { whoToHandle } from './Avatar'
@@ -7,7 +8,7 @@ import { SiteKbd } from './SiteKbd'
 import { UserChip } from './UserChip'
 import { fmtMarkDate } from './MarkControls'
 import { ActionChip, LOCAL_TZ, fmtWhen, useMarkEvents } from './markEvents'
-import { type RuleUser, type Rules } from './types'
+import { type RuleUser } from './types'
 import { useDocTitle } from './title'
 
 // Recent-marks activity feed (specs/actions-ledger.md): the ledger's keep +
@@ -35,15 +36,7 @@ export function MarksPage() {
   useDocTitle('Marks')
   const { events, isLoading, error } = useMarkEvents()
   const [page, setPage] = useState(0)
-  const { data: rules } = useQuery<Rules>({
-    queryKey: ['rules'],
-    queryFn: async () => {
-      const r = await fetch('/data/rules.json')
-      if (!r.ok) throw new Error(`rules: ${r.status}`)
-      return r.json()
-    },
-    retry: false,
-  })
+  const { data: rules } = useRules()
   const userByHandle = useMemo(() => {
     const m = new Map<string, RuleUser>()
     for (const u of rules?.users ?? []) {
@@ -67,7 +60,7 @@ export function MarksPage() {
       </header>
 
       {error && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load marks: {error.message}</p>}
-      {isLoading && events.length === 0 && <p className="loading">loading marks…</p>}
+      {isLoading && events.length === 0 && <Skeleton height={400} label="loading marks…" />}
       {!isLoading && !error && events.length === 0 && <p className="tab-note">No marks yet — head to the map and start marking.</p>}
 
       {events.length > 0 && (() => {

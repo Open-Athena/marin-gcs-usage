@@ -10,6 +10,7 @@ import { Avatar } from './Avatar'
 import { MultiSelect } from './MultiSelect'
 import { ghHandle, shortName, shortUserKey, UserChip } from './UserChip'
 import { useUnits } from './units'
+import { Busy, Skeleton } from './Busy'
 import { useDocTitle } from './title'
 
 // /sweep — the sweep console (specs/sweep-executor.md § Phase 2): review the
@@ -367,6 +368,8 @@ export function SweepPage() {
           ? <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>
           : <p className="err">Error loading the latest plan: {String(latestQ.error)}</p>
       )}
+      {!candsQ.data && !latestQ.isError && !candsQ.isError && <Skeleton height={420} label="loading plan…" />}
+      {candsQ.isError && <p className="err">Error loading the plan's candidates: {String(candsQ.error)}</p>}
       {candsQ.data && (<>
         <div className="sweep-tools">
           <span className="tb-axis nb">
@@ -564,8 +567,11 @@ export function SweepPage() {
               A dry-run walks the pinned scan listing under each approved band, plans the deletions under the ownership gate, and records the run below — it deletes nothing. The real run takes the same plan and deletes.
             </p>
             {allBuckets.length > 1 && (
+              <details className="dispatch-buckets-wrap">
+                <summary className="dim">
+                  limit this run to some buckets{partial ? <> — <b>{onBuckets.length} of {allBuckets.length}</b> checked</> : ''}
+                </summary>
               <p className="dispatch-buckets">
-                <span className="dim">buckets:</span>
                 {allBuckets.map(b => {
                   const e = perBucket.get(b)!
                   return (
@@ -577,6 +583,7 @@ export function SweepPage() {
                 })}
                 {partial && <span className="dim"> — only the checked buckets are planned and swept</span>}
               </p>
+              </details>
             )}
             <div className="dispatch-btns">
           {/* Dispatches a GCP Batch executor run: `sweep manifest -S` (reads
@@ -611,11 +618,12 @@ export function SweepPage() {
       })()}
 
       <h2>Dispatches</h2>
+      {jobsQ.isPending && <Skeleton height={120} label="loading dispatches…" />}
       {jobsQ.data?.configured === false && <p className="dim">Dispatch isn't configured on this deployment (no <code>GCP_SA_KEY</code>), so there is nothing to list.</p>}
       {jobsQ.isError && <p className="err">{String(jobsQ.error)}</p>}
       {jobsQ.data?.configured && !jobsQ.data.jobs.length && <p className="dim">None yet — every job the console (or the CLI) submits to Batch shows here from the moment it is queued.</p>}
       {!!jobsQ.data?.jobs.length && (
-        <div className="table-scroll"><table className="sweep-table jobs">
+        <div className="table-scroll busy-host">{jobsQ.isFetching && <Busy corner label="refreshing…" />}<table className="sweep-table jobs">
           <thead>
             <tr><th>job</th><th>mode</th><th>state</th><th>by</th><th>started</th><th className="num">elapsed</th><th>plan</th><th>logs</th></tr>
           </thead>
@@ -646,9 +654,11 @@ export function SweepPage() {
       )}
 
       <h2>Deletion runs</h2>
-      {!runsQ.data?.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here as soon as it starts, and fills in the totals when it finishes.</p>}
+      {runsQ.isPending && <Skeleton height={120} label="loading runs…" />}
+      {runsQ.isError && <p className="err">{String(runsQ.error)}</p>}
+      {runsQ.data && !runsQ.data.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here as soon as it starts, and fills in the totals when it finishes.</p>}
       {!!runsQ.data?.rows.length && (
-        <div className="table-scroll"><table className="sweep-table">
+        <div className="table-scroll busy-host">{runsQ.isFetching && <Busy corner label="refreshing…" />}<table className="sweep-table">
           <thead>
             <tr><th>run</th><th>mode</th><th>started</th><th className="num">{'∑'} deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>undo by</th><th>logs</th></tr>
           </thead>

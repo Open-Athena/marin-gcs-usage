@@ -787,6 +787,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 @keyframes busy-spin { to { transform: rotate(360deg); } }
 .diff-slot { min-height: 380px; }
+.skel { width: 100%; border-radius: 6px; background: var(--panel); animation: tm-pulse 1.4s ease-in-out infinite; }
 // The full value behind a clipped table cell (/files parquet viewer, via
 // file-tree's `elide.tooltip`): a long GCS path, wrapped so it fits the panel.
 .tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
@@ -1905,8 +1906,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   .dispatch-sum { margin: 0 0 2px; font-size: 13.5px; .user-chip { vertical-align: middle; } }
   .dispatch-note { margin: 0 0 6px; font-size: 12.5px; }
   .dispatch-btns { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .dispatch-buckets-wrap { margin: 0 0 8px; font-size: 12.5px; summary { cursor: pointer; } }
   .dispatch-buckets {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0 0 8px; font-size: 12.5px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 6px 0 0; font-size: 12.5px;
     label { cursor: pointer; }
     label.off { opacity: .55; }
     input { vertical-align: -2px; }

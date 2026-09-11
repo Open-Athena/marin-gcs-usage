@@ -5,6 +5,7 @@ import { useMemo } from 'react'
 import { boolParam, useUrlState } from 'use-prms'
 import { shortName } from './UserChip'
 import { useUnits } from './units'
+import { Skeleton } from './Busy'
 
 // Stored bytes over the historical scans, scoped exactly like the map: the
 // drilled prefix, a user, or an owner pool (`/api/series` — one row read per
@@ -167,7 +168,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
           window={win && [xOfScan(win[0]), xOfScan(win[1])]}
         />
       ) : (
-        <p className="loading">{seriesQ.isLoading ? 'loading series…' : 'fewer than two scans hold this path'}</p>
+        seriesQ.isLoading ? <Skeleton height={220} label="loading series…" /> : <p className="loading">fewer than two scans hold this path</p>
       )}
     </section>
   )

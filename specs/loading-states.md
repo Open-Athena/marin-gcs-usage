@@ -9,15 +9,17 @@ Ryan demoed the site and hit two silent loads: toggling **not** on the owner pic
 - `Busy` (`src/Busy.tsx`) + `.busy-host` / `.busy-overlay` styles are the shared affordance for any widget that holds content across a load.
 - `ChildrenTable`'s `segs` prop is memoized (a fresh array per render defeated its memos); the Treemap rollup's client state walk is cached by inputs (it re-walked the drilled subtree on every hover/outline render).
 
-## Findings not yet acted on
+## Second pass (2026-09-11, same day)
 
-TSQ coverage is near-total. Outside it: `OgPage` (serial DIY `fetch`es in a `useEffect`, no cache/loading/error), `TokenModal` (own phase state machine, has loading UI), `FilesPage` (file-tree's `HttpStore`, own caching).
+- **Background polls visible**: a corner `Busy` pill on the marks feed (`actions`, 30 s), the sweep console's dispatches and runs tables (30 s), and the assignments matrix while a refetch is in flight.
+- **Pending states everywhere a section used to be blank or a bare "loading…"**: `Skeleton` (reserves the widget's height under the marker) on the age chart, size-over-time (220 px), `/users` map (300 px), `/user/:id` estate and map, `/assignments`, `/marks`, `DbTable`, and the sweep console's plan, dispatches and runs tables.
+- **Headline-first diff**: `/api/diff?summary=1` returns both sides' scoped totals without the row walk; `App` runs it as a companion query, so the +X / Δobjects line shows in a second or two while the rows align (the subtitle says "aligning the rows…" meanwhile).
+- **One definition per query**: `useScans` (scan.ts) behind `useScan`, `/user*` and `/og`; `useRules` (rules.ts) for the map page and `/marks`; `useMyUser` on top of `useUserEmails`. `OgPage` reads through the cache instead of a serial DIY fetch chain.
+- **Deep-link pursuit** capped at ~20 s (was 60) and re-armed on the drawn tree, not the raw one.
+- **Dev instrumentation**: `window.__qc` (the QueryClient) in dev / `?spy=1`, so a console session can subscribe to the cache and see which query refetched and whether its data identity changed — the companion to the render spy.
+- **Sweep console**: the per-bucket cut is folded into a `<details>` ("limit this run to some buckets"); the summary names the cut when one is set.
 
-1. **`isFetching` is read nowhere else.** Background polls (`actions` 30 s, `mark-totals` 30 s incl. its ~10 s cold recompute, `deletion-runs`/`sweep-jobs` 30 s, `scans` 5 min, every refetch-on-focus) are invisible. Cheap: a corner `Busy` on the relevant section when `isFetching && !isPending`.
-2. **No pending UI at all**: `/user/:id` map query; all five `/sweep` queries (console is blank until candidates land); `DbTable` (`return null` while pending); the age chart section (heading over nothing); `OgPage`.
-3. **Text-only `loading…` that collapses its section**: `SizeOverTime` (220 px), `/user/:id` estate, `/users` meta, `/assignments`, `/marks`. Reserve each widget's height with a skeleton (`.tm-skel` pattern).
-4. **Ledger poll invalidates the world**: `useMarkIndex` keys on the `['actions']` data identity; a byte-identical 30 s poll should keep identity via structural sharing — verify with the render spy; if not, gate on max `action_id`. Today a no-op poll rebuilds `MarkIndex` → `klcSplits` over the tree → `markOutlines` → a full treemap re-layout.
-5. **Progressive diff**: `/api/diff` returns totals and rows together; a `summary=1` companion (like the map's `depth=1`) would paint the +X/Δobjects line in under a second while the 10–20 s alignment finishes.
-6. **Duplicate query definitions** with drifting options: `['scans', store.key]` (`scan.ts` vs `UserPage.tsx`), `['user-emails']` (twice in `sweep.ts`), `['rules']` (`App.tsx` vs `MarksPage.tsx`). Whichever mounts first wins the options.
-7. **Deep-link scroll loop** (`App.tsx`, 500 ms interval for up to 60 s, re-armed on `[hash, tree, meta, scans]`) — with the map and diff no longer reflowing the page it can shrink to a couple of `requestAnimationFrame` passes.
-8. Web workers: not worth it before 4–5; the trees are pixel-budgeted and the ledger is ~7 k rows. Measure with `?spy=1` first.
+## Open
+
+- The 30 s ledger polls still re-render `AppContent` (~300–400 ms each, measured with the spy over 85 s idle) even though both payloads are byte-identical (structural sharing keeps `data`'s identity). Which tracked result property flips is not yet pinned down — use `__qc` to watch the cache; if it's a tracked prop, `notifyOnChangeProps: ['data', 'error']` on `useMarks` / `useMarkTotals` is the fix. `/api/actions` is 2.1 MB per poll; a `since=<action_id>` delta (or a `head` HEAD probe before the GET) would cut the transfer.
+- Web workers: not worth it — the trees are pixel-budgeted and the ledger is ~7 k rows.

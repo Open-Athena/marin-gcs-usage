@@ -2,7 +2,10 @@
  * scans' index tiers at one shared byte floor (`_lib/view.ts` `buildDiff`).
  *
  *   GET /api/diff?from=<scan>&to=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>][&top=<n>]
- *                 [&lens=user:<id>][&o=claimed|unclaimed][&k=<⊆ksu>][&q=<name filter>]
+ *                 [&lens=user:<id>][&o=claimed|unclaimed][&k=<⊆ksu>][&q=<name filter>][&summary=1]
+ *
+ * `summary=1` answers with the totals only (both sides' scoped root reads,
+ * no walk — `rows` empty): the section's headline, seconds before the rows.
  *
  * Same scope axes as `/api/subtree`; the response is the treemap's row list
  * (`{ rows, total_a, total_b, objects_a, objects_b, expansions, truncated }`),
@@ -33,6 +36,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const minArea = Number(url.searchParams.get('minArea')) || MIN_AREA_DEFAULT
   const atten = Number(url.searchParams.get('atten')) || ATTEN_DEFAULT
   const top = Math.min(5000, Number(url.searchParams.get('top')) || 500)
+  const summary = url.searchParams.get('summary') === '1'
   if (!SCAN_RE.test(from) || !SCAN_RE.test(to)) return new Response('bad from/to', { status: 400 })
   if (from >= to) return new Response('from must precede to', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
@@ -58,14 +62,14 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const head = (states || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
   const cacheKey = new Request(
     `https://diff.cache/${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
-      `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
+      `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}`,
   )
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
 
   try {
-    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes })
+    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes, summary })
     const body = JSON.stringify({
       prev: from,
       curr: to,

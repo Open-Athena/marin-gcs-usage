@@ -46,8 +46,8 @@ const ACTION_GLYPH: Record<string, string> = {
   keep: '✓', keep_last_ckpt: '◐', sweep: '✕',
 }
 
-export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; error: Error | null } {
-  const { data, isLoading, error } = useMarks(true)
+export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; isFetching: boolean; error: Error | null } {
+  const { data, isLoading, isFetching, error } = useMarks(true)
   const events = useMemo((): MarkEvent[] => {
     if (!data) return []
     const evs: MarkEvent[] = []
@@ -70,7 +70,7 @@ export function useMarkEvents(): { events: MarkEvent[]; isLoading: boolean; erro
     // Newest first; action_id breaks ties within the same second.
     return evs.sort((a, b) => b.ts - a.ts || b.id - a.id)
   }, [data])
-  return { events, isLoading, error: error ?? null }
+  return { events, isLoading, isFetching, error: error ?? null }
 }
 
 /** The colored action chip (glyph + label) shared by the feed and history. */

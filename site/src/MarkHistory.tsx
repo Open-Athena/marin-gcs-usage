@@ -7,6 +7,7 @@ import { UserChip } from './UserChip'
 import type { NamePred } from './filterTree'
 import { ActionChip, LOCAL_TZ, MARK_ACTS, eventsUnder, fmtWhen, useMarkEvents } from './markEvents'
 import { fmtScan, scanTime } from './scan'
+import { Busy } from './Busy'
 
 // Path-scoped slice of the mark ledger: every keep/sweep/clear/assignment under the
 // currently-drilled prefix, newest first. The map shows *current* state; this
@@ -31,7 +32,7 @@ export function MarkHistory({ prefix, scope, pred, filterQ, window: win }: {
   /** The page's diff window [before, after] (scan ids), offered as a time filter. */
   window?: [string, string]
 }) {
-  const { events } = useMarkEvents()
+  const { events, isLoading, isFetching } = useMarkEvents()
   const [page, setPage] = useState(0)
   // Action-type filter: `?mk=` ⊆ the MARK_ACTS letters (absent = all).
   const [mkP, setMkP] = useUrlState('mk', stringParam())
@@ -79,7 +80,9 @@ export function MarkHistory({ prefix, scope, pred, filterQ, window: win }: {
   const filtered = scoped.length !== total
 
   return (
-    <section id="marks" className="children-tbl">
+    <section id="marks" className="children-tbl busy-host">
+      {/* The ledger polls every 30 s; the refresh shows as a corner marker. */}
+      {isFetching && !isLoading && <Busy corner label="refreshing marks…" />}
       <div className="hrow">
         <h2>Mark history</h2>
         <Link className="nav-files" to="/marks" style={{ fontSize: '0.9em' }}>All&nbsp;marks&nbsp;→</Link>

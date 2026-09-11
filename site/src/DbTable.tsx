@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 
 import type { ColumnSpec, Row, TableMeta } from './db'
 import { useTable, useTableMutations } from './db'
+import { Skeleton } from './Busy'
 
 // Generic editable table over one /api/db table: TanStack Table for the
 // grid (sorting now; filtering/pagination are config away), TSQ mutations
@@ -96,7 +97,8 @@ export function DbTable({ name }: { name: string }) {
   })
 
   if (error) return <p className="err">{error.message}</p>
-  if (isPending || !spec) return null
+  if (isPending) return <Skeleton height={200} label="loading table…" />
+  if (!spec) return null
 
   const addable = spec.columns.filter(c => !c.server)
   const err = insert.error ?? update.error ?? remove.error

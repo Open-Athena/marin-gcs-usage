@@ -12,7 +12,8 @@ import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
-import { Busy } from './Busy'
+import { Busy, Skeleton } from './Busy'
+import { useRules } from './rules'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
@@ -152,15 +153,7 @@ function AppContent() {
   // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
   const { asof, scans, dMatches, dP, setDP, span, setSpan, setRange, scansQ } = useScan(store)
-  const rulesQ = useQuery({
-    queryKey: ['rules'],
-    queryFn: async () => {
-      const r = await fetch('/data/rules.json')
-      if (!r.ok) throw new Error(`rules: ${r.status}`)
-      return r.json()
-    },
-    retry: false,
-  })
+  const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
   useEffect(() => setCurrentScan(asof ?? undefined), [asof])
@@ -472,8 +465,9 @@ function AppContent() {
     // rewrite the hash: at scrollY 0 it would clear `#diff` before the
     // section exists.
     // Keep nudging until the anchor sits still at the sticky bar's margin
-    // (cold loads shift the page for many seconds as the map, its table and
-    // the diff sides land); a reader's own scroll input ends the pursuit.
+    // (cold loads shift the page as sections land — the map and the diff
+    // now hold their slots, so ~20 s covers it); a reader's own scroll
+    // input ends the pursuit.
     deepLinkPending = true
     let last = NaN
     let tries = 0
@@ -483,7 +477,7 @@ function AppContent() {
       for (const ev of USER_SCROLL_EVENTS) window.removeEventListener(ev, stop)
     }
     const iv = setInterval(() => {
-      if (++tries > 120) { stop(); return }
+      if (++tries > 40) { stop(); return }
       const el = document.getElementById(id)
       if (!el) return
       const top = el.getBoundingClientRect().top
@@ -496,7 +490,7 @@ function AppContent() {
     }, 500)
     for (const ev of USER_SCROLL_EVENTS) window.addEventListener(ev, stop, { passive: true })
     return stop
-  }, [hash, tree, meta, scans])
+  }, [hash, mapTree, meta, scans])
   // Scroll-spy: keep the URL fragment tracking the section in view
   // (replaceState — no history entries, no scroll jumps), so a copied URL
   // reopens roughly where the reader was.
@@ -601,12 +595,31 @@ function AppContent() {
       return r.json() as Promise<DiffData>
     },
   })
+  // The headline first: the same pair's totals without the row walk land in
+  // a second or two, so the +X / Δobjects line shows while the rows align.
+  const diffSumQ = useQuery<DiffData, Error>({
+    queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs, 'summary'],
+    enabled: !!asof && !!diffPrev,
+    staleTime: markAxes ? 30_000 : Infinity,
+    retry: false,
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
+        { credentials: 'include' },
+      )
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      return r.json() as Promise<DiffData>
+    },
+  })
   const diff: DiffData | null = diffQ.data ?? null
   const diffErr = diffQ.error
   // The shown diff is the previous pair's (placeholder) or the pair is still
   // aligning: its numbers describe another pair, so the subtitle says
   // "aligning" instead, and the drawn treemap dims under a marker.
   const diffStale = diffQ.isPlaceholderData || (!diff && diffQ.isFetching)
+  // What the subtitle's numbers describe: the full diff once it's this pair's,
+  // else the summary (its own query — current for this key or absent).
+  const diffHead: DiffData | null = diff && !diffStale ? diff : diffSumQ.data ?? null
   // One-line description of the page scope, for the section subtitles:
   // where, then whose, then which mark states, then which names.
   const scopeParts: string[] = [
@@ -1135,22 +1148,23 @@ function AppContent() {
                 ))}
               </span>
             )}
-            {diff && !diffStale ? (
+            {diffHead ? (
               <>
-                {' '}· <b className={diff.total_b >= diff.total_a ? 'grew' : 'shrank'}>
-                  {(diff.total_b >= diff.total_a ? '+' : '−') + fmtBytes(Math.abs(diff.total_b - diff.total_a))}
+                {' '}· <b className={diffHead.total_b >= diffHead.total_a ? 'grew' : 'shrank'}>
+                  {(diffHead.total_b >= diffHead.total_a ? '+' : '−') + fmtBytes(Math.abs(diffHead.total_b - diffHead.total_a))}
                 </b>
-                {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
+                {' '}· Δobjects {(diffHead.objects_b - diffHead.objects_a).toLocaleString('en-US')}
+                {diffStale && <span className="loading"> · aligning the rows…</span>}
                 {' '}· <Tooltip content={<>
                   <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
                   a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
-                  Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
+                  Both scans are read at one byte floor ({fmtBytes(diffHead.threshold)}): a directory is named on both sides or folded into
                   “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
-                  {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
+                  {diffHead.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
                 </>}>
                   <span className="dotted">≈ {scopeDesc}</span>
                 </Tooltip>
-                {diff.truncated && (
+                {diffHead.truncated && (
                   <>
                     {' '}· <Tooltip content="Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).">
                       <span className="dotted">largest changes</span>
@@ -1198,6 +1212,7 @@ function AppContent() {
           color by it to see which vintages nobody has touched. The chart’s color axis is its own (right):
           it follows the map’s until you pick one; marks have no per-stratum value here.
         </p>
+        {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
         {age.length > 0 && (
           <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
         )}

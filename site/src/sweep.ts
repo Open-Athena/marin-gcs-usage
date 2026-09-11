@@ -407,17 +407,6 @@ export function useUserEmails(enabled: boolean): Record<string, string> | undefi
 
 /** The viewer's canonical attribution user id, from D1 `user_emails`. */
 export function useMyUser(email: string | undefined, enabled: boolean): string | null {
-  const { data } = useQuery<Record<string, string>, Error>({
-    queryKey: ['user-emails'],
-    enabled: enabled && !!email,
-    staleTime: 10 * 60_000,
-    retry: false,
-    queryFn: async () => {
-      const r = await fetch('/api/db/user_emails', { credentials: 'include' })
-      if (!r.ok) throw new Error(`user_emails: ${r.status}`)
-      const { rows } = (await r.json()) as { rows: { email: string; user: string }[] }
-      return Object.fromEntries(rows.map(x => [x.email, x.user]))
-    },
-  })
+  const data = useUserEmails(enabled && !!email)
   return (email && data?.[email.toLowerCase()]) || null
 }

@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useScans } from './scan'
 import { Treemap } from './Treemap'
 import type { Store } from './stores'
 import { DEFAULT_STORE } from './stores'
@@ -29,7 +31,6 @@ const treeLegend = (root: TreeNode): [string, string][] => {
 }
 
 export function OgPage({ store = DEFAULT_STORE }: { store?: Store }) {
-  const [tree, setTree] = useState<TreeNode | null>(null)
 
   useEffect(() => {
     const prev = document.documentElement.dataset.theme
@@ -40,20 +41,20 @@ export function OgPage({ store = DEFAULT_STORE }: { store?: Store }) {
     }
   }, [])
 
-  useEffect(() => {
-    let cancel = false
-    void fetch(`${store.base}/scans.json`)
-      .then(r => r.json())
-      .then((scans: string[]) => {
-        const asof = scans[0]
-        // The same pixel-budget view the map draws (og card is 1200×630).
-        return asof
-          ? fetch(`/api/subtree?date=${asof}&path=&w=1200&h=630`, { credentials: 'include' }).then(r => r.json())
-          : null
-      })
-      .then((v: { tree: TreeNode } | null) => v && !cancel && setTree(v.tree))
-    return () => { cancel = true }
-  }, [store])
+  // The latest scan's root view at the og card's pixel budget (1200×630) —
+  // the same `/api/subtree` the map draws, through the query cache.
+  const asof = useScans(store).data?.[0]
+  const treeQ = useQuery<{ tree: TreeNode }>({
+    queryKey: ['subtree', asof, '', 1200, '', 'og'],
+    enabled: !!asof,
+    staleTime: Infinity,
+    queryFn: async () => {
+      const r = await fetch(`/api/subtree?date=${asof}&path=&w=1200&h=630`, { credentials: 'include' })
+      if (!r.ok) throw new Error(`subtree: ${r.status}`)
+      return r.json()
+    },
+  })
+  const tree = treeQ.data?.tree ?? null
 
   const legend = useMemo(() => (tree ? treeLegend(tree) : []), [tree])
 
