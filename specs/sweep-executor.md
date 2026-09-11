@@ -102,6 +102,13 @@ Three east5-only real dispatches failed in a row, each one layer deeper, before 
 - **Run the executor in the bucket's region.** The eu-west4 run dispatched from us-central1 listed at 0.6 pages/s and deleted at ~200/s while central2 (same VM shape, colocated) did 1,750/s: every listing page and every delete sub-request is a round trip to the bucket. `/api/sweep/dispatch` now places a one-bucket cut in that bucket's region (`BUCKET_REGION` in `_lib/gcp.ts`); an uncut run stays in us-central1. `/api/sweep/jobs` lists every region. **Open:** the daily listing job (`job/batch-submit.sh`, one task per bucket in one us-central1 job) has the same geometry; per-bucket jobs in each region would cut its 2 h too.
 - **`gcs-usage sweep stop PLAN_DIR`** drops `PLAN_DIR/STOP`; the executor polls it every 10 s (and handles SIGTERM the same way): roots not yet started are skipped and counted in `interrupted`, everything done is logged and recorded, the CLI exits 130 so the Batch job ends red. A re-run of the same plan finishes the rest (done keys resolve as `skipped_gone`). A job killed from outside (`gcloud batch jobs delete`) gets no such courtesy — its log parquet has no footer — and needs `sweep reconstruct-log`.
 
+## Durable logs, progress, one runs table (2026-09-11, later the same day)
+
+- **Part-file logs.** `<mode>/<bucket>/part-NNNNN.parquet`, one complete file per flushed chunk (8k rows real, 64k dry). Nothing depends on a writer closing: a job killed from outside loses at most the chunk in memory. `read_log` (undo, reconstruct-log) globs the parts and still reads the single `<mode>/<bucket>.parquet` of earlier runs. `sweep reconstruct-log` is now the last resort, not the plan.
+- **`progress/<bucket>.json`** every 30 s and at the end: roots done/total, decisions so far, bytes, started/updated, `done`. The console's live rows read it (rate = deletes ÷ elapsed).
+- **Stop from the console.** `POST /api/sweep/stop {job_id}` writes `sweep/runs/<job>/STOP` with the dispatch route's identity; the executor's watcher does the rest. A `stop…` button sits on live rows for admins.
+- **One runs table.** A dispatch is a run's pre-record state, so `/sweep` shows one row per run: the Batch job (state, region, buckets, elapsed, logs link) joined to the D1 run (totals, undo window) by the job id in the run's log dir; live rows carry a progress bar; D1 runs without a job (CLI, or older than Batch's list) still list.
+
 ## Non-goals (v1)
 
 - User self-serve deletion (v2, above). — Regex mark patterns (don't exist). — Ledger tombstoning (follow-up). — CW/S3 sweep (separate estate, no marks yet).
