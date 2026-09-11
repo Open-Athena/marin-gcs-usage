@@ -300,6 +300,27 @@ export function SweepPage() {
   const approvedAttrBytes = approvedRows.reduce(
     (s, b) => s + (approvals.get(b.prefix)?.mode === 'full' ? b.net_bytes : attrCap(b) ?? b.net_bytes), 0)
 
+  // A run can be cut to some of the approved bands' buckets (one bucket
+  // first, then the rest): unchecked buckets are left out of the dispatch,
+  // and `sweep manifest -b` / `sweep execute -b` plan and delete only the
+  // checked ones. Default: every bucket with an approved band.
+  const [bucketsOff, setBucketsOff] = useState<ReadonlySet<string>>(new Set())
+  const bucketOf = (c: Candidate) => c.prefix.split('/')[2]
+  const perBucket = new Map<string, { bands: number; bytes: number; attr: number; objects: number }>()
+  for (const c of approvedRows) {
+    const e = perBucket.get(bucketOf(c)) ?? { bands: 0, bytes: 0, attr: 0, objects: 0 }
+    e.bands++
+    e.bytes += c.net_bytes
+    e.attr += approvals.get(c.prefix)?.mode === 'full' ? c.net_bytes : attrCap(c) ?? c.net_bytes
+    e.objects += c.net_objects
+    perBucket.set(bucketOf(c), e)
+  }
+  const allBuckets = [...perBucket.keys()].sort()
+  const onBuckets = allBuckets.filter(b => !bucketsOff.has(b))
+  const partial = onBuckets.length < allBuckets.length
+  const runBytes = onBuckets.reduce((s, b) => s + perBucket.get(b)!.bytes, 0)
+  const runAttrBytes = onBuckets.reduce((s, b) => s + perBucket.get(b)!.attr, 0)
+
   const [armed, setArmed] = useState(false)
   const dispatch = useMutation({
     mutationFn: async (mode: 'dry' | 'real') => {
@@ -307,7 +328,7 @@ export function SweepPage() {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, date: candsQ.data!.scan }),
+        body: JSON.stringify({ mode, date: candsQ.data!.scan, ...(partial ? { buckets: onBuckets } : {}) }),
       })
       const j = await r.json() as { error?: string; job_id?: string; plan?: string; mode?: string }
       if (!r.ok) throw new Error(j.error ?? `${r.status}`)
@@ -542,21 +563,36 @@ export function SweepPage() {
             <p className="dim dispatch-note">
               A dry-run walks the pinned scan listing under each approved band, plans the deletions under the ownership gate, and records the run below — it deletes nothing. The real run takes the same plan and deletes.
             </p>
+            {allBuckets.length > 1 && (
+              <p className="dispatch-buckets">
+                <span className="dim">buckets:</span>
+                {allBuckets.map(b => {
+                  const e = perBucket.get(b)!
+                  return (
+                    <label key={b} className={bucketsOff.has(b) ? 'off' : undefined}>
+                      <input type="checkbox" checked={!bucketsOff.has(b)} onChange={ev => setBucketsOff(s => { const n = new Set(s); if (ev.target.checked) n.delete(b); else n.add(b); return n })} />
+                      {' '}<code>{b}</code> <span className="dim">{e.bands} band{e.bands === 1 ? '' : 's'} · ≈{tb(e.attr)} · {e.objects.toLocaleString()} objects in bands</span>
+                    </label>
+                  )
+                })}
+                {partial && <span className="dim"> — only the checked buckets are planned and swept</span>}
+              </p>
+            )}
             <div className="dispatch-btns">
           {/* Dispatches a GCP Batch executor run: `sweep manifest -S` (reads
               the approvals above) → `sweep execute` — the run records itself
               into the table below. Dry-run is the default posture; "real"
               takes a second, armed click and shows what it will consume. */}
-          <button className="mini go" disabled={dispatch.isPending} onClick={() => dispatch.mutate('dry')}>dispatch dry-run</button>
+          <button className="mini go" disabled={dispatch.isPending || !onBuckets.length} onClick={() => dispatch.mutate('dry')}>dispatch dry-run</button>
           {!armed ? (
-            <button className="mini danger" disabled={approvedBytes === 0 || dispatch.isPending} onClick={() => setArmed(true)}
-                    title={approvedBytes === 0 ? 'approve at least one band first' : undefined}>
+            <button className="mini danger" disabled={runBytes === 0 || dispatch.isPending} onClick={() => setArmed(true)}
+                    title={approvedBytes === 0 ? 'approve at least one band first' : runBytes === 0 ? 'check at least one bucket' : undefined}>
               real delete…
             </button>
           ) : (
             <>
               <button className="mini danger armed" disabled={dispatch.isPending} onClick={() => dispatch.mutate('real')}>
-                confirm REAL delete — ≈{tb(approvedAttrBytes)} (attr-gated, of {tb(approvedBytes)} approved)
+                confirm REAL delete — ≈{tb(runAttrBytes)} (attr-gated, of {tb(runBytes)} approved{partial ? `, ${onBuckets.length} of ${allBuckets.length} buckets` : ''})
               </button>
               <button className="mini" onClick={() => setArmed(false)}>cancel</button>
             </>
@@ -591,7 +627,7 @@ export function SweepPage() {
               return (
                 <tr key={j.job_id} className={j.state === 'FAILED' ? 'failed' : live ? 'live' : ''}>
                   <td><code>{j.job_id}</code></td>
-                  <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry'}</td>
+                  <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
                   <td>
                     <span className={j.state === 'SUCCEEDED' ? 'ok' : j.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'}>{j.state.toLowerCase()}</span>
                     {recorded && <span className="dim nb"> · run recorded ↓</span>}
@@ -620,7 +656,7 @@ export function SweepPage() {
             {runsQ.data.rows.map(r => (
               <tr key={r.run_id}>
                 <td><code>{r.run_id}</code> <span className="dim">by {r.actor}</span></td>
-                <td>{r.mode === 'real' ? <b className="real">real</b> : 'dry'}</td>
+                <td>{r.mode === 'real' ? <b className="real">real</b> : 'dry-run'}</td>
                 <td>{when(r.started_ts)}</td>
                 <td className="num">{tb(r.deleted_bytes)} · {r.deleted_objects.toLocaleString()}</td>
                 <td className="num">{r.skipped_gone.toLocaleString()}</td>

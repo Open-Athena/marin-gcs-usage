@@ -1885,6 +1885,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   .dispatch-sum { margin: 0 0 2px; font-size: 13.5px; .user-chip { vertical-align: middle; } }
   .dispatch-note { margin: 0 0 6px; font-size: 12.5px; }
   .dispatch-btns { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .dispatch-buckets {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0 0 8px; font-size: 12.5px;
+    label { cursor: pointer; }
+    label.off { opacity: .55; }
+    input { vertical-align: -2px; }
+  }
   button.mini {
     font-size: 12px; padding: 1px 8px; margin-left: 6px; cursor: pointer;
     background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
