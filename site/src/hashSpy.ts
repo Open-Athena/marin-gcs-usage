@@ -38,16 +38,18 @@ const NUDGE_MS = 500
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x)
 
 /** The section the spy would name for the current scroll position, or '' at
- * the very top. The reference line starts just under the header and slides
- * to the bottom of the viewport as the page runs out of scroll: the last
- * sections, which can never reach the top of a page that ends, still get
- * their turn — the one deepest into the viewport wins. */
+ * the very top. The reference line sits just under the header for most of
+ * the page; over the last viewport's worth of scroll — where the remaining
+ * sections can no longer reach it, because the page ends — it slides down
+ * to the bottom of the viewport, so each of them still gets its turn (the
+ * one deepest into the viewport wins). */
 export function sectionInView(ids: readonly string[], offset: number): string {
   const h = window.innerHeight
   const maxY = document.documentElement.scrollHeight - h
-  const progress = maxY > 0 ? clamp01(window.scrollY / maxY) : 1
   const near = offset + Math.min(h / 3, 150)
-  const yRef = near + (h - near) * progress
+  const slide = h - near // the stretch of scroll over which the line descends
+  const progress = maxY > 0 ? clamp01((window.scrollY - (maxY - slide)) / slide) : 1
+  const yRef = near + slide * progress
   let cur = ''
   for (const id of ids) {
     const el = document.getElementById(id)
