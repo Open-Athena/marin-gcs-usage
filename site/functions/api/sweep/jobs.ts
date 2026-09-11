@@ -17,7 +17,7 @@ interface BatchJob {
   createTime: string
   updateTime?: string
   status?: { state?: string; runDuration?: string; statusEvents?: { type?: string; description?: string; eventTime?: string }[] }
-  taskGroups?: { taskSpec?: { environment?: { variables?: Record<string, string> } } }[]
+  taskGroups?: { taskSpec?: { environment?: { variables?: Record<string, string> }; runnables?: { container?: { commands?: string[] } }[] } }[]
 }
 
 export interface SweepJob {
@@ -29,6 +29,8 @@ export interface SweepJob {
   run_secs: number | null
   by: string | null
   date: string | null
+  /** The `-b` cut the job was dispatched with (empty = every bucket). */
+  buckets: string[]
   plan: string
   last_event: string | null
   logs: string
@@ -50,6 +52,8 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     .map(j => {
       const job_id = j.name.slice(j.name.lastIndexOf('/') + 1)
       const vars = j.taskGroups?.[0]?.taskSpec?.environment?.variables ?? {}
+      const script = j.taskGroups?.[0]?.taskSpec?.runnables?.[0]?.container?.commands?.join(' ') ?? ''
+      const buckets = [...new Set([...script.matchAll(/(?:^|\s)-b\s+(marin-[a-z0-9-]+)/g)].map(m => m[1]))].sort()
       const ev = j.status?.statusEvents ?? []
       const last = ev.length ? ev[ev.length - 1] : null
       const dur = j.status?.runDuration
@@ -62,6 +66,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
         run_secs: dur ? Number(dur.replace(/s$/, '')) : null,
         by: vars.USER ?? null,
         date: vars.SWEEP_DATE ?? null,
+        buckets,
         plan: `gs://oa-gcs-usage-dvx/sweep/runs/${job_id}`,
         last_event: last?.description ?? null,
         logs: `https://console.cloud.google.com/logs/query;query=${encodeURIComponent(`labels.job_uid="${j.uid}"`)}?project=${GCP_PROJECT}`,

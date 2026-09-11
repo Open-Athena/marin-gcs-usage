@@ -1989,6 +1989,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 // Anchored sections scroll in under the sticky bar otherwise (its height is
 // published as --topbar-h; it wraps to more rows on narrow viewports).
 #tree-map, #tbl, #over-time, #marks, #diff, #mtime { scroll-margin-top: var(--topbar-h, 48px); }
+.sweep-table tr[id^='run-'] { scroll-margin-top: calc(var(--topbar-h, 48px) + 8px); }
 .leaf-note { margin: -8px 0 4px; color: var(--ink-2); code { color: var(--ink); } }
 // Nothing drawable under the drilled node: the canvas folds away (the mark
 // controls / rollup above it stay).

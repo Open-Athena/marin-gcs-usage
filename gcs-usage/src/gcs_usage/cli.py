@@ -1160,7 +1160,7 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, delete_workers: int
         from .sweep_exec import record_run_start
         try:
             with fsspec.open(f"{plan_dir}/plan-summary.json") as fh:
-                run_id = record_run_start(json.load(fh), plan_dir, exec_head=head, actor=actor, started_ts=started, for_real=for_real)
+                run_id = record_run_start(json.load(fh), plan_dir, exec_head=head, actor=actor, started_ts=started, for_real=for_real, buckets=only_buckets)
             err(f"recorded deletion run {run_id} (in progress)")
         except Exception as e:  # recording must never block the run
             err(f"WARN: deletion-run start record failed: {e}")

@@ -15,4 +15,4 @@ PROJECT=${PROJECT:-oa-internal-450019}
 IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:latest}
 
 echo "building $IMAGE (Cloud Build; context = repo root, minus .gcloudignore)" >&2
-exec gcloud builds submit --project "$PROJECT" --tag "$IMAGE" .
+exec gcloud builds submit --project "$PROJECT" --config cloudbuild.yaml --substitutions "_IMAGE=$IMAGE" .

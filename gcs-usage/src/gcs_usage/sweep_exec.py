@@ -681,9 +681,10 @@ def run_id_for(plan: dict, started_ts: int) -> str:
     return f"{plan['date']}-h{plan['head']}/{dt.datetime.fromtimestamp(started_ts, dt.timezone.utc):%Y%m%dT%H%M%SZ}"
 
 
-def record_run_start(plan: dict, plan_dir: str, exec_head: int, actor: str, started_ts: int, for_real: bool) -> str:
+def record_run_start(plan: dict, plan_dir: str, exec_head: int, actor: str, started_ts: int, for_real: bool, buckets: tuple[str, ...] = ()) -> str:
     """Insert the run's D1 row as soon as it starts (`finished_ts` NULL, zero
-    totals) so the console lists it while it runs; `record_run` fills it in."""
+    totals) so the console lists it while it runs; `record_run` fills it in.
+    `buckets` = the `-b` cut (empty = every bucket in the plan → NULL)."""
     from .index_footer import _creds, _d1_query, _q
 
     run_id = run_id_for(plan, started_ts)
@@ -691,9 +692,10 @@ def record_run_start(plan: dict, plan_dir: str, exec_head: int, actor: str, star
     _d1_query(
         "INSERT INTO deletion_runs (run_id, plan, scan, head, exec_head, actor, mode, started_ts, finished_ts, "
         "deleted_bytes, deleted_objects, skipped_gone, skipped_overwritten, drift_dirs, ledger_drift_dirs, "
-        "undo_deadline, log_dir) VALUES ("
+        "undo_deadline, log_dir, buckets) VALUES ("
         f"{_q(run_id)}, {_q(plan_dir)}, {_q(plan['date'])}, {plan['head']}, {exec_head}, {_q(actor)}, "
-        f"{_q('real' if for_real else 'dry')}, {started_ts}, NULL, 0, 0, 0, 0, 0, 0, NULL, {_q(plan_dir)})",
+        f"{_q('real' if for_real else 'dry')}, {started_ts}, NULL, 0, 0, 0, 0, 0, 0, NULL, {_q(plan_dir)}, "
+        f"{_q(','.join(sorted(buckets))) if buckets else 'NULL'})",
         acct, tok,
     )
     return run_id

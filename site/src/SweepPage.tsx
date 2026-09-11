@@ -74,6 +74,8 @@ interface DeletionRun {
   undo_deadline: number | null
   undo_state: string
   log_dir: string
+  /** Comma-separated `-b` cut; null = every bucket in the plan. */
+  buckets?: string | null
 }
 
 /** A `gcs-sweep-*` Batch job as `/api/sweep/jobs` reports it (live state). */
@@ -86,10 +88,15 @@ interface SweepJob {
   run_secs: number | null
   by: string | null
   date: string | null
+  buckets: string[]
   plan: string
   last_event: string | null
   logs: string
 }
+
+/** `marin-us-east5` → `us-east5`; a run's bucket cut, or "all" when it had none. */
+const shortBuckets = (bs: readonly string[] | null | undefined): string =>
+  bs && bs.length ? bs.map(b => b.replace(/^marin-/, '')).join(', ') : 'all'
 
 const when = (ts: number | null) => (ts ? new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—')
 const fmtDur = (s: number): string => {
@@ -625,20 +632,21 @@ export function SweepPage() {
       {!!jobsQ.data?.jobs.length && (
         <div className="table-scroll busy-host">{jobsQ.isFetching && <Busy corner label="refreshing…" />}<table className="sweep-table jobs">
           <thead>
-            <tr><th>job</th><th>mode</th><th>state</th><th>by</th><th>started</th><th className="num">elapsed</th><th>plan</th><th>logs</th></tr>
+            <tr><th>job</th><th>mode</th><th>buckets</th><th>state</th><th>by</th><th>started</th><th className="num">elapsed</th><th>plan</th><th>logs</th></tr>
           </thead>
           <tbody>
             {jobsQ.data.jobs.map(j => {
               const live = j.state === 'RUNNING' || j.state === 'QUEUED' || j.state === 'SCHEDULED'
               const secs = j.run_secs ?? (live ? (Date.now() - Date.parse(j.created)) / 1000 : null)
-              const recorded = runsQ.data?.rows.some(r => r.log_dir.includes(j.job_id))
+              const run = runsQ.data?.rows.find(r => r.log_dir.includes(j.job_id))
               return (
                 <tr key={j.job_id} className={j.state === 'FAILED' ? 'failed' : live ? 'live' : ''}>
                   <td><code>{j.job_id}</code></td>
                   <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
+                  <td className="nb">{shortBuckets(j.buckets)}</td>
                   <td>
                     <span className={j.state === 'SUCCEEDED' ? 'ok' : j.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'}>{j.state.toLowerCase()}</span>
-                    {recorded && <span className="dim nb"> · run recorded ↓</span>}
+                    {run && <span className="dim nb"> · <a href={`#run-${run.run_id.replace('/', '-')}`}>run recorded ↓</a></span>}
                     {j.state === 'FAILED' && j.last_event && <div className="dim small">{j.last_event}</div>}
                   </td>
                   <td>{j.by ? shortName(j.by) : '—'}</td>
@@ -660,13 +668,14 @@ export function SweepPage() {
       {!!runsQ.data?.rows.length && (
         <div className="table-scroll busy-host">{runsQ.isFetching && <Busy corner label="refreshing…" />}<table className="sweep-table">
           <thead>
-            <tr><th>run</th><th>mode</th><th>started</th><th className="num">{'∑'} deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>undo by</th><th>logs</th></tr>
+            <tr><th>run</th><th>mode</th><th>buckets</th><th>started</th><th className="num">{'∑'} deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>undo by</th><th>logs</th></tr>
           </thead>
           <tbody>
             {runsQ.data.rows.map(r => (
-              <tr key={r.run_id}>
+              <tr key={r.run_id} id={`run-${r.run_id.replace('/', '-')}`}>
                 <td><code>{r.run_id}</code> <span className="dim">by {r.actor}</span></td>
                 <td>{r.mode === 'real' ? <b className="real">real</b> : 'dry-run'}</td>
+                <td className="nb">{shortBuckets(r.buckets?.split(','))}</td>
                 <td>{when(r.started_ts)}</td>
                 <td className="num">{tb(r.deleted_bytes)} · {r.deleted_objects.toLocaleString()}</td>
                 <td className="num">{r.skipped_gone.toLocaleString()}</td>
