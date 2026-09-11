@@ -10,6 +10,7 @@ import { Avatar } from './Avatar'
 import { MultiSelect } from './MultiSelect'
 import { ghHandle, shortName, shortUserKey, UserChip } from './UserChip'
 import { useUnits } from './units'
+import { useSectionHash } from './sectionHash'
 import { Busy, Skeleton } from './Busy'
 import { useDocTitle } from './title'
 
@@ -207,6 +208,9 @@ export function SweepPage() {
       queryKey: ['sweep-plan-summary', j.job_id],
       staleTime: Infinity,
       retry: false,
+      // Absent until the manifest step runs (minutes into a big bucket): keep
+      // asking while the job is live; a finished job without one stays a dash.
+      refetchInterval: (q: { state: { data?: unknown } }) => q.state.data || !/RUNNING|QUEUED|SCHEDULED/.test(j.state) ? false : 60_000,
       queryFn: () => jfetch<{ buckets: Record<string, { eligible?: { bytes: number; objects: number } }> }>(`/v1/files/get?path=${encodeURIComponent(`sweep/runs/${j.job_id}/plan-summary.json`)}`),
     })),
   })
@@ -220,6 +224,9 @@ export function SweepPage() {
     planned.set(j.job_id, tot)
   })
   const canWrite = apprQ.data?.spec.canWrite ?? false
+  // `#bands` / `#dispatch` / `#dispatches` / `#runs` (and a run row's own id):
+  // a reload or a shared link lands where the reader was.
+  useSectionHash(['bands', 'dispatch', 'dispatches', 'runs'], [candsQ.data, jobsQ.data, runsQ.data])
   // Orientation text: open until the reader closes it once (per browser).
   const [introOpen, setIntroOpenRaw] = useState(() => { try { return localStorage.getItem('sweep-intro') !== 'closed' } catch { return true } })
   const setIntroOpen = (v: boolean) => { setIntroOpenRaw(v); try { localStorage.setItem('sweep-intro', v ? 'open' : 'closed') } catch { /* private mode */ } }
@@ -398,7 +405,7 @@ export function SweepPage() {
       {!candsQ.data && !latestQ.isError && !candsQ.isError && <Skeleton height={420} label="loading plan…" />}
       {candsQ.isError && <p className="err">Error loading the plan's candidates: {String(candsQ.error)}</p>}
       {candsQ.data && (<>
-        <div className="sweep-tools">
+        <div className="sweep-tools" id="bands">
           <span className="tb-axis nb">
             <span className="lbl">status</span>
             <MultiSelect<Status>
@@ -578,7 +585,7 @@ export function SweepPage() {
         for (const c of ap) for (const sw of c.sweepers) bySweeper.set(sw, (bySweeper.get(sw) ?? 0) + 1)
         const full = ap.filter(c => approvals.get(c.prefix)!.mode === 'full').length
         return (
-          <div className="dispatch">
+          <div className="dispatch" id="dispatch">
             <p className="dispatch-sum">
               {ap.length === 0 ? <>Nothing approved yet — a dispatch would plan nothing.</> : (
                 <>
@@ -644,7 +651,7 @@ export function SweepPage() {
         )
       })()}
 
-      <h2>Dispatches</h2>
+      <h2 id="dispatches">Dispatches</h2>
       {jobsQ.isPending && <Skeleton height={120} label="loading dispatches…" />}
       {jobsQ.data?.configured === false && <p className="dim">Dispatch isn't configured on this deployment (no <code>GCP_SA_KEY</code>), so there is nothing to list.</p>}
       {jobsQ.isError && <p className="err">{String(jobsQ.error)}</p>}
@@ -660,7 +667,7 @@ export function SweepPage() {
               const secs = j.run_secs ?? (live ? (Date.now() - Date.parse(j.created)) / 1000 : null)
               const run = runsQ.data?.rows.find(r => r.log_dir.includes(j.job_id))
               return (
-                <tr key={j.job_id} className={[j.mode, j.state === 'FAILED' ? 'failed' : live ? 'live' : ''].filter(Boolean).join(' ')}>
+                <tr key={j.job_id} className={[`mode-${j.mode}`, j.state === 'FAILED' ? 'failed' : live ? 'live' : ''].filter(Boolean).join(' ')}>
                   <td><code>{j.job_id}</code></td>
                   <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
                   <td><span className="nb">{shortBuckets(j.buckets)}</span></td>
@@ -682,7 +689,7 @@ export function SweepPage() {
         </table></div>
       )}
 
-      <h2>Deletion runs</h2>
+      <h2 id="runs">Deletion runs</h2>
       {runsQ.isPending && <Skeleton height={120} label="loading runs…" />}
       {runsQ.isError && <p className="err">{String(runsQ.error)}</p>}
       {runsQ.data && !runsQ.data.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here as soon as it starts, and fills in the totals when it finishes.</p>}
@@ -693,7 +700,7 @@ export function SweepPage() {
           </thead>
           <tbody>
             {runsQ.data.rows.map(r => (
-              <tr key={r.run_id} id={`run-${r.run_id.replace('/', '-')}`} className={r.mode}>
+              <tr key={r.run_id} id={`run-${r.run_id.replace('/', '-')}`} className={`mode-${r.mode}`}>
                 <td><code>{r.run_id}</code> <span className="dim">by {r.actor}</span></td>
                 <td>{r.mode === 'real' ? <b className="real">real</b> : 'dry-run'}</td>
                 <td><span className="nb">{shortBuckets(r.buckets?.split(','))}</span></td>

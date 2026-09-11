@@ -16,6 +16,12 @@ database_id = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"
 # ignore `remote`. Needs CLOUDFLARE_API_TOKEN (direnv) + CLOUDFLARE_ACCOUNT_ID.
 remote = true
 
+# Workers Logs: retain console output + uncaught exceptions from the Pages
+# Functions (a few days, in the dashboard) — without this a 500 leaves no trace
+# once the request is gone (`wrangler pages deployment tail` is live-only).
+[observability]
+enabled = true
+
 [vars]
 # Zero Trust team domain whose JWTs the SSO hand-off + edge fallback accept.
 ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"

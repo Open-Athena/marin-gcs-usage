@@ -1862,8 +1862,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     // status cell stays one line (was the wrapping word "revoke").
     button.mini.ico.revoke { display: inline-flex; align-items: center; padding: 2px 4px; vertical-align: middle; svg { width: 12px; height: 12px; } }
   }
-  // Real runs carry a faint warm tint in both tables; dry runs stay plain.
-  .sweep-table tr.real { background: rgba(255, 150, 50, 0.06); }
+  // Dry runs sit on a faint grey; real runs stay plain (their mode cell is
+  // already the red word).
+  .sweep-table tr.mode-dry { background: rgba(128, 128, 128, 0.09); }
   .sweep-table.jobs {
     tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
     tr.failed td { background: color-mix(in srgb, var(--mk-del) 10%, transparent); }
@@ -1991,7 +1992,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 
 // Anchored sections scroll in under the sticky bar otherwise (its height is
 // published as --topbar-h; it wraps to more rows on narrow viewports).
-#tree-map, #tbl, #over-time, #marks, #diff, #mtime { scroll-margin-top: var(--topbar-h, 48px); }
+#tree-map, #tbl, #over-time, #marks, #diff, #mtime, #bands, #dispatch, #dispatches, #runs { scroll-margin-top: var(--topbar-h, 48px); }
 .sweep-table tr[id^='run-'] { scroll-margin-top: calc(var(--topbar-h, 48px) + 8px); }
 .leaf-note { margin: -8px 0 4px; color: var(--ink-2); code { color: var(--ink); } }
 // Nothing drawable under the drilled node: the canvas folds away (the mark

@@ -14,6 +14,7 @@ import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
+import { useSectionHash } from './sectionHash'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
@@ -24,7 +25,7 @@ import { MARK_AXES, klcSplits, useMyUser } from './sweep'
 import type { MarkAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { MultiSelect } from './MultiSelect'
-import { SiteNav, TOPBAR_VAR } from './SiteNav'
+import { SiteNav } from './SiteNav'
 import type { MenuEntry } from './SiteNav'
 import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
@@ -102,9 +103,6 @@ const MARK_CHIPS: { f: MarkAxis; key: string; glyph: string; color: string; tip:
 // = the nobody-owns-it pool. A user narrows "owned" to that person.
 type OwnerMode = 'all' | 'owned' | 'unowned' | 'user' | 'others'
 
-/** The sticky bar's current height (px) — where anchored sections park. */
-const topbarH = (): number =>
-  parseFloat(getComputedStyle(document.documentElement).getPropertyValue(TOPBAR_VAR)) || 48
 
 // Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
 // tracking the one in view, and deep links scroll to it. Old ids keep working.
@@ -112,15 +110,6 @@ const SECTION_IDS = ['tree-map', 'tbl', 'marks', 'over-time', 'diff', 'mtime']
 const LEGACY_ANCHORS: Record<string, string> = {
   'size-over-time': 'over-time', 'mark-history': 'marks', 'created-date': 'mtime', changes: 'diff',
 }
-// The last hash the scroll-spy itself wrote: the deep-link effect must ignore
-// it, or a router-driven location change would re-scroll to wherever the
-// reader already is.
-let spyHash = ''
-// True while a `#hash` deep link is still scrolling into place (see the
-// deep-link effect); the scroll-spy holds off until then.
-let deepLinkPending = false
-// Reader-initiated scrolling (not the programmatic kind) — ends a deep link's pursuit.
-const USER_SCROLL_EVENTS = ['wheel', 'touchmove', 'keydown'] as const
 
 function AppContent() {
   // Which object store to render comes from the path (one store today; the
@@ -450,73 +439,10 @@ function AppContent() {
   const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
   const age: AgeRow[] = ageQ.data ?? []
   const meta: Meta | null = metaQ.data ?? null
-  // Deep-link to a section via `#hash` (e.g. `…/ego-dex#over-time`). Re-runs
-  // as each data source lands (sections mount off different queries), and defers
-  // to the next frame so the target exists and is laid out before we scroll.
-  useEffect(() => {
-    if (!hash || hash === spyHash) return
-    const raw = hash.slice(1)
-    const id = LEGACY_ANCHORS[raw] ?? raw
-    // The treemap/table lay out async and shift the page after first paint, so a
-    // single deferred scroll lands in the wrong place (or a still-empty page).
-    // Re-scroll over ~2s until the anchor's position stops moving.
-    // While the deep link is still trying to land (sections mount as data
-    // arrives — a lens's tree.json can take seconds), the scroll-spy must not
-    // rewrite the hash: at scrollY 0 it would clear `#diff` before the
-    // section exists.
-    // Keep nudging until the anchor sits still at the sticky bar's margin
-    // (cold loads shift the page as sections land — the map and the diff
-    // now hold their slots, so ~20 s covers it); a reader's own scroll
-    // input ends the pursuit.
-    deepLinkPending = true
-    let last = NaN
-    let tries = 0
-    const stop = () => {
-      clearInterval(iv)
-      deepLinkPending = false
-      for (const ev of USER_SCROLL_EVENTS) window.removeEventListener(ev, stop)
-    }
-    const iv = setInterval(() => {
-      if (++tries > 40) { stop(); return }
-      const el = document.getElementById(id)
-      if (!el) return
-      const top = el.getBoundingClientRect().top
-      if (Math.abs(top - topbarH()) < 4 && top === last) { stop(); return } // parked
-      last = top
-      // Instant, not smooth: this is page-load positioning, not a navigation
-      // the reader watches — and a smooth animation restarted every nudge
-      // (or paused in a background tab) never gets there.
-      el.scrollIntoView({ behavior: 'instant', block: 'start' })
-    }, 500)
-    for (const ev of USER_SCROLL_EVENTS) window.addEventListener(ev, stop, { passive: true })
-    return stop
-  }, [hash, mapTree, meta, scans])
-  // Scroll-spy: keep the URL fragment tracking the section in view
-  // (replaceState — no history entries, no scroll jumps), so a copied URL
-  // reopens roughly where the reader was.
-  useEffect(() => {
-    let raf = 0
-    const onScroll = () => {
-      if (raf || deepLinkPending) return
-      raf = requestAnimationFrame(() => {
-        raf = 0
-        // Reference line near the top (not ⅓ viewport): a short section
-        // scrolled to the top should own the hash, not its taller successor.
-        const yRef = Math.min(window.innerHeight / 3, 150)
-        let cur = ''
-        for (const id of SECTION_IDS) {
-          const el = document.getElementById(id)
-          if (el && el.getBoundingClientRect().top <= yRef) cur = `#${id}`
-        }
-        if (window.scrollY < 40) cur = '' // parked at the top — no anchor
-        if (cur === window.location.hash) return
-        spyHash = cur
-        history.replaceState(history.state, '', window.location.pathname + window.location.search + cur)
-      })
-    }
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
-  }, [])
+  // Section `#hash` both ways (deep link in, scroll-spy out) — shared with
+  // /sweep. Re-armed as the map, meta and scans land (sections mount off
+  // different queries).
+  useSectionHash(SECTION_IDS, [mapTree, meta, scans], LEGACY_ANCHORS)
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { fmtBytes } = useUnits()
   // The treemap's drill path now lives in the URL *path* (below the store's own

@@ -42,9 +42,22 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   if (request.method === 'GET') {
     const limit = Math.min(Number(new URL(request.url).searchParams.get('limit')) || 500, 5000)
     const cols = spec.columns.map(c => c.name).join(', ')
-    const { results } = await env.DB
-      .prepare(`SELECT ${cols} FROM ${spec.name} ORDER BY ${spec.orderBy} LIMIT ?`)
-      .bind(limit).all()
+    const q = env.DB.prepare(`SELECT ${cols} FROM ${spec.name} ORDER BY ${spec.orderBy} LIMIT ?`).bind(limit)
+    // A D1 read can fail transiently (the console saw a bare 500 on
+    // 2026-09-11 while two executors were inserting): retry once, and answer
+    // with the cause — logged too, so it survives in Workers Logs.
+    let results
+    try {
+      ({ results } = await q.all())
+    } catch (e1) {
+      try {
+        ({ results } = await q.all())
+      } catch (e2) {
+        const msg = String((e2 as Error).message ?? e2)
+        console.error(`db read ${spec.name} failed twice: ${String((e1 as Error).message ?? e1)} / ${msg}`)
+        return json({ error: `D1 read failed: ${msg}` }, 500)
+      }
+    }
     return json({ spec: { ...spec, normalize: undefined, validate: undefined, canWrite }, rows: results })
   }
 
