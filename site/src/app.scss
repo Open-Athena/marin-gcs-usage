@@ -1865,6 +1865,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   // Dry runs sit on a faint grey; real runs stay plain (their mode cell is
   // already the red word).
   .sweep-table tr.mode-dry { background: rgba(128, 128, 128, 0.09); }
+  .sweep-table .prog progress { width: 90px; height: 8px; vertical-align: middle; margin-right: 4px; }
   .sweep-table.jobs {
     tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
     tr.failed td { background: color-mix(in srgb, var(--mk-del) 10%, transparent); }

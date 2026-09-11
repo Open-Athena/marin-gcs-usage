@@ -142,8 +142,24 @@ def _client():
 
 
 def _decisions(plan, mode):
-    df = pq.read_table(f"{plan}/{mode}/b1.parquet").to_pandas()
+    # the log is a directory of part files (each chunk its own parquet)
+    df = pq.read_table(f"{plan}/{mode}/b1").to_pandas()
     return sorted(map(tuple, df[["name", "decision", "generation"]].itertuples(index=False)))
+
+
+def test_log_lands_as_part_files_with_progress(tmp_path):
+    # Each flushed chunk is a complete parquet; the run's progress file ends
+    # marked done with the same counts the summary carries.
+    plan = _plan_dir(tmp_path)
+    s = execute_plan(str(plan), client=_client(), workers=1)
+    parts = sorted(p.name for p in (plan / "would-delete" / "b1").iterdir())
+    assert parts == ["part-00000.parquet"]
+    prog = json.loads((plan / "progress" / "b1.json").read_text())
+    assert {k: prog[k] for k in ("bucket", "mode", "roots", "roots_done", "decisions", "delete_bytes", "done")} == {
+        "bucket": "b1", "mode": "would-delete", "roots": 2, "roots_done": 2,
+        "decisions": {"delete": 1, "skipped_gone": 1, "skipped_overwritten": 1}, "delete_bytes": 10, "done": True,
+    }
+    assert s["buckets"]["b1"]["decisions"] == prog["decisions"]
 
 
 def test_dry_run_decisions_and_drift_skip(tmp_path):

@@ -38,6 +38,9 @@ BATCH = 100  # GCS JSON batch limit per request
 #: run's first batch) rides out a minute of unavailability.
 DELETE_ATTEMPTS = 8
 DELETE_BACKOFF_CAP = 60.0
+#: How often a running bucket writes `progress/<bucket>.json` (the console's
+#: progress bar; also the only live signal a job gives).
+PROGRESS_EVERY = 30.0
 TRANSIENT_CODES = frozenset({408, 429, 500, 502, 503, 504})
 _sleep = time.sleep  # patched in tests
 
@@ -373,39 +376,71 @@ def execute_plan(
 
         total_deleted_b = 0
         bands: dict[str, Counter] = {}
-        log_path = f"{plan_dir}/{mode}/{bucket}.parquet"
-        lfs, lpath = fsspec.core.url_to_fs(log_path)
-        lfs.makedirs(lpath.rsplit("/", 1)[0], exist_ok=True)
+        log_dir = f"{ppath}/{mode}/{bucket}"
+        fs.makedirs(log_dir, exist_ok=True)
         # Decisions stream to the log as roots complete (35M of them on the
-        # biggest bucket — never all in memory at once). Small row groups: the
-        # site's parquet viewer pages *within* a row group, so a 1M-row group
-        # (~27 MB) is fetched to show 100 rows; 64k rows (~1.7 MB) keeps a page
-        # cheap. The file is written once, read many times.
-        # A real run's rows are the undo record: 8k-row chunks bound what a
-        # kill can lose (the 2026-09-11 third real run wrote nothing before it
-        # died — 241 deletes with no record). A dry run keeps the 64k groups.
+        # biggest bucket — never all in memory at once), as *part files*: each
+        # chunk is its own complete parquet (`part-00042.parquet`), durable the
+        # moment it lands — a job killed from outside loses at most the chunk
+        # in memory, never the run (the 2026-09-11 eu-west4 run's single
+        # parquet had no footer when its job was deleted: ~2M deletes with no
+        # record until `reconstruct-log`). Readers glob the directory. Small
+        # chunks on a real run (the undo record); the site's parquet viewer
+        # pages within a row group, so 64k rows (~1.7 MB) keeps a dry run's
+        # pages cheap.
         ROWS_PER_GROUP = 8_192 if for_real else 65_536
         buf: list[tuple] = []
         n_written = 0
+        n_parts = 0
         log_lock = threading.Lock()
-        writer = pq.ParquetWriter(lpath, log_schema, filesystem=lfs)
 
         def flush_log(final: bool = False) -> None:
-            nonlocal buf, n_written
+            nonlocal buf, n_written, n_parts
             while len(buf) >= ROWS_PER_GROUP or (final and buf):
                 chunk, buf = buf[:ROWS_PER_GROUP], buf[ROWS_PER_GROUP:]
                 cols = list(zip(*chunk))
-                writer.write_table(pa.table(dict(zip(log_schema.names, cols)), schema=log_schema), row_group_size=ROWS_PER_GROUP)
+                with fs.open(f"{log_dir}/part-{n_parts:05d}.parquet", "wb") as fh:
+                    pq.write_table(pa.table(dict(zip(log_schema.names, cols)), schema=log_schema), fh, row_group_size=ROWS_PER_GROUP)
+                n_parts += 1
                 n_written += len(chunk)
+
+        # Live progress for the console: what the workers have logged so far,
+        # written every PROGRESS_EVERY seconds and once more at the end.
+        prog: dict = {"bucket": bucket, "mode": mode, "roots": len(roots), "roots_done": 0, "decisions": Counter(), "delete_bytes": 0,
+                      "started": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "updated": None, "done": False}
+
+        def write_progress(final: bool = False) -> None:
+            with log_lock:
+                snap = {**prog, "decisions": dict(prog["decisions"]), "updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "done": final}
+            try:
+                fs.makedirs(f"{ppath}/progress", exist_ok=True)
+                with fs.open(f"{ppath}/progress/{bucket}.json", "w") as fh:
+                    json.dump(snap, fh)
+            except Exception as e:  # progress is advisory; never the run's problem
+                err(f"WARN: progress write failed: {e}")
+
+        prog_stop = threading.Event()
+
+        def progress_loop() -> None:
+            while not prog_stop.wait(PROGRESS_EVERY):
+                write_progress()
+
+        threading.Thread(target=progress_loop, name="progress", daemon=True).start()
 
         def emit(rows: list[tuple]) -> None:
             with log_lock:
                 buf.extend(rows)
                 flush_log()
+                for _name, size, _gen, decision, _dn in rows:
+                    prog["decisions"][decision] += 1
+                    if decision == "delete":
+                        prog["delete_bytes"] += size
 
         try:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 for done in pool.map(do_root, roots):
+                    with log_lock:
+                        prog["roots_done"] += 1
                     if done is None:
                         roots_skipped += 1
                         continue
@@ -427,11 +462,12 @@ def execute_plan(
                             else:
                                 band["failed"] += 1
         finally:
-            # Whatever the workers emitted lands before the writer closes —
-            # a root that raised (a listing error) doesn't take the rest with it.
+            # Whatever the workers emitted lands as a final part — a root that
+            # raised (a listing error) doesn't take the rest with it.
             with log_lock:
                 flush_log(final=True)
-            writer.close()
+            prog_stop.set()
+            write_progress(final=True)
         summary["buckets"][bucket] = {
             "missing_perms": missing_perms,
             "soft_delete_days": soft_delete_days,
@@ -457,6 +493,24 @@ def execute_plan(
         json.dump(summary, fh, indent=2)
     summary["_plan"] = plan
     return summary
+
+
+def read_log(fs, ppath: str, mode: str, bucket: str):
+    """A run's decision log for `bucket`: the part files under
+    `<mode>/<bucket>/` (current layout) plus the single `<mode>/<bucket>.parquet`
+    of older or reconstructed runs, as one table (None if neither exists)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tables = []
+    single = f"{ppath}/{mode}/{bucket}.parquet"
+    if fs.exists(single):
+        with fs.open(single, "rb") as fh:
+            tables.append(pq.read_table(fh))
+    for part in sorted(fs.glob(f"{ppath}/{mode}/{bucket}/part-*.parquet")):
+        with fs.open(part, "rb") as fh:
+            tables.append(pq.read_table(fh))
+    return pa.concat_tables(tables) if tables else None
 
 
 def stop_file_watch(plan_dir: str, stop: threading.Event, every: float = 10.0) -> threading.Thread:
@@ -510,11 +564,10 @@ def reconstruct_deleted_log(
     with fs.open(f"{ppath}/manifest/{bucket}.parquet", "rb") as fh:
         mt = pq.read_table(fh, columns=["name", "size_bytes", "dir"])
     manifest = {n: (s, d) for n, s, d in zip(mt["name"].to_pylist(), mt["size_bytes"].to_pylist(), mt["dir"].to_pylist())}
-    lpath = f"{ppath}/deleted/{bucket}.parquet"
-    if fs.exists(lpath):
-        with fs.open(lpath, "rb") as fh:
-            if pq.read_metadata(fh).num_rows:
-                raise SystemExit(f"{plan_dir}/deleted/{bucket}.parquet already has rows — not replacing it")
+    lpath = f"{ppath}/deleted/{bucket}/part-00000.parquet"
+    existing = read_log(fs, ppath, "deleted", bucket)
+    if existing is not None and existing.num_rows:
+        raise SystemExit(f"{plan_dir}/deleted/{bucket} already has {existing.num_rows:,} log rows — not replacing them")
     rows: list[tuple] = []
     for band in bands:
         for blob in client.list_blobs(bucket, prefix=band, soft_deleted=True):
@@ -528,10 +581,10 @@ def reconstruct_deleted_log(
         ("name", pa.string()), ("size_bytes", pa.int64()), ("generation", pa.int64()),
         ("decision", pa.string()), ("dir", pa.string()),
     ])
-    fs.makedirs(f"{ppath}/deleted", exist_ok=True)
+    fs.makedirs(f"{ppath}/deleted/{bucket}", exist_ok=True)
     cols = list(zip(*rows)) if rows else [[] for _ in log_schema.names]
-    with pq.ParquetWriter(lpath, log_schema, filesystem=fs) as w:
-        w.write_table(pa.table(dict(zip(log_schema.names, cols)), schema=log_schema), row_group_size=8_192)
+    with fs.open(lpath, "wb") as fh:
+        pq.write_table(pa.table(dict(zip(log_schema.names, cols)), schema=log_schema), fh, row_group_size=8_192)
     bands_c: dict[str, Counter] = {}
     for name, size, _gen, _d, dn in rows:
         p = f"gs://{bucket}/{dn}/" if dn else pre
@@ -551,7 +604,7 @@ def reconstruct_deleted_log(
     }
     with fsspec.open(f"{plan_dir}/deleted-summary.json", "w") as fh:
         json.dump(summary, fh, indent=2)
-    err(f"{bucket}: {len(rows):,} soft-deleted objects in the window matched the manifest → {plan_dir}/deleted/{bucket}.parquet")
+    err(f"{bucket}: {len(rows):,} soft-deleted objects in the window matched the manifest → {plan_dir}/deleted/{bucket}/part-00000.parquet")
     summary["_plan"] = plan
     return summary
 
@@ -637,11 +690,10 @@ def undo_run(
     for bucket in dsum["buckets"]:
         if only_buckets and bucket not in only_buckets:
             continue
-        lpath = f"{ppath}/deleted/{bucket}.parquet"
-        if not fs.exists(lpath):
+        log = read_log(fs, ppath, "deleted", bucket)
+        if log is None:
             continue
-        with fs.open(lpath, "rb") as fh:
-            t = pq.read_table(fh, columns=["name", "size_bytes", "generation", "decision", "dir"]).to_pandas()
+        t = log.select(["name", "size_bytes", "generation", "decision", "dir"]).to_pandas()
         t = t[t["decision"] == "delete"]
         t = t[[wanted(bucket, n) for n in t["name"]]]
         todo = list(t[["name", "size_bytes", "generation", "dir"]].itertuples(index=False, name=None))

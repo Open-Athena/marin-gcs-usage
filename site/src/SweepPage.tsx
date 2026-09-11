@@ -90,10 +90,16 @@ interface SweepJob {
   by: string | null
   date: string | null
   buckets: string[]
+  /** The Batch region it runs in (its bucket's, for a one-bucket cut). */
+  region: string
   plan: string
   last_event: string | null
   logs: string
 }
+
+const LIVE_STATES = new Set(['RUNNING', 'QUEUED', 'SCHEDULED'])
+/** A runs-table row: the Batch job, its recorded D1 run, or both. */
+interface RunRow { key: string; job?: SweepJob; run?: DeletionRun }
 
 /** `marin-us-east5` → `us-east5`; a run's bucket cut, or "all" when it had none. */
 const shortBuckets = (bs: readonly string[] | null | undefined): string =>
@@ -223,10 +229,54 @@ export function SweepPage() {
     for (const k of want) { tot.bytes += b[k]?.eligible?.bytes ?? 0; tot.objects += b[k]?.eligible?.objects ?? 0 }
     planned.set(j.job_id, tot)
   })
+  // Live progress: the executor's `progress/<bucket>.json` per bucket of a
+  // running job, polled every 30 s; summed over the job's buckets.
+  const liveJobs = jobList.filter(j => LIVE_STATES.has(j.state))
+  const progTargets = liveJobs.flatMap(j => (j.buckets.length ? j.buckets : Object.keys(planQs[jobList.indexOf(j)]?.data?.buckets ?? {})).map(b => ({ job: j.job_id, bucket: b })))
+  const progQs = useQueries({
+    queries: progTargets.map(t => ({
+      queryKey: ['sweep-progress', t.job, t.bucket],
+      staleTime: 20_000,
+      refetchInterval: 30_000,
+      retry: false,
+      queryFn: () => jfetch<{ roots: number; roots_done: number; decisions: Record<string, number>; delete_bytes: number; started: string; updated: string; done: boolean }>(`/v1/files/get?path=${encodeURIComponent(`sweep/runs/${t.job}/progress/${t.bucket}.json`)}`),
+    })),
+  })
+  const progress = new Map<string, { deletes: number; gone: number; bytes: number; roots: number; roots_done: number; rate: number }>()
+  progTargets.forEach((t, i) => {
+    const d = progQs[i]?.data
+    if (!d) return
+    const cur = progress.get(t.job) ?? { deletes: 0, gone: 0, bytes: 0, roots: 0, roots_done: 0, rate: 0 }
+    const secs = Math.max(1, (Date.parse(d.updated) - Date.parse(d.started)) / 1000)
+    cur.deletes += d.decisions.delete ?? 0
+    cur.gone += d.decisions.skipped_gone ?? 0
+    cur.bytes += d.delete_bytes
+    cur.roots += d.roots
+    cur.roots_done += d.roots_done
+    cur.rate = Math.round(cur.deletes / secs)
+    progress.set(t.job, cur)
+  })
+  // One row per run: every Batch job (newest first), joined to its D1 run;
+  // then the D1 runs no job accounts for (CLI runs, or older than the list).
+  const runRows = runsQ.data?.rows ?? []
+  const runList: RunRow[] = [
+    ...jobList.map((j): RunRow => ({ key: j.job_id, job: j, run: runRows.find(r => r.log_dir.includes(j.job_id)) })),
+    ...runRows.filter(r => !jobList.some(j => r.log_dir.includes(j.job_id))).map((r): RunRow => ({ key: r.run_id, run: r })),
+  ].sort((a, b) => (b.run?.started_ts ?? Date.parse(b.job!.created) / 1000) - (a.run?.started_ts ?? Date.parse(a.job!.created) / 1000))
+  const [stopped, setStopped] = useState<ReadonlySet<string>>(new Set())
+  const stop = useMutation({
+    mutationFn: async (job_id: string) => {
+      const r = await fetch('/api/sweep/stop', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id }) })
+      const j = await r.json() as { error?: string }
+      if (!r.ok) throw new Error(j.error ?? `${r.status}`)
+      return job_id
+    },
+    onSuccess: job_id => setStopped(s => new Set([...s, job_id])),
+  })
   const canWrite = apprQ.data?.spec.canWrite ?? false
   // `#bands` / `#dispatch` / `#dispatches` / `#runs` (and a run row's own id):
   // a reload or a shared link lands where the reader was.
-  useSectionHash(['bands', 'dispatch', 'dispatches', 'runs'], [candsQ.data, jobsQ.data, runsQ.data])
+  useSectionHash(['bands', 'dispatch', 'runs'], [candsQ.data, jobsQ.data, runsQ.data])
   // Orientation text: open until the reader closes it once (per browser).
   const [introOpen, setIntroOpenRaw] = useState(() => { try { return localStorage.getItem('sweep-intro') !== 'closed' } catch { return true } })
   const setIntroOpen = (v: boolean) => { setIntroOpenRaw(v); try { localStorage.setItem('sweep-intro', v ? 'open' : 'closed') } catch { /* private mode */ } }
@@ -651,71 +701,81 @@ export function SweepPage() {
         )
       })()}
 
-      <h2 id="dispatches">Dispatches</h2>
-      {jobsQ.isPending && <Skeleton height={120} label="loading dispatches…" />}
-      {jobsQ.data?.configured === false && <p className="dim">Dispatch isn't configured on this deployment (no <code>GCP_SA_KEY</code>), so there is nothing to list.</p>}
+      <h2 id="runs">Runs</h2>
+      {/* One row per run, from the moment it is queued: Batch's job (state,
+          region, buckets, elapsed) joined to the D1 run the executor records
+          (totals, undo window) by the job id in the run's log dir. A row
+          without a job is a CLI run or older than Batch's list; a live row
+          draws its progress from the executor's `progress/<bucket>.json`. */}
+      {(jobsQ.isPending || runsQ.isPending) && <Skeleton height={160} label="loading runs…" />}
+      {jobsQ.data?.configured === false && <p className="dim">Dispatch isn't configured on this deployment (no <code>GCP_SA_KEY</code>): only recorded runs are listed.</p>}
       {jobsQ.isError && <p className="err">{String(jobsQ.error)}</p>}
-      {jobsQ.data?.configured && !jobsQ.data.jobs.length && <p className="dim">None yet — every job the console (or the CLI) submits to Batch shows here from the moment it is queued.</p>}
-      {!!jobsQ.data?.jobs.length && (
-        <div className="table-scroll busy-host">{jobsQ.isFetching && <Busy corner label="refreshing…" />}<table className="sweep-table jobs">
+      {runsQ.isError && <p className="err">{String(runsQ.error)}</p>}
+      {jobsQ.data && runsQ.data && !runList.length && <p className="dim">None yet — a dispatch shows here from the moment it is queued; the executor fills in the totals as it runs.</p>}
+      {!!runList.length && (
+        <div className="table-scroll busy-host">{(jobsQ.isFetching || runsQ.isFetching) && <Busy corner label="refreshing…" />}<table className="sweep-table runs">
           <thead>
-            <tr><th>job</th><th>mode</th><th>buckets</th><th className="num">planned</th><th>state</th><th>by</th><th>started</th><th className="num">elapsed</th><th>plan</th><th>logs</th></tr>
+            <tr><th>run</th><th>mode</th><th>buckets</th><th className="num">planned</th><th className="num">deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>state</th><th>started</th><th className="num">elapsed</th><th>undo by</th><th>links</th>{canWrite && <th></th>}</tr>
           </thead>
           <tbody>
-            {jobsQ.data.jobs.map(j => {
-              const live = j.state === 'RUNNING' || j.state === 'QUEUED' || j.state === 'SCHEDULED'
-              const secs = j.run_secs ?? (live ? (Date.now() - Date.parse(j.created)) / 1000 : null)
-              const run = runsQ.data?.rows.find(r => r.log_dir.includes(j.job_id))
+            {runList.map(({ key, job, run }) => {
+              const mode = job?.mode ?? run!.mode
+              const live = !!job && LIVE_STATES.has(job.state)
+              const startedTs = run?.started_ts ?? (job ? Date.parse(job.created) / 1000 : 0)
+              const secs = job?.run_secs ?? (run?.finished_ts ? run.finished_ts - run.started_ts : live ? Date.now() / 1000 - startedTs : null)
+              const p = job ? planned.get(job.job_id) : undefined
+              const prog = job ? progress.get(job.job_id) : undefined
+              const bucketsOf = job ? job.buckets : run?.buckets?.split(',') ?? []
+              const state = job ? job.state.toLowerCase() : run?.finished_ts ? 'recorded' : 'in progress'
+              const stateCls = job?.state === 'SUCCEEDED' ? 'ok' : job?.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'
+              const logDir = (run?.log_dir ?? job?.plan ?? '').replace('gs://oa-gcs-usage-dvx/', '').replace(/\/?$/, '/')
               return (
-                <tr key={j.job_id} className={[`mode-${j.mode}`, j.state === 'FAILED' ? 'failed' : live ? 'live' : ''].filter(Boolean).join(' ')}>
-                  <td><code>{j.job_id}</code></td>
-                  <td>{j.mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
-                  <td><span className="nb">{shortBuckets(j.buckets)}</span></td>
-                  <td className="num"><span className="nb">{(() => { const p = planned.get(j.job_id); return p ? `${tb(p.bytes)} · ${p.objects.toLocaleString()}` : '—' })()}</span></td>
-                  <td>
-                    <span className={j.state === 'SUCCEEDED' ? 'ok' : j.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'}>{j.state.toLowerCase()}</span>
-                    {run && <span className="dim nb"> · <a href={`#run-${run.run_id.replace('/', '-')}`}>run recorded ↓</a></span>}
-                    {j.state === 'FAILED' && j.last_event && <div className="dim small">{j.last_event}</div>}
+                <tr key={key} id={run ? `run-${run.run_id.replace('/', '-')}` : undefined} className={[`mode-${mode}`, job?.state === 'FAILED' ? 'failed' : live ? 'live' : ''].filter(Boolean).join(' ')}>
+                  <td><code>{job?.job_id ?? run!.run_id}</code>{run && <span className="dim"> by {shortName(run.actor)}</span>}{!run && job?.by && <span className="dim"> by {shortName(job.by)}</span>}</td>
+                  <td>{mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
+                  <td><span className="nb">{shortBuckets(bucketsOf)}{job && job.region !== 'us-central1' && <span className="dim"> · {job.region}</span>}</span></td>
+                  <td className="num"><span className="nb">{p ? `${tb(p.bytes)} · ${p.objects.toLocaleString()}` : '—'}</span></td>
+                  <td className="num">
+                    {run?.finished_ts ? (
+                      <span className="nb">{tb(run.deleted_bytes)} · {run.deleted_objects.toLocaleString()}</span>
+                    ) : live && prog ? (
+                      <span className="prog nb" title={`${prog.deletes.toLocaleString()} of ${(p?.objects ?? 0).toLocaleString()} · ${prog.rate.toLocaleString()}/s · ${prog.roots_done.toLocaleString()} / ${prog.roots.toLocaleString()} roots`}>
+                        <progress max={p?.objects || undefined} value={prog.deletes} /> {tb(prog.bytes)} · {prog.deletes.toLocaleString()} · {prog.rate.toLocaleString()}/s
+                      </span>
+                    ) : live ? <span className="dim">listing…</span> : '—'}
                   </td>
-                  <td>{j.by ? shortName(j.by) : '—'}</td>
-                  <td><span className="nb">{when(Date.parse(j.created) / 1000)}</span></td>
+                  <td className="num">{run ? run.skipped_gone.toLocaleString() : prog ? prog.gone.toLocaleString() : '—'}</td>
+                  <td className="num">{run ? run.skipped_overwritten.toLocaleString() : '—'}</td>
+                  <td className="num">{run ? run.drift_dirs + run.ledger_drift_dirs : '—'}</td>
+                  <td>
+                    <span className={stateCls}>{state}</span>
+                    {job?.state === 'FAILED' && job.last_event && <div className="dim small">{job.last_event}</div>}
+                  </td>
+                  <td><span className="nb">{when(startedTs)}</span></td>
                   <td className="num"><span className="nb">{secs == null ? '—' : fmtDur(secs)}</span></td>
-                  <td><Link to={`/files/${j.plan.replace('gs://oa-gcs-usage-dvx/', '')}/`}>{j.date ?? 'plan'} →</Link></td>
-                  <td><a href={j.logs} target="_blank" rel="noreferrer">Cloud Logging ↗</a></td>
+                  <td>{mode === 'real' && run?.undo_deadline ? <span className="nb">{when(run.undo_deadline)}</span> : '—'}</td>
+                  <td className="nb">
+                    <Link to={`/files/${logDir}`}>plan →</Link>
+                    {(run?.finished_ts || live) && <> · <Link to={`/files/${logDir}${mode === 'real' ? 'deleted' : 'would-delete'}/`}>log →</Link></>}
+                    {job && <> · <a href={job.logs} target="_blank" rel="noreferrer">logs ↗</a></>}
+                  </td>
+                  {canWrite && (
+                    <td>
+                      {live && (
+                        <button className="mini" disabled={stop.isPending || stopped.has(job!.job_id)} onClick={() => stop.mutate(job!.job_id)}
+                                title="Drop the STOP file: roots already listing finish and log, the rest are left for a re-run; the job ends red.">
+                          {stopped.has(job!.job_id) ? 'stop requested' : 'stop…'}
+                        </button>
+                      )}
+                    </td>
+                  )}
                 </tr>
               )
             })}
           </tbody>
         </table></div>
       )}
-
-      <h2 id="runs">Deletion runs</h2>
-      {runsQ.isPending && <Skeleton height={120} label="loading runs…" />}
-      {runsQ.isError && <p className="err">{String(runsQ.error)}</p>}
-      {runsQ.data && !runsQ.data.rows.length && <p className="dim">None yet — the executor records every run (dry + real) here as soon as it starts, and fills in the totals when it finishes.</p>}
-      {!!runsQ.data?.rows.length && (
-        <div className="table-scroll busy-host">{runsQ.isFetching && <Busy corner label="refreshing…" />}<table className="sweep-table">
-          <thead>
-            <tr><th>run</th><th>mode</th><th>buckets</th><th>started</th><th className="num">{'∑'} deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>undo by</th><th>logs</th></tr>
-          </thead>
-          <tbody>
-            {runsQ.data.rows.map(r => (
-              <tr key={r.run_id} id={`run-${r.run_id.replace('/', '-')}`} className={`mode-${r.mode}`}>
-                <td><code>{r.run_id}</code> <span className="dim">by {r.actor}</span></td>
-                <td>{r.mode === 'real' ? <b className="real">real</b> : 'dry-run'}</td>
-                <td><span className="nb">{shortBuckets(r.buckets?.split(','))}</span></td>
-                <td>{when(r.started_ts)}</td>
-                <td className="num">{tb(r.deleted_bytes)} · {r.deleted_objects.toLocaleString()}</td>
-                <td className="num">{r.skipped_gone.toLocaleString()}</td>
-                <td className="num">{r.skipped_overwritten.toLocaleString()}</td>
-                <td className="num">{r.drift_dirs + r.ledger_drift_dirs}</td>
-                <td>{r.mode === 'real' ? when(r.undo_deadline) : '—'}</td>
-                <td><Link to={`/files/${r.log_dir.replace('gs://oa-gcs-usage-dvx/', '').replace(/\/?$/, '/')}${r.mode === 'real' ? 'deleted' : 'would-delete'}/`}>parquet →</Link></td>
-              </tr>
-            ))}
-          </tbody>
-        </table></div>
-      )}
+      {stop.error != null && <p className="err">{String(stop.error)}</p>}
     </main>
   )
 }
