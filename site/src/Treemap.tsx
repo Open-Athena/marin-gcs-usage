@@ -1,9 +1,9 @@
 import { useCallback, useState } from 'react'
-import type { ReactNode } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle } from '@disk-tree/react'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndex } from './colors'
+import { CopyName, copyText } from './CopyName'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
@@ -49,17 +49,6 @@ export function legendGroups(names: string[]): { prefix: string; names: string[]
   return out
 }
 
-// An elided name's full text on hover; click copies it.
-function CopyName({ text, note, children }: { text: string; note?: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false)
-  const copy = () => { navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) }) }
-  return (
-    <Tooltip content={<><code className="elide-full">{text}</code><span className="copy-hint">{copied ? 'copied ✓' : note ? `${note} · click to copy` : 'click to copy'}</span></>}>
-      <span onClick={copy} role="button" tabIndex={-1}>{children}</span>
-    </Tooltip>
-  )
-}
-
 const rankCache = new WeakMap<TreeNode, Map<string, [number, number]>>()
 /** name → [rank, count] over a node's real (non-fold) children, largest first. */
 function childRanks(node: TreeNode): Map<string, [number, number]> {
@@ -85,7 +74,7 @@ function PathBar({ uri }: { uri: string }) {
       <span className="path-acts" onClick={e => e.stopPropagation()}>
         <button
           type="button" className="path-copy" title="Copy path to clipboard"
-          onClick={() => navigator.clipboard?.writeText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
+          onClick={() => copyText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
         >{copied ? 'copied ✓' : 'copy'}</button>
       </span>
     </div>

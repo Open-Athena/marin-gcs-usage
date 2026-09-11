@@ -522,3 +522,63 @@ has the use-kbd SpeedDial + ⌘K, so which gcs control is meant is unclear
 (flagged to Ryan). **Still TODO: refresh `factored/cw-s3-gcs-*` to verify the
 residual shrank** (the "port directly, verify after" plan's verify step).
 These are gcs-ward too — general FE gcs already has; cw-s3 catching up.
+
+### 2026-09-11 (cw-ward, `/cp gcs and dt`) — general FE + treemap parity, sweep held
+
+gcs had a 50-commit batch since the cursor (`dfc473453..fc6dd8d70`), **dominated
+by the sweep executor + console + `/api/sweep`** (the real 9/11 GCS sweep run and
+its aftermath) — the whole subsystem, still port-pending on cw-s3 (no owner/writer
+attribution; ledger 2026-09-08). Landed the portable general-FE slices, adapted
+(one commit, `a3d8681`; cursor ref advanced to gcs tip `fc6dd8d70`):
+
+- `170a144da` — children names elide from the **middle** (`elideMid`, 60-char
+  budget, tail kept) not the end, never wrap; full path in a floating `Tooltip`.
+  `CopyName` + `copyText` (non-secure-origin `execCommand` fallback for the
+  tailnet dev server) extracted to `CopyName.tsx`, shared by the table + the pin.
+- `2cb25f2d0` (general slice) — held-map loading marker: a scan switch keeps the
+  last map drawn but dimmed under a "loading view…" pill (`Busy` + `.busy-*`)
+  instead of blanking; the map's derivations (`mapPath`/`dateRange`) follow
+  `shownTree = tree ?? lastTree`, so the children table doesn't empty mid-load.
+- `250eed6f4` + `6c9146926` (core hunks) — `packages/treemap` back to byte-parity
+  with gcs (src **and** tests): ⌥-click pins a branch cell instead of drilling;
+  the drill-pop keydown listens on `window` and yields to `defaultPrevented` (a
+  use-kbd hotkey layer clearing a selection wins). The row-selection/bulk UI those
+  commits carry is the sweep axis, skipped.
+- Opportunistic parity (pre-cursor, hard-parity surface): `packages/react/tests`
+  gained gcs's 3 `TimeSeries` brush/window `it()` blocks (src was already parity)
+  — closes the last `packages/*` audit-yellow. **`packages/treemap/{src,tests}`,
+  `packages/react/{src,tests}`, `src/disk_tree` all `parity` now.**
+
+Skipped as gcs-only / port-pending (sweep + ownership axes): the entire sweep
+executor/console/API (~30 commits incl. the fate→mark rename `e5d7fb61d`, region
+routing, undo, part-file logs, runs-table UI, dispatch error surfacing), the
+children-table sweep bits (`de281fff9`/`84de6dac2`/`5e0d35c30`/`ec540a50d`), the
+index-extras attribution sidecars (`e8ede579b`/`f0af501ea`/`68e0bc583` —
+`attr.tsv`), serving (`4aa30bdeb`/`776b3f429` — cw-s3 aligns diff client-side),
+`79c85ed59` skeletons (sweep/multipage), `7d73b5c30` `useSectionHash`+`/sweep`
+(single-page), `a7baf89d6` `job/rerg` (intended `job/` delta), the dep bumps
+`f0723a1ba`/`05747cc1b`/`f9a203818` (gcs lockfile-specific — cw-s3 wants its own
+`pnpm audit`), `97eb89af6` `specs/org-axis.md` (tabled). The BUCKET_REGION +
+`/api/sweep/stop` fixes that landed mid-pass are sweep too.
+
+**dt/main `48060e5..d5f85d2b9` assessed (23 commits), cursor NOT advanced.** dt's
+new `@rdub/treemap` core is HELD gcs-first: `522fa2d67` (seam/`var()`/DOM fixes),
+`96bbc5f2f` (test), `b771fac1e` (`nestedHues` L1/L2 coloring), `da645c0a0` (canvas
+`var()` fills, `onDrawn`, hover-tip guard, canvas↔DOM parity). gcs's
+`packages/treemap` doesn't carry them yet (144-line gcs↔dt gap), and cw-s3 mirrors
+the core from gcs — taking them now puts cw-s3 ahead. `a4305050a` (`CellCtx.chain`)
+already here. Rest intended delta: upstream `ui/` (Flask www arch), the
+public-diff-demo / IaC / serverless-reference specs, remote-scan-target +
+per-bucket-creds (`02a84a678`) + `.groups.json` footer (`6f0999de0`/`334c9272d`)
+engine work (upstream's laptop→cloud pipeline; the CW job lists in Batch and bakes
+its own `diff.json`). Leaving the dt cursor at `48060e5` re-surfaces the treemap
+core next pass, once gcs takes it. **Queued gcs-ward:** none new (general FE gcs
+already has). **Queued dt-ward:** unchanged.
+
+Verify: audit green on all shared surfaces; site build + `tsc` clean; treemap 141
+/ react 88 tests pass. CIC'd on `marin/grug` — middle-elision (tail kept), the
+floating tooltip shows the full `s3://…` path, an in-app scan switch holds the
+dimmed map under "loading view…" then clears. Factored-branch refresh deferred:
+the residual is a misleading metric until `classify.py` re-buckets the unlisted
+gcs-only files (documented 9/09); the git-didi audit is the honest parity check
+and it's green.

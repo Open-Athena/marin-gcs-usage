@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { intParam, useUrlState } from 'use-prms'
 import { dateColor, epochDaysToMonth } from './colors'
+import { elideMid } from './CopyName'
+import { Tooltip } from './Tooltip'
 import type { TreeNode } from './types'
 import { fmtN } from './types'
 import { useUnits } from './units'
@@ -15,6 +17,10 @@ type SortKey = 'n' | 'b' | 'o' | 'd'
 
 // Rows per page: `?n=` (default 20); the pager offers the usual sizes.
 const PAGE_SIZES = [20, 50, 100, 200]
+
+/** Names longer than this elide from the middle (the full path is in the
+ *  tooltip); ~60 chars fills the column at 13px. */
+const NAME_MAX = 60
 
 export function ChildrenTable({ node, segs, scheme = 's3://', onOpen }: {
   /** The treemap's currently-viewed node. */
@@ -99,8 +105,14 @@ export function ChildrenTable({ node, segs, scheme = 's3://', onOpen }: {
             const uri = scheme + kidSegs.join('/')
             return (
               <tr key={k.n}>
-                <td className="prefix" title={uri}>
-                  {synthetic || !k.c?.length ? k.n : <a role="link" tabIndex={0} onClick={() => onOpen(kidSegs)}>{k.n}</a>}
+                <td className="prefix">
+                  <Tooltip content={<code className="elide-full">{uri}</code>}>
+                    {synthetic || !k.c?.length ? (
+                      <span>{elideMid(k.n, NAME_MAX)}</span>
+                    ) : (
+                      <a role="link" tabIndex={0} onClick={() => onOpen(kidSegs)}>{elideMid(k.n, NAME_MAX)}</a>
+                    )}
+                  </Tooltip>
                 </td>
                 <td className="num">{fmtBytes(k.b)}</td>
                 <td className="num">{node.b ? ((100 * k.b) / node.b).toFixed(1) : 0}%</td>

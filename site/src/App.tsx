@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { FaGithub } from 'react-icons/fa'
 import { Link, useLocation } from 'react-router-dom'
@@ -7,6 +7,7 @@ import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
+import { Busy } from './Busy'
 import { DiffTreemap } from './DiffTreemap'
 import { SizeOverTime } from './SizeOverTime'
 import type { DiffData } from './DiffTreemap'
@@ -124,6 +125,13 @@ function AppContent() {
   // section aligns client-side, its "before" scan.
   const [trees, setTrees] = useState<Record<string, TreeNode>>({})
   const tree = asof ? trees[asof] ?? null : null
+  // Loading state: while a newly-picked scan's tree lands, keep the last one
+  // drawn (dimmed under a marker) rather than blanking the map — the map's
+  // derivations below follow `shownTree`, so decorations don't empty either.
+  const lastTree = useRef<TreeNode | null>(null)
+  if (tree) lastTree.current = tree
+  const shownTree = tree ?? lastTree.current
+  const treeLoading = !tree && !!asof
   const [age, setAge] = useState<AgeRow[]>([])
   const [meta, setMeta] = useState<Meta | null>(null)
   const [rules, setRules] = useState<Rules | null>(null)
@@ -298,9 +306,9 @@ function AppContent() {
   // node, and a table row drills the map by pushing onto it.
   const [drillPath, setDrillPath] = useUrlState('path', stringParam())
   const mapPath = useMemo((): TreeNode[] | undefined => {
-    if (!tree) return undefined
-    const path = [tree]
-    let cur: TreeNode = tree
+    if (!shownTree) return undefined
+    const path = [shownTree]
+    let cur: TreeNode = shownTree
     for (const s of (drillPath ?? '').split('/').filter(Boolean)) {
       const next = cur.c?.find(c => c.n === s)
       if (!next) break
@@ -309,9 +317,9 @@ function AppContent() {
     }
     // A store with one bucket (CoreWeave today) opens inside it — the bucket
     // level is a single full-width box otherwise.
-    if (path.length === 1 && tree.c?.length === 1) return [tree, tree.c[0]]
+    if (path.length === 1 && shownTree.c?.length === 1) return [shownTree, shownTree.c[0]]
     return path
-  }, [tree, drillPath])
+  }, [shownTree, drillPath])
   const onMapPath = (p: TreeNode[]) => setDrillPath(p.slice(1).map(n => n.n).join('/') || undefined)
   // Table row → drill the map to that prefix and scroll it into view.
   const openPath = (segs: string[]) => {
@@ -392,7 +400,7 @@ function AppContent() {
   })
 
   const dateRange = useMemo((): DateRange | null => {
-    if (!tree) return null
+    if (!shownTree) return null
     let min = Infinity
     let max = -Infinity
     const walk = (n: TreeNode) => {
@@ -402,9 +410,9 @@ function AppContent() {
       }
       n.c?.forEach(walk)
     }
-    walk(tree)
+    walk(shownTree)
     return min < max ? { min, max } : null
-  }, [tree])
+  }, [shownTree])
 
   useEffect(() => {
     void fetch('/data/rules.json').then(r => r.json()).then(setRules).catch(() => {})
@@ -549,9 +557,12 @@ function AppContent() {
         </div>
       )}
 
-      {tree ? (
-        <div id="tree-map"><Treemap root={tree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens}
-          path={mapPath} onPathChange={onMapPath} /></div>
+      {shownTree ? (
+        <div id="tree-map" className={treeLoading ? 'busy-host stale' : 'busy-host'}>
+          <Treemap root={shownTree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens}
+            path={mapPath} onPathChange={onMapPath} />
+          {treeLoading && <Busy label="loading view…" />}
+        </div>
       ) : (
         <p className="loading">loading tree…</p>
       )}
