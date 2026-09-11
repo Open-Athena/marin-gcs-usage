@@ -94,6 +94,8 @@ interface SweepJob {
   buckets: string[]
   /** The Batch region it runs in (its bucket's, for a one-bucket cut). */
   region: string
+  /** A one-bucket cut running away from its bucket (Batch has no location there). */
+  remote: boolean
   plan: string
   last_event: string | null
   logs: string
@@ -730,7 +732,7 @@ export function SweepPage() {
       {!!runList.length && (
         <div className="table-scroll busy-host">{(jobsQ.isFetching || runsQ.isFetching) && <Busy corner label="refreshing…" />}<table className="sweep-table runs">
           <thead>
-            <tr><th>run</th><th>mode</th><th>buckets</th><th className="num">planned</th><th className="num">deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>state</th><th>started</th><th className="num">elapsed</th><th>undo by</th><th>links</th>{canWrite && <th></th>}</tr>
+            <tr><th>run</th><th>by</th><th>mode</th><th>buckets</th><th className="num">planned</th><th className="num">deleted</th><th className="num">gone</th><th className="num">overwritten</th><th className="num">drift</th><th>state</th><th>started</th><th className="num">elapsed</th><th>undo by</th><th>links</th>{canWrite && <th></th>}</tr>
           </thead>
           <tbody>
             {runPageRows.map(({ key, job, run }) => {
@@ -743,12 +745,18 @@ export function SweepPage() {
               const bucketsOf = job ? job.buckets : run?.buckets?.split(',') ?? []
               const state = job ? job.state.toLowerCase() : run?.finished_ts ? 'recorded' : 'in progress'
               const stateCls = job?.state === 'SUCCEEDED' ? 'ok' : job?.state === 'FAILED' ? 'err' : live ? 'live-tag' : 'dim'
+              const actor = run?.actor ?? job?.by ?? ''
               const logDir = (run?.log_dir ?? job?.plan ?? '').replace('gs://oa-gcs-usage-dvx/', '').replace(/\/?$/, '/')
               return (
                 <tr key={key} id={run ? `run-${run.run_id.replace('/', '-')}` : undefined} className={[`mode-${mode}`, job?.state === 'FAILED' ? 'failed' : live ? 'live' : job?.state === 'SUCCEEDED' || run?.finished_ts ? 'ok' : ''].filter(Boolean).join(' ')}>
-                  <td><code>{job?.job_id ?? run!.run_id}</code>{run && <span className="dim"> by {shortName(run.actor)}</span>}{!run && job?.by && <span className="dim"> by {shortName(job.by)}</span>}</td>
+                  <td><code>{job?.job_id ?? run!.run_id}</code></td>
+                  <td>{actor && (
+                    <Tooltip content={<>{run ? 'run' : 'dispatched'} by <b>{shortName(actor)}</b></>}>
+                      <span className="approver"><Avatar github={ghHandle(actor)} name={shortName(actor)} size={16} /></span>
+                    </Tooltip>
+                  )}</td>
                   <td>{mode === 'real' ? <span className="warn-tag">REAL</span> : 'dry-run'}</td>
-                  <td><span className="nb">{shortBuckets(bucketsOf)}{job && job.region !== 'us-central1' && <span className="dim"> · {job.region}</span>}</span></td>
+                  <td><span className="nb">{shortBuckets(bucketsOf)}{job?.remote && <span className="dim" title={`Runs in ${job.region}: Batch has no ${job.buckets[0].replace(/^marin-/, '')} location`}> · {job.region}</span>}</span></td>
                   <td className="num"><span className="nb">{p ? `${tb(p.bytes)} · ${p.objects.toLocaleString()}` : '—'}</span></td>
                   <td className="num">
                     {run?.finished_ts ? (
@@ -783,9 +791,9 @@ export function SweepPage() {
                   {canWrite && (
                     <td>
                       {live && (
-                        <button className="mini" disabled={stop.isPending || stopped.has(job!.job_id)} onClick={() => stop.mutate(job!.job_id)}
+                        <button className="mini stop" disabled={stop.isPending || stopped.has(job!.job_id)} onClick={() => stop.mutate(job!.job_id)}
                                 title="Drop the STOP file: roots already listing finish and log, the rest are left for a re-run; the job ends red.">
-                          {stopped.has(job!.job_id) ? 'stop requested' : 'stop…'}
+                          {stopped.has(job!.job_id) ? 'stopping' : 'stop'}
                         </button>
                       )}
                     </td>

@@ -5,7 +5,7 @@
 // `dispatch.ts` (`batch.jobsEditor` covers list). Any signed-in viewer of the
 // console may read this; the payload holds no bucket data.
 import { type Env as AuthEnv, GCS_SCOPE, json, requireScope } from '../../_lib/auth.js'
-import { BATCH_REGIONS, GCP_PROJECT, batchJobsUrl, gcpToken } from '../../_lib/gcp.js'
+import { BATCH_REGIONS, BUCKET_REGION, GCP_PROJECT, batchJobsUrl, gcpToken } from '../../_lib/gcp.js'
 
 interface Env extends AuthEnv {
   GCP_SA_KEY?: string
@@ -33,6 +33,8 @@ export interface SweepJob {
   buckets: string[]
   /** The Batch region it runs in (its bucket's, for a one-bucket cut). */
   region: string
+  /** A one-bucket cut running away from its bucket (Batch has no location there). */
+  remote: boolean
   plan: string
   last_event: string | null
   logs: string
@@ -77,6 +79,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
         date: vars.SWEEP_DATE ?? null,
         buckets,
         region: j.region,
+        remote: buckets.length === 1 && BUCKET_REGION[buckets[0]] !== j.region,
         plan: `gs://oa-gcs-usage-dvx/sweep/runs/${job_id}`,
         last_event: last?.description ?? null,
         logs: `https://console.cloud.google.com/logs/query;query=${encodeURIComponent(`labels.job_uid="${j.uid}"`)}?project=${GCP_PROJECT}`,

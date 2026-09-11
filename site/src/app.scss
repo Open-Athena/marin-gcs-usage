@@ -1877,6 +1877,14 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     tr.live td { background: color-mix(in srgb, #58a6ff 8%, transparent); }
     tr.failed td { background: color-mix(in srgb, var(--mk-del) 9%, transparent); }
     tr.ok td { background: color-mix(in srgb, var(--mk-keep, #3fb950) 5%, transparent); }
+    // Stop: a quiet outline in the delete red; filled on hover, muted once sent.
+    button.mini.stop {
+      font: inherit; font-size: 12px; font-weight: 600; line-height: 1; cursor: pointer;
+      padding: 3px 9px; border-radius: 6px; background: transparent;
+      color: var(--mk-del); border: 1px solid color-mix(in srgb, var(--mk-del) 60%, transparent);
+      &:hover:not(:disabled) { background: var(--mk-del); color: #fff; border-color: var(--mk-del); }
+      &:disabled { cursor: default; color: var(--ink-3); border-color: var(--line); }
+    }
     details.why summary { cursor: pointer; list-style: none; }
     details.why summary::before { content: '▸ '; }
     details.why[open] summary::before { content: '▾ '; }
