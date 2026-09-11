@@ -1132,8 +1132,9 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
     from .sweep_plan import (
         VoteResolver, classify_dir, ever_kept_prefixes, load_keeps, owners_resolver,
     )
-    from .sweep_exec import execute_plan
+    from .sweep_exec import DELETE_ATTEMPTS, execute_plan
 
+    DELETE_ATTEMPTS_NOTE = f"{DELETE_ATTEMPTS} attempts"
     base, tok = creds(token, url)
     if not tok:
         raise SystemExit("no token — set $GCS_USAGE_TOKEN or pass -t")
@@ -1173,13 +1174,42 @@ def sweep_execute(only_buckets: tuple[str, ...], drift: str, token: str | None, 
     finished = int(dt.datetime.now(dt.timezone.utc).timestamp())
     total = sum(b.get("delete_bytes", 0) for b in summary["buckets"].values())
     err(f"\n{'deleted' if for_real else 'would delete'}: {total / 1e12:.2f} TB total")
+    failed = {b: v["failed_dirs"] for b, v in summary["buckets"].items() if v.get("failed_dirs")}
     if not no_record:
         from .sweep_exec import record_run
+        # The undo deadline follows the narrowest window actually measured on
+        # the run's buckets (the guard already refused anything under 7 d).
+        windows = [int(v["soft_delete_days"]) for v in summary["buckets"].values() if "soft_delete_days" in v]
         try:
-            run_id = record_run(summary, summary["_plan"], exec_head=head, actor=actor, started_ts=started, finished_ts=finished)
+            run_id = record_run(summary, summary["_plan"], exec_head=head, actor=actor, started_ts=started, finished_ts=finished, soft_delete_days=min(windows) if windows else 7)
             err(f"recorded deletion run {run_id}")
         except Exception as e:  # recording must never mask a completed run
             err(f"WARN: deletion-run record failed: {e}")
+    if failed:
+        # Logged and recorded above; the job still ends red so nobody reads
+        # "succeeded" over deletes GCS never answered for.
+        n = sum(d["objects"] for ds in failed.values() for d in ds)
+        err(f"ERROR: {n:,} delete(s) in {sum(map(len, failed.values())):,} dir(s) got no definitive answer after {DELETE_ATTEMPTS_NOTE} — see `failed_dirs` in the summary; a re-run settles them (already-gone → skipped_gone)")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(2)
+    _hard_exit()
+
+
+@sweep.command("reconstruct-log")
+@option("-b", "--bucket", "bucket", required=True, help="Bucket whose deleted/ log to rebuild")
+@option("-s", "--since", "since", required=True, help="Window start — soft-delete time, ISO 8601 UTC (e.g. 2026-09-11T05:55:00Z)")
+@option("-u", "--until", "until", required=True, help="Window end, ISO 8601 UTC")
+@argument("plan_dir")
+def sweep_reconstruct_log(bucket: str, since: str, until: str, plan_dir: str) -> None:
+    """Rebuild PLAN_DIR/deleted/<bucket>.parquet for a real run that died
+    before writing its log: the bucket's soft-deleted objects under the plan's
+    bands whose soft-delete time falls in [--since, --until], matched to the
+    manifest by name. Writes deleted-summary.json too. Refuses to replace a
+    log that already has rows."""
+    from .sweep_exec import reconstruct_deleted_log
+    parse = lambda v: dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+    reconstruct_deleted_log(plan_dir, bucket, since=parse(since), until=parse(until))
     _hard_exit()
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -22,6 +21,7 @@ class FakeBlob:
     size: int
     generation: int
     time_created: dt.datetime
+    soft_delete_time: dt.datetime | None = None
 
 
 @dataclass
@@ -30,12 +30,48 @@ class FakeBucketHandle:
     # What the job identity holds on the bucket (GCS answers testIamPermissions
     # with the granted subset of what was asked).
     perms: set = field(default_factory=lambda: {"storage.buckets.get", "storage.objects.delete", "storage.objects.restore"})
+    active_batch: object = None
 
     def delete_blob(self, name, if_generation_match=None):
         self.deletes.append((name, if_generation_match))
+        if self.active_batch is not None:
+            self.active_batch.items.append((name, if_generation_match))
 
     def test_iam_permissions(self, permissions):
         return [p for p in permissions if p in self.perms]
+
+
+@dataclass
+class FakeResponse:
+    status_code: int
+
+
+class FakeBatch:
+    """The library's `Batch` as the executor sees it: deletes issued inside the
+    block, then `_responses` — one per item — once it closes (or the whole
+    request fails). What each attempt answers comes from the client's script."""
+
+    def __init__(self, client, raise_exception):
+        self.client = client
+        self.raise_exception = raise_exception
+        self.items: list = []
+        self._responses: list = []
+
+    def __enter__(self):
+        self.client.handle.active_batch = self
+        return self
+
+    def __exit__(self, et, ev, tb):
+        self.client.handle.active_batch = None
+        if et is not None:
+            return False
+        answer = self.client.batch_script.pop(0) if self.client.batch_script else self.client.batch_default
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer, int):
+            answer = [answer] * len(self.items)
+        self._responses = [FakeResponse(c) for c in answer]
+        return False
 
 
 @dataclass
@@ -44,10 +80,20 @@ class FakeClient:
     handle: FakeBucketHandle = field(default_factory=FakeBucketHandle)
     soft_days: int = 7
     listed: list = field(default_factory=list)  # prefixes asked for, in order
+    # Scripted batch answers, one per attempt: a status per item, one status
+    # for every item, or an exception for the whole request. Empty → default.
+    batch_script: list = field(default_factory=list)
+    batch_default: object = 204
+    fail_prefixes: set = field(default_factory=set)  # listings that blow up (a root that raises)
 
-    def list_blobs(self, bucket, prefix=""):
+    soft_deleted: dict = field(default_factory=dict)  # bucket -> [FakeBlob] with soft_delete_time
+
+    def list_blobs(self, bucket, prefix="", soft_deleted=False):
         self.listed.append(prefix)
-        return sorted((b for b in self.blobs.get(bucket, []) if b.name.startswith(prefix)), key=lambda b: b.name)
+        if prefix in self.fail_prefixes:
+            raise RuntimeError(f"listing {prefix!r} failed")
+        src = self.soft_deleted if soft_deleted else self.blobs
+        return sorted((b for b in src.get(bucket, []) if b.name.startswith(prefix)), key=lambda b: b.name)
 
     def bucket(self, name):
         return self.handle
@@ -62,9 +108,9 @@ class FakeClient:
             soft_delete_policy: SoftDeletePolicy
         return B(SoftDeletePolicy(bucket=None, retention_duration_seconds=self.soft_days * 86400))
 
-    @contextmanager
-    def batch(self):
-        yield
+    def batch(self, raise_exception=True):
+        assert raise_exception is False, "the executor must read per-item responses, not let the library raise the last one"
+        return FakeBatch(self, raise_exception)
 
 
 def _plan_dir(tmp_path):
@@ -142,6 +188,89 @@ def test_for_real_refuses_without_soft_delete(tmp_path):
     with pytest.raises(SystemExit) as ei:
         execute_plan(str(plan), for_real=True, client=client)
     assert "soft delete retention 0d < required 7d" in str(ei.value)
+
+
+def test_delete_batch_settles_each_item_and_retries_transients(monkeypatch):
+    from google.api_core.exceptions import ServiceUnavailable
+    import gcs_usage.sweep_exec as se
+    sleeps = []
+    monkeypatch.setattr(se, "_sleep", sleeps.append)
+    client = FakeClient(blobs={})
+    blobs = [FakeBlob(n, 1, g, T0) for n, g in (("a/1", 11), ("a/2", 22), ("a/3", 33), ("a/4", 44))]
+    # attempt 1: the request itself fails (the 2026-09-11 503); attempt 2: one
+    # item still 503; attempt 3: it lands.
+    client.batch_script = [ServiceUnavailable("server(s) are not responding"), [204, 404, 412, 503], [204]]
+    out = se.delete_batch(client, client.handle, blobs)
+    assert [(b.name, d) for b, d in out] == [("a/1", "delete"), ("a/2", "skipped_gone"), ("a/3", "skipped_overwritten"), ("a/4", "delete")]
+    assert client.handle.deletes == [("a/1", 11), ("a/2", 22), ("a/3", 33), ("a/4", 44)] * 2 + [("a/4", 44)]
+    assert len(sleeps) == 2
+
+
+def test_delete_batch_gives_up_as_delete_failed(monkeypatch):
+    import gcs_usage.sweep_exec as se
+    sleeps = []
+    monkeypatch.setattr(se, "_sleep", sleeps.append)
+    client = FakeClient(blobs={})
+    client.batch_default = 503
+    out = se.delete_batch(client, client.handle, [FakeBlob("a/1", 1, 11, T0)])
+    assert [(b.name, d) for b, d in out] == [("a/1", "delete_failed")]
+    assert len(sleeps) == se.DELETE_ATTEMPTS
+
+
+def test_delete_batch_raises_on_a_non_transient_item(monkeypatch):
+    import pytest
+    import gcs_usage.sweep_exec as se
+    monkeypatch.setattr(se, "_sleep", lambda _s: None)
+    client = FakeClient(blobs={})
+    client.batch_script = [[403]]
+    with pytest.raises(RuntimeError) as ei:
+        se.delete_batch(client, client.handle, [FakeBlob("a/1", 1, 11, T0)])
+    assert str(ei.value) == "delete a/1@11: unexpected HTTP 403"
+
+
+def test_for_real_unanswered_deletes_are_reported_not_fatal(tmp_path, monkeypatch):
+    import gcs_usage.sweep_exec as se
+    monkeypatch.setattr(se, "_sleep", lambda _s: None)
+    plan = _plan_dir(tmp_path)
+    client = _client()
+    client.batch_default = 503
+    s = execute_plan(str(plan), for_real=True, client=client)
+    b = s["buckets"]["b1"]
+    assert b["decisions"] == {"delete_failed": 1, "skipped_gone": 1, "skipped_overwritten": 1}
+    assert b["failed_dirs"] == [{"dir": "a", "objects": 1}]
+    assert b["delete_bytes"] == 0
+    assert _decisions(plan, "deleted") == [("a/x", "delete_failed", 111), ("a/y", "skipped_gone", 0), ("a/z", "skipped_overwritten", 333)]
+
+
+def test_log_keeps_finished_roots_when_another_root_raises(tmp_path):
+    import pytest
+    plan = _plan_dir(tmp_path)
+    client = _client()
+    client.fail_prefixes = {"b/"}
+    with pytest.raises(RuntimeError) as ei:
+        execute_plan(str(plan), client=client, workers=1)
+    assert str(ei.value) == "listing 'b/' failed"
+    assert _decisions(plan, "would-delete") == [("a/x", "delete", 111), ("a/y", "skipped_gone", 0), ("a/z", "skipped_overwritten", 333)]
+
+
+def test_reconstruct_deleted_log_from_the_soft_deleted_listing(tmp_path):
+    # A real run that died before writing its log (2026-09-11: 241 deletes, 0
+    # rows): the bucket's soft-deleted objects in the run's window, matched to
+    # the manifest by name, become the `deleted/` log an undo can read.
+    from gcs_usage.sweep_exec import reconstruct_deleted_log
+    plan = _plan_dir(tmp_path)
+    t = lambda m: dt.datetime(2026, 9, 11, 5, 55, m, tzinfo=dt.timezone.utc)
+    client = FakeClient(blobs={}, soft_deleted={"b1": [
+        FakeBlob("a/x", 10, 111, T0, soft_delete_time=t(5)),   # in window, in manifest
+        FakeBlob("b/w", 40, 444, T0, soft_delete_time=t(9)),   # in window, in manifest
+        FakeBlob("a/y", 20, 222, T0, soft_delete_time=t(30)),  # after the window: not this run's
+        FakeBlob("c/q", 7, 777, T0, soft_delete_time=t(6)),    # not in the manifest: not ours
+    ]})
+    s = reconstruct_deleted_log(str(plan), "b1", since=t(0), until=t(12), client=client)
+    assert s["buckets"]["b1"] == {"decisions": {"delete": 2}, "delete_bytes": 50, "bands": {"gs://b1/a/": {"bytes": 10, "objects": 1}, "gs://b1/b/": {"bytes": 40, "objects": 1}}}
+    assert s["reconstructed"] == {"since": "2026-09-11T05:55:00+00:00", "until": "2026-09-11T05:55:12+00:00"}
+    assert _decisions(plan, "deleted") == [("a/x", "delete", 111), ("b/w", "delete", 444)]
+    assert json.loads((plan / "deleted-summary.json").read_text())["buckets"]["b1"]["decisions"] == {"delete": 2}
 
 
 def test_dry_run_reads_the_soft_delete_window(tmp_path):

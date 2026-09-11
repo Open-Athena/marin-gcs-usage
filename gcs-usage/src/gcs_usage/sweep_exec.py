@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import random
 import sys
+import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -26,9 +29,80 @@ DECISIONS = (
     "delete",              # in manifest ∩ live, created matches → deleted (or would be)
     "skipped_gone",        # in manifest, no longer live — graceful no-op
     "skipped_overwritten", # live but created moved — rewritten since the scan; keep
+    "delete_failed",       # real run: no definitive answer from GCS after every retry — state unknown, dir reported in `failed_dirs`
 )
 
 BATCH = 100  # GCS JSON batch limit per request
+#: Retries of a delete batch on a transient answer (whole request or item):
+#: 2^n s + jitter, capped, so a bucket-wide 503 (the 2026-09-11 third real
+#: run's first batch) rides out a minute of unavailability.
+DELETE_ATTEMPTS = 8
+DELETE_BACKOFF_CAP = 60.0
+TRANSIENT_CODES = frozenset({408, 429, 500, 502, 503, 504})
+_sleep = time.sleep  # patched in tests
+
+
+def _status_code(resp) -> int | None:
+    """HTTP status of one batch sub-response — a `requests.Response`, or (with
+    `raise_exception=False`) the `GoogleAPICallError` the library built for a
+    non-2xx part."""
+    code = getattr(resp, "status_code", None)
+    if code is None:
+        code = getattr(resp, "code", None)
+    return int(code) if code is not None else None
+
+
+def _outcome(code: int | None) -> str | None:
+    """A sub-response's decision, or None when it must be retried."""
+    if code is not None and 200 <= code < 300:
+        return "delete"
+    if code == 404:
+        return "skipped_gone"           # already gone (an earlier attempt landed, or someone else's delete)
+    if code == 412:
+        return "skipped_overwritten"    # generation moved since the listing: not the object we planned on
+    return None
+
+
+def delete_batch(client, bkt, blobs: list) -> list[tuple[object, str]]:
+    """Generation-matched deletes of `blobs` in one GCS batch (≤ `BATCH`),
+    each item settled by its own sub-response: 2xx deleted, 404 gone, 412
+    overwritten; anything else — or a whole-request failure (5xx, 429, a
+    connection error, a malformed batch reply) — is retried with backoff.
+    Returns `(blob, decision)` per input; items still unanswered after
+    `DELETE_ATTEMPTS` come back `delete_failed`."""
+    from google.api_core import exceptions as gax
+
+    remaining = list(blobs)
+    settled: dict[int, str] = {}
+    for attempt in range(DELETE_ATTEMPTS):
+        responses = None
+        try:
+            with client.batch(raise_exception=False) as b:
+                for blob in remaining:
+                    bkt.delete_blob(blob.name, if_generation_match=blob.generation)
+            responses = list(getattr(b, "_responses", []))
+            if len(responses) != len(remaining):
+                responses = None  # a reply we can't attribute per item: retry the whole batch
+        except gax.GoogleAPICallError as e:
+            if e.code not in TRANSIENT_CODES:
+                raise
+        except (ConnectionError, TimeoutError, ValueError, OSError):
+            pass
+        retry = []
+        for blob, resp in zip(remaining, responses or []):
+            code = _status_code(resp)
+            decision = _outcome(code)
+            if decision is None and code is not None and code not in TRANSIENT_CODES:
+                raise RuntimeError(f"delete {blob.name}@{blob.generation}: unexpected HTTP {code}")
+            if decision is None:
+                retry.append(blob)
+            else:
+                settled[id(blob)] = decision
+        remaining = retry if responses is not None else remaining
+        if not remaining:
+            break
+        _sleep(min(DELETE_BACKOFF_CAP, 2.0 ** attempt) + random.uniform(0, 1))
+    return [(blob, settled.get(id(blob), "delete_failed")) for blob in blobs]
 
 
 def list_roots(dirs: set[str], approved: tuple[str, ...], bucket: str) -> list[str]:
@@ -148,6 +222,7 @@ def execute_plan(
         bkt = client.bucket(bucket)
         counts: Counter = Counter()
         drift_dirs: list[dict] = []
+        failed_dirs: list[dict] = []
 
         def _lower_bound(key: str) -> int:
             # first sorted position whose name >= key, by binary search through
@@ -206,19 +281,29 @@ def execute_plan(
                 todo, out = p["todo"], p["out"]
                 drifted = p["extra_o"] > 0
                 if drifted and drift == "skip":
+                    emit(out)
                     done.append((dn, out, {"dir": dn, "new_objects": p["extra_o"], "new_bytes": p["extra_b"], "skipped_deletes": len(todo)}, 0))
                     return
-                if for_real:
-                    for i in range(0, len(todo), BATCH):
-                        # raise on failure: a 412 (generation moved) or transient
-                        # error aborts loudly; a re-run resumes via skipped_gone
-                        with client.batch():
-                            for blob in todo[i : i + BATCH]:
-                                bkt.delete_blob(blob.name, if_generation_match=blob.generation)
                 deleted_b = 0
-                for blob in todo:
-                    out.append((blob.name, int(blob.size or 0), int(blob.generation), "delete", dn))
-                    deleted_b += blob.size or 0
+                if for_real:
+                    n_failed = 0
+                    for i in range(0, len(todo), BATCH):
+                        for blob, decision in delete_batch(client, bkt, todo[i : i + BATCH]):
+                            out.append((blob.name, int(blob.size or 0), int(blob.generation), decision, dn))
+                            if decision == "delete":
+                                deleted_b += blob.size or 0
+                            elif decision == "delete_failed":
+                                n_failed += 1
+                    if n_failed:
+                        failed_dirs.append({"dir": dn, "objects": n_failed})
+                else:
+                    for blob in todo:
+                        out.append((blob.name, int(blob.size or 0), int(blob.generation), "delete", dn))
+                        deleted_b += blob.size or 0
+                # The dir's rows reach the log now, from this thread — not when
+                # the root's result is consumed — so a later failure elsewhere
+                # (or a kill) loses at most one unflushed chunk, never the run.
+                emit(out)
                 done.append((dn, out, ({"dir": dn, "new_objects": p["extra_o"], "new_bytes": p["extra_b"], "skipped_deletes": 0} if drifted else None), deleted_b))
 
             def settle(name: str) -> None:
@@ -273,11 +358,16 @@ def execute_plan(
         # site's parquet viewer pages *within* a row group, so a 1M-row group
         # (~27 MB) is fetched to show 100 rows; 64k rows (~1.7 MB) keeps a page
         # cheap. The file is written once, read many times.
-        ROWS_PER_GROUP = 65_536
+        # A real run's rows are the undo record: 8k-row chunks bound what a
+        # kill can lose (the 2026-09-11 third real run wrote nothing before it
+        # died — 241 deletes with no record). A dry run keeps the 64k groups.
+        ROWS_PER_GROUP = 8_192 if for_real else 65_536
         buf: list[tuple] = []
         n_written = 0
+        log_lock = threading.Lock()
+        writer = pq.ParquetWriter(lpath, log_schema, filesystem=lfs)
 
-        def flush_log(writer, final: bool = False) -> None:
+        def flush_log(final: bool = False) -> None:
             nonlocal buf, n_written
             while len(buf) >= ROWS_PER_GROUP or (final and buf):
                 chunk, buf = buf[:ROWS_PER_GROUP], buf[ROWS_PER_GROUP:]
@@ -285,26 +375,37 @@ def execute_plan(
                 writer.write_table(pa.table(dict(zip(log_schema.names, cols)), schema=log_schema), row_group_size=ROWS_PER_GROUP)
                 n_written += len(chunk)
 
-        with pq.ParquetWriter(lpath, log_schema, filesystem=lfs) as writer, ThreadPoolExecutor(max_workers=workers) as pool:
-            for done in pool.map(do_root, roots):
-                for dn, out, drifted, dbytes in done:
-                    band = bands.setdefault(band_of(bucket, dn), Counter())
-                    if drifted:
-                        drift_dirs.append(drifted)
-                        band["drift_new_objects"] += drifted["new_objects"]
-                    total_deleted_b += dbytes
-                    for _name, size, _gen, decision, _dn in out:
-                        counts[decision] += 1
-                        if decision == "delete":
-                            band["bytes"] += size
-                            band["objects"] += 1
-                        elif decision == "skipped_gone":
-                            band["gone"] += 1
-                        else:
-                            band["overwritten"] += 1
-                    buf.extend(out)
-                    flush_log(writer)
-            flush_log(writer, final=True)
+        def emit(rows: list[tuple]) -> None:
+            with log_lock:
+                buf.extend(rows)
+                flush_log()
+
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for done in pool.map(do_root, roots):
+                    for dn, out, drifted, dbytes in done:
+                        band = bands.setdefault(band_of(bucket, dn), Counter())
+                        if drifted:
+                            drift_dirs.append(drifted)
+                            band["drift_new_objects"] += drifted["new_objects"]
+                        total_deleted_b += dbytes
+                        for _name, size, _gen, decision, _dn in out:
+                            counts[decision] += 1
+                            if decision == "delete":
+                                band["bytes"] += size
+                                band["objects"] += 1
+                            elif decision == "skipped_gone":
+                                band["gone"] += 1
+                            elif decision == "skipped_overwritten":
+                                band["overwritten"] += 1
+                            else:
+                                band["failed"] += 1
+        finally:
+            # Whatever the workers emitted lands before the writer closes —
+            # a root that raised (a listing error) doesn't take the rest with it.
+            with log_lock:
+                flush_log(final=True)
+            writer.close()
         summary["buckets"][bucket] = {
             "missing_perms": missing_perms,
             "soft_delete_days": soft_delete_days,
@@ -312,16 +413,91 @@ def execute_plan(
             "delete_bytes": total_deleted_b,
             "drift_dirs": drift_dirs,
             "ledger_drift_dirs": ledger_drift,
+            "failed_dirs": failed_dirs,
             "bands": {b: dict(c) for b, c in bands.items()},
         }
         err(
             f"  {bucket}: {counts['delete']:,} {mode} ({total_deleted_b / 1e12:.2f} TB), "
             f"{counts['skipped_gone']:,} gone, {counts['skipped_overwritten']:,} overwritten, "
             f"{len(drift_dirs):,} drifted dir(s){' (skipped)' if drift == 'skip' else ''}"
+            + (f", {counts['delete_failed']:,} deletes UNANSWERED in {len(failed_dirs):,} dir(s)" if failed_dirs else "")
         )
 
     with fsspec.open(f"{plan_dir}/{mode}-summary.json", "w") as fh:
         json.dump(summary, fh, indent=2)
+    summary["_plan"] = plan
+    return summary
+
+
+def reconstruct_deleted_log(
+    plan_dir: str,
+    bucket: str,
+    since: dt.datetime,
+    until: dt.datetime,
+    client=None,
+) -> dict:
+    """Rebuild `deleted/<bucket>.parquet` (+ `deleted-summary.json`) for a
+    real run that died before writing its log: the bucket's soft-deleted
+    objects under the plan's bands whose soft-delete time is in
+    [since, until], matched to the manifest by name. Refuses to replace a log
+    that already has rows."""
+    import fsspec
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from google.cloud import storage
+
+    fs, ppath = fsspec.core.url_to_fs(plan_dir)
+    with fs.open(f"{ppath}/plan-summary.json") as fh:
+        plan = json.load(fh)
+    client = client or storage.Client()
+    pre = f"gs://{bucket}/"
+    approved = tuple(plan.get("approved") or ())
+    bands = [a[len(pre):] for a in approved if a.startswith(pre)] or [""]
+    with fs.open(f"{ppath}/manifest/{bucket}.parquet", "rb") as fh:
+        mt = pq.read_table(fh, columns=["name", "size_bytes", "dir"])
+    manifest = {n: (s, d) for n, s, d in zip(mt["name"].to_pylist(), mt["size_bytes"].to_pylist(), mt["dir"].to_pylist())}
+    lpath = f"{ppath}/deleted/{bucket}.parquet"
+    if fs.exists(lpath):
+        with fs.open(lpath, "rb") as fh:
+            if pq.read_metadata(fh).num_rows:
+                raise SystemExit(f"{plan_dir}/deleted/{bucket}.parquet already has rows — not replacing it")
+    rows: list[tuple] = []
+    for band in bands:
+        for blob in client.list_blobs(bucket, prefix=band, soft_deleted=True):
+            t = blob.soft_delete_time
+            if t is None or not (since <= t <= until) or blob.name not in manifest:
+                continue
+            size, dn = manifest[blob.name]
+            rows.append((blob.name, int(size), int(blob.generation), "delete", dn))
+    rows.sort()
+    log_schema = pa.schema([
+        ("name", pa.string()), ("size_bytes", pa.int64()), ("generation", pa.int64()),
+        ("decision", pa.string()), ("dir", pa.string()),
+    ])
+    fs.makedirs(f"{ppath}/deleted", exist_ok=True)
+    cols = list(zip(*rows)) if rows else [[] for _ in log_schema.names]
+    with pq.ParquetWriter(lpath, log_schema, filesystem=fs) as w:
+        w.write_table(pa.table(dict(zip(log_schema.names, cols)), schema=log_schema), row_group_size=8_192)
+    bands_c: dict[str, Counter] = {}
+    for name, size, _gen, _d, dn in rows:
+        p = f"gs://{bucket}/{dn}/" if dn else pre
+        hits = [a for a in approved if p.startswith(a)]
+        band = max(hits, key=len) if hits else f"gs://{bucket}/{dn.split('/', 1)[0]}/"
+        c = bands_c.setdefault(band, Counter())
+        c["bytes"] += size
+        c["objects"] += 1
+    summary = {
+        "plan": plan_dir, "for_real": True, "drift": "skip",
+        "reconstructed": {"since": since.isoformat(), "until": until.isoformat()},
+        "buckets": {bucket: {
+            "decisions": {"delete": len(rows)} if rows else {},
+            "delete_bytes": sum(r[1] for r in rows),
+            "bands": {b: dict(c) for b, c in bands_c.items()},
+        }},
+    }
+    with fsspec.open(f"{plan_dir}/deleted-summary.json", "w") as fh:
+        json.dump(summary, fh, indent=2)
+    err(f"{bucket}: {len(rows):,} soft-deleted objects in the window matched the manifest → {plan_dir}/deleted/{bucket}.parquet")
     summary["_plan"] = plan
     return summary
 
