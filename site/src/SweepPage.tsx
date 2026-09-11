@@ -419,8 +419,17 @@ export function SweepPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode, date: candsQ.data!.scan, ...(partial ? { buckets: onBuckets } : {}) }),
       })
-      const j = await r.json() as { error?: string; job_id?: string; plan?: string; mode?: string }
-      if (!r.ok) throw new Error(j.error ?? `${r.status}`)
+      // Read the body as text first: a Function that throws (or a Cloudflare
+      // error page) answers with HTML, and the status + a snippet of it is
+      // the whole clue — `r.json()` would only say "not valid JSON".
+      const text = await r.text()
+      let j: { error?: string; job_id?: string; plan?: string; mode?: string; detail?: unknown } | null = null
+      try { j = JSON.parse(text) } catch { /* non-JSON body: reported below */ }
+      if (!r.ok || !j) {
+        console.error('dispatch failed', r.status, text)
+        const snippet = j ? (j.error ?? '') + (j.detail ? ` — ${JSON.stringify(j.detail).slice(0, 300)}` : '') : text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+        throw new Error(`HTTP ${r.status}${snippet ? `: ${snippet}` : ''}`)
+      }
       return j as { job_id: string; plan: string; mode: string }
     },
     onSuccess: () => setArmed(false),
