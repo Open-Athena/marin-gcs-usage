@@ -879,3 +879,21 @@ details.fold {
   table.runs .why summary { cursor: pointer; color: var(--muted); font-size: 0.85em; }
   table.runs .actions button { margin-left: 0.3em; font-size: 0.85em; cursor: pointer; }
 }
+
+/* Mark-axis dots in the children table (specs/cw-sweep.md). */
+.children-tbl td.marks { white-space: nowrap; text-align: center; }
+.children-tbl th.mark-h { text-align: center; }
+.mkdot {
+  width: 13px; height: 13px; border-radius: 50%; padding: 0; margin: 0 2px; cursor: pointer;
+  border: 2px solid var(--mk-act, var(--line)); background: transparent; vertical-align: middle;
+}
+.mkdot.keep { --mk-act: var(--mk-keep); }
+.mkdot.keep_last_ckpt { --mk-act: var(--mk-klc); }
+.mkdot.sweep { --mk-act: var(--mk-sweep); }
+.mkdot.own { background: var(--mk-act); }
+.mkdot.inh { border-style: dashed; }
+.mkdot:disabled { opacity: 0.4; cursor: default; }
+.mkdot.clear {
+  width: auto; height: auto; border-radius: 4px; border-color: var(--muted); color: var(--muted);
+  font-size: 0.8em; line-height: 1; padding: 1px 4px;
+}

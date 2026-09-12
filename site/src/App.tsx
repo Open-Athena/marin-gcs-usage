@@ -18,6 +18,7 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { ChildrenTable } from './ChildrenTable'
+import { useMarks } from './marks'
 import { DiffTable } from './DiffTable'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
 import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
@@ -121,6 +122,7 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list; absent `?d` is a
   // first-class "latest", so a parked tab follows new scans.
   const { asof, scans, setDP, span, setSpan, setRange } = useScan()
+  const marks = useMarks()
   // Loaded trees by scan id: the page's own (`asof`) plus, when the Diff
   // section aligns client-side, its "before" scan.
   const [trees, setTrees] = useState<Record<string, TreeNode>>({})
@@ -576,7 +578,7 @@ function AppContent() {
             <b>Contents</b> of <code>{mapPath[mapPath.length - 1].n}</code>
             {' '}· {fmtN((mapPath[mapPath.length - 1].c ?? []).length)} entries
           </summary>
-          <ChildrenTable node={mapPath[mapPath.length - 1]} segs={mapPath.slice(1).map(n => n.n)} onOpen={openPath} />
+          <ChildrenTable node={mapPath[mapPath.length - 1]} segs={mapPath.slice(1).map(n => n.n)} onOpen={openPath} marks={marks} scan={asof ?? undefined} />
         </details>
       )}
 

@@ -169,6 +169,12 @@ function PlanPanel({ detail, jobs, admin, scans, date, setDate, fmtBytes, act }:
     const prefixes = add.split('\n').map(s => s.trim()).filter(Boolean)
     if (prefixes.length && await act(`/api/plans/${plan.id}/items`, 'POST', { prefixes })) setAdd('')
   }
+  const addMarked = async () => {
+    const d = await getJson<{ marks: { prefix: string; keep: string }[] }>('/api/marks').catch(() => ({ marks: [] }))
+    const have = new Set(items.map(i => i.prefix))
+    const prefixes = d.marks.filter(m => m.keep === 'sweep' && !have.has(m.prefix)).map(m => m.prefix)
+    if (prefixes.length) await act(`/api/plans/${plan.id}/items`, 'POST', { prefixes })
+  }
 
   return (
     <div className="plan-panel">
@@ -191,7 +197,10 @@ function PlanPanel({ detail, jobs, admin, scans, date, setDate, fmtBytes, act }:
       {admin && open && (
         <div className="add-items">
           <textarea placeholder="s3://marin-us-east-02a/… prefixes, one per line" value={add} onChange={e => setAdd(e.target.value)} rows={3} />
-          <button onClick={addPrefixes} disabled={!add.trim()}>add prefixes</button>
+          <div className="add-btns">
+            <button onClick={addPrefixes} disabled={!add.trim()}>add prefixes</button>
+            <button onClick={addMarked} title="add every prefix currently marked 'sweep'">add sweep-marked</button>
+          </div>
         </div>
       )}
 

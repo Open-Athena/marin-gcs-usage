@@ -3,9 +3,12 @@ import { intParam, useUrlState } from 'use-prms'
 import { dateColor, epochDaysToMonth } from './colors'
 import { elideMid } from './CopyName'
 import { Tooltip } from './Tooltip'
+import { ACTION_LABELS, type MarkAction, type MarksApi } from './marks'
 import type { TreeNode } from './types'
 import { fmtN } from './types'
 import { useUnits } from './units'
+
+const MARK_ACTIONS: MarkAction[] = ['keep', 'keep_last_ckpt', 'sweep']
 
 // Sortable, paged listing of the treemap's current node's children — the
 // tabular twin of the map above it: clicking a row drills the map into it. A
@@ -22,13 +25,17 @@ const PAGE_SIZES = [20, 50, 100, 200]
  *  tooltip); ~60 chars fills the column at 13px. */
 const NAME_MAX = 60
 
-export function ChildrenTable({ node, segs, scheme = 's3://', onOpen }: {
+export function ChildrenTable({ node, segs, scheme = 's3://', onOpen, marks, scan }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
   segs: string[]
   scheme?: string
   onOpen: (segs: string[]) => void
+  /** Mark axis (specs/cw-sweep.md); when present, a settable keep/sweep column shows. */
+  marks?: MarksApi
+  /** Current scan id, stamped on marks set from here. */
+  scan?: string
 }) {
   const { fmtBytes } = useUnits()
   const [sort, setSort] = useState<{ k: SortKey; asc: boolean }>({ k: 'b', asc: false })
@@ -96,6 +103,7 @@ export function ChildrenTable({ node, segs, scheme = 's3://', onOpen }: {
             <th className="num">share</th>
             {th('o', 'objects')}
             {th('d', 'created')}
+            {marks && <th className="mark-h" title="keep / keep-last-ckpt / sweep">mark</th>}
           </tr>
         </thead>
         <tbody>
@@ -103,6 +111,7 @@ export function ChildrenTable({ node, segs, scheme = 's3://', onOpen }: {
             const synthetic = k.n.startsWith('(')
             const kidSegs = [...segs, k.n]
             const uri = scheme + kidSegs.join('/')
+            const mk = marks && !synthetic ? marks.idx.resolve(uri) : null
             return (
               <tr key={k.n}>
                 <td className="prefix">
@@ -120,6 +129,24 @@ export function ChildrenTable({ node, segs, scheme = 's3://', onOpen }: {
                 <td className="created num">{k.d != null
                   ? <span className="cm"><i style={{ background: ageInk(k.d) }} />{epochDaysToMonth(k.d)}</span>
                   : '—'}</td>
+                {marks && (
+                  <td className="marks">
+                    {synthetic ? null : <>
+                      {MARK_ACTIONS.map(a => {
+                        const on = mk?.mark.keep === a
+                        const st = on ? (mk!.own ? 'own' : 'inh') : ''
+                        return (
+                          <button key={a} className={`mkdot ${a} ${st}`} title={ACTION_LABELS[a]}
+                            disabled={!marks.canMark} onClick={() => void marks.mark(uri, a, scan)} />
+                        )
+                      })}
+                      {mk?.own && (
+                        <button className="mkdot clear" title="unmark" disabled={!marks.canMark}
+                          onClick={() => void marks.mark(uri, null, scan)}>×</button>
+                      )}
+                    </>}
+                  </td>
+                )}
               </tr>
             )
           })}
@@ -131,6 +158,7 @@ export function ChildrenTable({ node, segs, scheme = 's3://', onOpen }: {
             <td className="num">{node.b ? ((100 * totB) / node.b).toFixed(1) : 0}%</td>
             <td className="num">{fmtN(totO)}</td>
             <td />
+            {marks && <td />}
           </tr>
         </tfoot>
       </table>
