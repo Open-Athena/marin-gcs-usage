@@ -16,7 +16,7 @@ compatibility_date = "2026-06-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "oa-cw-s3-usage-db"
-database_id = ""  # TODO(phase-0 provision): set from `wrangler d1 create oa-cw-s3-usage-db`
+database_id = "7f1e1326-b879-4ecd-8621-846621c24f36"
 # Local dev runs against the REAL prod D1 (read-write) — dev-only: deploys
 # ignore `remote`. Needs CLOUDFLARE_API_TOKEN (direnv) + CLOUDFLARE_ACCOUNT_ID.
 remote = true
