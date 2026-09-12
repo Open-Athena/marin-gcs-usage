@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +39,9 @@ if TYPE_CHECKING:
 CW_ENDPOINT = os.environ.get("CW_ENDPOINT", "https://cwobject.com")
 CW_BUCKET = os.environ.get("CW_BUCKET", "marin-us-east-02a")
 DATA_BUCKET = os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx")
+
+# S3 `delete_objects` accepts up to 1000 keys per call.
+DELETE_BATCH = 1000
 
 # A plan prefix, once normalized to a relative key prefix: non-empty, no scheme,
 # no leading slash, trailing slash, no `.`/`..` segments or backslashes.
@@ -178,3 +183,181 @@ def build_manifest(l2_path: str, plan: Plan, out_dir: str) -> dict:
     }
     (out / "plan-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
+
+
+# --- executor -------------------------------------------------------------
+
+def prefix_free(prefixes: list[str]) -> list[str]:
+    """Minimal prefix-free cover: drop any prefix nested under another (so we
+    list each listing root once). Sorted, so an ancestor precedes its descendants."""
+    out: list[str] = []
+    for p in sorted(set(prefixes)):
+        if not any(p != q and p.startswith(q) for q in out):
+            out.append(p)
+    return out
+
+
+def _lp_len(key: str, prefixes: list[str]) -> int:
+    """Length of the longest prefix in `prefixes` that is a prefix of `key` (-1 if none)."""
+    return max((len(p) for p in prefixes if key.startswith(p)), default=-1)
+
+
+def eligible(key: str, sweep: list[str], keep: list[str]) -> bool:
+    """Deepest-mark-wins: a key is swept iff its longest matching sweep prefix is
+    longer than its longest matching keep prefix (same rule as the manifest SQL)."""
+    return _lp_len(key, sweep) > _lp_len(key, keep)
+
+
+def _dir_of(key: str) -> str:
+    return key.rsplit("/", 1)[0] + "/" if "/" in key else ""
+
+
+def _write_log(path: Path, rows: list[tuple]) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tbl = pa.table({
+        "name": [r[0] for r in rows],
+        "size_bytes": pa.array([r[1] for r in rows], pa.int64()),
+        "mtime": pa.array([r[2] for r in rows], pa.int64()),
+        "decision": [r[3] for r in rows],
+        "dir": [r[4] for r in rows],
+        "band": [r[5] for r in rows],
+    })
+    pq.write_table(tbl, path)
+
+
+def execute_plan(
+    run_dir: str,
+    *,
+    for_real: bool = False,
+    client: "S3Client | None" = None,
+    delete_workers: int = 16,
+    mtime_tol: int = 1,
+) -> dict:
+    """Execute the manifest under `run_dir` against CoreWeave S3 (boto3).
+
+    Lists each curated root, merge-checks every live object against the reviewed
+    manifest, and deletes only the reviewed keys whose (size, mtime) still match
+    — new keys since the scan are left alone (drift), changed ones skipped
+    (overwritten), vanished ones noted (gone). A real delete writes a recoverable
+    delete marker (guarded by bucket versioning); a dry run touches nothing.
+
+    Writes a decision-log parquet + `<deleted|would-delete>-summary.json` under
+    `run_dir` and returns the summary. Does NOT write D1 — the Functions layer
+    reflects this summary into `deletion_runs`/`deletion_bands`.
+    """
+    started = int(time.time())
+    run = Path(run_dir)
+    plan_summary = json.loads((run / "plan-summary.json").read_text())
+    bucket = plan_summary["bucket"]
+    sweep = plan_summary["sweep"]
+    keep = plan_summary.get("keep", [])
+    roots = prefix_free(sweep)
+
+    client = client or s3_client()
+    if for_real and not versioning_enabled(client, bucket):
+        raise SweepError(
+            f"refusing real delete: bucket {bucket} versioning is not Status=Enabled "
+            "(no recoverable delete marker; see specs/cw-sweep.md)"
+        )
+
+    manifest_path = run / "manifest" / f"{bucket}.parquet"
+    manifest = {
+        name: (size, mtime)
+        for name, size, mtime in duckdb.connect()
+        .execute(f"SELECT name, size_bytes, mtime FROM read_parquet('{manifest_path}') ORDER BY name")
+        .fetchall()
+    }
+
+    counters = {k: 0 for k in ("deleted_objects", "deleted_bytes", "skipped_gone",
+                               "skipped_overwritten", "drift_new", "delete_failed")}
+    bands: dict[str, dict] = {}
+
+    def band_rec(b: str) -> dict:
+        return bands.setdefault(b, {k: 0 for k in ("bytes", "objects", "gone", "overwritten", "drift_new")})
+
+    seen: set[str] = set()
+    log_rows: list[tuple] = []
+    to_delete: list[tuple[str, int, str]] = []
+
+    for root in roots:
+        token: str | None = None
+        while True:
+            kw = {"Bucket": bucket, "Prefix": root}
+            if token:
+                kw["ContinuationToken"] = token
+            resp = client.list_objects_v2(**kw)
+            for obj in resp.get("Contents", []):
+                key = obj["Key"]
+                band = next((p for p in sorted(roots, key=len, reverse=True) if key.startswith(p)), root)
+                if key in manifest:
+                    seen.add(key)
+                    size, mtime = manifest[key]
+                    live_mtime = int(obj["LastModified"].timestamp())
+                    if obj["Size"] == size and abs(live_mtime - mtime) <= mtime_tol:
+                        to_delete.append((key, size, band))
+                        log_rows.append((key, size, mtime, "delete", _dir_of(key), band))
+                    else:
+                        counters["skipped_overwritten"] += 1
+                        band_rec(band)["overwritten"] += 1
+                        log_rows.append((key, size, mtime, "skipped_overwritten", _dir_of(key), band))
+                elif eligible(key, sweep, keep):
+                    # live, under a swept prefix, but not in the reviewed manifest → new since scan
+                    counters["drift_new"] += 1
+                    band_rec(band)["drift_new"] += 1
+                # else: kept carve-out or outside the plan — expected, ignore
+            token = resp.get("NextContinuationToken")
+            if not resp.get("IsTruncated"):
+                break
+
+    for key, (size, mtime) in manifest.items():
+        if key not in seen:
+            counters["skipped_gone"] += 1
+            band = next((p for p in sorted(roots, key=len, reverse=True) if key.startswith(p)), "")
+            band_rec(band)["gone"] += 1
+            log_rows.append((key, size, mtime, "skipped_gone", _dir_of(key), band))
+
+    def _apply(batch: list[tuple[str, int, str]]) -> tuple[list, set]:
+        resp = client.delete_objects(
+            Bucket=bucket, Delete={"Objects": [{"Key": k} for k, _, _ in batch], "Quiet": True}
+        )
+        return batch, {e["Key"] for e in resp.get("Errors", [])}
+
+    if for_real and to_delete:
+        with ThreadPoolExecutor(max_workers=delete_workers) as ex:
+            batches = [to_delete[i:i + DELETE_BATCH] for i in range(0, len(to_delete), DELETE_BATCH)]
+            for batch, errs in ex.map(_apply, batches):
+                for key, size, band in batch:
+                    if key in errs:
+                        counters["delete_failed"] += 1
+                    else:
+                        counters["deleted_objects"] += 1
+                        counters["deleted_bytes"] += size
+                        band_rec(band)["objects"] += 1
+                        band_rec(band)["bytes"] += size
+    else:
+        for _key, size, band in to_delete:
+            counters["deleted_objects"] += 1
+            counters["deleted_bytes"] += size
+            band_rec(band)["objects"] += 1
+            band_rec(band)["bytes"] += size
+
+    mode = "deleted" if for_real else "would-delete"
+    log_dir = run / mode / bucket
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _write_log(log_dir / "part-00000.parquet", sorted(log_rows))
+
+    out_summary = {
+        "plan_id": plan_summary.get("plan_id"),
+        "name": plan_summary.get("name"),
+        "bucket": bucket,
+        "mode": "real" if for_real else "dry",
+        **counters,
+        "bands": [{"prefix": b, **v} for b, v in sorted(bands.items())],
+        "started_ts": started,
+        "finished_ts": int(time.time()),
+        "log_dir": str(log_dir),
+    }
+    (run / f"{mode}-summary.json").write_text(json.dumps(out_summary, indent=2) + "\n")
+    return out_summary

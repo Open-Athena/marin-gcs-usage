@@ -220,12 +220,22 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
     keys off (size, mtime) — layer-2 has no ETag. gcs's `sweep_plan.py`
     classify/vote/owner brain is dropped wholesale (the curated plan is the
     eligibility decision).
-  - **Slice 2 (next)**: the executor — `sweep execute [--for-real]` (boto3
-    `delete_objects` ≤1000/batch, ETag/mtime overwrite recheck at execute, part-file
-    decision log, versioning preflight) + the listing/merge-join/LPT engine ported
-    owner-free from gcs's `sweep_exec.py`. D1 writes stay in the Functions layer
-    (Batch writes gs:// summary/log only; `/api/sweep/jobs` reflects into D1) — a
-    cw-s3 simplification vs gcs's Batch-writes-D1-directly.
+  - **Slice 2 DONE 2026-09-11** (`execute_plan` + `sweep execute` CLI, tests): the
+    executor. Lists each curated root (`list_objects_v2`), merge-checks every live
+    object against the reviewed manifest, deletes only reviewed keys whose (size,
+    mtime) still match — new keys since scan left alone (`drift_new`), changed ones
+    `skipped_overwritten`, vanished `skipped_gone`. `delete_objects` ≤1000/batch on
+    a thread pool; real delete writes a recoverable delete marker; **versioning
+    preflight** refuses `--for-real` unless Status=Enabled. Writes a decision-log
+    parquet + `<deleted|would-delete>-summary.json` (with per-band aggregates for
+    `deletion_bands`). Does **not** write D1 — the Functions layer reflects the
+    summary in (a cw-s3 simplification vs gcs's Batch-writes-D1-directly). Tests
+    (5) cover dry decisions-without-delete, real delete, versioning refusal, and
+    delete-failure recording via a fake S3.
+  - **Slice 2 follow-ups (deferred)**: gcs's scale/robustness extras not yet
+    ported — LPT root scheduling + the in-memory bisection index (manifest is
+    dict-loaded; fine for curated subsets, revisit for giant plans), streamed
+    multi-part logs, progress daemon + `STOP`-file. `undo`/`purge` are Phase 3.
 - **Phase 2 (FE, cw-s3)**: mark axis (`MarkControls`, `ChildrenTable` mark column,
   mark legend/outlines) + the Plans view (curate items) + `SweepPage` (dispatch +
   runs, per plan), adapted from gcs (no owner).

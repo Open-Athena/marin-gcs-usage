@@ -532,6 +532,28 @@ def sweep_manifest(date: str, l2_path: str | None, out: str, plan_path: str) -> 
     print(json.dumps(summary))
 
 
+@sweep.command("execute")
+@option("-r", "--for-real", is_flag=True, help="Actually delete (writes recoverable delete markers); default is a dry run")
+@argument("run_dir")
+def sweep_execute(for_real: bool, run_dir: str) -> None:
+    """Execute the manifest under RUN_DIR against CoreWeave S3 (boto3).
+
+    Default is a dry run (touches nothing). `--for-real` deletes reviewed keys
+    whose (size, mtime) still match; refused unless the bucket has versioning
+    Status=Enabled."""
+    import json
+
+    from .sweep import execute_plan
+
+    s = execute_plan(run_dir, for_real=for_real)
+    err(
+        f"{'REAL' if for_real else 'DRY'}: {s['deleted_objects']} objs / {s['deleted_bytes']} bytes; "
+        f"gone {s['skipped_gone']} overwritten {s['skipped_overwritten']} "
+        f"drift {s['drift_new']} failed {s['delete_failed']}"
+    )
+    print(json.dumps(s))
+
+
 @main.group()
 def job() -> None:
     """Read-only ops for the daily snapshot Batch job (status/logs/watch/metrics)."""

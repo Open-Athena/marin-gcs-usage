@@ -1,6 +1,7 @@
-"""Mark & sweep engine (Slice 1): plan model, versioning guard, manifest builder."""
+"""Mark & sweep engine: plan model, versioning guard, manifest builder, executor."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -13,8 +14,11 @@ from gcs_usage.sweep import (
     Plan,
     SweepError,
     build_manifest,
+    eligible,
+    execute_plan,
     load_plan,
     normalize_prefix,
+    prefix_free,
     versioning_enabled,
 )
 
@@ -131,3 +135,127 @@ def test_build_manifest_no_keep(tmp_path: Path) -> None:
         ("marin/ckpt/a", 100, 111, "marin/ckpt/"),
     ]
     assert (summary["objects"], summary["bytes"], summary["keep"]) == (1, 100, [])
+
+
+def test_prefix_free_and_eligible() -> None:
+    assert prefix_free(["a/b/", "a/", "c/"]) == ["a/", "c/"]
+    assert eligible("a/b/x", ["a/"], ["a/b/"]) is False  # deeper keep wins
+    assert eligible("a/y", ["a/"], ["a/b/"]) is True
+    assert eligible("z/q", ["a/"], []) is False  # no sweep match
+
+
+class _FakeStore:
+    """A minimal in-memory S3 for the executor: versioning, paginated list, batch delete."""
+
+    def __init__(self, objects: dict[str, tuple[int, int]], versioning: str | None = "Enabled",
+                 page: int = 2, fail_keys: set[str] | None = None) -> None:
+        # objects: key -> (size, mtime_epoch)
+        self.objects = dict(objects)
+        self._versioning = versioning
+        self._page = page
+        self._fail = fail_keys or set()
+        self.delete_calls = 0
+
+    def get_bucket_versioning(self, Bucket: str) -> dict:  # noqa: N803
+        return {"Status": self._versioning} if self._versioning else {}
+
+    def list_objects_v2(self, Bucket: str, Prefix: str = "", ContinuationToken: str | None = None) -> dict:  # noqa: N803
+        keys = sorted(k for k in self.objects if k.startswith(Prefix))
+        start = int(ContinuationToken) if ContinuationToken else 0
+        chunk = keys[start:start + self._page]
+        contents = [
+            {"Key": k, "Size": self.objects[k][0],
+             "LastModified": dt.datetime.fromtimestamp(self.objects[k][1], tz=dt.timezone.utc)}
+            for k in chunk
+        ]
+        nxt = start + self._page
+        truncated = nxt < len(keys)
+        return {"Contents": contents, "IsTruncated": truncated,
+                **({"NextContinuationToken": str(nxt)} if truncated else {})}
+
+    def delete_objects(self, Bucket: str, Delete: dict) -> dict:  # noqa: N803
+        self.delete_calls += 1
+        deleted, errors = [], []
+        for o in Delete["Objects"]:
+            k = o["Key"]
+            if k in self._fail:
+                errors.append({"Key": k, "Code": "AccessDenied"})
+            else:
+                self.objects.pop(k, None)
+                deleted.append({"Key": k})
+        return {"Deleted": deleted, "Errors": errors}
+
+
+def _run_with_manifest(tmp_path: Path) -> Path:
+    """Build a run dir whose manifest = {a:(100,111), sub/d:(200,222), gone:(300,333)}."""
+    l2 = tmp_path / "l2.parquet"
+    _write_l2(l2, [
+        ("marin/ckpt/a", 100, 111, "file"),
+        ("marin/ckpt/sub/d", 200, 222, "file"),
+        ("marin/ckpt/gone", 300, 333, "file"),
+        ("marin/ckpt/keep/b", 400, 444, "file"),  # carved out — not in manifest
+    ])
+    plan = Plan(name="p", bucket=BUCKET, sweep=["marin/ckpt/"], keep=["marin/ckpt/keep/"], plan_id=3)
+    out = tmp_path / "run"
+    build_manifest(str(l2), plan, str(out))
+    return out
+
+
+# Live store: a matches; sub/d overwritten (mtime drift); gone is absent;
+# keep/b live but carved out (ignored); new live + eligible → drift.
+_LIVE = {
+    "marin/ckpt/a": (100, 111),
+    "marin/ckpt/sub/d": (200, 999),
+    "marin/ckpt/keep/b": (400, 444),
+    "marin/ckpt/new": (50, 555),
+}
+_COUNTS = {"deleted_objects": 1, "deleted_bytes": 100, "skipped_gone": 1,
+           "skipped_overwritten": 1, "drift_new": 1, "delete_failed": 0}
+
+
+def test_execute_dry_run_decides_without_deleting(tmp_path: Path) -> None:
+    run = _run_with_manifest(tmp_path)
+    store = _FakeStore(_LIVE, versioning=None)  # dry run needs no versioning
+    s = execute_plan(str(run), for_real=False, client=store)
+
+    assert {k: s[k] for k in _COUNTS} == _COUNTS
+    assert s["mode"] == "dry"
+    assert store.delete_calls == 0 and "marin/ckpt/a" in store.objects  # nothing deleted
+    # decision log: exact (name, decision) set
+    log = duckdb.connect().execute(
+        f"SELECT name, decision FROM read_parquet('{run}/would-delete/{BUCKET}/part-00000.parquet') ORDER BY name"
+    ).fetchall()
+    assert log == [
+        ("marin/ckpt/a", "delete"),
+        ("marin/ckpt/gone", "skipped_gone"),
+        ("marin/ckpt/sub/d", "skipped_overwritten"),
+    ]
+
+
+def test_execute_for_real_deletes_matched(tmp_path: Path) -> None:
+    run = _run_with_manifest(tmp_path)
+    store = _FakeStore(_LIVE, versioning="Enabled")
+    s = execute_plan(str(run), for_real=True, client=store)
+
+    assert {k: s[k] for k in _COUNTS} == _COUNTS
+    assert s["mode"] == "real"
+    assert "marin/ckpt/a" not in store.objects  # the one matched key is gone
+    assert set(store.objects) == {"marin/ckpt/sub/d", "marin/ckpt/keep/b", "marin/ckpt/new"}
+    assert s["bands"] == [{"prefix": "marin/ckpt/", "bytes": 100, "objects": 1,
+                           "gone": 1, "overwritten": 1, "drift_new": 1}]
+
+
+def test_execute_for_real_refused_without_versioning(tmp_path: Path) -> None:
+    run = _run_with_manifest(tmp_path)
+    store = _FakeStore(_LIVE, versioning="Suspended")
+    with pytest.raises(SweepError, match="versioning"):
+        execute_plan(str(run), for_real=True, client=store)
+    assert store.delete_calls == 0
+
+
+def test_execute_records_delete_failure(tmp_path: Path) -> None:
+    run = _run_with_manifest(tmp_path)
+    store = _FakeStore(_LIVE, versioning="Enabled", fail_keys={"marin/ckpt/a"})
+    s = execute_plan(str(run), for_real=True, client=store)
+    assert (s["deleted_objects"], s["delete_failed"]) == (0, 1)
+    assert "marin/ckpt/a" in store.objects  # failed delete left it in place
