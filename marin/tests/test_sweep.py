@@ -19,6 +19,8 @@ from gcs_usage.sweep import (
     load_plan,
     normalize_prefix,
     prefix_free,
+    purge_run,
+    undo_run,
     versioning_enabled,
 )
 
@@ -259,3 +261,106 @@ def test_execute_records_delete_failure(tmp_path: Path) -> None:
     s = execute_plan(str(run), for_real=True, client=store)
     assert (s["deleted_objects"], s["delete_failed"]) == (0, 1)
     assert "marin/ckpt/a" in store.objects  # failed delete left it in place
+
+
+class _FakeVersionedStore:
+    """Versioned in-memory S3 for the delete→undo→purge lifecycle: a delete with
+    no VersionId appends a delete marker; a delete with VersionId drops that version."""
+
+    def __init__(self, objects: dict[str, tuple[int, int]], page: int = 100) -> None:
+        self._n = 0
+        self._page = page
+        # key -> list of versions {VersionId, Size, mtime, dm}, oldest first (last = latest)
+        self.versions: dict[str, list[dict]] = {}
+        for k, (size, mtime) in objects.items():
+            self.versions[k] = [self._ver(size, mtime, False)]
+
+    def _ver(self, size: int, mtime: int, dm: bool) -> dict:
+        self._n += 1
+        return {"VersionId": f"v{self._n}", "Size": size, "mtime": mtime, "dm": dm}
+
+    def get_bucket_versioning(self, Bucket: str) -> dict:  # noqa: N803
+        return {"Status": "Enabled"}
+
+    def _live(self, key: str) -> dict | None:
+        vs = self.versions.get(key)
+        if vs and not vs[-1]["dm"]:
+            return vs[-1]
+        return None
+
+    def list_objects_v2(self, Bucket: str, Prefix: str = "", ContinuationToken: str | None = None) -> dict:  # noqa: N803
+        keys = sorted(k for k in self.versions if k.startswith(Prefix) and self._live(k))
+        contents = [
+            {"Key": k, "Size": self._live(k)["Size"],  # type: ignore[index]
+             "LastModified": dt.datetime.fromtimestamp(self._live(k)["mtime"], tz=dt.timezone.utc)}  # type: ignore[index]
+            for k in keys
+        ]
+        return {"Contents": contents, "IsTruncated": False}
+
+    def list_object_versions(self, Bucket: str, Prefix: str = "",  # noqa: N803
+                             KeyMarker: str | None = None, VersionIdMarker: str | None = None) -> dict:
+        versions, markers = [], []
+        for k in sorted(self.versions):
+            if not k.startswith(Prefix):
+                continue
+            vs = self.versions[k]
+            for i, v in enumerate(vs):
+                latest = i == len(vs) - 1
+                row = {"Key": k, "VersionId": v["VersionId"], "IsLatest": latest}
+                if v["dm"]:
+                    markers.append(row)
+                else:
+                    versions.append({**row, "Size": v["Size"]})
+        return {"Versions": versions, "DeleteMarkers": markers, "IsTruncated": False}
+
+    def delete_objects(self, Bucket: str, Delete: dict) -> dict:  # noqa: N803
+        deleted = []
+        for o in Delete["Objects"]:
+            k, vid = o["Key"], o.get("VersionId")
+            vs = self.versions.get(k)
+            if vs is None:
+                continue
+            if vid is None:
+                vs.append(self._ver(0, 0, True))  # write a delete marker
+            else:
+                self.versions[k] = [v for v in vs if v["VersionId"] != vid]
+            deleted.append({"Key": k})
+        return {"Deleted": deleted, "Errors": []}
+
+
+def test_delete_undo_purge_lifecycle(tmp_path: Path) -> None:
+    run = _run_with_manifest(tmp_path)  # manifest = a(100,111), sub/d(200,222), gone(300,333)
+    store = _FakeVersionedStore({
+        "marin/ckpt/a": (100, 111),         # matches → deleted
+        "marin/ckpt/sub/d": (200, 999),     # overwritten → skipped
+        "marin/ckpt/keep/b": (400, 444),    # carved out → ignored
+        "marin/ckpt/new": (50, 555),        # drift → ignored
+    })
+
+    # 1. real delete → `a` gets a delete marker; it disappears from a live list.
+    s1 = execute_plan(str(run), for_real=True, client=store)
+    assert s1["deleted_objects"] == 1
+    assert store._live("marin/ckpt/a") is None
+    assert [v["dm"] for v in store.versions["marin/ckpt/a"]] == [False, True]
+
+    # 2. undo → the delete marker is removed; `a` is live again.
+    u = undo_run(str(run), client=store)
+    assert (u["restored"], u["restore_failed"]) == (1, 0)
+    assert store._live("marin/ckpt/a") is not None
+    assert [v["dm"] for v in store.versions["marin/ckpt/a"]] == [False]
+
+    # 3. re-delete, then purge → every version of `a` is gone (data + marker).
+    execute_plan(str(run), for_real=True, client=store)
+    p = purge_run(str(run), client=store)
+    assert (p["purged_versions"], p["purged_bytes"]) == (2, 100)
+    assert store.versions["marin/ckpt/a"] == []
+
+
+def test_undo_dry_run_touches_nothing(tmp_path: Path) -> None:
+    run = _run_with_manifest(tmp_path)
+    store = _FakeVersionedStore({"marin/ckpt/a": (100, 111)})
+    execute_plan(str(run), for_real=True, client=store)
+    before = list(store.versions["marin/ckpt/a"])
+    u = undo_run(str(run), client=store, dry_run=True)
+    assert u["restored"] == 1 and u["dry_run"] is True
+    assert store.versions["marin/ckpt/a"] == before  # unchanged

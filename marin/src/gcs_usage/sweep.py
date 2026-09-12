@@ -361,3 +361,123 @@ def execute_plan(
     }
     (run / f"{mode}-summary.json").write_text(json.dumps(out_summary, indent=2) + "\n")
     return out_summary
+
+
+# --- undo / purge (Phase 3) ------------------------------------------------
+
+def _chunks(xs: list, n: int):
+    for i in range(0, len(xs), n):
+        yield xs[i:i + n]
+
+
+def _deleted_keys(run: Path, bucket: str) -> list[str]:
+    """Keys a real run actually deleted, from its decision-log part-files."""
+    parts = sorted((run / "deleted" / bucket).glob("part-*.parquet"))
+    if not parts:
+        return []
+    glob = str(run / "deleted" / bucket / "part-*.parquet")
+    rows = duckdb.connect().execute(
+        f"SELECT name FROM read_parquet('{glob}') WHERE decision = 'delete' ORDER BY name"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _list_versions(client: "S3Client", bucket: str, prefix: str):
+    """Paginate `list_object_versions` under a prefix (Versions[] + DeleteMarkers[])."""
+    key_marker: str | None = None
+    ver_marker: str | None = None
+    while True:
+        kw: dict = {"Bucket": bucket, "Prefix": prefix}
+        if key_marker:
+            kw["KeyMarker"] = key_marker
+        if ver_marker:
+            kw["VersionIdMarker"] = ver_marker
+        page = client.list_object_versions(**kw)
+        yield page
+        if not page.get("IsTruncated"):
+            return
+        key_marker = page.get("NextKeyMarker")
+        ver_marker = page.get("NextVersionIdMarker")
+
+
+def undo_run(run_dir: str, *, client: "S3Client | None" = None,
+             prefixes: list[str] | None = None, dry_run: bool = False) -> dict:
+    """Undo a real run: remove the delete markers it wrote, so the prior version
+    is current again (CAIOS's recoverable-delete). Must run before `purge`."""
+    run = Path(run_dir)
+    plan_summary = json.loads((run / "plan-summary.json").read_text())
+    bucket = plan_summary["bucket"]
+    roots = prefix_free(plan_summary["sweep"])
+    client = client or s3_client()
+
+    keys = set(_deleted_keys(run, bucket))
+    if prefixes:
+        keys = {k for k in keys if any(k.startswith(p) for p in prefixes)}
+
+    to_restore: list[tuple[str, str]] = []  # (key, delete-marker versionId)
+    for root in roots:
+        for page in _list_versions(client, bucket, root):
+            for dm in page.get("DeleteMarkers", []):
+                if dm.get("IsLatest") and dm["Key"] in keys:
+                    to_restore.append((dm["Key"], dm["VersionId"]))
+
+    counters = {"restored": 0, "restore_failed": 0, "skipped": len(keys) - len({k for k, _ in to_restore})}
+    if dry_run:
+        counters["restored"] = len(to_restore)
+    else:
+        for batch in _chunks(to_restore, DELETE_BATCH):
+            resp = client.delete_objects(
+                Bucket=bucket, Delete={"Objects": [{"Key": k, "VersionId": v} for k, v in batch], "Quiet": True}
+            )
+            errs = {e["Key"] for e in resp.get("Errors", [])}
+            for k, _v in batch:
+                counters["restore_failed" if k in errs else "restored"] += 1
+
+    summary = {"mode": "undo", "bucket": bucket, "dry_run": dry_run,
+               "candidates": len(keys), **counters, "finished_ts": int(time.time())}
+    (run / "undo-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    return summary
+
+
+def purge_run(run_dir: str, *, client: "S3Client | None" = None, dry_run: bool = False) -> dict:
+    """Permanently drop every version of a real run's deleted keys — the second,
+    irreversible stage that actually reclaims space (after the undo hold). Removes
+    both the delete markers and the shadowed noncurrent data versions."""
+    run = Path(run_dir)
+    plan_summary = json.loads((run / "plan-summary.json").read_text())
+    bucket = plan_summary["bucket"]
+    roots = prefix_free(plan_summary["sweep"])
+    client = client or s3_client()
+
+    keys = set(_deleted_keys(run, bucket))
+    victims: list[tuple[str, str, int]] = []  # (key, versionId, size) for every version of a deleted key
+    for root in roots:
+        for page in _list_versions(client, bucket, root):
+            for v in page.get("Versions", []):
+                if v["Key"] in keys:
+                    victims.append((v["Key"], v["VersionId"], int(v.get("Size", 0))))
+            for dm in page.get("DeleteMarkers", []):
+                if dm["Key"] in keys:
+                    victims.append((dm["Key"], dm["VersionId"], 0))
+
+    counters = {"purged_versions": 0, "purge_failed": 0, "purged_bytes": 0}
+    if dry_run:
+        counters["purged_versions"] = len(victims)
+        counters["purged_bytes"] = sum(sz for _k, _v, sz in victims)
+    else:
+        for batch in _chunks(victims, DELETE_BATCH):
+            resp = client.delete_objects(
+                Bucket=bucket, Delete={"Objects": [{"Key": k, "VersionId": v} for k, v, _ in batch], "Quiet": True}
+            )
+            errs = {e["Key"] for e in resp.get("Errors", [])}
+            for k, _v, sz in batch:
+                if k in errs:
+                    counters["purge_failed"] += 1
+                else:
+                    counters["purged_versions"] += 1
+                    counters["purged_bytes"] += sz
+
+    summary = {"mode": "purge", "bucket": bucket, "dry_run": dry_run,
+               "keys": len(keys), **counters, "finished_ts": int(time.time())}
+    (run / "purge-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    return summary

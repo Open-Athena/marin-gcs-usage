@@ -554,6 +554,37 @@ def sweep_execute(for_real: bool, run_dir: str) -> None:
     print(json.dumps(s))
 
 
+@sweep.command("undo")
+@option("-n", "--dry-run", is_flag=True, help="Report what would be restored without touching anything")
+@option("-p", "--prefix", "prefixes", multiple=True, help="Restrict undo to keys under this prefix (repeatable)")
+@argument("run_dir")
+def sweep_undo(dry_run: bool, prefixes: tuple[str, ...], run_dir: str) -> None:
+    """Undo a real run under RUN_DIR: remove its delete markers (recoverable
+    delete). Must run before `purge`."""
+    import json
+
+    from .sweep import undo_run
+
+    s = undo_run(run_dir, prefixes=list(prefixes) or None, dry_run=dry_run)
+    err(f"{'DRY ' if dry_run else ''}undo: restored {s['restored']} (failed {s['restore_failed']}, skipped {s['skipped']})")
+    print(json.dumps(s))
+
+
+@sweep.command("purge")
+@option("-n", "--dry-run", is_flag=True, help="Report what would be purged without touching anything")
+@argument("run_dir")
+def sweep_purge(dry_run: bool, run_dir: str) -> None:
+    """Permanently drop every version of a real run's deleted keys under RUN_DIR
+    — the irreversible space-reclaim stage, after the undo hold."""
+    import json
+
+    from .sweep import purge_run
+
+    s = purge_run(run_dir, dry_run=dry_run)
+    err(f"{'DRY ' if dry_run else ''}purge: {s['purged_versions']} versions / {s['purged_bytes']} bytes (failed {s['purge_failed']})")
+    print(json.dumps(s))
+
+
 @main.group()
 def job() -> None:
     """Read-only ops for the daily snapshot Batch job (status/logs/watch/metrics)."""
