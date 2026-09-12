@@ -1,6 +1,7 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
-import type { CellCtx, CellStyle } from '@disk-tree/react'
+import type { CellCtx, CellStyle, OutlineGroups } from '@disk-tree/react'
+import { ACTION_COLORS, ACTION_LABELS, type MarkAction, type MarkIndex } from './marks'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndex } from './colors'
 import { CopyName, copyText } from './CopyName'
@@ -91,7 +92,7 @@ export interface Highlight {
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact, initialPath, path, onPathChange, marks }: {
   // Start drilled here (the lone bucket) — crumbs keep the ancestry.
   initialPath?: TreeNode[]
   // Controlled drill path (App owns it, in `?path=`): every drill/crumb/
@@ -110,6 +111,9 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   // OG-image mode: hide every text detail (cell labels, crumb/rollup bars, hint)
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
+  // Mark axis (specs/cw-sweep.md): when present, marked prefixes get union
+  // outlines on the map (keep/klc/sweep) + a legend key.
+  marks?: MarkIndex
 }) {
   const { fmtBytes } = useUnits()
   // Tiling is a user preference (header toggle): `shared` by default.
@@ -134,6 +138,51 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
 
   // this branch serves the CoreWeave (CAIOS) estate — object URLs are s3://
   const pathOf = (path: TreeNode[]) => 's3://' + path.slice(1).map(n => n.n).join('/')
+
+  // Mark outlines: a cell is outlined only where its resolved mark differs from
+  // the state its parent cell already conveys, so a uniformly-marked subtree is
+  // one frame (the core strokes the union per group key), not a lattice. The
+  // drill root's own mark is inherited by its tiles, so they stay undecorated.
+  const drillPath = path ?? initialPath
+  const drillDepth = drillPath?.length ?? 0
+  const rootKeep = marks && drillPath?.length ? marks.resolve(pathOf(drillPath))?.mark.keep ?? null : null
+  const chainOf = (cellPath: TreeNode[]): number => {
+    let i = cellPath.length - 1
+    while (i > drillDepth && cellPath[i - 1].c?.length === 1) i--
+    return cellPath.length - 1 - i
+  }
+  const edgeMark = (cellPath: TreeNode[], chain: number): { keep: MarkAction; parent: TreeNode[] } | null => {
+    if (!marks) return null
+    const r = marks.resolve(pathOf(cellPath))
+    if (!r) return null
+    const parent = cellPath.slice(0, cellPath.length - chain - 1)
+    const parentKeep = parent.length > drillDepth ? (marks.resolve(pathOf(parent))?.mark.keep ?? null)
+      : parent.length === drillDepth ? rootKeep : null
+    if (parentKeep && parentKeep === r.mark.keep) return null
+    return { keep: r.mark.keep, parent }
+  }
+  const [outlined, setOutlined] = useState<MarkAction[]>([])
+  const onDrawn = useCallback((keys: string[]) => {
+    const acts = (['keep', 'keep_last_ckpt', 'sweep'] as MarkAction[]).filter(a => keys.some(k => k.startsWith(a + '|')))
+    setOutlined(prev => (prev.length === acts.length && prev.every((a, i) => a === acts[i]) ? prev : acts))
+  }, [])
+  const markOutlines = useMemo<OutlineGroups<TreeNode> | undefined>(
+    () => marks
+      ? {
+          key: (n, cellPath) => {
+            if (n.n.startsWith('(')) return null
+            const e = edgeMark(cellPath, chainOf(cellPath))
+            return e ? `${e.keep}|${pathOf(e.parent)}` : null
+          },
+          color: key => ACTION_COLORS[key.slice(0, key.indexOf('|')) as MarkAction],
+          width: 2,
+          onDrawn,
+        }
+      : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [marks, drillDepth, rootKeep, onDrawn],
+  )
+  useEffect(() => { if (!markOutlines) setOutlined([]) }, [markOutlines])
 
   // Fold merger: first-class TreeNode aggregating us/d so folded tiles keep
   // real tooltips (upstream calls this at every nesting level).
@@ -320,6 +369,13 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   const legend = (legendNode: TreeNode, legendPath: TreeNode[]) => (
     <div className="legend">
       {modeLegend?.(legendNode, legendPath)}
+      {outlined.length > 0 && (
+        <span className="mark-key">
+          {outlined.map(a => (
+            <span className="mk-li" key={a}><span className="sw" style={{ borderColor: ACTION_COLORS[a] }} />{ACTION_LABELS[a]}</span>
+          ))}
+        </span>
+      )}
       <TilingToggle />
     </div>
   )
@@ -386,6 +442,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       formatSize={fmtBytes}
       mergeSmall={mergeSmall}
       colorForCell={colorForCell}
+      outlineGroups={markOutlines}
       renderTooltip={renderTooltip}
       renderRollup={renderRollup}
       renderLegend={redact ? undefined : legend}

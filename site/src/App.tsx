@@ -563,7 +563,7 @@ function AppContent() {
       {shownTree ? (
         <div id="tree-map" className={treeLoading ? 'busy-host stale' : 'busy-host'}>
           <Treemap root={shownTree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens}
-            path={mapPath} onPathChange={onMapPath} />
+            path={mapPath} onPathChange={onMapPath} marks={marks.idx} />
           {treeLoading && <Busy label="loading view…" />}
         </div>
       ) : (

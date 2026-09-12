@@ -897,3 +897,8 @@ details.fold {
   width: auto; height: auto; border-radius: 4px; border-color: var(--muted); color: var(--muted);
   font-size: 0.8em; line-height: 1; padding: 1px 4px;
 }
+
+/* Treemap mark-outline legend key (specs/cw-sweep.md). */
+.legend .mark-key { display: inline-flex; gap: 0.6em; align-items: center; margin: 0 0.4em; }
+.legend .mark-key .mk-li { display: inline-flex; gap: 0.3em; align-items: center; font-size: 0.85em; color: var(--muted); }
+.legend .mark-key .sw { width: 11px; height: 11px; border: 2px solid; border-radius: 2px; background: transparent; }
