@@ -202,12 +202,22 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
   - **In-repo authoring DONE 2026-09-11**: `site/wrangler.toml` (aud + name +
     db-name set; `database_id` blank pending create), `site/migrations/0001–0004`
     (marks, plans, deletions, admin), parity surfaces + ledger updated.
-  - **Provisioning PENDING** (the one-time cloud ops, no repo change):
-    `CLOUDFLARE_ACCOUNT_ID=74981a43… wrangler d1 create oa-cw-s3-usage-db` → paste
-    the id into `wrangler.toml` → `wrangler d1 migrations apply oa-cw-s3-usage-db
-    --remote`; and `aws s3api put-bucket-versioning --bucket marin-us-east-02a
-    --versioning-configuration Status=Enabled --endpoint-url https://cwobject.com`
-    (idempotent; verify with `get-bucket-versioning`).
+  - **Provisioning — D1 DONE 2026-09-12**: `oa-cw-s3-usage-db`
+    (`7f1e1326-b879-4ecd-8621-846621c24f36`, region ENAM) created + migrations
+    0001–0004 applied `--remote`; `database_id` committed to `wrangler.toml`.
+  - **Provisioning STILL PENDING** (shared-resource ops — the auto-mode classifier
+    blocks these from the agent; run manually or via the ops/ Pulumi session):
+    - **CoreWeave bucket versioning** (the soft-delete guard): `aws s3api
+      put-bucket-versioning --bucket marin-us-east-02a --versioning-configuration
+      Status=Enabled --endpoint-url https://cwobject.com` with virtual addressing
+      + the CAIOS creds (`tmp/enable-versioning.py` does exactly this, creds from
+      Secret Manager). Real `--for-real` sweeps are refused until this is on.
+    - **`GCP_SA_KEY` Pages secret** on `oa-cw-s3-usage`: a dedicated SA (Batch
+      submit + actAs `gcs-usage-job` + GCS write) key, `wrangler pages secret put
+      GCP_SA_KEY --project-name oa-cw-s3-usage`. Without it dispatch/jobs/undo/purge
+      return 503. (The GCP SA + IAM is the `cf-iac.md` GCP half.)
+    - **Rebuild `IMAGE:cw`** (`job/build.sh` → Cloud Build from this worktree) so
+      the image carries the new `gcs-usage sweep` CLI the Batch jobs run.
 - **Phase 1 (backend, cw-s3)**: `marin sweep {manifest,execute}` with the boto3
   delete path + versioning-guard preflight (`manifest` expands a plan JSON);
   `/api/plans/*` (CRUD) + `/api/sweep/{dispatch,jobs,stop}` (dispatch takes a
@@ -273,9 +283,12 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
   - **2b mark axis** — `marks.ts` (`MarkIndex` deepest-wins + `useMarks`) + a
     settable keep/klc/sweep dot column in `ChildrenTable` (own/inherited/available)
     + an "add sweep-marked" button on a plan. `/api/whoami` gates the controls.
-  - **Deferred (polish)**: the `MarkControls` tooltip widget + the treemap mark
-    **outlines/legend** (`outlineGroups` overlay — the capability landed in
-    `0a18858`, the mark wiring hasn't). Not needed for the delete workflow.
+  - **2c treemap mark outlines** DONE 2026-09-12: a `marks` prop on `Treemap`
+    drives an `outlineGroups` overlay — union frames where a cell's mark differs
+    from its parent's (uniform subtree = one frame) + an outline legend key.
+    CIC'd (throwaway dev → local-D1 wrangler): a swept subtree renders one red
+    union frame. **Still deferred**: the `MarkControls` tooltip widget (the
+    children-table dots cover marking); not needed for the workflow.
 - **Phase 3 (cw-s3)** — DONE 2026-09-11: `sweep undo` (remove delete markers) +
   `sweep purge` (drop noncurrent versions after the hold) engine + tests, and
   `/api/sweep/{undo,purge}` (Batch-dispatched, state-gated, reflected via
