@@ -212,6 +212,20 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
   delete path + versioning-guard preflight (`manifest` expands a plan JSON);
   `/api/plans/*` (CRUD) + `/api/sweep/{dispatch,jobs,stop}` (dispatch takes a
   `plan_id`); apply the D1 migrations. Dry-run end-to-end on Batch first.
+  - **Slice 1 DONE 2026-09-11** (`marin/src/gcs_usage/sweep.py` + `sweep manifest`
+    CLI, tests): the plan model (`Plan`/`load_plan`, deepest-mark-wins, keep
+    carves out sweep), the CAIOS boto3 client + `versioning_enabled` guard, and
+    the manifest builder (curated plan × the pinned layer-2 parquet → object-level
+    `manifest/<bucket>.parquet` + `plan-summary.json`, via DuckDB). Overwrite guard
+    keys off (size, mtime) — layer-2 has no ETag. gcs's `sweep_plan.py`
+    classify/vote/owner brain is dropped wholesale (the curated plan is the
+    eligibility decision).
+  - **Slice 2 (next)**: the executor — `sweep execute [--for-real]` (boto3
+    `delete_objects` ≤1000/batch, ETag/mtime overwrite recheck at execute, part-file
+    decision log, versioning preflight) + the listing/merge-join/LPT engine ported
+    owner-free from gcs's `sweep_exec.py`. D1 writes stay in the Functions layer
+    (Batch writes gs:// summary/log only; `/api/sweep/jobs` reflects into D1) — a
+    cw-s3 simplification vs gcs's Batch-writes-D1-directly.
 - **Phase 2 (FE, cw-s3)**: mark axis (`MarkControls`, `ChildrenTable` mark column,
   mark legend/outlines) + the Plans view (curate items) + `SweepPage` (dispatch +
   runs, per plan), adapted from gcs (no owner).

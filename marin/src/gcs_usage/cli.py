@@ -506,6 +506,33 @@ def rules(identities_path: Path, out: Path | None) -> None:
 
 
 @main.group()
+def sweep() -> None:
+    """Mark & sweep: build deletion manifests and execute them (boto3/CAIOS)."""
+
+
+@sweep.command("manifest")
+@option("-d", "--date", required=True, help="Scan id (SNAP_ID) whose layer-2 parquet to pin")
+@option("-l", "--l2", "l2_path", help="Layer-2 parquet path (default: /gcs/<data>/cw-l2/<date>/<bucket>.parquet)")
+@option("-o", "--out", required=True, help="Output dir for manifest/ + plan-summary.json")
+@argument("plan_path")
+def sweep_manifest(date: str, l2_path: str | None, out: str, plan_path: str) -> None:
+    """Expand a curated PLAN (json) into an object-level deletion manifest.
+
+    Deletes nothing; reads the pinned layer-2 parquet and writes
+    manifest/<bucket>.parquet + plan-summary.json under --out."""
+    import json
+
+    from .sweep import DATA_BUCKET, build_manifest, load_plan
+
+    plan = load_plan(plan_path)
+    if l2_path is None:
+        l2_path = f"/gcs/{DATA_BUCKET}/cw-l2/{date}/{plan.bucket}.parquet"
+    summary = build_manifest(l2_path, plan, out)
+    err(f"manifest: {summary['objects']} objects, {summary['bytes']} bytes -> {summary['manifest']}")
+    print(json.dumps(summary))
+
+
+@main.group()
 def job() -> None:
     """Read-only ops for the daily snapshot Batch job (status/logs/watch/metrics)."""
 
