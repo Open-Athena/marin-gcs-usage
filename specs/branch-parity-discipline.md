@@ -77,7 +77,8 @@ architecture.
 
 | pair | surface | intended delta |
 |---|---|---|
-| gcs ↔ cw-s3 | `site/` | **Intrinsic:** own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA + CoreWeave domains, edge identity); branding, `s3://` scheme. **Port-pending, not deltas** (2026-09-08): mark & sweep, `/user/:id` + user/owner views, server-side diff/subtree — cw-s3 lacks them but they are slated to converge. Blocked on a CW ownership signal (no access logs; path-prefix rules the likely route). |
+| gcs ↔ cw-s3 | `site/` | **Intrinsic:** own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA + CoreWeave domains, edge identity); branding, `s3://` scheme. **Converging** (2026-09-11, specs/cw-sweep.md): mark & sweep is porting in (Phase 0 landed the D1/wrangler IaC + migrations); `/user/:id` + user/owner views stay port-pending (no CW ownership signal — path-prefix rules the likely route). Server-side diff/subtree still absent (cw-s3 loads whole `tree.json`). |
+| gcs ↔ cw-s3 | `site/wrangler.toml`, `site/migrations` | **CP-adapt, small patch** (2026-09-11): cw-s3's `wrangler.toml` = gcs's with `name`/`database_name`/`database_id`/`ACCESS_AUD` changed and the auth-package-migration prose dropped. `site/migrations` = a fresh mark+plan+sweep subset (`0001_marks` keep-axis, default-unmarked; `0002_plans` plan-as-first-class; `0003_deletions`; `0004_admin`), **not** a replay of gcs's 23-step auth/access-log/index-footer history. The git-didi delta on these surfaces is the intended patch (name/id/aud + table-subset), not a whole-file absence. |
 | gcs ↔ cw-s3 | `job/` | `run.sh`+`batch-submit.sh` (GCS) vs `cw-*` (CW: S3-compat listing, precomputed `diff.json`); restore `cw-*` onto cw-s3 from `053cc33^` |
 | gcs ↔ cw-s3 | `packages/react`, `src/disk_tree` | **none** — keep at parity (synced 8/28) |
 | marin ↔ dt/main | `src/disk_tree` | upstream carries Flask serving (`server.py`, diff index, vocab sidecar, compare perf); marin carries nothing server-side. Shared core must be a superset upstream: fork→upstream manifest `~/c/disk-tree/specs/marin-python-cp-2026-08-28.md` |
@@ -582,3 +583,28 @@ dimmed map under "loading view…" then clears. Factored-branch refresh deferred
 the residual is a misleading metric until `classify.py` re-buckets the unlisted
 gcs-only files (documented 9/09); the git-didi audit is the honest parity check
 and it's green.
+
+### 2026-09-11 (cw-ward) — sweep Phase 0: D1/wrangler IaC + mark+sweep migrations
+
+First implementation slice of `specs/cw-sweep.md`. In-repo IaC authored (no cloud
+side effects yet): `site/wrangler.toml` CP-adapted from gcs (name `oa-cw-s3-usage`,
+`database_name` `oa-cw-s3-usage-db`, `ACCESS_AUD` = the cw app `4c463052`'s real aud
+`1de65a9f…dc8378`, `STAFF_DOMAIN` kept; `database_id` left blank pending the
+`wrangler d1 create`), and a fresh 4-file `site/migrations/` mark+plan+sweep subset —
+`0001_marks` (keep-axis ledger `marks` + `mark_log`; **default = unmarked**, i.e.
+absence of a row — `keep` is an affirmative protect signal, not the default;
+nothing sweeps without an explicit `sweep` mark — unlike gcs's default-delete +
+owner-slice safety), `0002_plans` (**plan as a first-class object**: `plans` +
+`plan_items`; admin curates marked prefixes into a named draftable plan, multiple
+plans coexist — cw-s3's cleaner answer to gcs's owner==marker slice), `0003_deletions`
+(`deletion_runs` + `deletion_bands`, gcs 0015+0023 folded, `plan_id` FK, GCS→CAIOS
+undo: `undo_state` before `undo_deadline` + `purge_state` for the two-stage
+versioned-bucket space reclaim), `0004_admin` (`admin_emails` gate + `admin_edits`
+audit). **Folded `site/wrangler.toml` +
+`site/migrations` into the CP parity surfaces** (`.claude/cp.yml` + `branch-audit`
+SURFACES) so git-didi renders the gcs↔cw-s3 delta as the intended small patch
+(name/id/aud + table-subset) rather than a whole-file absence — the visibility Ryan
+asked for. Resolved cw-sweep open questions in passing: admin allowlist → D1
+(`admin_emails`, gcs-proven; CF Access stays the sign-in gate + identity source).
+Provisioning (D1 create, `marin-us-east-02a` versioning-enable) is the next step,
+still pending. Phase 1 (backend: `marin sweep` + `/api/sweep`) not started.
