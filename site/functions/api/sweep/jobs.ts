@@ -86,9 +86,9 @@ export const onRequestGet = async (ctx: Ctx & { env: Env }): Promise<Response> =
   const { jobs = [] } = (await r.json()) as { jobs?: BatchJob[] }
   const mine = jobs.filter(j => /\/jobs\/cw-sweep-(dry|real)-/.test(j.name)).slice(0, 20)
 
-  // Reflect any terminal run whose D1 row is still in-progress.
   const db = ctx.env.DB
   if (db) {
+    // Reflect any terminal sweep run whose D1 row is still in-progress.
     const pending = new Set(
       (await db.prepare("SELECT run_id FROM deletion_runs WHERE finished_ts IS NULL").all<{ run_id: string }>())
         .results.map(x => x.run_id),
@@ -101,6 +101,19 @@ export const onRequestGet = async (ctx: Ctx & { env: Env }): Promise<Response> =
       if (summary) await reflect(db, jobId, mode, summary)
       else await db.prepare("UPDATE deletion_runs SET finished_ts = ? WHERE run_id = ? AND finished_ts IS NULL")
         .bind(Math.floor(Date.now() / 1000), jobId).run()
+    }
+    // Reflect terminal undo/purge ops onto their target run (state guards keep it
+    // idempotent). TARGET_RUN + OP are in the op job's env.
+    for (const j of jobs) {
+      if (!/\/jobs\/cw-(undo|purge)-/.test(j.name) || j.status?.state !== "SUCCEEDED") continue
+      const vars = j.taskGroups?.[0]?.taskSpec?.environment?.variables ?? {}
+      const target = vars.TARGET_RUN
+      if (!target) continue
+      if (vars.OP === "undo") {
+        await db.prepare("UPDATE deletion_runs SET undo_state = 'full' WHERE run_id = ? AND undo_state = 'partial'").bind(target).run()
+      } else if (vars.OP === "purge") {
+        await db.prepare("UPDATE deletion_runs SET purge_state = 'done' WHERE run_id = ? AND purge_state = 'pending'").bind(target).run()
+      }
     }
   }
 

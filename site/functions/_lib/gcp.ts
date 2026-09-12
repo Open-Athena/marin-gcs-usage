@@ -73,3 +73,69 @@ export async function gcpToken(saKey: string): Promise<string> {
   memo = { k, ...got }
   return got.token
 }
+
+/** The standard cw-sweep Batch job spec (mirrors job/cw-batch-submit.sh): the cw
+ * image running `bash -c <script>`, the data bucket FUSE-mounted at /gcs/<bucket>,
+ * and the CAIOS S3 creds from Secret Manager. `env` merges in per-job variables. */
+export function sweepBatchSpec(script: string, env: Record<string, string> = {}): unknown {
+  return {
+    taskGroups: [{
+      taskCount: 1,
+      taskSpec: {
+        runnables: [{
+          container: {
+            imageUri: CW_IMAGE,
+            entrypoint: "/bin/bash",
+            commands: ["-c", script],
+            volumes: [`/mnt/disks/gcs/${DATA_BUCKET}:/gcs/${DATA_BUCKET}:rw`],
+          },
+        }],
+        computeResource: { cpuMilli: 8000, memoryMib: 16000 },
+        maxRetryCount: 0,
+        maxRunDuration: "86400s",
+        volumes: [{
+          gcs: { remotePath: DATA_BUCKET },
+          mountPath: `/mnt/disks/gcs/${DATA_BUCKET}`,
+          mountOptions: ["--implicit-dirs"],
+        }],
+        environment: {
+          variables: {
+            DATA_BUCKET, CW_BUCKET, CW_ENDPOINT,
+            AWS_DEFAULT_REGION: "us-east-1",
+            AWS_EC2_METADATA_DISABLED: "true",
+            DT_S3_ADDRESSING_STYLE: "virtual",
+            ...env,
+          },
+          secretVariables: {
+            AWS_ACCESS_KEY_ID: secretRef("cw-s3-access-key-id"),
+            AWS_SECRET_ACCESS_KEY: secretRef("cw-s3-secret-access-key"),
+          },
+        },
+      },
+    }],
+    allocationPolicy: {
+      instances: [{ policy: { machineType: "n2-standard-8", bootDisk: { type: "pd-balanced", sizeGb: "100" } } }],
+      serviceAccount: { email: JOB_SA },
+      location: { allowedLocations: [`regions/${BATCH_REGION}`] },
+    },
+    logsPolicy: { destination: "CLOUD_LOGGING" },
+  }
+}
+
+/** Submit a Batch job; returns { ok, status, text } (caller maps errors). */
+export async function submitBatch(token: string, jobId: string, spec: unknown): Promise<{ ok: boolean; status: number; text: string }> {
+  const r = await fetch(`${batchJobsUrl()}?job_id=${jobId}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(spec),
+  })
+  return { ok: r.ok, status: r.status, text: await r.text() }
+}
+
+/** Compact UTC stamp `YYYYMMDD-HHMMSS` for a job id. */
+export const jobStamp = (): string =>
+  new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15).toLowerCase()
+
+/** The FUSE-mount path of a run dir inside the Batch job. */
+export const runMountPath = (jobId: string): string => `/gcs/${DATA_BUCKET}/sweep/cw/runs/${jobId}`
+export const runGsPath = (jobId: string): string => `gs://${DATA_BUCKET}/sweep/cw/runs/${jobId}`

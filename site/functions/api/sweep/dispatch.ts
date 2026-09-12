@@ -13,8 +13,7 @@
 import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireAdmin } from "../../_lib/auth.js"
 import {
-  batchJobsUrl, BATCH_REGION, CW_BUCKET, CW_ENDPOINT, CW_IMAGE, DATA_BUCKET,
-  gcpToken, JOB_SA, secretRef,
+  DATA_BUCKET, gcpToken, jobStamp, runGsPath, runMountPath, submitBatch, sweepBatchSpec,
 } from "../../_lib/gcp.js"
 import { snapshotPlan } from "../../_lib/plans.js"
 
@@ -42,10 +41,9 @@ export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> 
   if (!snapshot) return json({ error: "no such plan" }, 404)
   if (!snapshot.sweep.length) return json({ error: "plan has no items to sweep" }, 400)
 
-  const ts = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15).toLowerCase()
-  const jobId = `cw-sweep-${mode}-${ts}z`
-  const runGs = `gs://${DATA_BUCKET}/sweep/cw/runs/${jobId}`
-  const runMnt = `/gcs/${DATA_BUCKET}/sweep/cw/runs/${jobId}`
+  const jobId = `cw-sweep-${mode}-${jobStamp()}z`
+  const runGs = runGsPath(jobId)
+  const runMnt = runMountPath(jobId)
 
   const token = await gcpToken(ctx.env.GCP_SA_KEY)
 
@@ -64,65 +62,13 @@ export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> 
     `gcs-usage sweep execute ${mode === "real" ? "--for-real " : ""}"$RUN"`,
   ].join("\n")
 
-  const spec = {
-    taskGroups: [{
-      taskCount: 1,
-      taskSpec: {
-        runnables: [{
-          container: {
-            imageUri: CW_IMAGE,
-            entrypoint: "/bin/bash",
-            commands: ["-c", script],
-            volumes: [`/mnt/disks/gcs/${DATA_BUCKET}:/gcs/${DATA_BUCKET}:rw`],
-          },
-        }],
-        computeResource: { cpuMilli: 8000, memoryMib: 16000 },
-        maxRetryCount: 0,
-        // Deletes are network-bound round trips to the bucket; a big plan can run
-        // for hours. 24 h ceiling (the scan itself is ~30 min).
-        maxRunDuration: "86400s",
-        volumes: [{
-          gcs: { remotePath: DATA_BUCKET },
-          mountPath: `/mnt/disks/gcs/${DATA_BUCKET}`,
-          mountOptions: ["--implicit-dirs"],
-        }],
-        environment: {
-          variables: {
-            JOB_ID: jobId,
-            SWEEP_DATE: date,
-            DATA_BUCKET,
-            CW_BUCKET,
-            CW_ENDPOINT,
-            AWS_DEFAULT_REGION: "us-east-1",
-            AWS_EC2_METADATA_DISABLED: "true",
-            DT_S3_ADDRESSING_STYLE: "virtual",
-          },
-          secretVariables: {
-            AWS_ACCESS_KEY_ID: secretRef("cw-s3-access-key-id"),
-            AWS_SECRET_ACCESS_KEY: secretRef("cw-s3-secret-access-key"),
-          },
-        },
-      },
-    }],
-    allocationPolicy: {
-      instances: [{ policy: { machineType: "n2-standard-8", bootDisk: { type: "pd-balanced", sizeGb: "100" } } }],
-      serviceAccount: { email: JOB_SA },
-      location: { allowedLocations: [`regions/${BATCH_REGION}`] },
-    },
-    logsPolicy: { destination: "CLOUD_LOGGING" },
-  }
-
-  const r = await fetch(`${batchJobsUrl()}?job_id=${jobId}`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(spec),
-  })
-  const text = await r.text()
-  if (!r.ok) {
-    console.error("batch submit failed", r.status, text.slice(0, 2000))
+  const spec = sweepBatchSpec(script, { JOB_ID: jobId, SWEEP_DATE: date })
+  const { ok, status, text } = await submitBatch(token, jobId, spec)
+  if (!ok) {
+    console.error("batch submit failed", status, text.slice(0, 2000))
     let detail: unknown = { body: text.slice(0, 1000) }
     try { detail = JSON.parse(text) } catch { /* keep raw */ }
-    return json({ error: `batch submit failed (${r.status})`, status: r.status, detail }, 500)
+    return json({ error: `batch submit failed (${status})`, status, detail }, 500)
   }
 
   const head = (await db.prepare("SELECT coalesce(max(id), 0) AS h FROM mark_log").first<{ h: number }>())?.h ?? 0
