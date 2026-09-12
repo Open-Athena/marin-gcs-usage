@@ -260,14 +260,27 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
     - Tooling: added `site/functions/tsconfig.json` + `@cloudflare/workers-types`
       and `tsc -p functions` to the site `build` (CI now typechecks Functions —
       cw-s3 didn't before, a gap vs gcs).
-  - **Deferred**: `/api/marks` (the mark-axis write path) lands with the FE mark
-    axis in Phase 2; dispatch already reads keep marks defensively. `undo`/`purge`
-    are Phase 3.
-- **Phase 2 (FE, cw-s3)**: mark axis (`MarkControls`, `ChildrenTable` mark column,
-  mark legend/outlines) + the Plans view (curate items) + `SweepPage` (dispatch +
-  runs, per plan), adapted from gcs (no owner).
-- **Phase 3 (cw-s3)**: sweeper identity + admin gate, `sweep undo` (remove delete
-  markers), and the **purge/GC** job for noncurrent versions after the hold.
+  - `/api/marks` + `/api/whoami` DONE 2026-09-11 (mark-axis write path; the FE
+    admin flag get-identity doesn't carry).
+- **Phase 2 (FE, cw-s3)** — DONE 2026-09-11 (typechecks, CIC'd on localhost;
+  data flows need D1):
+  - **2a `SweepPage.tsx` + `/sweep` route** — the console: plans list + create,
+    a plan panel (curate items add/remove while open, dry/armed-real dispatch
+    against a chosen scan), and a runs table (live state polled from
+    `/api/sweep/jobs`, deleted/gone/overwritten, failed "why" fold, undo/purge/
+    stop actions gated on run state + admin). Owner axis absent — the curated
+    plan is the gate. Plain fetch/useState.
+  - **2b mark axis** — `marks.ts` (`MarkIndex` deepest-wins + `useMarks`) + a
+    settable keep/klc/sweep dot column in `ChildrenTable` (own/inherited/available)
+    + an "add sweep-marked" button on a plan. `/api/whoami` gates the controls.
+  - **Deferred (polish)**: the `MarkControls` tooltip widget + the treemap mark
+    **outlines/legend** (`outlineGroups` overlay — the capability landed in
+    `0a18858`, the mark wiring hasn't). Not needed for the delete workflow.
+- **Phase 3 (cw-s3)** — DONE 2026-09-11: `sweep undo` (remove delete markers) +
+  `sweep purge` (drop noncurrent versions after the hold) engine + tests, and
+  `/api/sweep/{undo,purge}` (Batch-dispatched, state-gated, reflected via
+  `/api/sweep/jobs`). Sweeper identity + admin gate = `_lib/auth.ts` + `admin_emails`.
+  Deferred: the executor's clean `STOP`-drain (stop.ts cancels the job today).
 
 ## Open questions
 
