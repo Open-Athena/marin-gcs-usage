@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "dev:full": "./dev",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && tsc -p functions && vite build",
     "preview": "vite preview",
     "shots": "scrns",
     "clean": "rm -rf node_modules/.vite dist"
@@ -26,6 +26,7 @@
     "use-prms": "^0.4.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.1",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.5.0",

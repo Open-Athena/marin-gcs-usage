@@ -236,6 +236,33 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
     ported — LPT root scheduling + the in-memory bisection index (manifest is
     dict-loaded; fine for curated subsets, revisit for giant plans), streamed
     multi-part logs, progress daemon + `STOP`-file. `undo`/`purge` are Phase 3.
+  - **Slice 3 DONE 2026-09-11** (the API, `site/functions/`, typechecks clean):
+    - `_lib/auth.ts` — lean identity from the edge Access JWT (`Cf-Access-Jwt-Assertion`,
+      aud/exp checked) + `requireAdmin`/`requireViewer`; admin = `admin_emails` D1
+      OR the staff domain (implicit, so there's a bootstrap admin without a PII
+      seed row in this public repo). Much leaner than gcs's `@open-athena/auth`.
+    - `_lib/gcp.ts` — `gcpToken` (SA-key JWT → OAuth, WebCrypto, memoized) + Batch/
+      CW infra consts; ported from gcs minus the multi-region fan-out (CW is
+      single-region us-central1).
+    - `_lib/plans.ts` — prefix normalization, the admin-edit audit, and
+      `snapshotPlan` (plan items + current keep marks → the executor's plan.json).
+    - `api/plans/[[path]].ts` — CRUD (list/create/get/close/add-items/remove-items;
+      reads viewer, writes admin, items editable only while open).
+    - `api/sweep/dispatch.ts` — snapshot → write plan.json to GCS → submit the
+      Batch job (mirrors `cw-batch-submit.sh`: `IMAGE:cw`, `gcs-usage-job` SA, CAIOS
+      secrets, data-bucket FUSE mount) running `sweep manifest && execute` → insert
+      the in-progress `deletion_runs` row.
+    - `api/sweep/jobs.ts` — list `cw-sweep-*` jobs + **reflect** each terminal run's
+      gs:// summary into `deletion_runs`/`deletion_bands` (idempotent; the D1-write
+      side of the Batch-writes-gs://-only split).
+    - `api/sweep/stop.ts` — cancel a running job (Batch `:cancel`; the clean
+      STOP-drain awaits the executor's STOP-poll follow-up).
+    - Tooling: added `site/functions/tsconfig.json` + `@cloudflare/workers-types`
+      and `tsc -p functions` to the site `build` (CI now typechecks Functions —
+      cw-s3 didn't before, a gap vs gcs).
+  - **Deferred**: `/api/marks` (the mark-axis write path) lands with the FE mark
+    axis in Phase 2; dispatch already reads keep marks defensively. `undo`/`purge`
+    are Phase 3.
 - **Phase 2 (FE, cw-s3)**: mark axis (`MarkControls`, `ChildrenTable` mark column,
   mark legend/outlines) + the Plans view (curate items) + `SweepPage` (dispatch +
   runs, per plan), adapted from gcs (no owner).
