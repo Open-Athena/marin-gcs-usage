@@ -481,6 +481,7 @@ function AppContent() {
               in the sticky `.pagebar` below, not the h1 line. */}
           <span className="nav-links">
             <Link className="nav-files" to="/files">Scans</Link>
+            <Link className="nav-sweep" to="/sweep">Sweep</Link>
           </span>
           {ident && (
             <div className="whoami">

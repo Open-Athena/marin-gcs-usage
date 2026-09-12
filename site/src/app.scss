@@ -812,3 +812,70 @@ details.fold {
   }
 }
 @keyframes busy-spin { to { transform: rotate(360deg); } }
+
+/* Mark & sweep console (/sweep) + mark-axis colors (specs/cw-sweep.md). */
+:root {
+  --mk-keep: #2e9e5b;   /* affirmative keep — green */
+  --mk-klc: #d68a1e;    /* keep-last-ckpt — amber (deliberately not keep-green) */
+  --mk-sweep: #d0453b;  /* sweep — red */
+}
+.sweep-page {
+  max-width: 1100px; margin: 0 auto; padding: 1rem;
+  .sweep-head {
+    display: flex; align-items: baseline; gap: 0.75rem;
+    h1 { font-size: 1.2rem; margin: 0; }
+    .back { font-size: 0.85em; }
+    .who { margin-left: auto; font-size: 0.85em; color: var(--muted); display: inline-flex; align-items: center; gap: 0.4em; }
+  }
+  .note { color: var(--muted); font-size: 0.85em; }
+  .sweep-err { background: color-mix(in srgb, var(--mk-sweep) 15%, var(--panel)); border: 1px solid var(--mk-sweep); padding: 0.4em 0.6em; border-radius: 6px; font-size: 0.9em; }
+  .sweep-grid { display: grid; grid-template-columns: 260px 1fr; gap: 1.2rem; align-items: start; }
+  @media (max-width: 720px) { .sweep-grid { grid-template-columns: 1fr; } }
+
+  h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+  h3 { font-size: 0.9rem; margin: 1rem 0 0.4rem; color: var(--ink-2); }
+  .dim { color: var(--muted); }
+  code { font-size: 0.85em; word-break: break-all; }
+
+  .plans-list {
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { margin: 0 0 2px; }
+    li > button { display: block; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 0.4em 0.6em; cursor: pointer; }
+    li.on > button { border-color: var(--accent); }
+    li.closed > button { opacity: 0.6; }
+    .pname { display: block; font-weight: 600; }
+    .pmeta { display: block; font-size: 0.78em; color: var(--muted); }
+    .new-plan { display: flex; flex-direction: column; gap: 4px; margin-top: 0.6rem; }
+    .new-plan input { padding: 0.3em; }
+  }
+
+  .plan-panel {
+    .pp-head { display: flex; align-items: baseline; gap: 0.6rem; }
+    .state { font-size: 0.7em; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--line); text-transform: uppercase; }
+    .state.open { color: var(--mk-keep); border-color: var(--mk-keep); }
+    .state.closed { color: var(--muted); }
+    .pp-note { color: var(--muted); font-size: 0.9em; }
+    .items { list-style: none; margin: 0; padding: 0; }
+    .items li { display: flex; align-items: center; gap: 0.4em; padding: 2px 0; }
+    .items .rm { color: var(--mk-sweep); border: none; background: none; cursor: pointer; font-size: 1em; }
+    .add-items { display: flex; flex-direction: column; gap: 4px; margin-top: 0.4rem; }
+    .add-items textarea { width: 100%; font-family: inherit; }
+    .dispatch { margin-top: 0.5rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    .dispatch h3 { width: 100%; margin-bottom: 0; }
+    button.dry { border: 1px solid var(--accent); background: var(--panel); border-radius: 6px; padding: 0.35em 0.7em; cursor: pointer; }
+    button.danger { border: 1px solid var(--mk-sweep); color: var(--mk-sweep); background: var(--panel); border-radius: 6px; padding: 0.35em 0.7em; cursor: pointer; }
+    button.danger.armed { background: var(--mk-sweep); color: #fff; }
+    .close-plan { margin-left: auto; font-size: 0.8em; }
+  }
+
+  .runs-wrap { overflow-x: auto; }
+  table.runs { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  table.runs th, table.runs td { text-align: left; padding: 0.3em 0.5em; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.runs .rstate { font-weight: 600; }
+  table.runs tr.running .rstate, table.runs tr.queued .rstate, table.runs tr.scheduled .rstate { color: var(--accent); }
+  table.runs tr.failed .rstate { color: var(--mk-sweep); }
+  table.runs tr.succeeded .rstate { color: var(--mk-keep); }
+  table.runs .tag { margin-left: 0.4em; font-size: 0.8em; padding: 0 5px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
+  table.runs .why summary { cursor: pointer; color: var(--muted); font-size: 0.85em; }
+  table.runs .actions button { margin-left: 0.3em; font-size: 0.85em; cursor: pointer; }
+}

@@ -15,6 +15,8 @@ export default defineConfig({
     proxy: {
       '/data': 'http://localhost:3264',
       '/v1/files': 'http://localhost:3264',
+      // Mark & sweep console: plans/marks/sweep/whoami Functions (D1 + Batch).
+      '/api': 'http://localhost:3264',
     },
   },
   // The workspace-linked `@rdub/file-tree` calls `useLocation` etc. — force a

@@ -3,6 +3,7 @@ import App from './App'
 import { AuthGate } from './AuthGate'
 import { FilesPage } from './FilesPage'
 import { OgPage } from './OgPage'
+import { SweepPage } from './SweepPage'
 
 // `/files/*` → scan browser; `/og` → redacted fixed-size treemap for the
 // og:image screenshot (public, ungated — it's what unfurl crawlers render);
@@ -13,6 +14,7 @@ export default function Root() {
     <Routes>
       <Route path="/og" element={<OgPage />} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
+      <Route path="/sweep" element={<AuthGate><SweepPage /></AuthGate>} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>
   )
