@@ -61,3 +61,23 @@ def upload_app_emoji(token: str, app: str, name: str, png: Path) -> str:
         body={"name": name, "image": f"data:image/png;base64,{b64}"},
     )
     return resp["id"]
+
+
+def guild_channels(token: str, guild: str) -> dict[str, str]:
+    """Text channels of a guild, ``name -> id``."""
+    chans = _request("GET", f"{API}/guilds/{guild}/channels", label="GET guild channels", token=token)
+    return {c["name"]: c["id"] for c in chans if c["type"] == 0}
+
+
+def channel_webhooks(token: str, channel: str) -> list[dict]:
+    """The channel's webhooks (needs Manage Webhooks there); app-owned ones carry their ``token``."""
+    return _request("GET", f"{API}/channels/{channel}/webhooks", label="GET channel webhooks", token=token)
+
+
+def create_webhook(token: str, channel: str, name: str) -> dict:
+    """Create a webhook owned by the bot's application in ``channel`` (needs Manage Webhooks)."""
+    return _request("POST", f"{API}/channels/{channel}/webhooks", label="POST channel webhook", token=token, body={"name": name})
+
+
+def webhook_url(hook: dict) -> str:
+    return f"{API}/webhooks/{hook['id']}/{hook['token']}"

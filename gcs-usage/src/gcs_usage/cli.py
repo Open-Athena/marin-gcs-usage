@@ -2443,6 +2443,42 @@ def discord_emoji(bot_token: str | None, icons: Path | None, dry_run: bool) -> N
         print(name, have[name])
 
 
+@main.command("discord-webhook")
+@option("-b", "--bot-token", help="Discord bot token (default $DISCORD_BOT_TOKEN)")
+@option("-c", "--channel", required=True, help="Channel id, or `#name` resolved in --guild")
+@option("-g", "--guild", help="Guild id for a `#name` channel (default $DISCORD_GUILD)")
+@option("-N", "--name", default="GCS usage", help="Webhook name (default 'GCS usage')")
+def discord_webhook(bot_token: str | None, channel: str, guild: str | None, name: str) -> None:
+    """Create (or reuse, by name) a webhook owned by the bot's application in a
+    channel, and print its URL on stdout. App-owned matters: Discord renders the
+    bot's application emoji (`discord-emoji`) only from the bot or a webhook the
+    bot owns — through a user-created webhook `<:name:id>` silently degrades to
+    `:name:`. Needs Manage Webhooks on the channel. The URL embeds a secret:
+    redirect stdout into a secret store or a 0600 file, never a log."""
+    from . import discord_api as api
+
+    bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+    if not bot_token:
+        raise SystemExit("discord-webhook: need DISCORD_BOT_TOKEN (or -b)")
+    if channel.startswith("#"):
+        guild = guild or os.environ.get("DISCORD_GUILD")
+        if not guild:
+            raise SystemExit("discord-webhook: a `#name` channel needs -g/--guild (or $DISCORD_GUILD)")
+        chans = api.guild_channels(bot_token, guild)
+        if channel[1:] not in chans:
+            raise SystemExit(f"discord-webhook: no text channel {channel} in guild {guild}")
+        channel = chans[channel[1:]]
+    app = api.app_id(bot_token)
+    mine = [h for h in api.channel_webhooks(bot_token, channel) if h.get("application_id") == app and h["name"] == name]
+    if mine:
+        hook = mine[0]
+        err(f"discord-webhook: reusing app-owned webhook {hook['id']} ({name!r}) in channel {channel}")
+    else:
+        hook = api.create_webhook(bot_token, channel, name)
+        err(f"discord-webhook: created app-owned webhook {hook['id']} ({name!r}) in channel {channel}")
+    print(api.webhook_url(hook))
+
+
 @main.command()
 @option("-d", "--date", help="Scan to report (default: latest under --root)")
 @option("-k", "--top", default=5, type=int, help="Movers per direction (default 5)")

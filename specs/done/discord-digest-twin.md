@@ -27,14 +27,14 @@ Every content function (`deg`, `op_body`, `reply`, `rows_from_meta`, `render_plo
 - `gcs-usage digest -P discord [-w URL] [-b TOKEN] [-m YYYY-MM]` — `DISCORD_DIGEST_WEBHOOK` + `DISCORD_BOT_TOKEN` by default. `-n` still prints the platform-neutral body.
 - `job/icons/calendar.png` (Twemoji `1f4c5`, CC-BY 4.0) deployed with the icons project.
 
-## Emoji gotcha (open — needs a permission grant)
+## Emoji gotcha (resolved: the webhook must be app-owned)
 
-Discord silently rewrites `<:name:id>` to bare `:name:` when the *poster* can't use that emoji. Application emoji are usable by the app and by **webhooks the app owns**, and the `#marin-bot-dbg` staging webhook is user-created (`application_id: null`), so the staged OP shows `:arrow_degm30:` as text. Marin Bot has no `MANAGE_WEBHOOKS` (nor `CREATE_GUILD_EXPRESSIONS`), so it can't create its own webhook yet. Fix = grant Marin Bot **Manage Webhooks** on the digest channel(s), then `gcs-usage` creates an app-owned "GCS usage" webhook there (`tmp/discord-webhook-probe.py` is the probe; promote to a `discord-webhook` subcommand once confirmed) and posts through it. The alternative — guild emoji — would put 17 arrows in the server's picker and needs Create Expressions instead.
+Discord silently rewrites `<:name:id>` to bare `:name:` when the *poster* can't use that emoji. Application emoji are usable by the app and by **webhooks the app owns** (`application_id` = the bot's app); a user-created webhook (channel settings → Integrations → New Webhook, `application_id: null`) strips them — the first `#marin-bot-dbg` staging OP showed `:arrow_degm30:` as text. So the digest's webhook is created *by the bot*: `gcs-usage discord-webhook -c '#gcs-usage' -g <guild>` (reuses an existing app-owned "GCS usage" webhook by name; needs the bot's role to have **Manage Webhooks** on the channel; prints the URL on stdout — redirect it, it embeds a secret). Verified 2026-09-14 in `#gcs-usage`: the readback OP carries `<:arrow_degm30:id>`. Guild emoji would have worked from any webhook but need Create Expressions and land in the server's picker.
 
 ## Rollout
 
-1. Grant Marin Bot Manage Webhooks on `#marin-bot-dbg` → re-stage through an app-owned webhook, confirm the arrows render.
-2. Pick the prod channel (a `#gcs-usage` twin in Marin's server, or `#internal-discuss`), same grant, create the webhook, store its URL + the bot token as GSM secrets (`gcs-usage-discord-digest-webhook`, `marin-discord-bot-token`), mount them as `DISCORD_DIGEST_WEBHOOK` / `DISCORD_BOT_TOKEN` in the Batch job, add `gcs-usage digest -P discord` next to the Slack call in `run.sh`.
-3. Backfill the month once (no spacing needed); daily runs append one reply.
+1. ~~Grant Marin Bot Manage Webhooks, re-stage through an app-owned webhook, confirm the arrows render.~~ Done 2026-09-14: `#gcs-usage` (private: Ryan + the Marin Archiver role, i.e. Marin Bot) holds the September thread through app-owned webhook `1549163390683971686`; Marin Dev gets added once the format settles. The earlier `#marin-bot-dbg` thread is orphaned (its webhook is user-created).
+2. Store the webhook URL + the bot token as GSM secrets (`gcs-usage-discord-webhook`, `marin-discord-bot-token`), mount them as `DISCORD_DIGEST_WEBHOOK` / `DISCORD_BOT_TOKEN` in the Batch job, add `gcs-usage digest -P discord` next to the Slack call in `run.sh`. The weekly report can post through the same webhook (`-w`), which retires the `#internal-discuss` secret grant.
+3. Daily runs append one reply; no backfill spacing needed.
 
 [shape-c]: slack-digest-shape-c.md
