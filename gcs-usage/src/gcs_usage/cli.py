@@ -2390,5 +2390,61 @@ def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: 
     err(f"digest: converged {m:%Y-%m}")
 
 
+@main.command()
+@option("-d", "--date", help="Scan to report (default: latest under --root)")
+@option("-k", "--top", default=5, type=int, help="Movers per direction (default 5)")
+@option("-n", "--dry-run", is_flag=True, help="Print the message; post nothing")
+@option("-p", "--prior", help="Baseline scan (default: newest ≥ 7 days before --date)")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
+@option("-t", "--threshold-gib", "threshold_gib", default=100, type=int, help="Mover threshold in GiB (default 100)")
+@option("-u", "--url", "site_url", default=None, help="Site base for links + the sweep-runs API (default gcs.oa.dev)")
+@option("-w", "--webhook", help="Discord webhook URL (default $DISCORD_WEBHOOK_INTERNAL_DISCUSS)")
+def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: str | None, threshold_gib: int, site_url: str | None, webhook: str | None) -> None:
+    """Post the weekly storage report to Marin's #internal-discuss: totals vs a
+    week ago, what the sweep removed, and the biggest movers with owners, from
+    the two scans' coarse index tiers. See specs/weekly-discord-report.md."""
+    from . import weekly as wk
+    from .mark import creds
+
+    site_url = site_url or wk.DEFAULT_URL
+    bucket = os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx")
+    root = root or f"gs://{bucket}/snapshots"
+    webhook = webhook or os.environ.get("DISCORD_WEBHOOK_INTERNAL_DISCUSS")
+    if not dry_run and not webhook:
+        raise SystemExit("weekly: need -w/--webhook or $DISCORD_WEBHOOK_INTERNAL_DISCUSS (or -n)")
+
+    dates = wk.scan_dates(root)
+    if not dates:
+        raise SystemExit(f"weekly: no scans under {root}")
+    date = date or dates[-1]
+    if date not in dates:
+        raise SystemExit(f"weekly: no scan {date} under {root}")
+    prior = prior or wk.prior_scan(dates, date)
+    if prior is None:
+        raise SystemExit(f"weekly: no scan ≥ 7 days before {date}")
+    err(f"weekly: {prior} → {date}")
+
+    totals = wk.totals_from_meta(wk.load_meta(root, prior), wk.load_meta(root, date))
+    _, token = creds(None, None)
+    swept, bands = None, []
+    if token:
+        runs = wk.load_runs(site_url, token)
+        since, until = wk.scan_ts(prior), wk.scan_ts(date) + 86400
+        swept = wk.swept_from_runs(runs, since, until)
+        real = [r["run_id"] for r in runs if r.get("mode") == "real" and r.get("finished_ts") and since < r["finished_ts"] <= until]
+        bands = wk.load_bands(site_url, token, real) if real else []
+        err(f"weekly: {swept.runs} real sweep runs in window, {len(bands)} bands")
+    else:
+        err("weekly: no $GCS_USAGE_TOKEN — sweep totals omitted")
+    a, b = wk.load_table(bucket, prior), wk.load_table(bucket, date)
+    mv = wk.movers(a, b, threshold=threshold_gib * wk.GIB, top=top, swept=bands)
+    text = wk.compose(totals, swept, mv, date=date, prior=prior, threshold=threshold_gib * wk.GIB, url=site_url)
+    if dry_run:
+        print(text)
+        return
+    mid = wk.post(webhook, text)
+    err(f"weekly: posted {mid} ({len(text)} chars)")
+
+
 if __name__ == "__main__":
     main()

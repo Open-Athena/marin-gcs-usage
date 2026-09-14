@@ -16,7 +16,7 @@ dependencies = [
     # editable image blocks + per-message sender). GitHub tarball (not git+…) so
     # `pip install ./gcs-usage` works in the git-less python:slim image. Bump the
     # SHA to update.
-    "thrds @ https://github.com/runsascoded/thrds/archive/200e1fd94d51832b872d30b4604e101afe429711.tar.gz",
+    "thrds @ https://github.com/runsascoded/thrds/archive/c4207a280a1597c747f2a8f23e1c73b5cd69747e.tar.gz",
 ]
 
 [project.optional-dependencies]
