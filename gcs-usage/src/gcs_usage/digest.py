@@ -375,7 +375,7 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
 
 # ---- Discord twin ---------------------------------------------------------
 
-CALENDAR_URL = f"{ICONS_BASE}/calendar.png"  # the OP sender's avatar (Slack uses :calendar:)
+CALENDAR_URL = f"{ICONS_BASE}/calendar.png?v=2"  # the OP sender's avatar (Slack uses :calendar:); ?v busts Discord's per-URL avatar cache
 
 
 def converge_discord(rows: list[Scan], month: dt.date, state: dict, *, hook, bot, emoji: dict[str, str], plot, site_url: str = DEFAULT_URL, save=None) -> dict:

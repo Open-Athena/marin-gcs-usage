@@ -174,7 +174,7 @@ OP_TWO_SCANS = "\n".join([
     "*Weekly summaries*",
     "<:arrow_deg0:1> [wk of 8/3](https://gcs.oa.dev/?d=260804) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
 ])
-CAL = "https://gcs-usage-icons.pages.dev/calendar.png"
+CAL = "https://gcs-usage-icons.pages.dev/calendar.png?v=2"
 AV = "https://gcs-usage-icons.pages.dev/arrows/av_deg"
 
 
