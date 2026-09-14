@@ -53,6 +53,8 @@ Bump the `thrds` pin in `gcs-usage/pyproject.toml` (currently `200e1fd`, before 
 
 ## Movers
 
+**Index-tier semantics (bit us on 2026-09-14):** in the `*-by-user` tiers the `usr IS NULL` row is the *unowned slice*, not the path's total — a path's total is the sum of all its rows (the first dry run treated NULL as the total, summed the six buckets to 2.3 PB against `meta.json`'s 3.3 PB, and showed the 150 TB sweep week as +46 TB). `weekly.Table` sums every slice per path; the non-user tiers also carry several rows per path, so any reader must aggregate.
+
 Their diff: per-`(bucket, dir_prefix)` snapshot at a fixed depth, flag |Δ| ≥ 100 GiB, top 5 each way in the post (30 in the gist). Ours reads both scans' path-index tiers directly from the data bucket (the job produced them; no site round-trip), joins on `path` across `depth ≤ 4`, and picks **maximal explanatory prefixes** rather than a fixed depth:
 
 1. Start at depth 1 (`bucket/dir`). For each row with |Δ| ≥ threshold, descend while a single child accounts for ≥ 80 % of the parent's Δ and is itself ≥ threshold; report the deepest such child. A parent whose Δ is spread over many children is reported as itself.
@@ -82,8 +84,10 @@ Module `gcs_usage/weekly.py`: `movers(a, b, *, threshold, top) -> Movers`, `comp
 
 ## Rollout
 
-1. `gcs-usage weekly -n -d 2026-09-07 -p 2026-08-31` locally: compare the mover lists with the 2026-08-31 post (their window was 14 days, ours 7 — expect overlap on the big movers, not identity). Fix the descent rule if a mover reads as the wrong level.
-2. `#marin-bot-dbg` post for the rendering (sender name/icon, code spans, the image, the 2,000-char fit).
+Status 2026-09-14: `gcs-usage weekly` is implemented (`weekly.py`, 12 exact-equality tests; `run.sh` Monday gate + `WEEKLY=1`; `batch-submit.sh` mounts the webhook with `WEEKLY_SECRET=1`), and the 9/7 → 9/14 report was posted to `#marin-bot-dbg` from the laptop with the job's site token: 66.6M objects / 199 TB swept in 7 runs, `grug` / `eu-west4/checkpoints` / `scratch/kaiyue` / `rl_testing` as the swept movers with owners, `us-east1/documents` +28.5 TiB the top grower. The treemap image waits on thrds attachments. Steps 1–2 below are done; 3–5 remain, and the daily **cron body** (edited in place in Cloud Scheduler, never regenerated from `batch-submit.sh`) needs the `DISCORD_WEBHOOK_INTERNAL_DISCUSS` secretVariable added after the grant.
+
+1. ~~`gcs-usage weekly -n -d 2026-09-07 -p 2026-08-31` locally~~ — done against 9/7 → 9/14 instead (a sweep week; the movers explain the −150 TB exactly).
+2. ~~`#marin-bot-dbg` post for the rendering~~ — done (sender name/icon, code spans, masked link, the 2,000-char fit; embeds suppressed so the Access-gated site link shows no sign-in-page preview).
 3. Tell Rohith and David the plan (Ryan, in the channel or DM): we post from Monday 2026-09-14; they disable their schedule (`ops-storage-report.yaml` `schedule:` — a one-line PR, or the Actions UI). Until they do, a Monday could carry both posts; theirs is currently failing anyway.
 4. First live post Monday 2026-09-14 (`WEEKLY=1` from the console is not needed — the day gate fires).
 5. Marin PR removing the pipeline + workflow + README section, referencing this spec and the first post. Land after step 4 has been seen in the channel.

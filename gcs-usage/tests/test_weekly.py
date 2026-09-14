@@ -123,6 +123,7 @@ def test_swept_from_runs_windows_real_finished_runs():
         {"mode": "dry", "finished_ts": 55, "deleted_objects": 5, "deleted_bytes": 5},          # dry: excluded
         {"mode": "real", "finished_ts": 10, "deleted_objects": 7, "deleted_bytes": 7},          # before the window
         {"mode": "real", "finished_ts": None, "deleted_objects": 9, "deleted_bytes": 9},        # unfinished
+        {"mode": "real", "finished_ts": 58, "deleted_objects": 0, "deleted_bytes": 0},          # aborted: nothing deleted
     ]
     assert W.swept_from_runs(runs, since=10, until=60) == W.Swept(objects=1234, bytes=50_000_000_000_000, runs=2, undo_deadline=UNDO)
 

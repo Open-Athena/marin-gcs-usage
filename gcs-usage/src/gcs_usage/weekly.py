@@ -191,8 +191,12 @@ def totals_from_meta(prior: dict, meta: dict) -> Totals:
 
 
 def swept_from_runs(runs: list[dict], since: int, until: int) -> Swept:
-    """Sum the real runs that finished in ``(since, until]`` (epoch seconds)."""
-    real = [r for r in runs if r.get("mode") == "real" and r.get("finished_ts") and since < r["finished_ts"] <= until]
+    """Sum the real runs that finished in ``(since, until]`` (epoch seconds)
+    and deleted at least one object (an aborted run leaves a zero row)."""
+    real = [
+        r for r in runs
+        if r.get("mode") == "real" and r.get("finished_ts") and since < r["finished_ts"] <= until and r.get("deleted_objects", 0) > 0
+    ]
     undo = [r["undo_deadline"] for r in real if r.get("undo_deadline")]
     return Swept(
         objects=sum(r.get("deleted_objects", 0) for r in real),
@@ -364,7 +368,7 @@ def post(webhook: str, content: str, *, files: list = ()) -> str:
     """Post as the GCS-usage sender through thrds's webhook client; returns the message id."""
     from thrds.discord import DiscordWebhookClient
 
-    client = DiscordWebhookClient(webhook, username=SENDER, avatar_url=ICON_URL)
+    client = DiscordWebhookClient(webhook, username=SENDER, avatar_url=ICON_URL, suppress_embeds=True)
     kwargs = {"files": list(files)} if files else {}
     return client.post(content, **kwargs).id
 

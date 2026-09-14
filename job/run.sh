@@ -350,6 +350,23 @@ else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
 fi
 
+# Mondays: the weekly storage report to Marin's #internal-discuss (specs/
+# weekly-discord-report.md) — this scan vs the newest one ≥ 7 days back, the
+# week's real sweep runs (via GCS_USAGE_TOKEN), and the biggest movers with
+# owners, through the channel's webhook (a cross-project secret; see
+# batch-submit.sh). WEEKLY=1 forces it on any day (first live post, re-posts);
+# REPROC skips it. A failed post never fails the snapshot.
+if [ "${REPROC:-0}" = "1" ]; then
+  echo "REPROC — skipping weekly report" >&2
+elif [ -z "${DISCORD_WEBHOOK_INTERNAL_DISCUSS:+set}" ]; then  # `:+set`: xtrace must not print the webhook
+  echo "no DISCORD_WEBHOOK_INTERNAL_DISCUSS — skipping weekly report" >&2
+elif [ "${WEEKLY:-0}" = "1" ] || [ "$(date -u +%u)" = 1 ]; then
+  gcs-usage weekly -d "$DATE" -r "gs://$DATA/snapshots" \
+    || echo "WARN: weekly-report step failed" >&2
+else
+  echo "not Monday — skipping weekly report (WEEKLY=1 forces)" >&2
+fi
+
 # Sweep row groups of generations the pointer no longer names (a REPROC's
 # previous generation; every reader handle has expired by now), and retire
 # the floor-free row groups of scans older than the newest INDEX_RETAIN —
