@@ -23,6 +23,7 @@ FROM python:3.12-slim
 COPY --from=site /usr/local/bin/node /usr/local/bin/node
 COPY --from=site /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && npm install -g wrangler@4
 # GNU time: the gate mode (`job/run.sh` GATE=1) reports each import's peak RSS.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends time && rm -rf /var/lib/apt/lists/*

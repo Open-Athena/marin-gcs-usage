@@ -124,7 +124,7 @@ if [ "${TIERS_ONLY:-0}" = "1" ]; then
   mkdir -p "/gcs/$DATA/$INDEX_DIR"
   cp "$work"/path-index-coarse*.parquet "/gcs/$DATA/$INDEX_DIR/"
   { set +x; } 2>/dev/null
-  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
     # A scan indexed before the footer-in-D1 sync existed has no D1 rows at
     # all (the scan picker lists only scans D1 knows): sync its floor-free
     # variants from where they are, then the fresh coarse tiers.
@@ -308,7 +308,7 @@ echo "PHASE publish: ${SECONDS}s (wall)" >&2
 # so this never blocks the snapshot. Disable xtrace for the WHOLE block first:
 # even the `[ -n "$CLOUDFLARE_API_TOKEN" ]` test echoes the token under `set -x`.
 { set +x; } 2>/dev/null
-if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
   gcs-usage index-sync -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" \
     || echo "WARN: index-sync failed (the site keeps serving the previous generation)" >&2
 else
@@ -325,7 +325,7 @@ set -x
 # agent token (also used by `series` below); skip quietly without it, and on
 # REPROC (no fresh publish to verify). The token rides in env, never the
 # cmdline, so xtrace is safe here.
-if [ -n "${GCS_USAGE_TOKEN:-}" ] && [ "${REPROC:-0}" != "1" ]; then
+if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
   if gcs-usage healthcheck -d "$DATE"; then
     echo "healthcheck OK — $DATE is servable" >&2
   else
@@ -343,7 +343,7 @@ fi
 # present in this image). A failed digest never fails the snapshot.
 if [ "${REPROC:-0}" = "1" ]; then
   echo "REPROC — skipping usage digest" >&2
-elif [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
+elif [ -n "${SLACK_BOT_TOKEN:+set}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then  # `:+set`: xtrace must not print the token
   gcs-usage digest -r "gs://$DATA/snapshots" \
     || echo "WARN: usage-digest step failed" >&2
 else
@@ -359,7 +359,7 @@ fi
 # the window is wide (~40 MB of D1 per scan: 120 ≈ 5 GB) until retired
 # scans read a group manifest blob instead.
 { set +x; } 2>/dev/null
-if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
   gcs-usage index-gc -r "${INDEX_RETAIN:-120}" "$DATE" || echo "WARN: index-gc failed" >&2
 fi
 set -x

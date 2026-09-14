@@ -2370,10 +2370,16 @@ def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: 
         # specific URL (served instantly), which the OP image uses to avoid
         # racing root-alias CDN propagation (→ Slack `invalid_blocks`).
         import re
+        import shutil
         import subprocess
 
+        # The job image installs wrangler globally (`npm install -g`) but has
+        # no `npx` shim, so prefer the binary; `npx` only serves a laptop run.
+        wrangler = [shutil.which("wrangler")] if shutil.which("wrangler") else ["npx", "wrangler"] if shutil.which("npx") else None
+        if wrangler is None:
+            raise SystemExit("digest: neither `wrangler` nor `npx` on PATH — can't publish the plot")
         r = subprocess.run(
-            ["npx", "wrangler", "pages", "deploy", str(icons), "--project-name", "gcs-usage-icons", "--branch", "main", "--commit-dirty=true"],
+            [*wrangler, "pages", "deploy", str(icons), "--project-name", "gcs-usage-icons", "--branch", "main", "--commit-dirty=true"],
             check=True, capture_output=True, text=True,
         )
         err(r.stdout)
