@@ -49,7 +49,7 @@ Two gaps to close in thrds first (spec'd for that session as `~/c/thrds/specs/di
 
 Bump the `thrds` pin in `gcs-usage/pyproject.toml` (currently `200e1fd`, before any of the Discord work) to the pushed `py` head once those land.
 
-**Why not `thrds discord push` for the post itself.** `push` posts the OP under the *bot's* identity and only routes `+++ as <name>` replies through the webhook (policy: always a bot, the webhook is a per-sender layer on top). Our post is a single message whose whole point is the custom sender, so it is the one shape `push` refuses ("the OP can't carry a per-sender override"). The library client is the right level; the CLI verb is for hand-authored threads.
+**`thrds discord push` and the post.** `push` reconciles a doc with both transports: replies marked `+++ as <name>` post (and later edit) through the webhook with that sender, everything else through the bot. The one shape it rejects today is a custom sender on the **OP** (`op_sender` on Discord), on the reasoning that the OP must be the bot's so the bot can open the thread off it. That is a thrds gap rather than a Discord limit: the bot can open a thread off any message in the channel, webhook-authored included, so the thrds spec's item 3 asks for a probe and, if it holds, an OP posted through the webhook. Either way the job itself calls the library client directly (a cron post has no doc or session); `push` matters for iterating drafts in a `dscrd/weekly/` session with gist history.
 
 ## Movers
 
