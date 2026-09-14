@@ -24,7 +24,7 @@ Every content function (`deg`, `op_body`, `reply`, `rows_from_meta`, `render_plo
 
 - `gcs_usage/discord_api.py` — the three REST calls thrds doesn't wrap: `webhook_info` (which channel/id a webhook URL is), `app_emojis`, `upload_app_emoji`. Bot calls send the `DiscordBot (url, version)` User-Agent Discord's Cloudflare front requires.
 - `gcs-usage discord-emoji [-n]` — idempotent upload of `job/icons/arrows/arrow_deg*.png` as application emoji; prints `name id`. Run once per bot; the digest resolves ids at runtime.
-- `gcs-usage digest -P discord [-w URL] [-b TOKEN] [-m YYYY-MM]` — `DISCORD_DIGEST_WEBHOOK` + `DISCORD_BOT_TOKEN` by default. `-n` still prints the platform-neutral body.
+- `gcs-usage digest -P discord [-w URL] [-b TOKEN] [-m YYYY-MM]` — `DISCORD_GCS_USAGE_WEBHOOK` + `DISCORD_BOT_TOKEN` by default. `-n` still prints the platform-neutral body.
 - `job/icons/calendar.png` (Twemoji `1f4c5`, CC-BY 4.0) deployed with the icons project.
 
 ## Emoji gotcha (resolved: the webhook must be app-owned)
@@ -34,7 +34,7 @@ Discord silently rewrites `<:name:id>` to bare `:name:` when the *poster* can't 
 ## Rollout
 
 1. ~~Grant Marin Bot Manage Webhooks, re-stage through an app-owned webhook, confirm the arrows render.~~ Done 2026-09-14: `#gcs-usage` (private: Ryan + the Marin Archiver role, i.e. Marin Bot) holds the September thread through app-owned webhook `1549163390683971686`; Marin Dev gets added once the format settles. The earlier `#marin-bot-dbg` thread is orphaned (its webhook is user-created).
-2. Store the webhook URL + the bot token as GSM secrets (`gcs-usage-discord-webhook`, `marin-discord-bot-token`), mount them as `DISCORD_DIGEST_WEBHOOK` / `DISCORD_BOT_TOKEN` in the Batch job, add `gcs-usage digest -P discord` next to the Slack call in `run.sh`. The weekly report can post through the same webhook (`-w`), which retires the `#internal-discuss` secret grant.
-3. Daily runs append one reply; no backfill spacing needed.
+2. ~~Store the webhook URL + the bot token as GSM secrets …~~ Done 2026-09-14: `gcs-usage-discord-webhook` + `marin-discord-bot-token` in `oa-internal-450019` (job SA granted accessor), mounted as `DISCORD_GCS_USAGE_WEBHOOK` / `DISCORD_BOT_TOKEN` by `batch-submit.sh` and the daily cron body; `run.sh` runs `gcs-usage digest -P discord` after the Slack digest, and the Monday weekly report posts through the same webhook (the `#internal-discuss` cross-project secret is retired).
+3. Daily runs append one reply; no backfill spacing needed. First in-job run: the 2026-09-15 07:00Z cron.
 
 [shape-c]: slack-digest-shape-c.md

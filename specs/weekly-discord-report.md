@@ -69,7 +69,7 @@ The weekly window is `from` = the newest scan at least 7 days before `to` (so a 
 
 - `-d/--date` scan to report (default: latest under `--root`); `-p/--prior` the baseline scan (default: newest ≥ 7 days earlier).
 - `-t/--threshold-gib` mover threshold (default 100); `-k/--top` movers per direction (default 5).
-- `-w/--webhook` Discord webhook URL (default `$DISCORD_WEBHOOK_INTERNAL_DISCUSS`); `-n/--dry-run` prints the message and posts nothing.
+- `-w/--webhook` Discord webhook URL (default `$DISCORD_GCS_USAGE_WEBHOOK`); `-n/--dry-run` prints the message and posts nothing.
 - `-r/--root` snapshots root, `-u/--url` site base for links — as `digest`.
 - Reads D1 through the site with `$GCS_USAGE_TOKEN` (already in the job's env).
 - Exit non-zero on a webhook failure (`run.sh` wraps it in `|| echo WARN`, same as the digest — a failed post never fails the snapshot).
@@ -102,3 +102,5 @@ Status 2026-09-14: `gcs-usage weekly` is implemented (`weekly.py`, 12 exact-equa
 [digest]: ../gcs-usage/src/gcs_usage/digest.py
 [run.sh]: ../job/run.sh
 [batch-submit]: ../job/batch-submit.sh
+
+Status 2026-09-14 (evening): the report moves to Marin's new private `#gcs-usage` channel (Ryan + Marin Bot for now; Marin Dev once the format settles) and posts through the same app-owned webhook as the Discord digest twin (`specs/done/discord-digest-twin.md`), mounted as `DISCORD_GCS_USAGE_WEBHOOK` from this project's `gcs-usage-discord-webhook` secret. The `#internal-discuss` cross-project secret, its grant, and `WEEKLY_SECRET=1` are retired. First live post: Monday 2026-09-21 07:00Z.

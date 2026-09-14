@@ -2329,7 +2329,7 @@ def _icons_dir() -> Path:
 @option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
 @option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default gcs.oa.dev)")
-@option("-w", "--webhook", help="Discord webhook URL in the digest channel (default $DISCORD_DIGEST_WEBHOOK; with -P discord)")
+@option("-w", "--webhook", help="Discord webhook URL in the digest channel (default $DISCORD_GCS_USAGE_WEBHOOK; with -P discord)")
 def digest(bot_token: str | None, channel: str | None, reply_delay: float, month: str | None, dry_run: bool, platform: str, root: str | None, token: str | None, site_url: str | None, webhook: str | None) -> None:
     """Converge the Shape-C monthly digest thread: an OP (month-to-date headline,
     per-week bullets, mosaic plot) edited in place + one reply per scan (headline
@@ -2364,10 +2364,10 @@ def digest(bot_token: str | None, channel: str | None, reply_delay: float, month
         return
 
     if platform == "discord":
-        webhook = webhook or os.environ.get("DISCORD_DIGEST_WEBHOOK")
+        webhook = webhook or os.environ.get("DISCORD_GCS_USAGE_WEBHOOK")
         bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
         if not (webhook and bot_token):
-            raise SystemExit("digest: -P discord needs DISCORD_DIGEST_WEBHOOK + DISCORD_BOT_TOKEN (or -w/-b)")
+            raise SystemExit("digest: -P discord needs DISCORD_GCS_USAGE_WEBHOOK + DISCORD_BOT_TOKEN (or -w/-b)")
         dg.post_digest_discord(root, m, webhook, bot_token, site_url=site_url)
         err(f"digest: converged {m:%Y-%m} (discord)")
         return
@@ -2487,7 +2487,7 @@ def discord_webhook(bot_token: str | None, channel: str, guild: str | None, name
 @option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
 @option("-t", "--threshold-gib", "threshold_gib", default=100, type=int, help="Mover threshold in GiB (default 100)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links + the sweep-runs API (default gcs.oa.dev)")
-@option("-w", "--webhook", help="Discord webhook URL (default $DISCORD_WEBHOOK_INTERNAL_DISCUSS)")
+@option("-w", "--webhook", help="Discord webhook URL (default $DISCORD_GCS_USAGE_WEBHOOK — the #gcs-usage app-owned webhook the digest twin also posts through)")
 def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: str | None, threshold_gib: int, site_url: str | None, webhook: str | None) -> None:
     """Post the weekly storage report to Marin's #internal-discuss: totals vs a
     week ago, what the sweep removed, and the biggest movers with owners, from
@@ -2498,9 +2498,9 @@ def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: s
     site_url = site_url or wk.DEFAULT_URL
     bucket = os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx")
     root = root or f"gs://{bucket}/snapshots"
-    webhook = webhook or os.environ.get("DISCORD_WEBHOOK_INTERNAL_DISCUSS")
+    webhook = webhook or os.environ.get("DISCORD_GCS_USAGE_WEBHOOK")
     if not dry_run and not webhook:
-        raise SystemExit("weekly: need -w/--webhook or $DISCORD_WEBHOOK_INTERNAL_DISCUSS (or -n)")
+        raise SystemExit("weekly: need -w/--webhook or $DISCORD_GCS_USAGE_WEBHOOK (or -n)")
 
     dates = wk.scan_dates(root)
     if not dates:

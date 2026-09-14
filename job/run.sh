@@ -350,16 +350,29 @@ else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
 fi
 
-# Mondays: the weekly storage report to Marin's #internal-discuss (specs/
+# The same month thread in Marin's Discord #gcs-usage (specs/done/discord-
+# digest-twin.md): OP + plot through the channel's app-owned webhook, the bot
+# opens the thread and lends its arrow emoji. Both secrets are always mounted
+# (batch-submit.sh); a failed post never fails the snapshot.
+if [ "${REPROC:-0}" = "1" ]; then
+  echo "REPROC — skipping Discord digest" >&2
+elif [ -n "${DISCORD_GCS_USAGE_WEBHOOK:+set}" ] && [ -n "${DISCORD_BOT_TOKEN:+set}" ]; then  # `:+set`: xtrace must not print secrets
+  gcs-usage digest -P discord -r "gs://$DATA/snapshots" \
+    || echo "WARN: Discord digest step failed" >&2
+else
+  echo "no Discord transport (DISCORD_GCS_USAGE_WEBHOOK+DISCORD_BOT_TOKEN) — skipping Discord digest" >&2
+fi
+
+# Mondays: the weekly storage report to Marin's Discord #gcs-usage (specs/
 # weekly-discord-report.md) — this scan vs the newest one ≥ 7 days back, the
 # week's real sweep runs (via GCS_USAGE_TOKEN), and the biggest movers with
-# owners, through the channel's webhook (a cross-project secret; see
-# batch-submit.sh). WEEKLY=1 forces it on any day (first live post, re-posts);
-# REPROC skips it. A failed post never fails the snapshot.
+# owners, through the same app-owned webhook as the digest twin. WEEKLY=1
+# forces it on any day (first live post, re-posts); REPROC skips it. A failed
+# post never fails the snapshot.
 if [ "${REPROC:-0}" = "1" ]; then
   echo "REPROC — skipping weekly report" >&2
-elif [ -z "${DISCORD_WEBHOOK_INTERNAL_DISCUSS:+set}" ]; then  # `:+set`: xtrace must not print the webhook
-  echo "no DISCORD_WEBHOOK_INTERNAL_DISCUSS — skipping weekly report" >&2
+elif [ -z "${DISCORD_GCS_USAGE_WEBHOOK:+set}" ]; then  # `:+set`: xtrace must not print the webhook
+  echo "no DISCORD_GCS_USAGE_WEBHOOK — skipping weekly report" >&2
 elif [ "${WEEKLY:-0}" = "1" ] || [ "$(date -u +%u)" = 1 ]; then
   gcs-usage weekly -d "$DATE" -r "gs://$DATA/snapshots" \
     || echo "WARN: weekly-report step failed" >&2

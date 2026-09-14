@@ -84,15 +84,10 @@ EOF
 }
 
 spec=$(mktemp)
-# WEEKLY_SECRET=1 mounts Marin's #internal-discuss webhook (a cross-project
-# secret): Batch refuses to start a job whose SA can't read a secretVariable,
-# so it is opt-in until the accessor grant is in place. The daily cron body
-# (edited in place in Cloud Scheduler) carries it once granted.
-weekly_secret=""
-if [ -n "${WEEKLY_SECRET:-}" ]; then
-  weekly_secret=",
-          \"DISCORD_WEBHOOK_INTERNAL_DISCUSS\": \"projects/${MARIN_PROJECT_NUMBER:-748532799086}/secrets/marin-discord-webhook-internal-discuss/versions/latest\""
-fi
+# Every secretVariable must be readable by the job SA or Batch refuses to start
+# the job; the two Discord ones (the #gcs-usage app-owned webhook + Marin Bot's
+# token, both in this project) were granted 2026-09-14. The daily cron body is
+# edited in place in Cloud Scheduler and carries the same set.
 cat > "$spec" <<EOF
 {
   "taskGroups": [{
@@ -109,7 +104,9 @@ cat > "$spec" <<EOF
           "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/gcs-alert-slack-bot-token/versions/latest",
           "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest",
           "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
-          "GCS_USAGE_TOKEN": "projects/$PROJECT/secrets/gcs-sheet-sync-token/versions/latest"${weekly_secret}
+          "GCS_USAGE_TOKEN": "projects/$PROJECT/secrets/gcs-sheet-sync-token/versions/latest",
+          "DISCORD_GCS_USAGE_WEBHOOK": "projects/$PROJECT/secrets/gcs-usage-discord-webhook/versions/latest",
+          "DISCORD_BOT_TOKEN": "projects/$PROJECT/secrets/marin-discord-bot-token/versions/latest"
         }
       }
     }
