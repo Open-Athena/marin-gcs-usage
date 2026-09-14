@@ -33,9 +33,23 @@ _Changes since 2026-09-07 (prefixes that moved ≥ 100 GiB):_
 
 - **totals**: objects, bytes, and the $/mo run-rate from the `to` scan's `meta.json` (the digest's cost model), with Δ against the `from` scan. Same formatting helpers as `digest.py` (`_tb`, `_usd`, `_pct`).
 - **swept this week**: the sum of D1 `deletion_runs` (mode `real`, `finished_ts` inside the window) — objects, bytes, run count, and the latest `undo_deadline`. Read through `/api/db/deletion_runs` with the job's site token. Omitted when there were none.
-- **report link**: the site's Diff section pinned to `(from, to)` — the same view the movers came from. (Confirm the exact query params the Diff section reads for its span; `App.tsx` `spanScan`/`asof`.)
+- **report link**: the site's Diff section pinned to `(from, to)` — the same view the movers came from: `https://gcs.oa.dev/?d=<yymmdd>-7d#diff` (`?d=[scan][-span]`, `scan.ts` `encodeSel`; the span resolves to the nearest scan, which is exactly how `from` is chosen below, so the link reproduces the post's window). Scan times drift minutes past the day boundary, so the compact date form (`260914`) is what the site itself writes.
+- **image**: the Diff treemap for the same window, attached to the message as a PNG (a Discord attachment renders inline under the text; no public hosting, unlike the Slack digest's plot on `gcs-usage-icons.pages.dev`, which Slack's image blocks force). v1 renders it in the job with matplotlib + squarify from the same two path-index tables the movers come from (the site's treemap is canvas-painted, so there is no SVG to rasterize server-side); the `[plot]` extra already carries matplotlib for `digest_plot.py`. Needs multipart on the webhook client — see *Transport* below.
 - **movers**: see below. Each line: bucket-qualified prefix, signed Δ in TiB (one decimal), and a status word plus the owner's short name: `new` (absent in `from`), `gone` (absent in `to`), `grew`, `shrank`, or `swept` (gone/shrank *and* covered by a sweep run's band this window). Owner = the dominant `usr` slice of the prefix in the `to` scan (in `from` for `gone`); `unowned` when no slice claims a majority. Short names only — no emails, no handles beyond what the site shows.
 - **sender**: Discord webhooks honour `username` / `avatar_url` per message (unlike Slack's), so post as **GCS usage** with the mark icon from `gcs-usage-icons.pages.dev`. `allowed_mentions: { parse: [] }` so a path can never ping anyone.
+
+## Transport (thrds)
+
+`digest.py` already drives Slack through thrds's `SlackClient`; the weekly post drives Discord through thrds's **`DiscordWebhookClient`** (`thrds/discord.py`, landed 2026-09-13 with `thrds discord push`, the `DiscordHybridClient`, and the README's platform-capability matrix). It is the honest per-message-sender transport on Discord: `post(content, username=, icon_url=)` → `POST {webhook}?wait=true`, `suppress_embeds`, the same curl/backoff/429 core as the bot client, and the webhook URL kept out of every error string (it embeds a secret). `post` is all we need — one message, no thread, no reconcile — so no bot token: a webhook is the production transport Marin already uses for this channel, and a bot in Marin's server would be a second credential to mint and grant for nothing.
+
+Two gaps to close in thrds first (spec'd for that session as `~/c/thrds/specs/discord-webhook-attachments.md`):
+
+1. **Attachments** — `post(..., files=[Path])` as multipart (`payload_json` + `files[n]`), which is how a webhook message carries the treemap PNG. Until it lands, the job posts text-only (the link still reaches the same treemap on the site).
+2. **`allowed_mentions`** — a client-wide `allowed_mentions={"parse": []}` so a prefix like `@scratch` can never ping a role or user. Bare `content` posts today can.
+
+Bump the `thrds` pin in `gcs-usage/pyproject.toml` (currently `200e1fd`, before any of the Discord work) to the pushed `py` head once those land.
+
+**Why not `thrds discord push` for the post itself.** `push` posts the OP under the *bot's* identity and only routes `+++ as <name>` replies through the webhook (policy: always a bot, the webhook is a per-sender layer on top). Our post is a single message whose whole point is the custom sender, so it is the one shape `push` refuses ("the OP can't carry a per-sender override"). The library client is the right level; the CLI verb is for hand-authored threads.
 
 ## Movers
 
@@ -64,12 +78,12 @@ Module `gcs_usage/weekly.py`: `movers(a, b, *, threshold, top) -> Movers`, `comp
 
 - **Secret**: the webhook lives in Marin's GCP project as `marin-discord-webhook-internal-discuss`. Grant `roles/secretmanager.secretAccessor` on *that one secret* to `gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com` (Ryan runs the grant), and reference it cross-project in `job/batch-submit.sh` `secretVariables` as `DISCORD_WEBHOOK_INTERNAL_DISCUSS: projects/<marin-project-number>/secrets/marin-discord-webhook-internal-discuss/versions/latest`. One source of truth; nothing copied. (Fallback if cross-project access is refused: copy it into our project as `gcs-discord-webhook-internal-discuss`.)
 - **Schedule**: `run.sh`, after the digest step, `if [ "$(date -u +%u)" = 1 ] && [ -n "${DISCORD_WEBHOOK_INTERNAL_DISCUSS:-}" ]`, run `gcs-usage weekly`. The daily job starts 07:00Z, so the post lands mid-morning UTC on Mondays instead of their 14:00Z; nobody has asked for the hour. `REPROC=1` skips it, like the digest. `WEEKLY=1` forces it on any day (manual re-posts / the first live run).
-- **Staging**: dry-run first; then a webhook on a private test server (`-w`) for the render; only then the real channel.
+- **Staging**: `#marin-bot-dbg` in Marin's server (private: two members, Ryan + David; the thrds session already posts there). Its webhook exists — `DSCRD_MARIN_BOT_DBG_WEBHOOK` in `~/c/thrds/.envrc` (rotated after the first paste; never printed) — and this repo's `.envrc` already carries the same value under the same name, so `gcs-usage weekly -w "$DSCRD_MARIN_BOT_DBG_WEBHOOK"` exercises the exact production code path (sender, image, link, 2,000-char fit) into a channel nobody else reads. Iteration order: `-n` (text to stdout) → `thrds discord preview` on that text when the markdown is in doubt (Discord-faithful renderer; the doc lives under `dscrd/weekly/` so drafts land in a gist like `slck/gcs-digest`) → staging webhook → prod. A private server of Ryan's own is optional; the debug channel suffices for this.
 
 ## Rollout
 
 1. `gcs-usage weekly -n -d 2026-09-07 -p 2026-08-31` locally: compare the mover lists with the 2026-08-31 post (their window was 14 days, ours 7 — expect overlap on the big movers, not identity). Fix the descent rule if a mover reads as the wrong level.
-2. Test-server post for the rendering (sender name/icon, code spans, the 2,000-char fit).
+2. `#marin-bot-dbg` post for the rendering (sender name/icon, code spans, the image, the 2,000-char fit).
 3. Tell Rohith and David the plan (Ryan, in the channel or DM): we post from Monday 2026-09-14; they disable their schedule (`ops-storage-report.yaml` `schedule:` — a one-line PR, or the Actions UI). Until they do, a Monday could carry both posts; theirs is currently failing anyway.
 4. First live post Monday 2026-09-14 (`WEEKLY=1` from the console is not needed — the day gate fires).
 5. Marin PR removing the pipeline + workflow + README section, referencing this spec and the first post. Land after step 4 has been seen in the channel.
@@ -79,6 +93,7 @@ Module `gcs_usage/weekly.py`: `movers(a, b, *, threshold, top) -> Movers`, `comp
 - A gist. Theirs existed because Discord could not carry the tables; ours links the site, which has the same rollups live (by bucket, by class, top prefixes, age) behind Access. If someone outside Access needs the numbers, that is a separate question.
 - Their CoreWeave telemetry (`coreweave_usage.py`). Untouched.
 - Per-user nudges in the post. `/users` and the sheet sync cover that; the weekly post stays a storage report.
+- A Slack twin. `#gcs-usage` already carries the monthly digest (`digest.py`, `SlackClient`); the weekly's `compose` is a pure function over the same inputs, so a Slack rendering (`mrkdwn`, image block on the icons host) is a second formatter away if anyone asks. Not built until then.
 
 [digest]: ../gcs-usage/src/gcs_usage/digest.py
 [run.sh]: ../job/run.sh
