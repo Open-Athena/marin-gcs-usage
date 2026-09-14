@@ -25,7 +25,7 @@ from typing import Callable, Iterable
 from .digest import GIB, MINUS, TIB, _cost
 
 DEFAULT_URL = "https://gcs.oa.dev"
-ICON_URL = "https://gcs-usage-icons.pages.dev/mark.png"
+ICON_URL = "https://gcs-usage-icons.pages.dev/gcs-digest.png"  # the digest app icon (mark.png was never deployed → Discord fell back to its default avatar)
 SENDER = "GCS usage"
 MESSAGE_LIMIT = 2000
 MAX_DEPTH = 5  # index depth: bucket + 4 segments
