@@ -366,9 +366,10 @@ def load_bands(url: str, token: str, run_ids: Iterable[str]) -> list[str]:
 
 def post(webhook: str, content: str, *, files: list = ()) -> str:
     """Post as the GCS-usage sender through thrds's webhook client; returns the message id."""
-    from thrds.discord import DiscordWebhookClient
+    from thrds.discord import NO_MENTIONS, DiscordWebhookClient
 
-    client = DiscordWebhookClient(webhook, username=SENDER, avatar_url=ICON_URL, suppress_embeds=True)
+    # NO_MENTIONS: interpolated paths/owner names can never ping @here/@everyone/@role
+    client = DiscordWebhookClient(webhook, username=SENDER, avatar_url=ICON_URL, suppress_embeds=True, allowed_mentions=NO_MENTIONS)
     kwargs = {"files": list(files)} if files else {}
     return client.post(content, **kwargs).id
 

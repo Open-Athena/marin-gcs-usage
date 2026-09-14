@@ -2312,21 +2312,31 @@ def index_compact(variants: tuple[str, ...], dates: tuple[str, ...]) -> None:
         err("index-compact: nothing synced matches")
 
 
+def _icons_dir() -> Path:
+    """`job/icons` in both layouts: pip-installed in the job image (cwd=/app →
+    /app/job/icons) or the repo checkout (…/parents[3]/job/icons)."""
+    cands = (Path.cwd() / "job" / "icons", Path(__file__).resolve().parents[3] / "job" / "icons")
+    return next((c for c in cands if c.exists()), cands[-1])
+
+
 @main.command()
+@option("-b", "--bot-token", help="Discord bot token: opens the month's thread + resolves app emoji (default $DISCORD_BOT_TOKEN; with -P discord)")
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
-@option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so Slack keeps per-reply sender chrome)")
+@option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced Slack backfill so per-reply sender chrome survives; Discord needs none)")
 @option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
 @option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
+@option("-P", "--platform", type=Choice(["slack", "discord"]), default="slack", help="Which twin to converge (default slack)")
 @option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
 @option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default gcs.oa.dev)")
-def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None) -> None:
-    """Converge the Shape-C monthly digest thread in Slack: an OP (month-to-date
-    headline, per-week bullets, mosaic plot) edited in place + one reply per scan
-    (headline sender, class breakdown body, colour-coded arrow avatar). State
-    lives in gs://<bucket>/digest/<YYYY-MM>.json. See specs/done/slack-digest-shape-c.md."""
-    from pathlib import Path
-
+@option("-w", "--webhook", help="Discord webhook URL in the digest channel (default $DISCORD_DIGEST_WEBHOOK; with -P discord)")
+def digest(bot_token: str | None, channel: str | None, reply_delay: float, month: str | None, dry_run: bool, platform: str, root: str | None, token: str | None, site_url: str | None, webhook: str | None) -> None:
+    """Converge the Shape-C monthly digest thread: an OP (month-to-date headline,
+    per-week bullets, mosaic plot) edited in place + one reply per scan (headline
+    sender, $/mo body, colour-coded arrow avatar). Slack (default; state in
+    gs://<bucket>/digest/<YYYY-MM>.json) or its Discord twin (`-P discord`: webhook
+    OP with the plot attached, bot-opened thread, per-scan webhook replies; state
+    in digest/discord/<channel>/<YYYY-MM>.json). See specs/done/slack-digest-shape-c.md."""
     from . import digest as dg
 
     site_url = site_url or dg.DEFAULT_URL
@@ -2353,16 +2363,19 @@ def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: 
             print(f"{s} | {b} | {a.split('/')[-1]}")
         return
 
+    if platform == "discord":
+        webhook = webhook or os.environ.get("DISCORD_DIGEST_WEBHOOK")
+        bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+        if not (webhook and bot_token):
+            raise SystemExit("digest: -P discord needs DISCORD_DIGEST_WEBHOOK + DISCORD_BOT_TOKEN (or -w/-b)")
+        dg.post_digest_discord(root, m, webhook, bot_token, site_url=site_url)
+        err(f"digest: converged {m:%Y-%m} (discord)")
+        return
     channel = channel or os.environ.get("SLACK_CHANNEL")
     token = token or os.environ.get("SLACK_BOT_TOKEN")
     if not (channel and token):
         raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
-    # Resolve job/icons in both layouts: pip-installed in the image (cwd=/app,
-    # icons at /app/job/icons) or the repo checkout (…/parents[3]/job/icons).
-    icons = next(
-        (c for c in (Path.cwd() / "job" / "icons", Path(__file__).resolve().parents[3] / "job" / "icons") if c.exists()),
-        Path(__file__).resolve().parents[3] / "job" / "icons",
-    )
+    icons = _icons_dir()
 
     def deploy(local: Path, name: str) -> str | None:
         # publish the icons dir (incl. the freshly-rendered plot) to the Pages
@@ -2388,6 +2401,46 @@ def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: 
 
     dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
     err(f"digest: converged {m:%Y-%m}")
+
+
+@main.command("discord-emoji")
+@option("-b", "--bot-token", help="Discord bot token (default $DISCORD_BOT_TOKEN)")
+@option("-i", "--icons", type=Path, help="Dir of arrow_deg*.png glyphs (default job/icons/arrows)")
+@option("-n", "--dry-run", is_flag=True, help="Say what would be uploaded; upload nothing")
+def discord_emoji(bot_token: str | None, icons: Path | None, dry_run: bool) -> None:
+    """Upload the digest's trend-arrow glyphs (arrow_deg-80 … arrow_deg80) as
+    application emoji on the bot, so `digest -P discord` can render `:arrow_degN:`
+    as `<:arrow_degN:id>` (negatives become `arrow_degmN`: Discord names allow no
+    `-`). Idempotent: names already on the app are kept. Prints `name id` for the
+    whole set on stdout."""
+    import re
+
+    from . import digest as dg
+    from . import discord_api as api
+
+    bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+    if not bot_token:
+        raise SystemExit("discord-emoji: need DISCORD_BOT_TOKEN (or -b)")
+    icons = icons or _icons_dir() / "arrows"
+    glyphs = {
+        dg.emoji_name(int(m.group(1))): p
+        for p in sorted(icons.glob("arrow_deg*.png"))
+        if (m := re.fullmatch(r"arrow_deg(-?\d+)\.png", p.name))
+    }
+    if not glyphs:
+        raise SystemExit(f"discord-emoji: no arrow_deg*.png under {icons}")
+    app = api.app_id(bot_token)
+    have = api.app_emojis(bot_token, app)
+    for name, p in glyphs.items():
+        if name in have:
+            continue
+        if dry_run:
+            err(f"would upload {name} <- {p.name}")
+            continue
+        have[name] = api.upload_app_emoji(bot_token, app, name, p)
+        err(f"uploaded {name} <- {p.name}")
+    for name in sorted(have):
+        print(name, have[name])
 
 
 @main.command()

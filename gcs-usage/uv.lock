@@ -1076,7 +1076,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=16.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "thrds", url = "https://github.com/runsascoded/thrds/archive/c4207a280a1597c747f2a8f23e1c73b5cd69747e.tar.gz" },
+    { name = "thrds", url = "https://github.com/runsascoded/thrds/archive/70548988ac6827a81a770b938b36057f67ae0e3d.tar.gz" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.19" },
 ]
 provides-extras = ["wandb", "sheets", "plot"]
@@ -1878,14 +1878,14 @@ wheels = [
 [[package]]
 name = "thrds"
 version = "0.5.0"
-source = { url = "https://github.com/runsascoded/thrds/archive/c4207a280a1597c747f2a8f23e1c73b5cd69747e.tar.gz" }
+source = { url = "https://github.com/runsascoded/thrds/archive/70548988ac6827a81a770b938b36057f67ae0e3d.tar.gz" }
 dependencies = [
     { name = "click" },
     { name = "emoji" },
     { name = "pyyaml" },
     { name = "utz" },
 ]
-sdist = { hash = "sha256:02221a35b731c724ce69a201f0c7be320923b3af8ad578aeff26418b979ca2aa" }
+sdist = { hash = "sha256:d8ac363b59714c3c9084f8ba55a281af53bd8cb4335ed224d99526f3cf587e1f" }
 
 [package.metadata]
 requires-dist = [

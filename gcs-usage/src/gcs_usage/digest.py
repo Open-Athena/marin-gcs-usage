@@ -1,4 +1,5 @@
-"""Shape-C monthly GCS-usage digest -> a Slack thread (`gcs-usage digest`).
+"""Shape-C monthly GCS-usage digest -> a Slack thread (`gcs-usage digest`),
+or its Discord twin (`gcs-usage digest -P discord`).
 
 One thread per calendar month: an OP (month-to-date headline, per-week rollup
 bullets, and a 2-panel mosaic plot) that's edited in place as the month
@@ -10,14 +11,19 @@ token). Converge state lives in a per-month JSON in the data bucket.
 
 Design + rationale: specs/done/slack-digest-shape-c.md.
 
-The pure content functions (`deg`, `op_body`, `reply`, `rows_from_meta`) hold
-all the formatting and are unit-tested; `post_digest` is the thin side-effecting
-shell (render+host plot, post/edit OP, post new replies, persist state)."""
+The pure content functions (`deg`, `op_body`, `reply`, `rows_from_meta`,
+`discordify`) hold all the formatting and are unit-tested; `post_digest` is the
+thin side-effecting shell (render+host plot, post/edit OP, post new replies,
+persist state). The Discord twin reuses every content function: `converge_discord`
+drives thrds's webhook + bot clients (the OP is a webhook message with the plot
+attached, the bot opens the thread off it, replies are webhook posts under their
+headline sender), and `post_digest_discord` is its shell."""
 from __future__ import annotations
 
 import datetime as dt
 import json
 import os
+import re
 import secrets
 import sys
 from collections import OrderedDict
@@ -123,11 +129,12 @@ def rows_from_meta(dated_meta: list[tuple[str, dict]]) -> list[Scan]:
     return out
 
 
-def op_body(rows: list[Scan], month: dt.date, plot_url: str, site_url: str = DEFAULT_URL) -> str:
+def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, site_url: str = DEFAULT_URL) -> str:
     """OP markdown: month-to-date headline, per-week bullets, trailing plot image.
 
     The month/year title is NOT in the body -- it's folded into the OP's sender
-    name by the poster."""
+    name by the poster. ``plot_url=None`` omits the image line (Discord attaches
+    the plot as a file instead of hosting it)."""
     base_tb = rows[0].tb - (rows[0].dtb or 0)
     base_cost = rows[0].cost - (rows[0].dcost or 0)
     mdtb = rows[-1].tb - base_tb
@@ -155,7 +162,8 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str, site_url: str = DEF
             f"**{end.tb:,.0f} TB** ({_tb(wdtb)}, {_pct(wdtb, end.tb)}%) · ${end.cost:,}/mo ({_usd(end.cost - b_cost)})"
         )
         prev_end = end
-    lines += ["", f"![GCS usage — {month:%B %Y}]({plot_url})"]
+    if plot_url is not None:
+        lines += ["", f"![GCS usage — {month:%B %Y}]({plot_url})"]
     return "\n".join(lines)
 
 
@@ -177,6 +185,29 @@ def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
     body = f"${r.cost:,}/mo ({_usd(dcost)}) [\u2197\ufe0e]({site_url}/?d={_yy(r.date)})"
     avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 7)}.png?v={AVATAR_REV}"
     return sender, body, avatar
+
+
+_EMOJI_RE = re.compile(r":arrow_deg(-?\d+):")
+
+
+def emoji_name(d: int) -> str:
+    """Discord application-emoji name for a signed arrow degree. Discord emoji
+    names are ``[A-Za-z0-9_]`` only (no ``-``), so a negative reads
+    ``arrow_degm30`` where the Slack custom emoji is ``arrow_deg-30``."""
+    return f"arrow_deg{d}" if d >= 0 else f"arrow_degm{-d}"
+
+
+def discordify(text: str, emoji: dict[str, str]) -> str:
+    """Rewrite the Slack ``:arrow_degN:`` shortcodes in ``text`` to Discord's
+    ``<:name:id>`` form via ``emoji`` (app-emoji name -> id; uploaded by
+    `gcs-usage discord-emoji`). The rest of the markdown (bold, italics, masked
+    links) renders the same on both platforms."""
+    def sub(m: re.Match) -> str:
+        name = emoji_name(int(m.group(1)))
+        if name not in emoji:
+            raise ValueError(f"discord app emoji {name!r} missing — run `gcs-usage discord-emoji` to upload the arrow set")
+        return f"<:{name}:{emoji[name]}>"
+    return _EMOJI_RE.sub(sub, text)
 
 
 # ---- IO (side-effecting) --------------------------------------------------
@@ -235,25 +266,36 @@ def _wait_reachable(url: str, timeout: float = 90, interval: float = 3) -> None:
     _err(f"digest: WARN {url} not reachable after {timeout:.0f}s — posting anyway")
 
 
-def _state_path(root: str, month: dt.date) -> str:
+def _state_path(root: str, month: dt.date, platform: str = "slack", key: str | None = None) -> str:
+    """Converge-state JSON for one month's thread. Slack: ``digest/<YYYY-MM>.json``
+    (one prod thread). Discord: ``digest/discord/<webhook_id>/<YYYY-MM>.json`` —
+    keyed by webhook because a webhook can only edit its own messages, so the
+    OP/replies it recorded are only reachable through it (and a staging webhook
+    never masquerades as the prod thread)."""
     base = root.rsplit("/snapshots", 1)[0]
-    return f"{base}/digest/{month:%Y-%m}.json"
+    if platform == "slack":
+        return f"{base}/digest/{month:%Y-%m}.json"
+    if platform == "discord":
+        if not key:
+            raise ValueError("discord digest state is keyed by webhook id")
+        return f"{base}/digest/discord/{key}/{month:%Y-%m}.json"
+    raise ValueError(f"unknown digest platform {platform!r}")
 
 
-def load_state(root: str, month: dt.date) -> dict:
+def load_state(root: str, month: dt.date, platform: str = "slack", key: str | None = None) -> dict:
     import fsspec
 
     try:
-        with fsspec.open(_state_path(root, month), "rt") as f:
+        with fsspec.open(_state_path(root, month, platform, key), "rt") as f:
             return json.load(f)
     except (FileNotFoundError, OSError):
         return {}
 
 
-def save_state(root: str, month: dt.date, state: dict) -> None:
+def save_state(root: str, month: dt.date, state: dict, platform: str = "slack", key: str | None = None) -> None:
     import fsspec
 
-    with fsspec.open(_state_path(root, month), "wt") as f:
+    with fsspec.open(_state_path(root, month, platform, key), "wt") as f:
         json.dump(state, f, indent=2)
 
 
@@ -329,3 +371,79 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
 
     save_state(root, month, state)
     return state
+
+
+# ---- Discord twin ---------------------------------------------------------
+
+CALENDAR_URL = f"{ICONS_BASE}/calendar.png"  # the OP sender's avatar (Slack uses :calendar:)
+
+
+def converge_discord(rows: list[Scan], month: dt.date, state: dict, *, hook, bot, emoji: dict[str, str], plot, site_url: str = DEFAULT_URL, save=None) -> dict:
+    """Bring one month's Discord thread to the desired state; returns ``state``.
+
+    The Slack twin's shape on Discord's split transports: the OP is a *webhook*
+    message (custom sender = month title + calendar avatar; the plot rides
+    along as a file attachment, re-uploaded on every edit) that the *bot* then
+    opens a thread off (webhooks can't); each not-yet-posted scan becomes a
+    webhook reply into that thread under its headline sender + trend-arrow
+    avatar. Discord groups consecutive messages by *displayed* sender and every
+    headline differs, so replies need no spacing (Slack needs ~5 min).
+
+    ``hook``/``bot`` are thrds's `DiscordWebhookClient`/`DiscordClient` (or
+    fakes), ``emoji`` maps app-emoji names to ids, ``save(state)`` persists
+    after each step so an interrupted run resumes without duplicates."""
+    save = save or (lambda s: None)
+    title = f"GCS usage — {month:%B %Y}"
+    body = discordify(op_body(rows, month, None, site_url), emoji)
+    op_id = state.get("op_id")
+    if op_id:
+        hook.edit(op_id, body, files=[plot])
+        _err(f"digest: edited OP {op_id} ({len(rows)} scans)")
+    else:
+        op_id = hook.post(body, username=title, icon_url=CALENDAR_URL, files=[plot]).id
+        state["op_id"] = op_id
+        state["thread_id"] = bot.create_thread(op_id, title)
+        save(state)
+        _err(f"digest: posted OP {op_id}, thread {state['thread_id']}")
+    thread_id = state["thread_id"]
+    posted = state.setdefault("posted", {})
+    for r in rows:
+        if r.date in posted:
+            continue
+        sender, rbody, avatar = reply(r, site_url)
+        posted[r.date] = hook.post(rbody, thread_id=thread_id, username=sender, icon_url=avatar).id
+        save(state)
+        _err(f"digest: reply {r.date} -> {posted[r.date]}")
+    save(state)
+    return state
+
+
+def post_digest_discord(root: str, month: dt.date, webhook: str, bot_token: str, site_url: str = DEFAULT_URL, plot_dir=None) -> dict:
+    """`converge_discord` against real Discord: resolve the webhook's channel,
+    load that webhook's month state, render the plot, converge, persist. There
+    is no plot-hosting step — the PNG is an attachment."""
+    import tempfile
+    from pathlib import Path
+
+    from thrds.discord import NO_MENTIONS, DiscordClient, DiscordWebhookClient
+
+    from . import discord_api
+
+    rows = load_month(root, month)
+    if not rows:
+        _err(f"digest: no scans for {month:%Y-%m}")
+        return {}
+    info = discord_api.webhook_info(webhook)
+    channel, key = info["channel_id"], info["id"]
+    state = load_state(root, month, "discord", key)
+    plot = Path(plot_dir or tempfile.gettempdir()) / f"gcs-usage-{month:%Y-%m}.png"
+    render_plot(rows, month, plot)
+    return converge_discord(
+        rows, month, state,
+        hook=DiscordWebhookClient(webhook, suppress_embeds=True, allowed_mentions=NO_MENTIONS),
+        bot=DiscordClient(bot_token, channel),
+        emoji=discord_api.app_emojis(bot_token),
+        plot=plot,
+        site_url=site_url,
+        save=lambda s: save_state(root, month, s, "discord", key),
+    )
