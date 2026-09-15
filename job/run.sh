@@ -334,6 +334,15 @@ if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
   fi
 fi
 
+# Warm the site's subtree + diff caches for this scan (colo cache + global
+# KV) so the first viewer of the day gets hits instead of a multi-second
+# compute — the home page's default requests at the common canvas widths
+# (`gcs-usage warm-cache`). Same token, same gating; never fatal.
+if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
+  gcs-usage warm-cache -d "$DATE" -r "gs://$DATA/snapshots" \
+    || echo "WARN: cache warm-up failed for $DATE" >&2
+fi
+
 # Converge the monthly Shape-C digest thread in Slack (specs/done/slack-digest-
 # shape-c.md): the OP + one reply per scan. Only when SLACK_BOT_TOKEN +
 # SLACK_CHANNEL are set — Shape C needs the Web API's per-message sender/avatar

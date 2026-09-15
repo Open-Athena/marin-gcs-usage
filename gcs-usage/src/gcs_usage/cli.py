@@ -2538,5 +2538,43 @@ def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: s
     err(f"weekly: posted {mid} ({len(text)} chars)")
 
 
+@main.command("warm-cache")
+@option("-d", "--date", help="Scan to warm (default: latest under --root)")
+@option("-j", "--jobs", default=4, type=int, help="Concurrent requests (default 4)")
+@option("-n", "--dry-run", is_flag=True, help="Print the request paths; fetch nothing")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
+@option("-t", "--token", help="Site read token (default $GCS_USAGE_TOKEN)")
+@option("-u", "--url", "site_url", default=None, help="Site base (default gcs.oa.dev)")
+@option("-W", "--widths", default="512,1280,1536,1792,1920", help="Canvas widths to warm (the client sends ceil(innerWidth/128)*128; default = phone + common laptops)")
+def warm_cache(date: str | None, jobs: int, dry_run: bool, root: str | None, token: str | None, site_url: str | None, widths: str) -> None:
+    """Warm the site's subtree + diff caches for a scan: replay the home
+    page's default requests (one subtree, the diff span chips 1d/3d/7d/14d/30d
+    and the previous-scan pair, each with its summary) at the common canvas
+    widths, so the first viewer anywhere gets a cache hit (colo cache + global
+    KV). Non-fatal: a failed request just leaves that view cold."""
+    from . import warm as wm
+    from . import weekly as wk
+
+    site_url = site_url or wk.DEFAULT_URL
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
+    dates = wk.scan_dates(root)
+    if not dates:
+        raise SystemExit("warm-cache: no scans under root")
+    date = date or dates[-1]
+    if date not in dates:
+        raise SystemExit(f"warm-cache: {date} is not a published scan")
+    paths = wm.plan(date, dates, tuple(int(w) for w in widths.split(",")))
+    if dry_run:
+        for p in paths:
+            print(p)
+        return
+    token = token or os.environ.get("GCS_USAGE_TOKEN")
+    if not token:
+        raise SystemExit("warm-cache: need GCS_USAGE_TOKEN (or -t)")
+    res = wm.warm(site_url, token, paths, jobs=jobs)
+    bad = [r for r in res if r[1] != 200]
+    err(f"warm-cache: {len(res) - len(bad)}/{len(res)} warmed for {date} in {sum(r[2] for r in res):.0f}s of request time" + (f"; {len(bad)} failed" if bad else ""))
+
+
 if __name__ == "__main__":
     main()

@@ -38,6 +38,8 @@ export interface Env {
   DEV_EMAIL?: string
   GCS_HMAC_KEY_ID: string
   GCS_HMAC_SECRET: string
+  /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */
+  CACHE_KV?: KVNamespace
 }
 
 export interface Ctx {

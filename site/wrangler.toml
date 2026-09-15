@@ -19,6 +19,14 @@ remote = true
 # Workers Logs: retain console output + uncaught exceptions from the Pages
 # Functions (a few days, in the dashboard) — without this a 500 leaves no trace
 # once the request is gone (`wrangler pages deployment tail` is live-only).
+# Global second cache tier for the per-scan-immutable JSON endpoints
+# (`/api/subtree`, `/api/diff`): the Workers Cache API is per data-center, so
+# the daily job's warm-up (`gcs-usage warm-cache`) only reaches everyone
+# through KV. Created with `wrangler kv namespace create oa-gcs-usage-cache`.
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "757702a080a549418f16a5ae096529c4"
+
 [observability]
 enabled = true
 

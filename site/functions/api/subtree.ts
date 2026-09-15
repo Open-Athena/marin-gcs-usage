@@ -68,7 +68,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
       `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
-  const hit = await cacheMatch(cacheKey)
+  const hit = await cacheMatch(ctx.env, cacheKey)
   if (hit) return hit
 
   try {
@@ -91,7 +91,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...(query ? { q: qRaw, matches: view.matches } : {}),
       tree: view.tree,
     })
-    return await cacheStore(cacheKey, body)
+    return await cacheStore(ctx.env, cacheKey, body)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     // 409 (not 500): a lens index missing for this scan is deterministic —

@@ -63,7 +63,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
     `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
       `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}`,
   )
-  const hit = await cacheMatch(cacheKey)
+  const hit = await cacheMatch(ctx.env, cacheKey)
   if (hit) return hit
 
   try {
@@ -79,7 +79,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...diff,
       threshold: Math.round(diff.threshold),
     })
-    return await cacheStore(cacheKey, body)
+    return await cacheStore(ctx.env, cacheKey, body)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })
