@@ -26,3 +26,8 @@ thrds
 screenshots
 site/screenshots
 *.csv
+# wrangler dev state + Playwright output: ~235 MiB the image never reads
+site/.wrangler
+.wrangler
+site/playwright-report
+site/test-results
