@@ -2323,6 +2323,7 @@ def _icons_dir() -> Path:
 @option("-b", "--bot-token", help="Discord bot token: opens the month's thread + resolves app emoji (default $DISCORD_BOT_TOKEN; with -P discord)")
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
 @option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced Slack backfill so per-reply sender chrome survives; Discord needs none)")
+@option("-E", "--edit-replies", is_flag=True, help="Re-edit every already-posted reply to its current body (backfill after a format change; -P discord only)")
 @option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
 @option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
 @option("-P", "--platform", type=Choice(["slack", "discord"]), default="slack", help="Which twin to converge (default slack)")
@@ -2330,7 +2331,7 @@ def _icons_dir() -> Path:
 @option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default gcs.oa.dev)")
 @option("-w", "--webhook", help="Discord webhook URL in the digest channel (default $DISCORD_GCS_USAGE_WEBHOOK; with -P discord)")
-def digest(bot_token: str | None, channel: str | None, reply_delay: float, month: str | None, dry_run: bool, platform: str, root: str | None, token: str | None, site_url: str | None, webhook: str | None) -> None:
+def digest(bot_token: str | None, channel: str | None, reply_delay: float, edit_replies: bool, month: str | None, dry_run: bool, platform: str, root: str | None, token: str | None, site_url: str | None, webhook: str | None) -> None:
     """Converge the Shape-C monthly digest thread: an OP (month-to-date headline,
     per-week bullets, mosaic plot) edited in place + one reply per scan (headline
     sender, $/mo body, colour-coded arrow avatar). Slack (default; state in
@@ -2368,9 +2369,11 @@ def digest(bot_token: str | None, channel: str | None, reply_delay: float, month
         bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
         if not (webhook and bot_token):
             raise SystemExit("digest: -P discord needs DISCORD_GCS_USAGE_WEBHOOK + DISCORD_BOT_TOKEN (or -w/-b)")
-        dg.post_digest_discord(root, m, webhook, bot_token, site_url=site_url)
+        dg.post_digest_discord(root, m, webhook, bot_token, site_url=site_url, edit_replies=edit_replies)
         err(f"digest: converged {m:%Y-%m} (discord)")
         return
+    if edit_replies:
+        raise SystemExit("digest: -E/--edit-replies is Discord-only (Slack replies are never edited)")
     channel = channel or os.environ.get("SLACK_CHANNEL")
     token = token or os.environ.get("SLACK_BOT_TOKEN")
     if not (channel and token):

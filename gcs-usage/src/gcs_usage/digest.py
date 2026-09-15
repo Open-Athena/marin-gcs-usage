@@ -174,14 +174,15 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, site_url: st
     return "\n".join(lines)
 
 
-def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
+def reply(r: Scan, site_url: str = DEFAULT_URL, platform: str = "slack") -> tuple[str, str, str]:
     """One scan's reply -> (sender_username, body, avatar_url).
 
     Style B, mobile-first: the SENDER is the size headline (bold, plain text --
     Slack renders no links/emoji/markdown there), sized to not wrap on a phone;
-    the BODY is one line: the cost + a "diff" link to the day's Diff section
-    at EOL (a word, not a bare arrow glyph: the glyph alone was too small to
-    notice on Discord).
+    the BODY is one line: the cost + a link to the day's Diff section at EOL.
+    The link text is per platform: Slack renders the bare ↗︎ glyph
+    fine, Discord's is too small to notice, so there it reads "view →"
+    (picked from a dozen candidates on 2026-09-15).
     The avatar is the day's colour-coded trend arrow (URL carries AVATAR_REV --
     Slack caches avatars per-URL, so glyph redesigns must bust it)."""
     d = dt.date.fromisoformat(r.date)
@@ -191,7 +192,9 @@ def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
     # \u2197\ufe0e = NE arrow + text-presentation selector: renders as a font
     # glyph in link colour (bare \u2197 gets emoji-ized by Slack into the
     # cartoonish :arrow_upper_right:)
-    body = f"${r.cost:,}/mo ({_usd(dcost)}) [diff \u2197\ufe0e]({site_url}/?d={_yy(r.date)}#diff)"
+    url = f"{site_url}/?d={_yy(r.date)}#diff"
+    link = f"\u00b7 [view \u2192]({url})" if platform == "discord" else f"[\u2197\ufe0e]({url})"
+    body = f"${r.cost:,}/mo ({_usd(dcost)}) {link}"
     avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 7)}.png?v={AVATAR_REV}"
     return sender, body, avatar
 
@@ -387,7 +390,7 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
 CALENDAR_URL = f"{ICONS_BASE}/calendar.png?v=2"  # the OP sender's avatar (Slack uses :calendar:); ?v busts Discord's per-URL avatar cache
 
 
-def converge_discord(rows: list[Scan], month: dt.date, state: dict, *, hook, bot, emoji: dict[str, str], plot, site_url: str = DEFAULT_URL, save=None) -> dict:
+def converge_discord(rows: list[Scan], month: dt.date, state: dict, *, hook, bot, emoji: dict[str, str], plot, site_url: str = DEFAULT_URL, save=None, edit_replies: bool = False, reply_hook=None) -> dict:
     """Bring one month's Discord thread to the desired state; returns ``state``.
 
     The Slack twin's shape on Discord's split transports: the OP is a *webhook*
@@ -400,7 +403,11 @@ def converge_discord(rows: list[Scan], month: dt.date, state: dict, *, hook, bot
 
     ``hook``/``bot`` are thrds's `DiscordWebhookClient`/`DiscordClient` (or
     fakes), ``emoji`` maps app-emoji names to ids, ``save(state)`` persists
-    after each step so an interrupted run resumes without duplicates."""
+    after each step so an interrupted run resumes without duplicates.
+    ``edit_replies`` re-edits every already-posted reply to its current body
+    (a backfill after a format change) through ``reply_hook``, a webhook client
+    bound to the thread — a webhook edit inside a thread must carry the thread
+    id, which the OP-level ``hook`` doesn't."""
     save = save or (lambda s: None)
     title = f"GCS usage — {month:%B %Y}"
     body = discordify(op_body(rows, month, None, site_url), emoji)
@@ -417,9 +424,12 @@ def converge_discord(rows: list[Scan], month: dt.date, state: dict, *, hook, bot
     thread_id = state["thread_id"]
     posted = state.setdefault("posted", {})
     for r in rows:
+        sender, rbody, avatar = reply(r, site_url, "discord")
         if r.date in posted:
+            if edit_replies:
+                reply_hook.edit(posted[r.date], rbody)
+                _err(f"digest: re-edited reply {r.date} ({posted[r.date]})")
             continue
-        sender, rbody, avatar = reply(r, site_url)
         posted[r.date] = hook.post(rbody, thread_id=thread_id, username=sender, icon_url=avatar).id
         save(state)
         _err(f"digest: reply {r.date} -> {posted[r.date]}")
@@ -427,7 +437,7 @@ def converge_discord(rows: list[Scan], month: dt.date, state: dict, *, hook, bot
     return state
 
 
-def post_digest_discord(root: str, month: dt.date, webhook: str, bot_token: str, site_url: str = DEFAULT_URL, plot_dir=None) -> dict:
+def post_digest_discord(root: str, month: dt.date, webhook: str, bot_token: str, site_url: str = DEFAULT_URL, plot_dir=None, edit_replies: bool = False) -> dict:
     """`converge_discord` against real Discord: resolve the webhook's channel,
     load that webhook's month state, render the plot, converge, persist. There
     is no plot-hosting step — the PNG is an attachment."""
@@ -447,9 +457,12 @@ def post_digest_discord(root: str, month: dt.date, webhook: str, bot_token: str,
     state = load_state(root, month, "discord", key)
     plot = Path(plot_dir or tempfile.gettempdir()) / f"gcs-usage-{month:%Y-%m}.png"
     render_plot(rows, month, plot)
+    thread_id = state.get("thread_id")
     return converge_discord(
         rows, month, state,
         hook=DiscordWebhookClient(webhook, suppress_embeds=True, allowed_mentions=NO_MENTIONS),
+        reply_hook=DiscordWebhookClient(webhook, thread_id, suppress_embeds=True, allowed_mentions=NO_MENTIONS) if thread_id else None,
+        edit_replies=edit_replies,
         bot=DiscordClient(bot_token, channel),
         emoji=discord_api.app_emojis(bot_token),
         plot=plot,

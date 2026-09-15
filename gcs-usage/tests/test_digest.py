@@ -49,7 +49,7 @@ def test_rows_from_meta_deltas():
 def test_reply_grow():
     assert D.reply(ROWS[0]) == (
         "8/3 — 3,030 TB (+30.0, 1.0%)",
-        "$19,784/mo (+$615) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260803#diff)",
+        "$19,784/mo (+$615) [\u2197\ufe0e](https://gcs.oa.dev/?d=260803#diff)",
         "https://gcs-usage-icons.pages.dev/arrows/av_deg50.png?v=4",
     )
 
@@ -57,9 +57,14 @@ def test_reply_grow():
 def test_reply_shrink():
     assert D.reply(ROWS[1]) == (
         "8/4 — 3,010 TB (−20.0, 0.7%)",
-        "$19,374/mo (−$410) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260804#diff)",
+        "$19,374/mo (−$410) [\u2197\ufe0e](https://gcs.oa.dev/?d=260804#diff)",
         "https://gcs-usage-icons.pages.dev/arrows/av_deg-40.png?v=4",
     )
+
+
+def test_reply_discord_link_text():
+    # Discord: the bare glyph is too small, so the link reads "view →"
+    assert D.reply(ROWS[0], platform="discord")[1] == "$19,784/mo (+$615) \u00b7 [view \u2192](https://gcs.oa.dev/?d=260803#diff)"
 
 
 def test_op_body():
@@ -185,7 +190,7 @@ def test_converge_discord_fresh_then_incremental():
     state = D.converge_discord(ROWS[:1], AUG, {}, hook=hook, bot=bot, emoji=EMOJI, plot=plot, save=lambda s: saves.append(dict(s)))
     assert hook.calls == [
         ("post", OP_ONE_SCAN, None, "GCS usage — August 2026", CAL, [plot]),
-        ("post", "$19,784/mo (+$615) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260803#diff)", "t1", "8/3 — 3,030 TB (+30.0, 1.0%)", f"{AV}50.png?v=4", []),
+        ("post", "$19,784/mo (+$615) \u00b7 [view \u2192](https://gcs.oa.dev/?d=260803#diff)", "t1", "8/3 — 3,030 TB (+30.0, 1.0%)", f"{AV}50.png?v=4", []),
     ]
     assert bot.calls == [("create_thread", "m1", "GCS usage — August 2026")]
     assert state == {"op_id": "m1", "thread_id": "t1", "posted": {"2026-08-03": "m2"}}
@@ -201,7 +206,7 @@ def test_converge_discord_fresh_then_incremental():
     state = D.converge_discord(ROWS, AUG, state, hook=hook, bot=bot, emoji=EMOJI, plot=plot)
     assert hook.calls == [
         ("edit", "m1", OP_TWO_SCANS, [plot]),
-        ("post", "$19,374/mo (−$410) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260804#diff)", "t1", "8/4 — 3,010 TB (−20.0, 0.7%)", f"{AV}-40.png?v=4", []),
+        ("post", "$19,374/mo (−$410) \u00b7 [view \u2192](https://gcs.oa.dev/?d=260804#diff)", "t1", "8/4 — 3,010 TB (−20.0, 0.7%)", f"{AV}-40.png?v=4", []),
     ]
     assert bot.calls == []
     assert state == {"op_id": "m1", "thread_id": "t1", "posted": {"2026-08-03": "m2", "2026-08-04": "m3"}}
@@ -210,3 +215,16 @@ def test_converge_discord_fresh_then_incremental():
     hook.calls.clear()
     D.converge_discord(ROWS, AUG, state, hook=hook, bot=bot, emoji=EMOJI, plot=plot)
     assert hook.calls == [("edit", "m1", OP_TWO_SCANS, [plot])]
+
+
+def test_converge_discord_edit_replies():
+    # backfill mode: every posted reply is re-edited (through the thread-bound hook) to its current body; nothing is re-posted
+    hook, bot, rhook = _FakeHook(), _FakeBot(), _FakeHook()
+    state = {"op_id": "m1", "thread_id": "t1", "posted": {"2026-08-03": "m2", "2026-08-04": "m3"}}
+    D.converge_discord(ROWS, AUG, state, hook=hook, bot=bot, emoji=EMOJI, plot="/x/plot.png", edit_replies=True, reply_hook=rhook)
+    assert hook.calls == [("edit", "m1", OP_TWO_SCANS, ["/x/plot.png"])]
+    assert rhook.calls == [
+        ("edit", "m2", "$19,784/mo (+$615) \u00b7 [view \u2192](https://gcs.oa.dev/?d=260803#diff)", []),
+        ("edit", "m3", "$19,374/mo (−$410) \u00b7 [view \u2192](https://gcs.oa.dev/?d=260804#diff)", []),
+    ]
+    assert state["posted"] == {"2026-08-03": "m2", "2026-08-04": "m3"}
