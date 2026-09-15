@@ -40,3 +40,5 @@ STAFF_DOMAIN = "openathena.ai"
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
 #   GCS_HMAC_KEY_ID / GCS_HMAC_SECRET — read-only GCS proxy creds (data + /files)
+#   GCP_SA_KEY — JSON key for `gcs-usage-dispatch@oa-internal-450019` (Batch
+#     submit/cancel for /api/sweep/*; `batch.jobsEditor` + actAs `gcs-usage-job`)

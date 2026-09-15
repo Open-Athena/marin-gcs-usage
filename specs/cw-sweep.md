@@ -57,9 +57,22 @@ On a **versioned** bucket:
   recoverable** (this is our soft-delete). Restore = delete the delete marker, or
   `copy-object`/`get-object` by `versionId`.
 - list via `aws s3api list-object-versions` (`Versions[]` + `DeleteMarkers[]`).
-- **no native lifecycle** for expiring noncurrent versions was found; cleanup is
-  manual (`rclone backend cleanup-hidden`, or `list-object-versions` → delete by
+- ~~no native lifecycle for expiring noncurrent versions was found~~ **Corrected
+  2026-09-15 by probing the bucket**: CAIOS **does implement bucket lifecycle** —
+  `get_bucket_lifecycle_configuration` on `marin-us-east-02a` returned 10 rules
+  Marin already relies on (`marin-abort-incomplete-mpu` 7d + `marin-ttl-{1…7,14,30}d`
+  `Expiration` rules on `tmp/ttl=<N>d/` prefixes). Whether
+  `NoncurrentVersionExpiration` / `ExpiredObjectDeleteMarker` are *honored* is
+  still untested (accept-test: PUT then observe). Until a noncurrent rule exists,
+  cleanup is manual (`sweep purge`, or `list-object-versions` → delete by
   `versionId`).
+- **Hazard once versioning is on**: under S3 semantics an `Expiration` rule on a
+  versioned bucket writes a *delete marker* rather than freeing the object, so
+  Marin's `tmp/ttl=<N>d/` cleanup now leaves expired data behind as noncurrent
+  versions (quota not reclaimed) until a `NoncurrentVersionExpiration` rule is
+  added — and `put_bucket_lifecycle_configuration` **replaces the whole config**,
+  so any addition must be a read-modify-write preserving Marin's 10 rules (a
+  shared-resource edit; Marin owns those rules).
 
 Consequences for the design (mirrors GCS soft-delete's retention window):
 
@@ -205,19 +218,30 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
   - **Provisioning — D1 DONE 2026-09-12**: `oa-cw-s3-usage-db`
     (`7f1e1326-b879-4ecd-8621-846621c24f36`, region ENAM) created + migrations
     0001–0004 applied `--remote`; `database_id` committed to `wrangler.toml`.
-  - **Provisioning STILL PENDING** (shared-resource ops — the auto-mode classifier
-    blocks these from the agent; run manually or via the ops/ Pulumi session):
-    - **CoreWeave bucket versioning** (the soft-delete guard): `aws s3api
-      put-bucket-versioning --bucket marin-us-east-02a --versioning-configuration
-      Status=Enabled --endpoint-url https://cwobject.com` with virtual addressing
-      + the CAIOS creds (`tmp/enable-versioning.py` does exactly this, creds from
-      Secret Manager). Real `--for-real` sweeps are refused until this is on.
-    - **`GCP_SA_KEY` Pages secret** on `oa-cw-s3-usage`: a dedicated SA (Batch
-      submit + actAs `gcs-usage-job` + GCS write) key, `wrangler pages secret put
-      GCP_SA_KEY --project-name oa-cw-s3-usage`. Without it dispatch/jobs/undo/purge
-      return 503. (The GCP SA + IAM is the `cf-iac.md` GCP half.)
-    - **Rebuild `IMAGE:cw`** (`job/build.sh` → Cloud Build from this worktree) so
-      the image carries the new `gcs-usage sweep` CLI the Batch jobs run.
+  - **Provisioning — remaining three DONE 2026-09-15**:
+    - **CoreWeave bucket versioning ENABLED** on `marin-us-east-02a`
+      (`put_bucket_versioning Status=Enabled` via boto3 — virtual addressing,
+      creds from Secret Manager; helper `tmp/cw-versioning.py`: status /
+      `--enable` / `--lifecycle` probe). Real sweeps now pass the preflight.
+      **Open decision** (see the lifecycle hazard in the safety model above):
+      (A) add a bucket-wide `NoncurrentVersionExpiration` ≈ the undo window +
+      `ExpiredObjectDeleteMarker`, read-modify-write over Marin's 10 rules — makes
+      sweep victims *and* Marin's tmp TTLs self-reclaiming (purge becomes
+      belt-and-braces); or (B) suspend versioning, accept permanent deletes, soften
+      the preflight to a warning.
+    - **`GCP_SA_KEY` Pages secret SET** on `oa-cw-s3-usage`: a fresh JSON key for
+      the existing `gcs-usage-dispatch@oa-internal-450019` SA (already scoped
+      `roles/batch.jobsEditor` + `serviceAccountUser` on `gcs-usage-job` — the same
+      submit identity gcs uses). Key creation is classifier-blocked for the agent
+      (Ryan ran it); the agent piped it into `wrangler pages secret put` and deleted
+      the local material.
+    - **`IMAGE:cw` REBUILT** (`job/build.sh`, Cloud Build 7m12s) — now carries the
+      `gcs-usage sweep` CLI. The first attempt failed: the branch's `Dockerfile`
+      never got the `COPY packages/treemap` line from the 9/7 `@rdub/treemap`
+      split (gcs's did), so a clean install resolved a stale `@rdub/treemap` and
+      the site's `tsc` failed on `Tiling`/`borderWidth`. Fixed (`3c7dc52`, now
+      matches gcs); the image had not rebuilt successfully on this branch since the
+      split.
 - **Phase 1 (backend, cw-s3)**: `marin sweep {manifest,execute}` with the boto3
   delete path + versioning-guard preflight (`manifest` expands a plan JSON);
   `/api/plans/*` (CRUD) + `/api/sweep/{dispatch,jobs,stop}` (dispatch takes a
