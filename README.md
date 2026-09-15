@@ -70,6 +70,10 @@ Listing-scale runs (34M+ dirs) belong on a work node, not a laptop.
 
 The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at `/auth/sso` (Google sign-in with any account, or a one-time email PIN), and the app then checks the signed-in email against an allowlist it owns (a D1 table, edited by admins at `/admin/db/allowed_emails`; removals take effect immediately). Invited guests can also be issued personal share links. To be added, ping Ryan (Discord) or ask any admin.
 
+## Reports
+
+The daily job posts the same digest to Slack `#gcs-usage` and Discord `#gcs-usage` (Marin's server): one thread per month whose OP (month-to-date headline, per-week bullets, a class-mosaic plot) is edited in place, plus one reply per scan under a headline sender with a colour-coded trend-arrow avatar. Mondays add a week-over-week report (totals, sweep deletions, biggest movers with owners). Code: `gcs-usage/src/gcs_usage/digest.py` (`gcs-usage digest [-P discord]`) and `weekly.py` (`gcs-usage weekly`); design notes in `specs/done/slack-digest-shape-c.md`, `specs/done/discord-digest-twin.md`, and `specs/weekly-discord-report.md`. Posting goes through [thrds] (per-message sender + attachments on both platforms).
+
 ## Repo layout
 
 Monorepo — a shared engine plus the Marin-specific app and site:
@@ -109,3 +113,4 @@ stack (Vite UI + `wrangler pages dev` for the Functions).
 [marin]: https://github.com/marin-community/marin
 [marin#6790]: https://github.com/marin-community/marin/issues/6790
 [disk-tree]: https://github.com/runsascoded/disk-tree
+[thrds]: https://github.com/runsascoded/thrds
