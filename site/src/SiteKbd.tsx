@@ -2,6 +2,7 @@ import { FaGithub } from 'react-icons/fa'
 import { MdBrightnessAuto, MdDarkMode, MdLightMode } from 'react-icons/md'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Omnibar, ShortcutsModal, SpeedDial, useActions, type SpeedDialAction } from 'use-kbd'
+import { SpeedDialTip } from './Tooltip'
 import { IDENTITIES } from './identities.gen'
 import { useTheme } from './theme'
 import { useUnits } from './units'
@@ -72,7 +73,7 @@ export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }
   })
   return (
     <>
-      <SpeedDial actions={[
+      <SpeedDial TooltipRenderer={SpeedDialTip} actions={[
         { key: 'github', label: 'GitHub', icon: <FaGithub />, href: REPO_URL },
         ...extra,
         {
