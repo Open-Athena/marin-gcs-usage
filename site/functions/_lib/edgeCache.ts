@@ -65,10 +65,12 @@ export async function cacheStore(env: CacheEnv, key: Request, body: string, head
     if (env.CACHE_KV) ps.push(env.CACHE_KV.put(await kvKey(key), body, { expirationTtl: KV_TTL }))
     await Promise.all(ps)
   }
+  let stored = 'deferred'
   if (waitUntil) waitUntil(puts().catch(() => undefined))
-  else await puts()
+  else { const t0 = performance.now(); await puts(); stored = `awaited;dur=${Math.round(performance.now() - t0)}` }
   const res = clientRes(body, 'miss')
   for (const [k, v] of Object.entries(headers)) res.headers.set(k, v)
+  res.headers.set('x-cache-store', stored)
   return res
 }
 
