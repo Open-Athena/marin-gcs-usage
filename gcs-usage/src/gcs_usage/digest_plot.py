@@ -39,9 +39,13 @@ def render(
     rows: list[dict],
     out: Path,
     title: str | None = None,
+    redact: bool = False,
 ) -> None:
     """Render the mosaic PNG for ``rows`` (each ``{date, std, near, cold,
-    arch}``, TiB) to ``out``. matplotlib imported lazily — the `[plot]` extra."""
+    arch}``, TiB) to ``out``. matplotlib imported lazily — the `[plot]` extra.
+    ``redact`` drops every size (y tick labels, the TiB call-out) — the shape
+    of the month without the numbers, for the public README; sizes stay behind
+    the site's sign-in."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -78,7 +82,8 @@ def render(
     ax1.plot(xs[-1], tot[-1], "o", color=LINE, ms=5)
     # label goes on whichever side of the point has room in the month frame
     left_half = (xs[-1] - m0) < (m1 - xs[-1])
-    ax1.annotate(f"{tot[-1]:,.0f} TiB", (xs[-1], tot[-1]), textcoords="offset points", xytext=(6, 7) if left_half else (-6, 7), ha="left" if left_half else "right", color=INK, fontsize=11, fontweight="bold")
+    if not redact:
+        ax1.annotate(f"{tot[-1]:,.0f} TiB", (xs[-1], tot[-1]), textcoords="offset points", xytext=(6, 7) if left_half else (-6, 7), ha="left" if left_half else "right", color=INK, fontsize=11, fontweight="bold")
     lo, hi = min(tot), max(tot)
     pad = (hi - lo) * 0.25 or max(hi * 0.002, 1.0)
     ax1.set_ylim(lo - pad, hi + pad)
@@ -106,6 +111,10 @@ def render(
     h, la = ax2.get_legend_handles_labels()  # legend hot→cold (visual top→bottom)
     ax2.legend(h[::-1], la[::-1], loc="upper right", fontsize=8, facecolor=BG, edgecolor=GRID, labelcolor=INK, ncol=4, framealpha=0.55)
 
+    if redact:
+        for ax in (ax1, ax2):
+            ax.tick_params(axis="y", labelleft=False, left=False)
+        ax2.text(0.0, -0.22, "sizes omitted — sign in at gcs.oa.dev for the numbers", transform=ax2.transAxes, ha="left", va="top", color=DIM, fontsize=8)
     fig.tight_layout(h_pad=0.6)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, facecolor=BG)
@@ -115,9 +124,10 @@ def render(
 @command()
 @option("-d", "--days", "days_path", type=CP(exists=True, path_type=Path), default=Path("tmp/class-days.json"), help="Per-scan tier rows: {date, std, near, cold, arch} TiB")
 @option("-o", "--out", type=CP(path_type=Path), default=Path("tmp/plot-mosaic.png"), help="Output PNG")
+@option("-R", "--redact", is_flag=True, help="No sizes (y labels, TiB call-out) — the public README version")
 @option("-t", "--title", default=None, help="Title (default: 'GCS usage — <Month Year>')")
-def main(days_path: Path, out: Path, title: str | None) -> None:
-    render(load(open(days_path)), out, title)
+def main(days_path: Path, out: Path, redact: bool, title: str | None) -> None:
+    render(load(open(days_path)), out, title, redact=redact)
     print(f"wrote {out}")
 
 

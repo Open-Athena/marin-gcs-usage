@@ -1,5 +1,9 @@
 # marin-gcs-usage
 
+![Treemap of the six marin-* buckets, coloured by top-level prefix](site/public/og.jpg)
+
+*The public preview: cells are sized by bytes and coloured by top-level prefix, with names, sizes, owners, and costs omitted. The [site][gcs.oa.dev] shows all of them to signed-in users.*
+
 Storage-usage attribution and cleanup for the Marin GCS buckets: **who is using
 what**, and a **mark & sweep** workflow to reclaim space. Browse it at
 **[gcs.oa.dev]** (Open-Athena-gated).
@@ -73,6 +77,10 @@ The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at 
 ## Reports
 
 The daily job posts the same digest to Slack `#gcs-usage` and Discord `#gcs-usage` (Marin's server): one thread per month whose OP (month-to-date headline, per-week bullets, a class-mosaic plot) is edited in place, plus one reply per scan under a headline sender with a colour-coded trend-arrow avatar. Mondays add a week-over-week report (totals, sweep deletions, biggest movers with owners). Code: `gcs-usage/src/gcs_usage/digest.py` (`gcs-usage digest [-P discord]`) and `weekly.py` (`gcs-usage weekly`); design notes in `specs/done/slack-digest-shape-c.md`, `specs/done/discord-digest-twin.md`, and `specs/weekly-discord-report.md`. Posting goes through [thrds] (per-message sender + attachments on both platforms).
+
+![August 2026 digest plot: total bytes over the month, and the storage-class mosaic beneath](docs/img/digest-2026-08-redacted.jpg)
+
+*The thread OP's plot for August 2026 (`python -m gcs_usage.digest_plot --redact`): the shape of the month and the class mix, with the sizes left off. The posted version carries the axis values and the running total.*
 
 ## Repo layout
 
