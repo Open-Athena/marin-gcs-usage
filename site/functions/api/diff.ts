@@ -18,8 +18,7 @@ import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, parseQuery } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-
-const CACHE = 'private, max-age=86400'
+import { cacheKeyFor, cacheMatch, cacheStore } from '../_lib/edgeCache.js'
 const SCAN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
@@ -60,12 +59,11 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   if (gated instanceof Response) return gated
 
   const head = (states || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
-  const cacheKey = new Request(
-    `https://diff.cache/${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
+  const cacheKey = cacheKeyFor('diff',
+    `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
       `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}`,
   )
-  const cache = (caches as unknown as { default: Cache }).default
-  const hit = await cache.match(cacheKey)
+  const hit = await cacheMatch(cacheKey)
   if (hit) return hit
 
   try {
@@ -81,11 +79,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...diff,
       threshold: Math.round(diff.threshold),
     })
-    const res = new Response(body, {
-      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': CACHE },
-    })
-    await cache.put(cacheKey, res.clone())
-    return res
+    return await cacheStore(cacheKey, body)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })

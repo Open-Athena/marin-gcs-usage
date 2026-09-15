@@ -1114,7 +1114,7 @@ function AppContent() {
           {/* The slot keeps the treemap's height through a reload: the last
               diff dims under the marker, or (first load) a skeleton stands in. */}
           {diff && diff.rows.length > 0 && (
-            <div className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'}>
+            <div className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={{ minHeight: Math.round(canW * 0.6) }}>
               <DiffTreemap data={diff} label={scopeDesc} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>

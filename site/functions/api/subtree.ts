@@ -18,8 +18,8 @@ import { ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, parseQuery, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
+import { cacheKeyFor, cacheMatch, cacheStore } from '../_lib/edgeCache.js'
 
-const CACHE = 'private, max-age=86400' // immutable per scan; browser may hold it
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
   const { GCS_HMAC_KEY_ID, GCS_HMAC_SECRET } = ctx.env
@@ -64,12 +64,11 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   // The mark axis folds the live ledger: its cache key carries the head.
   // …and so does a user lens (claims repaint attribution).
   const [head, xtra] = await Promise.all([(states || lens) && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date)])
-  const cacheKey = new Request(
-    `https://subtree.cache/${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
+  const cacheKey = cacheKeyFor('subtree',
+    `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
       `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
-  const cache = (caches as unknown as { default: Cache }).default
-  const hit = await cache.match(cacheKey)
+  const hit = await cacheMatch(cacheKey)
   if (hit) return hit
 
   try {
@@ -92,11 +91,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...(query ? { q: qRaw, matches: view.matches } : {}),
       tree: view.tree,
     })
-    const res = new Response(body, {
-      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': CACHE },
-    })
-    await cache.put(cacheKey, res.clone())
-    return res
+    return await cacheStore(cacheKey, body)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     // 409 (not 500): a lens index missing for this scan is deterministic —
