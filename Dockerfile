@@ -26,7 +26,9 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && npm install -g wrangler@4
 # GNU time: the gate mode (`job/run.sh` GATE=1) reports each import's peak RSS.
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends time && rm -rf /var/lib/apt/lists/*
+# curl: thrds's Discord clients shell out to it (the 2026-09-15 job's Discord
+# digest died with `FileNotFoundError: 'curl'`); python:slim ships none.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends time curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # disk-tree engine (root project): fan-out listing tasks run `disk-tree
 # bulk-list`; its wheel force-includes ui/dist (built in stage 1).

@@ -35,6 +35,6 @@ Discord silently rewrites `<:name:id>` to bare `:name:` when the *poster* can't 
 
 1. ~~Grant Marin Bot Manage Webhooks, re-stage through an app-owned webhook, confirm the arrows render.~~ Done 2026-09-14: `#gcs-usage` (private: Ryan + the Marin Archiver role, i.e. Marin Bot) holds the September thread through app-owned webhook `1549163390683971686`; Marin Dev gets added once the format settles. The earlier `#marin-bot-dbg` thread is orphaned (its webhook is user-created).
 2. ~~Store the webhook URL + the bot token as GSM secrets …~~ Done 2026-09-14: `gcs-usage-discord-webhook` + `marin-discord-bot-token` in `oa-internal-450019` (job SA granted accessor), mounted as `DISCORD_GCS_USAGE_WEBHOOK` / `DISCORD_BOT_TOKEN` by `batch-submit.sh` and the daily cron body; `run.sh` runs `gcs-usage digest -P discord` after the Slack digest, and the Monday weekly report posts through the same webhook (the `#internal-discuss` cross-project secret is retired).
-3. Daily runs append one reply; no backfill spacing needed. First in-job run: the 2026-09-15 07:00Z cron.
+3. Daily runs append one reply; no backfill spacing needed. The first in-job run (2026-09-15 07:00Z) failed at the OP edit with `FileNotFoundError: 'curl'` — thrds's Discord transport shells out to curl and `python:3.12-slim` has none (the Slack client doesn't, so that half posted). The Dockerfile now installs `curl` + `ca-certificates`; the 9/15 reply was converged from the laptop.
 
 [shape-c]: slack-digest-shape-c.md
