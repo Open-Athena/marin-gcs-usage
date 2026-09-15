@@ -49,7 +49,7 @@ def test_rows_from_meta_deltas():
 def test_reply_grow():
     assert D.reply(ROWS[0]) == (
         "8/3 — 3,030 TB (+30.0, 1.0%)",
-        "$19,784/mo (+$615) [\u2197\ufe0e](https://gcs.oa.dev/?d=260803)",
+        "$19,784/mo (+$615) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260803#diff)",
         "https://gcs-usage-icons.pages.dev/arrows/av_deg50.png?v=4",
     )
 
@@ -57,7 +57,7 @@ def test_reply_grow():
 def test_reply_shrink():
     assert D.reply(ROWS[1]) == (
         "8/4 — 3,010 TB (−20.0, 0.7%)",
-        "$19,374/mo (−$410) [\u2197\ufe0e](https://gcs.oa.dev/?d=260804)",
+        "$19,374/mo (−$410) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260804#diff)",
         "https://gcs-usage-icons.pages.dev/arrows/av_deg-40.png?v=4",
     )
 
@@ -67,7 +67,7 @@ def test_op_body():
         ":arrow_deg20: **+10.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
         "",
         "*Weekly summaries*",
-        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#diff) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
         "",
         "![GCS usage — August 2026](https://x/p.png)",
     ]
@@ -80,7 +80,7 @@ def test_op_body_full_week_not_partial():
         dm.append((f"2026-08-0{d}", _meta(3000 + i, 300 + i, 600, 1500, 600)))
     rows = D.rows_from_meta(dm)[1:]
     bullet = D.op_body(rows, date(2026, 8, 1), "https://x/p.png").split("\n")[3]
-    assert bullet.startswith(":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260809) — ")
+    assert bullet.startswith(":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260809-7d#diff) — ")
 
 
 # ---- Discord twin ---------------------------------------------------------
@@ -92,7 +92,7 @@ def test_op_body_without_plot():
         ":arrow_deg20: **+10.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
         "",
         "*Weekly summaries*",
-        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#diff) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
     ]
 
 
@@ -166,13 +166,13 @@ OP_ONE_SCAN = "\n".join([
     "<:arrow_deg50:5> **+30.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
     "",
     "*Weekly summaries*",
-    "<:arrow_deg20:2> [wk of 8/3](https://gcs.oa.dev/?d=260803) _(partial)_ — **3,030 TB** (+30.0, 1.0%) · $19,784/mo (+$615)",
+    "<:arrow_deg20:2> [wk of 8/3](https://gcs.oa.dev/?d=260803-1d#diff) _(partial)_ — **3,030 TB** (+30.0, 1.0%) · $19,784/mo (+$615)",
 ])
 OP_TWO_SCANS = "\n".join([
     "<:arrow_deg20:2> **+10.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
     "",
     "*Weekly summaries*",
-    "<:arrow_deg0:1> [wk of 8/3](https://gcs.oa.dev/?d=260804) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+    "<:arrow_deg0:1> [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#diff) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
 ])
 CAL = "https://gcs-usage-icons.pages.dev/calendar.png?v=2"
 AV = "https://gcs-usage-icons.pages.dev/arrows/av_deg"
@@ -185,7 +185,7 @@ def test_converge_discord_fresh_then_incremental():
     state = D.converge_discord(ROWS[:1], AUG, {}, hook=hook, bot=bot, emoji=EMOJI, plot=plot, save=lambda s: saves.append(dict(s)))
     assert hook.calls == [
         ("post", OP_ONE_SCAN, None, "GCS usage — August 2026", CAL, [plot]),
-        ("post", "$19,784/mo (+$615) [\u2197\ufe0e](https://gcs.oa.dev/?d=260803)", "t1", "8/3 — 3,030 TB (+30.0, 1.0%)", f"{AV}50.png?v=4", []),
+        ("post", "$19,784/mo (+$615) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260803#diff)", "t1", "8/3 — 3,030 TB (+30.0, 1.0%)", f"{AV}50.png?v=4", []),
     ]
     assert bot.calls == [("create_thread", "m1", "GCS usage — August 2026")]
     assert state == {"op_id": "m1", "thread_id": "t1", "posted": {"2026-08-03": "m2"}}
@@ -201,7 +201,7 @@ def test_converge_discord_fresh_then_incremental():
     state = D.converge_discord(ROWS, AUG, state, hook=hook, bot=bot, emoji=EMOJI, plot=plot)
     assert hook.calls == [
         ("edit", "m1", OP_TWO_SCANS, [plot]),
-        ("post", "$19,374/mo (−$410) [\u2197\ufe0e](https://gcs.oa.dev/?d=260804)", "t1", "8/4 — 3,010 TB (−20.0, 0.7%)", f"{AV}-40.png?v=4", []),
+        ("post", "$19,374/mo (−$410) [diff \u2197\ufe0e](https://gcs.oa.dev/?d=260804#diff)", "t1", "8/4 — 3,010 TB (−20.0, 0.7%)", f"{AV}-40.png?v=4", []),
     ]
     assert bot.calls == []
     assert state == {"op_id": "m1", "thread_id": "t1", "posted": {"2026-08-03": "m2", "2026-08-04": "m3"}}

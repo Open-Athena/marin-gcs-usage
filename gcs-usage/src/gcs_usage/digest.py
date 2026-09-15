@@ -151,14 +151,21 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, site_url: st
         weeks.setdefault(mon, []).append(r)
     prev_end: Scan | None = None
     last_mon = list(weeks)[-1]
+    # the lead-in scan (sliced off `rows`) is the first week's baseline; the
+    # daily cadence puts it one day before the first row
+    base_date = dt.date.fromisoformat(rows[0].date) - dt.timedelta(days=1)
     for mon, ws in weeks.items():
         end = ws[-1]
         b_tb, b_cost = (prev_end.tb, prev_end.cost) if prev_end is not None else (base_tb, base_cost)
+        b_date = dt.date.fromisoformat(prev_end.date) if prev_end is not None else base_date
         wdtb = end.tb - b_tb
         wpct = wdtb / b_tb * 100 if b_tb else 0
         partial = " _(partial)_" if len(ws) < 7 and mon == last_mon else ""
+        # the link opens the site's Diff section over exactly this bullet's
+        # span (`?d=<end>-<N>d`: the end scan, N days back to the baseline)
+        span = (dt.date.fromisoformat(end.date) - b_date).days
         lines.append(
-            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_yy(end.date)}){partial} — "
+            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_yy(end.date)}-{span}d#diff){partial} — "
             f"**{end.tb:,.0f} TB** ({_tb(wdtb)}, {_pct(wdtb, end.tb)}%) · ${end.cost:,}/mo ({_usd(end.cost - b_cost)})"
         )
         prev_end = end
@@ -172,7 +179,9 @@ def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
 
     Style B, mobile-first: the SENDER is the size headline (bold, plain text --
     Slack renders no links/emoji/markdown there), sized to not wrap on a phone;
-    the BODY is one line: the cost + a linked \u2197 to the day's scan at EOL.
+    the BODY is one line: the cost + a "diff" link to the day's Diff section
+    at EOL (a word, not a bare arrow glyph: the glyph alone was too small to
+    notice on Discord).
     The avatar is the day's colour-coded trend arrow (URL carries AVATAR_REV --
     Slack caches avatars per-URL, so glyph redesigns must bust it)."""
     d = dt.date.fromisoformat(r.date)
@@ -182,7 +191,7 @@ def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
     # \u2197\ufe0e = NE arrow + text-presentation selector: renders as a font
     # glyph in link colour (bare \u2197 gets emoji-ized by Slack into the
     # cartoonish :arrow_upper_right:)
-    body = f"${r.cost:,}/mo ({_usd(dcost)}) [\u2197\ufe0e]({site_url}/?d={_yy(r.date)})"
+    body = f"${r.cost:,}/mo ({_usd(dcost)}) [diff \u2197\ufe0e]({site_url}/?d={_yy(r.date)}#diff)"
     avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 7)}.png?v={AVATAR_REV}"
     return sender, body, avatar
 
