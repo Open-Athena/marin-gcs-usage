@@ -55,9 +55,22 @@ export async function cacheMatch(env: CacheEnv, key: Request): Promise<Response 
 }
 
 /** Store `body` (already-serialized JSON) in both tiers; return the client response. */
-export async function cacheStore(env: CacheEnv, key: Request, body: string): Promise<Response> {
+export async function cacheStore(env: CacheEnv, key: Request, body: string, headers: Record<string, string> = {}): Promise<Response> {
   const puts: Promise<unknown>[] = [colo().put(key, publicRes(body))]
   if (env.CACHE_KV) puts.push(env.CACHE_KV.put(await kvKey(key), body, { expirationTtl: KV_TTL }))
   await Promise.all(puts)
-  return clientRes(body, 'miss')
+  const res = clientRes(body, 'miss')
+  for (const [k, v] of Object.entries(headers)) res.headers.set(k, v)
+  return res
+}
+
+/** A `Trace` sink plus its `Server-Timing` rendering (`fetch;dur=812,…`;
+ * counts ride as `dur` too — DevTools shows them the same way). */
+export function serverTiming(): { trace: (name: string, ms: number) => void; header: () => string } {
+  const t: Record<string, number> = {}
+  const t0 = performance.now()
+  return {
+    trace: (name, ms) => { t[name] = (t[name] ?? 0) + ms },
+    header: () => [...Object.entries(t), ['total', performance.now() - t0] as [string, number]].map(([k, v]) => `${k};dur=${Math.round(v)}`).join(', '),
+  }
 }

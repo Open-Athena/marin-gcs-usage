@@ -59,6 +59,15 @@ interface GroupSpan {
 
 type FileSlice = { byteLength: number; slice: (s: number, e?: number) => Promise<ArrayBuffer> }
 
+/** Per-request timing sink: `(phase, ms)` accumulates into a `Server-Timing`
+ * header (`/api/subtree`, `/api/diff`), so DevTools shows where a cold view
+ * went — D1 span queries, group-metadata fetch, range fetches, decode. Handles
+ * are memoized across requests, so a trace rides on a per-request copy
+ * (`withTrace`), never on the shared handle. */
+export type Trace = (name: string, ms: number) => void
+export const withTrace = <H extends IndexHandle>(h: H, trace?: Trace): H => (trace ? { ...h, trace } : h)
+const now = () => performance.now()
+
 // D1-backed: metadata comes from index_schema/index_row_groups per query.
 interface D1Handle {
   mode: 'd1'
@@ -71,6 +80,7 @@ interface D1Handle {
   gen: string
   schema: SchemaElement[]
   version: number
+  trace?: Trace
   /** A coarse tier's absolute byte floor (every path with subtree bytes >= floor
    * is present); null for the floor-free tier. */
   floor: number | null
@@ -268,16 +278,25 @@ export function reviveRowGroup(json: string, schema: SchemaElement[]): Record<st
 async function readGroup(h: IndexHandle, rgJson: string, columns?: string[]): Promise<Row[]> {
   const rg = reviveRowGroup(rgJson, h.schema)
   const metadata = { version: h.version, schema: h.schema, num_rows: rg.num_rows, row_groups: [rg], metadata_length: 0 } as unknown as Awaited<ReturnType<typeof parquetMetadataAsync>>
-  const rows = (await parquetReadObjects({ file: h.file, metadata, columns })) as Record<string, unknown>[]
+  const trace = h.trace
+  const file: FileSlice = trace
+    ? { byteLength: h.file.byteLength, slice: async (s, e) => { const t0 = now(); try { return await h.file.slice(s, e) } finally { trace('fetch', now() - t0) } } }
+    : h.file
+  const t0 = now()
+  const rows = (await parquetReadObjects({ file, metadata, columns })) as Record<string, unknown>[]
+  trace?.('group', now() - t0)
   return rows.map(toRow)
 }
 
 interface Span extends GroupSpan { rg: number }
 
 /** Row groups in flight at once per read. Each group is its own range
- * fetch + decode (~150 ms); a claims-heavy lens root touches ~80 of them
- * and the estate manifest ~400, so serial reads were the whole latency. */
-const GROUP_READS = 8
+ * fetch + decode; the fetch is ~200–240 ms of latency for ~280 KB, so the
+ * reads are latency-bound, not bandwidth-bound: a root subtree's 24 groups
+ * took three rounds at 8-wide (`Server-Timing` 2026-09-15: fetch 5.0 s
+ * summed, 1.0 s wall) and a 7-day diff's 107 groups fourteen. 32 in flight
+ * is ~9 MB of buffers at most — well inside the isolate's memory. */
+const GROUP_READS = 32
 
 /** `Promise.all(items.map(f))` with at most `limit` in flight; results in
  * input order. */
@@ -395,10 +414,12 @@ export async function readRects(
   const dMin = Math.min(...rects.map(q => q.dLo))
   const RECTS_PER_QUERY = 20 // D1 binds: 4 per rect (+2 with a lens)
   const byRg = new Map<number, Span>()
+  let t0 = now()
   for (let i = 0; i < rects.length; i += RECTS_PER_QUERY) {
     const spans = await selectSpans(h, rects.slice(i, i + RECTS_PER_QUERY), 4000, thrAt ? thrAt(dMin) : 0, lens)
     for (const s of spans) byRg.set(s.rg, s)
   }
+  h.trace?.('spans', now() - t0)
   const kept = [...byRg.values()].sort((a, b) => a.rg - b.rg).filter(s => !thrAt || s.bMax >= thrAt(Math.max(s.dMin, dMin)))
   if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
   // Bound the decode too, not just the group count — a broad lens (a big
@@ -406,7 +427,11 @@ export async function readRects(
   // decode millions of rows and blow the Worker CPU. Error cleanly instead.
   const totalRows = kept.reduce((n, s) => n + (s.rowEnd - s.rowStart), 0)
   if (totalRows > 700_000) throw new Error('query too wide: drill deeper or raise minArea')
+  t0 = now()
   const jsons = await fetchGroupJson(h, kept.map(s => s.rg))
+  h.trace?.('rgjson', now() - t0)
+  h.trace?.('ngroups', kept.length)
+  t0 = now()
   const perGroup = await mapLimit(kept, GROUP_READS, async s => {
     const j = jsons.get(s.rg)
     if (!j) return []
@@ -414,6 +439,7 @@ export async function readRects(
     for (const r of await readGroup(h, j)) if (inRect(r) && lensOk(r)) out.push(r)
     return out
   })
+  h.trace?.('groups', now() - t0)
   return perGroup.flat()
 }
 
@@ -451,13 +477,20 @@ export async function readAsks(
   const rects = [...byDepth.entries()].map(([d, r]) => ({ dLo: d, dHi: d, pLo: r.pLo, pHi: r.pHi }))
   // A per-depth [min,max] rectangle over-selects the groups between the
   // lowest and highest ask; narrow to groups an actual ask falls in.
+  let t0 = now()
   const cand = await selectSpans(h, rects)
+  h.trace?.('spans', now() - t0)
   const spans = cand.filter(s => asks.some(a => groupMayHold(s, a)))
   if (spans.length > maxGroups) throw new Error(`lookup too wide: ${spans.length} row groups (cap ${maxGroups})`)
+  t0 = now()
   const jsons = await fetchGroupJson(h, spans.map(s => s.rg))
+  h.trace?.('rgjson', now() - t0)
+  h.trace?.('ngroups', spans.length)
+  t0 = now()
   const perGroup = await mapLimit(spans, GROUP_READS, async s => {
     const j = jsons.get(s.rg)
     return j ? (await readGroup(h, j, columns)).filter(keep) : []
   })
+  h.trace?.('groups', now() - t0)
   return { rows: perGroup.flat(), groups: spans.length }
 }

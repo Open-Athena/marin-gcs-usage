@@ -18,7 +18,7 @@ import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, parseQuery } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { cacheKeyFor, cacheMatch, cacheStore } from '../_lib/edgeCache.js'
+import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 const SCAN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
@@ -67,7 +67,8 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   if (hit) return hit
 
   try {
-    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes, summary })
+    const st = serverTiming()
+    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes, summary, trace: st.trace })
     const body = JSON.stringify({
       prev: from,
       curr: to,
@@ -79,7 +80,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...diff,
       threshold: Math.round(diff.threshold),
     })
-    return await cacheStore(ctx.env, cacheKey, body)
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() })
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })

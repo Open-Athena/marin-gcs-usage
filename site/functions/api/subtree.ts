@@ -18,7 +18,7 @@ import { ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, parseQuery, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { cacheKeyFor, cacheMatch, cacheStore } from '../_lib/edgeCache.js'
+import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
@@ -72,7 +72,8 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   if (hit) return hit
 
   try {
-    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, states, query, classes })
+    const st = serverTiming()
+    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, states, query, classes, trace: st.trace })
     const body = JSON.stringify({
       date,
       path,
@@ -91,7 +92,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...(query ? { q: qRaw, matches: view.matches } : {}),
       tree: view.tree,
     })
-    return await cacheStore(ctx.env, cacheKey, body)
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() })
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     // 409 (not 500): a lens index missing for this scan is deterministic —

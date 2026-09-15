@@ -19,7 +19,7 @@
  */
 import type { Env } from './auth.js'
 import { type MarkAxis, markScope, type MarkScope } from './markAxes.js'
-import { type IndexHandle, type Lens, openIndex, readAsks, readRects, readRows, type Rect, type Row } from './index.js'
+import { type IndexHandle, type Lens, openIndex, readAsks, readRects, readRows, type Rect, type Row, type Trace, withTrace } from './index.js'
 import { ownerLens, type OwnerLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { markClaims, markTotals } from './totals.js'
@@ -41,6 +41,8 @@ export type ViewNode = { n: string; b: number; o: number; c?: ViewNode[]; f?: nu
 export interface ViewOpts {
   date: string
   path: string
+  /** Timing sink for the response's `Server-Timing` header (see `index.ts` `Trace`). */
+  trace?: Trace
   w: number
   h: number
   minArea: number
@@ -312,22 +314,26 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // Root aggregate P.b (and P's own us for the response root) from the
   // coarsest tier that has P at all — the same numbers in every tier. The
   // by-path tier of the same name serves the lens's region reads.
+  const tr = o.trace
+  let t0 = performance.now()
   const tiers = (await Promise.all(COARSE_EXPS.map(async e => {
     const [idx, allIdx] = await Promise.all([
       tryOpen(env, date, `coarse${e}${sort === 'path' ? '' : `-${sort}`}`),
       regions.length ? tryOpen(env, date, `coarse${e}`) : null,
     ])
     if (!idx || floorOf(idx) == null) return null
-    return { name: `coarse${e}`, idx, ...(allIdx ? { all: allIdx } : {}) }
+    return { name: `coarse${e}`, idx: withTrace(idx, tr), ...(allIdx ? { all: withTrace(allIdx, tr) } : {}) }
   }))).filter((t): t is { name: string; idx: IndexHandle; all?: IndexHandle } => t != null)
+  tr?.('open', performance.now() - t0)
   let rootRows: Row[] = []
   let fine: IndexHandle | null = null
+  t0 = performance.now()
   for (const t of tiers) {
     rootRows = await readRoot(t.idx)
     if (rootRows.length) break
   }
   if (!rootRows.length) {
-    fine = await openFine(env, date, sort, lens)
+    fine = withTrace(await openFine(env, date, sort, lens), tr)
     rootRows = await readRoot(fine)
     // A lens user the scan attributes nothing to under P may still own it
     // all by claim: an empty attribution root is a zero, not a miss.
@@ -374,7 +380,8 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   for (const t of tiers) {
     if (thrAll >= floorOf(t.idx)!) { pick = t; break }
   }
-  if (!pick) pick = { name: 'fine', idx: fine ?? await openFine(env, date, sort, lens), ...(regions.length ? { all: await openFine(env, date, 'path') } : {}) }
+  tr?.('root', performance.now() - t0)
+  if (!pick) pick = { name: 'fine', idx: fine ?? withTrace(await openFine(env, date, sort, lens), tr), ...(regions.length ? { all: withTrace(await openFine(env, date, 'path'), tr) } : {}) }
   const idx = pick.idx
 
   // Everything under P that this canvas can draw. Depth is unbounded — the
@@ -384,7 +391,9 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // `maxDepth` caps the band read at dP + N: the rows at the cap come back
   // childless (the client treats a `c`-less branch as drillable), and the
   // deeper bands — the bulk of the work — are never touched.
+  t0 = performance.now()
   const rows = await readRows(idx, dP + 1, maxDepth != null ? dP + maxDepth : 1e9, pLo, pHi, thrAt, lens)
+  tr?.('rows', performance.now() - t0)
   // The lens's claimed regions from the by-path tier (their own rows and
   // everything under them): every path there whose U-share can clear the
   // threshold is present, since all ≥ U's share. P itself as a region means
@@ -625,16 +634,22 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   const { from, to, path, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const sort = lens ? 'user' : 'path'
+  const tr = o.trace
+  let t0 = performance.now()
   const [ra, rb] = await Promise.all([
     readRootAgg(env, { date: from, path, lens }),
     readRootAgg(env, { date: to, path, lens }),
   ])
+  tr?.('rootagg', performance.now() - t0)
   if (!ra && !rb) throw new NotFound(path)
   const threshold = o.threshold ?? (Math.max(ra?.b ?? 0, rb?.b ?? 0) * o.minArea) / (o.w * o.h)
+  t0 = performance.now()
   const [va, vb] = await Promise.all([
     ra ? readView(env, { ...o, date: from, threshold }) : null,
     rb ? readView(env, { ...o, date: to, threshold }) : null,
   ])
+  tr?.('views', performance.now() - t0)
+  const walkStart = performance.now()
   const totals = {
     total_a: Math.round(va?.rootAgg.b ?? 0),
     total_b: Math.round(vb?.rootAgg.b ?? 0),
@@ -651,7 +666,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   const fineOf = new Map<string, Promise<IndexHandle>>()
   const fine = (date: string) => {
     let h = fineOf.get(date)
-    if (!h) fineOf.set(date, (h = openFine(env, date, sort, lens)))
+    if (!h) fineOf.set(date, (h = openFine(env, date, sort, lens).then(x => withTrace(x, tr))))
     return h
   }
   const fineAllOf = new Map<string, Promise<IndexHandle>>()
@@ -811,6 +826,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   // Cap like the batch walk did: every expanded ancestor (the skeleton) plus
   // the top-|Δ| changed frontier rows; unchanged frontier rows are inferred
   // as filler by the renderer.
+  tr?.('walk', performance.now() - walkStart)
   const skeleton = rows.filter(r => r.x)
   const frontier = rows
     .filter(r => !r.x && r.s !== 'unchanged')
