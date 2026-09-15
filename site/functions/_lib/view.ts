@@ -19,7 +19,7 @@
  */
 import type { Env } from './auth.js'
 import { type MarkAxis, markScope, type MarkScope } from './markAxes.js'
-import { type IndexHandle, type Lens, openIndex, readRects, readRows, type Rect, type Row } from './index.js'
+import { type IndexHandle, type Lens, openIndex, readAsks, readRects, readRows, type Rect, type Row } from './index.js'
 import { ownerLens, type OwnerLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { markClaims, markTotals } from './totals.js'
@@ -680,6 +680,57 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     return a.b > 0 ? a : null
   }
 
+  // One side's lookups for a whole level in one read: `readAsks` turns the
+  // level's (depth, path) asks into a few span queries + one round of group
+  // reads, where the per-ask `lookup` cost two D1 queries and a range read
+  // each, eight at a time — 150 lookups was ~20 s of a 7-day root diff
+  // (2026-09-15). Lens views keep the per-ask path: the user-keyed index's
+  // group stats only hold inside a single-user group, which `readAsks`'s
+  // per-depth rectangles don't model. A batch too wide for the reader's group
+  // cap falls back to per-ask reads rather than failing the diff.
+  const lookupMany = async (date: string, v: Read, items: { cp: string; d: number }[]): Promise<Map<string, Agg | null>> => {
+    const out = new Map<string, Agg | null>()
+    const todo: { cp: string; d: number }[] = []
+    for (const q of items) if (inQuery(q.cp, v)) todo.push(q); else out.set(q.cp, null)
+    const perAsk = async (qs: { cp: string; d: number }[]) => {
+      for (let i = 0; i < qs.length; i += PAR) {
+        const chunk = qs.slice(i, i + PAR)
+        const got = await Promise.all(chunk.map(q => lookup(date, v, q.cp, q.d)))
+        chunk.forEach((q, j) => out.set(q.cp, got[j]))
+      }
+    }
+    if (lens || !todo.length) { await perAsk(todo); return out }
+    const room = Math.max(0, LOOKUP_CAP - lookups)
+    const take = todo.slice(0, room)
+    if (todo.length > room) { capped = true; for (const q of todo.slice(room)) out.set(q.cp, null) }
+    if (!take.length) return out
+    const want = new Map(take.map(q => [`${q.d}\0${q.cp}`, q]))
+    let got: Row[]
+    try {
+      got = (await readAsks(await fine(date), take.map(q => ({ depth: q.d, path: q.cp })), r => want.has(`${r.depth}\0${r.path}`), { maxGroups: 120 })).rows
+    } catch (e) {
+      if (!/too wide/.test(String((e as Error).message ?? e))) throw e
+      await perAsk(take)
+      return out
+    }
+    lookups += take.length
+    const byPath = new Map<string, { all: Agg; mine: Agg }>()
+    for (const r of got) {
+      let e = byPath.get(r.path)
+      if (!e) byPath.set(r.path, (e = { all: newAgg(), mine: newAgg() }))
+      const cr = classRow(r, o.classes)
+      merge(e.all, cr)
+      if (ownerOk(r.usr, owner)) merge(e.mine, cr)
+    }
+    for (const q of take) {
+      const e = byPath.get(q.cp)
+      if (!e) { out.set(q.cp, null); continue }
+      const a = v.scoped(q.cp, e.all, e.mine)
+      out.set(q.cp, a.b > 0 ? a : null)
+    }
+    return out
+  }
+
   const rows: DiffRow[] = []
   let expansions = 0
   const rel = (p: string) => (path === '' ? p : p.slice(path.length + 1))
@@ -722,11 +773,13 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
       }
     }
     const found = new Map<string, Agg | null>() // `${side}:${cp}`
-    for (let i = 0; i < asks.length; i += PAR) {
-      const chunk = asks.slice(i, i + PAR)
-      const got = await Promise.all(chunk.map(q => lookup(q.date, q.v, q.cp, q.d)))
-      chunk.forEach((q, j) => found.set(`${q.side}:${q.cp}`, got[j]))
-    }
+    const sideAsks = (side: 1 | 2) => asks.filter(q => q.side === side)
+    const [gotA, gotB] = await Promise.all([
+      va && sideAsks(1).length ? lookupMany(from, va, sideAsks(1)) : new Map<string, Agg | null>(),
+      vb && sideAsks(2).length ? lookupMany(to, vb, sideAsks(2)) : new Map<string, Agg | null>(),
+    ])
+    for (const [cp, agg] of gotA) found.set(`1:${cp}`, agg)
+    for (const [cp, agg] of gotB) found.set(`2:${cp}`, agg)
     for (const { it, expand, names } of plans) {
       const { p, d, a, b } = it
       if (p !== path) emit(rel(p), d - dP, a, b, expand, it.l)
