@@ -4,10 +4,10 @@
 
 A Slack channel `#cw-s3-usage` (created 2026-09-15: `C0C1YR7D0KU`) mirroring `#gcs-usage`'s **Shape C** shape (`specs/done/slack-digest-shape-c.md` on the `gcs` branch): one thread per calendar month whose OP is edited in place as scans land, plus one reply per scan under its own sender name + trend-arrow avatar, converged by `thrds`'s `SlackClient`.
 
-This lands in two parts:
+This landed in two parts:
 
-1. **Mechanism** (this pass, done): port gcs's converge machinery to the cw-s3 branch against the CoreWeave data — monthly-thread state, plot render + host, the job wiring — with the message text as a clean seam.
-2. **Content** (workshop, open): what the headline and replies should *say*. CoreWeave has no storage classes and no dollar figures, so gcs's text doesn't transfer; the raw material and three candidate framings are in *Content — TBD* below. Only `op_body` / `reply` in `marin/src/gcs_usage/digest.py` change when it's decided.
+1. **Mechanism** (done): port gcs's converge machinery to the cw-s3 branch against the CoreWeave data — monthly-thread state, plot render + host, the job wiring.
+2. **Content** (decided 2026-09-15, framing A — *quota headroom*; implemented, A/B-staged): CoreWeave has no storage classes and no dollar figures, so gcs's text doesn't transfer. The chosen text, the one open tradeoff (two reply variants, staged side by side), and the data inventory that fed the decision are under *Content* below.
 
 ## A separate Slack app
 
@@ -21,34 +21,65 @@ Per-message sender overrides (`username` / `icon_url`) don't hide the underlying
 Ported from gcs's `digest.py` with these CoreWeave deltas (each forced by the data or the deployment):
 
 1. **Data source.** gcs reads `snapshots/<YYYY-MM-DD>/meta.json` (daily). cw publishes `snapshots/cw/<YYYY-MM-DDTHHMM>/meta.json` (12-hourly since 9/2; see the inventory). No `series.json` on either — `load_month` walks the `meta.json`s; the scan-id regex admits the sub-daily suffix, ids sort chronologically, and the lead-in scan (for the first delta) is the last scan before the month.
-2. **No dollars.** cw's `meta.json` has `class_bytes: {}` *by design* (`job/cw-webdata.py`: pricing CoreWeave with GCS list rates "would invent a number"; `App.tsx` sets `pricing = null` whenever `class_bytes` is empty — verified on this branch). `Scan` rows carry TiB + `total_objects` (+ deltas + hours since the prior scan); nothing is priced.
-3. **Clock-normalised arrows.** gcs hard-codes one scan/day (`deg(…, 7)`). cw projects a scan's Δ% over the actual hours since the previous scan to a weekly rate (`168 / hours` — 14 for the 12-hourly feed, 7 for a daily one, so a daily feed reproduces gcs's numbers exactly).
-4. **Plot.** No tiers to stack, so the 2-panel mosaic is total TiB (top; month frame + month-start reference line, as gcs) over object count (bottom). Title `CoreWeave usage — <Month Year>`, corner `cw-s3.oa.dev`. (Framing A below adds a quota line.)
+2. **No dollars.** cw's `meta.json` has `class_bytes: {}` *by design* (`job/cw-webdata.py`: pricing CoreWeave with GCS list rates "would invent a number"; `App.tsx` sets `pricing = null` whenever `class_bytes` is empty — verified on this branch). `Scan` rows carry TiB + `total_objects` (+ deltas + hours since the prior scan); nothing is priced. Headroom is against the quota instead (see *Content*).
+3. **Clock-normalised arrows.** gcs hard-codes one scan/day (`deg(…, 7)`). cw projects a delta's % over the actual hours it spans to a weekly rate (`168 / hours` — 7 for a clean 24 h day, 14 for a 12 h half-day), so the arrows mean the same rate whatever the interval.
+4. **Plot.** The month's sparkline of every scan (12-hourly points), single panel, y-axis pinned to the quota: the 1 PB line, the used fill under the line, a hatched headroom band above it, a dashed month-start reference. Title `CoreWeave usage — <Month Year>`, corner `cw-s3.oa.dev · TiB`.
+4a. **Days, not scans.** gcs replies once per scan (= per day). cw scans twice a day, so replies are keyed by UTC **day** (`day_rows`), with the day's representative scan chosen per variant (below); the OP and plot still re-converge on every scan.
 5. **Hosting without touching gcs's alias.** gcs deploys `job/icons/` to the `gcs-usage-icons` Pages project's **production** branch every run — that root alias serves the trend-arrow avatars *both* digests use. cw deploys its own dir (`job/icons-cw/`: the CORS `_headers` + the month's PNG) with `--branch cw`, a preview branch: the OP's image uses the deployment-specific URL (as gcs does), the production alias never changes, and the avatars stay `https://gcs-usage-icons.pages.dev/arrows/av_deg<N>.png?v=4`. Same Pages project, nothing new to provision.
-6. **Converge state keyed by channel.** gcs keeps one prod thread's state at `gs://<bucket>/digest/<YYYY-MM>.json`. cw's lives at `gs://<bucket>/digest/cw/<channel>/<YYYY-MM>.json` — namespaced so it can't collide with gcs's, keyed by channel so a staging converge never masquerades as the prod thread. `posted` is keyed by scan id.
+6. **Converge state keyed by channel + variant.** gcs keeps one prod thread's state at `gs://<bucket>/digest/<YYYY-MM>.json`. cw's lives at `gs://<bucket>/digest/cw/<channel>/<variant>/<YYYY-MM>.json` — namespaced so it can't collide with gcs's, keyed by channel so a staging converge never masquerades as the prod thread, and by variant so the A/B threads coexist. `posted` is keyed by UTC day → `{ts, scan}` (the scan the reply currently reflects).
 7. **Deep links.** `https://cw-s3.oa.dev/?d=<yymmdd>-<hhmm>#diff` — the site's compact scan-prefix token (`site/src/scan.ts`); `_span` renders its `-<N>d<M>h` look-back for scan-pair links.
 8. **Slack only.** gcs's Discord twin (and its `discordify`/emoji helpers) isn't ported — no cw Discord destination was asked for, and there's no `discord_api` module on this branch.
 9. **Retired** the pre-Shape-C one-liner `gcs-usage alert` (+ its `_snapshot_dates` helper) from `cli.py`; `job/cw-run.sh` never called it.
 
 Wiring:
 
-- `marin/src/gcs_usage/digest.py` (mechanism + placeholder content), `digest_plot.py` (`[plot]` extra = matplotlib), `tests/test_digest.py` (exact-equality specs on the helpers + the converge against a fake client over a local snapshot tree).
-- `gcs-usage digest` (cli.py): `-c/--channel` (`$SLACK_CHANNEL`), `-t/--token` (`$SLACK_BOT_TOKEN`), `-r/--root` (default `gs://$DATA_BUCKET/snapshots/cw`), `-m/--month`, `-u/--url`, `-D/--reply-delay`, `-n/--dry-run` (renders the plot + prints the OP/replies, posts nothing).
+- `marin/src/gcs_usage/digest.py` (mechanism + framing-A content), `digest_plot.py` (`[plot]` extra = matplotlib), `tests/test_digest.py` (exact-equality specs on the helpers, the rendered OP and both reply variants, the daily keying rule, and the converge against a fake client over a local snapshot tree).
+- `gcs-usage digest` (cli.py): `-c/--channel` (`$SLACK_CHANNEL`), `-t/--token` (`$SLACK_BOT_TOKEN`), `-r/--root` (default `gs://$DATA_BUCKET/snapshots/cw`), `-m/--month`, `-u/--url`, `-V/--variant` (`sender`|`body`, default `sender`), `-i/--icons-dir`, `-D/--reply-delay`, `-n/--dry-run` (renders the plot + prints the OP/replies, posts nothing).
 - `marin/pyproject.toml`: `thrds` pinned to the GitHub tarball SHA gcs runs in prod (`70548988…`, `py` branch); `plot = ["matplotlib>=3.8"]`; hatch `allow-direct-references`.
 - `Dockerfile`: `pip install "./marin[plot]"` (wrangler is already in the image).
 - `job/cw-run.sh`: after publish — `gcs-usage digest -r gs://$DATA/snapshots/cw`, only when `SLACK_BOT_TOKEN` + `SLACK_CHANNEL` are set, never fails the scan; `fail_alert` prefers `SLACK_ALERT_CHANNEL` (→ `#gcs-usage-alerts`, as gcs) over the digest channel.
 - `job/cw-batch-submit.sh`: vars `SLACK_CHANNEL` = `C0C1YR7D0KU`, `SLACK_ALERT_CHANNEL` = `C0BTUNT3B5Z`, `CLOUDFLARE_ACCOUNT_ID`; secretVariables `SLACK_BOT_TOKEN` ← **`cw-s3-slack-bot-token`** (the new app), `CLOUDFLARE_API_TOKEN` ← `cf-pages-token`.
 - `job/icons-cw/_headers`: the CORS header, as `job/icons/_headers` on gcs.
 
-## Content — TBD (workshop)
+## Content
 
-Nothing has been posted anywhere (no staging preview either) — the text is decided first. The placeholders today: OP = `**<TB> TB** · <N>M objects · [dashboard]` + plot; reply sender = `M/D HH:MMZ — <TB> TB (Δ, Δ%)`, body = `<N>M objects (Δ) [↗](diff link)`, avatar = the clock-normalised trend arrow.
+### Decision (2026-09-15): framing A — quota headroom
 
-### Ryan's candidate framings (verbatim)
+Of the three candidates —
 
 - **(A) quota-headroom headline** — `TiB (Δ, Δ%) · NN% of quota · X TiB free` + month plot with the quota line
 - **(B) movers body** — top ±3 top-level prefixes by Δ, link to the dashboard diff view for that scan pair
 - **(C) sweep ledger** — Δ split into sweeps-reclaimed vs organic growth + versioning-pending bytes with their expiry date, month-to-date reclaimed in the OP
+
+— **A** is the digest: the sparkline relative to the quota, daily replies, no burn-rate line ("days until full" was rejected: a single day is too random to extrapolate). B's movers already exist per scan in `diff.json` and C needs the sweep + versioning data paths; both stay available as later additions.
+
+**Quota.** 1 PB *decimal* = `10^15` bytes = 909.49 TiB (the "910 TiB" in the site's comments and the zones memo is this rounded). Owned once: `QUOTA_BYTES = 10**15` in `digest.py`; headroom renders as `NN.N% of 1 PB` and `<free> TiB free`. Sizes are TiB throughout (the site's default unit; quotas are binary).
+
+**OP** — sender `CoreWeave usage — <Month YYYY>` with the `:calendar:` icon; body:
+
+```
+:arrow_degNN: **±Δ TiB** month-to-date · <TiB> TiB · NN.N% of 1 PB · [dashboard](https://cw-s3.oa.dev/)
+
+*Weekly summaries*
+:arrow_degNN: [wk of M/D](diff link over the week): **±Δ TiB** → <TiB> TiB · NN.N% of 1 PB
+:arrow_degNN: [wk of M/D](…) _(partial)_: …          ← the current week, until its Sunday has a scan
+
+![CoreWeave usage — <Month YYYY>](<sparkline>)
+```
+
+Weeks are ISO (Monday-keyed); a bullet's Δ is its last scan vs the previous bullet's last scan (the first vs the month's baseline = the last pre-month scan), and its link opens the dashboard's Diff section over exactly that span (`?d=<end>-<N>d<M>h#diff`). Month-to-date is the latest scan vs the same baseline; its arrow is the month's rate projected to a week. The image is the quota sparkline described under *Mechanism* §4.
+
+**Replies — one per UTC day**, `M/D — <TiB> TiB (Δ, Δ%) · NN.N% of 1 PB · <free> TiB free`, Δ over the prior day's reply scan (so a clean 24 h in steady state), the arrow normalised by that interval, the day linked to its 24 h diff on the dashboard. The one real tradeoff — Slack fixes a message's `username` + icon at post time, `chat.update` can't change them ([[gcs-usage-slack-alerting]]) — gives two variants, both implemented (`-V`) and staged side by side:
+
+| | **`sender`** (gcs-style) | **`body`** |
+|---|---|---|
+| headline | the sender name: `9/15 — 840 TiB (+25.3, 3.1%)` | bold in the body under a static `CoreWeave usage` / `:calendar:` sender |
+| arrow | the avatar (`av_deg<N>.png`) | the leading `:arrow_degN:` emoji |
+| body | `92.3% of 1 PB · 70.0 TiB free [↗](diff)` | `:arrow_deg60: [9/15](diff) — **840 TiB (+25.3, 3.1%)** · 92.3% of 1 PB · 70.0 TiB free` |
+| day's scan | the **first** (00:01Z) — posted once, midnight-to-midnight Δ; the 12:01Z scan only re-converges the OP + plot | the **latest** — the reply is **edited** as the day's scans land, so text and sparkline agree intra-day (the 00:01Z post's Δ spans 12 h until the 12:01Z edit makes it 24 h) |
+| per-reply chrome | distinct sender per day → every reply carries its own header | same sender → consecutive replies within ~5 min collapse into one block (a backfill; not a concern at one reply per day) |
+
+Staging (2026-09-15): both variants converged from the real September scans into `gcs-usage-staging` (`C0BSV6ETHT4`) with the GCS bot token — fine for staging, the app-name concern only bites in prod. Permalinks in the session report; state under `digest/cw/C0BSV6ETHT4/{sender,body}/2026-09.json`, plots on the `cw` branch of the icons project.
 
 ### What a cw scan gives us (real September snapshots, `gs://oa-gcs-usage-dvx/snapshots/cw/`)
 
@@ -61,7 +92,7 @@ Per scan, four files (`job/cw-webdata.py` + `job/cw-diff.py`):
 
 Across scans (derivable): Δ per prefix between any two trees; month-to-date and weekly rollups from the `meta.json` series; per-scan movers from `diff.json`. **Not** in the scans: sweep attribution (which Δ was a deletion run vs organic churn — that's the `deletion_runs` D1 table + run summaries in `gs://…/cw-sweep/`, joinable by scan id), and anything about object versions.
 
-**Quota.** `910 TiB` appears only in *comments* (`site/src/types.ts:112`, `site/src/units.tsx:7`) and in session memory (`cw-zones-and-buckets`: the whole quota sits in `us-east-02a`) — there is **no constant** anywhere the digest could read. Framing A needs one; the honest home is a `QUOTA_TIB` in `digest.py` (or `meta.json` from the job) with the number confirmed against CoreWeave's console/contract.
+**Quota.** `910 TiB` appeared only in *comments* (`site/src/types.ts:112`, `site/src/units.tsx:7`) and in session memory (`cw-zones-and-buckets`: the whole quota sits in `us-east-02a`) — there was **no constant** anywhere the digest could read. Resolved: it is and always has been 1 PB decimal; `QUOTA_BYTES = 10**15` in `digest.py` owns it now.
 
 **Versioning (enabled 2026-09-15).** Deletes now leave a delete marker + a noncurrent version; those bytes are *pending reclaim* until the lifecycle rule expires them (acceptance test in flight — `specs/cw-sweep.md`). None of this is in the scan (`bulk-list` lists current objects): `list_object_versions` per swept prefix could supply noncurrent bytes + marker counts, and with `NoncurrentDays=N` the expiry date is `noncurrent-since + N`. That's framing C's second half; it's a new data path, not a reshaping of existing JSON.
 
@@ -128,7 +159,7 @@ list[342], first = {"d": 20631, "d1": "marin", "b": 17330764, "o": 12}
 ## Gated follow-ups (in order)
 
 1. **Slack app** (Ryan): create from the manifest, install, `cw-s3-slack-bot-token` in Secret Manager + accessor grant to `gcs-usage-job`, app icon.
-2. **Content decision** (workshop) → implement `op_body`/`reply` + tests; then a staging preview into `gcs-usage-staging` (`C0BSV6ETHT4`) with `-c C0BSV6ETHT4` (its own state file), before prod.
+2. **Pick the reply variant** from the two staged threads; make it the `-V` default (or drop the other) and retire the loser's state file.
 3. **Rebuild `IMAGE:cw`** (`job/build.sh`) — the image needs `thrds` + matplotlib + the `digest` command.
 4. **Edit the `cw-usage-snapshot` Cloud Scheduler body** (user-owned): add the vars + secretVariables from *Wiring* (`DRY=1 job/cw-batch-submit.sh` prints the full spec).
 5. **First prod converge** — backfills the month into `#cw-s3-usage` with spaced replies: `gcs-usage digest -r gs://oa-gcs-usage-dvx/snapshots/cw -D 305` (Slack collapses consecutive same-sender chrome inside ~5 min).

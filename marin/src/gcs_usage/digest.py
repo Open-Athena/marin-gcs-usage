@@ -1,23 +1,30 @@
-"""Shape-C monthly CoreWeave-usage digest -> a Slack thread (`gcs-usage digest`).
+"""Monthly CoreWeave-usage digest -> a Slack thread (`gcs-usage digest`).
 
-One thread per calendar month: an OP that's edited in place as the month
-progresses (headline + a hosted plot), plus one reply per scan, each under its
-own sender name + trend-arrow avatar. Posts via the `thrds` `SlackClient`
-(per-message username/icon overrides need a bot token). Converge state lives
-in a per-channel, per-month JSON in the data bucket.
+One thread per calendar month: an OP that's edited in place as scans land
+(month-to-date headline, per-ISO-week rollup bullets, dashboard link, and a
+hosted sparkline of every scan pinned to the 1 PB quota), plus ONE REPLY PER
+UTC DAY: `M/D — <TiB> (Δ, Δ%) · NN% of 1 PB · <free> TiB free`, Δ over the
+prior day's reply scan, a colour-coded trend arrow normalised per day. Posts
+via the `thrds` `SlackClient` (per-message username/icon overrides need a bot
+token). Converge state lives in a per-channel, per-variant, per-month JSON in
+the data bucket.
 
-This is the MECHANISM, ported from gcs's `digest.py` (specs/done/slack-digest-
-shape-c.md there) with the CoreWeave deltas in specs/cw-slack-digest.md:
-12-hourly scan ids, object counts (no storage-class dollars), a preview-branch
-plot deploy, channel-keyed state, Slack only. The message CONTENT is a clean
-seam — `op_body` / `reply` are placeholders while the headline/body framing is
-workshopped (that spec's "Content" section); nothing else changes when the
-real text lands.
+Two reply VARIANTS exist because Slack fixes a message's username + icon at
+post time (`chat.update` can't change them):
+- ``sender`` (gcs-style): the headline IS the sender name, the arrow the
+  avatar. Posted once, by the day's first scan (00:01Z) — a clean
+  midnight-to-midnight delta; the 12:01Z scan only re-converges the OP + plot.
+- ``body``: the headline is bold body text under a static sender/avatar, so
+  the day's reply is EDITED whenever a later scan of the day lands — text and
+  sparkline agree intra-day (at the cost of the first edit's Δ spanning 12 h
+  until the day's last scan makes it 24 h).
 
-Pure helpers (`deg`, `scan_ts`, `rows_from_meta`, the `_tb`/`_pct`/`_objs`
-formatters, `_dlink`/`_span` link tokens) are unit-tested; `post_digest` is the
-side-effecting shell (render+host plot, post/edit OP, post new replies, persist
-state), tested against a fake client."""
+Mechanism ported from gcs's `digest.py` (specs/done/slack-digest-shape-c.md
+there); the CoreWeave content + deltas are in specs/cw-slack-digest.md. Pure
+functions (`deg`, `scan_ts`, `rows_from_meta`, `day_rows`, `op_body`, `reply`,
+the formatters, the `_dlink`/`_span` link tokens) are unit-tested;
+`post_digest` is the side-effecting shell (render+host plot, post/edit OP,
+post/edit replies, persist state), tested against a fake client."""
 from __future__ import annotations
 
 import datetime as dt
@@ -25,9 +32,15 @@ import json
 import re
 import secrets
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass
 
 TIB = 1024**4
+# The bucket's quota is 1 PB *decimal* (10^15 bytes) = 909.49 TiB — the
+# "910 TiB" in the site's comments and the zones memo is this number rounded.
+# Owned here, once; headroom renders as "% of 1 PB".
+QUOTA_BYTES = 10**15
+QUOTA_TIB = QUOTA_BYTES / TIB
 # Weekly-halving arrow buckets: |dpct| >= THRESH[i] -> deg (i+1)*10 (capped 80).
 THRESH = [0.39, 0.78, 1.5, 3.1, 6.25, 12.5, 25, 50]
 MINUS = "−"  # matches the site's unicode minus
@@ -43,15 +56,17 @@ ICONS_BRANCH = "cw"
 AVATAR_REV = 4
 HOURS_PER_WEEK = 168.0
 SCAN_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2}))?$")
+VARIANTS = ("sender", "body")
+OP_SENDER = "CoreWeave usage"  # + " — <Month YYYY>" on the OP; bare on `body`-variant replies
 
 
 def deg(pct_signed: float, mult: float = 1.0) -> int:
     """Signed arrow degree for a percent change, time-normalized by ``mult``.
 
-    Anchored on a weekly halving (deg80 ~ +/-50%/week). A reply passes the
-    weekly-equivalent multiplier for its scan interval (``168 / hours``: 7 for
-    a daily feed, 14 for 12-hourly), a weekly rollup ``mult=1``, month-to-date
-    ``7 / days_elapsed`` -- so every arrow means the same underlying rate."""
+    Anchored on a weekly halving (deg80 ~ +/-50%/week). A daily reply passes
+    ``168 / hours`` (7 for a clean 24 h), a weekly bullet ``mult=1``,
+    month-to-date ``7 / days_elapsed`` -- so every arrow means the same
+    underlying rate."""
     a = abs(pct_signed) * mult
     d = 0
     for i, t in enumerate(THRESH):
@@ -74,14 +89,6 @@ def _tb(v: float) -> str:
     return f"+{v:.1f}" if v >= 0 else f"{MINUS}{abs(v):.1f}"
 
 
-def _objs(n: int) -> str:
-    return f"{n / 1e6:.2f}M"
-
-
-def _dobjs(d: int) -> str:
-    return ("+" if d >= 0 else MINUS) + f"{abs(d) / 1e6:.2f}M"
-
-
 def _pct(dtb: float, tb: float) -> str:
     prev = tb - dtb
     return f"{abs(dtb / prev * 100) if prev else 0:.1f}"
@@ -90,6 +97,20 @@ def _pct(dtb: float, tb: float) -> str:
 def _pct_val(dtb: float, tb: float) -> float:
     prev = tb - dtb
     return dtb / prev * 100 if prev else 0.0
+
+
+def _quota(tb: float) -> str:
+    """`NN.N% of 1 PB` for a TiB total."""
+    return f"{tb / QUOTA_TIB * 100:.1f}% of 1 PB"
+
+
+def _free(tb: float) -> str:
+    return f"{QUOTA_TIB - tb:,.1f} TiB free"
+
+
+def _md(date: str) -> str:
+    d = dt.date.fromisoformat(date)
+    return f"{d.month}/{d.day}"
 
 
 def _dlink(scan: str) -> str:
@@ -102,10 +123,17 @@ def _dlink(scan: str) -> str:
 def _span(a: dt.datetime, b: dt.datetime) -> str:
     """`?d=` look-back token for the interval a→b (`1d12h`, `7d`, `12h`),
     matching the site's `encodeSpan`."""
-    secs = (b - a).total_seconds()
-    days = int(secs // 86400)
-    hours = round((secs - days * 86400) / 3600)
+    # round to whole hours first so a scan that drifted a minute (00:02 →
+    # 12:01) still reads `1d`, not `24h`
+    hours, days = divmod(round((b - a).total_seconds() / 3600), 24)[::-1]
     return (f"{days}d" if days else "") + (f"{hours}h" if hours else "") or "0h"
+
+
+def _diff_url(scan: str, since: dt.datetime | None, site_url: str) -> str:
+    """The dashboard's Diff section pinned to ``scan``, looking back to
+    ``since`` (None: the baked previous scan)."""
+    span = f"-{_span(since, scan_ts(scan))}" if since is not None else ""
+    return f"{site_url}/?d={_dlink(scan)}{span}#diff"
 
 
 @dataclass(frozen=True)
@@ -126,10 +154,7 @@ class Scan:
 
 
 def rows_from_meta(dated_meta: list[tuple[str, dict]]) -> list[Scan]:
-    """Build ``Scan`` rows from ``(scan_id, meta.json)`` pairs in scan order.
-
-    The first pair seeds the delta for the second; callers pass one scan of
-    lead-in before the window they want, then slice it off."""
+    """Build ``Scan`` rows from ``(scan_id, meta.json)`` pairs in scan order."""
     out: list[Scan] = []
     ptb = pobjs = pts = None
     for scan, m in dated_meta:
@@ -150,45 +175,135 @@ def rows_from_meta(dated_meta: list[tuple[str, dict]]) -> list[Scan]:
     return out
 
 
-# ---- Content (PLACEHOLDER — specs/cw-slack-digest.md § Content) -------------
-# The real headline/body framing (quota headroom / movers / sweep ledger) is
-# being workshopped; these bodies exist so the converge mechanism runs end to
-# end. Only `op_body` and `reply` change when the content lands.
+@dataclass(frozen=True)
+class Month:
+    """A month's scans: ``rows`` (in-month, chronological) and ``lead`` (every
+    scan of the last calendar day before the month — the baseline for the
+    first delta of either reply variant; empty for the first month ever)."""
+
+    lead: list[Scan]
+    rows: list[Scan]
+
+    @property
+    def base(self) -> Scan:
+        """Month-to-date / first-week baseline: the last pre-month scan, else
+        the month's first scan (a zero-length month-to-date)."""
+        return self.lead[-1] if self.lead else self.rows[0]
 
 
-def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, site_url: str = DEFAULT_URL) -> str:
-    """OP markdown (placeholder): latest total + objects + dashboard link, and
-    the trailing plot image. The month/year title is NOT in the body -- it's
-    folded into the OP's sender name by the poster. ``plot_url=None`` omits the
-    image line."""
+@dataclass(frozen=True)
+class DayRow:
+    """One UTC day's reply: its ``scan`` (the day's first scan for the
+    ``sender`` variant, last for ``body``) and the delta to the prior day's
+    reply scan (``None`` fields = no prior)."""
+
+    date: str
+    scan: str
+    tb: float
+    dtb: float | None
+    hours: float | None
+    since: dt.datetime | None  # the prior reply scan's instant (the diff link's look-back)
+
+
+def day_rows(month: Month, variant: str) -> list[DayRow]:
+    """One ``DayRow`` per in-month UTC day. ``sender`` keys each day on its
+    FIRST scan (posted once, midnight-to-midnight); ``body`` on its LAST (the
+    reply is re-edited as the day's scans land)."""
+    if variant not in VARIANTS:
+        raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
+    pick = (lambda rs: rs[0]) if variant == "sender" else (lambda rs: rs[-1])
+    days: OrderedDict[str, list[Scan]] = OrderedDict()
+    for r in month.lead + month.rows:
+        days.setdefault(r.date, []).append(r)
+    out: list[DayRow] = []
+    prev: Scan | None = None
+    for date, rs in days.items():
+        s = pick(rs)
+        if date >= month.rows[0].date:
+            out.append(
+                DayRow(
+                    date=date,
+                    scan=s.scan,
+                    tb=s.tb,
+                    dtb=round(s.tb - prev.tb, 1) if prev else None,
+                    hours=(scan_ts(s.scan) - scan_ts(prev.scan)).total_seconds() / 3600 if prev else None,
+                    since=scan_ts(prev.scan) if prev else None,
+                )
+            )
+        prev = s
+    return out
+
+
+# ---- Content (framing A: quota headroom) ------------------------------------
+
+
+def op_body(month: Month, m: dt.date, plot_url: str | None, site_url: str = DEFAULT_URL) -> str:
+    """OP markdown: month-to-date headline, per-ISO-week bullets, trailing
+    sparkline. The month/year title is NOT in the body -- it's folded into the
+    OP's sender name by the poster. ``plot_url=None`` omits the image line."""
+    rows, base = month.rows, month.base
     last = rows[-1]
-    lines = [f"**{last.tb:,.0f} TB** · {_objs(last.objs)} objects · [dashboard]({site_url}/)"]
+    mdtb = last.tb - base.tb
+    days = (scan_ts(last.scan) - scan_ts(base.scan)).total_seconds() / 86400 or 1.0
+    mweekly = (mdtb / base.tb * 100 * 7 / days) if base.tb else 0
+    lines = [
+        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** month-to-date · {last.tb:,.0f} TiB · {_quota(last.tb)} · [dashboard]({site_url}/)",
+        "",
+        "*Weekly summaries*",
+    ]
+    weeks: OrderedDict[dt.date, list[Scan]] = OrderedDict()
+    for r in rows:
+        d = dt.date.fromisoformat(r.date)
+        weeks.setdefault(d - dt.timedelta(days=d.weekday()), []).append(r)
+    last_mon = list(weeks)[-1]
+    prev_end = base
+    for mon, ws in weeks.items():
+        end = ws[-1]
+        wdtb = end.tb - prev_end.tb
+        wpct = wdtb / prev_end.tb * 100 if prev_end.tb else 0
+        # partial while the week's Sunday has no scan yet
+        partial = " _(partial)_" if mon == last_mon and dt.date.fromisoformat(end.date) < mon + dt.timedelta(days=6) else ""
+        # the link opens the Diff section over exactly this bullet's span
+        lines.append(
+            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({_diff_url(end.scan, scan_ts(prev_end.scan) if prev_end is not end else None, site_url)}){partial}: "
+            f"**{_tb(wdtb)} TiB** → {end.tb:,.0f} TiB · {_quota(end.tb)}"
+        )
+        prev_end = end
     if plot_url is not None:
-        lines += ["", f"![CoreWeave usage — {month:%B %Y}]({plot_url})"]
+        lines += ["", f"![CoreWeave usage — {m:%B %Y}]({plot_url})"]
     return "\n".join(lines)
 
 
-def reply(r: Scan, site_url: str = DEFAULT_URL) -> tuple[str, str, str]:
-    """One scan's reply (placeholder) -> (sender_username, body, avatar_url).
+@dataclass(frozen=True)
+class Reply:
+    """A reply's post parameters: ``username``/``icon_url``/``icon_emoji`` are
+    fixed at post time (Slack), ``body`` is what an edit can change."""
 
-    The SENDER is the scan's headline (plain text -- Slack renders no
-    links/emoji/markdown there); two scans share a date, so the UTC time rides
-    along. The BODY is one line ending in a link to the scan's Diff section.
-    The avatar is the scan's colour-coded trend arrow, its Δ% projected over
-    the hours since the previous scan to a weekly rate (URL carries AVATAR_REV
-    -- Slack caches avatars per-URL, so glyph redesigns must bust it)."""
-    _, _, _, hh, mm = SCAN_RE.match(r.scan).groups()
-    d = dt.date.fromisoformat(r.date)
-    dtb = r.dtb or 0
-    when = f"{d.month}/{d.day}" + (f" {hh}:{mm}Z" if hh else "")
-    sender = f"{when} — {r.tb:,.0f} TB ({_tb(dtb)}, {_pct(dtb, r.tb)}%)"
-    # ↗︎ = NE arrow + text-presentation selector: renders as a font
-    # glyph in link colour (bare ↗ gets emoji-ized by Slack into the
-    # cartoonish :arrow_upper_right:)
-    body = f"{_objs(r.objs)} objects ({_dobjs(r.dobjs or 0)}) [↗︎]({site_url}/?d={_dlink(r.scan)}#diff)"
-    mult = HOURS_PER_WEEK / r.hours if r.hours else 7.0
-    avatar = f"{ICONS_BASE}/arrows/av_deg{deg(_pct_val(dtb, r.tb), mult)}.png?v={AVATAR_REV}"
-    return sender, body, avatar
+    username: str
+    body: str
+    icon_url: str | None = None
+    icon_emoji: str | None = None
+
+
+def reply(day: DayRow, variant: str, site_url: str = DEFAULT_URL) -> Reply:
+    """One day's reply. ``sender``: headline as the sender name (plain text --
+    Slack renders no links/emoji/markdown there), trend-arrow avatar, the rest
+    in the body with the diff link at EOL. ``body``: everything in the body
+    under the static month sender, headline bold, arrow as the leading emoji.
+    The arrow projects the day's Δ% over its real interval to a weekly rate."""
+    dtb = day.dtb or 0
+    mult = HOURS_PER_WEEK / day.hours if day.hours else 7.0
+    d = deg(_pct_val(dtb, day.tb), mult)
+    url = _diff_url(day.scan, day.since, site_url)
+    size = f"{day.tb:,.0f} TiB ({_tb(dtb)}, {_pct(dtb, day.tb)}%)"
+    tail = f"{_quota(day.tb)} · {_free(day.tb)}"
+    if variant == "sender":
+        # ↗︎ = NE arrow + text-presentation selector: renders as a
+        # font glyph in link colour (bare ↗ gets emoji-ized by Slack)
+        return Reply(f"{_md(day.date)} — {size}", f"{tail} [↗︎]({url})", icon_url=f"{ICONS_BASE}/arrows/av_deg{d}.png?v={AVATAR_REV}")
+    if variant == "body":
+        return Reply(OP_SENDER, f":arrow_deg{d}: [{_md(day.date)}]({url}) — **{size}** · {tail}", icon_emoji=":calendar:")
+    raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
 
 
 # ---- IO (side-effecting) --------------------------------------------------
@@ -198,13 +313,11 @@ def _err(*a) -> None:
     print(*a, file=sys.stderr)
 
 
-def load_month(root: str, month: dt.date) -> list[Scan]:
-    """Per-scan ``Scan`` rows for ``month`` (UTC), read from ``root`` snapshots.
-
-    ``root`` = ``gs://<bucket>/snapshots/cw``. Lists the scan ids (one
-    ``meta.json`` per published scan; ids sort chronologically), keeps the
-    month's plus one lead-in scan for the first delta, reads each scan's
-    ``meta.json``, then slices the lead-in off."""
+def load_month(root: str, month: dt.date) -> Month | None:
+    """The month's scans from ``root`` (``gs://<bucket>/snapshots/cw``): one
+    ``meta.json`` per published scan, ids sorting chronologically. ``lead`` =
+    every scan of the last calendar day before the month. None if the month
+    has no scans."""
     import fsspec
 
     fs, _, _ = fsspec.get_fs_token_paths(root)
@@ -216,15 +329,15 @@ def load_month(root: str, month: dt.date) -> list[Scan]:
     pfx = f"{month:%Y-%m}-"
     in_month = [s for s in scans if s.startswith(pfx)]
     if not in_month:
-        return []
-    first_idx = scans.index(in_month[0])
-    window = scans[max(0, first_idx - 1) : scans.index(in_month[-1]) + 1]
+        return None
+    before = [s for s in scans if s < in_month[0]]
+    lead = [s for s in before if s[:10] == before[-1][:10]] if before else []
     dated_meta: list[tuple[str, dict]] = []
-    for s in window:
+    for s in lead + in_month:
         with fsspec.open(f"{root}/{s}/meta.json", "rt") as f:
             dated_meta.append((s, json.load(f)))
     rows = rows_from_meta(dated_meta)
-    return rows[1:] if first_idx > 0 else rows
+    return Month(lead=rows[: len(lead)], rows=rows[len(lead) :])
 
 
 def _wait_reachable(url: str, timeout: float = 90, interval: float = 3) -> None:
@@ -245,57 +358,60 @@ def _wait_reachable(url: str, timeout: float = 90, interval: float = 3) -> None:
     _err(f"digest: WARN {url} not reachable after {timeout:.0f}s — posting anyway")
 
 
-def _state_path(root: str, month: dt.date, channel: str) -> str:
-    """Converge-state JSON for one month's thread: ``digest/cw/<channel>/<YYYY-MM>.json``
-    — namespaced under ``cw/`` (gcs's prod state is ``digest/<YYYY-MM>.json``)
-    and keyed by channel so a staging converge never masquerades as prod."""
+def _state_path(root: str, month: dt.date, channel: str, variant: str) -> str:
+    """Converge-state JSON for one month's thread:
+    ``digest/cw/<channel>/<variant>/<YYYY-MM>.json`` — namespaced under ``cw/``
+    (gcs's prod state is ``digest/<YYYY-MM>.json``), keyed by channel so a
+    staging converge never masquerades as prod, and by variant so both can be
+    staged side by side."""
     base = root.rsplit("/snapshots", 1)[0]
-    return f"{base}/digest/cw/{channel}/{month:%Y-%m}.json"
+    return f"{base}/digest/cw/{channel}/{variant}/{month:%Y-%m}.json"
 
 
-def load_state(root: str, month: dt.date, channel: str) -> dict:
+def load_state(root: str, month: dt.date, channel: str, variant: str) -> dict:
     import fsspec
 
     try:
-        with fsspec.open(_state_path(root, month, channel), "rt") as f:
+        with fsspec.open(_state_path(root, month, channel, variant), "rt") as f:
             return json.load(f)
     except (FileNotFoundError, OSError):
         return {}
 
 
-def save_state(root: str, month: dt.date, channel: str, state: dict) -> None:
+def save_state(root: str, month: dt.date, channel: str, variant: str, state: dict) -> None:
     import fsspec
 
-    with fsspec.open(_state_path(root, month, channel), "wt", auto_mkdir=True) as f:
+    with fsspec.open(_state_path(root, month, channel, variant), "wt", auto_mkdir=True) as f:
         json.dump(state, f, indent=2)
 
 
-def render_plot(rows: list[Scan], month: dt.date, out_path) -> None:
-    """Render the 2-panel PNG for ``rows`` to ``out_path`` (in-process; needs
-    the `[plot]` extra — matplotlib)."""
+def render_plot(month: Month, m: dt.date, out_path) -> None:
+    """Render the quota sparkline PNG for the month to ``out_path`` (in-process;
+    needs the `[plot]` extra — matplotlib)."""
     from pathlib import Path
 
     from .digest_plot import render
 
-    render([{"scan": r.scan, "tb": r.tb, "objs": r.objs} for r in rows], Path(out_path), f"CoreWeave usage — {month:%B %Y}")
+    render([{"scan": r.scan, "tb": r.tb} for r in month.rows], Path(out_path), f"CoreWeave usage — {m:%B %Y}")
 
 
-def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0, client=None) -> dict:
-    """Converge the month's thread: render+host the plot, post/edit the OP, post
-    one reply per not-yet-posted scan, persist and return state. ``icons_dir`` is
-    where to write the PNG; ``deploy_plot(local_png, basename)`` publishes it and
-    returns the host that serves it (or None → the branch alias). ``reply_delay``
-    sleeps that many seconds between replies (>0 for a spaced backfill, so Slack
-    doesn't collapse the per-reply sender chrome). ``client`` overrides the
-    thrds ``SlackClient`` (tests)."""
+def post_digest(root, m, token, channel, variant="sender", site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0, client=None) -> dict:
+    """Converge the month's thread: render+host the plot, post/edit the OP, then
+    per in-month day post its reply if none exists — or, on the ``body``
+    variant, edit it when a later scan of that day has landed. Persist and
+    return state. ``icons_dir`` is where to write the PNG; ``deploy_plot(local,
+    basename)`` publishes it and returns the host that serves it (None → the
+    branch alias). ``reply_delay`` sleeps between new replies (>0 for a spaced
+    backfill so Slack doesn't collapse same-sender chrome). ``client``
+    overrides the thrds ``SlackClient`` (tests)."""
     import time
     from pathlib import Path
 
-    rows = load_month(root, month)
-    if not rows:
-        _err(f"digest: no scans for {month:%Y-%m}")
+    month = load_month(root, m)
+    if month is None:
+        _err(f"digest: no scans for {m:%Y-%m}")
         return {}
-    state = load_state(root, month, channel)
+    state = load_state(root, m, channel, variant)
     if client is None:
         from thrds.slack import SlackClient
 
@@ -305,7 +421,7 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
     base = ICONS_BASE.replace("https://", f"https://{ICONS_BRANCH}.")
     if icons_dir is not None:
         local = Path(icons_dir) / plot_name
-        render_plot(rows, month, local)
+        render_plot(month, m, local)
         if deploy_plot is not None:
             # the deployment-specific host serves the just-uploaded plot
             # immediately (no alias propagation race → no invalid_blocks)
@@ -314,33 +430,42 @@ def post_digest(root, month, token, channel, site_url=DEFAULT_URL, icons_dir=Non
                 base = dep
     plot_url = f"{base}/{plot_name}?v={int(dt.datetime.now(dt.timezone.utc).timestamp())}"
     state["plot_name"] = plot_name
+    state["variant"] = variant
     # A just-deployed Pages asset isn't instantly served at the branch alias; if
     # we post before it propagates, Slack's image-block validation 500s the whole
     # message with `invalid_blocks`. Poll until the URL is live (or give up + warn).
     if icons_dir is not None and deploy_plot is not None:
         _wait_reachable(plot_url)
 
-    body = op_body(rows, month, plot_url, site_url)
+    body = op_body(month, m, plot_url, site_url)
     op_ts = state.get("op_ts")
     if op_ts:
         client.edit(op_ts, body)
-        _err(f"digest: edited OP {op_ts} ({len(rows)} scans)")
+        _err(f"digest: edited OP {op_ts} ({len(month.rows)} scans)")
     else:
-        m = client.post(body, username=f"CoreWeave usage — {month:%B %Y}", icon_emoji=":calendar:")
-        op_ts = m.id
+        msg = client.post(body, username=f"{OP_SENDER} — {m:%B %Y}", icon_emoji=":calendar:")
+        op_ts = msg.id
         state["op_ts"] = op_ts
         _err(f"digest: posted OP {op_ts}")
 
     posted = state.setdefault("posted", {})
-    todo = [r for r in rows if r.scan not in posted]
-    for i, r in enumerate(todo):
-        sender, rbody, avatar = reply(r, site_url)
-        rm = client.post(rbody, thread_id=op_ts, username=sender, icon_url=avatar)
-        posted[r.scan] = rm.id
-        save_state(root, month, channel, state)   # persist after each → a spaced backfill is resumable
-        _err(f"digest: reply {r.scan} -> {rm.id}")
-        if reply_delay and i < len(todo) - 1:
-            time.sleep(reply_delay)
+    new = 0
+    for day in day_rows(month, variant):
+        r = reply(day, variant, site_url)
+        have = posted.get(day.date)
+        if have is None:
+            if new and reply_delay:
+                time.sleep(reply_delay)
+            rm = client.post(r.body, thread_id=op_ts, username=r.username, icon_url=r.icon_url, icon_emoji=r.icon_emoji)
+            posted[day.date] = {"ts": rm.id, "scan": day.scan}
+            new += 1
+            save_state(root, m, channel, variant, state)   # persist after each → a spaced backfill is resumable
+            _err(f"digest: reply {day.date} ({day.scan}) -> {rm.id}")
+        elif variant == "body" and have["scan"] != day.scan:
+            client.edit(have["ts"], r.body)
+            have["scan"] = day.scan
+            save_state(root, m, channel, variant, state)
+            _err(f"digest: edited reply {day.date} -> {day.scan}")
 
-    save_state(root, month, channel, state)
+    save_state(root, m, channel, variant, state)
     return state

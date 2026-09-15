@@ -846,17 +846,18 @@ def _icons_dir() -> Path:
 @main.command()
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
 @option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so per-reply sender chrome survives)")
+@option("-i", "--icons-dir", type=Path, default=None, help="Where the plot PNG is written + deployed from (default job/icons-cw)")
 @option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
 @option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
 @option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots/cw)")
 @option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default cw-s3.oa.dev)")
-def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None) -> None:
-    """Converge the Shape-C monthly digest thread in #cw-s3-usage: an OP edited
-    in place (headline + hosted plot) + one reply per scan (headline sender,
-    trend-arrow avatar), via thrds. State in gs://<bucket>/digest/cw/<channel>/
-    <YYYY-MM>.json. The message content is a placeholder while it's being
-    workshopped — specs/cw-slack-digest.md."""
+@option("-V", "--variant", type=Choice(["sender", "body"]), default="sender", help="Reply style: headline as the sender name, posted once per day (sender) or bold in the body, edited as the day's scans land (body)")
+def digest(channel: str | None, reply_delay: float, icons_dir: Path | None, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None, variant: str) -> None:
+    """Converge the monthly digest thread in #cw-s3-usage: an OP edited in place
+    (month-to-date + weekly bullets + quota sparkline) + one reply per UTC day,
+    via thrds. State in gs://<bucket>/digest/cw/<channel>/<variant>/<YYYY-MM>.json.
+    See specs/cw-slack-digest.md."""
     from . import digest as dg
 
     site_url = site_url or dg.DEFAULT_URL
@@ -868,26 +869,26 @@ def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: 
     root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots/cw"
 
     if dry_run:
-        rows = dg.load_month(root, m)
-        if not rows:
+        month = dg.load_month(root, m)
+        if month is None:
             raise SystemExit(f"digest: no scans for {m:%Y-%m}")
         import tempfile
 
         out = Path(tempfile.gettempdir()) / f"cw-digest-{m:%Y%m}.png"
-        dg.render_plot(rows, m, out)
+        dg.render_plot(month, m, out)
         err(f"rendered plot → {out}")
-        print(dg.op_body(rows, m, "<plot-url>", site_url))
-        print("\n--- replies (sender | body | avatar) ---")
-        for r in rows:
-            s, b, a = dg.reply(r, site_url)
-            print(f"{s} | {b} | {a.split('/')[-1]}")
+        print(dg.op_body(month, m, "<plot-url>", site_url))
+        print(f"\n--- replies ({variant}: username | body | icon) ---")
+        for day in dg.day_rows(month, variant):
+            r = dg.reply(day, variant, site_url)
+            print(f"{r.username} | {r.body} | {(r.icon_url or r.icon_emoji or '').split('/')[-1]}")
         return
 
     channel = channel or os.environ.get("SLACK_CHANNEL")
     token = token or os.environ.get("SLACK_BOT_TOKEN")
     if not (channel and token):
         raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
-    icons = _icons_dir()
+    icons = icons_dir or _icons_dir()
 
     def deploy(local: Path, name: str) -> str | None:
         # publish the cw icons dir (the CORS _headers + the fresh plot) to the
@@ -912,8 +913,8 @@ def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: 
         found = re.search(r"https://[a-z0-9]+\.gcs-usage-icons\.pages\.dev", r.stdout + r.stderr)
         return found.group(0) if found else None
 
-    dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
-    err(f"digest: converged {m:%Y-%m}")
+    dg.post_digest(root, m, token, channel, variant, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
+    err(f"digest: converged {m:%Y-%m} ({variant})")
 
 
 
