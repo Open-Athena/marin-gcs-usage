@@ -36,15 +36,18 @@ DATE=${SNAP_ID%%T*}
 # a missing script went unnoticed for two days). Activates once a transport is
 # configured on the scheduler body (SLACK_BOT_TOKEN+SLACK_CHANNEL secret/env,
 # or SLACK_WEBHOOK); `set +x` first so the token never hits the xtrace log.
+# Alerts go to SLACK_ALERT_CHANNEL (#gcs-usage-alerts, as the GCS job) when
+# set, so they don't land in the #cw-s3-usage digest thread's channel.
 fail_alert() {
   local rc=$1 line=$2 cmd=$3
   { set +x; } 2>/dev/null
   local msg="❌ CoreWeave scan job failed ($SNAP_ID): \`${cmd}\` exited $rc at cw-run.sh:$line"
   [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
-  if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
+  local chan="${SLACK_ALERT_CHANNEL:-${SLACK_CHANNEL:-}}"
+  if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "$chan" ]; then
     curl -sS -X POST https://slack.com/api/chat.postMessage \
       -H "Authorization: Bearer $SLACK_BOT_TOKEN" -H 'Content-type: application/json; charset=utf-8' \
-      -d "$(python3 -c 'import json,sys; print(json.dumps({"channel": sys.argv[1], "text": sys.argv[2]}))' "$SLACK_CHANNEL" "$msg")" >/dev/null || true
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"channel": sys.argv[1], "text": sys.argv[2]}))' "$chan" "$msg")" >/dev/null || true
   elif [ -n "${SLACK_WEBHOOK:-}" ]; then
     curl -sS -X POST "$SLACK_WEBHOOK" -H 'Content-type: application/json' \
       -d "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$msg")" >/dev/null || true
@@ -99,5 +102,19 @@ cp "$WORK"/web/*.json "$DEST/"
 # question ("what grew?", "what's idle?") that the JSONs can't answer.
 mkdir -p "/gcs/$DATA/cw-l2/$SNAP_ID"
 cp "$L2" "/gcs/$DATA/cw-l2/$SNAP_ID/$BUCKET.parquet"
+
+# 5. Converge the monthly Shape-C digest thread in Slack (specs/cw-slack-
+# digest.md): the OP + one reply per scan, into #cw-s3-usage. Only when
+# SLACK_BOT_TOKEN + SLACK_CHANNEL are set — Shape C needs the Web API's
+# per-message sender/avatar overrides. `gcs-usage digest` also renders the
+# plot into job/icons-cw/ and `wrangler pages deploy`s it to the icons Pages
+# project's `cw` branch, so it needs CLOUDFLARE_* + wrangler (both in this
+# image). A failed digest never fails the scan.
+if [ -n "${SLACK_BOT_TOKEN:+set}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then  # `:+set`: xtrace must not print the token
+  gcs-usage digest -r "gs://$DATA/snapshots/cw" \
+    || echo "WARN: usage-digest step failed" >&2
+else
+  echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
+fi
 
 echo "CW-SCAN-JOB-DONE $SNAP_ID -> gs://$DATA/snapshots/cw/$SNAP_ID"

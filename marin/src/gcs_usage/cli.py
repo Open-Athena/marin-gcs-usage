@@ -836,157 +836,85 @@ def _load_meta(root: str, date: str) -> dict:
         return json.load(f)
 
 
-def _snapshot_dates(root: str) -> list[str]:
-    import re
-
-    import fsspec
-
-    fs, r = fsspec.core.url_to_fs(root)
-    out = []
-    for e in fs.ls(r, detail=False):
-        name = e.rstrip("/").rsplit("/", 1)[-1]
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name):
-            out.append(name)
-    return sorted(out)
+def _icons_dir() -> Path:
+    """`job/icons-cw` in both layouts: pip-installed in the job image (cwd=/app →
+    /app/job/icons-cw) or the repo checkout (…/parents[3]/job/icons-cw)."""
+    cands = (Path.cwd() / "job" / "icons-cw", Path(__file__).resolve().parents[3] / "job" / "icons-cw")
+    return next((c for c in cands if c.exists()), cands[-1])
 
 
 @main.command()
-@option("-b", "--bot-token", help="Slack bot token (xoxb-…, or $SLACK_BOT_TOKEN); with --channel, posts via chat.postMessage so the per-message avatar applies")
-@option("-c", "--ceiling-tb", type=float, help="absolute alert: flag when total TB exceeds this")
-@option("-C", "--channel", help="Slack channel id for chat.postMessage (or $SLACK_CHANNEL)")
-@option("-d", "--date", help="snapshot date (default: latest under --root)")
-@option("-e", "--edit-ts", help="edit an existing message (chat.update at this ts) instead of posting a new one — back-applies a format change; avatar is unchanged")
-@option("-n", "--dry-run", is_flag=True, help="print the message instead of posting to Slack")
-@option("-p", "--prior", help="prior date to diff against (default: the snapshot before --date)")
-@option("-r", "--root", help="snapshots root: gs://bucket/snapshots or a local dir (default $DATA_BUCKET)")
-@option("-s", "--spike-pct", default=10.0, help="relative alert: flag when |Δ%%| exceeds this")
-@option("-w", "--webhook", help="Slack incoming webhook URL (or $SLACK_WEBHOOK); fallback with no per-message avatar")
-def alert(
-    bot_token: str | None,
-    ceiling_tb: float | None,
-    channel: str | None,
-    date: str | None,
-    edit_ts: str | None,
-    dry_run: bool,
-    prior: str | None,
-    root: str | None,
-    spike_pct: float,
-    webhook: str | None,
-) -> None:
-    """Post a daily GCS-usage digest to Slack: a one-line headline (date · total
-    · Δ, in the per-message sender name) + the $/mo run-rate linked to the site
-    (with Δ$); flag threshold breaches (absolute ceiling and/or relative spike).
+@option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
+@option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so per-reply sender chrome survives)")
+@option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
+@option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots/cw)")
+@option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
+@option("-u", "--url", "site_url", default=None, help="Site base for links (default cw-s3.oa.dev)")
+def digest(channel: str | None, reply_delay: float, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None) -> None:
+    """Converge the Shape-C monthly digest thread in #cw-s3-usage: an OP edited
+    in place (headline + hosted plot) + one reply per scan (headline sender,
+    trend-arrow avatar), via thrds. State in gs://<bucket>/digest/cw/<channel>/
+    <YYYY-MM>.json. The message content is a placeholder while it's being
+    workshopped — specs/cw-slack-digest.md."""
+    from . import digest as dg
 
-    Per-message avatars (mark + 📊/🚨) require the Web API: pass a bot token
-    (needs the chat:write.customize scope) + channel. Incoming webhooks ignore
-    icon/name overrides, so the --webhook path folds the headline into the body
-    and posts with the app's static icon."""
-    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
-    dates = _snapshot_dates(root)
-    if not dates:
-        raise SystemExit(f"no snapshots under {root}")
-    date = date or dates[-1]
-    if prior is None:
-        earlier = [d for d in dates if d < date]
-        prior = earlier[-1] if earlier else None
+    site_url = site_url or dg.DEFAULT_URL
+    m = (
+        dt.datetime.strptime(month, "%Y-%m").date()
+        if month
+        else dt.datetime.now(dt.timezone.utc).date().replace(day=1)
+    )
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots/cw"
 
-    cur = _load_meta(root, date)
-    tb = cur["total_bytes"] / 1e12
-    breach = []
-    if ceiling_tb is not None and tb > ceiling_tb:
-        breach.append(f"total {tb:,.0f} TB > ceiling {ceiling_tb:,.0f} TB")
+    if dry_run:
+        rows = dg.load_month(root, m)
+        if not rows:
+            raise SystemExit(f"digest: no scans for {m:%Y-%m}")
+        import tempfile
 
-    # est. $/mo from the class-byte mix (US list prices; mirror site CLASS_PRICE_US).
-    CLASS_PRICE = {"1": 0.02, "2": 0.01, "3": 0.004, "4": 0.0012}  # $/GiB·mo
-    cost = lambda cb: sum((cb.get(c, 0) / 1024**3) * p for c, p in CLASS_PRICE.items())
-    cur_cost = cost(cur["class_bytes"])
-
-    d_bytes = d_pct = d_cost = 0.0
-    if prior:
-        pri = _load_meta(root, prior)
-        d_bytes = cur["total_bytes"] - pri["total_bytes"]
-        d_pct = 100 * d_bytes / pri["total_bytes"] if pri["total_bytes"] else 0.0
-        d_cost = cur_cost - cost(pri["class_bytes"])
-        if abs(d_pct) > spike_pct:
-            breach.append(f"Δ {d_pct:+.1f}% vs {prior} exceeds ±{spike_pct:.0f}%")
-
-    # Resolve the Slack transport. A chat.postMessage carries the headline
-    # (date · total · Δ) in its per-message username — the bold name Slack
-    # renders beside the avatar — leaving a one-line body: the $/mo run-rate
-    # linked to the site, plus the Δ$. Webhooks can't set a username, so that
-    # path folds the headline into the body as a bold first line instead.
-    webhook = webhook or os.environ.get("SLACK_WEBHOOK")
-    bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
-    channel = channel or os.environ.get("SLACK_CHANNEL")
-    use_api = bool(bot_token and channel)  # chat.postMessage → per-message avatar + username
-
-    # Per-message avatar (mark + 📊/🚨 badge), served public so Slack can fetch
-    # it (the app itself is Access-gated). See job/gen-slack-icons.py + the
-    # gcs-usage-icons Pages project.
-    icon_url = f"https://gcs-usage-icons.pages.dev/gcs-{'breach' if breach else 'digest'}.png"
-    md = lambda s: f"{int(s[5:7])}/{int(s[8:10])}"  # 2026-08-06 → 8/6
-
-    def pct(p: float) -> str:
-        s = f"{abs(p):.1f}"  # 0.6 → ".6", 12.3 → "12.3" (sign carried by the ΔTB)
-        return s[1:] if s.startswith("0") else s
-
-    headline = f"{md(date)} — {tb:,.0f} TB"
-    yymmdd = date[2:].replace("-", "")  # 2026-08-09 → 260809 (site's ?d= deep-link)
-    cost_line = f"<https://gcs.oa.dev/?d={yymmdd}|${cur_cost:,.0f}/mo>"
-    if prior:
-        headline += f" ({d_bytes / 1e12:+.1f}, {pct(d_pct)}%)"
-        d_cost_s = f"{'-' if d_cost < 0 else '+'}${abs(d_cost):,.0f}"  # sign before $
-        cost_line += f" ({d_cost_s}/mo)"
-    username = headline
-    lines = [] if use_api else [f"*{headline}*"]  # webhook has no username → headline in body
-    lines.append(cost_line)
-    if breach:
-        lines.append(":rotating_light: " + "; ".join(breach))
-    text = "\n".join(lines)
-
-    if edit_ts and not use_api:
-        raise SystemExit("--edit-ts needs a bot token + channel (chat.update)")
-    if dry_run or not (use_api or webhook):
-        if not (use_api or webhook) and not dry_run:
-            err("no bot-token+channel / --webhook set — printing (dry-run)")
-        if use_api and not edit_ts:  # headline rides in the sender name, not the body
-            err(f"[sender: {username}]")
-        print(text)
+        out = Path(tempfile.gettempdir()) / f"cw-digest-{m:%Y%m}.png"
+        dg.render_plot(rows, m, out)
+        err(f"rendered plot → {out}")
+        print(dg.op_body(rows, m, "<plot-url>", site_url))
+        print("\n--- replies (sender | body | avatar) ---")
+        for r in rows:
+            s, b, a = dg.reply(r, site_url)
+            print(f"{s} | {b} | {a.split('/')[-1]}")
         return
 
-    import json
-    import urllib.request
+    channel = channel or os.environ.get("SLACK_CHANNEL")
+    token = token or os.environ.get("SLACK_BOT_TOKEN")
+    if not (channel and token):
+        raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
+    icons = _icons_dir()
 
-    if use_api:
-        # chat.update to back-apply a format change (avatar set at post time is
-        # untouched); else chat.postMessage with the per-message avatar.
-        method = "chat.update" if edit_ts else "chat.postMessage"
-        payload = {"channel": channel, "text": text, "unfurl_links": False, "unfurl_media": False}
-        if edit_ts:
-            payload["ts"] = edit_ts
-        else:
-            payload["icon_url"] = icon_url
-            payload["username"] = username
-        req = urllib.request.Request(
-            f"https://slack.com/api/{method}",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {bot_token}",
-                "Content-Type": "application/json; charset=utf-8",
-            },
+    def deploy(local: Path, name: str) -> str | None:
+        # publish the cw icons dir (the CORS _headers + the fresh plot) to the
+        # icons Pages project's `cw` preview branch — never its production
+        # branch, whose root alias serves the arrow avatars both digests use.
+        # Return the deployment-specific URL (served instantly), which the OP
+        # image uses to avoid racing alias propagation (→ Slack invalid_blocks).
+        import re
+        import shutil
+        import subprocess
+
+        # The job image installs wrangler globally (`npm install -g`) but has
+        # no `npx` shim, so prefer the binary; `npx` only serves a laptop run.
+        wrangler = [shutil.which("wrangler")] if shutil.which("wrangler") else ["npx", "wrangler"] if shutil.which("npx") else None
+        if wrangler is None:
+            raise SystemExit("digest: neither `wrangler` nor `npx` on PATH — can't publish the plot")
+        r = subprocess.run(
+            [*wrangler, "pages", "deploy", str(icons), "--project-name", dg.ICONS_PROJECT, "--branch", dg.ICONS_BRANCH, "--commit-dirty=true"],
+            check=True, capture_output=True, text=True,
         )
-        resp = json.loads(urllib.request.urlopen(req).read())
-        if not resp.get("ok"):
-            raise RuntimeError(f"Slack {method} failed: {resp.get('error')}")
-        err(f"{'edited' if edit_ts else 'posted'} GCS-usage alert for {date}")
-    else:
-        req = urllib.request.Request(
-            webhook,
-            data=json.dumps({"text": text}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req).read()
-        err(f"posted GCS-usage alert for {date} (webhook; no per-message avatar)")
+        err(r.stdout)
+        found = re.search(r"https://[a-z0-9]+\.gcs-usage-icons\.pages\.dev", r.stdout + r.stderr)
+        return found.group(0) if found else None
+
+    dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
+    err(f"digest: converged {m:%Y-%m}")
+
 
 
 if __name__ == "__main__":

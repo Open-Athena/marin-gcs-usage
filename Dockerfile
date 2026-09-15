@@ -33,7 +33,8 @@ COPY --from=site /repo/ui/dist ./ui/dist
 RUN pip install --no-cache-dir ".[gcs,s3]"
 COPY marin/pyproject.toml ./marin/
 COPY marin/src ./marin/src
-RUN pip install --no-cache-dir ./marin
+# `[plot]`: matplotlib for the digest's OP plot (specs/cw-slack-digest.md)
+RUN pip install --no-cache-dir "./marin[plot]"
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
 ENTRYPOINT ["bash", "job/cw-run.sh"]

@@ -41,6 +41,13 @@ v = {
     # CAIOS rejects path-style requests, and boto's auto degrades to path
     # for custom endpoints when no ~/.aws/config says otherwise.
     "DT_S3_ADDRESSING_STYLE": "virtual",
+    # Slack digest target (specs/cw-slack-digest.md): chat.postMessage (bot
+    # token) so per-message avatars apply
+    "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0C1YR7D0KU"),  # #cw-s3-usage
+    # failure alerts go to #gcs-usage-alerts (shared with the GCS job), not the digest channel
+    "SLACK_ALERT_CHANNEL": os.environ.get("SLACK_ALERT_CHANNEL", "C0BTUNT3B5Z"),
+    # CF account for the digest plot's `wrangler pages deploy` (token is a secretVariable)
+    "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }
 for k in ["SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
     if k in os.environ:
@@ -74,7 +81,9 @@ cat > "$spec" <<EOF
         "variables": $(vars),
         "secretVariables": {
           "AWS_ACCESS_KEY_ID": "projects/$PROJECT/secrets/cw-s3-access-key-id/versions/latest",
-          "AWS_SECRET_ACCESS_KEY": "projects/$PROJECT/secrets/cw-s3-secret-access-key/versions/latest"
+          "AWS_SECRET_ACCESS_KEY": "projects/$PROJECT/secrets/cw-s3-secret-access-key/versions/latest",
+          "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/cw-s3-slack-bot-token/versions/latest",
+          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest"
         }
       }
     }
