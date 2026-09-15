@@ -1,5 +1,8 @@
 {
-  "_comment": "Slack app manifest for the #cw-s3-usage digest bot (specs/cw-slack-digest.md). A separate app from GCS Usage Bot: per-message sender overrides don't hide the app name in Slack's Unread/Threads views, so the app itself must say CoreWeave. Create at api.slack.com/apps → Create New App → From a manifest → paste; install to the workspace; the Bot User OAuth Token (xoxb-…) goes to Secret Manager as `cw-s3-slack-bot-token`. Scopes = what thrds's SlackClient calls (chat.postMessage/update/delete/getPermalink, conversations.history/replies/info/list, users.info, emoji.list) + chat:write.customize for the per-message sender/avatar; chat:write.public lets it post to public channels without an /invite.",
+  "_metadata": {
+    "major_version": 1,
+    "minor_version": 1
+  },
   "display_information": {
     "name": "CoreWeave Usage Bot",
     "description": "Storage-usage digest for the Marin CoreWeave bucket — cw-s3.oa.dev",
