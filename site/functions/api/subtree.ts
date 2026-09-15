@@ -21,7 +21,8 @@ import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, 
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 
 
-export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
+export const onRequestGet = async (ctx: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
+  const st = serverTiming()
   const { GCS_HMAC_KEY_ID, GCS_HMAC_SECRET } = ctx.env
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) {
     return new Response('subtree API not configured (missing GCS HMAC creds)', { status: 503 })
@@ -58,21 +59,20 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
 
   // Data is gated (store-specific scope), like /data/*.
   const scope = path.startsWith('cw/') ? CW_SCOPE : GCS_SCOPE
-  const gated = await requireScope(ctx as never, scope)
+  const gated = await st.time('auth', requireScope(ctx as never, scope))
   if (gated instanceof Response) return gated
 
   // The mark axis folds the live ledger: its cache key carries the head.
   // …and so does a user lens (claims repaint attribution).
-  const [head, xtra] = await Promise.all([(states || lens) && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date)])
+  const [head, xtra] = await st.time('pre', Promise.all([(states || lens) && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date)]))
   const cacheKey = cacheKeyFor('subtree',
     `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
       `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
-  const hit = await cacheMatch(ctx.env, cacheKey)
+  const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
   if (hit) return hit
 
   try {
-    const st = serverTiming()
     const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, states, query, classes, trace: st.trace })
     const body = JSON.stringify({
       date,
@@ -92,7 +92,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...(query ? { q: qRaw, matches: view.matches } : {}),
       tree: view.tree,
     })
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() })
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx))
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     // 409 (not 500): a lens index missing for this scan is deterministic —

@@ -55,10 +55,18 @@ export async function cacheMatch(env: CacheEnv, key: Request): Promise<Response 
 }
 
 /** Store `body` (already-serialized JSON) in both tiers; return the client response. */
-export async function cacheStore(env: CacheEnv, key: Request, body: string, headers: Record<string, string> = {}): Promise<Response> {
-  const puts: Promise<unknown>[] = [colo().put(key, publicRes(body))]
-  if (env.CACHE_KV) puts.push(env.CACHE_KV.put(await kvKey(key), body, { expirationTtl: KV_TTL }))
-  await Promise.all(puts)
+/** Store `body` (already-serialized JSON) in both tiers and return the client
+ * response. With ``waitUntil`` (the Pages `EventContext`'s) the writes run
+ * after the response is sent — a KV put is hundreds of ms the viewer needn't
+ * wait for; without it they complete first. */
+export async function cacheStore(env: CacheEnv, key: Request, body: string, headers: Record<string, string> = {}, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
+  const puts = async () => {
+    const ps: Promise<unknown>[] = [colo().put(key, publicRes(body))]
+    if (env.CACHE_KV) ps.push(env.CACHE_KV.put(await kvKey(key), body, { expirationTtl: KV_TTL }))
+    await Promise.all(ps)
+  }
+  if (waitUntil) waitUntil(puts().catch(() => undefined))
+  else await puts()
   const res = clientRes(body, 'miss')
   for (const [k, v] of Object.entries(headers)) res.headers.set(k, v)
   return res
@@ -66,11 +74,13 @@ export async function cacheStore(env: CacheEnv, key: Request, body: string, head
 
 /** A `Trace` sink plus its `Server-Timing` rendering (`fetch;dur=812,…`;
  * counts ride as `dur` too — DevTools shows them the same way). */
-export function serverTiming(): { trace: (name: string, ms: number) => void; header: () => string } {
+export function serverTiming(): { trace: (name: string, ms: number) => void; time: <T>(name: string, p: Promise<T>) => Promise<T>; header: () => string } {
   const t: Record<string, number> = {}
   const t0 = performance.now()
+  const trace = (name: string, ms: number) => { t[name] = (t[name] ?? 0) + ms }
   return {
-    trace: (name, ms) => { t[name] = (t[name] ?? 0) + ms },
+    trace,
+    time: async (name, p) => { const s = performance.now(); try { return await p } finally { trace(name, performance.now() - s) } },
     header: () => [...Object.entries(t), ['total', performance.now() - t0] as [string, number]].map(([k, v]) => `${k};dur=${Math.round(v)}`).join(', '),
   }
 }

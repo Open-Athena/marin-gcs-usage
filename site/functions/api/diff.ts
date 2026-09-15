@@ -21,7 +21,8 @@ import { ATTEN_DEFAULT, buildDiff, LensUnavailable, MIN_AREA_DEFAULT, NotFound, 
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 const SCAN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
 
-export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
+export const onRequestGet = async (ctx: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
+  const st = serverTiming()
   const { GCS_HMAC_KEY_ID, GCS_HMAC_SECRET } = ctx.env
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) {
     return new Response('diff API not configured (missing GCS HMAC creds)', { status: 503 })
@@ -55,19 +56,18 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const query = parseQuery(qRaw) ?? undefined
 
   const scope = path.startsWith('cw/') ? CW_SCOPE : GCS_SCOPE
-  const gated = await requireScope(ctx as never, scope)
+  const gated = await st.time('auth', requireScope(ctx as never, scope))
   if (gated instanceof Response) return gated
 
-  const head = (states || lens) && ctx.env.DB ? await ledgerHead(ctx.env) : 0
+  const head = (states || lens) && ctx.env.DB ? await st.time('pre', ledgerHead(ctx.env)) : 0
   const cacheKey = cacheKeyFor('diff',
     `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
       `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}`,
   )
-  const hit = await cacheMatch(ctx.env, cacheKey)
+  const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
   if (hit) return hit
 
   try {
-    const st = serverTiming()
     const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes, summary, trace: st.trace })
     const body = JSON.stringify({
       prev: from,
@@ -80,7 +80,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
       ...diff,
       threshold: Math.round(diff.threshold),
     })
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() })
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx))
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })
