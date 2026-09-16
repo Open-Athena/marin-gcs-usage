@@ -22,13 +22,13 @@ export DATA_BUCKET=${DATA_BUCKET:-oa-gcs-usage-dvx}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-gcs-usage report -o "$work/mark-status.csv" -s attributed -u "$SITE_URL"
+dt-cloud report -o "$work/mark-status.csv" -s attributed -u "$SITE_URL"
 
 # Static footer prefix; sheet-push appends "; last change <ts>" and only bumps
 # that stamp when data actually changed (so no-op hourly runs rewrite nothing).
 disc="⟳ Auto-synced hourly from $SITE_URL/users (edits are overwritten — add derived views in a separate tab)"
 
-gcs-usage sheet-push -w "$SHEET_TAB" -D "$disc" "$SHEET_ID" "$work/mark-status.csv"
+dt-cloud sheet-push -w "$SHEET_TAB" -D "$disc" "$SHEET_ID" "$work/mark-status.csv"
 echo "✓ synced $SHEET_TAB @ $(date -u '+%Y-%m-%d %H:%M UTC')" >&2
 
 # Hourly live-site health check — piggybacks on this already-scheduled job so
@@ -38,13 +38,13 @@ echo "✓ synced $SHEET_TAB @ $(date -u '+%Y-%m-%d %H:%M UTC')" >&2
 # (SLACK_BOT_TOKEN+SLACK_CHANNEL, else SLACK_WEBHOOK — neither is set on this job
 # by default, so it just logs until deploy.sh wires them). NOTE: rebuild the
 # sheet-sync image (sheet-sync/build.sh) for this to take effect.
-if gcs-usage healthcheck -u "$SITE_URL"; then
+if dt-cloud healthcheck -u "$SITE_URL"; then
   echo "✓ healthcheck OK" >&2
 else
   echo "WARN: gcs.oa.dev healthcheck failed" >&2
   python3 - <<'PY' || true
 import json, os, urllib.request
-msg = "⚠️ gcs.oa.dev health check failed (hourly, from sheet-sync). Debug: `gcs-usage healthcheck`."
+msg = "⚠️ gcs.oa.dev health check failed (hourly, from sheet-sync). Debug: `dt-cloud healthcheck`."
 bot, chan, hook = os.environ.get("SLACK_BOT_TOKEN"), os.environ.get("SLACK_CHANNEL"), os.environ.get("SLACK_WEBHOOK")
 def post(url, payload, headers):
     urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(payload).encode(),

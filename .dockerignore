@@ -7,7 +7,7 @@ site/dist
 site/public/data/20*
 wt
 gh
-gcs-usage/.venv
+cloud/.venv
 ui/node_modules
 packages/react/node_modules
-gcs-usage/tmp
+cloud/tmp

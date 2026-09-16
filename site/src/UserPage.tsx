@@ -83,7 +83,7 @@ const prefixToPath = (prefix: string): string => {
 const store = DEFAULT_STORE
 
 // The live Google Sheet mirror of this table (created 2026-08-27; re-seed
-// with: `gcs-usage report -a <actions.json> -o mark-status.csv` then
+// with: `dt-cloud report -a <actions.json> -o mark-status.csv` then
 // `gws drive files update --params '{"fileId":"<id>","uploadType":"multipart"}'
 //   --upload mark-status.csv --upload-content-type text/csv`).
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1k_11LA21g8uqMckPhkKvwrnRENVKF8yHxbW5NnUiRFc/edit'

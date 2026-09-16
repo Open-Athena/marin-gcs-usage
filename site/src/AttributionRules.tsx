@@ -3,7 +3,7 @@ import { userBytes, type TreeNode } from './types'
 
 const GROUP_EMAIL = 'marin-gcs-usage@openathena.ai'
 const DISCORD_URL = 'https://discord.com/channels/1354881461060243556/1412294350645493840'
-const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/gcs-usage/src/gcs_usage/identities.yaml'
+const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/gcs/cloud/src/dt_cloud/identities.yaml'
 
 /** Where owners come from, and where to go with questions. Assignments are the
  *  source of truth; inferred ownership is only the bootstrap for whatever

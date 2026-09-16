@@ -4,7 +4,7 @@
 -- count and blew the Worker CPU budget at 8k-row groups (1102). With the footer
 -- here, row-group count no longer touches cold-start cost, so groups can shrink
 -- freely (specs/path-agnostic-serving.md §2.1). Populated per scan by
--- `gcs-usage index-sync`; old scans are dead weight, prune at leisure.
+-- `dt-cloud index-sync`; old scans are dead weight, prune at leisure.
 
 CREATE TABLE index_schema (
   date       TEXT PRIMARY KEY,          -- snapshot date the index belongs to

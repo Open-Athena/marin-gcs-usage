@@ -182,7 +182,7 @@ export default function TokenModal({ onClose }: { onClose: () => void }) {
             </div>
             <p className="token-muted token-small">Then, in your agent’s environment:</p>
             <pre className="token-recipe">{`export GCS_USAGE_TOKEN=${phase.token}
-echo gs://marin-us-central1/checkpoints/my-run/ | gcs-usage mark`}</pre>
+echo gs://marin-us-central1/checkpoints/my-run/ | dt-cloud mark`}</pre>
             <div className="token-actions">
               <button type="button" onClick={() => void loadStatus()}>Done</button>
             </div>

@@ -21,7 +21,7 @@ remote = true
 # once the request is gone (`wrangler pages deployment tail` is live-only).
 # Global second cache tier for the per-scan-immutable JSON endpoints
 # (`/api/subtree`, `/api/diff`): the Workers Cache API is per data-center, so
-# the daily job's warm-up (`gcs-usage warm-cache`) only reaches everyone
+# the daily job's warm-up (`dt-cloud warm-cache`) only reaches everyone
 # through KV. Created with `wrangler kv namespace create oa-gcs-usage-cache`.
 [[kv_namespaces]]
 binding = "CACHE_KV"

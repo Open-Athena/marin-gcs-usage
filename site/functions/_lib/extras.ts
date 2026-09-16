@@ -7,7 +7,7 @@
  * `P` are contiguous in sorted order) plus, for provenance, the blocks
  * holding P's ancestors. The small indexes are memoized per (scan,
  * generation) per isolate; a scan without sidecars (older generations, until
- * `gcs-usage index-extras` backfills) yields `null` and every consumer keeps
+ * `dt-cloud index-extras` backfills) yields `null` and every consumer keeps
  * today's behaviour.
  */
 import type { Env } from './auth.js'
@@ -16,7 +16,7 @@ import { shared } from './shared.js'
 
 export type Provenance = [source: string, evidence: string | null, prefix: string]
 
-/** A dir whose own name says checkpoint (mirrors `gcs_usage.extras.CKPT_NAME_RE` and the client's `looksCkpt`). */
+/** A dir whose own name says checkpoint (mirrors `dt_cloud.extras.CKPT_NAME_RE` and the client's `looksCkpt`). */
 export const CKPT_NAME_RE = /(^|[-_.])(ckpts?|checkpoints?)([-_.]|$)/i
 
 export interface BlockIndex { v: number; n: number; size: number; keys: string[]; offsets: number[] }

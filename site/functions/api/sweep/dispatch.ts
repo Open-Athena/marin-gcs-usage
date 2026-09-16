@@ -45,8 +45,8 @@ export const onRequestPost = async (ctx: { request: Request; env: Env }): Promis
   const bflags = buckets.map(b => `-b ${b}`).join(' ')
   const script = [
     'set -euo pipefail',
-    `gcs-usage sweep manifest -d "$SWEEP_DATE" -S ${bflags} -o "${plan}"`,
-    `gcs-usage sweep execute ${bflags} ${mode === 'real' ? '--for-real ' : ''}"${plan}"`,
+    `dt-cloud sweep manifest -d "$SWEEP_DATE" -S ${bflags} -o "${plan}"`,
+    `dt-cloud sweep execute ${bflags} ${mode === 'real' ? '--for-real ' : ''}"${plan}"`,
   ].join('\n')
 
   const spec = {

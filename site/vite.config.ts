@@ -4,7 +4,7 @@ import { defineConfig } from 'vite'
 
 const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(',') ?? []
 
-// dev only: serve a locally-generated `tmp/series.json` (from `gcs-usage series
+// dev only: serve a locally-generated `tmp/series.json` (from `dt-cloud series
 // -r http://localhost:3254/data -o tmp/series.json`) at /data/series.json, so
 // the scoped size chart can be previewed before the index is published to the
 // bucket. Registered in the plugin body so it pre-empts the /data proxy; a no-op

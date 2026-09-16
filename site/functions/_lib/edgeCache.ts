@@ -13,7 +13,7 @@
  * authorized viewer.
  *
  * The colo cache is per data-center, so the daily job's warm-up
- * (`gcs-usage warm-cache`, run in us-central1) would reach one colo; KV is
+ * (`dt-cloud warm-cache`, run in us-central1) would reach one colo; KV is
  * global, so a warmed key is a hit for the first viewer anywhere. A KV hit
  * back-fills the colo cache. Values are small JSON (≤ ~350 KB); keys are the
  * SHA-256 of the cache key URL (KV keys are capped at 512 bytes). */

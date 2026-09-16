@@ -8,7 +8,7 @@ Storage-usage attribution and cleanup for the Marin GCS buckets: **who is using
 what**, and a **mark & sweep** workflow to reclaim space. Browse it at
 **[gcs.oa.dev]** (Open-Athena-gated).
 
-The identity map (`gcs-usage/src/gcs_usage/identities.yaml`: handles, teams, login
+The identity map (`cloud/src/dt_cloud/identities.yaml`: handles, teams, login
 aliases) is curated in-repo; it maps already-public GitHub / W&B handles to a
 team bucket (`oa` / `stanford` / `communal`) and carries no emails or private
 contact info.
@@ -19,7 +19,7 @@ Storage across the `marin-*` buckets is reviewed by **marking prefixes to keep**
 — everything left unmarked is **swept (deleted) after the cleanup deadline**.
 Mark from the web UI at [gcs.oa.dev], or non-interactively:
 
-- `gcs-usage mark` / `status` / `todo` — the CLI (bulk-mark, check a prefix's
+- `dt-cloud mark` / `status` / `todo` — the CLI (bulk-mark, check a prefix's
   effective fate, list the undecided backlog).
 - `GET /api/resolve`, `GET /api/todo`, `POST /api/actions` — the HTTP API.
 
@@ -34,23 +34,23 @@ Attribution parquets (`prefix → user/team` rows) come from two builders:
 
 ```bash
 # Path + record signals from the listing itself:
-gcs-usage build -l 'gs://<bucket>/<scan>/objects/*.parquet' -o tmp/attribution.parquet
-gcs-usage build -l <listing> -o <out> -R   # path signals only (no GETs)
+dt-cloud build -l 'gs://<bucket>/<scan>/objects/*.parquet' -o tmp/attribution.parquet
+dt-cloud build -l <listing> -o <out> -R   # path signals only (no GETs)
 
 # W&B signals (the bulk of coverage):
-gcs-usage wandb-mine -e marin-community -o tmp/wandb-runs.parquet   # full API mine (time-bisected; -E/-s/-u for parallel range workers)
-gcs-usage executor-mine -l <listing> -o tmp/executor-infos.parquet  # .executor_info sidecar GETs
-gcs-usage wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <listing> -o tmp/attribution-wandb.parquet
+dt-cloud wandb-mine -e marin-community -o tmp/wandb-runs.parquet   # full API mine (time-bisected; -E/-s/-u for parallel range workers)
+dt-cloud executor-mine -l <listing> -o tmp/executor-infos.parquet  # .executor_info sidecar GETs
+dt-cloud wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <listing> -o tmp/attribution-wandb.parquet
 ```
 
 Reporting and the site consume any number of attribution parquets (`-a`, repeatable):
 
 ```bash
-gcs-usage attr-report -l <listing> -a <attr...>       # per-user/team bytes + coverage; -u <user> prints their prefixes
-gcs-usage report -a <actions.json>                    # per-user mark-status CSV (the "who still needs to mark" nag list)
-gcs-usage gaps -l <listing> -a <attr...> -d 2         # largest unowned prefixes (curation queue)
-gcs-usage webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
-gcs-usage rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
+dt-cloud attr-report -l <listing> -a <attr...>       # per-user/team bytes + coverage; -u <user> prints their prefixes
+dt-cloud report -a <actions.json>                    # per-user mark-status CSV (the "who still needs to mark" nag list)
+dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unowned prefixes (curation queue)
+dt-cloud webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
+dt-cloud rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
 ```
 
 Signals, roughly best-first (deepest-prefix-wins at join time):
@@ -65,7 +65,7 @@ Signals, roughly best-first (deepest-prefix-wins at join time):
 Users/teams are re-resolved against the *current* `identities.yaml` at load
 time, so alias/team curation takes effect without rebuilding parquets. Unknown
 spellings resolve to their own sanitized segment with team `unknown` and are
-listed on stderr — curate them into `identities.yaml` (`gcs-usage rules`
+listed on stderr — curate them into `identities.yaml` (`dt-cloud rules`
 validates it).
 
 Listing-scale runs (34M+ dirs) belong on a work node, not a laptop.
@@ -76,17 +76,17 @@ The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at 
 
 ## Reports
 
-The daily job posts the same digest to Slack `#gcs-usage` and Discord `#gcs-usage` (Marin's server): one thread per month whose OP (month-to-date headline, per-week bullets, a class-mosaic plot) is edited in place, plus one reply per scan under a headline sender with a colour-coded trend-arrow avatar. Mondays add a week-over-week report (totals, sweep deletions, biggest movers with owners). Code: `gcs-usage/src/gcs_usage/digest.py` (`gcs-usage digest [-P discord]`) and `weekly.py` (`gcs-usage weekly`); design notes in `specs/done/slack-digest-shape-c.md`, `specs/done/discord-digest-twin.md`, and `specs/weekly-discord-report.md`. Posting goes through [thrds] (per-message sender + attachments on both platforms).
+The daily job posts the same digest to Slack `#gcs-usage` and Discord `#gcs-usage` (Marin's server): one thread per month whose OP (month-to-date headline, per-week bullets, a class-mosaic plot) is edited in place, plus one reply per scan under a headline sender with a colour-coded trend-arrow avatar. Mondays add a week-over-week report (totals, sweep deletions, biggest movers with owners). Code: `cloud/src/dt_cloud/digest.py` (`dt-cloud digest [-P discord]`) and `weekly.py` (`dt-cloud weekly`); design notes in `specs/done/slack-digest-shape-c.md`, `specs/done/discord-digest-twin.md`, and `specs/weekly-discord-report.md`. Posting goes through [thrds] (per-message sender + attachments on both platforms).
 
 ![August 2026 digest plot: total bytes over the month, and the storage-class mosaic beneath](docs/img/digest-2026-08-redacted.jpg)
 
-*The thread OP's plot for August 2026 (`python -m gcs_usage.digest_plot --redact`): the shape of the month and the class mix, with the sizes left off. The posted version carries the axis values and the running total.*
+*The thread OP's plot for August 2026 (`python -m dt_cloud.digest_plot --redact`): the shape of the month and the class mix, with the sizes left off. The posted version carries the axis values and the running total.*
 
 ## Repo layout
 
 Monorepo — a shared engine plus the Marin-specific app and site:
 
-- **`gcs-usage/`** — the `marin-gcs-usage` package (the `gcs-usage` CLI: attribution
+- **`cloud/`** — the `marin-gcs-usage` package (the `dt-cloud` CLI: attribution
   builders, reporting, the mark & sweep ledger client, access-log ingest).
 - **`src/disk_tree/`** — the [disk-tree] engine (indexing, tree aggregation,
   storage backends) this repo is built on; installed as the root `disk-tree`
@@ -96,10 +96,10 @@ Monorepo — a shared engine plus the Marin-specific app and site:
 
 ## Development
 
-The `gcs-usage` CLI lives in `gcs-usage/`:
+The `dt-cloud` CLI lives in `cloud/`:
 
 ```bash
-cd gcs-usage
+cd cloud
 uv sync
 uv run pytest
 ```
@@ -107,9 +107,9 @@ uv run pytest
 Two marin contracts are deliberately mirrored (not imported) to keep this repo
 standalone; if either changes upstream, update in lockstep:
 
-- `gcs-usage/src/gcs_usage/usernames.py` — `sanitize_username` rules, mirror of
+- `cloud/src/dt_cloud/usernames.py` — `sanitize_username` rules, mirror of
   `rigging.provenance.username_segment`
-- `gcs-usage/src/gcs_usage/records.py` — the `.artifact.json` shape
+- `cloud/src/dt_cloud/records.py` — the `.artifact.json` shape
   (`marin.execution.artifact.ArtifactRecord`), of which only
   `provenance.built_by` is read
 

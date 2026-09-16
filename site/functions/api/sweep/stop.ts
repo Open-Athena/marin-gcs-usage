@@ -1,7 +1,7 @@
 // POST /api/sweep/stop — ask a running sweep job to stop cleanly.
 //
 // Body: { job_id }. Drops `sweep/runs/<job_id>/STOP` in the data bucket; the
-// executor polls that file every 10 s (`gcs-usage sweep stop`): roots already
+// executor polls that file every 10 s (`dt-cloud sweep stop`): roots already
 // listing finish and log, the rest are left for a re-run, the job ends red.
 // Admin-only, like dispatch.
 import { ADMIN_SCOPE, type Env as AuthEnv, json, requireScope } from '../../_lib/auth.js'

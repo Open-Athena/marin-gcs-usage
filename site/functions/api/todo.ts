@@ -2,11 +2,11 @@
  * `GET /api/todo?limit=&min_frac=` — the keep-axis review backlog: the largest
  * prefixes with no keep/sweep decision anywhere in their subtree or ancestry
  * (specs/actions-ledger.md). The single source of truth the UI's To-do view and
- * `gcs-usage todo` both consume.
+ * `dt-cloud todo` both consume.
  *
  *   → { scan, min_bytes, count, items: [{ prefix, bytes, objects }] }
  *
- * `prefix` is the gs:// dir form, ready to hand straight to `gcs-usage mark`.
+ * `prefix` is the gs:// dir form, ready to hand straight to `dt-cloud mark`.
  */
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { type Ctx, type Env, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'

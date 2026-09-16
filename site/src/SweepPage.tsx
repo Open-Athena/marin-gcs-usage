@@ -19,7 +19,7 @@ import { useDocTitle } from './title'
 // /sweep — the sweep console (specs/sweep-executor.md § Phase 2): review the
 // candidate sweep-only bands with their ownership evidence, sign bands off
 // (rows in `sweep_approvals`; admin scope — everyone else sees read-only),
-// and follow executor runs (`deletion_runs`, written by `gcs-usage sweep
+// and follow executor runs (`deletion_runs`, written by `dt-cloud sweep
 // execute`) through to their object-level logs in /files.
 
 interface Candidate {
@@ -466,7 +466,7 @@ export function SweepPage() {
       {latestQ.isError && (
         // Only a 404 means there's no plan; anything else is the backend.
         /: 404$/.test(String(latestQ.error))
-          ? <p className="err">No plan baked yet — run <code>gcs-usage sweep plan -C</code>.</p>
+          ? <p className="err">No plan baked yet — run <code>dt-cloud sweep plan -C</code>.</p>
           : <p className="err">Error loading the latest plan: {String(latestQ.error)}</p>
       )}
       {!candsQ.data && !latestQ.isError && !candsQ.isError && <Skeleton height={420} label="loading plan…" />}

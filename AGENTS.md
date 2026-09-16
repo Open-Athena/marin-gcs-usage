@@ -30,10 +30,10 @@ export GCS_USAGE_URL=https://gcs.oa.dev   # optional; this is the default
 
 ## 2. CLI
 
-Install the `gcs-usage` CLI (Python ≥ 3.12):
+Install the `dt-cloud` CLI (Python ≥ 3.12):
 
 ```bash
-pip install "git+https://github.com/Open-Athena/marin-gcs-usage.git#subdirectory=marin"
+pip install "git+https://github.com/Open-Athena/marin-gcs-usage.git#subdirectory=cloud"
 ```
 
 Prefixes are always `gs://marin-<bucket>/<dir>/…/` — **directory prefixes only**
@@ -42,7 +42,7 @@ Prefixes are always `gs://marin-<bucket>/<dir>/…/` — **directory prefixes on
 ### Check a prefix's status
 
 ```bash
-gcs-usage status gs://marin-us-east5/checkpoints/my-run/
+dt-cloud status gs://marin-us-east5/checkpoints/my-run/
 ```
 
 Prints the **effective** keep-state and owner of that path (marks are inherited
@@ -51,8 +51,8 @@ from ancestors; the most recent mark covering a prefix wins). `-j` for raw JSON.
 ### List what still needs a decision (the "todo" backlog)
 
 ```bash
-gcs-usage todo                 # largest undecided prefixes first
-gcs-usage todo -p | head       # bare prefixes, one per line (pipe into `mark`)
+dt-cloud todo                 # largest undecided prefixes first
+dt-cloud todo -p | head       # bare prefixes, one per line (pipe into `mark`)
 ```
 
 Options: `-n/--limit N`, `-f/--min-frac F` (ignore prefixes below F of total
@@ -62,16 +62,16 @@ bytes), `-j/--json`.
 
 ```bash
 # keep specific prefixes
-gcs-usage mark gs://marin-us-east5/checkpoints/keep-me/ gs://marin-us-central2/data/gold/
+dt-cloud mark gs://marin-us-east5/checkpoints/keep-me/ gs://marin-us-central2/data/gold/
 
 # keep only the newest checkpoint under each run, sweep the older ones
-gcs-usage mark -k keep_last_ckpt gs://marin-us-east5/checkpoints/my-run/
+dt-cloud mark -k keep_last_ckpt gs://marin-us-east5/checkpoints/my-run/
 
 # explicitly sweep (delete) a prefix
-gcs-usage mark -k sweep gs://marin-us-east5/scratch/
+dt-cloud mark -k sweep gs://marin-us-east5/scratch/
 
 # from a file / stdin (one prefix per line) — e.g. straight from `todo`
-gcs-usage todo -p | gcs-usage mark -k keep -f -
+dt-cloud todo -p | dt-cloud mark -k keep -f -
 ```
 
 Keep actions (`-k`): `keep`, `keep_last_ckpt`, `sweep` (or `none` to leave the
@@ -132,7 +132,7 @@ curl -X POST https://gcs.oa.dev/api/actions \
   time before the deadline; nothing is deleted at mark time.
 - **Prefer the CLI** — it batches, validates prefixes client-side, and shares one
   token/URL resolution across `status` / `todo` / `mark`.
-- **Browse first:** `gcs-usage todo` surfaces the biggest undecided prefixes;
+- **Browse first:** `dt-cloud todo` surfaces the biggest undecided prefixes;
   `status` confirms what a mark will actually affect (inheritance can mean a
   parent already decided it).
 
@@ -151,7 +151,7 @@ GitHub handle max); sizes and $ stay behind the site's auth.
   (`functions/` — auth gating, actions ledger, `/api/subtree`, `/api/path-index`,
   `/data/*` GCS proxy, `/v1/files/*` raw-store browser), D1 migrations
   (`migrations/`), `wrangler.toml`.
-- `gcs-usage/` — the `gcs-usage` Python CLI (own `pyproject.toml`/venv): attribution
+- `cloud/` — the `dt-cloud` Python CLI (own `pyproject.toml`/venv): attribution
   (`identities.yaml`, rules, W&B mining), `webdata` aggregation, access-log
   ingest, `mark`/`status`/`todo`, `series`, `report`. Runtime-imports the
   `disk_tree` engine below.
@@ -178,7 +178,7 @@ GitHub handle max); sizes and $ stay behind the site's auth.
   compares deployed vs HEAD.
 - D1 schema: `wrangler d1 migrations apply oa-gcs-usage-auth --remote` (separate
   from deploy; needs `CLOUDFLARE_ACCOUNT_ID` inline).
-- Python: `cd gcs-usage && uv sync && uv run pytest` (viz tests need the root
+- Python: `cd cloud && uv sync && uv run pytest` (viz tests need the root
   `disk_tree` package importable).
 
 ### Data flow

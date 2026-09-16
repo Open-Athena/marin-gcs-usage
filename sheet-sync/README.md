@@ -3,14 +3,14 @@
 Keeps Percy's shared sheet mirroring the site's `/users` "who still needs to
 mark & sweep" rollup, refreshed hourly, with no human re-export. Standalone from
 the heavy daily-snapshot job (`job/`, root `Dockerfile`): this image is just the
-`gcs-usage` CLI, so hourly runs are cheap and cold-start fast.
+`dt-cloud` CLI, so hourly runs are cheap and cold-start fast.
 
 ## Chain (`sync.sh`)
 
-1. `gcs-usage report` → the per-user CSV: the site's `/api/marks/totals` for
+1. `dt-cloud report` → the per-user CSV: the site's `/api/marks/totals` for
    the latest scan (the ledger folded against the index, claims applied), with
    the read-only `gcs` grant token (`GCS_USAGE_TOKEN`, from Secret Manager).
-2. `gcs-usage sheet-push -w <tab> -D <footer>` → full-replaces one **named** tab
+2. `dt-cloud sheet-push -w <tab> -D <footer>` → full-replaces one **named** tab
    in place (values-only clear preserves header styling + freeze), stamping an
    "AUTO — regenerated hourly" disclaimer two rows below the table.
 

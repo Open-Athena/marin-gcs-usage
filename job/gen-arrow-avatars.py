@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["pillow>=10"]
 # ///
-"""Per-reply trend-arrow avatars for the Slack monthly digest (`gcs-usage
+"""Per-reply trend-arrow avatars for the Slack monthly digest (`dt-cloud
 digest`). Each `av_deg{N}.png` is a solid red(grow)/green(shrink)/grey(flat)
 square with a centered, chunky white arrow whose angle (and the bg colour
 intensity) encode magnitude. Used as the per-message `icon_url` — legible at

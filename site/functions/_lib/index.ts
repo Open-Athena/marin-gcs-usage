@@ -123,7 +123,7 @@ export function makeStore(env: Env) {
 /** Index variant → parquet key under the generation dir D1 points at
  * (`index_schema.dir`, e.g. `listing/<date>/index/<gen>`). Variants are
  * `<tier>[-<sort>]`: tier `''` (floor-free) or `coarse<E>`; sort `path`
- * (default) or `user`. Mirrors `INDEX_VARIANTS` in the gcs-usage CLI
+ * (default) or `user`. Mirrors `INDEX_VARIANTS` in the dt-cloud CLI
  * (specs/view-serving.md §1). */
 export function indexKey(dir: string, variant: string): string {
   const m = /^(?:(coarse\d+)(?:-(user))?|(path|user))$/.exec(variant)

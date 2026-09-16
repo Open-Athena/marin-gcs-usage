@@ -161,7 +161,7 @@ export const TABLES: TableSpec[] = [
   {
     name: 'deletion_runs',
     pk: 'run_id',
-    desc: 'Executed sweeps (dry + real): plan, actor, totals, expected-vs-actual counters, undo window, log dir. Written by `gcs-usage sweep execute`.',
+    desc: 'Executed sweeps (dry + real): plan, actor, totals, expected-vs-actual counters, undo window, log dir. Written by `dt-cloud sweep execute`.',
     columns: [
       { name: 'run_id', type: 'text' },
       { name: 'plan', type: 'text' },

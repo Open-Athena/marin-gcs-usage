@@ -63,7 +63,7 @@ export function collectRows(
 /**
  * The keep-axis "to-do": the largest prefixes with no keep/sweep decision
  * anywhere in their subtree or ancestry (mirrors `functions/_lib/todo.ts`, so
- * the tab and `gcs-usage todo` agree). A keep decision inherits down, so a node
+ * the tab and `dt-cloud todo` agree). A keep decision inherits down, so a node
  * is a to-do item only when it's fully untouched; marking part of it drops it
  * and surfaces its still-clean siblings. Biggest first.
  */

@@ -68,7 +68,7 @@ PY
 }
 fail_alert() {
   local rc=$1 line=$2 cmd=$3
-  local msg="❌ \`gcs-usage\` snapshot job failed ($DATE): \`${cmd}\` exited $rc at run.sh:$line"
+  local msg="❌ \`dt-cloud\` snapshot job failed ($DATE): \`${cmd}\` exited $rc at run.sh:$line"
   [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
   slack_post "$msg"
 }
@@ -92,7 +92,7 @@ cd /app
 export DUCKDB_MEM_ACCESS=${DUCKDB_MEM_ACCESS:-48GB}
 # ACCESS_ONLY (backlog backfill): serial ingest, then exit — no snapshot.
 if [ "${ACCESS_ONLY:-0}" = "1" ]; then
-  gcs-usage access ingest ${ACCESS_ARGS:-} || exit 1
+  dt-cloud access ingest ${ACCESS_ARGS:-} || exit 1
   echo "ACCESS-JOB-DONE"
   exit 0
 fi
@@ -110,7 +110,7 @@ if [ "${TIERS_ONLY:-0}" = "1" ]; then
   # run's own generation dir, and only they are synced under it: the
   # floor-free variants keep their existing pointer.
   { set +x; } 2>/dev/null
-  srckey=$(gcs-usage index-dir "$DATE" || true)
+  srckey=$(dt-cloud index-dir "$DATE" || true)
   sync_ff=0
   if [ -z "$srckey" ]; then srckey="listing/$DATE"; sync_ff=1; fi  # pre-generation layout, never synced
   set -x
@@ -120,7 +120,7 @@ if [ "${TIERS_ONLY:-0}" = "1" ]; then
   work="${STAGE_DIR:-/tmp}/tiers/$DATE"
   mkdir -p "$work"
   cp "$src" "$work/path-index.parquet"
-  gcs-usage index-tiers -m "${DUCKDB_MEM:-40GB}" -t "${DUCKDB_THREADS:-8}" -P "$work/path-index.parquet" "$DATE"
+  dt-cloud index-tiers -m "${DUCKDB_MEM:-40GB}" -t "${DUCKDB_THREADS:-8}" -P "$work/path-index.parquet" "$DATE"
   mkdir -p "/gcs/$DATA/$INDEX_DIR"
   cp "$work"/path-index-coarse*.parquet "/gcs/$DATA/$INDEX_DIR/"
   { set +x; } 2>/dev/null
@@ -129,10 +129,10 @@ if [ "${TIERS_ONLY:-0}" = "1" ]; then
     # all (the scan picker lists only scans D1 knows): sync its floor-free
     # variants from where they are, then the fresh coarse tiers.
     if [ "$sync_ff" = "1" ]; then
-      gcs-usage index-sync -F -d "$srcdir" -g legacy -k "$srckey" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
+      dt-cloud index-sync -F -d "$srcdir" -g legacy -k "$srckey" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
     fi
-    gcs-usage index-sync -C -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
-    gcs-usage index-gc "$DATE" || echo "WARN: index-gc failed" >&2
+    dt-cloud index-sync -C -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
+    dt-cloud index-gc "$DATE" || echo "WARN: index-gc failed" >&2
   else
     echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced" >&2
   fi
@@ -156,11 +156,11 @@ if [ -n "${SWEEP:-}" ]; then
   bflags=()
   for b in ${SWEEP_BUCKETS:-}; do bflags+=(-b "$b"); done
   { set +x; } 2>/dev/null
-  gcs-usage sweep manifest -d "$sd" -S "${bflags[@]}" -o "$plan"
+  dt-cloud sweep manifest -d "$sd" -S "${bflags[@]}" -o "$plan"
   if [ "$SWEEP" = real ]; then
-    gcs-usage sweep execute "${bflags[@]}" --for-real "$plan"
+    dt-cloud sweep execute "${bflags[@]}" --for-real "$plan"
   else
-    gcs-usage sweep execute "${bflags[@]}" "$plan"
+    dt-cloud sweep execute "${bflags[@]}" "$plan"
   fi
   echo "SWEEP-JOB-DONE $SWEEP $plan"
   exit 0
@@ -171,7 +171,7 @@ fi
 # unset so intentional re-runs always proceed. A NOP retry still ingests access
 # logs (keeps read-recency ~6h fresh) — serially, since no listing follows it.
 if [ "${NOP_IF_PUBLISHED:-0}" = "1" ] && [ -f "/gcs/$DATA/$SNAP_PATH/meta.json" ]; then
-  [ "${SKIP_ACCESS:-0}" = "1" ] || gcs-usage access ingest ${ACCESS_ARGS:-} \
+  [ "${SKIP_ACCESS:-0}" = "1" ] || dt-cloud access ingest ${ACCESS_ARGS:-} \
     || echo "WARN: access ingest failed (watermark self-heals next run)" >&2
   echo "SNAPSHOT-JOB-NOP $DATE (already published)"
   exit 0
@@ -185,7 +185,7 @@ fi
 # caught at the barrier and the watermark self-heals next run.
 ACCESS_PID=""
 if [ "${SKIP_ACCESS:-0}" != "1" ] && [ "${REPROC:-0}" != "1" ]; then
-  gcs-usage access ingest ${ACCESS_ARGS:-} & ACCESS_PID=$!
+  dt-cloud access ingest ${ACCESS_ARGS:-} & ACCESS_PID=$!
 fi
 SECONDS=0   # phase-timing baseline (see PHASE markers below)
 
@@ -209,7 +209,7 @@ if [ "${REPROC:-0}" != "1" ]; then
   [ -n "${LISTING_MACHINE:-}" ] && LZ+=(-m "$LISTING_MACHINE")
   [ -n "${LISTING_PROCS:-}" ] && LZ+=(-P "$LISTING_PROCS")
   [ -n "${LISTING_WORKERS:-}" ] && LZ+=(-w "$LISTING_WORKERS")
-  gcs-usage job submit-listing -d "$DATE" -W "${LZ[@]}"
+  dt-cloud job submit-listing -d "$DATE" -W "${LZ[@]}"
 fi
 echo "PHASE listing-fanout: ${SECONDS}s (wall)" >&2
 
@@ -238,7 +238,7 @@ compgen -G "$XG" > /dev/null && HAVE_ACCESS=1
 if [ -n "${STAGE_DIR:-}" ]; then
   SG=("${G[@]}" "${AG[@]}")
   [ "$HAVE_ACCESS" = "1" ] && SG+=("$XG")
-  gcs-usage stage -o "$STAGE_DIR" "${SG[@]}"
+  dt-cloud stage -o "$STAGE_DIR" "${SG[@]}"
   export DUCKDB_TMP=${DUCKDB_TMP:-$STAGE_DIR/.duckdb-tmp}
   mkdir -p "$DUCKDB_TMP"
 fi
@@ -259,8 +259,8 @@ if [ "${GATE:-0}" = "1" ]; then
   GD="${STAGE_DIR:-/tmp}/gate"
   mkdir -p "$GD/labels" "$GD/tiers" "$GD/l2" "$GD/db" "$GD/root"
   export DISK_TREE_ROOT="$GD/root"
-  gcs-usage labels "${L[@]}" "${A[@]}" -o "$GD/labels"
-  srckey=$(gcs-usage index-dir "$DATE") || { echo "ERROR: no synced path index for $DATE to compare against" >&2; exit 1; }
+  dt-cloud labels "${L[@]}" "${A[@]}" -o "$GD/labels"
+  srckey=$(dt-cloud index-dir "$DATE") || { echo "ERROR: no synced path index for $DATE to compare against" >&2; exit 1; }
   for b in "${FLEET[@]}"; do
     echo "GATE $b: import (k=${GATE_K:-2}, P=${GATE_P:-4000000}, n=${GATE_THREADS:-8}, mem=${DUCKDB_MEM:-100GB})" >&2
     /usr/bin/time -v disk-tree import -e duckdb -l "$(loc "/gcs/$DATA/listing/$DATE/$b/*.parquet")" -b "$b" -s gcs \
@@ -268,7 +268,7 @@ if [ "${GATE:-0}" = "1" ]; then
       -i dirs -O "$GD/tiers" -r 8192 -S usr -M "${DUCKDB_MEM:-100GB}" -T "${DUCKDB_TMP:-/tmp}" \
       -t "${DATE}T00:00:00Z" -o "$GD/l2" > "$GD/import-$b.log" 2>&1 || echo "GATE $b: import FAILED (see import-$b.log)" >&2
     grep -E "partition depth|Elapsed|Maximum resident" "$GD/import-$b.log" >&2 || true
-    gcs-usage cascade-a2a -b "$b" -i "/gcs/$DATA/$srckey/path-index.parquet" "$GD/tiers/gcs-$b.dirs.parquet" > "$GD/a2a-$b.txt" 2>&1 \
+    dt-cloud cascade-a2a -b "$b" -i "/gcs/$DATA/$srckey/path-index.parquet" "$GD/tiers/gcs-$b.dirs.parquet" > "$GD/a2a-$b.txt" 2>&1 \
       && echo "GATE $b: a2a exact" >&2 || echo "GATE $b: a2a DIFFERENT (see a2a-$b.txt)" >&2
     rm -rf "$GD/db"/* "$GD/l2"/*
   done
@@ -282,10 +282,10 @@ fi
 # first aggregation of a date and reused by any re-attribution run (REPROC,
 # ledger refreshes) — those then skip the 595M-row object scans entirely.
 # Colocated with the listing (immutable per date, same lifecycle).
-gcs-usage webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
+dt-cloud webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
   -c "/gcs/$DATA/listing/$DATE/dir-cache" \
   -P "/gcs/$DATA/$INDEX_PATH"
-gcs-usage rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
+dt-cloud rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 echo "PHASE webdata+stage: ${SECONDS}s (wall)" >&2
 
 # 3. publish to the canonical store — the live site reads these directly
@@ -309,7 +309,7 @@ echo "PHASE publish: ${SECONDS}s (wall)" >&2
 # even the `[ -n "$CLOUDFLARE_API_TOKEN" ]` test echoes the token under `set -x`.
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  gcs-usage index-sync -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" \
+  dt-cloud index-sync -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" \
     || echo "WARN: index-sync failed (the site keeps serving the previous generation)" >&2
 else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (scan stays unlisted)" >&2
@@ -317,7 +317,7 @@ fi
 set -x
 
 # Serving invariant: the snapshot published + the footer synced — but is the
-# SITE actually serving this scan? `gcs-usage healthcheck` asserts
+# SITE actually serving this scan? `dt-cloud healthcheck` asserts
 # /api/marks/totals is 200 on the D1-index path (not the footer-parse fallback
 # that 1102'd on 2026-08-31 → /users blank), plus subtree + the data JSONs.
 # Non-fatal — the snapshot data is fine, only serving would be degraded — but
@@ -326,34 +326,34 @@ set -x
 # REPROC (no fresh publish to verify). The token rides in env, never the
 # cmdline, so xtrace is safe here.
 if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
-  if gcs-usage healthcheck -d "$DATE"; then
+  if dt-cloud healthcheck -d "$DATE"; then
     echo "healthcheck OK — $DATE is servable" >&2
   else
     echo "WARN: post-snapshot healthcheck failed for $DATE" >&2
-    slack_post "⚠️ \`gcs-usage\` $DATE published but the live site health check failed — data is fine, serving may be degraded (e.g. missing D1 index footer → /users blank). Debug: \`gcs-usage healthcheck -d $DATE\`."
+    slack_post "⚠️ \`dt-cloud\` $DATE published but the live site health check failed — data is fine, serving may be degraded (e.g. missing D1 index footer → /users blank). Debug: \`dt-cloud healthcheck -d $DATE\`."
   fi
 fi
 
 # Warm the site's subtree + diff caches for this scan (colo cache + global
 # KV) so the first viewer of the day gets hits instead of a multi-second
 # compute — the home page's default requests at the common canvas widths
-# (`gcs-usage warm-cache`). Same token, same gating; never fatal.
+# (`dt-cloud warm-cache`). Same token, same gating; never fatal.
 if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
-  gcs-usage warm-cache -d "$DATE" -r "gs://$DATA/snapshots" \
+  dt-cloud warm-cache -d "$DATE" -r "gs://$DATA/snapshots" \
     || echo "WARN: cache warm-up failed for $DATE" >&2
 fi
 
 # Converge the monthly Shape-C digest thread in Slack (specs/done/slack-digest-
 # shape-c.md): the OP + one reply per scan. Only when SLACK_BOT_TOKEN +
 # SLACK_CHANNEL are set — Shape C needs the Web API's per-message sender/avatar
-# overrides, so the webhook fallback can't drive it. `gcs-usage digest` also
+# overrides, so the webhook fallback can't drive it. `dt-cloud digest` also
 # renders the mosaic plot into job/icons/ and `wrangler pages deploy`s it to the
 # gcs-usage-icons Pages project, so it needs CLOUDFLARE_* + node/wrangler (both
 # present in this image). A failed digest never fails the snapshot.
 if [ "${REPROC:-0}" = "1" ]; then
   echo "REPROC — skipping usage digest" >&2
 elif [ -n "${SLACK_BOT_TOKEN:+set}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then  # `:+set`: xtrace must not print the token
-  gcs-usage digest -r "gs://$DATA/snapshots" \
+  dt-cloud digest -r "gs://$DATA/snapshots" \
     || echo "WARN: usage-digest step failed" >&2
 else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
@@ -366,7 +366,7 @@ fi
 if [ "${REPROC:-0}" = "1" ]; then
   echo "REPROC — skipping Discord digest" >&2
 elif [ -n "${DISCORD_GCS_USAGE_WEBHOOK:+set}" ] && [ -n "${DISCORD_BOT_TOKEN:+set}" ]; then  # `:+set`: xtrace must not print secrets
-  gcs-usage digest -P discord -r "gs://$DATA/snapshots" \
+  dt-cloud digest -P discord -r "gs://$DATA/snapshots" \
     || echo "WARN: Discord digest step failed" >&2
 else
   echo "no Discord transport (DISCORD_GCS_USAGE_WEBHOOK+DISCORD_BOT_TOKEN) — skipping Discord digest" >&2
@@ -383,7 +383,7 @@ if [ "${REPROC:-0}" = "1" ]; then
 elif [ -z "${DISCORD_GCS_USAGE_WEBHOOK:+set}" ]; then  # `:+set`: xtrace must not print the webhook
   echo "no DISCORD_GCS_USAGE_WEBHOOK — skipping weekly report" >&2
 elif [ "${WEEKLY:-0}" = "1" ] || [ "$(date -u +%u)" = 1 ]; then
-  gcs-usage weekly -d "$DATE" -r "gs://$DATA/snapshots" \
+  dt-cloud weekly -d "$DATE" -r "gs://$DATA/snapshots" \
     || echo "WARN: weekly-report step failed" >&2
 else
   echo "not Monday — skipping weekly report (WEEKLY=1 forces)" >&2
@@ -399,7 +399,7 @@ fi
 # scans read a group manifest blob instead.
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  gcs-usage index-gc -r "${INDEX_RETAIN:-120}" "$DATE" || echo "WARN: index-gc failed" >&2
+  dt-cloud index-gc -r "${INDEX_RETAIN:-120}" "$DATE" || echo "WARN: index-gc failed" >&2
 fi
 set -x
 

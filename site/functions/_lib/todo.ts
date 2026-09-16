@@ -22,7 +22,7 @@ export interface Node {
 }
 
 export interface TodoItem {
-  prefix: string // gs://marin-<bucket>/<dir>/ — ready to hand to `gcs-usage mark`
+  prefix: string // gs://marin-<bucket>/<dir>/ — ready to hand to `dt-cloud mark`
   bytes: number
   objects: number
 }
