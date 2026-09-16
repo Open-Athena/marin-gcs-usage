@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { dateColor, dateGradientCss, userColor } from './colors'
+import { dateColor, dateGradientCss, epochDaysToDate, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
 import { MODE_LABELS } from './types'
@@ -7,8 +7,13 @@ import { useUnits } from './units'
 
 const SLOTS = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8']
 
-/** Color axes the chart can stratify by — every mode with a per-row value. */
-export const AGE_MODES: ColorMode[] = ['date', 'user', 'tree']
+/** Color axes the chart can stratify by — every mode with a per-row value.
+ *  Marks are absent on purpose: age.json strata predate the ledger. */
+export const AGE_MODES: ColorMode[] = ['date', 'read', 'user', 'tree']
+
+// Read-mode key for "no read observed in the logging window"; sorts first so
+// the never-read slab is the base of every stack (the sweep-interesting part).
+const NEVER = -1
 
 const dateBarColor = (i: number, n: number): string => dateColor(n > 1 ? i / (n - 1) : 1)
 
@@ -27,8 +32,10 @@ const bucketOf = (d: number, gran: Granularity): number => {
 const bucketLabel = (b: number, gran: Granularity): string =>
   gran === 'month' ? isoMonth(b) : iso(b)
 
-/** Stacked bars of bytes by created date (month/week/day), split per color mode. */
-export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, userIdx }: {
+/** Stacked bars of bytes by created date (month/week/day), split per color mode.
+ *  `readRange` null means the read axis is unavailable for this scan (no access
+ *  window, or age strata published before they carried `a`). */
+export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, userIdx, readRange }: {
   rows: AgeRow[]
   catOrder: string[]
   /** Axes to offer (caller drops the ones this scan can't color by — never a dead button). */
@@ -36,6 +43,7 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
   mode: ColorMode
   onMode?: (m: ColorMode) => void
   userIdx: Map<string, UserIndexEntry>
+  readRange?: { min: number; max: number } | null
 }) {
   const { fmtBytes } = useUnits()
   // Default to the finest granularity that still fits on screen: the most
@@ -51,11 +59,12 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
   })
   const [hover, setHover] = useState<{ b: number; x: number; y: number } | null>(null)
 
-  const { buckets, byBucket, colorOf, legend } = useMemo(() => {
+  const { buckets, byBucket, colorOf, labelOf, segOrder, legend } = useMemo(() => {
     const slotMap = new Map(catOrder.slice(0, 8).map((k, i) => [k, SLOTS[i]]))
     const userMode = mode === 'user'
     const keyOf = (r: AgeRow) =>
-      userMode ? (r.u ?? 'unattributed')
+      mode === 'read' ? String(r.a ?? NEVER)
+      : userMode ? (r.u ?? 'unattributed')
       : slotMap.has(r.d1) ? r.d1 : '(other)'
     const byBucket = new Map<number, Map<string, number>>()
     for (const r of rows) {
@@ -67,21 +76,33 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
       byBucket.set(bk, m)
     }
     const buckets = [...byBucket.keys()].sort((a, b) => a - b)
+    const rr = readRange && readRange.max > readRange.min ? readRange : null
     const colorOf = (k: string): string =>
-      userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx))
+      mode === 'read'
+        ? (k === String(NEVER) || !rr ? 'var(--never-read)' : dateColor((Number(k) - rr.min) / (rr.max - rr.min)))
+      : userMode ? (k === 'unattributed' ? 'var(--t-unattr)' : userColor(k, userIdx))
       : `var(${slotMap.get(k) ?? '--other'})`
+    const labelOf = (k: string): string =>
+      mode === 'read' ? (k === String(NEVER) ? 'never read' : `read ${epochDaysToDate(Number(k))}`)
+      : k === 'unattributed' ? 'unowned' // internal key; display name is standardized
+      : k
+    // Stack order: categorical modes put the biggest slice at the base; the
+    // read axis stacks by time instead (never-read base, then older → newer
+    // reads), so the un-touched share of each vintage is one contiguous slab.
+    const segOrder = (a: [string, number], b: [string, number]): number =>
+      mode === 'read' ? Number(a[0]) - Number(b[0]) : b[1] - a[1]
     const legend: [string, string][] =
       userMode
         ? [
             ...[...userIdx.keys()].slice(0, 10).map((u): [string, string] => [u, userColor(u, userIdx)]),
-            ['unattributed', 'var(--t-unattr)'],
+            ['unowned', 'var(--t-unattr)'],
           ]
         : [
             ...catOrder.slice(0, 8).map((k, i): [string, string] => [k, `var(${SLOTS[i]})`]),
             ['(other)', 'var(--other)'],
           ]
-    return { buckets, byBucket, colorOf, legend }
-  }, [rows, catOrder, mode, userIdx, gran])
+    return { buckets, byBucket, colorOf, labelOf, segOrder, legend }
+  }, [rows, catOrder, mode, userIdx, gran, readRange])
 
   const maxB = useMemo(
     () => Math.max(...buckets.map(b => [...byBucket.get(b)!.values()].reduce((a, v) => a + v, 0))),
@@ -105,6 +126,17 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
             <span className="gradbar" style={{ background: dateGradientCss() }} />
             newer
           </span>
+        ) : mode === 'read' ? (
+          <>
+            <span className="li"><span className="sw" style={{ background: 'var(--never-read)' }} />never read*</span>
+            {readRange && (
+              <span className="li gradli">
+                {epochDaysToDate(readRange.min)}
+                <span className="gradbar" style={{ background: dateGradientCss() }} />
+                {epochDaysToDate(readRange.max)}
+              </span>
+            )}
+          </>
         ) : (
           legend.map(([k, v]) => (
             <span className="li" key={k}>
@@ -137,7 +169,7 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
         {buckets.map((bk, i) => {
           const parts = byBucket.get(bk)!
           let y = H
-          const segs = [...parts.entries()].sort((a, b) => b[1] - a[1]).map(([k, b]) => {
+          const segs = [...parts.entries()].sort(segOrder).map(([k, b]) => {
             const h = (b / maxB) * H
             y -= h
             return <rect key={k} x={i * bw + gap} y={y} width={Math.max(bw - 2 * gap, 0.8)} height={Math.max(h - gap, 0)} fill={mode === 'date' ? dateBarColor(i, buckets.length) : colorOf(k)} rx={bw > 4 ? 1.5 : 0} />
@@ -165,9 +197,9 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
           </div>
           <div className="nums">
             {[...(byBucket.get(hover.b) ?? new Map<string, number>())]
-              .sort((a, b) => b[1] - a[1])
+              .sort(mode === 'read' ? (a, b) => b[1] - a[1] : segOrder)
               .slice(0, 5)
-              .map(([k, b]) => `${k} ${fmtBytes(b)}`)
+              .map(([k, b]) => `${labelOf(k)} ${fmtBytes(b)}`)
               .join(' · ')}
           </div>
         </div>

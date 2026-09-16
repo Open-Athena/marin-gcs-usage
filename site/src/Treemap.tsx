@@ -1,29 +1,76 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Treemap as DtTreemap } from '@disk-tree/react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { stringParam, useUrlState } from 'use-prms'
+import { DustHatch, Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle, OutlineGroups } from '@disk-tree/react'
-import { ACTION_COLORS, ACTION_LABELS, type MarkAction, type MarkIndex } from './planMarks'
-import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
+import { Avatar } from './Avatar'
+import { CopyName } from './CopyName'
+import { canonId, UserChip, ghHandle, shortName } from './UserChip'
+import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
-import { CopyName, copyText } from './CopyName'
+import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
+import type { Mark, MarkAction, MarkIndex } from './marks'
+import { klcStateAt, klcKeptWithin, subtreeStateTotals, unattrLens } from './sweep'
+import type { MarkState, KlcIndex } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
-import { UserChip } from './UserChip'
-import { TilingToggle, useTiling } from './tiling'
+import { SettingsMenu, useRenderer, useTiling } from './prefs'
 import { useUnits } from './units'
 
+const OUTLINE_LABELS: Record<MarkAction, string> = { keep: 'keep', keep_last_ckpt: 'last ckpt', sweep: 'sweep' }
+const OUTLINE_TIP =
+  'Keep/sweep marks draw as outlines: a colored frame traces a region whose decision differs from the directory around it (amber = keep last checkpoint only). Nested frames are flips inside flips. Hover a cell for who set it; switch color to “marks” to see states as fills.'
+
+// Legend rows inline only the metrics toggled on (swatch + name always show).
+// URL param `?li=` — a subset of "spc" (size / percent / cost); absent = "s"
+// (just sizes: all three at once made the bar unreadable).
+type LiMetric = 's' | 'p' | 'c'
+const LI_METRIC_CHIPS: [LiMetric, string, string][] = [
+  ['s', 'size', 'Show each legend row’s bytes'],
+  ['p', '%', 'Show each legend row’s share of the current view'],
+  ['c', '$', 'Show each legend row’s estimated storage cost ($/mo, list price)'],
+]
+
+/** The `gs://…` path shown at the top of a pinned tooltip, with a copy-to-
+ * clipboard button (eject the prefix to the CLI) and an "open ↗" that drills the
+ * map to / focuses this prefix (also a shareable `?path=` URL). Its own component
+ * so the copy state has somewhere to live (renderTooltip is a plain function). */
+function PathBar({ uri, onOpen }: { uri: string; onOpen?: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const slash = uri.lastIndexOf('/') + 1
+  return (
+    <div className="path">
+      <span className="dirname">{uri.slice(0, slash)}</span>
+      <span className="basename">{uri.slice(slash)}</span>
+      <span className="path-acts" onClick={e => e.stopPropagation()}>
+        <button
+          type="button" className="path-copy" title="Copy path to clipboard"
+          onClick={() => navigator.clipboard?.writeText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
+        >{copied ? 'copied ✓' : 'copy'}</button>
+        {onOpen && <button type="button" className="path-open" title="Focus this prefix (drill in / shareable ?path= link)" onClick={onOpen}>open ↗</button>}
+      </span>
+    </div>
+  )
+}
+
+// A top-level prefix holding more than this share of the store is split one
+// level deeper for colouring (see catSlot).
 // Tree-mode colouring is relative to the *drilled* root: its direct children
 // (L1) take the distinct category hues, ranked by size — the macro axis — and
 // each L1's own children (L2) fan across shades of that hue — the micro axis;
 // deeper cells inherit their L2 ancestor's shade. Drilling re-keys both, so
 // whatever you're looking at gets the full palette.
-const MAX_SLOTS = 8
+const MAX_SLOTS = 8 // legend entries; the map colours every child (slotHsl)
 
-// Legend names in one directory often share a long run-name prefix
-// (`open-athena_snowball-67b-a2b-base-262k-…` × 5) that carries no information
-// *within* the legend and, on a phone, is the whole first fold. Cluster names
-// whose token-aligned common prefix is long enough, render the prefix once, and
-// give the swatches to the parts that differ. Rank order is kept.
+/**
+ * Legend names in one directory tend to share a long run-name prefix
+ * (`exp5611_sft_qwen3_1_7b_swe_zero_…` × 4) that carries no information
+ * *within* the legend and, on a phone, is the whole first fold. Cluster names
+ * whose token-aligned common prefix is long enough, render the prefix once,
+ * and give the swatches to the parts that differ. Rank order is kept: a
+ * cluster sits where its first member would.
+ */
 const MIN_PFX = 12
 function tokenPrefix(a: string, b: string): string {
   let i = 0
@@ -50,6 +97,16 @@ export function legendGroups(names: string[]): { prefix: string; names: string[]
   return out
 }
 
+/** Nesting levels of tiles a subtree renders as (see `viewLevels`). */
+function tileLevels(node: TreeNode): number {
+  const kids = node.c ?? []
+  if (kids.length === 0) return 0
+  const real = kids.filter(c => !c.n.startsWith('('))
+  if (real.length === 1 && kids.length === 1) return tileLevels(real[0])
+  let deepest = 0
+  for (const k of kids) if (!k.n.startsWith('(')) deepest = Math.max(deepest, tileLevels(k))
+  return 1 + deepest
+}
 const rankCache = new WeakMap<TreeNode, Map<string, [number, number]>>()
 /** name → [rank, count] over a node's real (non-fold) children, largest first. */
 function childRanks(node: TreeNode): Map<string, [number, number]> {
@@ -62,128 +119,114 @@ function childRanks(node: TreeNode): Map<string, [number, number]> {
   return m
 }
 
-/** The `s3://…` path shown at the top of a pinned tooltip, with a copy-to-
- * clipboard button (eject the prefix to the CLI). Its own component so the copy
- * state has somewhere to live (renderTooltip is a plain function). */
-function PathBar({ uri }: { uri: string }) {
-  const [copied, setCopied] = useState(false)
-  const slash = uri.lastIndexOf('/') + 1
-  return (
-    <div className="path">
-      <span className="dirname">{uri.slice(0, slash)}</span>
-      <span className="basename">{uri.slice(slash)}</span>
-      <span className="path-acts" onClick={e => e.stopPropagation()}>
-        <button
-          type="button" className="path-copy" title="Copy path to clipboard"
-          onClick={() => copyText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
-        >{copied ? 'copied ✓' : 'copy'}</button>
-      </span>
-    </div>
-  )
-}
+// Micro-hue for the user axis: a cell's owner sets the hue (macro), and its
+// storage-class mix nudges the shade (micro) — colder classes (Nearline /
+// Coldline / Archive) pull the owner's color toward black, up to ~35% at 100%
+// cold. Same hue family, so the legend swatch still identifies the person;
+// within one person's band, darker just means colder. `color-mix` keeps this a
+// string op that works for any color the palette hands back (hex, hsl, var()).
+const coldShade = (color: string, cold: number): string =>
+  cold > 0.01 ? `color-mix(in srgb, ${color} ${Math.round(100 - 35 * Math.min(1, cold))}%, black)` : color
 
 export interface DateRange { min: number; max: number }
 
+/** The secondary color axis ("shade by"): a perturbation *within* each cell's
+ * primary color. `none` = the primary color as-is; `class` = darker for a
+ * larger share of cold storage classes (`coldShade`). Opt-in — the primary
+ * axis reads the same as before unless a shade is picked. */
+export type ShadeMode = 'none' | 'class'
+
 export interface Highlight {
   user?: string
+  /** The unclaimed pool (bytes no person owns). */
+  unclaimed?: boolean
 }
 
 // Domain wrapper over @disk-tree/react's generic <Treemap>: all layout,
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 's3://', redact, initialPath, path, onPathChange, marks }: {
-  // Start drilled here (the lone bucket) — crumbs keep the ancestry.
-  initialPath?: TreeNode[]
-  // Controlled drill path (App owns it, in `?path=`): every drill/crumb/
-  // Backspace gesture reports through `onPathChange`, so the children table
-  // below the map can mirror the same node and a table row can drill the map.
-  // Mutually exclusive with `initialPath`.
-  path?: TreeNode[]
-  onPathChange?: (p: TreeNode[]) => void
+// Scale a user's fleet-wide class-byte mix down to `b` bytes, so the rollup
+// tooltip's table totals the $ figure it explains (rate × this view's bytes)
+// rather than showing their whole-fleet Ti/$ next to a small slice.
+const scaleMix = (mix: Record<string, number>, b: number): Record<string, number> => {
+  const tot = Object.values(mix).reduce((s, x) => s + x, 0)
+  return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
+}
+
+export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, klcIdx, viewMarkAxes, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
+  /** Secondary color axis — see `ShadeMode`. Default `none`. */
+  shade?: ShadeMode
   userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
+  // Access-log observation window (epoch days) — domain of the read lens.
+  readRange?: DateRange | null
+  /** Exact keep / sweep totals for the CURRENT view (`/api/marks/totals`,
+   *  estate at the root or the drilled subtree via `?path=`). Used at any
+   *  depth; the client walk is the instant fallback while it loads (shown ≈). */
+  viewMarkAxes?: Record<MarkState, number> | null
   hl?: Highlight | null
+  /** Legend-row interactions (plotly-style): hover a row = solo it (others
+   *  fade, map dims to it), click = pin (sticky `hl`; click again, any empty
+   *  spot, or `x` clears). Absent → rows are inert. */
+  onPickUser?: (u: string) => void
+  onPickUnclaimed?: () => void
+  onClearHl?: () => void
   pricing?: Pricing | null
   lens?: boolean
+  /** The view is filtered to one owner (`?o=<user>`): nodes carry that
+   * person's slice alone, so the mark panel's inferred owner shows no share. */
+  ownerLensed?: boolean
   // URI scheme for cell paths — `gs://` for GCS, `s3://` for CoreWeave.
   scheme?: string
   // OG-image mode: hide every text detail (cell labels, crumb/rollup bars, hint)
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
-  // Mark axis (specs/cw-sweep.md): when present, marked prefixes get union
-  // outlines on the map (keep/klc/sweep) + a legend key.
-  marks?: MarkIndex
+  // Mark & sweep mode (/mark): overlay keep/delete badges and marking controls.
+  markIdx?: MarkIndex | null
+  // keep_last_ckpt → concrete keep/sweep decomposition (sweep.ts `klcSplits`).
+  klcIdx?: KlcIndex | null
+  // Start drilled here (e.g. CW's lone bucket) — crumbs keep the ancestry.
+  initialPath?: TreeNode[]
+  // Controlled drill path + change reporting (upstream contract) — lets the
+  // app keep the drill in the URL and command drills from worklist rows.
+  path?: TreeNode[]
+  onPathChange?: (p: TreeNode[]) => void
 }) {
-  const { fmtBytes } = useUnits()
+  const { fmtBytes, fmtBytesLike } = useUnits()
+  const [liP, setLiP] = useUrlState('li', stringParam('s'))
+  const liMetrics = useMemo(() => new Set([...(liP ?? 's')].filter((m): m is LiMetric => m === 's' || m === 'p' || m === 'c')), [liP])
+  // Toggling rebuilds the value in canonical "spc" order, so equal selections
+  // always serialize identically.
+  const liToggle = (m: LiMetric) => setLiP(LI_METRIC_CHIPS.map(([k]) => k).filter(k => liMetrics.has(k) !== (k === m)).join(''))
   // Tiling is a user preference (header toggle): `shared` by default.
   const [tiling] = useTiling()
-  // Macro/micro hue for a cell, relative to the drilled root (see childRanks):
-  // `depth` counts from the view root, so kidPath[len-2-depth] is that root,
-  // the next entry the L1 category, the one after (if any) the L2 shade.
+  const [renderer] = useRenderer()
+  // Macro/micro hue for a cell, relative to the drilled root (see childRanks).
+  // Every cell path starts with the drilled path, so the view root sits at a
+  // fixed index — NOT `len - 2 - depth`: a collapsed chain (`run/…/checkpoints`
+  // drawn as one tile) lengthens the path by the chain without adding depth,
+  // and that arithmetic then walked past the root and colored by the *bucket's*
+  // ranking (every chained run dir came out slot-0 blue).
+  const drillLen = (path ?? initialPath)?.length ?? 1
   const slotOf = useCallback(
-    (kidPath: TreeNode[], depth: number): { slot: number; i: number; n: number } | null => {
-      const rootIdx = kidPath.length - 2 - depth
+    (kidPath: TreeNode[]): { slot: number; i: number; n: number } | null => {
+      const rootIdx = drillLen - 1
       const viewRoot = kidPath[rootIdx]
       const l1 = kidPath[rootIdx + 1]
       if (!viewRoot || !l1 || l1.n.startsWith('(')) return null
       const slot = childRanks(viewRoot).get(l1.n)?.[0]
-      if (slot == null || slot >= MAX_SLOTS) return null
+      if (slot == null) return null
       const l2 = kidPath[rootIdx + 2]
       const [i, n] = l2 && !l2.n.startsWith('(') ? childRanks(l1).get(l2.n) ?? [0, 1] : [0, 1]
       return { slot, i, n }
     },
-    [],
+    [drillLen],
   )
 
   const uriOf = (path: TreeNode[]) => scheme + path.slice(1).map(n => n.n).join('/')
-
-  // Mark outlines: a cell is outlined only where its resolved mark differs from
-  // the state its parent cell already conveys, so a uniformly-marked subtree is
-  // one frame (the core strokes the union per group key), not a lattice. The
-  // drill root's own mark is inherited by its tiles, so they stay undecorated.
-  const drillPath = path ?? initialPath
-  const drillDepth = drillPath?.length ?? 0
-  const rootKeep = marks && drillPath?.length ? marks.resolve(uriOf(drillPath))?.mark.keep ?? null : null
-  const chainOf = (cellPath: TreeNode[]): number => {
-    let i = cellPath.length - 1
-    while (i > drillDepth && cellPath[i - 1].c?.length === 1) i--
-    return cellPath.length - 1 - i
-  }
-  const edgeMark = (cellPath: TreeNode[], chain: number): { keep: MarkAction; parent: TreeNode[] } | null => {
-    if (!marks) return null
-    const r = marks.resolve(uriOf(cellPath))
-    if (!r) return null
-    const parent = cellPath.slice(0, cellPath.length - chain - 1)
-    const parentKeep = parent.length > drillDepth ? (marks.resolve(uriOf(parent))?.mark.keep ?? null)
-      : parent.length === drillDepth ? rootKeep : null
-    if (parentKeep && parentKeep === r.mark.keep) return null
-    return { keep: r.mark.keep, parent }
-  }
-  const [outlined, setOutlined] = useState<MarkAction[]>([])
-  const onDrawn = useCallback((keys: string[]) => {
-    const acts = (['keep', 'keep_last_ckpt', 'sweep'] as MarkAction[]).filter(a => keys.some(k => k.startsWith(a + '|')))
-    setOutlined(prev => (prev.length === acts.length && prev.every((a, i) => a === acts[i]) ? prev : acts))
-  }, [])
-  const markOutlines = useMemo<OutlineGroups<TreeNode> | undefined>(
-    () => marks
-      ? {
-          key: (n, cellPath) => {
-            if (n.n.startsWith('(')) return null
-            const e = edgeMark(cellPath, chainOf(cellPath))
-            return e ? `${e.keep}|${uriOf(e.parent)}` : null
-          },
-          color: key => ACTION_COLORS[key.slice(0, key.indexOf('|')) as MarkAction],
-          width: 2,
-          onDrawn,
-        }
-      : undefined,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [marks, drillDepth, rootKeep, onDrawn],
-  )
-  useEffect(() => { if (!markOutlines) setOutlined([]) }, [markOutlines])
 
   // Fold merger: first-class TreeNode aggregating us/d so folded tiles keep
   // real tooltips (upstream calls this at every nesting level).
@@ -193,28 +236,91 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
     const us: Record<string, number> = {}
     let wd = 0
     let wdb = 0
+    let ma = -1
     for (const it of tiny) {
       for (const [u, ub] of it.us ?? []) us[u] = (us[u] ?? 0) + ub
       if (it.d != null) {
         wd += it.d * it.b
         wdb += it.b
       }
+      if (it.a != null && it.a > ma) ma = it.a
     }
     const folded: TreeNode = { n: `(+${tiny.length})`, b, o }
     if (wdb) folded.d = Math.round(wd / wdb)
+    if (ma >= 0) folded.a = ma
     const topUs = Object.entries(us).sort((a, c) => c[1] - a[1]).slice(0, 5)
     if (topUs.length) folded.us = topUs as [string, number][]
     return folded
   }, [])
 
+  // Transient solo from hovering a legend row; a pinned `hl` (URL state) wins.
+  const [hoverHl, setHoverHl] = useState<Highlight | null>(null)
+  const effHl = hl ?? hoverHl
+  // Pinned highlight clears on a click anywhere that isn't a legend row, the
+  // map, or a control — the plotly "click empty space to unpin" convention.
+  useEffect(() => {
+    if (!hl || !onClearHl) return
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t?.closest('.ri, .dt-treemap-map, button, a, input, select, textarea, [role="dialog"], [role="tooltip"], .tt')) return
+      onClearHl()
+    }
+    document.addEventListener('click', onDoc)
+    return () => document.removeEventListener('click', onDoc)
+  }, [hl, onClearHl])
+
   const colorForCell = useCallback(
     (kid: TreeNode, kidPath: TreeNode[], depth: number, ctx: CellCtx): CellStyle => {
       let bg: string
       let ink: string
+      let segments: CellStyle['segments']
+      // Cold-class share of the cell (NL/CL/AR bytes over all bytes) — the
+      // "shade by" micro axis, applied to whichever base color the primary
+      // axis picks. Ink is chosen from the base so labels stay legible.
+      const cold = shade === 'class' && kid.b ? Object.values(kid.cb ?? {}).reduce((a, b) => a + b, 0) / kid.b : 0
       if (mode === 'tree') {
-        const s = slotOf(kidPath, depth)
-        bg = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
-        ink = s ? inkFor(bg) : 'var(--ink)'
+        const s = slotOf(kidPath)
+        const base = s ? slotColor(s.slot, s.i, s.n) : 'var(--other)'
+        bg = s ? coldShade(base, cold) : base
+        ink = s ? inkFor(base) : 'var(--ink)'
+      } else if (mode === 'marks') {
+        // Keep-axis state: paint kept (green) / swept (red); undecided cells
+        // stay grey — the review to-do, visible at a glance. A
+        // keep_last_ckpt mark decomposes into its *actual* keep/sweep: the
+        // kept step-child subtrees are green, siblings red, and a mixed cell
+        // (the mark root, a run dir holding its kept step) gets proportional
+        // stripes. Amber only when the split can't be resolved from the tree.
+        const st = markIdx?.resolve(uriOf(kidPath))
+        const m = st?.mark ?? null
+        if (m && (st!.own || !ctx.hasKids)) {
+          bg = ACTION_COLORS[m.action]
+          ink = inkFor(bg)
+          if (m.action === 'keep_last_ckpt' && klcIdx) {
+            const split = klcIdx.get(m.prefix.endsWith('/') ? m.prefix : m.prefix + '/')
+            if (split) {
+              const uri = uriOf(kidPath)
+              const rel = klcStateAt(uri, split)
+              if (rel === 'mixed') {
+                const frac = kid.b > 0 ? Math.min(1, klcKeptWithin(uri, split) / kid.b) : 0
+                segments = [
+                  { color: ACTION_COLORS.keep, frac },
+                  { color: ACTION_COLORS.sweep, frac: 1 - frac },
+                ]
+                bg = 'var(--panel)'
+                ink = 'var(--ink)'
+              } else {
+                bg = ACTION_COLORS[rel]
+                ink = inkFor(bg)
+              }
+            }
+          }
+        } else if (ctx.hasKids) {
+          bg = 'var(--panel)' // container without its own mark: children carry the state
+          ink = 'var(--ink)'
+        } else {
+          bg = 'var(--other)' // undecided leaf
+          ink = 'var(--ink)'
+        }
       } else if (ctx.hasKids) {
         // container: neutral so the nested tiles carry the data colors
         bg = 'var(--panel)'
@@ -227,14 +333,44 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
           bg = 'var(--other)'
           ink = 'var(--ink)'
         }
+      } else if (mode === 'read') {
+        if (kid.a != null && readRange && readRange.max > readRange.min) {
+          bg = dateColor((kid.a - readRange.min) / (readRange.max - readRange.min))
+          ink = inkFor(bg)
+        } else {
+          // Never read since logging began — the sweep-interesting bucket.
+          bg = 'var(--never-read)'
+          ink = 'var(--ink)'
+        }
       } else {
-        // user: a cell takes a user's color only when it is (nearly) wholly
-        // theirs — mixed boxes stay gray until you drill/zoom. The bar is 94%
-        // rather than ~100%: a dominant owner with a sub-6% remainder read as
-        // unattributed gray (gcs `9fe605b`).
+        // user: a wholly-owned (~100%) cell takes its user's color; a mixed
+        // cell renders its top users as proportional stripes (with a gray
+        // remainder for unclaimed bytes) instead of one blob.
         const [u, ub] = kid.us?.[0] ?? [null, 0]
-        bg = userColor(ub >= 0.94 * kid.b ? u : null, userIdx)
-        ink = inkFor(bg)
+        if (ub >= 0.98 * kid.b) {
+          const base = userColor(u, userIdx)
+          bg = coldShade(base, cold)
+          ink = inkFor(base)
+        } else {
+          const us = (kid.us ?? []).filter(([, b]) => b >= 0.06 * kid.b).slice(0, 4)
+          const rem = kid.b - us.reduce((s, [, b]) => s + b, 0)
+          if (us.length && (us.length > 1 || rem >= 0.06 * kid.b)) {
+            segments = us.map(([uu, b]) => ({ color: coldShade(userColor(uu, userIdx), cold), frac: b / kid.b }))
+            if (rem >= 0.06 * kid.b) segments.push({ color: userColor(null, userIdx), frac: rem / kid.b })
+            bg = 'var(--panel)'
+            ink = 'var(--ink)'
+          } else if (us.length === 1) {
+            // One dominant user, remainder too small to stripe (<6%): their
+            // color, not unattributed gray — covers the 94–98% window the
+            // wholly-owned fast path above misses.
+            const base = userColor(us[0][0], userIdx)
+            bg = coldShade(base, cold)
+            ink = inkFor(base)
+          } else {
+            bg = userColor(null, userIdx)
+            ink = inkFor(bg)
+          }
+        }
       }
       // class lens: hatch by colder-class (non-STANDARD) byte fraction — leaf
       // cells only (cells are semi-transparent, so a parent hatch would bleed
@@ -243,72 +379,299 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
       const hatch = coldFrac > 0.01
         ? `repeating-linear-gradient(135deg, rgb(120 170 255 / ${(0.18 + 0.5 * coldFrac).toFixed(2)}) 0 4px, transparent 4px 9px)`
         : undefined
-      // highlight mode: leaf cells not majority-owned by the selected user fade back
+      // highlight mode: leaf cells not majority-owned by the selected user
+      // (or, for the unclaimed pin, not majority-unclaimed) fade back
       let dim = false
-      if (hl?.user && !ctx.hasKids) {
-        dim = (kid.us?.find(([u]) => u === hl.user)?.[1] ?? 0) < 0.5 * kid.b
+      if (effHl && !ctx.hasKids) {
+        if (effHl.user) dim = (kid.us?.find(([u]) => u === effHl.user)?.[1] ?? 0) < 0.5 * kid.b
+        else if (effHl.unclaimed) dim = unattrLens(kid) < 0.5 * kid.b
       }
       // Shared-edge stroke, per cell: each neighbor paints its own half of a
-      // boundary. Top-level rects take the page background — the strongest
-      // seam the theme has. Below that the edge is left to the core's
-      // `edgeContrast` default: a luminance-adaptive stroke (light on dark
-      // fills, dark on light ones; `contrastEdge`), which only applies when
-      // the consumer doesn't pin one. `var()` container faces fall through to
-      // the neutral `--dt-treemap-edge` gutter.
-      const edge = depth === 0 ? 'var(--surface)' : undefined
-      return { bg, ink, hatch, edge, opacity: dim ? 0.22 : undefined }
+      // boundary, so the line can adapt to the face it borders. Top-level
+      // (bucket) rects take the page background — the strongest seam the
+      // theme has — and deeper cells pull their own fill toward it, so even
+      // grey-on-grey siblings show a visible edge. Gradient fills (stripe
+      // segments paint over bg anyway) keep the themed default.
+      // (`--surface` is the page ground; there is no `--bg` token, and an
+      // undefined var here silently dropped the whole seam color.)
+      const edge = depth === 0
+        ? 'var(--surface)'
+        : bg.includes('gradient')
+          ? undefined
+          : `color-mix(in oklab, ${bg} ${depth === 1 ? 40 : 62}%, var(--surface))`
+      return { bg, ink, hatch, segments, edge, opacity: dim ? 0.22 : undefined }
     },
-    [mode, slotOf, userIdx, dateRange, hl, lens],
+    [mode, shade, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx, klcIdx],
   )
 
-  // per-user roll-up for the current view: top users, plus the remainder that
-  // isn't covered by the top-users list; $ figures use class-aware per-user
-  // rates when the snapshot carries them
+  // owner roll-up for the current view (user coloring only): everyone ≥1% of
+  // the node, at least 5, at most 12; the rest roll into "(other users)";
+  // what no person owns is the unclaimed pool. $ figures use class-aware
+  // per-user rates when the snapshot carries them.
   const rollupFor = (node: TreeNode) => {
-    const us = node.us ?? []
-    if (!us.length) return []
+    if (mode !== 'user' || !node.us) return []
     const userRate = (u: string) => pricing && (pricing.userRates?.[u] ?? pricing.blended)
-    const rest = node.b - us.reduce((s, [, b]) => s + b, 0)
+    const us = node.us
+    const userTotal = us.reduce((s, [, b]) => s + b, 0)
+    const unattr = Math.max(0, node.b - userTotal)
+    const shown = us.filter(([, b], i) => i < 5 || (i < 12 && b >= 0.01 * node.b))
+    const otherUsers = userTotal - shown.reduce((s, [, b]) => s + b, 0)
     return [
-      ...us.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx), rate: userRate(u), mix: pricing?.userMix?.[u] })),
-      ...(rest > 0 ? [{ k: '(other)', b: rest, col: 'var(--other)', rate: pricing?.blended, mix: undefined }] : []),
+      ...shown.map(([u, b]) => ({ k: u, b, col: userColor(u, userIdx), rate: userRate(u), mix: pricing?.userMix?.[u], hl: { user: u } as Highlight | undefined })),
+      ...(otherUsers > 0 ? [{ k: `(other users ×${us.length - shown.length})`, b: otherUsers, col: 'var(--other)', rate: pricing?.blended, mix: undefined, hl: undefined }] : []),
+      ...(unattr > 0 ? [{ k: 'unowned', b: unattr, col: 'var(--t-unattr)', rate: pricing?.blended, mix: undefined, hl: { unclaimed: true } as Highlight | undefined }] : []),
     ].sort((a, b) => b.b - a.b)
   }
 
-  const renderRollup = (node: TreeNode) => {
+  // Mark decoration is state-as-*outline* (keep green / keep-last-ckpt amber /
+  // sweep red), NOT an ✕ stamped on every descendant. A marked prefix inherits
+  // to its whole subtree, so decorating every cell is redundant noise — an
+  // outline goes only where a cell's state DIFFERS from the state its parent cell
+  // already conveys: a kept (or swept) parent is outlined once, and same-state
+  // descendants (inheriting it or re-stating it with their own mark) drop out,
+  // so a uniformly-marked subtree is one frame, not a wall of edges. The drill
+  // root's own mark is the header's headline ("sweep set by …"), so tiles that
+  // merely inherit it stay undecorated too. Adjacent siblings that differ from
+  // the parent the same way share ONE outline: the core strokes the perimeter
+  // of their union (`outlineGroups`), so a grid of kept run dirs reads as one
+  // bordered region, not a chain-link fence. Skipped in `state` mode, where the
+  // fill already *is* the state. No corner badges: the border is the signal,
+  // and provenance (who/when/inherited-from) lives in the cell tooltip.
+  const drillDepth = drillLen
+  // $/mo from the node's own storage-class mix at list price — the same
+  // arithmetic as the Storage-classes table — not the store-wide blended
+  // rate, which over-charged a Coldline-heavy directory by ~2×.
+  const estUsd = (n: TreeNode) => n.b * (n.cb ? ratePerByte(classMix(n)) : pricing?.blended ?? 0)
+  const drillPath = path ?? initialPath
+  // Levels of tiles the view will draw (the loaded subtree is already
+  // pixel-budgeted, so its depth ≈ what renders). Lone-child chains collapse
+  // into one tile and don't count; folds are leaves. Drives the seam widths:
+  // the fat gutter belongs to a level with two more under it — a flat
+  // directory of step dirs is one level and gets hairlines, not the
+  // bucket-grade 6px frame around every cell.
+  const viewLevels = drillPath?.length ? tileLevels(drillPath[drillPath.length - 1]) : 1
+  const rootMark = markIdx && drillPath?.length ? markIdx.resolve(uriOf(drillPath)).mark : null
+  // The mark a cell's edge conveys, or null when its parent cell already shows
+  // the same state. `chain` = single-child levels the core collapsed into this
+  // cell (`collapseChains`): the chain's top node is that many levels up, so
+  // the parent cell is one above that.
+  const edgeMark = (cellPath: TreeNode[], chain: number): { mark: Mark; parent: TreeNode[] } | null => {
+    if (!markIdx) return null
+    const { mark } = markIdx.resolve(uriOf(cellPath))
+    if (!mark) return null
+    const parent = cellPath.slice(0, cellPath.length - chain - 1)
+    const parentMark = parent.length > drillDepth ? markIdx.resolve(uriOf(parent)).mark
+      : parent.length === drillDepth ? rootMark : null
+    if (parentMark && parentMark.action === mark.action) return null
+    return { mark, parent }
+  }
+  // The core's chain collapse, replayed from a placed cell's path: it folds a
+  // tile's single-child descendants into the tile, so climbing from the cell's
+  // (deepest) node through lone-child parents finds the tile's own node. Stops
+  // at the drill root's direct children.
+  const chainOf = (cellPath: TreeNode[]): number => {
+    let i = cellPath.length - 1
+    while (i > drillDepth && cellPath[i - 1].c?.length === 1) i--
+    return cellPath.length - 1 - i
+  }
+  // Group key = the state + the parent cell it differs from: siblings that
+  // flip the same way merge into one region, while a deeper flip back to an
+  // ancestor's state (keep → sweep → keep) stays its own group, so the core's
+  // nesting rule (an open key's descendants are covered) can't swallow it.
+  const [outlined, setOutlined] = useState<MarkAction[]>([])
+  const onDrawn = useCallback((keys: string[]) => {
+    const acts = (['keep', 'keep_last_ckpt', 'sweep'] as MarkAction[]).filter(a => keys.some(k => k.startsWith(a + '|')))
+    setOutlined(prev => (prev.length === acts.length && prev.every((a, i) => a === acts[i]) ? prev : acts))
+  }, [])
+  const markOutlines = useMemo<OutlineGroups<TreeNode> | undefined>(
+    () => markIdx && mode !== 'marks'
+      ? {
+          key: (n, cellPath) => {
+            if (n.n.startsWith('(')) return null
+            const e = edgeMark(cellPath, chainOf(cellPath))
+            return e ? `${e.mark.action}|${uriOf(e.parent)}` : null
+          },
+          color: key => ACTION_COLORS[key.slice(0, key.indexOf('|')) as MarkAction],
+          width: 2,
+          onDrawn,
+        }
+      : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [markIdx, mode, rootMark, drillDepth],
+  )
+  useEffect(() => { if (!markOutlines) setOutlined([]) }, [markOutlines])
+  const markExtra = markIdx
+    ? (n: TreeNode, cellPath: TreeNode[], { w, h, chain = 0 }: { w: number; h: number; chain?: number }) => {
+        if (mode === 'marks') {
+          // The fills already ARE the state — only the KLC "both states live
+          // inside" barber-pole ring adds information here.
+          const { mark, own } = markIdx.resolve(uriOf(cellPath))
+          if (own && mark?.action === 'keep_last_ckpt' && w >= 8 && h >= 8) {
+            return <span className="mark-edge klc" />
+          }
+          return null
+        }
+        return null
+      }
+    : undefined
+
+  // Per-cell overlay. Two layers, independent of each other:
+  //   1. Dust hatch on every `(other)` fold, at ANY depth. The server builds
+  //      these tiles (view.ts: parent − Σ kept kids, with `f` = how many
+  //      children they stand in for), so they're plain nodes to the core and
+  //      never hit its own fold hatch — draw the core's `DustHatch` here so a
+  //      fold reads as "many small things", not a flat grey block.
+  //   2. The mark decoration (`markExtra`), only in mark mode.
+  const renderCellExtra = (n: TreeNode, cellPath: TreeNode[], box: { w: number; h: number; fade?: number; hasKids?: boolean; chain?: number }) => {
+    const dust = n.n.startsWith('(') && box.w >= 8 && box.h >= 8
+      ? <DustHatch w={box.w} h={box.h} count={Math.max(1, n.f ?? 1)} />
+      : null
+    const mark = markExtra?.(n, cellPath, box) ?? null
+    if (!dust && !mark) return null
+    return <>{dust}{mark}</>
+  }
+
+  // The client-side state walk below runs from a render callback (no hook
+  // memo possible); cache its last answer by inputs so a hover or outline
+  // re-render doesn't re-walk the drilled subtree.
+  const stateWalk = useRef<{ node: TreeNode; uri: string; idx: MarkIndex; klc: KlcIndex | undefined; val: Record<MarkState, number> } | null>(null)
+  const walkState = (node: TreeNode, uri: string, idx: MarkIndex, klc: KlcIndex | undefined): Record<MarkState, number> => {
+    const c = stateWalk.current
+    if (c && c.node === node && c.uri === uri && c.idx === idx && c.klc === klc) return c.val
+    const val = subtreeStateTotals(node, uri, idx, klc)
+    stateWalk.current = { node, uri, idx, klc, val }
+    return val
+  }
+  const renderRollup = (node: TreeNode, path: TreeNode[]) => {
     if (redact) return null
+    // The rollup follows the ACTIVE color axis: the owner breakdown renders
+    // only when the map is colored by user (tree/written/read/marks each key
+    // their own legend). The state row keys the mark overlay, which is active
+    // whenever markIdx is (mark mode), in every coloring.
     const rollup = rollupFor(node)
-    if (!rollup.length) return null
+    if (!markIdx && !rollup.length) return null
+    // MarkState totals for the current view: of the drilled subtree's bytes, how
+    // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
+    // amber "last ckpt" appears only for marks the tree can't split).
+    const stateWanted = !!markIdx && mode === 'marks'
+    const atRoot = path.length <= 1
+    // Exact server-side total for this exact view (root or drilled); the client
+    // walk over the loaded (floored) tree is the instant fallback while the
+    // exact fetch is in flight, marked ≈.
+    const exact = stateWanted && viewMarkAxes ? viewMarkAxes : null
+    const state = stateWanted ? (exact ?? walkState(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
+    const stateRows = state
+      ? ([
+          ['keep', state.keep, ACTION_COLORS.keep],
+          ['last ckpt', state.keep_last_ckpt, ACTION_COLORS.keep_last_ckpt],
+          ['sweep', state.sweep, ACTION_COLORS.sweep],
+          ['undecided', state.unmarked, 'var(--other)'],
+        ] as [string, number, string][]).filter(([, b]) => b > 0)
+      : []
     return (
       <>
-        {rollup.filter(r => r.b >= 0.001 * node.b).map(r => (
-          <span className="ri" key={r.k}>
+        {/* A bucket itself isn't markable (MarkControls renders nothing there) —
+            no panel for an empty box. */}
+        {hasPanel && (
+          <div className="root-marks">
+            <MarkControls uri={uriOf(path)} idx={markIdx!} node={node} lensed={ownerLensed} userIdx={userIdx} onPickUser={onPickUser} />
+            {keys}
+          </div>
+        )}
+        {stateRows.length > 0 && (
+          <span
+            className={`state-rollup${exact ? '' : ' approx'}`}
+            title={exact
+              ? 'exact: the live ledger priced against the floor-free path index'
+              : 'approximate: resolved at this view’s resolution — marks folded below it settle as their ancestor’s state; the root total is exact'}
+          >
+            {!exact && <span className="approx-mark">≈</span>}
+            {stateRows.map(([k, b, col]) => (
+              <span className="ri" key={k}>
+                <span className="sw" style={{ background: col }} />
+                {k} <b>{fmtBytes(b)}</b>
+                <span className="pct">{node.b ? ((100 * b) / node.b).toFixed(1) : 0}%</span>
+              </span>
+            ))}
+          </span>
+        )}
+        {rollup.filter(r => r.b >= 0.001 * node.b).map(r => {
+          // Real per-user rows (not "(other users)"/"unowned") get a GitHub
+          // avatar next to the color swatch.
+          const isUser = mode === 'user' && !r.k.startsWith('(') && r.k !== 'unowned'
+          const pickable = !!r.hl && !!(r.hl.user ? onPickUser : onPickUnclaimed)
+          const same = (a: Highlight | null | undefined, b: Highlight | undefined) => !!a && !!b && a.user === b.user && !!a.unclaimed === !!b.unclaimed
+          const pinned = same(hl, r.hl)
+          // Hover-solo fades the other rows; a pin (the map is scoped to the
+          // pinned row's bytes) hides them.
+          const faded = !hl && !!hoverHl && !same(hoverHl, r.hl)
+          const hidden = !!hl && !pinned
+          const pick = () => {
+            if (!r.hl) return
+            if (pinned) onClearHl?.()
+            else if (r.hl.user) onPickUser?.(r.hl.user)
+            else if (r.hl.unclaimed) onPickUnclaimed?.()
+          }
+          return (
+          <span
+            className={`ri${pickable ? ' pickable' : ''}${pinned ? ' pinned' : ''}${faded ? ' faded' : ''}`}
+            hidden={hidden}
+            key={r.k}
+            onMouseEnter={pickable ? () => setHoverHl(r.hl!) : undefined}
+            onMouseLeave={pickable ? () => setHoverHl(null) : undefined}
+            onClick={pickable ? pick : undefined}
+            title={pickable ? (pinned ? 'Unpin (or press x)' : 'Click to pin this highlight') : undefined}
+          >
             <span className="sw" style={{ background: r.col }} />
-            {r.k.startsWith('(') || r.k === 'unattributed' ? r.k : <UserChip who={r.k} size={15} />} <b>{fmtBytes(r.b)}</b>
-            <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>
-            {r.rate != null && (
+            {isUser ? <UserChip who={r.k} size={15} /> : r.k}
+            {liMetrics.has('s') && <> <b>{fmtBytesLike(r.b, rollup[0]?.b ?? r.b)}</b></>}
+            {liMetrics.has('p') && <span className="pct">{((100 * r.b) / node.b).toFixed(1)}%</span>}
+            {r.rate != null && liMetrics.has('c') && (
               r.mix ? (
-                <Tooltip content={<ClassMixTip mix={r.mix} note="the user's fleet-wide class mix sets their $/byte rate; $ shown = rate × this view's bytes" />}>
+                <Tooltip content={<ClassMixTip mix={scaleMix(r.mix, r.b)} note="assumes this slice mirrors the user's fleet-wide class mix — the table is that mix scaled to this view's bytes" />}>
                   <span className="usd dotted">{fmtUsd(r.b * r.rate)}/mo</span>
                 </Tooltip>
               ) : (
                 <span className="usd">{fmtUsd(r.b * r.rate)}/mo</span>
               )
             )}
+            {pinned && <span className="unpin" aria-hidden>✕</span>}
           </span>
-        ))}
+        )})}
+        {rollup.length > 0 && (
+          <span className="li-metrics" role="group" aria-label="Legend row metrics">
+            {LI_METRIC_CHIPS.map(([m, label, tip]) => (
+              <Tooltip key={m} content={tip}>
+                <button type="button" aria-pressed={liMetrics.has(m)} className={liMetrics.has(m) ? 'on' : ''} onClick={() => liToggle(m)}>{label}</button>
+              </Tooltip>
+            ))}
+          </span>
+        )}
       </>
     )
   }
 
-  /* Legend only for modes where it isn't a strict subset of the roll-up bar:
-     user mode is dropped (the roll-up already shows the same swatch+label,
-     plus size and $). tree (prefix colors) and age (date gradient) convey
-     distinct keys, so they keep the legend. */
-  const modeLegend = mode !== 'user'
+  /* One keying strip per view: any CATEGORICAL axis keys through the roll-up
+     bar (swatch + label + size + %, presence-filtered) — user,
+     and state all render there, so a separate legend for them would be a
+     strict-subset duplicate. This legend exists only for encodings the
+     roll-up can't key: date gradients (written/read) and the tree prefix
+     palette. A new mode should default into the roll-up, not here. */
+  const modeLegend = mode === 'read' || mode === 'date' || mode === 'tree'
     ? (legendNode: TreeNode, legendPath: TreeNode[]) => (
         <>
-          {mode === 'date' && dateRange ? (
+          {mode === 'read' && readRange ? (
+            <>
+              <Tooltip content={`No reads observed since access logging began (${epochDaysToDate(readRange.min)}) — activity before that predates the logs, so "never read" really means "not read in the observed window".`}>
+                <span className="li has-tt"><span className="sw" style={{ background: 'var(--never-read)' }} />never read*</span>
+              </Tooltip>
+              <span className="li gradli">
+                {epochDaysToDate(readRange.min)}
+                <span className="gradbar" style={{ background: dateGradientCss() }} />
+                {epochDaysToDate(readRange.max)}
+              </span>
+            </>
+          ) : mode === 'date' && dateRange ? (
             <span className="li gradli">
               {epochDaysToMonth(dateRange.min)}
               <span className="gradbar" style={{ background: dateGradientCss() }} />
@@ -316,15 +679,17 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
             </span>
           ) : (
             // The macro axis: the drilled root's children, largest first, in
-            // their hue. Names sharing a long run-name prefix cluster under it
-            // (rendered once, muted); long names elide to head + tail (the tail
-            // — a hash or step number — usually tells them apart); the full
-            // name is in each row's tooltip, click to copy. Every real child
-            // has its own hue, so past MAX_SLOTS is a "+N more" count, and
-            // "other" is only the fold tile.
+            // their hue; anything past the palette (and folds) is "other".
+            // Names cluster on a shared prefix (rendered once, muted) and
+            // elide from the middle when the row is narrow — the tail (a hash
+            // or step number) is usually the part that tells them apart. The
+            // full name is in each item's tooltip.
             (() => {
               const ranked = [...childRanks(legendNode).entries()].sort((a, b) => a[1][0] - b[1][0])
               const shown = ranked.slice(0, MAX_SLOTS)
+              // Every real child has its own hue (see `slotHsl`); the legend
+              // lists the largest MAX_SLOTS and counts the rest. "other" is
+              // only the fold tile.
               const more = ranked.length - shown.length
               const hasOther = (legendNode.c ?? []).some(c => c.n.startsWith('('))
               const slot = new Map(shown.map(([k, [i]]) => [k, i]))
@@ -367,22 +732,65 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
     : null
   // The tiling toggle rides in the same slot (right of the crumbs, left of ⛶)
   // in every mode: a map-level preference belongs on the map, not in the nav.
+  // The outline key: whenever marks draw as outlines (every coloring but
+  // `state`), say what a colored frame means — the map otherwise shows an
+  // unexplained amber/red/blue border with no swatch anywhere. Hollow
+  // swatches, so it reads as "outline", not another fill. Lists only the
+  // states whose outlines are actually on screen: the overlay reports what it
+  // drew (`onDrawn`), so a view with one red frame gets a one-entry key.
+  const outlineActions = outlined
+  const outlineLegend = outlineActions.length > 0 && (
+    <Tooltip content={OUTLINE_TIP}>
+      <span className="li outl has-tt">
+        <span className="olbl">outline</span>
+        {outlineActions.map(a => (
+          <span className="oli" key={a}>
+            <span className="sw" style={{ borderColor: ACTION_COLORS[a] }} />
+            {OUTLINE_LABELS[a]}
+          </span>
+        ))}
+      </span>
+    </Tooltip>
+  )
+  // The keys (outline key + ⚙) are the last flex items with `margin-left:
+  // auto`: they take the free end of the LIs' last line, or wrap to a line of
+  // their own only when there's no room — never a mostly-empty row.
+  // The map's keys and knobs — outline key, ⚙, fullscreen — as one group.
+  // They sit at the right edge of the mark panel (its head-matter row has
+  // the room); without a panel (bucket level, no marks) they take the free
+  // end of the legend's last line instead. The core's own ⛶ is hidden.
+  const hasPanel = !!markIdx && (path?.length ?? 0) > 2
+  const keys = (
+    <span className="keys">
+      {outlineLegend}
+      <SettingsMenu />
+      <Tooltip content="Fullscreen (Esc to leave)">
+        <button
+          type="button" className="fs-btn" aria-label="Fullscreen"
+          onClick={e => {
+            const el = (e.currentTarget as HTMLElement).closest('.treemap') as HTMLElement | null
+            if (!el) return
+            if (document.fullscreenElement) void document.exitFullscreen()
+            else void el.requestFullscreen()
+          }}
+        >⛶</button>
+      </Tooltip>
+    </span>
+  )
   const legend = (legendNode: TreeNode, legendPath: TreeNode[]) => (
     <div className="legend">
       {modeLegend?.(legendNode, legendPath)}
-      {outlined.length > 0 && (
-        <span className="mark-key">
-          {outlined.map(a => (
-            <span className="mk-li" key={a}><span className="sw" style={{ borderColor: ACTION_COLORS[a] }} />{ACTION_LABELS[a]}</span>
-          ))}
-        </span>
-      )}
-      <TilingToggle />
+      {!hasPanel && keys}
     </div>
   )
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
     const uri = uriOf(path)
+    const userMode = mode === 'user'
+    // The mark decision covering this cell — so provenance (who/when, inherited
+    // or own) is always legible in the tooltip, even on cells too small for the
+    // corner badge or when not in state coloring.
+    const st = markIdx && !n.n.startsWith('(') ? markIdx.resolve(uri) : null
     const mix = classMix(n)
     const classes = n.cb && (
       <div className="classes-row">
@@ -398,21 +806,31 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
       <div className="users">
         {n.us.map(([u, b]) => (
           <div className="tt-user" key={u}>
-            {mode === 'user' && <span className="sw" style={{ background: userColor(u, userIdx) }} />}
-            <UserChip who={u} size={15} /> · {fmtBytes(b)}
+            {userMode && <span className="sw" style={{ background: userColor(u, userIdx) }} />}
+            <Avatar github={ghHandle(u)} name={shortName(u)} size={13} /> {shortName(u)} · {fmtBytes(b)}
           </div>
         ))}
       </div>
     )
     return (
       <>
-        <PathBar uri={uri} />
+        <PathBar uri={uri} onOpen={n.n.startsWith('(') ? undefined : () => onPathChange?.(path)} />
         <div className="nums">
           {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
           {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}
+          {n.a != null
+            ? <> · last read {epochDaysToDate(n.a)}</>
+            : readRange && !n.n.startsWith('(') && <> · <span className="never-read">no reads since {epochDaysToDate(readRange.min)}</span></>}
         </div>
+        {st?.mark && <div className="tt-mark">{markProvenance(st.mark, st.own)}</div>}
         {classes}
         {users}
+        {/* interactive only when the tooltip is pinned; CSS hides it on hover */}
+        {markIdx && !n.n.startsWith('(') && <MarkControls uri={uriOf(path)} idx={markIdx} node={n} lensed={ownerLensed} userIdx={userIdx} onPickUser={onPickUser} />}
+        {/* The passive preview says where the controls are: any cell, at any
+            depth, marks and assigns from its pinned box (the table below only
+            lists the drilled node's children). Gone once pinned or hovered into. */}
+        {markIdx && !n.n.startsWith('(') && <div className="tt-hint tt-pin-hint">{n.c?.length ? '⌥-click' : 'click'} to pin · mark or assign it here</div>}
       </>
     )
   }
@@ -420,45 +838,84 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, sch
   return (
     <DtTreemap<TreeNode>
       root={root}
-      initialPath={path ? undefined : initialPath}
+      initialPath={initialPath}
       path={path}
       onPathChange={onPathChange}
-      tiling={tiling}
-      // Depth-emphasized seams: the core default (max(1, 3-depth)) tops out
-      // at 1.5px painted per side — invisible between same-grey siblings.
-      // Give the top level a fat gutter (3px per side → 6px between cells),
-      // one step down a clear line, leaves a hairline. Colors: page-bg at
-      // depth 0 (`colorForCell`'s `edge`), the core's contrast edge below.
-      // Capped by cell size: drilling into a flat dir puts hundreds of small
-      // cells at depth 0, where the 6px seam eats the area shared-edges mode
-      // exists to preserve.
-      borderWidth={(depth, { w, h }) => {
-        const base = depth === 0 ? 6 : depth === 1 ? 2.5 : 1
-        return Math.min(base, Math.max(1, Math.min(w, h) / 16))
+      // A directory whose children fell below this view's pixel budget
+      // arrives without `c` — the core would treat it as a leaf and pin its
+      // tooltip. It's still a branch: drilling fetches its own budget's
+      // children (the URL path drives the fetch). Only a lone object pins.
+      onCellClick={(n, p) => {
+        if (n.c?.length || n.o <= 1 || n.n.startsWith('(') || !onPathChange) return false
+        onPathChange(p)
+        return true
       }}
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
       getId={(_n, p) => uriOf(p)}
       formatSize={fmtBytes}
+      collapseChains
       mergeSmall={mergeSmall}
       colorForCell={colorForCell}
-      outlineGroups={markOutlines}
+      // Opaque cells. Upstream's default fades every nesting level by 0.82,
+      // which compounds: this store nests 6+ deep under `marin/datakit/...`,
+      // so leaves landed near 0.4 alpha and every category washed out to the
+      // same pale grey-blue. Structure comes from borders instead (app.scss).
+      depthFade={1}
+      rootFade={1}
+      // Depth-emphasized seams: the core default (max(1, 3-depth)) tops out
+      // at 1.5px painted per side — invisible between same-grey buckets. Give
+      // the top level a fat gutter (3px per side → 6px between buckets), one
+      // step down a clear line, leaves a hairline. Colors come from
+      // `colorForCell`'s `edge` (page-bg at depth 0, fill-adaptive below).
+      // Capped by cell size: drilling into a flat dir puts hundreds of small
+      // cells at depth 0, where the bucket-grade 6px seam eats the area
+      // shared-edges mode exists to preserve.
+      borderWidth={(depth, { w, h }) => {
+        const below = Math.max(0, viewLevels - 1 - depth)
+        // Width alone is a blunt cue: the top seam gets 3px and one step down
+        // 2px, the rest hairlines — nesting reads from the edge color (page
+        // background at the top, fill-tinted deeper) and the header bars.
+        const base = below >= 2 ? 3 : below === 1 ? 2 : 1
+        return Math.min(base, Math.max(1, Math.min(w, h) / 16))
+      }}
+      tiling={tiling}
+      renderer={renderer}
       renderTooltip={renderTooltip}
+      renderCellExtra={renderCellExtra}
+      outlineGroups={markOutlines}
       renderRollup={renderRollup}
       renderLegend={redact ? undefined : legend}
       renderCrumbSuffix={node => (
         <>
           — {fmtBytes(node.b)} · {fmtN(node.o)} objects
-          {pricing && <> · est. {fmtUsd(node.b * pricing.blended)}/mo</>}
+          {pricing && <> · est. {fmtUsd(estUsd(node))}/mo</>}
         </>
       )}
       renderFooter={redact
         ? undefined
-        : () => <div className="hint">click to drill in · click a leaf to pin its details · click the path (or Backspace) to go up · cells &lt;20 GB folded into “(other)”</div>}
+        : node => (
+          <div className="hint">
+            <span className="stats">{fmtBytes(node.b)} · {fmtN(node.o)} objects{pricing && <> · est. {fmtUsd(estUsd(node))}/mo</>}</span>
+            <Tooltip content={<>Click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into “(other)” · j/k select rows in the table below</>}>
+              <span className="info" aria-label="how to use the map">ⓘ</span>
+            </Tooltip>
+          </div>
+        )}
       chrome={!redact}
       showLabels={!redact}
-      className="treemap"
+      // Names over sizes: a cell narrower than this shows only its (often
+      // long) path segment; the size waits in the tooltip / a tall leaf's 2nd
+      // line. The core's default (90px) let a 3-char stub sit beside "694 GiB".
+      inlineSizeMinWidth={150}
+      // Per-store style hook: deliberate CW/GCS presentation differences live
+      // under these classes in app.scss (one codebase, no branches).
+      // `root-marked-<action>`: the drill root itself carries a mark (the panel's
+      // headline), so the map area gets ONE frame in that state's color — every
+      // tile inherits it, and per-tile borders are suppressed (state boundaries
+      // only), so without this the view read as unmarked.
+      className={`treemap store-${scheme === 's3://' ? 'cw' : 'gcs'} tiling-${tiling}${rootMark ? ` root-marked root-marked-${rootMark.action}` : ''}`}
     />
   )
 }

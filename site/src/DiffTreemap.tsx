@@ -2,7 +2,6 @@ import { useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
 import { stringParam, useUrlState } from 'use-prms'
-import { TilingToggle, useTiling } from './tiling'
 import { useUnits } from './units'
 
 const { abs, max, min, sign } = Math
@@ -12,8 +11,9 @@ const { abs, max, min, sign } = Math
 const UNCHANGED_GREY = 'rgba(110, 118, 129, 0.28)'
 const deltaColor = (t: number) => divergingColor(-t)
 
-// /api/diff row (functions/_lib/view.ts buildDiff): p=path d=depth k=kind s=status a/b=bytes
-// oa/ob=n_desc x=expanded pr=pruned.
+// `/api/diff` row (functions/_lib/view.ts `DiffRow`): p=path (relative to
+// the diffed root) d=depth k=kind s=status a/b=bytes oa/ob=objects
+// x=expanded l=read by a point lookup on side 1|2.
 export interface DiffRow {
   p: string
   d: number
@@ -24,7 +24,7 @@ export interface DiffRow {
   oa: number
   ob: number
   x?: boolean
-  pr?: boolean
+  l?: 1 | 2
 }
 
 export interface DiffData {
@@ -36,13 +36,11 @@ export interface DiffData {
   objects_b: number
   expansions: number
   truncated: boolean
+  /** The shared byte floor both scans were read at. */
+  threshold: number
+  lookups: number
+  lookups_capped: boolean
   rows: DiffRow[]
-  /** `/api/diff` extras: the shared byte floor both sides were read at, which
-   * tier answered, and whether the one-sided lookup budget ran out. */
-  threshold?: number
-  tier?: string
-  lookups?: number
-  lookups_capped?: boolean
 }
 
 type AreaMode = 'max' | 'delta'
@@ -52,11 +50,18 @@ interface DiffNode {
   label: string
   weight: number
   delta: number
+  /** Bytes that arrived / left under this node (Σ over the frontier below
+   * it): start − removed + added = end. A frontier row is all one or the other. */
+  added: number
+  removed: number
   status: DiffRow['s'] | 'filler' | 'root'
   size_old: number
   size_new: number
   n_desc_delta: number
-  pruned?: boolean
+  /** Object counts on each side (net only — the diff rows don't carry per-node adds/removes). */
+  n_old: number
+  n_new: number
+  lookup?: 1 | 2
   children?: DiffNode[]
 }
 
@@ -82,8 +87,8 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
     if (!parent) {
       // Expanded-but-net-zero dir whose children were emitted without it.
       parent = {
-        key: parentPath, label: parentPath.split('/').pop()!, weight: 0, delta: 0,
-        status: 'unchanged', size_old: 0, size_new: 0, n_desc_delta: 0, children: [],
+        key: parentPath, label: parentPath.split('/').pop()!, weight: 0, delta: 0, added: 0, removed: 0,
+        status: 'unchanged', size_old: 0, size_new: 0, n_desc_delta: 0, n_old: 0, n_new: 0, children: [],
       }
       attach(parent, parentPath)
     }
@@ -97,11 +102,15 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
       label: r.p.split('/').pop() || r.p,
       weight: 0,
       delta: r.b - r.a,
+      added: r.x ? 0 : max(0, r.b - r.a),
+      removed: r.x ? 0 : max(0, r.a - r.b),
       status: r.s,
       size_old: r.a,
       size_new: r.b,
       n_desc_delta: r.ob - r.oa,
-      pruned: r.pr,
+      n_old: r.oa,
+      n_new: r.ob,
+      lookup: r.l,
     }, r.p)
   }
 
@@ -112,13 +121,17 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
       return node.weight
     }
     let kidSum = 0
-    for (const k of node.children) kidSum += finalize(k)
+    for (const k of node.children) {
+      kidSum += finalize(k)
+      node.added += k.added
+      node.removed += k.removed
+    }
     node.weight = max(own, kidSum)
     const gap = node.weight - kidSum
     if (areaMode === 'max' && gap > max(1_000_000, node.weight * 0.002)) {
       node.children.push({
-        key: `${node.key}/__unchanged__`, label: '(unchanged)', weight: gap, delta: 0,
-        status: 'filler', size_old: gap, size_new: gap, n_desc_delta: 0,
+        key: `${node.key}/__unchanged__`, label: '(unchanged)', weight: gap, delta: 0, added: 0, removed: 0,
+        status: 'filler', size_old: gap, size_new: gap, n_desc_delta: 0, n_old: 0, n_new: 0,
       })
     }
     node.children.sort((a, b) => (b.delta - a.delta) || (b.weight - a.weight))
@@ -135,7 +148,6 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
 
 export function DiffTreemap({ data, label }: { data: DiffData; label: string }) {
   const { fmtBytes } = useUnits()
-  const [tiling] = useTiling()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
   // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
   // Δ (area = |delta|) is the default — the movement is what a diff view is
@@ -144,36 +156,29 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
   const areaMode: AreaMode = dmP === 'max' ? 'max' : 'delta'
   const setAreaMode = (m: AreaMode) => setDmP(m === 'max' ? 'max' : undefined)
   // Root arithmetic for the crumb: start − removed + added = end. Bytes move
-  // at the frontier (non-expanded rows; an expanded row's own Δ is carried by
-  // its children), so sum the frontier's signed deltas. A truncated walk (or a
-  // client-side alignment) can leave small movements unenumerated, in which
-  // case the two terms are approximate — the endpoints are always exact.
-  const { added, removed } = useMemo(() => {
-    let added = 0
-    let removed = 0
-    for (const r of data.rows) {
-      if (r.x) continue
-      const d = r.b - r.a
-      if (d > 0) added += d
-      else removed -= d
-    }
-    return { added, removed }
-  }, [data])
-  const root = useMemo(() => {
+  // at the frontier (an expanded row's own Δ is carried by its children), so
+  // the two terms are the tree's sums; a truncated walk leaves the smallest
+  // movements unenumerated, in which case they're approximate — the
+  // endpoints are always exact.
+  const root = useMemo((): DiffNode => {
     const { cells } = buildTree(data, areaMode)
-    const root: DiffNode = {
+    return {
       key: label,
       label,
       weight: cells.reduce((s, c) => s + c.weight, 0),
       delta: data.total_b - data.total_a,
+      added: cells.reduce((s, c) => s + c.added, 0),
+      removed: cells.reduce((s, c) => s + c.removed, 0),
       status: 'root',
       size_old: data.total_a,
       size_new: data.total_b,
       n_desc_delta: data.objects_b - data.objects_a,
+      n_old: data.objects_a,
+      n_new: data.objects_b,
       children: cells,
     }
-    return root
   }, [data, areaMode, label])
+  const { added, removed } = root
 
   if (!root.children?.length) return null
 
@@ -181,7 +186,6 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
     <div className="diff-tm">
       <DtTreemap<DiffNode>
         root={root}
-        tiling={tiling}
         getSize={n => n.weight}
         getChildren={n => n.children}
         getLabel={n => n.label}
@@ -251,17 +255,22 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
         renderTooltip={n => (
           <>
             <div style={{ fontWeight: 500 }}>{n.key}</div>
-            <div style={{ opacity: 0.75, fontSize: '0.85em' }}>
-              {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} ({fmtDelta(n.delta)})
+            <div style={{ opacity: 0.85, fontSize: '0.85em', fontVariantNumeric: 'tabular-nums' }}>
+              {fmtBytes(n.size_old)}
+              {n.removed > 0 && <> <span className="shrank">− {fmtBytes(n.removed)}</span></>}
+              {n.added > 0 && <> <span className="grew">+ {fmtBytes(n.added)}</span></>}
+              {' '}= {fmtBytes(n.size_new)}{' '}
+              <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
             </div>
-            {n.n_desc_delta !== 0 && (
-              <div style={{ opacity: 0.6, fontSize: '0.8em' }}>
-                Δobjects: {n.n_desc_delta > 0 ? '+' : ''}{n.n_desc_delta.toLocaleString('en-US')}
+            {n.status !== 'filler' && (
+              <div style={{ opacity: 0.75, fontSize: '0.85em', fontVariantNumeric: 'tabular-nums' }}>
+                {n.n_old.toLocaleString('en-US')} → {n.n_new.toLocaleString('en-US')} objects{' '}
+                <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({n.n_desc_delta > 0 ? '+' : ''}{n.n_desc_delta.toLocaleString('en-US')})</span>
               </div>
             )}
             <div style={{ opacity: 0.5, fontSize: '0.75em', marginTop: 2 }}>
               {n.status === 'filler' ? 'unchanged bytes the diff never needed to enumerate' : n.status}
-              {n.pruned && ' · more change below (walk budget)'}
+              {n.lookup && ' · under the floor on one side, read exactly'}
             </div>
           </>
         )}
@@ -276,9 +285,8 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
               unchanged
             </>}
             <span style={{ opacity: 0.6, marginLeft: 4 }}>
-              {areaMode === 'max' ? 'area = max(old, new), band = |Δ|' : 'area = |Δ|'}
+              {areaMode === 'max' ? 'area = max(old, new), band = |Δ|' : 'area = |Δ| · color = Δ / size'}
             </span>
-            <TilingToggle />
             <span style={{ display: 'inline-flex', gap: 2, marginLeft: 6 }}>
               {(['max', 'delta'] as const).map(m => (
                 <button

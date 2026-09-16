@@ -1,133 +1,311 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SyntheticEvent } from 'react'
-import { FaGithub } from 'react-icons/fa'
-import { Link, useLocation } from 'react-router-dom'
-import { MdBrightnessAuto, MdDarkMode, MdInfoOutline, MdLayers, MdLightMode } from 'react-icons/md'
-import { Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
+import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { MdLayers } from 'react-icons/md'
+import { useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
+import { canonId, shortName, shortUserKey } from './UserChip'
+import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
-import { Busy, Skeleton } from './Busy'
 import { DiffTreemap } from './DiffTreemap'
-import { SizeOverTime } from './SizeOverTime'
 import type { DiffData } from './DiffTreemap'
-import { buildUserIndex } from './colors'
-import { DAY, fmtScan, nearestScan, scanTime, useScan } from './scan'
-import { storeForPath } from './stores'
-import { ClassMixTip, SpeedDialTip, Tooltip } from './Tooltip'
-import { Treemap } from './Treemap'
-import type { DateRange, Highlight } from './Treemap'
+import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
+import { Busy, Skeleton } from './Busy'
+import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
 import { LifecycleFold } from './LifecycleFold'
-import { useMarks } from './planMarks'
-import { DiffTable } from './DiffTable'
+import { ClassMixTip, Tooltip } from './Tooltip'
+import { Treemap } from './Treemap'
+import type { DateRange, Highlight, ShadeMode } from './Treemap'
+import { collectFlagged, parseQuery } from './filterTree'
+import { BulkBar } from './BulkBar'
+import { setCurrentScan, useMarkIndex, useMarks } from './marks'
+import { MARK_AXES, klcSplits, useMyUser } from './sweep'
+import type { MarkAxis } from './sweep'
+import { MarkHistory } from './MarkHistory'
+import { MultiSelect } from './MultiSelect'
+import { SiteNav, topbarH } from './SiteNav'
+import type { MenuEntry } from './SiteNav'
+import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
+import { SizeOverTime } from './SizeOverTime'
+import { STORES, storeForPath } from './stores'
+import { useDocTitle } from './title'
+import { TypedPrefixModal } from './TypedPrefix'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
-import { CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, fmtN, ratePerByte } from './types'
-import { UserChip, shortName } from './UserChip'
+import { CLASS_COLORS, CLASS_NAMES, CLASS_PRICE_US, MODE_LABELS, classMix, fmtN, fmtUsd, ratePerByte } from './types'
+import { SiteKbd } from './SiteKbd'
+import { useMarkTotals } from './markTotals'
 import { useUnits } from './units'
-const MODES = Object.keys(MODE_LABELS) as ColorMode[]
-const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
+// The color axes on offer.
+const MODES: ColorMode[] = ['marks', 'read', 'user', 'date', 'tree']
 
-// CF Access identity (present when served behind gcs.oa.dev; absent in local dev)
-interface Identity { email: string; name?: string }
-
-function useIdentity(): Identity | null {
-  const [ident, setIdent] = useState<Identity | null>(null)
+/**
+ * URL value codecs. Values are ONE letter on the wire (`?c=t`); every older
+ * spelling still decodes (`tree`, `written`/`age`, `mark`/`state`, `class`…)
+ * so old links keep working, and `useCanonicalParams` rewrites them to the
+ * short form on load. `use-prms` has no alias support of its own — a codec's
+ * `decode` accepts the legacy forms and the rewrite is ours.
+ */
+const MODE_CODES: Record<string, string> = { tree: 't', date: 'w', read: 'r', user: 'u', marks: 'm' }
+const MODE_ALIASES: Record<string, string> = {
+  t: 'tree', tree: 'tree',
+  w: 'date', written: 'date', age: 'date', date: 'date',
+  r: 'read', read: 'read',
+  u: 'user', user: 'user',
+  m: 'marks', mark: 'marks', marks: 'marks', fate: 'marks',
+}
+const modeCodec = {
+  encode: (v: string | undefined) => (v === undefined ? undefined : MODE_CODES[v] ?? v),
+  decode: (e: string | undefined) => (e === undefined ? undefined : MODE_ALIASES[e] ?? e),
+}
+const shadeCodec = {
+  encode: (v: string | undefined) => (v === 'class' ? 'c' : undefined),
+  decode: (e: string | undefined): string | undefined => (e === 'c' || e === 'class' ? 'class' : undefined),
+}
+/** Rewrite legacy param spellings to their canonical encoding, once, on load. */
+function useCanonicalParams(codecs: [string, { encode: (v: string | undefined) => string | undefined; decode: (e: string | undefined) => string | undefined }][]) {
   useEffect(() => {
-    void fetch('/cdn-cgi/access/get-identity')
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => d?.email && setIdent(d))
-      .catch(() => {})
+    const q = new URLSearchParams(window.location.search)
+    let changed = false
+    for (const [k, codec] of codecs) {
+      const raw = q.get(k)
+      if (raw === null) continue
+      const canon = codec.encode(codec.decode(raw))
+      if (canon === raw) continue
+      changed = true
+      if (canon === undefined) q.delete(k)
+      else q.set(k, canon)
+    }
+    if (changed) window.history.replaceState(window.history.state, '', `${window.location.pathname}${q.size ? `?${q}` : ''}${window.location.hash}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  return ident
 }
 
-// Edu-fold state: open for the viewer's FIRST session (the copy is onboarding
-// — it earns its space once), collapsed by default ever after. An explicit
-// toggle wins forever (localStorage); sessionStorage marks the grace session
-// so a mid-session reload doesn't slam the fold shut on a first-time reader.
-function useFold(key: string): [boolean, (e: SyntheticEvent<HTMLDetailsElement>) => void] {
-  const [open, setOpen] = useState(() => {
-    try {
-      const chosen = localStorage.getItem(key)
-      if (chosen != null) return chosen !== '0'
-      if (localStorage.getItem(`${key}:seen`) == null) {
-        localStorage.setItem(`${key}:seen`, '1')
-        sessionStorage.setItem(`${key}:grace`, '1')
-        return true
-      }
-      return sessionStorage.getItem(`${key}:grace`) != null
-    } catch { return true }
-  })
-  const onToggle = (e: SyntheticEvent<HTMLDetailsElement>) => {
-    const o = e.currentTarget.open
-    if (o === open) return // browsers fire `toggle` when the attr is first set — not a choice
-    setOpen(o)
-    try { localStorage.setItem(key, o ? '1' : '0') } catch { /* in-memory only */ }
-  }
-  return [open, onToggle]
-}
+// The storage-class axis (`?cl=`): one letter per class, in class order.
+type ClassAxis = 's' | 'n' | 'c' | 'a'
+const CLASS_AXES: ClassAxis[] = ['s', 'n', 'c', 'a']
+const CLASS_OF: Record<ClassAxis, string> = { s: '1', n: '2', c: '3', a: '4' }
 
 // Diff-section span presets (days back from the "after" scan).
 const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14], ['30d', 30]]
 
+// The mark-state axis chips (`?k=` letters), in bar order.
+const MARK_CHIPS: { f: MarkAxis; key: string; glyph: string; color: string; tip: string }[] = [
+  { f: 'keep', key: 'k', glyph: '✓', color: 'var(--mk-keep)', tip: 'Bytes under a keep decision (keep-last-ckpt counts: it splits its subtree).' },
+  { f: 'sweep', key: 's', glyph: '✕', color: 'var(--mk-del)', tip: 'Bytes marked for the sweep (keep-last-ckpt counts: it splits its subtree).' },
+  { f: 'unmarked', key: 'u', glyph: '○', color: 'var(--ink-2)', tip: 'The review backlog — no keep/sweep decision on the prefix or any ancestor.' },
+]
+
+// The owner axis: `?o=` is `owned`, `unowned`, `me`, or a user key
+// (`?o=rw`); absent = everything. Owned = a person owns it (inferred from
+// paths/runs, or assigned); unowned
+// = the nobody-owns-it pool. A user narrows "owned" to that person.
+type OwnerMode = 'all' | 'owned' | 'unowned' | 'user' | 'others'
+
+
 // Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
 // tracking the one in view, and deep links scroll to it. Old ids keep working.
-const SECTION_IDS = ['tree-map', 'over-time', 'diff', 'mtime']
-const LEGACY_ANCHORS: Record<string, string> = { 'size-over-time': 'over-time', changes: 'diff', 'created-date': 'mtime' }
-// Color-mode URL tokens: one letter each (`?c=a`, `?ac=t`); the older
-// spelled-out forms still decode so shared links keep working.
-const MODE_TOKENS: Record<string, ColorMode> = { a: 'date', age: 'date', t: 'tree', tree: 'tree', u: 'user', user: 'user' }
-const modeToken = (m: ColorMode): string => (m === 'date' ? 'a' : m === 'tree' ? 't' : 'u')
-
-type Theme = 'system' | 'dark' | 'light'
-const THEME_KEY = 'gcs-usage:theme'
-
-function useTheme(): [Theme, () => void] {
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem(THEME_KEY) as Theme) || 'system')
-  useEffect(() => {
-    if (theme === 'system') delete document.documentElement.dataset.theme
-    else document.documentElement.dataset.theme = theme
-    localStorage.setItem(THEME_KEY, theme)
-  }, [theme])
-  return [theme, () => setTheme(t => (t === 'system' ? 'dark' : t === 'dark' ? 'light' : 'system'))]
+const SECTION_IDS = ['tree-map', 'tbl', 'marks', 'over-time', 'diff', 'mtime']
+const LEGACY_ANCHORS: Record<string, string> = {
+  'size-over-time': 'over-time', 'mark-history': 'marks', 'created-date': 'mtime', changes: 'diff',
 }
 
 function AppContent() {
   // Which object store to render comes from the path (one store today; the
   // abstraction stays so a second cloud store is a `STORES` row + data).
-  const { pathname, hash } = useLocation()
+  const { pathname, search, hash } = useLocation()
+  const navigate = useNavigate()
   const store = storeForPath(pathname)
-  // Scan selection (`?d=YYMMDD`) + the polling scan list; absent `?d` is a
-  // first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, setDP, span, setSpan, setRange, scansQ } = useScan(store)
-  const marks = useMarks()
+  const canMark = useCanMark()
+  // Mark & sweep (specs/mark-sweep-ui.md): the same treemap plus keep/sweep
+  // controls, shown to any signed-in marker on the GCS store — anon and guest
+  // (no-email) sessions get the read-only view. Folded onto `/` (was a separate
+  // `/mark` route); GCS only, since CoreWeave is out of the sweep.
+  const markMode = store.marks && canMark
+  const marksQ = useMarks(markMode)
+  const markIdx = useMarkIndex(marksQ.data)
+  const [typedOpen, setTypedOpen] = useState(false)
+  // Keep the tab title in sync with the store on client-side navigation.
+  useDocTitle() // the bare site name (= the store's title) is the home page
+  // URL token matches the visible label ("written"/"mark"), not the internal
+  // key ("date"/"marks"); old ?c=age / ?c=fate links still decode (the retired
+  // group axes decode to the default).
+  // ABSENT is meaningful: it means "the lens-appropriate default" (see `mode`
+  // below), so switching lenses re-defaults the coloring — but an explicit
+  // pick (any `?c=`) survives every lens change.
+  const [modeP, setModeP] = useUrlState('c', modeCodec)
+  // The age chart's own color axis (`?ac=`, same tokens); absent = follow the map.
+  const [ageModeP, setAgeModeP] = useUrlState('ac', modeCodec)
+  useCanonicalParams([['c', modeCodec], ['ac', modeCodec], ['s', shadeCodec]])
+  // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
+  // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
+  // a first-class "latest", so a parked tab follows new scans.
+  const { asof, scans, dMatches, dP, setDP, span, setSpan, setRange, scansQ } = useScan(store)
+  const rulesQ = useRules()
+  const rules: Rules | null = rulesQ.data ?? null
+  // Ledger actions record which scan the actor was viewing.
+  useEffect(() => setCurrentScan(asof ?? undefined), [asof])
   const scanQuery = <T,>(name: string) => ({
     queryKey: [name, store.key, asof],
     queryFn: () => fetch(`${store.base}/${asof}/${name}.json`).then(r => r.json() as Promise<T>),
     enabled: !!asof,
     staleTime: Infinity,
   })
+  // `?f=` (name filter), `?k=` (mark axis) and `?o=` (owner axis): the
+  // page's scope, sent to the server with every view (see `scopeQs`
+  // below). The two axes replace the old review *lenses* (`?l=todo|user|
+  // unclaimed`, `?lu=`, and the `?u=` legend pin) — one orthogonal pair
+  // instead of a tab row, so "unmarked ∧ unclaimed" or "sweep ∧ one user"
+  // are plain combinations. Old links normalize below.
+  const [fq, setFq] = useUrlState('f', stringParam())
+  // Lens changes push history (they change WHAT you're looking at, like a
+  // drill); cosmetics (`?c=`, `?s=`, `?n=`) replace.
+  const [kP, setKP] = useUrlState('k', stringParam(), true)
+  const [oP, setOP] = useUrlState('o', stringParam(), true)
+  // `?by=<assigner>` — the /assignments heatmap cell lens: with a user owner
+  // lens, fold only the claims that assigner made. Only meaningful alongside a
+  // person in `?o=`.
+  const [byP] = useUrlState('by', stringParam())
+  // `?s=` — the secondary "shade by" axis, a perturbation within each cell's
+  // primary color (`ShadeMode`). Absent = none: the primary axis unchanged.
+  const [sP, setSP] = useUrlState('s', shadeCodec)
+  const shade: ShadeMode = sP === 'class' ? 'class' : 'none'
+  // `?cl=` ⊆ snca — the storage-class axis (server-side, like `?k=`): the
+  // view's bytes are cut to the allowed classes. All four = no scope.
+  const [clP, setClP] = useUrlState('cl', stringParam(), true)
+  const classSet = useMemo((): ReadonlySet<ClassAxis> | null => {
+    const on = new Set(CLASS_AXES.filter(c => (clP ?? '').includes(c)))
+    return on.size > 0 && on.size < CLASS_AXES.length ? on : null
+  }, [clP])
+  const setClasses = (ks: ClassAxis[]) => setClP(ks.length === 0 || ks.length === CLASS_AXES.length ? undefined : CLASS_AXES.filter(c => ks.includes(c)).join(''))
+  const ident = useIdentity()
+  const myUser = useMyUser(ident?.email, markMode)
+  // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
+  const markAxes = useMemo((): ReadonlySet<MarkAxis> | null => {
+    const on = new Set(MARK_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
+    return on.size > 0 && on.size < MARK_AXES.length && markMode ? on : null
+  }, [kP, markMode])
+  const setMarkAxes = (keep: MarkAxis[]) =>
+    setKP(keep.length === MARK_AXES.length || keep.length === 0 ? undefined : MARK_CHIPS.filter(c => keep.includes(c.f)).map(c => c.key).join(''))
+  // Owner axis. `me` resolves to the signed-in user's attribution id (a
+  // shared `?o=me` link shows each reader their own files); an unmapped
+  // email resolves to nothing, and the axis falls back to "all" with a note.
+  // `?o=!<key>,<key>` — the "owned by someone OTHER than these people" pool
+  // (the sweep console's "show me the conflicts under this band" link). The
+  // excluded users resolve to canonical ids for the server's row filter.
+  const notUsers: string[] =
+    markMode && oP?.startsWith('!') ? oP.slice(1).split(',').filter(Boolean).map(k => canonId(k)) : []
+  const ownerUser: string | null =
+    !markMode || !oP || oP === 'owned' || oP === 'unowned' || oP.startsWith('!') ? null
+    : oP === 'me' ? myUser
+    : canonId(oP)
+  const ownerMode: OwnerMode =
+    !markMode || !oP ? 'all'
+    : notUsers.length ? 'others'
+    : oP === 'owned' ? 'owned' : oP === 'unowned' ? 'unowned' : ownerUser ? 'user' : 'all'
+  const meUnmapped = markMode && oP === 'me' && !myUser
+  const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
+  // Flip a picked person between their own bytes (`?o=<key>`) and everyone
+  // else's under the current view (`?o=!<key>`) — the ≠ toggle beside the picker.
+  const negateOwner = (on: boolean) => {
+    const key = ownerUser ? shortUserKey(ownerUser) : notUsers.length ? shortUserKey(notUsers[0]) : null
+    if (key) setOP(on ? `!${key}` : key)
+  }
+  const viewUser = ownerUser
+  // Every scope axis is applied server-side by /api/subtree (specs/
+  // view-serving.md §2): a user (`lens=user:`), a pool (`o=`), the mark axis
+  // (`k=`, folded from the live ledger), the name filter (`q=`). The client
+  // receives exactly the current view and only draws it.
+  const lensUser = viewUser
+  const activeLens = lensUser ? `user:${lensUser}` : null
+  const assigner = markMode && byP ? canonId(byP) : null
+  const scopeQs =
+    (activeLens ? `&lens=${activeLens}` : '') +
+    (activeLens && assigner ? `&by=${encodeURIComponent(assigner)}` : '') +
+    (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
+    (notUsers.length ? `&o=!${notUsers.map(encodeURIComponent).join(',')}` : '') +
+    (markAxes ? `&k=${[...markAxes].map(f => f[0]).join('')}` : '') +
+    (classSet ? `&cl=${CLASS_AXES.filter(c => classSet.has(c)).join('')}` : '') +
+    (fq ? `&q=${encodeURIComponent(fq)}` : '')
+  // One-time legacy-param rewrite onto the two axes, so old links (Slack
+  // digests, /user pages) work and re-share in the current form:
+  //   ?l=todo → ?k=u · ?l=unclaimed|communal, ?t=unattributed|communal → ?o=unclaimed
+  //   ?l=user[&lu=x] (and older ?mt=mine[&mu=x]) → ?o=x|me · ?u=x (legend pin) → ?o=x
+  //   any other ?t= (the retired group pin) → dropped
+  useEffect(() => {
+    const sp = new URLSearchParams(search)
+    const legacy = ['l', 'lu', 'u', 'mt', 'mu', 't']
+    const t = sp.get('t')
+    // The owner pools were `claimed` / `unclaimed` until 2026-09-07.
+    const oldPool = sp.get('o') === 'claimed' ? 'owned' : sp.get('o') === 'unclaimed' ? 'unowned' : null
+    if (!legacy.some(k => sp.has(k)) && !oldPool) return
+    if (oldPool) sp.set('o', oldPool)
+    const l = sp.get('l') ?? sp.get('mt')
+    const lu = sp.get('lu') ?? sp.get('mu')
+    const u = sp.get('u')
+    for (const k of legacy) sp.delete(k)
+    if (t === 'unattributed' || t === 'communal') sp.set('o', 'unowned')
+    if (l === 'todo') sp.set('k', 'u')
+    else if (l === 'unclaimed' || l === 'communal') sp.set('o', 'unowned')
+    else if (l === 'user' || l === 'mine') sp.set('o', lu ? shortUserKey(canonId(lu)) : 'me')
+    if (u && !sp.has('o')) sp.set('o', shortUserKey(canonId(u)))
+    navigate({ pathname, search: `?${sp.toString()}`, hash }, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search])
   const ageQ = useQuery(scanQuery<AgeRow[]>('age'))
   const metaQ = useQuery(scanQuery<Meta>('meta'))
-  const rulesQ = useQuery<Rules | null>({ queryKey: ['rules'], queryFn: () => fetch('/data/rules.json').then(r => (r.ok ? r.json() : null)).catch(() => null), staleTime: Infinity })
-  const age: AgeRow[] = ageQ.data ?? []
-  const meta: Meta | null = metaQ.data ?? null
-  const rules: Rules | null = rulesQ.data ?? null
-  // Controlled treemap drill path in `?path=` (bucket-prefixed segments,
-  // `marin-us-east-02a/marin/...` — the index's own paths). It survives scan
-  // switches by re-walking the new tree; a vanished path truncates to its
-  // deepest surviving ancestor.
-  const [drillPath, setDrillPath] = useUrlState('path', stringParam())
-  const graftPath = (drillPath ?? '').replace(/^\/+|\/+$/g, '')
-  // Every read is a view query (specs/view-serving.md): the map's base is the
-  // pixel-budget subtree at the root, and every level of the drilled path
-  // gets its own subtree query, grafted in depth order — interactive drills
-  // hit each level's cache as they go, and a cold deep link fans the whole
-  // chain out in parallel. w/h are the canvas budget (quantized to 128 px so
-  // resizes mostly re-hit the edge cache).
+  // The Diff section's "before" endpoint comes from the `?d=` span (see
+  // scan.ts): absent = the previous scan; a span resolves to the scan
+  // *nearest* that far before "after" — scan times drift minutes past exact
+  // multiples, so "at least N days back" would skip half a cadence. The
+  // "after" endpoint IS the page's scan (`?d=`). Both sides align client-side
+  // from `/api/subtree` at the drilled path and take the page scope (lens,
+  // pinned row, `?f=`) exactly like the map — one code path for every scope;
+  // the batch job's root-only `diff.json` is no longer read here.
+  const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
+  const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
+  const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
+  const diffPrev = spanScan ?? prevScan
+  // Hour-rounded span back from `to` — the previous scan clears it, anything
+  // else round-trips as its own span (nearest-scan resolution recovers it,
+  // and the link keeps following `latest`).
+  const spanTo = (to: string, from: string): number | undefined =>
+    scans[scans.indexOf(to) + 1] === from
+      ? undefined
+      : Math.max(3600_000, Math.round((scanTime(to) - scanTime(from)) / 3600_000) * 3600_000)
+  const pickBefore = (scan: string) => { if (asof) setSpan(spanTo(asof, scan)) }
+  // A brush on the size chart hands back calendar dates; each resolves to the
+  // scan on that date, and the pair becomes the page's `?d=` (after + span).
+  const brushRange = (from: string, to: string) => {
+    const toScan = scans.find(s => s.startsWith(to))
+    const fromScan = scans.find(s => s.startsWith(from))
+    if (!toScan || !fromScan || toScan <= fromScan) return
+    setRange(toScan, spanTo(toScan, fromScan))
+  }
+  const diffWindow: [string, string] | undefined = diffPrev && asof ? [diffPrev, asof] : undefined
+  // Presets past the history's reach — nearest scan more than a quarter of
+  // the span off, or already claimed by a shorter preset — are dropped
+  // rather than mislabeled.
+  const spanPicks = useMemo(() => {
+    if (!asof) return []
+    const t0 = scanTime(asof)
+    const picks: { label: string; ms: number; scan: string }[] = []
+    for (const [label, days] of SPANS) {
+      const ms = days * DAY
+      const best = nearestScan(earlier, t0 - ms)
+      if (!best || Math.abs(scanTime(best) - (t0 - ms)) > ms / 4) continue
+      if (!picks.some(p => p.scan === best)) picks.push({ label, ms, scan: best })
+    }
+    return picks
+  }, [asof, earlier])
+  // Lazy drill (specs/path-index-lazy-drill.md step 3, now the primary
+  // source): the map's base is the pixel-budget subtree at the store root,
+  // and every level of the drilled path gets its own subtree query, grafted
+  // in depth order — interactive drills hit each level's cache as they go,
+  // and a cold deep link fans the whole chain out in parallel.
+  const graftPath = pathname.slice((store.path === '/' ? '' : store.path).length).replace(/^\/+/, '')
   const canW = Math.ceil((typeof window === 'undefined' ? 1280 : window.innerWidth) / 128) * 128
   const subtreePaths = useMemo(() => {
     const segs = graftPath.split('/').filter(Boolean)
@@ -135,38 +313,40 @@ function AppContent() {
   }, [graftPath])
   const subtreeQs = useQueries({
     queries: subtreePaths.map(p => ({
-      queryKey: ['subtree', asof, p, canW],
+      queryKey: ['subtree', asof, p, canW, scopeQs],
       enabled: !!asof,
-      staleTime: Infinity,
+      staleTime: markAxes ? 30_000 : Infinity, // the mark axis follows the live ledger
       // Retry transient failures, but not the deterministic ones (409: no
-      // index for this scan; 413: view too wide) — those surface as-is.
+      // user index for this scan; 413: view too wide) — those surface as-is.
       retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
       retryDelay: (n: number) => 400 * 2 ** n,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}`,
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
           { credentials: 'include' },
         )
         if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
-        return r.json() as Promise<{ tree: TreeNode; threshold?: number }>
+        return r.json() as Promise<{ tree: TreeNode; matches?: string[]; threshold?: number }>
       },
     })),
   })
-  // Progressive fill: a companion `depth=1` fetch for the deepest path — the
-  // same pixel budget, capped one level below the root, so it returns the
-  // *identical* top-level children (branches arrive without `c`, already
-  // drillable) from a single depth-band read. It stands in until the full
-  // tree lands; because the top level matches, the fill-in adds children
-  // under tiles that don't move.
+  // Progressive fill: a companion `depth=1` fetch per path — the same pixel
+  // budget, capped one level below the root, so it returns the *identical*
+  // top-level children (branches arrive without `c`, already drillable) from
+  // a single depth-band read. It stands in until the full tree lands; because
+  // the top level matches, the fill-in adds children under tiles that don't
+  // move. The whole held tree (`mapTree`, below) outranks it on later loads,
+  // so a scope change never downgrades a held full tree to a coarse one.
   const coarseQs = useQueries({
     queries: subtreePaths.map((p, i) => ({
-      queryKey: ['subtree', asof, p, canW, 'depth1'],
+      queryKey: ['subtree', asof, p, canW, scopeQs, 'depth1'],
+      // Deepest path only — see `dataFor`; ancestors never use it.
       enabled: !!asof && i === subtreePaths.length - 1,
-      staleTime: Infinity,
+      staleTime: markAxes ? 30_000 : Infinity,
       retry: false,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}&depth=1`,
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}&depth=1${scopeQs}`,
           { credentials: 'include' },
         )
         if (!r.ok) throw new Error(`${r.status}`)
@@ -174,22 +354,36 @@ function AppContent() {
       },
     })),
   })
-  // The full tree for path i once it's here; for the DEEPEST path only, the
-  // depth-1 one while it isn't (an ancestor must be full or absent: `mapPath`
-  // walks the spine and truncates at the first node without children).
+  /** The full tree for path i once it's here; for the DEEPEST path only, the
+   * depth-1 one while it isn't. An ancestor must be full or absent: `mapPath`
+   * walks the spine by segment and truncates at the first node without
+   * children, so a depth-1 ancestor would collapse the drill to itself and
+   * the controlled path would thrash until the full spine landed. The
+   * deepest node's children are the visible map — the walk never descends
+   * through them, and that's the level whose speed matters. */
+  // Full > depth-1 (deepest only). Never a *held* previous tree here: a graft
+  // must receive a node's own subtree. Holding, say, the previous sibling's
+  // tree under a new name puts this node's totals over that node's children,
+  // and children that don't sum to their parent send the core's fold
+  // arithmetic (`(other)` = parent − Σ kids) negative — its layout then never
+  // converges until a consistent tree lands. The previous *rendered* tree is
+  // held whole instead, below (`mapTree`).
   const dataFor = (i: number): TreeNode | null =>
     subtreeQs[i]?.data?.tree ?? (i === subtreePaths.length - 1 ? coarseQs[i]?.data?.tree ?? null : null)
   const baseTree: TreeNode | null = dataFor(0)
   const rootErr = subtreeQs[0]?.error as Error | undefined
   // useQueries returns a fresh array each render; stamp the data so the graft
-  // memo re-runs exactly when a response (either tier) lands.
+  // memo re-runs exactly when a response lands.
+  // Both tiers stamp the graft: a depth-1 tree landing must re-run it just
+  // as a full one does.
   const subStamp = [...subtreeQs, ...coarseQs].map(q => q.dataUpdatedAt).join(',')
   const tree = useMemo((): TreeNode | null => {
     if (!baseTree) return null
     const graftAt = (t: TreeNode, segs: string[], sub: TreeNode): TreeNode => {
       const rec = (n: TreeNode, i: number): TreeNode => {
-        // Keep own totals; adopt the finer children.
-        if (i === segs.length) return { ...n, c: sub.c }
+        // Keep own totals; adopt the finer children — and the response root's
+        // extras (`k`, `pv`), which a parent-level view may have skipped.
+        if (i === segs.length) return { ...n, c: sub.c, ...(sub.k != null ? { k: sub.k } : {}), ...(sub.pv ? { pv: sub.pv } : {}) }
         const seg = segs[i]
         const kids = n.c ?? []
         if (kids.some(k => k.n === seg)) return { ...n, c: kids.map(k => (k.n === seg ? rec(k, i + 1) : k)) }
@@ -214,95 +408,157 @@ function AppContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseTree, subtreePaths, subStamp])
   // Hold the last tree that rendered while the next one loads — whole, so it
-  // is self-consistent. The map never flashes to nothing across a scan or
-  // drill change; at worst `mapPath` truncates the new drill to an ancestor
-  // this tree still has, until the new tree (depth-1 first, then full)
-  // replaces it. The map's derivations follow `shownTree`, not `tree`.
+  // is self-consistent (it already laid out fine). The map never flashes to
+  // nothing across a scope, scan, or drill change, and the page below never
+  // reflows; at worst `mapPath` truncates the new drill to an ancestor this
+  // tree still has, until the new tree (depth-1 first, then full) replaces it.
+  // Everything derived for the drawn map (`klcIdx`, `dateRange`, `catOrder`,
+  // the rules section) follows `mapTree`, not `tree`, so a hold doesn't
+  // empty the decorations under a map that is still showing.
   const lastTree = useRef<TreeNode | null>(null)
   if (tree) lastTree.current = tree
-  const shownTree = tree ?? lastTree.current
-  const treeLoading = !tree && !!lastTree.current
-  const mapBusy = treeLoading || subtreeQs.some(q => q.isFetching)
-  // The Diff section's "before" endpoint comes from the `?d=` span (see
-  // scan.ts): absent = the previous scan; a span resolves to the scan
-  // *nearest* that far before "after" — scan times drift minutes past exact
-  // multiples (0:01, 12:01…), so "at least N days back" would skip half a
-  // cadence. The "after" endpoint IS the page's scan. Both sides are read
-  // server-side (`/api/diff`) at the drilled path, at one shared byte floor.
-  const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
-  const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
-  const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
-  const diffPrev = spanScan ?? prevScan
-  // Hour-rounded span back from `to` — the previous scan clears it, anything
-  // else round-trips as its own span (nearest-scan resolution recovers it,
-  // and the link keeps following `latest`).
-  const spanTo = (to: string, from: string): number | undefined =>
-    scans[scans.indexOf(to) + 1] === from
-      ? undefined
-      : Math.max(3600_000, Math.round((scanTime(to) - scanTime(from)) / 3600_000) * 3600_000)
-  const pickBefore = (scan: string) => { if (asof) setSpan(spanTo(asof, scan)) }
-  // A brush on the size chart picks both endpoints at once: "after" becomes
-  // the page's scan and "before" round-trips as its hour-rounded span. A
-  // zero-width brush is a click (TimeSeries hands those to `onPickDate`).
-  const brushRange = (from: string, to: string) => {
-    if (to <= from) return
-    setRange(to, spanTo(to, from))
-  }
-  const diffWindow: [string, string] | undefined = diffPrev && asof ? [diffPrev, asof] : undefined
-  // Presets past the history's reach — nearest scan more than a quarter of
-  // the span off, or already claimed by a shorter preset — are dropped
-  // rather than mislabeled.
-  const spanPicks = useMemo(() => {
-    if (!asof) return []
-    const t0 = scanTime(asof)
-    const picks: { label: string; ms: number; scan: string }[] = []
-    for (const [label, days] of SPANS) {
-      const ms = days * DAY
-      const best = nearestScan(earlier, t0 - ms)
-      if (!best || Math.abs(scanTime(best) - (t0 - ms)) > ms / 4) continue
-      if (!picks.some(p => p.scan === best)) picks.push({ label, ms, scan: best })
-    }
-    return picks
-  }, [asof, earlier])
-  const diffFetch = (extra: string) => async () => {
-    const r = await fetch(
-      `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${extra}`,
-      { credentials: 'include' },
-    )
-    if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
-    return r.json() as Promise<DiffData>
-  }
-  // First paint: the top-level diff (`depth=1` — the two root reads plus one
-  // level of lookups) stands in for the full walk while it aligns, so the
-  // map shows the shape of the change before its detail.
+  const mapTree = tree ?? lastTree.current
+  // What the map shows vs. what the page asked for: a held previous tree
+  // (`mapStale` — dimmed, with a centered marker), or the asked-for tree with
+  // a fetch still in flight (`mapBusy` — the full tree filling in behind the
+  // depth-1 one, or a refresh; a corner marker, nothing dimmed).
+  const mapStale = !tree && !!lastTree.current
+  const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
+
+  // keep_last_ckpt → concrete keep/sweep split, resolved against the drawn
+  // tree (state cells, stripes, and the state rollup all decompose through it).
+  const klcIdx = useMemo(
+    () => (mapTree && markIdx.count ? klcSplits(mapTree, markIdx.keeps) : undefined),
+    [mapTree, markIdx],
+  )
+  // The marks feed filters its (small, client-held) rows by the same name
+  // query; the map's filtering is the server's.
+  const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
+  // Bulk actions target the outermost matched prefixes — the nodes the server
+  // flagged `m` (a match root's whole subtree comes along, so its descendants
+  // aren't flagged).
+  const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
+  const age: AgeRow[] = ageQ.data ?? []
+  const meta: Meta | null = metaQ.data ?? null
+  // Section `#hash` both ways (deep link in, scroll-spy out) — shared with
+  // /sweep. Re-armed as the map, meta and scans land (sections mount off
+  // different queries).
+  useHashSpy({ ids: SECTION_IDS, hash, deps: [mapTree, meta, scans], legacy: LEGACY_ANCHORS, offset: topbarH })
+  const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
+  const { fmtBytes } = useUnits()
+  // The treemap's drill path now lives in the URL *path* (below the store's own
+  // route prefix), so a drilled prefix is a real shareable URL —
+  // `/marin-us-central1/ego-dex`, not `/?p=marin-us-central1/ego-dex`. View
+  // options stay query params (`?c`, `?mt`, …); the section stays in the `#hash`.
+  const storeBase = store.path === '/' ? '' : store.path
+  const drillPath = pathname.slice(storeBase.length).replace(/^\/+/, '')
+  // Exact keep/sweep/undecided for the CURRENT view — estate at the root, the
+  // drilled subtree once you drill (`?path=`), so the map's rollup is exact at
+  // every depth, not just the root (specs/path-agnostic-serving.md §2.3).
+  const drillPfx = drillPath ? `${store.scheme}${drillPath}/` : undefined
+  const totalsQ = useMarkTotals(asof, markMode ? drillPfx : undefined, markMode)
+  const drillTo = (segs: string[]) =>
+    navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
+  // Read-recency lens domain: the access-log observation window (meta), not
+  // the tree's own min/max — "no reads" is only meaningful vs when logging began.
+  const readRange = useMemo((): DateRange | null =>
+    meta?.access ? { min: meta.access.from, max: meta.access.to } : null,
+  [meta])
+  // No explicit `?c=` → a scope-appropriate default; an explicit pick always
+  // wins. During the cleanup sprint the primary axis is mark state ("marks"),
+  // so the fill and the keep/sweep decorations are ONE axis. A single mark
+  // state or a single owner defaults to `user` instead (state is useless on an
+  // all-undecided view; on a one-owner view the interesting axis is who else
+  // is in there).
+  const lensDefaultMode: ColorMode =
+    markAxes?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : markMode ? 'marks' : 'user'
+  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
+  const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
+  // The scan carries attribution (the owner axis and user coloring apply) —
+  // from the scan's meta, not the current view, which may hold no user bytes
+  // at all (e.g. `?o=unclaimed`).
+  const hasAttr = !!meta?.users?.length
+  const effMode: ColorMode =
+    (mode === 'read' && !readRange) || (mode === 'marks' && !markMode) ? 'user' : hasAttr ? mode : 'tree'
+  // The age chart's color axis: an explicit `?ac=` wins; otherwise it follows
+  // the map, except marks (no per-stratum value in age.json) → written. The
+  // read axis needs strata that carry `a` (scans published from 8/29 on) —
+  // without them it's offered disabled and the chart falls back to written.
+  const ageReadRange = age.some(r => r.a != null) ? readRange : null
+  // Only axes this scan can actually color by are offered (no dead buttons):
+  // `read` needs `a` strata, the user axis needs `us`.
+  const ageModes = AGE_MODES.filter(m => (m !== 'read' || ageReadRange) && (hasAttr || m === 'date' || m === 'tree'))
+  const ageMode: ColorMode = (() => {
+    const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'marks' ? 'date' : effMode
+    return ageModes.includes(want) ? want : 'date'
+  })()
+  // The pinned highlight the map dims to: the owner axis's user (a scoped
+  // subtree still contains minority co-tenants, and user coloring should dim
+  // them); the pools are sliced exactly, nothing to dim.
+  const hl: Highlight | null = ownerUser ? { user: ownerUser } : null
+  // Any scope narrower than "everything" — sections whose data can't follow
+  // it (the age chart) hide rather than show fleet-wide numbers.
+  const lensScoped = markAxes != null || ownerMode !== 'all' || classSet != null
+  // Diff sides: the drilled subtree at each endpoint, scoped like the map.
+  // The diff is read server-side (`/api/diff`): both scans' index tiers at
+  // one shared byte floor, point lookups for names that crossed it, the
+  // page scope applied to both sides (specs/view-serving.md §2).
+  // First paint: the bucket-level diff (`depth=1` — the two root reads plus
+  // one level of lookups, ~2 s cold) stands in for the full walk while it
+  // aligns, so the map shows the shape of the change before its detail.
   const diffQ1 = useQuery<DiffData, Error>({
-    queryKey: ['diff', diffPrev, asof, graftPath, canW, 'l1'],
+    queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs, 'l1'],
     enabled: !!asof && !!diffPrev,
-    staleTime: Infinity,
+    staleTime: markAxes ? 30_000 : Infinity,
     retry: false,
-    queryFn: diffFetch('&depth=1'),
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
+        { credentials: 'include' },
+      )
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      return r.json() as Promise<DiffData>
+    },
   })
   const diffL1 = diffQ1.data
+  // The settled diff map's rendered height, held as the slot's floor while
+  // the next pair loads under it (see the slot below).
+  const diffSlotRef = useRef<HTMLDivElement>(null)
+  const diffSlotH = useRef(0)
   const diffQ = useQuery<DiffData, Error>({
-    queryKey: ['diff', diffPrev, asof, graftPath, canW],
+    queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs],
     enabled: !!asof && !!diffPrev,
-    // While the full walk aligns: the top-level diff of the SAME pair once it
-    // lands, else the last pair's diff — drawn dimmed either way, so the
+    // While the full walk aligns: the bucket-level diff of the SAME pair once
+    // it lands, else the last pair's diff — drawn dimmed either way, so the
     // section holds its height and shows something before the detail.
     placeholderData: (prev: DiffData | undefined) => diffL1 ?? prev,
-    staleTime: Infinity,
+    staleTime: markAxes ? 30_000 : Infinity,
     retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
     retryDelay: (n: number) => 400 * 2 ** n,
-    queryFn: diffFetch(''),
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
+        { credentials: 'include' },
+      )
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      return r.json() as Promise<DiffData>
+    },
   })
   // The headline first: the same pair's totals without the row walk land in
   // a second or two, so the +X / Δobjects line shows while the rows align.
   const diffSumQ = useQuery<DiffData, Error>({
-    queryKey: ['diff', diffPrev, asof, graftPath, canW, 'summary'],
+    queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs, 'summary'],
     enabled: !!asof && !!diffPrev,
-    staleTime: Infinity,
+    staleTime: markAxes ? 30_000 : Infinity,
     retry: false,
-    queryFn: diffFetch('&summary=1'),
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
+        { credentials: 'include' },
+      )
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      return r.json() as Promise<DiffData>
+    },
   })
   const diff: DiffData | null = diffQ.data ?? null
   const diffErr = diffQ.error
@@ -310,57 +566,34 @@ function AppContent() {
   // aligning: its numbers describe another pair, so the subtitle says
   // "aligning" instead, and the drawn treemap dims under a marker.
   const diffStale = diffQ.isPlaceholderData || (!diff && diffQ.isFetching)
+  // Record the settled map's height after every commit that shows one; a
+  // reload then holds that height under the marker instead of collapsing.
+  useLayoutEffect(() => {
+    if (!diffStale && diffSlotRef.current) diffSlotH.current = diffSlotRef.current.offsetHeight
+  })
   // What the subtitle's numbers describe: the full diff once it's this pair's,
   // else the summary (its own query — current for this key or absent).
   const diffHead: DiffData | null = diff && !diffStale ? diff : diffSumQ.data ?? null
-  const [introOpen, onIntroToggle] = useFold('gcs-usage:fold2:intro')
-  // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
-  // map, meta and scans land (sections mount off different queries). The
-  // sections park under the sticky pagebar (`scroll-margin-top`, app.scss).
-  useHashSpy({
-    ids: SECTION_IDS, hash, deps: [shownTree, meta, scans], legacy: LEGACY_ANCHORS,
-    offset: () => { const el = document.getElementById('tree-map'); return el ? parseFloat(getComputedStyle(el).scrollMarginTop) || 0 : 0 },
-  })
-  // Map color-by (`?c=`): absent = the default (`user`); one-letter tokens.
-  const [modeP, setModeP] = useUrlState('c', {
-    encode: (v: string | undefined) => (v === 'user' || v === undefined ? undefined : modeToken(v as ColorMode)),
-    decode: (e: string | undefined) => (e === undefined ? 'user' : MODE_TOKENS[e] ?? 'user'),
-  })
-  // The age chart's own color axis (`?ac=`); absent = follow the map (so a
-  // pick equal to the map's effective mode is cleared, not serialized).
-  const [ageModeP, setAgeModeP] = useUrlState('ac', {
-    encode: (v: string | undefined) => (v === undefined ? undefined : modeToken(v as ColorMode)),
-    decode: (e: string | undefined) => (e === undefined ? undefined : MODE_TOKENS[e]),
-  })
-  const [hlUser, setHlUser] = useUrlState('u', stringParam())
-  const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
-  const [theme, cycleTheme] = useTheme()
-  const ident = useIdentity()
-  const { units, suffixB, fmtBytes, toggleUnits, toggleSuffixB } = useUnits()
-  const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : 'user'
-  const setMode = (m: ColorMode) => setModeP(m)
-  const hasAttr = (meta?.users?.length ?? 0) > 0
-  const effMode: ColorMode = hasAttr ? mode : 'tree'
-  // Only axes this scan can color by are offered — `user` needs attribution
-  // (CoreWeave has none today), so it's absent rather than a dead button.
-  const ageModes = AGE_MODES.filter(m => hasAttr || m !== 'user')
-  const ageMode: ColorMode = (() => {
-    const want = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode
-    return ageModes.includes(want) ? want : 'tree'
-  })()
-  const hl: Highlight | null = hlUser ? { user: hlUser } : null
-
-  const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
-
-  // The drilled node, resolved against the shown tree each render (a vanished
-  // path truncates to its deepest surviving ancestor). The children table
-  // below the map mirrors this node, and a table row drills the map by
-  // pushing onto it.
+  // One-line description of the page scope, for the section subtitles:
+  // where, then whose, then which mark states, then which names.
+  const scopeParts: string[] = [
+    drillPath || 'all buckets',
+    ...(ownerUser ? [`${shortName(ownerUser)}’s files${assigner ? `, assigned by ${shortName(assigner)}` : ''}`]
+      : ownerMode === 'others' && notUsers[0] ? [`not ${shortName(notUsers[0])}`]
+      : ownerMode !== 'all' ? [ownerMode] : []),
+    ...(markAxes ? [[...markAxes].join(' / ')] : []),
+    ...(fq ? [`“${fq}”`] : []),
+  ]
+  const scopeDesc = scopeParts.join(' · ')
+  // Controlled treemap drill path, resolved against the (possibly filtered/
+  // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
+  // switches by re-walking the new tree; a vanished path truncates to its
+  // deepest surviving ancestor.
   const mapPath = useMemo((): TreeNode[] | undefined => {
-    if (!shownTree) return undefined
-    const path = [shownTree]
-    let cur: TreeNode = shownTree
-    for (const s of (drillPath ?? '').split('/').filter(Boolean)) {
+    if (!mapTree) return undefined
+    const path = [mapTree]
+    let cur: TreeNode = mapTree
+    for (const s of drillPath.split('/').filter(Boolean)) {
       const next = cur.c?.find(c => c.n === s)
       if (!next) break
       path.push(next)
@@ -368,26 +601,37 @@ function AppContent() {
     }
     // A store with one bucket (CoreWeave today) opens inside it — the bucket
     // level is a single full-width box otherwise.
-    if (path.length === 1 && shownTree.c?.length === 1) return [shownTree, shownTree.c[0]]
+    if (path.length === 1 && mapTree.c?.length === 1) return [mapTree, mapTree.c[0]]
     return path
-  }, [shownTree, drillPath])
-  const onMapPath = (p: TreeNode[]) => setDrillPath(p.slice(1).map(n => n.n).join('/') || undefined)
-  // The deepest drilled node's own subtree query — its threshold tells a
-  // childless dir apart from one whose children are still loading.
-  const leafQ = subtreeQs[subtreeQs.length - 1]
-  // Table row → drill the map to that prefix and scroll it into view.
+  }, [mapTree, drillPath])
+  // The table's path segments, stable while `mapPath` is (a fresh array per
+  // render defeated every memo keyed on it).
+  const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
+  const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
+  // Worklist rows / children table → drill the map to a prefix and show it.
   const openPath = (segs: string[]) => {
-    setDrillPath(segs.join('/') || undefined)
+    drillTo(segs)
     document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
+  // A server user-lens map is already just that user's bytes — nothing to dim.
+  const effHl: Highlight | null = activeLens ? null : hl
 
-  const pickUser = (u: string) => {
-    setHlUser(u)
-    if (mode !== 'user') setMode('user')
+  const userIdx = useMemo(() => buildUserIndex(meta?.users ?? []), [meta])
+  const mkUsers = useMemo(
+    () => (meta?.users ?? []).map(u => u.u).sort((a, b) => shortName(a).localeCompare(shortName(b))),
+    [meta],
+  )
+
+  // Legend-row pins land on the owner axis (a user, or the unclaimed pool).
+  // `switchMode`: a ⌘K pick from any coloring jumps to an axis where the pick
+  // is visible; a legend-row click is already on such an axis and must not
+  // move it.
+  const pickUser = (u: string, switchMode = true) => {
+    setOwnerUser(u)
+    if (switchMode && mode !== 'user') setMode('user')
   }
-  const clearHl = () => {
-    setHlUser(undefined)
-  }
+  const pickUnclaimed = () => setOP('unowned')
+  const clearHl = () => setOP(undefined)
 
   useActions({
     ...Object.fromEntries(
@@ -402,29 +646,18 @@ function AppContent() {
       ]),
     ),
     'highlight:clear': {
-      label: 'Clear user highlight',
-      group: 'Highlight',
-      defaultBindings: ['x'],
+      label: 'Clear the owner axis (everyone)',
+      group: 'Scope',
+      // `⇧x` belongs to row selection (toggle the page) in every table; the
+      // owner axis has its own × button beside the picker.
+      defaultBindings: ['alt+x'],
       handler: clearHl,
     },
-    'units:toggle': {
-      label: `Byte units: ${units === 'si' ? 'SI (TB) → IEC (TiB)' : 'IEC (TiB) → SI (TB)'}`,
-      group: 'View',
-      defaultBindings: ['i'],
-      handler: toggleUnits,
-    },
-    'units:suffix': {
-      label: `Unit suffix: ${suffixB ? 'TiB → Ti' : 'Ti → TiB'}`,
-      group: 'View',
-      defaultBindings: ['b'],
-      handler: toggleSuffixB,
-    },
-    'theme:cycle': {
-      label: `Theme: ${theme} (cycle)`,
-      group: 'View',
-      defaultBindings: ['shift+d'],
-      handler: cycleTheme,
-    },
+    'owner:me': { label: 'Owner: my files', group: 'Scope', handler: () => setOP('me') },
+    'owner:claimed': { label: 'Owner: owned only', group: 'Scope', handler: () => setOP('owned') },
+    'owner:unclaimed': { label: 'Owner: unowned only', group: 'Scope', handler: () => setOP('unowned') },
+    'marks:unmarked': { label: 'Marks: unmarked only (the to-do backlog)', group: 'Scope', handler: () => setKP('u') },
+    'marks:all': { label: 'Marks: every state', group: 'Scope', handler: () => setKP(undefined) },
     'lens:classes': {
       label: 'Storage-class lens (hatch colder-class bytes)',
       group: 'View',
@@ -435,7 +668,7 @@ function AppContent() {
       (meta?.users ?? []).map(u => [
         `user:${u.u}`,
         {
-          label: `${shortName(u.u)} · ${fmtBytes(u.b)}`,
+          label: `${u.u} · ${fmtBytes(u.b)}`,
           group: 'Users',
           handler: () => pickUser(u.u),
         },
@@ -445,16 +678,26 @@ function AppContent() {
       scans.map(s => [
         `scan:${s}`,
         {
-          label: `Scan ${s}`,
+          label: `Scan ${fmtScan(s)}`,
           group: 'Scans',
           handler: () => setDP(s),
+        },
+      ]),
+    ),
+    ...Object.fromEntries(
+      STORES.map(s => [
+        `store:${s.key}`,
+        {
+          label: `Store: ${s.label}`,
+          group: 'Stores',
+          handler: () => navigate({ pathname: s.path, search }),
         },
       ]),
     ),
   })
 
   const dateRange = useMemo((): DateRange | null => {
-    if (!shownTree) return null
+    if (!mapTree) return null
     let min = Infinity
     let max = -Infinity
     const walk = (n: TreeNode) => {
@@ -464,36 +707,36 @@ function AppContent() {
       }
       n.c?.forEach(walk)
     }
-    walk(shownTree)
+    walk(mapTree)
     return min < max ? { min, max } : null
-  }, [shownTree])
+  }, [mapTree])
 
   const catOrder = useMemo(() => {
-    if (!shownTree) return []
+    if (!mapTree) return []
     const catBytes = new Map<string, number>()
-    for (const bucket of shownTree.c ?? [])
+    for (const bucket of mapTree.c ?? [])
       for (const d of bucket.c ?? []) {
         const k = d.n.startsWith('(') ? '(other)' : d.n
         catBytes.set(k, (catBytes.get(k) ?? 0) + d.b)
       }
     return [...catBytes.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k).filter(k => k !== '(other)')
-  }, [shownTree])
+  }, [mapTree])
 
-  // Storage-class $ estimates are GCS list prices; a store that publishes no
-  // class breakdown (CoreWeave) has nothing to price — hide every $ surface.
-  const hasPrices = !!meta && Object.keys(meta.class_bytes).length > 0
+  // $ figures are GCS list prices per storage class, so they're only meaningful
+  // for stores that have those classes — a CoreWeave bucket priced at GCS rates
+  // would be an invented number, so its cost UI is dropped rather than faked.
   const estCost = useMemo(() => {
-    if (!meta || !hasPrices) return null
+    if (!meta || !store.prices) return null
     const gib = (b: number) => b / 1024 ** 3
-    const list = Object.entries(meta.class_bytes).reduce(
+    const list = Object.entries(meta.class_bytes ?? {}).reduce(
       (s, [c, b]) => s + gib(b) * (CLASS_PRICE_US[c] ?? 0.02),
       0,
     )
     return { list }
-  }, [meta, hasPrices])
+  }, [meta, store])
 
   const pricing = useMemo((): Pricing | null => {
-    if (!meta || !hasPrices) return null
+    if (!meta || !store.prices) return null
     const rates = (m?: Record<string, Record<string, number>>) =>
       m && Object.fromEntries(Object.entries(m).map(([k, cb]) => [k, ratePerByte(cb)]))
     return {
@@ -501,138 +744,321 @@ function AppContent() {
       userRates: rates(meta.user_class_bytes),
       userMix: meta.user_class_bytes,
     }
-  }, [meta, hasPrices])
+  }, [meta, store])
+
+  // Catch-all route: a first path segment that isn't one of the store's
+  // buckets is a typo'd URL (/sweeps), not a drillable prefix — 404 it
+  // instead of silently rendering the root view at a bogus address.
+  const seg0 = drillPath.split('/')[0]
+  if (baseTree?.c && seg0 && !baseTree.c.some(k => k.n === seg0)) {
+    return (
+      <main>
+        <SiteNav />
+        <p className="err">
+          404 — <code>/{drillPath}</code> is not a bucket or page here.{' '}
+          <Link to="/">home</Link> · <Link to="/sweep">sweep console</Link> · <Link to="/users">users</Link>
+        </p>
+      </main>
+    )
+  }
+
+  const segs = drillPath.split('/').filter(Boolean)
+  const scanTip = meta && (
+    <div className="scan-tip">
+      {asof && !/[T ]\d{2}/.test(asof) && meta.published && (
+        <div>published {new Date(meta.published).toISOString().replace('T', ' ').slice(0, 16)} UTC</div>
+      )}
+      <div><b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects across all buckets</div>
+      {estCost && (
+        <div>
+          est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b> at list price
+          <ClassMixTip mix={meta.class_bytes} note="GCS list prices (US regions) × scanned bytes; actual spend depends on the billing account's negotiated rates/credits" />
+        </div>
+      )}
+    </div>
+  )
+  // One owner control (was two: an owned/unowned checklist + a person picker).
+  // A single select — anyone / owned / unowned / a person — plus a `≠` toggle
+  // that flips a picked person between their bytes and everyone-else's (the
+  // negated `?o=!key` pool). `me` and any person the view already scopes to
+  // stay selectable even if they haven't marked anything.
+  const negated = ownerMode === 'others'
+  const selPerson = ownerMode === 'user' ? (oP === 'me' ? 'me' : ownerUser)
+    : negated ? (myUser && notUsers[0] === myUser ? 'me' : notUsers[0])
+    : null
+  const ownerSelVal = ownerMode === 'owned' ? 'owned' : ownerMode === 'unowned' ? 'unowned' : selPerson ?? ''
+  const pickOwner = (v: string) =>
+    v === '' ? setOP(undefined)
+    : v === 'owned' || v === 'unowned' ? setOP(v)
+    : v === 'me' ? setOP(negated ? (myUser ? `!${shortUserKey(myUser)}` : undefined) : 'me')
+    : setOP(negated ? `!${shortUserKey(canonId(v))}` : shortUserKey(canonId(v)))
+  const ownerSelect = (
+    <>
+      <select className="tb-select" value={ownerSelVal} aria-label="Owner"
+        onChange={e => pickOwner(e.target.value)}>
+        <option value="">anyone</option>
+        <option value="owned">owned</option>
+        <option value="unowned">unowned</option>
+        {myUser && <option value="me">me ({shortName(myUser)})</option>}
+        {mkUsers.filter(u => u !== myUser).map(u => <option key={u} value={u}>{shortName(u)}</option>)}
+        {ownerUser && !mkUsers.includes(ownerUser) && ownerUser !== myUser && <option value={ownerUser}>{shortName(ownerUser)}</option>}
+        {negated && notUsers[0] && notUsers[0] !== myUser && !mkUsers.includes(notUsers[0]) && <option value={notUsers[0]}>{shortName(notUsers[0])}</option>}
+      </select>
+      {selPerson && (
+        <Tooltip content={negated
+          ? <>Showing everyone <b>except</b> this person. Click for just theirs.</>
+          : <>Invert: show everyone <b>else's</b> data under this view instead of this person's.</>}>
+          <button type="button" className={`mini neg${negated ? ' on' : ''}`} aria-pressed={negated} onClick={() => negateOwner(!negated)}>not</button>
+        </Tooltip>
+      )}
+      {ownerSelVal !== '' && (
+        <Tooltip content="Clear the owner filter (back to anyone)">
+          <button type="button" className="mini clear" aria-label="clear owner filter" onClick={() => setOP(undefined)}>×</button>
+        </Tooltip>
+      )}
+    </>
+  )
+  const menu: MenuEntry[] = markMode ? [{ key: 'typed', label: 'Mark a typed prefix…', onClick: () => setTypedOpen(true) }] : []
+  // The bar's first row: where the page is. The map's own crumb strip is
+  // hidden (app.scss) — this IS it, kept on screen mid-scroll; the deepest
+  // node's totals ride along as the suffix.
+  const here = mapPath?.[mapPath.length - 1]
+  const crumbs = (
+    <span className="tb-path" aria-label="Drilled path">
+      <Tooltip content="all buckets"><button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])}>{mapTree?.n ?? 'all buckets'}</button></Tooltip>
+      {segs.map((sg, i) => (
+        <span key={i}>
+          <span className="sep">/</span>
+          <Tooltip content={<code>{segs.slice(0, i + 1).join('/')}</code>}><button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))}>{sg}</button></Tooltip>
+        </span>
+      ))}
+    </span>
+  )
 
   return (
     <main>
-      <header>
-        <div className="hrow">
-          <h1>{store.title}</h1>
-          {/* Nav + identity flush right as one designed cluster (no SiteNav
-              here — one page). Page-scoped controls (scan/units/color-by) live
-              in the sticky `.pagebar` below, not the h1 line. */}
-          <span className="nav-links">
-            <Link className="nav-files" to="/files">Scans</Link>
-            <Link className="nav-sweep" to="/sweep">Sweep</Link>
-          </span>
-          {ident && (
-            <div className="whoami">
-              <UserChip who={ident.email} size={22} extra={<div className="uc-session"><div>signed in as <code>{ident.email}</code></div></div>} />
-              <a className="logout" href="/cdn-cgi/access/logout">log out</a>
-            </div>
-          )}
-        </div>
-        {meta && (
-          <p className="sub">
-            <Tooltip content={`${units === 'si' ? 'SI' : 'IEC'} units${suffixB ? '' : ', bare suffix'} — click to toggle (i / b)`}><b className="dotted" style={{ cursor: 'pointer' }} onClick={toggleUnits}>{fmtBytes(meta.total_bytes)}</b></Tooltip> · <b>{fmtN(meta.total_objects)}</b> objects
-            {estCost && (
-              <>
-                {' '}· est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b>{' '}
-                <Tooltip content={<ClassMixTip mix={meta.class_bytes} note="GCS list prices (US regions) × scanned bytes; actual spend depends on the billing account's negotiated rates/credits" />}>
-                  <span className="dotted">at list price</span>
-                </Tooltip>
-              </>
-            )}
-          </p>
-        )}
-      </header>
-
-      <details className="prose fold" open={introOpen} onToggle={onIntroToggle}>
-        <summary>
-          <MdInfoOutline className="fold-icon" aria-hidden />
-          <span><b>About</b> — the data &amp; color modes</span>
-        </summary>
-        <p>
-          Storage in CoreWeave AI Object Storage (<code>s3://marin-us-east-02a</code>), from a per-object
-          listing every 12 h. The treemap drills into prefixes; “color by” recolors both plots by top-level
-          tree or age (older→newer). Objects under <code>tmp/ttl=&lt;N&gt;d/</code> expire by the bucket’s
-          lifecycle rules; everything else is deleted only through a reviewed plan on the Sweep page
-          (keep/sweep marks → plan → dry run → real run).
-        </p>
-      </details>
-
-      <LifecycleFold
-        store={store} asof={asof} prevScan={prevScan}
-        note={<>Intended state is tracked in <code>job/cw-lifecycle.json</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
-      />
-
-      {/* Page-scoped controls, sticky under the top edge as you scroll the
-          long page: which scan, byte units, and (when the scan has
-          attribution) the color-by axis. Full-bleed with a bottom border so it
-          reads as a stuck bar. */}
-      {meta && (
-        <div className="pagebar">
-          <span className="pb-grp">
-            <span className="lbl">scan</span>
-            {scans.length > 1 && asof ? (
-              <select className="scanpick" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
+      {typedOpen && <TypedPrefixModal idx={markIdx} onClose={() => setTypedOpen(false)} />}
+      {/* The page scope, all of it, in the sticky bar — the same bar at the
+          top of the page and mid-scroll, so every section reads against it:
+          where (drill path) · when (scan, and the diff window's start while
+          a section that shows it is on screen) · color axis · mark axis ·
+          owner axis · name filter. */}
+      <SiteNav menu={menu} crumbs={crumbs}>
+        {asof && scans.length > 1 && (
+          <span className="tb-scan">
+            <Tooltip content={scanTip ?? 'scan'}>
+              <select className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
                 {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
               </select>
-            ) : (
-              <b>{meta.asof}</b>
+            </Tooltip>
+          </span>
+        )}
+        {hasAttr && (<>
+          <label className="tb-ctl">
+            <span className="lbl">color</span>
+            <Tooltip content={
+              effMode === 'date' ? <>Object <b>creation time</b>, from the bucket listings (each cell = the byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.</>
+              : effMode === 'read' ? <><b>Last read</b> — the most recent GET/HEAD/LIST anywhere under each cell, from the GCS usage logs (logging began {readRange ? epochDaysToDate(readRange.min) : '—'}). Brick-red = <b>never read</b> since then: prime sweep candidates.</>
+              : effMode === 'marks' ? <>Effective <b>keep / sweep / undecided</b> state of every cell (the most recent covering mark wins).</>
+              : effMode === 'user' ? <>Dominant <b>owner</b> of each cell; the legend lists the top users of the current view.</>
+              : <>Top-level directory each cell belongs to.</>
+            }>
+              <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
+                {MODES
+                  .filter(m => (m !== 'read' || readRange) && (m !== 'marks' || markMode))
+                  .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
+              </select>
+            </Tooltip>
+          </label>
+          {/* Secondary color axis: a shade *within* each cell's primary color.
+              Opt-in (default none), so the primary axis reads as it always has. */}
+          <label className="tb-ctl">
+            <span className="lbl">shade</span>
+            <Tooltip content={<>A perturbation <i>within</i> each cell's color, on top of the primary axis. <b>storage class</b>: darker = a larger share of cold classes (Nearline / Coldline / Archive), so within one owner's band you can see what's already cold. Off by default.</>}>
+              <select className="tb-select" value={shade} aria-label="Shade cells by" onChange={e => setSP(e.target.value === 'none' ? undefined : e.target.value)}>
+                <option value="none">none</option>
+                <option value="class">storage class</option>
+              </select>
+            </Tooltip>
+          </label>
+        </>)}
+        {hasAttr && (
+          <span className="tb-axis">
+            <span className="lbl">class</span>
+            <MultiSelect<ClassAxis>
+              label="storage classes"
+              options={CLASS_AXES.map(c => ({ key: c, label: CLASS_NAMES[CLASS_OF[c]], glyph: '●', color: CLASS_COLORS[CLASS_OF[c]], tip: `Only bytes in ${CLASS_NAMES[CLASS_OF[c]]} storage — every size on the page shrinks to that share (objects pro-rated).` }))}
+              selected={classSet ? [...classSet] : CLASS_AXES}
+              onChange={setClasses}
+            />
+          </span>
+        )}
+        {markMode && (
+          <span className="tb-axis">
+            <span className="lbl">marks</span>
+            <MultiSelect<MarkAxis>
+              label="mark states"
+              options={MARK_CHIPS.map(c => ({ key: c.f, label: c.f, glyph: c.glyph, color: c.color, tip: c.tip }))}
+              selected={markAxes ? [...markAxes] : MARK_AXES}
+              onChange={setMarkAxes}
+            />
+          </span>
+        )}
+        {markMode && hasAttr && (
+          <span className="tb-axis">
+            <span className="lbl">owner</span>
+            {ownerSelect}
+          </span>
+        )}
+        {hasAttr && (
+          <span className="filterbox">
+            <input
+              value={fq ?? ''}
+              onChange={e => setFq(e.target.value || undefined)}
+              placeholder="filter paths — text, a|b, or /regex/"
+              aria-label="Filter tree by segment name"
+              size={22}
+            />
+            {fq && tree && (
+              <span className="fnote">
+                {tree.b > 0 ? <>{fmtBytes(tree.b)} matched</> : 'no matches'}
+                <Tooltip content="clear filter"><button type="button" onClick={() => setFq(undefined)}>✕</button></Tooltip>
+              </span>
             )}
           </span>
-          <Tooltip content={<>Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B</>}>
-            <button
-              className="units-btn" type="button"
-              onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
-            >
-              {(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}
-            </button>
-          </Tooltip>
-          {hasAttr && (
-            <span className="pb-grp colorby" role="radiogroup" aria-label="Color plots by">
-              <span className="lbl">color by</span>
-              {MODES.map(m => (
-                <button key={m} role="radio" aria-checked={effMode === m} className={effMode === m ? 'on' : ''} onClick={() => setMode(m)}>
-                  {MODE_LABELS[m]}
-                </button>
-              ))}
-              {hl && (
-                <Tooltip content="Clear highlight (x)"><button className="hlchip" onClick={clearHl}>{hlUser} ✕</button></Tooltip>
-              )}
-            </span>
-          )}
-        </div>
+        )}
+        {fq && fMatches.length > 0 && (
+          <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
+        )}
+      </SiteNav>
+
+      {/* Stores whose scan job snapshots the bucket's lifecycle rules get the
+          fold here (cw-s3 today); the rows diff against the previous scan. */}
+      {store.lifecycle && (
+        <LifecycleFold
+          store={store} asof={asof} prevScan={prevScan}
+          note={<>Intended state is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
+        />
       )}
 
+      {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
+          end) with a strip listing every candidate to pin one. */}
+      {dMatches.length > 1 && (
+        <p className="disambig">
+          <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
+          {dMatches.map(s => (
+            <button key={s} className={s === asof ? 'on' : ''} onClick={() => setDP(s)}>{fmtScan(s)}</button>
+          ))}
+        </p>
+      )}
+      {marksQ.error && <p className="tab-note err">Marks unavailable: {marksQ.error.message}</p>}
+      {meUnmapped && (
+        <p className="tab-note">
+          Your email isn't mapped to an owner id yet — ping Ryan (or an admin can add you at{' '}
+          <code>/admin/db/user_emails</code>); pick any user from the owner menu to view their files.
+        </p>
+      )}
       {scansQ.isError && (
         <p className="tab-note" style={{ color: 'var(--s3)' }}>
           Couldn’t load snapshot data ({(scansQ.error as { status?: number })?.status === 401 ? 'not signed in — this dashboard is access-gated' : String(scansQ.error)}).
+          {' '}<a href={signInUrl()}>Sign in</a> or reload once your session is active.
         </p>
       )}
-      {shownTree ? (
+
+      {mapTree ? (
         <>
-          {/* `leaf` folds the canvas away (height 0): a directory its own
-              subtree fetch confirmed has nothing drawable (objects only, or
-              dirs under the floor). Never before that fetch answers: a
-              childless dir may be a branch whose kids fell below the parent's
-              pixel budget. */}
+          {/* Remount per store: the treemap's caches are tied to the tree it
+              mounted with, and a switch can swap `tree` without ever passing
+              through null once both payloads are cached. */}
+          {/* `leaf` folds the canvas away (height 0): a genuine single object,
+              or a directory its own subtree fetch confirmed has nothing
+              drawable (objects only, or dirs under the floor) — the note below
+              says which. Never before that fetch answers: a childless dir may
+              be a branch whose kids fell below the parent's pixel budget, and
+              a zero-height canvas sends the core's squarify into a
+              non-terminating loop on degenerate aspect ratios once they land. */}
           <div id="tree-map" className={[
             'busy-host',
-            mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && (mapPath[mapPath.length - 1].o <= 1 || leafQ?.data) ? 'leaf' : '',
-            treeLoading ? 'stale' : '',
-          ].filter(Boolean).join(' ')} aria-busy={mapBusy || undefined}>
-            <Treemap root={shownTree} mode={effMode} userIdx={userIdx} dateRange={dateRange} hl={hl} pricing={pricing} lens={lens}
-              path={mapPath} onPathChange={onMapPath} marks={marks.idx} />
-            {treeLoading ? <Busy label="loading view…" /> : mapBusy ? <Busy corner label="filling in…" /> : null}
-          </div>
+            mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && (mapPath[mapPath.length - 1].o <= 1 || subtreeQs[subtreeQs.length - 1]?.data) ? 'leaf' : '',
+            mapStale ? 'stale' : '',
+          ].filter(Boolean).join(' ')} aria-busy={mapBusy || undefined}><Treemap
+            key={store.key}
+            ownerLensed={ownerMode === 'user'}
+            root={mapTree}
+            mode={effMode}
+            shade={shade}
+            userIdx={userIdx}
+            dateRange={dateRange}
+            readRange={readRange}
+            hl={effHl}
+            onPickUser={u => pickUser(u, false)}
+            onPickUnclaimed={pickUnclaimed}
+            onClearHl={clearHl}
+            pricing={pricing}
+            lens={lens}
+            scheme={store.scheme}
+            markIdx={markMode ? markIdx : undefined}
+            klcIdx={markMode ? klcIdx : undefined}
+            // Exact state totals only when they describe THIS view: a server
+            // user-lens map gets that user's totals; the unscoped estate gets
+            // the estate totals. Any client-side scoping (a pool, a mark
+            // state, a group pin) has no server-sliced totals — pass null so
+            // the ≈ client walk over the scoped tree keeps numerator and
+            // denominator on the same slice (estate totals over a 269 Ti
+            // scope read as "undecided 777%").
+            viewMarkAxes={
+              activeLens && lensUser && !markAxes ? totalsQ.data?.users?.[lensUser] ?? null
+              : lensScoped ? null
+              : totalsQ.data?.total ?? null
+            }
+            path={mapPath}
+            onPathChange={onMapPath}
+          />{mapStale ? <Busy label="loading view…" /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
           {/* A drilled directory with nothing drawable under it: only objects
-              (not in the index — dirs only, specs/view-serving.md §3), or
-              directories under this view's floor. Say so rather than show a
-              blank canvas. */}
-          {mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && leafQ?.data && (
-            <p className="hint leaf-note">
-              <code>{mapPath[mapPath.length - 1].n}</code> holds {fmtN(mapPath[mapPath.length - 1].o)} objects and no directory of{' '}
-              {fmtBytes(leafQ.data.threshold ?? 0)} or more. Objects aren’t listed in the index — browse them under{' '}
-              <Link to="/files">Scans</Link>, or press Backspace to go up.
-            </p>
+              (not in the index yet — specs/view-serving.md §3), or directories
+              under this view's floor. Say so rather than show a blank canvas. */}
+          {mapPath && mapPath.length > 1 && !mapPath[mapPath.length - 1].c?.length && subtreeQs[subtreeQs.length - 1]?.data && (
+            mapPath[mapPath.length - 1].b === 0 && (ownerMode !== 'all' || markAxes) ? (
+              // The scope, not the directory, is what's empty here: say whose
+              // filter came up dry rather than describe a 0-byte directory.
+              <p className="hint leaf-note">
+                {ownerMode === 'user' && lensUser
+                  ? <><b>{shortName(lensUser)}</b> owns nothing under <code>{mapPath[mapPath.length - 1].n}</code> in this scan</>
+                  : ownerMode === 'unowned'
+                    ? <>Nothing under <code>{mapPath[mapPath.length - 1].n}</code> is unowned in this scan</>
+                    : ownerMode === 'owned'
+                      ? <>Nothing under <code>{mapPath[mapPath.length - 1].n}</code> is owned in this scan</>
+                      : <>Nothing under <code>{mapPath[mapPath.length - 1].n}</code> matches the marks filter</>}
+                {' '}— widen the scope in the bar above, or press Backspace to go up.
+              </p>
+            ) : (
+              <p className="hint leaf-note">
+                <code>{mapPath[mapPath.length - 1].n}</code> holds {fmtN(mapPath[mapPath.length - 1].o)} objects and no directory of{' '}
+                {fmtBytes(subtreeQs[subtreeQs.length - 1]!.data!.threshold ?? 0)} or more. Objects aren’t listed yet — mark or assign this prefix from the
+                controls above, or press Backspace to go up.
+              </p>
+            )
+          )}
+          {/* The map's own listing — this node's children, narrowed to the
+              mark axis (`{unmarked}` drops already-decided prefixes). */}
+          {mapPath && (
+            <div id="tbl"><ChildrenTable
+              node={mapPath[mapPath.length - 1]}
+              segs={tblSegs}
+              scheme={store.scheme}
+              markIdx={markMode ? markIdx : undefined}
+              klcIdx={markMode ? klcIdx : undefined}
+              states={markMode ? markAxes : null}
+              userIdx={userIdx}
+              onPickUser={u => pickUser(u, false)}
+              onOpen={openPath}
+            /></div>
           )}
         </>
       ) : rootErr ? (
         <p className="loading">
-          {rootErr.message.startsWith('409') ? 'no index for this scan — pick a newer scan'
-            : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in'
+          {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
+            : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in, or narrow the scope'
             : `view failed: ${rootErr.message}`}
         </p>
       ) : (
@@ -642,34 +1068,36 @@ function AppContent() {
         <div id="tree-map" className="tm-skel" aria-busy="true" aria-label="loading tree" />
       )}
 
-      {/* The map's tabular twin: this node's children, sortable/paged, clicking
-          a row drills the map into it. Foldable; open by default. */}
-      {mapPath && (mapPath[mapPath.length - 1].c?.length ?? 0) > 0 && (
-        <details className="tbl-fold" open>
-          <summary>
-            <b>Contents</b> of <code>{mapPath[mapPath.length - 1].n}</code>
-            {' '}· {fmtN((mapPath[mapPath.length - 1].c ?? []).length)} entries
-          </summary>
-          <ChildrenTable node={mapPath[mapPath.length - 1]} segs={mapPath.slice(1).map(n => n.n)} onOpen={openPath} marks={marks} scan={asof ?? undefined} />
-        </details>
+      {markMode && (
+        <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} pred={pred} filterQ={fq} window={diffWindow} />
       )}
 
-      {/* Bytes per scan under the drilled prefix — one index row per scan via /api/series. */}
-      <SizeOverTime scans={scans} prefix={graftPath} onPickDate={setDP} onBrush={brushRange} window={diffWindow} />
+      {/* Bytes per scan under the drilled prefix, scoped like the map (a user
+          or an owner pool) — one index row per scan via /api/series. The mark
+          axis has no series yet (a per-scan ledger replay; view-serving.md).
+          The age chart still hides under any scope until /api/age lands. */}
+      <SizeOverTime
+        scans={scans} prefix={drillPath}
+        user={ownerUser}
+        pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}
+        onPickDate={setDP}
+        onBrush={brushRange}
+        window={diffWindow}
+      />
 
       {asof && diffPrev && (
         <section id="diff">
           <h2>Diff</h2>
           <p className="sub">
-            {/* both endpoints are pickable; "after" IS the page's scan, so
-                changing it moves the whole page (same as the header picker) */}
+            {/* Both endpoints: the window's start, and the page's scan again
+                (the bar's picker — one scan, stated where the diff reads). */}
             <Tooltip content={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
-              <select className="scanpick" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
+              <select className="tb-select scan" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
                 {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
               </select>
             </Tooltip>
-            {' '}→{' '}
-            <select className="scanpick" value={asof} aria-label="Diff to scan (moves the page)" onChange={e => setDP(e.target.value)}>
+            <span className="arrow"> → </span>
+            <select className="tb-select scan" value={asof} aria-label="Diff to scan (the page's scan)" onChange={e => setDP(e.target.value)}>
               {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
             </select>
             {spanPicks.length > 0 && (
@@ -692,12 +1120,13 @@ function AppContent() {
                 {' '}· Δobjects {(diffHead.objects_b - diffHead.objects_a).toLocaleString('en-US')}
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
                 {' '}· <Tooltip content={<>
-                  <code>{graftPath || 'whole bucket'}</code> at each scan — the same drill as the map above.
-                  Both scans are read at one byte floor ({fmtBytes(diffHead.threshold ?? 0)}): a directory is named on both sides or folded into
+                  <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
+                  a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
+                  Both scans are read at one byte floor ({fmtBytes(diffHead.threshold)}): a directory is named on both sides or folded into
                   “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
                   {diffHead.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
                 </>}>
-                  <span className="dotted">≈ {graftPath || 'whole bucket'}</span>
+                  <span className="dotted">≈ {scopeDesc}</span>
                 </Tooltip>
                 {diffHead.truncated && (
                   <>
@@ -712,7 +1141,7 @@ function AppContent() {
                 {' '}· {diffErr.message.startsWith('404')
                   ? <><code>{graftPath || '/'}</code> is in neither scan’s index — pick other scans or drill up.</>
                   : diffErr.message.startsWith('409')
-                    ? <>one of these scans has no index yet — pick newer scans.</>
+                    ? <>no per-user index for one of these scans — pick newer scans, or clear the user.</>
                     : <>couldn’t diff {fmtScan(diffPrev)} → {fmtScan(asof)} ({diffErr.message}).</>}
                 {' '}<button type="button" className="linkish" onClick={() => diffQ.refetch()}>retry</button>
               </span>
@@ -721,77 +1150,88 @@ function AppContent() {
             )}
           </p>
           {/* The slot keeps the treemap's height through a reload: the last
-              diff dims under the marker, or (first load) a skeleton stands in. */}
+              diff dims under the marker, or (first load) a skeleton stands in.
+              The height held is the one the last settled map actually drew
+              (measured), not the request's canvas budget — the map is
+              shorter than that, and a fixed floor left a blank band under it. */}
           {diff && diff.rows.length > 0 && (
-            <div className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={{ minHeight: Math.round(canW * 0.6) }}>
-              <DiffTreemap data={diff} label={store.title} />
+            <div ref={diffSlotRef} className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
+              <DiffTreemap data={diff} label={scopeDesc} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>
           )}
-          {diff && diff.rows.length === 0 && !diffStale && <p className="hint">No changes under this path between the two scans.</p>}
-          {!diff && diffStale && <Skeleton height={Math.round(canW * 0.6)} className="diff-tm" label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
-          {diff && diff.rows.length > 0 && !diffStale && (
-            <details className="tbl-fold" open>
-              <summary><b>Changes</b> — the diff’s largest movements, row by row</summary>
-              <DiffTable data={diff} />
-            </details>
+          {diff && diff.rows.length === 0 && !diffStale && <p className="hint">No changes in this scope between the two scans.</p>}
+          {!diff && diffStale && (
+            <div className="diff-tm tm-skel busy-host stale" aria-busy="true"><Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} /></div>
           )}
         </section>
       )}
 
+      {!lensScoped && (
       <section id="mtime">
+        {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
+            the heading stays unit-free rather than lying about "month". */}
         <h2>Bytes by creation date</h2>
         <p className="sub">
-          When today’s objects were written — created-time strata. The chart’s color axis is its own
-          (right); it follows the map’s until you pick one.
+          When each stored byte was <b>written</b> — the object’s creation time from the listing.
+          GCS objects are immutable, so there’s no separate “modified” time; the other time axis is{' '}
+          <b>last read</b> (from the usage logs, since {readRange ? epochDaysToDate(readRange.min) : '8/13'}) —
+          color by it to see which vintages nobody has touched. The chart’s color axis is its own (right):
+          it follows the map’s until you pick one; marks have no per-stratum value here.
         </p>
+        {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
         {age.length > 0 && (
-          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m === effMode ? undefined : m)} modes={ageModes} userIdx={userIdx} />
+          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
         )}
       </section>
-
-      {rules && shownTree && meta?.users && (
-        <AttributionRules rules={rules} tree={shownTree} users={meta.users} />
       )}
 
-      {meta && hasPrices && (
-        <section>
-          <h2>Storage classes</h2>
-          <table className="classes">
-            <thead>
-              <tr><th>class</th><th>bytes</th><th>est. $/mo (list, US)</th></tr>
-            </thead>
-            <tbody>
-              {Object.entries(meta.class_bytes)
-                .sort((a, b) => b[1] - a[1])
-                .map(([c, b]) => (
-                  <tr key={c}>
-                    <td>
-                      <Tooltip placement="right" content={<>${CLASS_PRICE_US[c] ?? 0.02}/GiB·mo · {((100 * b) / meta.total_bytes).toFixed(1)}% of scanned bytes</>}>
-                        <span className="dotted">{CLASS_NAMES[c] ?? c}</span>
-                      </Tooltip>
-                    </td>
-                    <td>{fmtBytes(b)}</td>
-                    <td>${Math.round((b / 1024 ** 3) * (CLASS_PRICE_US[c] ?? 0.02)).toLocaleString()}</td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </section>
-      )}
+      {meta && store.prices && (() => {
+        // Class mix of the *drilled* node (each node carries descendant-inclusive
+        // `cb`), so this tracks the treemap instead of always showing fleet totals.
+        const node = mapPath ? mapPath[mapPath.length - 1] : tree
+        if (!node) return null
+        const mix = classMix(node)
+        const total = node.b || 1
+        const scope = mapPath && mapPath.length > 1 ? mapPath.slice(1).map(n => n.n).join('/') : 'all buckets'
+        return (
+          <section id="storage-classes">
+            <h2>Storage classes</h2>
+            <p className="sub">
+              Class mix + list-price estimate for <code>{scope}</code> — updates as you drill the treemap.
+            </p>
+            <table className="classes">
+              <thead>
+                <tr><th>class</th><th>bytes</th><th>est. $/mo (list, US)</th></tr>
+              </thead>
+              <tbody>
+                {Object.entries(mix)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([c, b]) => (
+                    <tr key={c}>
+                      <td>
+                        <Tooltip placement="right" content={<>${CLASS_PRICE_US[c] ?? 0.02}/GiB·mo · {((100 * b) / total).toFixed(1)}% of these bytes</>}>
+                          <span className="dotted">{CLASS_NAMES[c] ?? c}</span>
+                        </Tooltip>
+                      </td>
+                      <td>{fmtBytes(b)}</td>
+                      <td>${Math.round((b / 1024 ** 3) * (CLASS_PRICE_US[c] ?? 0.02)).toLocaleString()}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </section>
+        )
+      })()}
 
-      <SpeedDial TooltipRenderer={SpeedDialTip} actions={[
-        { key: 'github', label: 'GitHub', icon: <FaGithub />, href: REPO_URL },
-        { key: 'lens', label: `Class lens: ${lens ? 'on' : 'off'} (s)`, icon: <MdLayers />, onClick: () => setLens(v => !v) },
-        {
-          key: 'theme',
-          label: `Theme: ${theme}`,
-          icon: theme === 'light' ? <MdLightMode /> : theme === 'dark' ? <MdDarkMode /> : <MdBrightnessAuto />,
-          onClick: cycleTheme,
-        },
-      ]} />
-      <Omnibar placeholder="Users, color modes, scans…" maxResults={15} />
-      <ShortcutsModal />
+      {/* Static attribution reference — how ownership is inferred + the rule tables.
+          Reference material, so it sits last rather than sandwiched mid-page. */}
+      {hasAttr && mapTree && <AttributionRules tree={mapTree} />}
+
+      <SiteKbd
+        placeholder="Users, color modes, scans, pages…"
+        extra={[{ key: 'lens', label: `Class lens: ${lens ? 'on' : 'off'} (s)`, icon: <MdLayers />, onClick: () => setLens(v => !v) }]}
+      />
     </main>
   )
 }
