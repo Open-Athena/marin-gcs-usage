@@ -847,6 +847,7 @@ def _icons_dir() -> Path:
 @main.command()
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
 @option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so per-reply sender chrome survives)")
+@option("-F", "--for-real", is_flag=True, help="With --redo-replies: actually post the new replies and delete the old ones (default: print the plan)")
 @option("-H", "--reply-hour", type=int, default=REPLY_HOUR_UTC, help="UTC hour the sender variant's daily reply is taken from: the day's first scan at/after it (default 12 → the 12:01Z morning scan, 8:01 am ET; 00:01Z scans still feed the OP + plot)")
 @option("-i", "--icons-dir", type=Path, default=None, help="Where the plot PNG is written + deployed from (default job/icons-cw)")
 @option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
@@ -854,8 +855,9 @@ def _icons_dir() -> Path:
 @option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots/cw)")
 @option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default cw-s3.oa.dev)")
+@option("-R", "--redo-replies", is_flag=True, help="Re-post the month's replies under the current day rule, then delete the old ones (dry-run unless --for-real)")
 @option("-V", "--variant", type=Choice(["sender", "body"]), default="sender", help="Reply style: headline as the sender name, posted once from the day's morning scan (sender) or bold in the body, edited as the day's scans land (body)")
-def digest(channel: str | None, reply_delay: float, reply_hour: int, icons_dir: Path | None, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None, variant: str) -> None:
+def digest(channel: str | None, reply_delay: float, for_real: bool, reply_hour: int, icons_dir: Path | None, month: str | None, dry_run: bool, redo_replies: bool, root: str | None, token: str | None, site_url: str | None, variant: str) -> None:
     """Converge the monthly digest thread in #cw-s3-usage: an OP edited in place
     (month-to-date + weekly bullets + quota sparkline) + one reply per UTC day,
     via thrds. State in gs://<bucket>/digest/cw/<channel>/<variant>/<YYYY-MM>.json.
@@ -915,6 +917,22 @@ def digest(channel: str | None, reply_delay: float, reply_hour: int, icons_dir: 
         found = re.search(r"https://[a-z0-9]+\.gcs-usage-icons\.pages\.dev", r.stdout + r.stderr)
         return found.group(0) if found else None
 
+    if redo_replies:
+        # rule change: re-post every reply under the current day rule, then retire the old ones
+        plan = dg.redo_replies(root, m, token, channel, variant, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay, reply_hour=reply_hour, for_real=for_real)
+        if for_real:
+            err(f"digest: re-threaded {m:%Y-%m} ({variant}): {len(plan.get('posted', {}))} replies" + (f", {len(plan['stale'])} old left undeleted" if plan.get("stale") else ""))
+            return
+        old = {day: e for day, e in plan["old"]}
+        print(f"digest --redo-replies {m:%Y-%m} in {channel} ({variant}; dry-run — -F/--for-real applies):")
+        print(f"  old replies to delete: {len(plan['old'])}")
+        for day, e in plan["old"]:
+            print(f"    {day}  {e['scan']}  ts={e['ts']}")
+        print(f"  new replies to post: {len(plan['new'])}")
+        for day, scan, head in plan["new"]:
+            same = "  (same scan as the old reply)" if day in old and old[day]["scan"] == scan else ""
+            print(f"    {day}  {scan}  {head!r}{same}")
+        return
     dg.post_digest(root, m, token, channel, variant, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay, reply_hour=reply_hour)
     err(f"digest: converged {m:%Y-%m} ({variant})")
 

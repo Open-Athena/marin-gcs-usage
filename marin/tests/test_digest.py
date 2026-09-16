@@ -178,18 +178,27 @@ class _Msg:
 class _FakeSlack:
     """Records `post`/`edit` calls as tuples; message ids are sequential."""
 
-    def __init__(self):
+    def __init__(self, fail_post_at: int | None = None, fail_delete: set[str] = frozenset()):
         self.calls: list[tuple] = []
         self.n = 0
+        self.fail_post_at = fail_post_at  # the n-th post raises
+        self.fail_delete = fail_delete
 
     def post(self, content, thread_id=None, *, username=None, icon_url=None, icon_emoji=None):
         self.n += 1
+        if self.n == self.fail_post_at:
+            raise RuntimeError("slack down")
         self.calls.append(("post", content, thread_id, username, icon_url, icon_emoji))
         return _Msg(f"m{self.n}")
 
     def edit(self, ts, content):
         self.calls.append(("edit", ts, content))
         return _Msg(ts)
+
+    def delete(self, message_id, orphans_ok=False):
+        self.calls.append(("delete", message_id))
+        if message_id in self.fail_delete:
+            raise RuntimeError("cant_delete_message")
 
 
 def _publish(root: Path, dated_meta) -> None:
@@ -375,3 +384,67 @@ def test_render_smoke(tmp_path: Path):
     assert out.stat().st_size > 10_000
     render(rows, tmp_path / "s.png", "t")  # sparkline only
     assert (tmp_path / "s.png").stat().st_size > 5_000
+
+
+# ---- redo replies (rule change) --------------------------------------------
+
+
+def _call(c):
+    return c if c[0] == "delete" else _post(c)
+
+
+def _old_rule_thread(tmp_path: Path, **fake_kw):
+    """A month converged under the old first-scan rule: OP m1, replies m2 (9/1 00:00), m3 (9/2 00:00)."""
+    root = tmp_path / "snapshots" / "cw"
+    _publish(root, LEAD + SEPT)
+    fake = _FakeSlack(**fake_kw)
+    D.post_digest(str(root), SEP, "xoxb", "C1", "sender", client=fake, reply_hour=0)
+    assert [c[0] for c in fake.calls] == ["post", "post", "post"]
+    fake.calls.clear()
+    return root, fake
+
+
+def test_redo_replies(tmp_path: Path):
+    root, fake = _old_rule_thread(tmp_path)
+    # dry-run: the plan, nothing posted or deleted
+    assert D.redo_replies(str(root), SEP, "xoxb", "C1", "sender", client=fake) == {
+        "old": [("2026-09-01", {"ts": "m2", "scan": "2026-09-01T0000"}), ("2026-09-02", {"ts": "m3", "scan": "2026-09-02T0000"})],
+        "new": [("2026-09-01", "2026-09-01T1200", "9/1 — 713 TiB (+8.0, 1.1%)"), ("2026-09-02", "2026-09-02T1200", "9/2 — 715 TiB (+2.0, 0.3%)")],
+    }
+    assert fake.calls == []
+    # for real: OP refreshed, the new replies appended to the same thread, THEN the old ones deleted in order
+    state = D.redo_replies(str(root), SEP, "xoxb", "C1", "sender", client=fake, for_real=True)
+    assert [_call(c) for c in fake.calls] == [
+        ("edit", "m1"),
+        ("post", "m1", "9/1 — 713 TiB (+8.0, 1.1%)", f"{AV}50.png?v=4", None),
+        ("post", "m1", "9/2 — 715 TiB (+2.0, 0.3%)", f"{AV}30.png?v=4", None),
+        ("delete", "m2"),
+        ("delete", "m3"),
+    ]
+    assert state["posted"] == {"2026-09-01": {"ts": "m4", "scan": "2026-09-01T1200"}, "2026-09-02": {"ts": "m5", "scan": "2026-09-02T1200"}}
+    assert "stale" not in state
+    assert json.loads((tmp_path / "digest" / "cw" / "C1" / "sender" / "2026-09.json").read_text()) == state
+    # a second redo is a plain re-thread of the (now current) replies
+    fake.calls.clear()
+    D.redo_replies(str(root), SEP, "xoxb", "C1", "sender", client=fake, for_real=True)
+    assert [_call(c) for c in fake.calls] == [("edit", "m1"), ("post", "m1", "9/1 — 713 TiB (+8.0, 1.1%)", f"{AV}50.png?v=4", None), ("post", "m1", "9/2 — 715 TiB (+2.0, 0.3%)", f"{AV}30.png?v=4", None), ("delete", "m4"), ("delete", "m5")]
+
+
+def test_redo_replies_post_failure_deletes_nothing(tmp_path: Path):
+    # the 2nd new reply fails to post: stop — nothing deleted, the old ts kept as `stale` for a re-run
+    root, fake = _old_rule_thread(tmp_path, fail_post_at=5)
+    with pytest.raises(RuntimeError, match="slack down"):
+        D.redo_replies(str(root), SEP, "xoxb", "C1", "sender", client=fake, for_real=True)
+    assert [_call(c) for c in fake.calls] == [("edit", "m1"), ("post", "m1", "9/1 — 713 TiB (+8.0, 1.1%)", f"{AV}50.png?v=4", None)]
+    saved = json.loads((tmp_path / "digest" / "cw" / "C1" / "sender" / "2026-09.json").read_text())
+    assert (saved["stale"], saved["posted"]) == (["m2", "m3"], {"2026-09-01": {"ts": "m4", "scan": "2026-09-01T1200"}})
+
+
+def test_redo_replies_delete_failure_continues(tmp_path: Path):
+    # a delete that fails is logged and kept in `stale`; the rest proceed and the new replies stand
+    root, fake = _old_rule_thread(tmp_path, fail_delete={"m2"})
+    state = D.redo_replies(str(root), SEP, "xoxb", "C1", "sender", client=fake, for_real=True)
+    assert [c for c in fake.calls if c[0] == "delete"] == [("delete", "m2"), ("delete", "m3")]
+    assert state["stale"] == ["m2"]
+    assert state["posted"] == {"2026-09-01": {"ts": "m4", "scan": "2026-09-01T1200"}, "2026-09-02": {"ts": "m5", "scan": "2026-09-02T1200"}}
+

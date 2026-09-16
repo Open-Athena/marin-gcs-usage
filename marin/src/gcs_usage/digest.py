@@ -566,3 +566,51 @@ def post_digest(root, m, token, channel, variant="sender", site_url=DEFAULT_URL,
 
     save_state(root, m, channel, variant, state)
     return state
+
+
+def redo_replies(root, m, token, channel, variant="sender", site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0, client=None, reply_hour=REPLY_HOUR_UTC, for_real=False) -> dict:
+    """Re-post the month's replies under the CURRENT day rule and retire the
+    old ones (a rule change, e.g. evening→morning scan). Post-new-then-delete-
+    old on purpose: no empty-thread window, and the old block vanishes at
+    once. No strike/edit step — the headline lives in the sender name, which
+    `chat.update` can't touch, so a strike would look broken.
+
+    Dry-run (default) returns the plan — ``old`` replies (day, {ts, scan})
+    and ``new`` (day, scan, headline) — and posts nothing. ``for_real``: the
+    old ts list is stashed in the state as ``stale`` first, ``posted`` is
+    cleared, the normal converge appends the new replies to the same thread,
+    and only if every post succeeded are the stale ts deleted (a failed
+    delete is logged and left for a re-run — a leftover old reply is
+    harmless); a failed post stops before any delete, ``stale`` persisted."""
+    month = load_month(root, m)
+    if month is None:
+        _err(f"digest: no scans for {m:%Y-%m}")
+        return {}
+    state = load_state(root, m, channel, variant)
+    old = list(state.get("posted", {}).items())
+    days = day_rows(month, variant, reply_hour)
+    new = [(day.date, day.scan, reply(day, variant, site_url).username if variant == "sender" else reply(day, variant, site_url).body) for day in days]
+    if not for_real:
+        return {"old": old, "new": new}
+    if not state.get("op_ts"):
+        raise SystemExit(f"digest: no OP for {m:%Y-%m} in {channel} — nothing to re-thread under")
+    state["stale"] = [e["ts"] for _, e in old] + state.get("stale", [])
+    state["posted"] = {}
+    save_state(root, m, channel, variant, state)
+    state = post_digest(root, m, token, channel, variant, site_url=site_url, icons_dir=icons_dir, deploy_plot=deploy_plot, reply_delay=reply_delay, client=client, reply_hour=reply_hour)
+    if client is None:
+        from thrds.slack import SlackClient
+
+        client = SlackClient(token, channel)
+    failed = []
+    for ts in state.pop("stale", []):
+        try:
+            client.delete(ts, orphans_ok=True)
+            _err(f"digest: deleted old reply {ts}")
+        except Exception as e:  # noqa: BLE001 — leave it for a re-run; an old reply lingering is harmless
+            _err(f"digest: WARN could not delete old reply {ts}: {e}")
+            failed.append(ts)
+    if failed:
+        state["stale"] = failed
+    save_state(root, m, channel, variant, state)
+    return state
