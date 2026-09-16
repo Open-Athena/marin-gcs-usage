@@ -56,9 +56,13 @@ const dateOfX = (x: number) => new Date(x).toISOString().slice(0, 10)
 const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const xOfScan = (d: string) => new Date(d.slice(0, 10)).getTime()
 
-export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets' }: {
+export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, filterLabel }: {
   /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
   scopeLabel?: string
+  /** The page filter's match roots: the series is their sum per scan. */
+  paths?: string[]
+  /** The filter text, for the subtitle. */
+  filterLabel?: string
   scans: string[]
   prefix: string
   /** The owner axis's user: their bytes under `prefix`, per scan. */
@@ -78,10 +82,12 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   const yFrom: YFrom = y0P ? 'zero' : 'data'
   const setYFrom = (y: YFrom) => setY0P(y === 'zero')
 
-  const scope = user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : ''
+  const scope = (user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : '') + (paths?.length ? `&paths=${encodeURIComponent(paths.join(','))}` : '')
   const seriesQ = useQuery<Series>({
     queryKey: ['series', prefix, scope, scans.length],
-    enabled: scans.length > 1,
+    // Under a filter, wait for its match roots: the whole-store series is not
+    // what the page asked for.
+    enabled: scans.length > 1 && !(filterLabel && !paths?.length),
     staleTime: 5 * 60_000,
     queryFn: async () => {
       const r = await fetch(`/api/series?path=${encodeURIComponent(prefix)}${scope}`, { credentials: 'include' })
@@ -141,6 +147,8 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
             ? <>Bytes no person owns{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
             : pool === 'owned'
               ? <>Bytes owned by a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
+              : paths?.length
+                ? <>Stored bytes under “{filterLabel}” ({paths.length} {paths.length === 1 ? 'prefix' : 'prefixes'}) per scan.</>
               : prefix
                 ? <>Stored bytes under <code>{prefix}</code> per scan.</>
                 : <>Total stored bytes per scan ({scopeLabel}).</>}

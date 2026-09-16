@@ -19,6 +19,7 @@ import { type Lens, makeStore } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner } from '../_lib/scope.js'
 import { readRootAgg } from '../_lib/view.js'
+import { parsePaths } from '../_lib/filter.js'
 
 // The default store's snapshot dirs (`snapshots/<date>/`; other stores live in
 // a named subdir that DATE_RE keeps out), and the scan-id shape they're named by.
@@ -61,6 +62,11 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   const url = new URL(request.url)
   const path = (url.searchParams.get('path') ?? '').replace(/\/+$/, '')
   if (path.includes('..') || path.startsWith('/')) return json({ error: 'bad path' }, 400)
+  // `paths=` (specs/filter-views.md §4): the filter's match roots — the point
+  // is the sum of one root read per scan. Bounded like a view's region reads.
+  const paths = parsePaths(url.searchParams.getAll('paths'))
+  if (paths.some(p => p.includes('..') || p.startsWith('/'))) return json({ error: 'bad paths' }, 400)
+  if (paths.length > 24) return json({ error: 'too many paths (max 24)' }, 400)
   const lensRaw = url.searchParams.get('lens')
   let lens: Lens | undefined
   if (lensRaw) {
@@ -77,8 +83,8 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   // A user lens applies the live claims, so its key carries the ledger head.
   const head = lens ? await ledgerHead(env) : 0
   // Unscoped whole-bucket series only: scans without tiers still have a total in meta.json.
-  const extra = path === '' && !lens && !owner && !classes ? await unindexedScans(env, new Set(dates)) : []
-  const cacheKey = new Request(`https://series.cache/${encodeURIComponent(path)}?l=${lensRaw ?? ''}&o=${owner ?? ''}&cl=${classKey(classes)}&d=${dates.join(',')}&x=${extra.join(',')}&head=${head}`)
+  const extra = path === '' && !paths.length && !lens && !owner && !classes ? await unindexedScans(env, new Set(dates)) : []
+  const cacheKey = new Request(`https://series.cache/${encodeURIComponent(path)}?P=${encodeURIComponent(paths.join(','))}&l=${lensRaw ?? ''}&o=${owner ?? ''}&cl=${classKey(classes)}&d=${dates.join(',')}&x=${extra.join(',')}&head=${head}`)
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
@@ -89,6 +95,13 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   // since a silently absent point looks like a gap in the data.
   const point = async (date: string, tries = 2): Promise<{ date: string; b: number; o: number } | null> => {
     try {
+      if (paths.length) {
+        // Σ over the match roots; a root absent from a scan contributes 0.
+        const parts = await Promise.all(paths.map(p => readRootAgg(env, { date, path: p, lens, owner, classes })))
+        const b = parts.reduce((n, a) => n + (a?.b ?? 0), 0)
+        const o = parts.reduce((n, a) => n + (a?.o ?? 0), 0)
+        return parts.some(Boolean) ? { date, b, o } : null
+      }
       const a = await readRootAgg(env, { date, path, lens, owner, classes })
       return a ? { date, ...a } : null
     } catch (e) {
@@ -109,7 +122,7 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
     for (const g of got) if (g) points.push(g)
   }
   points.sort((a, b) => a.date.localeCompare(b.date))
-  const res = json({ path, ...(lensRaw ? { lens: lensRaw } : {}), ...(owner ? { owner } : {}), points }, 200, { 'cache-control': 'private, max-age=300' })
+  const res = json({ path, ...(paths.length ? { paths } : {}), ...(lensRaw ? { lens: lensRaw } : {}), ...(owner ? { owner } : {}), points }, 200, { 'cache-control': 'private, max-age=300' })
   await cache.put(cacheKey, res.clone())
   return res
 }

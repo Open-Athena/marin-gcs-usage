@@ -36,6 +36,11 @@
 - **Diff**: already scoped; keep the header form "the whole bucket · “ttl” — …".
 - **Bytes by creation date**: scoped to the matched set when the age data can be (per-prefix age rows exist at the top level only; otherwise say so in the subtitle).
 
+### As built, §3–§4 (2026-09-16)
+
+- Client: the filter box edits a local draft, the URL follows after 250 ms; every subtree/diff `queryFn` passes react-query's abort signal to `fetch`; with a filter the companion query fetches the whole forest from the coarsest tier (`partial`) and the main query `full=1`; the map holds the previous tree (dimmed) as it already did across scan/drill changes; `lifecycle.json` is fetched only for scans ≥ the recorded-from date.
+- `/api/series?paths=a,b` (≤ 24 roots, `parsePaths`): each scan's point is Σ one root read per root; `SizeOverTime` takes the deepest subtree response's `matched` roots and subtitles "Stored bytes under “ttl” (3 prefixes) per scan", and waits for the roots rather than showing the whole-store series first. The Diff header already read "the whole bucket · “ttl” — …". Age data is per top-level dir: `scopeAgeRows` scopes the chart exactly when every match root is a top-level dir, else the chart stays whole and its subtitle says so.
+
 ## Tests and verification
 
 - Pure: matched-set resolution (nested matches collapse to the outer one; an object match is a leaf; case rules as today), forest budget split, series summation — exact-equality vitest/pytest as applicable.
@@ -45,3 +50,8 @@
 ## Non-goals
 
 Fuzzy/regex beyond today's `text, a|b`; a global name index (the coarse tier is the index); the KV warm tier (gcs's `diff-perf` track, independent).
+
+## Verified (2026-09-16, harness on cw's synced scans)
+
+- Functions: `?q=ttl` → 3 match roots (`tmp/ttl=14d` 145.8 T, `marin/tmp/ttl=14d` 12.9 T, `tmp/ttl=30d` 7.2 T); the `tmp/ttl=14d` root's children and grandchildren are name/byte/object-identical to drilling into it; partial (coarse16+coarse16, 942 nodes) 0.6 s, full (coarse16+coarse20, 1221 nodes) 0.9 s; `/api/diff?q=ttl` summary + depth=1 compose; `/api/series?paths=` sums the three roots per scan (148.7 → 165.9 Ti).
+- Client: typing `t`,`tt`,`ttl` within the pause issued exactly `q=ttl` (subtree ×2, diff ×3); the previous map stayed held and dimmed; "151 Ti matched"; the `ttl=14d` tile drew its children (skyrl 130 Ti …); the series subtitle names the 3 prefixes and the chart shows their sum; the age chart notes it is per top-level dir; the Diff header reads "the whole bucket · “ttl” — 135 Ti − 109 Gi + 16 Ti = 151 Ti".

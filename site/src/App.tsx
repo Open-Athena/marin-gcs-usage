@@ -16,6 +16,7 @@ import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
 import { barControls } from './pageBar'
+import { scopeAgeRows } from './ageScope'
 import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
@@ -467,7 +468,16 @@ function AppContent() {
   // flagged `m` (a match root's whole subtree comes along, so its descendants
   // aren't flagged).
   const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
-  const age: AgeRow[] = ageQ.data ?? []
+  const ageAll: AgeRow[] = ageQ.data ?? []
+  // The filter's match roots (the deepest subtree response carries them);
+  // the series sums them per scan, the age chart follows when it can.
+  const matchedRoots = useMemo((): string[] | undefined => {
+    if (!fq) return undefined
+    const m = subtreeQs[subtreeQs.length - 1]?.data?.matched ?? subtreeQs[0]?.data?.matched
+    return m?.map(x => x.path)
+  }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
+  const ageScoped = useMemo(() => scopeAgeRows(ageAll, matchedRoots), [ageAll, matchedRoots])
+  const age: AgeRow[] = ageScoped.rows
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out) — shared with
   // /sweep. Re-armed as the map, meta and scans land (sections mount off
@@ -1101,6 +1111,8 @@ function AppContent() {
           The age chart still hides under any scope until /api/age lands. */}
       <SizeOverTime
         scopeLabel={store.rootLabel}
+        paths={matchedRoots}
+        filterLabel={fq ?? undefined}
         scans={scans} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}
@@ -1211,6 +1223,7 @@ function AppContent() {
           {store.objectsNote}{readRange ? <>{' '}The other time axis is <b>last read</b> (from the usage logs, since {epochDaysToDate(readRange.min)}) —
           color by it to see which vintages nobody has touched.</> : null}{' '}The chart’s color axis is its own (right):
           it follows the map’s until you pick one; marks have no per-stratum value here.
+          {fq && !ageScoped.scoped && <>{' '}<i>Age data is per top-level dir, so this chart is not scoped to “{fq}”.</i></>}
         </p>
         {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
         {age.length > 0 && (
