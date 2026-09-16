@@ -1,0 +1,223 @@
+import {
+  FloatingFocusManager,
+  FloatingPortal,
+  autoUpdate,
+  flip,
+  offset,
+  shift,
+  useClick,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from '@floating-ui/react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { FaGithub } from 'react-icons/fa'
+import { MdMenu } from 'react-icons/md'
+import { Link, useLocation } from 'react-router-dom'
+import { AboutModal } from './About'
+import { Avatar } from './Avatar'
+import { signInUrl, useCanMark, useIdent, useSignOut } from './auth'
+import { IDENTITIES } from './identities.gen'
+import { REPO_URL } from './SiteKbd'
+import { useMyUser, useUserEmails } from './sweep'
+import TokenModal from './TokenModal'
+import { UserCard, ghHandle, shortName } from './UserChip'
+import { useUnits } from './units'
+import { Tooltip } from './Tooltip'
+
+const CW_URL = 'https://cw-s3.oa.dev/'
+
+// The one bar every page wears, pinned to the viewport top: the site nav
+// folded into a ☰ menu (far left), the page's own scope/controls across the
+// middle, and the signed-in identity as an avatar menu (far right — units,
+// token, sign-out live in it). On the home page the middle IS the page scope
+// (scan, diff window, color axis, mark/owner axes, name filter), so every
+// section below reads against a visible statement of what it's scoped to,
+// and the bar looks the same parked at the top as it does stuck mid-page.
+//
+// The bar's rendered height is published as `--topbar-h` on <html>, so
+// anchored sections park just under it (`scroll-margin-top`) however many
+// rows the controls wrap onto.
+export const TOPBAR_VAR = '--topbar-h'
+/** The bar's current height (px) — where anchored sections park. */
+export const topbarH = (): number =>
+  parseFloat(getComputedStyle(document.documentElement).getPropertyValue(TOPBAR_VAR)) || 48
+
+export function SiteNav({ children, menu, crumbs }: {
+  /** Page controls for the middle of the bar. */
+  children?: ReactNode
+  /** Page-specific entries appended to the ☰ menu (after the site links). */
+  menu?: MenuEntry[]
+  /** Where the page is (the drilled path): the first row, beside the brand;
+   * the controls then take a row of their own under it. */
+  crumbs?: ReactNode
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const root = document.documentElement
+    const set = () => root.style.setProperty(TOPBAR_VAR, `${el.offsetHeight}px`)
+    set()
+    const ro = new ResizeObserver(set)
+    ro.observe(el)
+    return () => { ro.disconnect(); root.style.removeProperty(TOPBAR_VAR) }
+  }, [])
+  // The crumbs scroll horizontally when they don't fit (a phone), and snap
+  // to their END on every path change so the basename — the one segment the
+  // reader needs — is what shows, not `marin GCS/marin-us-…`.
+  const crumbsRef = useRef<HTMLDivElement | null>(null)
+  const { pathname } = useLocation()
+  useLayoutEffect(() => {
+    const el = crumbsRef.current
+    if (el) el.scrollLeft = el.scrollWidth
+  }, [pathname])
+  return (
+    <div className="topbar" ref={ref}>
+      <div className="tb-row">
+        <NavMenu extra={menu} />
+        {crumbs ? <div className="tb-crumbs" ref={crumbsRef}>{crumbs}</div> : <div className="tb-mid">{children}</div>}
+        <UserMenu />
+      </div>
+      {crumbs && children && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
+    </div>
+  )
+}
+
+export interface MenuEntry {
+  key: string
+  label: ReactNode
+  onClick: () => void
+}
+
+/** A click-toggled floating menu anchored to its trigger button. */
+function useMenu(placement: 'bottom-start' | 'bottom-end') {
+  const [open, setOpen] = useState(false)
+  const { refs, floatingStyles, context } = useFloating({
+    open,
+    onOpenChange: setOpen,
+    placement,
+    middleware: [offset(6), flip(), shift({ padding: 8 })],
+    whileElementsMounted: autoUpdate,
+  })
+  const { getReferenceProps, getFloatingProps } = useInteractions([
+    useClick(context),
+    useDismiss(context),
+    useRole(context, { role: 'menu' }),
+  ])
+  return { open, setOpen, refs, floatingStyles, context, getReferenceProps, getFloatingProps }
+}
+
+function NavMenu({ extra }: { extra?: MenuEntry[] }) {
+  const { pathname } = useLocation()
+  const canMark = useCanMark()
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const m = useMenu('bottom-start')
+  const here = (to: string) => (to === '/' ? pathname === '/' : pathname === to || pathname.startsWith(to + '/'))
+  const link = (to: string, label: string) => (
+    <Link key={to} role="menuitem" className="mi" to={to} aria-current={here(to) ? 'page' : undefined} onClick={() => m.setOpen(false)}>
+      {label}
+    </Link>
+  )
+  return (
+    <>
+      {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
+      <button type="button" className="tb-menu-btn" ref={m.refs.setReference} {...m.getReferenceProps()} aria-label="Site menu" title="Site menu">
+        <MdMenu aria-hidden />
+      </button>
+      {m.open && (
+        <FloatingPortal>
+          <FloatingFocusManager context={m.context} modal={false}>
+            <div className="menu-pop" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
+              {link('/', 'Map')}
+              {link('/files', 'Scans')}
+              {canMark && link('/users', 'Users')}
+              {canMark && link('/marks', 'Marks')}
+              {canMark && link('/assignments', 'Assignments')}
+              {canMark && link('/sweep', 'Sweep')}
+              <hr />
+              <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setAboutOpen(true) }}>About — the data, axes &amp; colors</button>
+              {extra?.map(e => (
+                <button key={e.key} type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); e.onClick() }}>{e.label}</button>
+              ))}
+              <hr />
+              <a role="menuitem" className="mi" href={CW_URL} target="_blank" rel="noreferrer">CoreWeave usage ↗</a>
+              <a role="menuitem" className="mi" href={REPO_URL} target="_blank" rel="noreferrer"><FaGithub aria-hidden /> Source on GitHub ↗</a>
+            </div>
+          </FloatingFocusManager>
+        </FloatingPortal>
+      )}
+    </>
+  )
+}
+
+function UserMenu() {
+  const ident = useIdent()
+  const canMark = useCanMark()
+  const signOut = useSignOut()
+  const myUser = useMyUser(ident?.email, canMark)
+  const emails = useUserEmails(canMark)
+  const [tokenOpen, setTokenOpen] = useState(false)
+  const { units, suffixB, toggleUnits, toggleSuffixB } = useUnits()
+  const m = useMenu('bottom-end')
+  if (!ident) return <a className="tb-signin" href={signInUrl()}>sign in</a>
+  const who = myUser ?? ident.email
+  return (
+    <>
+      {tokenOpen && <TokenModal onClose={() => setTokenOpen(false)} />}
+      <button type="button" className="tb-avatar" ref={m.refs.setReference} {...m.getReferenceProps()} aria-label={`Signed in as ${shortName(who)}`} title={shortName(who)}>
+        <Avatar github={ghHandle(who)} name={shortName(who)} size={26} />
+      </button>
+      {m.open && (
+        <FloatingPortal>
+          <FloatingFocusManager context={m.context} modal={false}>
+            <div className="menu-pop user-menu" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
+              <UserCard who={who} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />
+              <hr />
+              <Tooltip content="Byte units, site-wide: binary (TiB) ↔ decimal (TB)" placement="left">
+                <button type="button" role="menuitem" className="mi" onClick={() => toggleUnits()}>
+                  units: <b>{(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}</b> → {(units === 'iec' ? 'T' : 'Ti') + (suffixB ? 'B' : '')}
+                </button>
+              </Tooltip>
+              <Tooltip content="Show or hide the trailing B (Ti vs TiB), site-wide" placement="left">
+                <button type="button" role="menuitem" className="mi" onClick={() => toggleSuffixB()}>
+                  trailing B: <b>{suffixB ? 'on' : 'off'}</b> <span className="dim">({units === 'iec' ? 'Ti' : 'T'}{suffixB ? 'B' : ''})</span>
+                </button>
+              </Tooltip>
+              {canMark && (
+                <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setTokenOpen(true) }}>
+                  agent / CLI token…
+                </button>
+              )}
+              <button type="button" role="menuitem" className="mi" onClick={signOut}>log out</button>
+            </div>
+          </FloatingFocusManager>
+        </FloatingPortal>
+      )}
+    </>
+  )
+}
+
+// Session-specific lines appended to the identity card (the card itself —
+// avatar, name, group, GitHub, storage link — is the shared <UserCard>):
+// which sign-in email this session is, the user's other aliases and sign-in
+// emails, or a warning when the email maps to no user.
+function SessionLines({ email, user, emails }: { email: string; user: string | null; emails?: Record<string, string> }) {
+  const aliases = user ? Object.keys(IDENTITIES).filter(k => k !== user && IDENTITIES[k].u === user) : []
+  const others = user && emails ? Object.keys(emails).filter(e => emails[e] === user && e !== email.toLowerCase()) : []
+  return (
+    <div className="uc-session">
+      <div>signed in as <code>{email}</code></div>
+      {user ? (
+        <>
+          {aliases.length > 0 && <div>aliases: {aliases.map(a => <code key={a}>{a}</code>)}</div>}
+          {others.length > 0 && <div>also signs in as: {others.map(e => <code key={e}>{e}</code>)}</div>}
+        </>
+      ) : (
+        <div className="uc-warn">not mapped to a user in the identity registry — the “me” owner filter won't resolve; ping Ryan.</div>
+      )}
+    </div>
+  )
+}

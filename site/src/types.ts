@@ -56,12 +56,17 @@ export interface AgeRow {
 
 export type Granularity = 'month' | 'week' | 'day'
 
-export type ColorMode = 'tree' | 'date' | 'user'
+export type ColorMode = 'tree' | 'date' | 'read' | 'user' | 'marks'
 
+// Key order = the "color by" button row (and ⌘K entry order): the cleanup
+// axes lead (marks is the default fill; read is the best sweep-candidate
+// signal), attribution next, chronology/structure last.
 export const MODE_LABELS: Record<ColorMode, string> = {
-  tree: 'tree',
-  date: 'age',
+  marks: 'marks',
+  read: 'read',
   user: 'user',
+  date: 'written',
+  tree: 'tree',
 }
 
 export interface Meta {
@@ -156,8 +161,7 @@ export const fmtBytesIec = (b: number, suffixB = false): string => {
   return Math.round(b / Ki) + ' Ki' + B
 }
 
-// Non-hook default (IEC, bare `Ti`): the 910 TiB CoreWeave quota is binary.
-// Components under <UnitsProvider> use `useUnits().fmtBytes` instead.
+// Non-hook default (IEC, bare `Ti`); kept for cw's pre-hub consumers until the page hub converges.
 export const fmtBytes = (b: number): string => fmtBytesIec(b)
 
 export const fmtN = (n: number): string => n.toLocaleString('en-US')
