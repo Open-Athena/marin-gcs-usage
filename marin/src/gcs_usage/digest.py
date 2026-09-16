@@ -12,8 +12,10 @@ the data bucket.
 Two reply VARIANTS exist because Slack fixes a message's username + icon at
 post time (`chat.update` can't change them):
 - ``sender`` (gcs-style): the headline IS the sender name, the arrow the
-  avatar. Posted once, by the day's first scan (00:01Z) — a clean
-  midnight-to-midnight delta; the 12:01Z scan only re-converges the OP + plot.
+  avatar. Posted once, from the day's MORNING scan — the first at/after
+  ``REPLY_HOUR_UTC`` (12:01Z = 8:01 am ET, the same calendar date in both
+  zones) — with a ~24 h delta to the prior day's reply scan; the 00:01Z scan
+  only re-converges the OP + plot.
 - ``body``: the headline is bold body text under a static sender/avatar, so
   the day's reply is EDITED whenever a later scan of the day lands — text and
   sparkline agree intra-day (at the cost of the first edit's Δ spanning 12 h
@@ -57,6 +59,10 @@ AVATAR_REV = 4
 HOURS_PER_WEEK = 168.0
 SCAN_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2}))?$")
 VARIANTS = ("sender", "body")
+# The `sender` variant's daily reply is the day's first scan at/after this UTC
+# hour: 12 → the 12:01Z scan, 8:01 am ET, so the reply carries the same date
+# on both coasts (the 00:01Z scan is 8:01 pm ET the evening before).
+REPLY_HOUR_UTC = 12
 OP_SENDER = "CoreWeave usage"  # + " — <Month YYYY>" on the OP; bare on `body`-variant replies
 
 
@@ -205,20 +211,30 @@ class DayRow:
     since: dt.datetime | None  # the prior reply scan's instant (the diff link's look-back)
 
 
-def day_rows(month: Month, variant: str) -> list[DayRow]:
-    """One ``DayRow`` per in-month UTC day. ``sender`` keys each day on its
-    FIRST scan (posted once, midnight-to-midnight); ``body`` on its LAST (the
+def day_rows(month: Month, variant: str, reply_hour: int = REPLY_HOUR_UTC) -> list[DayRow]:
+    """One ``DayRow`` per in-month UTC day that has its reply scan.
+
+    ``sender``: the day's first scan at/after ``reply_hour`` UTC (the morning
+    scan; posted once, never edited). A day whose morning scan hasn't landed
+    yet has no row — unless a later day has already started, in which case
+    the day's LAST scan stands in, so a missed 12:01Z scan still yields
+    exactly one reply per day. ``body``: the day's LAST scan so far (the
     reply is re-edited as the day's scans land)."""
     if variant not in VARIANTS:
         raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
-    pick = (lambda rs: rs[0]) if variant == "sender" else (lambda rs: rs[-1])
     days: OrderedDict[str, list[Scan]] = OrderedDict()
     for r in month.lead + month.rows:
         days.setdefault(r.date, []).append(r)
     out: list[DayRow] = []
     prev: Scan | None = None
-    for date, rs in days.items():
-        s = pick(rs)
+    for i, (date, rs) in enumerate(days.items()):
+        if variant == "body":
+            s = rs[-1]
+        else:
+            later = i + 1 < len(days)  # some scan of a later day exists
+            s = next((r for r in rs if scan_ts(r.scan).hour >= reply_hour), rs[-1] if later else None)
+            if s is None:
+                continue  # the day's morning scan is still to come
         if date >= month.rows[0].date:
             out.append(
                 DayRow(
@@ -476,7 +492,7 @@ def render_plot(month: Month, m: dt.date, out_path, root: str | None = None) -> 
     render([{"scan": r.scan, "tb": r.tb} for r in month.rows], Path(out_path), f"CoreWeave usage — {m:%B %Y}", diff=diff, diff_label=f"{_md(base.date)} → {_md(last.date)}")
 
 
-def post_digest(root, m, token, channel, variant="sender", site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0, client=None) -> dict:
+def post_digest(root, m, token, channel, variant="sender", site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0, client=None, reply_hour=REPLY_HOUR_UTC) -> dict:
     """Converge the month's thread: render+host the plot, post/edit the OP, then
     per in-month day post its reply if none exists — or, on the ``body``
     variant, edit it when a later scan of that day has landed. Persist and
@@ -531,7 +547,7 @@ def post_digest(root, m, token, channel, variant="sender", site_url=DEFAULT_URL,
 
     posted = state.setdefault("posted", {})
     new = 0
-    for day in day_rows(month, variant):
+    for day in day_rows(month, variant, reply_hour):
         r = reply(day, variant, site_url)
         have = posted.get(day.date)
         if have is None:

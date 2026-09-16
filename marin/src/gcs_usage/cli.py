@@ -20,6 +20,7 @@ import duckdb
 import pandas as pd
 from click import Choice, argument, group, option
 
+from .digest import REPLY_HOUR_UTC
 from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
 from .listing import prepare_listing
 from .prefixes import load_prefix_map
@@ -846,14 +847,15 @@ def _icons_dir() -> Path:
 @main.command()
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
 @option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so per-reply sender chrome survives)")
+@option("-H", "--reply-hour", type=int, default=REPLY_HOUR_UTC, help="UTC hour the sender variant's daily reply is taken from: the day's first scan at/after it (default 12 → the 12:01Z morning scan, 8:01 am ET; 00:01Z scans still feed the OP + plot)")
 @option("-i", "--icons-dir", type=Path, default=None, help="Where the plot PNG is written + deployed from (default job/icons-cw)")
 @option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
 @option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
 @option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots/cw)")
 @option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default cw-s3.oa.dev)")
-@option("-V", "--variant", type=Choice(["sender", "body"]), default="sender", help="Reply style: headline as the sender name, posted once per day (sender) or bold in the body, edited as the day's scans land (body)")
-def digest(channel: str | None, reply_delay: float, icons_dir: Path | None, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None, variant: str) -> None:
+@option("-V", "--variant", type=Choice(["sender", "body"]), default="sender", help="Reply style: headline as the sender name, posted once from the day's morning scan (sender) or bold in the body, edited as the day's scans land (body)")
+def digest(channel: str | None, reply_delay: float, reply_hour: int, icons_dir: Path | None, month: str | None, dry_run: bool, root: str | None, token: str | None, site_url: str | None, variant: str) -> None:
     """Converge the monthly digest thread in #cw-s3-usage: an OP edited in place
     (month-to-date + weekly bullets + quota sparkline) + one reply per UTC day,
     via thrds. State in gs://<bucket>/digest/cw/<channel>/<variant>/<YYYY-MM>.json.
@@ -879,7 +881,7 @@ def digest(channel: str | None, reply_delay: float, icons_dir: Path | None, mont
         err(f"rendered plot → {out}")
         print(dg.op_body(month, m, "<plot-url>", site_url))
         print(f"\n--- replies ({variant}: username | body | icon) ---")
-        for day in dg.day_rows(month, variant):
+        for day in dg.day_rows(month, variant, reply_hour):
             r = dg.reply(day, variant, site_url)
             print(f"{r.username} | {r.body} | {(r.icon_url or r.icon_emoji or '').split('/')[-1]}")
         return
@@ -913,7 +915,7 @@ def digest(channel: str | None, reply_delay: float, icons_dir: Path | None, mont
         found = re.search(r"https://[a-z0-9]+\.gcs-usage-icons\.pages\.dev", r.stdout + r.stderr)
         return found.group(0) if found else None
 
-    dg.post_digest(root, m, token, channel, variant, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
+    dg.post_digest(root, m, token, channel, variant, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay, reply_hour=reply_hour)
     err(f"digest: converged {m:%Y-%m} ({variant})")
 
 

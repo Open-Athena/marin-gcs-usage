@@ -73,11 +73,19 @@ def test_rows_from_meta_deltas():
 
 
 def test_day_rows_variants():
-    # sender: a day is its FIRST scan, Δ vs the prior day's first (midnight-to-midnight)
+    # sender: a day is its MORNING scan (first at/after 12:00Z), Δ vs the prior day's morning scan
     assert D.day_rows(MONTH, "sender") == [
-        D.DayRow("2026-09-01", "2026-09-01T0000", 710.0, 10.0, 24.0, D.scan_ts("2026-08-31T0000")),
-        D.DayRow("2026-09-02", "2026-09-02T0000", 712.0, 2.0, 24.0, D.scan_ts("2026-09-01T0000")),
+        D.DayRow("2026-09-01", "2026-09-01T1200", 713.0, 8.0, 24.0, D.scan_ts("2026-08-31T1200")),
+        D.DayRow("2026-09-02", "2026-09-02T1200", 715.0, 2.0, 24.0, D.scan_ts("2026-09-01T1200")),
     ]
+    # a half-landed day (only its 00:00 scan, no later day yet) has no reply yet
+    assert [d.date for d in D.day_rows(D.Month(lead=MONTH.lead, rows=MONTH.rows[:3]), "sender")] == ["2026-09-01"]
+    # …but once the next day has started, the day's last scan stands in (a missed 12:01Z scan)
+    assert D.day_rows(D.Month(lead=MONTH.lead, rows=[MONTH.rows[0], MONTH.rows[2]]), "sender") == [
+        D.DayRow("2026-09-01", "2026-09-01T0000", 710.0, 5.0, 12.0, D.scan_ts("2026-08-31T1200")),
+    ]
+    # `reply_hour=0` is the old first-scan rule
+    assert D.day_rows(MONTH, "sender", reply_hour=0)[0] == D.DayRow("2026-09-01", "2026-09-01T0000", 710.0, 10.0, 24.0, D.scan_ts("2026-08-31T0000"))
     # body: a day is its LAST scan so far, Δ vs the prior day's last
     assert D.day_rows(MONTH, "body") == [
         D.DayRow("2026-09-01", "2026-09-01T1200", 713.0, 8.0, 24.0, D.scan_ts("2026-08-31T1200")),
@@ -87,7 +95,7 @@ def test_day_rows_variants():
     half = D.Month(lead=MONTH.lead, rows=MONTH.rows[:3])
     assert D.day_rows(half, "body")[1] == D.DayRow("2026-09-02", "2026-09-02T0000", 712.0, -1.0, 12.0, D.scan_ts("2026-09-01T1200"))
     # first month ever: no prior for day 1
-    assert D.day_rows(D.Month(lead=[], rows=MONTH.rows), "sender")[0] == D.DayRow("2026-09-01", "2026-09-01T0000", 710.0, None, None, None)
+    assert D.day_rows(D.Month(lead=[], rows=MONTH.rows), "sender")[0] == D.DayRow("2026-09-01", "2026-09-01T1200", 713.0, None, None, None)
     with pytest.raises(ValueError, match="variant must be one of"):
         D.day_rows(MONTH, "x")
 
@@ -120,15 +128,15 @@ def test_op_body_two_weeks():
 
 def test_reply_sender_variant():
     d1, d2 = D.day_rows(MONTH, "sender")
-    # +10.0 on 700 in 24 h → 1.43%·7 = 10%/wk → deg50; +2.0 on 710 → 0.28%·7 = 2.0% → deg30
+    # +8.0 on 705 in 24 h → 1.13%·7 = 7.9%/wk → deg50; +2.0 on 713 → 0.28%·7 = 2.0% → deg30
     assert D.reply(d1, "sender") == D.Reply(
-        "9/1 — 710 TiB (+10.0, 1.4%)",
-        f"78.1% of 1 PB · 199.5 TiB free [↗︎]({SITE}/?d=260901-0000-1d#over-time)",
+        "9/1 — 713 TiB (+8.0, 1.1%)",
+        f"78.4% of 1 PB · 196.5 TiB free [↗︎]({SITE}/?d=260901-1200-1d#over-time)",
         icon_url=f"{AV}50.png?v=4",
     )
     assert D.reply(d2, "sender") == D.Reply(
-        "9/2 — 712 TiB (+2.0, 0.3%)",
-        f"78.3% of 1 PB · 197.5 TiB free [↗︎]({SITE}/?d=260902-0000-1d#over-time)",
+        "9/2 — 715 TiB (+2.0, 0.3%)",
+        f"78.6% of 1 PB · 194.5 TiB free [↗︎]({SITE}/?d=260902-1200-1d#over-time)",
         icon_url=f"{AV}30.png?v=4",
     )
 
@@ -150,8 +158,8 @@ def test_reply_body_variant():
 
 def test_reply_first_day_ever():
     # no prior scan: zero delta, flat arrow, link without a look-back
-    day = D.day_rows(D.Month(lead=[], rows=MONTH.rows[:1]), "sender")[0]
-    assert D.reply(day, "sender") == D.Reply("9/1 — 710 TiB (+0.0, 0.0%)", f"78.1% of 1 PB · 199.5 TiB free [↗︎]({SITE}/?d=260901-0000#over-time)", icon_url=f"{AV}0.png?v=4")
+    day = D.day_rows(D.Month(lead=[], rows=MONTH.rows[:2]), "sender")[0]
+    assert D.reply(day, "sender") == D.Reply("9/1 — 713 TiB (+0.0, 0.0%)", f"78.4% of 1 PB · 196.5 TiB free [↗︎]({SITE}/?d=260901-1200#over-time)", icon_url=f"{AV}0.png?v=4")
 
 
 def test_state_path():
@@ -212,31 +220,35 @@ def test_post_digest_sender_variant(tmp_path: Path):
     root = tmp_path / "snapshots" / "cw"
     _publish(root, LEAD + SEPT[:1])
     fake = _FakeSlack()
-    # 9/1 00:00 lands: OP under the month sender + one reply for 9/1 (headline as sender, arrow avatar)
+    # 9/1 00:00 lands: the OP under the month sender — no reply yet (the morning scan is still to come)
     state = D.post_digest(str(root), SEP, "xoxb", "C1", "sender", client=fake)
     plot = state["plot_name"]
     assert plot.startswith("plot-") and plot.endswith(".png")
-    assert [_post(c) for c in fake.calls] == [
-        ("post", None, "CoreWeave usage — September 2026", None, ":calendar:"),
-        ("post", "m1", "9/1 — 710 TiB (+10.0, 1.4%)", f"{AV}50.png?v=4", None),
-    ]
+    assert [_post(c) for c in fake.calls] == [("post", None, "CoreWeave usage — September 2026", None, ":calendar:")]
     assert fake.calls[0][1].startswith(":arrow_deg") and f"https://cw.gcs-usage-icons.pages.dev/{plot}?v=" in fake.calls[0][1]
-    assert state == {"plot_name": plot, "variant": "sender", "op_ts": "m1", "posted": {"2026-09-01": {"ts": "m2", "scan": "2026-09-01T0000"}}}
-    assert json.loads((tmp_path / "digest" / "cw" / "C1" / "sender" / "2026-09.json").read_text()) == state
+    assert state == {"plot_name": plot, "variant": "sender", "op_ts": "m1", "posted": {}}
 
-    # 9/1 12:00 lands: only the OP is refreshed — no reply, no edit
+    # 9/1 12:00 lands: OP refreshed + the day's reply (headline as sender, arrow avatar)
     _publish(root, SEPT[1:2])
     fake.calls.clear()
     state = D.post_digest(str(root), SEP, "xoxb", "C1", "sender", client=fake)
-    assert [_post(c) for c in fake.calls] == [("edit", "m1")]
-    assert state["posted"] == {"2026-09-01": {"ts": "m2", "scan": "2026-09-01T0000"}}
+    assert [_post(c) for c in fake.calls] == [("edit", "m1"), ("post", "m1", "9/1 — 713 TiB (+8.0, 1.1%)", f"{AV}50.png?v=4", None)]
+    assert state["posted"] == {"2026-09-01": {"ts": "m2", "scan": "2026-09-01T1200"}}
+    assert json.loads((tmp_path / "digest" / "cw" / "C1" / "sender" / "2026-09.json").read_text()) == state
 
-    # 9/2 00:00 lands: a new day → a new reply
+    # 9/2 00:00 lands: only the OP is refreshed — no reply, no edit
     _publish(root, SEPT[2:3])
     fake.calls.clear()
     state = D.post_digest(str(root), SEP, "xoxb", "C1", "sender", client=fake)
-    assert [_post(c) for c in fake.calls] == [("edit", "m1"), ("post", "m1", "9/2 — 712 TiB (+2.0, 0.3%)", f"{AV}30.png?v=4", None)]
-    assert state["posted"]["2026-09-02"] == {"ts": "m3", "scan": "2026-09-02T0000"}
+    assert [_post(c) for c in fake.calls] == [("edit", "m1")]
+    assert state["posted"] == {"2026-09-01": {"ts": "m2", "scan": "2026-09-01T1200"}}
+
+    # 9/2 12:00 lands: the new day's reply
+    _publish(root, SEPT[3:4])
+    fake.calls.clear()
+    state = D.post_digest(str(root), SEP, "xoxb", "C1", "sender", client=fake)
+    assert [_post(c) for c in fake.calls] == [("edit", "m1"), ("post", "m1", "9/2 — 715 TiB (+2.0, 0.3%)", f"{AV}30.png?v=4", None)]
+    assert state["posted"]["2026-09-02"] == {"ts": "m3", "scan": "2026-09-02T1200"}
     assert state["plot_name"] == plot
 
 
