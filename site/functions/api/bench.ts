@@ -1,4 +1,4 @@
-/** Admin-only decode benchmarks, run in the real Pages Function environment
+/** Decode benchmarks (any `gcs` reader: counts, timings, one sample row), run in the real Pages Function environment
  * against real objects in GCS — the laptop can't stand in for the edge (its
  * parquet decode is ~14× faster, and its fetches are bandwidth-bound where
  * the edge's are latency- and CPU-bound). CPU per request comes from the
@@ -11,7 +11,7 @@
  *   GET /api/bench?mode=pagelookup&key=bench/<scan>/<pq>&paths=… point lookups via page index + filter
  */
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
-import { ADMIN_SCOPE, type Env, requireScope } from '../_lib/auth.js'
+import { type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
 import { makeStore, openIndex, readAsks, readRects, type Row } from '../_lib/index.js'
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
@@ -23,7 +23,7 @@ async function inflate(gz: Uint8Array): Promise<ArrayBuffer> {
 }
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
-  const gated = await requireScope(ctx as never, ADMIN_SCOPE)
+  const gated = await requireScope(ctx as never, GCS_SCOPE)
   if (gated instanceof Response) return gated
   const url = new URL(ctx.request.url)
   const mode = url.searchParams.get('mode') ?? ''
