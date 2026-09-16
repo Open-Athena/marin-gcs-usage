@@ -33,7 +33,7 @@ const PAGE_SIZES = [20, 50, 100, 200]
  *  tooltip); ~60 chars fills the column's 480px at 12px mono. */
 const NAME_MAX = 60
 
-export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, userIdx, onPickUser, onOpen }: {
+export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, clientStates, userIdx, onPickUser, onOpen }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
@@ -45,6 +45,9 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   /** The page's mark-state axis: list only children whose effective decision
    * is in it (`{unmarked}` = the old To-do lens). Absent = every child. */
   states?: ReadonlySet<MarkAxis> | null
+  /** The server did NOT cut the view to `states` (a plan-first ledger is
+   *  client-side): filter the rows here by each child's effective state. */
+  clientStates?: boolean
   userIdx?: Map<string, UserIndexEntry>
   onPickUser?: (u: string) => void
   onOpen: (segs: string[]) => void
@@ -67,6 +70,13 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
     // effective decision here was wrong: the marks that keep bytes alive
     // under a swept band usually sit below the pixel-budgeted tree.
     if (states) ks = ks.filter(k => !k.n.startsWith('(') && k.b > 0)
+    if (states && clientStates && markIdx) {
+      const stateOf = (k: TreeNode): MarkAxis => {
+        const a = markIdx.resolve(scheme + [...segs, k.n].join('/')).mark?.action
+        return a === 'sweep' ? 'sweep' : a ? 'keep' : 'unmarked'
+      }
+      ks = ks.filter(k => states.has(stateOf(k)))
+    }
     const dir = sort.asc ? 1 : -1
     const val = (n: TreeNode): number | string =>
       sort.k === 'n' ? n.n
@@ -79,7 +89,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
       const vb = val(b)
       return (typeof va === 'string' ? (va as string).localeCompare(vb as string) : (va as number) - (vb as number)) * dir
     })
-  }, [node, sort, states])
+  }, [node, sort, states, clientStates, markIdx, scheme, segs])
   // A new listing (drill, sort, lens) starts on page 1.
   useEffect(() => setPage(0), [node, sort, states])
 

@@ -15,6 +15,7 @@ import { ChildrenTable } from './ChildrenTable'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
+import { barControls } from './pageBar'
 import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
@@ -200,8 +201,8 @@ function AppContent() {
   // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
   const markAxes = useMemo((): ReadonlySet<MarkAxis> | null => {
     const on = new Set(MARK_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
-    return on.size > 0 && on.size < MARK_AXES.length && serverLedger ? on : null
-  }, [kP, serverLedger])
+    return on.size > 0 && on.size < MARK_AXES.length && markMode ? on : null
+  }, [kP, markMode])
   const setMarkAxes = (keep: MarkAxis[]) =>
     setKP(keep.length === MARK_AXES.length || keep.length === 0 ? undefined : MARK_CHIPS.filter(c => keep.includes(c.f)).map(c => c.key).join(''))
   // Owner axis. `me` resolves to the signed-in user's attribution id (a
@@ -241,7 +242,7 @@ function AppContent() {
     (activeLens && assigner ? `&by=${encodeURIComponent(assigner)}` : '') +
     (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
     (notUsers.length ? `&o=!${notUsers.map(encodeURIComponent).join(',')}` : '') +
-    (markAxes ? `&k=${[...markAxes].map(f => f[0]).join('')}` : '') +
+    (markAxes && serverLedger ? `&k=${[...markAxes].map(f => f[0]).join('')}` : '') +
     (classSet ? `&cl=${CLASS_AXES.filter(c => classSet.has(c)).join('')}` : '') +
     (fq ? `&q=${encodeURIComponent(fq)}` : '')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
@@ -486,15 +487,17 @@ function AppContent() {
   // all-undecided view; on a one-owner view the interesting axis is who else
   // is in there).
   const lensDefaultMode: ColorMode =
-    markAxes?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : markMode ? 'marks' : 'user'
+    !store.owners ? 'tree'
+    : markAxes?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : markMode ? 'marks' : 'user'
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
   // The scan carries attribution (the owner axis and user coloring apply) —
   // from the scan's meta, not the current view, which may hold no user bytes
   // at all (e.g. `?o=unclaimed`).
   const hasAttr = !!meta?.users?.length
-  const effMode: ColorMode =
-    (mode === 'read' && !readRange) || (mode === 'marks' && !markMode) ? 'user' : hasAttr ? mode : 'tree'
+  // The page bar's controls, each on what backs it (`pageBar.ts`).
+  const bar = barControls({ marks: markMode, owners: store.owners, hasAttr, classes: store.prices, readRange: !!readRange })
+  const effMode: ColorMode = bar.color.includes(mode) ? mode : bar.color.includes('user') ? 'user' : 'tree'
   // The age chart's color axis: an explicit `?ac=` wins; otherwise it follows
   // the map, except marks (no per-stratum value in age.json) → written. The
   // read axis needs strata that carry `a` (scans published from 8/29 on) —
@@ -513,7 +516,7 @@ function AppContent() {
   const hl: Highlight | null = ownerUser ? { user: ownerUser } : null
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
-  const lensScoped = markAxes != null || ownerMode !== 'all' || classSet != null
+  const lensScoped = (markAxes != null && serverLedger) || ownerMode !== 'all' || classSet != null
   // Diff sides: the drilled subtree at each endpoint, scoped like the map.
   // The diff is read server-side (`/api/diff`): both scans' index tiers at
   // one shared byte floor, point lookups for names that crossed it, the
@@ -868,7 +871,7 @@ function AppContent() {
             </Tooltip>
           </span>
         )}
-        {hasAttr && (<>
+        {bar.color.length > 1 && (
           <label className="tb-ctl">
             <span className="lbl">color</span>
             <Tooltip content={
@@ -879,14 +882,14 @@ function AppContent() {
               : <>Top-level directory each cell belongs to.</>
             }>
               <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
-                {MODES
-                  .filter(m => (m !== 'read' || readRange) && (m !== 'marks' || markMode))
-                  .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
+                {bar.color.map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
               </select>
             </Tooltip>
           </label>
-          {/* Secondary color axis: a shade *within* each cell's primary color.
-              Opt-in (default none), so the primary axis reads as it always has. */}
+        )}
+        {bar.shade && (
+          /* Secondary color axis: a shade *within* each cell's primary color.
+             Opt-in (default none), so the primary axis reads as it always has. */
           <label className="tb-ctl">
             <span className="lbl">shade</span>
             <Tooltip content={<>A perturbation <i>within</i> each cell's color, on top of the primary axis. <b>storage class</b>: darker = a larger share of cold classes (Nearline / Coldline / Archive), so within one owner's band you can see what's already cold. Off by default.</>}>
@@ -896,8 +899,8 @@ function AppContent() {
               </select>
             </Tooltip>
           </label>
-        </>)}
-        {hasAttr && (
+        )}
+        {bar.classes && (
           <span className="tb-axis">
             <span className="lbl">class</span>
             <MultiSelect<ClassAxis>
@@ -908,7 +911,7 @@ function AppContent() {
             />
           </span>
         )}
-        {serverLedger && (
+        {bar.marksFilter && (
           <span className="tb-axis">
             <span className="lbl">marks</span>
             <MultiSelect<MarkAxis>
@@ -919,13 +922,13 @@ function AppContent() {
             />
           </span>
         )}
-        {markMode && hasAttr && (
+        {bar.ownerFilter && (
           <span className="tb-axis">
             <span className="lbl">owner</span>
             {ownerSelect}
           </span>
         )}
-        {hasAttr && (
+        {bar.pathFilter && (
           <span className="filterbox">
             <input
               value={fq ?? ''}
@@ -946,15 +949,6 @@ function AppContent() {
           <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
         )}
       </SiteNav>
-
-      {/* Stores whose scan job snapshots the bucket's lifecycle rules get the
-          fold here (cw-s3 today); the rows diff against the previous scan. */}
-      {store.lifecycle && (
-        <LifecycleFold
-          store={store} asof={asof} prevScan={prevScan}
-          note={<>Intended state is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
-        />
-      )}
 
       {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
           end) with a strip listing every candidate to pin one. */}
@@ -1064,6 +1058,7 @@ function AppContent() {
               markIdx={markMode ? markIdx : undefined}
               klcIdx={markMode ? klcIdx : undefined}
               states={markMode ? markAxes : null}
+              clientStates={!serverLedger}
               userIdx={userIdx}
               onPickUser={u => pickUser(u, false)}
               onOpen={openPath}
@@ -1181,6 +1176,16 @@ function AppContent() {
             <div className="diff-tm tm-skel busy-host stale" aria-busy="true"><Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} /></div>
           )}
         </section>
+      )}
+
+
+      {/* Stores whose scan job snapshots the bucket's lifecycle rules get the
+          fold here, after the Diff (cw-s3 today); the rows diff against the previous scan. */}
+      {store.lifecycle && (
+        <LifecycleFold
+          store={store} asof={asof} prevScan={prevScan}
+          note={<>Intended state is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
+        />
       )}
 
       {!lensScoped && (
