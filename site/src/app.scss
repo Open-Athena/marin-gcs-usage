@@ -423,6 +423,9 @@ details.fold {
 }
 
 .tt-ref { display: inline; }
+.tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
+.tooltip-content.pinned { border-color: var(--ink-3); }
+.tt-ref.pinnable { cursor: pointer; }
 
 .tooltip-content {
   z-index: 10000;
@@ -902,3 +905,5 @@ details.fold {
 .legend .mark-key { display: inline-flex; gap: 0.6em; align-items: center; margin: 0 0.4em; }
 .legend .mark-key .mk-li { display: inline-flex; gap: 0.3em; align-items: center; font-size: 0.85em; color: var(--muted); }
 .legend .mark-key .sw { width: 11px; height: 11px; border: 2px solid; border-radius: 2px; background: transparent; }
+
+.classmix td .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }

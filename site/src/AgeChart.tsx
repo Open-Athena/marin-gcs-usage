@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { dateColor, dateGradientCss, userColor } from './colors'
-import type { UserIndex } from './colors'
+import type { UserIndexEntry } from './colors'
 import type { AgeRow, ColorMode, Granularity } from './types'
 import { MODE_LABELS } from './types'
 import { useUnits } from './units'
@@ -35,7 +35,7 @@ export function AgeChart({ rows, catOrder, mode, onMode, modes = AGE_MODES, user
   modes?: ColorMode[]
   mode: ColorMode
   onMode?: (m: ColorMode) => void
-  userIdx: UserIndex
+  userIdx: Map<string, UserIndexEntry>
 }) {
   const { fmtBytes } = useUnits()
   // Default to the finest granularity that still fits on screen: the most

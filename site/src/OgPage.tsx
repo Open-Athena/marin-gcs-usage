@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Treemap } from './Treemap'
 import { buildUserIndex } from './colors'
-import type { UserIndex } from './colors'
+import type { UserIndexEntry } from './colors'
 import type { Meta, TreeNode } from './types'
 
 // `/og` — a redacted, fixed-size (1200×630) render of the per-user treemap,
@@ -10,7 +10,7 @@ import type { Meta, TreeNode } from './types'
 // dropped: no cell labels, no $/byte totals, no user names (hence no legend).
 export function OgPage() {
   const [tree, setTree] = useState<TreeNode | null>(null)
-  const [userIdx, setUserIdx] = useState<UserIndex>(new Map())
+  const [userIdx, setUserIdx] = useState<Map<string, UserIndexEntry>>(new Map())
 
   useEffect(() => {
     const prev = document.documentElement.dataset.theme

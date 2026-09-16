@@ -3,7 +3,7 @@ import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle, OutlineGroups } from '@disk-tree/react'
 import { ACTION_COLORS, ACTION_LABELS, type MarkAction, type MarkIndex } from './marks'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
-import type { UserIndex } from './colors'
+import type { UserIndexEntry } from './colors'
 import { CopyName, copyText } from './CopyName'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
@@ -103,7 +103,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   onPathChange?: (p: TreeNode[]) => void
   root: TreeNode
   mode: ColorMode
-  userIdx: UserIndex
+  userIdx: Map<string, UserIndexEntry>
   dateRange: DateRange | null
   hl?: Highlight | null
   pricing?: Pricing | null

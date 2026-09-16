@@ -28,6 +28,76 @@ export const epochDaysToMonth = (d: number): string => {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`
 }
 
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** Compact month for tight table cells: `May ’26` (no wrap, unambiguous year). */
+export const epochDaysToMonthShort = (d: number): string => {
+  const dt = new Date(d * 86400_000)
+  const y = dt.getUTCFullYear()
+  return y === new Date().getUTCFullYear() ? MON[dt.getUTCMonth()] : `${MON[dt.getUTCMonth()]} ’${String(y).slice(2)}`
+}
+
+/** Day-precision variant (`8/21`, year-qualified when not the current year) —
+ * read-recency spans days, not the months the created-age lens works in. */
+export const epochDaysToDate = (d: number, now = new Date()): string => {
+  const dt = new Date(d * 86400_000)
+  const md = `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}`
+  return dt.getUTCFullYear() === now.getUTCFullYear() ? md : `${dt.getUTCFullYear()}-${md}`
+}
+
+// ---- category slots (tree mode) ----
+
+// Base hue/sat/light per category slot. These live here rather than as `--sN`
+// CSS vars because the treemap fans *hue* within a category (see `slotColor`),
+// which needs the components, not an opaque hex. Legend swatches call the same
+// function, so legend and cells can't drift apart.
+export const SLOT_HSL: [number, number, number][] = [
+  [212, 78, 52],  // blue
+  [128, 60, 38],  // green
+  [332, 72, 60],  // pink
+  [41, 92, 48],   // amber
+  [163, 74, 40],  // teal
+  [18, 88, 55],   // orange
+  [255, 64, 60],  // indigo
+  [2, 78, 57],    // red
+]
+
+// Degrees a category's children fan across. Bounded by how close the base hues
+// sit: the warm slots (red 2°, orange 18°, amber 41°) are only ~20° apart, so a
+// much wider fan makes a big `iris` child indistinguishable from a `marin/grug`
+// one. 46 buys clear intra-category structure without that collision.
+const HUE_SPREAD = 22
+const LIGHT_SPREAD = 14 // ...plus a lightness ramp, so near-identical hues still separate
+// Rank at which the fan reaches its far end. Spreading over *all* n children
+// makes the step 60/n degrees, so in a category with 30 children the handful
+// that actually own the pixels (ranks 0-5) come out nearly identical. Saturate
+// the ramp early instead: the visible children get the whole band, and the
+// long tail of slivers piles up at the far end where nobody can tell anyway.
+const FAN_RANKS = 6
+
+/**
+ * Color for category `slot`, optionally shaded by a child's rank within it.
+ *
+ * A single flat color per top-level prefix turns a lopsided store into one
+ * giant monochrome slab (`marin/datakit` alone is ~57% of the CoreWeave
+ * bucket). Fanning the second level across a hue *range* keeps the category
+ * legible at a glance while making its internal structure visible.
+ */
+// Past the curated eight, hues step by the golden angle from the last curated
+// one: consecutive ranks land ~137° apart, so neighbours in rank (and, with
+// squarify's rank-ordered layout, usually on the map) stay high-contrast for
+// any number of children — no "other" grey for the ninth-largest directory.
+const GOLDEN = 137.508
+export function slotHsl(slot: number): [number, number, number] {
+  if (slot < SLOT_HSL.length) return SLOT_HSL[slot]
+  const k = slot - SLOT_HSL.length + 1
+  return [(SLOT_HSL[SLOT_HSL.length - 1][0] + k * GOLDEN) % 360, 68, 50]
+}
+export function slotColor(slot: number, i = 0, n = 1): string {
+  const [h, s, l] = slotHsl(slot)
+  const t = n > 1 ? Math.min(i / Math.min(n - 1, FAN_RANKS), 1) - 0.5 : 0
+  return `hsl(${(h + t * HUE_SPREAD + 360) % 360} ${s}% ${l + t * LIGHT_SPREAD}%)`
+}
+
 // ---- user palettes ----
 
 // hi-contrast categorical (20 distinct hues, mid lightness so ink is computable)
@@ -38,17 +108,20 @@ export const HI_CONTRAST = [
   '#1f77b4', '#d67195', '#17becf', '#bcbd22', '#8c564b',
 ]
 
-/** user -> overall rank by bytes (index into the categorical palette) */
-export type UserIndex = Map<string, number>
-
-export function buildUserIndex(users: UserInfo[]): UserIndex {
-  return new Map(users.map((u, rank) => [u.u, rank]))
+export interface UserIndexEntry {
+  rank: number     // overall rank by bytes
 }
 
-export function userColor(u: string | null, idx: UserIndex): string {
-  const rank = u != null ? idx.get(u) : undefined
-  if (rank == null) return 'var(--t-unattr)'
-  return HI_CONTRAST[rank % HI_CONTRAST.length]
+export function buildUserIndex(users: UserInfo[]): Map<string, UserIndexEntry> {
+  const idx = new Map<string, UserIndexEntry>()
+  users.forEach((u, rank) => idx.set(u.u, { rank }))
+  return idx
+}
+
+export function userColor(u: string | null, idx: Map<string, UserIndexEntry>): string {
+  const e = u ? idx.get(u) : undefined
+  if (!e) return 'var(--t-unattr)'
+  return HI_CONTRAST[e.rank % HI_CONTRAST.length]
 }
 
 // ---- ink (label color) for a computed background ----
@@ -77,48 +150,4 @@ export function inkFor(color: string): string {
   } else return 'var(--ink)' // css var background (theme grays): use theme ink
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
   return lum > 0.62 ? '#1a1a19' : '#fff'
-}
-
-// ---- category slots (tree color mode) ----
-
-// Base hue/sat/light per category slot. These live here rather than as `--sN`
-// CSS vars because the treemap fans *hue* within a category (see `slotColor`),
-// which needs the components, not an opaque hex. Legend swatches call the same
-// function, so legend and cells can't drift apart.
-export const SLOT_HSL: [number, number, number][] = [
-  [212, 78, 52],  // blue
-  [128, 60, 38],  // green
-  [332, 72, 60],  // pink
-  [41, 92, 48],   // amber
-  [163, 74, 40],  // teal
-  [18, 88, 55],   // orange
-  [255, 64, 60],  // indigo
-  [2, 78, 57],    // red
-]
-
-// Degrees a category's children fan across. Bounded by how close the base hues
-// sit: the warm slots (red 2°, orange 18°, amber 41°) are only ~20° apart, so a
-// much wider fan makes a big `iris` child indistinguishable from a `marin/grug`
-// one. 46 buys clear intra-category structure without that collision.
-const HUE_SPREAD = 46
-const LIGHT_SPREAD = 20 // ...plus a lightness ramp, so near-identical hues still separate
-// Rank at which the fan reaches its far end. Spreading over *all* n children
-// makes the step 60/n degrees, so in a category with 30 children the handful
-// that actually own the pixels (ranks 0-5) come out nearly identical. Saturate
-// the ramp early instead: the visible children get the whole band, and the
-// long tail of slivers piles up at the far end where nobody can tell anyway.
-const FAN_RANKS = 6
-
-/**
- * Color for category `slot`, optionally shaded by a child's rank within it.
- *
- * A single flat color per top-level prefix turns a lopsided store into one
- * giant monochrome slab (`marin/datakit` alone is ~57% of the CoreWeave
- * bucket). Fanning the second level across a hue *range* keeps the category
- * legible at a glance while making its internal structure visible.
- */
-export function slotColor(slot: number, i = 0, n = 1): string {
-  const [h, s, l] = SLOT_HSL[slot % SLOT_HSL.length]
-  const t = n > 1 ? Math.min(i / Math.min(n - 1, FAN_RANKS), 1) - 0.5 : 0
-  return `hsl(${(h + t * HUE_SPREAD + 360) % 360} ${s}% ${l + t * LIGHT_SPREAD}%)`
 }
