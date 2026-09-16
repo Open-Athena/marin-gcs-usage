@@ -25,6 +25,7 @@ import { useMyUser, useUserEmails } from './sweep'
 import TokenModal from './TokenModal'
 import { UserCard, ghHandle, shortName } from './UserChip'
 import { useUnits } from './units'
+import { Tooltip } from './Tooltip'
 
 const CW_URL = 'https://cw-s3.oa.dev/'
 
@@ -175,14 +176,16 @@ function UserMenu() {
             <div className="menu-pop user-menu" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
               <UserCard who={who} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />
               <hr />
-              <button type="button" role="menuitem" className="mi" onClick={() => toggleUnits()}
-                title="Byte units, site-wide: binary (TiB) ↔ decimal (TB)">
-                units: <b>{(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}</b> → {(units === 'iec' ? 'T' : 'Ti') + (suffixB ? 'B' : '')}
-              </button>
-              <button type="button" role="menuitem" className="mi" onClick={() => toggleSuffixB()}
-                title="Show or hide the trailing B (Ti vs TiB), site-wide">
-                trailing B: <b>{suffixB ? 'on' : 'off'}</b> <span className="dim">({units === 'iec' ? 'Ti' : 'T'}{suffixB ? 'B' : ''})</span>
-              </button>
+              <Tooltip content="Byte units, site-wide: binary (TiB) ↔ decimal (TB)" placement="left">
+                <button type="button" role="menuitem" className="mi" onClick={() => toggleUnits()}>
+                  units: <b>{(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}</b> → {(units === 'iec' ? 'T' : 'Ti') + (suffixB ? 'B' : '')}
+                </button>
+              </Tooltip>
+              <Tooltip content="Show or hide the trailing B (Ti vs TiB), site-wide" placement="left">
+                <button type="button" role="menuitem" className="mi" onClick={() => toggleSuffixB()}>
+                  trailing B: <b>{suffixB ? 'on' : 'off'}</b> <span className="dim">({units === 'iec' ? 'Ti' : 'T'}{suffixB ? 'B' : ''})</span>
+                </button>
+              </Tooltip>
               {canMark && (
                 <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setTokenOpen(true) }}>
                   agent / CLI token…

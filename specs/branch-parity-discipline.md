@@ -296,3 +296,19 @@ upstream's final file versions (our pre-change divergence in
 Tests: 104 in the ported files, 405 root, 144 gcs-usage. Next: the A.3
 gate (DT's cascade on the 9/7 listing with `--db --partition-depth
 --label usr --tiers --size-hist`, a2a against mgu's `path-index`) on Batch.
+
+### 2026-09-16 (gcs-ward, `/cp cw-s3`) — the h11n pass's CP manifest
+
+cw-s3's factored-branch pass (`d285f16`, `wt/cw-s3/specs/cp-from-cw-s3-2026-09-16.md`) attributed every `cw-s3..gcs` hunk and queued 8 gcs-ward items; this pass lands them on `gcs` in one commit (cursor `cw-s3 d285f16`), so the triage is the manifest's, not a fresh survey:
+
+- `c4aad0a` store allow-lists are the union (`_lib/index.ts` + `cw-l2/`, `v1/files` + `cw-sweep/`) — one bucket, one list; inert here.
+- `9bca450` `/data/<store>/scans.json` filters by D1 for every store (a stray `/data/cw/scans.json` now answers `[]`); `requireScope` stays gcs's.
+- `d8bd295` `/og` opens inside a lone bucket (`initialPath`); inert with six.
+- `3069767` login wall title/blurb from `DEFAULT_STORE` (the `<code>marin-*</code>` markup went plain); the Google / one-time-PIN paragraphs stay gcs's.
+- `2dd8ddc`'s `warm(url, headers, …)` — the CLI builds the bearer header; cw passes an Access service-token pair.
+- `e38add0` `/files` parquet cells (`renderCell`: bytes, 8-char hex ids, no native `title`) — on gcs the byte formatter is the units hook's (`useUnits().fmtBytes`, TiB ↔ TB), so the viewer is built per component with `useMemo` instead of at module scope.
+- `49dcc37` native tooltips → `Tooltip`: cw's three sites map to the diff-span radios (`App`) and the units / trailing-B menu items (`SiteNav`); gcs has no highlight chip. The other `App` natives (breadcrumb, clear-filter) went too. Other files' `title=` (sweep console, tables, marks) are a separate pass.
+
+Skipped: the digest-plot item (`4a7587b`) — gcs's sparkline already fits its y-range to the month (`set_ylim(lo - pad, hi + pad)`), and the rest of that commit is the diff-treemap panel, which needs cw's `digest.tree_diff` (+88 lines, 85 test lines): a feature port for the gcs OP image if wanted, not a hunk CP. The four considered-not-queued items stand as cw-s3 triaged them.
+
+Tests: 24 vitest, `tsc` clean, 182 gcs-usage (the 9 `test_viz` failures + 2 collection errors are the pre-existing `disk_tree`-not-importable venv state). CIC on `site/dev`: login wall (`?wall`), `/files` shard cells, App tooltips.

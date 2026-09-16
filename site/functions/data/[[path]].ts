@@ -63,7 +63,7 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
       // Only scans the site can serve: every view reads the path index, so a
       // snapshot with no index (pre-2026-08-26, until re-aggregated) is left
       // out of the picker rather than offered and failing on every drill.
-      if (ctx.env.DB && !scansM[1]) {
+      if (ctx.env.DB) {
         const rows = await ctx.env.DB.prepare("SELECT DISTINCT date FROM index_schema WHERE variant = 'path'").all<{ date: string }>()
         const indexed = new Set(rows.results.map(r => r.date))
         for (let i = dates.length - 1; i >= 0; i--) if (!indexed.has(dates[i])) dates.splice(i, 1)

@@ -114,7 +114,7 @@ export function makeStore(env: Env) {
     endpoint: 'https://storage.googleapis.com',
     bucket: BUCKET,
     region: 'us-east1',
-    prefixes: ['listing/', 'snapshots/'],
+    prefixes: ['listing/', 'snapshots/', 'cw-l2/'],
     accessKeyId: env.GCS_HMAC_KEY_ID,
     secretAccessKey: env.GCS_HMAC_SECRET,
   })

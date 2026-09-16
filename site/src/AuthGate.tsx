@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { AuthGate as Gate } from '@open-athena/auth/react'
 import { DEV_IDENTITY, signInUrl, WHOAMI_SOURCE } from './auth'
+import { DEFAULT_STORE } from './stores'
 
 // Gate the human-facing routes on an identity: the app session on gcs.oa.dev
 // (minted at /auth/sso, or by a `?key=` share link, which <Gate> redeems
@@ -19,8 +20,8 @@ function LoginWall() {
   return (
     <div className="authwall">
       <div className="card">
-        <h1>Marin GCS usage</h1>
-        <p>Storage ownership + cleanup across the six <code>marin-*</code> GCS buckets.</p>
+        <h1>{DEFAULT_STORE.title}</h1>
+        <p>{DEFAULT_STORE.desc}</p>
         <p className="restrict">Access is limited to marin contributors and invited collaborators.</p>
         <a className="signin" href={signInUrl()}>Sign in</a>
         <p className="signin-how">

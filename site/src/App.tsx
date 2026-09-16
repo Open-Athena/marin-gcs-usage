@@ -815,11 +815,11 @@ function AppContent() {
   const here = mapPath?.[mapPath.length - 1]
   const crumbs = (
     <span className="tb-path" aria-label="Drilled path">
-      <button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])} title="all buckets">{mapTree?.n ?? 'all buckets'}</button>
+      <Tooltip content="all buckets"><button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])}>{mapTree?.n ?? 'all buckets'}</button></Tooltip>
       {segs.map((sg, i) => (
         <span key={i}>
           <span className="sep">/</span>
-          <button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))} title={segs.slice(0, i + 1).join('/')}>{sg}</button>
+          <Tooltip content={<code>{segs.slice(0, i + 1).join('/')}</code>}><button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))}>{sg}</button></Tooltip>
         </span>
       ))}
     </span>
@@ -912,7 +912,7 @@ function AppContent() {
             {fq && tree && (
               <span className="fnote">
                 {tree.b > 0 ? <>{fmtBytes(tree.b)} matched</> : 'no matches'}
-                <button type="button" title="clear filter" onClick={() => setFq(undefined)}>✕</button>
+                <Tooltip content="clear filter"><button type="button" onClick={() => setFq(undefined)}>✕</button></Tooltip>
               </span>
             )}
           </span>
@@ -1084,11 +1084,12 @@ function AppContent() {
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (
-                  <button key={label} role="radio" aria-checked={diffPrev === scan} className={diffPrev === scan ? 'on' : ''}
-                    title={`${fmtScan(scan)} → ${fmtScan(asof)}`}
-                    onClick={() => setSpan(scan === prevScan ? undefined : ms)}>
-                    {label}
-                  </button>
+                  <Tooltip key={label} content={`${fmtScan(scan)} → ${fmtScan(asof)}`}>
+                    <button role="radio" aria-checked={diffPrev === scan} className={diffPrev === scan ? 'on' : ''}
+                      onClick={() => setSpan(scan === prevScan ? undefined : ms)}>
+                      {label}
+                    </button>
+                  </Tooltip>
                 ))}
               </span>
             )}

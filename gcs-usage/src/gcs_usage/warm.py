@@ -66,12 +66,14 @@ def plan(date: str, dates: list[str], widths: tuple[int, ...] = WIDTHS, spans: t
     return out
 
 
-def warm(url: str, token: str, paths: list[str], jobs: int = 4, timeout: float = 120) -> list[tuple[str, int, float, str]]:
-    """GET each path with the bearer token, ``jobs`` at a time; returns
+def warm(url: str, headers: dict[str, str], paths: list[str], jobs: int = 4, timeout: float = 120) -> list[tuple[str, int, float, str]]:
+    """GET each path with ``headers`` (a bearer token here; the CoreWeave
+    deployment passes a Cloudflare Access service-token pair), ``jobs`` at a
+    time; returns
     ``(path, status, seconds, x-cache)`` per request (status 0 = transport
     error). Logs one line per request to stderr."""
     def one(path: str) -> tuple[str, int, float, str]:
-        req = urllib.request.Request(url.rstrip("/") + path, headers={"Authorization": f"Bearer {token}", "User-Agent": "gcs-usage-warm/1.0"})
+        req = urllib.request.Request(url.rstrip("/") + path, headers={**headers, "User-Agent": "gcs-usage-warm/1.0"})
         t0 = time.time()
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
