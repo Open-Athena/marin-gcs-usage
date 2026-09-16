@@ -173,7 +173,11 @@ def _sql_escape(s: str) -> str:
 
 
 # The D1 database `/query` runs one SQL string; we send multi-row INSERTs.
-D1_DB_ID = "7f1e1326-b879-4ecd-8621-846621c24f36"  # oa-cw-s3-usage-db (site/wrangler.toml)
+# Deployment config (specs/denovo-factor.md): the site's D1, as `site/wrangler.toml`
+# binds it — `D1_DB_ID` / `D1_DB_NAME` in the job's environment (`job/cw-run.sh`
+# exports the CoreWeave pair); the defaults are the GCS deployment's.
+D1_DB_ID = os.environ.get("D1_DB_ID", "e52398b7-5538-4bc4-83db-3355a1b5ef9a")  # oa-gcs-usage-auth
+D1_DB_NAME = os.environ.get("D1_DB_NAME", "oa-gcs-usage-auth")
 
 
 def _creds() -> tuple[str, str]:
@@ -318,7 +322,7 @@ def sync_d1(
             with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as tf:
                 tf.write("\n".join(stmts[i : i + 300]))
                 sqlpath = tf.name
-            subprocess.run(["npx", "wrangler", "d1", "execute", "oa-cw-s3-usage-db", "--local", "--file", sqlpath], check=True, cwd=str(site))
+            subprocess.run(["npx", "wrangler", "d1", "execute", D1_DB_NAME, "--local", "--file", sqlpath], check=True, cwd=str(site))
         return len(rows)
 
     tok, acct = _creds()
@@ -345,7 +349,9 @@ def gc_d1(date: str, db_id: str = D1_DB_ID) -> int:
     return len(rows)
 
 
-FLOOR_FREE_VARIANTS = ("path",)  # cw has no user-sorted variant
+# The floor-free (uncoarsened) tiers `index-gc -r` retires: the deployment's
+# variant set minus the coarse ones (cw has no user-sorted variant).
+FLOOR_FREE_VARIANTS = tuple(v for v in os.environ.get("INDEX_VARIANTS", "path,user").split(",") if v)
 
 
 def retire_d1(retain: int, db_id: str = D1_DB_ID) -> list[tuple[str, str, int]]:

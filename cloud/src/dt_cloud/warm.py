@@ -15,6 +15,7 @@ Pure planning (`nearest_prior`, `plan`) is unit-tested; `warm` does the HTTP."""
 from __future__ import annotations
 
 import datetime as dt
+import os
 import sys
 import time
 import urllib.error
@@ -24,7 +25,9 @@ from concurrent.futures import ThreadPoolExecutor
 WIDTHS = (512, 1280, 1536, 1792, 1920)
 SPANS = (1, 3, 7, 14, 30)
 # The root, the (one) bucket, and the top-level dirs everyone drills into.
-PATHS = ("", "marin-us-east-02a", "marin-us-east-02a/marin", "marin-us-east-02a/tmp", "marin-us-east-02a/iris")
+# Deployment config: `WARM_PATHS` (comma-separated; `""` = the root) — the
+# CoreWeave job passes its bucket + top-level dirs. Default: the GCS fleet.
+PATHS = tuple(os.environ["WARM_PATHS"].split(",")) if os.environ.get("WARM_PATHS") else ("", "marin-us-central2", "marin-us-east5", "marin-us-central1", "marin-eu-west4", "marin-us-west4", "marin-us-east1")
 
 
 def _ts(date: str) -> int:

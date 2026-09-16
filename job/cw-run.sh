@@ -22,6 +22,12 @@
 # (injected from Secret Manager by cw-batch-submit.sh).
 set -euxo pipefail
 
+# Deployment config for the shared CLI (cloud/src/dt_cloud/{index_footer,warm}.py).
+export D1_DB_ID=${D1_DB_ID:-7f1e1326-b879-4ecd-8621-846621c24f36}   # oa-cw-s3-usage-db (site/wrangler.toml)
+export D1_DB_NAME=${D1_DB_NAME:-oa-cw-s3-usage-db}
+export INDEX_VARIANTS=${INDEX_VARIANTS:-path}                           # no user-sorted tiers here
+export WARM_PATHS=${WARM_PATHS:-",marin-us-east-02a,marin-us-east-02a/marin,marin-us-east-02a/tmp,marin-us-east-02a/iris"}
+
 BUCKET=${CW_BUCKET:-marin-us-east-02a}
 ENDPOINT=${CW_ENDPOINT:-https://cwobject.com}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
