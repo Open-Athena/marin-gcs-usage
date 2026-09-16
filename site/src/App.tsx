@@ -1,5 +1,5 @@
 import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { MdLayers } from 'react-icons/md'
 import { useActions } from 'use-kbd'
@@ -520,6 +520,10 @@ function AppContent() {
     },
   })
   const diffL1 = diffQ1.data
+  // The settled diff map's rendered height, held as the slot's floor while
+  // the next pair loads under it (see the slot below).
+  const diffSlotRef = useRef<HTMLDivElement>(null)
+  const diffSlotH = useRef(0)
   const diffQ = useQuery<DiffData, Error>({
     queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs],
     enabled: !!asof && !!diffPrev,
@@ -561,6 +565,11 @@ function AppContent() {
   // aligning: its numbers describe another pair, so the subtitle says
   // "aligning" instead, and the drawn treemap dims under a marker.
   const diffStale = diffQ.isPlaceholderData || (!diff && diffQ.isFetching)
+  // Record the settled map's height after every commit that shows one; a
+  // reload then holds that height under the marker instead of collapsing.
+  useLayoutEffect(() => {
+    if (!diffStale && diffSlotRef.current) diffSlotH.current = diffSlotRef.current.offsetHeight
+  })
   // What the subtitle's numbers describe: the full diff once it's this pair's,
   // else the summary (its own query — current for this key or absent).
   const diffHead: DiffData | null = diff && !diffStale ? diff : diffSumQ.data ?? null
@@ -1131,9 +1140,12 @@ function AppContent() {
             )}
           </p>
           {/* The slot keeps the treemap's height through a reload: the last
-              diff dims under the marker, or (first load) a skeleton stands in. */}
+              diff dims under the marker, or (first load) a skeleton stands in.
+              The height held is the one the last settled map actually drew
+              (measured), not the request's canvas budget — the map is
+              shorter than that, and a fixed floor left a blank band under it. */}
           {diff && diff.rows.length > 0 && (
-            <div className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={{ minHeight: Math.round(canW * 0.6) }}>
+            <div ref={diffSlotRef} className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
               <DiffTreemap data={diff} label={scopeDesc} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>

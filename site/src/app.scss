@@ -786,8 +786,10 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   }
 }
 @keyframes busy-spin { to { transform: rotate(360deg); } }
-.diff-slot { min-height: 380px; }
 .skel { width: 100%; border-radius: 6px; background: var(--panel); animation: tm-pulse 1.4s ease-in-out infinite; }
+// /files parquet cells that keep their tail: an RTL block clips at the visual
+// left (`…thoughts3_0/shard-7.parquet`); the `<bdi>` inside stays LTR.
+.files-page .cell-tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 // The full value behind a clipped table cell (/files parquet viewer, via
 // file-tree's `elide.tooltip`): a long GCS path, wrapped so it fits the panel.
 .tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
