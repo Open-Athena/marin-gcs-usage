@@ -118,6 +118,17 @@ function AppContent() {
   const { pathname, search, hash } = useLocation()
   const navigate = useNavigate()
   const store = storeForPath(pathname)
+  // Legacy `?path=<prefix>` links (cw-s3 drilled by query param until the
+  // union): forward to the URL-path form, keeping the other params.
+  useEffect(() => {
+    const q = new URLSearchParams(search)
+    const legacy = q.get('path')
+    if (legacy == null) return
+    q.delete('path')
+    const base = store.path === '/' ? '' : store.path
+    const rest = q.toString()
+    navigate({ pathname: legacy ? `${base}/${legacy.replace(/^\/+|\/+$/g, '')}` : store.path, search: rest ? `?${rest}` : '', hash }, { replace: true })
+  }, [search, hash, navigate, store])
   const canMark = useCanMark()
   // Mark & sweep (specs/mark-sweep-ui.md): the same treemap plus keep/sweep
   // controls, shown to any signed-in marker on the GCS store — anon and guest
