@@ -57,6 +57,10 @@ export function OgPage({ store = DEFAULT_STORE }: { store?: Store }) {
   const tree = treeQ.data?.tree ?? null
 
   const legend = useMemo(() => (tree ? treeLegend(tree) : []), [tree])
+  // A store with one bucket opens inside it (as the live map does): the
+  // bucket level would otherwise be one full-width box in one hue, while the
+  // legend below names the bucket's children.
+  const initialPath = useMemo(() => (tree && tree.c?.length === 1 ? [tree, tree.c[0]] : undefined), [tree])
 
   return (
     <div className="og">
@@ -72,6 +76,7 @@ export function OgPage({ store = DEFAULT_STORE }: { store?: Store }) {
             userIdx={EMPTY_USERS}
             dateRange={null}
             scheme={store.scheme}
+            initialPath={initialPath}
             redact
           />
         )}
