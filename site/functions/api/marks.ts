@@ -1,66 +1,66 @@
-// /api/marks — the mark axis (specs/cw-sweep.md).
-//
-//   GET  /api/marks   -> { marks: [{ prefix, keep, who, ts, note }] }   viewer
-//   POST /api/marks   { prefixes: [...], keep: 'keep'|'keep_last_ckpt'|'sweep'|null, scan?, note? }
-//
-// A mark records intent only — it never deletes. Any authenticated viewer may
-// mark (who is recorded); an admin later curates `sweep`-marked prefixes into a
-// plan and dispatches. `keep: null` un-marks. Both the resolved `marks` row and
-// the append-only `mark_log` history are written.
-import type { D1Database } from "@cloudflare/workers-types"
-import { type Ctx, type Env as AuthEnv, json, requireViewer } from "../_lib/auth.js"
-import { canonicalPrefix } from "../_lib/plans.js"
+/**
+ * Marks store for the mark & sweep flow (specs/mark-sweep-ui.md).
+ *
+ *   GET  /api/marks             → { marks: [...], claims: [...] } (small; the
+ *                                 UI overlays them on the tree client-side)
+ *   PUT  /api/marks             → upsert { prefix, action, note? }; action
+ *                                 null removes the mark. `who`/`ts` come from
+ *                                 the session; every write appends to mark_log.
+ *
+ * Anyone who can see the dashboard can mark (`gcs` scope) — the sweep's
+ * review gate is where authority gets applied, and `mark_log` keeps the full
+ * who-did-what trail either way.
+ */
+import { type Ctx, json, requireViewer } from '../_lib/auth.js'
 
-type Env = AuthEnv & { DB?: D1Database }
+/** gs://marin-<suffix>/<path>/ — the six marin buckets only, dir prefixes only. */
+const PREFIX_RE = /^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/
 
-const KEEPS = new Set(["keep", "keep_last_ckpt", "sweep"])
+const ACTIONS = new Set(['keep', 'keep_last_ckpt', 'delete'])
 
-export const onRequestGet = async (ctx: Ctx & { env: Env }): Promise<Response> => {
-  const gated = await requireViewer(ctx)
-  if (gated instanceof Response) return gated
-  if (!ctx.env.DB) return json({ marks: [] })
-  const { results } = await ctx.env.DB.prepare(
-    "SELECT prefix, keep, who, ts, note FROM marks ORDER BY prefix",
-  ).all()
-  return json({ marks: results })
-}
+export const onRequest = async (ctx: Ctx): Promise<Response> => {
+  const { request, env } = ctx
+  if (!env.DB) return json({ error: 'marks backend not configured (DB)' }, 503)
+  const id = await requireViewer(ctx)
+  if (id instanceof Response) return id
+  const who = id.email ?? id.name ?? 'unknown'
 
-export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> => {
-  const gated = await requireViewer(ctx)
-  if (gated instanceof Response) return gated
-  if (!ctx.env.DB) return json({ error: "marks store not configured (no D1 binding)" }, 503)
-  const db = ctx.env.DB
-
-  const body = (await ctx.request.json().catch(() => null)) as
-    | { prefixes?: unknown; keep?: unknown; scan?: unknown; note?: unknown } | null
-  const keep = body?.keep ?? null
-  if (keep !== null && (typeof keep !== "string" || !KEEPS.has(keep))) {
-    return json({ error: "keep must be 'keep' | 'keep_last_ckpt' | 'sweep' | null" }, 400)
+  if (request.method === 'GET') {
+    const [marks, claims] = await Promise.all([
+      env.DB.prepare('SELECT prefix, action, who, ts, note FROM marks ORDER BY prefix').all(),
+      env.DB.prepare('SELECT prefix, who, ts FROM claims ORDER BY prefix').all(),
+    ])
+    return json({ marks: marks.results, claims: claims.results })
   }
-  const raw = Array.isArray(body?.prefixes) ? body!.prefixes : []
-  if (!raw.length) return json({ error: "prefixes required" }, 400)
-  const prefixes: string[] = []
-  for (const r of raw) {
-    const c = typeof r === "string" ? canonicalPrefix(r) : null
-    if (!c) return json({ error: `bad prefix ${JSON.stringify(r)}` }, 400)
-    prefixes.push(c)
-  }
-  const scan = typeof body?.scan === "string" ? body.scan : ""
-  const note = typeof body?.note === "string" ? body.note : null
-  const who = gated.email
-  const ts = Math.floor(Date.now() / 1000)
 
-  for (const prefix of prefixes) {
-    if (keep === null) {
-      await db.prepare("DELETE FROM marks WHERE prefix = ?").bind(prefix).run()
-    } else {
-      await db.prepare(
-        "INSERT OR REPLACE INTO marks (prefix, keep, who, scan, ts, note) VALUES (?, ?, ?, ?, ?, ?)",
-      ).bind(prefix, keep, who, scan, ts, note).run()
+  if (request.method === 'PUT') {
+    if (!id.email) {
+      return json({ error: 'marking requires a signed-in email — guest links are read-only; sign in via Google or ask for a personal link' }, 403)
     }
-    await db.prepare(
-      "INSERT INTO mark_log (prefix, keep, who, scan, ts, note) VALUES (?, ?, ?, ?, ?, ?)",
-    ).bind(prefix, keep, who, scan, ts, note).run()
+    const b = (await request.json()) as { prefix?: string; action?: string | null; note?: string }
+    const prefix = b.prefix ?? ''
+    if (!PREFIX_RE.test(prefix) || prefix.length > 1024) {
+      return json({ error: 'prefix must be gs://marin-<bucket>/<path>/ (trailing slash)' }, 400)
+    }
+    const action = b.action ?? null
+    if (action !== null && !ACTIONS.has(action)) {
+      return json({ error: `action must be one of ${[...ACTIONS].join(', ')}, or null to unmark` }, 400)
+    }
+    const note = b.note?.slice(0, 1024) ?? null
+    const ts = Math.floor(Date.now() / 1000)
+    const stmts = [
+      env.DB.prepare('INSERT INTO mark_log (prefix, action, who, ts, note) VALUES (?, ?, ?, ?, ?)')
+        .bind(prefix, action, who, ts, note),
+      action === null
+        ? env.DB.prepare('DELETE FROM marks WHERE prefix = ?').bind(prefix)
+        : env.DB.prepare(
+            'INSERT INTO marks (prefix, action, who, ts, note) VALUES (?, ?, ?, ?, ?) ' +
+            'ON CONFLICT (prefix) DO UPDATE SET action = ?2, who = ?3, ts = ?4, note = ?5',
+          ).bind(prefix, action, who, ts, note),
+    ]
+    await env.DB.batch(stmts)
+    return json({ ok: true, prefix, action, who, ts })
   }
-  return json({ marked: prefixes, keep })
+
+  return json({ error: 'method not allowed' }, 405)
 }

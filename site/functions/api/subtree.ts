@@ -1,19 +1,27 @@
 /** Pixel-budget subtree of any path, served from the index tiers
  * (specs/view-serving.md; the folding lives in `_lib/view.ts`).
  *
- *   GET /api/subtree?date=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>][&depth=<levels>][&q=<name filter>]
+ *   GET /api/subtree?date=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>]
+ *                    [&lens=user:<id>][&o=claimed|unclaimed][&k=<⊆ksu>][&q=<name filter>]
  *
- * gcs's endpoint minus its scope axes (no owner / mark / class axes on cw).
- * Responses are immutable per (date, path, w₁₂₈, h₁₂₈, minArea, atten, depth,
- * q) and cached in the edge cache accordingly; w/h arrive quantized-up to
- * 128px so resizes mostly re-hit the cache. Viewer-gated like `/data/*`.
+ * The page's scope axes (specs/view-serving.md §2) are applied server-side:
+ * the owner axis (`lens` for a user, `o` for the pools), the mark axis (`k`,
+ * folded from the live ledger), the name filter (`q`). Responses are
+ * immutable per (date, path, w₁₂₈, h₁₂₈, minArea, atten, scope) plus the
+ * ledger head when `k` is set — and cached in the edge cache accordingly.
+ * w/h arrive quantized-up to 128px so resizes mostly re-hit the cache.
  */
-import { type Ctx, requireViewer } from '../_lib/auth.js'
-import { parseQuery } from '../_lib/scope.js'
-import { ATTEN_DEFAULT, buildView, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
+import { type Env, requireViewer } from '../_lib/auth.js'
+import { parseMarkAxes } from '../_lib/markAxes.js'
+import type { Lens } from '../_lib/index.js'
+import { ledgerHead } from '../_lib/ledger.js'
+import { parseOwner, parseQuery, classKey, parseClasses } from '../_lib/scope.js'
+import { hasExtras } from '../_lib/extras.js'
+import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 
-export const onRequestGet = async (ctx: Ctx & { waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
+
+export const onRequestGet = async (ctx: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   const st = serverTiming()
   const { GCS_HMAC_KEY_ID, GCS_HMAC_SECRET } = ctx.env
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) {
@@ -28,22 +36,43 @@ export const onRequestGet = async (ctx: Ctx & { waitUntil?: (p: Promise<unknown>
   const atten = Number(url.searchParams.get('atten')) || ATTEN_DEFAULT
   if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
+
+  // Optional lens: `lens=user:<id>` — a treemap of that user's bytes, read
+  // from the by-user sort.
+  const lensRaw = url.searchParams.get('lens')
+  let lens: Lens | undefined
+  if (lensRaw) {
+    const m = /^user:(.+)$/.exec(lensRaw)
+    if (!m) return new Response('bad lens (want user:<id>)', { status: 400 })
+    lens = { key: m[1] }
+  }
+
+  const rawOwner = url.searchParams.get('o')
+  const owner = parseOwner(rawOwner)
+  const by = url.searchParams.get('by') ?? undefined
   // `depth=N`: cap the read N levels below the root (see ViewOpts.maxDepth).
   const depth = Number(url.searchParams.get('depth')) || undefined
+  const states = parseMarkAxes(url.searchParams.get('k'))
+  const classes = parseClasses(url.searchParams.get('cl'))
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
 
-  const gated = await st.time('auth', requireViewer(ctx))
+  // Data is gated (store-specific scope), like /data/*.
+  const gated = await st.time('auth', requireViewer(ctx as never))
   if (gated instanceof Response) return gated
 
+  // The mark axis folds the live ledger: its cache key carries the head.
+  // …and so does a user lens (claims repaint attribution).
+  const [head, xtra] = await st.time('pre', Promise.all([(states || lens) && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date)]))
   const cacheKey = cacheKeyFor('subtree',
-    `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&D=${depth ?? ''}&q=${encodeURIComponent(query ? qRaw : '')}`,
+    `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
+      `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}`,
   )
   const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
   if (hit) return hit
 
   try {
-    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, maxDepth: depth, query, trace: st.trace })
+    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, states, query, classes, trace: st.trace })
     const body = JSON.stringify({
       date,
       path,
@@ -53,17 +82,22 @@ export const onRequestGet = async (ctx: Ctx & { waitUntil?: (p: Promise<unknown>
       atten,
       tier: view.tier,
       index: view.index,
+      ...(lensRaw ? { lens: lensRaw } : {}),
       threshold: Math.round(view.threshold),
       nodes: view.nodes,
       truncated: view.truncated,
+      ...(owner ? { owner } : {}),
+      ...(states ? { states: [...states].sort() } : {}),
       ...(query ? { q: qRaw, matches: view.matches } : {}),
       tree: view.tree,
     })
     return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx))
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
+    // 409 (not 500): a lens index missing for this scan is deterministic —
+    // the client falls back instead of retrying forever.
+    if (e instanceof LensUnavailable) return new Response('lens index not available for this scan', { status: 409 })
     const msg = String((e as Error).message ?? e)
-    if (msg.includes('not synced')) return new Response(msg, { status: 409 })
     if (msg.startsWith('query too wide')) return new Response(msg, { status: 413 })
     return new Response(`subtree failed: ${msg}`, { status: 500 })
   }

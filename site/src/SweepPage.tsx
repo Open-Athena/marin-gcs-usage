@@ -171,7 +171,7 @@ function PlanPanel({ detail, jobs, admin, scans, date, setDate, fmtBytes, act }:
     if (prefixes.length && await act(`/api/plans/${plan.id}/items`, 'POST', { prefixes })) setAdd('')
   }
   const addMarked = async () => {
-    const d = await getJson<{ marks: { prefix: string; keep: string }[] }>('/api/marks').catch(() => ({ marks: [] }))
+    const d = await getJson<{ marks: { prefix: string; keep: string }[] }>('/api/plan-marks').catch(() => ({ marks: [] }))
     const have = new Set(items.map(i => i.prefix))
     const prefixes = d.marks.filter(m => m.keep === 'sweep' && !have.has(m.prefix)).map(m => m.prefix)
     if (prefixes.length) await act(`/api/plans/${plan.id}/items`, 'POST', { prefixes })
