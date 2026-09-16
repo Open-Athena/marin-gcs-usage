@@ -309,6 +309,71 @@ def reply(day: DayRow, variant: str, site_url: str = DEFAULT_URL) -> Reply:
     raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
 
 
+# ---- Diff treemap data ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DiffCell:
+    """One cell of the month's diff treemap: a depth-2 path (`marin/skyrl`,
+    `tmp/ttl=14d`), its top-level ``group``, and its byte delta base→latest.
+    ``<group>/…`` is a group's residual (children pruned from the tree or below
+    the fold threshold); ``other`` gathers whole groups below the threshold."""
+
+    path: str
+    group: str
+    delta: int
+
+
+def _kids(node: dict) -> dict[str, dict]:
+    return {c["n"]: c for c in node.get("c", [])}
+
+
+def tree_diff(base: dict, latest: dict, min_frac: float = 0.0) -> list[DiffCell]:
+    """Diff two size trees (the bucket node of each scan's `tree.json`, nodes
+    `{n,b,o,d,c}`) into depth-2 cells by path: each top-level dir's children
+    get a cell (a dir present on one side only counts as fully grown/shrunk),
+    and whatever the children don't account for — the tree is pruned at 0.02%
+    of bytes, so small dirs vanish from `c` — lands in the group's `…` cell.
+    A top-level dir with no children on either side is its own single cell.
+
+    ``min_frac`` folds small cells: a cell under ``min_frac`` of the total
+    |Δ| joins its group's `…`; a whole group under it joins `other`. Groups
+    are ordered by Σ|Δ| desc, cells within a group by |Δ| desc then path."""
+    bk, lk = _kids(base), _kids(latest)
+    groups: dict[str, list[DiffCell]] = {}
+    for name in sorted(set(bk) | set(lk)):
+        b, l = bk.get(name, {}), lk.get(name, {})
+        dtotal = l.get("b", 0) - b.get("b", 0)
+        bc, lc = _kids(b), _kids(l)
+        cells = [DiffCell(f"{name}/{k}", name, lc.get(k, {}).get("b", 0) - bc.get(k, {}).get("b", 0)) for k in sorted(set(bc) | set(lc))]
+        cells = [c for c in cells if c.delta]
+        if not bc and not lc:
+            cells = [DiffCell(name, name, dtotal)] if dtotal else []
+        elif (rest := dtotal - sum(c.delta for c in cells)):
+            cells.append(DiffCell(f"{name}/…", name, rest))
+        if cells:
+            groups[name] = cells
+    total = sum(abs(c.delta) for cs in groups.values() for c in cs)
+    thresh = min_frac * total
+    out: list[DiffCell] = []
+    other = 0
+    for name, cells in groups.items():
+        if sum(abs(c.delta) for c in cells) < thresh:
+            other += sum(c.delta for c in cells)
+            continue
+        keep = [c for c in cells if abs(c.delta) >= thresh and not c.path.endswith("/…")]
+        rest = sum(c.delta for c in cells if c not in keep)
+        if rest:
+            keep.append(DiffCell(f"{name}/…", name, rest))
+        out.extend(sorted(keep, key=lambda c: (-abs(c.delta), c.path)))
+    if other:
+        out.append(DiffCell("other", "other", other))
+    order = {}
+    for c in out:
+        order[c.group] = order.get(c.group, 0) + abs(c.delta)
+    return sorted(out, key=lambda c: (-order[c.group], c.group, -abs(c.delta), c.path))
+
+
 # ---- IO (side-effecting) --------------------------------------------------
 
 
@@ -388,14 +453,27 @@ def save_state(root: str, month: dt.date, channel: str, variant: str, state: dic
         json.dump(state, f, indent=2)
 
 
-def render_plot(month: Month, m: dt.date, out_path) -> None:
-    """Render the quota sparkline PNG for the month to ``out_path`` (in-process;
-    needs the `[plot]` extra — matplotlib)."""
+def load_tree(root: str, scan: str) -> dict:
+    """The bucket node of a scan's `tree.json` (`snapshots/cw/<scan>/tree.json`
+    is `{n: <store label>, …, c: [<bucket>]}`)."""
+    import fsspec
+
+    with fsspec.open(f"{root}/{scan}/tree.json", "rt") as f:
+        return json.load(f)["c"][0]
+
+
+def render_plot(month: Month, m: dt.date, out_path, root: str | None = None) -> None:
+    """Render the month's PNG to ``out_path`` (in-process; needs the `[plot]`
+    extra — matplotlib): the quota sparkline, plus — when ``root`` is given
+    and the month spans two scans — the diff treemap over the OP headline's
+    interval (the lead-in scan → the latest)."""
     from pathlib import Path
 
     from .digest_plot import render
 
-    render([{"scan": r.scan, "tb": r.tb} for r in month.rows], Path(out_path), f"CoreWeave usage — {m:%B %Y}")
+    base, last = month.base, month.rows[-1]
+    diff = tree_diff(load_tree(root, base.scan), load_tree(root, last.scan), min_frac=0.01) if root and base is not last else None
+    render([{"scan": r.scan, "tb": r.tb} for r in month.rows], Path(out_path), f"CoreWeave usage — {m:%B %Y}", diff=diff, diff_label=f"{_md(base.date)} → {_md(last.date)}")
 
 
 def post_digest(root, m, token, channel, variant="sender", site_url=DEFAULT_URL, icons_dir=None, deploy_plot=None, reply_delay=0.0, client=None) -> dict:
@@ -424,7 +502,7 @@ def post_digest(root, m, token, channel, variant="sender", site_url=DEFAULT_URL,
     base = ICONS_BASE.replace("https://", f"https://{ICONS_BRANCH}.")
     if icons_dir is not None:
         local = Path(icons_dir) / plot_name
-        render_plot(month, m, local)
+        render_plot(month, m, local, root)
         if deploy_plot is not None:
             # the deployment-specific host serves the just-uploaded plot
             # immediately (no alias propagation race → no invalid_blocks)

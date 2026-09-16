@@ -278,3 +278,88 @@ def test_post_digest_empty_month(tmp_path: Path):
     fake = _FakeSlack()
     assert D.post_digest(str(root), date(2026, 10, 1), "xoxb", "C1", client=fake) == {}
     assert fake.calls == []
+
+
+# ---- diff treemap ------------------------------------------------------------
+
+
+def _node(n: str, b: float, kids=()) -> dict:
+    d = {"n": n, "b": round(b * TIB), "o": 1, "d": 20000}
+    if kids:
+        d["c"] = list(kids)
+    return d
+
+
+BASE_TREE = _node("bkt", 160, [
+    _node("marin", 100, [_node("a", 60), _node("s", 40)]),
+    _node("tmp", 50, [_node("t14", 50)]),
+    _node("models", 10),
+])
+LATEST_TREE = _node("bkt", 165, [
+    _node("marin", 130, [_node("a", 50), _node("s", 70), _node("new", 10)]),
+    _node("tmp", 30, [_node("t14", 20), _node("t30", 10)]),
+    _node("iris", 5, [_node("x", 5)]),
+])
+
+
+def _cells(cs):
+    return [(c.path, c.group, round(c.delta / TIB, 1)) for c in cs]
+
+
+def test_tree_diff():
+    # depth-2 cells by path; a dir on one side only is fully grown/shrunk; a
+    # childless top-level dir is its own cell; groups by Σ|Δ| desc, cells by |Δ| desc then path
+    assert _cells(D.tree_diff(BASE_TREE, LATEST_TREE)) == [
+        ("marin/s", "marin", 30.0), ("marin/a", "marin", -10.0), ("marin/new", "marin", 10.0),
+        ("tmp/t14", "tmp", -30.0), ("tmp/t30", "tmp", 10.0),
+        ("models", "models", -10.0),
+        ("iris/x", "iris", 5.0),
+    ]
+
+
+def test_tree_diff_residual():
+    # what the (pruned) children don't account for lands in `<group>/…`
+    base = _node("bkt", 100, [_node("marin", 100, [_node("a", 60)])])
+    latest = _node("bkt", 130, [_node("marin", 130, [_node("a", 50)])])
+    assert _cells(D.tree_diff(base, latest)) == [("marin/…", "marin", 40.0), ("marin/a", "marin", -10.0)]
+    assert D.tree_diff(base, base) == []
+
+
+def test_tree_diff_folds_small():
+    # total |Δ| = 105 Ti; min_frac 0.2 → 21 Ti: small cells join their group's `…`
+    # (tmp/t30; marin's a and new cancel to nothing), small groups (models −10,
+    # iris +5) join `other`; groups re-rank on what's left (tmp 40 > marin 30)
+    assert _cells(D.tree_diff(BASE_TREE, LATEST_TREE, min_frac=0.2)) == [
+        ("tmp/t14", "tmp", -30.0), ("tmp/…", "tmp", 10.0),
+        ("marin/s", "marin", 30.0),
+        ("other", "other", -5.0),
+    ]
+
+
+def test_squarify():
+    from gcs_usage.digest_plot import squarify
+
+    assert squarify([5], 0, 0, 3, 2) == [(0, 0, 3, 2)]
+    # a wide rect splits into vertical strips; a tall one into horizontal strips
+    assert squarify([1, 1], 0, 0, 2, 1) == [(0, 0, 1, 1), (1, 0, 1, 1)]
+    assert squarify([1, 1], 0, 0, 1, 2) == [(0, 0, 1, 1), (0, 1, 1, 1)]
+    # 4×2 with [2,1,1]: the 2 takes a 2×2 column (ratio 1); the two 1s share the
+    # remaining 2×2 as stacked 2×1 (adding the second doesn't worsen the row)
+    assert squarify([2, 1, 1], 0, 0, 4, 2) == [(0, 0, 2, 2), (2, 0, 2, 1), (2, 1, 2, 1)]
+    rects = squarify([6, 6, 4, 3, 2, 2, 1], 10, 20, 6, 4)
+    assert len(rects) == 7
+    assert round(sum(w * h for _, _, w, h in rects), 9) == 24
+    assert [round(w * h, 9) for _, _, w, h in rects] == [6, 6, 4, 3, 2, 2, 1]
+    assert squarify([], 0, 0, 1, 1) == []
+
+
+def test_render_smoke(tmp_path: Path):
+    pytest.importorskip("matplotlib")
+    from gcs_usage.digest_plot import render
+
+    rows = [{"scan": s, "tb": D.rows_from_meta([(s, m)])[0].tb} for s, m in SEPT]
+    out = tmp_path / "p.png"
+    render(rows, out, "t", diff=D.tree_diff(BASE_TREE, LATEST_TREE), diff_label="8/31 → 9/2")
+    assert out.stat().st_size > 10_000
+    render(rows, tmp_path / "s.png", "t")  # sparkline only
+    assert (tmp_path / "s.png").stat().st_size > 5_000

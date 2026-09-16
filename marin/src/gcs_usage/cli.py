@@ -875,7 +875,7 @@ def digest(channel: str | None, reply_delay: float, icons_dir: Path | None, mont
         import tempfile
 
         out = Path(tempfile.gettempdir()) / f"cw-digest-{m:%Y%m}.png"
-        dg.render_plot(month, m, out)
+        dg.render_plot(month, m, out, root)
         err(f"rendered plot → {out}")
         print(dg.op_body(month, m, "<plot-url>", site_url))
         print(f"\n--- replies ({variant}: username | body | icon) ---")
