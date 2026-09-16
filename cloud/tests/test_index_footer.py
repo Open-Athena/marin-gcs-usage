@@ -212,8 +212,9 @@ def test_gc_d1_deletes_only_generations_no_pointer_names(monkeypatch):
     from dt_cloud.index_footer import gc_d1
 
     con = sqlite3.connect(":memory:")
-    # cw's one migration creates both tables in their end state (gcs's 0013+0014+0018+0020 folded)
-    con.executescript((Path(__file__).parents[2] / "site/migrations/0005_index_footer.sql").read_text())
+    ddl = (Path(__file__).parents[2] / "site/migrations/0020_index_generations.sql").read_text()
+    con.executescript("CREATE TABLE index_schema (date TEXT, variant TEXT, version INTEGER, schema_json TEXT, floor_bytes INTEGER, PRIMARY KEY (date, variant));")
+    con.executescript(ddl)
     row = "(?, ?, ?, ?, 1, 1, 'a', 'b', 1, NULL, NULL, 0, 1, '[]')"
     con.executemany(f"INSERT INTO index_row_groups VALUES {row}", [
         ("2026-09-01", "path", "g1", 0), ("2026-09-01", "path", "g1", 1),
@@ -248,8 +249,8 @@ def test_gc_d1_deletes_only_generations_no_pointer_names(monkeypatch):
 
 
 def test_retire_d1_drops_floor_free_groups_of_scans_past_the_retention_window(monkeypatch):
-    """Newest `retain` scans keep everything; older scans lose only the
-    floor-free `path` row groups (the coarse tiers stay); pointers are untouched."""
+    """Newest `retain` scans keep everything; older scans lose only path/user
+    row groups (the coarse tiers stay); pointers are untouched."""
     import sqlite3
 
     from dt_cloud.index_footer import retire_d1
@@ -259,9 +260,8 @@ def test_retire_d1_drops_floor_free_groups_of_scans_past_the_retention_window(mo
     con.executescript("""
       CREATE TABLE index_row_groups (date TEXT, variant TEXT, gen TEXT, rg INTEGER, PRIMARY KEY (date, variant, gen, rg));
     """)
-    # cw's variants: the floor-free path tier + a coarse tier (no user sorts)
     for d in ("2026-09-01", "2026-09-02", "2026-09-03"):
-        for v in ("path", "coarse24"):
+        for v in ("path", "user", "coarse24", "coarse24-user"):
             con.execute("INSERT INTO index_schema VALUES (?, ?, 1, '[]', NULL, 'legacy', ?)", (d, v, f"listing/{d}"))
             con.executemany("INSERT INTO index_row_groups VALUES (?, ?, 'legacy', ?)", [(d, v, i) for i in range(2)])
 
@@ -271,13 +271,13 @@ def test_retire_d1_drops_floor_free_groups_of_scans_past_the_retention_window(mo
 
     monkeypatch.setattr(index_footer, "_d1_query", fake_query)
     monkeypatch.setattr(index_footer, "_creds", lambda: ("tok", "acct"))
-    assert retire_d1(2) == [("2026-09-01", "path", 2)]
+    assert retire_d1(2) == [("2026-09-01", "path", 2), ("2026-09-01", "user", 2)]
     assert con.execute("SELECT date, variant, count(*) FROM index_row_groups GROUP BY 1, 2 ORDER BY 1, 2").fetchall() == [
-        ("2026-09-01", "coarse24", 2),
-        ("2026-09-02", "coarse24", 2), ("2026-09-02", "path", 2),
-        ("2026-09-03", "coarse24", 2), ("2026-09-03", "path", 2),
+        ("2026-09-01", "coarse24", 2), ("2026-09-01", "coarse24-user", 2),
+        ("2026-09-02", "coarse24", 2), ("2026-09-02", "coarse24-user", 2), ("2026-09-02", "path", 2), ("2026-09-02", "user", 2),
+        ("2026-09-03", "coarse24", 2), ("2026-09-03", "coarse24-user", 2), ("2026-09-03", "path", 2), ("2026-09-03", "user", 2),
     ]
-    assert con.execute("SELECT count(*) FROM index_schema").fetchone() == (6,)
+    assert con.execute("SELECT count(*) FROM index_schema").fetchone() == (12,)
     assert retire_d1(2) == []  # idempotent
 
 
