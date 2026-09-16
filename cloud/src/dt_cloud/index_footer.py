@@ -353,6 +353,18 @@ def gc_d1(date: str, db_id: str = D1_DB_ID) -> int:
 # variant set minus the coarse ones (cw has no user-sorted variant).
 FLOOR_FREE_VARIANTS = tuple(v for v in os.environ.get("INDEX_VARIANTS", "path,user").split(",") if v)
 
+# Index variants the site reads (functions/_lib/index.ts `fileFor` mirrors this):
+# each floor-free tier (`path`, and `user` where the deployment writes it) and
+# every coarse tier (viz.py COARSE_EXPS) in the same sorts. D1 keys (date, variant).
+COARSE_EXPS = (16, 20, 24)
+INDEX_VARIANTS: dict[str, str] = {"path": "path-index.parquet"}
+if "user" in FLOOR_FREE_VARIANTS:
+    INDEX_VARIANTS["user"] = "path-index-by-user.parquet"
+for _e in COARSE_EXPS:
+    INDEX_VARIANTS[f"coarse{_e}"] = f"path-index-coarse{_e}.parquet"
+    if "user" in FLOOR_FREE_VARIANTS:
+        INDEX_VARIANTS[f"coarse{_e}-user"] = f"path-index-coarse{_e}-by-user.parquet"
+
 
 def retire_d1(retain: int, db_id: str = D1_DB_ID) -> list[tuple[str, str, int]]:
     """Retention (specs/view-serving.md follow-ups): drop the floor-free

@@ -26,7 +26,7 @@ from .cw_digest import REPLY_HOUR_UTC
 from .identity import DEFAULT_IDENTITIES, load_identities
 from .mark import DEFAULT_URL as MARK_DEFAULT_URL
 from .mark import KEEP_ACTIONS as MARK_KEEPS
-from .index import INDEX_VARIANTS
+from .index_footer import INDEX_VARIANTS
 from .viz import COARSE_EXPS
 from .listing import prepare_listing
 from .prefixes import load_prefix_map
@@ -775,25 +775,34 @@ def index_write(bucket: str | None, mem: str, out_dir: Path, threads: int, tmp_d
 
 @main.command("index-sync")
 @option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
-@option("-C", "--coarse-only", is_flag=True, help="Only the coarse tiers")
+@option("-C", "--coarse-only", is_flag=True, help="Only the coarse tiers (a backfill; the floor-free variants keep their pointer)")
 @option("-d", "--dir", "listing_dir", default=None, help="Local/mounted dir holding the parquets (default: <bucket>/<key>)")
-@option("-F", "--floor-free-only", is_flag=True, help="Only the floor-free variant")
-@option("-g", "--gen", required=True, help="Generation stamp these files belong to (the run's GEN)")
-@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under — what the site reads (default: cw-l2/<scan>/index/<gen>)")
+@option("-F", "--floor-free-only", is_flag=True, help="Only the floor-free variants (path, user)")
+@option("-g", "--gen", required=True, help="Generation stamp these files belong to (the run's GEN; `legacy` for the pre-generation listing/<date>/ layout)")
+@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under — what the site reads (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
 @option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
-@option("-v", "--variant", "variants", multiple=True, help="Only sync these variants (default: all)")
-@argument("scan")
-def index_sync(bucket: str, coarse_only: bool, listing_dir: str | None, floor_free_only: bool, gen: str, key: str | None, local: bool, variants: tuple[str, ...], scan: str) -> None:
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only sync these variants (default: all)")
+@argument("date")
+def index_sync(
+    bucket: str,
+    coarse_only: bool,
+    listing_dir: str | None,
+    floor_free_only: bool,
+    gen: str,
+    key: str | None,
+    local: bool,
+    variants: tuple[str, ...],
+    date: str,
+) -> None:
     """Publish a scan's index-tier footers to D1 (index_row_groups + the
-    index_schema pointer) — one generation of files under one bucket dir. Per
-    variant the row groups land first, tagged with the generation, and the
+    index_schema pointer) — one generation of files under one bucket dir.
+    Per variant the row groups land first, tagged with the generation, and the
     pointer (gen, dir) flips last, so the site moves from the previous complete
-    generation to this one with no window. Needs CLOUDFLARE_API_TOKEN +
-    CLOUDFLARE_ACCOUNT_ID in the env."""
-    from .index import INDEX_VARIANTS
+    generation to this one with no window (specs/view-serving.md). Needs
+    CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the env."""
     from .index_footer import sync_d1
 
-    key = key or f"cw-l2/{scan}/index/{gen}"
+    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
     base = listing_dir or f"{bucket}/{key}"
     todo = variants or tuple(INDEX_VARIANTS)
     if coarse_only:
@@ -801,37 +810,40 @@ def index_sync(bucket: str, coarse_only: bool, listing_dir: str | None, floor_fr
     if floor_free_only:
         todo = tuple(v for v in todo if not v.startswith("coarse"))
     for variant in todo:
-        if variant not in INDEX_VARIANTS:
-            raise SystemExit(f"index-sync: unknown variant {variant!r} (want one of {list(INDEX_VARIANTS)})")
-        n = sync_d1(scan, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, gen=gen, key=key, remote=not local)
-        err(f"index-sync: {scan} [{variant}] gen {gen} @ {key} — {n} row groups ({'local' if local else 'remote'})")
+        n = sync_d1(date, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, gen=gen, key=key, remote=not local)
+        err(f"index-sync: {date} [{variant}] gen {gen} @ {key} — {n} row groups ({'local' if local else 'remote'})")
 
 
 @main.command("index-gc")
-@option("-r", "--retain", type=int, default=None, help="Also retire the floor-free tier's row groups for every synced scan older than the newest N (the coarse tiers stay)")
-@argument("scans", nargs=-1)
-def index_gc(retain: int | None, scans: tuple[str, ...]) -> None:
-    """Drop the row groups of generations no pointer names (leftovers of a
-    flip or a failed sync) for SCANS; with -r, retention on top."""
-    from .index_footer import gc_d1, retire_d1
+@option("-r", "--retain", type=int, default=None, help="Retention: also retire the floor-free variants' row groups of every scan older than the newest N (their pointers stay; the reader falls back to the parquet footer)")
+@argument("dates", nargs=-1)
+def index_gc(retain: int | None, dates: tuple[str, ...]) -> None:
+    """Delete row groups of index generations no pointer names — a REPROC's
+    previous generation, or a sync that died before flipping. All synced
+    scans by default; DATES to restrict. With -r, the retention pass too."""
+    from .index_footer import gc_d1, retire_d1, synced_variants
 
-    for s in scans:
-        err(f"index-gc: {s}: {gc_d1(s)} orphan row groups deleted")
+    todo = dates or sorted({d for d, _ in synced_variants()})
+    for d in todo:
+        n = gc_d1(d)
+        err(f"index-gc: {d} — {n} stale row groups deleted")
     if retain is not None:
         for d, v, n in retire_d1(retain):
-            err(f"index-gc: retired {d} [{v}]: {n} row groups")
+            err(f"index-gc: retired {d} [{v}] — {n} row groups (footer path serves it now)")
 
 
 @main.command("index-dir")
-@option("-v", "--variant", default="path", help="Index variant (default path)")
-@argument("scan")
-def index_dir_cmd(variant: str, scan: str) -> None:
-    """Print the bucket-relative dir D1 points at for SCAN's VARIANT (exit 1 if unsynced)."""
+@option("-v", "--variant", default="path", type=Choice(list(INDEX_VARIANTS)), help="Which variant's dir")
+@argument("date")
+def index_dir_cmd(variant: str, date: str) -> None:
+    """Print the bucket-relative dir holding a scan's index variant (the D1
+    pointer). Exits 1, printing nothing, when that (date, variant) was never
+    synced."""
     from .index_footer import index_dir
 
-    d = index_dir(scan, variant)
-    if not d:
-        raise SystemExit(f"index-dir: {scan} [{variant}] not synced")
+    d = index_dir(date, variant)
+    if d is None:
+        raise SystemExit(1)
     print(d)
 
 
@@ -953,39 +965,51 @@ def index_compact(variants: tuple[str, ...], dates: tuple[str, ...]) -> None:
 
 
 @main.command("warm-cache")
-@option("-d", "--date", "scan", default=None, help="Scan to warm (default: newest under --root)")
-@option("-j", "--jobs", default=4, help="Concurrent requests")
-@option("-n", "--dry-run", is_flag=True, help="Print the request plan, fetch nothing")
-@option("-r", "--root", default=None, help="Snapshots root (default gs://$DATA_BUCKET/snapshots/cw)")
-@option("-u", "--url", "site_url", default=None, help="Site base URL (default https://cw-s3.oa.dev)")
-@option("-w", "--widths", default=None, help="Comma-separated canvas widths (default: the common laptop/phone set)")
-def warm_cache(scan: str | None, jobs: int, dry_run: bool, root: str | None, site_url: str | None, widths: str | None) -> None:
-    """Replay the home page's default views for a fresh scan so its first
-    viewer hits the edge cache. Auth: a Cloudflare Access *service token* —
-    CF_ACCESS_CLIENT_ID + CF_ACCESS_CLIENT_SECRET in the env (the site is
-    whole-host Access-gated; there is no agent bearer token here)."""
-    import fsspec
+@option("-d", "--date", help="Scan to warm (default: latest under --root)")
+@option("-j", "--jobs", default=4, type=int, help="Concurrent requests (default 4)")
+@option("-n", "--dry-run", is_flag=True, help="Print the request paths; fetch nothing")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
+@option("-t", "--token", help="Site read token (default $GCS_USAGE_TOKEN)")
+@option("-u", "--url", "site_url", default=None, help="Site base (default gcs.oa.dev)")
+@option("-W", "--widths", default="512,1280,1536,1792,1920", help="Canvas widths to warm (the client sends ceil(innerWidth/128)*128; default = phone + common laptops)")
+def warm_cache(date: str | None, jobs: int, dry_run: bool, root: str | None, token: str | None, site_url: str | None, widths: str) -> None:
+    """Warm the site's subtree + diff caches for a scan: replay the home
+    page's default requests (one subtree, the diff span chips 1d/3d/7d/14d/30d
+    and the previous-scan pair, each with its summary) at the common canvas
+    widths, so the first viewer anywhere gets a cache hit (colo cache + global
+    KV). Non-fatal: a failed request just leaves that view cold."""
+    from . import warm as wm
+    from . import weekly as wk
 
-    from . import warm as W
-    from .cw_digest import DEFAULT_URL
-
-    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots/cw"
-    fs, _, _ = fsspec.get_fs_token_paths(root)
-    scans = sorted(p.rstrip("/").rsplit("/", 1)[-1] for p in fs.ls(root.split("://", 1)[-1], detail=False) if re.search(r"/\d{4}-\d{2}-\d{2}(T\d{4})?/?$", p + "/"))
-    scan = scan or (scans[-1] if scans else None)
-    if not scan:
-        raise SystemExit("warm-cache: no scans")
-    ws = tuple(int(x) for x in widths.split(",")) if widths else W.WIDTHS
-    plan = W.plan(scan, scans, widths=ws)
+    # Deployment config: SITE_URL / SNAPSHOTS_SUBDIR (the CoreWeave job exports
+    # cw-s3.oa.dev + snapshots/cw); defaults are the GCS deployment's.
+    site_url = site_url or os.environ.get("SITE_URL") or wk.DEFAULT_URL
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/{os.environ.get('SNAPSHOTS_SUBDIR', 'snapshots')}"
+    dates = wk.scan_dates(root)
+    if not dates:
+        raise SystemExit("warm-cache: no scans under root")
+    date = date or dates[-1]
+    if date not in dates:
+        raise SystemExit(f"warm-cache: {date} is not a published scan")
+    paths = wm.plan(date, dates, tuple(int(w) for w in widths.split(",")))
     if dry_run:
-        print("\n".join(plan))
+        for p in paths:
+            print(p)
         return
+    # Auth: an agent bearer token (`-t` / GCS_USAGE_TOKEN — the app gate), or a
+    # Cloudflare Access service-token pair (CF_ACCESS_CLIENT_ID/SECRET — a
+    # whole-host edge-gated deployment). Same request either way.
+    token = token or os.environ.get("GCS_USAGE_TOKEN")
     cid, csec = os.environ.get("CF_ACCESS_CLIENT_ID"), os.environ.get("CF_ACCESS_CLIENT_SECRET")
-    if not (cid and csec):
-        raise SystemExit("warm-cache: need CF_ACCESS_CLIENT_ID + CF_ACCESS_CLIENT_SECRET (an Access service token)")
-    res = W.warm(site_url or DEFAULT_URL, {"CF-Access-Client-Id": cid, "CF-Access-Client-Secret": csec}, plan, jobs=jobs)
+    if token:
+        headers = {"Authorization": f"Bearer {token}"}
+    elif cid and csec:
+        headers = {"CF-Access-Client-Id": cid, "CF-Access-Client-Secret": csec}
+    else:
+        raise SystemExit("warm-cache: need GCS_USAGE_TOKEN (or -t), or CF_ACCESS_CLIENT_ID + CF_ACCESS_CLIENT_SECRET")
+    res = wm.warm(site_url, headers, paths, jobs=jobs)
     bad = [r for r in res if r[1] != 200]
-    err(f"warm-cache: {len(res) - len(bad)}/{len(res)} ok" + (f"; {len(bad)} failed" if bad else ""))
+    err(f"warm-cache: {len(res) - len(bad)}/{len(res)} warmed for {date} in {sum(r[2] for r in res):.0f}s of request time" + (f"; {len(bad)} failed" if bad else ""))
 
 
 @main.group()
