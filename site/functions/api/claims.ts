@@ -3,7 +3,7 @@
  * unattributed prefix as yours; POST { prefix, release: true } to release a
  * claim you hold. Claim ≠ mark — an unmarked claim still defaults to delete.
  */
-import { type Ctx, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
+import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 
 const PREFIX_RE = /^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/
 
@@ -11,7 +11,7 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const { request, env } = ctx
   if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405)
   if (!env.DB) return json({ error: 'marks backend not configured (DB)' }, 503)
-  const id = await requireScope(ctx, GCS_SCOPE)
+  const id = await requireViewer(ctx)
   if (id instanceof Response) return id
   if (!id.email) {
     return json({ error: 'claiming requires a signed-in email — guest links are read-only; sign in via Google or ask for a personal link' }, 403)

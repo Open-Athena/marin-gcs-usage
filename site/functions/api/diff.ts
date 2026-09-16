@@ -12,7 +12,7 @@
  * immutable per (from, to, path, budget, scope) plus the ledger head when
  * `k` is set, and edge-cached accordingly.
  */
-import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { type Env, requireViewer } from '../_lib/auth.js'
 import { parseMarkAxes } from '../_lib/markAxes.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
@@ -56,8 +56,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env; waitUntil?
   const qRaw = url.searchParams.get('q') ?? ''
   const query = parseQuery(qRaw) ?? undefined
 
-  const scope = path.startsWith('cw/') ? CW_SCOPE : GCS_SCOPE
-  const gated = await st.time('auth', requireScope(ctx as never, scope))
+  const gated = await st.time('auth', requireViewer(ctx as never))
   if (gated instanceof Response) return gated
 
   const head = (states || lens) && ctx.env.DB ? await st.time('pre', ledgerHead(ctx.env)) : 0

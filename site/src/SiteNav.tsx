@@ -13,6 +13,7 @@ import {
 } from '@floating-ui/react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { DEFAULT_STORE } from './stores'
 import { FaGithub } from 'react-icons/fa'
 import { MdMenu } from 'react-icons/md'
 import { Link, useLocation } from 'react-router-dom'
@@ -27,7 +28,6 @@ import { UserCard, ghHandle, shortName } from './UserChip'
 import { useUnits } from './units'
 import { Tooltip } from './Tooltip'
 
-const CW_URL = 'https://cw-s3.oa.dev/'
 
 // The one bar every page wears, pinned to the viewport top: the site nav
 // folded into a ☰ menu (far left), the page's own scope/controls across the
@@ -133,9 +133,9 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
             <div className="menu-pop" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
               {link('/', 'Map')}
               {link('/files', 'Scans')}
-              {canMark && link('/users', 'Users')}
-              {canMark && link('/marks', 'Marks')}
-              {canMark && link('/assignments', 'Assignments')}
+              {canMark && DEFAULT_STORE.marks && link('/users', 'Users')}
+              {canMark && DEFAULT_STORE.marks && link('/marks', 'Marks')}
+              {canMark && DEFAULT_STORE.marks && link('/assignments', 'Assignments')}
               {canMark && link('/sweep', 'Sweep')}
               <hr />
               <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setAboutOpen(true) }}>About — the data, axes &amp; colors</button>
@@ -143,7 +143,7 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
                 <button key={e.key} type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); e.onClick() }}>{e.label}</button>
               ))}
               <hr />
-              <a role="menuitem" className="mi" href={CW_URL} target="_blank" rel="noreferrer">CoreWeave usage ↗</a>
+              {DEFAULT_STORE.peer && <a role="menuitem" className="mi" href={DEFAULT_STORE.peer.href} target="_blank" rel="noreferrer">{DEFAULT_STORE.peer.label} ↗</a>}
               <a role="menuitem" className="mi" href={REPO_URL} target="_blank" rel="noreferrer"><FaGithub aria-hidden /> Source on GitHub ↗</a>
             </div>
           </FloatingFocusManager>
@@ -157,8 +157,10 @@ function UserMenu() {
   const ident = useIdent()
   const canMark = useCanMark()
   const signOut = useSignOut()
-  const myUser = useMyUser(ident?.email, canMark)
-  const emails = useUserEmails(canMark)
+  // The ledger pages + the email → user map exist only on a marks store.
+  const marksOn = canMark && DEFAULT_STORE.marks
+  const myUser = useMyUser(ident?.email, marksOn)
+  const emails = useUserEmails(marksOn)
   const [tokenOpen, setTokenOpen] = useState(false)
   const { units, suffixB, toggleUnits, toggleSuffixB } = useUnits()
   const m = useMenu('bottom-end')

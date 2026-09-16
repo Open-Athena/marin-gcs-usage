@@ -9,7 +9,7 @@
  * `prefix` is the gs:// dir form, ready to hand straight to `dt-cloud mark`.
  */
 import { S3Store } from '@rdub/file-tree/stores/s3'
-import { type Ctx, type Env, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
+import { type Ctx, type Env, json, requireViewer } from '../_lib/auth.js'
 import { keepSets, todoItems } from '../_lib/todo.js'
 import { buildView } from '../_lib/view.js'
 
@@ -38,7 +38,7 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   if (!env.DB) return json({ error: 'todo backend not configured (DB)' }, 503)
   const { GCS_HMAC_KEY_ID, GCS_HMAC_SECRET } = env
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) return json({ error: 'data proxy not configured (HMAC)' }, 503)
-  const id = await requireScope(ctx, GCS_SCOPE)
+  const id = await requireViewer(ctx)
   if (id instanceof Response) return id
 
   const url = new URL(request.url)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import sys
 from collections import Counter
 from dataclasses import asdict
@@ -24,9 +25,7 @@ from click import Choice, argument, group, option
 from .identity import DEFAULT_IDENTITIES, load_identities
 from .mark import DEFAULT_URL as MARK_DEFAULT_URL
 from .mark import KEEP_ACTIONS as MARK_KEEPS
-from .prefixes import load_prefix_map
-from .records import mine_record_rows
-from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows
+from .index_footer import INDEX_VARIANTS
 from .viz import COARSE_EXPS
 
 
@@ -36,17 +35,9 @@ def prepare_listing(con, listings):
     (and the CLI's `--help`) run from a bare `dt-cloud` venv (Healthcheck GHA)."""
     from disk_tree.listing import prepare_listing as _prepare_listing
     return _prepare_listing(con, listings)
-
-
-def _hard_exit() -> None:
-    """Exit without interpreter teardown. The batch commands that stream GCS
-    parquet through gcsfs hung at exit once (2026-09-08: last line printed,
-    0% CPU for an hour) — fsspec's event loop being finalized while a file
-    object's `__del__` still needs it. Every file is closed explicitly now;
-    this is the guarantee."""
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(0)
+from .prefixes import load_prefix_map
+from .records import mine_record_rows
+from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows
 
 err = partial(print, file=sys.stderr)
 
@@ -66,6 +57,22 @@ def _connect() -> "duckdb.DuckDBPyConnection":
 @group()
 def main() -> None:
     """Per-user attribution and reporting for Marin GCS storage."""
+
+
+def _hard_exit() -> None:
+    """Exit without interpreter teardown. The batch commands that stream GCS
+    parquet through gcsfs hung at exit once (2026-09-08: last line printed,
+    0% CPU for an hour) — fsspec's event loop being finalized while a file
+    object's `__del__` still needs it. Every file is closed explicitly now;
+    this is the guarantee."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
+err = partial(print, file=sys.stderr)
+
+
+err = partial(print, file=sys.stderr)
 
 
 @main.command()
@@ -536,6 +543,9 @@ def rules(identities_path: Path, out: Path | None) -> None:
         raise SystemExit(1)
 
 
+# --- index tiers + their D1 footers (specs/view-serving.md, ported from gcs) ---
+
+
 @main.command()
 @option("-f", "--file", "sources", multiple=True, type=Path, help="Read prefixes from FILE (one per line; '-' = stdin). Repeatable.")
 @option("-k", "--keep", default="keep", type=Choice([*MARK_KEEPS, "none"]), help="Keep action to set ('none' leaves the keep axis untouched)")
@@ -747,6 +757,245 @@ def healthcheck(date: str | None, max_age_days: int, as_json: bool, max_ms: int,
         print(json.dumps(as_dict(resolved, checks), indent=2))
     if not ok:
         raise SystemExit(1)
+
+
+@main.command("index-sync")
+@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
+@option("-C", "--coarse-only", is_flag=True, help="Only the coarse tiers (a backfill; the floor-free variants keep their pointer)")
+@option("-d", "--dir", "listing_dir", default=None, help="Local/mounted dir holding the parquets (default: <bucket>/<key>)")
+@option("-F", "--floor-free-only", is_flag=True, help="Only the floor-free variants (path, user)")
+@option("-g", "--gen", required=True, help="Generation stamp these files belong to (the run's GEN; `legacy` for the pre-generation listing/<date>/ layout)")
+@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under — what the site reads (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
+@option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only sync these variants (default: all)")
+@argument("date")
+def index_sync(
+    bucket: str,
+    coarse_only: bool,
+    listing_dir: str | None,
+    floor_free_only: bool,
+    gen: str,
+    key: str | None,
+    local: bool,
+    variants: tuple[str, ...],
+    date: str,
+) -> None:
+    """Publish a scan's index-tier footers to D1 (index_row_groups + the
+    index_schema pointer) — one generation of files under one bucket dir.
+    Per variant the row groups land first, tagged with the generation, and the
+    pointer (gen, dir) flips last, so the site moves from the previous complete
+    generation to this one with no window (specs/view-serving.md). Needs
+    CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the env."""
+    from .index_footer import sync_d1
+
+    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
+    base = listing_dir or f"{bucket}/{key}"
+    todo = variants or tuple(INDEX_VARIANTS)
+    if coarse_only:
+        todo = tuple(v for v in todo if v.startswith("coarse"))
+    if floor_free_only:
+        todo = tuple(v for v in todo if not v.startswith("coarse"))
+    for variant in todo:
+        n = sync_d1(date, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, gen=gen, key=key, remote=not local)
+        err(f"index-sync: {date} [{variant}] gen {gen} @ {key} — {n} row groups ({'local' if local else 'remote'})")
+
+
+@main.command("index-gc")
+@option("-r", "--retain", type=int, default=None, help="Retention: also retire the floor-free variants' row groups of every scan older than the newest N (their pointers stay; the reader falls back to the parquet footer)")
+@argument("dates", nargs=-1)
+def index_gc(retain: int | None, dates: tuple[str, ...]) -> None:
+    """Delete row groups of index generations no pointer names — a REPROC's
+    previous generation, or a sync that died before flipping. All synced
+    scans by default; DATES to restrict. With -r, the retention pass too."""
+    from .index_footer import gc_d1, retire_d1, synced_variants
+
+    todo = dates or sorted({d for d, _ in synced_variants()})
+    for d in todo:
+        n = gc_d1(d)
+        err(f"index-gc: {d} — {n} stale row groups deleted")
+    if retain is not None:
+        for d, v, n in retire_d1(retain):
+            err(f"index-gc: retired {d} [{v}] — {n} row groups (footer path serves it now)")
+
+
+@main.command("index-dir")
+@option("-v", "--variant", default="path", type=Choice(list(INDEX_VARIANTS)), help="Which variant's dir")
+@argument("date")
+def index_dir_cmd(variant: str, date: str) -> None:
+    """Print the bucket-relative dir holding a scan's index variant (the D1
+    pointer). Exits 1, printing nothing, when that (date, variant) was never
+    synced."""
+    from .index_footer import index_dir
+
+    d = index_dir(date, variant)
+    if d is None:
+        raise SystemExit(1)
+    print(d)
+
+
+@main.command("index-tiers")
+@option("-m", "--mem", default="48GB", help="DuckDB memory limit")
+@option("-P", "--path-index", "path_index", type=Path, required=True, help="Local floor-free path-index.parquet; the coarse tiers are written beside it")
+@option("-t", "--threads", default=8, type=int, help="DuckDB threads")
+@option("-T", "--tmp", "tmp_dir", type=Path, default=None, help="DuckDB spill dir (default: beside the index)")
+@argument("date")
+def index_tiers(mem: str, path_index: Path, threads: int, tmp_dir: Path | None, date: str) -> None:
+    """Backfill the coarse index tiers for an archived scan from its floor-free
+    path index (specs/view-serving.md §1): the per-path subtree totals, then one
+    parquet per E in COARSE_EXPS × {by-path, by-user}, floors in the KV metadata.
+    Same code path `webdata` runs on a fresh scan; `index-sync` records the
+    floors in D1. An old index's `team` column is dropped on the way."""
+    import duckdb
+
+    from .viz import write_coarse_tiers
+
+    con = duckdb.connect()
+    con.execute(f"SET memory_limit='{mem}'; SET threads={threads}")
+    con.execute(f"SET temp_directory='{tmp_dir or path_index.parent / '.duckdb-tmp'}'")
+    src = f"read_parquet('{path_index}')"
+    con.execute(f"CREATE TEMP TABLE tot AS SELECT path, sum(b) AS pb FROM {src} GROUP BY path")
+    floors, counts = write_coarse_tiers(con, path_index, rows=src)
+    err(f"index-tiers {date}: {json.dumps({str(e): {'floor': floors[e], 'paths': counts[e]} for e in floors})}")
+
+
+@main.command("labels")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `webdata -a`)")
+@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s) — path-glob rules expand against their dirs")
+@option("-o", "--out", "out_dir", type=Path, required=True, help="Output dir: one labels-<bucket>.parquet per bucket")
+def labels(attributions: tuple[str, ...], identities_path: Path, listings: tuple[str, ...], out_dir: Path) -> None:
+    """Export mgu's attribution as DT label tables — `(prefix, usr)` per bucket,
+    prefix relative to the bucket — for `disk-tree import -e duckdb -L
+    labels-<bucket>.parquet -c usr` (spec mgu-scale-unification.md §B): the
+    same prefix map `webdata` attributes with, so the two cascades can be
+    compared slice for slice."""
+    import duckdb
+
+    from .viz import write_labels
+
+    con = duckdb.connect()
+    for bucket, n in write_labels(con, listings, attributions, identities_path, out_dir).items():
+        err(f"labels: {bucket}: {n} prefixes → {out_dir / f'labels-{bucket}.parquet'}")
+
+
+@main.command("index-blob")
+@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
+@option("-d", "--dir", "listing_dir", default=None, help="Local/mounted/gs:// dir holding the parquets (default: gs://<bucket>/<key>)")
+@option("-g", "--gen", required=True, help="Generation the files belong to (`legacy` for listing/<date>/)")
+@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all)")
+@argument("date")
+def index_blob(bucket: str, listing_dir: str | None, gen: str, key: str | None, variants: tuple[str, ...], date: str) -> None:
+    """Write each tier's group-manifest blob (`<tier>.groups.json`, the rows
+    `index-sync` puts in D1) beside its parquet — the backfill for scans synced
+    before `index-sync` wrote blobs; the site opens the blob once retention
+    retires a tier's rows from D1 (specs/view-serving.md)."""
+    from .index_footer import extract, write_groups_blob
+
+    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
+    base = listing_dir or f"gs://{bucket}/{key}"
+    for variant in variants or tuple(INDEX_VARIANTS):
+        path = f"{base}/{INDEX_VARIANTS[variant]}"
+        schema, rows = extract(path)
+        out, n = write_groups_blob(path, schema, rows)
+        err(f"index-blob: {date} [{variant}] {len(rows)} groups → {out} ({n:,} B)")
+
+
+@main.command("index-extras")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `webdata -a`); omit for ck.json only")
+@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
+@option("-o", "--out", "out_dir", type=Path, default=None, help="Where to write ck.json / attr.json (default: beside the index)")
+@option("-P", "--path-index", "path_index", type=Path, required=True, help="Floor-free path-index.parquet of the scan (every dir is a row)")
+@argument("date")
+def index_extras(attributions: tuple[str, ...], identities_path: Path, out_dir: Path | None, path_index: Path, date: str) -> None:
+    """Backfill a scan's index sidecars (specs/index-extras.md) from its
+    floor-free path index (+ attribution parquets): `ck.json`, the
+    checkpoint-shaped dirs; `attr.json`, each attributing prefix's user /
+    source / evidence. `webdata` writes the same files for a fresh scan."""
+    import duckdb
+
+    from .extras import write_extras
+    from .viz import prefix_labels
+
+    con = duckdb.connect()
+    src = f"read_parquet('{path_index}')"
+    con.execute(f"CREATE TEMP VIEW idx_dirs AS SELECT DISTINCT path AS fp FROM {src}")
+    pfx_df = None
+    if attributions:
+        # Path-glob rules expand against `(bucket, name)` dirs — from the index's own paths.
+        con.execute(
+            "CREATE TEMP VIEW listing_dirs AS SELECT split_part(fp, '/', 1) AS bucket,"
+            " CASE WHEN position('/' IN fp) > 0 THEN substr(fp, position('/' IN fp) + 1) END AS name FROM idx_dirs"
+        )
+        pfx_df = prefix_labels(con, attributions, identities_path, "listing_dirs")
+    counts = write_extras(con, "idx_dirs", pfx_df, out_dir or path_index.parent)
+    err(f"index-extras {date}: {json.dumps(counts)}")
+
+
+@main.command("index-compact")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all synced)")
+@argument("dates", nargs=-1)
+def index_compact(variants: tuple[str, ...], dates: tuple[str, ...]) -> None:
+    """Rewrite D1's verbose pre-2026-09-06 `rg_json` rows into the compact form
+    `index-sync` now writes (index_footer.py), in place via JSON1 — one statement
+    per (date, variant), no parquet read. All synced scans by default; DATES
+    restrict it. Idempotent (only rows still in the old form change)."""
+    from .index_footer import compact_d1, synced_variants
+
+    todo = [(d, v) for d, v in synced_variants() if (not dates or d in dates) and (not variants or v in variants)]
+    for d, v in todo:
+        left = compact_d1(d, v)
+        err(f"index-compact: {d} [{v}] — {'done' if left == 0 else f'{left} rows still verbose'}")
+    if not todo:
+        err("index-compact: nothing synced matches")
+
+
+@main.command("warm-cache")
+@option("-d", "--date", help="Scan to warm (default: latest under --root)")
+@option("-j", "--jobs", default=4, type=int, help="Concurrent requests (default 4)")
+@option("-n", "--dry-run", is_flag=True, help="Print the request paths; fetch nothing")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
+@option("-t", "--token", help="Site read token (default $GCS_USAGE_TOKEN)")
+@option("-u", "--url", "site_url", default=None, help="Site base (default gcs.oa.dev)")
+@option("-W", "--widths", default="512,1280,1536,1792,1920", help="Canvas widths to warm (the client sends ceil(innerWidth/128)*128; default = phone + common laptops)")
+def warm_cache(date: str | None, jobs: int, dry_run: bool, root: str | None, token: str | None, site_url: str | None, widths: str) -> None:
+    """Warm the site's subtree + diff caches for a scan: replay the home
+    page's default requests (one subtree, the diff span chips 1d/3d/7d/14d/30d
+    and the previous-scan pair, each with its summary) at the common canvas
+    widths, so the first viewer anywhere gets a cache hit (colo cache + global
+    KV). Non-fatal: a failed request just leaves that view cold."""
+    from . import warm as wm
+    from . import weekly as wk
+
+    # Deployment config: SITE_URL / SNAPSHOTS_SUBDIR (the CoreWeave job exports
+    # cw-s3.oa.dev + snapshots/cw); defaults are the GCS deployment's.
+    site_url = site_url or os.environ.get("SITE_URL") or wk.DEFAULT_URL
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/{os.environ.get('SNAPSHOTS_SUBDIR', 'snapshots')}"
+    dates = wk.scan_dates(root)
+    if not dates:
+        raise SystemExit("warm-cache: no scans under root")
+    date = date or dates[-1]
+    if date not in dates:
+        raise SystemExit(f"warm-cache: {date} is not a published scan")
+    paths = wm.plan(date, dates, tuple(int(w) for w in widths.split(",")))
+    if dry_run:
+        for p in paths:
+            print(p)
+        return
+    # Auth: an agent bearer token (`-t` / GCS_USAGE_TOKEN — the app gate), or a
+    # Cloudflare Access service-token pair (CF_ACCESS_CLIENT_ID/SECRET — a
+    # whole-host edge-gated deployment). Same request either way.
+    token = token or os.environ.get("GCS_USAGE_TOKEN")
+    cid, csec = os.environ.get("CF_ACCESS_CLIENT_ID"), os.environ.get("CF_ACCESS_CLIENT_SECRET")
+    if token:
+        headers = {"Authorization": f"Bearer {token}"}
+    elif cid and csec:
+        headers = {"CF-Access-Client-Id": cid, "CF-Access-Client-Secret": csec}
+    else:
+        raise SystemExit("warm-cache: need GCS_USAGE_TOKEN (or -t), or CF_ACCESS_CLIENT_ID + CF_ACCESS_CLIENT_SECRET")
+    res = wm.warm(site_url, headers, paths, jobs=jobs)
+    bad = [r for r in res if r[1] != 200]
+    err(f"warm-cache: {len(res) - len(bad)}/{len(res)} warmed for {date} in {sum(r[2] for r in res):.0f}s of request time" + (f"; {len(bad)} failed" if bad else ""))
 
 
 @main.group()
@@ -1111,6 +1360,7 @@ def sweep_manifest(attributions: tuple[str, ...], approved: tuple[str, ...], app
             err(f"  {c:16s} {b / 1e12:10.2f} TB  {o:>13,} objects")
     err(f"\nwrote {out}/plan-summary.json")
     _hard_exit()
+
 
 @sweep.command("execute")
 @option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets")
@@ -1950,243 +2200,6 @@ def sheet_push(disclaimer: str | None, impersonate: str | None, dry_run: bool, w
     err(f"synced '{ws.title}': {len(changed)} cell(s) written ({len(rows) - 1} data rows, data {verb})")
 
 
-@main.command()
-@option("-b", "--bot-token", help="Slack bot token (xoxb-…, or $SLACK_BOT_TOKEN); with --channel, posts via chat.postMessage so the per-message avatar applies")
-@option("-c", "--ceiling-tb", type=float, help="absolute alert: flag when total TB exceeds this")
-@option("-C", "--channel", help="Slack channel id for chat.postMessage (or $SLACK_CHANNEL)")
-@option("-d", "--date", help="snapshot date (default: latest under --root)")
-@option("-e", "--edit-ts", help="edit an existing message (chat.update at this ts) instead of posting a new one — back-applies a format change; avatar is unchanged")
-@option("-n", "--dry-run", is_flag=True, help="print the message instead of posting to Slack")
-@option("-p", "--prior", help="prior date to diff against (default: the snapshot before --date)")
-@option("-r", "--root", help="snapshots root: gs://bucket/snapshots or a local dir (default $DATA_BUCKET)")
-@option("-s", "--spike-pct", default=10.0, help="relative alert: flag when |Δ%%| exceeds this")
-@option("-w", "--webhook", help="Slack incoming webhook URL (or $SLACK_WEBHOOK); fallback with no per-message avatar")
-def alert(
-    bot_token: str | None,
-    ceiling_tb: float | None,
-    channel: str | None,
-    date: str | None,
-    edit_ts: str | None,
-    dry_run: bool,
-    prior: str | None,
-    root: str | None,
-    spike_pct: float,
-    webhook: str | None,
-) -> None:
-    """Post a daily GCS-usage digest to Slack: a one-line headline (date · total
-    · Δ, in the per-message sender name) + the $/mo run-rate linked to the site
-    (with Δ$); flag threshold breaches (absolute ceiling and/or relative spike).
-
-    Per-message avatars (mark + 📊/🚨) require the Web API: pass a bot token
-    (needs the chat:write.customize scope) + channel. Incoming webhooks ignore
-    icon/name overrides, so the --webhook path folds the headline into the body
-    and posts with the app's static icon."""
-    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
-    dates = _snapshot_dates(root)
-    if not dates:
-        raise SystemExit(f"no snapshots under {root}")
-    date = date or dates[-1]
-    if prior is None:
-        earlier = [d for d in dates if d < date]
-        prior = earlier[-1] if earlier else None
-
-    cur = _load_meta(root, date)
-    tb = cur["total_bytes"] / 1e12
-    breach = []
-    if ceiling_tb is not None and tb > ceiling_tb:
-        breach.append(f"total {tb:,.0f} TB > ceiling {ceiling_tb:,.0f} TB")
-
-    # est. $/mo from the class-byte mix (US list prices; mirror site CLASS_PRICE_US).
-    CLASS_PRICE = {"1": 0.02, "2": 0.01, "3": 0.004, "4": 0.0012}  # $/GiB·mo
-    cost = lambda cb: sum((cb.get(c, 0) / 1024**3) * p for c, p in CLASS_PRICE.items())
-    cur_cost = cost(cur["class_bytes"])
-
-    d_bytes = d_pct = d_cost = 0.0
-    if prior:
-        pri = _load_meta(root, prior)
-        d_bytes = cur["total_bytes"] - pri["total_bytes"]
-        d_pct = 100 * d_bytes / pri["total_bytes"] if pri["total_bytes"] else 0.0
-        d_cost = cur_cost - cost(pri["class_bytes"])
-        if abs(d_pct) > spike_pct:
-            breach.append(f"Δ {d_pct:+.1f}% vs {prior} exceeds ±{spike_pct:.0f}%")
-
-    # Resolve the Slack transport. A chat.postMessage carries the headline
-    # (date · total · Δ) in its per-message username — the bold name Slack
-    # renders beside the avatar — leaving a one-line body: the $/mo run-rate
-    # linked to the site, plus the Δ$. Webhooks can't set a username, so that
-    # path folds the headline into the body as a bold first line instead.
-    webhook = webhook or os.environ.get("SLACK_WEBHOOK")
-    bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
-    channel = channel or os.environ.get("SLACK_CHANNEL")
-    use_api = bool(bot_token and channel)  # chat.postMessage → per-message avatar + username
-
-    # Per-message avatar (mark + 📊/🚨 badge), served public so Slack can fetch
-    # it (the app itself is Access-gated). See job/gen-slack-icons.py + the
-    # gcs-usage-icons Pages project.
-    icon_url = f"https://gcs-usage-icons.pages.dev/gcs-{'breach' if breach else 'digest'}.png"
-    md = lambda s: f"{int(s[5:7])}/{int(s[8:10])}"  # 2026-08-06 → 8/6
-
-    def pct(p: float) -> str:
-        s = f"{abs(p):.1f}"  # 0.6 → ".6", 12.3 → "12.3" (sign carried by the ΔTB)
-        return s[1:] if s.startswith("0") else s
-
-    headline = f"{md(date)} — {tb:,.0f} TB"
-    yymmdd = date[2:].replace("-", "")  # 2026-08-09 → 260809 (site's ?d= deep-link)
-    cost_line = f"<https://gcs.oa.dev/?d={yymmdd}|${cur_cost:,.0f}/mo>"
-    if prior:
-        headline += f" ({d_bytes / 1e12:+.1f}, {pct(d_pct)}%)"
-        d_cost_s = f"{'-' if d_cost < 0 else '+'}${abs(d_cost):,.0f}"  # sign before $
-        cost_line += f" ({d_cost_s}/mo)"
-    username = headline
-    lines = [] if use_api else [f"*{headline}*"]  # webhook has no username → headline in body
-    lines.append(cost_line)
-    if breach:
-        lines.append(":rotating_light: " + "; ".join(breach))
-    text = "\n".join(lines)
-
-    if edit_ts and not use_api:
-        raise SystemExit("--edit-ts needs a bot token + channel (chat.update)")
-    if dry_run or not (use_api or webhook):
-        if not (use_api or webhook) and not dry_run:
-            err("no bot-token+channel / --webhook set — printing (dry-run)")
-        if use_api and not edit_ts:  # headline rides in the sender name, not the body
-            err(f"[sender: {username}]")
-        print(text)
-        return
-
-    import json
-    import urllib.request
-
-    if use_api:
-        # chat.update to back-apply a format change (avatar set at post time is
-        # untouched); else chat.postMessage with the per-message avatar.
-        method = "chat.update" if edit_ts else "chat.postMessage"
-        payload = {"channel": channel, "text": text, "unfurl_links": False, "unfurl_media": False}
-        if edit_ts:
-            payload["ts"] = edit_ts
-        else:
-            payload["icon_url"] = icon_url
-            payload["username"] = username
-        req = urllib.request.Request(
-            f"https://slack.com/api/{method}",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {bot_token}",
-                "Content-Type": "application/json; charset=utf-8",
-            },
-        )
-        resp = json.loads(urllib.request.urlopen(req).read())
-        if not resp.get("ok"):
-            raise RuntimeError(f"Slack {method} failed: {resp.get('error')}")
-        err(f"{'edited' if edit_ts else 'posted'} GCS-usage alert for {date}")
-    else:
-        req = urllib.request.Request(
-            webhook,
-            data=json.dumps({"text": text}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req).read()
-        err(f"posted GCS-usage alert for {date} (webhook; no per-message avatar)")
-
-
-# Index variants the site reads (functions/_lib/index.ts `fileFor` mirrors this):
-# the floor-free tier sorted by path and by user, and each coarse tier (viz.py
-# COARSE_EXPS) in the same two (specs/view-serving.md §1). D1 keys (date, variant).
-INDEX_VARIANTS: dict[str, str] = {
-    "path": "path-index.parquet",
-    "user": "path-index-by-user.parquet",
-}
-for _e in COARSE_EXPS:
-    INDEX_VARIANTS[f"coarse{_e}"] = f"path-index-coarse{_e}.parquet"
-    INDEX_VARIANTS[f"coarse{_e}-user"] = f"path-index-coarse{_e}-by-user.parquet"
-
-
-@main.command("index-tiers")
-@option("-m", "--mem", default="48GB", help="DuckDB memory limit")
-@option("-P", "--path-index", "path_index", type=Path, required=True, help="Local floor-free path-index.parquet; the coarse tiers are written beside it")
-@option("-t", "--threads", default=8, type=int, help="DuckDB threads")
-@option("-T", "--tmp", "tmp_dir", type=Path, default=None, help="DuckDB spill dir (default: beside the index)")
-@argument("date")
-def index_tiers(mem: str, path_index: Path, threads: int, tmp_dir: Path | None, date: str) -> None:
-    """Backfill the coarse index tiers for an archived scan from its floor-free
-    path index (specs/view-serving.md §1): the per-path subtree totals, then one
-    parquet per E in COARSE_EXPS × {by-path, by-user}, floors in the KV metadata.
-    Same code path `webdata` runs on a fresh scan; `index-sync` records the
-    floors in D1. An old index's `team` column is dropped on the way."""
-    import duckdb
-
-    from .viz import write_coarse_tiers
-
-    con = duckdb.connect()
-    con.execute(f"SET memory_limit='{mem}'; SET threads={threads}")
-    con.execute(f"SET temp_directory='{tmp_dir or path_index.parent / '.duckdb-tmp'}'")
-    src = f"read_parquet('{path_index}')"
-    con.execute(f"CREATE TEMP TABLE tot AS SELECT path, sum(b) AS pb FROM {src} GROUP BY path")
-    floors, counts = write_coarse_tiers(con, path_index, rows=src)
-    err(f"index-tiers {date}: {json.dumps({str(e): {'floor': floors[e], 'paths': counts[e]} for e in floors})}")
-
-
-@main.command("index-sync")
-@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
-@option("-C", "--coarse-only", is_flag=True, help="Only the coarse tiers (a backfill; the floor-free variants keep their pointer)")
-@option("-d", "--dir", "listing_dir", default=None, help="Local/mounted dir holding the parquets (default: <bucket>/<key>)")
-@option("-F", "--floor-free-only", is_flag=True, help="Only the floor-free variants (path, user)")
-@option("-g", "--gen", required=True, help="Generation stamp these files belong to (the run's GEN; `legacy` for the pre-generation listing/<date>/ layout)")
-@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under — what the site reads (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
-@option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
-@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only sync these variants (default: all)")
-@argument("date")
-def index_sync(
-    bucket: str,
-    coarse_only: bool,
-    listing_dir: str | None,
-    floor_free_only: bool,
-    gen: str,
-    key: str | None,
-    local: bool,
-    variants: tuple[str, ...],
-    date: str,
-) -> None:
-    """Publish a scan's index-tier footers to D1 (index_row_groups + the
-    index_schema pointer) — one generation of files under one bucket dir.
-    Per variant the row groups land first, tagged with the generation, and the
-    pointer (gen, dir) flips last, so the site moves from the previous complete
-    generation to this one with no window (specs/view-serving.md). Needs
-    CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the env."""
-    from .index_footer import sync_d1
-
-    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
-    base = listing_dir or f"{bucket}/{key}"
-    todo = variants or tuple(INDEX_VARIANTS)
-    if coarse_only:
-        todo = tuple(v for v in todo if v.startswith("coarse"))
-    if floor_free_only:
-        todo = tuple(v for v in todo if not v.startswith("coarse"))
-    for variant in todo:
-        n = sync_d1(date, f"{base}/{INDEX_VARIANTS[variant]}", variant=variant, gen=gen, key=key, remote=not local)
-        err(f"index-sync: {date} [{variant}] gen {gen} @ {key} — {n} row groups ({'local' if local else 'remote'})")
-
-
-@main.command("labels")
-@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `webdata -a`)")
-@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s) — path-glob rules expand against their dirs")
-@option("-o", "--out", "out_dir", type=Path, required=True, help="Output dir: one labels-<bucket>.parquet per bucket")
-def labels(attributions: tuple[str, ...], identities_path: Path, listings: tuple[str, ...], out_dir: Path) -> None:
-    """Export mgu's attribution as DT label tables — `(prefix, usr)` per bucket,
-    prefix relative to the bucket — for `disk-tree import -e duckdb -L
-    labels-<bucket>.parquet -c usr` (spec mgu-scale-unification.md §B): the
-    same prefix map `webdata` attributes with, so the two cascades can be
-    compared slice for slice."""
-    import duckdb
-
-    from .viz import write_labels
-
-    con = duckdb.connect()
-    for bucket, n in write_labels(con, listings, attributions, identities_path, out_dir).items():
-        err(f"labels: {bucket}: {n} prefixes → {out_dir / f'labels-{bucket}.parquet'}")
-
-
 @main.command("cascade-a2a")
 @option("-b", "--bucket", required=True, help="Bucket the DT tier was imported as (its rows are relative to it)")
 @option("-i", "--index", "index_path", required=True, help="mgu floor-free path-index parquet (`path, depth, usr, b, o, wts, wb, c2, c3, c4, a`)")
@@ -2207,109 +2220,9 @@ def cascade_a2a(bucket: str, index_path: str, as_json: bool, top: int, dirs_tier
         raise SystemExit(1)
 
 
-@main.command("index-blob")
-@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
-@option("-d", "--dir", "listing_dir", default=None, help="Local/mounted/gs:// dir holding the parquets (default: gs://<bucket>/<key>)")
-@option("-g", "--gen", required=True, help="Generation the files belong to (`legacy` for listing/<date>/)")
-@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
-@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all)")
-@argument("date")
-def index_blob(bucket: str, listing_dir: str | None, gen: str, key: str | None, variants: tuple[str, ...], date: str) -> None:
-    """Write each tier's group-manifest blob (`<tier>.groups.json`, the rows
-    `index-sync` puts in D1) beside its parquet — the backfill for scans synced
-    before `index-sync` wrote blobs; the site opens the blob once retention
-    retires a tier's rows from D1 (specs/view-serving.md)."""
-    from .index_footer import extract, write_groups_blob
 
-    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
-    base = listing_dir or f"gs://{bucket}/{key}"
-    for variant in variants or tuple(INDEX_VARIANTS):
-        path = f"{base}/{INDEX_VARIANTS[variant]}"
-        schema, rows = extract(path)
-        out, n = write_groups_blob(path, schema, rows)
-        err(f"index-blob: {date} [{variant}] {len(rows)} groups → {out} ({n:,} B)")
-
-
-@main.command("index-extras")
-@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `webdata -a`); omit for ck.json only")
-@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-o", "--out", "out_dir", type=Path, default=None, help="Where to write ck.json / attr.json (default: beside the index)")
-@option("-P", "--path-index", "path_index", type=Path, required=True, help="Floor-free path-index.parquet of the scan (every dir is a row)")
-@argument("date")
-def index_extras(attributions: tuple[str, ...], identities_path: Path, out_dir: Path | None, path_index: Path, date: str) -> None:
-    """Backfill a scan's index sidecars (specs/index-extras.md) from its
-    floor-free path index (+ attribution parquets): `ck.json`, the
-    checkpoint-shaped dirs; `attr.json`, each attributing prefix's user /
-    source / evidence. `webdata` writes the same files for a fresh scan."""
-    import duckdb
-
-    from .extras import write_extras
-    from .viz import prefix_labels
-
-    con = duckdb.connect()
-    src = f"read_parquet('{path_index}')"
-    con.execute(f"CREATE TEMP VIEW idx_dirs AS SELECT DISTINCT path AS fp FROM {src}")
-    pfx_df = None
-    if attributions:
-        # Path-glob rules expand against `(bucket, name)` dirs — from the index's own paths.
-        con.execute(
-            "CREATE TEMP VIEW listing_dirs AS SELECT split_part(fp, '/', 1) AS bucket,"
-            " CASE WHEN position('/' IN fp) > 0 THEN substr(fp, position('/' IN fp) + 1) END AS name FROM idx_dirs"
-        )
-        pfx_df = prefix_labels(con, attributions, identities_path, "listing_dirs")
-    counts = write_extras(con, "idx_dirs", pfx_df, out_dir or path_index.parent)
-    err(f"index-extras {date}: {json.dumps(counts)}")
-
-
-@main.command("index-gc")
-@option("-r", "--retain", type=int, default=None, help="Retention: also retire the floor-free variants' row groups of every scan older than the newest N (their pointers stay; the reader falls back to the parquet footer)")
-@argument("dates", nargs=-1)
-def index_gc(retain: int | None, dates: tuple[str, ...]) -> None:
-    """Delete row groups of index generations no pointer names — a REPROC's
-    previous generation, or a sync that died before flipping. All synced
-    scans by default; DATES to restrict. With -r, the retention pass too."""
-    from .index_footer import gc_d1, retire_d1, synced_variants
-
-    todo = dates or sorted({d for d, _ in synced_variants()})
-    for d in todo:
-        n = gc_d1(d)
-        err(f"index-gc: {d} — {n} stale row groups deleted")
-    if retain is not None:
-        for d, v, n in retire_d1(retain):
-            err(f"index-gc: retired {d} [{v}] — {n} row groups (footer path serves it now)")
-
-
-@main.command("index-dir")
-@option("-v", "--variant", default="path", type=Choice(list(INDEX_VARIANTS)), help="Which variant's dir")
-@argument("date")
-def index_dir_cmd(variant: str, date: str) -> None:
-    """Print the bucket-relative dir holding a scan's index variant (the D1
-    pointer). Exits 1, printing nothing, when that (date, variant) was never
-    synced."""
-    from .index_footer import index_dir
-
-    d = index_dir(date, variant)
-    if d is None:
-        raise SystemExit(1)
-    print(d)
-
-
-@main.command("index-compact")
-@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all synced)")
-@argument("dates", nargs=-1)
-def index_compact(variants: tuple[str, ...], dates: tuple[str, ...]) -> None:
-    """Rewrite D1's verbose pre-2026-09-06 `rg_json` rows into the compact form
-    `index-sync` now writes (index_footer.py), in place via JSON1 — one statement
-    per (date, variant), no parquet read. All synced scans by default; DATES
-    restrict it. Idempotent (only rows still in the old form change)."""
-    from .index_footer import compact_d1, synced_variants
-
-    todo = [(d, v) for d, v in synced_variants() if (not dates or d in dates) and (not variants or v in variants)]
-    for d, v in todo:
-        left = compact_d1(d, v)
-        err(f"index-compact: {d} [{v}] — {'done' if left == 0 else f'{left} rows still verbose'}")
-    if not todo:
-        err("index-compact: nothing synced matches")
+if __name__ == "__main__":
+    main()
 
 
 def _icons_dir() -> Path:
@@ -2536,45 +2449,3 @@ def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: s
         return
     mid = wk.post(webhook, text)
     err(f"weekly: posted {mid} ({len(text)} chars)")
-
-
-@main.command("warm-cache")
-@option("-d", "--date", help="Scan to warm (default: latest under --root)")
-@option("-j", "--jobs", default=4, type=int, help="Concurrent requests (default 4)")
-@option("-n", "--dry-run", is_flag=True, help="Print the request paths; fetch nothing")
-@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
-@option("-t", "--token", help="Site read token (default $GCS_USAGE_TOKEN)")
-@option("-u", "--url", "site_url", default=None, help="Site base (default gcs.oa.dev)")
-@option("-W", "--widths", default="512,1280,1536,1792,1920", help="Canvas widths to warm (the client sends ceil(innerWidth/128)*128; default = phone + common laptops)")
-def warm_cache(date: str | None, jobs: int, dry_run: bool, root: str | None, token: str | None, site_url: str | None, widths: str) -> None:
-    """Warm the site's subtree + diff caches for a scan: replay the home
-    page's default requests (one subtree, the diff span chips 1d/3d/7d/14d/30d
-    and the previous-scan pair, each with its summary) at the common canvas
-    widths, so the first viewer anywhere gets a cache hit (colo cache + global
-    KV). Non-fatal: a failed request just leaves that view cold."""
-    from . import warm as wm
-    from . import weekly as wk
-
-    site_url = site_url or wk.DEFAULT_URL
-    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
-    dates = wk.scan_dates(root)
-    if not dates:
-        raise SystemExit("warm-cache: no scans under root")
-    date = date or dates[-1]
-    if date not in dates:
-        raise SystemExit(f"warm-cache: {date} is not a published scan")
-    paths = wm.plan(date, dates, tuple(int(w) for w in widths.split(",")))
-    if dry_run:
-        for p in paths:
-            print(p)
-        return
-    token = token or os.environ.get("GCS_USAGE_TOKEN")
-    if not token:
-        raise SystemExit("warm-cache: need GCS_USAGE_TOKEN (or -t)")
-    res = wm.warm(site_url, {"Authorization": f"Bearer {token}"}, paths, jobs=jobs)
-    bad = [r for r in res if r[1] != 200]
-    err(f"warm-cache: {len(res) - len(bad)}/{len(res)} warmed for {date} in {sum(r[2] for r in res):.0f}s of request time" + (f"; {len(bad)} failed" if bad else ""))
-
-
-if __name__ == "__main__":
-    main()

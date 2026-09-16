@@ -42,4 +42,9 @@ COPY cloud/src ./cloud/src
 RUN pip install --no-cache-dir "./cloud[plot]"
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
-ENTRYPOINT ["bash", "job/run.sh"]
+# One image, two scheduled jobs: the GCS fleet job (`job/run.sh`, tag `latest`)
+# and the CoreWeave scan job (`job/cw-run.sh`, tag `cw`). `job/build.sh` picks
+# the script by tag (`--build-arg JOB=cw-run.sh`); the default is the GCS job.
+ARG JOB=run.sh
+ENV JOB_SCRIPT=$JOB
+ENTRYPOINT ["bash", "-c", "exec bash job/$JOB_SCRIPT \"$@\"", "--"]

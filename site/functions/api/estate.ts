@@ -13,7 +13,7 @@
  *   the outermost such subtrees (the review backlog) — from the user lens
  *   scoped to unmarked bytes, walked down only while marks sit inside.
  */
-import { type Ctx, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
+import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 import { marksUnder } from '../_lib/markAxes.js'
 import { canonId } from '../_lib/identity.js'
 import { markTotals } from '../_lib/totals.js'
@@ -23,7 +23,7 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   const { env, request } = ctx
   if (!env.DB) return json({ error: 'ledger backend not configured (DB)' }, 503)
   if (!env.GCS_HMAC_KEY_ID || !env.GCS_HMAC_SECRET) return json({ error: 'index reader not configured' }, 503)
-  const gated = await requireScope(ctx, GCS_SCOPE)
+  const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
   const url = new URL(request.url)
   const date = url.searchParams.get('date') ?? ''

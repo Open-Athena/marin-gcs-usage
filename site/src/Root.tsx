@@ -10,7 +10,7 @@ import { AssignmentsPage } from './AssignmentsPage'
 import { SweepPage } from './SweepPage'
 import { OgPage } from './OgPage'
 import { UserOgPage, UserPage, UsersOgPage, UsersPage } from './UserPage'
-import { STORES } from './stores'
+import { DEFAULT_STORE, STORES } from './stores'
 
 // `/files/*` → scan browser; `<store>/og` → redacted fixed-size treemap for that
 // store's og:image screenshot (public, ungated — it's what unfurl crawlers
@@ -30,13 +30,18 @@ export default function Root() {
       <Route path="/admin/db" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
+      {/* The ledger pages exist only on a marks store; elsewhere they go home. */}
+      {DEFAULT_STORE.marks ? (<>
       <Route path="/marks" element={<AuthGate><MarksPage /></AuthGate>} />
       <Route path="/assignments" element={<AuthGate><AssignmentsPage /></AuthGate>} />
-      <Route path="/sweep" element={<AuthGate><SweepPage /></AuthGate>} />
       <Route path="/users/og" element={<UsersOgPage />} />
       <Route path="/user/:id/og" element={<UserOgPage />} />
       <Route path="/users" element={<AuthGate><UsersPage /></AuthGate>} />
       <Route path="/user/:id" element={<AuthGate><UserPage /></AuthGate>} />
+      </>) : (
+      <Route path="/users/*" element={<Navigate to="/" replace />} />
+      )}
+      <Route path="/sweep" element={<AuthGate><SweepPage /></AuthGate>} />
       {/* The review lenses became the home page's mark/owner axes — /mark is just the map. */}
       <Route path="/mark" element={<Navigate to="/" replace />} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />

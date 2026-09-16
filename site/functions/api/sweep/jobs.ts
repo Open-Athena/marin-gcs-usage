@@ -4,7 +4,7 @@
 // which can be an hour of listing). Read via the same dispatch SA as
 // `dispatch.ts` (`batch.jobsEditor` covers list). Any signed-in viewer of the
 // console may read this; the payload holds no bucket data.
-import { type Env as AuthEnv, GCS_SCOPE, json, requireScope } from '../../_lib/auth.js'
+import { type Env as AuthEnv, json, requireViewer } from '../../_lib/auth.js'
 import { BATCH_REGIONS, BUCKET_REGION, GCP_PROJECT, batchJobsUrl, gcpToken } from '../../_lib/gcp.js'
 
 interface Env extends AuthEnv {
@@ -41,7 +41,7 @@ export interface SweepJob {
 }
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
-  const gated = await requireScope(ctx, GCS_SCOPE)
+  const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
   if (!ctx.env.GCP_SA_KEY) return json({ jobs: [], configured: false })
   const token = await gcpToken(ctx.env.GCP_SA_KEY)

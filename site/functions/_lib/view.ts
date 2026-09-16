@@ -554,14 +554,15 @@ function kidsIndex(kept: Map<string, Agg>, path: string): Map<string, string[]> 
   return kidsOf
 }
 
-const rootName = (path: string) => (path === '' ? 'marin GCS' : path.split('/').pop()!)
+/** The store root's crumb label: `ROOT_LABEL` (wrangler var) per deployment. */
+const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 'marin GCS' : path.split('/').pop()!)
 
 export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const [v, ex] = await Promise.all([readView(env, o), extrasFor(env, o.date, path)])
   if (!v) {
-    return { tree: { n: rootName(path), b: 0, o: 0 }, tier: 'none', index: 'none', threshold: 0, nodes: 0, truncated: false, ...(query ? { matches: [] } : {}) }
+    return { tree: { n: rootName(path, env), b: 0, o: 0 }, tier: 'none', index: 'none', threshold: 0, nodes: 0, truncated: false, ...(query ? { matches: [] } : {}) }
   }
   const { kept, aggDepth, foldedOf, thrAt } = v
   const nodeOf = (name: string, a: Agg): ViewNode => ({
@@ -573,7 +574,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const kidsOf = kidsIndex(kept, path)
   const matched = new Set(v.matches ?? [])
   const build = (p: string, a: Agg): ViewNode => {
-    const node = nodeOf(p === path ? rootName(path) : p.split('/').pop()!, a)
+    const node = nodeOf(p === path ? rootName(path, env) : p.split('/').pop()!, a)
     if (matched.has(p)) node.m = 1
     // Index extras (specs/index-extras.md): the checkpoint-shape verdict and
     // the top owner's provenance, when the scan's generation carries them.

@@ -12,7 +12,7 @@
 // CORS). CF Pages serves static assets before Functions, so this only works
 // because public/data/ is no longer shipped (see the build).
 import { S3Store } from '@rdub/file-tree/stores/s3'
-import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { type Env, requireViewer } from '../_lib/auth.js'
 
 const BUCKET = 'oa-gcs-usage-dvx'
 // Scan ids are `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM` (no
@@ -27,10 +27,9 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) {
     return new Response('data proxy not configured (missing GCS HMAC creds)', { status: 503 })
   }
-  // CW snapshot data is OA-only; everything else needs the base `gcs` scope
-  // (staff, the Stanford whitelist, or a minted share link).
+  // Every payload is members-only: the edge (CF Access) session is the identity.
   const rel = new URL(ctx.request.url).pathname.replace(/^\/data\//, '')
-  const gated = await requireScope(ctx, rel.startsWith('cw/') ? CW_SCOPE : GCS_SCOPE)
+  const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
   const store = S3Store({
     endpoint: 'https://storage.googleapis.com', // GCS XML API is S3-compatible

@@ -11,7 +11,7 @@
  *   GET /api/bench?mode=pagelookup&key=bench/<scan>/<pq>&paths=… point lookups via page index + filter
  */
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
-import { type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { type Env, requireViewer } from '../_lib/auth.js'
 import { makeStore, openIndex, readAsks, readRects, type Row } from '../_lib/index.js'
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
@@ -23,7 +23,7 @@ async function inflate(gz: Uint8Array): Promise<ArrayBuffer> {
 }
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
-  const gated = await requireScope(ctx as never, GCS_SCOPE)
+  const gated = await requireViewer(ctx as never)
   if (gated instanceof Response) return gated
   const url = new URL(ctx.request.url)
   const mode = url.searchParams.get('mode') ?? ''

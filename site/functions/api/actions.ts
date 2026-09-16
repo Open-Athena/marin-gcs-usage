@@ -16,7 +16,7 @@
  * Anyone with the `gcs` scope can read; the sweep's review gate is where
  * authority gets applied — the ledger keeps the full who-did-what trail.
  */
-import { type Ctx, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
+import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 
 /** gs://marin-<suffix>/<path>/ — the six marin buckets only, dir prefixes only. */
 const PREFIX_RE = /^gs:\/\/marin-[a-z0-9-]+\/(?:[^\s]*\/)?$/
@@ -68,7 +68,7 @@ function validate(b: ActionBody): { error: string } | {
 export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const { request, env } = ctx
   if (!env.DB) return json({ error: 'actions backend not configured (DB)' }, 503)
-  const id = await requireScope(ctx, GCS_SCOPE)
+  const id = await requireViewer(ctx)
   if (id instanceof Response) return id
 
   if (request.method === 'GET') {

@@ -38,7 +38,7 @@ The seams look like "cw has no users" but split cleanly:
 
 ## 4. Order on gcs
 
-1. §1 as one commit (with the wall-copy store field). Then `cw-s3..gcs` = A + B.
+1. ~~§1 as one commit (with the wall-copy store field).~~ Done 2026-09-16 (ledger entry "the union's generalizations"). Then `cw-s3..gcs` = A + B.
 2. The lifecycle feature (§2), built de novo against the union's `Store.lifecycle` / fold, GCS adapter first, cw's CAIOS adapter as the second implementation of the same interface — this is also a rehearsal of the adapter shape seam 1 needs.
 3. Seams 1–4 per `convergence.md`, jointly.
 

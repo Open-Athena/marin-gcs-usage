@@ -16,7 +16,7 @@ import { useScan, useScans, type Scan } from './scan'
 import { Skeleton } from './Busy'
 import { SiteKbd } from './SiteKbd'
 import { useMarkTotals } from './markTotals'
-import { useDocTitle } from './title'
+import { useDocTitle, SITE } from './title'
 import { Tooltip } from './Tooltip'
 import { UserChip, canonId, ghHandle, shortName, shortUserKey } from './UserChip'
 import {
@@ -306,7 +306,7 @@ export function UsersOgPage() {
   return (
     <div className="og og-users">
       <div className="og-head">
-        <h1>Marin GCS usage — users</h1>
+        <h1>{SITE} — users</h1>
         <p>Who owns what, and where every user’s bytes stand: keep / sweep / undecided.</p>
       </div>
       <div className="og-map">
@@ -570,7 +570,7 @@ export function UserOgPage() {
         <Avatar github={ghHandle(id)} name={shortName(id)} size={110} />
         <div>
           <h1>{shortName(id)}</h1>
-          <p>Marin GCS usage — where their bytes stand.</p>
+          <p>{SITE} — where their bytes stand.</p>
         </div>
       </div>
       {f && total > 0 && (

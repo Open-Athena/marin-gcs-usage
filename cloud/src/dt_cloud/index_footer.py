@@ -173,7 +173,11 @@ def _sql_escape(s: str) -> str:
 
 
 # The D1 database `/query` runs one SQL string; we send multi-row INSERTs.
-D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"  # oa-gcs-usage-auth (site/wrangler.toml)
+# Deployment config (specs/denovo-factor.md): the site's D1, as `site/wrangler.toml`
+# binds it — `D1_DB_ID` / `D1_DB_NAME` in the job's environment (`job/cw-run.sh`
+# exports the CoreWeave pair); the defaults are the GCS deployment's.
+D1_DB_ID = os.environ.get("D1_DB_ID", "e52398b7-5538-4bc4-83db-3355a1b5ef9a")  # oa-gcs-usage-auth
+D1_DB_NAME = os.environ.get("D1_DB_NAME", "oa-gcs-usage-auth")
 
 
 def _creds() -> tuple[str, str]:
@@ -318,7 +322,7 @@ def sync_d1(
             with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as tf:
                 tf.write("\n".join(stmts[i : i + 300]))
                 sqlpath = tf.name
-            subprocess.run(["npx", "wrangler", "d1", "execute", "oa-gcs-usage-auth", "--local", "--file", sqlpath], check=True, cwd=str(site))
+            subprocess.run(["npx", "wrangler", "d1", "execute", D1_DB_NAME, "--local", "--file", sqlpath], check=True, cwd=str(site))
         return len(rows)
 
     tok, acct = _creds()
@@ -345,7 +349,21 @@ def gc_d1(date: str, db_id: str = D1_DB_ID) -> int:
     return len(rows)
 
 
-FLOOR_FREE_VARIANTS = ("path", "user")
+# The floor-free (uncoarsened) tiers `index-gc -r` retires: the deployment's
+# variant set minus the coarse ones (cw has no user-sorted variant).
+FLOOR_FREE_VARIANTS = tuple(v for v in os.environ.get("INDEX_VARIANTS", "path,user").split(",") if v)
+
+# Index variants the site reads (functions/_lib/index.ts `fileFor` mirrors this):
+# each floor-free tier (`path`, and `user` where the deployment writes it) and
+# every coarse tier (viz.py COARSE_EXPS) in the same sorts. D1 keys (date, variant).
+COARSE_EXPS = (16, 20, 24)
+INDEX_VARIANTS: dict[str, str] = {"path": "path-index.parquet"}
+if "user" in FLOOR_FREE_VARIANTS:
+    INDEX_VARIANTS["user"] = "path-index-by-user.parquet"
+for _e in COARSE_EXPS:
+    INDEX_VARIANTS[f"coarse{_e}"] = f"path-index-coarse{_e}.parquet"
+    if "user" in FLOOR_FREE_VARIANTS:
+        INDEX_VARIANTS[f"coarse{_e}-user"] = f"path-index-coarse{_e}-by-user.parquet"
 
 
 def retire_d1(retain: int, db_id: str = D1_DB_ID) -> list[tuple[str, str, int]]:

@@ -12,7 +12,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PROJECT=${PROJECT:-oa-internal-450019}
-IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:latest}
+# Which scheduled job this image runs: the GCS fleet job (`run.sh`, tag
+# `latest`, the default) or the CoreWeave scan job (`JOB=cw-run.sh`, tag `cw`).
+JOB=${JOB:-run.sh}
+TAG=${TAG:-$([ "$JOB" = cw-run.sh ] && echo cw || echo latest)}
+IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:$TAG}
 
 echo "building $IMAGE (Cloud Build; context = repo root, minus .gcloudignore)" >&2
-exec gcloud builds submit --project "$PROJECT" --config cloudbuild.yaml --substitutions "_IMAGE=$IMAGE" .
+exec gcloud builds submit --project "$PROJECT" --config cloudbuild.yaml --substitutions "_IMAGE=$IMAGE,_JOB=$JOB" .

@@ -122,12 +122,12 @@ function AppContent() {
   // controls, shown to any signed-in marker on the GCS store — anon and guest
   // (no-email) sessions get the read-only view. Folded onto `/` (was a separate
   // `/mark` route); GCS only, since CoreWeave is out of the sweep.
-  const markMode = store.key === 'gcs' && canMark
+  const markMode = store.marks && canMark
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
   const [typedOpen, setTypedOpen] = useState(false)
   // Keep the tab title in sync with the store on client-side navigation.
-  useDocTitle(store.key === 'gcs' ? undefined : store.title)
+  useDocTitle() // the bare site name (= the store's title) is the home page
   // URL token matches the visible label ("written"/"mark"), not the internal
   // key ("date"/"marks"); old ?c=age / ?c=fate links still decode (the retired
   // group axes decode to the default).
@@ -1037,6 +1037,8 @@ function AppContent() {
               segs={tblSegs}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
+              readAxis={!!readRange}
+              ownerAxis={hasAttr}
               klcIdx={markMode ? klcIdx : undefined}
               states={markMode ? markAxes : null}
               userIdx={userIdx}

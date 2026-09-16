@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Build and deploy to Cloudflare Pages: https://gcs.oa.dev (project oa-gcs-usage,
-# Open Athena account). CF Access (Zero Trust) gates every hostname — gcs.oa.dev
-# and the *.oa-gcs-usage.pages.dev production/preview URLs.
+# Build and deploy to Cloudflare Pages — the project named in wrangler.toml
+# (`oa-gcs-usage` → gcs.oa.dev, `oa-cw-s3-usage` → cw-s3.oa.dev; Open Athena
+# account). CF Access (Zero Trust) gates every hostname, production and preview.
 set -euo pipefail
+# The Pages project this checkout deploys: `name = "…"` in wrangler.toml.
+PROJECT=$(sed -n 's/^name = "\(.*\)"$/\1/p' wrangler.toml)
+[ -n "$PROJECT" ] || { echo "deploy: no name = ... in wrangler.toml" >&2; exit 1; }
 cd "$(dirname "$0")"
 
 # `--status`: report whether HEAD is deployed (no build/deploy). Delegates to the
@@ -22,7 +25,7 @@ for a in "$@"; do case "$a" in -P|--no-push) push=false ;; esac; done
 # account and then fails with auth error 10000 against the OA account.
 pnpm build
 CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d \
-  npx wrangler pages deploy dist --project-name oa-gcs-usage --branch main
+  npx wrangler pages deploy dist --project-name "$PROJECT" --branch main
 
 # On a successful production deploy, advance the local `prod` pointer to exactly
 # what we shipped (HEAD). Kept in sync by deploy itself, so it can't drift the

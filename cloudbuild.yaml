@@ -12,8 +12,11 @@ steps:
         DOCKER_BUILDKIT=1 docker build \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
           --cache-from "$_IMAGE" \
+          --build-arg JOB="$_JOB" \
           -t "$_IMAGE" .
 images: ["$_IMAGE"]
+substitutions:
+  _JOB: run.sh   # `cw-run.sh` for the CoreWeave scan image (job/build.sh sets it by tag)
 options:
   machineType: E2_HIGHCPU_8
 timeout: 1800s

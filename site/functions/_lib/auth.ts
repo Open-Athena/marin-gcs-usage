@@ -40,6 +40,19 @@ export interface Env {
   GCS_HMAC_SECRET: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */
   CACHE_KV?: KVNamespace
+  /** Deployment seam (specs/denovo-factor.md): set when the WHOLE host sits
+   *  behind a CF Access edge gate (cw-s3.oa.dev). Every request then carries
+   *  an edge JWT for an already-authorized viewer, so edge identities get the
+   *  base scope without an `allowed_emails` row; staff and `admin_emails`
+   *  rows get `admin`. Unset (gcs.oa.dev): only `/auth/sso` is edge-gated
+   *  and the app gate authorizes everything else. */
+  EDGE_TRUSTED?: string
+  /** The scope every viewer of this deployment needs (`gcs` | `cw`). */
+  BASE_SCOPE?: string
+  /** The store root's crumb label (`marin GCS`, `marin CoreWeave`). */
+  ROOT_LABEL?: string
+  /** Dedicated SA key (Batch submit + actAs the job SA) for the sweep dispatch bridge. */
+  GCP_SA_KEY?: string
 }
 
 export interface Ctx {
@@ -53,6 +66,9 @@ export const ADMIN_SCOPE = 'admin'
 export const REQUESTS_SCOPE = 'requests'
 
 export const TEAM_DOMAIN = 'https://openathena-ai-pages.cloudflareaccess.com'
+
+/** The deployment's base scope: what `requireViewer` asks for. */
+export const baseScope = (env: Env): string => env.BASE_SCOPE ?? GCS_SCOPE
 
 const staffDomain = (env: Env) => env.STAFF_DOMAIN ?? 'openathena.ai'
 
@@ -89,7 +105,19 @@ export interface Identity {
   /** Grant display name, for grant sessions with no email. */
   name: string | null
   scopes: string[]
+  /** `admin` scope, as a flag — what the plan-first sweep console keys on. */
+  admin: boolean
   via: 'edge' | 'session' | 'grant'
+}
+const withAdmin = (id: Omit<Identity, 'admin'>): Identity => ({ ...id, admin: id.scopes.includes(ADMIN_SCOPE) || id.scopes.includes('*') })
+
+/** Staff (by domain) or an `admin_emails` row (the edge-trusted deployment's
+ *  own admin list, `site/migrations/0004_admin.sql`). */
+export async function isAdmin(env: Env, email: string): Promise<boolean> {
+  if (email.toLowerCase().endsWith(`@${staffDomain(env)}`)) return true
+  if (!env.DB || !env.EDGE_TRUSTED) return false
+  const row = await env.DB.prepare('SELECT email FROM admin_emails WHERE email = ?').bind(email.toLowerCase()).first()
+  return !!row
 }
 
 async function edgeIdentity(req: Request, env: Env): Promise<Identity | null> {
@@ -99,17 +127,22 @@ async function edgeIdentity(req: Request, env: Env): Promise<Identity | null> {
   for (const aud of [env.ACCESS_AUD]) {
     const email = await verifyAccessJwt(jwt, teamDomain, aud)
     if (email) {
+      if (env.EDGE_TRUSTED) {
+        // The edge already authorized this viewer; the app only ranks them.
+        const admin = await isAdmin(env, email)
+        return withAdmin({ email, name: null, scopes: admin ? [baseScope(env), ADMIN_SCOPE] : [baseScope(env)], via: 'edge' })
+      }
       const scopes = await scopesFor(env)(email)
       if (!scopes) return null
-      return { email, name: null, scopes, via: 'edge' }
+      return withAdmin({ email, name: null, scopes, via: 'edge' })
     }
   }
   return null
 }
 
 function authIdentity(auth: Auth): Identity {
-  if (auth.kind === 'sso') return { email: auth.email, name: null, scopes: auth.scopes, via: 'session' }
-  return { email: auth.grant.email ?? null, name: auth.grant.name ?? null, scopes: auth.scopes, via: 'grant' }
+  if (auth.kind === 'sso') return withAdmin({ email: auth.email, name: null, scopes: auth.scopes, via: 'session' })
+  return withAdmin({ email: auth.grant.email ?? null, name: auth.grant.name ?? null, scopes: auth.scopes, via: 'grant' })
 }
 
 /** All app scopes — granted to the local-dev identity so `/data` etc. work
@@ -125,7 +158,7 @@ export async function identify(ctx: Ctx): Promise<Identity | null> {
   // gcs.oa.dev request's URL host is never `localhost`/`127.0.0.1`.
   const host = new URL(ctx.request.url).hostname
   if (host === 'localhost' || host === '127.0.0.1') {
-    return { email: ctx.env.DEV_EMAIL ?? 'dev@example.test', name: null, scopes: DEV_SCOPES, via: 'session' }
+    return withAdmin({ email: ctx.env.DEV_EMAIL ?? 'dev@example.test', name: null, scopes: DEV_SCOPES, via: 'session' })
   }
   const edge = await edgeIdentity(ctx.request, ctx.env)
   if (edge) return edge
@@ -144,6 +177,11 @@ export async function requireScope(ctx: Ctx, scope: string): Promise<Identity | 
 }
 
 export { hasScope }
+
+/** Any authenticated viewer of this deployment (reads). */
+export const requireViewer = (ctx: Ctx): Promise<Identity | Response> => requireScope(ctx, baseScope(ctx.env))
+/** An admin (plan writes + sweep dispatch). */
+export const requireAdmin = (ctx: Ctx): Promise<Identity | Response> => requireScope(ctx, ADMIN_SCOPE)
 
 export const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(data) + '\n', {

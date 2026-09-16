@@ -32,7 +32,7 @@ const PAGE_SIZES = [20, 50, 100, 200]
  *  tooltip); ~60 chars fills the column's 480px at 12px mono. */
 const NAME_MAX = 60
 
-export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, userIdx, onPickUser, onOpen }: {
+export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, userIdx, onPickUser, onOpen, readAxis, ownerAxis }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
@@ -47,6 +47,9 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   userIdx?: Map<string, UserIndexEntry>
   onPickUser?: (u: string) => void
   onOpen: (segs: string[]) => void
+  /** Whether this scan carries the read / owner axes at all (see above). */
+  readAxis?: boolean
+  ownerAxis?: boolean
 }) {
   const { fmtBytes } = useUnits()
   const { put, post } = useMarkMutations()
@@ -81,6 +84,15 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   }, [node, sort, states])
   // A new listing (drill, sort, lens) starts on page 1.
   useEffect(() => setPage(0), [node, sort, states])
+
+  // Columns the data can't fill are left out (no access logs → no `read`; no
+  // attribution and no marks → no `owner(s)`): a store without those axes
+  // shouldn't read as a table of dashes.
+  // The caller says whether the *scan* carries each axis (so a page whose
+  // children happen to be unread / unowned still shows the column as dashes,
+  // which is information); without that, fall back to the rows on the page.
+  const hasRead = readAxis ?? kids.some(k => k.a != null)
+  const hasOwners = !!markIdx || (ownerAxis ?? kids.some(k => k.us?.length))
 
   // Created-month ink: an age gradient over the listed rows' range, so a
   // column of "May / Jun / Apr" also reads at a glance as older ↔ newer.
@@ -215,8 +227,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
             <th className="num">share</th>
             {th('o', 'objects')}
             {th('d', 'created')}
-            {th('a', 'read', false)}
-            <th>owner(s)</th>
+            {hasRead && th('a', 'read', false)}
+            {hasOwners && <th>owner(s)</th>}
             {markIdx && <th>marks</th>}
             {showActions && <th>actions</th>}
           </tr>
@@ -242,11 +254,12 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
                   const [mon, yr] = epochDaysToMonthShort(k.d).split(' ')
                   return <span className="cm"><i style={{ background: ageInk(k.d) }} /><span className="mon">{mon}</span><span className="yr">{yr ?? ''}</span></span>
                 })() : '—'}</td>
-                <td title={k.a != null ? 'most recent GET/HEAD/LIST under this prefix (access logs)' : undefined}>
+                {hasRead && <td title={k.a != null ? 'most recent GET/HEAD/LIST under this prefix (access logs)' : undefined}>
                   {k.a != null ? epochDaysToDate(k.a) : '—'}
-                </td>
+                </td>}
                 {/* An assignee, or a single attributed owner, by name; a mix
                     as a bar (names and shares on hover). */}
+                {hasOwners && (
                 <td className="owners">
                   {cl ? <OwnerFactChip who={cl.who} assigned={{ by: cl.by, ts: cl.ts, memo: cl.memo }} />
                     : shares.length === 1 && shares[0][1] >= 0.98 * k.b ? <OwnerFactChip who={shares[0][0]} inferred={k.pv ?? null} />
@@ -255,6 +268,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
                     : shares.length ? <OwnerBar node={k} userIdx={userIdx} width={70} onPickUser={onPickUser && !synthetic ? u => { onOpen(kidSegs); onPickUser(u) } : undefined} />
                     : <span className="none">—</span>}
                 </td>
+                )}
                 {markIdx && <td className="state">{stateBar(k, totals)}</td>}
                 {showActions && (
                   <td className="actions">
@@ -290,7 +304,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
             <td className="num">{fmtBytes(kids.reduce((s, k) => s + k.b, 0))}</td>
             <td className="num">{node.b ? ((100 * kids.reduce((s, k) => s + k.b, 0)) / node.b).toFixed(1) : 0}%</td>
             <td className="num">{kids.reduce((s, k) => s + k.o, 0).toLocaleString('en-US')}</td>
-            <td colSpan={4 + (markIdx ? 1 : 0) + (showActions ? 2 : 0)} />
+            <td colSpan={2 + (hasRead ? 1 : 0) + (hasOwners ? 1 : 0) + (markIdx ? 1 : 0) + (showActions ? 2 : 0)} />
           </tr>
         </tfoot>
       </table>

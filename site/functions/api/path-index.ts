@@ -20,7 +20,7 @@
 // bare GET would mean buffering the whole multi-GB file and is refused with
 // a pointer to Range requests instead.
 import { S3Store } from '@rdub/file-tree/stores/s3'
-import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { type Env, requireViewer } from '../_lib/auth.js'
 import { indexDir } from '../_lib/index.js'
 
 const BUCKET = 'oa-gcs-usage-dvx'
@@ -39,7 +39,7 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
   if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
   // The GCS index carries no CW data today, but keep the gate shape ready for
   // a `store=cw` variant; base access = the same `gcs` scope as the app.
-  const gated = await requireScope(ctx, url.searchParams.get('store') === 'cw' ? CW_SCOPE : GCS_SCOPE)
+  const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
 
   const store = S3Store({

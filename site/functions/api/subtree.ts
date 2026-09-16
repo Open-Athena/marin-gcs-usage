@@ -11,7 +11,7 @@
  * ledger head when `k` is set — and cached in the edge cache accordingly.
  * w/h arrive quantized-up to 128px so resizes mostly re-hit the cache.
  */
-import { CW_SCOPE, type Env, GCS_SCOPE, requireScope } from '../_lib/auth.js'
+import { type Env, requireViewer } from '../_lib/auth.js'
 import { parseMarkAxes } from '../_lib/markAxes.js'
 import type { Lens } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
@@ -58,8 +58,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env; waitUntil?
   const query = parseQuery(qRaw) ?? undefined
 
   // Data is gated (store-specific scope), like /data/*.
-  const scope = path.startsWith('cw/') ? CW_SCOPE : GCS_SCOPE
-  const gated = await st.time('auth', requireScope(ctx as never, scope))
+  const gated = await st.time('auth', requireViewer(ctx as never))
   if (gated instanceof Response) return gated
 
   // The mark axis folds the live ledger: its cache key carries the head.

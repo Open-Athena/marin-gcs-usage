@@ -33,3 +33,31 @@ def test_plan_dedupes_pairs_and_counts():
     assert paths[0] == "/api/subtree?date=2026-09-15&path=&w=512&h=307"
     assert paths[11] == "/api/subtree?date=2026-09-15&path=marin-us-central2&w=512&h=307"
     assert paths[-1] == "/api/diff?from=2026-08-16&to=2026-09-15&path=marin-us-east1&w=1920&h=1152"
+
+
+# Sub-daily scan ids (`YYYY-MM-DDTHHMM`, the CoreWeave job): spans resolve on
+# their instants like the site's `nearestScan`.
+SUBDAILY = [f"2026-08-{d:02d}T{h}" for d in range(10, 32) for h in ("0001", "1201")] + [f"2026-09-{d:02d}T{h}" for d in range(1, 16) for h in ("0001", "1201")]
+
+
+def test_subdaily_nearest_prior():
+    # 7 days back from 9/15 12:01 is 9/8 12:01 exactly; 30 days back is 8/16 12:01
+    assert W.nearest_prior(SUBDAILY, "2026-09-15T1201", 7) == "2026-09-08T1201"
+    assert W.nearest_prior(SUBDAILY, "2026-09-15T1201", 30) == "2026-08-16T1201"
+    # a missing scan resolves to the nearest neighbour (12 h either side), never the scan itself
+    dates = [d for d in SUBDAILY if d != "2026-09-08T1201"]
+    assert W.nearest_prior(dates, "2026-09-15T1201", 7) in ("2026-09-08T0001", "2026-09-09T0001")
+    assert W.nearest_prior(SUBDAILY, "2026-09-15T1201", 0) == "2026-09-15T0001"
+    assert W.nearest_prior(["2026-09-15T1201"], "2026-09-15T1201", 1) is None
+
+
+def test_subdaily_plan_one_width():
+    assert W.plan("2026-09-15T1201", SUBDAILY, widths=(1280,), spans=(1, 7), paths=("",)) == [
+        "/api/subtree?date=2026-09-15T1201&path=&w=1280&h=768",
+        "/api/diff?from=2026-09-15T0001&to=2026-09-15T1201&path=&w=1280&h=768&summary=1",
+        "/api/diff?from=2026-09-15T0001&to=2026-09-15T1201&path=&w=1280&h=768",
+        "/api/diff?from=2026-09-14T1201&to=2026-09-15T1201&path=&w=1280&h=768&summary=1",
+        "/api/diff?from=2026-09-14T1201&to=2026-09-15T1201&path=&w=1280&h=768",
+        "/api/diff?from=2026-09-08T1201&to=2026-09-15T1201&path=&w=1280&h=768&summary=1",
+        "/api/diff?from=2026-09-08T1201&to=2026-09-15T1201&path=&w=1280&h=768",
+    ]

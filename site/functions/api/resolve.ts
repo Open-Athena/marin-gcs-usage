@@ -12,7 +12,7 @@
  * rather than being inherited from an ancestor. A winning row whose value is a
  * clear (NULL) resolves to `null` — an explicit un-mark, newest, wins.
  */
-import { type Ctx, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
+import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 import { ancestorPrefixes, PREFIX_RE } from '../_lib/resolve.js'
 
 interface KeepHit { prefix: string; keep: string | null; ts: number; who: string; memo: string | null }
@@ -21,7 +21,7 @@ interface OwnerHit { prefix: string; owner: string | null; ts: number; who: stri
 export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const { request, env } = ctx
   if (!env.DB) return json({ error: 'resolve backend not configured (DB)' }, 503)
-  const id = await requireScope(ctx, GCS_SCOPE)
+  const id = await requireViewer(ctx)
   if (id instanceof Response) return id
 
   const path = new URL(request.url).searchParams.get('path') ?? ''
