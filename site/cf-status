@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Report whether the local HEAD is deployed to the `oa-cw-s3-usage` CF Pages project.
+"""Report whether the local HEAD is deployed to the `oa-gcs-usage` CF Pages project.
 
 Reads `CLOUDFLARE_API_TOKEN` from the environment (the repo `.envrc` token has
 Pages read). Compares the newest successful deployment's commit to `HEAD` and
@@ -11,6 +11,8 @@ lists any undeployed commits touching `site/`. Invoked directly or via
 `site/deploy --status`.
 """
 import json
+import re
+from pathlib import Path
 import os
 import subprocess
 import sys
@@ -18,7 +20,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ACCT = "74981a43be0de7712369306c7b19133d"
-PROJECT = "oa-cw-s3-usage"
+PROJECT = re.search(r'^name = "(.*)"$', Path(__file__).with_name("wrangler.toml").read_text(), re.M).group(1)  # the Pages project this checkout deploys
 
 err = lambda *a: print(*a, file=sys.stderr)
 
