@@ -106,7 +106,7 @@ export const onRequest = async (ctx: Ctx & { env: Env }): Promise<Response> => {
     }
     if (method === "POST") {
       const gated = await requireAdmin(ctx)
-      return gated instanceof Response ? gated : createPlan(db, gated.email, await readBody(ctx.request))
+      return gated instanceof Response ? gated : createPlan(db, (gated.email ?? gated.name ?? 'guest'), await readBody(ctx.request))
     }
     return json({ error: "method not allowed" }, 405)
   }
@@ -122,7 +122,7 @@ export const onRequest = async (ctx: Ctx & { env: Env }): Promise<Response> => {
     }
     if (method === "PATCH") {
       const gated = await requireAdmin(ctx)
-      return gated instanceof Response ? gated : closePlan(db, gated.email, id, await readBody(ctx.request))
+      return gated instanceof Response ? gated : closePlan(db, (gated.email ?? gated.name ?? 'guest'), id, await readBody(ctx.request))
     }
     return json({ error: "method not allowed" }, 405)
   }
@@ -130,7 +130,7 @@ export const onRequest = async (ctx: Ctx & { env: Env }): Promise<Response> => {
   // /api/plans/:id/items
   if (segs.length === 2 && segs[1] === "items" && (method === "POST" || method === "DELETE")) {
     const gated = await requireAdmin(ctx)
-    return gated instanceof Response ? gated : editItems(db, gated.email, id, method === "POST", await readBody(ctx.request))
+    return gated instanceof Response ? gated : editItems(db, (gated.email ?? gated.name ?? 'guest'), id, method === "POST", await readBody(ctx.request))
   }
 
   return json({ error: "not found" }, 404)
