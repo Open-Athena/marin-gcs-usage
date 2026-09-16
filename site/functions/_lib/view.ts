@@ -402,9 +402,39 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
     ? { dLo: dP + 1, dHi: 1e9, pLo, pHi }
     : { dLo: r.depth, dHi: 1e9, pLo: r.path, pHi: r.path + '0' })
   const allRows = regionRects.length ? await readRects(pick.all!, regionRects, thrAt) : []
+  let aggs = new Map<string, Agg>() // the scoped aggregate per path
+  const aggDepth = new Map<string, number>()
+  const foldedOf = new Map<string, number>()
+  // The unscoped view (the default page, every warm-up target): the scoped
+  // aggregate IS the row sum, so the threshold applies to plain per-path
+  // byte totals before a single `Agg` exists. The general path below builds
+  // two aggregate objects per path for all ~240k rows a root read returns
+  // and keeps ~1k of them — 2 s of CPU per view on the edge (Workers Logs,
+  // 2026-09-15) against ~0.8 s for the decode itself.
+  const plain = !ol && !fs && !owner && !classes && !regionRects.length && !query
+  if (plain) {
+    const tot = new Map<string, number>()
+    for (const r of rows) tot.set(r.path, (tot.get(r.path) ?? 0) + r.b)
+    for (const [p, b] of tot) {
+      const d = p.split('/').length
+      if (b >= thrAt(d)) aggDepth.set(p, d)
+    }
+    for (const r of rows) {
+      if (!aggDepth.has(r.path)) continue
+      let a = aggs.get(r.path)
+      if (!a) aggs.set(r.path, (a = newAgg()))
+      merge(a, r)
+    }
+    // the folded (sub-threshold) child count per kept parent, as below
+    for (const [p, b] of tot) {
+      if (b <= 0 || aggDepth.has(p)) continue
+      const par = parentOf(p)
+      const key = aggDepth.has(par) ? par : par === path || (path === '' && !p.includes('/')) ? path : null
+      if (key !== null) foldedOf.set(key, (foldedOf.get(key) ?? 0) + 1)
+    }
+  } else {
   const allAggs = new Map<string, Agg>() // totals per path (the state share's denominator; a lens: only inside its regions)
   const mineAggs = new Map<string, Agg | null>() // the sort's own rows per path (U's slice, or the pool's); null = unread
-  const aggDepth = new Map<string, number>()
   for (const r0 of rows) {
     const r = classRow(r0, classes)
     let m = mineAggs.get(r.path)
@@ -434,7 +464,6 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // drill reads it), so U's attributed rows under one are not nodes.
   const unread = allRegions.filter(r => !regions.some(q => q.path === r.path)).map(r => r.path + '/')
   const insideUnread = (p: string) => unread.some(u => p.startsWith(u))
-  let aggs = new Map<string, Agg>() // the scoped aggregate per path
   for (const p of aggDepth.keys()) {
     if (unread.length && insideUnread(p)) continue
     const mine = mineAggs.get(p) ?? null
@@ -454,6 +483,7 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
       const a = aggs.get(q)
       if (a && mineAggs.get(q) == null && !allAggs.has(q)) a.o += r.objects
     }
+  }
   }
   let matches: string[] | undefined
   if (query) {
@@ -481,7 +511,6 @@ async function readView(env: Env, o: ViewOpts): Promise<Read | null> {
   // Sub-threshold child count per parent. A coarse tier only holds paths
   // above its floor, so this counts the folded children it can see; the
   // (other) bytes themselves are exact regardless (parent − Σ kept).
-  const foldedOf = new Map<string, number>()
   for (const [p, a] of aggs) {
     if (kept.has(p)) continue
     if (a.b >= thrAt(aggDepth.get(p)!)) continue // truncation casualty, not a fold
