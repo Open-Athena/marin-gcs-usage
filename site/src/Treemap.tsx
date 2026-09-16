@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle, OutlineGroups } from '@disk-tree/react'
-import { ACTION_COLORS, ACTION_LABELS, type MarkAction, type MarkIndex } from './marks'
+import { ACTION_COLORS, ACTION_LABELS, type MarkAction, type MarkIndex } from './planMarks'
 import { dateColor, dateGradientCss, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { CopyName, copyText } from './CopyName'

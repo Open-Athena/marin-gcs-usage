@@ -1,33 +1,45 @@
 // Identity plumbing (@open-athena/auth): where whoami comes from, per host.
 //
-// cw-s3.oa.dev is public shell + edge-gated data — identity is the Cloudflare
-// Access session (`/cdn-cgi/access/get-identity`, Tier 1); `/login` bounces
-// through Access to mint one.
+// gcs.oa.dev is public shell + app-gated data — identity is the app session
+// (`/api/auth/whoami`), minted at `/auth/sso` (CF Access as SSO IdP) or by
+// redeeming a `?key=` share link.
 import { displayName, useForgetWhoami, useWhoami, type Whoami, type WhoamiSource } from '@open-athena/auth/react'
 
-export const WHOAMI_SOURCE: WhoamiSource = { kind: 'edge' }
+// Deployment seam (specs/denovo-factor.md): the whoami source is a build-time
+// flag. `edge` = the whole host sits behind a CF Access gate (cw-s3.oa.dev:
+// `/cdn-cgi/access/get-identity`, sign-in bounces through `/login`); `app`
+// (default) = the app session (`/api/auth/whoami`, minted at `/auth/sso`).
+export const AUTH_MODE: 'app' | 'edge' = import.meta.env.VITE_AUTH_MODE === 'edge' ? 'edge' : 'app'
+export const WHOAMI_SOURCE: WhoamiSource = { kind: AUTH_MODE }
 
 // `?wall` forces the wall in dev (which otherwise short-circuits to authed,
-// since there's no CF Access locally) so it can be eyeballed without a deploy.
+// since neither identity source exists locally). A real `oa_auth` cookie
+// (forged against the local wrangler's SESSION_SECRET, set via
+// document.cookie so it's visible here) disables the stub entirely — dev
+// then exercises the real whoami/scopes path, including guest grants.
 const forceWall = new URLSearchParams(window.location.search).has('wall')
+const hasLocalSession = document.cookie.includes('oa_auth=')
 export const DEV_IDENTITY: Whoami | null | undefined =
-  import.meta.env.DEV
+  import.meta.env.DEV && !hasLocalSession
     ? (forceWall ? null : { email: import.meta.env.VITE_DEV_EMAIL ?? 'dev@example.test' })
     : undefined
 
-export const signInUrl = (): string => '/login'
+export const signInUrl = (): string =>
+  AUTH_MODE === 'edge' ? '/login' : `/auth/sso?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
 
 export interface Ident {
   email: string
   name?: string
 }
 
-/** Sign out of the Access session (the edge clears the cookie and bounces). */
+/** Sign out of the app session (POST /api/auth/logout clears the cookie). */
 export function useSignOut(): () => void {
   const forget = useForgetWhoami()
   return () => {
-    forget()
-    window.location.assign('/cdn-cgi/access/logout')
+    if (AUTH_MODE === 'edge') { forget(); window.location.assign('/cdn-cgi/access/logout'); return }
+    void fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => {
+      forget()
+    })
   }
 }
 
@@ -38,4 +50,13 @@ export function useIdent(): Ident | null {
   const name = displayName(whoami) ?? undefined
   const email = (whoami as { email?: string | null }).email ?? name ?? 'guest'
   return { email, name }
+}
+
+/**
+ * Mark/claim writes require an email-bearing identity — anonymous guest
+ * links are read-only (the server enforces the same rule).
+ */
+export function useCanMark(): boolean {
+  const { whoami } = useWhoami(WHOAMI_SOURCE, { devIdentity: DEV_IDENTITY })
+  return !!(whoami as { email?: string | null } | null)?.email
 }
