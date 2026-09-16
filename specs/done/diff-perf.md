@@ -29,10 +29,17 @@ The colo cache is per data-center, so the first viewer in each region still paid
 
 The fix that paid (`readView` fast path, this commit's parent): for the unscoped view the scoped aggregate is the row sum, so the threshold is applied to plain per-path byte totals before any aggregate object is built — ~240k rows → ~1k kept, output byte-identical. Cold root subtree 4.2 → 2.1–2.9 s wall (1.1–1.4 s CPU), bucket drill 3.0 → 1.9 s, 14-day root diff 14 → 4.8 s (2.7 s CPU), bucket diff 4.8 → 3.3 s.
 
+## First paint, brush slide, week links (2026-09-16, `5ef41d2` + `buildDiff` maxDepth)
+
+`/api/diff?depth=N` caps the walk N levels below P and the two views read only those bands (`maxDepth`): `depth=1` is the bucket-level diff — 4 groups instead of ~67 for a cold 19-day root diff, ~1.2 s cold (one 3.9 s outlier in three cold runs), against 4.5–5.7 s for the full walk. The page asks for it first and shows it, dimmed under "aligning…", as the placeholder of the full query; a change of pair keeps the last pair's full diff as before. Tiers, for the record: each coarse tier is the path index filtered to subtree bytes ≥ a floor (coarse16 64 GiB / 23k rows, coarse20 4 GiB / 236k, coarse24 256 MiB / 1.8M; fine = all 217M), same 8k-row groups — a view takes the coarsest tier whose floor is under its pixel threshold, and the root view's ~42 GiB threshold just misses coarse16.
+
+`TimeSeries` (`packages/react`, for `/cp` to disk-tree): a drag that starts inside the shown window slides it (same number of points, clamped; `grab`/`grabbing`), a drag outside brushes a new one, a click inside is still a pick. Verified with real mouse events on the dev server: the 8/23–8/30 window slid to 8/29–9/5 at its width and the Diff followed.
+
+Digest week bullets now land on `#over-time` (`?d=<end>-<N>d` highlights the week in the chart, the Diff sits right below); daily replies keep `#diff`.
+
 ## Not done
 
 - What's left of a cold root view is ~0.8 s of parquet decode (29 groups, ~28 ms each on the edge) plus ~1 s of fetch rounds at 6-wide; the root threshold at laptop widths (~42 GiB) sits between the coarse16 (64 GiB) and coarse20 (4 GiB) floors, so a 16 GiB tier (`viz.COARSE_EXPS` + site `COARSE_EXPS`, backfill) would cut both by ~4× at the cost of folding deep sub-16 GiB cells earlier. The diff walk's point lookups still decode a whole 8k-row fine-index group per hit; smaller row groups for the fine index (4× the D1 footer rows) or a real page-index reader are the remaining levers there.
-- `depth=1` first render: with the views at ~1 s each the walk is now most of a diff, so drawing the bucket level first would land ~2 s early on a cold diff. Cheap; do it if cold diffs still matter after warming.
 - Artifact Registry holds 112 untagged job images with no cleanup policy (layers dedupe, so a few GB, but unbounded); a policy scoped to the `gcs-usage-snapshot` package (keep tagged, drop untagged > 7 days) is one command away.
 
 Tooling: `tmp/diff-timing.sh` (prod timings with the job token), `tmp/warm-prod.sh` (warm prod from the laptop); local `wrangler pages dev` on :3254 reads real D1/GCS behind the dev identity stub and persists both cache tiers under `site/.wrangler/state`, so `rm -rf site/.wrangler/state/v3/cache` exercises the KV path.
