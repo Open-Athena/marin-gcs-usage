@@ -290,6 +290,43 @@ async function readGroup(h: IndexHandle, rgJson: string, columns?: string[]): Pr
 
 interface Span extends GroupSpan { rg: number }
 
+/** Decoded row groups, per isolate (LRU by an estimated byte size).
+ *
+ * Decoding is the cold cost on the edge: ~100 ms of CPU per 8k-row group
+ * (Workers Logs `cpuTime` 2026-09-15: a 25-group root subtree = 2.6 s CPU
+ * against 0.3 s of I/O), and the same tier groups serve every view of a
+ * scan — the root at each width, the bucket drills, both sides of every
+ * diff. A generation dir is immutable, so `(date, variant, gen, rg)` is a
+ * stable key. Rows are never mutated by readers (`classRow` copies). The cap
+ * keeps well inside the isolate's 128 MB with concurrent requests. */
+const GROUP_CACHE_CAP = 24 << 20
+const ROW_BYTES = 160 // a shaped Row with a ~60-char path, roughly
+const groupCache = new Map<string, Row[]>()
+let groupCacheBytes = 0
+
+async function readGroupCached(h: IndexHandle, rg: number, rgJson: string): Promise<Row[]> {
+  const k = `${h.date}|${h.variant}|${h.gen}|${rg}`
+  const hit = groupCache.get(k)
+  if (hit) {
+    groupCache.delete(k)
+    groupCache.set(k, hit) // LRU: most recent last
+    h.trace?.('gcache', 1)
+    return hit
+  }
+  const rows = await readGroup(h, rgJson)
+  const bytes = rows.length * ROW_BYTES
+  if (bytes <= GROUP_CACHE_CAP) {
+    while (groupCacheBytes + bytes > GROUP_CACHE_CAP && groupCache.size) {
+      const [k0, v0] = groupCache.entries().next().value as [string, Row[]]
+      groupCache.delete(k0)
+      groupCacheBytes -= v0.length * ROW_BYTES
+    }
+    groupCache.set(k, rows)
+    groupCacheBytes += bytes
+  }
+  return rows
+}
+
 /** Row groups in flight at once per read. Each group is its own range
  * fetch + decode; the fetch is ~200–240 ms of latency for ~280 KB, so the
  * reads are latency-bound, not bandwidth-bound: a root subtree's 24 groups
@@ -436,7 +473,7 @@ export async function readRects(
     const j = jsons.get(s.rg)
     if (!j) return []
     const out: Row[] = []
-    for (const r of await readGroup(h, j)) if (inRect(r) && lensOk(r)) out.push(r)
+    for (const r of await readGroupCached(h, s.rg, j)) if (inRect(r) && lensOk(r)) out.push(r)
     return out
   })
   h.trace?.('groups', now() - t0)
@@ -489,7 +526,9 @@ export async function readAsks(
   t0 = now()
   const perGroup = await mapLimit(spans, GROUP_READS, async s => {
     const j = jsons.get(s.rg)
-    return j ? (await readGroup(h, j, columns)).filter(keep) : []
+    if (!j) return []
+    // a column subset (the totals manifest) bypasses the cache: cached rows are whole
+    return (columns ? await readGroup(h, j, columns) : await readGroupCached(h, s.rg, j)).filter(keep)
   })
   h.trace?.('groups', now() - t0)
   return { rows: perGroup.flat(), groups: spans.length }

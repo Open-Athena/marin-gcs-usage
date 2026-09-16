@@ -23,6 +23,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 WIDTHS = (512, 1280, 1536, 1792, 1920)
 SPANS = (1, 3, 7, 14, 30)
+# The root plus the first drill everyone makes: one bucket. Deeper drills stay live.
+PATHS = ("", "marin-us-central2", "marin-us-east5", "marin-us-central1", "marin-eu-west4", "marin-us-west4", "marin-us-east1")
 
 
 def _ts(date: str) -> int:
@@ -40,10 +42,10 @@ def nearest_prior(dates: list[str], date: str, days: int) -> str | None:
     return min(earlier, key=lambda d: abs(_ts(d) - t))
 
 
-def plan(date: str, dates: list[str], widths: tuple[int, ...] = WIDTHS, spans: tuple[int, ...] = SPANS) -> list[str]:
+def plan(date: str, dates: list[str], widths: tuple[int, ...] = WIDTHS, spans: tuple[int, ...] = SPANS, paths: tuple[str, ...] = PATHS) -> list[str]:
     """The request paths (no host) to replay for ``date``, deduplicated, in
-    the order the page issues them: the subtree, then each diff pair's
-    summary and full rows."""
+    the order the page issues them: per width, the root's subtree and each
+    diff pair's summary + full rows, then the same for each bucket drill."""
     earlier = [d for d in dates if d < date]
     pairs: list[str] = []
     if earlier:
@@ -55,11 +57,12 @@ def plan(date: str, dates: list[str], widths: tuple[int, ...] = WIDTHS, spans: t
     out: list[str] = []
     for w in widths:
         h = round(w * 0.6)
-        out.append(f"/api/subtree?date={date}&path=&w={w}&h={h}")
-        for p in pairs:
-            base = f"/api/diff?from={p}&to={date}&path=&w={w}&h={h}"
-            out.append(base + "&summary=1")
-            out.append(base)
+        for path in paths:
+            out.append(f"/api/subtree?date={date}&path={path}&w={w}&h={h}")
+            for p in pairs:
+                base = f"/api/diff?from={p}&to={date}&path={path}&w={w}&h={h}"
+                out.append(base + "&summary=1")
+                out.append(base)
     return out
 
 
