@@ -27,7 +27,7 @@ Ported from gcs's `digest.py` with these CoreWeave deltas (each forced by the da
 4a. **Days, not scans.** gcs replies once per scan (= per day). cw scans twice a day, so replies are keyed by UTC **day** (`day_rows`), with the day's representative scan chosen per variant (below); the OP and plot still re-converge on every scan.
 5. **Hosting without touching gcs's alias.** gcs deploys `job/icons/` to the `gcs-usage-icons` Pages project's **production** branch every run — that root alias serves the trend-arrow avatars *both* digests use. cw deploys its own dir (`job/icons-cw/`: the CORS `_headers` + the month's PNG) with `--branch cw`, a preview branch: the OP's image uses the deployment-specific URL (as gcs does), the production alias never changes, and the avatars stay `https://gcs-usage-icons.pages.dev/arrows/av_deg<N>.png?v=4`. Same Pages project, nothing new to provision.
 6. **Converge state keyed by channel + variant.** gcs keeps one prod thread's state at `gs://<bucket>/digest/<YYYY-MM>.json`. cw's lives at `gs://<bucket>/digest/cw/<channel>/<variant>/<YYYY-MM>.json` — namespaced so it can't collide with gcs's, keyed by channel so a staging converge never masquerades as the prod thread, and by variant so the A/B threads coexist. `posted` is keyed by UTC day → `{ts, scan}` (the scan the reply currently reflects).
-7. **Deep links.** `https://cw-s3.oa.dev/?d=<yymmdd>-<hhmm>#diff` — the site's compact scan-prefix token (`site/src/scan.ts`); `_span` renders its `-<N>d<M>h` look-back for scan-pair links.
+7. **Deep links.** `https://cw-s3.oa.dev/?d=<yymmdd>-<hhmm>#over-time` — the site's compact scan-prefix token (`site/src/scan.ts`); `_span` renders its `-<N>d<M>h` look-back for scan-pair links.
 8. **Slack only.** gcs's Discord twin (and its `discordify`/emoji helpers) isn't ported — no cw Discord destination was asked for, and there's no `discord_api` module on this branch.
 9. **Retired** the pre-Shape-C one-liner `gcs-usage alert` (+ its `_snapshot_dates` helper) from `cli.py`; `job/cw-run.sh` never called it.
 
@@ -58,7 +58,7 @@ Of the three candidates —
 **OP** — sender `CoreWeave usage — <Month YYYY>` with the `:calendar:` icon; body:
 
 ```
-:arrow_degNN: **±Δ TiB** [month-to-date](https://cw-s3.oa.dev/?d=<latest>-<span since lead-in>#diff) · <TiB> TiB · NN.N% of 1 PB · [dashboard](https://cw-s3.oa.dev/)
+:arrow_degNN: **±Δ TiB** [month-to-date](https://cw-s3.oa.dev/?d=<latest>-<span since lead-in>#over-time) · <TiB> TiB · NN.N% of 1 PB · [dashboard](https://cw-s3.oa.dev/)
 
 *Weekly summaries*
 :arrow_degNN: [wk of M/D](diff link over the week): **±Δ TiB** → <TiB> TiB · NN.N% of 1 PB
@@ -67,7 +67,7 @@ Of the three candidates —
 ![CoreWeave usage — <Month YYYY>](<sparkline>)
 ```
 
-Weeks are ISO (Monday-keyed); a bullet's Δ is its last scan vs the previous bullet's last scan (the first vs the month's baseline = the last pre-month scan), and its link opens the dashboard's Diff section over exactly that span (`?d=<end>-<N>d<M>h#diff`). Month-to-date is the latest scan vs the same baseline; its arrow is the month's rate projected to a week. The image is the quota sparkline described under *Mechanism* §4.
+Weeks are ISO (Monday-keyed); a bullet's Δ is its last scan vs the previous bullet's last scan (the first vs the month's baseline = the last pre-month scan), and its link opens the dashboard's Diff section over exactly that span (`?d=<end>-<N>d<M>h#over-time`). Month-to-date is the latest scan vs the same baseline; its arrow is the month's rate projected to a week. The image is the quota sparkline described under *Mechanism* §4.
 
 **Replies — one per UTC day**, `M/D — <TiB> TiB (Δ, Δ%) · NN.N% of 1 PB · <free> TiB free`, Δ over the prior day's reply scan (so a clean 24 h in steady state), the arrow normalised by that interval, the day linked to its 24 h diff on the dashboard. The one real tradeoff — Slack fixes a message's `username` + icon at post time, `chat.update` can't change them ([[gcs-usage-slack-alerting]]) — gives two variants, both implemented (`-V`) and staged side by side:
 

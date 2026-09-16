@@ -133,7 +133,7 @@ def _diff_url(scan: str, since: dt.datetime | None, site_url: str) -> str:
     """The dashboard's Diff section pinned to ``scan``, looking back to
     ``since`` (None: the baked previous scan)."""
     span = f"-{_span(since, scan_ts(scan))}" if since is not None else ""
-    return f"{site_url}/?d={_dlink(scan)}{span}#diff"
+    return f"{site_url}/?d={_dlink(scan)}{span}#over-time"
 
 
 @dataclass(frozen=True)
