@@ -630,6 +630,74 @@ def warm_cache(scan: str | None, jobs: int, dry_run: bool, root: str | None, sit
 
 
 @main.group()
+def lifecycle() -> None:
+    """Bucket lifecycle rules as a tracked file: `pull` (live → JSON), `diff`
+    (file vs live), `push` (file → bucket, whole-config PUT + read-back
+    verification), `gc-rule` (print the bucket-wide noncurrent-version GC rule
+    to add to the file). Creds: the CAIOS keys from the env (see `sweep`)."""
+
+
+@lifecycle.command("pull")
+@option("-b", "--bucket", default=lambda: os.environ.get("CW_BUCKET", "marin-us-east-02a"), help="Bucket (default $CW_BUCKET)")
+@option("-o", "--out", type=Path, help="Write here instead of stdout")
+def lifecycle_pull(bucket: str, out: Path | None) -> None:
+    from .lifecycle import dump, pull
+    from .sweep import s3_client
+
+    text = dump(pull(s3_client(), bucket))
+    if out is None:
+        sys.stdout.write(text)
+    else:
+        out.write_text(text)
+        err(f"lifecycle: {bucket} → {out}")
+
+
+@lifecycle.command("diff")
+@option("-b", "--bucket", default=lambda: os.environ.get("CW_BUCKET", "marin-us-east-02a"), help="Bucket (default $CW_BUCKET)")
+@argument("path", type=Path)
+def lifecycle_diff(bucket: str, path: Path) -> None:
+    """Exit 1 when PATH (intended) differs from the live rules."""
+    from .lifecycle import diff, load, pull
+    from .sweep import s3_client
+
+    d = diff(load(str(path)), pull(s3_client(), bucket))
+    print(json.dumps(d))
+    if any(d.values()):
+        sys.exit(1)
+
+
+@lifecycle.command("push")
+@option("-b", "--bucket", default=lambda: os.environ.get("CW_BUCKET", "marin-us-east-02a"), help="Bucket (default $CW_BUCKET)")
+@option("-n", "--dry-run", is_flag=True, help="Print the diff that would be applied; touch nothing")
+@argument("path", type=Path)
+def lifecycle_push(bucket: str, dry_run: bool, path: Path) -> None:
+    """Replace the bucket's lifecycle configuration with PATH (read back + verified)."""
+    from .lifecycle import diff, load, pull, push
+    from .sweep import s3_client
+
+    client = s3_client()
+    intended = load(str(path))
+    d = diff(intended, pull(client, bucket))
+    if not any(d.values()):
+        err(f"lifecycle: {bucket} already matches {path}")
+        return
+    err(f"lifecycle: {'would apply' if dry_run else 'applying'} to {bucket}: {json.dumps(d)}")
+    if dry_run:
+        return
+    live = push(client, bucket, intended)
+    err(f"lifecycle: {bucket} now has {len(live)} rule(s), verified")
+
+
+@lifecycle.command("gc-rule")
+@option("-d", "--days", default=1, help="NoncurrentDays (1 while versioning is off; the undo window when it's on)")
+@option("-p", "--prefix", default="", help="Scope (default: whole bucket)")
+def lifecycle_gc_rule(days: int, prefix: str) -> None:
+    from .lifecycle import gc_rule
+
+    print(json.dumps(gc_rule(days, prefix), indent=2))
+
+
+@main.group()
 def sweep() -> None:
     """Mark & sweep: build deletion manifests and execute them (boto3/CAIOS)."""
 

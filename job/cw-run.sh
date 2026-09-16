@@ -88,6 +88,12 @@ python job/cw-webdata.py "$L2" "$WORK/web" -b "$BUCKET" -l "Marin CoreWeave" -a 
 DEST="/gcs/$DATA/snapshots/cw/$SNAP_ID"
 mkdir -p "$DEST"
 cp "$WORK"/web/*.json "$DEST/"
+# The bucket's lifecycle rules in force at this scan (Marin's tmp/ttl TTLs, the
+# abort-MPU rule, the noncurrent-version GC): snapshotted next to the scan so
+# the site can show them and later infer their effects. `job/cw-lifecycle.json`
+# is the intended state (`gcs-usage lifecycle diff|push`); a pull never fails
+# the scan.
+gcs-usage lifecycle pull -b "$BUCKET" -o "$DEST/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
 
 # Keep the canonical layer-2 parquet too -- it's the input to every ad-hoc
 # question ("what grew?", "what's idle?") that the JSONs can't answer.
