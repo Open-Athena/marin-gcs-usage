@@ -156,10 +156,14 @@ biggest ± movers vs prior scan: ['marin -7.29 TiB', 'MarinDNA +0.00 TiB', 'user
 
 list[342], first = {"d": 20631, "d1": "marin", "b": 17330764, "o": 12}
 
-## Gated follow-ups (in order)
+## Go-live record (2026-09-15 → 16)
 
-1. **Slack app** (Ryan): create from the manifest, install, `cw-s3-slack-bot-token` in Secret Manager + accessor grant to `gcs-usage-job`, app icon.
-2. **Pick the reply variant** from the two staged threads; make it the `-V` default (or drop the other) and retire the loser's state file.
-3. **Rebuild `IMAGE:cw`** (`job/build.sh`) — the image needs `thrds` + matplotlib + the `digest` command.
-4. **Edit the `cw-usage-snapshot` Cloud Scheduler body** (user-owned): add the vars + secretVariables from *Wiring* (`DRY=1 job/cw-batch-submit.sh` prints the full spec).
-5. **First prod converge** — backfills the month into `#cw-s3-usage` with spaced replies: `gcs-usage digest -r gs://oa-gcs-usage-dvx/snapshots/cw -D 305` (Slack collapses consecutive same-sender chrome inside ~5 min).
+All five gates cleared, in order:
+
+1. **Slack app** — "CoreWeave Usage Bot" created from the manifest (bot `B0C2YS423KJ`, user `coreweave_usage_bot`); the manifest's top-level `_comment` had to go first (Slack rejects unknown top-level keys — notes now in `job/slack/README.md`). Token stored as Secret Manager `cw-s3-slack-bot-token` with the accessor grant to `gcs-usage-job@`; locally in `wt/cw-s3/.envrc` as `CW_USAGE_SLACK_BOT_TOKEN`.
+2. **Reply variant** — v1 `sender` chosen from the two staged threads (`gcs-usage-staging`: `p1789511503660909` sender vs `p1789511536796279` body); it was already the `-V` default. The `body` variant stays in the code, dormant.
+3. **`IMAGE:cw` rebuilt** with thrds + matplotlib + `gcs-usage digest` (`sha256:2b286760…`).
+4. **Scheduler body** updated (`userUpdateTime 2026-09-16T01:19Z`): `SLACK_CHANNEL=C0C1YR7D0KU`, `SLACK_ALERT_CHANNEL=C0BTUNT3B5Z`, `CLOUDFLARE_ACCOUNT_ID`, secretVariables `SLACK_BOT_TOKEN` ← `cw-s3-slack-bot-token`, `CLOUDFLARE_API_TOKEN` ← `cf-pages-token`. First unattended converge = the 2026-09-16 12:00Z run.
+5. **Backfill posted** to `#cw-s3-usage`: August (OP `p1789516492354009`, 15 daily replies from 8/15 — the first CW scan ever) and September (OP `p1789516512015929`, 15 replies). `-D` was unnecessary: distinct per-reply senders don't collapse. The OP's `month-to-date` was then linked to the month's Diff view (lead-in → latest) and both OPs re-converged in place.
+
+Left by hand: a channel topic for `#cw-s3-usage` (the bot deliberately lacks `channels:manage`).
