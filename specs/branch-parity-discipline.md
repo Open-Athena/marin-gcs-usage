@@ -77,10 +77,12 @@ architecture.
 
 | pair | surface | intended delta |
 |---|---|---|
-| gcs ↔ cw-s3 | `site/` | **Intrinsic:** own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA + CoreWeave domains, edge identity); branding, `s3://` scheme. **Converging** (2026-09-11, specs/cw-sweep.md): mark & sweep is porting in (Phase 0 landed the D1/wrangler IaC + migrations); `/user/:id` + user/owner views stay port-pending (no CW ownership signal — path-prefix rules the likely route). Server-side diff/subtree still absent (cw-s3 loads whole `tree.json`). |
-| gcs ↔ cw-s3 | `site/wrangler.toml`, `site/migrations` | **CP-adapt, small patch** (2026-09-11): cw-s3's `wrangler.toml` = gcs's with `name`/`database_name`/`database_id`/`ACCESS_AUD` changed and the auth-package-migration prose dropped. `site/migrations` = a fresh mark+plan+sweep subset (`0001_marks` keep-axis, default-unmarked; `0002_plans` plan-as-first-class; `0003_deletions`; `0004_admin`), **not** a replay of gcs's 23-step auth/access-log/index-footer history. The git-didi delta on these surfaces is the intended patch (name/id/aud + table-subset), not a whole-file absence. |
-| gcs ↔ cw-s3 | `job/` | `run.sh`+`batch-submit.sh` (GCS) vs `cw-*` (CW: S3-compat listing, precomputed `diff.json`); restore `cw-*` onto cw-s3 from `053cc33^` |
-| gcs ↔ cw-s3 | `packages/react`, `src/disk_tree` | **none** — keep at parity (synced 8/28) |
+| gcs ↔ cw-s3 | `site/src` | **Intrinsic:** own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA + CoreWeave domains, edge identity); branding, `s3://` scheme. **Serving model at parity since 2026-09-16**: every read is a view query (`/api/subtree` drill chain + `depth=1` first paint, `/api/diff`, `/api/series`, react-query, `useHashSpy`, `SpeedDialTip`) — no whole `tree.json` / baked `diff.json` on the page. **Remaining intended deltas**: the drill lives in `?path=` (gcs: the URL path); no owner / mark-state / storage-class axes and no `/users`, `/user/:id`, `/marks`, `/assignments`, `/admin` (no CW ownership signal, no classes); cw's plan-first `SweepPage` (specs/done/cw-sweep.md) vs gcs's owner-slice console; cw's `Treemap`/`ChildrenTable` are the owner-free adaptations (file-level convergence onto gcs's is a later pass); `OgPage` still reads `tree.json`; the age chart is fleet-wide `age.json` on both branches (`/api/age` pending on both). |
+| gcs ↔ cw-s3 | `site/wrangler.toml`, `site/migrations` | **CP-adapt, small patch** (2026-09-11): cw-s3's `wrangler.toml` = gcs's with `name`/`database_name`/`database_id`/`ACCESS_AUD` changed, the auth-package-migration prose dropped, and (2026-09-16) the `CACHE_KV` binding commented out until a KV namespace + a KV-scoped token exist. `site/migrations` = a fresh subset — `0001_marks` (keep-axis, default-unmarked), `0002_plans` (plan-as-first-class), `0003_deletions`, `0004_admin`, `0005_index_footer` (= gcs's 0013+0014+0018+0020 index-footer end state, one file) — **not** a replay of gcs's 23-step auth/access-log history. The git-didi delta on these surfaces is the intended patch, not a whole-file absence. |
+| gcs ↔ cw-s3 | `job/` | `run.sh`+`batch-submit.sh` (GCS: six buckets, attribution, access log, Discord twin, weekly report) vs `cw-run.sh`+`cw-batch-submit.sh` (CW: S3-compat listing → layer-2 → `index-write` tiers → `index-sync` → tree/age/meta JSONs → the `#cw-s3-usage` digest); the baked `diff.json` (`cw-diff.py`) is gone (2026-09-16 — `/api/diff` serves it). `build.sh`, `Dockerfile` layout, `.dockerignore`/`.gcloudignore` mirror gcs. Not wired on cw: `warm-cache` (needs an Access service token), `index-gc -r` retention. |
+| gcs ↔ cw-s3 | `packages/treemap`, `packages/react`, `src/disk_tree` | **none** — keep at parity (synced 8/28; re-verified 2026-09-16) |
+| gcs ↔ cw-s3 | `gcs-usage/src` (was `marin/` until 2026-09-16) | **Shared verbatim**: `index_footer.py` (only `D1_DB_ID`, the wrangler DB name and the path-only variant set differ), `warm.py` (cw paths + service-token auth). **cw-only**: `index.py` (layer-2 → index tiers; gcs writes its tiers inside `webdata`/`viz.py`), `sweep.py` (plan-first CAIOS executor, versioned undo/purge, TTL expiry manifest), `listing.py`; `digest.py`/`digest_plot.py` are cw's framing-A content on gcs's mechanism. **gcs-only**: attribution (`identity`/`prefixes`/`rules`/`signals`/`attr_index`/`records`), `access.py`, `mark.py`, `sweep_plan.py`/`sweep_exec.py` (owner-slice sweep), `reactive.py`, `extras.py`, `healthcheck.py`, `index_footer` extras (`index-blob`/`index-compact`), `weekly.py`, `discord_api.py`, `cascade_a2a.py`. |
+| gcs ↔ cw-s3 | `site/functions` | **Shared verbatim** (2026-09-16): `_lib/index.ts` (reader; only the store allow-list differs), `_lib/shared.ts`, `_lib/edgeCache.ts`, `_lib/gcp.ts`. **Adapted**: `_lib/view.ts` = gcs's minus its owner / mark-state / class / extras axes; `api/{subtree,diff,series,path-index}.ts` minus the same axes, behind cw's `requireViewer`; `_lib/scope.ts` = the name filter only. **cw-only**: `_lib/auth.ts` (edge Access identity, no auth package), `_lib/plans.ts`, `api/plans`, `api/sweep/{dispatch,jobs,stop,undo,purge}`, `api/marks`, `api/whoami`, `login.ts`. **gcs-only**: `api/auth`, `api/db`, `api/actions`, `api/marks/totals`, `api/todo`, `api/estate`, `api/resolve`, `api/claims`, `api/assignments`, `api/sweep-owners`, `api/bench`, `api/token`, `auth/sso.ts`, `user/[id].ts`, `users.ts`, `cw.ts`, `_lib/{identity,ledger,markAxes,marks,owners,resolve,tables,totals,todo,unfurl,extras}.ts`. |
 | marin ↔ dt/main | `src/disk_tree` | upstream carries Flask serving (`server.py`, diff index, vocab sidecar, compare perf); marin carries nothing server-side. Shared core must be a superset upstream: fork→upstream manifest `~/c/disk-tree/specs/marin-python-cp-2026-08-28.md` |
 | marin ↔ dt/main | `packages/react` | none — parity, both directions (8/28) |
 | marin ↔ dt/main | www arch | `site/` (Vite+CFN) vs `ui/` (Vite+Flask) — intrinsically different |
@@ -608,3 +610,81 @@ asked for. Resolved cw-sweep open questions in passing: admin allowlist → D1
 (`admin_emails`, gcs-proven; CF Access stays the sign-in gate + identity source).
 Provisioning (D1 create, `marin-us-east-02a` versioning-enable) is the next step,
 still pending. Phase 1 (backend: `marin sweep` + `/api/sweep`) not started.
+
+### 2026-09-16 (cw-ward, `/cp gcs`) — serving architecture, `marin/` → `gcs-usage/`
+
+Cursor gcs `fc6dd8d70` → `180a362c4` (41 unmarked). Ryan's framing: cw-s3 was "way
+behind gcs" — it still shipped whole top-level JSONs (a per-top-level-dir `age.json`,
+a root-only baked `diff.json`, the whole `tree.json`), and its CLI package sat in a
+misnamed `marin/`; the goal is that `diff cw-s3..gcs` reads as exactly the things
+added/subtracted between the deploys, especially with sweep execution moving into the
+app here. Landed as five commits:
+
+- `2dd8ddc` **server-side view serving** (backend): the layer-2 parquet's dir rows
+  rewritten into gcs's index-tier contract (`gcs-usage index-write`: bucket-prefixed
+  paths, `b/o/wts/wb`, 8k-row groups, sorted `(depth, path)`, coarse tiers E ∈
+  16/20/24 with the floor in the parquet metadata), published under
+  `cw-l2/<scan>/index/<gen>/` and footer-synced to D1 (`index_footer.py` ported;
+  migration `0005_index_footer` = gcs's four index migrations folded; `index-sync`,
+  `index-gc`, `index-dir`, `warm-cache`); Functions `_lib/index.ts` + `shared.ts` +
+  `edgeCache.ts` verbatim, `_lib/view.ts` stripped of gcs's owner/mark/class/extras
+  axes, `/api/subtree`, `/api/diff`, `/api/series`, `/api/path-index`. Sources: the
+  pre-cursor serving foundation (`c78a34e` footer-in-D1, `43b4b33`/`ca6ab5c` coarse
+  tiers, `2bae18c` series, `6989062` blob fallback) plus this range's `279acff`
+  `7a5e338` `714be65` `4d80173` `23669f0` `beed6f9` `65a2cc2` `84cf668` `102781b`
+  `5ef41d2` (cache tiers, batched lookups, `Server-Timing`, group LRU, plain-view fast
+  path, depth-capped diff). 84 py + 5 vitest.
+- `a66019f` **the page reads views**: `/api/subtree` drill chain + `depth=1` first
+  paint + held tree, `/api/diff` (summary → depth-1 → full), `/api/series` per prefix,
+  react-query, `useHashSpy` (`631c3db` + `c0d7d53`), `SpeedDialTip` (`d208802`);
+  `clientDiff.ts` and `job/cw-diff.py` deleted. CIC'd on a throwaway local harness
+  against two real synced scans (root from tier `coarse20` in 0.8 s cold, a 6-level
+  drill chain, a real server diff, the 409 for an unindexed scan).
+- `0839bb8` **`marin/` → `gcs-usage/`** + gcs's `Dockerfile`/`.dockerignore`/
+  `.gcloudignore` (`68c4b93c7`) / CI `gcs-usage CLI tests` job.
+- this commit: `packages/react/src/TimeSeries.tsx` back to byte-parity (the brush
+  slide, `5ef41d2`'s core hunk), `packages/{react,treemap}/package.json` onto gcs's
+  (vitest ^4 — with `site` on vitest 4 the packages' vitest-2 runs lost jest-dom's
+  matchers: `Invalid Chai property: toBeInTheDocument`; now 88 + 141 + 5 tests
+  green) + this ledger.
+
+**Skipped as gcs-only** (named so the cursor is trustworthy): the Discord digest
+twin + weekly report + their wiring/specs (`43125ba8f` `f3e5047c1` `9ddfe1bf4`
+`82d538814` `83cdd1543` `33cc12100` `a861202fc` `6003940c8` `a71ec4902` `5c6f2cf22`
+`0db440797` `7b37af8d8` `12035ab88` — cw's digest is Slack-only, framing A);
+gcs digest link/text tweaks (`24375466b` `eac2d2257` — cw's digest links already
+open `#over-time`) and the wrangler-binary fix (`1365a874d` — already there);
+README reports section + preview images (`0fbb5dca8` `7f75fb7f7` — cw's README is
+its own); `og.jpg` refresh (`37d94ac20` — own asset); `/sweep` runs-table polish
+(`3a2a5ab03` `c853dc7bc` — cw's plan-first SweepPage differs structurally; a
+candidate for a later UI pass); `/api/bench` (`a0987d057` `2bfd8ba51` — an
+admin diagnostic gated on gcs's scope model); `specs/done/diff-perf.md` updates
+(`a95f5fc67` `f72a81c55` `4bb1e4946` `180a362c4` — gcs's own record).
+
+**Audit** (git-didi, after this pass): `packages/treemap/{src,tests}`,
+`packages/react/{src,tests}`, `src/disk_tree` **parity**; `job`, `gcs-usage/src`,
+`site/functions`, `site/src`, `site/wrangler.toml`, `site/migrations` differ by the
+rows above — which are now the whole intended delta.
+
+**The legible diff, cw-s3 vs gcs, after this pass** (what `diff cw-s3..gcs` should
+read as): *cw adds* the plan-first CAIOS sweep (`sweep.py`, `/api/plans`, `/api/sweep/
+{undo,purge}`, migrations 0001–0004, `SweepPage`), the TTL expiry manifest, the layer-2
+→ tier writer (`index.py`), the `#cw-s3-usage` digest content, `login.ts`/edge-Access
+auth, `?path=` drilling. *cw lacks* attribution and everything on it (owner axis,
+`/users`, `/user/:id`, `/assignments`, claims, the owner-slice sweep), the mark-state
+and storage-class axes, the auth package (`api/auth`, grants, tokens, `/admin`),
+the access log, `/marks`, `/api/marks/totals` + `todo` + `estate`, the Discord twin +
+weekly report, `/api/bench`, index extras. *Everything else* — the reader, the view
+planner/fold, the edge cache, the index sync, the treemap core, the React widgets, the
+disk-tree engine — is shared.
+
+**Follow-ups**: apply migration 0005 to prod D1 (`wrangler d1 migrations apply
+oa-cw-s3-usage-db --remote`) and rebuild `IMAGE:cw` before the next daily run so the
+job writes + syncs tiers (until then the page shows the honest "no index for this
+scan" for new scans; older scans backfill via `tmp/build-scan-index.sh <scan>` — the
+two local-synced scans, `2026-09-15T1201` and `2026-09-16T0001`, have their tiers in
+the bucket under `index/local-*/` and need a `--remote` sync); the `CACHE_KV`
+binding (KV namespace + KV-scoped token); an Access service token for `warm-cache`;
+`?path=` → URL-path drilling; `OgPage` onto `/api/subtree`; `/api/age` (both
+branches); file-level convergence of `Treemap`/`ChildrenTable` onto gcs's.
+
