@@ -43,7 +43,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3))
+        version: 4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0))
 
   packages/treemap:
     dependencies:
@@ -86,7 +86,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3))
+        version: 4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0))
 
   site:
     dependencies:
@@ -96,6 +96,9 @@ importers:
       '@floating-ui/react':
         specifier: ^0.27.20
         version: 0.27.20(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@open-athena/auth':
+        specifier: github:Open-Athena/auth#a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30
+        version: https://codeload.github.com/Open-Athena/auth/tar.gz/a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30(@cloudflare/workers-types@5.20260911.1)(@tanstack/react-query@5.101.4(react@19.2.8))(react@19.2.8)
       '@rdub/file-tree':
         specifier: https://github.com/runsascoded/file-tree#b64278c27d45479fe09507dabc0e16dd0a4b8b87
         version: https://codeload.github.com/runsascoded/file-tree/tar.gz/b64278c27d45479fe09507dabc0e16dd0a4b8b87(@disk-tree/react@packages+react)(@rdub/treemap@packages+treemap)(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))(wa-sqlite@1.0.0)(yaml@1.10.3)
@@ -156,7 +159,7 @@ importers:
         version: 7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3)
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3))
+        version: 4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0))
 
   ui:
     dependencies:
@@ -756,6 +759,21 @@ packages:
     engines: {node: ^22.20 || ^24.12 || >=25}
     cpu: [x64]
     os: [linux]
+
+  '@open-athena/auth@https://codeload.github.com/Open-Athena/auth/tar.gz/a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30':
+    resolution: {tarball: https://codeload.github.com/Open-Athena/auth/tar.gz/a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30}
+    version: 0.1.0-dist.0ac175c
+    peerDependencies:
+      '@cloudflare/workers-types': '*'
+      '@tanstack/react-query': ^5.0.0
+      react: ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@cloudflare/workers-types':
+        optional: true
+      '@tanstack/react-query':
+        optional: true
+      react:
+        optional: true
 
   '@parcel/watcher-android-arm64@2.6.0':
     resolution: {integrity: sha512-trgpLSCKRC/huFjXX/Smh+0sWe4+YtKfktIToiMl59ghz7z+qkH6kMvNnUbLyRs9N11t8l4svSCs1+5B3rOAhA==}
@@ -3498,6 +3516,12 @@ snapshots:
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
+  '@open-athena/auth@https://codeload.github.com/Open-Athena/auth/tar.gz/a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30(@cloudflare/workers-types@5.20260911.1)(@tanstack/react-query@5.101.4(react@19.2.8))(react@19.2.8)':
+    optionalDependencies:
+      '@cloudflare/workers-types': 5.20260911.1
+      '@tanstack/react-query': 5.101.4(react@19.2.8)
+      react: 19.2.8
+
   '@parcel/watcher-android-arm64@2.6.0':
     optional: true
 
@@ -3934,7 +3958,7 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.1
 
-  '@vitest/mocker@4.1.11(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3))':
+  '@vitest/mocker@4.1.11(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0))':
     dependencies:
       '@vitest/spy': 4.1.11
       estree-walker: 3.0.3
@@ -5858,10 +5882,10 @@ snapshots:
       sass: 1.102.0
       yaml: 1.10.3
 
-  vitest@4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3)):
+  vitest@4.1.11(@types/node@24.13.3)(jsdom@25.0.1)(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)):
     dependencies:
       '@vitest/expect': 4.1.11
-      '@vitest/mocker': 4.1.11(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0)(yaml@1.10.3))
+      '@vitest/mocker': 4.1.11(vite@7.3.6(@types/node@24.13.3)(sass@1.102.0))
       '@vitest/pretty-format': 4.1.11
       '@vitest/runner': 4.1.11
       '@vitest/snapshot': 4.1.11
