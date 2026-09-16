@@ -73,13 +73,17 @@ def _row_of(proj: str, run) -> dict:
     }
 
 
-def _mine_window(entity: str, proj: str, lo: str, hi: str, parts_dir, depth: int = 0) -> int:
+def _mine_window(entity: str, proj: str, lo: str, hi: str, parts_dir, depth: int = 0, spawn=None) -> int:
     """Mine runs created in [lo, hi); bisect when the window is too big.
 
     Each *leaf* window gets a fresh ``wandb.Api()`` (the SDK accumulates
     tens of GB of internal state across queries on a shared Api — observed
     wedging the work node three times on the ``marin`` project) and writes
     its own part file, so restarts skip completed windows.
+
+    ``spawn(lo, hi, depth)``, when given, receives the two halves of an
+    oversized window instead of recursing — the parallel miner points it at
+    the shared thread pool, so one dense project fans out across workers.
     """
     from datetime import datetime
 
@@ -103,6 +107,10 @@ def _mine_window(entity: str, proj: str, lo: str, hi: str, parts_dir, depth: int
         mid = (t0 + (t1 - t0) / 2).isoformat(timespec="seconds")
         if lo < mid < hi:
             del runs, api
+            if spawn is not None:
+                spawn(lo, mid, depth + 1)
+                spawn(mid, hi, depth + 1)
+                return 0
             total = _mine_window(entity, proj, lo, mid, parts_dir, depth + 1)
             total += _mine_window(entity, proj, mid, hi, parts_dir, depth + 1)
             return total
@@ -139,16 +147,26 @@ def mine_entity(
     since: str = ROOT_SINCE,
     until: str = ROOT_UNTIL,
     merge: bool = True,
+    jobs: int = 1,
 ) -> pd.DataFrame:
     """Mine every project of ``entity`` into ``out_path``.
 
     Incremental/resumable: work lands as parquet parts under
     ``<out_path stem>-parts/`` (per project, or per window for big projects)
-    and is skipped on re-runs; the final ``out_path`` is the deduplicated
-    concatenation. Parallelizable: give each worker a ``--since/--until``
-    range whose endpoints are bisection-tree edges (``window_edges()``) and
-    a shared parts dir; run once more with defaults to fill gaps + merge.
+    and is skipped on re-runs (an interrupt loses at most the in-flight
+    windows, ≤``WINDOW_MAX_RUNS`` runs each); the final ``out_path`` is the
+    deduplicated concatenation.
+
+    Parallelism (network-bound, so threads): ``jobs`` mines that many
+    projects concurrently — each leaf window already uses its own
+    ``wandb.Api``, so tasks share nothing. W&B rate limits are per API key;
+    a single key sustains ~8 workers comfortably (the serial miner is
+    latency-bound, nowhere near quota). For multi-*machine* runs, give each
+    worker a ``--since/--until`` bisection-edge range (``window_edges()``)
+    and a shared parts dir; run once more with defaults to fill gaps + merge.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     import wandb
 
     # The projects listing can silently truncate (observed: 15 of 205 projects,
@@ -170,19 +188,60 @@ def mine_entity(
     parts_dir = out_path.parent / (out_path.stem + "-parts")
     parts_dir.mkdir(parents=True, exist_ok=True)
     total = 0
+
+    # Whole-project part (small projects / pre-window era) means done; window
+    # parts are skipped inside _mine_window.
+    todo = []
     for i, proj in enumerate(projects, 1):
-        # Whole-project part (small projects / pre-window era) or any window part
-        # means the project is done/in-progress; window-level skips are inside.
         if (parts_dir / f"{_safe(proj)}.parquet").exists():
             err(f"[{i}/{len(projects)}] {proj}: exists, skipping", flush=True)
-            continue
-        try:
-            n = _mine_window(entity, proj, since, until, parts_dir)
-        except Exception as e:
-            err(f"  {proj}: FAILED {type(e).__name__}: {e}", flush=True)
-            continue
-        total += n
-        err(f"[{i}/{len(projects)}] {proj}: {n} runs ({total} new so far)", flush=True)
+        else:
+            todo.append(proj)
+
+    if jobs > 1:
+        # Work-queue over (project, window) tasks: an oversized window enqueues
+        # its halves via `spawn` and returns, so no task ever waits on another
+        # (deadlock-free with a bounded pool) and one dense project fans out
+        # across all workers. `total` += is CPython-atomic enough for progress.
+        from concurrent.futures import wait as fwait
+        from threading import Lock
+
+        futures: set = set()
+        flock = Lock()
+        pool = ThreadPoolExecutor(max_workers=jobs)
+
+        def submit(proj: str, lo: str, hi: str, depth: int = 0) -> None:
+            def work() -> None:
+                nonlocal total
+                try:
+                    total += _mine_window(
+                        entity, proj, lo, hi, parts_dir, depth,
+                        spawn=lambda a, b, d: submit(proj, a, b, d),
+                    )
+                except Exception as e:
+                    err(f"  {proj} [{lo} .. {hi}): FAILED {type(e).__name__}: {e}", flush=True)
+            with flock:
+                futures.add(pool.submit(work))
+
+        for proj in todo:
+            submit(proj, since, until)
+        while True:
+            with flock:
+                pending = {f for f in futures if not f.done()}
+            if not pending:
+                break
+            fwait(pending)
+        pool.shutdown()
+        err(f"parallel mine done: {total} new runs across {len(todo)} projects", flush=True)
+    else:
+        for i, proj in enumerate(todo, 1):
+            try:
+                n = _mine_window(entity, proj, since, until, parts_dir)
+            except Exception as e:
+                err(f"  {proj}: FAILED {type(e).__name__}: {e}", flush=True)
+                continue
+            total += n
+            err(f"[{i}/{len(todo)}] {proj}: {n} runs ({total} new so far)", flush=True)
 
     if not merge:
         err(f"worker done ({total} runs); skipping merge", flush=True)
