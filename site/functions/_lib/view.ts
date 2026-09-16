@@ -677,9 +677,11 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   if (!ra && !rb) throw new NotFound(path)
   const threshold = o.threshold ?? (Math.max(ra?.b ?? 0, rb?.b ?? 0) * o.minArea) / (o.w * o.h)
   t0 = performance.now()
+  // A depth-capped walk only ever consults rows down to that depth, so the
+  // views read just those bands (`depth=1`: two groups instead of ~25 a side).
   const [va, vb] = await Promise.all([
-    ra ? readView(env, { ...o, date: from, threshold }) : null,
-    rb ? readView(env, { ...o, date: to, threshold }) : null,
+    ra ? readView(env, { ...o, date: from, threshold, ...(o.depth != null ? { maxDepth: o.depth } : {}) }) : null,
+    rb ? readView(env, { ...o, date: to, threshold, ...(o.depth != null ? { maxDepth: o.depth } : {}) }) : null,
   ])
   tr?.('views', performance.now() - t0)
   const walkStart = performance.now()
