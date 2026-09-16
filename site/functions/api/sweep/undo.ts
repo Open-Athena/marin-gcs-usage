@@ -37,7 +37,7 @@ export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> 
   }
 
   const jobId = `cw-undo-${jobStamp()}z`
-  const script = `set -euo pipefail\ndt-cloud sweep undo "${runMountPath(runId)}"`
+  const script = `set -euo pipefail\ndt-cloud plan-sweep undo "${runMountPath(runId)}"`
   const token = await gcpToken(ctx.env.GCP_SA_KEY)
   const { ok, status, text } = await submitBatch(token, jobId, sweepBatchSpec(script, { OP: "undo", TARGET_RUN: runId }))
   if (!ok) {
