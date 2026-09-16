@@ -14,6 +14,7 @@
  * got (or lost) its tiers, rather than showing a gap.
  */
 import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
+import { snapshotsPrefix } from '../_lib/shared.js'
 import { type Lens, makeStore } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner } from '../_lib/scope.js'
@@ -21,7 +22,6 @@ import { readRootAgg } from '../_lib/view.js'
 
 // The default store's snapshot dirs (`snapshots/<date>/`; other stores live in
 // a named subdir that DATE_RE keeps out), and the scan-id shape they're named by.
-const SNAPSHOTS_PREFIX = 'snapshots/'
 const DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{4})?$/
 
 /** Scans present as snapshot dirs but absent from the index (oldest first). */
@@ -30,9 +30,9 @@ async function unindexedScans(env: Ctx['env'], indexed: Set<string>): Promise<st
   const out: string[] = []
   let cursor: string | undefined
   do {
-    const page = await store.list(SNAPSHOTS_PREFIX, { cursor })
+    const page = await store.list(snapshotsPrefix(env), { cursor })
     for (const e of page.entries) {
-      const d = e.key.slice(SNAPSHOTS_PREFIX.length).replace(/\/$/, '')
+      const d = e.key.slice(snapshotsPrefix(env).length).replace(/\/$/, '')
       if (e.isDir && DATE_RE.test(d) && !indexed.has(d)) out.push(d)
     }
     cursor = page.cursor
@@ -43,7 +43,7 @@ async function unindexedScans(env: Ctx['env'], indexed: Set<string>): Promise<st
 /** A whole-bucket point from a scan's `meta.json` (no tiers needed). */
 async function metaPoint(env: Ctx['env'], date: string): Promise<{ date: string; b: number; o: number } | null> {
   try {
-    const { bytes } = await makeStore(env).get(`${SNAPSHOTS_PREFIX}${date}/meta.json`)
+    const { bytes } = await makeStore(env).get(`${snapshotsPrefix(env)}${date}/meta.json`)
     const m = JSON.parse(new TextDecoder().decode(bytes)) as { total_bytes?: number; total_objects?: number }
     return typeof m.total_bytes === 'number' ? { date, b: m.total_bytes, o: m.total_objects ?? 0 } : null
   } catch (e) {

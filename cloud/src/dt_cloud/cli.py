@@ -984,7 +984,7 @@ def warm_cache(date: str | None, jobs: int, dry_run: bool, root: str | None, tok
     # Deployment config: SITE_URL / SNAPSHOTS_SUBDIR (the CoreWeave job exports
     # cw-s3.oa.dev + snapshots/cw); defaults are the GCS deployment's.
     site_url = site_url or os.environ.get("SITE_URL") or wk.DEFAULT_URL
-    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/{os.environ.get('SNAPSHOTS_SUBDIR', 'snapshots')}"
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots" + (f"/{os.environ['SNAPSHOTS_SUBDIR'].strip('/')}" if os.environ.get('SNAPSHOTS_SUBDIR') else '')
     dates = wk.scan_dates(root)
     if not dates:
         raise SystemExit("warm-cache: no scans under root")

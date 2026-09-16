@@ -51,6 +51,8 @@ export interface Env {
   BASE_SCOPE?: string
   /** The store root's crumb label (`marin GCS`, `marin CoreWeave`). */
   ROOT_LABEL?: string
+  /** Snapshot dir of this store inside the data bucket (`snapshots/<sub>/`); unset = the bare `snapshots/`. */
+  SNAPSHOTS_SUBDIR?: string
   /** Dedicated SA key (Batch submit + actAs the job SA) for the sweep dispatch bridge. */
   GCP_SA_KEY?: string
 }
