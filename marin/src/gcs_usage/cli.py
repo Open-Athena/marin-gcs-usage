@@ -533,20 +533,44 @@ def sweep_manifest(date: str, l2_path: str | None, out: str, plan_path: str) -> 
     print(json.dumps(summary))
 
 
+@sweep.command("expire-manifest")
+@option("-b", "--bucket", default=None, help="Bucket (default $CW_BUCKET)")
+@option("-e", "--early-days", type=float, default=0.0, help="Also take objects within this many days of their TTL (age >= N - EARLY_DAYS)")
+@option("-o", "--out", required=True, help="Output run dir for manifest/ + plan-summary.json (what `sweep execute` consumes)")
+@option("-t", "--now-ts", type=int, default=None, help="Epoch seconds to age against (default: now)")
+@argument("l2_parquet")
+def sweep_expire_manifest(bucket: str | None, early_days: float, out: str, now_ts: int | None, l2_parquet: str) -> None:
+    """Manifest of the `tmp/ttl=<N>d/` objects past (or within EARLY_DAYS of)
+    their TTL, from the layer-2 parquet L2_PARQUET, in the run-dir layout
+    `sweep execute` consumes. Objects younger than their TTL under the same
+    roots are not in the manifest, so the executor counts them as drift and
+    leaves them alone."""
+    import json
+    import time
+
+    from .sweep import CW_BUCKET, build_expiry_manifest
+
+    s = build_expiry_manifest(l2_parquet, out, bucket=bucket or CW_BUCKET, now_ts=now_ts or int(time.time()), early_days=early_days)
+    err(f"expire-manifest: {s['objects']} objects / {s['bytes']} bytes across {s['sweep']} -> {s['manifest']}")
+    print(json.dumps(s))
+
+
 @sweep.command("execute")
+@option("-G", "--no-versioning-guard", is_flag=True, help="Skip the versioning preflight: a real delete is then PERMANENT (no delete marker to undo)")
 @option("-r", "--for-real", is_flag=True, help="Actually delete (writes recoverable delete markers); default is a dry run")
 @argument("run_dir")
-def sweep_execute(for_real: bool, run_dir: str) -> None:
+def sweep_execute(no_versioning_guard: bool, for_real: bool, run_dir: str) -> None:
     """Execute the manifest under RUN_DIR against CoreWeave S3 (boto3).
 
     Default is a dry run (touches nothing). `--for-real` deletes reviewed keys
     whose (size, mtime) still match; refused unless the bucket has versioning
-    Status=Enabled."""
+    Status=Enabled — `-G` disables that guard (deletes become permanent; the
+    summary records `versioning_guard: false`)."""
     import json
 
     from .sweep import execute_plan
 
-    s = execute_plan(run_dir, for_real=for_real)
+    s = execute_plan(run_dir, for_real=for_real, require_versioning=not no_versioning_guard)
     err(
         f"{'REAL' if for_real else 'DRY'}: {s['deleted_objects']} objs / {s['deleted_bytes']} bytes; "
         f"gone {s['skipped_gone']} overwritten {s['skipped_overwritten']} "

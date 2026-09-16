@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -185,6 +186,73 @@ def build_manifest(l2_path: str, plan: Plan, out_dir: str) -> dict:
     return summary
 
 
+def build_expiry_manifest(
+    l2_path: str,
+    out_dir: str,
+    *,
+    bucket: str,
+    now_ts: int,
+    early_days: float = 0.0,
+    ttl_re: str = r"^tmp/ttl=(\d+)d/",
+) -> dict:
+    """Manifest of the `tmp/ttl=<N>d/` objects that are past their TTL (or within
+    `early_days` of it) as of `now_ts`, from the layer-2 parquet at `l2_path`:
+    file rows whose path matches `ttl_re` with `(now_ts - mtime) / 86400 >=
+    N - early_days`. Writes the SAME run-dir layout `execute_plan` consumes —
+    `manifest/<bucket>.parquet` (`name, size_bytes, mtime, dir`, ORDER BY name)
+    + `plan-summary.json` whose `sweep` roots are the distinct `tmp/ttl=<N>d/`
+    prefixes that actually have rows and whose `expiry` block carries the
+    parameters + a per-TTL breakdown.
+
+    The executor lists each root and deletes only the reviewed keys whose
+    (size, mtime) still match; a live key under a root that is NOT in the
+    manifest — here, an object younger than its TTL — is counted as `drift_new`
+    and left untouched. That is exactly the behaviour wanted: only the aged
+    objects go. Deletes nothing; pure read + artifact write.
+    """
+    out = Path(out_dir)
+    (out / "manifest").mkdir(parents=True, exist_ok=True)
+    manifest_path = out / "manifest" / f"{bucket}.parquet"
+
+    con = duckdb.connect()
+    con.execute(f"SET memory_limit='{os.environ.get('DUCKDB_MEM', '8GB')}'")
+    con.execute("SET VARIABLE L2 = ?", [l2_path])
+    expired = """
+        SELECT
+          path AS name,
+          size AS size_bytes,
+          mtime,
+          CASE WHEN path LIKE '%/%' THEN regexp_replace(path, '/[^/]*$', '/') ELSE '' END AS dir,
+          CAST(regexp_extract(path, $re, 1) AS INTEGER) AS ttl_days
+        FROM read_parquet(getvariable('L2'))
+        WHERE kind = 'file'
+          AND regexp_matches(path, $re)
+          AND ($now - mtime) / 86400.0 >= CAST(regexp_extract(path, $re, 1) AS INTEGER) - $early
+    """
+    params = {"re": ttl_re, "now": now_ts, "early": early_days}
+    con.execute(
+        f"COPY (SELECT name, size_bytes, mtime, dir FROM ({expired}) ORDER BY name) TO '{manifest_path}' (FORMAT PARQUET)",
+        params,
+    )
+    by_ttl = {
+        int(n): {"objects": int(o), "bytes": int(b)}
+        for n, o, b in con.execute(
+            f"SELECT ttl_days, count(*), coalesce(sum(size_bytes), 0) FROM ({expired}) GROUP BY 1 ORDER BY 1", params
+        ).fetchall()
+    }
+    summary = {
+        "bucket": bucket,
+        "sweep": [f"tmp/ttl={n}d/" for n in by_ttl],
+        "keep": [],
+        "objects": sum(v["objects"] for v in by_ttl.values()),
+        "bytes": sum(v["bytes"] for v in by_ttl.values()),
+        "manifest": str(manifest_path),
+        "expiry": {"early_days": early_days, "now_ts": now_ts, "by_ttl": by_ttl},
+    }
+    (out / "plan-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    return summary
+
+
 # --- executor -------------------------------------------------------------
 
 def prefix_free(prefixes: list[str]) -> list[str]:
@@ -234,6 +302,7 @@ def execute_plan(
     client: "S3Client | None" = None,
     delete_workers: int = 16,
     mtime_tol: int = 1,
+    require_versioning: bool = True,
 ) -> dict:
     """Execute the manifest under `run_dir` against CoreWeave S3 (boto3).
 
@@ -242,6 +311,8 @@ def execute_plan(
     — new keys since the scan are left alone (drift), changed ones skipped
     (overwritten), vanished ones noted (gone). A real delete writes a recoverable
     delete marker (guarded by bucket versioning); a dry run touches nothing.
+    `require_versioning=False` skips that guard — deletes are then PERMANENT —
+    loudly, and the summary records `versioning_guard: false`.
 
     Writes a decision-log parquet + `<deleted|would-delete>-summary.json` under
     `run_dir` and returns the summary. Does NOT write D1 — the Functions layer
@@ -256,11 +327,13 @@ def execute_plan(
     roots = prefix_free(sweep)
 
     client = client or s3_client()
-    if for_real and not versioning_enabled(client, bucket):
+    if for_real and require_versioning and not versioning_enabled(client, bucket):
         raise SweepError(
             f"refusing real delete: bucket {bucket} versioning is not Status=Enabled "
             "(no recoverable delete marker; see specs/cw-sweep.md)"
         )
+    if for_real and not require_versioning:
+        print(f"WARNING: versioning guard disabled — deletes are permanent (bucket {bucket})", file=sys.stderr)
 
     manifest_path = run / "manifest" / f"{bucket}.parquet"
     manifest = {
@@ -353,6 +426,7 @@ def execute_plan(
         "name": plan_summary.get("name"),
         "bucket": bucket,
         "mode": "real" if for_real else "dry",
+        "versioning_guard": require_versioning,
         **counters,
         "bands": [{"prefix": b, **v} for b, v in sorted(bands.items())],
         "started_ts": started,
