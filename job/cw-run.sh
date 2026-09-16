@@ -2,7 +2,8 @@
 # CoreWeave S3 scan job (GCP Batch). Chain:
 #   1. bulk-list  s3://<bucket> via the CAIOS S3-compatible endpoint
 #   2. import     listing shards -> canonical layer-2 parquet
-#   3. webdata    layer-2 -> the site's tree/age/meta JSONs
+#   3. webdata    layer-2 -> the site's tree/age/meta JSONs (the diff is
+#                 served live from the index tiers — step 4b)
 #   4. publish    JSONs to gs://$DATA/snapshots/cw/<id>/
 #
 # Why GCP Batch and not AWS Batch: the output lands in GCS (the site's Pages
@@ -80,16 +81,6 @@ L2=$(ls "$WORK"/l2/scans/*.parquet | head -1)
 
 # 3. Site JSONs.
 python job/cw-webdata.py "$L2" "$WORK/web" -b "$BUCKET" -l "Marin CoreWeave" -a "$DATE"
-
-# 3.5. Diff vs the previous snapshot, precomputed here because the site is
-# static. Consecutive pairs only (no pair explosion); the previous l2 is
-# copied local first — the diff walk does a few hundred filtered reads, which
-# beat on a FUSE mount but are cheap against local disk.
-PREV=$(ls "/gcs/$DATA/cw-l2/" 2>/dev/null | awk -v s="$SNAP_ID" '$0 < s' | sort | tail -1)
-if [ -n "$PREV" ] && [ -f "/gcs/$DATA/cw-l2/$PREV/$BUCKET.parquet" ]; then
-  cp "/gcs/$DATA/cw-l2/$PREV/$BUCKET.parquet" "$WORK/prev.parquet"
-  python job/cw-diff.py "$WORK/prev.parquet" "$L2" "$WORK/web/diff.json" -p "$PREV" -c "$SNAP_ID"
-fi
 
 # 4. Publish. Written last and all at once: the site's scan list is derived by
 # listing this prefix, so a partially-uploaded snapshot would show up in the

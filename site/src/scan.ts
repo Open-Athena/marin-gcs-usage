@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import type { UseQueryResult } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import { useUrlState } from 'use-prms'
 
 // How often an unpinned tab re-checks for newly published scans.
@@ -142,24 +144,35 @@ export interface Scan {
   setSpan: (ms: number | undefined) => void
   /** Pin + look-back in one URL write (a chart brush sets both). */
   setRange: (d: string | undefined, ms: number | undefined) => void
+  /** The scan-list query (error → the sign-in prompt, not a crash). */
+  scansQ: UseQueryResult<string[]>
+}
+
+export function useScans(): UseQueryResult<string[]> {
+  return useQuery<string[]>({
+    queryKey: ['scans'],
+    // Throw on non-OK (e.g. a 401 from the data proxy with no session) so
+    // react-query holds it as an error rather than handing the error body
+    // downstream — `scans` then stays `[]` and the error surfaces as a sign-in
+    // prompt rather than crashing `scans.map`.
+    queryFn: async () => {
+      const r = await fetch('/data/scans.json')
+      if (!r.ok) throw Object.assign(new Error(`scans: ${r.status}`), { status: r.status })
+      return r.json()
+    },
+    refetchInterval: SCANS_POLL_MS,
+  })
 }
 
 // Shared scan resolution: `?d=YYMMDD` (a prefix of a scan id) pins a scan;
 // absent means "latest" (a first-class state, so a parked tab follows new scans
 // via the poll rather than freezing on the day it opened). `scans` is
 // newest-first, so the first prefix match is the newest. Ported from gcs
-// (`9b8d237`, specs/scan-param-all-pages.md) minus react-query — this branch
-// fetches with plain `fetch`, so the poll is a bare interval.
+// (`9b8d237`, specs/scan-param-all-pages.md); one store here, so no argument.
 export function useScan(): Scan {
-  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel })
-  const [scans, setScans] = useState<string[]>([])
-  useEffect(() => {
-    // Per-scan payloads are immutable once published; only the list moves.
-    const load = () => void fetch('/data/scans.json').then(r => (r.ok ? r.json() : [])).then(setScans).catch(() => {})
-    load()
-    const t = setInterval(load, SCANS_POLL_MS)
-    return () => clearInterval(t)
-  }, [])
+  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel }, true)
+  const scansQ = useScans()
+  const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
   const dP = sel?.d
   const span = sel?.span
   const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
@@ -170,5 +183,5 @@ export function useScan(): Scan {
   }
   const setDP = (v: string | undefined) => setRange(v, span)
   const setSpan = (ms: number | undefined) => setRange(dP, ms)
-  return { asof, scans, dMatches, dP, setDP, span, setSpan, setRange }
+  return { asof, scans, dMatches, dP, setDP, span, setSpan, setRange, scansQ }
 }

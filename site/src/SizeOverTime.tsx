@@ -1,18 +1,20 @@
 import { TimeSeries } from '@disk-tree/react'
 import type { Annotation } from '@disk-tree/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import { boolParam, useUrlState } from 'use-prms'
+import { Skeleton } from './Busy'
 import { scanTime } from './scan'
-import type { Meta } from './types'
 import { useUnits } from './units'
 
-// Stored bytes over the historical scans (CP'd from gcs; specs/size-over-time.md
-// case 1, fleet-total form). gcs scopes this to the drilled prefix via a
-// precomputed cross-scan `series.json`; the CW job publishes no such index yet,
-// so this plots the bucket total from each scan's meta.json (~4 KB each,
-// fetched once and cached for the tab's life — scans are immutable).
+// Stored bytes over the historical scans, scoped like the map: the drilled
+// prefix (`/api/series` — one row read per scan in that scan's index tiers;
+// specs/view-serving.md §1). Nothing is precomputed per prefix and nothing is
+// floored. gcs's component minus its owner axis (no attribution here); points
+// sit at each scan's UTC instant (cw scans are sub-daily).
 
 interface Pt { x: number; y: number }
+interface Series { path: string; points: { date: string; b: number; o: number }[] }
 
 // Nice y-ticks aligned to the *display* unit: a base-10-nice byte value (1e15)
 // is an ugly binary label (909 TiB), so nice-tick in the unit's own base
@@ -49,18 +51,10 @@ function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
   )
 }
 
-const metaLoads = new Map<string, Promise<Meta | null>>()
-const loadMeta = (d: string): Promise<Meta | null> => {
-  let p = metaLoads.get(d)
-  if (!p) {
-    p = fetch(`/data/${d}/meta.json`).then(r => (r.ok ? (r.json() as Promise<Meta>) : null)).catch(() => null)
-    metaLoads.set(d, p)
-  }
-  return p
-}
-
-export function SizeOverTime({ scans, onPickDate, onBrush, window: win }: {
+export function SizeOverTime({ scans, prefix, onPickDate, onBrush, window: win }: {
   scans: string[]
+  /** The drilled prefix (bucket-relative index path; '' = everything). */
+  prefix: string
   /** Click a point → view the page as of that scan (pins `?d=`). */
   onPickDate?: (scan: string) => void
   /** Drag across the chart → make [from, to] the page's diff window. */
@@ -77,28 +71,34 @@ export function SizeOverTime({ scans, onPickDate, onBrush, window: win }: {
   const pickX = onPickDate && ((x: number) => { const s = scanAt(x); if (s) onPickDate(s) })
   const brushX = onBrush && ((x0: number, x1: number) => { const a = scanAt(x0); const b = scanAt(x1); if (a && b) onBrush(a, b) })
 
-  const [totals, setTotals] = useState<Record<string, number>>({})
-  useEffect(() => {
-    let live = true
-    for (const d of scans) {
-      if (d in totals) continue
-      void loadMeta(d).then(m => { if (live && m) setTotals(prev => (d in prev ? prev : { ...prev, [d]: m.total_bytes })) })
-    }
-    return () => { live = false }
-  }, [scans, totals])
+  const seriesQ = useQuery<Series>({
+    queryKey: ['series', prefix, scans.length],
+    enabled: scans.length > 1,
+    staleTime: 5 * 60_000,
+    queryFn: async () => {
+      const r = await fetch(`/api/series?path=${encodeURIComponent(prefix)}`, { credentials: 'include' })
+      if (!r.ok) throw new Error(`series: ${r.status}`)
+      return r.json()
+    },
+  })
 
   const series = useMemo(() => {
-    const points = scans
-      .map(d => ({ x: scanTime(d), y: totals[d] }))
-      .filter((p): p is Pt => p.y != null && Number.isFinite(p.x))
+    const pts = (seriesQ.data?.points ?? [])
+      .map(p => ({ x: scanTime(p.date), y: p.b }))
+      .filter(p => Number.isFinite(p.x))
       .sort((a, b) => a.x - b.x)
-    return points.length < 2 ? [] : [{ key: 'total', label: 'total', color: 'var(--s1)', points }]
-  }, [scans, totals])
+    if (pts.length < 2) return []
+    return [{ key: 'scoped', label: prefix || 'total', color: 'var(--s1)', points: pts }]
+  }, [seriesQ.data, prefix])
+  // A prefix that holds nothing in any scan is a flat zero line — say so
+  // instead of drawing an empty axis.
+  const allZero = series.length === 1 && series[0].points.every(p => p.y === 0)
 
   // Callouts at the points a reader looks for first: the ends of the series
   // and its extremes. Coinciding roles (first is also max) share one label.
   const annotations = useMemo((): Annotation[] => {
-    const pts = series[0]?.points ?? []
+    if (series.length !== 1) return []
+    const pts = series[0].points
     if (pts.length < 2) return []
     let lo = pts[0]
     let hi = pts[0]
@@ -126,8 +126,15 @@ export function SizeOverTime({ scans, onPickDate, onBrush, window: win }: {
   return (
     <section id="over-time">
       <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
-      <p className="sub">Total stored bytes per scan (whole bucket){onPickDate && ' — click a point to view the page as of that scan'}{onBrush && ', drag to set the diff window'}.</p>
-      {series.length > 0 && (
+      <p className="sub">
+        {prefix ? <>Stored bytes under <code>{prefix}</code> per scan.</> : <>Total stored bytes per scan (whole bucket).</>}
+        {' '}Each point is that scan’s own index row — exact, at any depth.
+        {onPickDate && ' Click a point to view the page as of that scan'}{onBrush && ', drag to set the diff window'}.
+        {seriesQ.isError && <> <i>(series unavailable)</i></>}
+      </p>
+      {allZero ? (
+        <p className="loading">nothing{prefix ? <> under <code>{prefix}</code></> : ''} in any scan</p>
+      ) : series.length > 0 ? (
         <TimeSeries<Pt>
           series={series}
           getX={p => p.x}
@@ -143,6 +150,8 @@ export function SizeOverTime({ scans, onPickDate, onBrush, window: win }: {
           onBrush={brushX}
           window={win && [scanTime(win[0]), scanTime(win[1])]}
         />
+      ) : (
+        seriesQ.isLoading ? <Skeleton height={220} label="loading series…" /> : <p className="loading">fewer than two scans hold this path</p>
       )}
     </section>
   )

@@ -12,7 +12,7 @@ const { abs, max, min, sign } = Math
 const UNCHANGED_GREY = 'rgba(110, 118, 129, 0.28)'
 const deltaColor = (t: number) => divergingColor(-t)
 
-// diff.json row (job/cw-diff.py): p=path d=depth k=kind s=status a/b=bytes
+// /api/diff row (functions/_lib/view.ts buildDiff): p=path d=depth k=kind s=status a/b=bytes
 // oa/ob=n_desc x=expanded pr=pruned.
 export interface DiffRow {
   p: string
@@ -37,6 +37,12 @@ export interface DiffData {
   expansions: number
   truncated: boolean
   rows: DiffRow[]
+  /** `/api/diff` extras: the shared byte floor both sides were read at, which
+   * tier answered, and whether the one-sided lookup budget ran out. */
+  threshold?: number
+  tier?: string
+  lookups?: number
+  lookups_capped?: boolean
 }
 
 type AreaMode = 'max' | 'delta'

@@ -85,3 +85,22 @@ export function ClassMixTip({ mix, note }: { mix: Record<string, number>; note?:
     </div>
   )
 }
+
+/** use-kbd `SpeedDial` `TooltipRenderer`: the same floating tip, anchored to
+ * the hovered dial button (use-kbd owns hover detection and mounts this only
+ * while a button is hovered), placed to the dial's left so it never leaves the
+ * viewport. Replaces the native `title=` the dial falls back to. */
+export function SpeedDialTip({ title, anchor }: { title: string; anchor: HTMLElement }) {
+  const { refs, floatingStyles } = useFloating({
+    open: true,
+    elements: { reference: anchor },
+    placement: 'left',
+    middleware: [offset(8), flip(), shift({ padding: 8 })],
+    whileElementsMounted: autoUpdate,
+  })
+  return (
+    <FloatingPortal>
+      <div className="tooltip-content" ref={refs.setFloating} style={floatingStyles} role="tooltip">{title}</div>
+    </FloatingPortal>
+  )
+}

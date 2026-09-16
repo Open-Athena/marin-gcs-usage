@@ -135,10 +135,13 @@ export async function readRootAgg(env: Env, o: { date: string; path: string }): 
   let rows: Row[] = []
   if (top) rows = await readRoot(top, path, dP)
   if (!rows.length) {
-    const fine = await tryOpen(env, date, 'path')
-    if (!fine) return null
+    // A scan with no synced index is a 409 for the caller (`not synced`),
+    // never a zero-byte side — a diff against it would read as "everything
+    // removed". A path absent from a synced scan is the null.
+    const fine = await openIndex(env, date, 'path')
     rows = await readRoot(fine, path, dP)
   }
+  if (!rows.length) return null
   const agg = newAgg()
   for (const r of rows) merge(agg, r)
   return { b: agg.b, o: agg.o }

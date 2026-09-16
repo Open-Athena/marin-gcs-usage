@@ -102,6 +102,9 @@ importers:
       '@rdub/treemap':
         specifier: workspace:*
         version: link:../packages/treemap
+      '@tanstack/react-query':
+        specifier: ^5.101.4
+        version: 5.101.4(react@19.2.8)
       hyparquet:
         specifier: ^1.27.1
         version: 1.28.2
