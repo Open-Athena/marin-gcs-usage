@@ -58,7 +58,7 @@ Of the three candidates —
 **OP** — sender `CoreWeave usage — <Month YYYY>` with the `:calendar:` icon; body:
 
 ```
-:arrow_degNN: **±Δ TiB** month-to-date · <TiB> TiB · NN.N% of 1 PB · [dashboard](https://cw-s3.oa.dev/)
+:arrow_degNN: **±Δ TiB** [month-to-date](https://cw-s3.oa.dev/?d=<latest>-<span since lead-in>#diff) · <TiB> TiB · NN.N% of 1 PB · [dashboard](https://cw-s3.oa.dev/)
 
 *Weekly summaries*
 :arrow_degNN: [wk of M/D](diff link over the week): **±Δ TiB** → <TiB> TiB · NN.N% of 1 PB

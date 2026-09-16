@@ -246,8 +246,11 @@ def op_body(month: Month, m: dt.date, plot_url: str | None, site_url: str = DEFA
     mdtb = last.tb - base.tb
     days = (scan_ts(last.scan) - scan_ts(base.scan)).total_seconds() / 86400 or 1.0
     mweekly = (mdtb / base.tb * 100 * 7 / days) if base.tb else 0
+    # "month-to-date" opens the Diff section over the whole month so far
+    # (lead-in scan -> latest), the same way each weekly bullet links its span
+    mtd_url = _diff_url(last.scan, scan_ts(base.scan) if base is not last else None, site_url)
     lines = [
-        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** month-to-date · {last.tb:,.0f} TiB · {_quota(last.tb)} · [dashboard]({site_url}/)",
+        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {last.tb:,.0f} TiB · {_quota(last.tb)} · [dashboard]({site_url}/)",
         "",
         "*Weekly summaries*",
     ]

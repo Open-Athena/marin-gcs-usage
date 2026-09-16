@@ -96,7 +96,7 @@ def test_op_body():
     # month-to-date +10.0 on 705 over 2 days → 1.42%·3.5 = 5.0%/wk → deg40;
     # the (partial) week +10.0 → 1.4% → deg20, linked over 8/31 12:00 → 9/2 12:00 = 2d
     assert D.op_body(MONTH, SEP, "https://x/p.png").split("\n") == [
-        f":arrow_deg40: **+10.0 TiB** month-to-date · 715 TiB · 78.6% of 1 PB · [dashboard]({SITE}/)",
+        f":arrow_deg40: **+10.0 TiB** [month-to-date]({SITE}/?d=260902-1200-2d#diff) · 715 TiB · 78.6% of 1 PB · [dashboard]({SITE}/)",
         "",
         "*Weekly summaries*",
         f":arrow_deg20: [wk of 8/31]({SITE}/?d=260902-1200-2d#diff) _(partial)_: **+10.0 TiB** → 715 TiB · 78.6% of 1 PB",
