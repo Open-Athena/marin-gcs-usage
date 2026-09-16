@@ -15,7 +15,6 @@ import { ChildrenTable } from './ChildrenTable'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
-import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
@@ -931,15 +930,6 @@ function AppContent() {
           <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
         )}
       </SiteNav>
-
-      {/* Stores whose scan job snapshots the bucket's lifecycle rules get the
-          fold here (cw-s3 today); the rows diff against the previous scan. */}
-      {store.lifecycle && (
-        <LifecycleFold
-          store={store} asof={asof} prevScan={prevScan}
-          note={<>Intended state is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
-        />
-      )}
 
       {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
           end) with a strip listing every candidate to pin one. */}
