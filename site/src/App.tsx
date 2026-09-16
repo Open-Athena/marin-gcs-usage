@@ -562,13 +562,14 @@ function AppContent() {
               <b>{meta.asof}</b>
             )}
           </span>
-          <button
-            className="units-btn" type="button"
-            onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
-            title="Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B"
-          >
-            {(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}
-          </button>
+          <Tooltip content={<>Byte units, site-wide: click toggles TiB (binary) ↔ TB (decimal); shift-click toggles the trailing B</>}>
+            <button
+              className="units-btn" type="button"
+              onClick={e => (e.shiftKey ? toggleSuffixB : toggleUnits)()}
+            >
+              {(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}
+            </button>
+          </Tooltip>
           {hasAttr && (
             <span className="pb-grp colorby" role="radiogroup" aria-label="Color plots by">
               <span className="lbl">color by</span>
@@ -578,7 +579,7 @@ function AppContent() {
                 </button>
               ))}
               {hl && (
-                <button className="hlchip" onClick={clearHl} title="Clear highlight (x)">{hlUser} ✕</button>
+                <Tooltip content="Clear highlight (x)"><button className="hlchip" onClick={clearHl}>{hlUser} ✕</button></Tooltip>
               )}
             </span>
           )}
@@ -664,11 +665,12 @@ function AppContent() {
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (
-                  <button key={label} role="radio" aria-checked={diffPrev === scan} className={diffPrev === scan ? 'on' : ''}
-                    title={`${fmtScan(scan)} → ${fmtScan(asof)}`}
-                    onClick={() => setSpan(scan === prevScan ? undefined : ms)}>
-                    {label}
-                  </button>
+                  <Tooltip key={label} content={`${fmtScan(scan)} → ${fmtScan(asof)}`}>
+                    <button role="radio" aria-checked={diffPrev === scan} className={diffPrev === scan ? 'on' : ''}
+                      onClick={() => setSpan(scan === prevScan ? undefined : ms)}>
+                      {label}
+                    </button>
+                  </Tooltip>
                 ))}
               </span>
             )}
