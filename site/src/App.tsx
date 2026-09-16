@@ -542,11 +542,11 @@ function AppContent() {
           <span><b>About</b> — the data &amp; color modes</span>
         </summary>
         <p>
-          Storage in CoreWeave AI Object Storage (<code>s3://marin-us-east-02a</code> and friends),
-          from a scheduled per-object listing. Treemap drills into prefixes; the “color by” control recolors
-          both plots — by top-level tree, age (older→newer), or owning user (hi-contrast). Ownership comes
-          from the <code>marin-gcs-usage</code> attribution pipeline (W&B run/config joins, executor sidecars,
-          manual curation) — hover a cell for its top users, or <kbd>⌘K</kbd> to jump to a user.
+          Storage in CoreWeave AI Object Storage (<code>s3://marin-us-east-02a</code>), from a per-object
+          listing every 12 h. The treemap drills into prefixes; “color by” recolors both plots by top-level
+          tree or age (older→newer). Objects under <code>tmp/ttl=&lt;N&gt;d/</code> expire by the bucket’s
+          lifecycle rules; everything else is deleted only through a reviewed plan on the Sweep page
+          (keep/sweep marks → plan → dry run → real run).
         </p>
       </details>
 

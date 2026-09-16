@@ -29,7 +29,7 @@ export const STORES: Store[] = [
     key: 'cw',
     label: 'CoreWeave',
     title: 'Marin CoreWeave usage',
-    desc: 'Per-user storage attribution across the Marin CoreWeave buckets.',
+    desc: 'Storage usage of the Marin CoreWeave bucket — treemap, diffs over time, and a reviewed sweep tool.',
     path: '/',
     scheme: 's3://',
     base: '/data/cw',
