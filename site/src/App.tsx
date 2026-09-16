@@ -20,6 +20,7 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
 import { ChildrenTable } from './ChildrenTable'
 import { useHashSpy } from './hashSpy'
+import { LifecycleFold } from './LifecycleFold'
 import { useMarks } from './marks'
 import { DiffTable } from './DiffTable'
 import type { AgeRow, ColorMode, Meta, Pricing, Rules, TreeNode } from './types'
@@ -549,6 +550,11 @@ function AppContent() {
           (keep/sweep marks → plan → dry run → real run).
         </p>
       </details>
+
+      <LifecycleFold
+        store={store} asof={asof} prevScan={prevScan}
+        note={<>Intended state is tracked in <code>job/cw-lifecycle.json</code> (<code>gcs-usage lifecycle diff|push</code>).</>}
+      />
 
       {/* Page-scoped controls, sticky under the top edge as you scroll the
           long page: which scan, byte units, and (when the scan has
