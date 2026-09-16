@@ -3,7 +3,7 @@ import type { Rules, TreeNode, UserInfo } from './types'
 import { fmtBytes } from './types'
 
 const SLACK_URL = 'https://openathena.slack.com/archives/C0AHF5KV11Q'
-const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/main/src/gcs_usage/identities.yaml'
+const YAML_URL = 'https://github.com/Open-Athena/marin-gcs-usage/blob/main/src/dt_cloud/identities.yaml'
 
 const Note = ({ note }: { note?: string }) =>
   note ? (

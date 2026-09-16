@@ -2,7 +2,7 @@
 
 Per-user attribution and reporting for Marin GCS storage: "who is using what."
 
-Private by design — the identity map (`src/gcs_usage/identities.yaml`: real
+Private by design — the identity map (`src/dt_cloud/identities.yaml`: real
 names, teams, login aliases) and per-user usage reports stay out of the public
 [marin] repo, matching the privacy stance of marin's egress report.
 
@@ -16,22 +16,22 @@ Attribution parquets (`prefix → user/team` rows) come from two builders:
 
 ```bash
 # Path + record signals from the listing itself:
-gcs-usage build -l 'gs://<bucket>/<scan>/objects/*.parquet' -o tmp/attribution.parquet
-gcs-usage build -l <listing> -o <out> -R   # path signals only (no GETs)
+dt-cloud build -l 'gs://<bucket>/<scan>/objects/*.parquet' -o tmp/attribution.parquet
+dt-cloud build -l <listing> -o <out> -R   # path signals only (no GETs)
 
 # W&B signals (the bulk of coverage):
-gcs-usage wandb-mine -e marin-community -o tmp/wandb-runs.parquet   # full API mine (time-bisected; -E/-s/-u for parallel range workers)
-gcs-usage executor-mine -l <listing> -o tmp/executor-infos.parquet  # .executor_info sidecar GETs
-gcs-usage wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <listing> -o tmp/attribution-wandb.parquet
+dt-cloud wandb-mine -e marin-community -o tmp/wandb-runs.parquet   # full API mine (time-bisected; -E/-s/-u for parallel range workers)
+dt-cloud executor-mine -l <listing> -o tmp/executor-infos.parquet  # .executor_info sidecar GETs
+dt-cloud wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <listing> -o tmp/attribution-wandb.parquet
 ```
 
 Reporting and the site consume any number of attribution parquets (`-a`, repeatable):
 
 ```bash
-gcs-usage report -l <listing> -a <attr...>            # per-user/team bytes + coverage; -u <user> prints their claim list
-gcs-usage gaps -l <listing> -a <attr...> -d 2         # largest unattributed prefixes (curation queue)
-gcs-usage webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
-gcs-usage rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
+dt-cloud report -l <listing> -a <attr...>            # per-user/team bytes + coverage; -u <user> prints their claim list
+dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unattributed prefixes (curation queue)
+dt-cloud webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
+dt-cloud rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
 ```
 
 Signals, roughly best-first (deepest-prefix-wins at join time):
@@ -46,7 +46,7 @@ Signals, roughly best-first (deepest-prefix-wins at join time):
 Users/teams are re-resolved against the *current* `identities.yaml` at load
 time, so alias/team curation takes effect without rebuilding parquets. Unknown
 spellings resolve to their own sanitized segment with team `unknown` and are
-listed on stderr — curate them into `identities.yaml` (`gcs-usage rules`
+listed on stderr — curate them into `identities.yaml` (`dt-cloud rules`
 validates it).
 
 Listing-scale runs (34M+ dirs) belong on a work node, not a laptop — see the
@@ -71,9 +71,9 @@ uv run pytest
 Two marin contracts are deliberately mirrored (not imported) to keep this repo
 standalone; if either changes upstream, update in lockstep:
 
-- `src/gcs_usage/usernames.py` — `sanitize_username` rules, mirror of
+- `src/dt_cloud/usernames.py` — `sanitize_username` rules, mirror of
   `rigging.provenance.username_segment`
-- `src/gcs_usage/records.py` — the `.artifact.json` shape
+- `src/dt_cloud/records.py` — the `.artifact.json` shape
   (`marin.execution.artifact.ArtifactRecord`), of which only
   `provenance.built_by` is read
 

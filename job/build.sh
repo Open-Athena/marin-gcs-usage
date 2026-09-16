@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build + push the daily-snapshot Batch image via Cloud Build (offloaded — no
-# local Docker). Bakes `job/run.sh`, the `gcs-usage` package (gcs-usage/src), and the
+# local Docker). Bakes `job/run.sh`, the `dt-cloud` package (cloud/src), and the
 # disk-tree engine per the root Dockerfile; `.gcloudignore` trims the context.
 #
 # The scheduled CW job (cw-batch-submit.sh) runs `IMAGE:cw` — this branch's own

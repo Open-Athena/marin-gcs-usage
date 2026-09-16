@@ -17,11 +17,11 @@ site/public/data/20*
 wt
 gh
 specs
-gcs-usage/.venv
+cloud/.venv
 ui/node_modules
 packages/react/node_modules
 packages/treemap/node_modules
-gcs-usage/tmp
+cloud/tmp
 thrds
 screenshots
 site/screenshots

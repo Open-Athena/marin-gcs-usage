@@ -553,7 +553,7 @@ function AppContent() {
 
       <LifecycleFold
         store={store} asof={asof} prevScan={prevScan}
-        note={<>Intended state is tracked in <code>job/cw-lifecycle.json</code> (<code>gcs-usage lifecycle diff|push</code>).</>}
+        note={<>Intended state is tracked in <code>job/cw-lifecycle.json</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
       />
 
       {/* Page-scoped controls, sticky under the top edge as you scroll the

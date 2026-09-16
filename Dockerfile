@@ -16,7 +16,7 @@ RUN cd site && pnpm build
 # disk-tree's wheel force-includes its built UI (ui/dist), so build it here too
 RUN cd ui && pnpm build
 
-# Stage 2: pipeline + wrangler (node for wrangler; python for gcs-usage).
+# Stage 2: pipeline + wrangler (node for wrangler; python for dt-cloud).
 # Node comes from the node:22-slim stage (same Debian base) — Debian's apt
 # nodejs is v20, below wrangler's floor (≥22 as of wrangler 4.116).
 FROM python:3.12-slim
@@ -31,10 +31,10 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY --from=site /repo/ui/dist ./ui/dist
 RUN pip install --no-cache-dir ".[gcs,s3]"
-COPY gcs-usage/pyproject.toml ./gcs-usage/
-COPY gcs-usage/src ./gcs-usage/src
-# [plot]: matplotlib for the digest's OP plot (gcs_usage.digest_plot)
-RUN pip install --no-cache-dir "./gcs-usage[plot]"
+COPY cloud/pyproject.toml ./cloud/
+COPY cloud/src ./cloud/src
+# [plot]: matplotlib for the digest's OP plot (dt_cloud.digest_plot)
+RUN pip install --no-cache-dir "./cloud[plot]"
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
 ENTRYPOINT ["bash", "job/cw-run.sh"]

@@ -91,9 +91,9 @@ cp "$WORK"/web/*.json "$DEST/"
 # The bucket's lifecycle rules in force at this scan (Marin's tmp/ttl TTLs, the
 # abort-MPU rule, the noncurrent-version GC): snapshotted next to the scan so
 # the site can show them and later infer their effects. `job/cw-lifecycle.json`
-# is the intended state (`gcs-usage lifecycle diff|push`); a pull never fails
+# is the intended state (`dt-cloud lifecycle diff|push`); a pull never fails
 # the scan.
-gcs-usage lifecycle pull -b "$BUCKET" -o "$DEST/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
+dt-cloud lifecycle pull -b "$BUCKET" -o "$DEST/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
 
 # Keep the canonical layer-2 parquet too -- it's the input to every ad-hoc
 # question ("what grew?", "what's idle?") that the JSONs can't answer.
@@ -109,13 +109,13 @@ cp "$L2" "/gcs/$DATA/cw-l2/$SNAP_ID/$BUCKET.parquet"
 # pointer last, so a reader sees the old complete set or the new one.
 GEN=${GEN:-$(date -u +%Y%m%dT%H%M%SZ)}
 INDEX_KEY="cw-l2/$SNAP_ID/index/$GEN"
-gcs-usage index-write -b "$BUCKET" -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK/index" "$L2"
+dt-cloud index-write -b "$BUCKET" -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK/index" "$L2"
 mkdir -p "/gcs/$DATA/$INDEX_KEY"
 cp "$WORK"/index/path-index*.parquet "/gcs/$DATA/$INDEX_KEY/"
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then  # `:+set`: xtrace must not print the token
-  gcs-usage index-sync -d "/gcs/$DATA/$INDEX_KEY" -g "$GEN" -k "$INDEX_KEY" "$SNAP_ID" \
+  dt-cloud index-sync -d "/gcs/$DATA/$INDEX_KEY" -g "$GEN" -k "$INDEX_KEY" "$SNAP_ID" \
     || echo "WARN: index-sync failed (the site keeps serving the previous generation)" >&2
-  gcs-usage index-gc "$SNAP_ID" || echo "WARN: index-gc failed" >&2
+  dt-cloud index-gc "$SNAP_ID" || echo "WARN: index-gc failed" >&2
 else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced (scan unlisted for the index reader)" >&2
 fi
@@ -123,12 +123,12 @@ fi
 # 5. Converge the monthly Shape-C digest thread in Slack (specs/cw-slack-
 # digest.md): the OP + one reply per scan, into #cw-s3-usage. Only when
 # SLACK_BOT_TOKEN + SLACK_CHANNEL are set — Shape C needs the Web API's
-# per-message sender/avatar overrides. `gcs-usage digest` also renders the
+# per-message sender/avatar overrides. `dt-cloud digest` also renders the
 # plot into job/icons-cw/ and `wrangler pages deploy`s it to the icons Pages
 # project's `cw` branch, so it needs CLOUDFLARE_* + wrangler (both in this
 # image). A failed digest never fails the scan.
 if [ -n "${SLACK_BOT_TOKEN:+set}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then  # `:+set`: xtrace must not print the token
-  gcs-usage digest -r "gs://$DATA/snapshots/cw" \
+  dt-cloud digest -r "gs://$DATA/snapshots/cw" \
     || echo "WARN: usage-digest step failed" >&2
 else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2

@@ -57,8 +57,8 @@ export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> 
   const script = [
     "set -euo pipefail",
     `RUN="${runMnt}"`,
-    `gcs-usage sweep manifest --plan "$RUN/plan.json" -d "$SWEEP_DATE" -o "$RUN"`,
-    `gcs-usage sweep execute ${mode === "real" ? "--for-real " : ""}"$RUN"`,
+    `dt-cloud sweep manifest --plan "$RUN/plan.json" -d "$SWEEP_DATE" -o "$RUN"`,
+    `dt-cloud sweep execute ${mode === "real" ? "--for-real " : ""}"$RUN"`,
   ].join("\n")
 
   const spec = sweepBatchSpec(script, { JOB_ID: jobId, SWEEP_DATE: date })

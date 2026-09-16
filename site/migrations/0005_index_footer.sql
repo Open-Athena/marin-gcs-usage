@@ -12,7 +12,7 @@
 -- schema and a coarse tier's floor. `index_row_groups` holds every group's
 -- pruning stats + compact (~250 B) metadata, keyed by that gen, so two
 -- generations coexist while a run lands and the pointer flips last.
--- Populated per scan by `gcs-usage index-sync`; `index-gc` sweeps the rest.
+-- Populated per scan by `dt-cloud index-sync`; `index-gc` sweeps the rest.
 CREATE TABLE index_schema (
   date        TEXT NOT NULL,            -- scan id (SNAP_ID, e.g. 2026-09-16T0001)
   variant     TEXT NOT NULL DEFAULT 'path',  -- 'path' (floor-free) or 'coarse<E>'
