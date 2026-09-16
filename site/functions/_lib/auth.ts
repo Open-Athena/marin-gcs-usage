@@ -112,7 +112,7 @@ export interface Identity {
 const withAdmin = (id: Omit<Identity, 'admin'>): Identity => ({ ...id, admin: id.scopes.includes(ADMIN_SCOPE) || id.scopes.includes('*') })
 
 /** Staff (by domain) or an `admin_emails` row (the edge-trusted deployment's
- *  own admin list, `site/migrations/0004_admin.sql`). */
+ *  own admin list, `site/migrations/cw/0004_admin.sql`). */
 export async function isAdmin(env: Env, email: string): Promise<boolean> {
   if (email.toLowerCase().endsWith(`@${staffDomain(env)}`)) return true
   if (!env.DB || !env.EDGE_TRUSTED) return false
