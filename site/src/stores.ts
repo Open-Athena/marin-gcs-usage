@@ -34,6 +34,12 @@ export interface Store {
   lifecycle?: string
   /** The sibling deployment the site menu links to (each store is its own host). */
   peer?: { label: string; href: string }
+  /** How the store's root reads in copy: the scope word for "all of it"
+   *  (`all buckets` for the six-bucket fleet, `the whole bucket` for one). */
+  rootLabel: string
+  /** One sentence on what the listing's time means for this store's objects
+   *  (the age chart's subtitle; the read axis adds its own clause when present). */
+  objectsNote: string
 }
 
 export const STORES: Store[] = [
@@ -51,6 +57,8 @@ export const STORES: Store[] = [
     sweep: 'plan',
     lifecycle: 'job/cw-lifecycle.json',
     peer: { label: 'GCS usage', href: 'https://gcs.oa.dev/' },
+    rootLabel: 'the whole bucket',
+    objectsNote: 'CoreWeave objects are written once by the training jobs and never rewritten in place, so created is the object’s only time.',
   },
 ]
 

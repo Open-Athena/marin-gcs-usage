@@ -56,7 +56,9 @@ const dateOfX = (x: number) => new Date(x).toISOString().slice(0, 10)
 const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const xOfScan = (d: string) => new Date(d.slice(0, 10)).getTime()
 
-export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win }: {
+export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets' }: {
+  /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
+  scopeLabel?: string
   scans: string[]
   prefix: string
   /** The owner axis's user: their bytes under `prefix`, per scan. */
@@ -141,7 +143,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
               ? <>Bytes owned by a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
               : prefix
                 ? <>Stored bytes under <code>{prefix}</code> per scan.</>
-                : <>Total stored bytes per scan (fleet-wide).</>}
+                : <>Total stored bytes per scan ({scopeLabel}).</>}
         {' '}Each point is that scan’s own index row — exact, at any depth.
         {seriesQ.isError && <> <i>(series unavailable)</i></>}
       </p>

@@ -588,7 +588,7 @@ function AppContent() {
   // One-line description of the page scope, for the section subtitles:
   // where, then whose, then which mark states, then which names.
   const scopeParts: string[] = [
-    drillPath || 'all buckets',
+    drillPath || store.rootLabel,
     ...(ownerUser ? [`${shortName(ownerUser)}’s files${assigner ? `, assigned by ${shortName(assigner)}` : ''}`]
       : ownerMode === 'others' && notUsers[0] ? [`not ${shortName(notUsers[0])}`]
       : ownerMode !== 'all' ? [ownerMode] : []),
@@ -779,7 +779,7 @@ function AppContent() {
       {asof && !/[T ]\d{2}/.test(asof) && meta.published && (
         <div>published {new Date(meta.published).toISOString().replace('T', ' ').slice(0, 16)} UTC</div>
       )}
-      <div><b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects across all buckets</div>
+      <div><b>{fmtBytes(meta.total_bytes)}</b> · <b>{fmtN(meta.total_objects)}</b> objects across {store.rootLabel}</div>
       {estCost && (
         <div>
           est. <b>${Math.round(estCost.list).toLocaleString()}/mo</b> at list price
@@ -836,7 +836,7 @@ function AppContent() {
   const here = mapPath?.[mapPath.length - 1]
   const crumbs = (
     <span className="tb-path" aria-label="Drilled path">
-      <Tooltip content="all buckets"><button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])}>{mapTree?.n ?? 'all buckets'}</button></Tooltip>
+      <Tooltip content={store.rootLabel}><button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])}>{mapTree?.n ?? store.rootLabel}</button></Tooltip>
       {segs.map((sg, i) => (
         <span key={i}>
           <span className="sep">/</span>
@@ -868,7 +868,7 @@ function AppContent() {
           <label className="tb-ctl">
             <span className="lbl">color</span>
             <Tooltip content={
-              effMode === 'date' ? <>Object <b>creation time</b>, from the bucket listings (each cell = the byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.</>
+              effMode === 'date' ? <>Object <b>creation time</b>, from the bucket listings (each cell = the byte-weighted mean of its objects). {store.objectsNote}</>
               : effMode === 'read' ? <><b>Last read</b> — the most recent GET/HEAD/LIST anywhere under each cell, from the GCS usage logs (logging began {readRange ? epochDaysToDate(readRange.min) : '—'}). Brick-red = <b>never read</b> since then: prime sweep candidates.</>
               : effMode === 'marks' ? <>Effective <b>keep / sweep / undecided</b> state of every cell (the most recent covering mark wins).</>
               : effMode === 'user' ? <>Dominant <b>owner</b> of each cell; the legend lists the top users of the current view.</>
@@ -1080,7 +1080,7 @@ function AppContent() {
       )}
 
       {markMode && (
-        <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} pred={pred} filterQ={fq} window={diffWindow} />
+        <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || store.rootLabel} pred={pred} filterQ={fq} window={diffWindow} />
       )}
 
       {/* Bytes per scan under the drilled prefix, scoped like the map (a user
@@ -1185,9 +1185,8 @@ function AppContent() {
         <h2>Bytes by creation date</h2>
         <p className="sub">
           When each stored byte was <b>written</b> — the object’s creation time from the listing.
-          GCS objects are immutable, so there’s no separate “modified” time; the other time axis is{' '}
-          <b>last read</b> (from the usage logs, since {readRange ? epochDaysToDate(readRange.min) : '8/13'}) —
-          color by it to see which vintages nobody has touched. The chart’s color axis is its own (right):
+          {store.objectsNote}{readRange ? <>{' '}The other time axis is <b>last read</b> (from the usage logs, since {epochDaysToDate(readRange.min)}) —
+          color by it to see which vintages nobody has touched.</> : null}{' '}The chart’s color axis is its own (right):
           it follows the map’s until you pick one; marks have no per-stratum value here.
         </p>
         {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
@@ -1204,7 +1203,7 @@ function AppContent() {
         if (!node) return null
         const mix = classMix(node)
         const total = node.b || 1
-        const scope = mapPath && mapPath.length > 1 ? mapPath.slice(1).map(n => n.n).join('/') : 'all buckets'
+        const scope = mapPath && mapPath.length > 1 ? mapPath.slice(1).map(n => n.n).join('/') : store.rootLabel
         return (
           <section id="storage-classes">
             <h2>Storage classes</h2>
