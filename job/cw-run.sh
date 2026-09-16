@@ -123,12 +123,12 @@ fi
 # 5. Converge the monthly Shape-C digest thread in Slack (specs/cw-slack-
 # digest.md): the OP + one reply per scan, into #cw-s3-usage. Only when
 # SLACK_BOT_TOKEN + SLACK_CHANNEL are set — Shape C needs the Web API's
-# per-message sender/avatar overrides. `dt-cloud digest` also renders the
+# per-message sender/avatar overrides. `dt-cloud cw-digest` also renders the
 # plot into job/icons-cw/ and `wrangler pages deploy`s it to the icons Pages
 # project's `cw` branch, so it needs CLOUDFLARE_* + wrangler (both in this
 # image). A failed digest never fails the scan.
 if [ -n "${SLACK_BOT_TOKEN:+set}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then  # `:+set`: xtrace must not print the token
-  dt-cloud digest -r "gs://$DATA/snapshots/cw" \
+  dt-cloud cw-digest -r "gs://$DATA/snapshots/cw" \
     || echo "WARN: usage-digest step failed" >&2
 else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
