@@ -13,6 +13,12 @@
 - Response: the forest (roots linked under their ancestors as today, now with children) + `matched: [{path, b, o}]`. `/api/diff?f=` composes the same way over both scans' match roots (union of the two sets).
 - Children table / drills unchanged: rows drill into the filtered subtree with `?f=` kept in the URL.
 
+### As built (2026-09-16, `readView` in `_lib/view.ts`, pure parts in `_lib/filter.ts`)
+
+- Phase 1 reads `coarse16` under the drilled path with no threshold (every path over its absolute floor — ~8k rows on cw); if nothing matches it walks `coarse20` → `coarse24` → fine **at the plain view's pixel threshold** (an unthresholded `coarse24` is ~1.2M rows on cw, past the reader's 700k-row guard), so a match below both the coarsest floor and the pixel threshold stays invisible, as before. `matchRoots` is the outermost-match rule scoped to the drilled root; a matching root itself means the plain view.
+- Phase 2 uses **one forest threshold** = matched bytes × min cell area / canvas — splitting the budget by bytes gives every root the same bytes-per-pixel, so per-root thresholds collapse to one number, attenuated from each root's own depth (`rebasedThreshold`); the tier is the plain planner's rule over that number (`pickTier`), `partial=true` forces the coarsest. The 24 largest roots are read as regions in one `readRects`; further roots stay leaves. Verified on cw's synced scans: the `tmp/ttl=14d` root's children (and grandchildren) are name- and byte-identical to drilling into it.
+- `/api/diff?q=`: each side plans its forest by its own matched bytes; the larger threshold is the shared floor and the other side is re-read at it. `matched` in the response is the union of both sides' roots. Under a user lens the claims fold owns the read, so the old post-read filter remains for that combination.
+
 ### Fast first paint
 
 - Phase 1 + a coarse-tier phase 2 is milliseconds; return that with `partial: true`, then the client re-requests with `full=1` for the per-root-planned tiers and swaps the view when it lands.
