@@ -14,6 +14,11 @@ import type { D1Database } from '@cloudflare/workers-types'
 
 export interface Env {
   DB?: D1Database
+  /** Global cache tier behind the colo cache (`_lib/edgeCache.ts`); optional. */
+  CACHE_KV?: KVNamespace
+  /** Read-only HMAC creds for the data bucket — the index reader's range reads. */
+  GCS_HMAC_KEY_ID?: string
+  GCS_HMAC_SECRET?: string
   /** AUD tag of the cw Access app (`4c463052`), checked against the edge JWT. */
   ACCESS_AUD?: string
   ACCESS_TEAM_DOMAIN?: string

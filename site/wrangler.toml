@@ -38,6 +38,15 @@ ACCESS_AUD = "1de65a9ffe270d860911b786720fefe00123e79e71ca038c311479e468dc8378"
 # admin gate is the site/migrations/0003 allowlist on top of this.
 STAFF_DOMAIN = "openathena.ai"
 
+# Global cache tier for the index reader's JSON (`functions/_lib/edgeCache.ts`:
+# colo cache → KV; gcs binds `CACHE_KV`). Optional — the code runs without it
+# (colo cache only). Binding it needs a KV namespace + a token with KV scope
+# (the current `CLOUDFLARE_API_TOKEN` has none: `wrangler kv namespace list`
+# fails auth). Add when provisioned:
+#   [[kv_namespaces]]
+#   binding = "CACHE_KV"
+#   id = "<namespace id>"
+
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
 #   GCS_HMAC_KEY_ID / GCS_HMAC_SECRET — read-only GCS proxy creds (data + /files)
 #   GCP_SA_KEY — JSON key for `gcs-usage-dispatch@oa-internal-450019` (Batch

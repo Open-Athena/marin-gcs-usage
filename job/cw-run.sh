@@ -103,6 +103,26 @@ cp "$WORK"/web/*.json "$DEST/"
 mkdir -p "/gcs/$DATA/cw-l2/$SNAP_ID"
 cp "$L2" "/gcs/$DATA/cw-l2/$SNAP_ID/$BUCKET.parquet"
 
+# 4b. Index tiers (specs/view-serving.md, ported from gcs): the site's
+# /api/subtree, /api/diff and /api/series read row-group-pruned ranges of
+# `path-index[-coarse<E>].parquet` — the layer-2's dir rows in the site's
+# column contract, 8k-row groups, plus coarse tiers by absolute byte floor.
+# Each run writes its tiers under a fresh generation dir and never overwrites
+# a file D1 points at; `index-sync` lands the footers in D1 and flips the
+# pointer last, so a reader sees the old complete set or the new one.
+GEN=${GEN:-$(date -u +%Y%m%dT%H%M%SZ)}
+INDEX_KEY="cw-l2/$SNAP_ID/index/$GEN"
+gcs-usage index-write -b "$BUCKET" -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK/index" "$L2"
+mkdir -p "/gcs/$DATA/$INDEX_KEY"
+cp "$WORK"/index/path-index*.parquet "/gcs/$DATA/$INDEX_KEY/"
+if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then  # `:+set`: xtrace must not print the token
+  gcs-usage index-sync -d "/gcs/$DATA/$INDEX_KEY" -g "$GEN" -k "$INDEX_KEY" "$SNAP_ID" \
+    || echo "WARN: index-sync failed (the site keeps serving the previous generation)" >&2
+  gcs-usage index-gc "$SNAP_ID" || echo "WARN: index-gc failed" >&2
+else
+  echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced (scan unlisted for the index reader)" >&2
+fi
+
 # 5. Converge the monthly Shape-C digest thread in Slack (specs/cw-slack-
 # digest.md): the OP + one reply per scan, into #cw-s3-usage. Only when
 # SLACK_BOT_TOKEN + SLACK_CHANNEL are set — Shape C needs the Web API's

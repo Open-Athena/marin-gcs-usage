@@ -10,7 +10,8 @@
     "build": "tsc -b && tsc -p functions && vite build",
     "preview": "vite preview",
     "shots": "scrns",
-    "clean": "rm -rf node_modules/.vite dist"
+    "clean": "rm -rf node_modules/.vite dist",
+    "test": "vitest run"
   },
   "dependencies": {
     "@disk-tree/react": "workspace:*",
@@ -34,7 +35,8 @@
     "sass": "^1.89.0",
     "scrns": "https://github.com/runsascoded/scrns#65420fd6cdf71c53be9a03def1de33a075e9975a",
     "typescript": "^5.8.0",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
