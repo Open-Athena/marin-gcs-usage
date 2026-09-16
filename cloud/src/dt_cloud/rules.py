@@ -1,7 +1,7 @@
 """Validate identities.yaml and export it (with trailing comments) as JSON.
 
 The export feeds the site's "attribution rules" section so the manual mapping
-layer (users, aliases, teams, prefix_owners) is reviewable by everyone the
+layer (users, aliases, prefix_owners) is reviewable by everyone the
 numbers get shown to. Trailing ``# ...`` comments on user/prefix rows survive
 into the JSON as ``note`` fields (that's where the "TODO confirm" caveats
 live), so the parse is line-based alongside the YAML load.
@@ -34,20 +34,17 @@ def parse_notes(text: str) -> tuple[dict[str, str], dict[str, str]]:
         if re.match(r"^prefix_owners:", line):
             section = "prefix"
             continue
-        if re.match(r"^teams:", line):
-            section = None
-            continue
         if section == "users":
             if m := re.match(r"^  ([a-z0-9_-]+):", line):
                 cur_user = m.group(1)
                 continue
-            if cur_user and (m := re.match(r"^    (?:team|aliases):.*?#\s*(.*\S)\s*$", line)):
+            if cur_user and (m := re.match(r"^    (?:aliases):.*?#\s*(.*\S)\s*$", line)):
                 user_notes.setdefault(cur_user, m.group(1))
         elif section == "prefix":
             if m := re.match(r"^  - prefix: (\S+)", line):
                 cur_prefix = m.group(1)
                 continue
-            if cur_prefix and (m := re.match(r"^    (?:team|user):.*?#\s*(.*\S)\s*$", line)):
+            if cur_prefix and (m := re.match(r"^    (?:user):.*?#\s*(.*\S)\s*$", line)):
                 prefix_notes.setdefault(cur_prefix, m.group(1))
     return user_notes, prefix_notes
 
@@ -56,13 +53,9 @@ def check_rules(doc: dict) -> list[str]:
     """Consistency findings (empty list = clean)."""
     findings = []
     users: dict = doc.get("users") or {}
-    teams = doc.get("teams") or []
     alias_counts: Counter[str] = Counter()
     for user, row in users.items():
         row = row or {}
-        team = row.get("team")
-        if team not in teams:
-            findings.append(f"user {user}: team {team!r} not in teams {teams}")
         for alias in row.get("aliases") or []:
             alias_counts[alias] += 1
             if alias == user:
@@ -78,8 +71,6 @@ def check_rules(doc: dict) -> list[str]:
         seen_prefixes[prefix] += 1
         if not prefix.startswith("gs://") or not prefix.endswith("/"):
             findings.append(f"prefix_owners: {prefix!r} must look like gs://bucket/path/")
-        if (team := row.get("team")) not in teams:
-            findings.append(f"prefix_owners {prefix}: team {team!r} not in teams {teams}")
         if (user := row.get("user")) and user not in users:
             findings.append(f"prefix_owners {prefix}: user {user!r} not in users map")
     for prefix, n in seen_prefixes.items():
@@ -97,7 +88,6 @@ def export_rules(identities_path: Path) -> tuple[dict, list[str]]:
     users = [
         {
             "u": user,
-            "team": (row or {}).get("team"),
             "aliases": (row or {}).get("aliases") or [],
             **({"note": user_notes[user]} if user in user_notes else {}),
         }
@@ -106,10 +96,9 @@ def export_rules(identities_path: Path) -> tuple[dict, list[str]]:
     prefix_owners = [
         {
             "prefix": row["prefix"],
-            "team": row.get("team"),
             **({"user": row["user"]} if row.get("user") else {}),
             **({"note": prefix_notes[row["prefix"]]} if row["prefix"] in prefix_notes else {}),
         }
         for row in doc.get("prefix_owners") or []
     ]
-    return {"teams": doc.get("teams") or [], "users": users, "prefix_owners": prefix_owners}, findings
+    return {"users": users, "prefix_owners": prefix_owners}, findings

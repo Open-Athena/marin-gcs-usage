@@ -23,7 +23,8 @@ import pandas as pd
 from click import Choice, argument, group, option
 
 from .digest import REPLY_HOUR_UTC
-from .identity import DEFAULT_IDENTITIES, UNKNOWN_TEAM, load_identities
+from .identity import DEFAULT_IDENTITIES, load_identities
+from .index import INDEX_VARIANTS
 from .listing import prepare_listing
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
@@ -95,9 +96,9 @@ def build(
 
     by_source = Counter(row.source for row in rows)
     err(f"wrote {len(rows)} attribution rows to {out}: {dict(by_source)}")
-    unknown_users = sorted({row.user for row in rows if row.user is not None and row.team == UNKNOWN_TEAM})
+    unknown_users = sorted({row.user for row in rows if row.user is not None and not identities.known(row.user)})
     if unknown_users:
-        err(f"users with no team (add to {identities_path}): {unknown_users}")
+        err(f"users not in {identities_path} (add name/github/aliases): {unknown_users}")
 
 
 @main.command("executor-mine")
@@ -175,22 +176,22 @@ def wandb_attr(
     err(f"wrote {len(rows)} attribution rows to {out}: {dict(by_source)}")
 
 
-@main.command()
+@main.command("attr-report")
 @option("-a", "--attribution", "attributions", required=True, multiple=True, help="Attribution parquet(s); repeatable, concatenated")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-n", "--top", default=30, help="Rows in the per-user table")
-@option("-u", "--user", "claim_user", default=None, help="Print this user's claim list (their attributed prefixes by bytes)")
-def report(
+@option("-u", "--user", "claim_user", default=None, help="Print this user's prefixes (inferred ownership, by bytes)")
+def attr_report(
     attributions: tuple[str, ...],
     identities_path: Path,
     listings: tuple[str, ...],
     top: int,
     claim_user: str | None,
 ) -> None:
-    """Join listing × attribution (deepest-prefix-wins) → per-user/team bytes + coverage.
+    """Join listing × attribution (deepest-prefix-wins) → per-user bytes + coverage.
 
-    Users/teams are re-resolved against the *current* identities.yaml, so alias
+    Users are re-resolved against the *current* identities.yaml, so alias
     curation takes effect without rebuilding attribution parquets.
     """
     identities = load_identities(identities_path)
@@ -207,7 +208,7 @@ def report(
 
     from collections import defaultdict
 
-    per_user: dict[tuple, list] = defaultdict(lambda: [0, 0])
+    per_user: dict[str | None, list] = defaultdict(lambda: [0, 0])
     per_source: dict[str, list] = defaultdict(lambda: [0, 0])
     claim: dict[str, list] = defaultdict(lambda: [0, 0])  # attributed-ancestor prefix -> [bytes, objects] for --user
     cache: dict[str, tuple | None] = {}
@@ -242,9 +243,9 @@ def report(
     total_bytes = int(dirs["bytes"].sum())
     for dir_key, nbytes, objects in zip(dirs["dir"], dirs["bytes"], dirs["objects"]):
         row = deepest(dir_key)
-        user, team, source = row if row else (None, "unattributed", "none")
-        per_user[(user, team)][0] += int(nbytes)
-        per_user[(user, team)][1] += int(objects)
+        user, source = row if row else (None, "none")
+        per_user[user][0] += int(nbytes)
+        per_user[user][1] += int(objects)
         per_source[source][0] += int(nbytes)
         per_source[source][1] += int(objects)
         if claim_user is not None and user == claim_user:
@@ -256,10 +257,10 @@ def report(
     for source, (nbytes, objects) in sorted(per_source.items(), key=lambda kv: -kv[1][0]):
         print(f"{source:>16}  {nbytes/1e12:10.2f} TB  {objects:>12,} objects  {100*nbytes/total_bytes:5.1f}%")
 
-    print(f"\n== top {top} users/teams by bytes ==")
+    print(f"\n== top {top} users by bytes ('-' = nobody) ==")
     rows = sorted(per_user.items(), key=lambda kv: -kv[1][0])[:top]
-    for (user, team), (nbytes, objects) in rows:
-        print(f"{user or '-':>24} {team:>14}  {nbytes/1e12:10.3f} TB  {objects:>12,} objects")
+    for user, (nbytes, objects) in rows:
+        print(f"{user or '-':>24}  {nbytes/1e12:10.3f} TB  {objects:>12,} objects")
 
     if claim_user is not None:
         print(f"\n== claim list: {claim_user} ({len(claim)} prefixes) ==")
@@ -394,6 +395,7 @@ def census(listings: tuple[str, ...], top: int) -> None:
 @main.command("wandb-mine")
 @option("-e", "--entity", default="marin-community", help="W&B entity to mine")
 @option("-E", "--print-edges", is_flag=True, help="Print bisection-tree edges (valid --since/--until values for parallel workers) and exit")
+@option("-j", "--jobs", default=1, help="Concurrent (project, window) mining tasks — network-bound threads; ~8 is safe per API key")
 @option("-M", "--no-merge", is_flag=True, help="Skip the final concat (parallel range-workers; run once without to merge)")
 @option("-o", "--out", "out_path", type=Path, default=Path("tmp/wandb-runs.parquet"), help="Output parquet")
 @option("-p", "--project-filter", default=None, help="Substring filter on project names")
@@ -402,6 +404,7 @@ def census(listings: tuple[str, ...], top: int) -> None:
 def wandb_mine(
     entity: str,
     print_edges: bool,
+    jobs: int,
     no_merge: bool,
     out_path: Path,
     project_filter: str | None,
@@ -422,21 +425,28 @@ def wandb_mine(
         since=since or ROOT_SINCE,
         until=until or ROOT_UNTIL,
         merge=not no_merge,
+        jobs=jobs,
     )
 
 
 @main.command()
-@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node team/user overlays")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node user overlays")
+@option("-c", "--dir-cache", "dir_cache", type=Path, default=None, help="Layer-2 cache dir (dir-stats/age-days parquet): attribution-independent rollups reused by re-attribution runs — see specs/dir-agg-cache.md")
 @option("-d", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", "out_dir", type=Path, default=None, help="Output dir for JSON files [default: site/public/data/<asof>]")
+@option("-P", "--path-index", "path_index", type=Path, default=None, help="Write the complete floor-free path index parquet here (pixel-budget subtree API; specs/path-index-lazy-drill.md)")
+@option("-x", "--access", "access", multiple=True, help="Access-log layer-2a agg parquet glob(s); adds per-node last-read ('a') for the read-recency lens")
 def webdata(
     attributions: tuple[str, ...],
+    dir_cache: Path | None,
     asof: str,
     identities_path: Path,
     listings: tuple[str, ...],
     out_dir: Path | None,
+    path_index: Path | None,
+    access: tuple[str, ...],
 ) -> None:
     """Generate a dated site-data snapshot (tree/age/meta JSONs) from a listing.
 
@@ -450,8 +460,8 @@ def webdata(
 
     if out_dir is None:
         out_dir = Path("site/public/data") / asof
-    meta = write_webdata(listings, out_dir, asof, attributions, identities_path)
-    err(f"wrote {out_dir}/: tree.json age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
+    meta = write_webdata(listings, out_dir, asof, attributions, identities_path, access=access, dir_cache=dir_cache, path_index=path_index)
+    err(f"wrote {out_dir}/: age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
     data_root = out_dir.parent
     dates = sorted(
         (
@@ -484,11 +494,11 @@ def stage(out_root: Path, workers: int, globs: tuple[str, ...]) -> None:
 
 @main.command()
 @option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
-@option("-o", "--out", type=Path, default=None, help="Write rules JSON (users/aliases/teams/prefix_owners + notes) for the site")
+@option("-o", "--out", type=Path, default=None, help="Write rules JSON (users/aliases/prefix_owners + notes) for the site")
 def rules(identities_path: Path, out: Path | None) -> None:
     """Validate identities.yaml; optionally export it as site JSON.
 
-    Checks alias collisions/shadowing, unknown teams, and prefix_owners rows
+    Checks alias collisions/shadowing and prefix_owners rows
     referencing unknown users or malformed/duplicate prefixes. Exits nonzero
     on findings (JSON is still written, so the site shows current state).
     """
@@ -591,6 +601,123 @@ def index_dir_cmd(variant: str, scan: str) -> None:
     if not d:
         raise SystemExit(f"index-dir: {scan} [{variant}] not synced")
     print(d)
+
+
+@main.command("index-tiers")
+@option("-m", "--mem", default="48GB", help="DuckDB memory limit")
+@option("-P", "--path-index", "path_index", type=Path, required=True, help="Local floor-free path-index.parquet; the coarse tiers are written beside it")
+@option("-t", "--threads", default=8, type=int, help="DuckDB threads")
+@option("-T", "--tmp", "tmp_dir", type=Path, default=None, help="DuckDB spill dir (default: beside the index)")
+@argument("date")
+def index_tiers(mem: str, path_index: Path, threads: int, tmp_dir: Path | None, date: str) -> None:
+    """Backfill the coarse index tiers for an archived scan from its floor-free
+    path index (specs/view-serving.md §1): the per-path subtree totals, then one
+    parquet per E in COARSE_EXPS × {by-path, by-user}, floors in the KV metadata.
+    Same code path `webdata` runs on a fresh scan; `index-sync` records the
+    floors in D1. An old index's `team` column is dropped on the way."""
+    import duckdb
+
+    from .viz import write_coarse_tiers
+
+    con = duckdb.connect()
+    con.execute(f"SET memory_limit='{mem}'; SET threads={threads}")
+    con.execute(f"SET temp_directory='{tmp_dir or path_index.parent / '.duckdb-tmp'}'")
+    src = f"read_parquet('{path_index}')"
+    con.execute(f"CREATE TEMP TABLE tot AS SELECT path, sum(b) AS pb FROM {src} GROUP BY path")
+    floors, counts = write_coarse_tiers(con, path_index, rows=src)
+    err(f"index-tiers {date}: {json.dumps({str(e): {'floor': floors[e], 'paths': counts[e]} for e in floors})}")
+
+
+@main.command("labels")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `webdata -a`)")
+@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
+@option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s) — path-glob rules expand against their dirs")
+@option("-o", "--out", "out_dir", type=Path, required=True, help="Output dir: one labels-<bucket>.parquet per bucket")
+def labels(attributions: tuple[str, ...], identities_path: Path, listings: tuple[str, ...], out_dir: Path) -> None:
+    """Export mgu's attribution as DT label tables — `(prefix, usr)` per bucket,
+    prefix relative to the bucket — for `disk-tree import -e duckdb -L
+    labels-<bucket>.parquet -c usr` (spec mgu-scale-unification.md §B): the
+    same prefix map `webdata` attributes with, so the two cascades can be
+    compared slice for slice."""
+    import duckdb
+
+    from .viz import write_labels
+
+    con = duckdb.connect()
+    for bucket, n in write_labels(con, listings, attributions, identities_path, out_dir).items():
+        err(f"labels: {bucket}: {n} prefixes → {out_dir / f'labels-{bucket}.parquet'}")
+
+
+@main.command("index-blob")
+@option("-b", "--bucket", default="oa-gcs-usage-dvx", help="Data bucket holding the index tiers")
+@option("-d", "--dir", "listing_dir", default=None, help="Local/mounted/gs:// dir holding the parquets (default: gs://<bucket>/<key>)")
+@option("-g", "--gen", required=True, help="Generation the files belong to (`legacy` for listing/<date>/)")
+@option("-k", "--key", default=None, help="Bucket-relative dir the parquets live under (default: listing/<date>/index/<gen>; listing/<date> for gen `legacy`)")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all)")
+@argument("date")
+def index_blob(bucket: str, listing_dir: str | None, gen: str, key: str | None, variants: tuple[str, ...], date: str) -> None:
+    """Write each tier's group-manifest blob (`<tier>.groups.json`, the rows
+    `index-sync` puts in D1) beside its parquet — the backfill for scans synced
+    before `index-sync` wrote blobs; the site opens the blob once retention
+    retires a tier's rows from D1 (specs/view-serving.md)."""
+    from .index_footer import extract, write_groups_blob
+
+    key = key or (f"listing/{date}" if gen == "legacy" else f"listing/{date}/index/{gen}")
+    base = listing_dir or f"gs://{bucket}/{key}"
+    for variant in variants or tuple(INDEX_VARIANTS):
+        path = f"{base}/{INDEX_VARIANTS[variant]}"
+        schema, rows = extract(path)
+        out, n = write_groups_blob(path, schema, rows)
+        err(f"index-blob: {date} [{variant}] {len(rows)} groups → {out} ({n:,} B)")
+
+
+@main.command("index-extras")
+@option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `webdata -a`); omit for ck.json only")
+@option("-i", "--identities", "identities_path", type=Path, default=DEFAULT_IDENTITIES, help="identities.yaml path")
+@option("-o", "--out", "out_dir", type=Path, default=None, help="Where to write ck.json / attr.json (default: beside the index)")
+@option("-P", "--path-index", "path_index", type=Path, required=True, help="Floor-free path-index.parquet of the scan (every dir is a row)")
+@argument("date")
+def index_extras(attributions: tuple[str, ...], identities_path: Path, out_dir: Path | None, path_index: Path, date: str) -> None:
+    """Backfill a scan's index sidecars (specs/index-extras.md) from its
+    floor-free path index (+ attribution parquets): `ck.json`, the
+    checkpoint-shaped dirs; `attr.json`, each attributing prefix's user /
+    source / evidence. `webdata` writes the same files for a fresh scan."""
+    import duckdb
+
+    from .extras import write_extras
+    from .viz import prefix_labels
+
+    con = duckdb.connect()
+    src = f"read_parquet('{path_index}')"
+    con.execute(f"CREATE TEMP VIEW idx_dirs AS SELECT DISTINCT path AS fp FROM {src}")
+    pfx_df = None
+    if attributions:
+        # Path-glob rules expand against `(bucket, name)` dirs — from the index's own paths.
+        con.execute(
+            "CREATE TEMP VIEW listing_dirs AS SELECT split_part(fp, '/', 1) AS bucket,"
+            " CASE WHEN position('/' IN fp) > 0 THEN substr(fp, position('/' IN fp) + 1) END AS name FROM idx_dirs"
+        )
+        pfx_df = prefix_labels(con, attributions, identities_path, "listing_dirs")
+    counts = write_extras(con, "idx_dirs", pfx_df, out_dir or path_index.parent)
+    err(f"index-extras {date}: {json.dumps(counts)}")
+
+
+@main.command("index-compact")
+@option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only these variants (default: all synced)")
+@argument("dates", nargs=-1)
+def index_compact(variants: tuple[str, ...], dates: tuple[str, ...]) -> None:
+    """Rewrite D1's verbose pre-2026-09-06 `rg_json` rows into the compact form
+    `index-sync` now writes (index_footer.py), in place via JSON1 — one statement
+    per (date, variant), no parquet read. All synced scans by default; DATES
+    restrict it. Idempotent (only rows still in the old form change)."""
+    from .index_footer import compact_d1, synced_variants
+
+    todo = [(d, v) for d, v in synced_variants() if (not dates or d in dates) and (not variants or v in variants)]
+    for d, v in todo:
+        left = compact_d1(d, v)
+        err(f"index-compact: {d} [{v}] — {'done' if left == 0 else f'{left} rows still verbose'}")
+    if not todo:
+        err("index-compact: nothing synced matches")
 
 
 @main.command("warm-cache")
