@@ -677,14 +677,15 @@ def lifecycle_push(bucket: str, dry_run: bool, path: Path) -> None:
 
     client = s3_client()
     intended = load(str(path))
-    d = diff(intended, pull(client, bucket))
+    base = pull(client, bucket)
+    d = diff(intended, base)
     if not any(d.values()):
         err(f"lifecycle: {bucket} already matches {path}")
         return
     err(f"lifecycle: {'would apply' if dry_run else 'applying'} to {bucket}: {json.dumps(d)}")
     if dry_run:
         return
-    live = push(client, bucket, intended)
+    live = push(client, bucket, intended, base=base)  # refuses if live moved since the diff
     err(f"lifecycle: {bucket} now has {len(live)} rule(s), verified")
 
 

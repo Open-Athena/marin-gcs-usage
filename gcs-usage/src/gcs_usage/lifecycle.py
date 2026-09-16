@@ -69,10 +69,24 @@ def diff(intended: list[dict], live: list[dict]) -> dict[str, list]:
     }
 
 
-def push(client: "S3Client", bucket: str, intended: list[dict]) -> list[dict]:
+class LifecycleRaced(RuntimeError):
+    """The live configuration changed between reading it and writing ours."""
+
+
+def push(client: "S3Client", bucket: str, intended: list[dict], *, base: list[dict] | None = None) -> list[dict]:
     """Replace the bucket's configuration with `intended` and verify the
-    read-back equals it (normalized). Returns the live rules after the PUT."""
+    read-back equals it (normalized). Returns the live rules after the PUT.
+
+    S3 has no conditional PUT for bucket configuration (no ETag/If-Match), so
+    `base` is the poor man's compare-and-swap: the live rules the caller
+    diffed against. They are re-read immediately before the PUT and, if they
+    moved, nothing is written (`LifecycleRaced`) — a millisecond window instead
+    of the seconds a human spends reviewing a diff."""
     want = normalize(intended)
+    if base is not None:
+        live = pull(client, bucket)
+        if live != normalize(base):
+            raise LifecycleRaced(f"{bucket}: live rules changed since they were read: {diff(live, base)}")
     client.put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration={"Rules": want})
     got = pull(client, bucket)
     if got != want:

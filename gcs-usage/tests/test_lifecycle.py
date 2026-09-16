@@ -91,3 +91,14 @@ def test_dump_load_round_trip(tmp_path):
     p.write_text(L.dump([TTL, MPU]))
     assert p.read_text() == L.dump([MPU, TTL])
     assert L.load(str(p)) == [MPU, TTL]
+
+
+def test_push_refuses_when_live_moved_since_base():
+    s3 = _FakeS3([TTL, MPU])
+    base = L.pull(s3, "b")
+    s3.rules = [MPU]  # someone removed the TTL rule after we read `base`
+    with pytest.raises(L.LifecycleRaced, match=r"live rules changed since they were read: .*'removed': \['marin-ttl-1d'\]"):
+        L.push(s3, "b", [MPU, TTL, L.gc_rule()], base=base)
+    assert s3.puts == []  # nothing written
+    # with an up-to-date base the same push goes through
+    assert L.push(s3, "b", [MPU, L.gc_rule()], base=L.pull(s3, "b")) == [L.gc_rule(), MPU]
