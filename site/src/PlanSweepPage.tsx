@@ -70,7 +70,7 @@ export function PlanSweepPage() {
 
   const loadPlans = useCallback(() => getJson<{ plans: PlanSummary[] }>('/api/plans').then(d => setPlans(d.plans)).catch(e => setErr(String(e))), [])
   const loadDetail = useCallback((id: number) => getJson<PlanDetail>(`/api/plans/${id}`).then(setDetail).catch(e => setErr(String(e))), [])
-  const loadJobs = useCallback(() => getJson<{ jobs: Job[] }>('/api/sweep/jobs')
+  const loadJobs = useCallback(() => getJson<{ jobs: Job[] }>('/api/plan-sweep/jobs')
     .then(d => setJobs(Object.fromEntries(d.jobs.map(j => [j.job_id, j])))).catch(() => {}), [])
 
   useEffect(() => { void getJson<Whoami>('/api/whoami').then(setWho).catch(() => {}) }, [])
@@ -209,11 +209,11 @@ function PlanPanel({ detail, jobs, admin, scans, date, setDate, fmtBytes, act }:
         <div className="dispatch">
           <h3>Dispatch</h3>
           <label>scan <select value={date} onChange={e => setDate(e.target.value)}>{scans.map(s => <option key={s}>{s}</option>)}</select></label>
-          <button className="dry" disabled={!items.length || !date} onClick={() => act('/api/sweep/dispatch', 'POST', { plan_id: plan.id, mode: 'dry', date })}>dispatch dry-run</button>
+          <button className="dry" disabled={!items.length || !date} onClick={() => act('/api/plan-sweep/dispatch', 'POST', { plan_id: plan.id, mode: 'dry', date })}>dispatch dry-run</button>
           {!armed
             ? <button className="danger" disabled={!items.length || !date} onClick={() => setArmed(true)}>real delete…</button>
             : <>
-                <button className="danger armed" onClick={async () => { if (await act('/api/sweep/dispatch', 'POST', { plan_id: plan.id, mode: 'real', date })) setArmed(false) }}>confirm REAL delete on {date}</button>
+                <button className="danger armed" onClick={async () => { if (await act('/api/plan-sweep/dispatch', 'POST', { plan_id: plan.id, mode: 'real', date })) setArmed(false) }}>confirm REAL delete on {date}</button>
                 <button onClick={() => setArmed(false)}>cancel</button>
               </>}
         </div>
@@ -258,9 +258,9 @@ function RunRow({ r, job, admin, fmtBytes, act }: {
       <td>{fmtN(r.skipped_overwritten)}</td>
       <td><Tooltip content={new Date(r.started_ts * 1000).toISOString()}><span>{ago(r.started_ts)} ago</span></Tooltip></td>
       <td className="actions">
-        {admin && live && <button onClick={() => act('/api/sweep/stop', 'POST', { job_id: r.run_id })}>stop</button>}
-        {canUndo && <button onClick={() => act('/api/sweep/undo', 'POST', { run_id: r.run_id })}>undo</button>}
-        {canPurge && <button className="danger" onClick={() => act('/api/sweep/purge', 'POST', { run_id: r.run_id })}>purge</button>}
+        {admin && live && <button onClick={() => act('/api/plan-sweep/stop', 'POST', { job_id: r.run_id })}>stop</button>}
+        {canUndo && <button onClick={() => act('/api/plan-sweep/undo', 'POST', { run_id: r.run_id })}>undo</button>}
+        {canPurge && <button className="danger" onClick={() => act('/api/plan-sweep/purge', 'POST', { run_id: r.run_id })}>purge</button>}
       </td>
     </tr>
   )
