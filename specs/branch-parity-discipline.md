@@ -77,12 +77,12 @@ architecture.
 
 | pair | surface | intended delta |
 |---|---|---|
-| gcs ↔ cw-s3 | `site/src` | **Intrinsic:** own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA + CoreWeave domains, edge identity); branding, `s3://` scheme. **Serving model at parity since 2026-09-16**: every read is a view query (`/api/subtree` drill chain + `depth=1` first paint, `/api/diff`, `/api/series`, react-query, `useHashSpy`, `SpeedDialTip`) — no whole `tree.json` / baked `diff.json` on the page. **Remaining intended deltas**: the drill lives in `?path=` (gcs: the URL path); no owner / mark-state / storage-class axes and no `/users`, `/user/:id`, `/marks`, `/assignments`, `/admin` (no CW ownership signal, no classes); cw's plan-first `SweepPage` (specs/done/cw-sweep.md) vs gcs's owner-slice console; cw's `Treemap`/`ChildrenTable` are the owner-free adaptations (file-level convergence onto gcs's is a later pass); `OgPage` still reads `tree.json`; the age chart is fleet-wide `age.json` on both branches (`/api/age` pending on both). |
+| gcs ↔ cw-s3 | `site/src` | **Intrinsic:** own Pages project (`oa-cw-s3-usage` ← cw-s3.oa.dev) + Access app `4c463052` (whole-host, OA + CoreWeave domains, edge identity); branding, `s3://` scheme. **Serving model at parity since 2026-09-16**: every read is a view query (`/api/subtree` drill chain + `depth=1` first paint, `/api/diff`, `/api/series`, react-query, `useHashSpy`, `SpeedDialTip`) — no whole `tree.json` / baked `diff.json` on the page. **Remaining intended deltas**: the drill lives in `?path=` (gcs: the URL path); no owner / mark-state / storage-class axes and no `/users`, `/user/:id`, `/marks`, `/assignments`, `/admin` (no CW ownership signal, no classes); cw's plan-first `SweepPage` (specs/done/cw-sweep.md) vs gcs's owner-slice console; cw's `Treemap`/`ChildrenTable` are the owner-free adaptations (file-level convergence onto gcs's is a later pass); the age chart is fleet-wide `age.json` on both branches (`/api/age` pending on both). **Shared verbatim since the 2026-09-16 h11n pass**: `Tooltip.tsx`, `units.tsx`, `colors.ts`, `main.tsx`, `dev/renderSpy.ts`, `scan.ts`, `OgPage.tsx` (on `/api/subtree`), `AuthGate.tsx` (on `@open-athena/auth`; cw's `auth.ts` supplies the `edge` whoami source + `/login`); `stores.ts` is the same file with one row (`cw`, `s3://`, `/data/cw`); `types.ts` differs only by cw's `ColorMode` set and the non-hook `fmtBytes`. **Queued general CPs (cw-ward)** still living in the cross-cut files: loading states `2cb25f2` `79c85ed`, legend hover/pin `974ee7c`, page bar + Diff header `c24632a`, diff first paint `5ef41d2` `f2d0a8d`, cell legibility `f17c666`, legend/axis URL toggles + scroll-spy `8191de0`, hue-fan L2 + opaque cells `4ba6af7`, chain borders / `collapseChains` `63dcec3` `34d3d04`, adaptive edges `3296ccd`, legend metric chips `bb11c05`, makeup stripes `6805541`, tooltip copy/open `679dd8c`, children-table elision + one-commit selection `170a144` `de281ff`, URL-path drilling `67d8132`. |
 | gcs ↔ cw-s3 | `site/wrangler.toml`, `site/migrations` | **CP-adapt, small patch** (2026-09-11): cw-s3's `wrangler.toml` = gcs's with `name`/`database_name`/`database_id`/`ACCESS_AUD` changed, the auth-package-migration prose dropped, and (2026-09-16) the `CACHE_KV` binding commented out until a KV namespace + a KV-scoped token exist. `site/migrations` = a fresh subset — `0001_marks` (keep-axis, default-unmarked), `0002_plans` (plan-as-first-class), `0003_deletions`, `0004_admin`, `0005_index_footer` (= gcs's 0013+0014+0018+0020 index-footer end state, one file) — **not** a replay of gcs's 23-step auth/access-log history. The git-didi delta on these surfaces is the intended patch, not a whole-file absence. |
 | gcs ↔ cw-s3 | `job/` | `run.sh`+`batch-submit.sh` (GCS: six buckets, attribution, access log, Discord twin, weekly report) vs `cw-run.sh`+`cw-batch-submit.sh` (CW: S3-compat listing → layer-2 → `index-write` tiers → `index-sync` → tree/age/meta JSONs → the `#cw-s3-usage` digest); the baked `diff.json` (`cw-diff.py`) is gone (2026-09-16 — `/api/diff` serves it). `build.sh`, `Dockerfile` layout, `.dockerignore`/`.gcloudignore` mirror gcs. Not wired on cw: `warm-cache` (needs an Access service token), `index-gc -r` retention. |
 | gcs ↔ cw-s3 | `packages/treemap`, `packages/react`, `src/disk_tree` | **none** — keep at parity (synced 8/28; re-verified 2026-09-16) |
-| gcs ↔ cw-s3 | `gcs-usage/src` (was `marin/` until 2026-09-16) | **Shared verbatim**: `index_footer.py` (only `D1_DB_ID`, the wrangler DB name and the path-only variant set differ), `warm.py` (cw paths + service-token auth). **cw-only**: `index.py` (layer-2 → index tiers; gcs writes its tiers inside `webdata`/`viz.py`), `sweep.py` (plan-first CAIOS executor, versioned undo/purge, TTL expiry manifest), `listing.py`; `digest.py`/`digest_plot.py` are cw's framing-A content on gcs's mechanism. **gcs-only**: attribution (`identity`/`prefixes`/`rules`/`signals`/`attr_index`/`records`), `access.py`, `mark.py`, `sweep_plan.py`/`sweep_exec.py` (owner-slice sweep), `reactive.py`, `extras.py`, `healthcheck.py`, `index_footer` extras (`index-blob`/`index-compact`), `weekly.py`, `discord_api.py`, `cascade_a2a.py`. |
-| gcs ↔ cw-s3 | `site/functions` | **Shared verbatim** (2026-09-16): `_lib/index.ts` (reader; only the store allow-list differs), `_lib/shared.ts`, `_lib/edgeCache.ts`, `_lib/gcp.ts`. **Adapted**: `_lib/view.ts` = gcs's minus its owner / mark-state / class / extras axes; `api/{subtree,diff,series,path-index}.ts` minus the same axes, behind cw's `requireViewer`; `_lib/scope.ts` = the name filter only. **cw-only**: `_lib/auth.ts` (edge Access identity, no auth package), `_lib/plans.ts`, `api/plans`, `api/sweep/{dispatch,jobs,stop,undo,purge}`, `api/marks`, `api/whoami`, `login.ts`. **gcs-only**: `api/auth`, `api/db`, `api/actions`, `api/marks/totals`, `api/todo`, `api/estate`, `api/resolve`, `api/claims`, `api/assignments`, `api/sweep-owners`, `api/bench`, `api/token`, `auth/sso.ts`, `user/[id].ts`, `users.ts`, `cw.ts`, `_lib/{identity,ledger,markAxes,marks,owners,resolve,tables,totals,todo,unfurl,extras}.ts`. |
+| gcs ↔ cw-s3 | `gcs-usage/src` (was `marin/` until 2026-09-16) | **Shared verbatim**: `index_footer.py` (only `D1_DB_ID`, the wrangler DB name and the path-only variant set differ), `warm.py` (cw paths + service-token auth). **cw-only**: `index.py` (layer-2 → index tiers; gcs writes its tiers inside `webdata`/`viz.py`), `sweep.py` (plan-first CAIOS executor, versioned undo/purge, TTL expiry manifest), `listing.py`, `lifecycle.py` (CAIOS bucket lifecycle rules as a tracked file); `digest.py`/`digest_plot.py` are cw's framing-A content on gcs's mechanism. **gcs-only**: attribution (`identity`/`prefixes`/`rules`/`signals`/`attr_index`/`records`), `access.py`, `mark.py`, `sweep_plan.py`/`sweep_exec.py` (owner-slice sweep), `reactive.py`, `extras.py`, `healthcheck.py`, `index_footer` extras (`index-blob`/`index-compact`), `weekly.py`, `discord_api.py`, `cascade_a2a.py`. |
+| gcs ↔ cw-s3 | `site/functions` | **Shared verbatim** (2026-09-16): `_lib/index.ts` (reader; the allow-list is the union of both deployments' prefixes once gcs takes specs/cp-from-cw-s3-2026-09-16.md §1), `_lib/shared.ts`, `_lib/edgeCache.ts`, `_lib/gcp.ts` (the CoreWeave Batch spec lives in cw-only `_lib/cwBatch.ts`), `data/[[path]].ts` (gcs's store-aware proxy; cw gates with `requireViewer` and D1-filters every store's listing). **Adapted**: `_lib/view.ts` = gcs's minus its owner / mark-state / class / extras axes; `api/{subtree,diff,series,path-index}.ts` minus the same axes, behind cw's `requireViewer`; `_lib/scope.ts` = the name filter only. **cw-only**: `_lib/auth.ts` (edge Access identity, no auth package), `_lib/cwBatch.ts`, `_lib/plans.ts`, `api/plans`, `api/sweep/{dispatch,jobs,stop,undo,purge}`, `api/marks`, `api/whoami`, `login.ts`. **gcs-only**: `api/auth`, `api/db`, `api/actions`, `api/marks/totals`, `api/todo`, `api/estate`, `api/resolve`, `api/claims`, `api/assignments`, `api/sweep-owners`, `api/bench`, `api/token`, `auth/sso.ts`, `user/[id].ts`, `users.ts`, `cw.ts`, `_lib/{identity,ledger,markAxes,marks,owners,resolve,tables,totals,todo,unfurl,extras}.ts`. |
 | marin ↔ dt/main | `src/disk_tree` | upstream carries Flask serving (`server.py`, diff index, vocab sidecar, compare perf); marin carries nothing server-side. Shared core must be a superset upstream: fork→upstream manifest `~/c/disk-tree/specs/marin-python-cp-2026-08-28.md` |
 | marin ↔ dt/main | `packages/react` | none — parity, both directions (8/28) |
 | marin ↔ dt/main | www arch | `site/` (Vite+CFN) vs `ui/` (Vite+Flask) — intrinsically different |
@@ -688,3 +688,73 @@ binding (KV namespace + KV-scoped token); an Access service token for `warm-cach
 `?path=` → URL-path drilling; `OgPage` onto `/api/subtree`; `/api/age` (both
 branches); file-level convergence of `Treemap`/`ChildrenTable` onto gcs's.
 
+### 2026-09-16 (h11n, "factor the diff into commits") — golf by hunks, second factored branch
+
+Same day, after the serving pass above; HEAD had moved to `9106aaa` (the lifecycle
+verb) under the pass. `factored/cw-s3-gcs-2026-09-16` regenerated in `wt/factored`
+from cw-s3's tip (never rebased; `tmp/factor.py` is the bucket script, buckets refreshed
+for `gcs-usage/`, `site/functions/{index,shared,edgeCache,view}.ts` and `/api/*`), one
+`git checkout gcs -- <paths>` (+ `git rm`) commit per intended delta, `git diff
+factored/… gcs` empty at the tip:
+
+| SHA | bucket (= ledger row) | files | + | − |
+|---|---|---|---|---|
+| `fb47b89` | py: shared engine + attribution modules (`gcs-usage/`) | 18 | 1370 | 687 |
+| `06bf8ea` | py: gcs-only feature modules (access plane, marks, owner-slice sweep, extras, healthcheck, reactive, weekly, discord) | 20 | 5444 | 0 |
+| `4e59b98` | py: cw-only modules removed (plan-first CAIOS sweep, layer-2 tier writer, listing) | 8 | 0 | 1574 |
+| `9b7e8b9` | py: CLI verbs + digest content (cw framing A → gcs Shape C) | 4 | 2342 | 1377 |
+| `4b11de4` | job: GCS Batch pipeline (run/batch-submit/webdata, icons, Dockerfile) vs the CW scan job | 55 | 955 | 562 |
+| `661431b` | site/functions: auth package (grants, tokens, SSO, users) vs edge-Access identity | 11 | 447 | 99 |
+| `a5fd26b` | site/functions: marks/claims/owner-slice sweep + D1 tables vs cw plan-first sweep | 27 | 2097 | 665 |
+| `9c59de7` | site/functions: view scope axes (owner/mark/class/extras) + bench | 10 | 995 | 184 |
+| `6bc0f57` | site/src: users / owners / attribution views + read axis | 11 | 1288 | 91 |
+| `5d6f534` | site/src: marks & sweep console, admin pages, multi-page nav/chrome | 27 | 3565 | 371 |
+| `cee5335` | site/src: diff / series / files consumers (scope-aware) | 4 | 132 | 236 |
+| `21e2bf9` | site: deployment config, e2e, og assets, D1 migrations | 81 | 927 | 277 |
+| `1ba7c76` | repo: specs/docs, CI, sheet-sync, ui, root config + locks | 83 | 5684 | 2065 |
+| `7e2bc78` | parity-pending: deployment constants (D1 id + wrangler DB, path-only variants, warm paths, the store row) + queued CPs (allow-list union, D1-filtered listing for every store, `warm(headers)`, sub-daily warm ids) | 7 | 52 | 57 |
+| `e0c6562` | RESIDUAL — cross-cutting core FE (App / app.scss / Treemap / ChildrenTable / Root / types / auth / AuthGate / OgPage); every hunk owned by a gcs feature commit — intended axes (a2f0103 7ab2d25 99c60a3 5ff6222 839f4b4 e5d7fb6 66a07e7 6c91469 …) or a queued general CP (2cb25f2 79c85ed 974ee7c 5ef41d2 f2d0a8d c24632a) — see the ledger's 2026-09-16 h11n entry | 8 | 3319 | 1129 |
+
+**Diagnostics went by hunks, not lines**: `git diff -U0 cw-s3 gcs` on the 21
+parity-pending + RESIDUAL files, each hunk blamed to the commit that introduced its
+`+` lines on gcs (`tmp/hunk-owners.py`) — the per-hunk owner IS the ledger row or the
+queued CP. Before: 413 hunks (parity-pending 51 over 8 files, RESIDUAL 362 over 13).
+After the ports below: 345 (30 / 315), six files driven to zero (`Tooltip.tsx`,
+`units.tsx`, `colors.ts`, `main.tsx`, `scan.ts`, `_lib/gcp.ts`); the RESIDUAL bucket is
+8 files (+3319/−1129), every remaining hunk owned by a named gcs commit.
+
+Per file after (hunks): `index_footer.py` 3; `warm.py` 3; `test_index_footer.py` 7; `test_warm.py` 5; `index.ts` 1; `gcp.ts` 0; `[[path]].ts` 4; `[[path]].ts` 3; `stores.ts` 4; `App.tsx` 101; `AuthGate.tsx` 2; `ChildrenTable.tsx` 32; `OgPage.tsx` 2; `Root.tsx` 8; `Tooltip.tsx` 0; `Treemap.tsx` 68; `app.scss` 88; `colors.ts` 0; `main.tsx` 0; `scan.ts` 0; `types.ts` 5; `units.tsx` 0; `auth.ts` 9.
+
+**Ports onto cw-s3** (this branch, tests green at each): `93071bc` shared FE
+primitives (pinnable tooltips + `safePolygon`, `fmtBytesLike`, `slotHsl` golden-angle
+slots + 22°/14% fan, `UserIndexEntry`, `epochDaysToMonthShort`/`epochDaysToDate`,
+render spy, `CLASS_COLORS`, extras node fields — owner `a2f0103` `974ee7c` `de281ff`
+`5ff6222`, general parts only); `9bca450` gcs's store model with one row (`stores.ts`,
+`scan.ts`/`OgPage.tsx` verbatim — the og card on `/api/subtree`, `tree.json` retired
+— `Root.tsx` mounts `<store>/og` + the one `HotkeysProvider`, `Treemap` takes
+`scheme`, `data/[[path]].ts` is gcs's with `requireViewer` and an every-store D1
+filter — owner `2b693f1` `79c85ed` `9b8d237` `7cfa124` `28697e7`); `c4aad0a` `_lib/gcp.ts`
+verbatim (`shared`-memoized mint, `BUCKET_REGION` inert) with the CoreWeave Batch spec
+split into `_lib/cwBatch.ts`, allow-lists unioned (owner `4260961` `1200bb6` `611ec46`);
+`c4f2dbf` `index_footer`/`warm` shed the "ported from" notes, `warm._ts` is gcs's
+(owner `714be65` `65a2cc2`); `3069767` `AuthGate.tsx` on `@open-athena/auth` with an
+`edge` whoami source in cw's `auth.ts` (owner `1d7fc2f` `afd932e`); `d8bd295` `/og`
+opens inside the lone bucket (CIC found the one-hue card). CIC'd on the throwaway
+harness (local D1, 3274/3275): home with the D1-filtered scan list and golden-angle
+hues, `/og`, `/?wall`.
+
+**Named, not ported** (intended axes; the hunk owners → the `site/src` row): marks /
+owner / claims (`a2f0103` 51 hunks, `7ab2d25` 16, `99c60a3` 13, `839f4b4` 10, `e5d7fb6`
+8, `66a07e7` 8, `f182c9e`, `5ccd092`, `fdac944`, `6c91469`, `3416155`, `5e0d35c`,
+`8fea938`, `0411c66`, `5244953`), the read axis (`5ff6222` 10), gcs-only pages in
+`Root.tsx` (`5880e87` `e9ddd74` `e195dd0`), the auth package (`1d7fc2f`), gcs's
+`/cw`-route plumbing + URL-path drilling in `App.tsx` (`2b693f1` `67d8132`), the
+index-retention test variants (`c02a4b6`) and warm ids/paths (`714be65`).
+
+**gcs-ward**: specs/cp-from-cw-s3-2026-09-16.md — allow-list union, every-store D1
+filter, lone-bucket `/og`, wall copy from the store, `warm(headers)`, `/files` cells
+(`e38add0`), the tooltip conversions (`49dcc37`), the fit-to-data digest sparkline;
+considered-not-queued: the morning-scan day rule, `--redo-replies`, `sweep
+expire-manifest` / `-G`, `lifecycle`.
+
+Not done, by instruction: the `cloud/` rename.
