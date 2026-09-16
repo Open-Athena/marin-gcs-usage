@@ -22,11 +22,12 @@ import duckdb
 import pandas as pd
 from click import Choice, argument, group, option
 
-from .digest import REPLY_HOUR_UTC
+from .cw_digest import REPLY_HOUR_UTC
 from .identity import DEFAULT_IDENTITIES, load_identities
 from .mark import DEFAULT_URL as MARK_DEFAULT_URL
 from .mark import KEEP_ACTIONS as MARK_KEEPS
 from .index import INDEX_VARIANTS
+from .viz import COARSE_EXPS
 from .listing import prepare_listing
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
@@ -966,7 +967,7 @@ def warm_cache(scan: str | None, jobs: int, dry_run: bool, root: str | None, sit
     import fsspec
 
     from . import warm as W
-    from .digest import DEFAULT_URL
+    from .cw_digest import DEFAULT_URL
 
     root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots/cw"
     fs, _, _ = fsspec.get_fs_token_paths(root)
@@ -2442,14 +2443,14 @@ def _load_meta(root: str, date: str) -> dict:
         return json.load(f)
 
 
-def _icons_dir() -> Path:
+def _cw_icons_dir() -> Path:
     """`job/icons-cw` in both layouts: pip-installed in the job image (cwd=/app →
     /app/job/icons-cw) or the repo checkout (…/parents[3]/job/icons-cw)."""
     cands = (Path.cwd() / "job" / "icons-cw", Path(__file__).resolve().parents[3] / "job" / "icons-cw")
     return next((c for c in cands if c.exists()), cands[-1])
 
 
-@main.command()
+@main.command("cw-digest")
 @option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
 @option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced backfill so per-reply sender chrome survives)")
 @option("-F", "--for-real", is_flag=True, help="With --redo-replies: actually post the new replies and delete the old ones (default: print the plan)")
@@ -2462,7 +2463,7 @@ def _icons_dir() -> Path:
 @option("-u", "--url", "site_url", default=None, help="Site base for links (default cw-s3.oa.dev)")
 @option("-R", "--redo-replies", is_flag=True, help="Re-post the month's replies under the current day rule, then delete the old ones (dry-run unless --for-real)")
 @option("-V", "--variant", type=Choice(["sender", "body"]), default="sender", help="Reply style: headline as the sender name, posted once from the day's morning scan (sender) or bold in the body, edited as the day's scans land (body)")
-def digest(channel: str | None, reply_delay: float, for_real: bool, reply_hour: int, icons_dir: Path | None, month: str | None, dry_run: bool, redo_replies: bool, root: str | None, token: str | None, site_url: str | None, variant: str) -> None:
+def cw_digest(channel: str | None, reply_delay: float, for_real: bool, reply_hour: int, icons_dir: Path | None, month: str | None, dry_run: bool, redo_replies: bool, root: str | None, token: str | None, site_url: str | None, variant: str) -> None:
     """Converge the monthly digest thread in #cw-s3-usage: an OP edited in place
     (month-to-date + weekly bullets + quota sparkline) + one reply per UTC day,
     via thrds. State in gs://<bucket>/digest/cw/<channel>/<variant>/<YYYY-MM>.json.
@@ -2497,7 +2498,7 @@ def digest(channel: str | None, reply_delay: float, for_real: bool, reply_hour: 
     token = token or os.environ.get("SLACK_BOT_TOKEN")
     if not (channel and token):
         raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
-    icons = icons_dir or _icons_dir()
+    icons = icons_dir or _cw_icons_dir()
 
     def deploy(local: Path, name: str) -> str | None:
         # publish the cw icons dir (the CORS _headers + the fresh plot) to the
@@ -2545,3 +2546,229 @@ def digest(channel: str | None, reply_delay: float, for_real: bool, reply_hour: 
 
 if __name__ == "__main__":
     main()
+
+
+def _icons_dir() -> Path:
+    """`job/icons` in both layouts: pip-installed in the job image (cwd=/app →
+    /app/job/icons) or the repo checkout (…/parents[3]/job/icons)."""
+    cands = (Path.cwd() / "job" / "icons", Path(__file__).resolve().parents[3] / "job" / "icons")
+    return next((c for c in cands if c.exists()), cands[-1])
+
+
+@main.command()
+@option("-b", "--bot-token", help="Discord bot token: opens the month's thread + resolves app emoji (default $DISCORD_BOT_TOKEN; with -P discord)")
+@option("-c", "--channel", help="Slack channel id (default $SLACK_CHANNEL)")
+@option("-D", "--reply-delay", "reply_delay", default=0.0, type=float, help="Seconds to sleep between replies (e.g. 305 for a spaced Slack backfill so per-reply sender chrome survives; Discord needs none)")
+@option("-E", "--edit-replies", is_flag=True, help="Re-edit every already-posted reply to its current body (backfill after a format change; -P discord only)")
+@option("-m", "--month", help="Month YYYY-MM (default: current UTC month)")
+@option("-n", "--dry-run", is_flag=True, help="Render the plot + print OP/replies; post & host nothing")
+@option("-P", "--platform", type=Choice(["slack", "discord"]), default="slack", help="Which twin to converge (default slack)")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
+@option("-t", "--token", help="Slack bot token (default $SLACK_BOT_TOKEN)")
+@option("-u", "--url", "site_url", default=None, help="Site base for links (default gcs.oa.dev)")
+@option("-w", "--webhook", help="Discord webhook URL in the digest channel (default $DISCORD_GCS_USAGE_WEBHOOK; with -P discord)")
+def digest(bot_token: str | None, channel: str | None, reply_delay: float, edit_replies: bool, month: str | None, dry_run: bool, platform: str, root: str | None, token: str | None, site_url: str | None, webhook: str | None) -> None:
+    """Converge the Shape-C monthly digest thread: an OP (month-to-date headline,
+    per-week bullets, mosaic plot) edited in place + one reply per scan (headline
+    sender, $/mo body, colour-coded arrow avatar). Slack (default; state in
+    gs://<bucket>/digest/<YYYY-MM>.json) or its Discord twin (`-P discord`: webhook
+    OP with the plot attached, bot-opened thread, per-scan webhook replies; state
+    in digest/discord/<channel>/<YYYY-MM>.json). See specs/done/slack-digest-shape-c.md."""
+    from . import digest as dg
+
+    site_url = site_url or dg.DEFAULT_URL
+    m = (
+        dt.datetime.strptime(month, "%Y-%m").date()
+        if month
+        else dt.datetime.now(dt.timezone.utc).date().replace(day=1)
+    )
+    root = root or f"gs://{os.environ.get('DATA_BUCKET', 'oa-gcs-usage-dvx')}/snapshots"
+
+    if dry_run:
+        rows = dg.load_month(root, m)
+        if not rows:
+            raise SystemExit(f"digest: no scans for {m:%Y-%m}")
+        import tempfile
+
+        out = Path(tempfile.gettempdir()) / f"digest-{m:%Y%m}.png"
+        dg.render_plot(rows, m, out)
+        err(f"rendered plot → {out}")
+        print(dg.op_body(rows, m, "<plot-url>", site_url))
+        print("\n--- replies (sender | body | avatar) ---")
+        for r in rows:
+            s, b, a = dg.reply(r, site_url)
+            print(f"{s} | {b} | {a.split('/')[-1]}")
+        return
+
+    if platform == "discord":
+        webhook = webhook or os.environ.get("DISCORD_GCS_USAGE_WEBHOOK")
+        bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+        if not (webhook and bot_token):
+            raise SystemExit("digest: -P discord needs DISCORD_GCS_USAGE_WEBHOOK + DISCORD_BOT_TOKEN (or -w/-b)")
+        dg.post_digest_discord(root, m, webhook, bot_token, site_url=site_url, edit_replies=edit_replies)
+        err(f"digest: converged {m:%Y-%m} (discord)")
+        return
+    if edit_replies:
+        raise SystemExit("digest: -E/--edit-replies is Discord-only (Slack replies are never edited)")
+    channel = channel or os.environ.get("SLACK_CHANNEL")
+    token = token or os.environ.get("SLACK_BOT_TOKEN")
+    if not (channel and token):
+        raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
+    icons = _icons_dir()
+
+    def deploy(local: Path, name: str) -> str | None:
+        # publish the icons dir (incl. the freshly-rendered plot) to the Pages
+        # project; needs CLOUDFLARE_* + node/wrangler. Return the deployment-
+        # specific URL (served instantly), which the OP image uses to avoid
+        # racing root-alias CDN propagation (→ Slack `invalid_blocks`).
+        import re
+        import shutil
+        import subprocess
+
+        # The job image installs wrangler globally (`npm install -g`) but has
+        # no `npx` shim, so prefer the binary; `npx` only serves a laptop run.
+        wrangler = [shutil.which("wrangler")] if shutil.which("wrangler") else ["npx", "wrangler"] if shutil.which("npx") else None
+        if wrangler is None:
+            raise SystemExit("digest: neither `wrangler` nor `npx` on PATH — can't publish the plot")
+        r = subprocess.run(
+            [*wrangler, "pages", "deploy", str(icons), "--project-name", "gcs-usage-icons", "--branch", "main", "--commit-dirty=true"],
+            check=True, capture_output=True, text=True,
+        )
+        err(r.stdout)
+        m = re.search(r"https://[a-z0-9]+\.gcs-usage-icons\.pages\.dev", r.stdout + r.stderr)
+        return m.group(0) if m else None
+
+    dg.post_digest(root, m, token, channel, site_url=site_url, icons_dir=icons, deploy_plot=deploy, reply_delay=reply_delay)
+    err(f"digest: converged {m:%Y-%m}")
+
+
+@main.command("discord-emoji")
+@option("-b", "--bot-token", help="Discord bot token (default $DISCORD_BOT_TOKEN)")
+@option("-i", "--icons", type=Path, help="Dir of arrow_deg*.png glyphs (default job/icons/arrows)")
+@option("-n", "--dry-run", is_flag=True, help="Say what would be uploaded; upload nothing")
+def discord_emoji(bot_token: str | None, icons: Path | None, dry_run: bool) -> None:
+    """Upload the digest's trend-arrow glyphs (arrow_deg-80 … arrow_deg80) as
+    application emoji on the bot, so `digest -P discord` can render `:arrow_degN:`
+    as `<:arrow_degN:id>` (negatives become `arrow_degmN`: Discord names allow no
+    `-`). Idempotent: names already on the app are kept. Prints `name id` for the
+    whole set on stdout."""
+    import re
+
+    from . import digest as dg
+    from . import discord_api as api
+
+    bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+    if not bot_token:
+        raise SystemExit("discord-emoji: need DISCORD_BOT_TOKEN (or -b)")
+    icons = icons or _icons_dir() / "arrows"
+    glyphs = {
+        dg.emoji_name(int(m.group(1))): p
+        for p in sorted(icons.glob("arrow_deg*.png"))
+        if (m := re.fullmatch(r"arrow_deg(-?\d+)\.png", p.name))
+    }
+    if not glyphs:
+        raise SystemExit(f"discord-emoji: no arrow_deg*.png under {icons}")
+    app = api.app_id(bot_token)
+    have = api.app_emojis(bot_token, app)
+    for name, p in glyphs.items():
+        if name in have:
+            continue
+        if dry_run:
+            err(f"would upload {name} <- {p.name}")
+            continue
+        have[name] = api.upload_app_emoji(bot_token, app, name, p)
+        err(f"uploaded {name} <- {p.name}")
+    for name in sorted(have):
+        print(name, have[name])
+
+
+@main.command("discord-webhook")
+@option("-b", "--bot-token", help="Discord bot token (default $DISCORD_BOT_TOKEN)")
+@option("-c", "--channel", required=True, help="Channel id, or `#name` resolved in --guild")
+@option("-g", "--guild", help="Guild id for a `#name` channel (default $DISCORD_GUILD)")
+@option("-N", "--name", default="GCS usage", help="Webhook name (default 'GCS usage')")
+def discord_webhook(bot_token: str | None, channel: str, guild: str | None, name: str) -> None:
+    """Create (or reuse, by name) a webhook owned by the bot's application in a
+    channel, and print its URL on stdout. App-owned matters: Discord renders the
+    bot's application emoji (`discord-emoji`) only from the bot or a webhook the
+    bot owns — through a user-created webhook `<:name:id>` silently degrades to
+    `:name:`. Needs Manage Webhooks on the channel. The URL embeds a secret:
+    redirect stdout into a secret store or a 0600 file, never a log."""
+    from . import discord_api as api
+
+    bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+    if not bot_token:
+        raise SystemExit("discord-webhook: need DISCORD_BOT_TOKEN (or -b)")
+    if channel.startswith("#"):
+        guild = guild or os.environ.get("DISCORD_GUILD")
+        if not guild:
+            raise SystemExit("discord-webhook: a `#name` channel needs -g/--guild (or $DISCORD_GUILD)")
+        chans = api.guild_channels(bot_token, guild)
+        if channel[1:] not in chans:
+            raise SystemExit(f"discord-webhook: no text channel {channel} in guild {guild}")
+        channel = chans[channel[1:]]
+    app = api.app_id(bot_token)
+    mine = [h for h in api.channel_webhooks(bot_token, channel) if h.get("application_id") == app and h["name"] == name]
+    if mine:
+        hook = mine[0]
+        err(f"discord-webhook: reusing app-owned webhook {hook['id']} ({name!r}) in channel {channel}")
+    else:
+        hook = api.create_webhook(bot_token, channel, name)
+        err(f"discord-webhook: created app-owned webhook {hook['id']} ({name!r}) in channel {channel}")
+    print(api.webhook_url(hook))
+
+
+@main.command()
+@option("-d", "--date", help="Scan to report (default: latest under --root)")
+@option("-k", "--top", default=5, type=int, help="Movers per direction (default 5)")
+@option("-n", "--dry-run", is_flag=True, help="Print the message; post nothing")
+@option("-p", "--prior", help="Baseline scan (default: newest ≥ 7 days before --date)")
+@option("-r", "--root", help="Snapshots root (default gs://$DATA_BUCKET/snapshots)")
+@option("-t", "--threshold-gib", "threshold_gib", default=100, type=int, help="Mover threshold in GiB (default 100)")
+@option("-u", "--url", "site_url", default=None, help="Site base for links + the sweep-runs API (default gcs.oa.dev)")
+@option("-w", "--webhook", help="Discord webhook URL (default $DISCORD_GCS_USAGE_WEBHOOK — the #gcs-usage app-owned webhook the digest twin also posts through)")
+def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: str | None, threshold_gib: int, site_url: str | None, webhook: str | None) -> None:
+    """Post the weekly storage report to Marin's #internal-discuss: totals vs a
+    week ago, what the sweep removed, and the biggest movers with owners, from
+    the two scans' coarse index tiers. See specs/weekly-discord-report.md."""
+    from . import weekly as wk
+    from .mark import creds
+
+    site_url = site_url or wk.DEFAULT_URL
+    bucket = os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx")
+    root = root or f"gs://{bucket}/snapshots"
+    webhook = webhook or os.environ.get("DISCORD_GCS_USAGE_WEBHOOK")
+    if not dry_run and not webhook:
+        raise SystemExit("weekly: need -w/--webhook or $DISCORD_GCS_USAGE_WEBHOOK (or -n)")
+
+    dates = wk.scan_dates(root)
+    if not dates:
+        raise SystemExit(f"weekly: no scans under {root}")
+    date = date or dates[-1]
+    if date not in dates:
+        raise SystemExit(f"weekly: no scan {date} under {root}")
+    prior = prior or wk.prior_scan(dates, date)
+    if prior is None:
+        raise SystemExit(f"weekly: no scan ≥ 7 days before {date}")
+    err(f"weekly: {prior} → {date}")
+
+    totals = wk.totals_from_meta(wk.load_meta(root, prior), wk.load_meta(root, date))
+    _, token = creds(None, None)
+    swept, bands = None, []
+    if token:
+        runs = wk.load_runs(site_url, token)
+        since, until = wk.scan_ts(prior), wk.scan_ts(date) + 86400
+        swept = wk.swept_from_runs(runs, since, until)
+        real = [r["run_id"] for r in runs if r.get("mode") == "real" and r.get("finished_ts") and since < r["finished_ts"] <= until]
+        bands = wk.load_bands(site_url, token, real) if real else []
+        err(f"weekly: {swept.runs} real sweep runs in window, {len(bands)} bands")
+    else:
+        err("weekly: no $GCS_USAGE_TOKEN — sweep totals omitted")
+    a, b = wk.load_table(bucket, prior), wk.load_table(bucket, date)
+    mv = wk.movers(a, b, threshold=threshold_gib * wk.GIB, top=top, swept=bands)
+    text = wk.compose(totals, swept, mv, date=date, prior=prior, threshold=threshold_gib * wk.GIB, url=site_url)
+    if dry_run:
+        print(text)
+        return
+    mid = wk.post(webhook, text)
+    err(f"weekly: posted {mid} ({len(text)} chars)")
