@@ -1,7 +1,5 @@
 /**
  * A scan's index tiers (`<dir>/path-index[-coarse<E>][-by-user].parquet`) as
- * (shared verbatim with gcs — only the store's allow-list differs: cw's tiers
- * live under `cw-l2/<scan>/index/<gen>/`)
  * a row-group-pruned range reader — shared by `/api/subtree` (pixel-budget
  * drill), `/api/diff`, `/api/series` and `/api/marks/totals` (exact keep /
  * sweep bytes per live mark).
@@ -116,7 +114,7 @@ export function makeStore(env: Env) {
     endpoint: 'https://storage.googleapis.com',
     bucket: BUCKET,
     region: 'us-east1',
-    prefixes: ['cw-l2/', 'snapshots/'],
+    prefixes: ['listing/', 'snapshots/', 'cw-l2/'],
     accessKeyId: env.GCS_HMAC_KEY_ID,
     secretAccessKey: env.GCS_HMAC_SECRET,
   })

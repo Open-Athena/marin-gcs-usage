@@ -4,7 +4,7 @@
 // snapshot + the admin-edit audit trail live here; the HTTP surface is
 // api/plans/[[path]].ts.
 import type { D1Database } from "@cloudflare/workers-types"
-import { CW_BUCKET } from "./gcp.js"
+import { CW_BUCKET } from "./cwBatch.js"
 
 // A plan prefix stored as `s3://<bucket>/<path>/` (matching the marks convention);
 // normalized to a relative key prefix only at snapshot time.

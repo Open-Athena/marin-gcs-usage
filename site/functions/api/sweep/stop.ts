@@ -7,7 +7,7 @@
 // run's log part-files and are recoverable (delete markers), and a re-dispatch
 // re-lists and skips already-deleted keys.
 import { type Ctx, type Env as AuthEnv, json, requireAdmin } from "../../_lib/auth.js"
-import { batchJobsUrl, gcpToken } from "../../_lib/gcp.js"
+import { BATCH_REGION, batchJobsUrl, gcpToken } from "../../_lib/gcp.js"
 
 type Env = AuthEnv & { GCP_SA_KEY?: string }
 
@@ -23,7 +23,7 @@ export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> 
   if (!JOB_RE.test(jobId)) return json({ error: "bad job_id" }, 400)
 
   const token = await gcpToken(ctx.env.GCP_SA_KEY)
-  const r = await fetch(`${batchJobsUrl()}/${jobId}:cancel`, {
+  const r = await fetch(`${batchJobsUrl(BATCH_REGION)}/${jobId}:cancel`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ reason: `cancelled by ${gated.email}` }),

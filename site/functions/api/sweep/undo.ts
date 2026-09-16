@@ -5,7 +5,8 @@
 // (undo_state -> full).
 import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireAdmin } from "../../_lib/auth.js"
-import { gcpToken, jobStamp, runMountPath, submitBatch, sweepBatchSpec } from "../../_lib/gcp.js"
+import { gcpToken } from "../../_lib/gcp.js"
+import { jobStamp, runMountPath, submitBatch, sweepBatchSpec } from "../../_lib/cwBatch.js"
 
 type Env = AuthEnv & { DB?: D1Database }
 

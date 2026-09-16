@@ -12,9 +12,8 @@
 // actAs the job SA + GCS write for the plan.json drop).
 import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireAdmin } from "../../_lib/auth.js"
-import {
-  DATA_BUCKET, gcpToken, jobStamp, runGsPath, runMountPath, submitBatch, sweepBatchSpec,
-} from "../../_lib/gcp.js"
+import { gcpToken } from "../../_lib/gcp.js"
+import { DATA_BUCKET, jobStamp, runGsPath, runMountPath, submitBatch, sweepBatchSpec } from "../../_lib/cwBatch.js"
 import { snapshotPlan } from "../../_lib/plans.js"
 
 type Env = AuthEnv & { DB?: D1Database }

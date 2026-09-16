@@ -10,7 +10,8 @@
 // simplification vs gcs writing D1 from inside Batch.
 import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireViewer } from "../../_lib/auth.js"
-import { batchJobsUrl, BATCH_REGION, CW_BUCKET, DATA_BUCKET, GCP_PROJECT, gcpToken } from "../../_lib/gcp.js"
+import { batchJobsUrl, BATCH_REGION, GCP_PROJECT, gcpToken } from "../../_lib/gcp.js"
+import { CW_BUCKET, DATA_BUCKET } from "../../_lib/cwBatch.js"
 
 type Env = AuthEnv & { DB?: D1Database }
 
@@ -76,7 +77,7 @@ export const onRequestGet = async (ctx: Ctx & { env: Env }): Promise<Response> =
   if (!ctx.env.GCP_SA_KEY) return json({ jobs: [], configured: false })
   const token = await gcpToken(ctx.env.GCP_SA_KEY)
 
-  const r = await fetch(`${batchJobsUrl()}?pageSize=100&orderBy=${encodeURIComponent("create_time desc")}`, {
+  const r = await fetch(`${batchJobsUrl(BATCH_REGION)}?pageSize=100&orderBy=${encodeURIComponent("create_time desc")}`, {
     headers: { authorization: `Bearer ${token}` },
   })
   if (!r.ok) {
