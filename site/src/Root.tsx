@@ -32,7 +32,7 @@ export default function Root() {
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesPage /></AuthGate>} />
       {/* The ledger pages exist only on a marks store; elsewhere they go home. */}
-      {DEFAULT_STORE.marks ? (<>
+      {DEFAULT_STORE.owners ? (<>
       <Route path="/marks" element={<AuthGate><MarksPage /></AuthGate>} />
       <Route path="/assignments" element={<AuthGate><AssignmentsPage /></AuthGate>} />
       <Route path="/users/og" element={<UsersOgPage />} />

@@ -10,6 +10,7 @@ import { ACTION_LABELS, useMarkMutations } from './marks'
 import { OwnerBar, ownerShares } from './OwnerBar'
 import { looksCkpt, subtreeStateTotals } from './sweep'
 import type { MarkState, MarkAxis, KlcIndex } from './sweep'
+import { DEFAULT_STORE } from './stores'
 import { Tooltip } from './Tooltip'
 import { elideMid } from './CopyName'
 import { AssignSelect } from './AssignSelect'
@@ -86,7 +87,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   // attribution and no marks → no `owner(s)`): a store without those axes
   // shouldn't read as a table of dashes.
   const hasRead = kids.some(k => k.a != null)
-  const hasOwners = !!markIdx || kids.some(k => k.us?.length)
+  const hasOwners = (!!markIdx && DEFAULT_STORE.owners) || kids.some(k => k.us?.length)
 
   // Created-month ink: an age gradient over the listed rows' range, so a
   // column of "May / Jun / Apr" also reads at a glance as older ↔ newer.
@@ -157,7 +158,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
         <Tooltip content="Clear the marks on every selected prefix (back to undecided)">
           <button type="button" className="dot clear" onClick={() => bulkMark(null)} aria-label="clear marks">×</button>
         </Tooltip>
-        <AssignSelect prefix={selUris.map(u => u + '/')} label={`assign ${sel.selected.size}…`} />
+        {DEFAULT_STORE.owners && <AssignSelect prefix={selUris.map(u => u + '/')} label={`assign ${sel.selected.size}…`} />}
         <button type="button" className="quiet" onClick={sel.clear}>deselect</button>
       </span>
     </span>
@@ -279,7 +280,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
                               <button type="button" className="dot clear" onClick={() => mark(uri, null)} aria-label="clear mark">×</button>
                             </Tooltip>
                           )}
-                          <AssignSelect prefix={uri + '/'} assigned={cl?.who ?? null} compact />
+                          {DEFAULT_STORE.owners && <AssignSelect prefix={uri + '/'} assigned={cl?.who ?? null} compact />}
                         </span>
                       </>
                     )}

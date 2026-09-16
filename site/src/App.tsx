@@ -135,6 +135,10 @@ function AppContent() {
   // (no-email) sessions get the read-only view. Folded onto `/` (was a separate
   // `/mark` route); GCS only, since CoreWeave is out of the sweep.
   const markMode = store.marks && canMark
+  // gcs's actions ledger lives server-side (mark-state scopes, totals, history);
+  // a plan-first store's marks are client-side only (marks.ts adapter).
+  const serverLedger = markMode && store.sweep === 'owner'
+  const ownersMode = markMode && store.owners
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
   const [typedOpen, setTypedOpen] = useState(false)
@@ -192,12 +196,12 @@ function AppContent() {
   }, [clP])
   const setClasses = (ks: ClassAxis[]) => setClP(ks.length === 0 || ks.length === CLASS_AXES.length ? undefined : CLASS_AXES.filter(c => ks.includes(c)).join(''))
   const ident = useIdentity()
-  const myUser = useMyUser(ident?.email, markMode)
+  const myUser = useMyUser(ident?.email, ownersMode)
   // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
   const markAxes = useMemo((): ReadonlySet<MarkAxis> | null => {
     const on = new Set(MARK_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
-    return on.size > 0 && on.size < MARK_AXES.length && markMode ? on : null
-  }, [kP, markMode])
+    return on.size > 0 && on.size < MARK_AXES.length && serverLedger ? on : null
+  }, [kP, serverLedger])
   const setMarkAxes = (keep: MarkAxis[]) =>
     setKP(keep.length === MARK_AXES.length || keep.length === 0 ? undefined : MARK_CHIPS.filter(c => keep.includes(c.f)).map(c => c.key).join(''))
   // Owner axis. `me` resolves to the signed-in user's attribution id (a
@@ -207,16 +211,16 @@ function AppContent() {
   // (the sweep console's "show me the conflicts under this band" link). The
   // excluded users resolve to canonical ids for the server's row filter.
   const notUsers: string[] =
-    markMode && oP?.startsWith('!') ? oP.slice(1).split(',').filter(Boolean).map(k => canonId(k)) : []
+    ownersMode && oP?.startsWith('!') ? oP.slice(1).split(',').filter(Boolean).map(k => canonId(k)) : []
   const ownerUser: string | null =
-    !markMode || !oP || oP === 'owned' || oP === 'unowned' || oP.startsWith('!') ? null
+    !ownersMode || !oP || oP === 'owned' || oP === 'unowned' || oP.startsWith('!') ? null
     : oP === 'me' ? myUser
     : canonId(oP)
   const ownerMode: OwnerMode =
-    !markMode || !oP ? 'all'
+    !ownersMode || !oP ? 'all'
     : notUsers.length ? 'others'
     : oP === 'owned' ? 'owned' : oP === 'unowned' ? 'unowned' : ownerUser ? 'user' : 'all'
-  const meUnmapped = markMode && oP === 'me' && !myUser
+  const meUnmapped = ownersMode && oP === 'me' && !myUser
   const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
   // Flip a picked person between their own bytes (`?o=<key>`) and everyone
   // else's under the current view (`?o=!<key>`) — the ≠ toggle beside the picker.
@@ -231,7 +235,7 @@ function AppContent() {
   // receives exactly the current view and only draws it.
   const lensUser = viewUser
   const activeLens = lensUser ? `user:${lensUser}` : null
-  const assigner = markMode && byP ? canonId(byP) : null
+  const assigner = ownersMode && byP ? canonId(byP) : null
   const scopeQs =
     (activeLens ? `&lens=${activeLens}` : '') +
     (activeLens && assigner ? `&by=${encodeURIComponent(assigner)}` : '') +
@@ -467,7 +471,7 @@ function AppContent() {
   // drilled subtree once you drill (`?path=`), so the map's rollup is exact at
   // every depth, not just the root (specs/path-agnostic-serving.md §2.3).
   const drillPfx = drillPath ? `${store.scheme}${drillPath}/` : undefined
-  const totalsQ = useMarkTotals(asof, markMode ? drillPfx : undefined, markMode)
+  const totalsQ = useMarkTotals(asof, serverLedger ? drillPfx : undefined, serverLedger)
   const drillTo = (segs: string[]) =>
     navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
   // Read-recency lens domain: the access-log observation window (meta), not
@@ -904,7 +908,7 @@ function AppContent() {
             />
           </span>
         )}
-        {markMode && (
+        {serverLedger && (
           <span className="tb-axis">
             <span className="lbl">marks</span>
             <MultiSelect<MarkAxis>
@@ -1079,7 +1083,7 @@ function AppContent() {
         <div id="tree-map" className="tm-skel" aria-busy="true" aria-label="loading tree" />
       )}
 
-      {markMode && (
+      {serverLedger && (
         <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || store.rootLabel} pred={pred} filterQ={fq} window={diffWindow} />
       )}
 
@@ -1088,6 +1092,7 @@ function AppContent() {
           axis has no series yet (a per-scan ledger replay; view-serving.md).
           The age chart still hides under any scope until /api/age lands. */}
       <SizeOverTime
+        scopeLabel={store.rootLabel}
         scans={scans} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}

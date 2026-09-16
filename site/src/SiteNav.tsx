@@ -133,9 +133,9 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
             <div className="menu-pop" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
               {link('/', 'Map')}
               {link('/files', 'Scans')}
-              {canMark && DEFAULT_STORE.marks && link('/users', 'Users')}
-              {canMark && DEFAULT_STORE.marks && link('/marks', 'Marks')}
-              {canMark && DEFAULT_STORE.marks && link('/assignments', 'Assignments')}
+              {canMark && DEFAULT_STORE.owners && link('/users', 'Users')}
+              {canMark && DEFAULT_STORE.owners && link('/marks', 'Marks')}
+              {canMark && DEFAULT_STORE.owners && link('/assignments', 'Assignments')}
               {canMark && link('/sweep', 'Sweep')}
               <hr />
               <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setAboutOpen(true) }}>About — the data, axes &amp; colors</button>
@@ -158,7 +158,7 @@ function UserMenu() {
   const canMark = useCanMark()
   const signOut = useSignOut()
   // The ledger pages + the email → user map exist only on a marks store.
-  const marksOn = canMark && DEFAULT_STORE.marks
+  const marksOn = canMark && DEFAULT_STORE.owners
   const myUser = useMyUser(ident?.email, marksOn)
   const emails = useUserEmails(marksOn)
   const [tokenOpen, setTokenOpen] = useState(false)
