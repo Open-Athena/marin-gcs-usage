@@ -17,7 +17,8 @@ const RECORDED_FROM = '2026-09-16'
 function useLifecycle(store: Store, scan: string | null | undefined) {
   return useQuery<LifecycleRule[] | null>({
     queryKey: ['lifecycle', store.key, scan],
-    enabled: !!scan,
+    // Snapshots exist from the recorded-from date on; earlier scans would only 404.
+    enabled: !!scan && scan >= RECORDED_FROM,
     staleTime: Infinity,
     queryFn: async () => {
       const r = await fetch(`${store.base}/${scan}/lifecycle.json`)

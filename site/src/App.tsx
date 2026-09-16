@@ -176,6 +176,14 @@ function AppContent() {
   // instead of a tab row, so "unmarked ∧ unclaimed" or "sweep ∧ one user"
   // are plain combinations. Old links normalize below.
   const [fq, setFq] = useUrlState('f', stringParam())
+  // The box edits a local draft; the URL (and every query keyed on it) follows
+  // after a 250 ms pause — one request pair per phrase, not per keystroke.
+  const [fqDraft, setFqDraft] = useState<string | null>(null)
+  useEffect(() => {
+    if (fqDraft == null) return
+    const t = setTimeout(() => { setFq(fqDraft || undefined); setFqDraft(null) }, 250)
+    return () => clearTimeout(t)
+  }, [fqDraft, setFq])
   // Lens changes push history (they change WHAT you're looking at, like a
   // drill); cosmetics (`?c=`, `?s=`, `?n=`) replace.
   const [kP, setKP] = useUrlState('k', stringParam(), true)
@@ -336,13 +344,15 @@ function AppContent() {
       // user index for this scan; 413: view too wide) — those surface as-is.
       retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
       retryDelay: (n: number) => 400 * 2 ** n,
-      queryFn: async () => {
+      // With a filter the full read plans each match root's tier (`full=1`);
+      // the companion below paints the coarsest-tier forest first.
+      queryFn: async ({ signal }: { signal?: AbortSignal }) => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
-          { credentials: 'include' },
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}${fq ? '&full=1' : ''}`,
+          { credentials: 'include', signal },
         )
         if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
-        return r.json() as Promise<{ tree: TreeNode; matches?: string[]; threshold?: number }>
+        return r.json() as Promise<{ tree: TreeNode; matches?: string[]; matched?: { path: string; b: number; o: number }[]; threshold?: number }>
       },
     })),
   })
@@ -360,10 +370,13 @@ function AppContent() {
       enabled: !!asof && i === subtreePaths.length - 1,
       staleTime: markAxes ? 30_000 : Infinity,
       retry: false,
-      queryFn: async () => {
+      // Plain view: one depth band. Filtered view: the whole forest from the
+      // coarsest tier (`partial`, milliseconds) — the fast first paint of
+      // specs/filter-views.md, replaced by the planned-tier read above.
+      queryFn: async ({ signal }: { signal?: AbortSignal }) => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}&depth=1${scopeQs}`,
-          { credentials: 'include' },
+          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${fq ? '' : '&depth=1'}${scopeQs}`,
+          { credentials: 'include', signal },
         )
         if (!r.ok) throw new Error(`${r.status}`)
         return r.json() as Promise<{ tree: TreeNode }>
@@ -529,10 +542,10 @@ function AppContent() {
     enabled: !!asof && !!diffPrev,
     staleTime: markAxes ? 30_000 : Infinity,
     retry: false,
-    queryFn: async () => {
+    queryFn: async ({ signal }: { signal?: AbortSignal }) => {
       const r = await fetch(
         `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
-        { credentials: 'include' },
+        { credentials: 'include', signal },
       )
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
       return r.json() as Promise<DiffData>
@@ -553,10 +566,10 @@ function AppContent() {
     staleTime: markAxes ? 30_000 : Infinity,
     retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
     retryDelay: (n: number) => 400 * 2 ** n,
-    queryFn: async () => {
+    queryFn: async ({ signal }: { signal?: AbortSignal }) => {
       const r = await fetch(
         `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
-        { credentials: 'include' },
+        { credentials: 'include', signal },
       )
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
       return r.json() as Promise<DiffData>
@@ -569,10 +582,10 @@ function AppContent() {
     enabled: !!asof && !!diffPrev,
     staleTime: markAxes ? 30_000 : Infinity,
     retry: false,
-    queryFn: async () => {
+    queryFn: async ({ signal }: { signal?: AbortSignal }) => {
       const r = await fetch(
         `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
-        { credentials: 'include' },
+        { credentials: 'include', signal },
       )
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
       return r.json() as Promise<DiffData>
@@ -931,8 +944,8 @@ function AppContent() {
         {bar.pathFilter && (
           <span className="filterbox">
             <input
-              value={fq ?? ''}
-              onChange={e => setFq(e.target.value || undefined)}
+              value={fqDraft ?? fq ?? ''}
+              onChange={e => setFqDraft(e.target.value)}
               placeholder="filter paths — text, a|b, or /regex/"
               aria-label="Filter tree by segment name"
               size={22}
@@ -940,7 +953,7 @@ function AppContent() {
             {fq && tree && (
               <span className="fnote">
                 {tree.b > 0 ? <>{fmtBytes(tree.b)} matched</> : 'no matches'}
-                <Tooltip content="clear filter"><button type="button" onClick={() => setFq(undefined)}>✕</button></Tooltip>
+                <Tooltip content="clear filter"><button type="button" onClick={() => { setFqDraft(null); setFq(undefined) }}>✕</button></Tooltip>
               </span>
             )}
           </span>
