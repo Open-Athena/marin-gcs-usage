@@ -4,7 +4,7 @@ import type { SyntheticEvent } from 'react'
 import { FaGithub } from 'react-icons/fa'
 import { Link, useLocation } from 'react-router-dom'
 import { MdBrightnessAuto, MdDarkMode, MdInfoOutline, MdLayers, MdLightMode } from 'react-icons/md'
-import { HotkeysProvider, Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
+import { Omnibar, ShortcutsModal, SpeedDial, useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { AttributionRules } from './AttributionRules'
@@ -14,6 +14,7 @@ import { SizeOverTime } from './SizeOverTime'
 import type { DiffData } from './DiffTreemap'
 import { buildUserIndex } from './colors'
 import { DAY, fmtScan, nearestScan, scanTime, useScan } from './scan'
+import { storeForPath } from './stores'
 import { ClassMixTip, SpeedDialTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight } from './Treemap'
@@ -94,13 +95,17 @@ function useTheme(): [Theme, () => void] {
 }
 
 function AppContent() {
+  // Which object store to render comes from the path (one store today; the
+  // abstraction stays so a second cloud store is a `STORES` row + data).
+  const { pathname, hash } = useLocation()
+  const store = storeForPath(pathname)
   // Scan selection (`?d=YYMMDD`) + the polling scan list; absent `?d` is a
   // first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, setDP, span, setSpan, setRange, scansQ } = useScan()
+  const { asof, scans, setDP, span, setSpan, setRange, scansQ } = useScan(store)
   const marks = useMarks()
   const scanQuery = <T,>(name: string) => ({
-    queryKey: [name, asof],
-    queryFn: () => fetch(`/data/${asof}/${name}.json`).then(r => r.json() as Promise<T>),
+    queryKey: [name, store.key, asof],
+    queryFn: () => fetch(`${store.base}/${asof}/${name}.json`).then(r => r.json() as Promise<T>),
     enabled: !!asof,
     staleTime: Infinity,
   })
@@ -308,7 +313,6 @@ function AppContent() {
   // else the summary (its own query — current for this key or absent).
   const diffHead: DiffData | null = diff && !diffStale ? diff : diffSumQ.data ?? null
   const [introOpen, onIntroToggle] = useFold('gcs-usage:fold2:intro')
-  const { hash } = useLocation()
   // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
   // map, meta and scans land (sections mount off different queries). The
   // sections park under the sticky pagebar (`scroll-margin-top`, app.scss).
@@ -502,7 +506,7 @@ function AppContent() {
     <main>
       <header>
         <div className="hrow">
-          <h1>Marin CoreWeave usage</h1>
+          <h1>{store.title}</h1>
           {/* Nav + identity flush right as one designed cluster (no SiteNav
               here — one page). Page-scoped controls (scan/units/color-by) live
               in the sticky `.pagebar` below, not the h1 line. */}
@@ -714,7 +718,7 @@ function AppContent() {
               diff dims under the marker, or (first load) a skeleton stands in. */}
           {diff && diff.rows.length > 0 && (
             <div className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={{ minHeight: Math.round(canW * 0.6) }}>
-              <DiffTreemap data={diff} label="Marin CoreWeave usage" />
+              <DiffTreemap data={diff} label={store.title} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>
           )}
@@ -787,9 +791,5 @@ function AppContent() {
 }
 
 export default function App() {
-  return (
-    <HotkeysProvider config={{ storageKey: 'gcs-usage' }}>
-      <AppContent />
-    </HotkeysProvider>
-  )
+  return <AppContent />
 }

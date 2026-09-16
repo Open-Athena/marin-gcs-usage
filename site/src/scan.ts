@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
-import type { UseQueryResult } from '@tanstack/react-query'
 import { useMemo } from 'react'
+import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useUrlState } from 'use-prms'
+import type { Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
 export const SCANS_POLL_MS = 5 * 60_000
@@ -139,24 +139,34 @@ export interface Scan {
   dP: string | undefined
   /** Pin the "after" scan; the latest scan (or undefined) clears the pin. */
   setDP: (v: string | undefined) => void
-  /** Diff look-back in ms; undefined = the baked previous scan. */
+  /** Diff look-back in ms; undefined = the previous scan. */
   span: number | undefined
   setSpan: (ms: number | undefined) => void
   /** Pin + look-back in one URL write (a chart brush sets both). */
   setRange: (d: string | undefined, ms: number | undefined) => void
-  /** The scan-list query (error → the sign-in prompt, not a crash). */
   scansQ: UseQueryResult<string[]>
 }
 
-export function useScans(): UseQueryResult<string[]> {
+// Shared scan resolution: `?d=YYMMDD` (a prefix of a scan id) pins a scan;
+// absent means "latest" (a first-class state, so a parked tab follows new scans
+// via the poll rather than freezing on the day it opened). Every scan-scoped
+// page (home map, /users, /user/:id) uses this so a scan pin is one shareable,
+// page-independent dimension. `scans` is newest-first, so the first prefix match
+// is the newest. See specs/scan-param-all-pages.md.
+/** The store's scan list (newest first) — the one definition every page
+ * shares, so the poll and error handling are the same wherever it mounts.
+ * The list polls so an unpinned tab discovers new scans on its own; the
+ * per-scan payloads are immutable once published, so they never refetch.
+ * Store-scoped key, so switching stores swaps the whole payload set. */
+export function useScans(store: Store): UseQueryResult<string[]> {
   return useQuery<string[]>({
-    queryKey: ['scans'],
+    queryKey: ['scans', store.key],
     // Throw on non-OK (e.g. a 401 from the data proxy with no session) so
     // react-query holds it as an error rather than handing the error body
     // downstream — `scans` then stays `[]` and the error surfaces as a sign-in
     // prompt rather than crashing `scans.map`.
     queryFn: async () => {
-      const r = await fetch('/data/scans.json')
+      const r = await fetch(`${store.base}/scans.json`)
       if (!r.ok) throw Object.assign(new Error(`scans: ${r.status}`), { status: r.status })
       return r.json()
     },
@@ -164,14 +174,9 @@ export function useScans(): UseQueryResult<string[]> {
   })
 }
 
-// Shared scan resolution: `?d=YYMMDD` (a prefix of a scan id) pins a scan;
-// absent means "latest" (a first-class state, so a parked tab follows new scans
-// via the poll rather than freezing on the day it opened). `scans` is
-// newest-first, so the first prefix match is the newest. Ported from gcs
-// (`9b8d237`, specs/scan-param-all-pages.md); one store here, so no argument.
-export function useScan(): Scan {
+export function useScan(store: Store): Scan {
   const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel }, true)
-  const scansQ = useScans()
+  const scansQ = useScans(store)
   const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
   const dP = sel?.d
   const span = sel?.span

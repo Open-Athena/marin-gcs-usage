@@ -92,7 +92,7 @@ export interface Highlight {
 // drill/crumb state, hover-pinning, folding, and keyboard nav live upstream;
 // this file supplies marin's business logic (attribution color modes, class
 // lens, $-pricing, rollup bar, tooltip content) through the accessor props.
-export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, redact, initialPath, path, onPathChange, marks }: {
+export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, scheme = 's3://', redact, initialPath, path, onPathChange, marks }: {
   // Start drilled here (the lone bucket) — crumbs keep the ancestry.
   initialPath?: TreeNode[]
   // Controlled drill path (App owns it, in `?path=`): every drill/crumb/
@@ -108,6 +108,8 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   hl?: Highlight | null
   pricing?: Pricing | null
   lens?: boolean
+  // URI scheme for cell paths — `gs://` for GCS, `s3://` for CoreWeave.
+  scheme?: string
   // OG-image mode: hide every text detail (cell labels, crumb/rollup bars, hint)
   // and render just the colored cells. Never set by the live app.
   redact?: boolean
@@ -136,8 +138,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     [],
   )
 
-  // this branch serves the CoreWeave (CAIOS) estate — object URLs are s3://
-  const pathOf = (path: TreeNode[]) => 's3://' + path.slice(1).map(n => n.n).join('/')
+  const uriOf = (path: TreeNode[]) => scheme + path.slice(1).map(n => n.n).join('/')
 
   // Mark outlines: a cell is outlined only where its resolved mark differs from
   // the state its parent cell already conveys, so a uniformly-marked subtree is
@@ -145,7 +146,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   // drill root's own mark is inherited by its tiles, so they stay undecorated.
   const drillPath = path ?? initialPath
   const drillDepth = drillPath?.length ?? 0
-  const rootKeep = marks && drillPath?.length ? marks.resolve(pathOf(drillPath))?.mark.keep ?? null : null
+  const rootKeep = marks && drillPath?.length ? marks.resolve(uriOf(drillPath))?.mark.keep ?? null : null
   const chainOf = (cellPath: TreeNode[]): number => {
     let i = cellPath.length - 1
     while (i > drillDepth && cellPath[i - 1].c?.length === 1) i--
@@ -153,10 +154,10 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   }
   const edgeMark = (cellPath: TreeNode[], chain: number): { keep: MarkAction; parent: TreeNode[] } | null => {
     if (!marks) return null
-    const r = marks.resolve(pathOf(cellPath))
+    const r = marks.resolve(uriOf(cellPath))
     if (!r) return null
     const parent = cellPath.slice(0, cellPath.length - chain - 1)
-    const parentKeep = parent.length > drillDepth ? (marks.resolve(pathOf(parent))?.mark.keep ?? null)
+    const parentKeep = parent.length > drillDepth ? (marks.resolve(uriOf(parent))?.mark.keep ?? null)
       : parent.length === drillDepth ? rootKeep : null
     if (parentKeep && parentKeep === r.mark.keep) return null
     return { keep: r.mark.keep, parent }
@@ -172,7 +173,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
           key: (n, cellPath) => {
             if (n.n.startsWith('(')) return null
             const e = edgeMark(cellPath, chainOf(cellPath))
-            return e ? `${e.keep}|${pathOf(e.parent)}` : null
+            return e ? `${e.keep}|${uriOf(e.parent)}` : null
           },
           color: key => ACTION_COLORS[key.slice(0, key.indexOf('|')) as MarkAction],
           width: 2,
@@ -381,7 +382,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
   )
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
-    const gsPath = pathOf(path)
+    const uri = uriOf(path)
     const mix = classMix(n)
     const classes = n.cb && (
       <div className="classes-row">
@@ -405,7 +406,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
     )
     return (
       <>
-        <PathBar uri={gsPath} />
+        <PathBar uri={uri} />
         <div className="nums">
           {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
           {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}
@@ -438,7 +439,7 @@ export function Treemap({ root, mode, userIdx, dateRange, hl, pricing, lens, red
       getSize={n => n.b}
       getChildren={n => n.c}
       getLabel={n => n.n}
-      getId={(_n, p) => pathOf(p)}
+      getId={(_n, p) => uriOf(p)}
       formatSize={fmtBytes}
       mergeSmall={mergeSmall}
       colorForCell={colorForCell}

@@ -9,6 +9,7 @@ import { Tooltip } from './Tooltip'
 import { UserChip } from './UserChip'
 import { useUnits } from './units'
 import { fmtN } from './types'
+import { DEFAULT_STORE } from './stores'
 
 interface Whoami { email: string | null; admin: boolean }
 interface PlanSummary {
@@ -74,7 +75,7 @@ export function SweepPage() {
 
   useEffect(() => { void getJson<Whoami>('/api/whoami').then(setWho).catch(() => {}) }, [])
   useEffect(() => { void loadPlans(); void loadJobs() }, [loadPlans, loadJobs])
-  useEffect(() => { void getJson<string[]>('/data/scans.json').then(s => { setScans(s); setDate(s[0] ?? '') }).catch(() => {}) }, [])
+  useEffect(() => { void getJson<string[]>(`${DEFAULT_STORE.base}/scans.json`).then(s => { setScans(s); setDate(s[0] ?? '') }).catch(() => {}) }, [])
   useEffect(() => { if (sel != null) void loadDetail(sel) }, [sel, loadDetail])
 
   // Poll while any of the selected plan's runs is live.
