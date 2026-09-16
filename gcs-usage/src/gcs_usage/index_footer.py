@@ -1,7 +1,5 @@
 """Extract a parquet's footer as hyparquet-compatible JSON (schema + per-row-group
-column metadata) and sync it to the site's D1 (ported from gcs; cw keeps the
-same shape so `_lib/index.ts` is shared verbatim — only the DB id, the wrangler
-DB name, and the variant set differ), so the Cloudflare reader can build
+column metadata) and sync it to the site's D1, so the Cloudflare reader can build
 a subset ``FileMetaData`` for a prefix query without parsing the whole footer on a
 cold isolate (specs/path-agnostic-serving.md §2.1 — the footer-in-D1 seam).
 

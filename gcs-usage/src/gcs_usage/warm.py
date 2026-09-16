@@ -1,6 +1,4 @@
-"""Warm the site's caches for a freshly published scan (`gcs-usage warm-cache`;
-ported from gcs — cw's paths are the bucket and its big top-level dirs, and
-auth is a Cloudflare Access service token rather than an agent bearer token).
+"""Warm the site's caches for a freshly published scan (`gcs-usage warm-cache`).
 
 The site's `/api/subtree` and `/api/diff` are auth-gated, immutable per scan,
 and cached in two tiers (colo cache + global KV, `site/functions/_lib/edgeCache.ts`).
@@ -30,10 +28,7 @@ PATHS = ("", "marin-us-east-02a", "marin-us-east-02a/marin", "marin-us-east-02a/
 
 
 def _ts(date: str) -> int:
-    # scan ids are `YYYY-MM-DD` or sub-daily `YYYY-MM-DDTHHMM` (digest.scan_ts)
-    from .digest import scan_ts
-
-    return int(scan_ts(date).timestamp())
+    return int(dt.datetime.fromisoformat(date).replace(tzinfo=dt.timezone.utc).timestamp())
 
 
 def nearest_prior(dates: list[str], date: str, days: int) -> str | None:
