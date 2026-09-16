@@ -292,6 +292,12 @@ echo "PHASE webdata+stage: ${SECONDS}s (wall)" >&2
 # (site/functions/data/[[path]].ts), so no site rebuild/deploy is needed.
 mkdir -p "/gcs/$DATA/$SNAP_PATH"
 cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
+# The fleet's lifecycle rules in force at this scan (Marin's tmp/ttl=<N>d TTLs
+# on every bucket): snapshotted next to the scan, keyed by bucket, so the site
+# can show them and diff them scan to scan. `job/lifecycle/<bucket>.json` is
+# the tracked copy (`dt-cloud lifecycle diff`); a pull never fails the scan.
+LC=(); for b in "${FLEET[@]}"; do LC+=(-b "gs://$b"); done
+dt-cloud lifecycle pull "${LC[@]}" -o "/gcs/$DATA/$SNAP_PATH/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
 if [ "${SCRATCH:-0}" = "1" ]; then
   echo "SCRATCH — published to $SNAP_PATH + $INDEX_PATH; skipping index-sync/healthcheck/series/diff/digest" >&2
   echo "PHASE total: ${SECONDS}s (wall)" >&2

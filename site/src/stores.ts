@@ -54,6 +54,7 @@ export const STORES: Store[] = [
     marks: true,
     sweep: 'owner',
     peer: { label: 'CoreWeave usage', href: 'https://cw-s3.oa.dev/' },
+    lifecycle: 'job/lifecycle/',
     wall: {
       restrict: 'Access is limited to marin contributors and invited collaborators.',
       signIn: 'Sign in',

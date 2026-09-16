@@ -15,6 +15,7 @@ import { ChildrenTable } from './ChildrenTable'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
+import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
@@ -930,6 +931,16 @@ function AppContent() {
           <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
         )}
       </SiteNav>
+
+      {/* The fleet's lifecycle rules as the scan job snapshotted them
+          (`<base>/<scan>/lifecycle.json`, keyed by bucket): a fold near the top
+          of the page; the rows diff against the previous scan. */}
+      {store.lifecycle && (
+        <LifecycleFold
+          store={store} asof={asof} prevScan={prevScan}
+          note={<>Marin sets these on its buckets; the job records them each scan (<code>dt-cloud lifecycle pull</code>) and a copy is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff</code> shows drift).</>}
+        />
+      )}
 
       {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
           end) with a strip listing every candidate to pin one. */}

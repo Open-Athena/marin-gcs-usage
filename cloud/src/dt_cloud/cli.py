@@ -999,6 +999,115 @@ def warm_cache(date: str | None, jobs: int, dry_run: bool, root: str | None, tok
 
 
 @main.group()
+def lifecycle() -> None:
+    """Bucket lifecycle rules as a tracked file: `pull` (live → JSON), `diff`
+    (file vs live), `push` (file → bucket, whole-config write + read-back
+    verification), `gc-rule` (print the S3 bucket-wide noncurrent-version GC
+    rule to add to a file). `gs://<bucket>` reads GCS (ADC: the job SA, or
+    your gcloud application-default login); a bare name is S3 / CAIOS with the
+    keys from the env (see `sweep`). Several `-b` → one JSON map keyed by
+    bucket, the per-scan snapshot shape."""
+
+
+def _lifecycle_clients(buckets: tuple[str, ...]):
+    from .lifecycle import is_gcs
+
+    gcs = s3 = None
+    if any(is_gcs(b) for b in buckets):
+        from google.cloud import storage
+
+        gcs = storage.Client(project=os.environ.get("GCP_PROJECT", "oa-internal-450019"))
+    if any(not is_gcs(b) for b in buckets):
+        try:
+            from .sweep import s3_client  # the CoreWeave deployment's CAIOS client
+        except ImportError as e:
+            raise SystemExit("lifecycle: bare (S3) bucket names need the CoreWeave deployment's `sweep` module; GCS buckets are `gs://<name>`") from e
+        s3 = s3_client()
+    return s3, gcs
+
+
+_LC_BUCKET = option("-b", "--bucket", "buckets", multiple=True, help="`gs://<bucket>` (GCS) or a bare S3 bucket name; repeatable (default $CW_BUCKET)")
+
+
+def _lc_buckets(buckets: tuple[str, ...]) -> tuple[str, ...]:
+    if buckets:
+        return buckets
+    b = os.environ.get("CW_BUCKET")
+    if not b:
+        raise SystemExit("lifecycle: need -b <bucket> (or $CW_BUCKET)")
+    return (b,)
+
+
+@lifecycle.command("pull")
+@_LC_BUCKET
+@option("-o", "--out", type=Path, help="Write here instead of stdout")
+def lifecycle_pull(buckets: tuple[str, ...], out: Path | None) -> None:
+    """One bucket → its rule list; several → `{bucket: rules}`."""
+    from .lifecycle import GCS_SCHEME, dump, is_gcs, pull_any, pull_many
+
+    buckets = _lc_buckets(buckets)
+    s3, gcs = _lifecycle_clients(buckets)
+    if len(buckets) == 1:
+        text = dump(pull_any(buckets[0], s3=s3, gcs=gcs), bucket=buckets[0])
+    else:
+        # one cloud per snapshot map (the keys are bare names, so the map's cloud is the flag)
+        text = dump(pull_many(list(buckets), s3=s3, gcs=gcs), bucket=GCS_SCHEME if all(is_gcs(b) for b in buckets) else "")
+    if out is None:
+        sys.stdout.write(text)
+    else:
+        out.write_text(text)
+        err(f"lifecycle: {', '.join(buckets)} → {out}")
+
+
+@lifecycle.command("diff")
+@_LC_BUCKET
+@argument("path", type=Path)
+def lifecycle_diff(buckets: tuple[str, ...], path: Path) -> None:
+    """Exit 1 when PATH (intended) differs from the live rules of the one -b bucket."""
+    from .lifecycle import diff_any, load, pull_any
+
+    (bucket,) = _lc_buckets(buckets)
+    s3, gcs = _lifecycle_clients((bucket,))
+    d = diff_any(bucket, load(str(path)), pull_any(bucket, s3=s3, gcs=gcs))
+    print(json.dumps(d))
+    if any(d.values()):
+        sys.exit(1)
+
+
+@lifecycle.command("push")
+@_LC_BUCKET
+@option("-n", "--dry-run", is_flag=True, help="Print the diff that would be applied; touch nothing")
+@argument("path", type=Path)
+def lifecycle_push(buckets: tuple[str, ...], dry_run: bool, path: Path) -> None:
+    """Replace the one -b bucket's lifecycle configuration with PATH (read back + verified)."""
+    from .lifecycle import bucket_name, diff_any, is_gcs, load, pull_any, push, push_gcs
+
+    (bucket,) = _lc_buckets(buckets)
+    s3, gcs = _lifecycle_clients((bucket,))
+    intended = load(str(path))
+    base = pull_any(bucket, s3=s3, gcs=gcs)
+    d = diff_any(bucket, intended, base)
+    if not any(d.values()):
+        err(f"lifecycle: {bucket} already matches {path}")
+        return
+    err(f"lifecycle: {'would apply' if dry_run else 'applying'} to {bucket}: {json.dumps(d)}")
+    if dry_run:
+        return
+    # refuses if live moved since the diff
+    live = push_gcs(gcs, bucket_name(bucket), intended, base=base) if is_gcs(bucket) else push(s3, bucket, intended, base=base)
+    err(f"lifecycle: {bucket} now has {len(live)} rule(s), verified")
+
+
+@lifecycle.command("gc-rule")
+@option("-d", "--days", default=1, help="NoncurrentDays (1 while versioning is off; the undo window when it's on)")
+@option("-p", "--prefix", default="", help="Scope (default: whole bucket)")
+def lifecycle_gc_rule(days: int, prefix: str) -> None:
+    from .lifecycle import gc_rule
+
+    print(json.dumps(gc_rule(days, prefix), indent=2))
+
+
+@main.group()
 def sweep() -> None:
     """Sweep-executor phases — plan / review / execute (specs/sweep-executor.md)."""
 

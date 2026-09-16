@@ -2077,3 +2077,28 @@ select.assign-sel {
 }
 // Storage-class swatches in the class-mix table (same palette as the CLASS bar).
 .classmix td .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+// The home page's "Bucket lifecycle" fold (LifecycleFold.tsx): a <details>
+// with an icon + one-line summary, and the rules table inside.
+.fold {
+  margin: 10px 0 4px;
+  > summary { cursor: pointer; display: flex; align-items: center; gap: 6px; list-style: none; color: var(--ink-2); }
+  > summary::-webkit-details-marker { display: none; }
+  > summary::before { content: '▸'; color: var(--ink-3); font-size: 11px; width: 10px; }
+  &[open] > summary::before { content: '▾'; }
+  .fold-icon { color: var(--ink-3); font-size: 15px; }
+  .tab-note { color: var(--ink-3); font-size: 12px; margin: 6px 0 0; }
+  .tbl-scroll { overflow-x: auto; margin-top: 6px; }
+}
+.fold.lifecycle { max-width: none; }
+.lifecycle-tbl {
+  th, td { white-space: nowrap; }
+  td.id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  code.clip { display: inline-block; max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  td.buckets { color: var(--ink-2); white-space: nowrap; }
+  tr.removed td { color: var(--ink-3); text-decoration: line-through; }
+  .chip { margin-left: 6px; font-size: 10.5px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--line); vertical-align: 1px; }
+  .chip.new { color: var(--grew, #3fb950); border-color: currentColor; }
+  .chip.removed { color: var(--shrank, #f85149); border-color: currentColor; text-decoration: none; }
+  .chip.changed { color: var(--ink-2); border-color: currentColor; cursor: help; }
+}
