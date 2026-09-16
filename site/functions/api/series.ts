@@ -7,13 +7,50 @@
  * tier that holds it (or the floor-free tier), scoped per row like a view's
  * root. Nothing is precomputed per prefix and nothing is floored: a path
  * below every tier falls through to the floor-free tier. Scans predating the
- * index (or the scope's variant) are simply absent.
+ * index (or the scope's variant) have no per-prefix point — but for the
+ * unscoped whole-bucket series (empty path, no lens / owner / class filter)
+ * a scan's `meta.json` total is as good as an index row, so those scans are
+ * filled in from the snapshot dir: the chart keeps any history that never
+ * got (or lost) its tiers, rather than showing a gap.
  */
 import { type Ctx, GCS_SCOPE, json, requireScope } from '../_lib/auth.js'
-import type { Lens } from '../_lib/index.js'
+import { type Lens, makeStore } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner } from '../_lib/scope.js'
 import { readRootAgg } from '../_lib/view.js'
+
+// The default store's snapshot dirs (`snapshots/<date>/`; other stores live in
+// a named subdir that DATE_RE keeps out), and the scan-id shape they're named by.
+const SNAPSHOTS_PREFIX = 'snapshots/'
+const DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{4})?$/
+
+/** Scans present as snapshot dirs but absent from the index (oldest first). */
+async function unindexedScans(env: Ctx['env'], indexed: Set<string>): Promise<string[]> {
+  const store = makeStore(env)
+  const out: string[] = []
+  let cursor: string | undefined
+  do {
+    const page = await store.list(SNAPSHOTS_PREFIX, { cursor })
+    for (const e of page.entries) {
+      const d = e.key.slice(SNAPSHOTS_PREFIX.length).replace(/\/$/, '')
+      if (e.isDir && DATE_RE.test(d) && !indexed.has(d)) out.push(d)
+    }
+    cursor = page.cursor
+  } while (cursor)
+  return out.sort()
+}
+
+/** A whole-bucket point from a scan's `meta.json` (no tiers needed). */
+async function metaPoint(env: Ctx['env'], date: string): Promise<{ date: string; b: number; o: number } | null> {
+  try {
+    const { bytes } = await makeStore(env).get(`${SNAPSHOTS_PREFIX}${date}/meta.json`)
+    const m = JSON.parse(new TextDecoder().decode(bytes)) as { total_bytes?: number; total_objects?: number }
+    return typeof m.total_bytes === 'number' ? { date, b: m.total_bytes, o: m.total_objects ?? 0 } : null
+  } catch (e) {
+    console.log(`series /: no meta.json point for ${date}: ${(e as Error).message}`)
+    return null
+  }
+}
 
 export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   const { env, request } = ctx
@@ -39,7 +76,9 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   const dates = rows.results.map(r => r.date)
   // A user lens applies the live claims, so its key carries the ledger head.
   const head = lens ? await ledgerHead(env) : 0
-  const cacheKey = new Request(`https://series.cache/${encodeURIComponent(path)}?l=${lensRaw ?? ''}&o=${owner ?? ''}&cl=${classKey(classes)}&d=${dates.join(',')}&head=${head}`)
+  // Unscoped whole-bucket series only: scans without tiers still have a total in meta.json.
+  const extra = path === '' && !lens && !owner && !classes ? await unindexedScans(env, new Set(dates)) : []
+  const cacheKey = new Request(`https://series.cache/${encodeURIComponent(path)}?l=${lensRaw ?? ''}&o=${owner ?? ''}&cl=${classKey(classes)}&d=${dates.join(',')}&x=${extra.join(',')}&head=${head}`)
   const cache = (caches as unknown as { default: Cache }).default
   const hit = await cache.match(cacheKey)
   if (hit) return hit
@@ -65,6 +104,11 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
     const got = await Promise.all(dates.slice(i, i + 12).map(d => point(d)))
     for (const g of got) if (g) points.push(g)
   }
+  for (let i = 0; i < extra.length; i += 12) {
+    const got = await Promise.all(extra.slice(i, i + 12).map(d => metaPoint(env, d)))
+    for (const g of got) if (g) points.push(g)
+  }
+  points.sort((a, b) => a.date.localeCompare(b.date))
   const res = json({ path, ...(lensRaw ? { lens: lensRaw } : {}), ...(owner ? { owner } : {}), points }, 200, { 'cache-control': 'private, max-age=300' })
   await cache.put(cacheKey, res.clone())
   return res

@@ -311,4 +311,6 @@ cw-s3's factored-branch pass (`d285f16`, `wt/cw-s3/specs/cp-from-cw-s3-2026-09-1
 
 Skipped: the digest-plot item (`4a7587b`) — gcs's sparkline already fits its y-range to the month (`set_ylim(lo - pad, hi + pad)`), and the rest of that commit is the diff-treemap panel, which needs cw's `digest.tree_diff` (+88 lines, 85 test lines): a feature port for the gcs OP image if wanted, not a hunk CP. The four considered-not-queued items stand as cw-s3 triaged them.
 
+Second commit (cursor `cw-s3 9da8f5d`): the manifest's ninth item, appended after the first read — `9da8f5d` `/api/series` fills the whole-bucket series from `meta.json` for snapshot dirs the index doesn't know (`SNAPSHOTS_PREFIX = 'snapshots/'`, only for the unscoped empty path; lens / owner / class series stay index-only). Inert on gcs today (48 snapshot dirs, 48 indexed); it keeps the chart whole if an index sync ever lags. `bcac98c` skipped as cw-s3-only (About / store copy).
+
 Tests: 24 vitest, `tsc` clean, 182 gcs-usage (the 9 `test_viz` failures + 2 collection errors are the pre-existing `disk_tree`-not-importable venv state). CIC on `site/dev`: login wall (`?wall`), `/files` shard cells, App tooltips.
