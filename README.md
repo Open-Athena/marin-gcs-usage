@@ -1,16 +1,34 @@
 # marin-gcs-usage
 
-Per-user attribution and reporting for Marin GCS storage: "who is using what."
+![Treemap of the six marin-* buckets, coloured by top-level prefix](site/public/og.jpg)
 
-Private by design — the identity map (`src/dt_cloud/identities.yaml`: real
-names, teams, login aliases) and per-user usage reports stay out of the public
-[marin] repo, matching the privacy stance of marin's egress report.
+*The public preview: cells are sized by bytes and coloured by top-level prefix, with names, sizes, owners, and costs omitted. The [site][gcs.oa.dev] shows all of them to signed-in users.*
 
-See [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md) for
-the full plan (attribution signals, join layer, weekly report integration,
-OA-gated webapp, [disk-tree] drill-down).
+Storage-usage attribution and cleanup for the Marin GCS buckets: **who is using
+what**, and a **mark & sweep** workflow to reclaim space. Browse it at
+**[gcs.oa.dev]** (Open-Athena-gated).
 
-## Usage
+The identity map (`cloud/src/dt_cloud/identities.yaml`: handles, teams, login
+aliases) is curated in-repo; it maps already-public GitHub / W&B handles to a
+team bucket (`oa` / `stanford` / `communal`) and carries no emails or private
+contact info.
+
+## Mark & sweep
+
+Storage across the `marin-*` buckets is reviewed by **marking prefixes to keep**
+— everything left unmarked is **swept (deleted) after the cleanup deadline**.
+Mark from the web UI at [gcs.oa.dev], or non-interactively:
+
+- `dt-cloud mark` / `status` / `todo` — the CLI (bulk-mark, check a prefix's
+  effective fate, list the undecided backlog).
+- `GET /api/resolve`, `GET /api/todo`, `POST /api/actions` — the HTTP API.
+
+**[AGENTS.md](AGENTS.md)** documents the token, CLI, and API for driving this
+autonomously (e.g. pointing an agent at your team's prefixes). Marking only
+records a decision in the ledger — nothing is deleted at mark time, and marks
+are reversible until the sweep.
+
+## Attribution pipeline
 
 Attribution parquets (`prefix → user/team` rows) come from two builders:
 
@@ -28,8 +46,9 @@ dt-cloud wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <
 Reporting and the site consume any number of attribution parquets (`-a`, repeatable):
 
 ```bash
-dt-cloud report -l <listing> -a <attr...>            # per-user/team bytes + coverage; -u <user> prints their claim list
-dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unattributed prefixes (curation queue)
+dt-cloud attr-report -l <listing> -a <attr...>       # per-user/team bytes + coverage; -u <user> prints their prefixes
+dt-cloud report -a <actions.json>                    # per-user mark-status CSV (the "who still needs to mark" nag list)
+dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unowned prefixes (curation queue)
 dt-cloud webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
 dt-cloud rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
 ```
@@ -49,21 +68,38 @@ spellings resolve to their own sanitized segment with team `unknown` and are
 listed on stderr — curate them into `identities.yaml` (`dt-cloud rules`
 validates it).
 
-Listing-scale runs (34M+ dirs) belong on a work node, not a laptop — see the
-weekly-refresh runbook in [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md).
+Listing-scale runs (34M+ dirs) belong on a work node, not a laptop.
 
 ## Access ([gcs.oa.dev])
 
-The viz site is gated by [Cloudflare Access][cf-access] (app "GCS usage", Open Athena CF account). The allow policy is:
+The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at `/auth/sso` (Google sign-in with any account, or a one-time email PIN), and the app then checks the signed-in email against an allowlist it owns (a D1 table, edited by admins at `/admin/db/allowed_emails`; removals take effect immediately). Invited guests can also be issued personal share links. To be added, ping Ryan (Discord) or ask any admin.
 
-- any `@openathena.ai` email (Google SSO or one-time email PIN), plus
-- a whitelist of external emails — currently Percy Liang: `psl@stanford.edu`, `percyliang@gmail.com` (one-time email PIN; Google SSO is restricted to the openathena.ai org by the OAuth client's consent config)
+## Reports
 
-To add/remove whitelisted emails: CF dashboard → Zero Trust → Access → Applications → "GCS usage" policy (or ask Ryan). Update this list in lockstep so the policy stays reviewable here.
+The daily job posts the same digest to Slack `#gcs-usage` and Discord `#gcs-usage` (Marin's server): one thread per month whose OP (month-to-date headline, per-week bullets, a class-mosaic plot) is edited in place, plus one reply per scan under a headline sender with a colour-coded trend-arrow avatar. Mondays add a week-over-week report (totals, sweep deletions, biggest movers with owners). Code: `cloud/src/dt_cloud/digest.py` (`dt-cloud digest [-P discord]`) and `weekly.py` (`dt-cloud weekly`); design notes in `specs/done/slack-digest-shape-c.md`, `specs/done/discord-digest-twin.md`, and `specs/weekly-discord-report.md`. Posting goes through [thrds] (per-message sender + attachments on both platforms).
+
+![August 2026 digest plot: total bytes over the month, and the storage-class mosaic beneath](docs/img/digest-2026-08-redacted.jpg)
+
+*The thread OP's plot for August 2026 (`python -m dt_cloud.digest_plot --redact`): the shape of the month and the class mix, with the sizes left off. The posted version carries the axis values and the running total.*
+
+## Repo layout
+
+Monorepo — a shared engine plus the Marin-specific app and site:
+
+- **`cloud/`** — the `marin-gcs-usage` package (the `dt-cloud` CLI: attribution
+  builders, reporting, the mark & sweep ledger client, access-log ingest).
+- **`src/disk_tree/`** — the [disk-tree] engine (indexing, tree aggregation,
+  storage backends) this repo is built on; installed as the root `disk-tree`
+  package.
+- **`site/`** — the [gcs.oa.dev] web app: a Cloudflare Pages SPA (treemap +
+  browse + mark UI) with Pages Functions serving `/data` and `/api/*`.
 
 ## Development
 
+The `dt-cloud` CLI lives in `cloud/`:
+
 ```bash
+cd cloud
 uv sync
 uv run pytest
 ```
@@ -71,14 +107,18 @@ uv run pytest
 Two marin contracts are deliberately mirrored (not imported) to keep this repo
 standalone; if either changes upstream, update in lockstep:
 
-- `src/dt_cloud/usernames.py` — `sanitize_username` rules, mirror of
+- `cloud/src/dt_cloud/usernames.py` — `sanitize_username` rules, mirror of
   `rigging.provenance.username_segment`
-- `src/dt_cloud/records.py` — the `.artifact.json` shape
+- `cloud/src/dt_cloud/records.py` — the `.artifact.json` shape
   (`marin.execution.artifact.ArtifactRecord`), of which only
   `provenance.built_by` is read
+
+For the web app (`site/`), see [`site/`](site) — `./dev` runs the full local
+stack (Vite UI + `wrangler pages dev` for the Functions).
 
 [gcs.oa.dev]: https://gcs.oa.dev
 [cf-access]: https://developers.cloudflare.com/cloudflare-one/applications/
 [marin]: https://github.com/marin-community/marin
 [marin#6790]: https://github.com/marin-community/marin/issues/6790
 [disk-tree]: https://github.com/runsascoded/disk-tree
+[thrds]: https://github.com/runsascoded/thrds

@@ -38,26 +38,26 @@ export interface Store {
 
 export const STORES: Store[] = [
   {
-    key: 'cw',
-    label: 'CoreWeave',
-    title: 'Marin CoreWeave usage',
-    desc: 'Storage usage of the Marin CoreWeave bucket — treemap, diffs over time, and a reviewed sweep tool.',
+    key: 'gcs',
+    label: 'GCS',
+    title: 'Marin GCS usage',
+    desc: 'Per-user storage ownership across the six marin-* GCS buckets.',
     path: '/',
-    scheme: 's3://',
-    base: '/data/cw',
+    scheme: 'gs://',
+    base: '/data',
     ogImage: '/og.jpg',
-    prices: false,
-    marks: false,
-    sweep: 'plan',
-    lifecycle: 'job/cw-lifecycle.json',
-    peer: { label: 'GCS usage', href: 'https://gcs.oa.dev/' },
+    prices: true,
+    marks: true,
+    sweep: 'owner',
+    peer: { label: 'CoreWeave usage', href: 'https://cw-s3.oa.dev/' },
   },
 ]
 
 export const DEFAULT_STORE = STORES[0]
 
-// Longest matching path wins. (This deployment — cw-s3.oa.dev, the `cw-s3`
-// branch — serves the CoreWeave store only; the GCS view is gcs.oa.dev.)
+// Longest matching path wins. (The CoreWeave view is its own deployment —
+// cw-s3.oa.dev, the `cw-s3` branch — not a store here; `/cw` redirects there
+// via functions/cw.ts.)
 export const storeForPath = (pathname: string): Store =>
   [...STORES]
     .sort((a, b) => b.path.length - a.path.length)

@@ -27,13 +27,12 @@ export default defineConfig({
     host: true,
     allowedHosts,
     // dev only: forward the Pages Functions (snapshot data + scan-browser API)
-    // to the local `wrangler pages dev` (run it on :3264 with GCS HMAC creds in
+    // to the local `wrangler pages dev` (run it on :3254 with GCS HMAC creds in
     // .dev.vars). Both /data and /v1/files now read live from the bucket.
     proxy: {
-      '/data': 'http://localhost:3264',
-      '/v1/files': 'http://localhost:3264',
-      // Mark & sweep console: plans/marks/sweep/whoami Functions (D1 + Batch).
-      '/api': 'http://localhost:3264',
+      '/data': 'http://localhost:3254',
+      '/v1/files': 'http://localhost:3254',
+      '/api': 'http://localhost:3254',
     },
   },
   // The workspace-linked `@rdub/file-tree` calls `useLocation` etc. — force a

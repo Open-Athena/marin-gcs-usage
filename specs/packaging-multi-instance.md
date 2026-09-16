@@ -73,7 +73,7 @@ Store coverage from DT today: gcs/s3/r2 (bulk) + local/ssh (walk). R2 costs plan
    ingest + per-prefix/op aggregation **in DT from day 1** (generic CSV schema — it's Google's
    documented usage-log format, nothing marin-specific), thin marin consumer: requester join +
    hot-prefix digest posted to `#internal-discuss`/`#gcs-usage` (Michael Ryan explicitly asked
-   for an ops auto-report "like we have for egress and storage"). This both answers the $60K
+   for an ops auto-report "like we have for egress and storage"). This both answers the bill-composition
    reads question and is the first deliverable of the new plane.
 2. **P1 — rewire marin onto the DT engine** (unblocked; all DT items landed):
    - Batch job: post-listing step → `disk-tree import --engine duckdb` over the layer-1
