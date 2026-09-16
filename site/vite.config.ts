@@ -20,7 +20,13 @@ const devSeriesIndex = {
   },
 }
 
+// Deployment default for the client's whoami source (src/auth.ts): this host
+// sits behind a CF Access edge gate, so identity comes from the edge unless the
+// environment says otherwise (`VITE_AUTH_MODE=app` for the app-session model).
+const AUTH_MODE = process.env.VITE_AUTH_MODE ?? 'edge'
+
 export default defineConfig({
+  define: { 'import.meta.env.VITE_AUTH_MODE': JSON.stringify(AUTH_MODE) },
   plugins: [react(), devSeriesIndex],
   server: {
     port: 3253,
