@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { SITE } from './title'
 import { Link } from 'react-router-dom'
 
 // The onboarding copy that used to sit above the map as two folds (the
@@ -14,7 +15,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
     <div className="token-backdrop" onClick={onClose}>
       <div className="token-modal about-modal" role="dialog" aria-label="About" onClick={e => e.stopPropagation()}>
         <div className="token-head">
-          <strong>Marin GCS usage</strong>
+          <strong>{SITE}</strong>
           <button type="button" className="token-x" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <h3>The data</h3>

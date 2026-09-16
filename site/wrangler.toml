@@ -28,6 +28,9 @@ remote = true
 enabled = true
 
 [vars]
+ROOT_LABEL = "marin CoreWeave"  # the store root's crumb label (`_lib/view.ts`)
+EDGE_TRUSTED = "1"              # whole host behind CF Access: edge identities get BASE_SCOPE (`_lib/auth.ts`)
+BASE_SCOPE = "cw"
 # Zero Trust team domain whose JWTs the edge identity / get-identity accept.
 ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"
 # AUD tag of the "CoreWeave usage (cw-s3.oa.dev)" Access app (`4c463052`),

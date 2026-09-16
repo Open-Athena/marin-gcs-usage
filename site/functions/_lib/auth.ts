@@ -49,6 +49,8 @@ export interface Env {
   EDGE_TRUSTED?: string
   /** The scope every viewer of this deployment needs (`gcs` | `cw`). */
   BASE_SCOPE?: string
+  /** The store root's crumb label (`marin GCS`, `marin CoreWeave`). */
+  ROOT_LABEL?: string
   /** Dedicated SA key (Batch submit + actAs the job SA) for the sweep dispatch bridge. */
   GCP_SA_KEY?: string
 }

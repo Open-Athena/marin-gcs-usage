@@ -161,7 +161,4 @@ export const fmtBytesIec = (b: number, suffixB = false): string => {
   return Math.round(b / Ki) + ' Ki' + B
 }
 
-// Non-hook default (IEC, bare `Ti`); kept for cw's pre-hub consumers until the page hub converges.
-export const fmtBytes = (b: number): string => fmtBytesIec(b)
-
 export const fmtN = (n: number): string => n.toLocaleString('en-US')
