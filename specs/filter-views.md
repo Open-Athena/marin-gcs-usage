@@ -2,18 +2,21 @@
 
 **From:** the union preview review (cw-s3, 2026-09-16). With `?f=ttl` at the root, the map drew `tmp/ttl=14d` as one 107 Ti slab with no children, the input fired a request per keystroke (37 requests, `subtree` 3–8 s and `diff` 10–13 s each, nothing cancelled), the held view was cleared to "0 bytes · 0 objects" while the next one loaded, and *Size over time* ignored the filter while *Diff* honoured it. Applies to both deployments (gcs has the same filter path; cw's 100 Ti single matches just made it obvious).
 
-## 1. Semantics: a match selects its subtree
+## 1. Where the filter runs today (server-side, post-read)
 
-Today `?f=` returns only rows whose **own segment** matches, so a matched directory is a leaf (its children — `skyrl`, `users`, `checkpoints-temp` — don't match and are cut). The bulk bar already computes the intended thing: the **matched-prefix set** (matches minus those nested under another match).
+`?f=` → `q=` on `/api/subtree` and `/api/diff`; the client never filters map rows (it only re-filters the small marks feed). In `view.ts` the read is planned as usual — tier by the unscoped root's pixel threshold, one depth-band read of every row above the attenuated threshold — and `nameFilter` (`_lib/scope.ts`) then runs over *those rows*: the predicate is a case-insensitive substring of the whole index path (so `ttl` matches `tmp/ttl=14d` and everything under it), the **outermost** matches are the match roots, and each root's aggregate is summed into its ancestors. By design it does not visit the roots' descendants ("its descendants are not visited"), so a matched directory always arrives childless. Two consequences: the slab, and matches below the read's threshold are invisible (the read was budgeted for the unfiltered view, not for finding names).
 
-- `/api/subtree?f=`: resolve the matched-prefix set first, then compose the view as a **forest** of those roots — each root's subtree rendered with the normal pixel-budget fold, the budget split across roots by bytes. A match with no children (an object) is a leaf as before. Response carries `matched: [{path, b, o}]` so the client doesn't recompute it.
-- `/api/diff?f=`: same forest composition on the diff tree (it already scopes totals to the matches; make the map consistent).
-- The children table under a filter lists the matched roots' parents as today, but rows drill into the *filtered* subtree (the filter stays in the URL across drills, as it does now).
+## 2. Semantics: a match selects its subtree, found adaptively
 
-## 2. Fast first paint
+- **Phase 1 — resolve the match roots on the coarsest tier**, independent of the pixel budget: the coarse tiers hold every path whose subtree clears an absolute floor (`coarse16` = 64 KiB), thousands of rows, one small read. Match roots = outermost matching paths (as `nameFilter` computes now). Nothing matched above the floor → walk down the tiers (`coarse20/24` are supersets in the other direction, so: `coarse16` → fine only if it found nothing), i.e. the traversal adapts its depth to the filter results rather than to the canvas.
+- **Phase 2 — read each root's subtree as a region** with the normal pixel-budget fold, the way the lens path already reads claimed regions (`readRects` over per-root rects), with the threshold re-based on the root's own depth and the budget split across roots by bytes. Tier for phase 2 is chosen per root from its bytes (a 107 Ti root reads `coarse24`; a 2 Gi root reads fine) — the existing planner rule, applied per region.
+- Response: the forest (roots linked under their ancestors as today, now with children) + `matched: [{path, b, o}]`. `/api/diff?f=` composes the same way over both scans' match roots (union of the two sets).
+- Children table / drills unchanged: rows drill into the filtered subtree with `?f=` kept in the URL.
 
-- Resolve the matched set on the **coarse tier** (thousands of rows — milliseconds) and return that view immediately with `partial: true`; then the client requests the refinement from the floor-free tier (same request with `full=1`), which replaces the view when it lands. Same two-step for `/api/diff`.
-- Segment-name matching can't use the row-group path-range pruning; on the full tier, prune by the **matched set's prefixes** instead — once the coarse pass has named them, the full-tier read is a handful of ranges, not a scan.
+### Fast first paint
+
+- Phase 1 + a coarse-tier phase 2 is milliseconds; return that with `partial: true`, then the client re-requests with `full=1` for the per-root-planned tiers and swaps the view when it lands.
+- No name index is needed: the coarse tier is the index. Substring matching cannot use row-group path pruning, but phase 1 reads the whole (small) tier and phase 2 prunes by the roots' prefixes.
 
 ## 3. Client behaviour
 
