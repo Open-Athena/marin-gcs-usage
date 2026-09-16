@@ -314,7 +314,7 @@ def scan_dates(root: str) -> list[str]:
     return sorted(
         m.group(1)
         for p in fs.glob(f"{root.split('://', 1)[-1]}/*/meta.json")
-        if (m := re.search(r"/(\d{4}-\d{2}-\d{2})/meta\.json$", p))
+        if (m := re.search(r"/(\d{4}-\d{2}-\d{2}(?:T\d{4})?)/meta\.json$", p))  # date-only or sub-daily ids
     )
 
 
