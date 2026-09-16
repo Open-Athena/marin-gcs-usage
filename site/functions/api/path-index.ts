@@ -9,25 +9,24 @@
 // row-group stats, then only the pages a predicate needs):
 //
 //   CREATE SECRET (TYPE http, EXTRA_HTTP_HEADERS MAP {
-//     'CF-Access-Client-Id': '<service token id>', 'CF-Access-Client-Secret': '<secret>' });
-//   SELECT * FROM read_parquet('https://cw-s3.oa.dev/api/path-index?date=2026-09-16T0001')
+//     'Authorization': 'Bearer <your /api/token>' });
+//   SELECT * FROM read_parquet('https://gcs.oa.dev/api/path-index?date=2026-08-26')
 //   WHERE depth = 2 ORDER BY b DESC LIMIT 20;
 //
-// Schema: one row per rolled-up path (bucket-prefixed) —
-// (path, depth, usr, b, o, wts, wb, c2, c3, c4, a), sorted (depth, path);
-// `usr`/`a` are NULL and `c2..c4` 0 on CoreWeave (no attribution / classes).
+// Schema: one row per rolled-up path × attribution slice —
+// (path, depth, usr, b, o, wts, wb, c2, c3, c4, a), sorted (depth, path).
 //
 // A Workers isolate buffers each range in memory, so ranges are capped; a
 // bare GET would mean buffering the whole multi-GB file and is refused with
 // a pointer to Range requests instead.
 import { S3Store } from '@rdub/file-tree/stores/s3'
-import { type Ctx, requireViewer } from '../_lib/auth.js'
+import { type Env, requireViewer } from '../_lib/auth.js'
 import { indexDir } from '../_lib/index.js'
 
 const BUCKET = 'oa-gcs-usage-dvx'
 const MAX_RANGE = 64 * 1024 * 1024 // 64MB per request — plenty for parquet pages
 
-export const onRequest = async (ctx: Ctx): Promise<Response> => {
+export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Response> => {
   const { request, env } = ctx
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
@@ -38,6 +37,8 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const url = new URL(request.url)
   const date = url.searchParams.get('date') ?? ''
   if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
+  // The GCS index carries no CW data today, but keep the gate shape ready for
+  // a `store=cw` variant; base access = the same `gcs` scope as the app.
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
 
@@ -45,7 +46,7 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
     endpoint: 'https://storage.googleapis.com',
     bucket: BUCKET,
     region: 'us-east1',
-    prefixes: ['cw-l2/'],
+    prefixes: ['listing/'],
     accessKeyId: env.GCS_HMAC_KEY_ID,
     secretAccessKey: env.GCS_HMAC_SECRET,
   })

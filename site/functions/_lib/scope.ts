@@ -1,6 +1,58 @@
-/** The page's server-side scope axes (specs/view-serving.md §2). cw carries
- * only the name filter — no owner or storage-class axis (no attribution, no
- * classes on CoreWeave) — so this is gcs's `scope.ts` minus those. */
+/** The page's scope axes, applied server-side to a view's rows
+ * (specs/view-serving.md §2): the owner axis (`o=`), and the name filter
+ * (`q=`). The mark axis (`k=`) lives in `states.ts` — it needs the ledger.
+ *
+ * Both are pure functions over index rows / per-path aggregates so `buildView`
+ * stays one pipeline: read a superset by total bytes, narrow per row, fold. */
+
+/** `o=`: `owned` = rows some person owns (`usr` set), `unowned` = the
+ * NULL-`usr` slices (ownership has one axis: a person or nobody). `{not}` =
+ * owned, but by nobody in the excluded set — the "owned by someone other than
+ * these users" pool (`o=!<id>,<id>`), used to surface the paths a sweep would
+ * touch that its sweeper does NOT own. Index rows are owner slices, so all
+ * three are exact per path. */
+export type OwnerScope = 'owned' | 'unowned' | { not: string[] }
+
+// `claimed` / `unclaimed` were the pools' names until 2026-09-07; old links
+// and cached clients still send them. `!a,b` = owned-except-{a,b}.
+export const parseOwner = (raw: string | null): OwnerScope | undefined =>
+  raw === 'owned' || raw === 'claimed' ? 'owned'
+  : raw === 'unowned' || raw === 'unclaimed' ? 'unowned'
+  : raw?.startsWith('!') ? { not: raw.slice(1).split(',').filter(Boolean) }
+  : undefined
+
+export const ownerOk = (usr: string | null, o: OwnerScope | undefined): boolean => {
+  if (!o) return true
+  if (o === 'owned') return usr != null
+  if (o === 'unowned') return usr == null
+  return usr != null && !o.not.includes(usr) // owned, excluding o.not
+}
+
+/** `cl=` ⊆ `snca` (Standard / Nearline / Coldline / Archive): the storage-
+ * class axis. Unlike the owner pools it doesn't pick rows — every index row
+ * is a (path, owner) slice carrying its own class split (`b` with `c2..c4`,
+ * Standard = the rest) — it *scales* each row down to the allowed classes'
+ * bytes. Objects aren't tracked per class, so `o` (and the written-time
+ * moments) scale with the byte share. All/none/absent = no scope. */
+export type ClassScope = ReadonlySet<'1' | '2' | '3' | '4'>
+const CLASS_LETTERS: Record<string, '1' | '2' | '3' | '4'> = { s: '1', n: '2', c: '3', a: '4' }
+export function parseClasses(raw: string | null): ClassScope | undefined {
+  if (!raw) return undefined
+  const out = new Set<'1' | '2' | '3' | '4'>()
+  for (const ch of raw) if (CLASS_LETTERS[ch]) out.add(CLASS_LETTERS[ch])
+  return out.size === 0 || out.size === 4 ? undefined : out
+}
+/** The canonical letters for a scope (cache keys). */
+export const classKey = (cl: ClassScope | undefined): string =>
+  cl ? ['1', '2', '3', '4'].filter(c => cl.has(c as '1')).map(c => ({ 1: 's', 2: 'n', 3: 'c', 4: 'a' })[c as '1' | '2' | '3' | '4']).join('') : ''
+/** A row cut down to its allowed classes' bytes (a copy; `r` untouched). */
+export function classRow<R extends { b: number; o: number; wts: number; wb: number; c2: number; c3: number; c4: number }>(r: R, cl: ClassScope | undefined): R {
+  if (!cl) return r
+  const c1 = Math.max(0, r.b - r.c2 - r.c3 - r.c4)
+  const b = (cl.has('1') ? c1 : 0) + (cl.has('2') ? r.c2 : 0) + (cl.has('3') ? r.c3 : 0) + (cl.has('4') ? r.c4 : 0)
+  const f = r.b > 0 ? b / r.b : 0
+  return { ...r, b, o: Math.round(r.o * f), wts: r.wts * f, wb: r.wb * f, c2: cl.has('2') ? r.c2 : 0, c3: cl.has('3') ? r.c3 : 0, c4: cl.has('4') ? r.c4 : 0 }
+}
 
 /** `q=`: `/…/` = regex (case-insensitive); anything else = substring (ci),
  * with `|` splitting alternatives. Predicates receive the index path
