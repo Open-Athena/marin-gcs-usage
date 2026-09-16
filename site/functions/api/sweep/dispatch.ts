@@ -1,80 +1,99 @@
-// POST /api/sweep/dispatch — launch a sweep run on GCP Batch from the /sweep
-// console (specs/cw-sweep.md). Admin only.
+// POST /api/sweep/dispatch — launch a sweep executor run on GCP Batch from
+// the /sweep console (specs/sweep-executor.md, "web dispatch bridge").
 //
-// Body: { plan_id, mode: 'dry' | 'real', date: <scan id> }. Snapshots the plan's
-// items into plan.json (in the run dir on GCS), submits a Batch job running the
-// cw image's `sweep manifest && sweep execute`, and records an in-progress
-// `deletion_runs` row (finished_ts NULL) so the run shows in the console from
-// the moment it's submitted. The executor writes only gs:// artifacts; the run's
-// totals are reflected into D1 later by /api/sweep/jobs.
+// Body: { mode: 'dry' | 'real', date: 'YYYY-MM-DD', buckets?: string[] }.
+// Admin scope only. The submitted job runs the daily-snapshot image with the
+// entrypoint overridden to `sweep manifest -S` (consuming the console's
+// `sweep_approvals` sign-offs) followed by `sweep execute` — which re-lists,
+// generation-matches, records to D1 (`deletion_runs`/`deletion_bands`, so the
+// run surfaces in the console within its refetch window), and for `real`
+// requires ≥7d soft delete on every bucket before deleting anything.
 //
-// Auth to GCP: `_lib/gcp.ts` (the `GCP_SA_KEY` Pages secret — Batch submit +
-// actAs the job SA + GCS write for the plan.json drop).
-import type { D1Database } from "@cloudflare/workers-types"
-import { type Ctx, type Env as AuthEnv, json, requireAdmin } from "../../_lib/auth.js"
-import { gcpToken } from "../../_lib/gcp.js"
-import { DATA_BUCKET, jobStamp, runGsPath, runMountPath, submitBatch, sweepBatchSpec } from "../../_lib/cwBatch.js"
-import { snapshotPlan } from "../../_lib/plans.js"
+// Auth to GCP: `_lib/gcp.ts` (the `GCP_SA_KEY` Pages secret — a dedicated SA
+// that can submit Batch jobs and act as the job SA, and nothing else).
+import { ADMIN_SCOPE, type Env as AuthEnv, json, requireScope } from '../../_lib/auth.js'
+import { GCP_PROJECT, batchJobsUrl, batchRegionFor, gcpToken } from '../../_lib/gcp.js'
 
-type Env = AuthEnv & { DB?: D1Database }
+interface Env extends AuthEnv {
+  GCP_SA_KEY?: string
+}
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
+const PROJECT = GCP_PROJECT
+const IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/cloud-run-source-deploy/gcs-usage-snapshot:latest`
+const JOB_SA = `gcs-usage-job@${PROJECT}.iam.gserviceaccount.com`
+const CF_ACCOUNT_ID = '74981a43be0de7712369306c7b19133d'
+const SECRET = (name: string) => `projects/${PROJECT}/secrets/${name}/versions/latest`
 
-export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> => {
-  const gated = await requireAdmin(ctx)
+export const onRequestPost = async (ctx: { request: Request; env: Env }): Promise<Response> => {
+  const gated = await requireScope(ctx, ADMIN_SCOPE)
   if (gated instanceof Response) return gated
-  if (!ctx.env.DB) return json({ error: "plans store not configured (no D1 binding)" }, 503)
-  if (!ctx.env.GCP_SA_KEY) return json({ error: "dispatch not configured (GCP_SA_KEY secret missing)" }, 503)
-  const db = ctx.env.DB
+  if (!ctx.env.GCP_SA_KEY) return json({ error: 'dispatch not configured (GCP_SA_KEY secret missing)' }, 503)
 
   const body = (await ctx.request.json().catch(() => null)) as
-    | { plan_id?: number; mode?: string; date?: string } | null
-  const planId = body?.plan_id
+    | { mode?: string; date?: string; buckets?: string[] } | null
   const mode = body?.mode
   const date = body?.date
-  if (!Number.isInteger(planId)) return json({ error: "plan_id required" }, 400)
-  if (mode !== "dry" && mode !== "real") return json({ error: "mode must be 'dry' or 'real'" }, 400)
-  if (!date || !DATE_RE.test(date)) return json({ error: "date must be a scan id (YYYY-MM-DD[THHMM])" }, 400)
+  if (mode !== 'dry' && mode !== 'real') return json({ error: "mode must be 'dry' or 'real'" }, 400)
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: 'date must be YYYY-MM-DD (the plan scan)' }, 400)
+  const buckets = body?.buckets ?? []
+  if (buckets.some(b => !/^marin-[a-z0-9-]+$/.test(b))) return json({ error: 'bad bucket name' }, 400)
+  const region = batchRegionFor(buckets)
 
-  const snapshot = await snapshotPlan(db, planId!)
-  if (!snapshot) return json({ error: "no such plan" }, 404)
-  if (!snapshot.sweep.length) return json({ error: "plan has no items to sweep" }, 400)
-
-  const jobId = `cw-sweep-${mode}-${jobStamp()}z`
-  const runGs = runGsPath(jobId)
-  const runMnt = runMountPath(jobId)
-
-  const token = await gcpToken(ctx.env.GCP_SA_KEY)
-
-  // Drop plan.json into the run dir (the executor reads it via the FUSE mount).
-  const planObj = encodeURIComponent(`sweep/cw/runs/${jobId}/plan.json`)
-  const up = await fetch(
-    `https://storage.googleapis.com/upload/storage/v1/b/${DATA_BUCKET}/o?uploadType=media&name=${planObj}`,
-    { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(snapshot) },
-  )
-  if (!up.ok) return json({ error: "plan.json write failed", status: up.status, detail: (await up.text()).slice(0, 300) }, 500)
-
+  const ts = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15).replace('T', '-').toLowerCase()
+  const jobId = `gcs-sweep-${mode}-${ts}z`
+  const plan = `gs://oa-gcs-usage-dvx/sweep/runs/${jobId}`
+  const bflags = buckets.map(b => `-b ${b}`).join(' ')
   const script = [
-    "set -euo pipefail",
-    `RUN="${runMnt}"`,
-    `dt-cloud plan-sweep manifest --plan "$RUN/plan.json" -d "$SWEEP_DATE" -o "$RUN"`,
-    `dt-cloud plan-sweep execute ${mode === "real" ? "--for-real " : ""}"$RUN"`,
-  ].join("\n")
+    'set -euo pipefail',
+    `dt-cloud sweep manifest -d "$SWEEP_DATE" -S ${bflags} -o "${plan}"`,
+    `dt-cloud sweep execute ${bflags} ${mode === 'real' ? '--for-real ' : ''}"${plan}"`,
+  ].join('\n')
 
-  const spec = sweepBatchSpec(script, { JOB_ID: jobId, SWEEP_DATE: date })
-  const { ok, status, text } = await submitBatch(token, jobId, spec)
-  if (!ok) {
-    console.error("batch submit failed", status, text.slice(0, 2000))
-    let detail: unknown = { body: text.slice(0, 1000) }
-    try { detail = JSON.parse(text) } catch { /* keep raw */ }
-    return json({ error: `batch submit failed (${status})`, status, detail }, 500)
+  const spec = {
+    taskGroups: [{
+      taskCount: 1,
+      taskSpec: {
+        runnables: [{ container: { imageUri: IMAGE, entrypoint: '/bin/bash', commands: ['-c', script] } }],
+        computeResource: { cpuMilli: 8000, memoryMib: 60000 },
+        maxRetryCount: 0,
+        // 72 h: the 35M-object bucket needs ~10 h of deletes at the bucket's
+        // write ceiling on top of its listing; 4 h (the old cap) fit only east5.
+        maxRunDuration: '259200s',
+        environment: {
+          variables: {
+            SWEEP_DATE: date,
+            // `sweep execute` records the run's `actor` from $USER
+            USER: gated.email ?? 'sweep-console',
+            CLOUDFLARE_ACCOUNT_ID: CF_ACCOUNT_ID,
+          },
+          secretVariables: {
+            GCS_USAGE_TOKEN: SECRET('gcs-sheet-sync-token'),
+            CLOUDFLARE_API_TOKEN: SECRET('cf-pages-token'),
+          },
+        },
+      },
+    }],
+    allocationPolicy: {
+      instances: [{ policy: { machineType: 'n2-highmem-8', bootDisk: { type: 'pd-balanced', sizeGb: '100' } } }],
+      serviceAccount: { email: JOB_SA },
+      location: { allowedLocations: [`regions/${region}`] },
+    },
+    logsPolicy: { destination: 'CLOUD_LOGGING' },
   }
 
-  const head = (await db.prepare("SELECT coalesce(max(id), 0) AS h FROM mark_log").first<{ h: number }>())?.h ?? 0
-  await db.prepare(`
-    INSERT INTO deletion_runs (run_id, plan_id, manifest, scan, head, exec_head, actor, mode, started_ts, log_dir)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(jobId, planId, runGs, date, head, head, gated.email, mode, Math.floor(Date.now() / 1000), runGs).run()
-
-  return json({ job_id: jobId, plan_id: planId, mode, date, run: runGs, by: gated.email })
+  const token = await gcpToken(ctx.env.GCP_SA_KEY)
+  const r = await fetch(
+    `${batchJobsUrl(region)}?job_id=${jobId}`,
+    { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(spec) },
+  )
+  const text = await r.text()
+  let out: unknown = {}
+  try { out = JSON.parse(text) } catch { out = { body: text.slice(0, 1000) } }
+  // 500, not 502: Cloudflare swaps an origin 502 for its own branded error
+  // page, which threw away this detail on the 2026-09-11 17:20Z dispatch.
+  if (!r.ok) {
+    console.error('batch submit failed', r.status, text.slice(0, 2000))
+    return json({ error: `batch submit failed (${r.status})`, status: r.status, detail: out }, 500)
+  }
+  return json({ job_id: jobId, mode, date, plan, region, by: gated.email })
 }
