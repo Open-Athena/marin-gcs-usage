@@ -31,10 +31,10 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY --from=site /repo/ui/dist ./ui/dist
 RUN pip install --no-cache-dir ".[gcs,s3]"
-COPY marin/pyproject.toml ./marin/
-COPY marin/src ./marin/src
-# `[plot]`: matplotlib for the digest's OP plot (specs/cw-slack-digest.md)
-RUN pip install --no-cache-dir "./marin[plot]"
+COPY gcs-usage/pyproject.toml ./gcs-usage/
+COPY gcs-usage/src ./gcs-usage/src
+# [plot]: matplotlib for the digest's OP plot (gcs_usage.digest_plot)
+RUN pip install --no-cache-dir "./gcs-usage[plot]"
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
 ENTRYPOINT ["bash", "job/cw-run.sh"]

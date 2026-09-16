@@ -175,6 +175,32 @@ jobs:
           path: ui/playwright-report/
           retention-days: 7
 
+  marin-test:
+    name: gcs-usage CLI tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      # gcs-usage has its own pyproject/venv (separate from the root disk_tree,
+      # which the viz tests import — install it into the same venv, as the
+      # Batch image does). The root wheel force-includes `ui/dist`; stub it
+      # (the viz tests don't touch the static UI, and building it here would
+      # drag node+pnpm into a python test job).
+      - name: Sync gcs-usage
+        run: mkdir -p ui/dist && cd gcs-usage && uv sync --group test && uv pip install ..
+
+      - name: Run gcs-usage tests
+        run: cd gcs-usage && uv run --no-sync pytest tests -v
+
   site-build:
     name: Site typecheck + build
     runs-on: ubuntu-latest
