@@ -72,7 +72,7 @@ def test_op_body():
         ":arrow_deg20: **+10.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
         "",
         "*Weekly summaries*",
-        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#diff) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
         "",
         "![GCS usage — August 2026](https://x/p.png)",
     ]
@@ -85,7 +85,7 @@ def test_op_body_full_week_not_partial():
         dm.append((f"2026-08-0{d}", _meta(3000 + i, 300 + i, 600, 1500, 600)))
     rows = D.rows_from_meta(dm)[1:]
     bullet = D.op_body(rows, date(2026, 8, 1), "https://x/p.png").split("\n")[3]
-    assert bullet.startswith(":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260809-7d#diff) — ")
+    assert bullet.startswith(":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260809-7d#over-time) — ")
 
 
 # ---- Discord twin ---------------------------------------------------------
@@ -97,7 +97,7 @@ def test_op_body_without_plot():
         ":arrow_deg20: **+10.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
         "",
         "*Weekly summaries*",
-        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#diff) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+        ":arrow_deg0: [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
     ]
 
 
@@ -171,13 +171,13 @@ OP_ONE_SCAN = "\n".join([
     "<:arrow_deg50:5> **+30.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
     "",
     "*Weekly summaries*",
-    "<:arrow_deg20:2> [wk of 8/3](https://gcs.oa.dev/?d=260803-1d#diff) _(partial)_ — **3,030 TB** (+30.0, 1.0%) · $19,784/mo (+$615)",
+    "<:arrow_deg20:2> [wk of 8/3](https://gcs.oa.dev/?d=260803-1d#over-time) _(partial)_ — **3,030 TB** (+30.0, 1.0%) · $19,784/mo (+$615)",
 ])
 OP_TWO_SCANS = "\n".join([
     "<:arrow_deg20:2> **+10.0 TB** month-to-date · [dashboard](https://gcs.oa.dev/)",
     "",
     "*Weekly summaries*",
-    "<:arrow_deg0:1> [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#diff) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+    "<:arrow_deg0:1> [wk of 8/3](https://gcs.oa.dev/?d=260804-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
 ])
 CAL = "https://gcs-usage-icons.pages.dev/calendar.png?v=2"
 AV = "https://gcs-usage-icons.pages.dev/arrows/av_deg"

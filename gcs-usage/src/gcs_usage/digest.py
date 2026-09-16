@@ -161,11 +161,13 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, site_url: st
         wdtb = end.tb - b_tb
         wpct = wdtb / b_tb * 100 if b_tb else 0
         partial = " _(partial)_" if len(ws) < 7 and mon == last_mon else ""
-        # the link opens the site's Diff section over exactly this bullet's
-        # span (`?d=<end>-<N>d`: the end scan, N days back to the baseline)
+        # the link selects exactly this bullet's span on the site (`?d=<end>-<N>d`:
+        # the end scan, N days back to the baseline) and lands on the
+        # size-over-time chart, where the week shows as the highlighted window
+        # with the Diff section right below it
         span = (dt.date.fromisoformat(end.date) - b_date).days
         lines.append(
-            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_yy(end.date)}-{span}d#diff){partial} — "
+            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_yy(end.date)}-{span}d#over-time){partial} — "
             f"**{end.tb:,.0f} TB** ({_tb(wdtb)}, {_pct(wdtb, end.tb)}%) · ${end.cost:,}/mo ({_usd(end.cost - b_cost)})"
         )
         prev_end = end

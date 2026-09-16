@@ -2,7 +2,7 @@
  * scans' index tiers at one shared byte floor (`_lib/view.ts` `buildDiff`).
  *
  *   GET /api/diff?from=<scan>&to=<scan>&path=<P>&w=<px>&h=<px>[&minArea=<px²>][&top=<n>]
- *                 [&lens=user:<id>][&o=claimed|unclaimed][&k=<⊆ksu>][&q=<name filter>][&summary=1]
+ *                 [&lens=user:<id>][&o=claimed|unclaimed][&k=<⊆ksu>][&q=<name filter>][&summary=1][&depth=<levels>]
  *
  * `summary=1` answers with the totals only (both sides' scoped root reads,
  * no walk — `rows` empty): the section's headline, seconds before the rows.
@@ -37,6 +37,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env; waitUntil?
   const atten = Number(url.searchParams.get('atten')) || ATTEN_DEFAULT
   const top = Math.min(5000, Number(url.searchParams.get('top')) || 500)
   const summary = url.searchParams.get('summary') === '1'
+  const depth = Number(url.searchParams.get('depth')) || undefined
   if (!SCAN_RE.test(from) || !SCAN_RE.test(to)) return new Response('bad from/to', { status: 400 })
   if (from >= to) return new Response('from must precede to', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
@@ -62,13 +63,13 @@ export const onRequestGet = async (ctx: { request: Request; env: Env; waitUntil?
   const head = (states || lens) && ctx.env.DB ? await st.time('pre', ledgerHead(ctx.env)) : 0
   const cacheKey = cacheKeyFor('diff',
     `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensRaw ?? ''}` +
-      `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}`,
+      `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&k=${states ? [...states].sort().join(',') : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}`,
   )
   const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
   if (hit) return hit
 
   try {
-    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes, summary, trace: st.trace })
+    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, states, query, classes, summary, depth, trace: st.trace })
     const body = JSON.stringify({
       prev: from,
       curr: to,

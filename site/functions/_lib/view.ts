@@ -614,6 +614,10 @@ export interface DiffOpts extends Omit<ViewOpts, 'date'> {
   /** Totals only: both sides' scoped root reads, no walk (`rows` empty) —
    * what the diff section's headline shows while the full diff aligns. */
   summary?: boolean
+  /** Expand at most this many levels below P (rows at the cap come back
+   * unexpanded, as leaves) — `depth=1` is the bucket-level diff the page
+   * draws first, before the full walk lands. */
+  depth?: number
 }
 
 export interface DiffRow {
@@ -804,7 +808,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
       // whole on their own row; a byte-identical subtree is one unchanged
       // row (the renderer infers it as filler), not a walk of its skeleton.
       const same = !!(a && b && Math.round(a.b) === Math.round(b.b) && Math.round(a.o) === Math.round(b.o))
-      const expand = !!(a && b && !same && (ka.length || kb.length))
+      const expand = !!(a && b && !same && (ka.length || kb.length)) && (o.depth == null || it.d - dP < o.depth)
       const names = expand ? [...new Set([...ka, ...kb])].sort() : []
       return { it, expand, names }
     })

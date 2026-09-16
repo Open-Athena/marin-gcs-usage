@@ -502,13 +502,31 @@ function AppContent() {
   // The diff is read server-side (`/api/diff`): both scans' index tiers at
   // one shared byte floor, point lookups for names that crossed it, the
   // page scope applied to both sides (specs/view-serving.md §2).
+  // First paint: the bucket-level diff (`depth=1` — the two root reads plus
+  // one level of lookups, ~2 s cold) stands in for the full walk while it
+  // aligns, so the map shows the shape of the change before its detail.
+  const diffQ1 = useQuery<DiffData, Error>({
+    queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs, 'l1'],
+    enabled: !!asof && !!diffPrev,
+    staleTime: markAxes ? 30_000 : Infinity,
+    retry: false,
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
+        { credentials: 'include' },
+      )
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      return r.json() as Promise<DiffData>
+    },
+  })
+  const diffL1 = diffQ1.data
   const diffQ = useQuery<DiffData, Error>({
     queryKey: ['diff', diffPrev, asof, graftPath, canW, scopeQs],
     enabled: !!asof && !!diffPrev,
-    // A new pair of scans (or scope) keeps the last diff drawn, dimmed, until
-    // the new one lands — the section holds its height instead of collapsing
-    // for the 10–20 s an alignment can take.
-    placeholderData: keepPreviousData,
+    // While the full walk aligns: the bucket-level diff of the SAME pair once
+    // it lands, else the last pair's diff — drawn dimmed either way, so the
+    // section holds its height and shows something before the detail.
+    placeholderData: (prev: DiffData | undefined) => diffL1 ?? prev,
     staleTime: markAxes ? 30_000 : Infinity,
     retry: (n: number, e: Error) => !/^4\d\d/.test(e.message) && n < 3,
     retryDelay: (n: number) => 400 * 2 ** n,
