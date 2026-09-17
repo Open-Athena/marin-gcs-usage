@@ -1151,9 +1151,6 @@ function AppContent() {
             )}
             {diffHead ? (
               <>
-                {' '}· <b className={diffHead.total_b >= diffHead.total_a ? 'grew' : 'shrank'}>
-                  {(diffHead.total_b >= diffHead.total_a ? '+' : '−') + fmtBytes(Math.abs(diffHead.total_b - diffHead.total_a))}
-                </b>
                 {' '}· Δobjects {(diffHead.objects_b - diffHead.objects_a).toLocaleString('en-US')}
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
                 {' '}· <Explain text={<>
@@ -1193,7 +1190,10 @@ function AppContent() {
               shorter than that, and a fixed floor left a blank band under it. */}
           {diff && diff.rows.length > 0 && (
             <div ref={diffSlotRef} className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
-              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} />
+              {/* A drill in the diff drills the page: the map, the table and
+                  the chart follow, and the diff itself re-reads at the new
+                  prefix (its rows are relative to the drilled path). */}
+              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>
           )}

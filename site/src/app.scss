@@ -2123,4 +2123,5 @@ body:has(.help-line) { padding-bottom: var(--help-line-h); }
 .diff-tm .dt-treemap-bar { flex-wrap: wrap !important; }  // the package's bar is one row; the crumb + legend take a row each
 .diff-tm .dt-treemap-crumbs { white-space: normal !important; flex-wrap: wrap !important; flex: 1 1 100% !important; row-gap: 2px; }
 .diff-tm .dt-treemap-crumbs > span:last-child { white-space: normal !important; }
-.diff-tm .dt-treemap-legend { flex: 1 1 100%; }
+.diff-tm .dt-treemap-legend { flex: 1 1 auto; min-width: 0; }
+.diff-tm .dt-treemap-fs { margin-left: auto; }  // ⛶ ends the legend's row instead of taking one of its own

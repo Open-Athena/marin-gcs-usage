@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
@@ -153,7 +154,16 @@ function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells
   return { cells }
 }
 
-export function DiffTreemap({ data, label, atRoot = false }: { data: DiffData; label: string; /** The diff is over the store root: depth-1 rows are buckets. */ atRoot?: boolean }) {
+export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
+  data: DiffData
+  label: string
+  /** The diff is over the store root: depth-1 rows are buckets. */
+  atRoot?: boolean
+  /** A cell was drilled: its path segments relative to the diff's scope. The
+   *  page drills there (and this diff re-reads at that prefix), so the map
+   *  never holds a drill of its own. */
+  onDrill?: (segs: string[]) => void
+}) {
   const { fmtBytes } = useUnits()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
   // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
@@ -197,6 +207,13 @@ export function DiffTreemap({ data, label, atRoot = false }: { data: DiffData; l
     <div className="diff-tm">
       <DtTreemap<DiffNode>
         root={root}
+        // Controlled at its root: a drill is the page's, not this map's.
+        path={[root]}
+        onPathChange={p => {
+          const leaf = p[p.length - 1]
+          if (!onDrill || p.length < 2 || leaf.status === 'filler' || leaf.label.startsWith('(')) return
+          onDrill(leaf.key.split('/'))
+        }}
         getSize={n => n.weight}
         getChildren={n => n.children}
         getLabel={n => (n.first ? `${n.label} (first scanned)` : n.label)}
@@ -301,18 +318,18 @@ export function DiffTreemap({ data, label, atRoot = false }: { data: DiffData; l
               <span style={{ display: 'inline-block', width: 12, height: 12, background: UNCHANGED_GREY, borderRadius: 2 }} />
               unchanged
             </>}
-            <span style={{ opacity: 0.6, marginLeft: 4 }}>
-              {areaMode === 'max' ? 'area = max(old, new), band = |Δ|' : 'area = |Δ| · color = Δ / size'}
-            </span>
             <span style={{ display: 'inline-flex', gap: 2, marginLeft: 6 }}>
               {(['max', 'delta'] as const).map(m => (
-                <button
-                  key={m}
-                  onClick={e => { e.stopPropagation(); setAreaMode(m) }}
-                  className={'diff-mode' + (areaMode === m ? ' on' : '')}
-                >
-                  {m === 'max' ? 'max' : 'Δ'}
-                </button>
+                <Explain key={m} text={m === 'max'
+                  ? 'Cell area = max(old, new) bytes, with a band for |Δ| — what is there, and how much of it moved'
+                  : 'Cell area = |Δ| bytes, colour = Δ as a share of the directory — only the movement'}>
+                  <button
+                    onClick={e => { e.stopPropagation(); setAreaMode(m) }}
+                    className={'diff-mode' + (areaMode === m ? ' on' : '')}
+                  >
+                    {m === 'max' ? 'max' : 'Δ'}
+                  </button>
+                </Explain>
               ))}
             </span>
           </span>
