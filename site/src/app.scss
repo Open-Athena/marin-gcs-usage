@@ -2120,6 +2120,7 @@ body:has(.help-line) { padding-bottom: var(--help-line-h); }
 #over-time h2 .gran { margin-left: 0; }
 // The diff treemap's bar on a phone: the crumb (path + movement arithmetic)
 // wraps instead of running under the legend, and the legend takes its own row.
+.diff-tm .dt-treemap-bar { flex-wrap: wrap !important; }  // the package's bar is one row; the crumb + legend take a row each
 .diff-tm .dt-treemap-crumbs { white-space: normal !important; flex-wrap: wrap !important; flex: 1 1 100% !important; row-gap: 2px; }
 .diff-tm .dt-treemap-crumbs > span:last-child { white-space: normal !important; }
 .diff-tm .dt-treemap-legend { flex: 1 1 100%; }
