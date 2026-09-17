@@ -713,6 +713,14 @@ function AppContent() {
       defaultBindings: ['alt+x'],
       handler: clearHl,
     },
+    'nav:up': {
+      label: 'Go up a directory level',
+      group: 'Navigate',
+      // Not Escape (that reads as "dismiss"; it stays for unpinning tips);
+      // Backspace still pops the map too.
+      defaultBindings: ['g u'],
+      handler: () => { const s = drillPath.split('/').filter(Boolean); if (s.length) drillTo(s.slice(0, -1)) },
+    },
     'owner:me': { label: 'Owner: my files', group: 'Scope', handler: () => setOP('me') },
     'owner:claimed': { label: 'Owner: owned only', group: 'Scope', handler: () => setOP('owned') },
     'owner:unclaimed': { label: 'Owner: unowned only', group: 'Scope', handler: () => setOP('unowned') },
@@ -1138,7 +1146,16 @@ function AppContent() {
 
       {asof && diffPrev && (
         <section id="diff">
-          <h2>Diff</h2>
+          <h2>Diff{diff && (
+            <Tooltip content={<>
+              <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
+              a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
+              Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
+              “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
+              {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
+              {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
+            </>}><span className="info" tabIndex={0} aria-label="how this diff is read"> ⓘ</span></Tooltip>
+          )}</h2>
           <p className="sub">
             {/* Both endpoints: the window's start, and the page's scan again
                 (the bar's picker — one scan, stated where the diff reads). */}
@@ -1186,19 +1203,7 @@ function AppContent() {
               {/* A drill in the diff drills the page: the map, the table and
                   the chart follow, and the diff itself re-reads at the new
                   prefix (its rows are relative to the drilled path). */}
-              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])}
-                extra={<>
-                  {' '}<Tooltip content={<>
-                    <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
-                    a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
-                    Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
-                    “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
-                    {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
-                    {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
-                  </>}>
-                    <span className="info" tabIndex={0} aria-label="how this diff is read">ⓘ</span>
-                  </Tooltip>
-                </>} />
+              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])} />
               {diffStaleOther
                 ? <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />
                 : diffRefining

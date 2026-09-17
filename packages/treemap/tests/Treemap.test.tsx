@@ -130,7 +130,20 @@ describe('<Treemap>', () => {
     }
   })
 
-  it('a consumed Escape (defaultPrevented by an earlier listener) does not pop', () => {
+  it('Escape does not pop the drill (Esc is dismiss, not drill-up)', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} />)
+      fireEvent.click(container.querySelector('.dt-treemap-map > .dt-treemap-cell.branch')!)
+      expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])  // unchanged — Esc is not drill-up
+    } finally {
+      restore()
+    }
+  })
+
+  it('a consumed Backspace (defaultPrevented by an earlier listener) does not pop', () => {
     const restore = withLayout()
     try {
       const { container } = render(<Treemap root={tree} {...accessors} minCellArea={null} />)
@@ -139,12 +152,12 @@ describe('<Treemap>', () => {
       const consume = (e: KeyboardEvent) => e.preventDefault()
       document.addEventListener('keydown', consume)
       try {
-        fireEvent.keyDown(document.body, { key: 'Escape' })
+        fireEvent.keyDown(document.body, { key: 'Backspace' })
         expect(cellLabels(container)).toEqual(['a.txt', 'b.txt'])  // still drilled
       } finally {
         document.removeEventListener('keydown', consume)
       }
-      fireEvent.keyDown(document.body, { key: 'Escape' })
+      fireEvent.keyDown(document.body, { key: 'Backspace' })
       expect(cellLabels(container)).toEqual(['foo', 'bar'])        // popped
     } finally {
       restore()

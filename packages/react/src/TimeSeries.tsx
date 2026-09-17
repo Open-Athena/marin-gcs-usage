@@ -94,6 +94,17 @@ export interface TimeSeriesProps<T> {
 
 const DEFAULT_COLORS = DEFAULT_PALETTE
 
+/** Which series rows the hover tooltip lists. Drops series with no value at
+ * this x (a root before its genesis: no "hero-checkpoints —" row), and drops
+ * the `total` row when a single real (non-`total`) series carries the whole
+ * value, since the total then just repeats it. Keeps `total` once two or more
+ * real series are present (where it's the useful sum). */
+export function visibleTipRows<T extends { key: string; y: number | null }>(rows: T[]): T[] {
+  const present = rows.filter(p => p.y != null)
+  const reals = present.filter(p => p.key !== 'total')
+  return reals.length >= 2 ? present : reals.length ? reals : present
+}
+
 // Plot insets. Narrow charts (a phone) give the x-range the width back: a
 // tighter left gutter sized to the y labels, no y-axis title, fewer ticks.
 const padFor = (w: number, yLabel: boolean, compact: boolean) => ({
@@ -297,16 +308,21 @@ export function TimeSeries<T>({
   }
   const band = drag ? [Math.min(drag.x0, drag.x1), Math.max(drag.x0, drag.x1)] as const : xWindow
 
-  const hoverPoints: { color: string; label: string; y: number | null }[] = hoverX == null
+  const hoverPoints: { key: string; color: string; label: string; y: number | null }[] = hoverX == null
     ? []
     : series.map((s, i) => {
       const pt = s.points.find(p => getX(p) === hoverX)
       return {
+        key: s.key,
         color: s.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
         label: s.label ?? s.key,
         y: pt ? getY(pt) - (getY0 ? getY0(pt) : 0) : null,
       }
     })
+  // What the tooltip lists (see `visibleTipRows`): only series with a value at
+  // this x, and the `total` row dropped when a single real series carries the
+  // whole value.
+  const tipRows = visibleTipRows(hoverPoints)
 
   return (
     <div
@@ -513,7 +529,7 @@ export function TimeSeries<T>({
           }}
         >
           <div style={{ opacity: 0.7, marginBottom: 2 }}>{formatX(hoverX)}</div>
-          {hoverPoints.map((p, i) => (
+          {tipRows.map((p, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ display: 'inline-block', width: 8, height: 8, background: p.color, borderRadius: 2 }} />
               <span style={{ minWidth: 60 }}>{p.label}</span>

@@ -93,6 +93,9 @@ header .hrow {
   // Row 1: ☰ · brand · where the page is (crumbs) · avatar. Row 2 (home
   // page): the controls, indented under the brand.
   .tb-row { display: flex; align-items: center; gap: 4px 10px; min-width: 0; }
+  // The "where am I" row reads as a distinct location header, not another line
+  // of page chrome: a rule under it separates it from the controls row below.
+  .tb-row:has(+ .tb-row2) { border-bottom: 1px solid var(--line); padding-bottom: 5px; margin-bottom: 1px; }
   .tb-row2 { padding-left: 0; }
   .tb-crumbs { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; overflow-x: auto; scrollbar-width: none; &::-webkit-scrollbar { display: none; } }
   .tb-menu-btn {
@@ -135,7 +138,9 @@ header .hrow {
   // Drill-path crumbs: the deepest segment is inked; ancestors drill up.
   .tb-path {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 13.5px;
+    // Bigger than the controls: it's the page's location header now that the
+    // diff's duplicate path is gone.
+    font-size: 15px;
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -787,13 +792,25 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 .treemap.bar-hidden > .dt-treemap-bar { display: none !important; }
 
 .diff-tm {
-  height: 380px;
+  // Auto height: the MAP is a fixed block (below) and the docked tip stacks
+  // under it, so the tip doesn't steal height from the map (it used to, when
+  // `.diff-tm` was a fixed 380px the map had to share with the dock).
+  height: auto;
   margin-top: 8px;
 }
-// Bytes and objects each on their own line in the diff crumb (both above the
-// legend), so the movement reads as two rows, not one over-long line.
-.diff-tm .diff-crumbline { display: block; font-variant-numeric: tabular-nums; }
-.diff-tm .diff-crumbline + .diff-crumbline { margin-top: 1px; }
+.diff-tm .dt-treemap-map { flex: none !important; height: 360px; }
+// The diff's crumb repeated the page's own breadcrumb (scope path) — hide it;
+// the movement table below carries the numbers, and drilling is the page's.
+.diff-tm .dt-treemap-crumbs { display: none !important; }
+// Movement table (bytes / objects rows) above the map: numbers right-aligned
+// in shared columns, so start / − / + / ⊕ / = / Δ line up between the two rows.
+.diff-tm .diff-move {
+  border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  margin: 1px 2px 2px;
+  th { text-align: left; font-weight: 500; color: var(--ink-2); padding: 0 10px 0 0; }
+  td { text-align: right; padding: 0 0 0 12px; white-space: nowrap; }
+  td.eq { color: var(--ink); }
+}
 // The diff tip is a line taller (path + bytes + objects + status) than the
 // main map's, so its docked panel gets more fixed height.
 .diff-tm .dt-treemap-tip.dock { --dt-dock-h: 112px; }
@@ -1599,6 +1616,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 .children-tbl .sel-bar-dock {
   position: sticky; bottom: 8px; z-index: 6;
   display: flex; justify-content: center; margin-top: 8px;
+  // Reserve the bar's height even when empty, so selecting / deselecting fills
+  // (or clears) this slot instead of pushing the rest of the page up and down.
+  min-height: 30px;
   .sel-bar { margin-left: 0; box-shadow: 0 6px 18px rgb(0 0 0 / 0.25); }
 }
 .children-tbl .pager {

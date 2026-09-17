@@ -620,16 +620,18 @@ export function Treemap<T>({
     return () => ro.disconnect()
   }, [])
 
-  // Backspace/Escape pops the drill stack — unless another listener already
-  // consumed the key (a hotkey layer clearing a selection, closing a modal…).
-  // Listens on `window`, the end of the bubbling path, so a hotkey layer on
-  // `document` or `window` gets to preventDefault first.
+  // Backspace pops the drill stack — unless another listener already consumed
+  // the key (a hotkey layer clearing a selection, closing a modal…). Escape is
+  // NOT a drill-up (it reads as "dismiss", and popping the whole view on Esc
+  // surprised people); it stays reserved for unpinning the tip / closing
+  // overlays. Listens on `window`, the end of the bubbling path, so a hotkey
+  // layer on `document` or `window` gets to preventDefault first.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-      if ((e.key === 'Backspace' || e.key === 'Escape') && path.length > 1) {
+      if (e.key === 'Backspace' && path.length > 1) {
         go(path.slice(0, -1))
       }
     }

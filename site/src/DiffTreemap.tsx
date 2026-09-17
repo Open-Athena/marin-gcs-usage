@@ -1,6 +1,6 @@
 import { Explain } from './Help'
 import { useMemo } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
 import { stringParam, useUrlState } from 'use-prms'
 import { useUnits } from './units'
@@ -180,7 +180,7 @@ function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells
   return { cells }
 }
 
-export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
+export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
   data: DiffData
   label: string
   /** The diff is over the store root: depth-1 rows are buckets. */
@@ -189,14 +189,17 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
    *  page drills there (and this diff re-reads at that prefix), so the map
    *  never holds a drill of its own. */
   onDrill?: (segs: string[]) => void
-  /** Appended to the root crumb after the movement arithmetic (the scope
-   *  note) — the one line every stat of the diff shares. */
-  extra?: ReactNode
 }) {
   const { fmtBytes } = useUnits()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
   const fmtN = (n: number) => n.toLocaleString('en-US')
   const fmtNDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtN(abs(d))
+  // The root movement table gets compact sig-figs on objects (5.63M, not
+  // 5,634,588) — the exact digit is never the point there, and the full number
+  // crowds the row. Per-cell tooltips keep exact counts (you're inspecting one).
+  const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 })
+  const fmtC = (n: number) => compact.format(n)
+  const fmtCDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtC(abs(d))
   // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
   // Δ (area = |delta|) is the default — the movement is what a diff view is
   // for — and stays out of the URL.
@@ -284,27 +287,37 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
         // Bytes and objects each on their own line, but BOTH in the crumb
         // suffix (which the diff lets wrap) — so the two movement lines sit
         // together above the legend, not split one above / one below it.
-        renderCrumbSuffix={n => n.status === 'root'
-          ? <>
-              <span className="diff-crumbline">
-                — {fmtBytes(n.size_old)}{' '}
-                <span className="shrank">− {fmtBytes(removed)}</span>{' '}
-                <span className="grew">+ {fmtBytes(grew)}</span>{' '}
-                {firstScanned > 0 && <><span className="first">⊕ {fmtBytes(firstScanned)} first scanned</span>{' '}</>}
-                {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
-                <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
-              </span>
-              <span className="diff-crumbline">
-                {fmtN(n.n_old)} obj{' '}
-                <span className="shrank">− {fmtN(n_removed)}</span>{' '}
-                <span className="grew">+ {fmtN(grewN)}</span>{' '}
-                {firstScannedN > 0 && <><span className="first">⊕ {fmtN(firstScannedN)} first scanned</span>{' '}</>}
-                {data.truncated || n_added - n_removed !== n.n_desc_delta ? '≈' : '='} {fmtN(n.n_new)}{' '}
-                <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(n.n_desc_delta)})</span>
-                {extra}
-              </span>
-            </>
-          : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span></>}
+        // The crumb is hidden (it repeated the page's own breadcrumb); the
+        // movement lives in a small right-aligned table above the map instead.
+        renderCrumbSuffix={() => null}
+        renderRollup={() => {
+          const bEq = data.truncated || added - removed !== root.delta ? '≈' : '='
+          const nEq = data.truncated || n_added - n_removed !== root.n_desc_delta ? '≈' : '='
+          return (
+            <table className="diff-move">
+              <tbody>
+                <tr>
+                  <th>bytes</th>
+                  <td>{fmtBytes(root.size_old)}</td>
+                  <td className="shrank">− {fmtBytes(removed)}</td>
+                  <td className="grew">+ {fmtBytes(grew)}</td>
+                  {firstScanned > 0 && <td className="first">⊕ {fmtBytes(firstScanned)}</td>}
+                  <td className="eq">{bEq} {fmtBytes(root.size_new)}</td>
+                  <td className={root.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(root.delta)})</td>
+                </tr>
+                <tr>
+                  <th>objects</th>
+                  <td>{fmtC(root.n_old)}</td>
+                  <td className="shrank">− {fmtC(n_removed)}</td>
+                  <td className="grew">+ {fmtC(grewN)}</td>
+                  {firstScanned > 0 && <td className="first">⊕ {fmtC(firstScannedN)}</td>}
+                  <td className="eq">{nEq} {fmtC(root.n_new)}</td>
+                  <td className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtCDelta(root.n_desc_delta)})</td>
+                </tr>
+              </tbody>
+            </table>
+          )
+        }}
         collapseChains
         depthFade={1}
         rootFade={1}

@@ -345,9 +345,11 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
       </table>
       {pager && <div className="pager">{pager}</div>}
       {/* The selection bar docks BELOW the table (sticky), so making a
-          selection never shifts the rows you're clicking — it used to sit
-          above and push every row down by its height. */}
-      {selBar && <div className="sel-bar-dock">{selBar}</div>}
+          selection never shifts the rows you're clicking. The dock is ALWAYS
+          rendered when the table is actionable — its height is reserved even
+          with nothing selected, so selecting/deselecting doesn't jump the rest
+          of the page either. */}
+      {showActions && <div className="sel-bar-dock">{selBar}</div>}
     </section>
   )
 }

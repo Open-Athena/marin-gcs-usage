@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render } from '@testing-library/react'
-import { BytesOverTime, TimeSeries } from '../src/TimeSeries'
+import { BytesOverTime, TimeSeries, visibleTipRows } from '../src/TimeSeries'
 
 /** Force a non-zero SVG size in jsdom (ResizeObserver mock never fires). */
 function forceSize(container: HTMLElement, w = 400, h = 200) {
@@ -194,5 +194,21 @@ describe('<BytesOverTime>', () => {
       />,
     )
     expect(container.querySelector('.dt-timeseries')).toBeInTheDocument()
+  })
+})
+
+describe('visibleTipRows (tooltip series filtering)', () => {
+  const row = (key: string, y: number | null) => ({ key, y })
+  it('drops the redundant total when one real series carries the whole value', () => {
+    expect(visibleTipRows([row('a', 736), row('b', null), row('total', 736)])).toEqual([row('a', 736)])
+  })
+  it('keeps every real series and the total once two are present', () => {
+    expect(visibleTipRows([row('a', 756), row('b', 84), row('total', 840)])).toEqual([row('a', 756), row('b', 84), row('total', 840)])
+  })
+  it('omits a series with no value at this x (a root before its genesis)', () => {
+    expect(visibleTipRows([row('a', 10), row('b', null)])).toEqual([row('a', 10)])
+  })
+  it('falls back to the total when no real series has a value', () => {
+    expect(visibleTipRows([row('a', null), row('total', 5)])).toEqual([row('total', 5)])
   })
 })
