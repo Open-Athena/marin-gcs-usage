@@ -40,6 +40,40 @@ The seams look like "cw has no users" but split cleanly:
 
 1. ~~§1 as one commit (with the wall-copy store field).~~ Done 2026-09-16 (ledger entry "the union's generalizations"). Then `cw-s3..gcs` = A + B.
 2. ~~The lifecycle feature (§2)~~ Done 2026-09-16 (ledger entry "bucket lifecycle rules for the GCS fleet"): GCS adapter beside cw's S3 one in `lifecycle.py`, the fold reading either cloud's snapshot, per-bucket map for the fleet.
-3. Seams 1–4 per `convergence.md`, jointly.
+3. Seams 1–4 per `convergence.md`, now **decided** in §5 (2026-09-17) — built jointly on the union.
 
 Not here: the repo/branch collapse itself, the IdP question, attribution changes.
+
+## 5. Seam decisions (2026-09-17)
+
+Ryan reviewed the four seams against the code (both branches read, not just the spec's framing) and settled them. This section supersedes `convergence.md`'s "recommendations" — where they differ, this wins. Correction that drove it: gcs's sweep is **not** the simple "owner-slice" thing the earlier framing implied. `site/functions/api/sweep/dispatch.ts` submits a Batch job that runs `dt-cloud sweep manifest -S` (consuming `sweep_approvals`) then `sweep execute` (re-list, generation-match, `deletion_runs`/`deletion_bands`, ≥7d soft-delete gate) — a full plan+run, and the one that ran the four real sweeps on 2026-09-11. The union's `sweep/dispatch.ts` is byte-identical to gcs's; cw's own model lives beside it as `plan-sweep/`, `plans/`, `plan-marks.ts`. So both sides plan and run; the seams are narrower than "plan-first vs not".
+
+### Seam 1 — sweep: gcs's executor + cw's plan object, reconciled
+
+- **Executor: gcs wins.** `sweep manifest`/`sweep execute` is the exercised path; keep it as the engine. cw's `plan-sweep` executor was an untested port of it.
+- **Plan as a first-class object: adopt cw's.** A revision of the earlier "no persistent plans" call — cw's `plans`/`plan_items` model is genuinely more capable: multiple concurrent drafts (plan A = old checkpoints, plan B = `tmp/`), each with its own dry→real lifecycle and a detail page. gcs's model is "exactly one implicit plan built from marks at dispatch." Take the object; feed it into gcs's manifest/execute. The plan is the curation layer, gcs's executor is what runs.
+- **Fix the empty-state friction.** cw's `/sweep` opens empty and demands a cold "create a plan" gesture — too much friction. The page must open with a **default plan auto-seeded** from the viewer's marks (gcs model: everything unmarked in the viewer's slice as of the deadline; cw model: the `sweep`-marked prefixes), showing actionable options immediately; "create another plan" is the branch action, not the cold start.
+- **Eligibility is per-deploy config, not a fixed rule.** The owner slice (`owner == author` for a non-admin) is a store eligibility policy, configurable and sometimes moot (CW has no owner data → `any`). The same executor enforces whichever the store declares at manifest time. Pairs with `Store.unmarked: 'eligible' | 'untouched'` (gcs: unmarked bytes are sweep-eligible after the deadline; cw: untouched).
+- **Undo is a pluggable strategy the adapter constrains.** Strategy ∈ `versioning | soft-delete | none`, chosen per store — but the cloud adapter declares which it *offers*, because the mechanisms differ by cloud: **GCS** has both a soft-delete retention window (default on) and object versioning; **S3 / CAIOS** has only versioning (delete markers) — there is no S3 equivalent of GCS's soft-delete window. So `undo`/`purge` endpoints are real only where a permanent-delete cloud (CAIOS) needs them; GCS defaults to its soft-delete window and needs neither. The executor reads the store's undo strategy from the set its adapter allows.
+
+### Seam 2 — mark ledger: gcs's `actions` WAL wins, outright
+
+cw's own `migrations/cw/0001_marks.sql` header says it was "Adapted from gcs's mark tables (gcs migrations 0007 + 0010 actions-ledger), keep-axis only," with "the raw-action / expanded-prefix split gcs added … arrive later." So cw's `marks`/`mark_log` is a documented subset-port of gcs's `actions` ledger, which already carries the owner axis, action kinds, expanded-prefix rows and inverse-action undo. cw's keep kinds (`keep`/`keep_last_ckpt`/`sweep`) map onto gcs's action kinds. One table: gcs's. Plan membership stays a separate table (`plan_items`) referencing prefixes.
+
+### Seam 3 — D1 lineage: one lineage, cw's live DB re-based; squash is optional hygiene
+
+Migrations are an ordered, append-only list of schema changes with a `d1_migrations` ledger of what's run; the data is already in its current shape once applied (a few of ours backfill once — event-dedupe, index-groups drop — but nothing re-runs on read). Nothing external consumes the schema (no API clients see migrations), and both databases are ours, so:
+
+- **The lineage is squashable** whenever we want the hygiene: replace the historical files with one baseline that creates today's schema and record it as already-applied on the live DBs. Not required — the 23 applied migrations cost nothing to keep — so it's independent of the collapse.
+- **The actual seam work** is merging two lineages into one at collapse time: gcs's `0001`–`0023` plus whatever cw-specific tables survive seams 1–2 (with gcs winning both, that's near-nothing — the CAIOS run/undo columns). Bring cw's live DB onto it the reversible way: stand up a **fresh D1 for cw** from the merged lineage, copy its few hundred rows over, keep the old DB until the cutover is verified. Until then the union's `migrations/{cw,gcs}` split stays isolated so neither DB wants the other's migrations.
+
+### Seam 4 — digest content: per-store profile, low priority, may stay forked
+
+Both deployments share one `thrds` posting mechanism (converge state, host plot, day-keyed replies, Slack + Discord). Only the body differs: gcs reports $ cost + storage-class breakdown; cw reports % of the 1 PB quota. Factor the mechanism into an engine with a per-store **profile** (body builder + plot-panel list, selected by `Store.digest`) *if it stays a thin interpolation layer* — worth it to avoid a fork for a copy tweak. If a deployment's style diverges a lot, that profile carries more, and it's fine to let some live as a persisted per-deploy diff and revisit. This seam can trail the others; it blocks nothing.
+
+### Where the work lands
+
+- **Seams 1–2** are the mark/sweep engine — built here on gcs and mirrored to cw-s3 (or built on the union and taken here), de novo on the union with the checkpoint protocol. These are the two that **unblock DT**: once the unified ledger + sweep model exist on both branches, DT can upstream *that* design into `disk_tree` (its `specs/mgu-cp-2026-09-16.md` roadmap item 3, correctly gated until now on "upstream the unified design, not one deployment's").
+- **Seam 3** is collapse-time and mechanical; no DT involvement.
+- **Seam 4** is a small shared-package ergonomic — DT's comms roadmap item 1 (`discord_api` + digest → a generic notify/digest module) is the natural home, and it was never gated on the union.
+- **Not blocked, do anytime:** the shared `packages/react` + `src/disk_tree` US is already complete (DT third pass, 2026-09-17); DT's comms (item 1) and IaC (item 2) never needed the union.
