@@ -1184,7 +1184,6 @@ function AppContent() {
                   prefix (its rows are relative to the drilled path). */}
               <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])}
                 extra={<>
-                  {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
                   {' '}<Tooltip content={<>
                     <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
                     a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.

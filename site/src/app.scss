@@ -1419,8 +1419,10 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     .none { color: var(--ink-3); }
     td.created {
       white-space: nowrap;
-      .cm { display: inline-grid; grid-template-columns: 7px 3ch 3ch; gap: 0 5px; align-items: center; justify-items: end; }
-      i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+      .cm { display: inline-grid; grid-template-columns: 8px 3ch 3ch; gap: 0 5px; align-items: center; justify-items: end; }
+      // A contrast ring so the pale (new) and dark (old) ends of the viridis
+      // ramp both read against the row — the swatch was invisible at each end.
+      i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); }
       .yr { color: var(--ink-3); font-size: 11px; }
     }
     td.owners, td.state { white-space: nowrap; }

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { intParam, useUrlState } from 'use-prms'
 import { useCanMark } from './auth'
-import { dateColor, epochDaysToDate, epochDaysToMonthShort } from './colors'
+import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonthShort } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
@@ -234,7 +234,25 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
             {th('b', 'bytes')}
             <th className="num">share</th>
             {th('o', 'objects')}
-            {th('d', 'created')}
+            <th
+              className={'num sortable' + (sort.k === 'd' ? ' on' : '')}
+              onClick={() => setSort(s => ({ k: 'd', asc: s.k === 'd' ? !s.asc : false }))}
+              title="sort"
+            >
+              created{sort.k === 'd' ? (sort.asc ? ' ▲' : ' ▼') : ''}
+              {dMax > dMin && (
+                <Tooltip content={<>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                    {epochDaysToMonthShort(dMin)}
+                    <span className="gradbar" style={{ background: dateGradientCss(), width: 90, height: 8, borderRadius: 2, display: 'inline-block' }} />
+                    {epochDaysToMonthShort(dMax)}
+                  </span>
+                  <div style={{ opacity: 0.7, marginTop: 3 }}>Swatch colour = the directory’s mean write date, old → new, over the rows listed here.</div>
+                </>}>
+                  <span className="info" tabIndex={0} onClick={e => e.stopPropagation()} aria-label="about the created colour"> ⓘ</span>
+                </Tooltip>
+              )}
+            </th>
             {hasRead && th('a', 'read', false)}
             {hasOwners && <th>owner(s)</th>}
             {markIdx && <th>marks</th>}

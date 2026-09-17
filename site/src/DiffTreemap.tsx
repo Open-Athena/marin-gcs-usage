@@ -12,7 +12,11 @@ const { abs, max, min, sign } = Math
 const UNCHANGED_GREY = 'rgba(110, 118, 129, 0.28)'
 const deltaColor = (t: number) => divergingColor(-t)
 // A root the older scan never covered (specs/root-geneses.md §3): neither
-// grew nor shrank, so neither green nor red — the site's blue.
+// grew nor shrank, so neither green nor red — the site's blue. A first-scanned
+// bucket AND everything under it read blue: its bytes entered the scan, they
+// aren't the interval's writes, so painting its interior green (as "added")
+// would double-count the day's growth. Blue frames a blue interior — never a
+// blue box sitting under green children.
 const FIRST_SCANNED = 'var(--s1)'
 
 // `/api/diff` row (functions/_lib/view.ts `DiffRow`): p=path (relative to
@@ -62,13 +66,23 @@ interface DiffNode {
   size_old: number
   size_new: number
   n_desc_delta: number
-  /** Object counts on each side (net only — the diff rows don't carry per-node adds/removes). */
+  /** Object counts on each side (net only per node — the movement decomposition
+   * below is the frontier sum). */
   n_old: number
   n_new: number
+  /** Objects that arrived / left under this node (frontier sum, exactly like
+   * `added`/`removed` for bytes): start − removed + added = end. */
+  n_added: number
+  n_removed: number
   lookup?: 1 | 2
   /** A root (bucket) the older scan didn't cover at all: it entered the scan,
-   *  its bytes aren't the interval's writes (specs/root-geneses.md §3). */
+   *  its bytes aren't the interval's writes (specs/root-geneses.md §3). The
+   *  crumb accounts for it apart from the interval's growth, and its label
+   *  says so — only the bucket carries this (see `fs` for the colour). */
   first?: boolean
+  /** First-scanned for colour: the bucket AND every descendant, so a
+   *  first-scanned subtree reads uniformly blue rather than green-inside-blue. */
+  fs?: boolean
   children?: DiffNode[]
 }
 
@@ -95,7 +109,7 @@ function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells
       // Expanded-but-net-zero dir whose children were emitted without it.
       parent = {
         key: parentPath, label: parentPath.split('/').pop()!, weight: 0, delta: 0, added: 0, removed: 0,
-        status: 'unchanged', size_old: 0, size_new: 0, n_desc_delta: 0, n_old: 0, n_new: 0, children: [],
+        status: 'unchanged', size_old: 0, size_new: 0, n_desc_delta: 0, n_old: 0, n_new: 0, n_added: 0, n_removed: 0, children: [],
       }
       attach(parent, parentPath)
     }
@@ -117,6 +131,8 @@ function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells
       n_desc_delta: r.ob - r.oa,
       n_old: r.oa,
       n_new: r.ob,
+      n_added: r.x ? 0 : max(0, r.ob - r.oa),
+      n_removed: r.x ? 0 : max(0, r.oa - r.ob),
       ...(atRoot && r.d === 1 && r.s === 'added' ? { first: true } : {}),
       lookup: r.l,
     }, r.p)
@@ -133,19 +149,29 @@ function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells
       kidSum += finalize(k)
       node.added += k.added
       node.removed += k.removed
+      node.n_added += k.n_added
+      node.n_removed += k.n_removed
     }
     node.weight = max(own, kidSum)
     const gap = node.weight - kidSum
     if (areaMode === 'max' && gap > max(1_000_000, node.weight * 0.002)) {
       node.children.push({
         key: `${node.key}/__unchanged__`, label: '(unchanged)', weight: gap, delta: 0, added: 0, removed: 0,
-        status: 'filler', size_old: gap, size_new: gap, n_desc_delta: 0, n_old: 0, n_new: 0,
+        status: 'filler', size_old: gap, size_new: gap, n_desc_delta: 0, n_old: 0, n_new: 0, n_added: 0, n_removed: 0,
       })
     }
     node.children.sort((a, b) => (b.delta - a.delta) || (b.weight - a.weight))
     return node.weight
   }
   for (const r of roots) finalize(r)
+
+  // First-scanned buckets colour their whole subtree blue (see FIRST_SCANNED):
+  // mark the bucket and every descendant `fs` once the tree is built.
+  const markFs = (node: DiffNode) => {
+    node.fs = true
+    for (const k of node.children ?? []) markFs(k)
+  }
+  for (const r of roots) if (r.first) markFs(r)
 
   const cells = roots.filter(r => r.weight > 0)
   cells.sort(areaMode === 'max'
@@ -163,26 +189,38 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
    *  page drills there (and this diff re-reads at that prefix), so the map
    *  never holds a drill of its own. */
   onDrill?: (segs: string[]) => void
-  /** Appended to the root crumb after the movement arithmetic (Δobjects, the
-   *  scope note) — the one line every stat of the diff shares. */
+  /** Appended to the root crumb after the movement arithmetic (the scope
+   *  note) — the one line every stat of the diff shares. */
   extra?: ReactNode
 }) {
   const { fmtBytes } = useUnits()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
+  const fmtN = (n: number) => n.toLocaleString('en-US')
+  const fmtNDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtN(abs(d))
   // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
   // Δ (area = |delta|) is the default — the movement is what a diff view is
   // for — and stays out of the URL.
   const [dmP, setDmP] = useUrlState('dm', stringParam())
-  const areaMode: AreaMode = dmP === 'max' ? 'max' : 'delta'
   const setAreaMode = (m: AreaMode) => setDmP(m === 'max' ? 'max' : undefined)
   // Root arithmetic for the crumb: start − removed + added = end. Bytes move
   // at the frontier (an expanded row's own Δ is carried by its children), so
   // the two terms are the tree's sums; a truncated walk leaves the smallest
   // movements unenumerated, in which case they're approximate — the
   // endpoints are always exact.
-  const root = useMemo((): DiffNode => {
-    const { cells } = buildTree(data, areaMode, atRoot)
-    return {
+  //
+  // Area mode falls back to `max` when Δ has nothing to show: if the user
+  // hasn't pinned a mode and the movement tree is empty (a scope where
+  // nothing moved between the two scans), draw the sizes in `max` instead of
+  // a bare "no changes" — the view still answers "what's here".
+  const { root, areaMode } = useMemo((): { root: DiffNode; areaMode: AreaMode } => {
+    const wantMax = dmP === 'max'
+    let mode: AreaMode = wantMax ? 'max' : 'delta'
+    let { cells } = buildTree(data, mode, atRoot)
+    if (!wantMax && cells.length === 0) {
+      const alt = buildTree(data, 'max', atRoot)
+      if (alt.cells.length) { mode = 'max'; cells = alt.cells }
+    }
+    const built: DiffNode = {
       key: label,
       label,
       weight: cells.reduce((s, c) => s + c.weight, 0),
@@ -195,16 +233,29 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
       n_desc_delta: data.objects_b - data.objects_a,
       n_old: data.objects_a,
       n_new: data.objects_b,
+      n_added: cells.reduce((s, c) => s + c.n_added, 0),
+      n_removed: cells.reduce((s, c) => s + c.n_removed, 0),
       children: cells,
     }
-  }, [data, areaMode, label, atRoot])
-  const { added, removed } = root
+    return { root: built, areaMode: mode }
+  }, [data, dmP, label, atRoot])
+  const { added, removed, n_added, n_removed } = root
   // Roots that entered the scan in this interval: shown apart from the
   // interval's writes (`⊕ first scanned`), so the day's growth stays readable.
   const firstScanned = (root.children ?? []).filter(c => c.first).reduce((s, c) => s + c.added, 0)
+  const firstScannedN = (root.children ?? []).filter(c => c.first).reduce((s, c) => s + c.n_added, 0)
   const grew = added - firstScanned
+  const grewN = n_added - firstScannedN
 
   if (!root.children?.length) return null
+
+  // Rect seams like the main map: a fat gutter at the top level, a clear line
+  // one down, hairlines below — so nested cells read as nested, not as one
+  // flat mosaic. Colours come from `edge` in colorForCell.
+  const borderWidth = (depth: number, { w, h }: { w: number; h: number }): number => {
+    const base = depth === 0 ? 3 : depth === 1 ? 2 : 1
+    return min(base, max(1, min(w, h) / 16))
+  }
 
   return (
     <div className="diff-tm">
@@ -227,7 +278,8 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
         formatSize={n => fmtBytes(n)}
         // The core's default suffix is the node's *area weight* (Σ max(old,new),
         // or Σ|Δ|), which reads as a nonsense total next to the header's scan
-        // size. Show the movement instead: start − removed + added = end.
+        // size. Show the movement instead — bytes and objects both decomposed
+        // as start − removed + added = end (±Δ).
         renderCrumbSuffix={n => n.status === 'root'
           ? <>
               — {fmtBytes(n.size_old)}{' '}
@@ -236,21 +288,42 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
               {firstScanned > 0 && <><span className="first">⊕ {fmtBytes(firstScanned)} first scanned</span>{' '}</>}
               {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
               <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
+              {'  ·  '}
+              {fmtN(n.n_old)} obj{' '}
+              <span className="shrank">− {fmtN(n_removed)}</span>{' '}
+              <span className="grew">+ {fmtN(grewN)}</span>{' '}
+              {firstScannedN > 0 && <><span className="first">⊕ {fmtN(firstScannedN)} first scanned</span>{' '}</>}
+              {data.truncated || n_added - n_removed !== n.n_desc_delta ? '≈' : '='} {fmtN(n.n_new)}{' '}
+              <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(n.n_desc_delta)})</span>
               {extra}
             </>
           : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span></>}
         collapseChains
         depthFade={1}
         rootFade={1}
+        borderWidth={borderWidth}
         colorForCell={n => {
-          if (n.first) return { bg: FIRST_SCANNED, ink: '#fff' }
+          // First-scanned: the bucket and its whole subtree read blue. A
+          // container gets a neutral fill with a blue frame (the borders draw
+          // it), so its blue children aren't sitting inside a blue block; a
+          // leaf takes the blue fill.
+          if (n.fs) {
+            return n.children?.length
+              ? { bg: 'var(--panel)', ink: 'var(--ink)', edge: FIRST_SCANNED }
+              : { bg: FIRST_SCANNED, ink: '#fff', edge: FIRST_SCANNED }
+          }
+          // The seam colour: page-ground blended into the fill (skipped for
+          // gradient fills, which paint their own band over bg).
+          const edgeOf = (bg: string): string | undefined =>
+            bg.includes('gradient') ? undefined : `color-mix(in oklab, ${bg} 55%, var(--surface))`
           if (areaMode === 'max') {
             if (n.children?.length) {
               const t = n.weight === 0 ? 0 : n.delta / n.weight
-              return { bg: deltaColor(t), ink: divergingInk(t) }
+              const bg = deltaColor(t)
+              return { bg, ink: divergingInk(t), edge: edgeOf(bg) }
             }
             const f = n.weight === 0 ? 0 : min(1, abs(n.delta) / n.weight)
-            if (f === 0) return { bg: UNCHANGED_GREY, ink: divergingInk(0) }
+            if (f === 0) return { bg: UNCHANGED_GREY, ink: divergingInk(0), edge: edgeOf(UNCHANGED_GREY) }
             const pct = `${(f * 100).toFixed(2)}%`
             const band = deltaColor(sign(n.delta))
             return {
@@ -264,10 +337,11 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
           // net-zero churn is grey (its tooltip shows the churn).
           const base = max(n.size_old, n.size_new)
           const t = base === 0 ? 0 : n.delta / base
-          return { bg: deltaColor(t), ink: divergingInk(t) }
+          const bg = deltaColor(t)
+          return { bg, ink: divergingInk(t), edge: edgeOf(bg) }
         }}
         renderCellExtra={areaMode === 'max' ? (n, _path, { w, h }) => {
-          if (n.children?.length || w < 56) return null
+          if (n.fs || n.children?.length || w < 56) return null
           const f = n.weight === 0 ? 0 : min(1, abs(n.delta) / n.weight)
           if (f === 0) return null
           const bandH = h * f
@@ -291,7 +365,7 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
         } : undefined}
         renderTooltip={n => (
           <>
-            <div style={{ fontWeight: 500 }}>{n.key}</div>
+            <div style={{ fontWeight: 500 }}>{n.key}{n.first ? ' (first scanned)' : ''}</div>
             <div style={{ opacity: 0.85, fontSize: '0.85em', fontVariantNumeric: 'tabular-nums' }}>
               {fmtBytes(n.size_old)}
               {n.removed > 0 && <> <span className="shrank">− {fmtBytes(n.removed)}</span></>}
@@ -301,12 +375,17 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
             </div>
             {n.status !== 'filler' && (
               <div style={{ opacity: 0.75, fontSize: '0.85em', fontVariantNumeric: 'tabular-nums' }}>
-                {n.n_old.toLocaleString('en-US')} → {n.n_new.toLocaleString('en-US')} objects{' '}
-                <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({n.n_desc_delta > 0 ? '+' : ''}{n.n_desc_delta.toLocaleString('en-US')})</span>
+                {fmtN(n.n_old)}
+                {n.n_removed > 0 && <> <span className="shrank">− {fmtN(n.n_removed)}</span></>}
+                {n.n_added > 0 && <> <span className="grew">+ {fmtN(n.n_added)}</span></>}
+                {' '}= {fmtN(n.n_new)} obj{' '}
+                <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(n.n_desc_delta)})</span>
               </div>
             )}
             <div style={{ opacity: 0.5, fontSize: '0.75em', marginTop: 2 }}>
-              {n.status === 'filler' ? 'unchanged bytes the diff never needed to enumerate' : n.status}
+              {n.status === 'filler' ? 'unchanged bytes the diff never needed to enumerate'
+                : n.fs ? 'first scanned — entered the scan this interval, not written in it'
+                : n.status}
               {n.lookup && ' · under the floor on one side, read exactly'}
             </div>
           </>
