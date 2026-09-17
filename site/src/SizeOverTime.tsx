@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { TimeSeries } from '@disk-tree/react'
 import type { Annotation } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
@@ -42,9 +43,9 @@ function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
     <span className="gran" role="radiogroup" aria-label="Y-axis range">
       <span className="lbl">y-axis</span>
       {(['data', 'zero'] as YFrom[]).map(y => (
-        <button key={y} role="radio" aria-checked={v === y} className={v === y ? 'on' : ''} onClick={() => set(y)} title={y === 'data' ? 'Fit the y-range to the data' : 'Start the y-axis at zero'}>
-          {y === 'data' ? 'fit' : 'from 0'}
-        </button>
+        <Explain key={y} text={y === 'data' ? 'Fit the y-range to the data (a small movement in a large total stays visible)' : 'Start the y-axis at zero (honest proportions)'}>
+          <button role="radio" aria-checked={v === y} className={v === y ? 'on' : ''} onClick={() => set(y)}>{y === 'data' ? 'fit' : 'from 0'}</button>
+        </Explain>
       ))}
     </span>
   )

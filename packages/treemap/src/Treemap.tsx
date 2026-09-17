@@ -1298,7 +1298,9 @@ export function Treemap<T>({
               )}
             </span>
           ))}
-          <span style={{ opacity: 0.6, marginLeft: 6, whiteSpace: 'nowrap' }}>
+          {/* Dimmed via color, not opacity: a consumer's suffix can colour its own
+              spans (a diff's grew/shrank terms) at full strength. */}
+          <span style={{ color: 'color-mix(in srgb, currentColor 60%, transparent)', marginLeft: 6, whiteSpace: 'nowrap' }}>
             {renderCrumbSuffix ? renderCrumbSuffix(node, path) : <>— {formatSize(getSize(node))}</>}
           </span>
         </nav>

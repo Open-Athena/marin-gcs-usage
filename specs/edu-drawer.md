@@ -21,6 +21,10 @@ A single fixed strip at the bottom of the viewport (above the SpeedDial on deskt
 
 One pass over `site/src`: each `<Tooltip>` wrapping a `.has-tt` control becomes `<Explain>`; the rest stay. The ⚙ menu, the colour/shade/scan selects, the y-axis and roots toggles, the diff window chips, the age chart's granularity and colour-by buttons, and the marks bar are the bulk. `Tooltip`'s `pinnable` mode is data-only and unchanged.
 
+## As built (2026-09-17)
+
+`site/src/Help.tsx` (`HelpProvider`, `Explain`, `HelpLine`) over the pure reducer in `helpState.ts` (hover and focus tracked apart; hover wins, blur falls back to hover). Preference `help` on/off in localStorage via `prefs.tsx`; `h` toggles it (use-kbd action) and a SpeedDial button mirrors it; no `?h=` URL override (a preference, not page state). Migrated: the bar's colour/shade selects and owner `not`/`×`, the path-filter clear, the diff's from-select, span chips, `≈ scope` and `largest changes`, the ⚙ menu rows, the legend metric chips, ⛶, the map's ⓘ (now focusable), `mark all` and the note input, the user menu's unit buttons, the mark feed's `in diff window`, and the chart's `fit / from 0` and `stacked / lines` toggles (which had native `title`s). Left floating: cell/row/legend-item/mark-dot/provenance/crumb-path/class-mix tips (data), the sweep pages (a later pass). The SpeedDial keeps its own floating tip. `body` gets `padding-bottom` while the line is mounted (`:has`).
+
 ## 4. Tests
 
 - `site/src/help.test.ts`: the provider's reducer — enter/leave/focus/blur sequences leave the expected text (a leave after a focus keeps the focused text; blur clears it).

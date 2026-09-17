@@ -89,20 +89,34 @@ interface PaintOpts<T> {
 // against the canvas element, so a consumer's `var(--other)` / `var(--ink)`
 // paint as the theme's color instead of `parseColor` giving up on them.
 let resolveVar: (c: string) => string = c => c
-// Label sizes, read from the same CSS custom properties the DOM renderer's
-// labels use (`--dt-treemap-lbl-fs`, `--dt-treemap-lbl-fs-sm`), so the two
-// renderers set type identically for a given consumer stylesheet.
+// Label type, read from the same CSS the DOM renderer's labels use — the
+// custom properties `--dt-treemap-lbl-fs`, `--dt-treemap-lbl-fs-sm`,
+// `--dt-treemap-lbl-pad` and the inherited font family/weight — so the two
+// renderers set type and inset identically for a given consumer stylesheet.
 let lblFs = 13.5
 let lblFsSm = 11.5
+let lblPadX = 4
+let lblPadY = 2
+let lblFont = 'system-ui, -apple-system, sans-serif'
+let lblWeight = '400'
+// The DOM label's `line-height: 1.2`: glyph tops sit ~0.1em below the box.
+const LBL_LH = 1.2
 function readLabelSizes(el: Element): void {
   const cs = getComputedStyle(el)
+  const rem = () => parseFloat(getComputedStyle(document.documentElement).fontSize || '16')
   const px = (v: string, dflt: number) => {
     const m = /^([\d.]+)(px|rem)?$/.exec(v.trim())
     if (!m) return dflt
-    return m[2] === 'rem' ? parseFloat(m[1]) * parseFloat(getComputedStyle(document.documentElement).fontSize || '16') : parseFloat(m[1])
+    return m[2] === 'rem' ? parseFloat(m[1]) * rem() : parseFloat(m[1])
   }
   lblFs = px(cs.getPropertyValue('--dt-treemap-lbl-fs'), 13.5)
   lblFsSm = px(cs.getPropertyValue('--dt-treemap-lbl-fs-sm'), 11.5)
+  // `<y> <x>` (CSS shorthand order) or one value for both.
+  const pad = cs.getPropertyValue('--dt-treemap-lbl-pad').trim().split(/\s+/).filter(Boolean)
+  lblPadY = pad.length ? px(pad[0], 2) : 2
+  lblPadX = pad.length > 1 ? px(pad[1], 4) : pad.length ? lblPadY : 4
+  lblFont = cs.fontFamily || lblFont
+  lblWeight = cs.fontWeight || lblWeight
 }
 function rgbaAt(c: string | undefined, alpha: number): string | null {
   const p = parseColor(resolveVar(c ?? ''))
@@ -450,7 +464,7 @@ function paintCell<T>(ctx: CanvasRenderingContext2D, cell: PlacedCell<T>, o: Pai
   if (showLbl) {
     const ink = rgbaAt(style.ink, 1) ?? 'rgba(230, 230, 238, 1)'
     const fs = w < 64 ? lblFsSm : lblFs
-    ctx.font = `${fs}px system-ui, -apple-system, sans-serif`
+    ctx.font = `${lblWeight} ${fs}px ${lblFont}`
     ctx.textBaseline = 'top'
     ctx.fillStyle = ink
     const label = folded
@@ -465,7 +479,10 @@ function paintCell<T>(ctx: CanvasRenderingContext2D, cell: PlacedCell<T>, o: Pai
     ctx.beginPath()
     ctx.rect(x, y, cw, ch)
     ctx.clip()
-    const pad = 4
+    const pad = lblPadX
+    // The DOM label box: padding, then a 1.2 line-height box the glyphs sit
+    // ~0.1em into.
+    const ty = y + lblPadY + fs * (LBL_LH - 1) / 2
     const kidSize = folded ? (cell.node as FoldedNode<T>).size : getSize(cell.node as T)
     // Same rule as the DOM label: inline size on branch bars / short leaves
     // wider than the consumer's threshold.
@@ -477,7 +494,7 @@ function paintCell<T>(ctx: CanvasRenderingContext2D, cell: PlacedCell<T>, o: Pai
     const szW = inlineSize ? ctx.measureText(szText).width : 0
     if (inlineSize) nameMax -= szW + gap
     const name = fit(ctx, label, Math.max(0, nameMax))
-    ctx.fillText(name, x + pad, y + 2)
+    ctx.fillText(name, x + pad, ty)
     if (inlineSize) {
       // `left`: right after the (possibly ellipsized) name; `right`: flush
       // with the cell's far edge — the DOM's `margin-left: auto`.
@@ -485,14 +502,16 @@ function paintCell<T>(ctx: CanvasRenderingContext2D, cell: PlacedCell<T>, o: Pai
         ? x + cw - pad - szW
         : x + pad + ctx.measureText(name).width + gap
       ctx.globalAlpha = 0.75
-      ctx.fillText(szText, sx, y + 2)
+      ctx.fillText(szText, sx, ty)
       ctx.globalAlpha = 1
     }
-    // Second-line size for a tall leaf (name owns the first line).
+    // Second-line size for a tall leaf (name owns the first line): the DOM's
+    // `.dt-treemap-lbl2` — below the label box, `padding: 0 4px`.
     if (!hasKids && h > 34) {
       ctx.globalAlpha = 0.75
-      ctx.font = `${lblFsSm}px system-ui, -apple-system, sans-serif`
-      ctx.fillText(fit(ctx, formatSize(kidSize), cw - 2 * pad), x + pad, y + 2 + fs + 3)
+      ctx.font = `${lblWeight} ${lblFsSm}px ${lblFont}`
+      const ty2 = y + 2 * lblPadY + fs * LBL_LH + lblFsSm * (LBL_LH - 1) / 2
+      ctx.fillText(fit(ctx, formatSize(kidSize), cw - 8), x + 4, ty2)
       ctx.globalAlpha = 1
     }
     ctx.restore()

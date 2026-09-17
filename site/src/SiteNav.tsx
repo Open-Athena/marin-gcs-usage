@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import {
   FloatingFocusManager,
   FloatingPortal,
@@ -178,16 +179,16 @@ function UserMenu() {
             <div className="menu-pop user-menu" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
               <UserCard who={who} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />
               <hr />
-              <Tooltip content="Byte units, site-wide: binary (TiB) ↔ decimal (TB)" placement="left">
+              <Explain text="Byte units, site-wide: binary (TiB) ↔ decimal (TB)">
                 <button type="button" role="menuitem" className="mi" onClick={() => toggleUnits()}>
                   units: <b>{(units === 'iec' ? 'Ti' : 'T') + (suffixB ? 'B' : '')}</b> → {(units === 'iec' ? 'T' : 'Ti') + (suffixB ? 'B' : '')}
                 </button>
-              </Tooltip>
-              <Tooltip content="Show or hide the trailing B (Ti vs TiB), site-wide" placement="left">
+              </Explain>
+              <Explain text="Show or hide the trailing B (Ti vs TiB), site-wide">
                 <button type="button" role="menuitem" className="mi" onClick={() => toggleSuffixB()}>
                   trailing B: <b>{suffixB ? 'on' : 'off'}</b> <span className="dim">({units === 'iec' ? 'Ti' : 'T'}{suffixB ? 'B' : ''})</span>
                 </button>
-              </Tooltip>
+              </Explain>
               {canMark && (
                 <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setTokenOpen(true) }}>
                   agent / CLI token…

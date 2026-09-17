@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import type { Tiling } from '@disk-tree/react'
 import { Tooltip } from './Tooltip'
@@ -39,6 +40,10 @@ function pref<T extends string>(key: string, ok: readonly T[], dflt: T) {
 
 const tiling = pref<Tiling>('tiling', ['shared', 'gaps'], 'shared')
 const renderer = pref<Renderer>('renderer', ['dom', 'canvas'], 'dom')
+// The help line (specs/edu-drawer.md): on until the reader turns it off.
+const help = pref<'on' | 'off'>('help', ['on', 'off'], 'on')
+export const useHelpPref = help.use
+export const setHelpPref = help.set
 export const useTiling = tiling.use
 export const setTiling = tiling.set
 export const useRenderer = renderer.use
@@ -71,14 +76,14 @@ export function SettingsMenu() {
           the renderer toggle also drilled the map — the synthesized mouse
           sequence, not the click, is what the cells saw). */}
       <div className="menu" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onTouchEnd={e => e.stopPropagation()}>
-        <Tooltip content={TILING_TIP} placement="left">
-          <label className="row has-tt">
+        <Explain text={TILING_TIP}>
+          <label className="row">
             <input type="checkbox" checked={t === 'gaps'} onChange={e => setT(e.target.checked ? 'gaps' : 'shared')} />
             gaps between cells
           </label>
-        </Tooltip>
-        <Tooltip content={RENDERER_TIP} placement="left">
-          <span className="row has-tt">
+        </Explain>
+        <Explain text={RENDERER_TIP}>
+          <span className="row">
             renderer
             <span className="seg">
               {(['dom', 'canvas'] as const).map(k => (
@@ -86,7 +91,7 @@ export function SettingsMenu() {
               ))}
             </span>
           </span>
-        </Tooltip>
+        </Explain>
       </div>
     </details>
   )

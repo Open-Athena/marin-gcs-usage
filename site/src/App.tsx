@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -818,16 +819,16 @@ function AppContent() {
         {negated && notUsers[0] && notUsers[0] !== myUser && !mkUsers.includes(notUsers[0]) && <option value={notUsers[0]}>{shortName(notUsers[0])}</option>}
       </select>
       {selPerson && (
-        <Tooltip content={negated
+        <Explain text={negated
           ? <>Showing everyone <b>except</b> this person. Click for just theirs.</>
           : <>Invert: show everyone <b>else's</b> data under this view instead of this person's.</>}>
           <button type="button" className={`mini neg${negated ? ' on' : ''}`} aria-pressed={negated} onClick={() => negateOwner(!negated)}>not</button>
-        </Tooltip>
+        </Explain>
       )}
       {ownerSelVal !== '' && (
-        <Tooltip content="Clear the owner filter (back to anyone)">
+        <Explain text="Clear the owner filter (back to anyone)">
           <button type="button" className="mini clear" aria-label="clear owner filter" onClick={() => setOP(undefined)}>×</button>
-        </Tooltip>
+        </Explain>
       )}
     </>
   )
@@ -869,7 +870,7 @@ function AppContent() {
         {hasAttr && (<>
           <label className="tb-ctl">
             <span className="lbl">color</span>
-            <Tooltip content={
+            <Explain text={
               effMode === 'date' ? <>Object <b>creation time</b>, from the bucket listings (each cell = the byte-weighted mean of its objects). GCS objects are immutable, so created ≈ last-modified.</>
               : effMode === 'read' ? <><b>Last read</b> — the most recent GET/HEAD/LIST anywhere under each cell, from the GCS usage logs (logging began {readRange ? epochDaysToDate(readRange.min) : '—'}). Brick-red = <b>never read</b> since then: prime sweep candidates.</>
               : effMode === 'marks' ? <>Effective <b>keep / sweep / undecided</b> state of every cell (the most recent covering mark wins).</>
@@ -881,18 +882,18 @@ function AppContent() {
                   .filter(m => (m !== 'read' || readRange) && (m !== 'marks' || marksUi))
                   .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
               </select>
-            </Tooltip>
+            </Explain>
           </label>
           {/* Secondary color axis: a shade *within* each cell's primary color.
               Opt-in (default none), so the primary axis reads as it always has. */}
           <label className="tb-ctl">
             <span className="lbl">shade</span>
-            <Tooltip content={<>A perturbation <i>within</i> each cell's color, on top of the primary axis. <b>storage class</b>: darker = a larger share of cold classes (Nearline / Coldline / Archive), so within one owner's band you can see what's already cold. Off by default.</>}>
+            <Explain text={<>A perturbation <i>within</i> each cell's color, on top of the primary axis. <b>storage class</b>: darker = a larger share of cold classes (Nearline / Coldline / Archive), so within one owner's band you can see what's already cold. Off by default.</>}>
               <select className="tb-select" value={shade} aria-label="Shade cells by" onChange={e => setSP(e.target.value === 'none' ? undefined : e.target.value)}>
                 <option value="none">none</option>
                 <option value="class">storage class</option>
               </select>
-            </Tooltip>
+            </Explain>
           </label>
         </>)}
         {hasAttr && (
@@ -935,7 +936,7 @@ function AppContent() {
             {fq && tree && (
               <span className="fnote">
                 {tree.b > 0 ? <>{fmtBytes(tree.b)} matched</> : 'no matches'}
-                <Tooltip content="clear filter"><button type="button" onClick={() => setFq(undefined)}>✕</button></Tooltip>
+                <Explain text="Clear the path filter"><button type="button" onClick={() => setFq(undefined)}>✕</button></Explain>
               </span>
             )}
           </span>
@@ -1098,11 +1099,11 @@ function AppContent() {
           <p className="sub">
             {/* Both endpoints: the window's start, and the page's scan again
                 (the bar's picker — one scan, stated where the diff reads). */}
-            <Tooltip content={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
+            <Explain text={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
               <select className="tb-select scan" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
                 {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
               </select>
-            </Tooltip>
+            </Explain>
             <span className="arrow"> → </span>
             <select className="tb-select scan" value={asof} aria-label="Diff to scan (the page's scan)" onChange={e => setDP(e.target.value)}>
               {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
@@ -1110,12 +1111,12 @@ function AppContent() {
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (
-                  <Tooltip key={label} content={`${fmtScan(scan)} → ${fmtScan(asof)}`}>
+                  <Explain key={label} text={<>Diff over the last {label}: {fmtScan(scan)} → {fmtScan(asof)}</>}>
                     <button role="radio" aria-checked={diffPrev === scan} className={diffPrev === scan ? 'on' : ''}
                       onClick={() => setSpan(scan === prevScan ? undefined : ms)}>
                       {label}
                     </button>
-                  </Tooltip>
+                  </Explain>
                 ))}
               </span>
             )}
@@ -1126,7 +1127,7 @@ function AppContent() {
                 </b>
                 {' '}· Δobjects {(diffHead.objects_b - diffHead.objects_a).toLocaleString('en-US')}
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
-                {' '}· <Tooltip content={<>
+                {' '}· <Explain text={<>
                   <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
                   a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
                   Both scans are read at one byte floor ({fmtBytes(diffHead.threshold)}): a directory is named on both sides or folded into
@@ -1134,12 +1135,12 @@ function AppContent() {
                   {diffHead.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
                 </>}>
                   <span className="dotted">≈ {scopeDesc}</span>
-                </Tooltip>
+                </Explain>
                 {diffHead.truncated && (
                   <>
-                    {' '}· <Tooltip content="Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).">
+                    {' '}· <Explain text="Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).">
                       <span className="dotted">largest changes</span>
-                    </Tooltip>
+                    </Explain>
                   </>
                 )}
               </>

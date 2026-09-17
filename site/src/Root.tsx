@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { HotkeysProvider } from 'use-kbd'
+import { HelpLine, HelpProvider } from './Help'
 import { AdminDbPage } from './AdminDbPage'
 import { AdminPage } from './AdminPage'
 import App from './App'
@@ -22,6 +23,7 @@ import { DEFAULT_STORE, STORES } from './stores'
 export default function Root() {
   return (
     <HotkeysProvider config={{ storageKey: 'gcs-usage' }}>
+    <HelpProvider>
     <Routes>
       {STORES.map(s => (
         <Route key={s.key} path={`${s.path.replace(/\/$/, '')}/og`} element={<OgPage store={s} />} />
@@ -46,6 +48,8 @@ export default function Root() {
       <Route path="/mark" element={<Navigate to="/" replace />} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>
+    <HelpLine />
+    </HelpProvider>
     </HotkeysProvider>
   )
 }
