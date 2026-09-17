@@ -1192,7 +1192,7 @@ function AppContent() {
               shorter than that, and a fixed floor left a blank band under it. */}
           {diff && diff.rows.length > 0 && (
             <div ref={diffSlotRef} className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
-              <DiffTreemap data={diff} label={scopeDesc} />
+              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>
           )}

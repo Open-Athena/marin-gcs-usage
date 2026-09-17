@@ -1,19 +1,22 @@
 import { TimeSeries } from '@disk-tree/react'
-import type { Annotation } from '@disk-tree/react'
+import type { Annotation, Series as TsSeries } from '@disk-tree/react'
+import { DEFAULT_PALETTE } from '@rdub/treemap'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { boolParam, useUrlState } from 'use-prms'
 import { shortName } from './UserChip'
 import { useUnits } from './units'
 import { Skeleton } from './Busy'
+import { stackSeries, youngestGenesis } from './series'
+import type { Band } from './series'
 
 // Stored bytes over the historical scans, scoped exactly like the map: the
 // drilled prefix, a user, or an owner pool (`/api/series` — one row read per
 // scan in that scan's index tiers; specs/view-serving.md §1). Nothing is
 // precomputed per prefix and nothing is floored.
 
-interface Pt { x: number; y: number }
-interface Series { path: string; points: { date: string; b: number; o: number }[] }
+interface Pt { x: number; y: number; y0?: number }
+interface Series { path: string; points: { date: string; b: number; o: number }[]; roots?: { path: string; points: { date: string; b: number; o: number }[] }[] }
 
 // Nice y-ticks aligned to the *display* unit: a base-10-nice byte value (1e15)
 // is an ugly binary label (909 TiB), so nice-tick in the unit's own base
@@ -33,6 +36,23 @@ const unitTicks = (min: number, max: number, base: number, count = 4): number[] 
 }
 
 type YFrom = 'data' | 'zero'
+type Layout = 'stacked' | 'lines'
+
+// Per-root layout at the store root (`?ln` — lines on): stacked bands (the
+// composition; a root's band starts at its genesis) or overlaid lines (each
+// root's own movement).
+function LayoutToggle({ v, set }: { v: Layout; set: (l: Layout) => void }) {
+  return (
+    <span className="gran" role="radiogroup" aria-label="Roots layout">
+      <span className="lbl">roots</span>
+      {(['stacked', 'lines'] as Layout[]).map(l => (
+        <button key={l} role="radio" aria-checked={v === l} className={v === l ? 'on' : ''} onClick={() => set(l)} title={l === 'stacked' ? 'One band per root, stacked to the total' : 'One line per root, plus the total'}>
+          {l}
+        </button>
+      ))}
+    </span>
+  )
+}
 
 // y-axis origin toggle (`?y0` — from-zero on): fit the data (default — a ~1%
 // wiggle on 3 PiB is invisible from zero) or anchor at zero (honest
@@ -81,8 +101,13 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   const [y0P, setY0P] = useUrlState('y0', boolParam)
   const yFrom: YFrom = y0P ? 'zero' : 'data'
   const setYFrom = (y: YFrom) => setY0P(y === 'zero')
+  const [linesP, setLinesP] = useUrlState('ln', boolParam)
+  const layout: Layout = linesP ? 'lines' : 'stacked'
+  const setLayout = (l: Layout) => setLinesP(l === 'lines')
 
-  const scope = (user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : '') + (paths?.length ? `&paths=${encodeURIComponent(paths.join(','))}` : '')
+  // The store root, unscoped: one trace per root (specs/root-geneses.md §2).
+  const split = !prefix && !user && !pool && !paths?.length && !filterLabel
+  const scope = (user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : '') + (paths?.length ? `&paths=${encodeURIComponent(paths.join(','))}` : '') + (split ? '&split=roots' : '')
   const seriesQ = useQuery<Series>({
     queryKey: ['series', prefix, scope, scans.length],
     // Under a filter, wait for its match roots: the whole-store series is not
@@ -97,22 +122,43 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   })
 
   const label = user ? shortName(user) : pool ?? (prefix || 'total')
-  const series = useMemo(() => {
-    const pts = (seriesQ.data?.points ?? [])
-      .map(p => ({ x: xOfScan(p.date), y: p.b }))
-      .sort((a, b) => a.x - b.x)
-    if (pts.length < 2) return []
-    return [{ key: 'scoped', label, color: 'var(--s1)', points: pts }]
-  }, [seriesQ.data, label])
+  const toPts = (points: { date: string; b: number }[]): Pt[] => points.map(p => ({ x: xOfScan(p.date), y: p.b })).sort((a, b) => a.x - b.x)
+  const total = useMemo(() => toPts(seriesQ.data?.points ?? []), [seriesQ.data])
+  // The roots' traces (split mode), keyed by bucket, coloured by slot (largest
+  // at the latest scan = slot 0, as the map colours the root's children).
+  const roots = useMemo(() => {
+    const rs = seriesQ.data?.roots ?? []
+    if (rs.length < 2) return []
+    const latest = (r: { points: { date: string; b: number }[] }) => r.points[r.points.length - 1]?.b ?? 0
+    const bySize = [...rs].sort((a, b) => latest(b) - latest(a))
+    const slot = new Map(bySize.map((r, i) => [r.path, i]))
+    return rs.map(r => ({ key: r.path, color: DEFAULT_PALETTE[slot.get(r.path)! % DEFAULT_PALETTE.length], points: toPts(r.points) }))
+  }, [seriesQ.data])
+  // The x before which the total lacks a root — the total is dashed there.
+  const genesis = useMemo(() => youngestGenesis(roots), [roots])
+  const series = useMemo((): TsSeries<Pt>[] => {
+    if (total.length < 2) return []
+    if (!roots.length) return [{ key: 'scoped', label, color: 'var(--s1)', points: total }]
+    if (layout === 'stacked') {
+      // Bands stack up to the total; the total rides along the stack's top
+      // edge as a thin grey line (dashed before the youngest genesis) so the
+      // tooltip lists it and the pre-genesis stretch reads as incomplete.
+      // `y0: 0` keeps its tooltip value the whole total, not a band height.
+      const bands: TsSeries<Pt>[] = stackSeries(roots).map((s, i) => ({ key: s.key, label: s.key, color: roots[i].color, points: s.points as Band[] }))
+      return [...bands, { key: 'total', label: 'total', color: 'var(--ink-3)', area: false, points: total.map(p => ({ ...p, y0: 0 })), dashBeforeX: genesis ?? undefined }]
+    }
+    return [...roots.map(r => ({ key: r.key, label: r.key, color: r.color, area: false, points: r.points })), { key: 'total', label: 'total', color: 'var(--s1)', area: false, points: total, dashBeforeX: genesis ?? undefined }]
+  }, [total, roots, layout, label, genesis])
+  const stacked = roots.length > 0 && layout === 'stacked'
   // A scope that owns nothing here in any scan is a flat zero line — say so
   // instead of drawing an empty axis.
   const allZero = series.length === 1 && series[0].points.every(p => p.y === 0)
 
   // Callouts at the points a reader looks for first: the ends of the series
   // and its extremes. Coinciding roles (first is also max) share one label.
+  // With roots they annotate the total.
   const annotations = useMemo((): Annotation[] => {
-    if (series.length !== 1) return []
-    const pts = series[0].points
+    const pts = roots.length ? total : series.length === 1 ? series[0].points : []
     if (pts.length < 2) return []
     let lo = pts[0]
     let hi = pts[0]
@@ -136,10 +182,11 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
     return unitTicks(Math.max(0, min - pad), max + pad, units === 'iec' ? 1024 : 1000)
   }, [series, units, yFrom])
 
+  const firstX = total[0]?.x
   if (scans.length < 2) return null
   return (
     <section id="over-time">
-      <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
+      <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} />{roots.length > 0 && <LayoutToggle v={layout} set={setLayout} />}</h2>
       <p className="sub">
         {user
           ? <><b>{shortName(user)}</b>’s bytes{prefix ? <> under <code>{prefix}</code></> : ''} per scan.</>
@@ -151,7 +198,9 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
                 ? <>Stored bytes under “{filterLabel}” ({paths.length} {paths.length === 1 ? 'prefix' : 'prefixes'}) per scan.</>
               : prefix
                 ? <>Stored bytes under <code>{prefix}</code> per scan.</>
-                : <>Total stored bytes per scan ({scopeLabel}).</>}
+                : roots.length
+                  ? <>Stored bytes per scan, one {stacked ? 'band' : 'line'} per bucket{genesis != null && <> — the total is dashed before every bucket was in the scan</>}.</>
+                  : <>Total stored bytes per scan ({scopeLabel}).</>}
         {' '}Each point is that scan’s own index row — exact, at any depth.
         {seriesQ.isError && <> <i>(series unavailable)</i></>}
       </p>
@@ -166,6 +215,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
           series={series}
           getX={p => p.x}
           getY={p => p.y}
+          getY0={stacked ? p => p.y0 ?? 0 : undefined}
           formatY={fmtBytes}
           formatX={fmtX}
           yTickValues={yTickValues}
@@ -179,6 +229,17 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
         />
       ) : (
         seriesQ.isLoading ? <Skeleton height={220} label="loading series…" /> : <p className="loading">fewer than two scans hold this path</p>
+      )}
+      {roots.length > 0 && (
+        <div className="legend roots-legend">
+          {roots.map(r => (
+            <span className="li" key={r.key}>
+              <span className="sw" style={{ background: r.color }} />
+              {r.key}
+              {r.points[0] && firstX != null && r.points[0].x > firstX && <span className="since"> · since {fmtX(r.points[0].x)}</span>}
+            </span>
+          ))}
+        </div>
       )}
     </section>
   )

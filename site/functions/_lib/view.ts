@@ -185,6 +185,23 @@ const floorOf = (h: IndexHandle): number | null => h.floor
 /** Just P's scoped aggregate for one scan — the size-over-time chart's point
  * (`/api/series`): the root read of a view, from the coarsest tier that has
  * P, without folding anything under it. */
+/** The store root's depth-1 rows (one per bucket) in a scan — `/api/series
+ * ?split=roots` (specs/root-geneses.md §1); null = the scan has no tier. The
+ * same one range read `readRootAgg` sums for the unscoped root. */
+export async function readRootRows(env: Env, date: string): Promise<{ path: string; b: number; o: number }[] | null> {
+  const top = await tryOpen(env, date, `coarse${COARSE_EXPS[0]}`)
+  const rows = top ? await readRows(top, 1, 1, '', '￿') : []
+  const src = rows.length ? rows : await (async () => { const fine = await tryOpen(env, date, 'path'); return fine ? readRows(fine, 1, 1, '', '￿') : null })()
+  if (src == null) return null
+  const by = new Map<string, { path: string; b: number; o: number }>()
+  for (const r of src) {
+    const a = by.get(r.path) ?? { path: r.path, b: 0, o: 0 }
+    a.b += r.b; a.o += r.o
+    by.set(r.path, a)
+  }
+  return [...by.values()]
+}
+
 export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
   const { date, path, lens, owner, classes } = o
   const dP = path === '' ? 0 : path.split('/').length

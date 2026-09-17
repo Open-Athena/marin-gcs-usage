@@ -2078,3 +2078,14 @@ select.assign-sel {
 }
 // Storage-class swatches in the class-mix table (same palette as the CLASS bar).
 .classmix td .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+// Size-over-time roots legend (specs/root-geneses.md §2): one swatch per
+// bucket; a root that entered the scan late says since when.
+#over-time .roots-legend {
+  display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px;
+  .li { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
+  .sw { width: 10px; height: 10px; border-radius: 3px; }
+  .since { color: var(--ink-3); }
+}
+// The diff crumb's "⊕ first scanned" term: a root that entered the scan.
+.diff-tm .first { color: var(--ink-3); }

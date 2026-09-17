@@ -62,6 +62,9 @@ interface DiffNode {
   n_old: number
   n_new: number
   lookup?: 1 | 2
+  /** A root (bucket) the older scan didn't cover at all: it entered the scan,
+   *  its bytes aren't the interval's writes (specs/root-geneses.md §3). */
+  first?: boolean
   children?: DiffNode[]
 }
 
@@ -72,7 +75,7 @@ interface DiffNode {
  * Under-filled parents get a grey `(unchanged)` filler cell so areas stay
  * truthful without shipping every unchanged row.
  */
-function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
+function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells: DiffNode[] } {
   const byPath = new Map<string, DiffNode>()
   const roots: DiffNode[] = []
   const attach = (node: DiffNode, path: string) => {
@@ -110,6 +113,7 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
       n_desc_delta: r.ob - r.oa,
       n_old: r.oa,
       n_new: r.ob,
+      ...(atRoot && r.d === 1 && r.s === 'added' ? { first: true } : {}),
       lookup: r.l,
     }, r.p)
   }
@@ -146,7 +150,7 @@ function buildTree(data: DiffData, areaMode: AreaMode): { cells: DiffNode[] } {
   return { cells }
 }
 
-export function DiffTreemap({ data, label }: { data: DiffData; label: string }) {
+export function DiffTreemap({ data, label, atRoot = false }: { data: DiffData; label: string; /** The diff is over the store root: depth-1 rows are buckets. */ atRoot?: boolean }) {
   const { fmtBytes } = useUnits()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
   // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
@@ -161,7 +165,7 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
   // movements unenumerated, in which case they're approximate — the
   // endpoints are always exact.
   const root = useMemo((): DiffNode => {
-    const { cells } = buildTree(data, areaMode)
+    const { cells } = buildTree(data, areaMode, atRoot)
     return {
       key: label,
       label,
@@ -177,8 +181,12 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
       n_new: data.objects_b,
       children: cells,
     }
-  }, [data, areaMode, label])
+  }, [data, areaMode, label, atRoot])
   const { added, removed } = root
+  // Roots that entered the scan in this interval: shown apart from the
+  // interval's writes (`⊕ first scanned`), so the day's growth stays readable.
+  const firstScanned = (root.children ?? []).filter(c => c.first).reduce((s, c) => s + c.added, 0)
+  const grew = added - firstScanned
 
   if (!root.children?.length) return null
 
@@ -188,7 +196,7 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
         root={root}
         getSize={n => n.weight}
         getChildren={n => n.children}
-        getLabel={n => n.label}
+        getLabel={n => (n.first ? `${n.label} (first scanned)` : n.label)}
         getId={(_n, p) => p.map(x => x.key).join('|')}
         formatSize={n => fmtBytes(n)}
         // The core's default suffix is the node's *area weight* (Σ max(old,new),
@@ -198,7 +206,8 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
           ? <>
               — {fmtBytes(n.size_old)}{' '}
               <span className="shrank">− {fmtBytes(removed)}</span>{' '}
-              <span className="grew">+ {fmtBytes(added)}</span>{' '}
+              <span className="grew">+ {fmtBytes(grew)}</span>{' '}
+              {firstScanned > 0 && <><span className="first">⊕ {fmtBytes(firstScanned)} first scanned</span>{' '}</>}
               {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
               <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
             </>
