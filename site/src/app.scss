@@ -1769,6 +1769,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   &[open] summary { color: var(--ink); }
   .menu {
     position: absolute; right: 0; top: 22px; z-index: 30;
+    touch-action: manipulation;  // no double-tap zoom delay on the toggles
     display: flex; flex-direction: column; gap: 8px;
     min-width: 190px; padding: 8px 10px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px;

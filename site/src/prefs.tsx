@@ -66,14 +66,18 @@ export function SettingsMenu() {
   return (
     <details className="map-settings" ref={ref}>
       <summary title="Map display settings" aria-label="Map display settings">⚙</summary>
-      <div className="menu" onClick={e => e.stopPropagation()}>
-        <Tooltip content={TILING_TIP} placement="left">
+      {/* Every pointer phase stops here: the menu floats over the map, and a
+          tap on it must not reach the cell underneath (on a phone a tap on
+          the renderer toggle also drilled the map — the synthesized mouse
+          sequence, not the click, is what the cells saw). */}
+      <div className="menu" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onTouchEnd={e => e.stopPropagation()}>
+        <Tooltip content={TILING_TIP} placement="bottom">
           <label className="row has-tt">
             <input type="checkbox" checked={t === 'gaps'} onChange={e => setT(e.target.checked ? 'gaps' : 'shared')} />
             gaps between cells
           </label>
         </Tooltip>
-        <Tooltip content={RENDERER_TIP} placement="left">
+        <Tooltip content={RENDERER_TIP} placement="bottom">
           <span className="row has-tt">
             renderer
             <span className="seg">

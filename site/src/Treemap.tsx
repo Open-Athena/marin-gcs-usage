@@ -655,10 +655,12 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
      bar (swatch + label + size + %, presence-filtered) — user,
      and state all render there, so a separate legend for them would be a
      strict-subset duplicate. This legend exists only for encodings the
-     roll-up can't key: date gradients (written/read) and the tree prefix
-     palette. A new mode should default into the roll-up, not here. */
-  const modeLegend = mode === 'read' || mode === 'date' || mode === 'tree'
-    ? (legendNode: TreeNode, legendPath: TreeNode[]) => (
+     roll-up can't key: the date gradients (written/read). The tree palette
+     needs no key either: each hue is a child of the drilled node, and those
+     children are the map's own labelled tiles — the legend only repeated
+     the first row of tile titles (and, on a phone, cost the first fold). */
+  const modeLegend = (mode === 'read' && readRange) || (mode === 'date' && dateRange)
+    ? () => (
         <>
           {mode === 'read' && readRange ? (
             <>
@@ -671,65 +673,17 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
                 {epochDaysToDate(readRange.max)}
               </span>
             </>
-          ) : mode === 'date' && dateRange ? (
+          ) : dateRange ? (
             <span className="li gradli">
               {epochDaysToMonth(dateRange.min)}
               <span className="gradbar" style={{ background: dateGradientCss() }} />
               {epochDaysToMonth(dateRange.max)}
             </span>
-          ) : (
-            // The macro axis: the drilled root's children, largest first, in
-            // their hue; anything past the palette (and folds) is "other".
-            // Names cluster on a shared prefix (rendered once, muted) and
-            // elide from the middle when the row is narrow — the tail (a hash
-            // or step number) is usually the part that tells them apart. The
-            // full name is in each item's tooltip.
-            (() => {
-              const ranked = [...childRanks(legendNode).entries()].sort((a, b) => a[1][0] - b[1][0])
-              const shown = ranked.slice(0, MAX_SLOTS)
-              // Every real child has its own hue (see `slotHsl`); the legend
-              // lists the largest MAX_SLOTS and counts the rest. "other" is
-              // only the fold tile.
-              const more = ranked.length - shown.length
-              const hasOther = (legendNode.c ?? []).some(c => c.n.startsWith('('))
-              const slot = new Map(shown.map(([k, [i]]) => [k, i]))
-              const li = (name: string, shownAs: string) => {
-                const tail = shownAs.length > 16 ? shownAs.slice(-7) : ''
-                const head = tail ? shownAs.slice(0, -7) : shownAs
-                return (
-                  <CopyName text={name} key={name}>
-                    <span className="li copyable">
-                      <span className="sw" style={{ background: slotColor(slot.get(name)!) }} />
-                      <span className="nm"><span className="head">{head}</span>{tail && <span className="tail">{tail}</span>}</span>
-                    </span>
-                  </CopyName>
-                )
-              }
-              return (
-                <>
-                  {legendGroups(shown.map(([k]) => k)).map(g => g.prefix
-                    ? (
-                      <span className="li-group" key={g.prefix}>
-                        <CopyName text={g.prefix} note={`shared by the ${g.names.length} items that follow`}>
-                          <span className="pfx copyable">{g.prefix}…</span>
-                        </CopyName>
-                        {g.names.map(n => li(n, n.slice(g.prefix.length)))}
-                      </span>
-                    )
-                    : li(g.names[0], g.names[0]))}
-                  {more > 0 && (
-                    <Tooltip content={<>{more} smaller {more === 1 ? 'directory' : 'directories'}, each in its own hue (hover a cell for its name)</>}>
-                      <span className="li more">+{more} more</span>
-                    </Tooltip>
-                  )}
-                  {hasOther && <span className="li"><span className="sw" style={{ background: 'var(--other)' }} />other</span>}
-                </>
-              )
-            })()
-          )}
+          ) : null}
         </>
       )
     : null
+
   // The tiling toggle rides in the same slot (right of the crumbs, left of ⛶)
   // in every mode: a map-level preference belongs on the map, not in the nav.
   // The outline key: whenever marks draw as outlines (every coloring but
@@ -777,9 +731,9 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
       </Tooltip>
     </span>
   )
-  const legend = (legendNode: TreeNode, legendPath: TreeNode[]) => (
+  const legend = () => (
     <div className="legend">
-      {modeLegend?.(legendNode, legendPath)}
+      {modeLegend?.()}
       {!hasPanel && keys}
     </div>
   )
