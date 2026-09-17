@@ -983,6 +983,63 @@ describe('<Treemap onCellHover>', () => {
   })
 })
 
+describe('<Treemap tipMode="dock">', () => {
+  const leafOf = (container: HTMLElement) =>
+    [...container.querySelectorAll('.dt-treemap-map > .dt-treemap-cell')]
+      .find(el => !el.classList.contains('branch'))!
+
+  it('renders one in-flow panel (never positioned), empty by default', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(
+        <Treemap root={tree} {...accessors} tipMode="dock" renderTooltip={n => <>TIP:{n.n}</>} minCellArea={null} />,
+      )
+      const dock = container.querySelector('.dt-treemap-tip.dock') as HTMLElement
+      expect(dock).not.toBeNull()
+      expect(dock.classList.contains('empty')).toBe(true)
+      // In flow, not a floating tip: position relative with no pointer offset.
+      expect([dock.style.position, dock.style.left, dock.style.top]).toEqual(['relative', '', ''])
+      // In dock mode there is never a separate floating tip.
+      expect(container.querySelector('.dt-treemap-tip:not(.dock)')).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('hovering a cell fills the same panel in place (still no floating tip)', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(
+        <Treemap root={tree} {...accessors} tipMode="dock" renderTooltip={n => <>TIP:{n.n}</>} minCellArea={null} />,
+      )
+      fireEvent.mouseMove(leafOf(container))
+      const dock = container.querySelector('.dt-treemap-tip.dock') as HTMLElement
+      expect(dock.classList.contains('empty')).toBe(false)
+      expect(dock.textContent).toBe('TIP:bar')
+      expect(dock.style.position).toBe('relative')
+      expect(container.querySelector('.dt-treemap-tip:not(.dock)')).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('float mode (default) still anchors a fixed tip near the pointer', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(
+        <Treemap root={tree} {...accessors} renderTooltip={n => <>TIP:{n.n}</>} minCellArea={null} />,
+      )
+      fireEvent.mouseMove(leafOf(container))
+      const tip = container.querySelector('.dt-treemap-tip') as HTMLElement
+      expect(tip.classList.contains('dock')).toBe(false)
+      expect(tip.style.position).toBe('fixed')
+      expect([tip.style.left !== '', tip.style.top !== '']).toEqual([true, true])
+    } finally {
+      restore()
+    }
+  })
+})
+
 describe('<Treemap a11yLinks> (canvas overlay)', () => {
   const a11yTree: Node = {
     n: 'root',

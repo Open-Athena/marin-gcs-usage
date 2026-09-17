@@ -1372,6 +1372,30 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   border-top: 1px solid var(--line);
 }
 
+// Docked tip (tipMode="dock"): the panel sits in flow below the footer, full
+// width, and updates in place instead of floating. Its mark controls / path
+// actions are always live here — the panel is interactive by construction, so
+// there's no "hover onto the floating tip" gesture to gate them behind.
+.dt-treemap-tip.dock {
+  max-width: 100% !important;
+  width: 100%;
+  margin-top: 4px;
+  box-shadow: none !important;
+  // A full-width panel holds a whole GCS/S3 path on one line otherwise —
+  // wrap it (the float tip was narrow enough to wrap on its own).
+  overflow-wrap: anywhere;
+  // A quieter frame than the floating tip's drop shadow — it's a fixed part of
+  // the widget, not something popped over the page.
+  background: color-mix(in oklab, var(--panel) 92%, var(--surface)) !important;
+  &.empty {
+    color: var(--ink-3) !important;
+    border-style: dashed !important;
+    background: transparent !important;
+    padding: 5px 10px !important;
+  }
+  .dt-treemap-tipdock-hint { font-size: 12px; }
+}
+
 // The children table is wider than a phone: it scrolls inside its own box
 // rather than widening the page (which dragged the whole header off-screen).
 #tbl { overflow-x: auto; }

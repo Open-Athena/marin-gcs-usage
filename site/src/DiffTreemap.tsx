@@ -276,6 +276,7 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
         getLabel={n => (n.first ? `${n.label} (first scanned)` : n.label)}
         getId={(_n, p) => p.map(x => x.key).join('|')}
         formatSize={n => fmtBytes(n)}
+        tipMode="dock"
         // The core's default suffix is the node's *area weight* (Σ max(old,new),
         // or Σ|Δ|), which reads as a nonsense total next to the header's scan
         // size. Show the movement instead — bytes and objects both decomposed
