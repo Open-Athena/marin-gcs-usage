@@ -988,12 +988,13 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
         if (cb) { sum.b.b += cb.b; sum.b.o += cb.o }
         next.push({ p: cp, d: d + 1, a: ca, b: cb, ...(lk ? { l: lk } : {}) })
       }
+      // A one-sided parent has no residual on its missing side.
       const restA = newAgg()
-      restA.b = Math.max(0, a!.b - sum.a.b)
-      restA.o = Math.max(0, a!.o - sum.a.o)
+      restA.b = Math.max(0, (a?.b ?? 0) - sum.a.b)
+      restA.o = Math.max(0, (a?.o ?? 0) - sum.a.o)
       const restB = newAgg()
-      restB.b = Math.max(0, b!.b - sum.b.b)
-      restB.o = Math.max(0, b!.o - sum.b.o)
+      restB.b = Math.max(0, (b?.b ?? 0) - sum.b.b)
+      restB.o = Math.max(0, (b?.o ?? 0) - sum.b.o)
       if (restA.b > 0 || restB.b > 0) {
         const key = p === path ? '(other)' : `${rel(p)}/(other)`
         emit(key, d - dP + 1, restA.b > 0 ? restA : null, restB.b > 0 ? restB : null, false)

@@ -25,8 +25,14 @@ const JSON_HDR = { 'content-type': 'application/json; charset=utf-8' }
 
 export interface CacheEnv { CACHE_KV?: KVNamespace }
 
+// Bumped whenever a cached endpoint's answer for the same inputs changes
+// (a reader rule, a diff walk rule): a stale entry lives a day in the colo
+// cache and a month in KV, and neither knows a deploy happened. 2026-09-17:
+// one-sided diff nodes expand.
+export const CACHE_V = '2'
+
 export function cacheKeyFor(ns: string, parts: string): Request {
-  return new Request(`https://${ns}.cache/${parts}`)
+  return new Request(`https://${ns}.cache/v${CACHE_V}/${parts}`)
 }
 
 const colo = () => (caches as unknown as { default: Cache }).default
