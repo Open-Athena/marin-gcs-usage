@@ -124,6 +124,12 @@ function AppContent() {
   // (no-email) sessions get the read-only view. Folded onto `/` (was a separate
   // `/mark` route); GCS only, since CoreWeave is out of the sweep.
   const markMode = store.marks && canMark
+  // gcs's actions ledger is server-side (mark-state scopes, totals, history);
+  // a plan-first store's marks would be client-side only. The owner axis is a
+  // separate publish (attribution). Both derive from markMode ∧ a store flag —
+  // on gcs (`sweep: 'owner'`, `owners: true`) both equal markMode.
+  const serverLedger = markMode && store.sweep === 'owner'
+  const ownersMode = markMode && store.owners
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
   // Marks (keep/sweep) are de-emphasized: owner assignment is the primary axis
@@ -188,7 +194,7 @@ function AppContent() {
   }, [clP])
   const setClasses = (ks: ClassAxis[]) => setClP(ks.length === 0 || ks.length === CLASS_AXES.length ? undefined : CLASS_AXES.filter(c => ks.includes(c)).join(''))
   const ident = useIdentity()
-  const myUser = useMyUser(ident?.email, markMode)
+  const myUser = useMyUser(ident?.email, ownersMode)
   // Mark axis: `?k=` ⊆ `ksu`; absent (or every letter) = no filter.
   const markAxes = useMemo((): ReadonlySet<MarkAxis> | null => {
     const on = new Set(MARK_CHIPS.filter(c => (kP ?? '').includes(c.key)).map(c => c.f))
@@ -203,16 +209,16 @@ function AppContent() {
   // (the sweep console's "show me the conflicts under this band" link). The
   // excluded users resolve to canonical ids for the server's row filter.
   const notUsers: string[] =
-    markMode && oP?.startsWith('!') ? oP.slice(1).split(',').filter(Boolean).map(k => canonId(k)) : []
+    ownersMode && oP?.startsWith('!') ? oP.slice(1).split(',').filter(Boolean).map(k => canonId(k)) : []
   const ownerUser: string | null =
-    !markMode || !oP || oP === 'owned' || oP === 'unowned' || oP.startsWith('!') ? null
+    !ownersMode || !oP || oP === 'owned' || oP === 'unowned' || oP.startsWith('!') ? null
     : oP === 'me' ? myUser
     : canonId(oP)
   const ownerMode: OwnerMode =
-    !markMode || !oP ? 'all'
+    !ownersMode || !oP ? 'all'
     : notUsers.length ? 'others'
     : oP === 'owned' ? 'owned' : oP === 'unowned' ? 'unowned' : ownerUser ? 'user' : 'all'
-  const meUnmapped = markMode && oP === 'me' && !myUser
+  const meUnmapped = ownersMode && oP === 'me' && !myUser
   const setOwnerUser = (u: string | undefined) => setOP(u === undefined ? undefined : u === 'me' ? 'me' : shortUserKey(canonId(u)))
   // Flip a picked person between their own bytes (`?o=<key>`) and everyone
   // else's under the current view (`?o=!<key>`) — the ≠ toggle beside the picker.
@@ -227,13 +233,13 @@ function AppContent() {
   // receives exactly the current view and only draws it.
   const lensUser = viewUser
   const activeLens = lensUser ? `user:${lensUser}` : null
-  const assigner = markMode && byP ? canonId(byP) : null
+  const assigner = ownersMode && byP ? canonId(byP) : null
   const scopeQs =
     (activeLens ? `&lens=${activeLens}` : '') +
     (activeLens && assigner ? `&by=${encodeURIComponent(assigner)}` : '') +
     (ownerMode === 'owned' || ownerMode === 'unowned' ? `&o=${ownerMode}` : '') +
     (notUsers.length ? `&o=!${notUsers.map(encodeURIComponent).join(',')}` : '') +
-    (markAxes ? `&k=${[...markAxes].map(f => f[0]).join('')}` : '') +
+    (markAxes && serverLedger ? `&k=${[...markAxes].map(f => f[0]).join('')}` : '') +
     (classSet ? `&cl=${CLASS_AXES.filter(c => classSet.has(c)).join('')}` : '') +
     (fq ? `&q=${encodeURIComponent(fq)}` : '')
   // One-time legacy-param rewrite onto the two axes, so old links (Slack
@@ -463,7 +469,7 @@ function AppContent() {
   // drilled subtree once you drill (`?path=`), so the map's rollup is exact at
   // every depth, not just the root (specs/path-agnostic-serving.md §2.3).
   const drillPfx = drillPath ? `${store.scheme}${drillPath}/` : undefined
-  const totalsQ = useMarkTotals(asof, markMode ? drillPfx : undefined, markMode)
+  const totalsQ = useMarkTotals(asof, serverLedger ? drillPfx : undefined, serverLedger)
   const drillTo = (segs: string[]) =>
     navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
   // Read-recency lens domain: the access-log observation window (meta), not
@@ -505,7 +511,7 @@ function AppContent() {
   const hl: Highlight | null = ownerUser ? { user: ownerUser } : null
   // Any scope narrower than "everything" — sections whose data can't follow
   // it (the age chart) hide rather than show fleet-wide numbers.
-  const lensScoped = markAxes != null || ownerMode !== 'all' || classSet != null
+  const lensScoped = (markAxes != null && serverLedger) || ownerMode !== 'all' || classSet != null
   // Diff sides: the drilled subtree at each endpoint, scoped like the map.
   // The diff is read server-side (`/api/diff`): both scans' index tiers at
   // one shared byte floor, point lookups for names that crossed it, the

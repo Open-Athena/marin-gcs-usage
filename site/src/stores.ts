@@ -26,8 +26,14 @@ export interface Store {
    *  `/users`, claims). Off = the plain map: tree / age colors only. */
   marks: boolean
   /** Which sweep console `/sweep` mounts: gcs's owner-slice bands (`owner`)
-   *  or cw's plan-first plans (`plan`). */
+   *  or cw's plan-first plans (`plan`). Also gates the server-side ledger
+   *  (`serverLedger`): mark-state scopes / totals / history are live only when
+   *  `sweep === 'owner'` (a plan-first store's marks are client-side). */
   sweep: 'owner' | 'plan'
+  /** Attribution (owner) axis is published here: the owner filter, claims,
+   *  `/users`, per-user lenses. gcs attributes bytes to people; a plain
+   *  deployment (cw) sets this off and the owner controls don't render. */
+  owners: boolean
   /** Set when the scan job snapshots the bucket's lifecycle rules
    *  (`<base>/<scan>/lifecycle.json`): the tracked intended-state path the
    *  home-page fold points at. Unset = no fold. */
@@ -53,6 +59,7 @@ export const STORES: Store[] = [
     prices: true,
     marks: true,
     sweep: 'owner',
+    owners: true,
     peer: { label: 'CoreWeave usage', href: 'https://cw-s3.oa.dev/' },
     lifecycle: 'job/lifecycle/',
     wall: {
