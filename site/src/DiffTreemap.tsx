@@ -10,6 +10,9 @@ const { abs, max, min, sign } = Math
 // `divergingColor` is red-positive, so negate on the way in.
 const UNCHANGED_GREY = 'rgba(110, 118, 129, 0.28)'
 const deltaColor = (t: number) => divergingColor(-t)
+// A root the older scan never covered (specs/root-geneses.md §3): neither
+// grew nor shrank, so neither green nor red — the site's blue.
+const FIRST_SCANNED = 'var(--s1)'
 
 // `/api/diff` row (functions/_lib/view.ts `DiffRow`): p=path (relative to
 // the diffed root) d=depth k=kind s=status a/b=bytes oa/ob=objects
@@ -216,6 +219,7 @@ export function DiffTreemap({ data, label, atRoot = false }: { data: DiffData; l
         depthFade={1}
         rootFade={1}
         colorForCell={n => {
+          if (n.first) return { bg: FIRST_SCANNED, ink: '#fff' }
           if (areaMode === 'max') {
             if (n.children?.length) {
               const t = n.weight === 0 ? 0 : n.delta / n.weight
@@ -284,11 +288,15 @@ export function DiffTreemap({ data, label, atRoot = false }: { data: DiffData; l
           </>
         )}
         renderLegend={() => (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', opacity: 0.85 }}>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 6px', fontSize: '0.8rem', opacity: 0.85 }}>
             <span style={{ display: 'inline-block', width: 12, height: 12, background: deltaColor(1), borderRadius: 2 }} />
             grew
             <span style={{ display: 'inline-block', width: 12, height: 12, background: deltaColor(-1), borderRadius: 2 }} />
             shrank
+            {firstScanned > 0 && <>
+              <span style={{ display: 'inline-block', width: 12, height: 12, background: FIRST_SCANNED, borderRadius: 2 }} />
+              first scanned
+            </>}
             {areaMode === 'max' && <>
               <span style={{ display: 'inline-block', width: 12, height: 12, background: UNCHANGED_GREY, borderRadius: 2 }} />
               unchanged

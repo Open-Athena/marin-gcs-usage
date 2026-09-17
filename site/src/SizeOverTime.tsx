@@ -10,6 +10,7 @@ import { useUnits } from './units'
 import { Skeleton } from './Busy'
 import { stackSeries, youngestGenesis } from './series'
 import type { Band } from './series'
+import { stringParam } from 'use-prms'
 
 // Stored bytes over the historical scans, scoped exactly like the map: the
 // drilled prefix, a user, or an owner pool (`/api/series` — one row read per
@@ -38,6 +39,23 @@ const unitTicks = (min: number, max: number, base: number, count = 4): number[] 
 
 type YFrom = 'data' | 'zero'
 type Layout = 'stacked' | 'lines'
+type XRange = '1w' | '1m' | 'all'
+const X_RANGES: [XRange, number | null][] = [['1w', 7], ['1m', 30], ['all', null]]
+
+// The x-range (`?xr=1w|1m`; all = default): the last N days before the
+// latest scan. A phone's chart is too narrow to read a month of 12-hourly
+// scans at the right edge.
+function XRangeToggle({ v, set }: { v: XRange; set: (r: XRange) => void }) {
+  return (
+    <span className="gran" role="radiogroup" aria-label="X-axis range">
+      {X_RANGES.map(([r, days]) => (
+        <Explain key={r} text={days ? `Only the last ${days === 7 ? 'week' : '30 days'} of scans` : 'Every scan'}>
+          <button role="radio" aria-checked={v === r} className={v === r ? 'on' : ''} onClick={() => set(r)}>{r}</button>
+        </Explain>
+      ))}
+    </span>
+  )
+}
 
 // Per-root layout at the store root (`?ln` — lines on): stacked bands (the
 // composition; a root's band starts at its genesis) or overlaid lines (each
@@ -105,6 +123,9 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   const [linesP, setLinesP] = useUrlState('ln', boolParam)
   const layout: Layout = linesP ? 'lines' : 'stacked'
   const setLayout = (l: Layout) => setLinesP(l === 'lines')
+  const [xrP, setXrP] = useUrlState('xr', stringParam())
+  const xRange: XRange = xrP === '1w' || xrP === '1m' ? xrP : 'all'
+  const setXRange = (r: XRange) => setXrP(r === 'all' ? undefined : r)
 
   // The store root, unscoped: one trace per root (specs/root-geneses.md §2).
   const split = !prefix && !user && !pool && !paths?.length && !filterLabel
@@ -123,8 +144,15 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   })
 
   const label = user ? shortName(user) : pool ?? (prefix || 'total')
-  const toPts = (points: { date: string; b: number }[]): Pt[] => points.map(p => ({ x: xOfScan(p.date), y: p.b })).sort((a, b) => a.x - b.x)
-  const total = useMemo(() => toPts(seriesQ.data?.points ?? []), [seriesQ.data])
+  // The x-range cut: points on or after (latest − N days). Applied to every
+  // trace, so the stack, the total and the callouts agree.
+  const xFrom = useMemo(() => {
+    const days = X_RANGES.find(([r]) => r === xRange)![1]
+    const last = seriesQ.data?.points.reduce((m, p) => Math.max(m, xOfScan(p.date)), 0) ?? 0
+    return days ? last - days * 86_400_000 : -Infinity
+  }, [seriesQ.data, xRange])
+  const toPts = (points: { date: string; b: number }[]): Pt[] => points.map(p => ({ x: xOfScan(p.date), y: p.b })).filter(p => p.x >= xFrom).sort((a, b) => a.x - b.x)
+  const total = useMemo(() => toPts(seriesQ.data?.points ?? []), [seriesQ.data, xFrom])
   // The roots' traces (split mode), keyed by bucket, coloured by slot (largest
   // at the latest scan = slot 0, as the map colours the root's children).
   const roots = useMemo(() => {
@@ -134,7 +162,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
     const bySize = [...rs].sort((a, b) => latest(b) - latest(a))
     const slot = new Map(bySize.map((r, i) => [r.path, i]))
     return rs.map(r => ({ key: r.path, color: DEFAULT_PALETTE[slot.get(r.path)! % DEFAULT_PALETTE.length], points: toPts(r.points) }))
-  }, [seriesQ.data])
+  }, [seriesQ.data, xFrom])
   // The x before which the total lacks a root — the total is dashed there.
   const genesis = useMemo(() => youngestGenesis(roots), [roots])
   const series = useMemo((): TsSeries<Pt>[] => {
@@ -146,9 +174,9 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
       // tooltip lists it and the pre-genesis stretch reads as incomplete.
       // `y0: 0` keeps its tooltip value the whole total, not a band height.
       const bands: TsSeries<Pt>[] = stackSeries(roots).map((s, i) => ({ key: s.key, label: s.key, color: roots[i].color, points: s.points as Band[] }))
-      return [...bands, { key: 'total', label: 'total', color: 'var(--ink-3)', area: false, points: total.map(p => ({ ...p, y0: 0 })), dashBeforeX: genesis ?? undefined }]
+      return [...bands, { key: 'total', label: 'total', color: 'var(--ink-3)', area: false, dots: false, strokeWidth: 1, points: total.map(p => ({ ...p, y0: 0 })), dashBeforeX: genesis ?? undefined }]
     }
-    return [...roots.map(r => ({ key: r.key, label: r.key, color: r.color, area: false, points: r.points })), { key: 'total', label: 'total', color: 'var(--s1)', area: false, points: total, dashBeforeX: genesis ?? undefined }]
+    return [...roots.map(r => ({ key: r.key, label: r.key, color: r.color, area: false, points: r.points })), { key: 'total', label: 'total', color: 'var(--ink-3)', area: false, dots: false, strokeWidth: 1, points: total, dashBeforeX: genesis ?? undefined }]
   }, [total, roots, layout, label, genesis])
   const stacked = roots.length > 0 && layout === 'stacked'
   // A scope that owns nothing here in any scan is a flat zero line — say so
@@ -187,24 +215,31 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   if (scans.length < 2) return null
   return (
     <section id="over-time">
-      <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} />{roots.length > 0 && <LayoutToggle v={layout} set={setLayout} />}</h2>
-      <p className="sub">
-        {user
-          ? <><b>{shortName(user)}</b>’s bytes{prefix ? <> under <code>{prefix}</code></> : ''} per scan.</>
-          : pool === 'unowned'
-            ? <>Bytes no person owns{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
-            : pool === 'owned'
-              ? <>Bytes owned by a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
-              : paths?.length
-                ? <>Stored bytes under “{filterLabel}” ({paths.length} {paths.length === 1 ? 'prefix' : 'prefixes'}) per scan.</>
-              : prefix
-                ? <>Stored bytes under <code>{prefix}</code> per scan.</>
-                : roots.length
-                  ? <>Stored bytes per scan, one {stacked ? 'band' : 'line'} per bucket{genesis != null && <> — the total is dashed before every bucket was in the scan</>}.</>
-                  : <>Total stored bytes per scan ({scopeLabel}).</>}
-        {' '}Each point is that scan’s own index row — exact, at any depth.
-        {seriesQ.isError && <> <i>(series unavailable)</i></>}
-      </p>
+      <h2>
+        Size over time
+        <Explain text={<>
+          {user
+            ? <><b>{shortName(user)}</b>’s bytes{prefix ? <> under <code>{prefix}</code></> : ''} per scan.</>
+            : pool === 'unowned'
+              ? <>Bytes no person owns{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
+              : pool === 'owned'
+                ? <>Bytes owned by a person{prefix ? <> under <code>{prefix}</code></> : ''}, per scan.</>
+                : paths?.length
+                  ? <>Stored bytes under “{filterLabel}” ({paths.length} {paths.length === 1 ? 'prefix' : 'prefixes'}) per scan.</>
+                : prefix
+                  ? <>Stored bytes under <code>{prefix}</code> per scan.</>
+                  : roots.length
+                    ? <>Stored bytes per scan, one {stacked ? 'band' : 'line'} per bucket{genesis != null && <> — the total is dashed before every bucket was in the scan</>}.</>
+                    : <>Total stored bytes per scan ({scopeLabel}).</>}
+          {' '}Each point is that scan’s own index row — exact, at any depth. Click a point to view that scan; drag to set the diff window.
+        </>}>
+          <span className="info" aria-label="about this chart" tabIndex={0}>ⓘ</span>
+        </Explain>
+        <XRangeToggle v={xRange} set={setXRange} />
+        <YFromToggle v={yFrom} set={setYFrom} />
+        {roots.length > 0 && <LayoutToggle v={layout} set={setLayout} />}
+      </h2>
+      {seriesQ.isError && <p className="sub"><i>series unavailable</i></p>}
       {allZero ? (
         <p className="loading">
           {user ? <><b>{shortName(user)}</b> owns nothing{prefix ? <> under <code>{prefix}</code></> : ''} in any scan</>

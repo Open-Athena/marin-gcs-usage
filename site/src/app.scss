@@ -2112,3 +2112,14 @@ body:has(.help-line) { padding-bottom: var(--help-line-h); }
 .has-help { border-bottom: 1px dotted var(--ink-3); cursor: help; }
 .has-help:has(select), .has-help:has(button), .has-help:has(input) { border-bottom: none; cursor: default; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+// Size-over-time header: the ⓘ (its explanation lives in the help line) and
+// the range/axis/roots toggles wrap under the title on a phone.
+#over-time h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+#over-time h2 .info { color: var(--ink-3); font-size: 15px; cursor: help; }
+#over-time h2 .gran { margin-left: 0; }
+// The diff treemap's bar on a phone: the crumb (path + movement arithmetic)
+// wraps instead of running under the legend, and the legend takes its own row.
+.diff-tm .dt-treemap-crumbs { white-space: normal !important; flex-wrap: wrap !important; flex: 1 1 100% !important; row-gap: 2px; }
+.diff-tm .dt-treemap-crumbs > span:last-child { white-space: normal !important; }
+.diff-tm .dt-treemap-legend { flex: 1 1 100%; }

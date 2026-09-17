@@ -29,6 +29,10 @@ export interface Series<T> {
   /** The part of the line at x < this is dashed — e.g. a total drawn before
    *  every component existed (specs/root-geneses.md). */
   dashBeforeX?: number
+  /** Draw a dot at each point (default true); off for a reference line. */
+  dots?: boolean
+  /** Line width (default 1.75). */
+  strokeWidth?: number
 }
 
 export interface Annotation {
@@ -90,7 +94,15 @@ export interface TimeSeriesProps<T> {
 
 const DEFAULT_COLORS = DEFAULT_PALETTE
 
-const PAD = { top: 12, right: 16, bottom: 24, left: 56 }
+// Plot insets. Narrow charts (a phone) give the x-range the width back: a
+// tighter left gutter sized to the y labels, no y-axis title, fewer ticks.
+const padFor = (w: number, yLabel: boolean, compact: boolean) => ({
+  top: 12,
+  right: compact ? 8 : 16,
+  bottom: 24,
+  left: compact ? 38 : yLabel ? 56 : 44,
+  compact: compact || w < 520,
+})
 
 function niceTicks(min: number, max: number, count: number, log = false): number[] {
   if (log) {
@@ -173,6 +185,8 @@ export function TimeSeries<T>({
     }
   }, [series, getX, getY, yScale, yFrom])
 
+  const PAD = padFor(dims.w, !!yLabel, dims.w > 0 && dims.w < 520)
+  const compact = PAD.compact
   const plotW = Math.max(0, dims.w - PAD.left - PAD.right)
   const plotH = Math.max(0, dims.h - PAD.top - PAD.bottom)
 
@@ -187,7 +201,7 @@ export function TimeSeries<T>({
     return PAD.top + plotH - ((y - yMin) / Math.max(0.001, yMax - yMin)) * plotH
   }
 
-  const xTickVals = niceTicks(xMin, xMax, xTicks)
+  const xTickVals = niceTicks(xMin, xMax, compact ? Math.min(xTicks, 4) : xTicks)
   const yTickVals = yTickValues
     ? yTickValues.filter(v => v >= yMin - 1e-9 && v <= yMax + 1e-9)
     : niceTicks(yMin, yMax, yTicks, yScale === 'log')
@@ -394,7 +408,7 @@ export function TimeSeries<T>({
             y2={PAD.top + plotH}
             stroke="var(--dt-ts-axis, rgba(255,255,255,0.2))"
           />
-          {yLabel && (
+          {yLabel && !compact && (
             <text
               x={12}
               y={PAD.top + plotH / 2}
@@ -427,9 +441,9 @@ export function TimeSeries<T>({
             return (
               <g key={s.key}>
                 {areaPath && <path d={areaPath} fill={color} fillOpacity={getY0 ? 0.35 : 0.15} />}
-                {dashed && <path d={dashed} fill="none" stroke={color} strokeWidth={1.75} strokeDasharray="4 4" />}
-                <path d={solid} fill="none" stroke={color} strokeWidth={1.75} />
-                {sortedPts.map((p, i) => (
+                {dashed && <path d={dashed} fill="none" stroke={color} strokeWidth={s.strokeWidth ?? 1.75} strokeDasharray="4 4" />}
+                <path d={solid} fill="none" stroke={color} strokeWidth={s.strokeWidth ?? 1.75} />
+                {(s.dots ?? true) && sortedPts.map((p, i) => (
                   <circle
                     key={i}
                     cx={xToPx(getX(p))}
