@@ -1,9 +1,10 @@
 import { FaGithub } from 'react-icons/fa'
-import { MdBrightnessAuto, MdDarkMode, MdLightMode } from 'react-icons/md'
+import { MdBrightnessAuto, MdDarkMode, MdHelpOutline, MdLightMode } from 'react-icons/md'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Omnibar, ShortcutsModal, SpeedDial, useActions, type SpeedDialAction } from 'use-kbd'
 import { SpeedDialTip } from './Tooltip'
 import { IDENTITIES } from './identities.gen'
+import { useHelpPref } from './prefs'
 import { useTheme } from './theme'
 import { useUnits } from './units'
 
@@ -37,7 +38,15 @@ export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }
   const { pathname } = useLocation()
   const [theme, cycleTheme] = useTheme()
   const { units, suffixB, toggleUnits, toggleSuffixB } = useUnits()
+  const [help, setHelp] = useHelpPref()
+  const toggleHelp = () => setHelp(help === 'on' ? 'off' : 'on')
   useActions({
+    'help:toggle': {
+      label: `Help line: ${help} (toggle)`,
+      group: 'View',
+      defaultBindings: ['h'],
+      handler: toggleHelp,
+    },
     ...Object.fromEntries(
       PAGES.filter(([to]) => to !== pathname).map(([to, label]) => [
         `page:${to}`,
@@ -76,6 +85,7 @@ export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }
       <SpeedDial TooltipRenderer={SpeedDialTip} actions={[
         { key: 'github', label: 'GitHub', icon: <FaGithub />, href: REPO_URL },
         ...extra,
+        { key: 'help', label: `Help line: ${help}`, icon: <MdHelpOutline />, onClick: toggleHelp },
         {
           key: 'theme',
           label: `Theme: ${theme}`,

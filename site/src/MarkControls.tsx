@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { type ReactNode, useState } from 'react'
 import { DEFAULT_STORE } from './stores'
 import { Avatar } from './Avatar'
@@ -136,7 +137,7 @@ export function MarkControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
       {/* The decision: one select (or, read-only, the word), then where the
           decision came from and what it covers. */}
       <span className="state">
-        <Tooltip content={stateTip}><span className="lbl has-tt">mark all</span></Tooltip>
+        <Explain text={stateTip}><span className="lbl">mark all</span></Explain>
         {canMark ? (
           <>
             <select
@@ -147,9 +148,9 @@ export function MarkControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
             >
               {options.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
             </select>
-            <Tooltip content={NOTE_TIP}>
+            <Explain text={NOTE_TIP}>
               <input className="note" value={note} onChange={e => setNote(e.target.value)} placeholder="note (optional)" size={14} />
-            </Tooltip>
+            </Explain>
             <button
               type="button" className="save" disabled={!draft || draft === cur}
               onClick={() => draft && set(draft === 'none' ? null : draft)}

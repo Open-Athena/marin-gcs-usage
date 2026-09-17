@@ -2089,3 +2089,26 @@ select.assign-sel {
 }
 // The diff crumb's "⊕ first scanned" term: a root that entered the scan.
 .diff-tm .first { color: var(--ink-3); }
+
+// The help line (specs/edu-drawer.md): one fixed strip that mirrors the
+// hovered/focused control's explanation; nothing floats over controls.
+:root { --help-line-h: 34px; }
+.help-line {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
+  box-sizing: border-box; min-height: var(--help-line-h); padding: 7px 16px;
+  padding-right: 72px;  // clear the SpeedDial
+  background: var(--panel); color: var(--ink-2); border-top: 1px solid var(--line);
+  font-size: 12.5px; line-height: 1.45;
+  .idle { color: var(--ink-3); }
+  kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; }
+  b, code { color: var(--ink); }
+  @media (max-width: 640px) {
+    padding-right: 16px; padding-bottom: calc(7px + env(safe-area-inset-bottom));
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+}
+body:has(.help-line) { padding-bottom: var(--help-line-h); }
+// A control with an explanation: the same quiet underline `.has-tt` used.
+.has-help { border-bottom: 1px dotted var(--ink-3); cursor: help; }
+.has-help:has(select), .has-help:has(button), .has-help:has(input) { border-bottom: none; cursor: default; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

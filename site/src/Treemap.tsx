@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { stringParam, useUrlState } from 'use-prms'
@@ -641,9 +642,9 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
         {rollup.length > 0 && (
           <span className="li-metrics" role="group" aria-label="Legend row metrics">
             {LI_METRIC_CHIPS.map(([m, label, tip]) => (
-              <Tooltip key={m} content={tip}>
+              <Explain key={m} text={tip}>
                 <button type="button" aria-pressed={liMetrics.has(m)} className={liMetrics.has(m) ? 'on' : ''} onClick={() => liToggle(m)}>{label}</button>
-              </Tooltip>
+              </Explain>
             ))}
           </span>
         )}
@@ -718,7 +719,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     <span className="keys">
       {outlineLegend}
       <SettingsMenu />
-      <Tooltip content="Fullscreen (Esc to leave)">
+      <Explain text="Fullscreen (Esc to leave)">
         <button
           type="button" className="fs-btn" aria-label="Fullscreen"
           onClick={e => {
@@ -728,7 +729,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
             else void el.requestFullscreen()
           }}
         >⛶</button>
-      </Tooltip>
+      </Explain>
     </span>
   )
   const legend = () => (
@@ -852,9 +853,9 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
         : node => (
           <div className="hint">
             <span className="stats">{fmtBytes(node.b)} · {fmtN(node.o)} objects{pricing && <> · est. {fmtUsd(estUsd(node))}/mo</>}</span>
-            <Tooltip content={<>Click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into “(other)” · j/k select rows in the table below</>}>
-              <span className="info" aria-label="how to use the map">ⓘ</span>
-            </Tooltip>
+            <Explain text={<>Click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into “(other)” · j/k select rows in the table below</>}>
+              <span className="info" aria-label="how to use the map" tabIndex={0}>ⓘ</span>
+            </Explain>
           </div>
         )}
       chrome={!redact}

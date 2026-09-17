@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { stringParam, useUrlState } from 'use-prms'
@@ -106,12 +107,12 @@ export function MarkHistory({ prefix, scope, pred, filterQ, window: win }: {
           ))}
         </span>
         {win && (
-          <Tooltip content={<>Only actions between the Diff section’s two scans ({fmtScan(win[0])} → {fmtScan(win[1])}). Drag on the size chart to change the window.</>}>
+          <Explain text={<>Only actions between the Diff section’s two scans ({fmtScan(win[0])} → {fmtScan(win[1])}). Drag on the size chart to change the window.</>}>
             <button type="button" className={`kind window${inWindow ? ' on' : ''}`} aria-pressed={inWindow}
               onClick={() => { setMwP(inWindow ? undefined : '1'); setPage(0) }}>
               in diff window
             </button>
-          </Tooltip>
+          </Explain>
         )}
         <span className="gran" role="radiogroup" aria-label="Rows per page">
           <span className="lbl">rows</span>
