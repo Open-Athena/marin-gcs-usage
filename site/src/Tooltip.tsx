@@ -5,6 +5,7 @@ import {
   offset,
   safePolygon,
   shift,
+  size,
   useDismiss,
   useFloating,
   useFocus,
@@ -37,7 +38,10 @@ export function Tooltip({ content, children, placement = 'top', pinnable }: {
       setHoverOpen(o)
     },
     placement,
-    middleware: [offset(6), flip(), shift({ padding: 8 })],
+    // `size` caps the tip to the viewport (minus padding): `shift` only moves a
+    // tip along its cross axis, so a wide tip placed left/right of a reference
+    // near the edge would otherwise run off-screen on a phone.
+    middleware: [offset(6), flip(), shift({ padding: 8 }), size({ padding: 8, apply: ({ availableWidth, elements }) => { elements.floating.style.maxWidth = `${Math.min(420, availableWidth)}px` } })],
     whileElementsMounted: autoUpdate,
   })
   // `safePolygon`: the tip stays while the pointer travels into it, so its

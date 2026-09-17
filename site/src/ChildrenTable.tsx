@@ -181,9 +181,11 @@ export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, s
       </select>
     </span>
   )
-  // The top bar holds the pager on the left and the selection on the right;
-  // it's always there once rows are selectable, so a selection appearing
-  // doesn't push the row that was just clicked out from under the pointer.
+  // The top bar holds the pager on the left and the selection on the right.
+  // It renders only when it has something to show — an always-present empty
+  // bar read as a stray gap between the map and the table (a phone's whole
+  // first fold). The first selection therefore shifts the rows down by one
+  // bar; the row just clicked stays selected, so nothing is lost.
   // A click on the section's own dead space (not a row / control) deselects.
   const clearOnDeadClick = (e: MouseEvent) => {
     if (sel.selected.size && !(e.target as HTMLElement).closest('tr, button, input, select, a, .sel-bar')) sel.clear()
@@ -211,7 +213,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, s
   }
   return (
     <section className="children-tbl" onClick={clearOnDeadClick}>
-      {(pager || showSel) && <div className="pager top">{pager}{selBar}</div>}
+      {(pager || (showSel && sel.selected.size > 0)) && <div className="pager top">{pager}{selBar}</div>}
       <table className="worklist selectable">
         <thead>
           <tr>
