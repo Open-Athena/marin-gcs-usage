@@ -9,10 +9,10 @@ import { Tooltip } from './Tooltip'
 // Each bucket's lifecycle rules as the scan job snapshotted them
 // (`<store.base>/<scan>/lifecycle.json`), diffed per bucket against the
 // previous scan's snapshot: a `<details>` fold under About. Scans from before
-// the job started recording (2026-09-16) have no file — the fold says so
-// rather than hiding.
+// the job started recording (the first with a file is 2026-09-17T0001) have
+// no file — the fold says so rather than fetching a 404 for them.
 
-const RECORDED_FROM = '2026-09-16'
+const RECORDED_FROM = '2026-09-17'
 
 /** One scan's rules; `null` = no snapshot for that scan (404 or any non-OK). */
 function useLifecycle(store: Store, scan: string | null | undefined) {

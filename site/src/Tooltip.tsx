@@ -48,7 +48,10 @@ export function Tooltip({ content, children, placement = 'top', pinnable }: {
   // contents (copy buttons, names) are reachable.
   const { getReferenceProps, getFloatingProps } = useInteractions([
     useHover(context, { move: false, delay: { open: 80 }, handleClose: safePolygon() }),
-    useFocus(context),
+    // `visibleOnly`: keyboard focus opens the tip, a click's focus doesn't — a
+    // <select> keeps focus after a choice, which pinned its tip open (and, the
+    // open state then being focus-owned, hover no longer toggled it).
+    useFocus(context, { visibleOnly: true }),
     useDismiss(context, { outsidePress: true }),
     useRole(context, { role: 'tooltip' }),
   ])
