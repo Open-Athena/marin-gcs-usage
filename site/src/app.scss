@@ -2182,6 +2182,13 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 // row to the crumbs (which scroll, tail-first); the map's fullscreen button
 // and the mark panel's fixed-width labels go too.
 @media (max-width: 640px) {
+  // iOS Safari doesn't repaint a `position: sticky` element during momentum
+  // (inertial) scrolling — it lags behind the flick and only snaps back to the
+  // top when the scroll settles, so the controls read as "not following". Pin
+  // the bar with `position: fixed` on phones (repainted every frame) and offset
+  // the page by its measured height so nothing hides under it.
+  .topbar { position: fixed; top: 0; left: 0; right: 0; margin: 0; z-index: 20; }
+  main { padding-top: calc(var(--topbar-h, 92px) + 8px); }
   .topbar .brand { display: none; }
   .topbar .tb-suffix { display: none; }
   // The path clips itself with an ellipsis on wide screens; on a phone the
