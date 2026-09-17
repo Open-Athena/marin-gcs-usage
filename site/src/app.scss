@@ -1430,11 +1430,13 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       display: inline-flex; align-items: center; gap: 4px;
       .dot-gap { width: 14px; height: 14px; }
       .tail { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; }
-      // The trash-can: stage this prefix for deletion (opt-in model).
+      // The trash-can: stage this prefix for deletion (opt-in model). A legible
+      // red at rest (the grey emoji was near-invisible in dark mode).
       button.trash {
-        border: none; background: transparent; cursor: pointer; padding: 0 3px; margin-right: 2px;
-        font-size: 13px; line-height: 1; opacity: 0.6; border-radius: 4px;
-        &:hover { opacity: 1; background: color-mix(in oklab, #d33 18%, transparent); }
+        border: none; background: transparent; cursor: pointer; padding: 2px 4px;
+        display: inline-flex; align-items: center; border-radius: 4px; line-height: 1;
+        font-size: 14px; color: color-mix(in oklab, #e5484d 72%, var(--ink-3));
+        &:hover { color: #f2555a; background: color-mix(in oklab, #d33 16%, transparent); }
       }
       button.dot {
         width: 14px; height: 14px; padding: 0; border-radius: 50%; cursor: pointer;
@@ -1497,9 +1499,11 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   .lbl { color: var(--ink-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.03em; margin-right: 2px; }
   button.trash {
     font: inherit; font-size: 12px; cursor: pointer; padding: 2px 8px; border-radius: 4px;
+    display: inline-flex; align-items: center; gap: 5px;
     background: color-mix(in oklab, #d33 14%, var(--panel)); color: var(--ink);
     border: 1px solid color-mix(in oklab, #d33 40%, var(--line));
     &:hover { background: color-mix(in oklab, #d33 24%, var(--panel)); }
+    svg { color: #f2555a; }
   }
   button.dot {
     width: 14px; height: 14px; padding: 0; border-radius: 50%; cursor: pointer;
