@@ -613,6 +613,15 @@ function AppContent() {
   // aligning: its numbers describe another pair, so the subtitle says
   // "aligning" instead, and the drawn treemap dims under a marker.
   const diffStale = diffQ.isPlaceholderData || (!diff && diffQ.isFetching)
+  // Two flavours of "still aligning": (1) refining — the map already shows
+  // THIS pair's depth-1 diff (`diffL1`) while the full walk lands, so it's
+  // correct as far as it goes; keep it bright and mark it with a small corner
+  // pill (specs/treemap-first-class-everywhere.md §2 — no map-wide veil once
+  // depth 1 has rendered). (2) genuinely stale — the map is still showing a
+  // DIFFERENT pair's diff (the placeholder fell back to `prev`); that one is
+  // misleading, so it dims under the centered marker until this pair lands.
+  const diffRefining = diffQ.isPlaceholderData && !!diffL1 && diff === diffL1
+  const diffStaleOther = diffStale && !diffRefining
   // Record the settled map's height after every commit that shows one; a
   // reload then holds that height under the marker instead of collapsing.
   useLayoutEffect(() => {
@@ -1178,7 +1187,7 @@ function AppContent() {
               (measured), not the request's canvas budget — the map is
               shorter than that, and a fixed floor left a blank band under it. */}
           {diff && diff.rows.length > 0 && (
-            <div ref={diffSlotRef} className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
+            <div ref={diffSlotRef} className={diffStaleOther ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
               {/* A drill in the diff drills the page: the map, the table and
                   the chart follow, and the diff itself re-reads at the new
                   prefix (its rows are relative to the drilled path). */}
@@ -1195,7 +1204,11 @@ function AppContent() {
                     <span className="info" tabIndex={0} aria-label="how this diff is read">ⓘ</span>
                   </Tooltip>
                 </>} />
-              {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
+              {diffStaleOther
+                ? <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />
+                : diffRefining
+                  ? <Busy label="aligning rows…" corner />
+                  : null}
             </div>
           )}
           {diff && diff.rows.length === 0 && !diffStale && <p className="hint">No changes in this scope between the two scans.</p>}
