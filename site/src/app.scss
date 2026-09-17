@@ -2092,23 +2092,42 @@ select.assign-sel {
 
 // The help line (specs/edu-drawer.md): one fixed strip that mirrors the
 // hovered/focused control's explanation; nothing floats over controls.
-:root { --help-line-h: 34px; }
-.help-line {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
-  box-sizing: border-box; min-height: var(--help-line-h); padding: 7px 16px;
-  padding-right: 72px;  // clear the SpeedDial
-  background: var(--panel); color: var(--ink-2); border-top: 1px solid var(--line);
-  font-size: 12.5px; line-height: 1.45;
-  .idle { color: var(--ink-3); }
-  kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; }
-  b, code { color: var(--ink); }
-  @media (max-width: 640px) {
-    padding-right: 16px; padding-bottom: calc(7px + env(safe-area-inset-bottom));
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+// The help card (specs/edu-drawer.md): a bottom-LEFT panel (the SpeedDial
+// owns bottom-right) that shows the hovered/focused control's explanation,
+// with a real border + shadow so it reads as a surface, not a status strip.
+// Idle it is a small "?" chip. It fades in; a prefers-reduced-motion reader
+// gets no transition.
+.help-card {
+  position: fixed; left: 16px; bottom: 16px; z-index: 900;
+  width: min(340px, calc(100vw - 32px));
+  background: var(--panel); color: var(--ink);
+  border: 1px solid color-mix(in oklab, var(--ink-3) 45%, var(--line));
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  padding: 9px 12px 11px; font-size: 12.5px; line-height: 1.5;
+  animation: help-in 120ms ease-out;
+  .head {
+    display: flex; align-items: center; gap: 5px; margin-bottom: 4px;
+    color: var(--ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
+    svg { font-size: 13px; }
+    .x { margin-left: auto; background: none; border: none; color: var(--ink-3); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; &:hover { color: var(--ink); } }
   }
+  .body { color: var(--ink-2); b { color: var(--ink); } code { color: var(--ink); } }
+  @media (max-width: 640px) { left: 8px; right: 8px; width: auto; bottom: calc(8px + env(safe-area-inset-bottom)); }
 }
-body:has(.help-line) { padding-bottom: var(--help-line-h); }
-// A control with an explanation: the same quiet underline `.has-tt` used.
+.help-chip {
+  position: fixed; left: 16px; bottom: 16px; z-index: 900;
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px;
+  background: var(--panel); color: var(--ink-3); border: 1px solid var(--line);
+  border-radius: 999px; font: inherit; font-size: 11.5px; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  svg { font-size: 13px; }
+  &:hover { color: var(--ink); border-color: var(--ink-3); }
+  @media (max-width: 640px) { left: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); }
+}
+@keyframes help-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .help-card { animation: none; } }
+kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; }
+// A control with an explanation: a quiet underline (bare text targets only).
 .has-help { border-bottom: 1px dotted var(--ink-3); cursor: help; }
 .has-help:has(select), .has-help:has(button), .has-help:has(input) { border-bottom: none; cursor: default; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -2116,7 +2135,8 @@ body:has(.help-line) { padding-bottom: var(--help-line-h); }
 // Size-over-time header: the ⓘ (its explanation lives in the help line) and
 // the range/axis/roots toggles wrap under the title on a phone.
 #over-time h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
-#over-time h2 .info { color: var(--ink-3); font-size: 15px; cursor: help; }
+#over-time h2 .info, #mtime h2 .info { color: var(--ink-3); font-size: 15px; cursor: help; }
+#mtime h2 { display: flex; align-items: center; gap: 8px; }
 #over-time h2 .gran { margin-left: 0; }
 // The diff treemap's bar on a phone: the crumb (path + movement arithmetic)
 // wraps instead of running under the legend, and the legend takes its own row.
@@ -2128,6 +2148,12 @@ body:has(.help-line) { padding-bottom: var(--help-line-h); }
 
 // An ⓘ carries its own affordance; the help underline under it read as noise.
 .has-help:has(.info) { border-bottom: none; }
+// Control labels ("marks", "color", "shade", "y-axis", "roots"): dim, but not
+// so dim they vanish next to their value (`marks all` was near-invisible).
+.tb-ctl .lbl, .tb-axis .lbl, .gran .lbl { color: var(--ink-2); }
+// Segmented toggles read as buttons: a real border, brighter when on.
+.gran button { border: 1px solid var(--line); }
+.gran button.on { border-color: var(--ink-3); }
 // The map's footer row: totals · ⓘ on the left, the keys (⚙, ⛶, outline
 // key) at the right — the row that used to sit above the map.
 .treemap .hint { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

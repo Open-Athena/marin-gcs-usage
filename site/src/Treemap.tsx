@@ -851,9 +851,9 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
         : node => (
           <div className="hint">
             <span className="stats">{fmtBytes(node.b)} · {fmtN(node.o)} objects{pricing && <> · est. {fmtUsd(estUsd(node))}/mo</>}</span>
-            <Explain text={<>Click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into “(other)” · j/k select rows in the table below</>}>
+            <Tooltip content={<>Click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into “(other)” · j/k select rows in the table below</>}>
               <span className="info" aria-label="how to use the map" tabIndex={0}>ⓘ</span>
-            </Explain>
+            </Tooltip>
             {!hasPanel && keys}
           </div>
         )}

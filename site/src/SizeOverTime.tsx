@@ -1,3 +1,4 @@
+import { Tooltip } from './Tooltip'
 import { Explain } from './Help'
 import { TimeSeries } from '@disk-tree/react'
 import type { Annotation, Series as TsSeries } from '@disk-tree/react'
@@ -229,7 +230,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
     <section id="over-time">
       <h2>
         Size over time
-        <Explain text={<>
+        <Tooltip content={<>
           {user
             ? <><b>{shortName(user)}</b>’s bytes{prefix ? <> under <code>{prefix}</code></> : ''} per scan.</>
             : pool === 'unowned'
@@ -246,7 +247,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
           {' '}Each point is that scan’s own index row — exact, at any depth. Click a point to view that scan; drag to set the diff window.
         </>}>
           <span className="info" aria-label="about this chart" tabIndex={0}>ⓘ</span>
-        </Explain>
+        </Tooltip>
         <XRangeToggle v={xRange} set={setXRange} />
         <YFromToggle v={yFrom} set={setYFrom} />
         {roots.length > 0 && <LayoutToggle v={layout} set={setLayout} />}

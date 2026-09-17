@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { HotkeysProvider } from 'use-kbd'
-import { HelpLine, HelpProvider } from './Help'
+import { HelpCard, HelpProvider } from './Help'
 import { AdminDbPage } from './AdminDbPage'
 import { AdminPage } from './AdminPage'
 import App from './App'
@@ -49,7 +49,7 @@ export default function Root() {
       <Route path="/mark" element={<Navigate to="/" replace />} />
       <Route path="*" element={<AuthGate><App /></AuthGate>} />
     </Routes>
-    <HelpLine />
+    <HelpCard />
     </HelpProvider>
     </HotkeysProvider>
   )

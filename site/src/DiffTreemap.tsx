@@ -325,7 +325,7 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
               <span style={{ display: 'inline-block', width: 12, height: 12, background: UNCHANGED_GREY, borderRadius: 2 }} />
               unchanged
             </>}
-            <span style={{ display: 'inline-flex', gap: 2, marginLeft: 6 }}>
+            <span style={{ display: 'inline-flex', gap: 2, marginLeft: 'auto' }}>
               {(['max', 'delta'] as const).map(m => (
                 <Explain key={m} text={m === 'max'
                   ? 'Cell area = max(old, new) bytes, with a band for |Δ| — what is there, and how much of it moved'

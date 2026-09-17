@@ -1185,7 +1185,7 @@ function AppContent() {
               <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])}
                 extra={<>
                   {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
-                  {' '}<Explain text={<>
+                  {' '}<Tooltip content={<>
                     <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
                     a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
                     Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
@@ -1194,7 +1194,7 @@ function AppContent() {
                     {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
                   </>}>
                     <span className="info" tabIndex={0} aria-label="how this diff is read">ⓘ</span>
-                  </Explain>
+                  </Tooltip>
                 </>} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>
@@ -1211,14 +1211,15 @@ function AppContent() {
       <section id="mtime">
         {/* Granularity is auto-picked (and user-switchable) inside AgeChart, so
             the heading stays unit-free rather than lying about "month". */}
-        <h2>Bytes by creation date</h2>
-        <p className="sub">
-          When each stored byte was <b>written</b> — the object’s creation time from the listing.
-          {store.objectsNote}{readRange ? <>{' '}The other time axis is <b>last read</b> (from the usage logs, since {epochDaysToDate(readRange.min)}) —
-          color by it to see which vintages nobody has touched.</> : null}{' '}The chart’s color axis is its own (right):
-          it follows the map’s until you pick one; marks have no per-stratum value here.
-          {fq && !ageScoped.scoped && <>{' '}<i>Age data is per top-level dir, so this chart is not scoped to “{fq}”.</i></>}
-        </p>
+        <h2>Bytes by creation date{' '}
+          <Tooltip content={<>
+            When each stored byte was <b>written</b> — the object’s creation time from the listing.
+            {store.objectsNote}{readRange ? <>{' '}The other time axis is <b>last read</b> (from the usage logs, since {epochDaysToDate(readRange.min)}) —
+            color by it to see which vintages nobody has touched.</> : null}{' '}The chart’s color axis is its own (right):
+            it follows the map’s until you pick one; marks have no per-stratum value here.
+          </>}><span className="info" tabIndex={0} aria-label="about this chart">ⓘ</span></Tooltip>
+        </h2>
+        {fq && !ageScoped.scoped && <p className="sub"><i>Age data is per top-level dir, so this chart is not scoped to “{fq}”.</i></p>}
         {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
         {age.length > 0 && (
           <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
