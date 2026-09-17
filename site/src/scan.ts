@@ -190,3 +190,22 @@ export function useScan(store: Store): Scan {
   const setSpan = (ms: number | undefined) => setRange(dP, ms)
   return { asof, scans, dMatches, dP, setDP, span, setSpan, setRange, scansQ }
 }
+
+/** `<optgroup>` rows for a scan picker: scans grouped by their displayed
+ * day (`fmtScan`'s date part, viewer-local for sub-daily ids), newest day
+ * first, each option labelled by its time alone (`8:01a`) — a date-only scan
+ * is its day's single, unlabelled-time entry. A list of sixty `9/16 8:01p`
+ * rows read as noise; grouped, the day is said once. */
+export function scanGroups(scans: string[], now = new Date()): { day: string; scans: { id: string; label: string }[] }[] {
+  const out: { day: string; scans: { id: string; label: string }[] }[] = []
+  for (const id of scans) {
+    const f = fmtScan(id, now)
+    const sp = f.indexOf(' ')
+    const day = sp < 0 ? f : f.slice(0, sp)
+    const label = sp < 0 ? f : f.slice(sp + 1)
+    const last = out[out.length - 1]
+    if (last && last.day === day) last.scans.push({ id, label })
+    else out.push({ day, scans: [{ id, label }] })
+  }
+  return out
+}

@@ -950,7 +950,11 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
       // whole on their own row; a byte-identical subtree is one unchanged
       // row (the renderer infers it as filler), not a walk of its skeleton.
       const same = !!(a && b && Math.round(a.b) === Math.round(b.b) && Math.round(a.o) === Math.round(b.o))
-      const expand = !!(a && b && !same && (ka.length || kb.length)) && (o.depth == null || it.d - dP < o.depth)
+      // A one-sided node (a bucket the older scan never covered, a directory
+      // that appeared or vanished) expands too: its children all read as
+      // added / removed, but they still say WHAT arrived — a leaf tile
+      // saying `84 Ti first scanned` says nothing about its shape.
+      const expand = !!((a || b) && !same && (ka.length || kb.length)) && (o.depth == null || it.d - dP < o.depth)
       const names = expand ? [...new Set([...ka, ...kb])].sort() : []
       return { it, expand, names }
     })

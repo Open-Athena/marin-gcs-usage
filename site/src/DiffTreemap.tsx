@@ -1,6 +1,6 @@
 import { Explain } from './Help'
 import { useMemo } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
 import { stringParam, useUrlState } from 'use-prms'
 import { useUnits } from './units'
@@ -154,7 +154,7 @@ function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells
   return { cells }
 }
 
-export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
+export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
   data: DiffData
   label: string
   /** The diff is over the store root: depth-1 rows are buckets. */
@@ -163,6 +163,9 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
    *  page drills there (and this diff re-reads at that prefix), so the map
    *  never holds a drill of its own. */
   onDrill?: (segs: string[]) => void
+  /** Appended to the root crumb after the movement arithmetic (Δobjects, the
+   *  scope note) — the one line every stat of the diff shares. */
+  extra?: ReactNode
 }) {
   const { fmtBytes } = useUnits()
   const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
@@ -233,6 +236,7 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
               {firstScanned > 0 && <><span className="first">⊕ {fmtBytes(firstScanned)} first scanned</span>{' '}</>}
               {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
               <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
+              {extra}
             </>
           : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span></>}
         collapseChains

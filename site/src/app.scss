@@ -2125,3 +2125,11 @@ body:has(.help-line) { padding-bottom: var(--help-line-h); }
 .diff-tm .dt-treemap-crumbs > span:last-child { white-space: normal !important; }
 .diff-tm .dt-treemap-legend { flex: 1 1 auto; min-width: 0; }
 .diff-tm .dt-treemap-fs { margin-left: auto; }  // ⛶ ends the legend's row instead of taking one of its own
+
+// An ⓘ carries its own affordance; the help underline under it read as noise.
+.has-help:has(.info) { border-bottom: none; }
+// The map's footer row: totals · ⓘ on the left, the keys (⚙, ⛶, outline
+// key) at the right — the row that used to sit above the map.
+.treemap .hint { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.treemap .hint .keys { margin-left: auto; }
+.filterbox input { max-width: 100%; }

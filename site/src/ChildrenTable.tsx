@@ -1,3 +1,4 @@
+import { Explain } from './Help'
 import { useEffect, useMemo, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { intParam, useUrlState } from 'use-prms'
@@ -161,13 +162,13 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
       <span className="acts">
         <span className="lbl">mark all</span>
         {(['keep', 'sweep', 'keep_last_ckpt'] as MarkAction[]).map(a => (
-          <Tooltip content={<>Mark every selected prefix <b>{ACTION_LABELS[a]}</b> (one batched save)</>} key={a}>
+          <Explain text={<>Mark every selected prefix <b>{ACTION_LABELS[a]}</b> (one batched save)</>} key={a}>
             <button type="button" className={`dot ${a}`} style={{ ['--act' as string]: ACTION_COLORS[a] }} onClick={() => bulkMark(a)} aria-label={ACTION_LABELS[a]} />
-          </Tooltip>
+          </Explain>
         ))}
-        <Tooltip content="Clear the marks on every selected prefix (back to undecided)">
+        <Explain text="Clear the marks on every selected prefix (back to undecided)">
           <button type="button" className="dot clear" onClick={() => bulkMark(null)} aria-label="clear marks">×</button>
-        </Tooltip>
+        </Explain>
         {DEFAULT_STORE.owners && <AssignSelect prefix={selUris.map(u => u + '/')} label={`assign ${sel.selected.size}…`} />}
         <button type="button" className="quiet" onClick={sel.clear}>deselect</button>
       </span>
@@ -197,9 +198,9 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
   // One small dot per decision, colored by state: filled = this row's OWN
   // mark, dashed = the mark it inherits from above, hollow = available.
   const dot = (uri: string, a: MarkAction, st: 'own' | 'inh' | null, tip: string) => (
-    <Tooltip content={<>{st === 'own' ? 'Marked ' : st === 'inh' ? 'Inherits ' : 'Mark '}<b>{ACTION_LABELS[a]}</b>{st === 'inh' ? ' from a directory above (click to set it here)' : ''}<div className="how">{tip}</div></>} key={a}>
+    <Explain text={<>{st === 'own' ? 'Marked ' : st === 'inh' ? 'Inherits ' : 'Mark '}<b>{ACTION_LABELS[a]}</b>{st === 'inh' ? ' from a directory above (click to set it here)' : ''} — {tip}</>} key={a}>
       <button type="button" className={`dot ${a}${st === 'own' ? ' on' : st === 'inh' ? ' inh' : ''}`} style={{ ['--act' as string]: ACTION_COLORS[a] }} onClick={() => mark(uri, a)} aria-label={ACTION_LABELS[a]} />
-    </Tooltip>
+    </Explain>
   )
   // MarkState of the bytes UNDER a row: keep / last-ckpt / sweep / undecided, as a
   // bar — a directory is rarely one thing (an inherited keep with swept

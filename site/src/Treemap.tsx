@@ -732,12 +732,10 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
       </Explain>
     </span>
   )
-  const legend = () => (
-    <div className="legend">
-      {modeLegend?.()}
-      {!hasPanel && keys}
-    </div>
-  )
+  // The legend row exists only for a gradient key (written/read); the keys
+  // (⚙, ⛶, outline key) live on the footer row with the totals, so nothing
+  // reserves a line above the map for two icons.
+  const legend = () => (modeLegend ? <div className="legend">{modeLegend()}</div> : null)
 
   const renderTooltip = (n: TreeNode, path: TreeNode[]) => {
     const uri = uriOf(path)
@@ -856,6 +854,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
             <Explain text={<>Click a directory to drill in · click an object to pin its details · click the path above (or Backspace) to go up · small children fold into “(other)” · j/k select rows in the table below</>}>
               <span className="info" aria-label="how to use the map" tabIndex={0}>ⓘ</span>
             </Explain>
+            {!hasPanel && keys}
           </div>
         )}
       chrome={!redact}

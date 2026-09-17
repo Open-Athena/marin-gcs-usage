@@ -31,7 +31,7 @@ import { MarkHistory } from './MarkHistory'
 import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, nearestScan, scanGroups, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import { useDocTitle } from './title'
@@ -618,8 +618,11 @@ function AppContent() {
   const diffHead: DiffData | null = diff && !diffStale ? diff : diffSumQ.data ?? null
   // One-line description of the page scope, for the section subtitles:
   // where, then whose, then which mark states, then which names.
+  // At the store root the scope is its buckets, counted (`2 buckets`) — the
+  // path bar already says where the page is.
+  const rootScope = mapTree?.c?.length ? `${mapTree.c.length} bucket${mapTree.c.length === 1 ? '' : 's'}` : store.rootLabel
   const scopeParts: string[] = [
-    drillPath || store.rootLabel,
+    drillPath || rootScope,
     ...(ownerUser ? [`${shortName(ownerUser)}’s files${assigner ? `, assigned by ${shortName(assigner)}` : ''}`]
       : ownerMode === 'others' && notUsers[0] ? [`not ${shortName(notUsers[0])}`]
       : ownerMode !== 'all' ? [ownerMode] : []),
@@ -888,11 +891,9 @@ function AppContent() {
       <SiteNav menu={menu} crumbs={crumbs}>
         {asof && scans.length > 1 && (
           <span className="tb-scan">
-            <Tooltip content={scanTip ?? 'scan'}>
-              <select className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
-                {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
-              </select>
-            </Tooltip>
+            <select className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
+              <ScanOptions scans={scans} />
+            </select>
           </span>
         )}
         {bar.color.length > 1 && (
@@ -959,7 +960,7 @@ function AppContent() {
               onChange={e => setFqDraft(e.target.value)}
               placeholder="filter paths — text, a|b, or /regex/"
               aria-label="Filter tree by segment name"
-              size={22}
+              size={32}
             />
             {fq && tree && (
               <span className="fnote">
@@ -1130,12 +1131,12 @@ function AppContent() {
                 (the bar's picker — one scan, stated where the diff reads). */}
             <Explain text={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
               <select className="tb-select scan" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
-                {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+                <ScanOptions scans={earlier} />
               </select>
             </Explain>
             <span className="arrow"> → </span>
             <select className="tb-select scan" value={asof} aria-label="Diff to scan (the page's scan)" onChange={e => setDP(e.target.value)}>
-              {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
+              <ScanOptions scans={scans} />
             </select>
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
@@ -1151,24 +1152,7 @@ function AppContent() {
             )}
             {diffHead ? (
               <>
-                {' '}· Δobjects {(diffHead.objects_b - diffHead.objects_a).toLocaleString('en-US')}
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
-                {' '}· <Explain text={<>
-                  <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
-                  a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
-                  Both scans are read at one byte floor ({fmtBytes(diffHead.threshold)}): a directory is named on both sides or folded into
-                  “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
-                  {diffHead.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
-                </>}>
-                  <span className="dotted">≈ {scopeDesc}</span>
-                </Explain>
-                {diffHead.truncated && (
-                  <>
-                    {' '}· <Explain text="Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).">
-                      <span className="dotted">largest changes</span>
-                    </Explain>
-                  </>
-                )}
               </>
             ) : diffErr && !diffStale ? (
               <span className="tab-note">
@@ -1193,7 +1177,20 @@ function AppContent() {
               {/* A drill in the diff drills the page: the map, the table and
                   the chart follow, and the diff itself re-reads at the new
                   prefix (its rows are relative to the drilled path). */}
-              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])} />
+              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])}
+                extra={<>
+                  {' '}· Δobjects {(diff.objects_b - diff.objects_a).toLocaleString('en-US')}
+                  {' '}<Explain text={<>
+                    <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
+                    a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
+                    Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
+                    “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
+                    {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
+                    {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
+                  </>}>
+                    <span className="info" tabIndex={0} aria-label="how this diff is read">ⓘ</span>
+                  </Explain>
+                </>} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>
           )}
@@ -1204,15 +1201,6 @@ function AppContent() {
         </section>
       )}
 
-
-      {/* Stores whose scan job snapshots the bucket's lifecycle rules get the
-          fold here, after the Diff (cw-s3 today); the rows diff against the previous scan. */}
-      {store.lifecycle && (
-        <LifecycleFold
-          store={store} asof={asof} prevScan={prevScan}
-          note={<>Intended state is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
-        />
-      )}
 
       {!lensScoped && (
       <section id="mtime">
@@ -1231,6 +1219,15 @@ function AppContent() {
           <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
         )}
       </section>
+      )}
+
+      {/* Stores whose scan job snapshots the buckets' lifecycle rules get the
+          fold here, last among the data sections; the rows diff against the previous scan. */}
+      {store.lifecycle && (
+        <LifecycleFold
+          store={store} asof={asof} prevScan={prevScan}
+          note={<>Intended state is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
+        />
       )}
 
       {meta && store.prices && (() => {
@@ -1281,6 +1278,15 @@ function AppContent() {
       />
     </main>
   )
+}
+
+/** A scan picker's options: one `<optgroup>` per day, times inside. */
+function ScanOptions({ scans }: { scans: string[] }) {
+  return <>{scanGroups(scans).map(g => (
+    g.scans.length === 1 && g.scans[0].label === g.day
+      ? <option key={g.scans[0].id} value={g.scans[0].id}>{g.day}</option>
+      : <optgroup key={g.day} label={g.day}>{g.scans.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</optgroup>
+  ))}</>
 }
 
 export default function App() {

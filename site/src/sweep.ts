@@ -378,11 +378,22 @@ const CKPT_NAME_RE = /(^|[-_.])(ckpts?|checkpoints?)([-_.]|$)/i
 // The child must BE a checkpoints dir, not merely mention one: eval-output
 // dirs are named after checkpoint paths (`gs__…__checkpoints__…__step-600`).
 const CKPT_DIR_RE = /^(ckpts?|checkpoints?)$/i
-export const looksCkpt = (n: TreeNode, _uri?: string): boolean =>
+export const looksCkpt = (n: TreeNode, uri?: string): boolean =>
   n.k === 1 ||
-  CKPT_NAME_RE.test(n.n) ||
-  (n.c ?? []).some(c => CKPT_DIR_RE.test(c.n)) ||
-  (n.c ?? []).filter(c => CKPT_SEG_RE.test(c.n)).length >= 2
+  // The heuristics (a checkpoint-shaped name or children) only from two
+  // levels into a bucket: a bucket's top-level directories (`marin/`,
+  // `checkpoints/`) hold many runs, and keep-last-ckpt on one of those
+  // would keep one step across every run. Deeper decisions belong to the
+  // CLI/API (`dt-cloud mark -k keep_last_ckpt …` over a run list).
+  (bucketDepth(uri) >= 2 && (
+    CKPT_NAME_RE.test(n.n) ||
+    (n.c ?? []).some(c => CKPT_DIR_RE.test(c.n)) ||
+    (n.c ?? []).filter(c => CKPT_SEG_RE.test(c.n)).length >= 2))
+
+/** Segments below the bucket in a `scheme://bucket/a/b/` uri (2 for that
+ * example); unknown (no uri) reads as deep enough. */
+export const bucketDepth = (uri?: string): number =>
+  uri == null ? 2 : Math.max(0, uri.replace(/^[a-z0-9+.-]+:\/\//i, '').split('/').filter(Boolean).length - 1)
 
 /** Reviewed = covered by any mark (deepest-wins ancestor or own). */
 export const reviewedBytes = (rows: SweepRow[], idx: MarkIndex): number =>
