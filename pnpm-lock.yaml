@@ -101,7 +101,7 @@ importers:
         version: https://codeload.github.com/Open-Athena/auth/tar.gz/a846f7cdb5e3c7c7cda0ba4523b0e17dc14eea30(@cloudflare/workers-types@5.20260820.1)(@tanstack/react-query@5.101.4(react@19.2.8))(react@19.2.8)
       '@rdub/file-tree':
         specifier: https://github.com/runsascoded/file-tree#b64278c27d45479fe09507dabc0e16dd0a4b8b87
-        version: https://codeload.github.com/runsascoded/file-tree/tar.gz/b64278c27d45479fe09507dabc0e16dd0a4b8b87(@disk-tree/react@packages+react)(@rdub/treemap@packages+treemap)(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))(wa-sqlite@1.0.0)(yaml@2.9.0)
+        version: https://codeload.github.com/runsascoded/file-tree/tar.gz/b64278c27d45479fe09507dabc0e16dd0a4b8b87(@disk-tree/react@packages+react)(@rdub/treemap@packages+treemap)(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.5.0(react@19.2.8))(wa-sqlite@1.0.0)(yaml@2.9.0)
       '@rdub/treemap':
         specifier: workspace:*
         version: link:../packages/treemap
@@ -130,8 +130,8 @@ importers:
         specifier: https://github.com/runsascoded/use-kbd#06ae0cfee696462fb35d761bb413b159eb66a1dd
         version: https://codeload.github.com/runsascoded/use-kbd/tar.gz/06ae0cfee696462fb35d761bb413b159eb66a1dd(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       use-prms:
-        specifier: ^0.4.1
-        version: 0.4.1(react@19.2.8)
+        specifier: ^0.5.0
+        version: 0.5.0(react@19.2.8)
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^5.20260820.1
@@ -200,8 +200,8 @@ importers:
         specifier: ^7.10.1
         version: 7.18.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       use-kbd:
-        specifier: https://github.com/runsascoded/use-kbd#34745efff8efdfd2c46e3e39d479a708aba704b2
-        version: https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: https://github.com/runsascoded/use-kbd#06ae0cfee696462fb35d761bb413b159eb66a1dd
+        version: https://codeload.github.com/runsascoded/use-kbd/tar.gz/06ae0cfee696462fb35d761bb413b159eb66a1dd(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       '@eslint/js':
         specifier: ^9.39.1
@@ -2571,15 +2571,8 @@ packages:
       react: '>=18.0.0'
       react-dom: '>=18.0.0'
 
-  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2:
-    resolution: {tarball: https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2}
-    version: 0.10.0-dist.bf02e9e
-    peerDependencies:
-      react: '>=18.0.0'
-      react-dom: '>=18.0.0'
-
-  use-prms@0.4.1:
-    resolution: {integrity: sha512-137eYoyglpP3bnQqU+BDnr4kJnPqkibcSBpjHAIZJugtRjtInRCi+Af+hsk5lElXcIqz+ReEA4me6YrOehg6XA==}
+  use-prms@0.5.0:
+    resolution: {integrity: sha512-oWgETG/6KxEzJToR0MltHgIkJBLVBcibjjvx7qdMg63SqUVgNAy6iYBjODjcXwC7OYtw9UyyrnFfqC6JumQdKQ==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
     peerDependenciesMeta:
@@ -3358,7 +3351,7 @@ snapshots:
     optionalDependencies:
       yauzl: 2.10.0
 
-  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/b64278c27d45479fe09507dabc0e16dd0a4b8b87(@disk-tree/react@packages+react)(@rdub/treemap@packages+treemap)(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.4.1(react@19.2.8))(wa-sqlite@1.0.0)(yaml@2.9.0)':
+  '@rdub/file-tree@https://codeload.github.com/runsascoded/file-tree/tar.gz/b64278c27d45479fe09507dabc0e16dd0a4b8b87(@disk-tree/react@packages+react)(@rdub/treemap@packages+treemap)(highlight.js@11.12.0)(hyparquet@1.28.2)(jq-web@0.6.2)(react-dom@19.2.8(react@19.2.8))(react-markdown@10.1.0(@types/react@19.2.18)(react@19.2.8))(react-router-dom@6.30.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(remark-gfm@4.0.1)(use-prms@0.5.0(react@19.2.8))(wa-sqlite@1.0.0)(yaml@2.9.0)':
     dependencies:
       '@disk-tree/react': link:packages/react
       '@rdub/treemap': link:packages/treemap
@@ -3368,7 +3361,7 @@ snapshots:
       jq-web: 0.6.2
       react-markdown: 10.1.0(@types/react@19.2.18)(react@19.2.8)
       remark-gfm: 4.0.1
-      use-prms: 0.4.1(react@19.2.8)
+      use-prms: 0.5.0(react@19.2.8)
       wa-sqlite: 1.0.0
       yaml: 2.9.0
     optionalDependencies:
@@ -5293,15 +5286,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  use-kbd@https://codeload.github.com/runsascoded/use-kbd/tar.gz/34745efff8efdfd2c46e3e39d479a708aba704b2(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
-    dependencies:
-      debug: 4.4.3
-      react: 19.2.8
-      react-dom: 19.2.8(react@19.2.8)
-    transitivePeerDependencies:
-      - supports-color
-
-  use-prms@0.4.1(react@19.2.8):
+  use-prms@0.5.0(react@19.2.8):
     optionalDependencies:
       react: 19.2.8
 
