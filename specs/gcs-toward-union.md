@@ -46,9 +46,68 @@ Not here: the repo/branch collapse itself, the IdP question, attribution changes
 
 ## 5. Seam decisions (2026-09-17)
 
-Ryan reviewed the four seams against the code (both branches read, not just the spec's framing) and settled them. This section supersedes `convergence.md`'s "recommendations" — where they differ, this wins. Correction that drove it: gcs's sweep is **not** the simple "owner-slice" thing the earlier framing implied. `site/functions/api/sweep/dispatch.ts` submits a Batch job that runs `dt-cloud sweep manifest -S` (consuming `sweep_approvals`) then `sweep execute` (re-list, generation-match, `deletion_runs`/`deletion_bands`, ≥7d soft-delete gate) — a full plan+run, and the one that ran the four real sweeps on 2026-09-11. The union's `sweep/dispatch.ts` is byte-identical to gcs's; cw's own model lives beside it as `plan-sweep/`, `plans/`, `plan-marks.ts`. So both sides plan and run; the seams are narrower than "plan-first vs not".
+Ryan reviewed the four seams against the code (both branches read, not just the spec's framing) and settled them. This section supersedes `convergence.md`'s "recommendations" — where they differ, this wins. Correction that drove it: gcs's sweep is **not** the simple "owner-slice" thing the earlier framing implied. `site/functions/api/sweep/dispatch.ts` submits a Batch job that runs `dt-cloud sweep manifest -S` (consuming `sweep_approvals`) then `sweep execute` (re-list, generation-match, `deletion_runs`/`deletion_bands`, ≥7d soft-delete gate) — a full plan+run, and the one that ran the four real sweeps on 2026-09-11. The union's `sweep/dispatch.ts` is byte-identical to gcs's; cw's own model lives beside it as `plan-sweep/`, `plans/`, `plan-marks.ts`. So both sides plan and run; the seams are narrower than "plan-first vs not". **Seam 1 then evolved a second time the same day** (see its subsection): out of the plan-first frame entirely, into an opt-in trash model. Where that subsection and this intro's mark-and-sweep language differ, the subsection wins.
 
-### Seam 1 — sweep: gcs's executor + cw's plan object, reconciled
+### Seam 1 — deletion: opt-in trash, per-deploy authority gate
+
+Second revision, same day (2026-09-17). The plan-first / auto-seeded-default-plan
+design that first filled this subsection (struck below) still carried the
+mark-and-sweep frame: a deadline, "unmarked is sweep-eligible," a page you
+assemble a plan on. Ryan cut that frame. The deadline we tried to enforce never
+worked (partly the app wasn't ready, but the model was wrong), and the "sweep"
+mark was chronically misread as "I don't personally need this" rather than "I
+authoritatively say this is deletable and would `rm` it myself" — so the intent
+channel rotted. The model flips from **opt-out** (everything unmarked dies at the
+deadline) to **opt-in** (nothing dies unless someone deliberately trashes it).
+The app's job shrinks to *a faster `rm` with better situational awareness*; go
+all in and reduce scope everywhere it lets us.
+
+- **Opt-out is gone.** No deadline, no "unmarked is eligible." `Store.unmarked`
+  is deleted. Nothing is ever deleted as a consequence of inaction.
+- **The "sweep" mark becomes a trash gesture.** Deletion is always an explicit
+  per-path act — a trash-can on each table row (as disk_tree local mode already
+  has), shift-click for a range, a treemap meta-drag geometric select later. The
+  gesture carries the full weight of an `rm`, so it's only made when meant; there
+  is no standing low-confidence "sweep" intent left to accumulate or misread.
+- **The undo window is what licenses one-click delete.** Unlike a local `rm`, a
+  trash here is a soft-delete / version marker, recoverable for the hold window
+  and purged later — so click-to-delete on petabytes is *safer* than local
+  disk_tree's permanent trash can. Pluggable per store (unchanged, see below).
+- **Authority is a per-deploy gate — `Store.approval`:**
+  - `'local-confirm'` (disk_tree local, single-user): trash → confirm dialog →
+    delete. No chat, no staging page.
+  - `'chat-approve'` (gcs, cw cloud deploys): a trash gesture *stages* the path
+    and posts to the deploy's channel (`Store.chat: 'slack' | 'discord'`); an
+    admin whitelists/approves, and approval fires the executor. A `/staged` (or
+    `/trash`) page lets admins multi-select staged paths and dispatch a run.
+    Non-admin viewers see `/staged` and the runs feed **read-only**. Dispatches
+    and runs still exist on the cloud deploys — they're just no longer a user
+    noun to assemble by hand.
+- **The plan object survives as the staged set.** `plans`/`plan_items`
+  (checkpoint 1) *is* the staged-set store — auto-populated by trash gestures
+  instead of hand-curated, reviewed on `/staged`, fed to gcs's `sweep
+  manifest`/`execute` executor, recorded as `deletion_runs`/`deletion_bands`. So
+  the CRUD (checkpoint 2) and executor (checkpoint 3) work stands; only its
+  user-facing framing changes from "create a plan" to "these are staged."
+- **Eligibility (owner slice) demotes to an optional auto-approve rule,** not a
+  core safety gate: a deploy may configure "an admin's own owned slice
+  auto-approves" so routine self-deletes skip the chat round-trip. Default is
+  admin approval for every real delete; `owner == author` is no longer
+  load-bearing. Moot on cw (no owner data) — it just never sets the rule.
+
+What the flip removes: the `/sweep` assemble-a-plan page, the deadline, the
+`sweep` keep-kind, `Store.unmarked`, and the auto-seeded-default-plan design. The
+keep axis as a *protective* mark is moot once nothing auto-sweeps, so
+`keep`/`keep_last_ckpt` are drop candidates — with `keep_last_ckpt` surviving only
+as a *trash-time modifier* ("trash all but the newest under here"), computed when
+staging rather than stored as a standing mark. That demolition is its own
+checkpoint (largest blast radius: `/marks`, `resolve`, `todo`).
+
+What stays untouched: the entire situational-awareness surface — treemap,
+`/users` + attribution, the lifecycle fold, the read-recency lens, `/files`. That
+browse layer *is* the product; only the mark/sweep machinery shrinks.
+
+<details><summary>Struck: the first (plan-first) revision</summary>
 
 - **Executor: gcs wins.** `sweep manifest`/`sweep execute` is the exercised path; keep it as the engine. cw's `plan-sweep` executor was an untested port of it.
 - **Plan as a first-class object: adopt cw's.** A revision of the earlier "no persistent plans" call — cw's `plans`/`plan_items` model is genuinely more capable: multiple concurrent drafts (plan A = old checkpoints, plan B = `tmp/`), each with its own dry→real lifecycle and a detail page. gcs's model is "exactly one implicit plan built from marks at dispatch." Take the object; feed it into gcs's manifest/execute. The plan is the curation layer, gcs's executor is what runs.
@@ -56,9 +115,20 @@ Ryan reviewed the four seams against the code (both branches read, not just the 
 - **Eligibility is per-deploy config, not a fixed rule.** The owner slice (`owner == author` for a non-admin) is a store eligibility policy, configurable and sometimes moot (CW has no owner data → `any`). The same executor enforces whichever the store declares at manifest time. Pairs with `Store.unmarked: 'eligible' | 'untouched'` (gcs: unmarked bytes are sweep-eligible after the deadline; cw: untouched).
 - **Undo is a pluggable strategy the adapter constrains.** Strategy ∈ `versioning | soft-delete | none`, chosen per store — but the cloud adapter declares which it *offers*, because the mechanisms differ by cloud: **GCS** has both a soft-delete retention window (default on) and object versioning; **S3 / CAIOS** has only versioning (delete markers) — there is no S3 equivalent of GCS's soft-delete window. So `undo`/`purge` endpoints are real only where a permanent-delete cloud (CAIOS) needs them; GCS defaults to its soft-delete window and needs neither. The executor reads the store's undo strategy from the set its adapter allows.
 
+</details>
+
+**Undo (unchanged by the flip).** Strategy ∈ `versioning | soft-delete | none`,
+chosen per store, but the cloud adapter declares which it *offers*: **GCS** has
+both a soft-delete retention window (default on) and versioning; **S3 / CAIOS**
+has only versioning (delete markers). So `undo`/`purge` endpoints are real only
+where a permanent-delete cloud (CAIOS) needs them; GCS defaults to its soft-delete
+window and needs neither.
+
 ### Seam 2 — mark ledger: gcs's `actions` WAL wins, outright
 
-cw's own `migrations/cw/0001_marks.sql` header says it was "Adapted from gcs's mark tables (gcs migrations 0007 + 0010 actions-ledger), keep-axis only," with "the raw-action / expanded-prefix split gcs added … arrive later." So cw's `marks`/`mark_log` is a documented subset-port of gcs's `actions` ledger, which already carries the owner axis, action kinds, expanded-prefix rows and inverse-action undo. cw's keep kinds (`keep`/`keep_last_ckpt`/`sweep`) map onto gcs's action kinds. One table: gcs's. Plan membership stays a separate table (`plan_items`) referencing prefixes.
+cw's own `migrations/cw/0001_marks.sql` header says it was "Adapted from gcs's mark tables (gcs migrations 0007 + 0010 actions-ledger), keep-axis only," with "the raw-action / expanded-prefix split gcs added … arrive later." So cw's `marks`/`mark_log` is a documented subset-port of gcs's `actions` ledger, which already carries the owner axis, action kinds, expanded-prefix rows and inverse-action undo. cw's keep kinds (`keep`/`keep_last_ckpt`/`sweep`) map onto gcs's action kinds. One table: gcs's. Plan (staged-set) membership stays a separate table (`plan_items`) referencing prefixes.
+
+The owner axis is the load-bearing survivor — it's the attribution substrate for the situational-awareness surface. The keep axis is a drop candidate under seam 1's opt-in flip (nothing auto-sweeps, so a protective `keep` guards nothing); `sweep` becomes the trash gesture, `keep_last_ckpt` a trash-time modifier. So convergence here may reduce to "one owner ledger" rather than "one keep+owner ledger" — decided when the keep-axis demolition checkpoint lands.
 
 ### Seam 3 — D1 lineage: one lineage, cw's live DB re-based; squash is optional hygiene
 
