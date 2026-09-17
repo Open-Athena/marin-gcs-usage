@@ -126,6 +126,13 @@ function AppContent() {
   const markMode = store.marks && canMark
   const marksQ = useMarks(markMode)
   const markIdx = useMarkIndex(marksQ.data)
+  // Marks (keep/sweep) are de-emphasized: owner assignment is the primary axis
+  // now, so the mark-state color option, the marks column, the mark-axis and
+  // owner-by-mark controls, and the Mark history feed are hidden from the
+  // default UI — reachable via `?marks=1` for triaging the mark backlog. The
+  // `?c=marks` colouring itself stays URL-accessible regardless.
+  const [marksFlagP] = useUrlState('marks', stringParam())
+  const marksUi = markMode && marksFlagP === '1'
   const [typedOpen, setTypedOpen] = useState(false)
   // Keep the tab title in sync with the store on client-side navigation.
   useDocTitle() // the bare site name (= the store's title) is the home page
@@ -471,7 +478,7 @@ function AppContent() {
   // all-undecided view; on a one-owner view the interesting axis is who else
   // is in there).
   const lensDefaultMode: ColorMode =
-    markAxes?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : markMode ? 'marks' : 'user'
+    markAxes?.size === 1 || ownerMode === 'user' || ownerMode === 'others' ? 'user' : marksUi ? 'marks' : 'user'
   const mode: ColorMode = (MODES as string[]).includes(modeP ?? '') ? (modeP as ColorMode) : lensDefaultMode
   const setMode = (m: ColorMode) => setModeP(m === lensDefaultMode ? undefined : m)
   // The scan carries attribution (the owner axis and user coloring apply) —
@@ -818,7 +825,7 @@ function AppContent() {
       )}
     </>
   )
-  const menu: MenuEntry[] = markMode ? [{ key: 'typed', label: 'Mark a typed prefix…', onClick: () => setTypedOpen(true) }] : []
+  const menu: MenuEntry[] = marksUi ? [{ key: 'typed', label: 'Mark a typed prefix…', onClick: () => setTypedOpen(true) }] : []
   // The bar's first row: where the page is. The map's own crumb strip is
   // hidden (app.scss) — this IS it, kept on screen mid-scroll; the deepest
   // node's totals ride along as the suffix.
@@ -865,7 +872,7 @@ function AppContent() {
             }>
               <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
                 {MODES
-                  .filter(m => (m !== 'read' || readRange) && (m !== 'marks' || markMode))
+                  .filter(m => (m !== 'read' || readRange) && (m !== 'marks' || marksUi))
                   .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
               </select>
             </Tooltip>
@@ -893,7 +900,7 @@ function AppContent() {
             />
           </span>
         )}
-        {markMode && (
+        {marksUi && (
           <span className="tb-axis">
             <span className="lbl">marks</span>
             <MultiSelect<MarkAxis>
@@ -931,16 +938,6 @@ function AppContent() {
           <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
         )}
       </SiteNav>
-
-      {/* The fleet's lifecycle rules as the scan job snapshotted them
-          (`<base>/<scan>/lifecycle.json`, keyed by bucket): a fold near the top
-          of the page; the rows diff against the previous scan. */}
-      {store.lifecycle && (
-        <LifecycleFold
-          store={store} asof={asof} prevScan={prevScan}
-          note={<>Marin sets these on its buckets; the job records them each scan (<code>dt-cloud lifecycle pull</code>) and a copy is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff</code> shows drift).</>}
-        />
-      )}
 
       {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
           end) with a strip listing every candidate to pin one. */}
@@ -1048,10 +1045,11 @@ function AppContent() {
               segs={tblSegs}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
+              marksCol={marksUi}
               readAxis={!!readRange}
               ownerAxis={hasAttr}
-              klcIdx={markMode ? klcIdx : undefined}
-              states={markMode ? markAxes : null}
+              klcIdx={marksUi ? klcIdx : undefined}
+              states={marksUi ? markAxes : null}
               userIdx={userIdx}
               onPickUser={u => pickUser(u, false)}
               onOpen={openPath}
@@ -1071,7 +1069,7 @@ function AppContent() {
         <div id="tree-map" className="tm-skel" aria-busy="true" aria-label="loading tree" />
       )}
 
-      {markMode && (
+      {marksUi && (
         <MarkHistory prefix={store.scheme + drillPath} scope={drillPath || 'all buckets'} pred={pred} filterQ={fq} window={diffWindow} />
       )}
 
@@ -1230,6 +1228,16 @@ function AppContent() {
       {/* Static attribution reference — how ownership is inferred + the rule tables.
           Reference material, so it sits last rather than sandwiched mid-page. */}
       {hasAttr && mapTree && <AttributionRules tree={mapTree} />}
+
+      {/* The fleet's lifecycle rules as the scan job snapshotted them
+          (`<base>/<scan>/lifecycle.json`, keyed by bucket) — last on the page,
+          below the analytics; the rows diff against the previous scan. */}
+      {store.lifecycle && (
+        <LifecycleFold
+          store={store} asof={asof} prevScan={prevScan}
+          note={<>Marin sets these on its buckets; the job records them each scan (<code>dt-cloud lifecycle pull</code>) and a copy is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff</code> shows drift).</>}
+        />
+      )}
 
       <SiteKbd
         placeholder="Users, color modes, scans, pages…"

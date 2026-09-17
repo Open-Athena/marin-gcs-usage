@@ -33,13 +33,16 @@ const PAGE_SIZES = [20, 50, 100, 200]
  *  tooltip); ~60 chars fills the column's 480px at 12px mono. */
 const NAME_MAX = 60
 
-export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, userIdx, onPickUser, onOpen, readAxis, ownerAxis }: {
+export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, states, userIdx, onPickUser, onOpen, readAxis, ownerAxis }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
   segs: string[]
   scheme: string
   markIdx?: MarkIndex | null
+  /** Show the read-only "marks" distribution column (owner claims come from
+   *  `markIdx` regardless; this gates only the keep/sweep column). */
+  marksCol?: boolean
   /** KLC splits, so a keep-last-ckpt subtree's bytes settle into real keep / sweep. */
   klcIdx?: KlcIndex
   /** The page's mark-state axis: list only children whose effective decision
@@ -220,7 +223,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
             {th('d', 'created')}
             {hasRead && th('a', 'read', false)}
             {hasOwners && <th>owner(s)</th>}
-            {markIdx && <th>marks</th>}
+            {marksCol && <th>marks</th>}
             {showSel && <th>actions</th>}
           </tr>
         </thead>
@@ -260,7 +263,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
                     : <span className="none">—</span>}
                 </td>
                 )}
-                {markIdx && <td className="state">{stateBar(k, totals)}</td>}
+                {marksCol && <td className="state">{stateBar(k, totals)}</td>}
                 {showSel && (
                   <td className="actions">
                     {synthetic ? null : (
@@ -286,7 +289,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
             <td className="num">{fmtBytes(kids.reduce((s, k) => s + k.b, 0))}</td>
             <td className="num">{node.b ? ((100 * kids.reduce((s, k) => s + k.b, 0)) / node.b).toFixed(1) : 0}%</td>
             <td className="num">{kids.reduce((s, k) => s + k.o, 0).toLocaleString('en-US')}</td>
-            <td colSpan={1 + (hasRead ? 1 : 0) + (hasOwners ? 1 : 0) + (markIdx ? 1 : 0) + (showSel ? 1 : 0)} />
+            <td colSpan={1 + (hasRead ? 1 : 0) + (hasOwners ? 1 : 0) + (marksCol ? 1 : 0) + (showSel ? 1 : 0)} />
           </tr>
         </tfoot>
       </table>
