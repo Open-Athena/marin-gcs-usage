@@ -17,9 +17,12 @@
 # with a plain boot disk is enough. The bytes that matter are transient listing
 # shards (~10 GB), not DuckDB spill.
 #
-# Env: CW_BUCKET, CW_ENDPOINT, DATA_BUCKET, SNAP_ID (default: UTC YYYY-MM-DDTHHMM
-# at listing start), LISTING_PROCS/WORKERS, AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY
-# (injected from Secret Manager by cw-batch-submit.sh).
+# Env: CW_BUCKETS (space-separated, the first is the primary — the quota bucket,
+# the sweep/lifecycle default; specs/cw-multi-bucket.md), CW_BUCKET (the primary;
+# defaults to CW_BUCKETS' first), CW_ENDPOINT, DATA_BUCKET, SNAP_ID (default: UTC
+# YYYY-MM-DDTHHMM at listing start), LISTING_PROCS/WORKERS,
+# AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY (injected from Secret Manager by
+# cw-batch-submit.sh).
 set -euxo pipefail
 
 # Deployment config for the shared CLI (cloud/src/dt_cloud/{index_footer,warm}.py).
@@ -28,9 +31,13 @@ export D1_DB_NAME=${D1_DB_NAME:-oa-cw-s3-usage-db}
 export INDEX_VARIANTS=${INDEX_VARIANTS:-path}                           # no user-sorted tiers here
 export SITE_URL=${SITE_URL:-https://cw-s3.oa.dev}
 export SNAPSHOTS_SUBDIR=${SNAPSHOTS_SUBDIR:-cw}                          # snapshots/cw/ (site/wrangler.toml says the same)
-export WARM_PATHS=${WARM_PATHS:-",marin-us-east-02a,marin-us-east-02a/marin,marin-us-east-02a/tmp,marin-us-east-02a/iris"}
+export WARM_PATHS=${WARM_PATHS:-",marin-us-east-02a,marin-us-east-02a/marin,marin-us-east-02a/tmp,marin-us-east-02a/iris,hero-checkpoints,hero-checkpoints/tmp,hero-checkpoints/marin"}
 
-BUCKET=${CW_BUCKET:-marin-us-east-02a}
+# Every bucket in the scan; the primary first. The scheduler body sets only
+# CW_BUCKET (the primary), so the list's default here IS the deployment's.
+BUCKETS=${CW_BUCKETS:-"marin-us-east-02a hero-checkpoints"}
+BUCKET=${CW_BUCKET:-${BUCKETS%% *}}
+export CW_BUCKET=$BUCKET
 ENDPOINT=${CW_ENDPOINT:-https://cwobject.com}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
 PROCS=${LISTING_PROCS:-8}
@@ -73,22 +80,26 @@ cd /app
 # resets partway through a multi-hour listing.
 ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536
 
-# 1. Listing. `-x clear` starts from a clean output dir so a retried task never
-# merges shards from a half-finished previous attempt.
-disk-tree bulk-list -a "s3://$BUCKET" -E "$ENDPOINT" \
-  -o "$WORK/listing" -P "$PROCS" -w "$WORKERS" -x clear
+# 1 + 2, per bucket: listing, then layer-2. One listing dir and one layer-2
+# root per bucket (paths stay bucket-relative; the bucket becomes the path's
+# first segment at index/webdata time). `-x clear` starts from a clean output
+# dir so a retried task never merges shards from a half-finished previous
+# attempt. Import: `-j` is CPU-bound over the k-way merge; the shards' row
+# groups are bounded at write time (see find/bulk.py) so each merge source
+# decodes one 64K group rather than the whole shard -- that bound is what
+# keeps this in ~2 GB.
+SRC=()  # <bucket>=<layer-2>, in CW_BUCKETS order
+for b in $BUCKETS; do
+  disk-tree bulk-list -a "s3://$b" -E "$ENDPOINT" \
+    -o "$WORK/listing/$b" -P "$PROCS" -w "$WORKERS" -x clear
+  env DISK_TREE_ROOT="$WORK/l2/$b" \
+    disk-tree import -e stream -j "${IMPORT_JOBS:-8}" -m -p storage_class_id \
+      -s s3 -t "${DATE}T00:00:00+00:00" -l "$WORK/listing/$b/shard-*.parquet" -b "$b"
+  SRC+=("$b=$(ls "$WORK/l2/$b"/scans/*.parquet | head -1)")
+done
 
-# 2. Layer-2. `-j` is CPU-bound over the k-way merge; the shards' row groups are
-# bounded at write time (see find/bulk.py) so each merge source decodes one 64K
-# group rather than the whole shard -- that bound is what keeps this in ~2 GB.
-env DISK_TREE_ROOT="$WORK/l2" \
-  disk-tree import -e stream -j "${IMPORT_JOBS:-8}" -m -p storage_class_id \
-    -s s3 -t "${DATE}T00:00:00+00:00" -l "$WORK/listing/shard-*.parquet" -b "$BUCKET"
-
-L2=$(ls "$WORK"/l2/scans/*.parquet | head -1)
-
-# 3. Site JSONs.
-python job/cw-webdata.py "$L2" "$WORK/web" -b "$BUCKET" -l "Marin CoreWeave" -a "$DATE"
+# 3. Site JSONs: the store root wraps one node per bucket.
+python job/cw-webdata.py "$WORK/web" "${SRC[@]}" -l "Marin CoreWeave" -a "$DATE"
 
 # 4. Publish. Written last and all at once: the site's scan list is derived by
 # listing this prefix, so a partially-uploaded snapshot would show up in the
@@ -96,17 +107,18 @@ python job/cw-webdata.py "$L2" "$WORK/web" -b "$BUCKET" -l "Marin CoreWeave" -a 
 DEST="/gcs/$DATA/snapshots/cw/$SNAP_ID"
 mkdir -p "$DEST"
 cp "$WORK"/web/*.json "$DEST/"
-# The bucket's lifecycle rules in force at this scan (Marin's tmp/ttl TTLs, the
-# abort-MPU rule, the noncurrent-version GC): snapshotted next to the scan so
-# the site can show them and later infer their effects. `job/cw-lifecycle.json`
-# is the intended state (`dt-cloud lifecycle diff|push`); a pull never fails
-# the scan.
-dt-cloud lifecycle pull -b "$BUCKET" -o "$DEST/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
+# Each bucket's lifecycle rules in force at this scan (Marin's tmp/ttl TTLs, the
+# abort-MPU rule, the primary's noncurrent-version GC): snapshotted next to the
+# scan as `{<bucket>: Rules[]}` so the site can show them and later infer their
+# effects. `job/cw-lifecycle.json` is the primary's intended state (`dt-cloud
+# lifecycle diff|push`); a pull never fails the scan.
+LB=(); for b in $BUCKETS; do LB+=(-b "$b"); done
+dt-cloud lifecycle pull "${LB[@]}" -o "$DEST/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
 
-# Keep the canonical layer-2 parquet too -- it's the input to every ad-hoc
+# Keep the canonical layer-2 parquets too -- they're the input to every ad-hoc
 # question ("what grew?", "what's idle?") that the JSONs can't answer.
 mkdir -p "/gcs/$DATA/cw-l2/$SNAP_ID"
-cp "$L2" "/gcs/$DATA/cw-l2/$SNAP_ID/$BUCKET.parquet"
+for s in "${SRC[@]}"; do cp "${s#*=}" "/gcs/$DATA/cw-l2/$SNAP_ID/${s%%=*}.parquet"; done
 
 # 4b. Index tiers (specs/view-serving.md, ported from gcs): the site's
 # /api/subtree, /api/diff and /api/series read row-group-pruned ranges of
@@ -117,7 +129,7 @@ cp "$L2" "/gcs/$DATA/cw-l2/$SNAP_ID/$BUCKET.parquet"
 # pointer last, so a reader sees the old complete set or the new one.
 GEN=${GEN:-$(date -u +%Y%m%dT%H%M%SZ)}
 INDEX_KEY="cw-l2/$SNAP_ID/index/$GEN"
-dt-cloud index-write -b "$BUCKET" -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK/index" "$L2"
+dt-cloud index-write -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK/index" "${SRC[@]}"
 mkdir -p "/gcs/$DATA/$INDEX_KEY"
 cp "$WORK"/index/path-index*.parquet "/gcs/$DATA/$INDEX_KEY/"
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then  # `:+set`: xtrace must not print the token

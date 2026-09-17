@@ -528,6 +528,9 @@ plot = [
 s3 = [
     { name = "boto3" },
 ]
+sheets = [
+    { name = "gspread" },
+]
 wandb = [
     { name = "wandb" },
 ]
@@ -545,6 +548,7 @@ requires-dist = [
     { name = "fsspec", specifier = ">=2024.0.0" },
     { name = "gcsfs", specifier = ">=2024.0.0" },
     { name = "google-cloud-storage", specifier = ">=2.14" },
+    { name = "gspread", marker = "extra == 'sheets'", specifier = ">=6.0" },
     { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.8" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=16.0" },
@@ -552,7 +556,7 @@ requires-dist = [
     { name = "thrds", url = "https://github.com/runsascoded/thrds/archive/70548988ac6827a81a770b938b36057f67ae0e3d.tar.gz" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.19" },
 ]
-provides-extras = ["wandb", "s3", "plot"]
+provides-extras = ["wandb", "s3", "sheets", "plot"]
 
 [package.metadata.requires-dev]
 test = [{ name = "pytest", specifier = ">=8.3" }]
@@ -983,6 +987,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/29/4d/3037f220cea14be7e77bb52e7dec18bdc90554e218642c8ebde620de37e3/grpcio_status-1.82.1.tar.gz", hash = "sha256:d9de8ac34763cd468130fdd2923294af7c3d28d09426f6c45221d27c25931130", size = 13906, upload-time = "2026-07-08T12:39:41.943Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/46/5c/2f6c7e24b99dbaf5f8d7e5b1413fc9fc23360cdeb7f290b49a1c87b49560/grpcio_status-1.82.1-py3-none-any.whl", hash = "sha256:71c7f2bea725c0027fa396b77a55d4e9d90591bab90de4c1c03d4df9a56552f0", size = 14636, upload-time = "2026-07-08T12:39:23.113Z" },
+]
+
+[[package]]
+name = "gspread"
+version = "6.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-auth" },
+    { name = "google-auth-oauthlib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/83/42d1d813822ed016d77aabadc99b09de3b5bd68532fd6bae23fd62347c41/gspread-6.2.1.tar.gz", hash = "sha256:2c7c99f7c32ebea6ec0d36f2d5cbe8a2be5e8f2a48bde87ad1ea203eff32bd03", size = 82590, upload-time = "2025-05-14T15:56:25.254Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/76/563fb20dedd0e12794d9a12cfe0198458cc0501fdc7b034eee2166d035d5/gspread-6.2.1-py3-none-any.whl", hash = "sha256:6d4ec9f1c23ae3c704a9219026dac01f2b328ac70b96f1495055d453c4c184db", size = 59977, upload-time = "2025-05-14T15:56:24.014Z" },
 ]
 
 [[package]]

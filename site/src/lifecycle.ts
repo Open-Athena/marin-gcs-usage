@@ -27,6 +27,17 @@ export function describeRule(r: LifecycleRule): string {
 
 export const rulePrefix = (r: LifecycleRule): string => r.Filter?.Prefix ?? ''
 
+/** Rules per bucket. The job writes `{<bucket>: Rules[]}` since the
+ * multi-bucket scan (specs/cw-multi-bucket.md §2); a bare `Rules[]` (earlier
+ * scans) is the primary bucket's. */
+export type LifecycleSnapshot = Record<string, LifecycleRule[]>
+
+export function parseLifecycle(json: unknown, primary: string): LifecycleSnapshot {
+  if (Array.isArray(json)) return { [primary]: json as LifecycleRule[] }
+  if (json && typeof json === 'object') return json as LifecycleSnapshot
+  throw new Error('lifecycle.json: expected Rules[] or {bucket: Rules[]}')
+}
+
 export type RuleChange = 'new' | 'removed' | 'changed' | null
 
 export interface LifecycleRow {
@@ -34,6 +45,10 @@ export interface LifecycleRow {
   change: RuleChange
   /** The previous scan's version of a `changed` rule. */
   prev?: LifecycleRule
+}
+
+export interface BucketLifecycleRow extends LifecycleRow {
+  bucket: string
 }
 
 /** What a rule's row compares by: prefix, status and the described action —
@@ -54,5 +69,20 @@ export function lifecycleDiff(prev: LifecycleRule[] | null, cur: LifecycleRule[]
   })
   const now = new Set(cur.map(r => r.ID))
   for (const rule of [...(prev ?? [])].sort(byId)) if (!now.has(rule.ID)) rows.push({ rule, change: 'removed' })
+  return rows
+}
+
+/** `lifecycleDiff` per bucket, in `cur`'s bucket order, then the buckets only
+ * `prev` has (every rule `removed`). Rule IDs are compared within a bucket —
+ * Marin's `marin-ttl-<N>d` rules exist in every bucket. */
+export function lifecycleDiffByBucket(prev: LifecycleSnapshot | null, cur: LifecycleSnapshot): BucketLifecycleRow[] {
+  const rows: BucketLifecycleRow[] = []
+  for (const [bucket, rules] of Object.entries(cur)) {
+    for (const row of lifecycleDiff(prev ? prev[bucket] ?? [] : null, rules)) rows.push({ bucket, ...row })
+  }
+  for (const [bucket, rules] of Object.entries(prev ?? {})) {
+    if (bucket in cur) continue
+    for (const rule of [...rules].sort(byId)) rows.push({ bucket, rule, change: 'removed' })
+  }
   return rows
 }

@@ -64,6 +64,52 @@ def test_formatters_and_links():
     assert D._diff_url("2026-09-02T1200", None, SITE) == f"{SITE}/?d=260902-1200#over-time"
 
 
+def _meta2(primary_tib: float, hero_tib: float, objs: int = 1_000_000) -> dict:
+    """A multi-bucket scan's meta.json (specs/cw-multi-bucket.md §2)."""
+    return {
+        "total_bytes": round((primary_tib + hero_tib) * TIB), "total_objects": objs + 400_000, "class_bytes": {},
+        "buckets": {
+            "marin-us-east-02a": {"total_bytes": round(primary_tib * TIB), "total_objects": objs},
+            "hero-checkpoints": {"total_bytes": round(hero_tib * TIB), "total_objects": 400_000},
+        },
+    }
+
+
+def test_primary_totals():
+    assert D.primary_totals(_meta(700)) == (700 * TIB, 1_000_000, {})
+    assert D.primary_totals(_meta2(700, 89.25)) == (700 * TIB, 1_000_000, {"hero-checkpoints": 89.25})
+    # a meta whose `buckets` lacks the primary reads as the flat totals
+    assert D.primary_totals({**_meta(5), "buckets": {"x": {"total_bytes": TIB, "total_objects": 1}}}) == (5 * TIB, 1_000_000, {})
+
+
+def test_rows_from_meta_buckets_switch():
+    # flat metas then `buckets` metas: the primary's deltas stay continuous
+    # across the switch (the flat totals were the primary's); the hero clause's
+    # Δ appears once a prior scan has the bucket
+    rows = D.rows_from_meta([("2026-09-01T0000", _meta(710)), ("2026-09-01T1200", _meta2(713, 89.25)), ("2026-09-02T0000", _meta2(712, 90.75))])
+    assert [(r.tb, r.dtb, r.extra) for r in rows] == [(710.0, None, {}), (713.0, 3.0, {"hero-checkpoints": 89.2}), (712.0, -1.0, {"hero-checkpoints": 90.8})]
+    month = D.Month(lead=[], rows=rows)
+    d1, d2 = D.day_rows(month, "body")
+    assert (d1.extra, d1.dextra) == ({"hero-checkpoints": 89.2}, {"hero-checkpoints": None})
+    assert (d2.extra, d2.dextra) == ({"hero-checkpoints": 90.8}, {"hero-checkpoints": 1.6})
+    assert D.reply(d1, "body").body == f":arrow_deg0: [9/1]({SITE}/?d=260901-1200#over-time) — **713 TiB (+0.0, 0.0%)** · 78.4% of 1 PB · 196.5 TiB free · hero-checkpoints 89 TiB"
+    assert D.reply(d2, "sender") == D.Reply(
+        "9/2 — 712 TiB (−1.0, 0.1%)",
+        f"78.3% of 1 PB · 197.5 TiB free · hero-checkpoints 91 TiB (+1.6) [↗︎]({SITE}/?d=260902-0000-12h#over-time)",
+        icon_url=f"{AV}-30.png?v=4",
+    )
+    # the OP headline carries the clause too, Δ vs the month's base scan
+    assert D.op_body(month, SEP, None).split("\n")[0] == (
+        f":arrow_deg30: **+2.0 TiB** [month-to-date]({SITE}/?d=260902-0000-1d#over-time) · 712 TiB · 78.3% of 1 PB · hero-checkpoints 91 TiB · [dashboard]({SITE}/)"
+    )
+
+
+def test_primary_node():
+    a, b = _node("marin-us-east-02a", 1), _node("hero-checkpoints", 2)
+    assert D.primary_node({"n": "root", "c": [b, a]}) is a
+    assert D.primary_node({"n": "root", "c": [b]}) is b  # single-bucket scans: the only child
+
+
 def test_rows_from_meta_deltas():
     r = MONTH.rows[0]
     assert (r.scan, r.date, r.tb, r.dtb, r.hours) == ("2026-09-01T0000", "2026-09-01", 710.0, 5.0, 12.0)

@@ -4,8 +4,9 @@
 # Deliberately a separate submitter from batch-submit.sh rather than a flag on
 # it: the two jobs share almost no shape. The GCS job fans out over six buckets,
 # mounts all of them, needs highmem-16 + local SSD for DuckDB spill, and posts a
-# digest. This one hits a single third-party S3 endpoint, mounts one bucket for
-# output, and peaks under 2 GB.
+# digest. This one lists a couple of buckets on a single third-party S3 endpoint
+# (`CW_BUCKETS`, specs/cw-multi-bucket.md), mounts one bucket for output, and
+# peaks under 2 GB.
 #
 #   ./job/cw-batch-submit.sh              # submit, print job id
 #   DRY=1 ./job/cw-batch-submit.sh        # print the spec (for a scheduler body)
@@ -49,7 +50,7 @@ v = {
     # CF account for the digest plot's `wrangler pages deploy` (token is a secretVariable)
     "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }
-for k in ["SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
+for k in ["CW_BUCKETS", "SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
     if k in os.environ:
         v[k] = os.environ[k]
 print(json.dumps(v))

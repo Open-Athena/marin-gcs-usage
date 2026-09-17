@@ -753,23 +753,35 @@ def healthcheck(date: str | None, max_age_days: int, as_json: bool, max_ms: int,
         raise SystemExit(1)
 
 
+def bucket_sources(specs: tuple[str, ...], default_bucket: str) -> list[tuple[str, str]]:
+    """`<bucket>=<layer-2 parquet>` pairs → [(bucket, path)]; a bare path is
+    ``default_bucket``'s (the single-bucket form)."""
+    out: list[tuple[str, str]] = []
+    for s in specs:
+        bucket, eq, path = s.partition("=")
+        out.append((bucket, path) if eq else (default_bucket, s))
+    return out
+
+
 @main.command("index-write")
-@option("-b", "--bucket", default=None, help="Bucket the layer-2 parquet describes (default $CW_BUCKET); prefixes every index path")
+@option("-b", "--bucket", default=None, help="Bucket a bare (no `<bucket>=`) layer-2 argument describes (default $CW_BUCKET)")
 @option("-m", "--mem", default="8GB", help="DuckDB memory limit")
 @option("-o", "--out", "out_dir", type=Path, required=True, help="Output dir: path-index.parquet + path-index-coarse<E>.parquet")
 @option("-t", "--threads", default=8, type=int, help="DuckDB threads")
 @option("-T", "--tmp", "tmp_dir", type=Path, default=None, help="DuckDB spill dir (default: <out>/.duckdb-tmp)")
-@argument("l2_parquet")
-def index_write(bucket: str | None, mem: str, out_dir: Path, threads: int, tmp_dir: Path | None, l2_parquet: str) -> None:
-    """Write the scan's index tiers from its layer-2 parquet: the floor-free
-    `path-index.parquet` (dir rows, bucket-prefixed, sorted (depth, path), 8k-row
-    groups, the site's column contract) and the coarse tiers, floors in their
-    parquet metadata. `index-sync` then publishes their footers to D1."""
+@argument("sources", nargs=-1, required=True)
+def index_write(bucket: str | None, mem: str, out_dir: Path, threads: int, tmp_dir: Path | None, sources: tuple[str, ...]) -> None:
+    """Write the scan's index tiers from its layer-2 parquet(s) — SOURCES are
+    `<bucket>=<l2.parquet>` pairs, one per bucket of the scan (a bare path is
+    `-b`'s bucket): the floor-free `path-index.parquet` (dir rows,
+    bucket-prefixed, sorted (depth, path), 8k-row groups, the site's column
+    contract) and the coarse tiers, floors in their parquet metadata.
+    `index-sync` then publishes their footers to D1."""
     from .index import write_index
     from .sweep import CW_BUCKET
 
-    s = write_index(l2_parquet, out_dir, bucket=bucket or CW_BUCKET, mem=mem, threads=threads, tmp_dir=tmp_dir)
-    err(f"index-write: {s['rows']:,} rows; floors {s['floors']}; kept {s['paths']}")
+    s = write_index(bucket_sources(sources, bucket or CW_BUCKET), out_dir, mem=mem, threads=threads, tmp_dir=tmp_dir)
+    err(f"index-write: {s['rows']:,} rows over {s['buckets']}; floors {s['floors']}; kept {s['paths']}")
     print(json.dumps(s))
 
 
@@ -1021,18 +1033,21 @@ def lifecycle() -> None:
 
 
 @lifecycle.command("pull")
-@option("-b", "--bucket", default=lambda: os.environ.get("CW_BUCKET", "marin-us-east-02a"), help="Bucket (default $CW_BUCKET)")
+@option("-b", "--bucket", "buckets", multiple=True, help="Bucket (repeatable; default $CW_BUCKET). One → the bare `Rules[]`; several → `{<bucket>: Rules[]}` in this order")
 @option("-o", "--out", type=Path, help="Write here instead of stdout")
-def lifecycle_pull(bucket: str, out: Path | None) -> None:
-    from .lifecycle import dump, pull
-    from .sweep import s3_client
+def lifecycle_pull(buckets: tuple[str, ...], out: Path | None) -> None:
+    from .lifecycle import dump, dump_map, pull
+    from .sweep import CW_BUCKET, s3_client
 
-    text = dump(pull(s3_client(), bucket))
+    buckets = buckets or (CW_BUCKET,)
+    client = s3_client()
+    by_bucket = {b: pull(client, b) for b in buckets}
+    text = dump(by_bucket[buckets[0]]) if len(buckets) == 1 else dump_map(by_bucket)
     if out is None:
         sys.stdout.write(text)
     else:
         out.write_text(text)
-        err(f"lifecycle: {bucket} → {out}")
+        err(f"lifecycle: {', '.join(buckets)} → {out}")
 
 
 @lifecycle.command("diff")

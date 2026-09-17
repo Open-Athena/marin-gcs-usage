@@ -103,3 +103,10 @@ def load(path: str) -> list[dict]:
 
 def dump(rules: list[dict]) -> str:
     return json.dumps(normalize(rules), indent=2) + "\n"
+
+
+def dump_map(by_bucket: dict[str, list[dict]]) -> str:
+    """The multi-bucket snapshot the scan job writes (specs/cw-multi-bucket.md
+    §2): `{<bucket>: Rules[]}` in the given (deployment) order, each bucket's
+    rules normalized. The site reads this and the bare `Rules[]` alike."""
+    return json.dumps({b: normalize(r) for b, r in by_bucket.items()}, indent=2) + "\n"

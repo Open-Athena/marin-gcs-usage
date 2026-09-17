@@ -29,6 +29,7 @@ interface BatchJob {
 
 interface RunSummary {
   mode: string
+  bucket?: string // the run's bucket (specs/cw-multi-bucket.md §4); older summaries: the primary
   deleted_objects: number
   deleted_bytes: number
   skipped_gone: number
@@ -67,7 +68,7 @@ async function reflect(db: D1Database, jobId: string, mode: string, s: RunSummar
       INSERT OR REPLACE INTO deletion_bands
         (run_id, prefix, bytes, objects, gone, overwritten, drift_new_objects, undone_objects)
       VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-    `).bind(jobId, `s3://${CW_BUCKET}/${b.prefix}`, b.bytes, b.objects, b.gone, b.overwritten, b.drift_new).run()
+    `).bind(jobId, `s3://${s.bucket ?? CW_BUCKET}/${b.prefix}`, b.bytes, b.objects, b.gone, b.overwritten, b.drift_new).run()
   }
 }
 

@@ -97,25 +97,35 @@ def write_coarse_tiers(con: "duckdb.DuckDBPyConnection", path_index: Path, rows:
 
 
 def write_index(
-    l2_path: str,
+    sources: list[tuple[str, str]],
     out_dir: str | Path,
     *,
-    bucket: str,
     mem: str = "8GB",
     threads: int = 8,
     tmp_dir: str | Path | None = None,
 ) -> dict:
     """Write the floor-free `path-index.parquet` + the coarse tiers under
-    ``out_dir`` from the layer-2 parquet at ``l2_path``. Returns a summary
-    (rows, floors, kept counts, files)."""
+    ``out_dir`` from ``sources`` — one ``(bucket, layer-2 parquet)`` per
+    bucket of the scan (specs/cw-multi-bucket.md §2): the rows are the UNION
+    of each bucket's rows, so depth 1 holds every bucket and the coarse
+    floors derive from their sum. Returns a summary (rows, buckets, floors,
+    kept counts, files)."""
+    if not sources:
+        raise ValueError("write_index: no (bucket, layer-2) sources")
+    buckets = [b for b, _ in sources]
+    if len(set(buckets)) != len(buckets):
+        raise ValueError(f"write_index: duplicate bucket in {buckets}")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path_index = out / INDEX_VARIANTS["path"]
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{mem}'; SET threads={threads}")
     con.execute(f"SET temp_directory='{tmp_dir or out / '.duckdb-tmp'}'")
-    con.execute("SET VARIABLE L2 = ?", [str(l2_path)])
-    con.execute(f"CREATE TEMP TABLE idx AS {index_rows_sql('getvariable(\'L2\')', bucket)}")
+    selects = []
+    for i, (bucket, l2_path) in enumerate(sources):
+        con.execute(f"SET VARIABLE L2_{i} = ?", [str(l2_path)])
+        selects.append(index_rows_sql(f"getvariable('L2_{i}')", bucket))
+    con.execute(f"CREATE TEMP TABLE idx AS {' UNION ALL '.join(f'({s})' for s in selects)}")
     n = con.execute("SELECT count(*) FROM idx").fetchone()[0]
     con.execute(f"COPY (SELECT {INDEX_COLS} FROM idx ORDER BY depth, path) TO '{path_index}' (FORMAT parquet, ROW_GROUP_SIZE {ROW_GROUP_SIZE})")
     err(f"path-index: {n:,} rows → {path_index}")
@@ -125,7 +135,7 @@ def write_index(
     floors, counts = write_coarse_tiers(con, path_index, rows="idx")
     return {
         "rows": int(n),
-        "bucket": bucket,
+        "buckets": buckets,
         "floors": {str(e): floors[e] for e in COARSE_EXPS},
         "paths": {str(e): counts[e] for e in COARSE_EXPS},
         "files": {v: str(out / f) for v, f in INDEX_VARIANTS.items()},

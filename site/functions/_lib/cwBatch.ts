@@ -15,7 +15,11 @@ export const CW_IMAGE = `us-central1-docker.pkg.dev/${GCP_PROJECT}/cloud-run-sou
 // it's FUSE-mounted into the Batch job at /gcs/<bucket>); the CoreWeave bucket
 // + endpoint the executor deletes from.
 export const DATA_BUCKET = "oa-gcs-usage-dvx"
-export const CW_BUCKET = "marin-us-east-02a"
+// Every bucket the scan covers (specs/cw-multi-bucket.md §1; mirrors
+// job/cw-run.sh `CW_BUCKETS`): the first is the primary — the 1 PB bucket,
+// the sweep default. A plan is dispatched against exactly one of these.
+export const CW_BUCKETS = ["marin-us-east-02a", "hero-checkpoints"] as const
+export const CW_BUCKET: string = CW_BUCKETS[0]
 export const CW_ENDPOINT = "https://cwobject.com"
 
 export const secretRef = (name: string): string =>

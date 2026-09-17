@@ -4,11 +4,20 @@
 // snapshot + the admin-edit audit trail live here; the HTTP surface is
 // api/plans/[[path]].ts.
 import type { D1Database } from "@cloudflare/workers-types"
-import { CW_BUCKET } from "./cwBatch.js"
+import { CW_BUCKET, CW_BUCKETS } from "./cwBatch.js"
 
 // A plan prefix stored as `s3://<bucket>/<path>/` (matching the marks convention);
 // normalized to a relative key prefix only at snapshot time.
 const PREFIX_RE = /^(?!\/)(?![.]{1,2}\/)[^\\]+\/$/
+
+/** The bucket a raw prefix names — `s3://<b>/…` or `<b>/…` for a scanned
+ * bucket — else the primary. The treemap's paths start with the bucket, so
+ * a mark or plan item under `hero-checkpoints/…` must not canonicalize under
+ * the primary (specs/cw-multi-bucket.md §4). */
+export function bucketOf(raw: string, buckets: readonly string[] = CW_BUCKETS): string {
+  const s = raw.trim().replace(/^s3:\/\//, "").replace(/^\/+/, "")
+  return buckets.find(b => s === b || s.startsWith(`${b}/`)) ?? buckets[0]
+}
 
 export interface PlanRow {
   id: number
@@ -29,11 +38,29 @@ export function relPrefix(raw: string, bucket: string = CW_BUCKET): string {
   return s
 }
 
-/** Canonical stored form of a plan-item prefix: `s3://<bucket>/<path>/`. */
-export function canonicalPrefix(raw: string, bucket: string = CW_BUCKET): string | null {
+/** Canonical stored form of a plan-item prefix: `s3://<bucket>/<path>/`, the
+ * bucket resolved from the raw (`bucketOf`) unless given. */
+export function canonicalPrefix(raw: string, bucket: string = bucketOf(raw)): string | null {
   const rel = relPrefix(raw, bucket)
   if (!PREFIX_RE.test(rel)) return null
   return `s3://${bucket}/${rel}`
+}
+
+/** A plan whose items name more than one bucket: the executor runs against one
+ * bucket per run, so dispatch refuses it (400) rather than guessing. */
+export class PlanSpansBuckets extends Error {
+  constructor(public readonly buckets: string[]) {
+    super(`plan spans buckets: ${buckets.join(", ")}`)
+  }
+}
+
+/** The one bucket a plan's (canonical) item prefixes live in, and the items
+ * relative to it; a plan with no items is the primary's. */
+export function planBucket(prefixes: string[]): { bucket: string; sweep: string[] } {
+  const buckets = [...new Set(prefixes.map(p => bucketOf(p)))]
+  if (buckets.length > 1) throw new PlanSpansBuckets(buckets)
+  const bucket = buckets[0] ?? CW_BUCKET
+  return { bucket, sweep: prefixes.map(p => relPrefix(p, bucket)) }
 }
 
 export async function audit(
@@ -53,9 +80,11 @@ export async function audit(
     .run()
 }
 
-/** Snapshot a plan into the executor's plan.json: relative sweep prefixes (the
- * plan's items) + relative keep prefixes (the current keep/keep_last_ckpt marks,
- * which carve out at manifest time). Returns null if the plan is missing. */
+/** Snapshot a plan into the executor's plan.json: the plan's one bucket
+ * (`planBucket`; throws `PlanSpansBuckets`), relative sweep prefixes (the
+ * plan's items) + relative keep prefixes (the current keep/keep_last_ckpt marks
+ * in that bucket, which carve out at manifest time). Returns null if the plan
+ * is missing. */
 export async function snapshotPlan(db: D1Database, planId: number): Promise<
   { plan_id: number; name: string; bucket: string; sweep: string[]; keep: string[] } | null
 > {
@@ -63,11 +92,12 @@ export async function snapshotPlan(db: D1Database, planId: number): Promise<
   if (!plan) return null
   const items = await db.prepare("SELECT prefix FROM plan_items WHERE plan_id = ? ORDER BY prefix").bind(planId).all<{ prefix: string }>()
   const keeps = await db.prepare("SELECT prefix FROM marks WHERE keep IN ('keep', 'keep_last_ckpt') ORDER BY prefix").all<{ prefix: string }>()
+  const { bucket, sweep } = planBucket(items.results.map(r => r.prefix))
   return {
     plan_id: planId,
     name: plan.name,
-    bucket: CW_BUCKET,
-    sweep: items.results.map(r => relPrefix(r.prefix)),
-    keep: keeps.results.map(r => relPrefix(r.prefix)),
+    bucket,
+    sweep,
+    keep: keeps.results.map(r => r.prefix).filter(p => bucketOf(p) === bucket).map(p => relPrefix(p, bucket)),
   }
 }

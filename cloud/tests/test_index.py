@@ -48,11 +48,11 @@ def _rows(path: Path) -> list[tuple]:
 def test_write_index(tmp_path: Path):
     l2 = tmp_path / "l2.parquet"
     _write_l2(l2, L2)
-    s = X.write_index(str(l2), tmp_path / "index", bucket=BUCKET, mem="1GB", threads=2)
+    s = X.write_index([(BUCKET, str(l2))], tmp_path / "index", mem="1GB", threads=2)
     # fleet = the bucket row = 40 GiB → log2 = 35.32 → 35; E=16 → 2^19 = 512 KiB, 20 → 32 KiB, 24 → 2 KiB
     assert s == {
         "rows": 5,
-        "bucket": BUCKET,
+        "buckets": [BUCKET],
         "floors": {"16": 2**19, "20": 2**15, "24": 2**11},
         "paths": {"16": 5, "20": 5, "24": 5},
         "files": {v: str(tmp_path / "index" / f) for v, f in X.INDEX_VARIANTS.items()},
@@ -83,11 +83,50 @@ def test_coarse_tier_membership(tmp_path: Path):
     ]
     l2 = tmp_path / "l2.parquet"
     _write_l2(l2, rows)
-    s = X.write_index(str(l2), tmp_path / "index", bucket="b", mem="1GB", threads=2)
+    s = X.write_index([("b", str(l2))], tmp_path / "index", mem="1GB", threads=2)
     assert s["floors"] == {"16": 1 << 25, "20": 1 << 21, "24": 1 << 17}
     assert s["paths"] == {"16": 2, "20": 4, "24": 5}
     assert [r[0] for r in _rows(tmp_path / "index" / "path-index-coarse16.parquet")] == ["b", "b/big"]
     assert [r[0] for r in _rows(tmp_path / "index" / "path-index-coarse20.parquet")] == ["b", "b/big", "b/small", "b/big/mid"]
+
+
+def test_write_index_two_buckets(tmp_path: Path):
+    # a second bucket's rows join the same tiers under its own depth-1 row; the
+    # fleet (floors) is both buckets' sum: 40 + 24 GiB = 64 GiB → log2 = 36 →
+    # E=16 → 2^20, 20 → 2^16, 24 → 2^12
+    HERO = [
+        (".", 0, "dir", 24 * GIB, 60, None),
+        ("tmp", 1, "dir", 24 * GIB, 60, 1_710_000_000.0),
+        ("tmp/ttl=14d", 2, "dir", 24 * GIB, 60, 1_710_000_000.0),
+    ]
+    a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
+    _write_l2(a, L2)
+    _write_l2(b, HERO)
+    s = X.write_index([(BUCKET, str(a)), ("hero-checkpoints", str(b))], tmp_path / "index", mem="1GB", threads=2)
+    assert s == {
+        "rows": 8,
+        "buckets": [BUCKET, "hero-checkpoints"],
+        "floors": {"16": 2**20, "20": 2**16, "24": 2**12},
+        "paths": {"16": 8, "20": 8, "24": 8},
+        "files": {v: str(tmp_path / "index" / f) for v, f in X.INDEX_VARIANTS.items()},
+    }
+    assert [(r[0], r[1], r[3]) for r in _rows(tmp_path / "index" / "path-index.parquet")] == [
+        ("hero-checkpoints", 1, 24 * GIB),
+        (BUCKET, 1, 40 * GIB),
+        ("hero-checkpoints/tmp", 2, 24 * GIB),
+        (f"{BUCKET}/marin", 2, 30 * GIB),
+        (f"{BUCKET}/tmp", 2, 10 * GIB),
+        ("hero-checkpoints/tmp/ttl=14d", 3, 24 * GIB),
+        (f"{BUCKET}/marin/a", 3, 20 * GIB),
+        (f"{BUCKET}/marin/b", 3, 10 * GIB),
+    ]
+
+
+def test_write_index_rejects_bad_sources(tmp_path: Path):
+    with pytest.raises(ValueError, match="no \\(bucket, layer-2\\) sources"):
+        X.write_index([], tmp_path / "index")
+    with pytest.raises(ValueError, match="duplicate bucket"):
+        X.write_index([("b", "x"), ("b", "y")], tmp_path / "index")
 
 
 def test_coarse_floor():

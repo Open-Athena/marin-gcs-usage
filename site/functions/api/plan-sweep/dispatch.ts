@@ -14,7 +14,7 @@ import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireAdmin } from "../../_lib/auth.js"
 import { gcpToken } from "../../_lib/gcp.js"
 import { DATA_BUCKET, jobStamp, runGsPath, runMountPath, submitBatch, sweepBatchSpec } from "../../_lib/cwBatch.js"
-import { snapshotPlan } from "../../_lib/plans.js"
+import { PlanSpansBuckets, snapshotPlan } from "../../_lib/plans.js"
 
 type Env = AuthEnv & { DB?: D1Database }
 
@@ -36,7 +36,14 @@ export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> 
   if (mode !== "dry" && mode !== "real") return json({ error: "mode must be 'dry' or 'real'" }, 400)
   if (!date || !DATE_RE.test(date)) return json({ error: "date must be a scan id (YYYY-MM-DD[THHMM])" }, 400)
 
-  const snapshot = await snapshotPlan(db, planId!)
+  let snapshot: Awaited<ReturnType<typeof snapshotPlan>>
+  try {
+    snapshot = await snapshotPlan(db, planId!)
+  } catch (e) {
+    // one bucket per run: a plan naming several is refused, not split
+    if (e instanceof PlanSpansBuckets) return json({ error: e.message, buckets: e.buckets }, 400)
+    throw e
+  }
   if (!snapshot) return json({ error: "no such plan" }, 404)
   if (!snapshot.sweep.length) return json({ error: "plan has no items to sweep" }, 400)
 
@@ -61,7 +68,8 @@ export const onRequestPost = async (ctx: Ctx & { env: Env }): Promise<Response> 
     `dt-cloud plan-sweep execute ${mode === "real" ? "--for-real " : ""}"$RUN"`,
   ].join("\n")
 
-  const spec = sweepBatchSpec(script, { JOB_ID: jobId, SWEEP_DATE: date })
+  // the executor deletes from the plan's bucket (`CW_BUCKET` in the job env)
+  const spec = sweepBatchSpec(script, { JOB_ID: jobId, SWEEP_DATE: date, CW_BUCKET: snapshot.bucket })
   const { ok, status, text } = await submitBatch(token, jobId, spec)
   if (!ok) {
     console.error("batch submit failed", status, text.slice(0, 2000))

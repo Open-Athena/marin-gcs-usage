@@ -31,13 +31,20 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import secrets
 import sys
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 TIB = 1024**4
+# The scan covers every CoreWeave bucket (specs/cw-multi-bucket.md); the
+# digest's headline, deltas and quota line are the PRIMARY's (the 1 PB
+# bucket), read from `meta.buckets[<primary>]` when the scan has it and from
+# the flat totals (which were the primary's) before that. The other buckets
+# ride along as a ` · <bucket> <TiB> TiB (Δ)` clause.
+PRIMARY_BUCKET = os.environ.get("CW_BUCKET", "marin-us-east-02a")
 # The bucket's quota is 1 PB *decimal* (10^15 bytes) = 909.49 TiB — the
 # "910 TiB" in the site's comments and the zones memo is this number rounded.
 # Owned here, once; headroom renders as "% of 1 PB".
@@ -114,6 +121,16 @@ def _free(tb: float) -> str:
     return f"{QUOTA_TIB - tb:,.1f} TiB free"
 
 
+def _extras(extra: dict[str, float], dextra: dict[str, float | None]) -> str:
+    """` · <bucket> <TiB> TiB (Δ)` per non-primary bucket (Δ omitted when the
+    prior scan lacked the bucket); `''` with none."""
+    out = ""
+    for b, tb in extra.items():
+        d = dextra.get(b)
+        out += f" · {b} {tb:,.0f} TiB" + (f" ({_tb(d)})" if d is not None else "")
+    return out
+
+
 def _md(date: str) -> str:
     d = dt.date.fromisoformat(date)
     return f"{d.month}/{d.day}"
@@ -153,20 +170,34 @@ class Scan:
     dtb: float | None
     dobjs: int | None
     hours: float | None
+    # the non-primary buckets' TiB (`meta.buckets` minus the primary), in
+    # meta order; empty on single-bucket scans
+    extra: dict[str, float] = field(default_factory=dict)
 
     @property
     def date(self) -> str:
         return self.scan[:10]
 
 
-def rows_from_meta(dated_meta: list[tuple[str, dict]]) -> list[Scan]:
+def primary_totals(m: dict, primary: str = PRIMARY_BUCKET) -> tuple[int, int, dict[str, float]]:
+    """A meta.json's ``(total_bytes, total_objects, extra)`` for the digest:
+    the primary bucket's totals from ``buckets`` when present (else the flat
+    totals), ``extra`` = the other buckets' TiB."""
+    bk = m.get("buckets") or {}
+    if primary in bk:
+        p = bk[primary]
+        return int(p["total_bytes"]), int(p["total_objects"]), {b: v["total_bytes"] / TIB for b, v in bk.items() if b != primary}
+    return int(m["total_bytes"]), int(m["total_objects"]), {}
+
+
+def rows_from_meta(dated_meta: list[tuple[str, dict]], primary: str = PRIMARY_BUCKET) -> list[Scan]:
     """Build ``Scan`` rows from ``(scan_id, meta.json)`` pairs in scan order."""
     out: list[Scan] = []
     ptb = pobjs = pts = None
     for scan, m in dated_meta:
         ts = scan_ts(scan)
-        tb = m["total_bytes"] / TIB
-        objs = int(m["total_objects"])
+        b, objs, extra = primary_totals(m, primary)
+        tb = b / TIB
         out.append(
             Scan(
                 scan=scan,
@@ -175,10 +206,16 @@ def rows_from_meta(dated_meta: list[tuple[str, dict]]) -> list[Scan]:
                 dtb=round(tb - ptb, 1) if ptb is not None else None,
                 dobjs=objs - pobjs if pobjs is not None else None,
                 hours=(ts - pts).total_seconds() / 3600 if pts is not None else None,
+                extra={k: round(v, 1) for k, v in extra.items()},
             )
         )
         ptb, pobjs, pts = tb, objs, ts
     return out
+
+
+def _dextra(cur: Scan, prev: Scan | None) -> dict[str, float | None]:
+    """Per extra bucket, Δ TiB vs ``prev`` (None when ``prev`` lacks it)."""
+    return {b: round(tb - prev.extra[b], 1) if prev and b in prev.extra else None for b, tb in cur.extra.items()}
 
 
 @dataclass(frozen=True)
@@ -209,6 +246,8 @@ class DayRow:
     dtb: float | None
     hours: float | None
     since: dt.datetime | None  # the prior reply scan's instant (the diff link's look-back)
+    extra: dict[str, float] = field(default_factory=dict)  # the other buckets' TiB
+    dextra: dict[str, float | None] = field(default_factory=dict)  # …and Δ vs the prior reply scan
 
 
 def day_rows(month: Month, variant: str, reply_hour: int = REPLY_HOUR_UTC) -> list[DayRow]:
@@ -244,6 +283,8 @@ def day_rows(month: Month, variant: str, reply_hour: int = REPLY_HOUR_UTC) -> li
                     dtb=round(s.tb - prev.tb, 1) if prev else None,
                     hours=(scan_ts(s.scan) - scan_ts(prev.scan)).total_seconds() / 3600 if prev else None,
                     since=scan_ts(prev.scan) if prev else None,
+                    extra=s.extra,
+                    dextra=_dextra(s, prev),
                 )
             )
         prev = s
@@ -266,7 +307,7 @@ def op_body(month: Month, m: dt.date, plot_url: str | None, site_url: str = DEFA
     # (lead-in scan -> latest), the same way each weekly bullet links its span
     mtd_url = _diff_url(last.scan, scan_ts(base.scan) if base is not last else None, site_url)
     lines = [
-        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {last.tb:,.0f} TiB · {_quota(last.tb)} · [dashboard]({site_url}/)",
+        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {last.tb:,.0f} TiB · {_quota(last.tb)}{_extras(last.extra, _dextra(last, base if base is not last else None))} · [dashboard]({site_url}/)",
         "",
         "*Weekly summaries*",
     ]
@@ -315,7 +356,7 @@ def reply(day: DayRow, variant: str, site_url: str = DEFAULT_URL) -> Reply:
     d = deg(_pct_val(dtb, day.tb), mult)
     url = _diff_url(day.scan, day.since, site_url)
     size = f"{day.tb:,.0f} TiB ({_tb(dtb)}, {_pct(dtb, day.tb)}%)"
-    tail = f"{_quota(day.tb)} · {_free(day.tb)}"
+    tail = f"{_quota(day.tb)} · {_free(day.tb)}{_extras(day.extra, day.dextra)}"
     if variant == "sender":
         # ↗︎ = NE arrow + text-presentation selector: renders as a
         # font glyph in link colour (bare ↗ gets emoji-ized by Slack)
@@ -469,13 +510,20 @@ def save_state(root: str, month: dt.date, channel: str, variant: str, state: dic
         json.dump(state, f, indent=2)
 
 
+def primary_node(tree: dict, primary: str = PRIMARY_BUCKET) -> dict:
+    """The primary bucket's node of a scan's `tree.json` (`{n: <store label>,
+    …, c: [<bucket>…]}`): by name, else the first child (single-bucket scans
+    named the bucket after the layer-2 file)."""
+    return next((c for c in tree["c"] if c["n"] == primary), tree["c"][0])
+
+
 def load_tree(root: str, scan: str) -> dict:
-    """The bucket node of a scan's `tree.json` (`snapshots/cw/<scan>/tree.json`
-    is `{n: <store label>, …, c: [<bucket>]}`)."""
+    """The primary bucket's node of a scan's `tree.json`
+    (`snapshots/cw/<scan>/tree.json`)."""
     import fsspec
 
     with fsspec.open(f"{root}/{scan}/tree.json", "rt") as f:
-        return json.load(f)["c"][0]
+        return primary_node(json.load(f))
 
 
 def render_plot(month: Month, m: dt.date, out_path, root: str | None = None) -> None:

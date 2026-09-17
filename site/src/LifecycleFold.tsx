@@ -1,28 +1,29 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { MdAutoDelete } from 'react-icons/md'
-import { describeRule, lifecycleDiff, rulePrefix } from './lifecycle'
-import type { LifecycleRule } from './lifecycle'
+import { describeRule, lifecycleDiffByBucket, parseLifecycle, rulePrefix } from './lifecycle'
+import type { LifecycleSnapshot } from './lifecycle'
 import type { Store } from './stores'
 import { Tooltip } from './Tooltip'
 
-// The bucket's lifecycle rules as the scan job snapshotted them
-// (`<store.base>/<scan>/lifecycle.json`), diffed against the previous scan's
-// snapshot: a `<details>` fold under About. Scans from before the job started
-// recording (2026-09-16) have no file — the fold says so rather than hiding.
+// Each bucket's lifecycle rules as the scan job snapshotted them
+// (`<store.base>/<scan>/lifecycle.json`), diffed per bucket against the
+// previous scan's snapshot: a `<details>` fold under About. Scans from before
+// the job started recording (2026-09-16) have no file — the fold says so
+// rather than hiding.
 
 const RECORDED_FROM = '2026-09-16'
 
 /** One scan's rules; `null` = no snapshot for that scan (404 or any non-OK). */
 function useLifecycle(store: Store, scan: string | null | undefined) {
-  return useQuery<LifecycleRule[] | null>({
+  return useQuery<LifecycleSnapshot | null>({
     queryKey: ['lifecycle', store.key, scan],
     // Snapshots exist from the recorded-from date on; earlier scans would only 404.
     enabled: !!scan && scan >= RECORDED_FROM,
     staleTime: Infinity,
     queryFn: async () => {
       const r = await fetch(`${store.base}/${scan}/lifecycle.json`)
-      return r.ok ? ((await r.json()) as LifecycleRule[]) : null
+      return r.ok ? parseLifecycle(await r.json(), store.buckets[0]) : null
     },
   })
 }
@@ -38,9 +39,13 @@ export function LifecycleFold({ store, asof, prevScan, note }: {
   const curQ = useLifecycle(store, asof)
   const prevQ = useLifecycle(store, prevScan)
   const rules = curQ.data
-  const rows = rules ? lifecycleDiff(prevQ.data ?? null, rules) : []
+  const rows = rules ? lifecycleDiffByBucket(prevQ.data ?? null, rules) : []
   const loading = !!asof && curQ.isPending
-  const title = rules ? `${rules.length} rule${rules.length === 1 ? '' : 's'}` : loading ? 'loading…' : 'no snapshot'
+  const nRules = rules ? Object.values(rules).reduce((n, rs) => n + rs.length, 0) : 0
+  const nBuckets = rules ? Object.keys(rules).length : 0
+  const title = rules
+    ? `${nRules} rule${nRules === 1 ? '' : 's'}${nBuckets > 1 ? ` · ${nBuckets} buckets` : ''}`
+    : loading ? 'loading…' : 'no snapshot'
   return (
     <details className="prose fold lifecycle">
       <summary>
@@ -51,11 +56,12 @@ export function LifecycleFold({ store, asof, prevScan, note }: {
         <div className="tbl-scroll">
         <table className="worklist lifecycle-tbl">
           <thead>
-            <tr><th>rule</th><th>prefix</th><th>action</th><th>status</th></tr>
+            <tr>{nBuckets > 1 && <th>bucket</th>}<th>rule</th><th>prefix</th><th>action</th><th>status</th></tr>
           </thead>
           <tbody>
-            {rows.map(({ rule, change, prev }) => (
-              <tr key={`${rule.ID}:${change ?? ''}`} className={change === 'removed' ? 'removed' : undefined}>
+            {rows.map(({ bucket, rule, change, prev }) => (
+              <tr key={`${bucket}/${rule.ID}:${change ?? ''}`} className={change === 'removed' ? 'removed' : undefined}>
+                {nBuckets > 1 && <td className="id">{bucket}</td>}
                 <td className="id">
                   {rule.ID}
                   {change === 'new' && <span className="chip new">new</span>}

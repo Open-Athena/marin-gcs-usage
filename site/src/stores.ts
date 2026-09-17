@@ -38,6 +38,10 @@ export interface Store {
    *  (`<base>/<scan>/lifecycle.json`): the tracked intended-state path the
    *  home-page fold points at. Unset = no fold. */
   lifecycle?: string
+  /** The buckets the scan covers, the first the primary (the quota / sweep
+   *  default; what a bare `lifecycle.json` `Rules[]` from before the
+   *  multi-bucket scan belongs to). */
+  buckets: string[]
   /** The sibling deployment the site menu links to (each store is its own host). */
   peer?: { label: string; href: string }
   /** How the store's root reads in copy: the scope word for "all of it"
@@ -53,7 +57,7 @@ export const STORES: Store[] = [
     key: 'cw',
     label: 'CoreWeave',
     title: 'Marin CoreWeave usage',
-    desc: 'Storage usage of the Marin CoreWeave bucket — treemap, diffs over time, and a reviewed sweep tool.',
+    desc: 'Storage usage of the Marin CoreWeave buckets — treemap, diffs over time, and a reviewed sweep tool.',
     path: '/',
     scheme: 's3://',
     base: '/data/cw',
@@ -63,8 +67,9 @@ export const STORES: Store[] = [
     owners: false,
     sweep: 'plan',
     lifecycle: 'job/cw-lifecycle.json',
+    buckets: ['marin-us-east-02a', 'hero-checkpoints'],
     peer: { label: 'GCS usage', href: 'https://gcs.oa.dev/' },
-    rootLabel: 'the whole bucket',
+    rootLabel: 'all buckets',
     objectsNote: 'CoreWeave objects are written once by the training jobs and never rewritten in place, so created is the object’s only time.',
   },
 ]

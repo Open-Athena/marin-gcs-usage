@@ -1,4 +1,6 @@
 """`dt_cloud.lifecycle`: pull / diff / push against a fake S3 client."""
+import json
+
 import pytest
 
 from dt_cloud import lifecycle as L
@@ -102,3 +104,9 @@ def test_push_refuses_when_live_moved_since_base():
     assert s3.puts == []  # nothing written
     # with an up-to-date base the same push goes through
     assert L.push(s3, "b", [MPU, L.gc_rule()], base=L.pull(s3, "b")) == [L.gc_rule(), MPU]
+
+
+def test_dump_map_keeps_bucket_order_and_normalizes():
+    assert L.dump_map({"marin-us-east-02a": [TTL, MPU], "hero-checkpoints": [TTL]}) == (
+        json.dumps({"marin-us-east-02a": [MPU, TTL], "hero-checkpoints": [TTL]}, indent=2) + "\n"
+    )
