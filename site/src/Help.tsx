@@ -46,14 +46,22 @@ export function Explain({ text, children, className }: { text: ReactNode; childr
   )
 }
 
+const HELP_INTRO = (
+  <>Hover (or keyboard-focus) any control and its explanation shows here.
+  Press <kbd>h</kbd> to turn this off.</>
+)
+
 /** The help card (specs/edu-drawer.md): a bottom-left panel that shows the
  * hovered/focused control's explanation. Idle it collapses to a small "?"
- * chip so it's discoverable without covering the page; the chip toggles the
- * preference off, and `h` / the SpeedDial bring it back. The card lingers
- * ~1s after the last control so a glance at it isn't a race. */
+ * chip; clicking the chip OPENS the card with a short intro (so a click does
+ * something, rather than the old behaviour of silently turning help off), and
+ * the card's × collapses back to the chip. `h` / the SpeedDial toggle help
+ * off entirely. The card lingers ~1s after the last control so a glance at it
+ * isn't a race. */
 export function HelpCard() {
   const ctx = useContext(HelpCtx)
-  const [on, setOn] = useHelpPref()
+  const [on] = useHelpPref()
+  const [intro, setIntro] = useState(false)
   const live = ctx?.text ?? null
   // Hold the last text briefly after the pointer leaves, so reading the card
   // doesn't clear it (moving off the control to the card would otherwise blank
@@ -67,10 +75,13 @@ export function HelpCard() {
     return () => { if (timer.current) clearTimeout(timer.current) }
   }, [live])
   if (on !== 'on') return null
-  if (shown == null) {
+  // What the card shows: a hovered control's text, else the intro if it was
+  // opened from the chip, else nothing (collapsed to the chip).
+  const body = shown ?? (intro ? HELP_INTRO : null)
+  if (body == null) {
     return (
-      <button type="button" className="help-chip" onClick={() => setOn('off')}
-        title="Hide the help card (press h to bring it back)" aria-label="Hide help card">
+      <button type="button" className="help-chip" onClick={() => setIntro(true)}
+        title="What do these controls do?" aria-label="Show help">
         <MdHelpOutline aria-hidden /> help
       </button>
     )
@@ -78,9 +89,9 @@ export function HelpCard() {
   return (
     <aside className="help-card" role="status" aria-live="polite">
       <div className="head"><MdHelpOutline aria-hidden /> <span>what this does</span>
-        <button type="button" className="x" onClick={() => setOn('off')} title="Hide (press h to bring it back)" aria-label="Hide help card">×</button>
+        <button type="button" className="x" onClick={() => { setIntro(false); setShown(null) }} title="Collapse to the help chip" aria-label="Collapse help card">×</button>
       </div>
-      <div className="body">{shown}</div>
+      <div className="body">{body}</div>
     </aside>
   )
 }

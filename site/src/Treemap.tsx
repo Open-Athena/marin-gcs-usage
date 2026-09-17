@@ -891,7 +891,12 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
       // headline), so the map area gets ONE frame in that state's color — every
       // tile inherits it, and per-tile borders are suppressed (state boundaries
       // only), so without this the view read as unmarked.
-      className={`treemap store-${scheme === 's3://' ? 'cw' : 'gcs'} tiling-${tiling}${rootMark ? ` root-marked root-marked-${rootMark.action}` : ''}`}
+      // At the un-drilled root the crumb bar is just the root label + totals —
+      // a redundant near-empty row (the topbar already names the view, the
+      // footer + resting card carry the totals) that read as a gap under the
+      // controls. Hide it there; a drill (breadcrumbs) or a gradient legend
+      // brings it back. `bar-hidden` → app.scss.
+      className={`treemap store-${scheme === 's3://' ? 'cw' : 'gcs'} tiling-${tiling}${rootMark ? ` root-marked root-marked-${rootMark.action}` : ''}${drillLen <= 1 && !modeLegend ? ' bar-hidden' : ''}`}
     />
   )
 }

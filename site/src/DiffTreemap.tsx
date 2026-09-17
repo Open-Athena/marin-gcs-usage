@@ -281,29 +281,30 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
         // or Σ|Δ|), which reads as a nonsense total next to the header's scan
         // size. Show the movement instead — bytes and objects both decomposed
         // as start − removed + added = end (±Δ).
+        // Bytes and objects each on their own line, but BOTH in the crumb
+        // suffix (which the diff lets wrap) — so the two movement lines sit
+        // together above the legend, not split one above / one below it.
         renderCrumbSuffix={n => n.status === 'root'
           ? <>
-              — {fmtBytes(n.size_old)}{' '}
-              <span className="shrank">− {fmtBytes(removed)}</span>{' '}
-              <span className="grew">+ {fmtBytes(grew)}</span>{' '}
-              {firstScanned > 0 && <><span className="first">⊕ {fmtBytes(firstScanned)} first scanned</span>{' '}</>}
-              {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
-              <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
+              <span className="diff-crumbline">
+                — {fmtBytes(n.size_old)}{' '}
+                <span className="shrank">− {fmtBytes(removed)}</span>{' '}
+                <span className="grew">+ {fmtBytes(grew)}</span>{' '}
+                {firstScanned > 0 && <><span className="first">⊕ {fmtBytes(firstScanned)} first scanned</span>{' '}</>}
+                {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
+                <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
+              </span>
+              <span className="diff-crumbline">
+                {fmtN(n.n_old)} obj{' '}
+                <span className="shrank">− {fmtN(n_removed)}</span>{' '}
+                <span className="grew">+ {fmtN(grewN)}</span>{' '}
+                {firstScannedN > 0 && <><span className="first">⊕ {fmtN(firstScannedN)} first scanned</span>{' '}</>}
+                {data.truncated || n_added - n_removed !== n.n_desc_delta ? '≈' : '='} {fmtN(n.n_new)}{' '}
+                <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(n.n_desc_delta)})</span>
+                {extra}
+              </span>
             </>
           : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span></>}
-        // The object movement gets its own row below the crumb — bytes and
-        // objects on one line was too much to read at a glance.
-        renderRollup={() => (
-          <span className="diff-objrow">
-            {fmtN(root.n_old)} obj{' '}
-            <span className="shrank">− {fmtN(n_removed)}</span>{' '}
-            <span className="grew">+ {fmtN(grewN)}</span>{' '}
-            {firstScannedN > 0 && <><span className="first">⊕ {fmtN(firstScannedN)} first scanned</span>{' '}</>}
-            {data.truncated || n_added - n_removed !== root.n_desc_delta ? '≈' : '='} {fmtN(root.n_new)}{' '}
-            <span className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(root.n_desc_delta)})</span>
-            {extra}
-          </span>
-        )}
         collapseChains
         depthFade={1}
         rootFade={1}
@@ -405,7 +406,15 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
         renderTipDefault={() => (
           <div className="tip-viewcard">
             <div className="vc-scope">{label}</div>
-            <div className="vc-hint">Hover a cell for its movement · totals are in the crumb above.</div>
+            <div className="nums">
+              {fmtBytes(root.size_old)} → {fmtBytes(root.size_new)}{' '}
+              <span className={root.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(root.delta)})</span>
+            </div>
+            <div className="nums">
+              {fmtN(root.n_old)} → {fmtN(root.n_new)} obj{' '}
+              <span className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(root.n_desc_delta)})</span>
+            </div>
+            <div className="vc-hint">Hover a cell for its movement · full breakdown in the crumb above.</div>
           </div>
         )}
         renderLegend={() => (

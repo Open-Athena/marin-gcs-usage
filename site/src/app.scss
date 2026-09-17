@@ -782,17 +782,21 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 
 
 // "Changes since previous scan" — diff treemap section.
+// The main map at the un-drilled root hides its crumb bar (redundant with the
+// topbar + footer) so the map sits right under the controls.
+.treemap.bar-hidden > .dt-treemap-bar { display: none !important; }
+
 .diff-tm {
   height: 380px;
   margin-top: 8px;
 }
-// The object-movement row under the diff crumb (its own line, quieter than
-// the byte crumb which carries the headline arithmetic).
-.diff-tm .dt-treemap-rollup { padding: 0 6px 2px; }
-.diff-tm .diff-objrow {
-  font-size: 0.82rem; color: var(--ink-2); font-variant-numeric: tabular-nums;
-  .info { margin-left: 6px; }
-}
+// Bytes and objects each on their own line in the diff crumb (both above the
+// legend), so the movement reads as two rows, not one over-long line.
+.diff-tm .diff-crumbline { display: block; font-variant-numeric: tabular-nums; }
+.diff-tm .diff-crumbline + .diff-crumbline { margin-top: 1px; }
+// The diff tip is a line taller (path + bytes + objects + status) than the
+// main map's, so its docked panel gets more fixed height.
+.diff-tm .dt-treemap-tip.dock { --dt-dock-h: 112px; }
 // Diff accents: brighter than the cell fills (they're read as 12px text on
 // the page background, not as a block of colour); light mode goes darker.
 .grew { color: var(--grew); }
@@ -1432,9 +1436,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   width: 100%;
   margin-top: 4px;
   box-shadow: none !important;
-  // A stable floor so swapping between the resting view-card and a hovered
-  // cell's tip (similar heights) doesn't jog the page vertically.
-  min-height: 3.2em;
+  // A FIXED height (not min) so nothing below the map jitters as you move
+  // across cells — a shorter entry (root, an "(other)" fold) pads with
+  // whitespace, a taller one (a long wrapped path) scrolls inside the panel.
+  // Sized to the common max; the diff overrides it (its tip is a line taller).
+  height: var(--dt-dock-h, 96px);
+  overflow-y: auto;
   // A full-width panel holds a whole GCS/S3 path on one line otherwise —
   // wrap it (the float tip was narrow enough to wrap on its own).
   overflow-wrap: anywhere;
@@ -1447,7 +1454,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     color: var(--ink-3) !important;
     border-style: dashed !important;
     background: transparent !important;
-    min-height: 0;
+    height: auto;
     padding: 5px 10px !important;
   }
   .dt-treemap-tipdock-hint { font-size: 12px; }

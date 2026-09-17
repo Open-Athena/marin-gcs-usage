@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { MdAutoDelete } from 'react-icons/md'
 import { describeRule, lifecycleDiffByBucket, parseLifecycle, rulePrefix } from './lifecycle'
 import type { LifecycleSnapshot } from './lifecycle'
 import type { Store } from './stores'
@@ -49,7 +48,6 @@ export function LifecycleFold({ store, asof, prevScan, note }: {
   return (
     <details className="prose fold lifecycle">
       <summary>
-        <MdAutoDelete className="fold-icon" aria-hidden />
         <span><b>Bucket lifecycle</b> — {title}</span>
       </summary>
       {rules ? (
