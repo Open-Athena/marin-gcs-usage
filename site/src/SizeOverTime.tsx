@@ -91,9 +91,21 @@ function YFromToggle({ v, set }: { v: YFrom; set: (y: YFrom) => void }) {
 
 // Points sit at UTC midnight of each scan's calendar date, so labels format
 // in UTC too — a local-time render shows the 8/23 scan as “Aug 22” in the US.
-const dateOfX = (x: number) => new Date(x).toISOString().slice(0, 10)
+// x → the scan id it came from: date-only ids sit at midnight; a sub-daily
+// id keeps its `THHMM` (`2026-09-17T1201`), so a pick or brush names the
+// exact scan.
+export const dateOfX = (x: number) => {
+  const iso = new Date(x).toISOString()
+  return iso.slice(11, 16) === '00:00' ? iso.slice(0, 10) : `${iso.slice(0, 10)}T${iso.slice(11, 13)}${iso.slice(14, 16)}`
+}
 const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
-const xOfScan = (d: string) => new Date(d.slice(0, 10)).getTime()
+// A scan's instant: `YYYY-MM-DD` = UTC midnight, `YYYY-MM-DDTHHMM` = that
+// UTC time. Two scans a day must not share an x (the bands key by x, and a
+// shared x drew the total as a vertical step against the band).
+export const xOfScan = (d: string) => {
+  const m = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2})(\d{2}))?$/.exec(d)
+  return m ? new Date(`${m[1]}T${m[2] ?? '00'}:${m[3] ?? '00'}:00Z`).getTime() : new Date(d.slice(0, 10)).getTime()
+}
 
 export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, filterLabel }: {
   /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
