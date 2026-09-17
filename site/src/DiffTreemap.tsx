@@ -207,12 +207,15 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
     <div className="diff-tm">
       <DtTreemap<DiffNode>
         root={root}
-        // Controlled at its root: a drill is the page's, not this map's.
+        // Controlled at its root: a drill is the page's, not this map's. Any
+        // directory cell drills — a leaf here (no enumerated children in the
+        // diff) is still a directory on the page, so it must not pin a tip
+        // the way the core's default click on a leaf does.
         path={[root]}
-        onPathChange={p => {
-          const leaf = p[p.length - 1]
-          if (!onDrill || p.length < 2 || leaf.status === 'filler' || leaf.label.startsWith('(')) return
-          onDrill(leaf.key.split('/'))
+        onCellClick={n => {
+          if (!onDrill || n.status === 'filler' || n.status === 'root' || n.label.startsWith('(')) return false
+          onDrill(n.key.split('/'))
+          return true
         }}
         getSize={n => n.weight}
         getChildren={n => n.children}
