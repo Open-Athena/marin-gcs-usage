@@ -883,6 +883,10 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
       tiling={tiling}
       renderer={renderer}
       renderTooltip={renderTooltip}
+      // One docked panel below the map (above the table) that updates in place,
+      // instead of a tip that chases the pointer up and down a lineage and
+      // covers the cells/controls under it.
+      tipMode="dock"
       renderCellExtra={renderCellExtra}
       outlineGroups={markOutlines}
       renderRollup={renderRollup}

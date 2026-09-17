@@ -191,6 +191,7 @@ export function DiffTreemap({ data, label }: { data: DiffData; label: string }) 
         getLabel={n => n.label}
         getId={(_n, p) => p.map(x => x.key).join('|')}
         formatSize={n => fmtBytes(n)}
+        tipMode="dock"
         // The core's default suffix is the node's *area weight* (Σ max(old,new),
         // or Σ|Δ|), which reads as a nonsense total next to the header's scan
         // size. Show the movement instead: start − removed + added = end.
