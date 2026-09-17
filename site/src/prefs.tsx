@@ -71,13 +71,13 @@ export function SettingsMenu() {
           the renderer toggle also drilled the map — the synthesized mouse
           sequence, not the click, is what the cells saw). */}
       <div className="menu" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onTouchEnd={e => e.stopPropagation()}>
-        <Tooltip content={TILING_TIP} placement="bottom">
+        <Tooltip content={TILING_TIP} placement="left">
           <label className="row has-tt">
             <input type="checkbox" checked={t === 'gaps'} onChange={e => setT(e.target.checked ? 'gaps' : 'shared')} />
             gaps between cells
           </label>
         </Tooltip>
-        <Tooltip content={RENDERER_TIP} placement="bottom">
+        <Tooltip content={RENDERER_TIP} placement="left">
           <span className="row has-tt">
             renderer
             <span className="seg">
