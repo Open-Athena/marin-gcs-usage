@@ -25,6 +25,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .secrets import secret
+
 err = partial(print, file=sys.stderr)
 
 DEFAULT_URL = "https://gcs.oa.dev"
@@ -35,7 +37,7 @@ UA = "gcs-usage-cli/1.0"
 def creds(token: str | None, url: str | None) -> tuple[str, str | None]:
     """Resolve (base_url, token) from args then env, so every verb shares one
     convention: ``$GCS_USAGE_TOKEN`` / ``$GCS_USAGE_URL``."""
-    return (url or os.environ.get("GCS_USAGE_URL") or DEFAULT_URL), (token or os.environ.get("GCS_USAGE_TOKEN"))
+    return (url or os.environ.get("GCS_USAGE_URL") or DEFAULT_URL), secret(token, "GCS_USAGE_TOKEN")
 
 #: Mirror of `PREFIX_RE` in the three site endpoints: a directory prefix under
 #: one of the six marin buckets, trailing slash required. Kept in lockstep so
