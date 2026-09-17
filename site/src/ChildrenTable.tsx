@@ -131,6 +131,18 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
   const path = segs.join('/')
   const clearSel = sel.clear
   useEffect(() => clearSel(), [path, clearSel])
+  // Deselect on a click anywhere outside the table (or its docked bar) — the
+  // plotly "click empty space to clear" convention; without it a selection
+  // could only be dropped from inside the section.
+  const selCount = sel.selected.size
+  useEffect(() => {
+    if (!selCount) return
+    const onDown = (e: Event) => {
+      if (!(e.target as HTMLElement)?.closest('.children-tbl, .sel-bar')) clearSel()
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [selCount, clearSel])
   const selUris = [...sel.selected]
   const bulkMark = (action: MarkAction | null) => { if (selUris.length) post.mutate(selUris.map(u => ({ pattern: u + '/', keep: action })), { onSuccess: () => sel.clear() }) }
   const selBytes = kids.filter(k => sel.selected.has(uriOfKid(k))).reduce((s, k) => s + k.b, 0)
@@ -186,11 +198,8 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
       </select>
     </span>
   )
-  // The top bar holds the pager on the left and the selection on the right.
-  // It renders only when it has something to show — an always-present empty
-  // bar read as a stray gap between the map and the table (a phone's whole
-  // first fold). The first selection therefore shifts the rows down by one
-  // bar; the row just clicked stays selected, so nothing is lost.
+  // The top bar holds only the pager now; the selection bar docks below the
+  // table (sel-bar-dock) so a selection never shifts the rows being clicked.
   // A click on the section's own dead space (not a row / control) deselects.
   const clearOnDeadClick = (e: MouseEvent) => {
     if (sel.selected.size && !(e.target as HTMLElement).closest('tr, button, input, select, a, .sel-bar')) sel.clear()
@@ -225,7 +234,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
   }
   return (
     <section className="children-tbl" onClick={clearOnDeadClick}>
-      {(pager || (showActions && sel.selected.size > 0)) && <div className="pager top">{pager}{selBar}</div>}
+      {pager && <div className="pager top">{pager}</div>}
       <table className="worklist selectable">
         <thead>
           <tr>
@@ -335,6 +344,10 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, cli
         </tfoot>
       </table>
       {pager && <div className="pager">{pager}</div>}
+      {/* The selection bar docks BELOW the table (sticky), so making a
+          selection never shifts the rows you're clicking — it used to sit
+          above and push every row down by its height. */}
+      {selBar && <div className="sel-bar-dock">{selBar}</div>}
     </section>
   )
 }

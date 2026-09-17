@@ -289,16 +289,21 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
               {firstScanned > 0 && <><span className="first">⊕ {fmtBytes(firstScanned)} first scanned</span>{' '}</>}
               {data.truncated || added - removed !== n.delta ? '≈' : '='} {fmtBytes(n.size_new)}{' '}
               <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span>
-              {'  ·  '}
-              {fmtN(n.n_old)} obj{' '}
-              <span className="shrank">− {fmtN(n_removed)}</span>{' '}
-              <span className="grew">+ {fmtN(grewN)}</span>{' '}
-              {firstScannedN > 0 && <><span className="first">⊕ {fmtN(firstScannedN)} first scanned</span>{' '}</>}
-              {data.truncated || n_added - n_removed !== n.n_desc_delta ? '≈' : '='} {fmtN(n.n_new)}{' '}
-              <span className={n.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(n.n_desc_delta)})</span>
-              {extra}
             </>
           : <>— {fmtBytes(n.size_old)} → {fmtBytes(n.size_new)} <span className={n.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(n.delta)})</span></>}
+        // The object movement gets its own row below the crumb — bytes and
+        // objects on one line was too much to read at a glance.
+        renderRollup={() => (
+          <span className="diff-objrow">
+            {fmtN(root.n_old)} obj{' '}
+            <span className="shrank">− {fmtN(n_removed)}</span>{' '}
+            <span className="grew">+ {fmtN(grewN)}</span>{' '}
+            {firstScannedN > 0 && <><span className="first">⊕ {fmtN(firstScannedN)} first scanned</span>{' '}</>}
+            {data.truncated || n_added - n_removed !== root.n_desc_delta ? '≈' : '='} {fmtN(root.n_new)}{' '}
+            <span className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(root.n_desc_delta)})</span>
+            {extra}
+          </span>
+        )}
         collapseChains
         depthFade={1}
         rootFade={1}
@@ -309,8 +314,11 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
           // it), so its blue children aren't sitting inside a blue block; a
           // leaf takes the blue fill.
           if (n.fs) {
+            // Container title bars take a blue tint (not flat panel) so a
+            // first-scanned subtree reads as one blue region rather than a
+            // black-and-blue checkerboard; leaves take the full blue fill.
             return n.children?.length
-              ? { bg: 'var(--panel)', ink: 'var(--ink)', edge: FIRST_SCANNED }
+              ? { bg: 'color-mix(in oklab, var(--s1) 28%, var(--panel))', ink: 'var(--ink)', edge: FIRST_SCANNED }
               : { bg: FIRST_SCANNED, ink: '#fff', edge: FIRST_SCANNED }
           }
           // The seam colour: page-ground blended into the fill (skipped for
@@ -390,6 +398,15 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill, extra }: {
               {n.lookup && ' · under the floor on one side, read exactly'}
             </div>
           </>
+        )}
+        // Resting card (nothing hovered / on a phone): the whole diff's totals
+        // already sit in the crumb + object row above, so this just names the
+        // scope and nudges toward hovering, instead of collapsing to a stub.
+        renderTipDefault={() => (
+          <div className="tip-viewcard">
+            <div className="vc-scope">{label}</div>
+            <div className="vc-hint">Hover a cell for its movement · totals are in the crumb above.</div>
+          </div>
         )}
         renderLegend={() => (
           <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 6px', fontSize: '0.8rem', opacity: 0.85 }}>

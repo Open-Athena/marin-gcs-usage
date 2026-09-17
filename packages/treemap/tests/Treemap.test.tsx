@@ -1006,6 +1006,29 @@ describe('<Treemap tipMode="dock">', () => {
     }
   })
 
+  it('renders the default view-card at rest (resting, not empty) and swaps to the cell on hover', () => {
+    const restore = withLayout()
+    try {
+      const { container } = render(
+        <Treemap root={tree} {...accessors} tipMode="dock"
+          renderTooltip={n => <>TIP:{n.n}</>}
+          renderTipDefault={n => <>VIEW:{n.n}</>}
+          minCellArea={null} />,
+      )
+      const dock = () => container.querySelector('.dt-treemap-tip.dock') as HTMLElement
+      // At rest: the default card, panel styled as `resting` (never `empty`).
+      expect(dock().classList.contains('empty')).toBe(false)
+      expect(dock().classList.contains('resting')).toBe(true)
+      expect(dock().textContent).toBe('VIEW:root')
+      // Hover swaps to the cell; leaving is handled elsewhere (grace timer).
+      fireEvent.mouseMove(leafOf(container))
+      expect(dock().textContent).toBe('TIP:bar')
+      expect(dock().classList.contains('resting')).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
   it('hovering a cell fills the same panel in place (still no floating tip)', () => {
     const restore = withLayout()
     try {

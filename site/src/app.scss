@@ -786,6 +786,13 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   height: 380px;
   margin-top: 8px;
 }
+// The object-movement row under the diff crumb (its own line, quieter than
+// the byte crumb which carries the headline arithmetic).
+.diff-tm .dt-treemap-rollup { padding: 0 6px 2px; }
+.diff-tm .diff-objrow {
+  font-size: 0.82rem; color: var(--ink-2); font-variant-numeric: tabular-nums;
+  .info { margin-left: 6px; }
+}
 // Diff accents: brighter than the cell fills (they're read as 12px text on
 // the page background, not as a block of colour); light mode goes darker.
 .grew { color: var(--grew); }
@@ -1425,19 +1432,31 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   width: 100%;
   margin-top: 4px;
   box-shadow: none !important;
+  // A stable floor so swapping between the resting view-card and a hovered
+  // cell's tip (similar heights) doesn't jog the page vertically.
+  min-height: 3.2em;
   // A full-width panel holds a whole GCS/S3 path on one line otherwise —
   // wrap it (the float tip was narrow enough to wrap on its own).
   overflow-wrap: anywhere;
   // A quieter frame than the floating tip's drop shadow — it's a fixed part of
   // the widget, not something popped over the page.
   background: color-mix(in oklab, var(--panel) 92%, var(--surface)) !important;
+  // Resting = the whole-view card (nothing hovered); a real panel, not a stub.
+  &.resting { color: var(--ink-2); }
   &.empty {
     color: var(--ink-3) !important;
     border-style: dashed !important;
     background: transparent !important;
+    min-height: 0;
     padding: 5px 10px !important;
   }
   .dt-treemap-tipdock-hint { font-size: 12px; }
+  // The main map's resting card: scope line, stats, then the hover nudge.
+  .tip-viewcard {
+    .vc-scope { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--ink); font-weight: 600; word-break: break-all; }
+    .nums { color: var(--ink-2); font-variant-numeric: tabular-nums; margin-top: 2px; }
+    .vc-hint { color: var(--ink-3); font-size: 11.5px; margin-top: 3px; }
+  }
 }
 
 // The children table is wider than a phone: it scrolls inside its own box
@@ -1544,7 +1563,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 
 .children-tbl { margin-top: 10px; }
 // Row selection (rowSelection.ts) on the children table: the checkbox
-// column, the cursor / selected row tints, and the bulk bar above the table.
+// column, the cursor / selected row tints, and the bulk bar docked below.
 .worklist.selectable {
   tbody tr { cursor: default; }
   tr.sel td { background: color-mix(in oklab, var(--s1) 14%, transparent); }
@@ -1566,6 +1585,14 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     &.clear { border-color: var(--line); &:hover { color: var(--ink); border-color: var(--ink-3); } }
   }
   button.quiet { font: inherit; font-size: 12px; background: transparent; color: var(--ink-3); border: 1px solid transparent; border-radius: 4px; padding: 1px 6px; cursor: pointer; &:hover { color: var(--ink); } }
+}
+// The selection bar docks at the bottom of the table, sticky so it stays in
+// reach on a long list, and centered — it appears below the rows, never
+// shifting the row just clicked.
+.children-tbl .sel-bar-dock {
+  position: sticky; bottom: 8px; z-index: 6;
+  display: flex; justify-content: center; margin-top: 8px;
+  .sel-bar { margin-left: 0; box-shadow: 0 6px 18px rgb(0 0 0 / 0.25); }
 }
 .children-tbl .pager {
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; margin: 6px 0; font-size: 12px; color: var(--ink-2);

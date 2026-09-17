@@ -569,6 +569,12 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
           ['undecided', state.unmarked, 'var(--other)'],
         ] as [string, number, string][]).filter(([, b]) => b > 0)
       : []
+    // Nothing to key here (tree/date/read at a level with no mark panel, no
+    // state row, no owner rows) — render no rollup at all, so an empty
+    // `.dt-treemap-rollup` div doesn't sit as a gap between the crumb bar and
+    // the map.
+    const rollupRows = rollup.filter(r => r.b >= 0.001 * node.b)
+    if (!hasPanel && stateRows.length === 0 && rollupRows.length === 0) return null
     return (
       <>
         {/* A bucket itself isn't markable (MarkControls renders nothing there) —
@@ -596,7 +602,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
             ))}
           </span>
         )}
-        {rollup.filter(r => r.b >= 0.001 * node.b).map(r => {
+        {rollupRows.map(r => {
           // Real per-user rows (not "(other users)"/"unowned") get a GitHub
           // avatar next to the color swatch.
           const isUser = mode === 'user' && !r.k.startsWith('(') && r.k !== 'unowned'
@@ -840,6 +846,18 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
       // instead of a tip that chases the pointer up and down a lineage and
       // covers the cells/controls under it.
       tipMode="dock"
+      // Resting state (nothing hovered / on a phone): a card about the whole
+      // current view, so the panel never collapses to an empty stub.
+      renderTipDefault={(n, p) => (
+        <div className="tip-viewcard">
+          <div className="vc-scope">{p.length > 1 ? uriOf(p) : n.n}</div>
+          <div className="nums">
+            {fmtBytes(n.b)} · {fmtN(n.o)} objects · {root.b ? ((100 * n.b) / root.b).toFixed(2) : 0}% of total
+            {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}
+          </div>
+          <div className="vc-hint">Hover a cell for its details · click one to pin it.</div>
+        </div>
+      )}
       renderCellExtra={renderCellExtra}
       outlineGroups={markOutlines}
       renderRollup={renderRollup}
