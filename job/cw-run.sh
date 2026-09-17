@@ -25,6 +25,23 @@
 # cw-batch-submit.sh).
 set -euxo pipefail
 
+# Secrets arrive from Secret Manager verbatim, and a version created with
+# `echo … | --data-file=-` carries a trailing newline (it broke the Discord
+# digest for two days, 2026-09-16/17). Strip surrounding whitespace off every
+# secret env var before anything (boto, curl, wrangler, the CLI) reads it.
+# xtrace off for the block: `${!n}` would print the values.
+{ set +x; } 2>/dev/null
+for n in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN DISCORD_BOT_TOKEN \
+         DISCORD_GCS_USAGE_WEBHOOK GCS_USAGE_TOKEN SLACK_BOT_TOKEN SLACK_WEBHOOK \
+         CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET; do
+  if [ -n "${!n+set}" ]; then
+    v=${!n}; v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
+    export "$n=$v"
+  fi
+done
+unset n v
+set -x
+
 # Deployment config for the shared CLI (cloud/src/dt_cloud/{index_footer,warm}.py).
 export D1_DB_ID=${D1_DB_ID:-7f1e1326-b879-4ecd-8621-846621c24f36}   # oa-cw-s3-usage-db (site/wrangler.toml)
 export D1_DB_NAME=${D1_DB_NAME:-oa-cw-s3-usage-db}

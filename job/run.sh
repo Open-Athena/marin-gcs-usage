@@ -17,6 +17,23 @@
 # bucket path (the live site only reads snapshots/<date>/).
 set -euxo pipefail
 
+# Secrets arrive from Secret Manager verbatim, and a version created with
+# `echo … | --data-file=-` carries a trailing newline (it broke the Discord
+# digest for two days, 2026-09-16/17). Strip surrounding whitespace off every
+# secret env var before anything (boto, curl, wrangler, the CLI) reads it.
+# xtrace off for the block: `${!n}` would print the values.
+{ set +x; } 2>/dev/null
+for n in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN DISCORD_BOT_TOKEN \
+         DISCORD_GCS_USAGE_WEBHOOK GCS_USAGE_TOKEN SLACK_BOT_TOKEN SLACK_WEBHOOK \
+         CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET; do
+  if [ -n "${!n+set}" ]; then
+    v=${!n}; v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
+    export "$n=$v"
+  fi
+done
+unset n v
+set -x
+
 DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
 SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}

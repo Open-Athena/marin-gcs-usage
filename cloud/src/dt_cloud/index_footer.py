@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from .secrets import env_secret
+
 # Physical/logical strings pyarrow emits already match parquet-thrift (and thus
 # hyparquet) — no remapping table needed; we just restructure.
 
@@ -183,7 +185,7 @@ D1_DB_NAME = os.environ.get("D1_DB_NAME", "oa-gcs-usage-auth")
 def _creds() -> tuple[str, str]:
     """(api_token, account_id) from the env, falling back to the repo .envrc —
     so it works in the Batch job (env) and from a laptop (direnv/.envrc)."""
-    tok = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    tok = env_secret("CLOUDFLARE_API_TOKEN", "")
     acct = os.environ.get("CLOUDFLARE_ACCOUNT_ID") or os.environ.get("OA_CF_ACCT", "")
     if not (tok and acct):
         try:

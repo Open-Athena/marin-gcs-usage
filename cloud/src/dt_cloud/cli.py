@@ -26,6 +26,7 @@ from .cw_digest import REPLY_HOUR_UTC
 from .identity import DEFAULT_IDENTITIES, load_identities
 from .mark import DEFAULT_URL as MARK_DEFAULT_URL
 from .mark import KEEP_ACTIONS as MARK_KEEPS
+from .secrets import env_secret, secret
 from .index_footer import INDEX_VARIANTS
 from .viz import COARSE_EXPS
 from .listing import prepare_listing
@@ -1011,8 +1012,8 @@ def warm_cache(date: str | None, jobs: int, dry_run: bool, root: str | None, tok
     # Auth: an agent bearer token (`-t` / GCS_USAGE_TOKEN — the app gate), or a
     # Cloudflare Access service-token pair (CF_ACCESS_CLIENT_ID/SECRET — a
     # whole-host edge-gated deployment). Same request either way.
-    token = token or os.environ.get("GCS_USAGE_TOKEN")
-    cid, csec = os.environ.get("CF_ACCESS_CLIENT_ID"), os.environ.get("CF_ACCESS_CLIENT_SECRET")
+    token = secret(token, "GCS_USAGE_TOKEN")
+    cid, csec = env_secret("CF_ACCESS_CLIENT_ID"), env_secret("CF_ACCESS_CLIENT_SECRET")
     if token:
         headers = {"Authorization": f"Bearer {token}"}
     elif cid and csec:
@@ -2534,7 +2535,7 @@ def cw_digest(channel: str | None, reply_delay: float, for_real: bool, reply_hou
         return
 
     channel = channel or os.environ.get("SLACK_CHANNEL")
-    token = token or os.environ.get("SLACK_BOT_TOKEN")
+    token = secret(token, "SLACK_BOT_TOKEN")
     if not (channel and token):
         raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
     icons = icons_dir or _cw_icons_dir()
@@ -2640,8 +2641,8 @@ def digest(bot_token: str | None, channel: str | None, reply_delay: float, edit_
         return
 
     if platform == "discord":
-        webhook = webhook or os.environ.get("DISCORD_GCS_USAGE_WEBHOOK")
-        bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+        webhook = secret(webhook, "DISCORD_GCS_USAGE_WEBHOOK")
+        bot_token = secret(bot_token, "DISCORD_BOT_TOKEN")
         if not (webhook and bot_token):
             raise SystemExit("digest: -P discord needs DISCORD_GCS_USAGE_WEBHOOK + DISCORD_BOT_TOKEN (or -w/-b)")
         dg.post_digest_discord(root, m, webhook, bot_token, site_url=site_url, edit_replies=edit_replies)
@@ -2650,7 +2651,7 @@ def digest(bot_token: str | None, channel: str | None, reply_delay: float, edit_
     if edit_replies:
         raise SystemExit("digest: -E/--edit-replies is Discord-only (Slack replies are never edited)")
     channel = channel or os.environ.get("SLACK_CHANNEL")
-    token = token or os.environ.get("SLACK_BOT_TOKEN")
+    token = secret(token, "SLACK_BOT_TOKEN")
     if not (channel and token):
         raise SystemExit("digest: need SLACK_BOT_TOKEN + SLACK_CHANNEL (or -t/-c)")
     icons = _icons_dir()
@@ -2696,7 +2697,7 @@ def discord_emoji(bot_token: str | None, icons: Path | None, dry_run: bool) -> N
     from . import digest as dg
     from . import discord_api as api
 
-    bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+    bot_token = secret(bot_token, "DISCORD_BOT_TOKEN")
     if not bot_token:
         raise SystemExit("discord-emoji: need DISCORD_BOT_TOKEN (or -b)")
     icons = icons or _icons_dir() / "arrows"
@@ -2735,7 +2736,7 @@ def discord_webhook(bot_token: str | None, channel: str, guild: str | None, name
     redirect stdout into a secret store or a 0600 file, never a log."""
     from . import discord_api as api
 
-    bot_token = bot_token or os.environ.get("DISCORD_BOT_TOKEN")
+    bot_token = secret(bot_token, "DISCORD_BOT_TOKEN")
     if not bot_token:
         raise SystemExit("discord-webhook: need DISCORD_BOT_TOKEN (or -b)")
     if channel.startswith("#"):
@@ -2776,7 +2777,7 @@ def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: s
     site_url = site_url or wk.DEFAULT_URL
     bucket = os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx")
     root = root or f"gs://{bucket}/snapshots"
-    webhook = webhook or os.environ.get("DISCORD_GCS_USAGE_WEBHOOK")
+    webhook = secret(webhook, "DISCORD_GCS_USAGE_WEBHOOK")
     if not dry_run and not webhook:
         raise SystemExit("weekly: need -w/--webhook or $DISCORD_GCS_USAGE_WEBHOOK (or -n)")
 
