@@ -7,13 +7,15 @@
 //   PATCH  /api/plans/:id          { state: 'closed' }                      admin
 //   POST   /api/plans/:id/items    { prefixes: [...], note? }               admin
 //   DELETE /api/plans/:id/items    { prefixes: [...] }                      admin
+//   POST   /api/plans/stage        { prefixes: [...], note? } -> { plan_id } viewer
 //
-// Reads are open to any authenticated viewer; writes require admin. Items are
+// Reads and staging (the opt-in trash proposal) are open to any authenticated
+// viewer; curating a specific plan's items and closing plans require admin. Items are
 // editable only while the plan is `open`. gcs adaptation of cw's handler:
 // gs:// prefixes, gcs auth helpers, `admin_edits` audit; a plan may span buckets.
 import type { D1Database } from '@cloudflare/workers-types'
 import { type Ctx, type Env as AuthEnv, json, requireAdmin, requireViewer } from '../../_lib/auth.js'
-import { audit, canonicalPrefix, type PlanRow } from '../../_lib/plans.js'
+import { audit, canonicalPrefix, stageItems, type PlanRow } from '../../_lib/plans.js'
 
 type Env = AuthEnv & { DB?: D1Database }
 
@@ -113,6 +115,19 @@ export const onRequest = async (ctx: Ctx & { env: Env }): Promise<Response> => {
       return gated instanceof Response ? gated : createPlan(db, who(gated), await readBody(ctx.request))
     }
     return json({ error: 'method not allowed' }, 405)
+  }
+
+  // /api/plans/stage — the opt-in trash proposal; any viewer may stage.
+  if (segs.length === 1 && segs[0] === 'stage' && method === 'POST') {
+    const gated = await requireViewer(ctx)
+    if (gated instanceof Response) return gated
+    const body = await readBody(ctx.request)
+    const prefixes = Array.isArray(body.prefixes)
+      ? (body.prefixes as unknown[]).filter((x): x is string => typeof x === 'string')
+      : []
+    const note = typeof body.note === 'string' ? body.note : null
+    const res = await stageItems(db, prefixes, who(gated), note)
+    return 'error' in res ? json(res, 400) : json(res, 201)
   }
 
   const id = Number(segs[0])

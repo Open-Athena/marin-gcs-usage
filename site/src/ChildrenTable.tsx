@@ -4,7 +4,7 @@ import { intParam, useUrlState } from 'use-prms'
 import { useCanMark } from './auth'
 import { dateColor, epochDaysToDate, epochDaysToMonthShort } from './colors'
 import type { UserIndexEntry } from './colors'
-import { ACTION_COLORS, KEEP_TIP, KLC_TIP, SWEEP_TIP, clearTip } from './MarkControls'
+import { ACTION_COLORS, KEEP_TIP, KLC_TIP, clearTip } from './MarkControls'
 import type { MarkAction, MarkIndex } from './marks'
 import { ACTION_LABELS, useMarkMutations } from './marks'
 import { OwnerBar, ownerShares } from './OwnerBar'
@@ -15,6 +15,7 @@ import { elideMid } from './CopyName'
 import { AssignSelect } from './AssignSelect'
 import { OwnerFactChip } from './OwnerFactChip'
 import { useRowSelection, useRowSelectionKeys } from './rowSelection'
+import { useStage } from './plans'
 import type { TreeNode } from './types'
 import { fmtN } from './types'
 import { useUnits } from './units'
@@ -53,13 +54,18 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
 }) {
   const { fmtBytes } = useUnits()
   const { put, post } = useMarkMutations()
+  const stage = useStage()
   const canMark = useCanMark()
   const [sort, setSort] = useState<{ k: SortKey; asc: boolean }>({ k: 'b', asc: false })
   const [page, setPage] = useState(0)
   const [nP, setNP] = useUrlState('n', intParam(20))
   const PAGE = PAGE_SIZES.includes(nP) ? nP : 20
+  // Any signed-in viewer can select + trash (stage for deletion, the opt-in
+  // model); the legacy mark dots render only in mark mode (markIdx present).
+  const showSel = canMark
   const showActions = !!markIdx && canMark
   const mark = (uri: string, action: MarkAction | null) => put.mutate({ prefix: uri + '/', action })
+  const trash = (uri: string) => stage.mutate([uri + '/'])
 
   const kids = useMemo(() => {
     let ks = (node.c ?? []).slice()
@@ -127,6 +133,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   useEffect(() => clearSel(), [path, clearSel])
   const selUris = [...sel.selected]
   const bulkMark = (action: MarkAction | null) => { if (selUris.length) post.mutate(selUris.map(u => ({ pattern: u + '/', keep: action })), { onSuccess: () => sel.clear() }) }
+  const trashSel = () => { if (selUris.length) stage.mutate(selUris.map(u => u + '/'), { onSuccess: () => sel.clear() }) }
   const selBytes = kids.filter(k => sel.selected.has(uriOfKid(k))).reduce((s, k) => s + k.b, 0)
   // Everything a row derives from the tree and the ledger — owner shares, the
   // resolved mark and claim, the state bar's subtree walk, the last-ckpt
@@ -150,20 +157,27 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
       ? <section className="children-tbl"><p className="tab-note">No prefix under this view is {[...states].join(' / ')}.</p></section>
       : null
   }
-  const selBar = showActions && sel.selected.size > 0 && (
+  const selBar = showSel && sel.selected.size > 0 && (
     <span className="sel-bar">
       <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}
       <span className="acts">
-        <span className="lbl">mark all</span>
-        {(['keep', 'sweep', 'keep_last_ckpt'] as MarkAction[]).map(a => (
-          <Tooltip content={<>Mark every selected prefix <b>{ACTION_LABELS[a]}</b> (one batched save)</>} key={a}>
-            <button type="button" className={`dot ${a}`} style={{ ['--act' as string]: ACTION_COLORS[a] }} onClick={() => bulkMark(a)} aria-label={ACTION_LABELS[a]} />
-          </Tooltip>
-        ))}
-        <Tooltip content="Clear the marks on every selected prefix (back to undecided)">
-          <button type="button" className="dot clear" onClick={() => bulkMark(null)} aria-label="clear marks">×</button>
+        <Tooltip content={<>Stage every selected prefix for deletion — an admin approves and dispatches from <b>/staged</b></>}>
+          <button type="button" className="trash" onClick={trashSel} aria-label="trash selected">🗑 trash {sel.selected.size}</button>
         </Tooltip>
-        <AssignSelect prefix={selUris.map(u => u + '/')} label={`assign ${sel.selected.size}…`} />
+        {showActions && (
+          <>
+            <span className="lbl">mark</span>
+            {(['keep', 'keep_last_ckpt'] as MarkAction[]).map(a => (
+              <Tooltip content={<>Mark every selected prefix <b>{ACTION_LABELS[a]}</b> (one batched save)</>} key={a}>
+                <button type="button" className={`dot ${a}`} style={{ ['--act' as string]: ACTION_COLORS[a] }} onClick={() => bulkMark(a)} aria-label={ACTION_LABELS[a]} />
+              </Tooltip>
+            ))}
+            <Tooltip content="Clear the marks on every selected prefix (back to undecided)">
+              <button type="button" className="dot clear" onClick={() => bulkMark(null)} aria-label="clear marks">×</button>
+            </Tooltip>
+            <AssignSelect prefix={selUris.map(u => u + '/')} label={`assign ${sel.selected.size}…`} />
+          </>
+        )}
         <button type="button" className="quiet" onClick={sel.clear}>deselect</button>
       </span>
     </span>
@@ -217,11 +231,11 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
   }
   return (
     <section className="children-tbl" onClick={clearOnDeadClick}>
-      {(pager || showActions) && <div className="pager top">{pager}{selBar}</div>}
+      {(pager || showSel) && <div className="pager top">{pager}{selBar}</div>}
       <table className="worklist selectable">
         <thead>
           <tr>
-            {showActions && <th className="col-sel"><input type="checkbox" title="select / deselect this page (⇧x)" checked={sel.pageAll} onChange={sel.togglePage} /></th>}
+            {showSel && <th className="col-sel"><input type="checkbox" title="select / deselect this page (⇧x)" checked={sel.pageAll} onChange={sel.togglePage} /></th>}
             {th('n', 'name', false)}
             {th('b', 'bytes')}
             <th className="num">share</th>
@@ -230,14 +244,14 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
             {hasRead && th('a', 'read', false)}
             {hasOwners && <th>owner(s)</th>}
             {markIdx && <th>marks</th>}
-            {showActions && <th>actions</th>}
+            {showSel && <th>actions</th>}
           </tr>
         </thead>
         <tbody>
           {rowData.map(({ k, synthetic, kidSegs, uri, shares, cl, mk, totals, ckpt, si }) => {
             return (
-              <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} {...(si >= 0 && showActions ? sel.rowProps(si) : {})}>
-                {showActions && <td className="col-sel">{!synthetic && <input type="checkbox" checked={sel.isSelected(k)} onChange={() => sel.toggle(si)} />}</td>}
+              <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} {...(si >= 0 && showSel ? sel.rowProps(si) : {})}>
+                {showSel && <td className="col-sel">{!synthetic && <input type="checkbox" checked={sel.isSelected(k)} onChange={() => sel.toggle(si)} />}</td>}
                 <td className="prefix">
                   <Tooltip content={<code className="elide-full">{uri}</code>}>
                     {synthetic || !k.c?.length ? (
@@ -270,23 +284,29 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
                 </td>
                 )}
                 {markIdx && <td className="state">{stateBar(k, totals)}</td>}
-                {showActions && (
+                {showSel && (
                   <td className="actions">
                     {synthetic ? null : (
                       <>
-                        {dot(uri, 'keep', mk?.mark?.action === 'keep' ? (mk.own ? 'own' : 'inh') : null, KEEP_TIP)}
-                        {dot(uri, 'sweep', mk?.mark?.action === 'sweep' ? (mk.own ? 'own' : 'inh') : null, SWEEP_TIP)}
-                        {/* Last-ckpt keeps its column whether or not it's offered, so
-                            the row of dots doesn't shift between rows. */}
-                        {ckpt ? dot(uri, 'keep_last_ckpt', mk?.mark?.action === 'keep_last_ckpt' ? (mk.own ? 'own' : 'inh') : null, KLC_TIP) : <span className="dot-gap" />}
-                        <span className="tail">
-                          {mk?.own && (
-                            <Tooltip content={clearTip(true)}>
-                              <button type="button" className="dot clear" onClick={() => mark(uri, null)} aria-label="clear mark">×</button>
-                            </Tooltip>
-                          )}
-                          <AssignSelect prefix={uri + '/'} assigned={cl?.who ?? null} compact />
-                        </span>
+                        <Tooltip content="Stage this prefix for deletion — an admin approves and dispatches">
+                          <button type="button" className="trash" onClick={() => trash(uri)} aria-label="trash">🗑</button>
+                        </Tooltip>
+                        {showActions && (
+                          <>
+                            {dot(uri, 'keep', mk?.mark?.action === 'keep' ? (mk.own ? 'own' : 'inh') : null, KEEP_TIP)}
+                            {/* Last-ckpt keeps its column whether or not it's offered, so
+                                the row of dots doesn't shift between rows. */}
+                            {ckpt ? dot(uri, 'keep_last_ckpt', mk?.mark?.action === 'keep_last_ckpt' ? (mk.own ? 'own' : 'inh') : null, KLC_TIP) : <span className="dot-gap" />}
+                            <span className="tail">
+                              {mk?.own && (
+                                <Tooltip content={clearTip(true)}>
+                                  <button type="button" className="dot clear" onClick={() => mark(uri, null)} aria-label="clear mark">×</button>
+                                </Tooltip>
+                              )}
+                              <AssignSelect prefix={uri + '/'} assigned={cl?.who ?? null} compact />
+                            </span>
+                          </>
+                        )}
                       </>
                     )}
                   </td>
@@ -299,12 +319,12 @@ export function ChildrenTable({ node, segs, scheme, markIdx, klcIdx, states, use
           {/* Totals of the LISTED rows — under a scoping lens (to-do) this is
               the lens total, not the parent node's. */}
           <tr className="total-row">
-            {showActions && <td />}
+            {showSel && <td />}
             <td>total{kids.length !== (node.c ?? []).length ? ` (${kids.length} shown)` : ''}</td>
             <td className="num">{fmtBytes(kids.reduce((s, k) => s + k.b, 0))}</td>
             <td className="num">{node.b ? ((100 * kids.reduce((s, k) => s + k.b, 0)) / node.b).toFixed(1) : 0}%</td>
             <td className="num">{kids.reduce((s, k) => s + k.o, 0).toLocaleString('en-US')}</td>
-            <td colSpan={2 + (hasRead ? 1 : 0) + (hasOwners ? 1 : 0) + (markIdx ? 1 : 0) + (showActions ? 2 : 0)} />
+            <td colSpan={1 + (hasRead ? 1 : 0) + (hasOwners ? 1 : 0) + (markIdx ? 1 : 0) + (showSel ? 1 : 0)} />
           </tr>
         </tfoot>
       </table>

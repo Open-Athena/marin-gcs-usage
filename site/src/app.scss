@@ -1427,9 +1427,15 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     // One dot per decision: hollow = available, filled = this row's own mark.
     .actions {
       white-space: nowrap;
-      display: grid; grid-template-columns: 14px 14px 14px auto; align-items: center; gap: 4px;
+      display: inline-flex; align-items: center; gap: 4px;
       .dot-gap { width: 14px; height: 14px; }
       .tail { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; }
+      // The trash-can: stage this prefix for deletion (opt-in model).
+      button.trash {
+        border: none; background: transparent; cursor: pointer; padding: 0 3px; margin-right: 2px;
+        font-size: 13px; line-height: 1; opacity: 0.6; border-radius: 4px;
+        &:hover { opacity: 1; background: color-mix(in oklab, #d33 18%, transparent); }
+      }
       button.dot {
         width: 14px; height: 14px; padding: 0; border-radius: 50%; cursor: pointer;
         background: transparent; border: 2px solid var(--act, var(--ink-3)); color: var(--act, var(--ink-3));
@@ -1489,6 +1495,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   b { color: var(--ink); }
   .acts { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
   .lbl { color: var(--ink-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.03em; margin-right: 2px; }
+  button.trash {
+    font: inherit; font-size: 12px; cursor: pointer; padding: 2px 8px; border-radius: 4px;
+    background: color-mix(in oklab, #d33 14%, var(--panel)); color: var(--ink);
+    border: 1px solid color-mix(in oklab, #d33 40%, var(--line));
+    &:hover { background: color-mix(in oklab, #d33 24%, var(--panel)); }
+  }
   button.dot {
     width: 14px; height: 14px; padding: 0; border-radius: 50%; cursor: pointer;
     background: transparent; border: 2px solid var(--act, var(--ink-3)); color: var(--ink-3); font-size: 11px; line-height: 1;

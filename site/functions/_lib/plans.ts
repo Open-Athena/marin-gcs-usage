@@ -59,6 +59,42 @@ export async function snapshotPlan(
   return { plan_id: planId, name: plan.name, buckets: planBuckets(sweep), sweep }
 }
 
+/** Stage prefixes for deletion — the opt-in trash model's proposal step
+ * (specs/sweep-plan-union.md, seam 1): append them to a shared open plan,
+ * creating one ("Staged") if none is open. Any viewer may stage; an admin
+ * approves + dispatches later from the /staged page. Prefixes are canonicalized
+ * and de-duplicated (`INSERT OR IGNORE`). Returns the plan id + what canonicalized,
+ * or an error for a malformed prefix. */
+export async function stageItems(
+  db: D1Database,
+  rawPrefixes: string[],
+  who: string,
+  note: string | null = null,
+): Promise<{ plan_id: number; staged: string[] } | { error: string }> {
+  const prefixes: string[] = []
+  for (const r of rawPrefixes) {
+    const c = canonicalPrefix(r)
+    if (!c) return { error: `bad prefix ${JSON.stringify(r)}` }
+    prefixes.push(c)
+  }
+  if (!prefixes.length) return { error: 'prefixes required' }
+  const ts = Math.floor(Date.now() / 1000)
+  let plan = await db.prepare("SELECT id FROM plans WHERE state = 'open' ORDER BY created_ts DESC LIMIT 1").first<{ id: number }>()
+  if (!plan) {
+    plan = (await db.prepare(
+      "INSERT INTO plans (name, note, state, created_by, created_ts) VALUES ('Staged', NULL, 'open', ?, ?) RETURNING id",
+    ).bind(who, ts).first<{ id: number }>())!
+    await audit(db, 'plans', String(plan.id), 'insert', who, null, { name: 'Staged', auto: true })
+  }
+  for (const p of prefixes) {
+    await db.prepare(
+      'INSERT OR IGNORE INTO plan_items (plan_id, prefix, note, added_by, added_ts) VALUES (?, ?, ?, ?, ?)',
+    ).bind(plan.id, p, note, who, ts).run()
+  }
+  await audit(db, 'plan_items', String(plan.id), 'insert', who, null, { staged: prefixes })
+  return { plan_id: plan.id, staged: prefixes }
+}
+
 /** Append an admin-edit audit row (`admin_edits`), mirroring the marks/allowlist trail. */
 export async function audit(
   db: D1Database,
