@@ -11,6 +11,7 @@ import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
+import { ScanCombobox } from './ScanCombobox'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { Busy, Skeleton } from './Busy'
@@ -31,7 +32,7 @@ import { MarkHistory } from './MarkHistory'
 import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, nearestScan, scanGroups, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { STORES, storeForPath } from './stores'
 import { useDocTitle } from './title'
@@ -905,9 +906,7 @@ function AppContent() {
       <SiteNav menu={menu} crumbs={crumbs}>
         {asof && scans.length > 1 && (
           <span className="tb-scan">
-            <select className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
-              <ScanOptions scans={scans} />
-            </select>
+            <ScanCombobox value={asof} scans={scans} onChange={setDP} label="Scan date" />
           </span>
         )}
         {bar.color.length > 1 && (
@@ -1144,14 +1143,10 @@ function AppContent() {
             {/* Both endpoints: the window's start, and the page's scan again
                 (the bar's picker — one scan, stated where the diff reads). */}
             <Explain text={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
-              <select className="tb-select scan" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
-                <ScanOptions scans={earlier} />
-              </select>
+              <ScanCombobox value={diffPrev} scans={earlier} onChange={pickBefore} label="Diff from scan" />
             </Explain>
             <span className="arrow"> → </span>
-            <select className="tb-select scan" value={asof} aria-label="Diff to scan (the page's scan)" onChange={e => setDP(e.target.value)}>
-              <ScanOptions scans={scans} />
-            </select>
+            <ScanCombobox value={asof} scans={scans} onChange={setDP} label="Diff to scan (the page's scan)" />
             {spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (
@@ -1296,15 +1291,6 @@ function AppContent() {
       />
     </main>
   )
-}
-
-/** A scan picker's options: one `<optgroup>` per day, times inside. */
-function ScanOptions({ scans }: { scans: string[] }) {
-  return <>{scanGroups(scans).map(g => (
-    g.scans.length === 1 && g.scans[0].label === g.day
-      ? <option key={g.scans[0].id} value={g.scans[0].id}>{g.day}</option>
-      : <optgroup key={g.day} label={g.day}>{g.scans.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</optgroup>
-  ))}</>
 }
 
 export default function App() {

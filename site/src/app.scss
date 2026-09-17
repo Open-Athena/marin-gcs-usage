@@ -207,6 +207,50 @@ header .hrow {
   max-width: 16ch;
   &.scan { font-variant-numeric: tabular-nums; }
 }
+
+// The scan picker: a filterable listbox (ARIA combobox) standing in for a
+// native grouped <select> — the trigger reads like a .tb-select, the popup is
+// a filter input over a day-grouped listbox.
+.scan-picker {
+  position: relative;
+  display: inline-flex;
+  .sp-trigger {
+    display: inline-flex; align-items: center; gap: 5px; max-width: none;
+    .sp-caret { color: var(--ink-3); font-size: 10px; }
+  }
+  .sp-pop {
+    position: absolute; z-index: 30; top: calc(100% + 3px); left: 0;
+    min-width: max(100%, 15ch); width: max-content; max-width: min(60vw, 320px);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
+    padding: 5px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .sp-filter {
+    font: inherit; font-size: 12.5px; padding: 4px 7px;
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; outline: none;
+    &:focus { border-color: var(--accent, #7aa2f7); }
+  }
+  .sp-list {
+    list-style: none; margin: 0; padding: 0;
+    max-height: 320px; overflow-y: auto;
+    font-variant-numeric: tabular-nums;
+    ul { list-style: none; margin: 0; padding: 0; }
+  }
+  .sp-day {
+    position: sticky; top: 0; background: var(--panel);
+    color: var(--ink-3); font-size: 11px; font-weight: 600;
+    padding: 5px 7px 2px;
+  }
+  .sp-opt {
+    padding: 4px 9px; border-radius: 5px; cursor: pointer;
+    color: var(--ink); font-size: 12.5px; white-space: nowrap;
+    &.sel { font-weight: 700; }
+    &.sel::after { content: ' ✓'; color: var(--accent, #7aa2f7); }
+    &.active { background: color-mix(in oklab, var(--accent, #7aa2f7) 22%, transparent); }
+  }
+  .sp-empty { padding: 6px 9px; color: var(--ink-3); font-size: 12px; }
+}
 // The `≠` owner-negate toggle beside the owner select: off = outline, on
 // (showing everyone-but-this-person) = filled accent.
 button.mini.clear { margin-left: 2px; padding: 0 5px; }
