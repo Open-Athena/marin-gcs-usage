@@ -56,15 +56,24 @@ export function SiteNav({ children, menu, crumbs }: {
   crumbs?: ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
+  const row2Ref = useRef<HTMLDivElement | null>(null)
+  // `--topbar-h` = the sticky bar's height (row 1 when the controls overlay);
+  // `--tb-row2-h` = the controls' own height, so the flow spacer under the bar
+  // reserves exactly that at the top of the page — where the overlay would
+  // otherwise sit over the first slice of content. Measured in a layout effect
+  // (synchronous, post-layout, so no zero-on-mount read) after every render,
+  // plus on viewport resize (which wraps the controls to a different height).
+  const measure = () => {
     const el = ref.current
-    if (!el) return
     const root = document.documentElement
-    const set = () => root.style.setProperty(TOPBAR_VAR, `${el.offsetHeight}px`)
-    set()
-    const ro = new ResizeObserver(set)
-    ro.observe(el)
-    return () => { ro.disconnect(); root.style.removeProperty(TOPBAR_VAR) }
+    if (el) root.style.setProperty(TOPBAR_VAR, `${el.offsetHeight}px`)
+    const r2 = row2Ref.current
+    root.style.setProperty('--tb-row2-h', r2 ? `${r2.offsetHeight}px` : '0px')
+  }
+  useLayoutEffect(measure)
+  useEffect(() => {
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
   }, [])
   // The crumbs scroll horizontally when they don't fit (a phone), and snap
   // to their END on every path change so the basename — the one segment the
@@ -102,14 +111,20 @@ export function SiteNav({ children, menu, crumbs }: {
     return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
   }, [hasControls])
   return (
+    <>
     <div className={'topbar' + (hidden ? ' ctrl-hidden' : '')} ref={ref}>
       <div className="tb-row">
         <NavMenu extra={menu} />
         {crumbs ? <div className="tb-crumbs" ref={crumbsRef}>{crumbs}</div> : <div className="tb-mid">{children}</div>}
         <UserMenu />
       </div>
-      {hasControls && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
+      {hasControls && <div className="tb-row tb-row2" ref={row2Ref}><div className="tb-mid">{children}</div></div>}
     </div>
+    {/* A flow spacer the height of the controls: at the top it holds their
+        place under the overlay so nothing is covered; once scrolled it rides up
+        off-screen, so hiding the overlay leaves no gap. Zero on desktop. */}
+    {hasControls && <div className="tb-row2-spacer" aria-hidden />}
+    </>
   )
 }
 
