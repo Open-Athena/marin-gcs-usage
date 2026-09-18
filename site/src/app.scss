@@ -2179,10 +2179,32 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     background: var(--surface);
     border-bottom: 1px solid var(--line);
     box-shadow: 0 6px 14px rgba(0, 0, 0, 0.18);
-    transition: transform 0.2s ease, opacity 0.18s ease;
+    // Behind the bar's own (opaque) background, so hiding slides the tray up
+    // and tucks it out of sight under the path row rather than fading in place.
+    z-index: -1;
+    transition: transform 0.22s ease, opacity 0.18s ease;
   }
-  .topbar.ctrl-hidden .tb-row2 { transform: translateY(-8px); opacity: 0; pointer-events: none; }
+  .topbar.ctrl-hidden .tb-row2 { transform: translateY(-100%); opacity: 0; pointer-events: none; }
   .tb-row2-spacer { height: var(--tb-row2-h, 0); }
+  // Legend as a table: two owner columns, swatch / name / size lined up so the
+  // sizes read down a column instead of scattering with the name lengths.
+  // `.treemap` prefix to match the base rule's specificity.
+  .treemap .dt-treemap-rollup {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 16px;
+    align-items: center;
+    // Rows that aren't per-owner keys span the full width.
+    > .state-rollup, > .li-metrics, > .li-group, > .approx-mark { grid-column: 1 / -1; }
+    .ri {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      > b, .pct, .usd { justify-self: end; }
+    }
+  }
   // Empty filter collapses to a search glyph; tap (focus) expands it.
   .filterbox input {
     box-sizing: border-box;

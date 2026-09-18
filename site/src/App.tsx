@@ -812,7 +812,7 @@ function AppContent() {
     <>
       <FitSelect className="tb-select" value={ownerSelVal} ariaLabel="Owner"
         onChange={e => pickOwner(e.target.value)}>
-        <option value="">anyone</option>
+        <option value="">all</option>
         <option value="owned">owned</option>
         <option value="unowned">unowned</option>
         {myUser && <option value="me">me ({shortName(myUser)})</option>}
