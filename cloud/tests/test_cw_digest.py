@@ -494,3 +494,30 @@ def test_redo_replies_delete_failure_continues(tmp_path: Path):
     assert state["stale"] == ["m2"]
     assert state["posted"] == {"2026-09-01": {"ts": "m4", "scan": "2026-09-01T1200"}, "2026-09-02": {"ts": "m5", "scan": "2026-09-02T1200"}}
 
+
+
+def test_cli_cw_digest_binds_cw_module(tmp_path: Path, monkeypatch):
+    """The `cw-digest` CLI must call `cw_digest.post_digest` (which takes
+    `variant`/`reply_hour`), not `digest.post_digest`. The wrong binding raised
+    `TypeError: post_digest() got multiple values for argument 'site_url'` and
+    silently killed the in-job digest (a best-effort step, so the scan job still
+    reported success) — no `#cw-s3-usage` post for 2026-09-17."""
+    from click.testing import CliRunner
+
+    from dt_cloud import cli
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(D, "post_digest", lambda *a, **k: calls.append((a, k)) or {})
+
+    root = tmp_path / "snapshots" / "cw"
+    icons = tmp_path / "icons"
+    res = CliRunner().invoke(
+        cli.main,
+        ["cw-digest", "-c", "C1", "-t", "xoxb", "-r", str(root), "-m", "2026-09", "-i", str(icons), "-V", "sender"],
+    )
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert len(calls) == 1
+    args, kw = calls[0]
+    assert args == (str(root), date(2026, 9, 1), "xoxb", "C1", "sender")
+    assert (kw["site_url"], kw["reply_delay"], kw["reply_hour"]) == (D.DEFAULT_URL, 0.0, D.REPLY_HOUR_UTC)
+    assert callable(kw["deploy_plot"]) and isinstance(kw["icons_dir"], Path)

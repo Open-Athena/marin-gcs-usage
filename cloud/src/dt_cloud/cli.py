@@ -2508,7 +2508,7 @@ def cw_digest(channel: str | None, reply_delay: float, for_real: bool, reply_hou
     (month-to-date + weekly bullets + quota sparkline) + one reply per UTC day,
     via thrds. State in gs://<bucket>/digest/cw/<channel>/<variant>/<YYYY-MM>.json.
     See specs/cw-slack-digest.md."""
-    from . import digest as dg
+    from . import cw_digest as dg
 
     site_url = site_url or dg.DEFAULT_URL
     m = (
