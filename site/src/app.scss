@@ -93,20 +93,7 @@ header .hrow {
   // Row 1: ☰ · brand · where the page is (crumbs) · avatar. Row 2 (home
   // page): the controls, indented under the brand.
   .tb-row { display: flex; align-items: center; gap: 4px 10px; min-width: 0; }
-  .tb-row2 { padding-left: 0; overflow: hidden; }
-  // The controls-fold chevron: hidden by default, shown on a narrow viewport
-  // once the bar has scrolled off the top (media query below).
-  .tb-ctrl-toggle {
-    flex: none; display: none;
-    align-items: center; justify-content: center;
-    width: 28px; height: 28px; padding: 0; margin-left: 2px;
-    background: transparent; color: var(--ink-2);
-    border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
-    font-size: 20px;
-    svg { transition: transform 0.2s ease; }
-    &[aria-expanded="true"] svg { transform: rotate(180deg); }
-    &:hover { color: var(--ink); background: var(--panel); }
-  }
+  .tb-row2 { padding-left: 0; }
   .tb-crumbs { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; overflow-x: auto; scrollbar-width: none; &::-webkit-scrollbar { display: none; } }
   .tb-menu-btn {
     flex: none;
@@ -213,8 +200,6 @@ header .hrow {
 .treemap .dt-treemap-crumbs { display: none !important; }
 .dt-treemap:fullscreen .dt-treemap-crumbs { display: flex !important; }
 // The bar's pickers — also the Diff header's two scan endpoints.
-.fold-sentinel { height: 0; margin: 0; padding: 0; pointer-events: none; }
-
 .tb-select {
   background: var(--panel); color: var(--ink);
   border: 1px solid var(--line); border-radius: 6px;
@@ -2183,10 +2168,18 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   // The path clips itself with an ellipsis on wide screens; on a phone the
   // crumbs box scrolls instead (tail-first), so let it overflow.
   .topbar .tb-path { white-space: nowrap; overflow: visible; text-overflow: clip; }
-  // Controls fold away once scrolled; the chevron peeks them back.
-  .topbar .tb-row2 { max-height: 45vh; transition: max-height 0.22s ease, opacity 0.16s ease; }
-  .topbar.scrolled .tb-ctrl-toggle { display: inline-flex; }
-  .topbar.ctrl-folded .tb-row2 { max-height: 0; opacity: 0; pointer-events: none; }
+  // The controls are an overlay under the pinned path row — OUT of page flow,
+  // so showing/hiding moves no content and can't perturb the scroll position.
+  // Auto-hide on scroll down, return on scroll up (SiteNav watches direction).
+  .topbar .tb-row2 {
+    position: absolute; top: 100%; left: 0; right: 0;
+    margin: 0; padding: 3px var(--pad-x, 24px) 7px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.18);
+    transition: transform 0.2s ease, opacity 0.18s ease;
+  }
+  .topbar.ctrl-hidden .tb-row2 { transform: translateY(-8px); opacity: 0; pointer-events: none; }
   // Empty filter collapses to a search glyph; tap (focus) expands it.
   .filterbox input {
     box-sizing: border-box;

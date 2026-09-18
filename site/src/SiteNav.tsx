@@ -16,7 +16,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { DEFAULT_STORE } from './stores'
 import { FaGithub } from 'react-icons/fa'
-import { MdKeyboardArrowDown } from 'react-icons/md'
 import { MdMenu } from 'react-icons/md'
 import { Link, useLocation } from 'react-router-dom'
 import { AboutModal } from './About'
@@ -76,59 +75,41 @@ export function SiteNav({ children, menu, crumbs }: {
     const el = crumbsRef.current
     if (el) el.scrollLeft = el.scrollWidth
   }, [pathname])
-  // The path row stays pinned; the controls row folds away once you scroll off
-  // the top, so a phone keeps the drill path (the one thing every section reads
-  // against) in view without the controls eating four rows. A chevron peeks the
-  // controls back while scrolled; the next scroll re-folds them. Desktop keeps
-  // both rows (the fold CSS is gated to a narrow viewport).
+  // The path row stays pinned; on a phone the controls row is an OVERLAY (out of
+  // page flow — CSS below, gated to a narrow viewport) that auto-hides on scroll
+  // down and returns on scroll up, like a native toolbar. Out of flow is the
+  // whole point: toggling it moves no content and can't perturb `window.scrollY`
+  // (an in-flow control row sits in the sticky bar above the viewport, so
+  // collapsing it drops scrollY by its own height and a scroll-driven fold then
+  // reads its own change and loops). So we can just watch scroll DIRECTION.
   const hasControls = !!(crumbs && children)
-  const sentinelRef = useRef<HTMLDivElement | null>(null)
-  const [scrolled, setScrolled] = useState(false)
-  const [peek, setPeek] = useState(false)
-  // Drive the fold off a flow sentinel at the top of the content, NOT
-  // `window.scrollY`. Folding the controls (they live in the sticky bar's flow
-  // box, above the viewport) shifts everything below up by their height and the
-  // browser drops `scrollY` by that same amount to hold the content still — so
-  // a `scrollY` threshold reads its own fold and flips back: the expand/hide
-  // loop (measured, and `overflow-anchor` doesn't stop it). The sentinel's
-  // on-screen position, by contrast, is preserved exactly across the fold, so
-  // an IntersectionObserver on it never re-triggers — no feedback, and no
-  // dependence on how tall the control rows wrap on a phone.
+  const [hidden, setHidden] = useState(false)
   useEffect(() => {
-    if (!hasControls) { setScrolled(false); return }
-    const el = sentinelRef.current
-    if (!el || typeof IntersectionObserver === 'undefined') return
-    const io = new IntersectionObserver(([e]) => setScrolled(!e.isIntersecting), { threshold: 0 })
-    io.observe(el)
-    return () => io.disconnect()
+    if (!hasControls) { setHidden(false); return }
+    let lastY = window.scrollY
+    let raf = 0
+    const update = () => {
+      raf = 0
+      const y = Math.max(0, window.scrollY)
+      if (y <= 4) { setHidden(false); lastY = y; return }   // always shown at the top
+      const dy = y - lastY
+      if (dy > 10) { setHidden(true); lastY = y }            // scrolled down → hide
+      else if (dy < -10) { setHidden(false); lastY = y }     // scrolled up → show
+      // small moves in the dead band leave lastY put, so a slow drag accumulates
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(update) }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
   }, [hasControls])
-  // Peek is the chevron's manual override; it resets on returning to the top.
-  useEffect(() => { if (!scrolled) setPeek(false) }, [scrolled])
-  const folded = hasControls && scrolled && !peek
   return (
-    <>
-    <div className={'topbar' + (hasControls && scrolled ? ' scrolled' : '') + (folded ? ' ctrl-folded' : '')} ref={ref}>
+    <div className={'topbar' + (hidden ? ' ctrl-hidden' : '')} ref={ref}>
       <div className="tb-row">
         <NavMenu extra={menu} />
         {crumbs ? <div className="tb-crumbs" ref={crumbsRef}>{crumbs}</div> : <div className="tb-mid">{children}</div>}
-        {hasControls && (
-          <button
-            type="button" className="tb-ctrl-toggle" aria-expanded={!folded}
-            aria-label={folded ? 'Show controls' : 'Hide controls'} title={folded ? 'Show controls' : 'Hide controls'}
-            onClick={() => setPeek(x => !x)}
-          >
-            <MdKeyboardArrowDown aria-hidden />
-          </button>
-        )}
         <UserMenu />
       </div>
       {hasControls && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
     </div>
-    {/* The fold sentinel: a zero-space flow marker just under the sticky bar.
-        Its viewport position is preserved when the controls fold, so observing
-        it (not scrollY) can't feed the fold back into its own trigger. */}
-    {hasControls && <div ref={sentinelRef} className="fold-sentinel" aria-hidden />}
-    </>
   )
 }
 
