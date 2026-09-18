@@ -1344,7 +1344,11 @@ export function Treemap<T>({
         ref={mapRef}
         role="application"
         aria-label="Treemap"
-        style={{ position: 'relative', flex: 1, minHeight: 0, ...mapStyle }}
+        // `minWidth: 0`: the canvas's intrinsic width would otherwise pin this
+        // flex item at its old size (min-width:auto), so the container never
+        // shrinks, its ResizeObserver never fires, and the treemap never reflows
+        // down on a window resize / rotate / device-mode switch.
+        style={{ position: 'relative', flex: 1, minWidth: 0, minHeight: 0, ...mapStyle }}
         onMouseLeave={() => {
           // Don't clear immediately — give the pointer time to reach the tip
           // (cancelled by the tip's onMouseEnter).
