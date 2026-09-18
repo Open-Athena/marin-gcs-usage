@@ -70,7 +70,7 @@ export async function stageItems(
   rawPrefixes: string[],
   who: string,
   note: string | null = null,
-): Promise<{ plan_id: number; staged: string[] } | { error: string }> {
+): Promise<{ plan_id: number; batch_id: number; staged: string[] } | { error: string }> {
   const prefixes: string[] = []
   for (const r of rawPrefixes) {
     const c = canonicalPrefix(r)
@@ -86,13 +86,20 @@ export async function stageItems(
     ).bind(who, ts).first<{ id: number }>())!
     await audit(db, 'plans', String(plan.id), 'insert', who, null, { name: 'Staged', auto: true })
   }
+  // One batch per gesture: the memo lives here (a fact about the action), and
+  // every prefix in this call points at it — the 1:many an admin reads back as
+  // "trashed together by X: <memo>". A re-staged prefix keeps its first batch
+  // (INSERT OR IGNORE), matching the existing dedup.
+  const batch = (await db.prepare(
+    'INSERT INTO stage_batches (plan_id, note, created_by, created_ts) VALUES (?, ?, ?, ?) RETURNING id',
+  ).bind(plan.id, note, who, ts).first<{ id: number }>())!
   for (const p of prefixes) {
     await db.prepare(
-      'INSERT OR IGNORE INTO plan_items (plan_id, prefix, note, added_by, added_ts) VALUES (?, ?, ?, ?, ?)',
-    ).bind(plan.id, p, note, who, ts).run()
+      'INSERT OR IGNORE INTO plan_items (plan_id, prefix, batch_id, added_by, added_ts) VALUES (?, ?, ?, ?, ?)',
+    ).bind(plan.id, p, batch.id, who, ts).run()
   }
-  await audit(db, 'plan_items', String(plan.id), 'insert', who, null, { staged: prefixes })
-  return { plan_id: plan.id, staged: prefixes }
+  await audit(db, 'plan_items', String(plan.id), 'insert', who, null, { staged: prefixes, batch_id: batch.id, note })
+  return { plan_id: plan.id, batch_id: batch.id, staged: prefixes }
 }
 
 /** Append an admin-edit audit row (`admin_edits`), mirroring the marks/allowlist trail. */

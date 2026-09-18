@@ -66,7 +66,9 @@ export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, s
   // model); the legacy mark dots render only in mark mode (markIdx present).
   const showSel = canMark
   const showActions = !!markIdx && canMark
-  const trash = (uri: string) => stage.mutate([uri + '/'])
+  const trash = (uri: string) => stage.mutate({ prefixes: [uri + '/'] })
+  // One memo for the whole multi-select gesture (stored on the stage batch).
+  const [memo, setMemo] = useState('')
 
   const kids = useMemo(() => {
     let ks = (node.c ?? []).slice()
@@ -133,7 +135,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, s
   const clearSel = sel.clear
   useEffect(() => clearSel(), [path, clearSel])
   const selUris = [...sel.selected]
-  const trashSel = () => { if (selUris.length) stage.mutate(selUris.map(u => u + '/'), { onSuccess: () => sel.clear() }) }
+  const trashSel = () => { if (selUris.length) stage.mutate({ prefixes: selUris.map(u => u + '/'), note: memo }, { onSuccess: () => { sel.clear(); setMemo('') } }) }
   const selBytes = kids.filter(k => sel.selected.has(uriOfKid(k))).reduce((s, k) => s + k.b, 0)
   // Everything a row derives from the tree and the ledger — owner shares, the
   // resolved mark and claim, the state bar's subtree walk, the last-ckpt
@@ -161,6 +163,9 @@ export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, s
     <span className="sel-bar">
       <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}
       <span className="acts">
+        <Tooltip content="Optional: one note for this deletion — why these prefixes go. Stored with the batch, visible to the admin who dispatches.">
+          <input className="memo" value={memo} onChange={e => setMemo(e.target.value)} placeholder="note (optional)" aria-label="deletion note" />
+        </Tooltip>
         <Tooltip content={<>Stage every selected prefix for deletion — an admin approves and dispatches from <b>/staged</b></>}>
           <button type="button" className="trash" onClick={trashSel} aria-label="trash selected"><FaRegTrashCan /> trash {sel.selected.size}</button>
         </Tooltip>

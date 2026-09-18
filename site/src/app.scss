@@ -1561,8 +1561,14 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   background: color-mix(in oklab, var(--s1) 12%, var(--panel)); border: 1px solid color-mix(in oklab, var(--s1) 35%, var(--line));
   font-size: 12.5px; color: var(--ink-2);
   b { color: var(--ink); }
-  .acts { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+  .acts { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; flex-wrap: wrap; }
   .lbl { color: var(--ink-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.03em; margin-right: 2px; }
+  input.memo {
+    font: inherit; font-size: 12px; width: 15ch; max-width: 40vw; padding: 2px 7px; border-radius: 4px;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    &::placeholder { color: var(--ink-3); }
+    &:focus { outline: none; border-color: color-mix(in oklab, var(--s1) 55%, var(--line)); }
+  }
   button.trash {
     font: inherit; font-size: 12px; cursor: pointer; padding: 2px 8px; border-radius: 4px;
     display: inline-flex; align-items: center; gap: 5px;

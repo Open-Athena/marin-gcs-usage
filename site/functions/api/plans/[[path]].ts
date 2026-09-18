@@ -38,7 +38,13 @@ async function listPlans(db: D1Database): Promise<Response> {
 async function getPlan(db: D1Database, id: number): Promise<Response> {
   const plan = await db.prepare('SELECT * FROM plans WHERE id = ?').bind(id).first<PlanRow>()
   if (!plan) return json({ error: 'no such plan' }, 404)
-  const items = await db.prepare('SELECT prefix, note, added_by, added_ts FROM plan_items WHERE plan_id = ? ORDER BY prefix').bind(id).all()
+  // The memo lives on the item's stage batch (one gesture, one note) — join it
+  // back so a staged item carries the reason it was trashed.
+  const items = await db.prepare(
+    `SELECT i.prefix, i.added_by, i.added_ts, i.batch_id, b.note
+     FROM plan_items i LEFT JOIN stage_batches b ON b.id = i.batch_id
+     WHERE i.plan_id = ? ORDER BY i.prefix`,
+  ).bind(id).all()
   const runs = await db.prepare('SELECT * FROM deletion_runs WHERE plan_id = ? ORDER BY started_ts DESC').bind(id).all()
   return json({ plan, items: items.results, runs: runs.results })
 }
