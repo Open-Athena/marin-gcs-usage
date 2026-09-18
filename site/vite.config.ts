@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(',') ?? []
+const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(",") ?? true
 
 // dev only: serve a locally-generated `tmp/series.json` (from `dt-cloud series
 // -r http://localhost:3254/data -o tmp/series.json`) at /data/series.json, so

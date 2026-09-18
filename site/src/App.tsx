@@ -13,6 +13,8 @@ import { DiffTreemap } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
+import { FitSelect } from './FitSelect'
+import { PathPopover } from './PathPopover'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
@@ -808,7 +810,7 @@ function AppContent() {
     : setOP(negated ? `!${shortUserKey(canonId(v))}` : shortUserKey(canonId(v)))
   const ownerSelect = (
     <>
-      <select className="tb-select" value={ownerSelVal} aria-label="Owner"
+      <FitSelect className="tb-select" value={ownerSelVal} ariaLabel="Owner"
         onChange={e => pickOwner(e.target.value)}>
         <option value="">anyone</option>
         <option value="owned">owned</option>
@@ -817,7 +819,7 @@ function AppContent() {
         {mkUsers.filter(u => u !== myUser).map(u => <option key={u} value={u}>{shortName(u)}</option>)}
         {ownerUser && !mkUsers.includes(ownerUser) && ownerUser !== myUser && <option value={ownerUser}>{shortName(ownerUser)}</option>}
         {negated && notUsers[0] && notUsers[0] !== myUser && !mkUsers.includes(notUsers[0]) && <option value={notUsers[0]}>{shortName(notUsers[0])}</option>}
-      </select>
+      </FitSelect>
       {selPerson && (
         <Explain text={negated
           ? <>Showing everyone <b>except</b> this person. Click for just theirs.</>
@@ -837,15 +839,21 @@ function AppContent() {
   // hidden (app.scss) — this IS it, kept on screen mid-scroll; the deepest
   // node's totals ride along as the suffix.
   const here = mapPath?.[mapPath.length - 1]
+  const crumbFullPath = store.scheme + segs.join('/') + (segs.length ? '/' : '')
   const crumbs = (
     <span className="tb-path" aria-label="Drilled path">
       <Tooltip content="all buckets"><button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])}>{mapTree?.n ?? 'all buckets'}</button></Tooltip>
-      {segs.map((sg, i) => (
-        <span key={i}>
-          <span className="sep">/</span>
-          <Tooltip content={<code>{segs.slice(0, i + 1).join('/')}</code>}><button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))}>{sg}</button></Tooltip>
-        </span>
-      ))}
+      {segs.map((sg, i) => {
+        const last = i === segs.length - 1
+        return (
+          <span key={i}>
+            <span className="sep">/</span>
+            {last
+              ? <PathPopover label={sg} fullPath={crumbFullPath} />
+              : <Tooltip content={<code>{segs.slice(0, i + 1).join('/')}</code>}><button type="button" onClick={() => drillTo(segs.slice(0, i + 1))}>{sg}</button></Tooltip>}
+          </span>
+        )
+      })}
     </span>
   )
 
@@ -861,9 +869,9 @@ function AppContent() {
         {asof && scans.length > 1 && (
           <span className="tb-scan">
             <Tooltip content={scanTip ?? 'scan'}>
-              <select className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} aria-label="Scan date">
+              <FitSelect className="tb-select scan" value={asof} onChange={e => setDP(e.target.value)} ariaLabel="Scan date">
                 {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
-              </select>
+              </FitSelect>
             </Tooltip>
           </span>
         )}
@@ -877,11 +885,11 @@ function AppContent() {
               : effMode === 'user' ? <>Dominant <b>owner</b> of each cell; the legend lists the top users of the current view.</>
               : <>Top-level directory each cell belongs to.</>
             }>
-              <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
+              <FitSelect className="tb-select" value={effMode} ariaLabel="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
                 {MODES
                   .filter(m => (m !== 'read' || readRange) && (m !== 'marks' || marksUi))
                   .map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
-              </select>
+              </FitSelect>
             </Explain>
           </label>
           {/* Secondary color axis: a shade *within* each cell's primary color.
@@ -889,10 +897,10 @@ function AppContent() {
           <label className="tb-ctl">
             <span className="lbl">shade</span>
             <Explain text={<>A perturbation <i>within</i> each cell's color, on top of the primary axis. <b>storage class</b>: darker = a larger share of cold classes (Nearline / Coldline / Archive), so within one owner's band you can see what's already cold. Off by default.</>}>
-              <select className="tb-select" value={shade} aria-label="Shade cells by" onChange={e => setSP(e.target.value === 'none' ? undefined : e.target.value)}>
+              <FitSelect className="tb-select" value={shade ?? 'none'} ariaLabel="Shade cells by" onChange={e => setSP(e.target.value === 'none' ? undefined : e.target.value)}>
                 <option value="none">none</option>
                 <option value="class">storage class</option>
-              </select>
+              </FitSelect>
             </Explain>
           </label>
         </>)}

@@ -16,6 +16,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { DEFAULT_STORE } from './stores'
 import { FaGithub } from 'react-icons/fa'
+import { MdKeyboardArrowDown } from 'react-icons/md'
 import { MdMenu } from 'react-icons/md'
 import { Link, useLocation } from 'react-router-dom'
 import { AboutModal } from './About'
@@ -75,14 +76,39 @@ export function SiteNav({ children, menu, crumbs }: {
     const el = crumbsRef.current
     if (el) el.scrollLeft = el.scrollWidth
   }, [pathname])
+  // The path row stays pinned; the controls row folds away once you scroll off
+  // the top, so a phone keeps the drill path (the one thing every section reads
+  // against) in view without the controls eating four rows. A chevron peeks the
+  // controls back while scrolled; the next scroll re-folds them. Desktop keeps
+  // both rows (the fold CSS is gated to a narrow viewport).
+  const hasControls = !!(crumbs && children)
+  const [scrolled, setScrolled] = useState(false)
+  const [peek, setPeek] = useState(false)
+  useEffect(() => {
+    if (!hasControls) return
+    const onScroll = () => { setScrolled(window.scrollY > 8); setPeek(false) }
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [hasControls])
+  const folded = hasControls && scrolled && !peek
   return (
-    <div className="topbar" ref={ref}>
+    <div className={'topbar' + (hasControls && scrolled ? ' scrolled' : '') + (folded ? ' ctrl-folded' : '')} ref={ref}>
       <div className="tb-row">
         <NavMenu extra={menu} />
         {crumbs ? <div className="tb-crumbs" ref={crumbsRef}>{crumbs}</div> : <div className="tb-mid">{children}</div>}
+        {hasControls && (
+          <button
+            type="button" className="tb-ctrl-toggle" aria-expanded={!folded}
+            aria-label={folded ? 'Show controls' : 'Hide controls'} title={folded ? 'Show controls' : 'Hide controls'}
+            onClick={() => setPeek(x => !x)}
+          >
+            <MdKeyboardArrowDown aria-hidden />
+          </button>
+        )}
         <UserMenu />
       </div>
-      {crumbs && children && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
+      {hasControls && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
     </div>
   )
 }
