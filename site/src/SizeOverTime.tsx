@@ -3,7 +3,7 @@ import { TimeSeries } from '@disk-tree/react'
 import type { Annotation } from '@disk-tree/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
-import { boolParam, useUrlState } from 'use-prms'
+import { boolParam, stringParam, useUrlState } from 'use-prms'
 import { shortName } from './UserChip'
 import { useUnits } from './units'
 import { Skeleton } from './Busy'
@@ -34,6 +34,24 @@ const unitTicks = (min: number, max: number, base: number, count = 4): number[] 
 }
 
 type YFrom = 'data' | 'zero'
+type XRange = '1w' | '1m' | 'all'
+const X_RANGES: [XRange, number | null][] = [['1w', 7], ['1m', 30], ['all', null]]
+
+// The x-range (`?xr=1w|1m`; all = default): the last N days before the latest
+// scan. A phone's chart is too narrow to read months of scans at the right
+// edge, and a recent-only view sharpens the last week's movement.
+function XRangeToggle({ v, set }: { v: XRange; set: (r: XRange) => void }) {
+  return (
+    <span className="gran" role="radiogroup" aria-label="X-axis range">
+      <span className="lbl">range</span>
+      {X_RANGES.map(([r, days]) => (
+        <Explain key={r} text={days ? `Only the last ${days === 7 ? 'week' : '30 days'} of scans` : 'Every scan'}>
+          <button role="radio" aria-checked={v === r} className={v === r ? 'on' : ''} onClick={() => set(r)}>{r}</button>
+        </Explain>
+      ))}
+    </span>
+  )
+}
 
 // y-axis origin toggle (`?y0` — from-zero on): fit the data (default — a ~1%
 // wiggle on 3 PiB is invisible from zero) or anchor at zero (honest
@@ -76,6 +94,9 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   const [y0P, setY0P] = useUrlState('y0', boolParam)
   const yFrom: YFrom = y0P ? 'zero' : 'data'
   const setYFrom = (y: YFrom) => setY0P(y === 'zero')
+  const [xrP, setXrP] = useUrlState('xr', stringParam())
+  const xRange: XRange = xrP === '1w' || xrP === '1m' ? xrP : 'all'
+  const setXRange = (r: XRange) => setXrP(r === 'all' ? undefined : r)
 
   const scope = user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : ''
   const seriesQ = useQuery<Series>({
@@ -90,13 +111,20 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   })
 
   const label = user ? shortName(user) : pool ?? (prefix || 'total')
+  // The x-range cut: points on or after (latest − N days).
+  const xFrom = useMemo(() => {
+    const days = X_RANGES.find(([r]) => r === xRange)![1]
+    const last = seriesQ.data?.points.reduce((m, p) => Math.max(m, xOfScan(p.date)), 0) ?? 0
+    return days ? last - days * 86_400_000 : -Infinity
+  }, [seriesQ.data, xRange])
   const series = useMemo(() => {
     const pts = (seriesQ.data?.points ?? [])
       .map(p => ({ x: xOfScan(p.date), y: p.b }))
+      .filter(p => p.x >= xFrom)
       .sort((a, b) => a.x - b.x)
     if (pts.length < 2) return []
     return [{ key: 'scoped', label, color: 'var(--s1)', points: pts }]
-  }, [seriesQ.data, label])
+  }, [seriesQ.data, label, xFrom])
   // A scope that owns nothing here in any scan is a flat zero line — say so
   // instead of drawing an empty axis.
   const allZero = series.length === 1 && series[0].points.every(p => p.y === 0)
@@ -132,7 +160,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   if (scans.length < 2) return null
   return (
     <section id="over-time">
-      <h2>Size over time <YFromToggle v={yFrom} set={setYFrom} /></h2>
+      <h2>Size over time <XRangeToggle v={xRange} set={setXRange} /><YFromToggle v={yFrom} set={setYFrom} /></h2>
       <p className="sub">
         {user
           ? <><b>{shortName(user)}</b>’s bytes{prefix ? <> under <code>{prefix}</code></> : ''} per scan.</>
