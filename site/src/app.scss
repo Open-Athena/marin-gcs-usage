@@ -204,6 +204,9 @@ header .hrow {
 .treemap.root-marked-sweep { --mk-frame: var(--mk-del); }
 .treemap .dt-treemap-crumbs { display: none !important; }
 .dt-treemap:fullscreen .dt-treemap-crumbs { display: flex !important; }
+// Zero on desktop (the controls sit in the flowing bar); a phone reserves the
+// controls-overlay height here (see the mobile `.tb-row2` overlay below).
+.tb-row2-spacer { height: 0; }
 // The bar's pickers — also the Diff header's two scan endpoints.
 .tb-select {
   background: var(--panel); color: var(--ink);
@@ -2182,13 +2185,31 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 // row to the crumbs (which scroll, tail-first); the map's fullscreen button
 // and the mark panel's fixed-width labels go too.
 @media (max-width: 640px) {
-  // iOS Safari doesn't repaint a `position: sticky` element during momentum
-  // (inertial) scrolling — it lags behind the flick and only snaps back to the
-  // top when the scroll settles, so the controls read as "not following". Pin
-  // the bar with `position: fixed` on phones (repainted every frame) and offset
-  // the page by its measured height so nothing hides under it.
-  .topbar { position: fixed; top: 0; left: 0; right: 0; margin: 0; z-index: 20; }
-  main { padding-top: calc(var(--topbar-h, 92px) + 8px); }
+  // The controls become an out-of-flow OVERLAY under the pinned path row (row 1
+  // stays `position: sticky`): showing/hiding them moves no content, so it can't
+  // perturb the scroll position — and, the reason this replaces an earlier
+  // `position: fixed` pin, the wide control row no longer sits in flow forcing
+  // the mobile layout viewport wider than the screen (which desynced the visual
+  // viewport and left the bar scrolled off). SiteNav auto-hides it on scroll
+  // down / shows on scroll up (`ctrl-hidden`), like a native toolbar.
+  // Lift the whole topbar context above the docked treemap tip (`position:
+  // fixed; z-index: 10`) so the controls overlay isn't painted behind it.
+  .topbar { z-index: 20; }
+  .topbar .tb-row2 {
+    position: absolute; top: 100%; left: 0; right: 0;
+    margin: 0; padding: 3px var(--pad-x, 24px) 7px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.18);
+    // Behind the bar's opaque background, so hiding tucks the tray up out of
+    // sight under the path row rather than fading in place.
+    z-index: -1;
+    transition: transform 0.22s ease, opacity 0.18s ease;
+  }
+  .topbar.ctrl-hidden .tb-row2 { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+  // The flow spacer reserves the controls' measured height at the top so the
+  // overlay covers no content there; it rides off-screen once scrolled.
+  .tb-row2-spacer { height: var(--tb-row2-h, 0); }
   .topbar .brand { display: none; }
   .topbar .tb-suffix { display: none; }
   // The path clips itself with an ellipsis on wide screens; on a phone the

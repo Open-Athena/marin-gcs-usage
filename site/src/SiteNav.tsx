@@ -56,15 +56,24 @@ export function SiteNav({ children, menu, crumbs }: {
   crumbs?: ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
+  const row2Ref = useRef<HTMLDivElement | null>(null)
+  // `--topbar-h` = the sticky bar's height (row 1 when the controls overlay);
+  // `--tb-row2-h` = the controls' own height, so the flow spacer under the bar
+  // reserves exactly that at the top of the page — where the overlay would
+  // otherwise sit over the first slice of content. Measured in a layout effect
+  // (synchronous, post-layout, so no zero-on-mount read) after every render,
+  // plus on viewport resize (which wraps the controls to a different height).
+  const measure = () => {
     const el = ref.current
-    if (!el) return
     const root = document.documentElement
-    const set = () => root.style.setProperty(TOPBAR_VAR, `${el.offsetHeight}px`)
-    set()
-    const ro = new ResizeObserver(set)
-    ro.observe(el)
-    return () => { ro.disconnect(); root.style.removeProperty(TOPBAR_VAR) }
+    if (el) root.style.setProperty(TOPBAR_VAR, `${el.offsetHeight}px`)
+    const r2 = row2Ref.current
+    root.style.setProperty('--tb-row2-h', r2 ? `${r2.offsetHeight}px` : '0px')
+  }
+  useLayoutEffect(measure)
+  useEffect(() => {
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
   }, [])
   // The crumbs scroll horizontally when they don't fit (a phone), and snap
   // to their END on every path change so the basename — the one segment the
@@ -75,15 +84,47 @@ export function SiteNav({ children, menu, crumbs }: {
     const el = crumbsRef.current
     if (el) el.scrollLeft = el.scrollWidth
   }, [pathname])
+  // The path row stays pinned; on a phone the controls row is an OVERLAY (out of
+  // page flow — CSS below, gated to a narrow viewport) that auto-hides on scroll
+  // down and returns on scroll up, like a native toolbar. Out of flow is the
+  // whole point: toggling it moves no content and can't perturb `window.scrollY`
+  // (an in-flow control row sits in the sticky bar above the viewport, so
+  // collapsing it drops scrollY by its own height and a scroll-driven fold then
+  // reads its own change and loops). So we can just watch scroll DIRECTION.
+  const hasControls = !!(crumbs && children)
+  const [hidden, setHidden] = useState(false)
+  useEffect(() => {
+    if (!hasControls) { setHidden(false); return }
+    let lastY = window.scrollY
+    let raf = 0
+    const update = () => {
+      raf = 0
+      const y = Math.max(0, window.scrollY)
+      if (y <= 4) { setHidden(false); lastY = y; return }   // always shown at the top
+      const dy = y - lastY
+      if (dy > 10) { setHidden(true); lastY = y }            // scrolled down → hide
+      else if (dy < -10) { setHidden(false); lastY = y }     // scrolled up → show
+      // small moves in the dead band leave lastY put, so a slow drag accumulates
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(update) }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
+  }, [hasControls])
   return (
-    <div className="topbar" ref={ref}>
+    <>
+    <div className={'topbar' + (hidden ? ' ctrl-hidden' : '')} ref={ref}>
       <div className="tb-row">
         <NavMenu extra={menu} />
         {crumbs ? <div className="tb-crumbs" ref={crumbsRef}>{crumbs}</div> : <div className="tb-mid">{children}</div>}
         <UserMenu />
       </div>
-      {crumbs && children && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
+      {hasControls && <div className="tb-row tb-row2" ref={row2Ref}><div className="tb-mid">{children}</div></div>}
     </div>
+    {/* A flow spacer the height of the controls: at the top it holds their
+        place under the overlay so nothing is covered; once scrolled it rides up
+        off-screen, so hiding the overlay leaves no gap. Zero on desktop. */}
+    {hasControls && <div className="tb-row2-spacer" aria-hidden />}
+    </>
   )
 }
 
