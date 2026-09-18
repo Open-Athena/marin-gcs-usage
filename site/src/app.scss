@@ -213,6 +213,8 @@ header .hrow {
 .treemap .dt-treemap-crumbs { display: none !important; }
 .dt-treemap:fullscreen .dt-treemap-crumbs { display: flex !important; }
 // The bar's pickers — also the Diff header's two scan endpoints.
+.fold-sentinel { height: 0; margin: 0; padding: 0; pointer-events: none; }
+
 .tb-select {
   background: var(--panel); color: var(--ink);
   border: 1px solid var(--line); border-radius: 6px;

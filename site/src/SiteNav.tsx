@@ -82,28 +82,31 @@ export function SiteNav({ children, menu, crumbs }: {
   // controls back while scrolled; the next scroll re-folds them. Desktop keeps
   // both rows (the fold CSS is gated to a narrow viewport).
   const hasControls = !!(crumbs && children)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
   const [scrolled, setScrolled] = useState(false)
   const [peek, setPeek] = useState(false)
-  // Hysteresis + one update per frame, so the fold can't feed back into itself:
-  // collapsing the controls (and a phone's address-bar show/hide) nudges the
-  // scroll offset, and a single-threshold listener then flips straight back —
-  // the expand/hide loop. Fold only once scrolled past 96px, unfold only back
-  // under 8, so a small jitter in the dead zone leaves the state put.
+  // Drive the fold off a flow sentinel at the top of the content, NOT
+  // `window.scrollY`. Folding the controls (they live in the sticky bar's flow
+  // box, above the viewport) shifts everything below up by their height and the
+  // browser drops `scrollY` by that same amount to hold the content still — so
+  // a `scrollY` threshold reads its own fold and flips back: the expand/hide
+  // loop (measured, and `overflow-anchor` doesn't stop it). The sentinel's
+  // on-screen position, by contrast, is preserved exactly across the fold, so
+  // an IntersectionObserver on it never re-triggers — no feedback, and no
+  // dependence on how tall the control rows wrap on a phone.
   useEffect(() => {
-    if (!hasControls) return
-    let raf = 0
-    const update = () => { raf = 0; const y = window.scrollY; setScrolled(prev => (prev ? y > 8 : y > 96)) }
-    const onScroll = () => { if (!raf) raf = requestAnimationFrame(update) }
-    update()
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
+    if (!hasControls) { setScrolled(false); return }
+    const el = sentinelRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver(([e]) => setScrolled(!e.isIntersecting), { threshold: 0 })
+    io.observe(el)
+    return () => io.disconnect()
   }, [hasControls])
-  // Peek is a manual override; it resets only on returning to the top — not on
-  // every scroll event, which undid the chevron the instant its own reflow
-  // fired a scroll (the other half of the loop).
+  // Peek is the chevron's manual override; it resets on returning to the top.
   useEffect(() => { if (!scrolled) setPeek(false) }, [scrolled])
   const folded = hasControls && scrolled && !peek
   return (
+    <>
     <div className={'topbar' + (hasControls && scrolled ? ' scrolled' : '') + (folded ? ' ctrl-folded' : '')} ref={ref}>
       <div className="tb-row">
         <NavMenu extra={menu} />
@@ -121,6 +124,11 @@ export function SiteNav({ children, menu, crumbs }: {
       </div>
       {hasControls && <div className="tb-row tb-row2"><div className="tb-mid">{children}</div></div>}
     </div>
+    {/* The fold sentinel: a zero-space flow marker just under the sticky bar.
+        Its viewport position is preserved when the controls fold, so observing
+        it (not scrollY) can't feed the fold back into its own trigger. */}
+    {hasControls && <div ref={sentinelRef} className="fold-sentinel" aria-hidden />}
+    </>
   )
 }
 
