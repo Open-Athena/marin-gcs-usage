@@ -248,7 +248,7 @@ export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, s
                 <td className="num">{fmtN(k.o)}</td>
                 <td className="created num">{k.d != null ? (() => {
                   const [mon, yr] = epochDaysToMonthShort(k.d).split(' ')
-                  return <span className="cm"><i style={{ background: ageInk(k.d) }} /><span className="mon">{mon}</span><span className="yr">{yr ?? ''}</span></span>
+                  return <span className="cm"><i style={{ background: ageInk(k.d) }} /><span className="mon">{mon}{yr && <span className="yr"> {yr}</span>}</span></span>
                 })() : '—'}</td>
                 {hasRead && <td title={k.a != null ? 'most recent GET/HEAD/LIST under this prefix (access logs)' : undefined}>
                   {k.a != null ? epochDaysToDate(k.a) : '—'}
