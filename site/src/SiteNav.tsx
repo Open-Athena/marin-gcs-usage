@@ -84,13 +84,24 @@ export function SiteNav({ children, menu, crumbs }: {
   const hasControls = !!(crumbs && children)
   const [scrolled, setScrolled] = useState(false)
   const [peek, setPeek] = useState(false)
+  // Hysteresis + one update per frame, so the fold can't feed back into itself:
+  // collapsing the controls (and a phone's address-bar show/hide) nudges the
+  // scroll offset, and a single-threshold listener then flips straight back —
+  // the expand/hide loop. Fold only once scrolled past 96px, unfold only back
+  // under 8, so a small jitter in the dead zone leaves the state put.
   useEffect(() => {
     if (!hasControls) return
-    const onScroll = () => { setScrolled(window.scrollY > 8); setPeek(false) }
-    onScroll()
+    let raf = 0
+    const update = () => { raf = 0; const y = window.scrollY; setScrolled(prev => (prev ? y > 8 : y > 96)) }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(update) }
+    update()
     window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
+    return () => { window.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
   }, [hasControls])
+  // Peek is a manual override; it resets only on returning to the top — not on
+  // every scroll event, which undid the chevron the instant its own reflow
+  // fired a scroll (the other half of the loop).
+  useEffect(() => { if (!scrolled) setPeek(false) }, [scrolled])
   const folded = hasControls && scrolled && !peek
   return (
     <div className={'topbar' + (hasControls && scrolled ? ' scrolled' : '') + (folded ? ' ctrl-folded' : '')} ref={ref}>
