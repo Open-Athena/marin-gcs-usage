@@ -1,18 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { SiteNav } from './SiteNav'
 import { useDocTitle } from './title'
 
 // Share-link console (staff-only; the backend enforces the `admin` scope on
 // every /api/auth/grants route — this page just renders the 403 politely).
-// Mint a named link, copy it exactly once (the raw token is never shown
-// again), and revoke it to kill every session it ever minted, instantly.
+// Mint a link, copy it exactly once (the raw token is never shown again), and
+// revoke it to kill every session it ever minted, instantly.
+
+/** The identity a link logs its holder in as (`grants.subject_json`). */
+interface Subject {
+  first?: string
+  last?: string
+  email?: string
+  avatar?: string
+}
 
 interface Grant {
   id: string
   name: string | null
   note: string | null
   email: string | null
+  subject: Subject | null
   scopes: string[]
   maxRedeems: number | null
   redeems: number
@@ -27,11 +37,18 @@ const fmtTs = (ts: number | null): string => (ts ? new Date(ts * 1000).toLocaleS
 
 const linkFor = (token: string): string => `${window.location.origin}/?key=${token}`
 
+/** Who a link is for: the person (subject), else its admin `name`, else nothing.
+ * Mirrors the package's `displayName` — first+last, falling back to email. */
+const holderName = (g: Grant): string | null => {
+  const s = g.subject
+  const full = s ? [s.first, s.last].filter(Boolean).join(' ') : ''
+  return full || s?.email || g.name || null
+}
+
 export function AdminPage() {
   useDocTitle('Admin')
   const qc = useQueryClient()
   const [memo, setMemo] = useState('')
-  const [user, setUser] = useState('')
   const [first, setFirst] = useState('')
   const [last, setLast] = useState('')
   const [email, setEmail] = useState('')
@@ -53,16 +70,15 @@ export function AdminPage() {
   const mint = useMutation({
     mutationFn: async () => {
       const expiresInS = days.trim() ? Number(days) * 86400 : null
-      // memo → `note` (admin-side label); user → `name` (admin fallback label);
-      // first/last/email/avatar → `subject_json`, the identity the link logs
-      // the holder in *as* — displayName prefers first+last, <Avatar> the URL.
+      // memo → `note` (the link's admin-side label); first/last/email/avatar →
+      // `subject_json`, the identity the link logs its holder in *as* —
+      // displayName prefers first+last, the avatar is shown in their chip.
       const r = await fetch('/api/auth/grants', {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           note: memo.trim(),
-          name: user.trim() || null,
           first: first.trim() || null,
           last: last.trim() || null,
           email: email.trim() || null,
@@ -75,9 +91,8 @@ export function AdminPage() {
       return r.json() as Promise<{ grant: Grant; token: string }>
     },
     onSuccess: ({ grant, token }) => {
-      setMinted({ label: grant.note ?? grant.name ?? 'unnamed', url: linkFor(token) })
+      setMinted({ label: holderName(grant) ?? grant.note ?? 'unnamed', url: linkFor(token) })
       setMemo('')
-      setUser('')
       setFirst('')
       setLast('')
       setEmail('')
@@ -96,23 +111,24 @@ export function AdminPage() {
 
   if (grantsQ.error) {
     return (
-      <div className="admin-page">
+      <main className="admin-page">
+        <SiteNav />
         <h1>Share links</h1>
         <p>{grantsQ.error.message === 'staff only' ? 'This console is staff-only.' : grantsQ.error.message}</p>
-        <p><Link to="/">← back</Link></p>
-      </div>
+      </main>
     )
   }
 
   const grants = grantsQ.data?.grants ?? []
   return (
-    <div className="admin-page">
+    <main className="admin-page">
+      <SiteNav />
       <h1>Share links</h1>
       <p>
-        Named, revocable view links for people outside the SSO/whitelist set. The raw link is shown{' '}
-        <strong>once</strong>, when the link is created; revoking a link signs out everyone using it, on their next request.{' '}
+        Revocable view links for people outside the SSO/whitelist set. The raw link is shown{' '}
+        <strong>once</strong>, when it's created; revoking a link signs out everyone using it, on their next request.{' '}
         Per-email access lives in the <Link to="/admin/db/allowed_emails">allowlist table</Link> (all tables:{' '}
-        <Link to="/admin/db">/admin/db</Link>). <Link to="/">← back to the dashboard</Link>
+        <Link to="/admin/db">/admin/db</Link>).
       </p>
       <form
         className="mint"
@@ -124,12 +140,7 @@ export function AdminPage() {
         <div className="field">
           <label htmlFor="mint-memo">Memo</label>
           <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} required />
-          <span className="hint">label for this link — where it's shared or what it's for, e.g. <code>#internal-discuss</code></span>
-        </div>
-        <div className="field">
-          <label htmlFor="mint-user">User</label>
-          <input id="mint-user" value={user} onChange={e => setUser(e.target.value)} />
-          <span className="hint">optional admin-side label for the holder (shown in the table below)</span>
+          <span className="hint">the link's label, for you — where it's shared or what it's for, e.g. <code>#internal-discuss</code></span>
         </div>
         <div className="field names">
           <label>Logs in as</label>
@@ -152,7 +163,7 @@ export function AdminPage() {
               <img className="avatar-preview" src={avatar.trim()} alt="" onError={e => { e.currentTarget.style.visibility = 'hidden' }} onLoad={e => { e.currentTarget.style.visibility = 'visible' }} />
             )}
           </div>
-          <span className="hint">optional — <code>https:</code> only; grab their Slack/GitHub avatar. No server-side lookup here, so paste the direct image URL.</span>
+          <span className="hint">optional — the direct <code>https:</code> image URL of their Slack or GitHub avatar</span>
         </div>
         <div className="field">
           <label htmlFor="mint-days">Expiry</label>
@@ -178,14 +189,19 @@ export function AdminPage() {
       <table className="grants">
         <thead>
           <tr>
-            <th>memo</th><th>user</th><th>scopes</th><th>redeems</th><th>last used</th><th>expires</th><th>created</th><th></th>
+            <th>memo</th><th>holder</th><th>scopes</th><th>redeems</th><th>last used</th><th>expires</th><th>created</th><th></th>
           </tr>
         </thead>
         <tbody>
           {grants.map(g => (
             <tr key={g.id} className={g.revokedAt ? 'revoked' : ''}>
               <td>{g.note ?? <em>—</em>}</td>
-              <td>{g.name}</td>
+              <td>
+                <span className="holder">
+                  {g.subject?.avatar && <img className="grant-avi" src={g.subject.avatar} alt="" />}
+                  {holderName(g) ?? <em>—</em>}
+                </span>
+              </td>
               <td>{g.scopes.join(' ')}</td>
               <td>{g.redeems}{g.maxRedeems != null ? `/${g.maxRedeems}` : ''}</td>
               <td>{fmtTs(g.lastUsedAt)}</td>
@@ -203,6 +219,6 @@ export function AdminPage() {
           )}
         </tbody>
       </table>
-    </div>
+    </main>
   )
 }

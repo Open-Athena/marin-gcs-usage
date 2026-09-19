@@ -1158,6 +1158,15 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     font-size: 13px;
 
     th, td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--ink-3, #4443); }
+    // Holder cell: the link's subject — small round avatar + their name.
+    .holder { display: inline-flex; align-items: center; gap: 6px; }
+    .grant-avi {
+      flex: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      object-fit: cover;
+    }
     tr.revoked td { opacity: 0.5; }
     .revoked-label { font-size: 12px; }
   }
