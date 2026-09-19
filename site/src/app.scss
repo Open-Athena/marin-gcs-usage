@@ -1106,6 +1106,21 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       gap: 12px;
       align-items: center;
     }
+    // First/last and avatar-url pairs share a cell: lay them out side by side.
+    .field .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      input { flex: 1; min-width: 0; }
+    }
+    .avatar-preview {
+      flex: none;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 1px solid var(--ink-3, #888);
+    }
     label { font-weight: 600; }
     input {
       padding: 6px 8px;

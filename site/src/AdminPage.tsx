@@ -32,6 +32,10 @@ export function AdminPage() {
   const qc = useQueryClient()
   const [memo, setMemo] = useState('')
   const [user, setUser] = useState('')
+  const [first, setFirst] = useState('')
+  const [last, setLast] = useState('')
+  const [email, setEmail] = useState('')
+  const [avatar, setAvatar] = useState('')
   const [days, setDays] = useState('30')
   const [minted, setMinted] = useState<{ label: string; url: string } | null>(null)
 
@@ -49,13 +53,23 @@ export function AdminPage() {
   const mint = useMutation({
     mutationFn: async () => {
       const expiresInS = days.trim() ? Number(days) * 86400 : null
-      // memo → `note` (the link's label, admin-side); user → `name` (also the
-      // link-holder's display name, so only set when the link is person-bound)
+      // memo → `note` (admin-side label); user → `name` (admin fallback label);
+      // first/last/email/avatar → `subject_json`, the identity the link logs
+      // the holder in *as* — displayName prefers first+last, <Avatar> the URL.
       const r = await fetch('/api/auth/grants', {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ note: memo.trim(), name: user.trim() || null, scopes: ['gcs'], expiresInS }),
+        body: JSON.stringify({
+          note: memo.trim(),
+          name: user.trim() || null,
+          first: first.trim() || null,
+          last: last.trim() || null,
+          email: email.trim() || null,
+          avatar: avatar.trim() || null,
+          scopes: ['gcs'],
+          expiresInS,
+        }),
       })
       if (!r.ok) throw new Error(`create failed: ${r.status}`)
       return r.json() as Promise<{ grant: Grant; token: string }>
@@ -64,6 +78,10 @@ export function AdminPage() {
       setMinted({ label: grant.note ?? grant.name ?? 'unnamed', url: linkFor(token) })
       setMemo('')
       setUser('')
+      setFirst('')
+      setLast('')
+      setEmail('')
+      setAvatar('')
       void qc.invalidateQueries({ queryKey: ['auth', 'grants'] })
     },
   })
@@ -111,7 +129,30 @@ export function AdminPage() {
         <div className="field">
           <label htmlFor="mint-user">User</label>
           <input id="mint-user" value={user} onChange={e => setUser(e.target.value)} />
-          <span className="hint">optional — set when the link is for one person; shown as their display name while they browse</span>
+          <span className="hint">optional admin-side label for the holder (shown in the table below)</span>
+        </div>
+        <div className="field names">
+          <label>Logs in as</label>
+          <div className="row">
+            <input aria-label="first name" value={first} onChange={e => setFirst(e.target.value)} placeholder="first" />
+            <input aria-label="last name" value={last} onChange={e => setLast(e.target.value)} placeholder="last" />
+          </div>
+          <span className="hint">optional — the person the link signs in as; shown as their name (with the avatar below) while they browse</span>
+        </div>
+        <div className="field">
+          <label htmlFor="mint-email">Email</label>
+          <input id="mint-email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+          <span className="hint">optional — binds the link to this address on first redeem (magic-link semantics)</span>
+        </div>
+        <div className="field avatar">
+          <label htmlFor="mint-avatar">Avatar URL</label>
+          <div className="row">
+            <input id="mint-avatar" type="url" value={avatar} onChange={e => setAvatar(e.target.value)} placeholder="https://…" />
+            {avatar.trim() && (
+              <img className="avatar-preview" src={avatar.trim()} alt="" onError={e => { e.currentTarget.style.visibility = 'hidden' }} onLoad={e => { e.currentTarget.style.visibility = 'visible' }} />
+            )}
+          </div>
+          <span className="hint">optional — <code>https:</code> only; grab their Slack/GitHub avatar. No server-side lookup here, so paste the direct image URL.</span>
         </div>
         <div className="field">
           <label htmlFor="mint-days">Expiry</label>
