@@ -223,12 +223,21 @@ Pulumi still declares the D1 database *exists*, wrangler fills its schema.
       (`put_bucket_versioning Status=Enabled` via boto3 — virtual addressing,
       creds from Secret Manager; helper `tmp/cw-versioning.py`: status /
       `--enable` / `--lifecycle` probe). Real sweeps now pass the preflight.
-      **Open decision** (see the lifecycle hazard in the safety model above):
-      (A) add a bucket-wide `NoncurrentVersionExpiration` ≈ the undo window +
-      `ExpiredObjectDeleteMarker`, read-modify-write over Marin's 10 rules — makes
-      sweep victims *and* Marin's tmp TTLs self-reclaiming (purge becomes
-      belt-and-braces); or (B) suspend versioning, accept permanent deletes, soften
-      the preflight to a warning.
+      **Direction chosen 2026-09-15: time-boxed soft deletes** = versioning +
+      `NoncurrentVersionExpiration` (old version dropped after N days) +
+      `ExpiredObjectDeleteMarker` (leftover marker removed) — deleted objects
+      evaporate on their own after the window; `sweep purge` becomes
+      belt-and-braces. **Acceptance test in flight** (started 12:09Z): a scoped
+      rule `cw-sweep-lifecycle-test` on `tmp/cw-sweep-lifecycle-test/` with
+      `NoncurrentDays=1` (S3's minimum — no sub-day granularity) was accepted by
+      CAIOS (read-modify-write; Marin's 10 rules verified unchanged, backup in
+      `tmp/`), and 2 seeded objects were deleted into noncurrent-version +
+      delete-marker pairs. `tmp/cw-versioning.py check` from ~2026-09-16 12:09Z
+      (possibly +1 day for midnight-UTC rounding + scheduler slack): versions
+      gone ⇒ expiry honored, markers gone ⇒ marker cleanup honored. If honored,
+      promote to a bucket-wide rule sized to the undo window (needs Marin's
+      go-ahead — it also restores reclaim for their `tmp/ttl=<N>d/` TTLs); if not,
+      fall back to (B) suspend versioning + soften the preflight.
     - **`GCP_SA_KEY` Pages secret SET** on `oa-cw-s3-usage`: a fresh JSON key for
       the existing `gcs-usage-dispatch@oa-internal-450019` SA (already scoped
       `roles/batch.jobsEditor` + `serviceAccountUser` on `gcs-usage-job` — the same
