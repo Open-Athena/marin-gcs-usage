@@ -1561,7 +1561,10 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     .none { color: var(--ink-3); }
     td.created {
       white-space: nowrap;
-      .cm { display: inline-grid; grid-template-columns: 8px 3ch 3ch; gap: 0 5px; align-items: center; justify-items: end; }
+      // Dot + month as a 2-col group, flush-right in the cell (a trailing
+      // empty year track used to leave dead space that shoved it left). Month
+      // track floors at 3ch so bare months align; a year suffix grows it.
+      .cm { display: inline-grid; grid-template-columns: 8px minmax(3ch, max-content); gap: 0 5px; align-items: center; justify-items: end; }
       // A contrast ring so the pale (new) and dark (old) ends of the viridis
       // ramp both read against the row — the swatch was invisible at each end.
       i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); }
