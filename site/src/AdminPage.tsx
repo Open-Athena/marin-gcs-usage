@@ -149,6 +149,8 @@ export function AdminPage() {
     )
   }
 
+  const canMint = !!(name.trim() || memo.trim())
+
   const grants = grantsQ.data?.grants ?? []
   return (
     <main className="admin-page">
@@ -164,7 +166,7 @@ export function AdminPage() {
         className="mint"
         onSubmit={e => {
           e.preventDefault()
-          mint.mutate()
+          if (canMint) mint.mutate()
         }}
       >
         <div className="field">
@@ -198,7 +200,8 @@ export function AdminPage() {
           <span className="hint">days until the link stops working; blank = never</span>
         </div>
         <div className="field submit">
-          <button type="submit" disabled={mint.isPending}>Create link</button>
+          <button type="submit" disabled={mint.isPending || !canMint}>Create link</button>
+          {!canMint && <span className="hint">add a name or a memo first</span>}
           {mint.error && <span className="err">{mint.error.message}</span>}
         </div>
       </form>
