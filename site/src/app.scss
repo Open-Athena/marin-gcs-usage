@@ -619,38 +619,44 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   // prop and per-cell adaptive `edge` colors via `colorForCell`, both in
   // site/src/Treemap.tsx. The old class-level inset rules were dead — dropped
   // (same cleanup cw-s3 did in `1e5ee40`; see specs/branch-parity-discipline.md).
-  .dt-treemap-cell {
-    // Cells nest, `:hover` matches every ancestor of the pointer, and `filter`
-    // compounds multiplicatively down the tree — so a leaf 3 deep used to light
-    // up at 1.07³ and kept brightening as the pointer crossed each ancestor.
-    // Only brighten the innermost hovered cell.
-    &:hover:not(:has(.dt-treemap-cell:hover)) { filter: brightness(1.07); }
-    // Hover affordance: the innermost hovered cell gets a crisp inked outline;
-    // each ancestor under the pointer a fainter one, so the nesting you're
-    // inside reads at a glance. `outline` (not box-shadow) so it doesn't fight
-    // the core's inline shared-edge stroke.
-    &:hover {
-      outline: 1px solid color-mix(in oklab, var(--ink) 45%, transparent);
-      outline-offset: -1px;
-      &:not(:has(.dt-treemap-cell:hover)) {
-        outline: 2px solid var(--ink);
-        outline-offset: -2px;
-        z-index: 1;
-      }
-    }
-    &:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
-    .dt-treemap-lbl {
-      font-variant-numeric: tabular-nums;
-      font-weight: 500;
-      // Dark shadow regardless of ink polarity: it separates white ink from a
-      // mid-tone fill, and under dark ink (on the light end of a hue fan) it
-      // just reads as extra weight rather than fighting the glyph.
-      text-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
-      &.sm { padding: 1px 3px !important; }
-      .sz { opacity: 0.88; font-weight: 500; }
+  .hint { color: var(--ink-3); font-size: 12px; }
+}
+
+// First-class treemap cells for BOTH the main map (`.treemap`) and the diff map
+// (`.diff-tm`) — they wrap the same @disk-tree/react core, so the hover/focus
+// outline, per-cell brightness and label weight/shadow live in one selector and
+// the diff map can't drift from the main map's cell chrome.
+.treemap .dt-treemap-cell,
+.diff-tm .dt-treemap-cell {
+  // Cells nest, `:hover` matches every ancestor of the pointer, and `filter`
+  // compounds multiplicatively down the tree — so a leaf 3 deep used to light
+  // up at 1.07³ and kept brightening as the pointer crossed each ancestor.
+  // Only brighten the innermost hovered cell.
+  &:hover:not(:has(.dt-treemap-cell:hover)) { filter: brightness(1.07); }
+  // Hover affordance: the innermost hovered cell gets a crisp inked outline;
+  // each ancestor under the pointer a fainter one, so the nesting you're
+  // inside reads at a glance. `outline` (not box-shadow) so it doesn't fight
+  // the core's inline shared-edge stroke.
+  &:hover {
+    outline: 1px solid color-mix(in oklab, var(--ink) 45%, transparent);
+    outline-offset: -1px;
+    &:not(:has(.dt-treemap-cell:hover)) {
+      outline: 2px solid var(--ink);
+      outline-offset: -2px;
+      z-index: 1;
     }
   }
-  .hint { color: var(--ink-3); font-size: 12px; }
+  &:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .dt-treemap-lbl {
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+    // Dark shadow regardless of ink polarity: it separates white ink from a
+    // mid-tone fill, and under dark ink (on the light end of a hue fan) it
+    // just reads as extra weight rather than fighting the glyph.
+    text-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+    &.sm { padding: 1px 3px !important; }
+    .sz { opacity: 0.88; font-weight: 500; }
+  }
 }
 
 // Login wall shown by <AuthGate> when there's no CF Access session.
@@ -805,9 +811,31 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 // The diff's crumb repeated the page's own breadcrumb (scope path) — hide it;
 // the movement table below carries the numbers, and drilling is the page's.
 .diff-tm .dt-treemap-crumbs { display: none !important; }
-// Movement table (bytes / objects rows) above the map: numbers right-aligned
-// in shared columns, so start / − / + / ⊕ / = / Δ line up between the two rows.
-.diff-tm .diff-move {
+// The diff header band above the map: two rows tall. Left column stacks the scan
+// pickers + span presets (row 1) over the colour legend (row 2); the movement
+// table sits beside it (its own two rows line up); the area-mode toggle parks
+// top-right, above the map's floated fullscreen button.
+.diff-head {
+  display: flex; align-items: flex-start; flex-wrap: wrap;
+  gap: 4px 20px; margin: 2px 0 6px;
+}
+.diff-head .dh-left {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  // The pickers row keeps the old `.sub` styling (it's the same inner markup).
+  .sub { margin: 0; }
+}
+.diff-head .dh-legend {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px;
+  font-size: 0.8rem; color: var(--ink-2);
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
+}
+.diff-head .diff-move { align-self: center; }
+.diff-head .dh-modes {
+  display: inline-flex; gap: 2px; margin-left: auto; align-self: flex-start;
+}
+// Movement table (bytes / objects rows): numbers right-aligned in shared
+// columns, so start / − / + / ⊕ / = / Δ line up between the two rows.
+.diff-move {
   border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
   margin: 1px 2px 2px;
   th { text-align: left; font-weight: 500; color: var(--ink-2); padding: 0 10px 0 0; }
@@ -2240,7 +2268,7 @@ select.assign-sel {
   .since { color: var(--ink-3); }
 }
 // The diff crumb's "⊕ first scanned" term: a root that entered the scan.
-.diff-tm .first { color: var(--ink-3); }
+.diff-move .first { color: var(--ink-3); }
 
 // The help line (specs/edu-drawer.md): one fixed strip that mirrors the
 // hovered/focused control's explanation; nothing floats over controls.
@@ -2290,13 +2318,20 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
 #over-time h2 .info, #mtime h2 .info { color: var(--ink-3); font-size: 15px; cursor: help; }
 #mtime h2 { display: flex; align-items: center; gap: 8px; }
 #over-time h2 .gran { margin-left: 0; }
-// The diff treemap's bar on a phone: the crumb (path + movement arithmetic)
-// wraps instead of running under the legend, and the legend takes its own row.
-.diff-tm .dt-treemap-bar { flex-wrap: wrap !important; }  // the package's bar is one row; the crumb + legend take a row each
-.diff-tm .dt-treemap-crumbs { white-space: normal !important; flex-wrap: wrap !important; flex: 1 1 100% !important; row-gap: 2px; }
-.diff-tm .dt-treemap-crumbs > span:last-child { white-space: normal !important; }
-.diff-tm .dt-treemap-legend { flex: 1 1 auto; min-width: 0; }
-.diff-tm .dt-treemap-fs { margin-left: auto; }  // ⛶ ends the legend's row instead of taking one of its own
+// The controls (scan pickers, stats, legend, area-mode toggle) now live in the
+// header band above the map (`.diff-head`); the core's bar is left holding only
+// the fullscreen button, floated over the map's top-right corner.
+.diff-tm { position: relative; }
+.diff-tm .dt-treemap-bar {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  min-height: 0; margin: 0; padding: 0; background: none; border: none;
+}
+.diff-tm .dt-treemap-fs {
+  margin: 0;
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  border: 1px solid var(--line); border-radius: 4px;
+  backdrop-filter: blur(2px);
+}
 
 // An ⓘ carries its own affordance; the help underline under it read as noise.
 .has-help:has(.info) { border-bottom: none; }

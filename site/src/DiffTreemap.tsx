@@ -1,6 +1,6 @@
 import { Explain } from './Help'
 import { useMemo } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { Treemap as DtTreemap, divergingColor, divergingInk } from '@disk-tree/react'
 import { stringParam, useUrlState } from 'use-prms'
 import { useUnits } from './units'
@@ -180,42 +180,54 @@ function buildTree(data: DiffData, areaMode: AreaMode, atRoot: boolean): { cells
   return { cells }
 }
 
-export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
+/** The diff's derived model: the built tree, the resolved area mode, the root
+ *  movement totals, and the unit-aware formatters — computed once and shared by
+ *  the header band (DiffHeader, above the map) and the map (DiffTreemap). Lifted
+ *  out of the map so the header (scan pickers + stats + legend) stays mounted
+ *  while a diff is loading or errored, when the map itself isn't rendered. */
+export type DiffModel = {
   data: DiffData
+  root: DiffNode
+  areaMode: AreaMode
+  setAreaMode: (m: AreaMode) => void
   label: string
-  /** The diff is over the store root: depth-1 rows are buckets. */
-  atRoot?: boolean
-  /** A cell was drilled: its path segments relative to the diff's scope. The
-   *  page drills there (and this diff re-reads at that prefix), so the map
-   *  never holds a drill of its own. */
-  onDrill?: (segs: string[]) => void
-}) {
+  added: number
+  removed: number
+  n_added: number
+  n_removed: number
+  grew: number
+  grewN: number
+  firstScanned: number
+  firstScannedN: number
+  fmtBytes: (n: number) => string
+  fmtDelta: (d: number) => string
+  fmtN: (n: number) => string
+  fmtNDelta: (d: number) => string
+  fmtC: (n: number) => string
+  fmtCDelta: (d: number) => string
+}
+
+export function useDiffModel(data: DiffData | null, atRoot: boolean, label: string): DiffModel | null {
   const { fmtBytes } = useUnits()
-  const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
-  const fmtN = (n: number) => n.toLocaleString('en-US')
-  const fmtNDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtN(abs(d))
-  // The root movement table gets compact sig-figs on objects (5.63M, not
-  // 5,634,588) — the exact digit is never the point there, and the full number
-  // crowds the row. Per-cell tooltips keep exact counts (you're inspecting one).
-  const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 })
-  const fmtC = (n: number) => compact.format(n)
-  const fmtCDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtC(abs(d))
-  // Area mode is shareable state: `?dm=max` switches to max(old,new) areas;
-  // Δ (area = |delta|) is the default — the movement is what a diff view is
-  // for — and stays out of the URL.
+  // Area mode is shareable state: `?dm=max` switches to max(old,new) areas; Δ
+  // (area = |delta|) is the default — the movement is what a diff view is for —
+  // and stays out of the URL.
   const [dmP, setDmP] = useUrlState('dm', stringParam())
   const setAreaMode = (m: AreaMode) => setDmP(m === 'max' ? 'max' : undefined)
-  // Root arithmetic for the crumb: start − removed + added = end. Bytes move
-  // at the frontier (an expanded row's own Δ is carried by its children), so
-  // the two terms are the tree's sums; a truncated walk leaves the smallest
-  // movements unenumerated, in which case they're approximate — the
-  // endpoints are always exact.
-  //
-  // Area mode falls back to `max` when Δ has nothing to show: if the user
-  // hasn't pinned a mode and the movement tree is empty (a scope where
-  // nothing moved between the two scans), draw the sizes in `max` instead of
-  // a bare "no changes" — the view still answers "what's here".
-  const { root, areaMode } = useMemo((): { root: DiffNode; areaMode: AreaMode } => {
+  const derived = useMemo(() => {
+    if (!data) return null
+    const fmtDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtBytes(abs(d))
+    const fmtN = (n: number) => n.toLocaleString('en-US')
+    const fmtNDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtN(abs(d))
+    // The root movement table gets compact sig-figs on objects (5.63M, not
+    // 5,634,588) — the exact digit is never the point there. Per-cell tooltips
+    // keep exact counts (you're inspecting one).
+    const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 })
+    const fmtC = (n: number) => compact.format(n)
+    const fmtCDelta = (d: number) => (d >= 0 ? '+' : '−') + fmtC(abs(d))
+    // Area mode falls back to `max` when Δ has nothing to show: if the user
+    // hasn't pinned a mode and the movement tree is empty (nothing moved between
+    // the two scans), draw the sizes in `max` instead of a bare "no changes".
     const wantMax = dmP === 'max'
     let mode: AreaMode = wantMax ? 'max' : 'delta'
     let { cells } = buildTree(data, mode, atRoot)
@@ -223,7 +235,7 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
       const alt = buildTree(data, 'max', atRoot)
       if (alt.cells.length) { mode = 'max'; cells = alt.cells }
     }
-    const built: DiffNode = {
+    const root: DiffNode = {
       key: label,
       label,
       weight: cells.reduce((s, c) => s + c.weight, 0),
@@ -240,21 +252,118 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
       n_removed: cells.reduce((s, c) => s + c.n_removed, 0),
       children: cells,
     }
-    return { root: built, areaMode: mode }
-  }, [data, dmP, label, atRoot])
-  const { added, removed, n_added, n_removed } = root
-  // Roots that entered the scan in this interval: shown apart from the
-  // interval's writes (`⊕ first scanned`), so the day's growth stays readable.
-  const firstScanned = (root.children ?? []).filter(c => c.first).reduce((s, c) => s + c.added, 0)
-  const firstScannedN = (root.children ?? []).filter(c => c.first).reduce((s, c) => s + c.n_added, 0)
-  const grew = added - firstScanned
-  const grewN = n_added - firstScannedN
+    if (!root.children?.length) return null
+    const { added, removed, n_added, n_removed } = root
+    // Roots that entered the scan in this interval: shown apart from the
+    // interval's writes (`⊕ first scanned`), so the day's growth stays readable.
+    const firstScanned = (root.children ?? []).filter(c => c.first).reduce((s, c) => s + c.added, 0)
+    const firstScannedN = (root.children ?? []).filter(c => c.first).reduce((s, c) => s + c.n_added, 0)
+    return {
+      root, areaMode: mode, added, removed, n_added, n_removed,
+      firstScanned, firstScannedN, grew: added - firstScanned, grewN: n_added - firstScannedN,
+      fmtBytes, fmtDelta, fmtN, fmtNDelta, fmtC, fmtCDelta,
+    }
+  }, [data, dmP, atRoot, label, fmtBytes])
+  if (!derived || !data) return null
+  return { data, label, setAreaMode, ...derived }
+}
 
-  if (!root.children?.length) return null
+/** The 2-row header band above the diff map: scan pickers + presets (passed in
+ *  as `controls`) with the colour legend beneath them, the bytes/objects
+ *  movement table beside them, and the area-mode toggle in the top-right corner
+ *  (by the map's fullscreen button). Renders the controls alone when the model
+ *  isn't ready (diff loading / errored), so the pickers never disappear. */
+export function DiffHeader({ model, controls }: { model: DiffModel | null; controls: ReactNode }) {
+  return (
+    <div className="diff-head">
+      <div className="dh-left">
+        <div className="dh-controls">{controls}</div>
+        {model && (
+          <div className="dh-legend">
+            <span className="sw" style={{ background: deltaColor(1) }} /> grew
+            <span className="sw" style={{ background: deltaColor(-1) }} /> shrank
+            {model.firstScanned > 0 && <>
+              <span className="sw" style={{ background: FIRST_SCANNED }} /> first scanned
+            </>}
+            {model.areaMode === 'max' && <>
+              <span className="sw" style={{ background: UNCHANGED_GREY }} /> unchanged
+            </>}
+          </div>
+        )}
+      </div>
+      {model && <DiffStats model={model} />}
+      {model && <DiffModes model={model} />}
+    </div>
+  )
+}
+
+/** The root movement table: bytes and objects, each decomposed as
+ *  start − removed + added (⊕ first scanned) = end (±Δ), columns shared so the
+ *  two rows line up. */
+function DiffStats({ model }: { model: DiffModel }) {
+  const { data, root, added, removed, n_added, n_removed, grew, grewN, firstScanned, firstScannedN,
+    fmtBytes, fmtDelta, fmtC, fmtCDelta } = model
+  const bEq = data.truncated || added - removed !== root.delta ? '≈' : '='
+  const nEq = data.truncated || n_added - n_removed !== root.n_desc_delta ? '≈' : '='
+  return (
+    <table className="diff-move">
+      <tbody>
+        <tr>
+          <th>bytes</th>
+          <td>{fmtBytes(root.size_old)}</td>
+          <td className="shrank">− {fmtBytes(removed)}</td>
+          <td className="grew">+ {fmtBytes(grew)}</td>
+          {firstScanned > 0 && <td className="first">⊕ {fmtBytes(firstScanned)}</td>}
+          <td className="eq">{bEq} {fmtBytes(root.size_new)}</td>
+          <td className={root.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(root.delta)})</td>
+        </tr>
+        <tr>
+          <th>objects</th>
+          <td>{fmtC(root.n_old)}</td>
+          <td className="shrank">− {fmtC(n_removed)}</td>
+          <td className="grew">+ {fmtC(grewN)}</td>
+          {firstScanned > 0 && <td className="first">⊕ {fmtC(firstScannedN)}</td>}
+          <td className="eq">{nEq} {fmtC(root.n_new)}</td>
+          <td className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtCDelta(root.n_desc_delta)})</td>
+        </tr>
+      </tbody>
+    </table>
+  )
+}
+
+/** Area-mode toggle (max vs Δ), parked top-right by the fullscreen button. */
+function DiffModes({ model }: { model: DiffModel }) {
+  const { areaMode, setAreaMode } = model
+  return (
+    <div className="dh-modes">
+      {(['max', 'delta'] as const).map(m => (
+        <Explain key={m} text={m === 'max'
+          ? 'Cell area = max(old, new) bytes, with a band for |Δ| — what is there, and how much of it moved'
+          : 'Cell area = |Δ| bytes, colour = Δ as a share of the directory — only the movement'}>
+          <button
+            onClick={e => { e.stopPropagation(); setAreaMode(m) }}
+            className={'diff-mode' + (areaMode === m ? ' on' : '')}
+          >
+            {m === 'max' ? 'max' : 'Δ'}
+          </button>
+        </Explain>
+      ))}
+    </div>
+  )
+}
+
+export function DiffTreemap({ model, onDrill }: {
+  model: DiffModel
+  /** A cell was drilled: its path segments relative to the diff's scope. The
+   *  page drills there (and this diff re-reads at that prefix), so the map
+   *  never holds a drill of its own. */
+  onDrill?: (segs: string[]) => void
+}) {
+  const { root, areaMode, label, fmtBytes, fmtDelta, fmtN, fmtNDelta } = model
 
   // Rect seams like the main map: a fat gutter at the top level, a clear line
-  // one down, hairlines below — so nested cells read as nested, not as one
-  // flat mosaic. Colours come from `edge` in colorForCell.
+  // one down, hairlines below — so nested cells read as nested, not as one flat
+  // mosaic. Colours come from `edge` in colorForCell.
   const borderWidth = (depth: number, { w, h }: { w: number; h: number }): number => {
     const base = depth === 0 ? 3 : depth === 1 ? 2 : 1
     return min(base, max(1, min(w, h) / 16))
@@ -266,8 +375,8 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
         root={root}
         // Controlled at its root: a drill is the page's, not this map's. Any
         // directory cell drills — a leaf here (no enumerated children in the
-        // diff) is still a directory on the page, so it must not pin a tip
-        // the way the core's default click on a leaf does.
+        // diff) is still a directory on the page, so it must not pin a tip the
+        // way the core's default click on a leaf does.
         path={[root]}
         onCellClick={n => {
           if (!onDrill || n.status === 'filler' || n.status === 'root' || n.label.startsWith('(')) return false
@@ -280,44 +389,9 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
         getId={(_n, p) => p.map(x => x.key).join('|')}
         formatSize={n => fmtBytes(n)}
         tipMode="dock"
-        // The core's default suffix is the node's *area weight* (Σ max(old,new),
-        // or Σ|Δ|), which reads as a nonsense total next to the header's scan
-        // size. Show the movement instead — bytes and objects both decomposed
-        // as start − removed + added = end (±Δ).
-        // Bytes and objects each on their own line, but BOTH in the crumb
-        // suffix (which the diff lets wrap) — so the two movement lines sit
-        // together above the legend, not split one above / one below it.
-        // The crumb is hidden (it repeated the page's own breadcrumb); the
-        // movement lives in a small right-aligned table above the map instead.
+        // Crumb and movement totals both live in the header band above the map
+        // now, so the map's own crumb suffix is empty.
         renderCrumbSuffix={() => null}
-        renderRollup={() => {
-          const bEq = data.truncated || added - removed !== root.delta ? '≈' : '='
-          const nEq = data.truncated || n_added - n_removed !== root.n_desc_delta ? '≈' : '='
-          return (
-            <table className="diff-move">
-              <tbody>
-                <tr>
-                  <th>bytes</th>
-                  <td>{fmtBytes(root.size_old)}</td>
-                  <td className="shrank">− {fmtBytes(removed)}</td>
-                  <td className="grew">+ {fmtBytes(grew)}</td>
-                  {firstScanned > 0 && <td className="first">⊕ {fmtBytes(firstScanned)}</td>}
-                  <td className="eq">{bEq} {fmtBytes(root.size_new)}</td>
-                  <td className={root.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(root.delta)})</td>
-                </tr>
-                <tr>
-                  <th>objects</th>
-                  <td>{fmtC(root.n_old)}</td>
-                  <td className="shrank">− {fmtC(n_removed)}</td>
-                  <td className="grew">+ {fmtC(grewN)}</td>
-                  {firstScanned > 0 && <td className="first">⊕ {fmtC(firstScannedN)}</td>}
-                  <td className="eq">{nEq} {fmtC(root.n_new)}</td>
-                  <td className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtCDelta(root.n_desc_delta)})</td>
-                </tr>
-              </tbody>
-            </table>
-          )
-        }}
         collapseChains
         depthFade={1}
         rootFade={1}
@@ -328,9 +402,6 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
           // it), so its blue children aren't sitting inside a blue block; a
           // leaf takes the blue fill.
           if (n.fs) {
-            // Container title bars take a blue tint (not flat panel) so a
-            // first-scanned subtree reads as one blue region rather than a
-            // black-and-blue checkerboard; leaves take the full blue fill.
             return n.children?.length
               ? { bg: 'color-mix(in oklab, var(--s1) 28%, var(--panel))', ink: 'var(--ink)', edge: FIRST_SCANNED }
               : { bg: FIRST_SCANNED, ink: '#fff', edge: FIRST_SCANNED }
@@ -354,10 +425,10 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
               ink: divergingInk(f > 0.85 ? 1 : 0),
             }
           }
-          // Δ mode: area already says how much moved; color says how much of
-          // the node that was — a wholly added / removed directory is full
-          // green / red however small, a 5% shrink is a faint red, a
-          // net-zero churn is grey (its tooltip shows the churn).
+          // Δ mode: area already says how much moved; color says how much of the
+          // node that was — a wholly added / removed directory is full green /
+          // red however small, a 5% shrink is a faint red, a net-zero churn is
+          // grey (its tooltip shows the churn).
           const base = max(n.size_old, n.size_new)
           const t = base === 0 ? 0 : n.delta / base
           const bg = deltaColor(t)
@@ -414,8 +485,8 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
           </>
         )}
         // Resting card (nothing hovered / on a phone): the whole diff's totals
-        // already sit in the crumb + object row above, so this just names the
-        // scope and nudges toward hovering, instead of collapsing to a stub.
+        // already sit in the header band above, so this just names the scope and
+        // nudges toward hovering, instead of collapsing to a stub.
         renderTipDefault={() => (
           <div className="tip-viewcard">
             <div className="vc-scope">{label}</div>
@@ -427,38 +498,8 @@ export function DiffTreemap({ data, label, atRoot = false, onDrill }: {
               {fmtN(root.n_old)} → {fmtN(root.n_new)} obj{' '}
               <span className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(root.n_desc_delta)})</span>
             </div>
-            <div className="vc-hint">Hover a cell for its movement · full breakdown in the crumb above.</div>
+            <div className="vc-hint">Hover a cell for its movement · full breakdown in the header above.</div>
           </div>
-        )}
-        renderLegend={() => (
-          <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 6px', fontSize: '0.8rem', opacity: 0.85 }}>
-            <span style={{ display: 'inline-block', width: 12, height: 12, background: deltaColor(1), borderRadius: 2 }} />
-            grew
-            <span style={{ display: 'inline-block', width: 12, height: 12, background: deltaColor(-1), borderRadius: 2 }} />
-            shrank
-            {firstScanned > 0 && <>
-              <span style={{ display: 'inline-block', width: 12, height: 12, background: FIRST_SCANNED, borderRadius: 2 }} />
-              first scanned
-            </>}
-            {areaMode === 'max' && <>
-              <span style={{ display: 'inline-block', width: 12, height: 12, background: UNCHANGED_GREY, borderRadius: 2 }} />
-              unchanged
-            </>}
-            <span style={{ display: 'inline-flex', gap: 2, marginLeft: 'auto' }}>
-              {(['max', 'delta'] as const).map(m => (
-                <Explain key={m} text={m === 'max'
-                  ? 'Cell area = max(old, new) bytes, with a band for |Δ| — what is there, and how much of it moved'
-                  : 'Cell area = |Δ| bytes, colour = Δ as a share of the directory — only the movement'}>
-                  <button
-                    onClick={e => { e.stopPropagation(); setAreaMode(m) }}
-                    className={'diff-mode' + (areaMode === m ? ' on' : '')}
-                  >
-                    {m === 'max' ? 'max' : 'Δ'}
-                  </button>
-                </Explain>
-              ))}
-            </span>
-          </span>
         )}
       />
     </div>

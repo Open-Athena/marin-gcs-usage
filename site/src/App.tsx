@@ -9,7 +9,7 @@ import { AGE_MODES, AgeChart } from './AgeChart'
 import { canonId, shortName, shortUserKey } from './UserChip'
 import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
-import { DiffTreemap } from './DiffTreemap'
+import { DiffTreemap, DiffHeader, useDiffModel } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
 import { ScanCombobox } from './ScanCombobox'
 import { buildUserIndex, epochDaysToDate } from './colors'
@@ -645,6 +645,10 @@ function AppContent() {
     ...(fq ? [`“${fq}”`] : []),
   ]
   const scopeDesc = scopeParts.join(' · ')
+  // Diff model (built tree + movement totals + formatters), shared by the diff
+  // header band and the diff map. Built here so the header stays mounted while a
+  // diff is loading/errored (the map isn't rendered then).
+  const diffModel = useDiffModel(diff, !drillPath, scopeDesc)
   // Controlled treemap drill path, resolved against the (possibly filtered/
   // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
   // switches by re-walking the new tree; a vanished path truncates to its
@@ -1156,7 +1160,12 @@ function AppContent() {
               {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
             </>}><span className="info" tabIndex={0} aria-label="how this diff is read"> ⓘ</span></Tooltip>
           )}</h2>
-          <p className="sub">
+          {/* 2-row header band above the map: scan pickers + presets (with the
+              status/error line) sit as `controls`, the colour legend beneath
+              them; DiffHeader adds the movement table + area-mode toggle when the
+              model is ready. Rendered here (not inside the map) so the pickers
+              stay put while a diff is loading or errored. */}
+          <DiffHeader model={diffModel} controls={<span className="sub">
             {/* Both endpoints: the window's start, and the page's scan again
                 (the bar's picker — one scan, stated where the diff reads). */}
             <Explain text={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
@@ -1192,18 +1201,18 @@ function AppContent() {
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
             )}
-          </p>
+          </span>} />
           {/* The slot keeps the treemap's height through a reload: the last
               diff dims under the marker, or (first load) a skeleton stands in.
               The height held is the one the last settled map actually drew
               (measured), not the request's canvas budget — the map is
               shorter than that, and a fixed floor left a blank band under it. */}
-          {diff && diff.rows.length > 0 && (
+          {diff && diff.rows.length > 0 && diffModel && (
             <div ref={diffSlotRef} className={diffStaleOther ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
               {/* A drill in the diff drills the page: the map, the table and
                   the chart follow, and the diff itself re-reads at the new
                   prefix (its rows are relative to the drilled path). */}
-              <DiffTreemap data={diff} label={scopeDesc} atRoot={!drillPath} onDrill={rel => drillTo([...segs, ...rel])} />
+              <DiffTreemap model={diffModel} onDrill={rel => drillTo([...segs, ...rel])} />
               {diffStaleOther
                 ? <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />
                 : diffRefining
