@@ -168,11 +168,6 @@ export function AdminPage() {
         }}
       >
         <div className="field">
-          <label htmlFor="mint-memo">Memo</label>
-          <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} />
-          <span className="hint">optional — a label for you (e.g. where it's shared); with the holder and creator shown below, a person link needs none</span>
-        </div>
-        <div className="field">
           <label htmlFor="mint-name">Logs in as</label>
           <input id="mint-name" value={name} onChange={e => setName(e.target.value)} placeholder="full name" />
           <span className="hint">optional — the person the link signs in as; shown as their name (with the avatar below) while they browse</span>
@@ -191,6 +186,11 @@ export function AdminPage() {
             )}
           </div>
           <span className="hint">optional — the direct <code>https:</code> image URL of their Slack or GitHub avatar</span>
+        </div>
+        <div className="field">
+          <label htmlFor="mint-memo">Memo</label>
+          <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} />
+          <span className="hint">optional — a label for you (e.g. where it's shared); with the holder and creator shown below, a person link needs none</span>
         </div>
         <div className="field">
           <label htmlFor="mint-days">Expiry</label>
