@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(',') ?? []
 
 // dev only: serve a locally-generated `tmp/series.json` (from `dt-cloud series
 // -r http://localhost:3254/data -o tmp/series.json`) at /data/series.json, so
@@ -31,7 +30,7 @@ export default defineConfig({
   server: {
     port: 3253,
     host: true,
-    allowedHosts,
+    allowedHosts: true,
     // dev only: forward the Pages Functions (snapshot data + scan-browser API)
     // to the local `wrangler pages dev` (run it on :3264 with GCS HMAC creds in
     // .dev.vars). Both /data and /v1/files now read live from the bucket.
