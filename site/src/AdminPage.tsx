@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { SiteNav } from './SiteNav'
 import { useDocTitle } from './title'
@@ -38,23 +38,50 @@ const fmtTs = (ts: number | null): string => (ts ? new Date(ts * 1000).toLocaleS
 const linkFor = (token: string): string => `${window.location.origin}/?key=${token}`
 
 /** Who a link is for: the person (subject), else its admin `name`, else nothing.
- * Mirrors the package's `displayName` — first+last, falling back to email. */
+ * The subject is a single freeform name (stored in `subject.first`); `displayName`
+ * renders it verbatim. `name` is the fallback for CLI/agent-token grants. */
 const holderName = (g: Grant): string | null => {
   const s = g.subject
   const full = s ? [s.first, s.last].filter(Boolean).join(' ') : ''
   return full || s?.email || g.name || null
 }
 
+// Persist the in-progress mint form so a reload / redeploy doesn't wipe a draft.
+// Per-tab (sessionStorage), cleared once the link is minted.
+const DRAFT_KEY = 'admin-mint-draft'
+interface Draft {
+  memo: string
+  name: string
+  email: string
+  avatar: string
+  days: string
+}
+const loadDraft = (): Partial<Draft> => {
+  try {
+    return JSON.parse(sessionStorage.getItem(DRAFT_KEY) ?? '{}') as Partial<Draft>
+  } catch {
+    return {}
+  }
+}
+
 export function AdminPage() {
   useDocTitle('Admin')
   const qc = useQueryClient()
-  const [memo, setMemo] = useState('')
-  const [first, setFirst] = useState('')
-  const [last, setLast] = useState('')
-  const [email, setEmail] = useState('')
-  const [avatar, setAvatar] = useState('')
-  const [days, setDays] = useState('30')
+  const [draft] = useState(loadDraft)
+  const [memo, setMemo] = useState(draft.memo ?? '')
+  const [name, setName] = useState(draft.name ?? '')
+  const [email, setEmail] = useState(draft.email ?? '')
+  const [avatar, setAvatar] = useState(draft.avatar ?? '')
+  const [days, setDays] = useState(draft.days ?? '30')
   const [minted, setMinted] = useState<{ label: string; url: string } | null>(null)
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ memo, name, email, avatar, days }))
+    } catch {
+      // sessionStorage can throw (private mode / disabled) — a lost draft is cosmetic.
+    }
+  }, [memo, name, email, avatar, days])
 
   const grantsQ = useQuery<{ grants: Grant[] }, Error>({
     queryKey: ['auth', 'grants'],
@@ -70,17 +97,16 @@ export function AdminPage() {
   const mint = useMutation({
     mutationFn: async () => {
       const expiresInS = days.trim() ? Number(days) * 86400 : null
-      // memo → `note` (the link's admin-side label); first/last/email/avatar →
-      // `subject_json`, the identity the link logs its holder in *as* —
-      // displayName prefers first+last, the avatar is shown in their chip.
+      // memo → `note` (the link's admin-side label); name/email/avatar →
+      // `subject_json`, the identity the link logs its holder in *as*. The name
+      // is one freeform field → `first` (last unused); `displayName` shows it.
       const r = await fetch('/api/auth/grants', {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           note: memo.trim(),
-          first: first.trim() || null,
-          last: last.trim() || null,
+          first: name.trim() || null,
           email: email.trim() || null,
           avatar: avatar.trim() || null,
           scopes: ['gcs'],
@@ -93,10 +119,14 @@ export function AdminPage() {
     onSuccess: ({ grant, token }) => {
       setMinted({ label: holderName(grant) ?? grant.note ?? 'unnamed', url: linkFor(token) })
       setMemo('')
-      setFirst('')
-      setLast('')
+      setName('')
       setEmail('')
       setAvatar('')
+      try {
+        sessionStorage.removeItem(DRAFT_KEY)
+      } catch {
+        // ignore
+      }
       void qc.invalidateQueries({ queryKey: ['auth', 'grants'] })
     },
   })
@@ -142,12 +172,9 @@ export function AdminPage() {
           <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} required />
           <span className="hint">the link's label, for you — where it's shared or what it's for, e.g. <code>#internal-discuss</code></span>
         </div>
-        <div className="field names">
-          <label>Logs in as</label>
-          <div className="row">
-            <input aria-label="first name" value={first} onChange={e => setFirst(e.target.value)} placeholder="first" />
-            <input aria-label="last name" value={last} onChange={e => setLast(e.target.value)} placeholder="last" />
-          </div>
+        <div className="field">
+          <label htmlFor="mint-name">Logs in as</label>
+          <input id="mint-name" value={name} onChange={e => setName(e.target.value)} placeholder="full name" />
           <span className="hint">optional — the person the link signs in as; shown as their name (with the avatar below) while they browse</span>
         </div>
         <div className="field">
