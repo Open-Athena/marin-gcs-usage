@@ -1171,6 +1171,28 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     .by { font-size: 11px; color: var(--ink-2); }
     tr.revoked td { opacity: 0.5; }
     .revoked-label { font-size: 12px; }
+
+    // Long ledger: the table scrolls inside its own box (sideways on a phone,
+    // and vertically past ~70vh) and the header row stays pinned to the box top.
+    thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--surface);
+    }
+  }
+  .table-scroll { overflow: auto; max-height: 70vh; max-width: 100%; }
+
+  // Phone: the 3-column label / input / hint grid squeezes the hint to one word
+  // per line — stack each field instead, hint at full width under its input.
+  @media (max-width: 640px) {
+    .mint {
+      display: block;
+      .field { display: block; margin: 0 0 14px; }
+      .field.submit { display: flex; margin-top: 4px; }
+      label { display: block; margin-bottom: 4px; }
+      & > .field > input { width: 100%; box-sizing: border-box; }
+      input.days { width: 6em; }
+      .hint { display: block; margin-top: 4px; }
+    }
   }
 }
 

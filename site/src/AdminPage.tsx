@@ -213,6 +213,7 @@ export function AdminPage() {
           </div>
         </div>
       )}
+      <div className="table-scroll">
       <table className="grants">
         <thead>
           <tr>
@@ -246,6 +247,7 @@ export function AdminPage() {
           )}
         </tbody>
       </table>
+      </div>
     </main>
   )
 }
