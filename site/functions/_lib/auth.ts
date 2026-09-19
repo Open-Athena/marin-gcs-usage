@@ -64,11 +64,15 @@ export const GCS_SCOPE = 'gcs'
 export const CW_SCOPE = 'cw'
 export const ADMIN_SCOPE = 'admin'
 export const REQUESTS_SCOPE = 'requests'
+/** Read-only viewer: reads only (no stage, no mark). Guest share links get this. */
+export const GCS_READ_SCOPE = 'gcs:read'
 
 export const TEAM_DOMAIN = 'https://openathena-ai-pages.cloudflareaccess.com'
 
 /** The deployment's base scope: what `requireViewer` asks for. */
 export const baseScope = (env: Env): string => env.BASE_SCOPE ?? GCS_SCOPE
+/** The read-only twin of the deployment's base scope (`gcs` -> `gcs:read`). */
+export const baseReadScope = (env: Env): string => `${baseScope(env)}:read`
 
 const staffDomain = (env: Env) => env.STAFF_DOMAIN ?? 'openathena.ai'
 
@@ -179,8 +183,20 @@ export async function requireScope(ctx: Ctx, scope: string): Promise<Identity | 
 export { hasScope }
 
 /** Any authenticated viewer of this deployment (reads). */
-export const requireViewer = (ctx: Ctx): Promise<Identity | Response> => requireScope(ctx, baseScope(ctx.env))
-/** An admin (plan writes + sweep dispatch). */
+/** Gate on ANY of several scopes; 401/403 as JSON. */
+export async function requireAnyScope(ctx: Ctx, scopes: string[]): Promise<Identity | Response> {
+  const id = await identify(ctx)
+  if (!id) return json({ error: 'unauthenticated' }, 401)
+  if (!scopes.some(sc => id.scopes.includes(sc)) && !id.scopes.includes('*')) return json({ error: 'forbidden' }, 403)
+  return id
+}
+
+/** Any viewer of this deployment (reads) — the base scope OR its read-only twin. */
+export const requireViewer = (ctx: Ctx): Promise<Identity | Response> =>
+  requireAnyScope(ctx, [baseScope(ctx.env), baseReadScope(ctx.env)])
+/** A full (non-read-only) viewer — may stage deletions; excludes guest read-only links. */
+export const requireStager = (ctx: Ctx): Promise<Identity | Response> => requireScope(ctx, baseScope(ctx.env))
+/** An admin (mark, plan writes, sweep dispatch). */
 export const requireAdmin = (ctx: Ctx): Promise<Identity | Response> => requireScope(ctx, ADMIN_SCOPE)
 
 export const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>

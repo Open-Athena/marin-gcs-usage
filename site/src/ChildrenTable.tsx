@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { intParam, useUrlState } from 'use-prms'
-import { useCanMark } from './auth'
+import { useCanMark, useCanStage } from './auth'
 import { dateColor, epochDaysToDate, epochDaysToMonthShort } from './colors'
 import type { UserIndexEntry } from './colors'
 import { FaRegTrashCan } from 'react-icons/fa6'
@@ -58,13 +58,14 @@ export function ChildrenTable({ node, segs, scheme, markIdx, marksCol, klcIdx, s
   const { fmtBytes } = useUnits()
   const stage = useStage()
   const canMark = useCanMark()
+  const canStage = useCanStage()
   const [sort, setSort] = useState<{ k: SortKey; asc: boolean }>({ k: 'b', asc: false })
   const [page, setPage] = useState(0)
   const [nP, setNP] = useUrlState('n', intParam(20))
   const PAGE = PAGE_SIZES.includes(nP) ? nP : 20
-  // Any signed-in viewer can select + trash (stage for deletion, the opt-in
-  // model); the legacy mark dots render only in mark mode (markIdx present).
-  const showSel = canMark
+  // Stagers (allowlisted users + admins, not read-only guest links) can select
+  // + trash. Owner-assign / mark dots are admin-only and render only in mark mode.
+  const showSel = canStage
   const showActions = !!markIdx && canMark
   const trash = (uri: string) => stage.mutate({ prefixes: [uri + '/'] })
   // One memo for the whole multi-select gesture (stored on the stage batch).

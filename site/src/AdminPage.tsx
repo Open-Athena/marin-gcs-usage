@@ -55,6 +55,7 @@ interface Draft {
   email: string
   avatar: string
   days: string
+  readOnly: boolean
 }
 const loadDraft = (): Partial<Draft> => {
   try {
@@ -73,15 +74,16 @@ export function AdminPage() {
   const [email, setEmail] = useState(draft.email ?? '')
   const [avatar, setAvatar] = useState(draft.avatar ?? '')
   const [days, setDays] = useState(draft.days ?? '30')
+  const [readOnly, setReadOnly] = useState(draft.readOnly ?? true)
   const [minted, setMinted] = useState<{ label: string; url: string } | null>(null)
 
   useEffect(() => {
     try {
-      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ memo, name, email, avatar, days }))
+      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ memo, name, email, avatar, days, readOnly }))
     } catch {
       // sessionStorage can throw (private mode / disabled) — a lost draft is cosmetic.
     }
-  }, [memo, name, email, avatar, days])
+  }, [memo, name, email, avatar, days, readOnly])
 
   const grantsQ = useQuery<{ grants: Grant[] }, Error>({
     queryKey: ['auth', 'grants'],
@@ -109,7 +111,7 @@ export function AdminPage() {
           first: name.trim() || null,
           email: email.trim() || null,
           avatar: avatar.trim() || null,
-          scopes: ['gcs'],
+          scopes: [readOnly ? 'gcs:read' : 'gcs'],
           expiresInS,
         }),
       })
@@ -122,6 +124,7 @@ export function AdminPage() {
       setName('')
       setEmail('')
       setAvatar('')
+      setReadOnly(true)
       try {
         sessionStorage.removeItem(DRAFT_KEY)
       } catch {
@@ -193,6 +196,11 @@ export function AdminPage() {
           <label htmlFor="mint-memo">Memo</label>
           <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} />
           <span className="hint">optional — a label for you (e.g. where it's shared); with the holder and creator shown below, a person link needs none</span>
+        </div>
+        <div className="field">
+          <label htmlFor="mint-ro">Read-only</label>
+          <input id="mint-ro" type="checkbox" checked={readOnly} onChange={e => setReadOnly(e.target.checked)} />
+          <span className="hint">on = view only (recommended for guests); off = a full viewer that can also stage deletions</span>
         </div>
         <div className="field">
           <label htmlFor="mint-days">Expiry</label>

@@ -14,7 +14,7 @@
 // editable only while the plan is `open`. gcs adaptation of cw's handler:
 // gs:// prefixes, gcs auth helpers, `admin_edits` audit; a plan may span buckets.
 import type { D1Database } from '@cloudflare/workers-types'
-import { type Ctx, type Env as AuthEnv, json, requireAdmin, requireViewer } from '../../_lib/auth.js'
+import { type Ctx, type Env as AuthEnv, json, requireAdmin, requireStager, requireViewer } from '../../_lib/auth.js'
 import { audit, canonicalPrefix, stageItems, type PlanRow } from '../../_lib/plans.js'
 
 type Env = AuthEnv & { DB?: D1Database }
@@ -125,7 +125,8 @@ export const onRequest = async (ctx: Ctx & { env: Env }): Promise<Response> => {
 
   // /api/plans/stage — the opt-in trash proposal; any viewer may stage.
   if (segs.length === 1 && segs[0] === 'stage' && method === 'POST') {
-    const gated = await requireViewer(ctx)
+    // Staging needs the full base scope; read-only guest links can't propose. 
+    const gated = await requireStager(ctx)
     if (gated instanceof Response) return gated
     const body = await readBody(ctx.request)
     const prefixes = Array.isArray(body.prefixes)

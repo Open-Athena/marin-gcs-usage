@@ -93,3 +93,38 @@ security cost) and only add `token_hint` if that proves insufficient.
 2. Surface grant `id` in the admin table (this repo, trivial) — the self-ID path.
 3. Rotate (upstream + gcs UI).
 4. `token_hint` (upstream + gcs UI) — only if grant-id proves insufficient.
+
+---
+
+## Decided + implemented — read-only scope (2026-09-19)
+
+**GCP IAM reality (informs, doesn't replace, the app gate):** the marin buckets
+live in Stanford's `hai-gcp-models`; ~51 individuals hold `roles/editor`/`owner`
+there, so they can `gsutil rm` any object directly, outside this app. So the app
+gate is a hard boundary only for principals with **no** bucket IAM — chiefly
+**guest share links** (the whole reason for a read-only tier). For allowlisted
+staff/users the app tiers are a workflow convention, kept deliberately (below).
+
+**Confirmed capability matrix (GCS):**
+
+| Principal | scopes | read | stage (propose trash) | mark (keep/sweep/owner) | dispatch |
+|---|---|---|---|---|---|
+| Guest share link (read-only) | `gcs:read` | ✅ | — | — | — |
+| Guest share link (full) | `gcs` | ✅ | ✅ | — | — |
+| Allowlisted non-admin user | `gcs` | ✅ | ✅ | — | — |
+| Admin (staff) | `gcs admin …` | ✅ | ✅ | ✅ | ✅ |
+
+Marking is **admin-only**; non-admins participate in deletion only by staging.
+
+**Shipped:**
+- `_lib/auth.ts`: `GCS_READ_SCOPE`/`baseReadScope`, `requireAnyScope`; `requireViewer`
+  now accepts `gcs`|`gcs:read`; new `requireStager` (needs `gcs`).
+- `api/actions.ts` POST + `api/marks.ts` PUT → `requireAdmin` (drop the `!id.email`
+  guard). `api/plans/[[path]].ts` `/stage` → `requireStager`. All reads unchanged
+  (now admit `gcs:read`).
+- Front end: `useCanMark` → admin scope; new `useCanStage` → base scope; the
+  children-table trash/select gates on `useCanStage` (guests see a clean read-only
+  table). Mint form gains a **Read-only** checkbox (default on → `gcs:read`).
+
+**Still open:** rotate (§2), `token_hint` (§3, likely unneeded — grant `id` covers
+self-ID), surface grant `id` in the admin table, and the cw-s3 `cw:read` mirror.

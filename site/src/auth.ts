@@ -52,11 +52,30 @@ export function useIdent(): Ident | null {
   return { email, name }
 }
 
+/** Scopes on the current identity, or null when unknown (the dev stub carries
+ *  none — the server has full scopes there, so callers treat null as dev-full). */
+function useScopes(): string[] | null {
+  const { whoami } = useWhoami(WHOAMI_SOURCE, { devIdentity: DEV_IDENTITY })
+  const sc = (whoami as { scopes?: string[] } | null)?.scopes
+  return Array.isArray(sc) ? sc : null
+}
+
 /**
- * Mark/claim writes require an email-bearing identity — anonymous guest
- * links are read-only (the server enforces the same rule).
+ * Marking (keep/sweep/owner) is admin-only — non-admins propose deletions by
+ * staging instead (specs/share-link-hardening.md); the server enforces the same.
  */
 export function useCanMark(): boolean {
-  const { whoami } = useWhoami(WHOAMI_SOURCE, { devIdentity: DEV_IDENTITY })
-  return !!(whoami as { email?: string | null } | null)?.email
+  const scopes = useScopes()
+  if (scopes === null) return import.meta.env.DEV
+  return scopes.includes('admin') || scopes.includes('*')
+}
+
+/**
+ * Staging (the opt-in trash proposal) needs the full base scope; a read-only
+ * guest link (`gcs:read`) cannot. The server enforces the same via `requireStager`.
+ */
+export function useCanStage(): boolean {
+  const scopes = useScopes()
+  if (scopes === null) return import.meta.env.DEV
+  return scopes.includes('gcs') || scopes.includes('*')
 }
