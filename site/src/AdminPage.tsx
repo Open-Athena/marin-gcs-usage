@@ -142,6 +142,26 @@ export function AdminPage() {
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['auth', 'grants'] }),
   })
 
+  // Rotate = re-key a (leaked) link: new token, same grant — subject/scopes/
+  // expiry intact, the old ?key= stops resolving. Re-key-only by default; the
+  // API also takes { endSessions: true } to boot sessions already inside.
+  const rotate = useMutation({
+    mutationFn: async (id: string) => {
+      const r = await fetch(`/api/auth/grants/${id}/rotate`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endSessions: false }),
+      })
+      if (!r.ok) throw new Error(`rotate failed: ${r.status}`)
+      return r.json() as Promise<{ id: string; token: string }>
+    },
+    onSuccess: ({ token }) => {
+      setMinted({ label: 'rotated link', url: linkFor(token) })
+      void qc.invalidateQueries({ queryKey: ['auth', 'grants'] })
+    },
+  })
+
   if (grantsQ.error) {
     return (
       <main className="admin-page">
@@ -249,7 +269,12 @@ export function AdminPage() {
               <td>
                 {g.revokedAt
                   ? <span className="revoked-label">revoked {fmtTs(g.revokedAt)}</span>
-                  : <button type="button" onClick={() => revoke.mutate(g.id)} disabled={revoke.isPending}>revoke</button>}
+                  : (
+                    <>
+                      <button type="button" className="quiet" title="Re-key this link: new URL, same grant; the old link stops working" onClick={() => rotate.mutate(g.id)} disabled={rotate.isPending}>rotate</button>{' '}
+                      <button type="button" onClick={() => revoke.mutate(g.id)} disabled={revoke.isPending}>revoke</button>
+                    </>
+                  )}
               </td>
             </tr>
           ))}

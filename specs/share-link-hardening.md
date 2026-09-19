@@ -128,3 +128,31 @@ Marking is **admin-only**; non-admins participate in deletion only by staging.
 
 **Still open:** rotate (§2), `token_hint` (§3, likely unneeded — grant `id` covers
 self-ID), surface grant `id` in the admin table, and the cw-s3 `cw:read` mirror.
+
+---
+
+## Auth-package adoption — completed (2026-09-19)
+
+Bumped `@open-athena/auth` `a846f7c` → dist `e254545` (subject-in-mint, disable,
+rotate) and dropped the mint shim (`functions/api/auth/[[path]].ts` is a clean
+delegate again — the package route now persists the subject natively).
+
+The pinned build predated subject-in-mint, so its `POST /grants` silently dropped
+`first`/`last`/`avatar` — every minted link lost its identity (D1: `has_subject`
+empty). The bump also brings §2's **rotate** (`gate.rotate(id, { endSessions })`,
+`POST …/grants/:id/rotate`, admin-gated) — wired as a "rotate" button beside
+"revoke" in `/admin` (re-key-only; `endSessions` available in the API).
+
+Schema sync (the site's migration numbering had diverged from the package's, so
+its `grants` table lacked the newer columns). New site migrations bring the auth
+schema fully level with the package — no divergence carried forward:
+- `0027_auth_grants_disable_expiry` (pkg 0007): `disabled_at`, `expiry_ends_sessions`.
+- `0028_auth_profiles` (pkg 0008): `profiles` table (opt-in; not yet used).
+- `0029_auth_pending_auth` (pkg 0009+0010): `pending_auth` table (opt-in; OIDC/email-code).
+- `0030_auth_grant_rotate` (pkg 0011): `sessions_invalid_before` (rotate's `endSessions`).
+
+Apply order: the migrations are additive and safe under the old code, so apply
+them first, then deploy the bump (the new grant store selects the new columns).
+
+**Remaining:** surface grant `id` in the admin table; cw-s3 `cw:read` mirror +
+the same package adoption.
