@@ -806,3 +806,43 @@ Per specs/denovo-factor.md: from cw-s3's tip `73183b3` (post-rename), gcs's delt
 **CIC** (throwaway harness in `wt/factored`: local D1 with cw's two synced scans, the lifecycle overlay, `VITE_AUTH_MODE=edge`): at the hub (6) and the union (12) the cw store shows its own map, legend, lifecycle fold, a children table without owner/read columns, crumb `marin CoreWeave`, menu Map / Scans / Sweep / About / GCS usage ↗, the plan console on `/sweep`, `/users` → `/`, and only subtree / diff / series API calls (`tmp/denovo/shots/`). What CIC caught: the `store.key === 'gcs'` gate, `useUserEmails` firing on a marks-off store, the doubled document title, the hard-coded brand and root label, the dash-only columns, the cache lesson above.
 
 **Not applied to cw-s3.** The branch is a construction; cw-s3 itself still carries `sweep`/`digest` as its verb names, `/api/sweep/*` and `/api/marks` as its routes, and its own `auth.ts`. Adopting the union on cw-s3 means those renames reach prod (the Batch scripts in `_lib/cwBatch.ts` callers, `job/cw-run.sh`), plus the D1 lineage decision (#3). gcs-ward: manifest §11.
+
+### 2026-09-19 (cw-ward, `/cp gcs`) — directed general FE + migration mirror; union/share-links deferred
+
+gcs `180a362c4..213f68d21` (29 unmarked). Scope this pass (Ryan): the directed
+mirror + safe general FE only — **not** the union, **not** share links. Landed on
+`cw-s3` (three commits, `git cp` cursor **left at `180a362c4`** so the deferred
+backlog re-surfaces; the landed commits carry `@` port-evidence):
+
+- `9f77d50` ← `474f940`: `packages/treemap` map `minWidth: 0` (reflow down on
+  resize / rotate / device-mode). Hard-parity surface + a real mobile bug here.
+  Also owed dt-ward (shared `@rdub/treemap`).
+- `e99577e` ← `ffc9f78`: children **Created** column flush-right dot+month
+  (`minmax(3ch, max-content)`, year folded inline), adapted onto cw-s3's 8px
+  contrast-ring swatch.
+- `28e199a` ← gcs `0024_plans`/`0025_deletion_plan_link`/`0026_stage_batches`:
+  bring `site/migrations/gcs/` (cw-s3's byte-mirror of gcs's flat lineage) current
+  with the seam-1/plan set. Pure parity bookkeeping — cw's wrangler applies only
+  `migrations/cw/`.
+
+**Deletion-memo *feature* (gcs `9567ca0`) NOT landed — union-blocked, not an
+intended delta.** cw-s3's `ChildrenTable` is read-only (no trash gesture / no
+multi-select sel-bar), and its plan-first sweep already carries a plan-level
+`note`; gcs's per-batch memo rides `stageItems`/`useStage` (the staging flow =
+union seam-1, §793). Only the schema mirrored. The seam-1 *plan schema*
+(`eeeda8bf2`) is a no-op here — gcs adopted **cw-s3's** shape (cw 0002/0003).
+
+**Skipped, with reasons** (cursor stays trustworthy via the unmarked backlog):
+share links `0b7b684 cc9dc26 917465c cbc88e6 9c05854 eb582c2 0c7cf16 fd8ebc1
+2ad5b67 213f68d` + auth migrations `0027`–`0030` (whole-host CF Access
+`EDGE_TRUSTED` — a `?key=` guest can't pass the edge wall; deferred flag-flip);
+the union `ead244be0 ecebd22f9 4b65b1852 def9eeef8 5eea3564c 168533e4c` +
+seam-1 staging `87aad75e2 206c0eba8 a50dcb283 34b540f1c 9567ca0 3d6dcae46`
+(deferred — Ryan's call, reaches prod: verb/route renames + D1 lineage #3);
+`2cee960` use-prms `^0.5.0` (gcs-lockfile-specific — cw wants its own audit);
+`13f23bfdb` secrets-strip (= cw's own `0858d6d`), `b1c98d0` x-range picker
+(gcs ported it *from* cw).
+
+Verify: site `tsc -b`, `packages/treemap` `tsc`, both clean; treemap 146 tests
+pass; HMR applied all three edits clean. CIC blocked this pass — the local
+wrangler dev stuck busy (memory pressure; cold reload never settled).
