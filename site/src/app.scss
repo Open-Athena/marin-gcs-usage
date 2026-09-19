@@ -1167,6 +1167,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       border-radius: 50%;
       object-fit: cover;
     }
+    // Who minted the link, under its created timestamp.
+    .by { font-size: 11px; color: var(--ink-2); }
     tr.revoked td { opacity: 0.5; }
     .revoked-label { font-size: 12px; }
   }

@@ -169,8 +169,8 @@ export function AdminPage() {
       >
         <div className="field">
           <label htmlFor="mint-memo">Memo</label>
-          <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} required />
-          <span className="hint">the link's label, for you — where it's shared or what it's for, e.g. <code>#internal-discuss</code></span>
+          <input id="mint-memo" value={memo} onChange={e => setMemo(e.target.value)} />
+          <span className="hint">optional — a label for you (e.g. where it's shared); with the holder and creator shown below, a person link needs none</span>
         </div>
         <div className="field">
           <label htmlFor="mint-name">Logs in as</label>
@@ -233,7 +233,7 @@ export function AdminPage() {
               <td>{g.redeems}{g.maxRedeems != null ? `/${g.maxRedeems}` : ''}</td>
               <td>{fmtTs(g.lastUsedAt)}</td>
               <td>{fmtTs(g.expiresAt)}</td>
-              <td title={`by ${g.createdBy}`}>{fmtTs(g.createdAt)}</td>
+              <td>{fmtTs(g.createdAt)}<div className="by">{g.createdBy}</div></td>
               <td>
                 {g.revokedAt
                   ? <span className="revoked-label">revoked {fmtTs(g.revokedAt)}</span>
