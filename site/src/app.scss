@@ -1129,6 +1129,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       border: 1px solid var(--ink-3, #888);
       border-radius: 4px;
     }
+    // The read-only checkbox is a small replaced element; without this it stretches
+    // to fill its grid cell and the glyph floats centered. Pin it to the cell start.
+    input[type="checkbox"] { justify-self: start; width: 15px; height: 15px; padding: 0; }
     .hint {
       font-size: 12px;
       color: var(--ink-2);
@@ -1169,6 +1172,17 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     }
     // Who minted the link, under its created timestamp.
     .by { font-size: 11px; color: var(--ink-2); }
+    // Rotate / revoke: side-by-side icon buttons, muted until hovered.
+    .row-actions { display: inline-flex; align-items: center; gap: 10px; }
+    .icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 4px; line-height: 0; cursor: pointer;
+      background: transparent; color: var(--ink-2);
+      border: 1px solid transparent; border-radius: 4px;
+      &:hover { color: var(--ink); border-color: var(--ink-3, #888); }
+      &.danger:hover { color: #d33; border-color: #d33; }
+      &:disabled { opacity: 0.4; cursor: default; border-color: transparent; }
+    }
     tr.revoked td { opacity: 0.5; }
     .revoked-label { font-size: 12px; }
 
@@ -1189,7 +1203,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       .field { display: block; margin: 0 0 14px; }
       .field.submit { display: flex; margin-top: 4px; }
       label { display: block; margin-bottom: 4px; }
-      & > .field > input { width: 100%; box-sizing: border-box; }
+      & > .field > input:not([type="checkbox"]) { width: 100%; box-sizing: border-box; }
       input.days { width: 6em; }
       .hint { display: block; margin-top: 4px; }
     }

@@ -9,6 +9,21 @@ import { useDocTitle } from './title'
 // Mint a link, copy it exactly once (the raw token is never shown again), and
 // revoke it to kill every session it ever minted, instantly.
 
+// Row-action icons (feather-style, stroke = currentColor so they theme + pick up
+// the button's hover color). rotate = re-key; revoke = kill (slashed circle).
+const RotateIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="23 4 23 10 17 10" />
+    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+)
+const RevokeIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <line x1="5.6" y1="5.6" x2="18.4" y2="18.4" />
+  </svg>
+)
+
 /** The identity a link logs its holder in as (`grants.subject_json`). */
 interface Subject {
   first?: string
@@ -193,7 +208,7 @@ export function AdminPage() {
         }}
       >
         <div className="field">
-          <label htmlFor="mint-name">Logs in as</label>
+          <label htmlFor="mint-name">Name</label>
           <input id="mint-name" value={name} onChange={e => setName(e.target.value)} placeholder="full name" />
           <span className="hint">optional — the person the link signs in as; shown as their name (with the avatar below) while they browse</span>
         </div>
@@ -270,10 +285,10 @@ export function AdminPage() {
                 {g.revokedAt
                   ? <span className="revoked-label">revoked {fmtTs(g.revokedAt)}</span>
                   : (
-                    <>
-                      <button type="button" className="quiet" title="Re-key this link: new URL, same grant; the old link stops working" onClick={() => rotate.mutate(g.id)} disabled={rotate.isPending}>rotate</button>{' '}
-                      <button type="button" onClick={() => revoke.mutate(g.id)} disabled={revoke.isPending}>revoke</button>
-                    </>
+                    <div className="row-actions">
+                      <button type="button" className="icon-btn" title="Rotate: re-key this link — new URL, same grant; the old link stops working" aria-label="Rotate link" onClick={() => rotate.mutate(g.id)} disabled={rotate.isPending}><RotateIcon /></button>
+                      <button type="button" className="icon-btn danger" title="Revoke: kill this link — signs out everyone using it, on their next request" aria-label="Revoke link" onClick={() => revoke.mutate(g.id)} disabled={revoke.isPending}><RevokeIcon /></button>
+                    </div>
                   )}
               </td>
             </tr>
