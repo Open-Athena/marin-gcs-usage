@@ -291,7 +291,6 @@ export function DiffHeader({ model, controls }: { model: DiffModel | null; contr
           </div>
         )}
       </div>
-      {model && <DiffStats model={model} />}
       {model && <DiffModes model={model} />}
     </div>
   )
@@ -485,20 +484,14 @@ export function DiffTreemap({ model, onDrill }: {
           </>
         )}
         // Resting card (nothing hovered / on a phone): the whole diff's totals
-        // already sit in the header band above, so this just names the scope and
-        // nudges toward hovering, instead of collapsing to a stub.
+        // as the full start − removed + added = end (±Δ) breakdown. This is the
+        // one home for them (the header band no longer duplicates it), and it's
+        // always present, so the numbers never disappear.
         renderTipDefault={() => (
           <div className="tip-viewcard">
             <div className="vc-scope">{label}</div>
-            <div className="nums">
-              {fmtBytes(root.size_old)} → {fmtBytes(root.size_new)}{' '}
-              <span className={root.delta >= 0 ? 'grew' : 'shrank'}>({fmtDelta(root.delta)})</span>
-            </div>
-            <div className="nums">
-              {fmtN(root.n_old)} → {fmtN(root.n_new)} obj{' '}
-              <span className={root.n_desc_delta >= 0 ? 'grew' : 'shrank'}>({fmtNDelta(root.n_desc_delta)})</span>
-            </div>
-            <div className="vc-hint">Hover a cell for its movement · full breakdown in the header above.</div>
+            <DiffStats model={model} />
+            <div className="vc-hint">Hover a cell for its movement.</div>
           </div>
         )}
       />
