@@ -166,7 +166,7 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, dMatches, dP, setDP, span, setSpan, setRange, scansQ } = useScan(store)
+  const { asof, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store)
   const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
@@ -299,7 +299,10 @@ function AppContent() {
   const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
   const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
   const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
-  const diffPrev = spanScan ?? prevScan
+  // A pinned start (`from`) wins over a look-back span; both fall back to the
+  // immediately-previous scan.
+  const fromScan = from && asof ? nearestScan(earlier, scanTime(from)) : null
+  const diffPrev = fromScan ?? spanScan ?? prevScan
   // Hour-rounded span back from `to` — the previous scan clears it, anything
   // else round-trips as its own span (nearest-scan resolution recovers it,
   // and the link keeps following `latest`).
@@ -317,6 +320,14 @@ function AppContent() {
     setRange(toScan, spanTo(toScan, fromScan))
   }
   const diffWindow: [string, string] | undefined = diffPrev && asof ? [diffPrev, asof] : undefined
+  // Two orthogonal, low-key toggles for the diff window (see scan.ts grammar):
+  // the start is either a pinned scan (`from`) or a look-back span; the end
+  // either follows the latest scan (floating) or is pinned. The end toggle only
+  // means anything while the page IS on the latest scan (an older `asof` is
+  // already pinned), so it hides otherwise.
+  const startPinned = from !== undefined
+  const endIsLatest = !!asof && asof === scans[0]
+  const endPinned = dP !== undefined
   // Presets past the history's reach — nearest scan more than a quarter of
   // the span off, or already claimed by a shorter preset — are dropped
   // rather than mislabeled.
@@ -1169,11 +1180,31 @@ function AppContent() {
             {/* Both endpoints: the window's start, and the page's scan again
                 (the bar's picker — one scan, stated where the diff reads). */}
             <Explain text={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
-              <ScanCombobox value={diffPrev} scans={earlier} onChange={pickBefore} label="Diff from scan" />
+              <ScanCombobox value={diffPrev} scans={earlier} onChange={startPinned ? setFrom : pickBefore} label="Diff from scan" />
+            </Explain>
+            <Explain text={startPinned
+              ? <>Start is <b>pinned</b> to this scan — the window's near end stays put as new scans arrive. Click to track a duration back from the end instead.</>
+              : <>Start tracks a <b>duration</b> back from the end (the buttons). Click to pin it to this scan.</>}>
+              <button type="button" role="switch" aria-checked={startPinned} className={'d-mode' + (startPinned ? ' on' : '')}
+                onClick={() => startPinned
+                  ? setSpan(asof && diffPrev ? spanTo(asof, diffPrev) : undefined)
+                  : setFrom(diffPrev ?? undefined)}>
+                {startPinned ? 'pinned' : 'duration'}
+              </button>
             </Explain>
             <span className="arrow"> → </span>
             <ScanCombobox value={asof} scans={scans} onChange={setDP} label="Diff to scan (the page's scan)" />
-            {spanPicks.length > 0 && (
+            {endIsLatest && (
+              <Explain text={endPinned
+                ? <>End is <b>pinned</b> to this scan. Click to follow the latest scan as new ones arrive.</>
+                : <>End follows the <b>latest</b> scan. Click to pin it to this one.</>}>
+                <button type="button" role="switch" aria-checked={endPinned} className={'d-mode' + (endPinned ? ' on' : '')}
+                  onClick={() => setEndPin(!endPinned)}>
+                  {endPinned ? 'pinned' : 'latest'}
+                </button>
+              </Explain>
+            )}
+            {!startPinned && spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (
                   <Explain key={label} text={<>Diff over the last {label}: {fmtScan(scan)} → {fmtScan(asof)}</>}>

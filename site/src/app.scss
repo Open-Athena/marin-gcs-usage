@@ -435,6 +435,22 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     padding: 1px 4px;
     cursor: pointer;
   }
+  // The diff window's two low-key mode toggles (start: pinned/duration; end:
+  // pinned/latest) — muted until hovered or active, so they sit quietly beside
+  // the scan pickers.
+  .d-mode {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--ink-3);
+    font: inherit;
+    font-size: 0.85em;
+    padding: 1px 4px;
+    margin-left: 2px;
+    border-radius: 6px;
+    cursor: pointer;
+    &:hover { color: var(--ink-2); border-color: var(--line); }
+    &.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
+  }
 }
 .prose {
   max-width: 68ch;
