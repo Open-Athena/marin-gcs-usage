@@ -129,6 +129,9 @@ export function indexKey(dir: string, variant: string): string {
   // The age index is a standalone index (per-path created-day strata), not a
   // path-index tier, so it keeps its own base name (specs/age-index.md).
   if (variant === 'age') return `${dir}/age-index.parquet`
+  // Phase B: one path-major pyramid tier per bin (`age-pyramid-<bin>`).
+  const pm = /^age-pyramid-(\d+(?:min|h|d|mo|y))$/.exec(variant)
+  if (pm) return `${dir}/age-pyramid-${pm[1]}.parquet`
   const m = /^(?:(coarse\d+)(?:-(user))?|(path|user))$/.exec(variant)
   if (!m) throw new Error(`bad index variant '${variant}'`)
   const tier = m[1] ? `-${m[1]}` : ''

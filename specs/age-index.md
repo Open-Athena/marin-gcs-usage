@@ -123,25 +123,80 @@ A ships as reviewed-but-unrun batch/serving code. Order:
 
 ## Phase B — pyrmts multi-scale pyramid (follow-up)
 
-Replace A's fixed day buckets with [`pyrmts`](~/c/pyrmts) tiered time pyramids —
-`(shard × bin)` tiers, a planner that serves any `(range, bin-budget)` in
-O(log) bins, `pyrmts-cfw` on our Functions, and the FE hook driving bins off the
-viewport. This is the "adaptively-size bins for any view" endpoint and the
-shared substrate (awair, ctbk).
+Replace A's fixed day buckets with [`pyrmts`](~/c/pyrmts) tiered time pyramids:
+`(shard × bin)` tiers, a planner picking the finest tier under a bin-budget (or
+an exact `targetBin` via ragged decomposition), `stitch` monoid re-aggregation,
+and the FE hook driving the budget off the viewport width. A's `/api/age` +
+`AgeChart` wiring survive — B swaps the backend behind the same endpoint and
+lets the day/week/month toggle become `bin_budget`/`targetBin`.
 
-- **Axis:** `binCol = dt` (created-time); bins `1min|1h|1d|1mo|1y`. The
-  day/week/month toggle becomes `targetBin`, not a hard-coded stratum.
-- **Path is a second, hierarchical axis.** pyrmts pyramids *time*; the
-  path-prefix rollup stays the path-index's job. The age pyramid = "path-index
-  rows, but the metric is a pyrmts time-histogram, not the scalar `wts/wb`
-  mean." Key **`(path, dt)` path-major** (matches pyrmts' `(dims…, bin)` and
-  the path-index `(depth, path)` sort): co-locates one path's whole history for
-  the drilled-path query + gives RG prefix-pushdown. `(dt, path)` serves the
-  inverse ("which paths moved in this window") — not a current view; add a
-  second pyramid only if it appears (as ctbk runs `avail.yml` + `trips.yml`).
-- The **column-cube** framing (time buckets as monoid rollup *columns* on
-  path-keyed rows) is the alternative; its footer-cost caveat (O(cols×RGs) per
-  query, harsh in CFW) makes the tiered pyramid the safer first cut.
+Grounded on the pyrmts map (packages `pyrmts` core, `pyrmts-cfw` serve; awair =
+time-only reference, ctbk = time+space + D1-footer reader reference):
 
-A's `age-index.parquet` is the throwaway B replaces; A's `/api/age` +
-`AgeChart` wiring survive (swap the backend behind the same endpoint).
+### Reuse directly
+
+- **Model + planner:** `Pyramid`/`Tier`, `planQuery` (finest tier under
+  `binBudget`), `targetBin` ragged decomposition, `binsInRange`. Bins
+  `1min|1h|1d|1mo|1y` are first-class (calendar `mo`/`y` handled). Config via a
+  `pyramid.yml` (`parsePyramidYaml`/`pyramidFromConfig`), bundled as raw text.
+- **Combine fork (decide first):** our metrics are plain additive `b`/`o`
+  totals. `stitch`'s monoid re-aggregation expects pyrmts *state columns*
+  (`sum` → `[n, sum, sumSq]`), which would pull the Python `pyrmts`
+  `write_tier_parquet` into the producer to emit them. Alternative: store bare
+  `b`/`o` and do our own trivial sum-combine across segments, using pyrmts only
+  for the *plan* (tier pick + ragged decomposition), not `stitch`. Lean DIY
+  combine — it keeps the producer as our own DuckDB (path-major, no pyrmts
+  Python dep) and the combine is one `GROUP BY`.
+- **Serve:** `pyrmts-cfw` `serveQuery({ pyramid, request, shardIndex?,
+  watermarks? })` as the body of a Pages Function (`/api/age` becomes a
+  `serveQuery` call, or a new `/api/age-pyramid` during migration). Params
+  `from`/`to`/`bin_budget`/`smooth` + one per dim.
+- **Watermarks:** `D1ShardIndex`/`CachedShardIndex` (tables `pyramid_watermarks`,
+  `pyramid_shards`).
+- **Producer layout:** Python `write_tier_parquet` (RG-pruning-friendly shard
+  layout) — reuse it from `write_age_index`'s file-row source instead of A's
+  single-file COPY.
+- **FE:** `usePyramid`/`buildQueryUrl` with `binBudget = ceil(chartPx /
+  targetPxPerBar)` — the pyrmts-native replacement for `AgeChart`'s
+  auto-granularity `useState`.
+- **Dep:** `github:runsascoded/pyrmts#<sha>&path:/js/packages/pyrmts` (+
+  `pyrmts-cfw`), or a `.pds.json` for local dev; peer `hyparquet`.
+
+### Build ourselves
+
+- **The hierarchical `path` axis** (pyrmts has no prefix axis). **Crux — the
+  sort.** pyrmts's writer sorts `binCol` *first* (time-major: RG stats prune a
+  time *window* across all dims — awair/ctbk's query shape). Our hot query is
+  the opposite: **one drilled path across all time**, so we want **path-major**
+  (`(depth, path, dt)`, like A's `age-index.parquet`) — a path's whole history
+  contiguous, RG-pruned by `path`. High path cardinality (millions of prefixes)
+  rules out key-template sharding per path (awair's `{device_id}` trick). So B
+  does **not** take pyrmts's file layout wholesale: it **reuses the time
+  planner + `stitch`** over our own path-major tiered parquet (`(depth, path,
+  dt)`, one file set per tier/bin), served through our D1-footer reader wired as
+  a custom `StorageBackend.fetchSegment`. The `path` prefix range (`P/`..`P0`)
+  is the segment filter, exactly A's contract. A minimal-prefix-cover step (port
+  geo's `vocabCover`/`minimalCover` DP over the path containment forest,
+  analogous to `pickResolution`) is a later upgrade for wide selections; a
+  `(dt, path)` time-major inverse pyramid ("which paths moved in this window")
+  is a second pyramid, added only if a view needs it.
+- **Keep our D1-footer / RG-in-R2-or-GCS reader.** pyrmts always reads the 64 KB
+  parquet footer per shard; our `_lib/index.ts` (D1 footer + synthetic
+  `FileMetaData`) is the cheaper path we already run. Slot it in as a custom
+  `StorageBackend.fetchSegment` (ctbk does exactly this in `avail_geo.ts` with
+  its `rg_manifest.ts`) so `serveQuery` calls our reader, not pyrmts's footer
+  fetch.
+- **A GCS `Storage` shim** (`head`/`getRange`/`get` over GCS via the existing
+  S3Store) mirroring `pyrmts-cfw`'s `r2Storage` — only if we use pyrmts's
+  parquet path anywhere; the D1-footer backend above avoids it for the hot path.
+- **The Python `Source.read_window`** raw→long ingest over the L2 file rows
+  (`kind='file'`, `mtime` → floored to the base-tier bin, per `(path, dt)`).
+  App-specific ingest is expected to be ours.
+
+### Migration
+
+A's `age-index.parquet` is the throwaway B replaces. Ship B behind the same
+`/api/age` (or a parallel endpoint + a FE flag), verify parity, then retire A's
+producer/variant. The **column-cube** alternative (time buckets as monoid
+columns on path-keyed rows) stays rejected: its O(cols×RGs) footer cost per
+query is harsh in a Worker; the tiered pyramid is the safer cut.

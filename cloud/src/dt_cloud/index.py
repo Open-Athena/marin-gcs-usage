@@ -190,6 +190,113 @@ def write_age_index(
     return {"rows": int(n_rows), "floor": floor, "paths": int(kept), "file": str(out_path)}
 
 
+# --- Phase B: multi-scale time pyramid (specs/age-index.md) ------------------
+# Path-major tiers (one parquet per bin), reusing pyrmts's planner + our
+# D1-footer reader at serve time (DIY sum-combine, so the producer stays our own
+# DuckDB — no pyrmts Python dep). Bins finest→coarsest; the base (first) is
+# exploded once, coarser bins re-bin from it (pyrmts `cascade_tiers` in SQL).
+AGE_PYRAMID_BINS = ("1h", "1d", "1mo", "1y")
+
+
+def _binstart_ms_sql(bin: str, secs: str) -> str:
+    """Epoch-**ms** bucket start (pyrmts `binCol` convention) for the epoch-**seconds**
+    int expression ``secs`` at ``bin`` (fixed-width `Nmin|Nh|Nd`, or calendar
+    `1mo`/`1y` via `date_trunc`)."""
+    if bin.endswith("min"):
+        n = int(bin[:-3]) * 60
+    elif bin.endswith("mo"):
+        return f"epoch_ms(date_trunc('month', to_timestamp({secs})))"
+    elif bin.endswith("h"):
+        n = int(bin[:-1]) * 3600
+    elif bin.endswith("d"):
+        n = int(bin[:-1]) * 86400
+    elif bin.endswith("y"):
+        return f"epoch_ms(date_trunc('year', to_timestamp({secs})))"
+    else:
+        raise ValueError(f"bad bin {bin!r}")
+    return f"((({secs}) // {n}) * {n * 1000})"
+
+
+def _age_explode_sql(l2: str, bucket: str, binstart_ms: str) -> str:
+    """Per-`(prefix, time-bin)` bytes/objects from a bucket's layer-2 file rows,
+    descendant-inclusive — `write_age_index`'s two-stage explode with an
+    arbitrary time bin (`binstart_ms` = an epoch-ms expression over `mtime`)."""
+    return f"""
+        WITH files AS (
+          SELECT
+            CASE WHEN path LIKE '%/%' THEN regexp_replace(path, '/[^/]*$', '') ELSE '' END AS pdir,
+            {binstart_ms} AS binstart,
+            size::BIGINT AS b
+          FROM read_parquet({l2})
+          WHERE kind = 'file' AND mtime > 0
+        ),
+        leaf AS (
+          SELECT pdir, binstart, sum(b) AS b, count(*) AS o FROM files GROUP BY pdir, binstart
+        ),
+        comps AS (
+          SELECT binstart, b, o,
+                 CASE WHEN pdir = '' THEN []::VARCHAR[] ELSE string_split(pdir, '/') END AS parts
+          FROM leaf
+        ),
+        expl AS (
+          SELECT binstart, b, o, parts, unnest(range(0, len(parts) + 1)) AS i FROM comps
+        )
+        SELECT
+          '{bucket}' || CASE WHEN i = 0 THEN '' ELSE '/' || array_to_string(parts[1:i], '/') END AS path,
+          (i + 1)::INTEGER AS depth,
+          binstart::BIGINT AS binstart,
+          b::BIGINT AS b,
+          o::BIGINT AS o
+        FROM expl
+    """
+
+
+def write_age_pyramid(
+    con: "duckdb.DuckDBPyConnection",
+    sources: list[tuple[str, str]],
+    out_dir: str | Path,
+    bins: tuple[str, ...] = AGE_PYRAMID_BINS,
+) -> dict:
+    """Write one path-major tier `age-pyramid-<bin>.parquet` per bin under
+    ``out_dir`` from ``sources``. Explode once at the base (finest) bin; re-bin
+    coarser tiers from it. Rows `(path, depth, binstart, b, o)` sorted
+    `(depth, path, binstart)` — a path's whole history contiguous, RG-pruned by
+    `path` (the drilled-path query is a prefix range). Floored per-path (total
+    bytes ≥ the finest coarse-tier floor); a depth-0 fleet-root row per bin.
+    Returns `{floor, bins: {bin: {rows, file}}}`."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    base = bins[0]
+    selects = []
+    for i, (bucket, l2_path) in enumerate(sources):
+        con.execute(f"SET VARIABLE PYR_L2_{i} = ?", [str(l2_path)])
+        selects.append(_age_explode_sql(f"getvariable('PYR_L2_{i}')", bucket, _binstart_ms_sql(base, "mtime")))
+    con.execute("CREATE TEMP TABLE pyr AS " + " UNION ALL ".join(f"({s})" for s in selects))
+    con.execute("CREATE TEMP TABLE pyr_base AS SELECT path, depth, sum(b)::BIGINT AS b, sum(o)::BIGINT AS o, binstart FROM pyr GROUP BY path, depth, binstart")
+    con.execute("INSERT INTO pyr_base SELECT '', 0, sum(b)::BIGINT, sum(o)::BIGINT, binstart FROM pyr_base WHERE depth = 1 GROUP BY binstart")
+    fleet = int(con.execute("SELECT coalesce(sum(b), 0) FROM pyr_base WHERE depth = 1").fetchone()[0])
+    floor = max(1, int(coarse_floor(fleet, AGE_FLOOR_EXP)))
+    con.execute(f"CREATE TEMP TABLE pyr_keep AS SELECT path FROM pyr_base GROUP BY path HAVING sum(b) >= {floor}")
+    summ: dict[str, dict] = {}
+    for bin in bins:
+        out_path = out / f"age-pyramid-{bin}.parquet"
+        if bin == base:
+            sel = "SELECT b.path, b.depth, b.binstart, b.b, b.o FROM pyr_base b JOIN pyr_keep USING (path)"
+        else:
+            # re-bin the base's ms bucket start (ms // 1000 = exact seconds) up.
+            rb = _binstart_ms_sql(bin, "(b.binstart // 1000)")
+            sel = f"SELECT b.path, b.depth, {rb} AS binstart, sum(b.b)::BIGINT AS b, sum(b.o)::BIGINT AS o FROM pyr_base b JOIN pyr_keep USING (path) GROUP BY b.path, b.depth, {rb}"
+        kv = f"(FORMAT parquet, ROW_GROUP_SIZE {ROW_GROUP_SIZE}, KV_METADATA {{coarse_floor: '{floor}', bin: '{bin}'}})"
+        con.execute(f"COPY ({sel} ORDER BY depth, path, binstart) TO '{out_path}' {kv}")
+        n = con.execute(f"SELECT count(*) FROM ({sel})").fetchone()[0]
+        summ[bin] = {"rows": int(n), "file": str(out_path)}
+        err(f"age-pyramid[{bin}]: {n:,} rows → {out_path}")
+    con.execute("DROP TABLE pyr")
+    con.execute("DROP TABLE pyr_base")
+    con.execute("DROP TABLE pyr_keep")
+    return {"floor": floor, "bins": summ}
+
+
 def write_index(
     sources: list[tuple[str, str]],
     out_dir: str | Path,
