@@ -2,8 +2,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(",") ?? true
-
 // dev only: serve a locally-generated `tmp/series.json` (from `dt-cloud series
 // -r http://localhost:3254/data -o tmp/series.json`) at /data/series.json, so
 // the scoped size chart can be previewed before the index is published to the
@@ -25,7 +23,9 @@ export default defineConfig({
   server: {
     port: 3253,
     host: true,
-    allowedHosts,
+    // Trust hosts unconditionally — personal dev server on a trusted tailnet.
+    // (`VITE_ALLOWED_HOSTS=.rbw.sh` can't cover the bare MagicDNS name `m3`.)
+    allowedHosts: true,
     // dev only: forward the Pages Functions (snapshot data + scan-browser API)
     // to the local `wrangler pages dev` (run it on :3254 with GCS HMAC creds in
     // .dev.vars). Both /data and /v1/files now read live from the bucket.
