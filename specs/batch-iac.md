@@ -48,11 +48,11 @@ What git already has: the image contents, `run.sh`/`cw-run.sh`, and the `job/*-b
 
 What is only in GCP: the two cron **schedules**, the crons' **request bodies**, the nine **secrets** + their **accessor IAM**, the **job SA** + its **project roles**.
 
-Confirmed drift (git submitter vs. live cron body), from `diff <(DRY=1 …) <live body>`:
+Confirmed drift (git submitter vs. live cron body), from `diff <(PIN=1 DRY=1 …) <live body>` — **now reconciled** (see [design](#keeping-the-cron-body-from-re-drifting-the-whole-point--implemented)):
 
-- **CW**: the tracked `job/cw-batch-submit.sh` `DRY=1` output is byte-identical to the live `cw-usage-snapshot` body (after key-sorting). No drift.
-- **Daily**: the live `gcs-usage-snapshot-daily` body carries `LISTING_MODE=diy` in its env `variables`, which the tracked `job/batch-submit.sh` does **not** emit. This is real drift — the cron would set `LISTING_MODE=diy`, a from-scratch resubmit via the script would not.
-- **Hazard, not drift**: `DRY=1 ./job/batch-submit.sh` run locally also emitted `USER=ryan`, because the submitter passes a passthrough allow-list of ambient env vars straight into the spec. So the script's output is environment-sensitive — the exact body depends on the caller's shell. This is a second reason the body should be pinned deterministically rather than regenerated ad hoc.
+- **CW**: `PIN=1 DRY=1 ./job/cw-batch-submit.sh` is byte-identical to the live `cw-usage-snapshot` body (after key-sorting). No drift.
+- **Daily**: the live `gcs-usage-snapshot-daily` body carries `LISTING_MODE=diy` in its env `variables`, which the tracked `job/batch-submit.sh` does **not** emit. `LISTING_MODE` is dead code (removed in `850e8cd`); the cron value is a no-op vestige. Resolution: drop it from the cron, applied by the first `pulumi up` after import (the one intended semantic change on adoption).
+- **Ambient-env hazard (fixed):** `DRY=1 ./job/batch-submit.sh` run locally used to leak `USER=ryan` into the spec, because the submitter forwards a passthrough allow-list of ambient env vars — so its output was caller-shell-dependent. Fixed by the new `PIN=1` mode (both submitters), which the Pulumi program uses so the generated body is byte-stable.
 
 ## Pulumi design
 
@@ -67,15 +67,17 @@ New project: `ops/gcp/gcs-usage/` (stack `prod`). Resources:
 5. **`gcp.cloudscheduler.Job` ×2** — schedule + `http_target` (uri, `POST`, `Content-Type: application/json`, base64 `body`, `oauth_token{service_account_email, scope}`). This is the core drift-prone thing being captured.
 6. Optional: **`gcp.serviceaccount.IAMMember`** for the `gcs-usage-dispatch` actAs binding; a **`gcp.artifactregistry.get_repository`** data source for reference only (do not adopt the repo).
 
-### Keeping the cron body from re-drifting (the whole point)
+### Keeping the cron body from re-drifting (the whole point) — IMPLEMENTED
 
-The Batch spec must have one source of truth. The submitters (`job/*-batch-submit.sh`, canonical for the spec shape) already emit it via `DRY=1`. Options, best first:
+The Batch spec has one source of truth: the submitters (`job/*-batch-submit.sh`). The Pulumi program (`ops/gcp/gcs-usage/__main__.py`, `batch_body()`) shells out to `PIN=1 DRY=1 bash <repo>/job/<submitter>` under a fully scrubbed subprocess env, parses the JSON, and feeds it as the scheduler body. `<repo>` comes from stack config `gcs_usage_repo` (default: the sibling checkout `../../../marin-gcs-usage` relative to the ops project; in CI, a checkout step). No re-drift by construction.
 
-- **(B, recommended) Pulumi generates the body from the submitter.** The `__main__.py` shells out to `DRY=1 bash <repo>/job/batch-submit.sh` (and `cw-batch-submit.sh`), parses the JSON, and feeds it as the scheduler body. `<repo>` comes from a stack config `gcs_usage_repo` (default: the sibling checkout, e.g. `../../../marin-gcs-usage` relative to the ops project, or an absolute path; in CI, a checkout step). One source of truth, no re-drift by construction. Caveats to close first: (a) the submitter's ambient-env passthrough must be neutered for deterministic output — run it under a scrubbed env (`env -i` plus only the intended vars), or add a `--pin`/`CRON=1` mode to the submitter that ignores ambient passthroughs; (b) `LISTING_MODE=diy` must be reconciled (add it to the submitter's defaults, or drop it from the cron) so the generated body matches what's imported; (c) cross-repo path coupling between `ops` and `marin-gcs-usage`.
+Both prerequisites are now closed (2026-09-20, this branch):
 
-- **(A, fallback) Literal body in Pulumi + a parity check.** Keep the imported body inline in `__main__.py`, and add a CI/pre-commit check that diffs `DRY=1 ./job/*-batch-submit.sh` (scrubbed env) against the committed Pulumi body and fails on drift. Simpler wiring, but two representations to keep aligned.
+- **Deterministic submitter output — done.** Both submitters honor a new `PIN=1` mode: `PIN` unsets the bash-level override knobs (`IMAGE`/`MACHINE`/`MEMORY_MIB`/`LOCAL_SSD_GB`/`MAX_RUN_SECONDS`/`DATA_BUCKET`, plus `CW_BUCKET` for the CW one) before the `${VAR:-default}` lines, and the `vars()` python skips the ambient passthrough allow-list and reads every default via a `g()` shim that ignores `os.environ`. Verified: `PIN=1 DRY=1 ./job/<submitter>` produces byte-identical output under a deliberately polluted shell (`USER=hacker DATA_BUCKET=evil MACHINE=n2-tiny SWEEP=1 WEEKLY=1 …`). The non-PIN path is unchanged — manual one-off overrides (`SWEEP=1`, `REPROC=1`, `MACHINE=…`, `CW_BUCKETS=…`) still forward exactly as before. This also fixes the demonstrated `USER=ryan` leak.
 
-Either way the fix for the ambient-env hazard (deterministic submitter output) is a prerequisite, and is worth doing regardless.
+- **`LISTING_MODE` reconciled — drop from the cron.** `LISTING_MODE` is **dead code**: commit `850e8cd` ("Make DIY the only listing mode; delete SII path") made DIY unconditional, deleted the var from `run.sh`, and dropped its passthrough from `batch-submit.sh`. Nothing in the repo reads it any more. The live daily cron still carries `LISTING_MODE=diy` as a stale vestige — a no-op. So the reconciliation is to **remove it from the cron**, which the generated body already omits; the first `pulumi up` after import applies that removal. (The same commit message flags this exact class of bug — the var "silently dropped out of the Cloud Scheduler spec when it was regenerated" — which is why this IaC exists.)
+
+Fallback, if the subprocess-at-plan-time coupling is ever unwanted: keep a literal body inline + a CI check diffing `PIN=1 DRY=1 ./job/*-batch-submit.sh` against it. Not needed now.
 
 ### Import-first adoption
 
@@ -138,6 +140,75 @@ pulumi import gcp:cloudscheduler/job:Job cw-usage-snapshot \
 
 After each batch of imports: `pulumi refresh` → `pulumi preview`, and edit the program until preview reports no changes. Then, and only then, is the stack authoritative.
 
+## Field-by-field match (Pulumi ↔ live)
+
+Statically checked against the captured live JSON (`tmp/batch-iac/`); the pulumi CLI was **not** run (it would authenticate to prod). Each resource's declared inputs mirror live:
+
+- **`serviceaccount.Account` `gcs-usage-job`** — `account_id=gcs-usage-job`, `display_name="Daily GCS-usage snapshot job"`. Live SA has no `description` → none set. ✓
+- **`projects.IAMMember` ×4** — roles `artifactregistry.reader`, `batch.agentReporter`, `batch.jobsEditor`, `logging.logWriter`; member `serviceAccount:gcs-usage-job@…`. Additive (non-authoritative). ✓
+- **`secretmanager.Secret` ×9** — `secret_id` = each name; `replication.auto={}` matches live `automatic: {}`. No versions/values modeled. ✓
+- **`secretmanager.SecretIamMember` ×9** — `role=roles/secretmanager.secretAccessor`, member the job SA; one per secret, matching the single live binding each has. ✓
+- **`cloudscheduler.Job` ×2** —
+  - `schedule`/`time_zone`: `0 7 * * *` / `Etc/UTC` (daily), `0 */12 * * *` / `Etc/UTC` (cw). ✓
+  - `attempt_deadline="180s"`. ✓
+  - `http_target.uri` = the Batch jobs-collection URL; `http_method=POST`; `headers={"Content-Type":"application/json"}` (Cloud Scheduler injects `User-Agent`/`Content-Length` itself; the provider ignores those, so they're intentionally omitted). ✓
+  - `oauth_token.service_account_email=gcs-usage-job@…`, `scope=https://www.googleapis.com/auth/cloud-platform`. ✓
+  - `retry_config` set explicitly to the live server defaults (`retry_count=0`, `max_retry_duration=0s`, `min_backoff_duration=5s`, `max_backoff_duration=3600s`, `max_doublings=5`) so import→preview doesn't diff on computed values. ✓
+  - `body` = base64 of `PIN=1 DRY=1 ./job/<submitter>` (canonical JSON). Content matches live **except**: (a) the daily body omits the dead `LISTING_MODE=diy` (intended — see Gap); (b) whitespace/key-ordering differ from the hand-created live bytes, so the first `up` re-normalizes the body formatting on both crons. Both are expected and semantically safe (Batch parses JSON regardless of formatting).
+- **`artifactregistry.get_repository`** — reference only (data source), never adopted. ✓
+
+The only non-empty items the first post-import `preview` should show: the two cron `body` fields (formatting re-normalization on both + `LISTING_MODE` removal on daily). If preview shows **anything else** (a role, a secret, the SA, oauth, schedule, retry), stop and fix the code before `up`.
+
+## Runbook (for the user — mutating steps are user-gated)
+
+Prereqs: `gcloud auth login --update-adc`, `pulumi login gs://oa-pulumi`, a local `marin-gcs-usage` checkout on `cw-s3` (or set `gcs-usage:gcs_usage_repo`), `python3` on PATH (the submitters shell out to it). Run from `ops/gcp/gcs-usage/`.
+
+```bash
+# 0. Deps + stack (KMS secrets provider, per ops/README.md)
+uv sync   # or: pip install 'pulumi>=3,<4' 'pulumi-gcp>=9,<10'
+pulumi stack init prod \
+  --secrets-provider=gcpkms://projects/oa-internal-450019/locations/global/keyRings/ops/cryptoKeys/pulumi/
+pulumi config set gcp:project oa-internal-450019
+pulumi config set gcp:region  us-central1
+# if the marin-gcs-usage checkout isn't the sibling default:
+# pulumi config set gcs-usage:gcs_usage_repo /abs/path/to/marin-gcs-usage
+
+# 1. Import every existing resource (adopt, don't recreate). Full id list in
+#    "Import command sequence" above — SA, 4 project IAM, 9 secrets, 9 secret
+#    IAM, 2 crons. Example first + last:
+pulumi import gcp:serviceaccount/account:Account gcs-usage-job \
+  projects/oa-internal-450019/serviceAccounts/gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com
+# … (all imports) …
+pulumi import gcp:cloudscheduler/job:Job cw-usage-snapshot \
+  projects/oa-internal-450019/locations/us-central1/jobs/cw-usage-snapshot
+
+# 2. Reconcile state with live, then inspect the plan
+pulumi refresh --yes
+pulumi preview --diff | tee /tmp/gcs-usage-preview.txt
+```
+
+**What an acceptable preview looks like:** `~ 2 to update` (the two `cloudscheduler.Job`s), both diffs limited to `http_target.body`; the daily diff drops `LISTING_MODE` and re-formats, the cw diff only re-formats. Everything else: `unchanged`. **Any create/replace/delete, or any change to a role / secret / SA / oauth / schedule / retry, is a red flag — do not `up`; fix the code (or the import) first.**
+
+```bash
+# 3. Apply — normalizes the two cron bodies (and drops dead LISTING_MODE). No
+#    other resource changes. This is the only mutating step.
+pulumi up --yes
+
+# 4. Confirm steady state
+pulumi preview   # expect: no changes
+```
+
+**Rollback:** the crons keep running throughout (import + refresh don't touch them; `up` only rewrites the request body, which the next fire uses). If `up` misbehaves, restore either cron's previous body from the captured JSON — decode and re-set with the same SA/oauth:
+
+```bash
+# body-only restore of a cron from the pre-adoption capture (no Pulumi):
+gcloud scheduler jobs update http gcs-usage-snapshot-daily \
+  --project oa-internal-450019 --location us-central1 \
+  --message-body-from-file <(python3 -c "import json,base64;print(base64.b64decode(json.load(open('tmp/batch-iac/sched-gcs-usage-snapshot-daily.json'))['httpTarget']['body']).decode())")
+```
+
+`pulumi destroy` is **not** a rollback here (it would delete the crons/secrets); never run it against this stack. To hand a resource back to manual control instead, `pulumi state delete <urn>` (drops it from state, leaves it live).
+
 ## Status
 
-Draft. Read-only investigation complete; draft Pulumi program at `ops/gcp/gcs-usage/` (not yet a live stack — no `pulumi stack init` run, no import, no `up`). Move to `specs/done/` once imported and preview-clean.
+Import-READY. Read-only investigation complete; drift reconciled (submitter `PIN=1` mode + dead-`LISTING_MODE` finding); `PIN=1 DRY=1` output verified deterministic and matching live (cw byte-identical; daily = live minus dead `LISTING_MODE`). Draft Pulumi program at `ops/gcp/gcs-usage/` passes `py_compile`, fields mapped to live. Still **not** a live stack — no `pulumi stack init`/`import`/`up` run (those are user-gated, per the runbook). Move to `specs/done/` once imported and preview-clean.

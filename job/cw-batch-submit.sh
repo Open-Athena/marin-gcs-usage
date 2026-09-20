@@ -16,6 +16,12 @@
 #   printf %s "$SECRET" | gcloud secrets create cw-s3-secret-access-key --data-file=-
 set -euo pipefail
 
+# PIN=1: emit the canonical/cron spec — drop every ambient override so the body is
+# byte-identical regardless of the caller's shell (the IaC in ops/gcp/gcs-usage
+# generates the Cloud Scheduler body from `PIN=1 DRY=1`). Must precede the
+# ${VAR:-default} knobs below; the python vars() honors PIN too.
+if [ -n "${PIN:-}" ]; then unset IMAGE MACHINE MEMORY_MIB DATA_BUCKET CW_BUCKET; fi
+
 PROJECT=oa-internal-450019
 REGION=us-central1
 SA=gcs-usage-job@$PROJECT.iam.gserviceaccount.com
@@ -31,11 +37,16 @@ JOB_ID=${JOB_ID:-cw-scan-$(date -u +%Y%m%d-%H%M%S)}
 vars() {
   python3 - <<'EOF'
 import json, os
+# PIN=1 emits the canonical/cron spec: ignore ambient overrides so the body is
+# byte-stable regardless of the caller's shell (see the PIN note at the top and
+# ops/gcp/gcs-usage). Without PIN the knobs and passthrough list stay live.
+pin = bool(os.environ.get("PIN"))
+g = (lambda k, d="": d) if pin else os.environ.get
 v = {
-    "CW_BUCKET": os.environ.get("CW_BUCKET", "marin-us-east-02a"),
-    "CW_ENDPOINT": os.environ.get("CW_ENDPOINT", "https://cwobject.com"),
-    "DATA_BUCKET": os.environ.get("DATA_BUCKET", "oa-gcs-usage-dvx"),
-    "WORK_DIR": os.environ.get("WORK_DIR", "/stage/cw"),
+    "CW_BUCKET": g("CW_BUCKET", "marin-us-east-02a"),
+    "CW_ENDPOINT": g("CW_ENDPOINT", "https://cwobject.com"),
+    "DATA_BUCKET": g("DATA_BUCKET", "oa-gcs-usage-dvx"),
+    "WORK_DIR": g("WORK_DIR", "/stage/cw"),
     # boto/aws-sdk needs a region even though CAIOS ignores it
     "AWS_DEFAULT_REGION": "us-east-1",
     "AWS_EC2_METADATA_DISABLED": "true",
@@ -44,15 +55,16 @@ v = {
     "DT_S3_ADDRESSING_STYLE": "virtual",
     # Slack digest target (specs/cw-slack-digest.md): chat.postMessage (bot
     # token) so per-message avatars apply
-    "SLACK_CHANNEL": os.environ.get("SLACK_CHANNEL", "C0C1YR7D0KU"),  # #cw-s3-usage
+    "SLACK_CHANNEL": g("SLACK_CHANNEL", "C0C1YR7D0KU"),  # #cw-s3-usage
     # failure alerts go to #gcs-usage-alerts (shared with the GCS job), not the digest channel
-    "SLACK_ALERT_CHANNEL": os.environ.get("SLACK_ALERT_CHANNEL", "C0BTUNT3B5Z"),
+    "SLACK_ALERT_CHANNEL": g("SLACK_ALERT_CHANNEL", "C0BTUNT3B5Z"),
     # CF account for the digest plot's `wrangler pages deploy` (token is a secretVariable)
-    "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
+    "CLOUDFLARE_ACCOUNT_ID": g("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }
-for k in ["CW_BUCKETS", "SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
-    if k in os.environ:
-        v[k] = os.environ[k]
+if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
+    for k in ["CW_BUCKETS", "SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
+        if k in os.environ:
+            v[k] = os.environ[k]
 print(json.dumps(v))
 EOF
 }
