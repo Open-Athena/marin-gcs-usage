@@ -44,6 +44,15 @@ INDEX_VARIANTS: dict[str, str] = {"path": "path-index.parquet"}
 for _e in COARSE_EXPS:
     INDEX_VARIANTS[f"coarse{_e}"] = f"path-index-coarse{_e}.parquet"
 
+# The per-path created-day strata behind a path-aware `AgeChart` (specs/age-index.md).
+# A distinct index (not a path-index tier): rows `(path, depth, day, b, o)` sorted
+# `(depth, path, day)`, floored, served by prefix as a point lookup. Registered as
+# variant `age` in `index_footer.INDEX_VARIANTS` too (what `index-sync` publishes).
+AGE_INDEX = "age-index.parquet"
+# The age index floors at the finest coarse tier: every prefix the treemap can drill
+# to as a page is covered; below it `/api/age` falls back to the nearest ancestor.
+AGE_FLOOR_EXP = max(COARSE_EXPS)
+
 ROW_GROUP_SIZE = 8192
 # The index rows, in the site's column contract (`_lib/index.ts` `Row`).
 INDEX_COLS = "path, depth, usr, b, o, wts::DOUBLE AS wts, wb, c2, c3, c4, a"
@@ -96,6 +105,91 @@ def write_coarse_tiers(con: "duckdb.DuckDBPyConnection", path_index: Path, rows:
     return floors, counts
 
 
+def age_rows_sql(l2: str, bucket: str) -> str:
+    """Per-`(prefix, created-day)` bytes/objects from a bucket's layer-2 **file**
+    rows, descendant-inclusive: each file's `mtime`-day-bucketed size/count rolled
+    up to every ancestor dir prefix (bucket-prefixed, `depth + 1`, so depth 1 is
+    the bucket — same key space as the path-index). Two-stage — aggregate files to
+    `(parent-dir, day)` first, then explode that to ancestors — so the intermediate
+    is distinct-dirs × days, not files × depth."""
+    return f"""
+        WITH files AS (
+          SELECT
+            CASE WHEN path LIKE '%/%' THEN regexp_replace(path, '/[^/]*$', '') ELSE '' END AS pdir,
+            CAST(mtime / 86400 AS BIGINT) AS day,
+            size::BIGINT AS b
+          FROM read_parquet({l2})
+          WHERE kind = 'file' AND mtime > 0
+        ),
+        leaf AS (
+          SELECT pdir, day, sum(b) AS b, count(*) AS o FROM files GROUP BY pdir, day
+        ),
+        comps AS (
+          SELECT day, b, o,
+                 CASE WHEN pdir = '' THEN []::VARCHAR[] ELSE string_split(pdir, '/') END AS parts
+          FROM leaf
+        ),
+        expl AS (
+          SELECT day, b, o, parts, unnest(range(0, len(parts) + 1)) AS i FROM comps
+        )
+        SELECT
+          '{bucket}' || CASE WHEN i = 0 THEN '' ELSE '/' || array_to_string(parts[1:i], '/') END AS path,
+          (i + 1)::INTEGER AS depth,
+          day::BIGINT AS day,
+          b::BIGINT AS b,
+          o::BIGINT AS o
+        FROM expl
+    """
+
+
+def write_age_index(
+    con: "duckdb.DuckDBPyConnection",
+    sources: list[tuple[str, str]],
+    out_dir: Path,
+) -> dict:
+    """Write `age-index.parquet` under ``out_dir`` from ``sources`` (the same
+    `(bucket, layer-2 parquet)` pairs as the path-index), on the caller's ``con``.
+    Rows are the UNION of each bucket's `(prefix, created-day)` strata, grouped,
+    floored to prefixes clearing the finest coarse tier's byte floor, and sorted
+    `(depth, path, day)` — the prefix-range + row-group-prune contract of the
+    path-index, so `/api/age?path=P` is a point lookup on P's own day rows.
+    Returns a summary (rows, floor, kept paths, file)."""
+    out = Path(out_dir)
+    selects = []
+    for i, (bucket, l2_path) in enumerate(sources):
+        con.execute(f"SET VARIABLE AGE_L2_{i} = ?", [str(l2_path)])
+        selects.append(age_rows_sql(f"getvariable('AGE_L2_{i}')", bucket))
+    con.execute(
+        "CREATE TEMP TABLE age AS "
+        + " UNION ALL ".join(f"({s})" for s in selects)
+    )
+    # Cast the sums back to BIGINT: DuckDB's SUM(BIGINT) is HUGEINT, which parquet
+    # stores without the int64 min/max stats the D1 footer + reader require.
+    con.execute("CREATE TEMP TABLE age_agg AS SELECT path, depth, sum(b)::BIGINT AS b, sum(o)::BIGINT AS o, day FROM age GROUP BY path, depth, day")
+    # A depth-0 fleet-root row (path '') summing every bucket per day, so the
+    # multi-bucket root view is a single point lookup like any drilled prefix
+    # (the buckets are the depth-1 rows; summing them counts each file once).
+    con.execute("INSERT INTO age_agg SELECT '', 0, sum(b)::BIGINT, sum(o)::BIGINT, day FROM age_agg WHERE depth = 1 GROUP BY day")
+    fleet = int(con.execute("SELECT coalesce(sum(b), 0) FROM age_agg WHERE depth = 1").fetchone()[0])
+    floor = max(1, int(coarse_floor(fleet, AGE_FLOOR_EXP)))
+    # Per-path total bytes (over all days) decides what clears the floor.
+    con.execute(f"CREATE TEMP TABLE age_keep AS SELECT path FROM age_agg GROUP BY path HAVING sum(b) >= {floor}")
+    kept = con.execute("SELECT count(*) FROM age_keep").fetchone()[0]
+    all_paths = con.execute("SELECT count(DISTINCT path) FROM age_agg").fetchone()[0]
+    out_path = out / AGE_INDEX
+    kv = f"(FORMAT parquet, ROW_GROUP_SIZE {ROW_GROUP_SIZE}, KV_METADATA {{coarse_floor: '{floor}'}})"
+    n = con.execute(
+        f"COPY (SELECT a.path, a.depth, a.day, a.b, a.o FROM age_agg a JOIN age_keep USING (path) "
+        f"ORDER BY a.depth, a.path, a.day) TO '{out_path}' {kv}"
+    )
+    n_rows = con.execute("SELECT count(*) FROM age_agg a JOIN age_keep USING (path)").fetchone()[0]
+    con.execute("DROP TABLE age")
+    con.execute("DROP TABLE age_agg")
+    con.execute("DROP TABLE age_keep")
+    err(f"age-index: {n_rows:,} rows, {kept:,} of {all_paths:,} paths ≥ floor {floor:,} B → {out_path}")
+    return {"rows": int(n_rows), "floor": floor, "paths": int(kept), "file": str(out_path)}
+
+
 def write_index(
     sources: list[tuple[str, str]],
     out_dir: str | Path,
@@ -133,10 +227,12 @@ def write_index(
     # sums), so a path's subtree bytes are its own `b`.
     con.execute("CREATE TEMP TABLE tot AS SELECT path, depth, b AS pb FROM idx")
     floors, counts = write_coarse_tiers(con, path_index, rows="idx")
+    age = write_age_index(con, sources, out)
     return {
         "rows": int(n),
         "buckets": buckets,
         "floors": {str(e): floors[e] for e in COARSE_EXPS},
         "paths": {str(e): counts[e] for e in COARSE_EXPS},
-        "files": {v: str(out / f) for v, f in INDEX_VARIANTS.items()},
+        "age": age,
+        "files": {**{v: str(out / f) for v, f in INDEX_VARIANTS.items()}, "age": age["file"]},
     }

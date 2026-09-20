@@ -148,7 +148,7 @@ GEN=${GEN:-$(date -u +%Y%m%dT%H%M%SZ)}
 INDEX_KEY="cw-l2/$SNAP_ID/index/$GEN"
 dt-cloud index-write -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK/index" "${SRC[@]}"
 mkdir -p "/gcs/$DATA/$INDEX_KEY"
-cp "$WORK"/index/path-index*.parquet "/gcs/$DATA/$INDEX_KEY/"
+cp "$WORK"/index/*.parquet "/gcs/$DATA/$INDEX_KEY/"  # path-index + coarse tiers + age-index
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then  # `:+set`: xtrace must not print the token
   dt-cloud index-sync -d "/gcs/$DATA/$INDEX_KEY" -g "$GEN" -k "$INDEX_KEY" "$SNAP_ID" \
     || echo "WARN: index-sync failed (the site keeps serving the previous generation)" >&2

@@ -18,7 +18,6 @@ import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
 import { barControls } from './pageBar'
-import { scopeAgeRows } from './ageScope'
 import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
@@ -286,7 +285,6 @@ function AppContent() {
     navigate({ pathname, search: `?${sp.toString()}`, hash }, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search])
-  const ageQ = useQuery(scanQuery<AgeRow[]>('age'))
   const metaQ = useQuery(scanQuery<Meta>('meta'))
   // The Diff section's "before" endpoint comes from the `?d=` span (see
   // scan.ts): absent = the previous scan; a span resolves to the scan
@@ -486,16 +484,14 @@ function AppContent() {
   // flagged `m` (a match root's whole subtree comes along, so its descendants
   // aren't flagged).
   const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
-  const ageAll: AgeRow[] = ageQ.data ?? []
   // The filter's match roots (the deepest subtree response carries them);
-  // the series sums them per scan, the age chart follows when it can.
+  // the series sums them per scan (the age chart follows the drill instead —
+  // its own per-path index, below).
   const matchedRoots = useMemo((): string[] | undefined => {
     if (!fq) return undefined
     const m = subtreeQs[subtreeQs.length - 1]?.data?.matched ?? subtreeQs[0]?.data?.matched
     return m?.map(x => x.path)
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
-  const ageScoped = useMemo(() => scopeAgeRows(ageAll, matchedRoots), [ageAll, matchedRoots])
-  const age: AgeRow[] = ageScoped.rows
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out) — shared with
   // /sweep. Re-armed as the map, meta and scans land (sections mount off
@@ -514,6 +510,19 @@ function AppContent() {
   // every depth, not just the root (specs/path-agnostic-serving.md §2.3).
   const drillPfx = drillPath ? `${store.scheme}${drillPath}/` : undefined
   const totalsQ = useMarkTotals(asof, serverLedger ? drillPfx : undefined, serverLedger)
+  // Per-path created-day strata (specs/age-index.md): the `age` index keyed on
+  // the drilled prefix, so `AgeChart` follows the drill exactly instead of
+  // showing the whole fleet at every depth. Root (`drillPath === ''`, depth 0)
+  // is the fleet total. A prefix below the index floor returns no rows.
+  const ageQ = useQuery({
+    queryKey: ['age', store.key, asof, drillPath],
+    queryFn: () =>
+      fetch(`/api/age?date=${asof}&path=${encodeURIComponent(drillPath)}`, { credentials: 'include' })
+        .then(r => { if (!r.ok) throw new Error(`age ${r.status}`); return r.json() as Promise<{ rows: AgeRow[] }> }),
+    enabled: !!asof,
+    staleTime: Infinity,
+  })
+  const age: AgeRow[] = ageQ.data?.rows ?? []
   const drillTo = (segs: string[]) =>
     navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
   // Read-recency lens domain: the access-log observation window (meta), not
@@ -544,9 +553,15 @@ function AppContent() {
   // read axis needs strata that carry `a` (scans published from 8/29 on) —
   // without them it's offered disabled and the chart falls back to written.
   const ageReadRange = age.some(r => r.a != null) ? readRange : null
-  // Only axes this scan can actually color by are offered (no dead buttons):
-  // `read` needs `a` strata, the user axis needs `us`.
-  const ageModes = AGE_MODES.filter(m => (m !== 'read' || ageReadRange) && (hasAttr || m === 'date' || m === 'tree'))
+  // Only axes the rows actually carry a per-stratum value for are offered (no
+  // dead buttons): `read` needs `a`, `user` needs `u`, `tree` needs `d1`. The
+  // Phase-A per-path index carries only `(d, b, o)`, so `date` is the axis;
+  // richer strata return with Phase B (specs/age-index.md).
+  const ageModes = AGE_MODES.filter(m =>
+    m === 'date'
+    || (m === 'read' && !!ageReadRange)
+    || (m === 'user' && hasAttr && age.some(r => r.u != null))
+    || (m === 'tree' && age.some(r => r.d1 != null)))
   const ageMode: ColorMode = (() => {
     const want: ColorMode = ageModeP && (AGE_MODES as string[]).includes(ageModeP) ? (ageModeP as ColorMode) : effMode === 'marks' ? 'date' : effMode
     return ageModes.includes(want) ? want : 'date'
@@ -1271,7 +1286,6 @@ function AppContent() {
             it follows the map’s until you pick one; marks have no per-stratum value here.
           </>}><span className="info" tabIndex={0} aria-label="about this chart">ⓘ</span></Tooltip>
         </h2>
-        {fq && !ageScoped.scoped && <p className="sub"><i>Age data is per top-level dir, so this chart is not scoped to “{fq}”.</i></p>}
         {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
         {age.length > 0 && (
           <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
