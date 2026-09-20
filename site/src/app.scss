@@ -1193,6 +1193,11 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       background: var(--surface);
     }
   }
+  .grants-toolbar {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin: 8px 0 2px; font-size: 13px; color: var(--ink-2); cursor: pointer;
+    input { margin: 0; }
+  }
   .table-scroll { overflow: auto; max-height: 70vh; max-width: 100%; }
 
   // Phone: the 3-column label / input / hint grid squeezes the hint to one word

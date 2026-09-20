@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { SiteNav } from './SiteNav'
 import { useDocTitle } from './title'
 
@@ -83,6 +83,15 @@ const loadDraft = (): Partial<Draft> => {
 export function AdminPage() {
   useDocTitle('Admin')
   const qc = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const showRevoked = searchParams.get('revoked') === '1'
+  const toggleRevoked = (on: boolean) =>
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (on) next.set('revoked', '1')
+      else next.delete('revoked')
+      return next
+    }, { replace: true })
   const [draft] = useState(loadDraft)
   const [memo, setMemo] = useState(draft.memo ?? '')
   const [name, setName] = useState(draft.name ?? '')
@@ -190,6 +199,8 @@ export function AdminPage() {
   const canMint = !!(name.trim() || memo.trim())
 
   const grants = grantsQ.data?.grants ?? []
+  const revokedCount = grants.filter(g => g.revokedAt).length
+  const shown = showRevoked ? grants : grants.filter(g => !g.revokedAt)
   return (
     <main className="admin-page">
       <SiteNav />
@@ -225,7 +236,7 @@ export function AdminPage() {
               <img className="avatar-preview" src={avatar.trim()} alt="" onError={e => { e.currentTarget.style.visibility = 'hidden' }} onLoad={e => { e.currentTarget.style.visibility = 'visible' }} />
             )}
           </div>
-          <span className="hint">optional — the direct <code>https:</code> image URL of their Slack or GitHub avatar</span>
+          <span className="hint">optional — the direct <code>https:</code> image URL of their avatar</span>
         </div>
         <div className="field">
           <label htmlFor="mint-memo">Memo</label>
@@ -259,6 +270,12 @@ export function AdminPage() {
           </div>
         </div>
       )}
+      {revokedCount > 0 && (
+        <label className="grants-toolbar">
+          <input type="checkbox" checked={showRevoked} onChange={e => toggleRevoked(e.target.checked)} />
+          show revoked <span className="dim">({revokedCount})</span>
+        </label>
+      )}
       <div className="table-scroll">
       <table className="grants">
         <thead>
@@ -267,7 +284,7 @@ export function AdminPage() {
           </tr>
         </thead>
         <tbody>
-          {grants.map(g => (
+          {shown.map(g => (
             <tr key={g.id} className={g.revokedAt ? 'revoked' : ''}>
               <td>{g.note ?? <em>—</em>}</td>
               <td>
@@ -293,8 +310,8 @@ export function AdminPage() {
               </td>
             </tr>
           ))}
-          {!grants.length && !grantsQ.isPending && (
-            <tr><td colSpan={8}><em>no links created yet</em></td></tr>
+          {!shown.length && !grantsQ.isPending && (
+            <tr><td colSpan={8}><em>{grants.length ? 'no active links (all revoked)' : 'no links created yet'}</em></td></tr>
           )}
         </tbody>
       </table>

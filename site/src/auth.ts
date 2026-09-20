@@ -30,6 +30,11 @@ export const signInUrl = (): string =>
 export interface Ident {
   email: string
   name?: string
+  /** A share-link (grant) session, not SSO — the chip shows the grant's own
+   *  subject (name + avatar) rather than the owner-registry lookup. */
+  guest?: boolean
+  /** The grant subject's explicit avatar URL (Slack/GitHub/…), when set. */
+  avatar?: string
 }
 
 /** Sign out of the app session (POST /api/auth/logout clears the cookie). */
@@ -49,7 +54,8 @@ export function useIdent(): Ident | null {
   if (!whoami) return null
   const name = displayName(whoami) ?? undefined
   const email = (whoami as { email?: string | null }).email ?? name ?? 'guest'
-  return { email, name }
+  const w = whoami as { kind?: string; subject?: { avatar?: string | null } | null }
+  return { email, name, guest: w.kind === 'grant', avatar: w.subject?.avatar ?? undefined }
 }
 
 /** Scopes on the current identity, or null when unknown (the dev stub carries
