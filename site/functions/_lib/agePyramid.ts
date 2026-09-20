@@ -13,9 +13,9 @@ import { planQuery, type Pyramid, type QueryPlan, type StorageBackend, type Tier
 
 /** Finest → coarsest; must match `AGE_PYRAMID_BINS` in `cloud/src/dt_cloud/index.py`.
  * `shards` are unused here (we store a complete file per bin) but the type
- * requires an ascending ladder. */
+ * requires an ascending ladder. (`1h` is available in the producer but not
+ * produced for CW — add it here too if ever enabled.) */
 export const AGE_TIERS: Tier[] = [
-  { name: '1h', bin: '1h', shards: ['1d'] },
   { name: '1d', bin: '1d', shards: ['1mo'] },
   { name: '1mo', bin: '1mo', shards: ['1y'] },
   { name: '1y', bin: '1y', shards: ['1y'] },

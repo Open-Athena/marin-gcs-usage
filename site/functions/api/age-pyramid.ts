@@ -13,7 +13,9 @@
  */
 import { type Env, requireViewer } from '../_lib/auth.js'
 import { num, openIndex, readPoint } from '../_lib/index.js'
-import { planAge, variantForPlan } from '../_lib/agePyramid.js'
+import { AGE_TIERS, planAge } from '../_lib/agePyramid.js'
+
+const COLS = ['path', 'depth', 'binstart', 'b', 'o']
 
 export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
   if (!ctx.env.GCS_HMAC_KEY_ID || !ctx.env.GCS_HMAC_SECRET) {
@@ -27,25 +29,32 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
   const binBudget = Math.max(1, Number(url.searchParams.get('bin_budget')) || 512)
   const fromMs = Date.parse(url.searchParams.get('from') ?? '')
   const toMs = Date.parse(url.searchParams.get('to') ?? '')
-  const from = new Date(Number.isNaN(fromMs) ? 0 : fromMs)
-  const to = new Date(Number.isNaN(toMs) ? Date.now() : toMs)
 
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
 
-  const plan = planAge(from, to, binBudget)
-  const variant = variantForPlan(plan)
-  const meta = { outputBin: plan.outputTier?.bin ?? plan.outputBin, tier: plan.outputTier?.name ?? null, binBudget }
   const depth = path === '' ? 0 : path.split('/').length
-  let rows: Record<string, unknown>[]
+  const fine = AGE_TIERS[0].bin // finest produced tier ('1d')
+  // Read the finest tier for the path: it gives the true extent and, in the
+  // common case (day-granular history), the rows themselves — so the FE need
+  // only pass `path` (+ optional bin_budget). from/to override the extent.
+  let baseRows: Record<string, unknown>[]
   try {
-    const h = await openIndex(ctx.env, date, variant)
-    rows = await readPoint(h, depth, path, ['path', 'depth', 'binstart', 'b', 'o'])
+    baseRows = await readPoint(await openIndex(ctx.env, date, `age-pyramid-${fine}`), depth, path, COLS)
   } catch (e) {
-    // Tier not synced (e.g. pre-backfill): empty chart, not a 500.
-    if (/not synced/.test((e as Error).message)) return json({ records: [], plan: meta })
+    if (/not synced/.test((e as Error).message)) return json({ records: [], plan: { outputBin: fine, tier: fine, binBudget } })
     throw e
   }
+  if (!baseRows.length) return json({ records: [], plan: { outputBin: fine, tier: fine, binBudget } })
+  const dts = baseRows.map(r => num(r.binstart))
+  const from = new Date(Number.isNaN(fromMs) ? Math.min(...dts) : fromMs)
+  const to = new Date(Number.isNaN(toMs) ? Math.max(...dts) : toMs)
+
+  const plan = planAge(from, to, binBudget)
+  const bin = plan.outputTier?.bin ?? plan.outputBin
+  const meta = { outputBin: bin, tier: plan.outputTier?.name ?? null, binBudget }
+  // Reuse the finest rows when the planner chose that tier; else read the coarser one.
+  const rows = bin === fine ? baseRows : await readPoint(await openIndex(ctx.env, date, `age-pyramid-${bin}`), depth, path, COLS)
   const lo = from.getTime()
   const hi = to.getTime()
   const records = rows

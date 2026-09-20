@@ -510,19 +510,25 @@ function AppContent() {
   // every depth, not just the root (specs/path-agnostic-serving.md §2.3).
   const drillPfx = drillPath ? `${store.scheme}${drillPath}/` : undefined
   const totalsQ = useMarkTotals(asof, serverLedger ? drillPfx : undefined, serverLedger)
-  // Per-path created-day strata (specs/age-index.md): the `age` index keyed on
-  // the drilled prefix, so `AgeChart` follows the drill exactly instead of
-  // showing the whole fleet at every depth. Root (`drillPath === ''`, depth 0)
-  // is the fleet total. A prefix below the index floor returns no rows.
+  // Per-path created-time strata for `AgeChart`, keyed on the drilled prefix so
+  // it follows the drill exactly instead of showing the whole fleet at every
+  // depth (specs/age-index.md). Root (`drillPath === ''`, depth 0) is the fleet
+  // total; a prefix below the index floor returns no rows. Served by the pyrmts
+  // pyramid (`/api/age-pyramid`, Phase B): the server picks the bin for the
+  // budget and returns `{dt (epoch-ms), b, o}`; the chart still buckets to
+  // day/week/month client-side, so we map `dt` back to an epoch-day `AgeRow`.
   const ageQ = useQuery({
     queryKey: ['age', store.key, asof, drillPath],
     queryFn: () =>
-      fetch(`/api/age?date=${asof}&path=${encodeURIComponent(drillPath)}`, { credentials: 'include' })
-        .then(r => { if (!r.ok) throw new Error(`age ${r.status}`); return r.json() as Promise<{ rows: AgeRow[] }> }),
+      fetch(`/api/age-pyramid?date=${asof}&path=${encodeURIComponent(drillPath)}&bin_budget=512`, { credentials: 'include' })
+        .then(r => { if (!r.ok) throw new Error(`age ${r.status}`); return r.json() as Promise<{ records: { dt: number; b: number; o: number }[] }> }),
     enabled: !!asof,
     staleTime: Infinity,
   })
-  const age: AgeRow[] = ageQ.data?.rows ?? []
+  const age: AgeRow[] = useMemo(
+    () => (ageQ.data?.records ?? []).map(r => ({ d: Math.floor(r.dt / 86400_000), b: r.b, o: r.o })),
+    [ageQ.data],
+  )
   const drillTo = (segs: string[]) =>
     navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
   // Read-recency lens domain: the access-log observation window (meta), not

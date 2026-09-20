@@ -195,7 +195,12 @@ def write_age_index(
 # D1-footer reader at serve time (DIY sum-combine, so the producer stays our own
 # DuckDB — no pyrmts Python dep). Bins finest→coarsest; the base (first) is
 # exploded once, coarser bins re-bin from it (pyrmts `cascade_tiers` in SQL).
-AGE_PYRAMID_BINS = ("1h", "1d", "1mo", "1y")
+# Day base: CW's history is day-granular and a 1h base-tier explode over ~92M
+# objects is a needless cost; add "1h" if finer zoom is ever wanted (the serve
+# tier list in `site/functions/_lib/agePyramid.ts` must match).
+AGE_PYRAMID_BINS = ("1d", "1mo", "1y")
+# Variant name per pyramid bin (what `index-sync`/`indexKey` resolve).
+AGE_PYRAMID_VARIANTS = {b: f"age-pyramid-{b}" for b in AGE_PYRAMID_BINS}
 
 
 def _binstart_ms_sql(bin: str, secs: str) -> str:
@@ -334,12 +339,18 @@ def write_index(
     # sums), so a path's subtree bytes are its own `b`.
     con.execute("CREATE TEMP TABLE tot AS SELECT path, depth, b AS pb FROM idx")
     floors, counts = write_coarse_tiers(con, path_index, rows="idx")
-    age = write_age_index(con, sources, out)
+    # The age chart's backend: the multi-scale pyramid (Phase B) supersedes the
+    # single-bin `age-index.parquet` (Phase A). `write_age_index` is kept for
+    # ad-hoc use but no longer produced by the job.
+    pyramid = write_age_pyramid(con, sources, out)
     return {
         "rows": int(n),
         "buckets": buckets,
         "floors": {str(e): floors[e] for e in COARSE_EXPS},
         "paths": {str(e): counts[e] for e in COARSE_EXPS},
-        "age": age,
-        "files": {**{v: str(out / f) for v, f in INDEX_VARIANTS.items()}, "age": age["file"]},
+        "pyramid": pyramid,
+        "files": {
+            **{v: str(out / f) for v, f in INDEX_VARIANTS.items()},
+            **{AGE_PYRAMID_VARIANTS[b]: s["file"] for b, s in pyramid["bins"].items()},
+        },
     }

@@ -369,10 +369,13 @@ for _e in COARSE_EXPS:
     INDEX_VARIANTS[f"coarse{_e}"] = f"path-index-coarse{_e}.parquet"
     if "user" in FLOOR_FREE_VARIANTS:
         INDEX_VARIANTS[f"coarse{_e}-user"] = f"path-index-coarse{_e}-by-user.parquet"
-# The per-path created-day strata behind a path-aware AgeChart (specs/age-index.md).
-# A standalone index (not a path-index tier), so it keeps its own base name; the
-# footer's (depth, path, b) stats prune it as usual, `usr` absent (u_min/u_max NULL).
-INDEX_VARIANTS["age"] = "age-index.parquet"
+# The age chart's backend: multi-scale path-major pyramid tiers, one per bin
+# (specs/age-index.md, Phase B — supersedes the single-bin `age-index.parquet`).
+# Standalone indexes, own base names; the footer's (depth, path, b) stats prune
+# them as usual, `usr` absent (u_min/u_max NULL). Keep in sync with
+# `AGE_PYRAMID_VARIANTS` in dt_cloud.index.
+for _b in ("1d", "1mo", "1y"):
+    INDEX_VARIANTS[f"age-pyramid-{_b}"] = f"age-pyramid-{_b}.parquet"
 
 
 def retire_d1(retain: int, db_id: str = D1_DB_ID) -> list[tuple[str, str, int]]:
