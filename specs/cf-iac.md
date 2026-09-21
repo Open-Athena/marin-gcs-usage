@@ -3,6 +3,13 @@
 Written 2026-08-28 after splitting cw-s3.oa.dev onto its own Pages project by
 hand (~12 API/CLI calls across two tokens). That exercise *is* the argument.
 
+**Status (2026-09-21): import-ready draft built, not applied.** The Pulumi
+program lives at `~/c/oa/ops/cf/gcs-usage/` (untracked in `ops`; project
+`gcs-usage-cf`, sibling to the GCP `gcs-usage` batch stack). It's the CF twin of
+`specs/batch-iac.md` — the same posture: authored, dep-resolved, and validated
+under Pulumi mocks for both stacks, but `pulumi stack init`/`import`/`up` are
+prod-gated (the user runs the §Runbook below). Nothing has touched live CF.
+
 ## Where things are deployed today
 
 | resource | where | how it's managed |
@@ -50,6 +57,66 @@ would then be `CfnDashboard` × per-branch config + the GCP job pieces.
 
 1. Bootstrap `~/c/oa/ops/cf/` (or `gcp/marin-usage/`) Pulumi project; **import**
    today's live resources for `gcs` + `cw-s3` so the first `pulumi up` is a
-   no-op diff. That alone gives drift detection.
-2. Scheduler jobs → rendered bodies (retire hand-edited decoded JSON).
+   no-op diff. That alone gives drift detection. — **program built (2026-09-21);
+   import is the §Runbook.**
+2. Scheduler jobs → rendered bodies (retire hand-edited decoded JSON). —
+   **done separately as the GCP stack (`specs/batch-iac.md`, `ops/gcp/gcs-usage/`).**
 3. Extract the CF half into the upstream component when the `cfn` branch exists.
+
+## What the program models (and deliberately doesn't)
+
+One program, one stack per deployment branch; the store descriptor is keyed by
+`pulumi.get_stack()` (`gcs` | `cw-s3`) in `__main__.py`. Managed:
+
+| program name | CF resource | notes |
+|---|---|---|
+| `pages` | `PagesProject` | container only, `ignore_changes=["deployment_configs"]` |
+| `domain` | `PagesDomain` | `gcs.oa.dev` / `cw-s3.oa.dev` |
+| `cname` | `DnsRecord` | the `oa.dev` CNAME → `<project>.pages.dev`, proxied |
+| `d1` | `D1Database` | container; migrations stay with the app |
+| `cache-kv` | `WorkersKvNamespace` | **gcs only** |
+| `access-app` + `access-policy` | `ZeroTrustAccessApplication` + `ZeroTrustAccessPolicy` | gcs: `/auth/sso`, include Everyone (D1 allowlist gates); cw-s3: whole host, include OA + coreweave.com |
+
+**The deploy/config boundary is the load-bearing decision.** `wrangler pages
+deploy` (via `site/deploy`) fills the Pages project's *deployment_configs* — env
+vars, D1/KV bindings, secrets — from `site/wrangler.toml` on every deploy. Pulumi
+must not fight that, so `PagesProject` carries
+`ignore_changes=["deployment_configs"]`: **Pulumi owns the container, wrangler
+fills it.** Secret *values* (`SESSION_SECRET`, `GCS_HMAC_*`, `GCP_SA_KEY`) are
+never in code or state. D1 *migrations* stay `wrangler d1 migrations apply`.
+
+## Runbook
+
+Prod-gated — the user runs these; expect to iterate step 4 before the diff
+closes. The CF provider needs a `CLOUDFLARE_API_TOKEN` scoped for Pages + Access
++ DNS + D1 + Workers KV.
+
+```bash
+cd ~/c/oa/ops/cf/gcs-usage && uv sync            # already resolved: pulumi-cloudflare 6.21.0
+# one stack per deployment; repeat init/config/import/refresh for cw-s3
+pulumi stack init gcs \
+  --secrets-provider=gcpkms://projects/oa-internal-450019/locations/global/keyRings/ops/cryptoKeys/pulumi/
+pulumi config set cloudflare:accountId 74981a43…      # full account id
+pulumi config set gcs-usage-cf:oaDevZoneId <oa.dev zone id>
+```
+
+Then `pulumi import <type> <name> <id>` each resource before any `up`. Known ids
+are public (in `site/wrangler.toml`); the rest come from the CF API/console at
+import time:
+
+| name | import id (`pulumi import` 3rd arg) | id source |
+|---|---|---|
+| `pages` | `<account_id>/<project>` (`oa-gcs-usage` / `oa-cw-s3-usage`) | known |
+| `domain` | `<account_id>/<project>/<domain>` | known |
+| `d1` | `<account_id>/<database_id>` | wrangler.toml (`e52398b7…` / `7f1e1326…`) |
+| `cache-kv` | `<account_id>/<namespace_id>` (`757702a0…`) | wrangler.toml (gcs) |
+| `access-app` | `<account_id>/<app_id>` (gcs `e18304ed…`, cw `4c463052…`) | full UUID from API |
+| `access-policy` | `<account_id>/<policy_id>` | from the app's policy (API) |
+| `cname` | `<zone_id>/<record_id>` | oa.dev zone (API) |
+
+4. `pulumi refresh` → iterate `pulumi preview` to empty. The Access app + policy
+   are the likeliest to need field tweaks first (v6's `destinations` / `includes`
+   shape vs. what's live); everything else should import clean. Only an empty
+   preview makes the stack authoritative — do **not** `up` before that.
+
+When applied, move this to `specs/done/`.
