@@ -28,7 +28,7 @@ v = {
     "WORK_DIR": "/stage",
     "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }
-for k in ("SCANS", "FORCE", "DUCKDB_MEM", "IMPORT_JOBS"):
+for k in ("SCANS", "FORCE", "AGE_ONLY", "DUCKDB_MEM", "IMPORT_JOBS"):
     if os.environ.get(k):
         v[k] = os.environ[k]
 print(json.dumps(v))

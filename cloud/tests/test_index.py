@@ -145,3 +145,23 @@ def test_coarse_floor():
     assert X.coarse_floor(0, 24) == 1
     assert X.coarse_floor(923_009_082_966_172, 24) == 2**26  # ~840 TiB → 2^50 → 64 MiB
     assert X.coarse_floor(2**40, 16) == 2**24
+
+
+def test_write_index_age_only(tmp_path: Path):
+    """`age_only=True` writes only the age pyramid — no path-index/coarse tiers,
+    and the summary omits their rows/floors/paths (index-sync -A syncs just the
+    age variants; the others keep their pointer)."""
+    bins = ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")
+    l2 = tmp_path / "l2.parquet"
+    _write_l2(l2, L2)
+    out = tmp_path / "index"
+    s = X.write_index([(BUCKET, str(l2))], out, mem="1GB", threads=2, age_only=True)
+    pyr_files = {b: str(out / f"age-pyramid-{b}.parquet") for b in bins}
+    # fixture files all have mtime 0 → empty pyramid (floor 1), but full tier set
+    assert s == {
+        "buckets": [BUCKET],
+        "pyramid": {"floor": 1, "bins": {b: {"rows": 0, "file": pyr_files[b]} for b in bins}},
+        "files": {f"age-pyramid-{b}": pyr_files[b] for b in bins},
+    }
+    # only the age tiers land on disk — no path-index / coarse recompute
+    assert sorted(p.name for p in out.glob("*.parquet")) == sorted(f"age-pyramid-{b}.parquet" for b in bins)

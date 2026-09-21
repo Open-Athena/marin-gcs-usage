@@ -56,10 +56,13 @@ for SNAP in $(list_scans); do
   WORK="$WORK_ROOT/$SNAP"; rm -rf "$WORK"; mkdir -p "$WORK"
   GEN=$(date -u +%Y%m%dT%H%M%SZ)
   KEY="cw-l2/$SNAP/index/$GEN"
-  if dt-cloud index-write -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK" "${SRC[@]}" \
+  # AGE_ONLY=1: recompute + sync only the age pyramid (skip the byte-identical
+  # path-index + coarse recompute); those variants keep their existing pointer.
+  AO=${AGE_ONLY:+-A}
+  if dt-cloud index-write ${AO:-} -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}" -o "$WORK" "${SRC[@]}" \
      && mkdir -p "/gcs/$DATA/$KEY" \
      && cp "$WORK"/*.parquet "/gcs/$DATA/$KEY/" \
-     && dt-cloud index-sync -d "/gcs/$DATA/$KEY" -g "$GEN" -k "$KEY" "$SNAP"; then
+     && dt-cloud index-sync ${AO:-} -d "/gcs/$DATA/$KEY" -g "$GEN" -k "$KEY" "$SNAP"; then
     dt-cloud index-gc "$SNAP" || echo "WARN: index-gc failed for $SNAP" >&2
     echo "REINDEXED $SNAP -> $KEY (buckets: ${SRC[*]%%=*})"
     ok=$((ok + 1))

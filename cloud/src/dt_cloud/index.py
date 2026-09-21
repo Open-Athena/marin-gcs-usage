@@ -312,13 +312,19 @@ def write_index(
     mem: str = "8GB",
     threads: int = 8,
     tmp_dir: str | Path | None = None,
+    age_only: bool = False,
 ) -> dict:
     """Write the floor-free `path-index.parquet` + the coarse tiers under
     ``out_dir`` from ``sources`` — one ``(bucket, layer-2 parquet)`` per
     bucket of the scan (specs/cw-multi-bucket.md §2): the rows are the UNION
     of each bucket's rows, so depth 1 holds every bucket and the coarse
     floors derive from their sum. Returns a summary (rows, buckets, floors,
-    kept counts, files)."""
+    kept counts, files).
+
+    ``age_only``: write *only* the age pyramid (skip the path-index + coarse
+    recompute). For a ladder-only backfill, where the L2 is unchanged so those
+    tiers would come out byte-identical — sync just the `age-pyramid-*` variants
+    (`index-sync -A`) and the floor-free/coarse pointers keep their generation."""
     if not sources:
         raise ValueError("write_index: no (bucket, layer-2) sources")
     buckets = [b for b, _ in sources]
@@ -330,6 +336,13 @@ def write_index(
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{mem}'; SET threads={threads}")
     con.execute(f"SET temp_directory='{tmp_dir or out / '.duckdb-tmp'}'")
+    if age_only:
+        pyramid = write_age_pyramid(con, sources, out)
+        return {
+            "buckets": buckets,
+            "pyramid": pyramid,
+            "files": {AGE_PYRAMID_VARIANTS[b]: s["file"] for b, s in pyramid["bins"].items()},
+        }
     selects = []
     for i, (bucket, l2_path) in enumerate(sources):
         con.execute(f"SET VARIABLE L2_{i} = ?", [str(l2_path)])
