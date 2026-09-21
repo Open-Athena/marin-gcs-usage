@@ -529,6 +529,20 @@ function AppContent() {
     () => (ageQ.data?.records ?? []).map(r => ({ d: Math.floor(r.dt / 86400_000), b: r.b, o: r.o })),
     [ageQ.data],
   )
+  // Same path, at the diff window's "before" scan — powers AgeChart's diff mode
+  // (per-vintage grew/shrank). Only fetched when a diff window exists.
+  const ageBaseQ = useQuery({
+    queryKey: ['age', store.key, diffPrev, drillPath],
+    queryFn: () =>
+      fetch(`/api/age-pyramid?date=${diffPrev}&path=${encodeURIComponent(drillPath)}&bin_budget=512`, { credentials: 'include' })
+        .then(r => { if (!r.ok) throw new Error(`age ${r.status}`); return r.json() as Promise<{ records: { dt: number; b: number; o: number }[] }> }),
+    enabled: !!diffPrev,
+    staleTime: Infinity,
+  })
+  const ageBase: AgeRow[] = useMemo(
+    () => (ageBaseQ.data?.records ?? []).map(r => ({ d: Math.floor(r.dt / 86400_000), b: r.b, o: r.o })),
+    [ageBaseQ.data],
+  )
   const drillTo = (segs: string[]) =>
     navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search, hash })
   // Read-recency lens domain: the access-log observation window (meta), not
@@ -1294,7 +1308,7 @@ function AppContent() {
         </h2>
         {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
         {age.length > 0 && (
-          <AgeChart rows={age} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
+          <AgeChart rows={age} baseRows={diffPrev ? ageBase : undefined} diffLabels={diffPrev && asof ? { from: fmtScan(diffPrev), to: fmtScan(asof) } : undefined} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
         )}
       </section>
       )}
