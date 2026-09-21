@@ -393,6 +393,22 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     padding: 1px 4px;
     cursor: pointer;
   }
+  // The diff window's two low-key mode toggles (start: pinned/duration; end:
+  // pinned/latest) — muted until hovered or active, so they sit quietly beside
+  // the scan pickers.
+  .d-mode {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--ink-3);
+    font: inherit;
+    font-size: 0.85em;
+    padding: 1px 4px;
+    margin-left: 2px;
+    border-radius: 6px;
+    cursor: pointer;
+    &:hover { color: var(--ink-2); border-color: var(--line); }
+    &.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
+  }
 }
 .prose {
   max-width: 68ch;
@@ -767,6 +783,40 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   color: var(--ink-2);
   &.on { background: var(--panel); color: var(--ink); }
 }
+
+// The diff header band above the map: two rows tall. Left column stacks the scan
+// pickers + span presets (row 1) over the colour legend (row 2); the movement
+// table sits beside it (its own two rows line up); the area-mode toggle parks
+// top-right, above the map's floated fullscreen button.
+.diff-head {
+  display: flex; align-items: flex-start; flex-wrap: wrap;
+  gap: 4px 20px; margin: 2px 0 6px;
+}
+.diff-head .dh-left {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  // The pickers row keeps the old `.sub` styling (it's the same inner markup).
+  .sub { margin: 0; }
+}
+.diff-head .dh-legend {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px;
+  font-size: 0.8rem; color: var(--ink-2);
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
+}
+.diff-head .diff-move { align-self: center; }
+.diff-head .dh-modes {
+  display: inline-flex; gap: 2px; margin-left: auto; align-self: flex-start;
+}
+// Movement table (bytes / objects rows): numbers right-aligned in shared
+// columns, so start / − / + / ⊕ / = / Δ line up between the two rows.
+.diff-move {
+  border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  margin: 1px 2px 2px;
+  th { text-align: left; font-weight: 500; color: var(--ink-2); padding: 0 10px 0 0; }
+  td { text-align: right; padding: 0 0 0 12px; white-space: nowrap; }
+  td.eq { color: var(--ink); }
+}
+// The diff crumb's "⊕ first scanned" term: a root that entered the scan.
+.diff-move .first { color: var(--ink-3); }
 
 .tt-ref { display: inline; }
 // The treemap's slot before any tree has landed: full width at the fetch's
@@ -1499,7 +1549,17 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   // Idle = nothing floating, table fully visible (out of flow, so no jump when
   // a hover fills it). The bottom help line still teaches the hover gesture.
   &.empty { display: none !important; }
+  // Resting = a whole-view card (the diff's totals) shown when nothing is
+  // hovered — a real panel, not the hidden `empty` stub (the diff map always
+  // provides one via `renderTipDefault`, so its drawer never collapses).
+  &.resting { color: var(--ink-2); }
   .dt-treemap-tipdock-hint { font-size: 12px; }
+  // The diff drawer's resting card: scope line, the movement table, then a
+  // hover nudge (the movement table itself is styled by `.diff-move`).
+  .tip-viewcard {
+    .vc-scope { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--ink); font-weight: 600; word-break: break-all; }
+    .vc-hint { color: var(--ink-3); font-size: 11.5px; margin-top: 3px; }
+  }
 }
 
 // The children table is wider than a phone: it scrolls inside its own box

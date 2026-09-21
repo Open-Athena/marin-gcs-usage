@@ -9,7 +9,7 @@ import { AGE_MODES, AgeChart } from './AgeChart'
 import { canonId, shortName, shortUserKey } from './UserChip'
 import { signInUrl, useCanMark, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
-import { DiffTreemap } from './DiffTreemap'
+import { DiffTreemap, DiffHeader, useDiffModel } from './DiffTreemap'
 import type { DiffData } from './DiffTreemap'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
@@ -158,7 +158,7 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, dMatches, dP, setDP, span, setSpan, setRange, scansQ } = useScan(store)
+  const { asof, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store)
   const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
@@ -283,7 +283,10 @@ function AppContent() {
   const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
   const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
   const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
-  const diffPrev = spanScan ?? prevScan
+  // A pinned start (`from`) wins over a look-back span; both fall back to the
+  // immediately-previous scan.
+  const fromScan = from && asof ? nearestScan(earlier, scanTime(from)) : null
+  const diffPrev = fromScan ?? spanScan ?? prevScan
   // Hour-rounded span back from `to` — the previous scan clears it, anything
   // else round-trips as its own span (nearest-scan resolution recovers it,
   // and the link keeps following `latest`).
@@ -301,6 +304,14 @@ function AppContent() {
     setRange(toScan, spanTo(toScan, fromScan))
   }
   const diffWindow: [string, string] | undefined = diffPrev && asof ? [diffPrev, asof] : undefined
+  // Two orthogonal, low-key toggles for the diff window (see scan.ts grammar):
+  // the start is either a pinned scan (`from`) or a look-back span; the end
+  // either follows the latest scan (floating) or is pinned. The end toggle only
+  // means anything while the page IS on the latest scan (an older `asof` is
+  // already pinned), so it hides otherwise.
+  const startPinned = from !== undefined
+  const endIsLatest = !!asof && asof === scans[0]
+  const endPinned = dP !== undefined
   // Presets past the history's reach — nearest scan more than a quarter of
   // the span off, or already claimed by a shorter preset — are dropped
   // rather than mislabeled.
@@ -601,6 +612,10 @@ function AppContent() {
     ...(fq ? [`“${fq}”`] : []),
   ]
   const scopeDesc = scopeParts.join(' · ')
+  // Diff model (built tree + movement totals + formatters), shared by the diff
+  // header band and the diff map. Built here so the header stays mounted while a
+  // diff is loading/errored (the map isn't rendered then).
+  const diffModel = useDiffModel(diff, !drillPath, scopeDesc)
   // Controlled treemap drill path, resolved against the (possibly filtered/
   // scoped) tree each render: `?p=` survives scope toggles, filters, and scan
   // switches by re-walking the new tree; a vanished path truncates to its
@@ -1103,20 +1118,54 @@ function AppContent() {
 
       {asof && diffPrev && (
         <section id="diff">
-          <h2>Diff</h2>
-          <p className="sub">
+          <h2>Diff{diff && (
+            <Tooltip content={<>
+              <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
+              a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
+              Both scans are read at one byte floor ({fmtBytes(diff.threshold)}): a directory is named on both sides or folded into
+              “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
+              {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
+              {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
+            </>}><span className="info" tabIndex={0} aria-label="how this diff is read"> ⓘ</span></Tooltip>
+          )}</h2>
+          {/* 2-row header band above the map: scan pickers + presets (with the
+              status/error line) sit as `controls`, the colour legend beneath
+              them; DiffHeader adds the movement table + area-mode toggle when the
+              model is ready. Rendered here (not inside the map) so the pickers
+              stay put while a diff is loading or errored. */}
+          <DiffHeader model={diffModel} controls={<span className="sub">
             {/* Both endpoints: the window's start, and the page's scan again
                 (the bar's picker — one scan, stated where the diff reads). */}
             <Explain text={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
-              <select className="tb-select scan" value={diffPrev} aria-label="Diff from scan" onChange={e => pickBefore(e.target.value)}>
+              <select className="tb-select scan" value={diffPrev} aria-label="Diff from scan" onChange={e => (startPinned ? setFrom : pickBefore)(e.target.value)}>
                 {earlier.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
               </select>
+            </Explain>
+            <Explain text={startPinned
+              ? <>Start is <b>pinned</b> to this scan — the window's near end stays put as new scans arrive. Click to track a duration back from the end instead.</>
+              : <>Start tracks a <b>duration</b> back from the end (the buttons). Click to pin it to this scan.</>}>
+              <button type="button" role="switch" aria-checked={startPinned} className={'d-mode' + (startPinned ? ' on' : '')}
+                onClick={() => startPinned
+                  ? setSpan(asof && diffPrev ? spanTo(asof, diffPrev) : undefined)
+                  : setFrom(diffPrev ?? undefined)}>
+                {startPinned ? 'pinned' : 'duration'}
+              </button>
             </Explain>
             <span className="arrow"> → </span>
             <select className="tb-select scan" value={asof} aria-label="Diff to scan (the page's scan)" onChange={e => setDP(e.target.value)}>
               {scans.map(s => <option key={s} value={s}>{fmtScan(s)}</option>)}
             </select>
-            {spanPicks.length > 0 && (
+            {endIsLatest && (
+              <Explain text={endPinned
+                ? <>End is <b>pinned</b> to this scan. Click to follow the latest scan as new ones arrive.</>
+                : <>End follows the <b>latest</b> scan. Click to pin it to this one.</>}>
+                <button type="button" role="switch" aria-checked={endPinned} className={'d-mode' + (endPinned ? ' on' : '')}
+                  onClick={() => setEndPin(!endPinned)}>
+                  {endPinned ? 'pinned' : 'latest'}
+                </button>
+              </Explain>
+            )}
+            {!startPinned && spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (
                   <Explain key={label} text={<>Diff over the last {label}: {fmtScan(scan)} → {fmtScan(asof)}</>}>
@@ -1130,27 +1179,7 @@ function AppContent() {
             )}
             {diffHead ? (
               <>
-                {' '}· <b className={diffHead.total_b >= diffHead.total_a ? 'grew' : 'shrank'}>
-                  {(diffHead.total_b >= diffHead.total_a ? '+' : '−') + fmtBytes(Math.abs(diffHead.total_b - diffHead.total_a))}
-                </b>
-                {' '}· Δobjects {(diffHead.objects_b - diffHead.objects_a).toLocaleString('en-US')}
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
-                {' '}· <Explain text={<>
-                  <b>{scopeDesc}</b> at each scan — the same scope as the map above (drill, lens, mark states, name filter), so in a lens
-                  a subtree that left the slice (e.g. got assigned to someone else) shows as shrunk even if its bytes didn’t move.
-                  Both scans are read at one byte floor ({fmtBytes(diffHead.threshold)}): a directory is named on both sides or folded into
-                  “(other)” on both, and one that crossed the floor is read exactly from the other scan — so every named cell’s Δ is real.
-                  {diffHead.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
-                </>}>
-                  <span className="dotted">≈ {scopeDesc}</span>
-                </Explain>
-                {diffHead.truncated && (
-                  <>
-                    {' '}· <Explain text="Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).">
-                      <span className="dotted">largest changes</span>
-                    </Explain>
-                  </>
-                )}
               </>
             ) : diffErr && !diffStale ? (
               <span className="tab-note">
@@ -1164,15 +1193,15 @@ function AppContent() {
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
             )}
-          </p>
+          </span>} />
           {/* The slot keeps the treemap's height through a reload: the last
               diff dims under the marker, or (first load) a skeleton stands in.
               The height held is the one the last settled map actually drew
               (measured), not the request's canvas budget — the map is
               shorter than that, and a fixed floor left a blank band under it. */}
-          {diff && diff.rows.length > 0 && (
+          {diff && diff.rows.length > 0 && diffModel && (
             <div ref={diffSlotRef} className={diffStale ? 'diff-slot busy-host stale' : 'diff-slot busy-host'} style={diffStale && diffSlotH.current ? { minHeight: diffSlotH.current } : undefined}>
-              <DiffTreemap data={diff} label={scopeDesc} />
+              <DiffTreemap model={diffModel} onDrill={rel => drillTo([...segs, ...rel])} />
               {diffStale && <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />}
             </div>
           )}
