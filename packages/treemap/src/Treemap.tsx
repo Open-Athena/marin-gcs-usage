@@ -132,6 +132,13 @@ export interface TreemapProps<T> {
    * small footprint while empty so the layout doesn't jump.
    */
   tipMode?: 'float' | 'dock'
+  /**
+   * Dock only: what the panel shows when nothing is hovered or pinned — a
+   * card about the whole current view (the drilled node's summary), so the
+   * panel never collapses to an empty stub. Falls back to a faint hint when
+   * absent. On a phone (no hover) this is the panel's resting state.
+   */
+  renderTipDefault?: (n: T, path: T[]) => ReactNode
   /** Extra row above the map (e.g. rollup / totals). */
   renderRollup?: (n: T, path: T[]) => ReactNode
   /** Right side of the breadcrumbs bar. */
@@ -497,6 +504,7 @@ export function Treemap<T>({
   renderCellExtra,
   renderTooltip,
   tipMode = 'float',
+  renderTipDefault,
   renderRollup,
   renderLegend,
   renderCrumbSuffix,
@@ -1417,31 +1425,40 @@ export function Treemap<T>({
           covering the cells and controls under it. Always rendered (a faint
           hint while empty) so the layout doesn't jump when a cell is hovered.
           A phone, with no hover, taps to pin into this same panel. */}
-      {tipMode === 'dock' ? (
-        <div
-          ref={tipRef}
-          className={'dt-treemap-tip dock' + (pinnedTip ? ' pinned' : '') + (tipContent ? '' : ' empty')}
-          onMouseEnter={cancelTipClear}
-          onMouseLeave={() => { if (!pinnedTip) { pin.hover(null); clearHover(); setTip(null) } }}
-          style={{ position: 'relative', width: '100%', pointerEvents: 'auto' }}
-        >
-          {tipContent && pinnedTip && (
-            <button
-              onClick={() => pin.clearPin()}
-              title="Unpin (Esc)"
-              className="dt-treemap-tip-x"
-              style={{
-                position: 'absolute', top: 2, right: 4,
-                background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer',
-                fontSize: '1em', opacity: 0.6, pointerEvents: 'auto',
-              }}
-            >
-              ×
-            </button>
-          )}
-          {tipContent ?? <span className="dt-treemap-tipdock-hint">Hover a cell for its details.</span>}
-        </div>
-      ) : tipContent && tipToShow ? (
+      {tipMode === 'dock' ? (() => {
+        const defaultContent = renderTipDefault ? renderTipDefault(node, path) : null
+        const body = tipContent ?? defaultContent
+          ?? <span className="dt-treemap-tipdock-hint">Hover a cell for its details.</span>
+        // `empty` (a quiet dashed stub) only when there's genuinely nothing —
+        // no hovered cell and no default view card; a default card renders as
+        // a real panel (`resting`).
+        const cls = tipContent ? '' : defaultContent ? ' resting' : ' empty'
+        return (
+          <div
+            ref={tipRef}
+            className={'dt-treemap-tip dock' + (pinnedTip ? ' pinned' : '') + cls}
+            onMouseEnter={cancelTipClear}
+            onMouseLeave={() => { if (!pinnedTip) { pin.hover(null); clearHover(); setTip(null) } }}
+            style={{ position: 'relative', width: '100%', pointerEvents: 'auto' }}
+          >
+            {tipContent && pinnedTip && (
+              <button
+                onClick={() => pin.clearPin()}
+                title="Unpin (Esc)"
+                className="dt-treemap-tip-x"
+                style={{
+                  position: 'absolute', top: 2, right: 4,
+                  background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer',
+                  fontSize: '1em', opacity: 0.6, pointerEvents: 'auto',
+                }}
+              >
+                ×
+              </button>
+            )}
+            {body}
+          </div>
+        )
+      })() : tipContent && tipToShow ? (
         <div
           ref={tipRef}
           className={'dt-treemap-tip' + (pinnedTip ? ' pinned' : '')}
