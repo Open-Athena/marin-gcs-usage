@@ -50,17 +50,17 @@ def test_write_index(tmp_path: Path):
     _write_l2(l2, L2)
     s = X.write_index([(BUCKET, str(l2))], tmp_path / "index", mem="1GB", threads=2)
     # fleet = the bucket row = 40 GiB → log2 = 35.32 → 35; E=16 → 2^19 = 512 KiB, 20 → 32 KiB, 24 → 2 KiB
-    pyr_files = {b: str(tmp_path / "index" / f"age-pyramid-{b}.parquet") for b in ("1d", "1mo", "1y")}
+    pyr_files = {b: str(tmp_path / "index" / f"age-pyramid-{b}.parquet") for b in ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")}
     assert s == {
         "rows": 5,
         "buckets": [BUCKET],
         "floors": {"16": 2**19, "20": 2**15, "24": 2**11},
         "paths": {"16": 5, "20": 5, "24": 5},
         # No file rows with mtime > 0 in the fixture, so the age pyramid is empty.
-        "pyramid": {"floor": 1, "bins": {b: {"rows": 0, "file": pyr_files[b]} for b in ("1d", "1mo", "1y")}},
+        "pyramid": {"floor": 1, "bins": {b: {"rows": 0, "file": pyr_files[b]} for b in ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")}},
         "files": {
             **{v: str(tmp_path / "index" / f) for v, f in X.INDEX_VARIANTS.items()},
-            **{f"age-pyramid-{b}": pyr_files[b] for b in ("1d", "1mo", "1y")},
+            **{f"age-pyramid-{b}": pyr_files[b] for b in ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")},
         },
     }
     # the floor-free tier: dir rows only, bucket-prefixed, depth + 1, gcs's columns
@@ -109,17 +109,17 @@ def test_write_index_two_buckets(tmp_path: Path):
     _write_l2(a, L2)
     _write_l2(b, HERO)
     s = X.write_index([(BUCKET, str(a)), ("hero-checkpoints", str(b))], tmp_path / "index", mem="1GB", threads=2)
-    pyr_files = {b: str(tmp_path / "index" / f"age-pyramid-{b}.parquet") for b in ("1d", "1mo", "1y")}
+    pyr_files = {b: str(tmp_path / "index" / f"age-pyramid-{b}.parquet") for b in ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")}
     assert s == {
         "rows": 8,
         "buckets": [BUCKET, "hero-checkpoints"],
         "floors": {"16": 2**20, "20": 2**16, "24": 2**12},
         "paths": {"16": 8, "20": 8, "24": 8},
         # No file rows with mtime > 0 in the fixture, so the age pyramid is empty.
-        "pyramid": {"floor": 1, "bins": {b: {"rows": 0, "file": pyr_files[b]} for b in ("1d", "1mo", "1y")}},
+        "pyramid": {"floor": 1, "bins": {b: {"rows": 0, "file": pyr_files[b]} for b in ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")}},
         "files": {
             **{v: str(tmp_path / "index" / f) for v, f in X.INDEX_VARIANTS.items()},
-            **{f"age-pyramid-{b}": pyr_files[b] for b in ("1d", "1mo", "1y")},
+            **{f"age-pyramid-{b}": pyr_files[b] for b in ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")},
         },
     }
     assert [(r[0], r[1], r[3]) for r in _rows(tmp_path / "index" / "path-index.parquet")] == [

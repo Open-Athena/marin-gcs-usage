@@ -194,11 +194,14 @@ def write_age_index(
 # Path-major tiers (one parquet per bin), reusing pyrmts's planner + our
 # D1-footer reader at serve time (DIY sum-combine, so the producer stays our own
 # DuckDB — no pyrmts Python dep). Bins finest→coarsest; the base (first) is
-# exploded once, coarser bins re-bin from it (pyrmts `cascade_tiers` in SQL).
-# Day base: CW's history is day-granular and a 1h base-tier explode over ~92M
-# objects is a needless cost; add "1h" if finer zoom is ever wanted (the serve
-# tier list in `site/functions/_lib/agePyramid.ts` must match).
-AGE_PYRAMID_BINS = ("1d", "1mo", "1y")
+# exploded once from L2 `mtime` (seconds), coarser bins re-bin from it (pyrmts
+# `cascade_tiers` in SQL). A dense, all-fixed-width ladder (no calendar `mo`/`y`
+# — pyrmts forbids mixing fixed-width and calendar in one ladder): powers-of-2
+# rungs let any output bin compose from ≤popcount(N) atoms (7d = 4+2+1), which
+# keeps the served bins few. `1h` base gives sub-day created-time resolution
+# (L2 `mtime` is second-precision). The serve tier list in
+# `site/functions/_lib/agePyramid.ts` must match.
+AGE_PYRAMID_BINS = ("1h", "3h", "6h", "12h", "1d", "2d", "4d", "8d")
 # Variant name per pyramid bin (what `index-sync`/`indexKey` resolve).
 AGE_PYRAMID_VARIANTS = {b: f"age-pyramid-{b}" for b in AGE_PYRAMID_BINS}
 

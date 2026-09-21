@@ -21,9 +21,6 @@ latter two wrong, which blanked the age chart and crashed the cost panel):
   top-level-dir color slots (Treemap.slotOf) and reads `root.c[].c[]` for the
   category order, so the store root must wrap *bucket* nodes, exactly like the
   GCS side's "marin GCS" -> "marin-us-east5" -> "checkpoints".
-- age.json   AgeRow[] = {d, d1, b, o} where `d` is the created day in *epoch
-  days* -- not a "YYYY-MM" string. AgeChart drops rows failing
-  `Number.isFinite(r.d)` and buckets by day/week/month itself.
 - meta.json  {asof, generated, total_bytes, total_objects, class_bytes,
   buckets}. The names matter: App.tsx reads meta.total_bytes / .total_objects,
   and iterates meta.class_bytes for the cost panel; `buckets` = {<name>:
@@ -141,14 +138,11 @@ def main():
     floor = int(total * args.min_frac)
 
     buckets = []
-    age = []
     max_mtime = 0
     for b, src in sources:
-        node, rows, mt = bucket_tree(con, b, src, floor)
+        node, _rows, mt = bucket_tree(con, b, src, floor)
         buckets.append(node)
-        age += rows
         max_mtime = max(max_mtime, mt or 0)
-    age.sort(key=lambda r: (r['d'], r['d1']))
 
     tree = {'n': args.label, 'b': int(total), 'o': int(total_objects), 'c': buckets}
     # the root's mean written day: bytes-weighted over the buckets that have one
@@ -159,8 +153,6 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     with open(os.path.join(outdir, 'tree.json'), 'w') as f:
         json.dump(tree, f, separators=(',', ':'))
-    with open(os.path.join(outdir, 'age.json'), 'w') as f:
-        json.dump(age, f, separators=(',', ':'))
 
     asof = args.asof or con.execute(f"SELECT strftime(to_timestamp({max_mtime}), '%Y-%m-%d')").fetchone()[0]
     meta = {
@@ -177,13 +169,11 @@ def main():
     def count(n):
         return 1 + sum(count(c) for c in n.get('c', []))
 
-    days = [r['d'] for r in age]
     print(f'root {total / 1e12:,.1f} TB ({total / 2**40:,.1f} TiB) / {total_objects:,} objects over {len(buckets)} bucket(s)')
     for b, t in totals.items():
         print(f'  {b}: {t[0] / 2**40:,.1f} TiB / {t[1]:,} objects')
     print(f'tree nodes: {count(tree):,} (floor {floor / 1e9:,.1f} GB = {args.min_frac:.2%})')
-    print(f'age rows: {len(age):,} over days {min(days)}..{max(days)}' if age else 'age rows: 0')
-    print(f'asof {asof}; wrote {outdir}/{{tree,age,meta}}.json')
+    print(f'asof {asof}; wrote {outdir}/{{tree,meta}}.json')
 
 
 if __name__ == '__main__':
