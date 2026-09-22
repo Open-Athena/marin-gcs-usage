@@ -80,9 +80,29 @@ archival compaction). Refinements:
 
 ## Phasing (proposed)
 
-1. **Over-time-per-path index** (aggregate half — telescoping, simplest, no
-   changeset semantics). A scan×path totals index; `/api/over-time?path=` reads
-   a path's line. Retire root-only `series.json`.
+1. **Over-time-per-path index** (aggregate half). ✅ **Implemented** (cw-s3;
+   verified on dev with a 15-scan real build). Not a throwaway densify — the
+   durable SCD-2 interval substrate (Phase 2 reuses it), since the churn is so
+   low (measured 1.0016 intervals/path over 15 real scans) that intervals cost
+   ≈ one tier for the whole history. Shipped shape:
+   - **Producer** `dt_cloud.overtime.write_over_time_index` (DuckDB, no pyrmts
+     hot-path dep): rolls each scan's `path-index` to `(depth, path)` totals
+     (owner slices summed), synthesizes a depth-0 fleet root per scan, and
+     SCD-2-encodes each path's `(b, o)` stream into pyrmts' `__scan_lo/__scan_hi`
+     layout, sorted `(depth, path, __scan_lo)`. A run breaks on value change or
+     a scan-index gap (absence ≠ `b=0`). CLI `over-time-write`.
+   - **Storage**: a cross-scan **singleton** — D1 variant `over-time` under the
+     *latest* scan it was built for (reader takes the max-date pointer); the
+     ordered scan list rides an `over-time.scans.json` sidecar (the D1-footer
+     read path carries row-group stats but not KV metadata). Reuses the whole
+     per-scan footer-in-D1 machinery (`index-sync -v over-time`, `_group_rows`).
+   - **Serving**: no new endpoint / no FE change — `/api/series` reads the index
+     once for the plain unscoped case (`readOverTime` → `expandIntervals`) and
+     the per-scan `point()` loop consults it (O(1) hit); tail scans newer than
+     the index, and any scoped/split/lens/owner/class query, fall through to the
+     existing per-scan reads. So `series.json` is already effectively retired
+     (the endpoint computes it) and the win is pure read-cost collapse:
+     N point-reads across N generations → one contiguous read + cached sidecar.
 2. **Diff-index** (changeset half — SCD-2 adjacent-scan deltas, produced by the
    DuckDB producer). `/api/diff` reads the intervals crossing the window
    (O(changes)) instead of joining two full `path-index`es. dTM gets faster +
