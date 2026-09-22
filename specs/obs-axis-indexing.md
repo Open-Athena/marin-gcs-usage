@@ -113,14 +113,27 @@ archival compaction). Refinements:
      N point-reads across N generations → one contiguous read + cached sidecar.
      cw does the **footer-pruned** row fetch (`readPoint`, only the `(depth,path)`
      row groups — pyrmts' whole-file `readMultiScan` won't fit a fleet index in a
-     128 MB isolate); the interval→line expansion is cw's `expandIntervals` for
-     now, to be swapped for pyrmts' `seriesFor` once pyrmts publishes a
-     consumable **dist** of the new TS multiscan primitives (the `workspace:*`
-     cross-dep blocks consuming them from a github source path). Pending item.
-2. **Diff-index** (changeset half — SCD-2 adjacent-scan deltas, produced by the
-   DuckDB producer). `/api/diff` reads the intervals crossing the window
-   (O(changes)) instead of joining two full `path-index`es. dTM gets faster +
-   sparse.
+     128 MB isolate); the interval→line expansion is pyrmts' **`seriesFor`** (dist
+     pin `7cf5d54`), fed a key-filtered *partial* `MultiScan` (that key's rows +
+     the group's full `scans` list — the scans list is the load-bearing part).
+     **Capped-K groups (the shipped shape, not the monolith):** the index is
+     sealed K=16-scan MS groups (pyrmts `multiscan consolidate --group-size`,
+     manifest → `pyramid_multiscans` via `sync_d1`); the reader routes with
+     `MultiScanD1Index`/`resolveScan` and stitches a line with
+     `seriesAcrossGroups` (per-group pruned `load`); the unsealed ≤K tip is the
+     per-scan fallback. Seal-at-K (immutable, drop-after-digest-verify), policy
+     cw-side.
+2. **Diff-index** (changeset half — SCD-2 adjacent-scan deltas). `/api/diff`
+   reads the intervals crossing the window (O(changes)) instead of joining two
+   full `path-index`es. dTM gets faster + sparse. Served by pyrmts'
+   `diffScans`/`diffTables` + `diffAcrossGroups` over the same MS groups.
+   **Prune asymmetry (don't design the diff reader around the over-time prune):**
+   over-time is per-key so its `load` prunes by *both* key and scan-span (one
+   `(depth,path)`'s rows); a diff/changeset is inherently **cross-key** (which
+   paths appeared/vanished/moved across the span), so `diffAcrossGroups` prunes
+   only by **scan-span** (groups/intervals crossing the window) and must read
+   *all* keys with a boundary in that span — not one key's rows. So the diff
+   reader needs a span-pruned (not key-pruned) `load`.
 3. **Dyadic hierarchy / consolidation integration** — bound far-apart diffs at
    O(log d); wire pyrmts' consolidation CLI for archival (drop old per-scan
    copies once digest-verified).
