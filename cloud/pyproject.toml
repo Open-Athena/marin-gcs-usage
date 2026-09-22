@@ -27,8 +27,8 @@ dependencies = [
 # to update. `pyrmts.overtime` imports are lazy (inside the CLI command), so the
 # base CLI works without this extra.
 overtime = [
-    "pyrmts @ git+https://github.com/runsascoded/pyrmts@2b820ef#subdirectory=python/pyrmts",
-    "pyrmts-engine[duckdb] @ git+https://github.com/runsascoded/pyrmts@2b820ef#subdirectory=python/pyrmts_engine",
+    "pyrmts @ git+https://github.com/runsascoded/pyrmts@35d8f57#subdirectory=python/pyrmts",
+    "pyrmts-engine[duckdb] @ git+https://github.com/runsascoded/pyrmts@35d8f57#subdirectory=python/pyrmts_engine",
 ]
 wandb = ["wandb>=0.19"]
 s3 = ["boto3>=1.34"]  # CoreWeave S3 (CAIOS) mark & sweep executor
