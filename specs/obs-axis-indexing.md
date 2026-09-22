@@ -85,12 +85,20 @@ archival compaction). Refinements:
    durable SCD-2 interval substrate (Phase 2 reuses it), since the churn is so
    low (measured 1.0016 intervals/path over 15 real scans) that intervals cost
    ≈ one tier for the whole history. Shipped shape:
-   - **Producer** `dt_cloud.overtime.write_over_time_index` (DuckDB, no pyrmts
-     hot-path dep): rolls each scan's `path-index` to `(depth, path)` totals
-     (owner slices summed), synthesizes a depth-0 fleet root per scan, and
-     SCD-2-encodes each path's `(b, o)` stream into pyrmts' `__scan_lo/__scan_hi`
-     layout, sorted `(depth, path, __scan_lo)`. A run breaks on value change or
-     a scan-index gap (absence ≠ `b=0`). CLI `over-time-write`.
+   - **Producer** `dt_cloud.overtime.write_over_time_index`: the SCD-2 interval
+     consolidation is **pyrmts' generic kernel** (`pyrmts_engine.multiscan_duckdb
+     .consolidate_parquet_duckdb` — vectorized gaps-and-islands over
+     `read_parquet`, out-of-core; the primitives live in pyrmts, not cw). cw
+     supplies only glue: roll each scan's `path-index` to `(depth, path)` totals
+     (owner slices summed) + a depth-0 fleet-root row, keyed as
+     `Pyramid(binCol='depth', dims=[path], metrics=count(b,o))` → exactly
+     `(depth, path, b, o, __scan_lo, __scan_hi)`, sorted `(depth, path,
+     __scan_lo)`. A `con` with a gcs secret reads `gs://` shards directly
+     (out-of-core, no download). pyrmts pinned as the optional `[overtime]` extra
+     (kept out of the git-less daily-scan image). CLI `over-time-write`.
+     *(An earlier cw hand-rolled DuckDB producer OOM'd materializing the full
+     82-scan grid — pyrmts' out-of-core kernel is the fleet-scale path; both
+     produce byte-identical intervals.)*
    - **Storage**: a cross-scan **singleton** — D1 variant `over-time` under the
      *latest* scan it was built for (reader takes the max-date pointer); the
      ordered scan list rides an `over-time.scans.json` sidecar (the D1-footer
@@ -103,6 +111,12 @@ archival compaction). Refinements:
      existing per-scan reads. So `series.json` is already effectively retired
      (the endpoint computes it) and the win is pure read-cost collapse:
      N point-reads across N generations → one contiguous read + cached sidecar.
+     cw does the **footer-pruned** row fetch (`readPoint`, only the `(depth,path)`
+     row groups — pyrmts' whole-file `readMultiScan` won't fit a fleet index in a
+     128 MB isolate); the interval→line expansion is cw's `expandIntervals` for
+     now, to be swapped for pyrmts' `seriesFor` once pyrmts publishes a
+     consumable **dist** of the new TS multiscan primitives (the `workspace:*`
+     cross-dep blocks consuming them from a github source path). Pending item.
 2. **Diff-index** (changeset half — SCD-2 adjacent-scan deltas, produced by the
    DuckDB producer). `/api/diff` reads the intervals crossing the window
    (O(changes)) instead of joining two full `path-index`es. dTM gets faster +

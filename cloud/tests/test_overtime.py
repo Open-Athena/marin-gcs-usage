@@ -45,11 +45,6 @@ def _intervals(path: Path) -> list[tuple]:
     ).fetchall()
 
 
-def _kv(path: Path) -> dict[str, str]:
-    md = pq.read_table(path).schema.metadata or {}
-    return {k.decode(): v.decode() for k, v in md.items()}
-
-
 def test_write_over_time_index(tmp_path: Path):
     scans = []
     for sid, rows in SCANS.items():
@@ -67,7 +62,8 @@ def test_write_over_time_index(tmp_path: Path):
         "scans_file": str(tmp_path / "ot" / "over-time.scans.json"),
     }
     assert json.loads((tmp_path / "ot" / "over-time.scans.json").read_text()) == ["s0", "s1", "s2", "s3"]
-    # SCD-2 runs: fleet root + B change at s2, B/a static, B/b only s1–s2.
+    # SCD-2 runs (pyrmts' interval kernel): fleet root + B change at s2, B/a
+    # static, B/b only s1–s2.
     assert _intervals(tmp_path / "ot" / "over-time.parquet") == [
         (0, "", 100, 10, 0, 1),
         (0, "", 200, 20, 2, 3),
@@ -76,9 +72,6 @@ def test_write_over_time_index(tmp_path: Path):
         (2, f"{B}/a", 50, 5, 0, 3),
         (2, f"{B}/b", 7, 1, 1, 2),
     ]
-    kv = _kv(tmp_path / "ot" / "over-time.parquet")
-    assert kv["schema"] == OT.OVER_TIME_SCHEMA
-    assert json.loads(kv["scans"]) == ["s0", "s1", "s2", "s3"]
 
 
 def test_intervals_reconstruct_each_scan(tmp_path: Path):
