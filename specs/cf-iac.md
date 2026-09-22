@@ -43,15 +43,58 @@ Pulumi has first-class providers for both (`@pulumi/cloudflare`:
 `Policy`, `D1Database`; `@pulumi/gcp`: `cloudscheduler.Job`,
 `secretmanager`). Import the existing resources rather than recreate.
 
-## Should upstream (disk-tree) offer primitives?
+## Should upstream (disk-tree) offer primitives? — the `CfnDashboard` component
 
-Probably a **component**, not primitives: `new CfnDashboard(name, { store,
-domain, accessPolicy, dataBucket, schedule })` that stands up "the Vite+CFN
-reference deploy" (Pages project + domain + Access + data-proxy secrets) — the
-same shape marin's two stacks instantiate. It belongs with the `cfn`
-reference branch proposed in disk-tree's `specs/two-reference-deploys.md`,
-and it's exactly what the R2/AWS-S3 deployments would reuse. Marin's stacks
-would then be `CfnDashboard` × per-branch config + the GCP job pieces.
+A **component**, not primitives: one `ComponentResource` that stands up the
+Cloudflare surface of a "Vite + CFN dashboard" so a deployment is one call plus
+its config. The `__main__.py` here already *is* the extraction source — the body
+of the `STORES` loop (Pages shell + domain + CNAME + Access app/policy + D1 +
+optional KV) is exactly the component; adopting it means lifting that block into
+`CfnDashboard.__init__` and having each stack pass a `Store`.
+
+**Refinement of the 2026-08-28 sketch:** keep the component **CF-only**. The
+original `{ dataBucket, schedule }` inputs conflated the data-plane job into it;
+that job is per-cloud (GCP Batch here, would be a Lambda/Cloud Run elsewhere) and
+already lives in its own stack (`specs/batch-iac.md`). A deployment is
+`CfnDashboard` (this) **+** a data-plane stack — not one mega-component that
+spans clouds. The CF half is the part that's genuinely identical across R2 /
+AWS-S3 / GCS backends, so that's what's worth sharing.
+
+```python
+class CfnDashboardArgs:
+    account_id: Input[str]
+    zone_id: Input[str]            # the apex zone holding the custom-domain CNAME
+    store: Store                   # pages_project, production_branch, domain,
+                                   # d1_{name,id}, access: AccessApp, kv?
+
+class CfnDashboard(pulumi.ComponentResource):
+    """Pages project shell + custom domain + zone CNAME + Zero Trust Access
+    app/policy + D1 + optional KV. Owns the *container*; wrangler still fills
+    deployment_configs (vars/bindings/secrets) — see the deploy/config boundary.
+    Exports: pages_project, custom_domain, d1_database, access_app_id/aud, kv?"""
+    def __init__(self, name, args: CfnDashboardArgs, opts=None): ...
+```
+
+Marin's two stacks then collapse to (per stack):
+
+```python
+dash = CfnDashboard(stack, CfnDashboardArgs(account_id=…, zone_id=…, store=STORES[stack]))
+```
+
+**Home / language.** `ops` is Python; disk-tree is TS. A Pulumi component must be
+importable by its consumer, so the pragmatic first home is a **shared Python
+module in `ops`** (`ops/cf/_components/cfn_dashboard.py`), imported by both
+stacks — no packaging, no cross-language bridge. "Belongs in disk-tree's `cfn`
+branch" (`specs/two-reference-deploys.md`) stays the *eventual* home, but that
+only pays off once a consumer **outside `ops`** (the R2/S3 reference deploy)
+needs it — at which point extract it to a published package (a Python
+`disk-tree-iac`, or a multi-language component provider if a TS consumer appears
+too). Don't pay the packaging/cross-language cost for two in-repo consumers.
+
+Preconditions before building it: (1) the `gcs`+`cw-s3` stacks are imported and
+sitting at empty preview (so the refactor is provably a no-op — diff before/after
+must be empty), and (2) a third consumer is on the horizon, else this is a
+two-call DRY with negative ROI. Until then the `STORES`-loop form is fine.
 
 ## Order
 
@@ -61,7 +104,8 @@ would then be `CfnDashboard` × per-branch config + the GCP job pieces.
    import is the §Runbook.**
 2. Scheduler jobs → rendered bodies (retire hand-edited decoded JSON). —
    **done separately as the GCP stack (`specs/batch-iac.md`, `ops/gcp/gcs-usage/`).**
-3. Extract the CF half into the upstream component when the `cfn` branch exists.
+3. Extract the CF half into the `CfnDashboard` component (sketch above) — gated
+   on both stacks at empty preview **and** a third (R2/S3) consumer existing.
 
 ## What the program models (and deliberately doesn't)
 
