@@ -36,6 +36,11 @@ err = partial(print, file=sys.stderr)
 
 OVER_TIME_VARIANT = "over-time"
 OVER_TIME_FILE = "over-time.parquet"
+#: Scans per sealed multi-scan group (capped so each build is bounded-memory +
+#: parallelizable, and a path's line reads ⌈N/K⌉ groups rather than one giant
+#: monolith; the ≤K-scan tip is served by `/api/series`'s per-scan fallback).
+#: 16 ≈ 8 days at the 12h scan cadence (specs/obs-axis-indexing.md Phase 1).
+OVER_TIME_GROUP_SIZE = 16
 #: The ordered scan list rides a sidecar JSON the CFW reader fetches — the
 #: D1-footer read path rebuilds row-group stats but not KV metadata, so the
 #: reader needs this to map `__scan_lo`/`__scan_hi` back to scan ids.
@@ -145,3 +150,54 @@ def write_over_time_index(
         "file": str(out_path),
         "scans_file": str(out / OVER_TIME_SCANS),
     }
+
+
+def write_over_time_groups(
+    scans: list[tuple[str, str | Path]],
+    out_dir: str | Path,
+    *,
+    group_size: int = OVER_TIME_GROUP_SIZE,
+    mem: str = "8GB",
+    threads: int = 8,
+    tmp_dir: str | Path | None = None,
+    con: "duckdb.DuckDBPyConnection | None" = None,
+) -> dict:
+    """Partition ``scans`` (ordered, oldest first) into fixed groups of
+    ``group_size`` and build one self-contained over-time MS per group under
+    ``out_dir/<group's last scan id>/`` — each an independent, bounded-memory
+    build (interval bounds are indices into *that group's* scan list). Each group
+    is synced to D1 as its own `(last-scan-date, over-time)` pointer; the reader
+    reads the groups covering a query window and stitches their series, with the
+    unsealed ≤``group_size``-scan tip served by the per-scan fallback.
+
+    Returns ``{group_size, groups: [{group, first, last, n, file, scans_file,
+    rows, paths}, ...]}`` (a group whose scans are all sealed here)."""
+    if group_size < 1:
+        raise ValueError(f"write_over_time_groups: group_size must be >= 1, got {group_size}")
+    out = Path(out_dir)
+    own = con is None
+    if own:
+        con = duckdb.connect()
+        con.execute(f"SET memory_limit='{mem}'; SET threads={threads}")
+        con.execute(f"SET temp_directory='{tmp_dir or out / '.duckdb-tmp'}'")
+    groups: list[dict] = []
+    try:
+        for i in range(0, len(scans), group_size):
+            grp = scans[i : i + group_size]
+            gid = grp[-1][0]  # the group's last scan id names its dir + D1 pointer
+            summ = write_over_time_index(grp, out / gid, con=con)
+            groups.append({
+                "group": gid,
+                "first": grp[0][0],
+                "last": grp[-1][0],
+                "n": len(grp),
+                "file": summ["file"],
+                "scans_file": summ["scans_file"],
+                "rows": summ["rows"],
+                "paths": summ["paths"],
+            })
+            err(f"over-time group {gid}: {len(grp)} scans, {summ['rows']:,} intervals")
+    finally:
+        if own:
+            con.close()
+    return {"group_size": group_size, "groups": groups}

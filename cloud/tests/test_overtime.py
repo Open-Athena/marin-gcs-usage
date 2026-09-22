@@ -105,6 +105,38 @@ def test_intervals_reconstruct_each_scan(tmp_path: Path):
         assert got == expected, f"scan {sid} (idx {k})"
 
 
+def test_write_over_time_groups(tmp_path: Path):
+    """Fixed K=2 groups: two self-contained MSs, each with its own scan list and
+    interval bounds indexing that group (0-based)."""
+    scans = []
+    for sid, rows in SCANS.items():
+        pi = tmp_path / f"{sid}.parquet"
+        _write_path_index(pi, rows)
+        scans.append((sid, str(pi)))
+    s = OT.write_over_time_groups(scans, tmp_path / "g", group_size=2)
+    assert s["group_size"] == 2
+    assert [(g["group"], g["first"], g["last"], g["n"]) for g in s["groups"]] == [
+        ("s1", "s0", "s1", 2),
+        ("s3", "s2", "s3", 2),
+    ]
+    # group s0–s1: B/b appears at s1 only; bounds are 0-based within the group.
+    assert json.loads((tmp_path / "g" / "s1" / "over-time.scans.json").read_text()) == ["s0", "s1"]
+    assert _intervals(tmp_path / "g" / "s1" / "over-time.parquet") == [
+        (0, "", 100, 10, 0, 1),
+        (1, B, 100, 10, 0, 1),
+        (2, f"{B}/a", 50, 5, 0, 1),
+        (2, f"{B}/b", 7, 1, 1, 1),
+    ]
+    # group s2–s3: B/b present s2, gone s3.
+    assert json.loads((tmp_path / "g" / "s3" / "over-time.scans.json").read_text()) == ["s2", "s3"]
+    assert _intervals(tmp_path / "g" / "s3" / "over-time.parquet") == [
+        (0, "", 200, 20, 0, 1),
+        (1, B, 200, 20, 0, 1),
+        (2, f"{B}/a", 50, 5, 0, 1),
+        (2, f"{B}/b", 7, 1, 0, 0),
+    ]
+
+
 def test_cli_over_time_write_explicit(tmp_path: Path):
     """`over-time-write <date>=<parquet> …` bypasses D1 and builds the index."""
     args = []
