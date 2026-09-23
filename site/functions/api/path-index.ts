@@ -21,9 +21,8 @@
 // a pointer to Range requests instead.
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { type Env, requireViewer } from '../_lib/auth.js'
-import { indexDir } from '../_lib/index.js'
+import { indexDir, storeCreds, storeReady, storeTarget } from '../_lib/index.js'
 
-const BUCKET = 'oa-gcs-usage-dvx'
 const MAX_RANGE = 64 * 1024 * 1024 // 64MB per request — plenty for parquet pages
 
 export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Response> => {
@@ -31,8 +30,8 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
   }
-  if (!env.GCS_HMAC_KEY_ID || !env.GCS_HMAC_SECRET) {
-    return new Response('path-index proxy not configured (missing GCS HMAC creds)', { status: 503 })
+  if (!storeReady(env)) {
+    return new Response('path-index proxy not configured (missing store creds)', { status: 503 })
   }
   const url = new URL(request.url)
   const date = url.searchParams.get('date') ?? ''
@@ -42,14 +41,7 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
 
-  const store = S3Store({
-    endpoint: 'https://storage.googleapis.com',
-    bucket: BUCKET,
-    region: 'us-east1',
-    prefixes: ['listing/'],
-    accessKeyId: env.GCS_HMAC_KEY_ID,
-    secretAccessKey: env.GCS_HMAC_SECRET,
-  })
+  const store = S3Store({ ...storeTarget(env), prefixes: ['listing/', 'cw-l2/'], ...storeCreds(env) })
   // The file lives under the generation dir D1 points at (a run never
   // overwrites the file being served; specs/view-serving.md).
   const dir = await indexDir(env, date)

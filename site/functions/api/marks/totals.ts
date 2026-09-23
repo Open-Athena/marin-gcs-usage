@@ -6,12 +6,13 @@
  * `marks=1` includes the per-mark manifest (the sweep executor's input).
  */
 import { type Ctx, json, requireScope, requireViewer } from '../../_lib/auth.js'
+import { storeReady } from '../../_lib/index.js'
 import { markTotals } from '../../_lib/totals.js'
 
 export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   const { env, request } = ctx
   if (!env.DB) return json({ error: 'ledger backend not configured (DB)' }, 503)
-  if (!env.GCS_HMAC_KEY_ID || !env.GCS_HMAC_SECRET) return json({ error: 'index reader not configured' }, 503)
+  if (!storeReady(env)) return json({ error: 'index reader not configured' }, 503)
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
   const url = new URL(request.url)

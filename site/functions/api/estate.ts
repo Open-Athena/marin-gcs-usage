@@ -14,6 +14,7 @@
  *   scoped to unmarked bytes, walked down only while marks sit inside.
  */
 import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
+import { storeReady } from '../_lib/index.js'
 import { marksUnder } from '../_lib/markAxes.js'
 import { canonId } from '../_lib/identity.js'
 import { markTotals } from '../_lib/totals.js'
@@ -22,7 +23,7 @@ import { buildView, type ViewNode } from '../_lib/view.js'
 export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   const { env, request } = ctx
   if (!env.DB) return json({ error: 'ledger backend not configured (DB)' }, 503)
-  if (!env.GCS_HMAC_KEY_ID || !env.GCS_HMAC_SECRET) return json({ error: 'index reader not configured' }, 503)
+  if (!storeReady(env)) return json({ error: 'index reader not configured' }, 503)
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
   const url = new URL(request.url)
