@@ -50,6 +50,12 @@ PRIMARY_BUCKET = os.environ.get("CW_BUCKET", "marin-us-east-02a")
 # Owned here, once; headroom renders as "% of 1 PB".
 QUOTA_BYTES = 10**15
 QUOTA_TIB = QUOTA_BYTES / TIB
+# Per-bucket quota (decimal bytes) + short label for the daily reply's tail:
+# 02a = 1 PB, hero-checkpoints = 100 TB (Russell Power, #marin-eng 2026-09-20:
+# "hero-checkpoints only has 100TB total"). A bucket absent here renders its raw
+# TiB (no % / free clause).
+BUCKET_QUOTA = {"marin-us-east-02a": 10**15, "hero-checkpoints": 10**14}
+BUCKET_LABEL = {"marin-us-east-02a": "02a", "hero-checkpoints": "hero"}
 # Weekly-halving arrow buckets: |dpct| >= THRESH[i] -> deg (i+1)*10 (capped 80).
 THRESH = [0.39, 0.78, 1.5, 3.1, 6.25, 12.5, 25, 50]
 MINUS = "−"  # matches the site's unicode minus
@@ -123,12 +129,46 @@ def _free(tb: float) -> str:
 
 def _extras(extra: dict[str, float], dextra: dict[str, float | None]) -> str:
     """` · <bucket> <TiB> TiB (Δ)` per non-primary bucket (Δ omitted when the
-    prior scan lacked the bucket); `''` with none."""
+    prior scan lacked the bucket); `''` with none. Still used by the OP +
+    weekly bullets; the daily reply uses `_tail` (per-bucket quota clauses)."""
     out = ""
     for b, tb in extra.items():
         d = dextra.get(b)
         out += f" · {b} {tb:,.0f} TiB" + (f" ({_tb(d)})" if d is not None else "")
     return out
+
+
+def _qlabel(b: int) -> str:
+    """SI quota label: 1 PB → `1P`, 100 TB → `100T`."""
+    return f"{b / 10**15:g}P" if b >= 10**15 else f"{b / 10**12:g}T"
+
+
+def _bucket_url(bucket: str, scan: str, since: dt.datetime | None, site_url: str) -> str:
+    """The dashboard's over-time view scoped to one bucket, pinned to ``scan``
+    and looking back to ``since`` (the `_diff_url` token with a bucket path)."""
+    span = f"-{_span(since, scan_ts(scan))}" if since is not None else ""
+    return f"{site_url}/{bucket}?d={_dlink(scan)}{span}#over-time"
+
+
+def _bucket_clause(bucket: str, tb: float, scan: str, since: dt.datetime | None, site_url: str) -> str:
+    """`[<label>](<over-time url>): NN.N% of <quota> (<free> Ti free)` for one
+    bucket; a bucket with no known quota renders its raw TiB."""
+    label = BUCKET_LABEL.get(bucket, bucket)
+    url = _bucket_url(bucket, scan, since, site_url)
+    q = BUCKET_QUOTA.get(bucket)
+    if q is None:
+        return f"[{label}]({url}): {tb:,.0f} Ti"
+    qt = q / TIB
+    return f"[{label}]({url}): {tb / qt * 100:.1f}% of {_qlabel(q)} ({qt - tb:,.1f} Ti free)"
+
+
+def _tail(day: "DayRow", site_url: str) -> str:
+    """The daily reply's per-bucket tail: the primary then each extra bucket as
+    a linked `% of quota (free)` clause, ` · `-joined."""
+    clauses = [_bucket_clause(PRIMARY_BUCKET, day.tb, day.scan, day.since, site_url)]
+    for b, tb in day.extra.items():
+        clauses.append(_bucket_clause(b, tb, day.scan, day.since, site_url))
+    return " · ".join(clauses)
 
 
 def _md(date: str) -> str:
@@ -356,11 +396,11 @@ def reply(day: DayRow, variant: str, site_url: str = DEFAULT_URL) -> Reply:
     d = deg(_pct_val(dtb, day.tb), mult)
     url = _diff_url(day.scan, day.since, site_url)
     size = f"{day.tb:,.0f} TiB ({_tb(dtb)}, {_pct(dtb, day.tb)}%)"
-    tail = f"{_quota(day.tb)} · {_free(day.tb)}{_extras(day.extra, day.dextra)}"
+    # Each bucket as a linked `% of quota (free)` clause (the bucket names are
+    # the over-time links, so no separate ↗ arrow).
+    tail = _tail(day, site_url)
     if variant == "sender":
-        # ↗︎ = NE arrow + text-presentation selector: renders as a
-        # font glyph in link colour (bare ↗ gets emoji-ized by Slack)
-        return Reply(f"{_md(day.date)} — {size}", f"{tail} [↗︎]({url})", icon_url=f"{ICONS_BASE}/arrows/av_deg{d}.png?v={AVATAR_REV}")
+        return Reply(f"{_md(day.date)} — {size}", tail, icon_url=f"{ICONS_BASE}/arrows/av_deg{d}.png?v={AVATAR_REV}")
     if variant == "body":
         return Reply(OP_SENDER, f":arrow_deg{d}: [{_md(day.date)}]({url}) — **{size}** · {tail}", icon_emoji=":calendar:")
     raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
