@@ -1,134 +1,84 @@
-# disk-tree
+# marin-gcs-usage
 
-Disk and cloud storage analyzer with caching, CLI, and web UI.
+Per-user attribution and reporting for Marin GCS storage: "who is using what."
 
-[![disk-tree treemap of an R2 bucket](screenshots/treemap.png)](https://r2.rbw.sh/r2/ctbk)
+Private by design — the identity map (`src/dt_cloud/identities.yaml`: real
+names, teams, login aliases) and per-user usage reports stay out of the public
+[marin] repo, matching the privacy stance of marin's egress report.
 
-<p align="center"><b><a href="https://r2.rbw.sh/r2/ctbk">▶ Live demo</a></b> — interactive treemap of a 916&nbsp;GB R2 bucket (drill in, filter, compare), from <a href="https://ctbk.dev">ctbk.dev</a></p>
+See [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md) for
+the full plan (attribution signals, join layer, weekly report integration,
+OA-gated webapp, [disk-tree] drill-down).
 
-<!-- toc -->
-- [Install](#install)
-- [Web UI](#web-ui)
-- [CLI](#cli)
-  - [Examples](#examples)
-- [Notes](#notes)
-  - [Caching](#caching)
-  - [Performance](#performance)
-<!-- /toc -->
+## Usage
 
-## Install
+Attribution parquets (`prefix → user/team` rows) come from two builders:
 
 ```bash
-pip install disk-tree
+# Path + record signals from the listing itself:
+dt-cloud build -l 'gs://<bucket>/<scan>/objects/*.parquet' -o tmp/attribution.parquet
+dt-cloud build -l <listing> -o <out> -R   # path signals only (no GETs)
+
+# W&B signals (the bulk of coverage):
+dt-cloud wandb-mine -e marin-community -o tmp/wandb-runs.parquet   # full API mine (time-bisected; -E/-s/-u for parallel range workers)
+dt-cloud executor-mine -l <listing> -o tmp/executor-infos.parquet  # .executor_info sidecar GETs
+dt-cloud wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <listing> -o tmp/attribution-wandb.parquet
 ```
 
-## Web UI
-
-Start the server and open http://localhost:5001:
+Reporting and the site consume any number of attribution parquets (`-a`, repeatable):
 
 ```bash
-disk-tree-server
+dt-cloud report -l <listing> -a <attr...>            # per-user/team bytes + coverage; -u <user> prints their claim list
+dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unattributed prefixes (curation queue)
+dt-cloud webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
+dt-cloud rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
 ```
 
-### Scan List
+Signals, roughly best-first (deepest-prefix-wins at join time):
 
-View all cached scans, start new scans for local paths or S3 buckets:
+1. W&B run-config writer paths (`base_path` & friends — checkpoint/output dirs the trainer wrote)
+2. W&B run-name ↔ dir joins under `checkpoints/`/`grug/`
+3. `.executor_info` → W&B run joins
+4. `users/<seg>/` path prefixes ([marin#6790] namespacing)
+5. `.artifact.json` sidecars → `provenance.built_by`
+6. manual `prefix_owners` for big shared trees (datasets, sweep namespaces)
 
-![Scan list](screenshots/scan-list.png)
+Users/teams are re-resolved against the *current* `identities.yaml` at load
+time, so alias/team curation takes effect without rebuilding parquets. Unknown
+spellings resolve to their own sanitized segment with team `unknown` and are
+listed on stderr — curate them into `identities.yaml` (`dt-cloud rules`
+validates it).
 
-### Directory Browsing
+Listing-scale runs (34M+ dirs) belong on a work node, not a laptop — see the
+weekly-refresh runbook in [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md).
 
-Browse directories with size, modification time, children, and descendant counts. Multi-select with keyboard navigation, bulk delete:
+## Access ([gcs.oa.dev])
 
-![Directory listing](screenshots/directory-listing.png)
+The viz site is gated by [Cloudflare Access][cf-access] (app "GCS usage", Open Athena CF account). The allow policy is:
 
-### Treemap Visualization
+- any `@openathena.ai` email (Google SSO or one-time email PIN), plus
+- a whitelist of external emails — currently Percy Liang: `psl@stanford.edu`, `percyliang@gmail.com` (one-time email PIN; Google SSO is restricted to the openathena.ai org by the OAuth client's consent config)
 
-Interactive treemaps for visualizing space usage — drill into any directory, filter by name, toggle an age lens. Zero-dependency DIY-SVG/canvas ([`@rdub/treemap`](packages/treemap)), no chart lib. Try it on the [live `r2://ctbk` demo](https://r2.rbw.sh/r2/ctbk):
-
-[![Treemap](screenshots/treemap.png)](https://r2.rbw.sh/r2/ctbk)
-
-### S3 Buckets
-
-Browse and scan S3 buckets:
-
-![S3 buckets](screenshots/s3-buckets.png)
-
-## CLI
-
-```bash
-disk-tree index --help
-# Usage: disk-tree index [OPTIONS] [URL]
-#
-# Options:
-#   -C, --no-cache-read    Force fresh scan (ignore cache)
-#   -g, --gc               Garbage collect old scans
-#   -s, --sudo             Run gfind with sudo
-#   -m, --measure-memory   Track peak memory usage
-#   --help                 Show this message and exit.
-
-disk-tree scans           # List cached scans (JSON)
-disk-tree-server          # Start the web UI server
-```
-
-### Examples
-
-Scan an S3 bucket:
-```bash
-disk-tree index s3://ctbk
-# 2333 files in 138 dirs, total size 45.1G
-#       4B  test.txt
-#    66.1K  favicon.ico
-#     3.9M  index.html
-#     5.5M  static
-#    11.2M  .dvc
-#    95.0M  tmp
-#   579.1M  stations
-#     1.2G  aggregated
-#     6.0G  normalized
-#    37.2G  csvs
-```
-
-Scan a local directory:
-```bash
-disk-tree index /Users/ryan/c/disk-tree
-# 97 files in 47 dirs, total size 1.5M
-#       0B  disk-tree/__init__.py
-#      77B  disk-tree/requirements.txt
-#     867B  disk-tree/setup.py
-#     2.3K  disk-tree/README.md
-#    23.8K  disk-tree/disk_tree
-#   291.8K  disk-tree/screenshots
-#   580.4K  disk-tree/.git
-#   628.6K  disk-tree/www
-```
-
-## Notes
-
-### Caching
-
-`disk-tree` caches scan results as Parquet files in `~/.config/disk-tree/scans/`, with metadata in `~/.config/disk-tree/disk-tree.db`. Override with `DISK_TREE_ROOT`.
-
-### Performance
-
-- **Local filesystems**: Uses `gfind -printf` for fast stat collection (handles sparse files correctly with 512-byte block sizes)
-- **S3**: Caches `aws s3 ls --recursive` output
-- **Fresher child patching**: When viewing a parent directory, newer child scans automatically patch in updated stats
-- **Depth-based predicate pushdown**: Parquet queries filter by depth for fast loading
+To add/remove whitelisted emails: CF dashboard → Zero Trust → Access → Applications → "GCS usage" policy (or ask Ryan). Update this list in lockstep so the policy stays reviewable here.
 
 ## Development
 
 ```bash
-# Python
 uv sync
-disk-tree-server
-
-# Web UI
-cd ui
-pnpm install
-pnpm dev  # http://localhost:5180 (proxies API to :5001)
-
-# Screenshots
-cd ui
-pnpm screenshots
+uv run pytest
 ```
+
+Two marin contracts are deliberately mirrored (not imported) to keep this repo
+standalone; if either changes upstream, update in lockstep:
+
+- `src/dt_cloud/usernames.py` — `sanitize_username` rules, mirror of
+  `rigging.provenance.username_segment`
+- `src/dt_cloud/records.py` — the `.artifact.json` shape
+  (`marin.execution.artifact.ArtifactRecord`), of which only
+  `provenance.built_by` is read
+
+[gcs.oa.dev]: https://gcs.oa.dev
+[cf-access]: https://developers.cloudflare.com/cloudflare-one/applications/
+[marin]: https://github.com/marin-community/marin
+[marin#6790]: https://github.com/marin-community/marin/issues/6790
+[disk-tree]: https://github.com/runsascoded/disk-tree
