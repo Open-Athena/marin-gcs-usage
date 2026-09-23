@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [gcs, cw-s3, cw-s3-next]
   pull_request:
-    branches: [main]
+    branches: [gcs, cw-s3, cw-s3-next]
 
 jobs:
   test:
@@ -174,3 +174,53 @@ jobs:
           name: playwright-report
           path: ui/playwright-report/
           retention-days: 7
+
+  marin-test:
+    name: dt-cloud CLI tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      # dt-cloud has its own pyproject/venv (separate from the root disk_tree,
+      # which the viz tests import — install it into the same venv, as the
+      # Batch image does). The root wheel force-includes `ui/dist`; stub it
+      # (the viz tests don't touch the static UI, and building it here would
+      # drag node+pnpm into a python test job).
+      - name: Sync dt-cloud
+        run: mkdir -p ui/dist && cd cloud && uv sync --group test && uv pip install ..
+
+      - name: Run dt-cloud tests
+        run: cd cloud && uv run --no-sync pytest tests -v
+
+  site-build:
+    name: Site typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # pnpm version comes from root package.json's `packageManager` field.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm build` = `tsc -b && vite build` — typechecks the SPA (+ referenced
+      # projects) and the Functions, then bundles. Catches a broken site/ before
+      # a manual `site/deploy` ships it. (cw-s3 deploys site/, not ui/.)
+      - name: Build site (typecheck + bundle)
+        run: cd site && pnpm build
