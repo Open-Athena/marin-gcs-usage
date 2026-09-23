@@ -45,17 +45,23 @@ TIB = 1024**4
 # the flat totals (which were the primary's) before that. The other buckets
 # ride along as a ` · <bucket> <TiB> TiB (Δ)` clause.
 PRIMARY_BUCKET = os.environ.get("CW_BUCKET", "marin-us-east-02a")
-# The bucket's quota is 1 PB *decimal* (10^15 bytes) = 909.49 TiB — the
-# "910 TiB" in the site's comments and the zones memo is this number rounded.
-# Owned here, once; headroom renders as "% of 1 PB".
-QUOTA_BYTES = 10**15
+# 02a's zone quota, authoritative from CoreWeave's own `cwobject_quota_info`
+# metric (observe.coreweave.com, mirrored into finelog / Grafana `storage.usage`):
+# exactly 910 TiB (≈ 1.0006 PB decimal). Owned here once; headroom renders as
+# "% of 1 PB".
+QUOTA_BYTES = 910 * TIB
 QUOTA_TIB = QUOTA_BYTES / TIB
-# Per-bucket quota (decimal bytes) + short label for the daily reply's tail:
-# 02a = 1 PB, hero-checkpoints = 100 TB (Russell Power, #marin-eng 2026-09-20:
-# "hero-checkpoints only has 100TB total"). A bucket absent here renders its raw
-# TiB (no % / free clause).
-BUCKET_QUOTA = {"marin-us-east-02a": 10**15, "hero-checkpoints": 10**14}
+# Per-bucket quota (bytes) + short label for the daily reply's tail, both
+# authoritative from CoreWeave's `cwobject_quota_info` (per-zone; via finelog):
+# 02a = 910 TiB (US-EAST-02A), hero-checkpoints = 100 TiB (the US-EAST-08A ZONE
+# quota, shared with rhoarnet-us-east-08a ~3 TiB, which cw-s3 doesn't scan — so
+# hero's "free" overstates true zone headroom by ~3 TiB). A bucket absent here
+# renders its raw TiB (no % / free clause).
+BUCKET_QUOTA = {"marin-us-east-02a": QUOTA_BYTES, "hero-checkpoints": 100 * TIB}
 BUCKET_LABEL = {"marin-us-east-02a": "02a", "hero-checkpoints": "hero"}
+# Explicit quota labels — the byte→SI `_qlabel` can't render these round-TiB
+# values cleanly (910 TiB isn't a clean decimal-P): 910 TiB → "1P", 100 TiB → "100Ti".
+BUCKET_QLABEL = {"marin-us-east-02a": "1P", "hero-checkpoints": "100Ti"}
 # Weekly-halving arrow buckets: |dpct| >= THRESH[i] -> deg (i+1)*10 (capped 80).
 THRESH = [0.39, 0.78, 1.5, 3.1, 6.25, 12.5, 25, 50]
 MINUS = "−"  # matches the site's unicode minus
@@ -159,7 +165,8 @@ def _bucket_clause(bucket: str, tb: float, scan: str, since: dt.datetime | None,
     if q is None:
         return f"[{label}]({url}): {tb:,.0f} Ti"
     qt = q / TIB
-    return f"[{label}]({url}): {tb / qt * 100:.1f}% of {_qlabel(q)} ({qt - tb:,.1f} Ti free)"
+    qlabel = BUCKET_QLABEL.get(bucket) or _qlabel(q)
+    return f"[{label}]({url}): {tb / qt * 100:.1f}% of {qlabel} ({qt - tb:,.1f} Ti free)"
 
 
 def _tail(day: "DayRow", site_url: str) -> str:
