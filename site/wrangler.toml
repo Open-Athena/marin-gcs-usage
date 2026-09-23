@@ -48,12 +48,30 @@ STAFF_DOMAIN = "openathena.ai"
 
 # Global cache tier for the index reader's JSON (`functions/_lib/edgeCache.ts`:
 # colo cache → KV; gcs binds `CACHE_KV`). Optional — the code runs without it
-# (colo cache only). Binding it needs a KV namespace + a token with KV scope
-# (the current `CLOUDFLARE_API_TOKEN` has none: `wrangler kv namespace list`
-# fails auth). Add when provisioned:
+# (colo cache only), but then the job's warm-cache reaches ONE datacenter.
+# USER-GATED: the namespace is the `cache_kv` output of the CF Pulumi stack
+# `cw-s3` (`cf/__main__.py`, Store.kv_name = "oa-cw-s3-usage-cache"); creating
+# it needs a token with KV scope (the wrangler-dev token has none). Paste the
+# id and uncomment once it exists (a bogus id breaks `wrangler pages dev`):
 #   [[kv_namespaces]]
 #   binding = "CACHE_KV"
-#   id = "<namespace id>"
+#   id = "<cache_kv output of `pulumi stack output` on cw-s3>"
+
+# R2 serving (specs/r2-serving-migration.md): the same store seam the base's
+# r2.rbw.sh deploy uses (`_lib/index.ts` storeTarget/storeCreds — S3-over-R2,
+# NOT a native R2 binding, so cw matches the base byte-for-byte). Unset = GCS
+# (today). Flipping = set the two vars here + three Pages secrets, then deploy;
+# the reads are byte-equivalent (same keys). USER-GATED — the bucket is the
+# `r2_bucket` output of the `cw-s3` Pulumi stack and must exist + be backfilled
+# (`dt-cloud publish-r2`, or Super Slurper) first:
+#   STORE_BUCKET = "oa-cw-s3-usage-index"   # `r2_bucket` output
+#   STORE_REGION = "auto"                   # R2 ignores the region; SigV4 wants one
+# Secrets (`wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
+#   STORE_ENDPOINT          = https://<account id>.r2.cloudflarestorage.com  (account id stays out of git)
+#   STORE_ACCESS_KEY_ID     = the `r2_s3_access_key_id` stack output (the R2 API token's id)
+#   STORE_SECRET_ACCESS_KEY = the `r2_s3_secret_access_key` stack output (sha256 of the token value)
+# `STORE_PREFIXES` stays unset: the index reader's default allow-list already
+# covers `listing/`, `snapshots/`, `cw-l2/`.
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
 #   GCS_HMAC_KEY_ID / GCS_HMAC_SECRET — read-only GCS proxy creds (data + /files)
