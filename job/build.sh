@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Build + push the daily-snapshot Batch image via Cloud Build (offloaded — no
+# local Docker). Bakes `job/run.sh`, the `dt-cloud` package (cloud/src), and the
+# disk-tree engine per the root Dockerfile; `.gcloudignore` trims the context.
+#
+# The scheduled job (batch-submit.sh) runs `IMAGE:latest`, so a rebuild is how
+# run.sh / pipeline changes reach prod. Immutable per-day snapshots mean this is
+# safe to run any time; the next daily run (or a manual batch-submit) picks it up.
+#
+# Env: PROJECT, IMAGE (override the tag, e.g. a throwaway tag to test a build).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+PROJECT=${PROJECT:-oa-internal-450019}
+# Which scheduled job this image runs: the GCS fleet job (`run.sh`, tag
+# `latest`, the default) or the CoreWeave scan job (`JOB=cw-run.sh`, tag `cw`).
+JOB=${JOB:-run.sh}
+TAG=${TAG:-$([ "$JOB" = cw-run.sh ] && echo cw || echo latest)}
+IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:$TAG}
+
+echo "building $IMAGE (Cloud Build; context = repo root, minus .gcloudignore)" >&2
+exec gcloud builds submit --project "$PROJECT" --config cloudbuild.yaml --substitutions "_IMAGE=$IMAGE,_JOB=$JOB" .

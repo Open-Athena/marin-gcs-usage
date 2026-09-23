@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Submit the daily snapshot job to GCP Batch (n2-highmem-8, real disk for DuckDB spill).
+# Cloud Run jobs cap at 32Gi with tmpfs-only storage — DuckDB spill lands in RAM and the
+# 470M-row webdata step OOMs there; Batch VMs give 64G RAM + a 200G boot disk for spill.
+#
+# Env overrides: SNAPSHOT_DATE (default today UTC, resolved inside run.sh), IMAGE,
+# DUCKDB_MEM (default 48GB), DUCKDB_THREADS (default 8), SNAP_PATH,
+# LISTING_MACHINE/PROCS/WORKERS (DIY fan-out sizing) — forwarded when set.
+set -euo pipefail
+
+# PIN=1: emit the canonical/cron spec — drop every ambient override so the body is
+# byte-identical regardless of the caller's shell (the IaC in ops/gcp/gcs-usage
+# generates the Cloud Scheduler body from `PIN=1 DRY=1`). Must precede the
+# ${VAR:-default} knobs below; the python vars() honors PIN too.
+if [ -n "${PIN:-}" ]; then unset IMAGE MACHINE MEMORY_MIB LOCAL_SSD_GB MAX_RUN_SECONDS DATA_BUCKET; fi
+
+PROJECT=oa-internal-450019
+REGION=us-central1
+SA=gcs-usage-job@$PROJECT.iam.gserviceaccount.com
+IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:latest}
+# webdata's peak RSS is DuckDB at its cap plus ~40GB it doesn't account for
+# (the access dict + hash-agg overshoot on 179M dir groups): 124GB on a
+# highmem-16 was OOM-killed on 2026-09-05/06, so the daily runs on a highmem-32
+# (256G) until specs/view-serving.md §4–5 land and the peak comes back down.
+# The Cloud Scheduler body is generated from `PIN=1 DRY=1` here (ops/gcp/gcs-usage),
+# so this stays the single source of truth for the daily spec.
+MACHINE=${MACHINE:-n2-highmem-32}
+MEMORY_MIB=${MEMORY_MIB:-250000}
+LOCAL_SSD_GB=${LOCAL_SSD_GB:-1500}  # n2 32-vCPU machines require >=4 local SSDs (375G each)
+JOB_ID=${JOB_ID:-gcs-usage-snapshot-$(date -u +%Y%m%d-%H%M%S)}
+
+vars() {  # container env: defaults + optional passthroughs
+  python3 - <<'EOF'
+import json, os
+# PIN=1 emits the canonical/cron spec: ignore every ambient override so the body
+# is byte-stable regardless of the caller's shell (the IaC in ops/gcp/gcs-usage
+# generates the Cloud Scheduler body from `PIN=1 DRY=1`). Without PIN, the env
+# knobs below and the passthrough list stay live for manual one-off submits.
+pin = bool(os.environ.get("PIN"))
+g = (lambda k, d="": d) if pin else os.environ.get
+v = {
+    # 100 on the 256G node (was 86 on 128G: DuckDB at its cap plus ~40GB of
+    # unaccounted process memory must fit the container — 100 and 90 inside
+    # 124GB both got kernel-OOM-killed, exit 137, as the dir-group count grew).
+    # Measured 2026-09-06 REPROC on highmem-32: peak RSS 141.7GB at 100GB.
+    "DUCKDB_MEM": g("DUCKDB_MEM", "100GB"),
+    # access ingest runs before (not concurrent with) the webdata step, so
+    # it can take a big slice of the 128G node; 24GB OOM'd on a row-heavy
+    # 53GB chunk (2026-08-23)
+    "DUCKDB_MEM_ACCESS": g("DUCKDB_MEM_ACCESS", "48GB"),
+    "DUCKDB_THREADS": g("DUCKDB_THREADS", "16"),
+    "DATA_BUCKET": g("DATA_BUCKET", "oa-gcs-usage-dvx"),
+    # stage inputs to the local-SSD mount (see disks below); STAGE_DIR="" disables
+    "STAGE_DIR": g("STAGE_DIR", "/stage"),
+    # Slack digest target: chat.postMessage (bot token) so per-message avatars apply
+    "SLACK_CHANNEL": g("SLACK_CHANNEL", "C0BNWAASXFW"),  # #gcs-usage
+    # failure/healthcheck alerts go to #gcs-usage-alerts, not the digest channel
+    "SLACK_ALERT_CHANNEL": g("SLACK_ALERT_CHANNEL", "C0BTUNT3B5Z"),
+    # CF account for index-sync's `wrangler d1 execute` (token is a secretVariable)
+    "CLOUDFLARE_ACCOUNT_ID": g("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
+}
+v = {k: s for k, s in v.items() if s}
+if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
+    for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "TIERS_ONLY", "SWEEP", "SWEEP_DATE", "SWEEP_BUCKETS", "USER",
+              "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS", "GATE", "GATE_K", "GATE_P", "GATE_THREADS", "GATE_HIST",
+              "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
+              "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
+        if k in os.environ:
+            v[k] = os.environ[k]
+    if os.environ.get("WEEKLY") == "1":  # force the Monday weekly report (specs/weekly-discord-report.md)
+        v["WEEKLY"] = "1"
+print(json.dumps(v))
+EOF
+}
+
+# Batch only auto-creates host mount dirs under /mnt/disks — mount there, then map
+# into the container at the /gcs/<bucket> paths run.sh expects.
+BUCKETS_PY='["marin-us-east1", "marin-us-east5", "marin-us-central1",
+             "marin-us-central2", "marin-eu-west4", "marin-us-west4",
+             "oa-gcs-usage-dvx"]'
+
+volumes() {
+  python3 - <<EOF
+import json
+print(json.dumps([
+    {"gcs": {"remotePath": b}, "mountPath": f"/mnt/disks/gcs/{b}", "mountOptions": ["--implicit-dirs"]}
+    for b in $BUCKETS_PY
+]))
+EOF
+}
+
+container_volumes() {
+  python3 - <<EOF
+import json
+print(json.dumps([f"/mnt/disks/gcs/{b}:/gcs/{b}:rw" for b in $BUCKETS_PY]
+                 + ["/mnt/disks/stage:/stage:rw"]))
+EOF
+}
+
+spec=$(mktemp)
+# Every secretVariable must be readable by the job SA or Batch refuses to start
+# the job; the two Discord ones (the #gcs-usage app-owned webhook + Marin Bot's
+# token, both in this project) were granted 2026-09-14. The daily cron body is
+# generated from this spec via `PIN=1 DRY=1` (ops/gcp/gcs-usage) and carries the same set.
+cat > "$spec" <<EOF
+{
+  "taskGroups": [{
+    "taskCount": 1,
+    "taskSpec": {
+      "runnables": [{"container": {"imageUri": "$IMAGE", "volumes": $(container_volumes)}}],
+      "computeResource": {"cpuMilli": 8000, "memoryMib": $MEMORY_MIB},
+      "maxRetryCount": 0,
+      "maxRunDuration": "${MAX_RUN_SECONDS:-21600}s",
+      "volumes": $(volumes | python3 -c 'import json,sys; v=json.load(sys.stdin); v.append({"deviceName": "stage", "mountPath": "/mnt/disks/stage"}); print(json.dumps(v))'),
+      "environment": {
+        "variables": $(vars),
+        "secretVariables": {
+          "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/gcs-alert-slack-bot-token/versions/latest",
+          "SLACK_WEBHOOK": "projects/$PROJECT/secrets/gcs-alert-slack-webhook/versions/latest",
+          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
+          "GCS_USAGE_TOKEN": "projects/$PROJECT/secrets/gcs-sheet-sync-token/versions/latest",
+          "DISCORD_GCS_USAGE_WEBHOOK": "projects/$PROJECT/secrets/gcs-usage-discord-webhook/versions/latest",
+          "DISCORD_BOT_TOKEN": "projects/$PROJECT/secrets/marin-discord-bot-token/versions/latest"
+        }
+      }
+    }
+  }],
+  "allocationPolicy": {
+    "instances": [{
+      "policy": {
+        "machineType": "$MACHINE",
+        "bootDisk": {"type": "pd-balanced", "sizeGb": "100"},
+        "disks": [{"newDisk": {"type": "local-ssd", "sizeGb": "$LOCAL_SSD_GB"}, "deviceName": "stage"}]
+      }
+    }],
+    "serviceAccount": {"email": "$SA"},
+    "location": {"allowedLocations": ["regions/$REGION"]}
+  },
+  "logsPolicy": {"destination": "CLOUD_LOGGING"}
+}
+EOF
+
+# DRY=1: print the job spec (e.g. for the Cloud Scheduler daily body) instead of submitting
+if [ -n "${DRY:-}" ]; then cat "$spec"; rm -f "$spec"; exit 0; fi
+gcloud batch jobs submit "$JOB_ID" --project "$PROJECT" --location "$REGION" --config "$spec" >&2
+rm -f "$spec"
+echo "$JOB_ID"
