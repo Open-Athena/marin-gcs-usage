@@ -1,36 +1,19 @@
-name: Build @rdub/treemap dist branch
+name: Build @disk-tree/react dist branch
 
-# Builds a SHA-pinnable `dist/treemap` branch for `packages/treemap/` (the
-# `@rdub/treemap` core) so external consumers (file-tree, marin's site, etc.)
-# can `pnpm add github:runsascoded/disk-tree#<dist-sha>` without pulling the
-# whole monorepo. Uses runsascoded/npm-dist in `package_dir` mode, which packs
-# the one package and flattens it to the dist branch ROOT — so the git dep
-# resolves to `@rdub/treemap` directly. Source-first (no compile — the package
-# ships .ts; `pnpm pack` respects its `files`).
+# Builds a SHA-pinnable dist branch for `packages/react/` so external
+# consumers (marin's site, etc.) can `pnpm add
+# github:runsascoded/disk-tree#<sha>` without pulling the whole
+# monorepo. Uses runsascoded/npm-dist in monorepo mode (`pkgs:
+# packages/react`), source-first (no compile — the package ships .ts).
 #
-# Branch-name convention: multi-target repos namespace their dist branches
-# under `dist/<pkg>` (here `dist/treemap`). Slashed dist branches are fine
-# downstream — `git fetch/checkout/orphan` accept them, and consumers pin the
-# resolved SHA (`github:…#<sha>`), never the branch name. Git's one rule: a
-# `dist/<x>` ref can't coexist with a bare `dist` branch (dir-vs-file). This
-# repo's legacy `dist` branch (the pre-split `@disk-tree/react` build) is
-# renamed to `dist/react` for that reason; its old SHA pins keep resolving.
-#
-# `@rdub/treemap` has no workspace dependencies (only peers), so its packed
-# artifact is self-contained. `@disk-tree/react` (packages/react) is NOT
-# dist-built: it depends on `@rdub/treemap` via `workspace:*`, which can't
-# resolve outside the monorepo; nothing external consumes its disk widgets. If
-# that changes, add a job packing it to `dist/react` that rewrites the
-# workspace dep to a `dist/treemap` SHA via npm-dist's `pkg_kvs`.
-#
-# Fires on any push to main that touches packages/treemap/, and on manual
-# dispatch for one-off rebuilds.
+# Fires on any push to main that touches packages/react/, and on
+# manual dispatch for one-off rebuilds.
 
 on:
   push:
     branches: [main]
     paths:
-      - "packages/treemap/**"
+      - "packages/react/**"
       - ".github/workflows/build-dist.yml"
   workflow_dispatch:
     inputs:
@@ -45,11 +28,12 @@ jobs:
       contents: write
     uses: runsascoded/npm-dist/.github/workflows/build-dist.yml@v1
     with:
-      # Package at the dist branch ROOT → `github:runsascoded/disk-tree#<dist-sha>`
-      # resolves to `@rdub/treemap`. (`pnpm pack` carries `src/` + README per the
-      # package's `files`, so no `preserve_dirs`/`extra_files` needed here.)
-      package_dir: packages/treemap
-      dist_branch: dist/treemap
+      pkgs: packages/react
       source_ref: ${{ inputs.source_ref }}
-      # The package's `build` script just typechecks (source-first, no emit);
-      # npm-dist runs it to smoke-test the source before publishing.
+      # Source-first — `main`/`types` in package.json point at src/*.ts,
+      # so the built branch keeps `src/` as-is next to the transformed
+      # package.json.
+      source_dirs: src
+      extra_files: README.md
+      # The package's `build` script just typechecks (source-first, no
+      # emit); npm-dist runs it to smoke-test the source before publishing.
