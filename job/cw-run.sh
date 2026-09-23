@@ -48,6 +48,7 @@ export D1_DB_NAME=${D1_DB_NAME:-oa-cw-s3-usage-db}
 export INDEX_VARIANTS=${INDEX_VARIANTS:-path}                           # no user-sorted tiers here
 export SITE_URL=${SITE_URL:-https://cw-s3.oa.dev}
 export SNAPSHOTS_SUBDIR=${SNAPSHOTS_SUBDIR:-cw}                          # snapshots/cw/ (site/wrangler.toml says the same)
+export LAYER2_PREFIX=${LAYER2_PREFIX:-'cw-l2/{scan}/'}   # this store's layer-2 dir (`dt-cloud publish-r2 -l`; the base's is listing/{scan}/index/)
 export WARM_PATHS=${WARM_PATHS:-",marin-us-east-02a,marin-us-east-02a/marin,marin-us-east-02a/tmp,marin-us-east-02a/iris,hero-checkpoints,hero-checkpoints/tmp,hero-checkpoints/marin"}
 
 # Every bucket in the scan; the primary first. The scheduler body sets only
