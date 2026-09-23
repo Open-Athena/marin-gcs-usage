@@ -32,6 +32,10 @@ export interface Env {
   ACCESS_TEAM_DOMAIN?: string
   /** AUD tags of the Access apps whose edge JWTs we accept (gcs + cw). */
   ACCESS_AUD?: string
+  /** OIDC (our own Google client) — the ZT-free sign-in path on gcs. Set as
+   *  Pages secrets; see specs/oidc-cutover.md. Absent → `/auth/google` 503s. */
+  GOOGLE_CLIENT_ID?: string
+  GOOGLE_CLIENT_SECRET?: string
   STAFF_DOMAIN?: string
   /** Local dev only (`.dev.vars`): email the localhost dev identity acts as.
    *  Matters when the D1 binding is remote (writes land in the real ledger). */
