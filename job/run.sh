@@ -299,7 +299,7 @@ fi
 # first aggregation of a date and reused by any re-attribution run (REPROC,
 # ledger refreshes) — those then skip the 595M-row object scans entirely.
 # Colocated with the listing (immutable per date, same lifecycle).
-dt-cloud webdata -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
+dt-cloud path-index -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
   -c "/gcs/$DATA/listing/$DATE/dir-cache" \
   -P "/gcs/$DATA/$INDEX_PATH"
 dt-cloud rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
