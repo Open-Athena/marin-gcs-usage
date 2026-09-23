@@ -157,6 +157,22 @@ else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced (scan unlisted for the index reader)" >&2
 fi
 
+# 4b. Warm the site's subtree + diff caches for this scan (the colo cache, plus
+# the global KV tier once `CACHE_KV` is bound in site/wrangler.toml) so the
+# first viewer gets hits instead of a multi-second compute: the home page's
+# default requests — one subtree, the diff span chips and the previous-scan
+# pair — at the common canvas widths (`dt-cloud warm-cache`, which reads the
+# SITE_URL / SNAPSHOTS_SUBDIR exported above). cw-s3.oa.dev is whole-host
+# Access-gated, so auth is the CF Access service-token pair (or a site token);
+# skipped when neither is set. Never fatal.
+if { [ -n "${GCS_USAGE_TOKEN:+set}" ] || { [ -n "${CF_ACCESS_CLIENT_ID:+set}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:+set}" ]; }; } \
+   && [ "${REPROC:-0}" != "1" ]; then  # `:+set`: xtrace must not print the tokens
+  dt-cloud warm-cache -d "$SNAP_ID" -r "gs://$DATA/snapshots/cw" \
+    || echo "WARN: cache warm-up failed for $SNAP_ID" >&2
+else
+  echo "no warm-cache auth (GCS_USAGE_TOKEN, or CF_ACCESS_CLIENT_ID+SECRET) — skipping cache warm-up" >&2
+fi
+
 # 5. Converge the monthly Shape-C digest thread in Slack (specs/cw-slack-
 # digest.md): the OP + one reply per scan, into #cw-s3-usage. Only when
 # SLACK_BOT_TOKEN + SLACK_CHANNEL are set — Shape C needs the Web API's
