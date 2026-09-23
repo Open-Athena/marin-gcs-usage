@@ -36,6 +36,10 @@ export interface Env {
    *  Pages secrets; see specs/oidc-cutover.md. Absent → `/auth/google` 503s. */
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
+  /** Email-code fallback (ZT One-Time-PIN replacement) — Resend sender + `from`
+   *  address (`Name <addr@verified-domain>`). Absent → `/auth/email/*` 503s. */
+  RESEND_API_KEY?: string
+  MAIL_FROM?: string
   STAFF_DOMAIN?: string
   /** Local dev only (`.dev.vars`): email the localhost dev identity acts as.
    *  Matters when the D1 binding is remote (writes land in the real ledger). */
