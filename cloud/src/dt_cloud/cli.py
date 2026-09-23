@@ -2862,3 +2862,31 @@ def weekly(date: str | None, top: int, dry_run: bool, prior: str | None, root: s
         return
     mid = wk.post(webhook, text)
     err(f"weekly: posted {mid} ({len(text)} chars)")
+
+
+@main.command("publish-r2")
+@option("-b", "--bucket", "src_bucket", default=None, help="Source GCS scan store (default $DATA_BUCKET)")
+@option("-n", "--dry-run", is_flag=True, help="List the keys that would be copied; copy nothing")
+@option("-p", "--prefix", "prefixes", multiple=True, help="Key prefix to publish (repeatable; default: the scan's served subset — snapshots/<subdir>/<scan>/ + cw-l2/<scan>/)")
+@option("-s", "--subdir", default="cw", help="Snapshots subdir of this store (default cw)")
+@option("-w", "--workers", default=8, type=int, help="Concurrent HEADs/uploads (default 8)")
+@argument("scan")
+def publish_r2(src_bucket: str | None, dry_run: bool, prefixes: tuple[str, ...], subdir: str, workers: int, scan: str) -> None:
+    """Copy one scan's served artifacts GCS → R2 (specs/r2-serving-migration.md).
+
+    The pipeline's final "publish to the serving cloud" stage: snapshot JSONs +
+    the layer-2 dir (canonical parquets + `index/<gen>/` tiers, `.groups.json`
+    manifests, age pyramids). Idempotent — same size + md5 already in R2 is
+    skipped — so it doubles as the backfill over old scans. R2 via the env:
+    R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (`s3` extra).
+    """
+    from . import publish as pub
+
+    pub.publish(
+        scan,
+        src_bucket=src_bucket or pub.DATA_BUCKET,
+        prefixes=list(prefixes) or None,
+        subdir=subdir,
+        dry_run=dry_run,
+        workers=workers,
+    )
