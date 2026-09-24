@@ -65,7 +65,7 @@ export const STORES: Store[] = [
     wall: {
       restrict: 'Access is limited to marin contributors and invited collaborators.',
       signIn: 'Sign in',
-      how: 'Use Google with any allow-listed account (Stanford, personal, or Open Athena), or pick one-time PIN for a code emailed to any allow-listed address (no Google account needed). Invited guests can also use a personal share link.',
+      how: 'Use Google with any allow-listed account (Stanford, personal, or Open Athena), or have a one-time code emailed to any allow-listed address (no Google account needed). Invited guests can also use a personal share link.',
     },
   },
 ]

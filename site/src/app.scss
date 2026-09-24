@@ -657,6 +657,60 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
       &:hover { filter: brightness(1.08); }
       &:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     }
+    // <SignInPanel>: Google button (`.signin`, primary), then an emailed-code
+    // form and request-access for the non-Google tail. Left-aligned inputs,
+    // full-width controls, an "or" divider between the affordances.
+    .signin-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      text-align: left;
+      .signin { display: block; text-align: center; }
+      // The panel emits an empty <div class="signin-or">; draw the rule with a
+      // gradient and the "or" label as ::before, masked by the card background.
+      .signin-or {
+        text-align: center;
+        line-height: 1;
+        margin: 2px 0;
+        background: linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat;
+        &::before {
+          content: 'or';
+          display: inline-block;
+          padding: 0 10px;
+          background: var(--panel);
+          color: var(--ink-3);
+          font-size: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+      }
+      label { color: var(--ink-3); font-size: 13px; display: block; margin-bottom: 4px; }
+      input, textarea {
+        width: 100%;
+        box-sizing: border-box;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 9px 12px;
+        font: inherit;
+        font-size: 14px;
+        &:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
+      }
+      textarea { resize: vertical; min-height: 64px; }
+      button {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        color: var(--ink);
+        font-weight: 600;
+        font-size: 14px;
+        padding: 9px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        &:hover { border-color: var(--ink-3); }
+        &:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+      }
+    }
     .signin-how { color: var(--ink-3); font-size: 13px; margin: 18px 0 0; line-height: 1.5; }
   }
 }
