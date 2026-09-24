@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { AuthGate as Gate, deniedEmail, RequestAccessForm, SignInPanel, useForgetWhoami } from '@open-athena/auth/react'
 import { devIdentity, WHOAMI_SOURCE } from './auth'
 import { DEFAULT_STORE } from './stores'
@@ -24,8 +25,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
 // unfold on a `?denied=<email>` bounce, which also pre-fills the form with the
 // provider-verified address. All paths converge on the same app session. See
 // specs/oidc-cutover.md.
-function LoginWall() {
+//
+// Inside <Gate> the wall stands in for the page, so signing in just refetches
+// whoami (`onSignedIn={forget}`) and Google returns to the current URL. On the
+// standalone `/signin` page (`next` given — the inline "sign in" links from a
+// guest / expired session land there) both paths return to `next` instead.
+function LoginWall({ next }: { next?: string }) {
   const forget = useForgetWhoami()
+  const navigate = useNavigate()
   const denied = deniedEmail()
   return (
     <div className="authwall">
@@ -34,9 +41,10 @@ function LoginWall() {
         <p>{DEFAULT_STORE.desc}</p>
         <p className="restrict">{DEFAULT_STORE.wall.restrict}</p>
         <SignInPanel
-          googleUrl="/auth/google"
+          googleUrl={next ? `/auth/google?next=${encodeURIComponent(next)}` : '/auth/google'}
+          withNext={!next}
           emailAuth={{ startEndpoint: '/auth/email/start', verifyEndpoint: '/auth/email/code' }}
-          onSignedIn={forget}
+          onSignedIn={() => { forget(); if (next) navigate(next, { replace: true }) }}
           classNames={{ root: 'signin-panel', googleButton: 'signin', divider: 'signin-or' }}
         />
         <details className="signin-more" open={Boolean(denied)}>
@@ -49,4 +57,13 @@ function LoginWall() {
       </div>
     </div>
   )
+}
+
+/** `/signin?next=<path>` — the wall as a page, for the inline "sign in" links
+ *  (`signInUrl()`): a guest upgrading to a real identity, or a session that
+ *  expired mid-page. Same-origin paths only; anything else goes home. */
+export function SignInPage() {
+  const raw = new URLSearchParams(useLocation().search).get('next') ?? '/'
+  const next = raw.startsWith('/') && !raw.startsWith('//') ? raw : '/'
+  return <LoginWall next={next} />
 }

@@ -29,8 +29,10 @@ export const devIdentity = (): Whoami | null | undefined =>
     ? (forceWall ? null : { email: import.meta.env.VITE_DEV_EMAIL ?? 'dev@example.test' })
     : undefined
 
+/** Where the inline "sign in" links go: the edge tier's `/login`, or the app
+ *  tier's own `/signin` page (Google / emailed code), returning here after. */
 export const signInUrl = (): string =>
-  AUTH_MODE === 'edge' ? '/login' : `/auth/sso?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
+  AUTH_MODE === 'edge' ? '/login' : `/signin?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
 
 export interface Ident {
   email: string
