@@ -1,0 +1,57 @@
+# Move cw-s3.oa.dev off Cloudflare Zero Trust → `@open-athena/auth` OIDC + emailed codes
+
+**Status: P1 (site code, dormant) + D1 lineage written; P0 (Google client), P2 (secrets + migrations), P3 (verify on the dev stack), P4 (cutover deploy + Access app delete), P5 (Pulumi + job token) pending.** The cw-s3 twin of gcs's [`specs/done/oidc-cutover.md`](done/oidc-cutover.md) (on the `gcs` branch), whose "cw-s3 follow-up" section decided this on 2026-09-24: cw-s3 follows gcs off Zero Trust rather than keeping a hand-managed Access app outside the Pulumi stack.
+
+## Why
+
+Same two pressures as gcs, plus one of cw's own:
+
+1. **The Zero Trust app is the one Cloudflare resource `pulumi-cloudflare` 6.21 can't adopt** (`destinations` + auto-mirrored `self_hosted_domains` fail the provider's input validation on import-read). It is what blocks `pulumi up -s cw-s3`, and with it the R2 bucket + cache KV the R2 serving migration waits on ([`r2-serving-migration.md`](r2-serving-migration.md)).
+2. **Zero Trust's 50-seat cap** bit during the CoreWeave quota incident; a domain-wide policy (`openathena.ai` + `coreweave.com`) against a fixed seat pool is structurally wrong.
+3. **The job's warm-cache stage needs a machine identity.** Behind Access that means a service token + a `non_identity` policy (both modelled in `cf/`, neither created). Off Access it is the same personal agent token gcs already uses (`GCS_USAGE_TOKEN`, minted at `/api/token`), which `job/cw-run.sh` already accepts.
+
+## What differs from gcs
+
+gcs's cutover was surgical because its app gate already owned authorization (D1 allowlist + `@open-athena/auth` sessions) and Access only did the `/auth/sso` hand-off. cw-s3 is the other deployment shape: **whole-host edge gate, no session model** — `EDGE_TRUSTED=1`, no `SESSION_SECRET`, none of the auth package's D1 tables (`migrations/cw` carries only the mark & sweep lineage), the SPA built with `VITE_AUTH_MODE=edge` (identity from `/cdn-cgi/access/get-identity`, sign-in via `/login`), and the OA-vs-CoreWeave gate living in the Access policy itself. So on top of gcs's code, cw-s3 needs:
+
+- **The session model.** The auth package's D1 migrations (its `0001`–`0011`: grants, access log, access requests, disable/expiry, profiles, pending email-code auth, grant rotate) as `migrations/cw/0007`–`0017`, verbatim from the package at the pinned dist, headers noting the origin; plus `allowed_emails` (`0018`, gcs's `0008` minus the `admin_edits` table cw's `0004` already has) and `agent_tokens` (`0019`, gcs's `0011`) so `/api/token` works. `SESSION_SECRET` becomes a Pages secret.
+- **The domain policy, in-app.** `scopesFor` gains `VIEWER_DOMAINS` (comma-separated; cw sets `coreweave.com`): a sign-in from a listed domain gets the base scope with no allowlist row, exactly what the Access policy's email-domain include did. Staff (`STAFF_DOMAIN`) keep everything; anyone else needs an `allowed_emails` row, as on gcs. `ADMIN_EMAILS=1` (cw only: the `admin_emails` table exists here) makes `scopesFor` add `admin` for rows of cw's admin allowlist, replacing the `EDGE_TRUSTED`-only path in `isAdmin`, so session identities rank the same way edge identities did.
+- **The client flip is a build flag.** `VITE_AUTH_MODE` defaults to `edge` in `vite.config.ts`; the cutover deploy flips the default to `app` (whoami from `/api/auth/whoami`, sign-in at `/signin`). Until then the new Functions are dormant (503 without their secrets) and the wall is unchanged.
+- **`/api/token` mints the deployment's base scope** (`cw`), not the hard-coded `gcs`.
+- **The Google client is cw-s3's own** (per the auth repo's `specs/done/oauth-client-iac.md`: one client per deployment), registered for prod, the dev stack, and localhost.
+
+Unchanged from gcs and reused verbatim: `functions/_lib/{oidc,emailcode,devsession}.ts`, `functions/auth/google.ts` + `google/callback.ts`, `functions/auth/email/[[path]].ts`, the `SignInPanel` wall + `/signin` page + failure explanations, the `/auth` dev proxy + `PORT=` override.
+
+## Phases (gated steps flagged)
+
+**P0 — Google OAuth client (GATED — Ryan).** Not IaC-able. From the auth repo:
+```
+scripts/provision-oauth-client.mjs --project oa-internal-450019 \
+  --app-origin https://cw-s3.oa.dev --app-origin https://dev.oa-cw-s3-usage.pages.dev --app-origin http://localhost:3263 \
+  --redirect-uri https://cw-s3.oa.dev/auth/google/callback \
+  --redirect-uri https://dev.oa-cw-s3-usage.pages.dev/auth/google/callback \
+  --redirect-uri http://localhost:3263/auth/google/callback \
+  --pages-project oa-cw-s3-usage            # --run to store the secrets
+```
+Name it `cw-s3.oa.dev (marin-gcs-usage)`. The three origins are prod, the Pages preview deployment (`site/deploy --dev`), and the local full stack (`site/dev`, Vite on 3263 — the callback derives its origin from the request, so each origin's callback must be registered).
+
+**P1 — Site code (DONE, dormant).** Server: `_lib/auth.ts` (`GOOGLE_*`/`RESEND_*`/`VIEWER_DOMAINS`/`ADMIN_EMAILS` on `Env`, `edgeIdentity` only when `ACCESS_AUD` is set, the domain policy), the shared configs + Functions above, `api/token.ts` on `baseScope`. Client: `SignInPanel` wall with `/signin`, `devIdentity()` + the `oa_dev_session` marker, wall copy in `stores.ts`. Dev: `/auth` proxy, `PORT=`. All typecheck (`tsc -p functions`), unit tests cover the policy, and the built SPA is byte-identical in behaviour until the flag flips.
+
+**P2 — Secrets + D1 (GATED — Ryan).**
+- D1: `CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d npx wrangler d1 migrations apply oa-cw-s3-usage-db --remote` from `site/` (applies `0007`–`0019`; the mark & sweep tables are untouched). Must precede any deploy carrying the package bump: the newer grant store selects the `0013` columns.
+- Pages secrets on `oa-cw-s3-usage`, production **and** `--env preview` (the dev stack shares the D1, so it needs the same session key): `SESSION_SECRET` (fresh 32+ random bytes), `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (P0), `RESEND_API_KEY` (the shared send-only key from `$oa/.envrc`) + `MAIL_FROM="Open Athena <noreply@oa.dev>"`.
+- `site/.dev.vars`: the same five + `DEV_EMAIL`, for the local stack.
+
+**P3 — Verify off-prod.** `site/dev` (Vite 3263 + wrangler 3264, remote D1): `/?wall` shows Google + emailed code; Google sign-in from an OA and a `coreweave.com` account mints a session with `cw` (+ `admin` for staff / `admin_emails` rows); a non-listed Gmail bounces to `?denied=` and unfolds request-access; the emailed code signs in a non-Google address; `/api/token` mints a `cw`-scoped bearer that `dt-cloud` accepts. Then `site/deploy --dev` and repeat on `dev.oa-cw-s3-usage.pages.dev` (still behind Access until P4, which is fine: the edge JWT and the app session coexist).
+
+**P4 — Cutover (GATED — deploy).** Flip `vite.config.ts`'s `VITE_AUTH_MODE` default to `app`; drop `EDGE_TRUSTED` + `ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` from `wrangler.toml` (both envs); delete `functions/login.ts` and `functions/auth/sso.ts`. `site/deploy`. Re-verify both sign-in paths on cw-s3.oa.dev, then Ryan deletes the "CoreWeave usage (cw-s3.oa.dev)" Access app `4c463052` in the Zero Trust dashboard (pre-delete JSON saved first). Verify from outside: `/` serves the shell without an Access 302, `/data/*` and `/api/*` 401 without a session.
+
+**P5 — Pulumi + job token.** `cf/__main__.py`: drop `access=` and `service_token=` from the cw-s3 `Store` and the `access-*` `importIds`; the stack then adopts Pages/domain/CNAME/D1 and creates the KV + R2 bucket/token — the `pulumi up` step 1 of the R2 checklist. Mint a personal agent token on cw-s3.oa.dev, store it in Secret Manager as `cw-s3-usage-token`, expose it to the job as `GCS_USAGE_TOKEN` (the 4b warm-cache stage already prefers it); the `cw-s3-access-client-*` Secret Manager entries in the R2 checklist are no longer needed.
+
+**Sequencing option worth taking now:** P5's Pulumi half doesn't actually depend on P4. Excluding the Access pair from the cw-s3 stack today unblocks `pulumi up` (KV + R2) immediately, and the Access app is deleted by hand after P4 exactly as gcs's was. The stack never needs to have modelled it.
+
+## Open
+
+- `coreweave.com` viewers: Google Workspace or not, the emailed code covers them either way; no allowlist rows needed.
+- One Tap: parked, same as gcs (opt-in in the auth package, after the cutover).
+- `cw-s3-next` (the disk-tree `cloud` lineage + config delta): cherry-pick these commits across once they land here; its auth files differ from cw-s3 only by the `PUBLIC_READ` seam.
