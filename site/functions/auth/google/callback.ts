@@ -14,5 +14,5 @@ import { oidcConfig } from '../../_lib/oidc.js'
 export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const cfg = oidcConfig(ctx.env, ctx.request)
   if (!cfg) return new Response('OIDC not configured\n', { status: 503 })
-  return markDevSession(await oidcCallback(cfg)({ request: ctx.request }), ctx.request)
+  return markDevSession(await oidcCallback(cfg)({ request: ctx.request }), ctx.env)
 }
