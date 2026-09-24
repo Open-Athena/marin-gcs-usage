@@ -3,15 +3,19 @@
 Written 2026-08-28 after splitting cw-s3.oa.dev onto its own Pages project by
 hand (~12 API/CLI calls across two tokens). That exercise *is* the argument.
 
-**Status (2026-09-22): import-ready draft built, not applied.** The Pulumi
-program lives at `~/c/oa/ops/cf/gcs-usage/` (untracked in `ops`; project
-`gcs-usage-cf`, sibling to the GCP `gcs-usage` batch stack): a marin-agnostic
-`CfnDashboard` component (`cfn_dashboard.py`) + thin per-stack wiring
-(`__main__.py`). It's the CF twin of `specs/batch-iac.md` — authored,
-dep-resolved (`pulumi-cloudflare` 6.21.0), and validated under Pulumi mocks for
-both stacks (all 7 children register; the `importIds` adopt path constructs).
-`pulumi login`/`up` are prod-gated (the §Runbook below). Nothing has touched
-live CF.
+**Status (2026-09-24): the `gcs` stack is live and at empty preview; `cw-s3`
+is import-ready but still blocked on its Zero Trust app.** The Pulumi program
+lives at `cf/` in this repo (project `gcs-usage-cf`, sibling to the GCP
+`gcs-usage` batch stack): a marin-agnostic `CfnDashboard` component
+(`cfn_dashboard.py`) + thin per-stack wiring (`__main__.py`). It's the CF twin
+of `specs/batch-iac.md`. gcs.oa.dev moved off Zero Trust on 2026-09-24
+(`specs/done/oidc-cutover.md`), which removed the one resource that wouldn't import
+under `pulumi-cloudflare` v6; the gcs stack then adopted Pages project, custom
+domain, CNAME, D1 and the cache KV in place (`pulumi up -s gcs` with the
+`CF_IAC_TOKEN` user token: 2 created, 5 imported, 0 errors; `importIds`
+dropped afterwards; `pulumi preview -s gcs` = 7 unchanged). cw-s3 keeps its
+real Access app, so its stack either waits for the same cutover or excludes
+the Access pair (see the cw-s3 follow-up in `oidc-cutover.md`).
 
 ## Where things are deployed today
 
