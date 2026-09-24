@@ -2,6 +2,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
+// Ports: `devPort` in package.json (vite), `PORT` env overrides (a second gcs
+// dev stack, or when another worktree already holds 3253); wrangler pages dev
+// (the Functions) is always the next port up — `./dev` derives it the same way.
+const PORT = Number(process.env.PORT ?? JSON.parse(readFileSync('package.json', 'utf8')).devPort)
+const WRANGLER = `http://localhost:${PORT + 1}`
+
 // dev only: serve a locally-generated `tmp/series.json` (from `dt-cloud series
 // -r http://localhost:3254/data -o tmp/series.json`) at /data/series.json, so
 // the scoped size chart can be previewed before the index is published to the
@@ -21,7 +27,7 @@ const devSeriesIndex = {
 export default defineConfig({
   plugins: [react(), devSeriesIndex],
   server: {
-    port: 3253,
+    port: PORT,
     host: true,
     // Trust hosts unconditionally — personal dev server on a trusted tailnet.
     // (`VITE_ALLOWED_HOSTS=.rbw.sh` can't cover the bare MagicDNS name `m3`.)
@@ -30,9 +36,14 @@ export default defineConfig({
     // to the local `wrangler pages dev` (run it on :3254 with GCS HMAC creds in
     // .dev.vars). Both /data and /v1/files now read live from the bucket.
     proxy: {
-      '/data': 'http://localhost:3254',
-      '/v1/files': 'http://localhost:3254',
-      '/api': 'http://localhost:3254',
+      '/data': WRANGLER,
+      '/v1/files': WRANGLER,
+      '/api': WRANGLER,
+      // Sign-in Functions (`/auth/google*`, `/auth/email/*`, `/auth/sso`). The
+      // Host header is passed through, so the OIDC callback resolves to this
+      // origin (`http://localhost:<PORT>/auth/google/callback`) — that URI must
+      // be registered on the Google client for local sign-in to work.
+      '/auth': WRANGLER,
     },
   },
   // The workspace-linked `@rdub/file-tree` calls `useLocation` etc. — force a

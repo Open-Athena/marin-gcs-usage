@@ -36,8 +36,10 @@ for arg in "$@"; do
   esac
 done
 
-# Ports: `devPort` in package.json (vite) and the next one (wrangler).
-PORT=$(node -p "require('./package.json').devPort")
+# Ports: `devPort` in package.json (vite) and the next one (wrangler). `PORT=…`
+# overrides (vite.config.ts reads the same env, so its proxy follows).
+PORT=${PORT:-$(node -p "require('./package.json').devPort")}
+export PORT
 WPORT=$((PORT + 1))
 DB=oa-gcs-usage-auth
 
