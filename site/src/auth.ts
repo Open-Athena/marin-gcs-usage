@@ -1,14 +1,14 @@
 // Identity plumbing (@open-athena/auth): where whoami comes from, per host.
 //
 // gcs.oa.dev is public shell + app-gated data — identity is the app session
-// (`/api/auth/whoami`), minted at `/auth/sso` (CF Access as SSO IdP) or by
-// redeeming a `?key=` share link.
+// (`/api/auth/whoami`), minted by our own Google OIDC client (`/auth/google`),
+// an emailed code (`/auth/email/*`), or by redeeming a `?key=` share link.
 import { displayName, useForgetWhoami, useWhoami, type Whoami, type WhoamiSource } from '@open-athena/auth/react'
 
 // Deployment seam (specs/denovo-factor.md): the whoami source is a build-time
 // flag. `edge` = the whole host sits behind a CF Access gate (cw-s3.oa.dev:
 // `/cdn-cgi/access/get-identity`, sign-in bounces through `/login`); `app`
-// (default) = the app session (`/api/auth/whoami`, minted at `/auth/sso`).
+// (default) = the app session (`/api/auth/whoami`, minted at `/signin`).
 export const AUTH_MODE: 'app' | 'edge' = import.meta.env.VITE_AUTH_MODE === 'edge' ? 'edge' : 'app'
 export const WHOAMI_SOURCE: WhoamiSource = { kind: AUTH_MODE }
 

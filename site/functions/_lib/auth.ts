@@ -1,25 +1,23 @@
 /**
- * One gate for the whole site (`@open-athena/auth`, Tier 2), plus the
- * transition shim that keeps both hosts working while the CF Access topology
- * moves from "edge-gate the whole host" to "Access is an SSO IdP on
- * `/auth/sso`; the app gate authorizes everything else".
+ * One gate for the whole site (`@open-athena/auth`, Tier 2).
  *
  * Identity sources, in the order `requireScope` tries them:
  *
- *  1. `Cf-Access-Jwt-Assertion` header — present on any request that came
- *     through a CF Access edge gate — today only `/auth/sso` (the SSO hand-off;
- *     the CoreWeave dashboard is its own deployment with its own Access app).
+ *  1. `Cf-Access-Jwt-Assertion` header — only on a deployment that sits behind
+ *     a CF Access edge gate (`ACCESS_AUD` set: the CoreWeave dashboard, its own
+ *     deployment with its own Access app). gcs.oa.dev has no Access app: its
+ *     sessions are minted by our own Google OIDC client (`/auth/google`) or an
+ *     emailed code (`/auth/email/*`) — see specs/oidc-cutover.md.
  *  2. The app session cookie / `Authorization: Bearer` / `?key=` — the
  *     `@open-athena/auth` gate, backed by D1. This is what makes named share
  *     links ("anyone with the link can view") possible: minted links redeem
  *     for a session that re-joins its grant row every request, so revocation
  *     is instant.
  *
- * Scopes: staff (`@openathena.ai`) get everything; anyone else who made it
- * through an Access gate (the Stanford whitelist) gets `gcs` only — same for
- * email sessions minted at `/auth/sso`, whose scopes re-derive from
- * `scopesFor` on every request. Grant sessions carry the scopes they were
- * minted with (normally just `gcs`).
+ * Scopes: staff (`@openathena.ai`) get everything; anyone else must be on the
+ * D1 `allowed_emails` whitelist to get `gcs` — email sessions re-derive that
+ * from `scopesFor` on every request, so removal bites instantly. Grant
+ * sessions carry the scopes they were minted with (normally just `gcs`).
  */
 import { type Auth, createGate, type Gate, hasScope } from '@open-athena/auth'
 import { verifyAccessJwt } from '@open-athena/auth/cf-access'
@@ -52,8 +50,8 @@ export interface Env {
    *  behind a CF Access edge gate (cw-s3.oa.dev). Every request then carries
    *  an edge JWT for an already-authorized viewer, so edge identities get the
    *  base scope without an `allowed_emails` row; staff and `admin_emails`
-   *  rows get `admin`. Unset (gcs.oa.dev): only `/auth/sso` is edge-gated
-   *  and the app gate authorizes everything else. */
+   *  rows get `admin`. Unset (gcs.oa.dev): no edge; the app gate authorizes
+   *  everything. */
   EDGE_TRUSTED?: string
   /** The scope every viewer of this deployment needs (`gcs` | `cw`). */
   BASE_SCOPE?: string
@@ -133,6 +131,8 @@ export async function isAdmin(env: Env, email: string): Promise<boolean> {
 }
 
 async function edgeIdentity(req: Request, env: Env): Promise<Identity | null> {
+  // Only a deployment behind an Access edge (ACCESS_AUD set) trusts the header.
+  if (!env.ACCESS_AUD) return null
   const jwt = req.headers.get('Cf-Access-Jwt-Assertion')
   if (!jwt) return null
   const teamDomain = env.ACCESS_TEAM_DOMAIN ?? TEAM_DOMAIN
