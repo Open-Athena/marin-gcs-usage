@@ -90,8 +90,8 @@ STAFF_DOMAIN = "openathena.ai"
 # Pages rule: `vars`, `d1_databases`, `kv_namespaces` are non-inheritable — the
 # moment ONE is overridden here, ALL must be restated, so this block mirrors
 # production and differs only where a line says so. Secrets are per-environment
-# too: set the preview copies in the dashboard (Settings → Variables and Secrets
-# → Preview) — `wrangler pages secret put` writes production only.
+# too: `wrangler pages secret put <NAME> --project-name oa-cw-s3-usage --env preview`
+# (the GCS HMAC pair is set there; `GCP_SA_KEY` is not — no sweep dispatch from dev).
 # ---------------------------------------------------------------------------
 [[env.preview.d1_databases]]
 binding = "DB"

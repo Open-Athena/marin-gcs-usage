@@ -21,8 +21,8 @@ if [ "${1:-}" = "--status" ]; then exec ./cf-status; fi
 # (the Access app covers `*.<project>.pages.dev`, so it is gated like prod). Same
 # D1 + vars as production unless `[env.preview]` in wrangler.toml overrides them
 # (Pages: overriding ANY of vars/d1/kv there means restating ALL of them), and
-# its own preview-scoped secrets (dashboard → Settings → Variables and Secrets →
-# Preview; `wrangler pages secret put` has no preview flag). The dev stack for
+# its own preview-scoped secrets (`wrangler pages secret put <NAME> --project-name
+# <project> --env preview`; the GCS HMAC pair is already there). The dev stack for
 # real-prod numbers on unmerged work; moves the local `dev` pointer, never `prod`,
 # and does not push (an unmerged branch is not the public face).
 push=true
