@@ -30,7 +30,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 // whoami (`onSignedIn={forget}`) and Google returns to the current URL. On the
 // standalone `/signin` page (`next` given — the inline "sign in" links from a
 // guest / expired session land there) both paths return to `next` instead.
-function LoginWall({ next }: { next?: string }) {
+function LoginWall({ next, error }: { next?: string; error?: string }) {
   const forget = useForgetWhoami()
   const navigate = useNavigate()
   const denied = deniedEmail()
@@ -40,6 +40,7 @@ function LoginWall({ next }: { next?: string }) {
         <h1>{DEFAULT_STORE.title}</h1>
         <p>{DEFAULT_STORE.desc}</p>
         <p className="restrict">{DEFAULT_STORE.wall.restrict}</p>
+        {error && <p className="signin-error" role="alert">{error}</p>}
         <SignInPanel
           googleUrl={next ? `/auth/google?next=${encodeURIComponent(next)}` : '/auth/google'}
           withNext={!next}
@@ -59,11 +60,28 @@ function LoginWall({ next }: { next?: string }) {
   )
 }
 
+/** `?error=` on `/signin` → what to tell the person. The Functions send the
+ *  adapter's reason (`google:<why>`) or `link` for a dead emailed link. */
+function signInError(code: string | null): string | undefined {
+  if (!code) return undefined
+  if (code === 'link') return 'That sign-in link is no longer valid — it may have expired or already been used. Ask for a fresh code below.'
+  if (code.startsWith('google:')) {
+    const why = code.slice('google:'.length)
+    const replay = /state|nonce/.test(why)
+    return replay
+      ? "Google sign-in didn't complete — the attempt expired or the page was reloaded mid-way. Try again."
+      : `Google sign-in didn't complete (${why}). Try again, or use an emailed code.`
+  }
+  return 'Sign-in didn\'t complete. Try again.'
+}
+
 /** `/signin?next=<path>` — the wall as a page, for the inline "sign in" links
  *  (`signInUrl()`): a guest upgrading to a real identity, or a session that
- *  expired mid-page. Same-origin paths only; anything else goes home. */
+ *  expired mid-page — and where the sign-in Functions land a failure
+ *  (`?error=`). Same-origin paths only; anything else goes home. */
 export function SignInPage() {
-  const raw = new URLSearchParams(useLocation().search).get('next') ?? '/'
+  const params = new URLSearchParams(useLocation().search)
+  const raw = params.get('next') ?? '/'
   const next = raw.startsWith('/') && !raw.startsWith('//') ? raw : '/'
-  return <LoginWall next={next} />
+  return <LoginWall next={next} error={signInError(params.get('error'))} />
 }

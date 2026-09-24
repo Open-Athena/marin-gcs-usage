@@ -14,5 +14,17 @@ import { oidcConfig } from '../../_lib/oidc.js'
 export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const cfg = oidcConfig(ctx.env, ctx.request)
   if (!cfg) return new Response('OIDC not configured\n', { status: 503 })
-  return markDevSession(await oidcCallback(cfg)({ request: ctx.request }), ctx.env)
+  const res = await oidcCallback(cfg)({ request: ctx.request })
+  // The adapter answers a failed exchange with a bare-text 400 (reason in
+  // `x-oidc-reason`: replayed/expired state, nonce mismatch, token exchange…).
+  // Land on the sign-in page with the reason instead, so the person sees the
+  // app's chrome, the explanation, and the buttons to try again.
+  if (res.status >= 400) {
+    const why = res.headers.get('x-oidc-reason') ?? `HTTP ${res.status}`
+    return new Response(null, {
+      status: 302,
+      headers: { location: `/signin?error=${encodeURIComponent(`google:${why}`)}`, 'cache-control': 'no-store' },
+    })
+  }
+  return markDevSession(res, ctx.env)
 }

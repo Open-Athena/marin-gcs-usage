@@ -28,7 +28,21 @@ export const onRequest = async (ctx: EmailCtx): Promise<Response> => {
   switch (seg) {
     case 'start': return handlers.start({ request, waitUntil: ctx.waitUntil })
     case 'code': return markDevSession(await handlers.verifyCode({ request }), ctx.env)
-    case 'verify': return markDevSession(await handlers.verifyLink({ request }), ctx.env)
+    case 'verify': {
+      const res = await handlers.verifyLink({ request })
+      // A dead link (expired, already used, unknown) bounces to `next` with no
+      // session — which just re-shows the wall with no explanation. Say why on
+      // the sign-in page instead. An allowlist denial keeps the adapter's own
+      // `?denied=<email>` bounce (the wall unfolds request-access for it).
+      const loc = res.headers.get('location') ?? '/'
+      if (res.status === 302 && !res.headers.get('set-cookie') && !loc.includes('?denied=')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `/signin?error=link&next=${encodeURIComponent(loc)}`, 'cache-control': 'no-store' },
+        })
+      }
+      return markDevSession(res, ctx.env)
+    }
     case 'poll': return handlers.poll({ request })
     default: return new Response('not found\n', { status: 404 })
   }
