@@ -8,10 +8,11 @@
  */
 import { oidcCallback } from '@open-athena/auth/oidc'
 import { type Ctx } from '../../_lib/auth.js'
+import { markDevSession } from '../../_lib/devsession.js'
 import { oidcConfig } from '../../_lib/oidc.js'
 
 export const onRequest = async (ctx: Ctx): Promise<Response> => {
   const cfg = oidcConfig(ctx.env, ctx.request)
   if (!cfg) return new Response('OIDC not configured\n', { status: 503 })
-  return oidcCallback(cfg)({ request: ctx.request })
+  return markDevSession(await oidcCallback(cfg)({ request: ctx.request }), ctx.request)
 }

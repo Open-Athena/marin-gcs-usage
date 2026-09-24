@@ -11,6 +11,7 @@
  * See specs/oidc-cutover.md.
  */
 import { type Ctx } from '../../_lib/auth.js'
+import { markDevSession } from '../../_lib/devsession.js'
 import { emailCodeFor } from '../../_lib/emailcode.js'
 
 /** Pages passes the full EventContext, which carries `waitUntil` (used to keep
@@ -26,8 +27,8 @@ export const onRequest = async (ctx: EmailCtx): Promise<Response> => {
   const seg = new URL(request.url).pathname.split('/').pop()
   switch (seg) {
     case 'start': return handlers.start({ request, waitUntil: ctx.waitUntil })
-    case 'code': return handlers.verifyCode({ request })
-    case 'verify': return handlers.verifyLink({ request })
+    case 'code': return markDevSession(await handlers.verifyCode({ request }), request)
+    case 'verify': return markDevSession(await handlers.verifyLink({ request }), request)
     case 'poll': return handlers.poll({ request })
     default: return new Response('not found\n', { status: 404 })
   }

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { AuthGate as Gate, SignInPanel, useForgetWhoami } from '@open-athena/auth/react'
-import { DEV_IDENTITY, WHOAMI_SOURCE } from './auth'
+import { devIdentity, WHOAMI_SOURCE } from './auth'
 import { DEFAULT_STORE } from './stores'
 
 // Gate the human-facing routes on an identity: the app session on gcs.oa.dev
@@ -11,7 +11,7 @@ import { DEFAULT_STORE } from './stores'
 // the og: meta from <head> regardless of which body we render.
 export function AuthGate({ children }: { children: ReactNode }) {
   return (
-    <Gate source={WHOAMI_SOURCE} devIdentity={DEV_IDENTITY} signIn={<LoginWall />}>
+    <Gate source={WHOAMI_SOURCE} devIdentity={devIdentity()} signIn={<LoginWall />}>
       {children}
     </Gate>
   )
