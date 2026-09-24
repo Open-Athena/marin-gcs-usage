@@ -711,7 +711,24 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
         &:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
       }
     }
-    .signin-how { color: var(--ink-3); font-size: 13px; margin: 18px 0 0; line-height: 1.5; }
+    .signin-how { color: var(--ink-3); font-size: 13px; margin: 14px 0 0; line-height: 1.5; }
+    // Request-access form + the how-to prose, folded behind a disclosure: the
+    // two sign-in affordances are the wall; this is the tail for everyone else.
+    .signin-more {
+      margin-top: 16px;
+      text-align: left;
+      summary {
+        cursor: pointer;
+        color: var(--ink-3);
+        font-size: 13px;
+        text-align: center;
+        list-style: none;
+        &::-webkit-details-marker { display: none; }
+        &::before { content: '▸ '; }
+        &:hover { color: var(--ink); }
+      }
+      &[open] summary { margin-bottom: 12px; &::before { content: '▾ '; } }
+    }
   }
 }
 

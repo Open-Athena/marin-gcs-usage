@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { AuthGate as Gate, SignInPanel, useForgetWhoami } from '@open-athena/auth/react'
+import { AuthGate as Gate, deniedEmail, RequestAccessForm, SignInPanel, useForgetWhoami } from '@open-athena/auth/react'
 import { devIdentity, WHOAMI_SOURCE } from './auth'
 import { DEFAULT_STORE } from './stores'
 
@@ -18,12 +18,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
 }
 
 // The wall: Google-first (one button, no typing), with an emailed-code fallback
-// for the non-Google tail (Yahoo / custom domains that can't Google-auth) and a
-// request-access form for anyone the D1 allowlist doesn't yet know. All three
-// converge on the same app session; a `?denied=<email>` bounce pre-fills the
-// request form with the provider-verified address. See specs/oidc-cutover.md.
+// for the non-Google tail (Yahoo / custom domains that can't Google-auth). The
+// request-access form + how-to prose fold behind a disclosure — they're the
+// tail for people the D1 allowlist doesn't yet know, not the wall itself — and
+// unfold on a `?denied=<email>` bounce, which also pre-fills the form with the
+// provider-verified address. All paths converge on the same app session. See
+// specs/oidc-cutover.md.
 function LoginWall() {
   const forget = useForgetWhoami()
+  const denied = deniedEmail()
   return (
     <div className="authwall">
       <div className="card">
@@ -33,11 +36,16 @@ function LoginWall() {
         <SignInPanel
           googleUrl="/auth/google"
           emailAuth={{ startEndpoint: '/auth/email/start', verifyEndpoint: '/auth/email/code' }}
-          requestAccess
           onSignedIn={forget}
           classNames={{ root: 'signin-panel', googleButton: 'signin', divider: 'signin-or' }}
         />
-        {DEFAULT_STORE.wall.how && <p className="signin-how">{DEFAULT_STORE.wall.how}</p>}
+        <details className="signin-more" open={Boolean(denied)}>
+          <summary>{denied ? `${denied} isn't on the list yet — request access` : "Don't have access?"}</summary>
+          <div className="signin-panel">
+            <RequestAccessForm defaultEmail={denied} />
+          </div>
+          {DEFAULT_STORE.wall.how && <p className="signin-how">{DEFAULT_STORE.wall.how}</p>}
+        </details>
       </div>
     </div>
   )
