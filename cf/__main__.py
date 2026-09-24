@@ -41,7 +41,7 @@ import_ids = cfg.get_object("importIds") or None
 STORES: dict[str, Store] = {
     # gcs.oa.dev — public shell + app-gated data; no Zero Trust at all since the
     # 2026-09-24 cutover (own Google OIDC client + emailed codes, D1 allowlist —
-    # specs/oidc-cutover.md). The Google OAuth client is console-managed (no API
+    # specs/done/oidc-cutover.md). The Google OAuth client is console-managed (no API
     # for Web-app clients); its secrets are `wrangler pages secret`s.
     "gcs": Store(
         pages_project="oa-gcs-usage",

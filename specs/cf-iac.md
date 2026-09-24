@@ -15,7 +15,7 @@ domain, CNAME, D1 and the cache KV in place (`pulumi up -s gcs` with the
 `CF_IAC_TOKEN` user token: 2 created, 5 imported, 0 errors; `importIds`
 dropped afterwards; `pulumi preview -s gcs` = 7 unchanged). cw-s3 keeps its
 real Access app, so its stack either waits for the same cutover or excludes
-the Access pair (see the cw-s3 follow-up in `oidc-cutover.md`).
+the Access pair (see the cw-s3 follow-up in `done/oidc-cutover.md`).
 
 ## Where things are deployed today
 

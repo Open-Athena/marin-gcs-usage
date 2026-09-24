@@ -4,7 +4,7 @@
  * and callback handlers must be given the *same* `redirectUri`, so it's derived
  * once here from the request origin — which makes prod (gcs.oa.dev), previews,
  * and localhost all work, provided each origin's callback is registered on the
- * Google client. See specs/oidc-cutover.md.
+ * Google client. See specs/done/oidc-cutover.md.
  */
 import { type Env, gateFor } from './auth.js'
 

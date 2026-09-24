@@ -4,7 +4,7 @@
  * 302 back to `?next`. Authenticated-but-not-on-the-allowlist 302s to
  * `/?denied=<email>`. This is the whole ZT-free identity path; everything
  * downstream (gate, D1, sessions, share links) is unchanged. See
- * specs/oidc-cutover.md.
+ * specs/done/oidc-cutover.md.
  */
 import { oidcCallback } from '@open-athena/auth/oidc'
 import { type Ctx } from '../../_lib/auth.js'

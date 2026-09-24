@@ -65,7 +65,7 @@ class Store:
     domain: str                       # custom domain (→ <pages_project>.pages.dev)
     d1_name: str
     # Zero Trust Access gate, or None when the deployment does its own identity
-    # (gcs.oa.dev: own Google OIDC client + emailed codes — specs/oidc-cutover.md).
+    # (gcs.oa.dev: own Google OIDC client + emailed codes — specs/done/oidc-cutover.md).
     access: AccessApp | None = None
     kv_name: str | None = None        # bind a CACHE_KV namespace, or None
     # R2 serving (cw's specs/r2-serving-migration.md; the base's r2.rbw.sh

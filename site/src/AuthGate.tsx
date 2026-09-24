@@ -24,7 +24,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 // tail for people the D1 allowlist doesn't yet know, not the wall itself — and
 // unfold on a `?denied=<email>` bounce, which also pre-fills the form with the
 // provider-verified address. All paths converge on the same app session. See
-// specs/oidc-cutover.md.
+// specs/done/oidc-cutover.md.
 //
 // Inside <Gate> the wall stands in for the page, so signing in just refetches
 // whoami (`onSignedIn={forget}`) and Google returns to the current URL. On the

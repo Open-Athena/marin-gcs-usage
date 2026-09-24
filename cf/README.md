@@ -35,7 +35,7 @@ GCP job stack carries the one broad-IAM caveat; see `../../ops/gcp/gcs-usage/`.)
 - `cloudflare.ZeroTrustAccessApplication` + `ZeroTrustAccessPolicy` — the Access
   gate, only when a store sets `access` (cw-s3: whole host, policy = OA +
   coreweave.com email domains). gcs has **no** Access app since the 2026-09-24
-  cutover to its own Google OIDC client + emailed codes (`../specs/oidc-cutover.md`);
+  cutover to its own Google OIDC client + emailed codes (`../specs/done/oidc-cutover.md`);
   that also removed the one resource pulumi-cloudflare 6.21 couldn't import
   (`destinations` + auto-mirrored `self_hosted_domains`).
 - `cloudflare.D1Database` — the database resource (migrations stay with the app).

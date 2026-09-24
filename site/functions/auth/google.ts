@@ -4,7 +4,7 @@
  * (`google/callback.ts`) mints the *same* app session `sso.ts` used to, so the
  * gate, D1 allowlist, scopes, and share links are all unchanged. Reads `?next`
  * exactly like `/auth/sso` did. Dormant until the Google client secrets are set
- * — see specs/oidc-cutover.md.
+ * — see specs/done/oidc-cutover.md.
  */
 import { oidcStart } from '@open-athena/auth/oidc'
 import { type Ctx } from '../_lib/auth.js'

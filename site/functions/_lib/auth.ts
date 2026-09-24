@@ -7,7 +7,7 @@
  *     a CF Access edge gate (`ACCESS_AUD` set: the CoreWeave dashboard, its own
  *     deployment with its own Access app). gcs.oa.dev has no Access app: its
  *     sessions are minted by our own Google OIDC client (`/auth/google`) or an
- *     emailed code (`/auth/email/*`) — see specs/oidc-cutover.md.
+ *     emailed code (`/auth/email/*`) — see specs/done/oidc-cutover.md.
  *  2. The app session cookie / `Authorization: Bearer` / `?key=` — the
  *     `@open-athena/auth` gate, backed by D1. This is what makes named share
  *     links ("anyone with the link can view") possible: minted links redeem
@@ -31,7 +31,7 @@ export interface Env {
   /** AUD tags of the Access apps whose edge JWTs we accept (gcs + cw). */
   ACCESS_AUD?: string
   /** OIDC (our own Google client) — the ZT-free sign-in path on gcs. Set as
-   *  Pages secrets; see specs/oidc-cutover.md. Absent → `/auth/google` 503s. */
+   *  Pages secrets; see specs/done/oidc-cutover.md. Absent → `/auth/google` 503s. */
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   /** Email-code fallback (ZT One-Time-PIN replacement) — Resend sender + `from`

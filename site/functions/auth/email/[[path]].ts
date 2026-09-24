@@ -8,7 +8,7 @@
  *   GET  /auth/email/poll    -> original tab polls for the link being clicked
  * All converge on the same `gate.signIn` as Google/CF-Access — same D1 allowlist,
  * sessions, scopes. Dormant (503) until RESEND_API_KEY + MAIL_FROM are set.
- * See specs/oidc-cutover.md.
+ * See specs/done/oidc-cutover.md.
  */
 import { type Ctx } from '../../_lib/auth.js'
 import { markDevSession } from '../../_lib/devsession.js'
