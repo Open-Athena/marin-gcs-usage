@@ -1,0 +1,15 @@
+# Stacks `gcs` + `cw-s3` are initialized in the backend; adoption `up` is
+# user-gated (see ../specs/cf-iac.md and README.md).
+# Distinct project name from gcp/gcs-usage so the two don't collide in the
+# shared gs://oa-pulumi backend (keyed by <project>/<stack>).
+name: gcs-usage-cf
+description: Cloudflare resources for the GCS-usage + CoreWeave dashboards — Pages project shell, custom domain + oa.dev CNAME, Zero Trust Access app/policy, D1, and (gcs) KV. Deployments + app config stay with site/deploy (wrangler).
+backend:
+  url: gs://oa-pulumi
+runtime:
+  name: python
+  options:
+    toolchain: uv
+config:
+  gcs-usage-cf:oaDevZoneId:
+    description: "Cloudflare zone id for oa.dev (holds the gcs.oa.dev / cw-s3.oa.dev CNAMEs)"

@@ -1,0 +1,13 @@
+secretsprovider: gcpkms://projects/oa-internal-450019/locations/global/keyRings/ops/cryptoKeys/pulumi
+encryptedkey: CiQAqKOWSFg1RxWOw+z3IycCWkyuUHqOGpbXRTZW2NwWU51WJLMSSAAw+4V0Y7dVUeF5Wm4G0d42EjChzjw3kRDye61UR5KYj8wJjfcvtkcER/QnOsm2h5ikGeqJfi1XtIypjVDbR37xh/dhen5gTw==
+config:
+  gcs-usage-cf:oaDevZoneId: 169959d6aafcbfd77764b8efafa3a509
+  gcs-usage-cf:importIds:
+    pages: 74981a43be0de7712369306c7b19133d/oa-gcs-usage
+    domain: 74981a43be0de7712369306c7b19133d/oa-gcs-usage/gcs.oa.dev
+    cname: 169959d6aafcbfd77764b8efafa3a509/0871cecda5e40cd1e29461a8b4cb1204
+    d1: 74981a43be0de7712369306c7b19133d/e52398b7-5538-4bc4-83db-3355a1b5ef9a
+    kv: 74981a43be0de7712369306c7b19133d/757702a080a549418f16a5ae096529c4
+    access-policy: 74981a43be0de7712369306c7b19133d/0fc07581-d67a-4d17-a084-99577400898b
+    access-app: accounts/74981a43be0de7712369306c7b19133d/e18304ed-b248-4de8-aa67-1730e3795bc9
+  gcs-usage-cf:accountId: 74981a43be0de7712369306c7b19133d
