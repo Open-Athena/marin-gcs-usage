@@ -39,11 +39,12 @@ export default defineConfig({
       '/data': WRANGLER,
       '/v1/files': WRANGLER,
       '/api': WRANGLER,
-      // Sign-in Functions (`/auth/google*`, `/auth/email/*`, `/auth/sso`). The
-      // Host header is passed through, so the OIDC callback resolves to this
-      // origin (`http://localhost:<PORT>/auth/google/callback`) — that URI must
-      // be registered on the Google client for local sign-in to work.
-      '/auth': WRANGLER,
+      // Sign-in Functions (`/auth/google*`, `/auth/email/*`, `/auth/sso`). Keep
+      // the browser's Host header (Vite's string-target default rewrites it to
+      // the wrangler port): the OIDC callback + emailed links derive their origin
+      // from it, so they resolve to `http://localhost:<PORT>/…` — the URI that
+      // must be registered on the Google client for local sign-in to work.
+      '/auth': { target: WRANGLER, changeOrigin: false },
     },
   },
   // The workspace-linked `@rdub/file-tree` calls `useLocation` etc. — force a
