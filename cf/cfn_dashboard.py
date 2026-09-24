@@ -30,7 +30,7 @@ so it's the part worth sharing.
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import pulumi
@@ -64,7 +64,9 @@ class Store:
     production_branch: str
     domain: str                       # custom domain (→ <pages_project>.pages.dev)
     d1_name: str
-    access: AccessApp
+    # Zero Trust Access gate, or None when the deployment does its own identity
+    # (gcs.oa.dev: own Google OIDC client + emailed codes — specs/oidc-cutover.md).
+    access: AccessApp | None = None
     kv_name: str | None = None        # bind a CACHE_KV namespace, or None
     # R2 serving (cw's specs/r2-serving-migration.md; the base's r2.rbw.sh
     # already serves this way): the bucket the served artifacts are published
@@ -182,87 +184,18 @@ class CfnDashboard(pulumi.ComponentResource):
                 opts=child("kv"),
             )
 
-        # Zero Trust Access: application + its single allow policy.
-        if store.access.include_everyone:
-            includes = [
-                cloudflare.ZeroTrustAccessPolicyIncludeArgs(
-                    everyone=cloudflare.ZeroTrustAccessPolicyIncludeEveryoneArgs()
-                )
-            ]
-        else:
-            includes = [
-                cloudflare.ZeroTrustAccessPolicyIncludeArgs(
-                    email_domain=cloudflare.ZeroTrustAccessPolicyIncludeEmailDomainArgs(domain=d)
-                )
-                for d in store.access.email_domains
-            ]
-        self.access_policy = cloudflare.ZeroTrustAccessPolicy(
-            f"{name}-access-policy",
-            account_id=account_id,
-            name=store.access.policy_name or f"{store.access.name} — allow",
-            decision="allow",
-            includes=includes,
-            opts=child("access-policy"),
-        )
-        app_policies = [
-            cloudflare.ZeroTrustAccessApplicationPolicyArgs(
-                id=self.access_policy.id, precedence=1
-            )
-        ]
-        # Optional machine identity: a service token + the `non_identity` policy
-        # that admits it (Access evaluates it before the human allow rule).
+        # Zero Trust Access: application + its single allow policy — only for a
+        # deployment that gates at the edge (`store.access` set). NOTE
+        # (pulumi-cloudflare 6.21): a hand-built app carrying both `destinations`
+        # and the legacy `self_hosted_domains` (CF auto-mirrors them) cannot be
+        # imported — the provider rejects the combination at input validation,
+        # before `ignore_changes` can help. Create such apps from here instead.
+        self.access_policy = None
+        self.access_app = None
         self.service_token = None
         self.service_policy = None
-        if store.service_token:
-            self.service_token = cloudflare.ZeroTrustAccessServiceToken(
-                f"{name}-service-token",
-                account_id=account_id,
-                name=store.service_token,
-                duration="forever",
-                opts=child("service-token"),
-            )
-            self.service_policy = cloudflare.ZeroTrustAccessPolicy(
-                f"{name}-service-policy",
-                account_id=account_id,
-                name=f"{store.service_token} — service token",
-                decision="non_identity",
-                includes=[
-                    cloudflare.ZeroTrustAccessPolicyIncludeArgs(
-                        service_token=cloudflare.ZeroTrustAccessPolicyIncludeServiceTokenArgs(
-                            token_id=self.service_token.id
-                        )
-                    )
-                ],
-                opts=child("service-policy"),
-            )
-            app_policies.append(
-                cloudflare.ZeroTrustAccessApplicationPolicyArgs(
-                    id=self.service_policy.id, precedence=2
-                )
-            )
-        access_app_kwargs = dict(
-            account_id=account_id,
-            name=store.access.name,
-            type="self_hosted",
-            destinations=[
-                cloudflare.ZeroTrustAccessApplicationDestinationArgs(type="public", uri=uri)
-                for uri in store.access.uris
-            ],
-            session_duration=store.access.session_duration,
-            http_only_cookie_attribute=True,
-            policies=app_policies,
-        )
-        # Only assert app_launcher_visible when the store sets it (None → unset,
-        # which matches a live null rather than diffing null→false).
-        if store.access.app_launcher_visible is not None:
-            access_app_kwargs["app_launcher_visible"] = store.access.app_launcher_visible
-        self.access_app = cloudflare.ZeroTrustAccessApplication(
-            f"{name}-access-app",
-            # `domain` / `self_hosted_domains` are legacy mirrors of `destinations`;
-            # keep the imported values rather than nulling them.
-            opts=child("access-app", ignore=["domain", "self_hosted_domains"]),
-            **access_app_kwargs,
-        )
+        if store.access is not None:
+            self._access(name, account_id, store, child)
 
         # R2 serving bucket + the API token whose S3-API credentials the publish
         # step (`dt-cloud publish-r2`) and the site's `STORE_*` seam use. R2's
@@ -312,9 +245,10 @@ class CfnDashboard(pulumi.ComponentResource):
             "pages_project": self.pages.name,
             "custom_domain": self.domain.name,
             "d1_database": self.d1.name,
-            "access_app_id": self.access_app.id,
-            "access_app_aud": self.access_app.aud,
         }
+        if self.access_app is not None:
+            outputs["access_app_id"] = self.access_app.id
+            outputs["access_app_aud"] = self.access_app.aud
         if self.kv is not None:
             outputs["cache_kv"] = self.kv.id
         if self.service_token is not None:
@@ -327,6 +261,97 @@ class CfnDashboard(pulumi.ComponentResource):
                 self.r2_token.value.apply(lambda v: hashlib.sha256(v.encode()).hexdigest())
             )
         self.register_outputs(outputs)
+
+    def _access(
+        self,
+        name: str,
+        account_id: Input[str],
+        store: Store,
+        child: Callable[..., ResourceOptions],
+    ) -> None:
+        """The Access application + its allow policy (+ optional service-token
+        policy) for an edge-gated deployment. Sets `access_policy`, `access_app`,
+        `service_token`, `service_policy`."""
+        access = store.access
+        assert access is not None
+        if access.include_everyone:
+            includes = [
+                cloudflare.ZeroTrustAccessPolicyIncludeArgs(
+                    everyone=cloudflare.ZeroTrustAccessPolicyIncludeEveryoneArgs()
+                )
+            ]
+        else:
+            includes = [
+                cloudflare.ZeroTrustAccessPolicyIncludeArgs(
+                    email_domain=cloudflare.ZeroTrustAccessPolicyIncludeEmailDomainArgs(domain=d)
+                )
+                for d in access.email_domains
+            ]
+        self.access_policy = cloudflare.ZeroTrustAccessPolicy(
+            f"{name}-access-policy",
+            account_id=account_id,
+            name=access.policy_name or f"{access.name} — allow",
+            decision="allow",
+            includes=includes,
+            opts=child("access-policy"),
+        )
+        app_policies = [
+            cloudflare.ZeroTrustAccessApplicationPolicyArgs(
+                id=self.access_policy.id, precedence=1
+            )
+        ]
+        # Optional machine identity: a service token + the `non_identity` policy
+        # that admits it (Access evaluates it before the human allow rule).
+        if store.service_token:
+            self.service_token = cloudflare.ZeroTrustAccessServiceToken(
+                f"{name}-service-token",
+                account_id=account_id,
+                name=store.service_token,
+                duration="forever",
+                opts=child("service-token"),
+            )
+            self.service_policy = cloudflare.ZeroTrustAccessPolicy(
+                f"{name}-service-policy",
+                account_id=account_id,
+                name=f"{store.service_token} — service token",
+                decision="non_identity",
+                includes=[
+                    cloudflare.ZeroTrustAccessPolicyIncludeArgs(
+                        service_token=cloudflare.ZeroTrustAccessPolicyIncludeServiceTokenArgs(
+                            token_id=self.service_token.id
+                        )
+                    )
+                ],
+                opts=child("service-policy"),
+            )
+            app_policies.append(
+                cloudflare.ZeroTrustAccessApplicationPolicyArgs(
+                    id=self.service_policy.id, precedence=2
+                )
+            )
+        access_app_kwargs = dict(
+            account_id=account_id,
+            name=access.name,
+            type="self_hosted",
+            destinations=[
+                cloudflare.ZeroTrustAccessApplicationDestinationArgs(type="public", uri=uri)
+                for uri in access.uris
+            ],
+            session_duration=access.session_duration,
+            http_only_cookie_attribute=True,
+            policies=app_policies,
+        )
+        # Only assert app_launcher_visible when the store sets it (None → unset,
+        # which matches a live null rather than diffing null→false).
+        if access.app_launcher_visible is not None:
+            access_app_kwargs["app_launcher_visible"] = access.app_launcher_visible
+        self.access_app = cloudflare.ZeroTrustAccessApplication(
+            f"{name}-access-app",
+            # `domain` / `self_hosted_domains` are legacy mirrors of `destinations`;
+            # keep the imported values rather than nulling them.
+            opts=child("access-app", ignore=["domain", "self_hosted_domains"]),
+            **access_app_kwargs,
+        )
 
 
 def _only_permission_group(result: object, name: str) -> str:

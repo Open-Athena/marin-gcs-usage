@@ -39,25 +39,16 @@ import_ids = cfg.get_object("importIds") or None
 # Instance wiring — one Store per deployment branch, keyed by stack name
 # ---------------------------------------------------------------------------
 STORES: dict[str, Store] = {
-    # gcs.oa.dev — public shell + Tier-2 SSO. Access gates only `/auth/sso`; the
-    # policy includes Everyone because the D1 grants table is the real gate.
+    # gcs.oa.dev — public shell + app-gated data; no Zero Trust at all since the
+    # 2026-09-24 cutover (own Google OIDC client + emailed codes, D1 allowlist —
+    # specs/oidc-cutover.md). The Google OAuth client is console-managed (no API
+    # for Web-app clients); its secrets are `wrangler pages secret`s.
     "gcs": Store(
         pages_project="oa-gcs-usage",
         production_branch="main",   # CF Pages production branch (wrangler deploys `--branch main`)
         domain="gcs.oa.dev",
         d1_name="oa-gcs-usage-auth",
         kv_name="oa-gcs-usage-cache",
-        access=AccessApp(
-            name="GCS usage (Marin storage attribution)",
-            uris=(
-                "gcs.oa.dev/auth/sso",
-                "oa-gcs-usage.pages.dev/auth/sso",
-                "*.oa-gcs-usage.pages.dev/auth/sso",
-            ),
-            include_everyone=True,
-            session_duration="168h",
-            policy_name="Access as IdP only (allowlist enforced in-app via D1 allowed_emails)",
-        ),
     ),
     # cw-s3.oa.dev — whole host behind Access; OA staff + CoreWeave viewers.
     "cw-s3": Store(
@@ -113,8 +104,9 @@ dash = CfnDashboard(
 pulumi.export("pages_project", dash.pages.name)
 pulumi.export("custom_domain", dash.domain.name)
 pulumi.export("d1_database", dash.d1.name)
-pulumi.export("access_app_id", dash.access_app.id)
-pulumi.export("access_app_aud", dash.access_app.aud)
+if dash.access_app is not None:
+    pulumi.export("access_app_id", dash.access_app.id)
+    pulumi.export("access_app_aud", dash.access_app.aud)
 if dash.kv is not None:
     pulumi.export("cache_kv", dash.kv.title)
     pulumi.export("cache_kv_id", dash.kv.id)   # → wrangler.toml `[[kv_namespaces]] id`

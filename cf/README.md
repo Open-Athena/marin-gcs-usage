@@ -33,8 +33,11 @@ GCP job stack carries the one broad-IAM caveat; see `../../ops/gcp/gcs-usage/`.)
 - `cloudflare.PagesDomain` — the custom domain (`gcs.oa.dev` / `cw-s3.oa.dev`).
 - `cloudflare.DnsRecord` — the `oa.dev` CNAME the custom domain resolves through.
 - `cloudflare.ZeroTrustAccessApplication` + `ZeroTrustAccessPolicy` — the Access
-  gate (gcs: `/auth/sso` path, policy includes Everyone since the D1 allowlist
-  gates; cw-s3: whole host, policy = OA + coreweave.com email domains).
+  gate, only when a store sets `access` (cw-s3: whole host, policy = OA +
+  coreweave.com email domains). gcs has **no** Access app since the 2026-09-24
+  cutover to its own Google OIDC client + emailed codes (`../specs/oidc-cutover.md`);
+  that also removed the one resource pulumi-cloudflare 6.21 couldn't import
+  (`destinations` + auto-mirrored `self_hosted_domains`).
 - `cloudflare.D1Database` — the database resource (migrations stay with the app).
 - `cloudflare.WorkersKvNamespace` — each stack's `CACHE_KV` global cache tier (`gcs` today; `cw-s3` declared, not yet created — its `wrangler.toml` stanza stays commented until the `cache_kv_id` output exists).
 - `cloudflare.ZeroTrustAccessServiceToken` + a second, `non_identity` `ZeroTrustAccessPolicy` on the app (`cw-s3` only) — the machine identity the Batch job's warm-cache stage uses to call the site through Access; client id/secret are the secret outputs `service_token_client_id` / `service_token_client_secret`, destined for Secret Manager, never git.
