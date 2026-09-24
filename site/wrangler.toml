@@ -72,7 +72,7 @@ STAFF_DOMAIN = "openathena.ai"
 #   STORE_BUCKET = "oa-cw-s3-usage-index"   # `r2_bucket` output
 #   STORE_REGION = "auto"                   # R2 ignores the region; SigV4 wants one
 # Secrets (`wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
-#   STORE_ENDPOINT          = https://<account id>.r2.cloudflarestorage.com  (account id stays out of git)
+#   STORE_ENDPOINT          = https://<account id>.r2.cloudflarestorage.com
 #   STORE_ACCESS_KEY_ID     = the `r2_s3_access_key_id` stack output (the R2 API token's id)
 #   STORE_SECRET_ACCESS_KEY = the `r2_s3_secret_access_key` stack output (sha256 of the token value)
 # `STORE_PREFIXES` is set in [vars] above (the base's defaults no longer include `cw-l2/`).
@@ -81,3 +81,41 @@ STAFF_DOMAIN = "openathena.ai"
 #   GCS_HMAC_KEY_ID / GCS_HMAC_SECRET — read-only GCS proxy creds (data + /files)
 #   GCP_SA_KEY — JSON key for `gcs-usage-dispatch@oa-internal-450019` (Batch
 #     submit/cancel for /api/sweep/*; `batch.jobsEditor` + actAs `gcs-usage-job`)
+
+# ---------------------------------------------------------------------------
+# Preview environment — the dev stack (`site/deploy --dev` → `--branch dev` →
+# https://dev.oa-cw-s3-usage.pages.dev, gated by the same Access app via its
+# `*.oa-cw-s3-usage.pages.dev` destination). Real prod data, unmerged code:
+# where the R2 / KV flips and a new base get their real numbers before prod.
+# Pages rule: `vars`, `d1_databases`, `kv_namespaces` are non-inheritable — the
+# moment ONE is overridden here, ALL must be restated, so this block mirrors
+# production and differs only where a line says so. Secrets are per-environment
+# too: set the preview copies in the dashboard (Settings → Variables and Secrets
+# → Preview) — `wrangler pages secret put` writes production only.
+# ---------------------------------------------------------------------------
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "oa-cw-s3-usage-db"   # the SAME ledger as prod (marks made on dev are real)
+database_id = "7f1e1326-b879-4ecd-8621-846621c24f36"
+migrations_dir = "migrations/cw"
+
+[env.preview.vars]
+ROOT_LABEL = "marin CoreWeave (dev)"
+EDGE_TRUSTED = "1"
+BASE_SCOPE = "cw"
+SNAPSHOTS_SUBDIR = "cw"
+STORE_PREFIXES = "listing/,snapshots/,sweep/,cw-sweep/,cw-l2/"
+ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"
+ACCESS_AUD = "1de65a9ffe270d860911b786720fefe00123e79e71ca038c311479e468dc8378"
+STAFF_DOMAIN = "openathena.ai"
+# R2 on the dev stack first (specs/r2-serving-migration.md §7 step 6): uncomment
+# here, set the three STORE_* preview secrets, `site/deploy --dev`, verify
+# byte-equivalence against prod, THEN mirror into production `[vars]`.
+#   STORE_BUCKET = "oa-cw-s3-usage-index"
+#   STORE_REGION = "auto"
+
+# The KV tier for the dev stack: same namespace as production (a shared global
+# cache is correct — same keys, same data; `CACHE_V` versions the entries).
+#   [[env.preview.kv_namespaces]]
+#   binding = "CACHE_KV"
+#   id = "<cache_kv_id output of `pulumi stack output` on cw-s3>"
