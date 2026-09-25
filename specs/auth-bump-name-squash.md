@@ -16,6 +16,16 @@
 2. **The `@open-athena/auth/cf-access` adapter is deleted**, along with `verifyAccessJwt`, `ssoHandler` and `SignInPanel`'s `signInUrl` generic-SSO button.
 3. **Auth's migrations are squashed** into `migrations/0001_init.sql`: the current auth schema, with no history. Auth also ships `scripts/d1-rebaseline.mjs`, which tells an existing D1 database that a squashed migrations directory is already applied. It first checks that the live schema matches what the directory builds, and refuses to rewrite if not. It's dry-run by default, with `--run` to write.
 
+
+**Also removed or renamed in the same cleanup** (auth `76c23b5`):
+- `AppWhoami` → `Whoami`. `EdgeWhoami` is gone.
+- `WhoamiSource` is just `{ endpoint? }`, and `AuthGate`'s `source` is optional (default `/api/auth/whoami`).
+- `DEFAULT_ENDPOINTS` → `DEFAULT_WHOAMI_ENDPOINT`.
+- `SignInPanel` loses `signInUrl` / `signInLabel`.
+- Root `schema.sql` and the `./schema.sql` export are gone. A fresh install applies `migrations/0001_init.sql`.
+
+**Target pin:** auth dist **`7442ab0`** (`0.1.0-dist.4c28b9d`) or later.
+
 ## To do here
 
 *Progress (gcs session, 2026-09-25):* items 2 and 4 are done; 1 and 3 are done as far as the published dist allows (the squash is still on auth's local `squash` branch); 5 and 6 wait on Ryan / on auth.

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AuthGate as Gate, deniedEmail, RequestAccessForm, SignInPanel, useForgetWhoami } from '@open-athena/auth/react'
-import { devIdentity, WHOAMI_SOURCE } from './auth'
+import { devIdentity } from './auth'
 import { DEFAULT_STORE } from './stores'
 
 // Gate the human-facing routes on an identity: the app session (our own
@@ -11,7 +11,7 @@ import { DEFAULT_STORE } from './stores'
 // crawlers read the og: meta from <head> regardless of which body we render.
 export function AuthGate({ children }: { children: ReactNode }) {
   return (
-    <Gate source={WHOAMI_SOURCE} devIdentity={devIdentity()} signIn={<LoginWall />}>
+    <Gate devIdentity={devIdentity()} signIn={<LoginWall />}>
       {children}
     </Gate>
   )
