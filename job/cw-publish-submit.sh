@@ -28,6 +28,7 @@ PARALLELISM=${PARALLELISM:-4}
 JOB_ID=${JOB_ID:-cw-publish-r2-$(date -u +%Y%m%d-%H%M%S)}
 
 # The scan list rides in the command as a bash array; task N publishes scan N.
+export PROJECT SA IMAGE DATA_BUCKET R2_BUCKET PARALLELISM
 body=$(python3 - "${SCANS[@]}" <<'EOF'
 import json, os, sys
 scans = sys.argv[1:]
