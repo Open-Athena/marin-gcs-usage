@@ -37,6 +37,7 @@ would invent a number. The store descriptor's `prices: false` hides the panel.
 import json
 import os
 from argparse import ArgumentParser
+from datetime import datetime, timezone
 
 import duckdb
 
@@ -158,6 +159,10 @@ def main():
     meta = {
         'asof': asof,
         'generated': asof,
+        # When this scan was published, as data: the site used to splice the
+        # store object's mtime in, which stops being the publish time once the
+        # served copy lives in R2 (specs/r2-serving-migration.md step 6).
+        'published': datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
         'total_bytes': int(total),
         'total_objects': int(total_objects),
         'class_bytes': {},
