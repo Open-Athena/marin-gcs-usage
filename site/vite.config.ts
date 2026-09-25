@@ -39,7 +39,7 @@ export default defineConfig({
       '/data': WRANGLER,
       '/v1/files': WRANGLER,
       '/api': WRANGLER,
-      // Sign-in Functions (`/auth/google*`, `/auth/email/*`, `/auth/sso`). Keep
+      // Sign-in Functions (`/auth/google*`, `/auth/email/*`). Keep
       // the browser's Host header (Vite's string-target default rewrites it to
       // the wrangler port): the OIDC callback + emailed links derive their origin
       // from it, so they resolve to `http://localhost:<PORT>/…` — the URI that

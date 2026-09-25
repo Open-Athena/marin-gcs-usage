@@ -1,8 +1,24 @@
 import type { ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AuthGate as Gate, deniedEmail, RequestAccessForm, SignInPanel, useForgetWhoami } from '@open-athena/auth/react'
 import { devIdentity } from './auth'
 import { DEFAULT_STORE } from './stores'
+
+/** The public Google client id, or null where Google sign-in isn't configured
+ *  (the wall then offers only the emailed code). One fetch per page load. */
+function useGoogleClient() {
+  return useQuery({
+    queryKey: ['google-client'],
+    queryFn: async (): Promise<string | null> => {
+      const r = await fetch('/auth/google/client', { credentials: 'include' })
+      if (!r.ok) return null
+      return ((await r.json()) as { clientId?: string | null }).clientId ?? null
+    },
+    staleTime: Infinity,
+    retry: false,
+  })
+}
 
 // Gate the human-facing routes on an identity: the app session (our own
 // Google OIDC or an emailed code, minted at `/auth/google` / `/auth/email/*`,
@@ -19,11 +35,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
 // The wall: Google-first (one button, no typing), with an emailed-code fallback
 // for the non-Google tail (Yahoo / custom domains that can't Google-auth). The
-// request-access form + how-to prose fold behind a disclosure — they're the
-// tail for people the D1 allowlist doesn't yet know, not the wall itself — and
-// unfold on a `?denied=<email>` bounce, which also pre-fills the form with the
-// provider-verified address. All paths converge on the same app session. See
-// specs/done/oidc-cutover.md.
+// Google button is Google's own in-page one (`oneTap`): personalized to the
+// account the browser is signed into, it signs in with one click and no
+// round-trip through the account chooser; where Google's script can't load it
+// degrades to the redirect flow (`/auth/google`). The request-access form +
+// how-to prose fold behind a disclosure — they're the tail for people the D1
+// allowlist doesn't yet know, not the wall itself — and unfold on a
+// `?denied=<email>` bounce (the redirect flow's, or one the in-page button
+// sets), which also pre-fills the form with the provider-verified address. All
+// paths converge on the same app session. See specs/done/oidc-cutover.md.
 //
 // Inside <Gate> the wall stands in for the page, so signing in just refetches
 // whoami (`onSignedIn={forget}`) and Google returns to the current URL. On the
@@ -32,7 +52,19 @@ export function AuthGate({ children }: { children: ReactNode }) {
 function LoginWall({ next, error }: { next?: string; error?: string }) {
   const forget = useForgetWhoami()
   const navigate = useNavigate()
+  const location = useLocation()
   const denied = deniedEmail()
+  const google = useGoogleClient()
+  const clientId = google.data ?? null
+  const googleUrl = next ? `/auth/google?next=${encodeURIComponent(next)}` : '/auth/google'
+  // A verified-but-not-allowed address from the in-page button: land on the
+  // same `?denied=` the redirect flow bounces to, so the wall unfolds
+  // request-access pre-filled with it.
+  const onDenied = (email: string) => {
+    const sp = new URLSearchParams(location.search)
+    sp.set('denied', email)
+    navigate({ search: `?${sp}` }, { replace: true })
+  }
   return (
     <div className="authwall">
       <div className="card">
@@ -40,13 +72,27 @@ function LoginWall({ next, error }: { next?: string; error?: string }) {
         <p>{DEFAULT_STORE.desc}</p>
         <p className="restrict">{DEFAULT_STORE.wall.restrict}</p>
         {error && <p className="signin-error" role="alert">{error}</p>}
-        <SignInPanel
-          googleUrl={next ? `/auth/google?next=${encodeURIComponent(next)}` : '/auth/google'}
-          withNext={!next}
-          emailAuth={{ startEndpoint: '/auth/email/start', verifyEndpoint: '/auth/email/code' }}
-          onSignedIn={() => { forget(); if (next) navigate(next, { replace: true }) }}
-          classNames={{ root: 'signin-panel', googleButton: 'signin', divider: 'signin-or' }}
-        />
+        {/* Wait for the client id (one small request) rather than flash the
+            redirect button and swap it for Google's. */}
+        {google.isFetched && (
+          <SignInPanel
+            googleUrl={clientId ? googleUrl : undefined}
+            withNext={!next}
+            oneTap={clientId ? {
+              clientId,
+              nonceEndpoint: '/auth/google/onetap/nonce',
+              verifyEndpoint: '/auth/google/onetap',
+              onDenied,
+              className: 'signin-onetap',
+              // GSI takes a fixed pixel width (≤ 400): fill the card's inner
+              // width (440 max − 2×32 padding), less on a narrow phone.
+              buttonOptions: { theme: 'filled_blue', size: 'large', text: 'continue_with', shape: 'rectangular', width: Math.min(376, Math.max(240, window.innerWidth - 112)) },
+            } : undefined}
+            emailAuth={{ startEndpoint: '/auth/email/start', verifyEndpoint: '/auth/email/code' }}
+            onSignedIn={() => { forget(); if (next) navigate(next, { replace: true }) }}
+            classNames={{ root: 'signin-panel', googleButton: 'signin', divider: 'signin-or' }}
+          />
+        )}
         <details className="signin-more" open={Boolean(denied)}>
           <summary>{denied ? `${denied} isn't on the list yet — request access` : "Don't have access?"}</summary>
           <div className="signin-panel">
