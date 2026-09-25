@@ -3,8 +3,3 @@ encryptedkey: CiQAqKOWSINJrHYsrXus/JlYKzfj7Eyku7kDn4lhLmqVYIgkSXISSQAw+4V0Wv8I+L
 config:
   gcs-usage-cf:accountId: 74981a43be0de7712369306c7b19133d
   gcs-usage-cf:oaDevZoneId: 169959d6aafcbfd77764b8efafa3a509
-  gcs-usage-cf:importIds:
-    pages: 74981a43be0de7712369306c7b19133d/oa-cw-s3-usage
-    domain: 74981a43be0de7712369306c7b19133d/oa-cw-s3-usage/cw-s3.oa.dev
-    cname: 169959d6aafcbfd77764b8efafa3a509/9a53f215a4cb06f596ec7de25a6c7b18
-    d1: 74981a43be0de7712369306c7b19133d/7f1e1326-b879-4ecd-8621-846621c24f36

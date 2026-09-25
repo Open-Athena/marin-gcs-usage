@@ -56,13 +56,11 @@ VIEWER_DOMAINS = "coreweave.com"
 # Global cache tier for the index reader's JSON (`functions/_lib/edgeCache.ts`:
 # colo cache → KV; gcs binds `CACHE_KV`). Optional — the code runs without it
 # (colo cache only), but then the job's warm-cache reaches ONE datacenter.
-# USER-GATED: the namespace is the `cache_kv` output of the CF Pulumi stack
-# `cw-s3` (`cf/__main__.py`, Store.kv_name = "oa-cw-s3-usage-cache"); creating
-# it needs a token with KV scope (the wrangler-dev token has none). Paste the
-# id and uncomment once it exists (a bogus id breaks `wrangler pages dev`):
-#   [[kv_namespaces]]
-#   binding = "CACHE_KV"
-#   id = "<cache_kv output of `pulumi stack output` on cw-s3>"
+# The namespace is the `cache_kv_id` output of this branch's CF Pulumi stack
+# (`cf/__main__.py`, Store.kv_name = "oa-cw-s3-usage-cache"), created 2026-09-25.
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "1dbc4c60884c4f3ba61aa1aa79f494bc"
 
 # R2 serving (specs/r2-serving-migration.md): the same store seam the base's
 # r2.rbw.sh deploy uses (`_lib/index.ts` storeTarget/storeCreds — S3-over-R2,

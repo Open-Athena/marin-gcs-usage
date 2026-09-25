@@ -246,7 +246,12 @@ class CfnDashboard(pulumi.ComponentResource):
                         ),
                     )
                 ],
-                opts=child("r2-token"),
+                # The provider reads `policies` back in a shape it never
+                # matches to the inputs (permission-group ids only vs the
+                # API's full group records), so a live token diffs on every
+                # preview. The policy is set once at create; re-key by
+                # replacing the token, not by editing this.
+                opts=child("r2-token", ["policies"]),
             )
 
         outputs: dict[str, object] = {
