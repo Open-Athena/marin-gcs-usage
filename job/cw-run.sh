@@ -158,6 +158,21 @@ else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced (scan unlisted for the index reader)" >&2
 fi
 
+# 4c. Publish this scan's served subset to R2 (specs/r2-serving-migration.md):
+# the snapshot JSONs + the layer-2 dir (parquets, index tiers, manifests) the
+# site reads through its `STORE_*` seam, colocated with the Worker instead of
+# fetched cross-provider from GCS. Idempotent (size + md5), so a re-run or a
+# backfill over old scans only moves what's missing. Must precede the warm-up
+# below: once the site serves from R2, the warm has to find the scan there.
+# Skipped without the R2 env (the `cw-s3-r2-*` Secret Manager secrets +
+# `R2_BUCKET`, from `cw-batch-submit.sh`); the site keeps serving GCS then.
+if [ -n "${R2_ENDPOINT:+set}" ] && [ -n "${R2_BUCKET:-}" ]; then  # `:+set`: xtrace must not print the creds
+  dt-cloud publish-r2 "$SNAP_ID" \
+    || echo "WARN: publish-r2 failed for $SNAP_ID (the site keeps serving GCS)" >&2
+else
+  echo "no R2_ENDPOINT/R2_BUCKET — skipping publish-r2" >&2
+fi
+
 # 4b. Warm the site's subtree + diff caches for this scan (the colo cache, plus
 # the global KV tier once `CACHE_KV` is bound in site/wrangler.toml) so the
 # first viewer gets hits instead of a multi-second compute: the home page's

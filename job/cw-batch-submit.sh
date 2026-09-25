@@ -60,6 +60,10 @@ v = {
     "SLACK_ALERT_CHANNEL": g("SLACK_ALERT_CHANNEL", "C0BTUNT3B5Z"),
     # CF account for the digest plot's `wrangler pages deploy` (token is a secretVariable)
     "CLOUDFLARE_ACCOUNT_ID": g("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
+    # R2 serving bucket the 4c publish stage copies each scan's served subset
+    # to (the `r2_bucket` output of the cw-s3 CF Pulumi stack; creds are the
+    # `cw-s3-r2-*` secretVariables) — specs/r2-serving-migration.md
+    "R2_BUCKET": g("R2_BUCKET", "oa-cw-s3-usage-index"),
 }
 if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
     for k in ["CW_BUCKETS", "SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
@@ -96,7 +100,10 @@ cat > "$spec" <<EOF
           "AWS_ACCESS_KEY_ID": "projects/$PROJECT/secrets/cw-s3-access-key-id/versions/latest",
           "AWS_SECRET_ACCESS_KEY": "projects/$PROJECT/secrets/cw-s3-secret-access-key/versions/latest",
           "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/cw-s3-slack-bot-token/versions/latest",
-          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest"
+          "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
+          "R2_ENDPOINT": "projects/$PROJECT/secrets/cw-s3-r2-endpoint/versions/latest",
+          "R2_ACCESS_KEY_ID": "projects/$PROJECT/secrets/cw-s3-r2-access-key-id/versions/latest",
+          "R2_SECRET_ACCESS_KEY": "projects/$PROJECT/secrets/cw-s3-r2-secret-access-key/versions/latest"
         }
       }
     }
