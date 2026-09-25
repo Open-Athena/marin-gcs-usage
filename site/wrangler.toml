@@ -4,10 +4,12 @@ name = "oa-gcs-usage"
 pages_build_output_dir = "dist"
 compatibility_date = "2026-06-01"
 
-# Auth backend (@open-athena/auth, Tier 2): D1 holds grants + access_log +
-# access_requests (package migrations 0001–0006) and the mark & sweep tables
-# (0007). Created with `wrangler d1 create oa-gcs-usage-auth`; apply migrations
-# with `wrangler d1 migrations apply oa-gcs-usage-auth --remote`.
+# D1: the @open-athena/auth tables (grants, access_log, access_requests,
+# profiles, pending_auth — `migrations/` carries copies of the package's
+# migrations, kept level with it) plus the app's own (allowlist, marks + actions
+# ledger, index metadata, plans, sweeps). Created with `wrangler d1 create
+# oa-gcs-usage-auth`; apply with `wrangler d1 migrations apply oa-gcs-usage-auth
+# --remote`.
 [[d1_databases]]
 binding = "DB"
 database_name = "oa-gcs-usage-auth"
@@ -32,10 +34,6 @@ enabled = true
 [vars]
 # Domain whose sign-in identities are staff (gcs + cw + admin scopes).
 STAFF_DOMAIN = "openathena.ai"
-# No `ACCESS_*` here: gcs.oa.dev has no Zero Trust app any more — identity is
-# our own Google OIDC client (`/auth/google`) or an emailed code
-# (`/auth/email/*`); see specs/done/oidc-cutover.md. A deployment that does sit
-# behind an Access edge (cw-s3) sets ACCESS_TEAM_DOMAIN + ACCESS_AUD.
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-gcs-usage`):
 #   SESSION_SECRET   — HMAC key for session cookies + IP hashing

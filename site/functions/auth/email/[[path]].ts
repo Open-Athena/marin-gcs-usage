@@ -1,12 +1,12 @@
 /**
- * Email-code sign-in — the ZT One-Time-PIN replacement, alongside Google OIDC.
+ * Email-code sign-in — the passwordless path alongside Google OIDC.
  * Mounted at `/auth/email/*` — deliberately NOT under the package's `/api/auth/*`
  * `authRoutes` catch-all, so there's no route-precedence ambiguity:
  *   POST /auth/email/start   -> email a magic link + 6-digit code (constant reply)
  *   POST /auth/email/code    -> verify the code, mint the session in this tab
  *   GET  /auth/email/verify  -> magic-link landing: mint + 302 to `next`
  *   GET  /auth/email/poll    -> original tab polls for the link being clicked
- * All converge on the same `gate.signIn` as Google/CF-Access — same D1 allowlist,
+ * All converge on the same `gate.signIn` as Google — same D1 allowlist,
  * sessions, scopes. Dormant (503) until RESEND_API_KEY + MAIL_FROM are set.
  * See specs/done/oidc-cutover.md.
  */

@@ -2,9 +2,8 @@
  * OIDC callback: verify state + nonce, trade the code for an id_token, verify
  * it against Google's JWKS, then `gate.signIn(email)` → app session cookie →
  * 302 back to `?next`. Authenticated-but-not-on-the-allowlist 302s to
- * `/?denied=<email>`. This is the whole ZT-free identity path; everything
- * downstream (gate, D1, sessions, share links) is unchanged. See
- * specs/done/oidc-cutover.md.
+ * `/?denied=<email>`. Everything downstream (gate, D1, sessions, share links)
+ * is shared with the other sign-in paths. See specs/done/oidc-cutover.md.
  */
 import { oidcCallback } from '@open-athena/auth/oidc'
 import { type Ctx } from '../../_lib/auth.js'

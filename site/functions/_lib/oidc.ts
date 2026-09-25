@@ -1,7 +1,6 @@
 /**
- * Shared config for the OIDC sign-in Functions (`/auth/google` + its callback),
- * the ZT-free replacement for the CF Access `/auth/sso` hand-off. Both the start
- * and callback handlers must be given the *same* `redirectUri`, so it's derived
+ * Shared config for the OIDC sign-in Functions (`/auth/google` + its callback).
+ * Both the start and callback handlers must be given the *same* `redirectUri`, so it's derived
  * once here from the request origin — which makes prod (gcs.oa.dev), previews,
  * and localhost all work, provided each origin's callback is registered on the
  * Google client. See specs/done/oidc-cutover.md.

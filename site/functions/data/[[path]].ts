@@ -8,8 +8,8 @@
 // writes), so new snapshots surface with no site redeploy.
 //
 // Same model as the /v1/files browser proxy: a read-only GCS HMAC key over the
-// S3-compatible XML API, same-origin behind CF Access (no second sign-in, no
-// CORS). CF Pages serves static assets before Functions, so this only works
+// S3-compatible XML API, same-origin (no second sign-in, no CORS). CF Pages
+// serves static assets before Functions, so this only works
 // because public/data/ is no longer shipped (see the build).
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import { type Env, requireViewer } from '../_lib/auth.js'
@@ -27,7 +27,7 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
   if (!GCS_HMAC_KEY_ID || !GCS_HMAC_SECRET) {
     return new Response('data proxy not configured (missing GCS HMAC creds)', { status: 503 })
   }
-  // Every payload is members-only: the edge (CF Access) session is the identity.
+  // Every payload is members-only: the app session is the identity.
   const rel = new URL(ctx.request.url).pathname.replace(/^\/data\//, '')
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated

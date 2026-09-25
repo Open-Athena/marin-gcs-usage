@@ -72,7 +72,7 @@ Listing-scale runs (34M+ dirs) belong on a work node, not a laptop.
 
 ## Access ([gcs.oa.dev])
 
-The viz site is app-gated: [Cloudflare Access][cf-access] acts as a pure IdP at `/auth/sso` (Google sign-in with any account, or a one-time email PIN), and the app then checks the signed-in email against an allowlist it owns (a D1 table, edited by admins at `/admin/db/allowed_emails`; removals take effect immediately). Invited guests can also be issued personal share links. To be added, ping Ryan (Discord) or ask any admin.
+The viz site is app-gated: sign in with any Google account, or have a one-time code emailed to you, and the app then checks the signed-in email against an allowlist it owns (a D1 table, edited by admins at `/admin/db/allowed_emails`; removals take effect immediately). Invited guests can also be issued personal share links. To be added, ping Ryan (Discord) or ask any admin.
 
 ## Reports
 
@@ -117,7 +117,6 @@ For the web app (`site/`), see [`site/`](site) — `./dev` runs the full local
 stack (Vite UI + `wrangler pages dev` for the Functions).
 
 [gcs.oa.dev]: https://gcs.oa.dev
-[cf-access]: https://developers.cloudflare.com/cloudflare-one/applications/
 [marin]: https://github.com/marin-community/marin
 [marin#6790]: https://github.com/marin-community/marin/issues/6790
 [disk-tree]: https://github.com/runsascoded/disk-tree

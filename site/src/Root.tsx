@@ -17,7 +17,7 @@ import { DEFAULT_STORE, STORES } from './stores'
 // store's og:image screenshot (public, ungated — it's what unfurl crawlers
 // render); every other path → the treemap app, which picks its store from the
 // path. The two data-backed routes sit behind
-// <AuthGate>, which shows a login wall when there's no CF Access session.
+// <AuthGate>, which shows a login wall when there's no app session.
 // One hotkey/omnibar registry for the whole site (SiteKbd renders the chrome
 // on each page; pages register their own actions on top of the shared ones).
 export default function Root() {

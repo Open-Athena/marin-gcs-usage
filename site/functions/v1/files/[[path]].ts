@@ -2,12 +2,12 @@
 //
 // Mounts file-tree's `createHandlers` over an `S3Store` pointed at GCS's
 // S3-compatible XML API (verified: GCS speaks ListObjectsV2 + range GETs).
-// The browser hits this same-origin, behind the site's CF Access gate — so
-// no second sign-in and no CORS. Reads use a dedicated read-only HMAC key
-// (SA `gcs-usage-browse@…`, `objectViewer` on this bucket ONLY); the
-// `prefixes` allow-list caps exposure to the scan outputs.
+// The browser hits this same-origin, so no second sign-in and no CORS. Reads
+// use a dedicated read-only HMAC key (SA `gcs-usage-browse@…`, `objectViewer`
+// on this bucket ONLY); the `prefixes` allow-list caps exposure to the scan
+// outputs.
 //
-// Auth model is intentionally coarse: anyone past CF Access can read the
+// Auth model is intentionally coarse: any signed-in viewer can read the
 // listing/snapshot data (metadata the gcs.oa.dev treemap already shows this
 // audience). No per-user authz.
 import { createHandlers } from '@rdub/file-tree/server'
@@ -34,7 +34,7 @@ export const onRequest = async (ctx: { request: Request; env: Env }): Promise<Re
     accessKeyId: GCS_HMAC_KEY_ID,
     secretAccessKey: GCS_HMAC_SECRET,
   })
-  // same-origin (behind CF Access) → no CORS needed
+  // same-origin → no CORS needed
   const handlers = createHandlers(store, { basePath: BASE, corsOrigin: null })
   return (await handlers.handle(ctx.request)) ?? new Response('not found', { status: 404 })
 }

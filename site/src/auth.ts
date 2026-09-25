@@ -5,12 +5,8 @@
 // an emailed code (`/auth/email/*`), or by redeeming a `?key=` share link.
 import { displayName, useForgetWhoami, useWhoami, type Whoami, type WhoamiSource } from '@open-athena/auth/react'
 
-// Deployment seam (specs/denovo-factor.md): the whoami source is a build-time
-// flag. `edge` = the whole host sits behind a CF Access gate (cw-s3.oa.dev:
-// `/cdn-cgi/access/get-identity`, sign-in bounces through `/login`); `app`
-// (default) = the app session (`/api/auth/whoami`, minted at `/signin`).
-export const AUTH_MODE: 'app' | 'edge' = import.meta.env.VITE_AUTH_MODE === 'edge' ? 'edge' : 'app'
-export const WHOAMI_SOURCE: WhoamiSource = { kind: AUTH_MODE }
+// The app session (`/api/auth/whoami`, minted at `/signin`).
+export const WHOAMI_SOURCE: WhoamiSource = { kind: 'app' }
 
 // `?wall` forces the wall in dev (which otherwise short-circuits to authed,
 // since neither identity source exists locally). A local session disables the
@@ -29,10 +25,10 @@ export const devIdentity = (): Whoami | null | undefined =>
     ? (forceWall ? null : { email: import.meta.env.VITE_DEV_EMAIL ?? 'dev@example.test' })
     : undefined
 
-/** Where the inline "sign in" links go: the edge tier's `/login`, or the app
- *  tier's own `/signin` page (Google / emailed code), returning here after. */
+/** Where the inline "sign in" links go: the `/signin` page (Google / emailed
+ *  code), returning here after. */
 export const signInUrl = (): string =>
-  AUTH_MODE === 'edge' ? '/login' : `/signin?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
+  `/signin?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
 
 export interface Ident {
   email: string
@@ -48,7 +44,6 @@ export interface Ident {
 export function useSignOut(): () => void {
   const forget = useForgetWhoami()
   return () => {
-    if (AUTH_MODE === 'edge') { forget(); window.location.assign('/cdn-cgi/access/logout'); return }
     void fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => {
       forget()
     })

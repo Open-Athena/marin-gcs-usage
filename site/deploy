@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and deploy to Cloudflare Pages — the project named in wrangler.toml
 # (`oa-gcs-usage` → gcs.oa.dev, `oa-cw-s3-usage` → cw-s3.oa.dev; Open Athena
-# account). CF Access (Zero Trust) gates every hostname, production and preview.
+# account).
 set -euo pipefail
 # The Pages project this checkout deploys: `name = "…"` in wrangler.toml.
 PROJECT=$(sed -n 's/^name = "\(.*\)"$/\1/p' wrangler.toml)

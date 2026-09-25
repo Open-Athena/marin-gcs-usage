@@ -627,7 +627,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
   .hint { color: var(--ink-3); font-size: 12px; }
 }
 
-// Login wall shown by <AuthGate> when there's no CF Access session.
+// Login wall shown by <AuthGate> when there's no app session.
 .authwall {
   min-height: 100vh;
   display: flex;

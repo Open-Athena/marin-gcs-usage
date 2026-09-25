@@ -4,12 +4,11 @@ import { AuthGate as Gate, deniedEmail, RequestAccessForm, SignInPanel, useForge
 import { devIdentity, WHOAMI_SOURCE } from './auth'
 import { DEFAULT_STORE } from './stores'
 
-// Gate the human-facing routes on an identity: the app session on gcs.oa.dev
-// (our own Google OIDC or an emailed code, minted at `/auth/google` /
-// `/auth/email/*`, or a `?key=` share link, which <Gate> redeems before
-// probing), the CF Access edge session on cw-* hosts. The static shell +
-// og:image stay publicly crawlable for link unfurls either way — crawlers read
-// the og: meta from <head> regardless of which body we render.
+// Gate the human-facing routes on an identity: the app session (our own
+// Google OIDC or an emailed code, minted at `/auth/google` / `/auth/email/*`,
+// or a `?key=` share link, which <Gate> redeems before probing). The static
+// shell + og:image stay publicly crawlable for link unfurls either way —
+// crawlers read the og: meta from <head> regardless of which body we render.
 export function AuthGate({ children }: { children: ReactNode }) {
   return (
     <Gate source={WHOAMI_SOURCE} devIdentity={devIdentity()} signIn={<LoginWall />}>

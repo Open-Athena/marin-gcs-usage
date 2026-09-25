@@ -26,8 +26,7 @@ const RevokeIcon = () => (
 
 /** The identity a link logs its holder in as (`grants.subject_json`). */
 interface Subject {
-  first?: string
-  last?: string
+  name?: string
   email?: string
   avatar?: string
 }
@@ -52,14 +51,9 @@ const fmtTs = (ts: number | null): string => (ts ? new Date(ts * 1000).toLocaleS
 
 const linkFor = (token: string): string => `${window.location.origin}/?key=${token}`
 
-/** Who a link is for: the person (subject), else its admin `name`, else nothing.
- * The subject is a single freeform name (stored in `subject.first`); `displayName`
- * renders it verbatim. `name` is the fallback for CLI/agent-token grants. */
-const holderName = (g: Grant): string | null => {
-  const s = g.subject
-  const full = s ? [s.first, s.last].filter(Boolean).join(' ') : ''
-  return full || s?.email || g.name || null
-}
+/** Who a link is for: the person (`subject.name`, then their email), else the
+ * grant's admin `name` — the fallback for CLI/agent-token grants. */
+const holderName = (g: Grant): string | null => g.subject?.name || g.subject?.email || g.name || null
 
 // Persist the in-progress mint form so a reload / redeploy doesn't wipe a draft.
 // Per-tab (sessionStorage), cleared once the link is minted.
@@ -124,15 +118,15 @@ export function AdminPage() {
     mutationFn: async () => {
       const expiresInS = days.trim() ? Number(days) * 86400 : null
       // memo → `note` (the link's admin-side label); name/email/avatar →
-      // `subject_json`, the identity the link logs its holder in *as*. The name
-      // is one freeform field → `first` (last unused); `displayName` shows it.
+      // `subject_json`, the identity the link logs its holder in *as*
+      // (`subjectName`, since the body's `name` is the grant's own label).
       const r = await fetch('/api/auth/grants', {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           note: memo.trim(),
-          first: name.trim() || null,
+          subjectName: name.trim() || null,
           email: email.trim() || null,
           avatar: avatar.trim() || null,
           scopes: [readOnly ? 'gcs:read' : 'gcs'],
