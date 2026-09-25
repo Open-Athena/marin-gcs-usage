@@ -120,8 +120,11 @@ STAFF_DOMAIN = "openathena.ai"
 # R2 on the dev stack first (specs/r2-serving-migration.md §7 step 6): uncomment
 # here, set the three STORE_* preview secrets, `site/deploy --dev`, verify
 # byte-equivalence against prod, THEN mirror into production `[vars]`.
-#   STORE_BUCKET = "oa-cw-s3-usage-index"
-#   STORE_REGION = "auto"
+# FLIPPED 2026-09-25: the dev stack reads the served subset from R2 (backfilled +
+# published per scan by the job); production stays on GCS until the byte-
+# equivalence check + re-bench pass (specs/r2-serving-migration.md step 6).
+STORE_BUCKET = "oa-cw-s3-usage-index"
+STORE_REGION = "auto"
 
 # The KV tier for the dev stack: same namespace as production (a shared global
 # cache is correct — same keys, same data; `CACHE_V` versions the entries).
