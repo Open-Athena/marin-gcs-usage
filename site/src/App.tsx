@@ -110,6 +110,11 @@ type OwnerMode = 'all' | 'owned' | 'unowned' | 'user' | 'others'
 
 // Home-page section anchors, top to bottom — the scroll-spy keeps `#hash`
 // tracking the one in view, and deep links scroll to it. Old ids keep working.
+// Client cache version: appended to the read endpoints' URLs so a browser's
+// HTTP copy of a pre-deploy answer (kept a day until this landed, five minutes
+// since) is never replayed after a reader rule changes. Bump alongside
+// `CACHE_V` in functions/_lib/edgeCache.ts.
+const API_CV = '1'
 const SECTION_IDS = ['tree-map', 'tbl', 'marks', 'over-time', 'diff', 'mtime']
 const LEGACY_ANCHORS: Record<string, string> = {
   'size-over-time': 'over-time', 'mark-history': 'marks', 'created-date': 'mtime', changes: 'diff',
@@ -349,7 +354,7 @@ function AppContent() {
       retryDelay: (n: number) => 400 * 2 ** n,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
+          `/api/subtree?cv=${API_CV}&date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
           { credentials: 'include' },
         )
         if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
@@ -373,7 +378,7 @@ function AppContent() {
       retry: false,
       queryFn: async () => {
         const r = await fetch(
-          `/api/subtree?date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}&depth=1${scopeQs}`,
+          `/api/subtree?cv=${API_CV}&date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}&depth=1${scopeQs}`,
           { credentials: 'include' },
         )
         if (!r.ok) throw new Error(`${r.status}`)
@@ -540,7 +545,7 @@ function AppContent() {
     retry: false,
     queryFn: async () => {
       const r = await fetch(
-        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
+        `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
         { credentials: 'include' },
       )
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
@@ -564,7 +569,7 @@ function AppContent() {
     retryDelay: (n: number) => 400 * 2 ** n,
     queryFn: async () => {
       const r = await fetch(
-        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
+        `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
         { credentials: 'include' },
       )
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
@@ -580,7 +585,7 @@ function AppContent() {
     retry: false,
     queryFn: async () => {
       const r = await fetch(
-        `/api/diff?from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
+        `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
         { credentials: 'include' },
       )
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)

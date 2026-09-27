@@ -1,22 +1,21 @@
 # gcs-usage-cf — Cloudflare resources as code
 
-**Status (2026-09-23): initialized, not yet applied.** Both stacks (`gcs`,
-`cw-s3`) exist in the `gs://oa-pulumi` backend with their config + adoption
-`importIds` set, and `pulumi preview` shows the expected adopt-in-place imports
-(gcs 7, cw-s3 6) plus the creates; no `up` has been run, so the live resources
-are still hand-managed (Pages API / Zero Trust console / zone DNS). This
-directory captures them as code so the first `up` adopts them and later `up`s
-create the rest (cw-s3: KV cache tier, R2 bucket + token, warm-cache service
-token).
+**Status (2026-09-27): the `gcs` stack is live** (adopted 2026-09-24: Pages
+project, custom domain, CNAME, D1 and the deployment configs imported in place;
+cache KV created; `pulumi preview` = 7 unchanged since). `up` stays user-gated.
+
+**One `cf/` per deployment branch.** This is the gcs branch's; the cw-s3
+deployment's twin (its stack live since 2026-09-25, with the R2 serving bucket +
+token) is on the `cw-s3` branch. `cfn_dashboard.py` is the reusable,
+marin-agnostic `CfnDashboard` component, kept byte-identical across branches
+like `packages/` (extraction-ready for disk-tree's `cfn` reference-deploy branch
+— no account ids, no store literals). `__main__.py` is just this branch's
+instance wiring: its one `Store` + account/zone config, and it refuses any other
+stack name. Both stacks share the backend project `gcs-usage-cf`, so the state
+never moves between branches.
 
 Full inventory, gap analysis, import command sequence, and adoption plan live in
 the spec: `../specs/cf-iac.md`.
-
-**Structure.** `cfn_dashboard.py` is the reusable, marin-agnostic `CfnDashboard`
-component (extraction-ready for disk-tree's `cfn` reference-deploy branch — no
-account ids, no store literals). `__main__.py` is just the instance wiring: the
-two per-deployment `Store`s + account/zone config, selected by stack name.
-Adding a third deployment is one dict entry + one `pulumi stack init`.
 
 **CI is `pulumi preview` only** (read-only drift alarm); a human runs `up`. The
 CF token model is per-product, per-account/zone, so the CI (read) token scopes

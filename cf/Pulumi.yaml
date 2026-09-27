@@ -1,9 +1,11 @@
-# Stacks `gcs` + `cw-s3` are initialized in the backend; adoption `up` is
-# user-gated (see ../specs/cf-iac.md and README.md).
+# One project, one stack per deployment branch (`gcs` here, `cw-s3` on the
+# cw-s3 branch); each branch's cf/ selects only its own stack. The gcs stack is
+# live (adopted 2026-09-24); `up` stays user-gated (see ../specs/cf-iac.md and
+# README.md).
 # Distinct project name from gcp/gcs-usage so the two don't collide in the
 # shared gs://oa-pulumi backend (keyed by <project>/<stack>).
 name: gcs-usage-cf
-description: Cloudflare resources for the GCS-usage + CoreWeave dashboards — Pages project shell, custom domain + oa.dev CNAME, Zero Trust Access app/policy, D1, and (gcs) KV. Deployments + app config stay with site/deploy (wrangler).
+description: Cloudflare resources for the storage-usage dashboards — Pages project shell, custom domain + oa.dev CNAME, D1, cache KV, and (cw-s3) the R2 serving bucket + token. Deployments + app config stay with site/deploy (wrangler).
 backend:
   url: gs://oa-pulumi
 runtime:

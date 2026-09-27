@@ -75,9 +75,12 @@ class Store:
     r2_bucket: str | None = None
     r2_location: str = "enam"         # location hint; only honored at first create
     # Names of the R2 permission groups the publish/read token needs. Resolved
-    # to ids by the API at program time (`get_api_token_permission_groups_list`);
-    # override with explicit ids via `r2_token_permission_group_ids` if the
-    # lookup is unavailable (e.g. a read-scoped CI token).
+    # to ids by the API at program time through the ACCOUNT-scoped list
+    # (`get_account_api_token_permission_groups_list`): the token is an
+    # account-owned `AccountToken`, so an account API token (the IaC/CI token)
+    # can both look these up and mint it — the user-level `ApiToken` API
+    # 403s for anything but a user token. Override with explicit ids via
+    # `r2_token_permission_group_ids` if the lookup is unavailable.
     r2_token_permission_groups: tuple[str, ...] = (
         "Workers R2 Storage Bucket Item Read",
         "Workers R2 Storage Bucket Item Write",
@@ -215,19 +218,24 @@ class CfnDashboard(pulumi.ComponentResource):
                 opts=child("r2"),
             )
             group_ids: list[Input[str]] = list(store.r2_token_permission_group_ids) or [
-                cloudflare.get_api_token_permission_groups_list_output(name=g).apply(
-                    lambda r, g=g: _only_permission_group(r, g)
-                )
+                cloudflare.get_account_api_token_permission_groups_list_output(
+                    account_id=account_id, name=g,
+                ).apply(lambda r, g=g: _only_permission_group(r, g))
                 for g in store.r2_token_permission_groups
             ]
-            self.r2_token = cloudflare.ApiToken(
+            # Account-owned (`/accounts/<id>/tokens`), not a user token: it
+            # belongs to the account, not to whoever ran `up`, and an account
+            # API token can create it. R2's S3 credentials derive the same way
+            # (access key id = token id, secret = sha256 of the value).
+            self.r2_token = cloudflare.AccountToken(
                 f"{name}-r2-token",
+                account_id=account_id,
                 name=f"{store.pages_project} r2 publish+read",
                 policies=[
-                    cloudflare.ApiTokenPolicyArgs(
+                    cloudflare.AccountTokenPolicyArgs(
                         effect="allow",
                         permission_groups=[
-                            cloudflare.ApiTokenPolicyPermissionGroupArgs(id=gid) for gid in group_ids
+                            cloudflare.AccountTokenPolicyPermissionGroupArgs(id=gid) for gid in group_ids
                         ],
                         # Scoped to this account's R2 buckets; bucket-level
                         # scoping (`com.cloudflare.edge.r2.bucket.<acct>_default_<name>`)
@@ -238,7 +246,12 @@ class CfnDashboard(pulumi.ComponentResource):
                         ),
                     )
                 ],
-                opts=child("r2-token"),
+                # The provider reads `policies` back in a shape it never
+                # matches to the inputs (permission-group ids only vs the
+                # API's full group records), so a live token diffs on every
+                # preview. The policy is set once at create; re-key by
+                # replacing the token, not by editing this.
+                opts=child("r2-token", ["policies"]),
             )
 
         outputs: dict[str, object] = {
@@ -356,8 +369,8 @@ class CfnDashboard(pulumi.ComponentResource):
 
 def _only_permission_group(result: object, name: str) -> str:
     """The single permission-group id matching `name`; loud when the lookup
-    returns none (a read-scoped token can't list them — pass explicit ids via
-    `Store.r2_token_permission_group_ids` instead)."""
+    returns none (a token without the account-level list permission can't —
+    pass explicit ids via `Store.r2_token_permission_group_ids` instead)."""
     results = list(getattr(result, "results", None) or [])
     ids = [getattr(r, "id", None) or r.get("id") for r in results]
     if len(ids) != 1:
