@@ -5,8 +5,8 @@ name: Healthcheck
 # outage a green data pipeline can still cause (2026-08-31: a scan whose D1
 # index footer never synced → /api/marks/totals 1102 → /users blank).
 #
-# Needs a `gcs`-scoped grant token in the `GCS_USAGE_TOKEN` repo secret; the job
-# skips (exit 0) when it's absent, so this is inert until the secret is added.
+# Needs a read-only grant token per host in the repo secrets (`GCS_USAGE_TOKEN`,
+# `CW_S3_USAGE_TOKEN`); a matrix entry skips (exit 0) when its secret is absent.
 on:
   schedule:
     - cron: "17 * * * *" # hourly, offset off the top of the hour
@@ -14,11 +14,27 @@ on:
 
 jobs:
   healthcheck:
-    name: gcs.oa.dev serving health
+    # Both OA deployments, from the default branch: GitHub only runs
+    # `schedule:` workflows from the default branch (gcs), so cw-s3's own copy
+    # of this file (on the cw-s3 branch) only ever fires by dispatch. Each
+    # entry probes its live host with its own read-only grant token; cw
+    # publishes under `/data/cw/` (`SNAPSHOTS_SUBDIR` → `dt-cloud healthcheck -s`).
+    name: ${{ matrix.host }} serving health
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: gcs.oa.dev
+            secret: GCS_USAGE_TOKEN
+            subdir: ""
+          - host: cw-s3.oa.dev
+            secret: CW_S3_USAGE_TOKEN
+            subdir: cw
     env:
-      GCS_USAGE_TOKEN: ${{ secrets.GCS_USAGE_TOKEN }}
-      GCS_USAGE_URL: ${{ vars.GCS_USAGE_URL }}
+      GCS_USAGE_TOKEN: ${{ secrets[matrix.secret] }}
+      GCS_USAGE_URL: https://${{ matrix.host }}
+      SNAPSHOTS_SUBDIR: ${{ matrix.subdir }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +55,7 @@ jobs:
       - name: Run healthcheck
         run: |
           if [ -z "${GCS_USAGE_TOKEN:-}" ]; then
-            echo "GCS_USAGE_TOKEN secret not set — skipping live healthcheck"
+            echo "${{ matrix.secret }} secret not set — skipping live healthcheck"
             exit 0
           fi
           cd cloud && uv run --no-sync dt-cloud healthcheck
