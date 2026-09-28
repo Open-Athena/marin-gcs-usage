@@ -1,6 +1,6 @@
 # Move cw-s3.oa.dev off Cloudflare Zero Trust → `@open-athena/auth` OIDC + emailed codes
 
-**Status: P1 (site code, dormant) + D1 lineage written; P0 (Google client), P2 (secrets + migrations), P3 (verify on the dev stack), P4 (cutover deploy + Access app delete), P5 (Pulumi + job token) pending.** The cw-s3 twin of gcs's [`specs/done/oidc-cutover.md`](done/oidc-cutover.md) (on the `gcs` branch), whose "cw-s3 follow-up" section decided this on 2026-09-24: cw-s3 follows gcs off Zero Trust rather than keeping a hand-managed Access app outside the Pulumi stack.
+**Status (2026-09-28): P1 (site code, dormant) DONE; P2's D1 half DONE (`0006`–`0019` applied to the production D1 2026-09-28, ahead of the cw-s3-next cutover deploy); P5's Pulumi half DONE (`cf/` on this branch, stack live 2026-09-25). Pending: P0 (Google client — in `oa-auth-509611`, see below), P2's secrets, P3, P4, P5's machine grant. The follow-on is [`auth-bump-name-squash.md`](auth-bump-name-squash.md) (from the auth session): bump the pin past the squash, one `name`, delete the Access adapter, rebaseline `migrations/cw/` — it needs this cutover first.** The cw-s3 twin of gcs's [`specs/done/oidc-cutover.md`](done/oidc-cutover.md) (on the `gcs` branch), whose "cw-s3 follow-up" section decided this on 2026-09-24: cw-s3 follows gcs off Zero Trust rather than keeping a hand-managed Access app outside the Pulumi stack.
 
 ## Why
 
@@ -24,9 +24,9 @@ Unchanged from gcs and reused verbatim: `functions/_lib/{oidc,emailcode,devsessi
 
 ## Phases (gated steps flagged)
 
-**P0 — Google OAuth client (GATED — Ryan).** Not IaC-able. From the auth repo:
+**P0 — Google OAuth client (GATED — Ryan).** Not IaC-able. In the **`oa-auth-509611`** project ("Open Athena" consent branding — gcs's client moved there 2026-09-25; `oa-internal-450019` is branded for an unrelated app), the way gcs did it: pre-fill the console's create-client form in the OA Chrome profile, Ryan clicks Create + downloads the JSON, then the auth repo's script stores it (`--from-json <path> --pages-project oa-cw-s3-usage --run`) and the JSON is deleted. Equivalent from the CLI:
 ```
-scripts/provision-oauth-client.mjs --project oa-internal-450019 \
+scripts/provision-oauth-client.mjs --project oa-auth-509611 \
   --app-origin https://cw-s3.oa.dev --app-origin https://dev.oa-cw-s3-usage.pages.dev --app-origin http://localhost:3263 \
   --redirect-uri https://cw-s3.oa.dev/auth/google/callback \
   --redirect-uri https://dev.oa-cw-s3-usage.pages.dev/auth/google/callback \
@@ -38,7 +38,7 @@ Name it `cw-s3.oa.dev (marin-gcs-usage)`. The three origins are prod, the Pages 
 **P1 — Site code (DONE, dormant).** Server: `_lib/auth.ts` (`GOOGLE_*`/`RESEND_*`/`VIEWER_DOMAINS`/`ADMIN_EMAILS` on `Env`, `edgeIdentity` only when `ACCESS_AUD` is set, the domain policy), the shared configs + Functions above, `api/token.ts` on `baseScope`. Client: `SignInPanel` wall with `/signin`, `devIdentity()` + the `oa_dev_session` marker, wall copy in `stores.ts`. Dev: `/auth` proxy, `PORT=`. All typecheck (`tsc -p functions`), unit tests cover the policy, and the built SPA is byte-identical in behaviour until the flag flips.
 
 **P2 — Secrets + D1 (GATED — Ryan).**
-- D1: `CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d npx wrangler d1 migrations apply oa-cw-s3-usage-db --remote` from `site/` (applies `0007`–`0019`; the mark & sweep tables are untouched). Must precede any deploy carrying the package bump: the newer grant store selects the `0013` columns.
+- D1 — **DONE 2026-09-28**: `CLOUDFLARE_ACCOUNT_ID=74981a43be0de7712369306c7b19133d npx wrangler d1 migrations apply oa-cw-s3-usage-db --remote` from `site/` applied `0006`–`0019` (`0006_pyramid_multiscans` had never reached production either; the mark & sweep tables are untouched). It had to precede the cutover deploy: the newer grant store selects the `0013` columns.
 - Pages secrets on `oa-cw-s3-usage`, production **and** `--env preview` (the dev stack shares the D1, so it needs the same session key): `SESSION_SECRET` (fresh 32+ random bytes), `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (P0), `RESEND_API_KEY` (the shared send-only key from `$oa/.envrc`) + `MAIL_FROM="Open Athena <noreply@oa.dev>"`.
 - `site/.dev.vars`: the same five + `DEV_EMAIL`, for the local stack.
 

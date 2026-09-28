@@ -57,6 +57,25 @@ ADMIN_EMAILS = "1"
 # domains get the `cw` scope with no `allowed_emails` row. Inert behind the
 # edge (edge identities are already authorized).
 VIEWER_DOMAINS = "coreweave.com"
+# R2 serving (specs/r2-serving-migration.md): the same store seam the base's
+# r2.rbw.sh deploy uses (`_lib/index.ts` storeTarget/storeCreds — S3-over-R2,
+# NOT a native R2 binding, so cw matches the base byte-for-byte). The bucket is
+# the `r2_bucket` output of the `cw-s3` Pulumi stack (`cf/`); the job publishes
+# each scan's served subset into it (`job/cw-run.sh` stage 4c, `dt-cloud
+# publish-r2`), so the reads are byte-equivalent to GCS (same keys). FLIPPED
+# 2026-09-28 (after the dev stack, 2026-09-25). The three secrets below MUST be
+# set on the same environment as these two vars — `cf/sync-secrets -P` — and
+# the vars must never be dropped while the secrets stay: a seam-aware build
+# with the creds but no `STORE_BUCKET` reads R2 with the GCS bucket name and
+# 404s every data route (the 2026-09-25 hotfix incident).
+# Secrets (`cf/sync-secrets -p -P`, or `wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
+#   STORE_ENDPOINT          = https://<account id>.r2.cloudflarestorage.com
+#   STORE_ACCESS_KEY_ID     = the `r2_s3_access_key_id` stack output (the R2 API token's id)
+#   STORE_SECRET_ACCESS_KEY = the `r2_s3_secret_access_key` stack output (sha256 of the token value)
+# `STORE_PREFIXES` is set above (the base's defaults no longer include `cw-l2/`).
+STORE_BUCKET = "oa-cw-s3-usage-index"   # `r2_bucket` output; R2 ignores the region, SigV4 wants one
+STORE_REGION = "auto"
+
 
 # Global cache tier for the index reader's JSON (`functions/_lib/edgeCache.ts`:
 # colo cache → KV; gcs binds `CACHE_KV`). Optional — the code runs without it
@@ -66,21 +85,6 @@ VIEWER_DOMAINS = "coreweave.com"
 [[kv_namespaces]]
 binding = "CACHE_KV"
 id = "1dbc4c60884c4f3ba61aa1aa79f494bc"
-
-# R2 serving (specs/r2-serving-migration.md): the same store seam the base's
-# r2.rbw.sh deploy uses (`_lib/index.ts` storeTarget/storeCreds — S3-over-R2,
-# NOT a native R2 binding, so cw matches the base byte-for-byte). Unset = GCS
-# (today). Flipping = set the two vars here + three Pages secrets, then deploy;
-# the reads are byte-equivalent (same keys). USER-GATED — the bucket is the
-# `r2_bucket` output of the `cw-s3` Pulumi stack and must exist + be backfilled
-# (`dt-cloud publish-r2`, or Super Slurper) first:
-#   STORE_BUCKET = "oa-cw-s3-usage-index"   # `r2_bucket` output
-#   STORE_REGION = "auto"                   # R2 ignores the region; SigV4 wants one
-# Secrets (`wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
-#   STORE_ENDPOINT          = https://<account id>.r2.cloudflarestorage.com
-#   STORE_ACCESS_KEY_ID     = the `r2_s3_access_key_id` stack output (the R2 API token's id)
-#   STORE_SECRET_ACCESS_KEY = the `r2_s3_secret_access_key` stack output (sha256 of the token value)
-# `STORE_PREFIXES` is set in [vars] above (the base's defaults no longer include `cw-l2/`).
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
 #   SESSION_SECRET   — HMAC key for session cookies + IP hashing (the app
@@ -117,12 +121,10 @@ STORE_PREFIXES = "listing/,snapshots/,sweep/,cw-sweep/,cw-l2/"
 ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"
 ACCESS_AUD = "1de65a9ffe270d860911b786720fefe00123e79e71ca038c311479e468dc8378"
 STAFF_DOMAIN = "openathena.ai"
-# R2 on the dev stack first (specs/r2-serving-migration.md §7 step 6): uncomment
-# here, set the three STORE_* preview secrets, `site/deploy --dev`, verify
-# byte-equivalence against prod, THEN mirror into production `[vars]`.
-# FLIPPED 2026-09-25: the dev stack reads the served subset from R2 (backfilled +
-# published per scan by the job); production stays on GCS until the byte-
-# equivalence check + re-bench pass (specs/r2-serving-migration.md step 6).
+ADMIN_EMAILS = "1"
+VIEWER_DOMAINS = "coreweave.com"
+# R2, flipped here first (2026-09-25) and in production on 2026-09-28
+# (specs/r2-serving-migration.md step 6): same bucket, preview-scoped secrets.
 STORE_BUCKET = "oa-cw-s3-usage-index"
 STORE_REGION = "auto"
 
