@@ -28,7 +28,9 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # GNU time: the gate mode (`job/run.sh` GATE=1) reports each import's peak RSS.
 # curl: thrds's Discord clients shell out to it (the 2026-09-15 job's Discord
 # digest died with `FileNotFoundError: 'curl'`); python:slim ships none.
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends time curl ca-certificates && rm -rf /var/lib/apt/lists/*
+# git: the [overtime] extra pins pyrmts from GitHub (`git+https`), which pip
+# can only fetch with a git binary.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends time curl ca-certificates git && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # disk-tree engine (root project): fan-out listing tasks run `disk-tree
 # bulk-list`; its wheel force-includes ui/dist (built in stage 1).
@@ -39,7 +41,8 @@ RUN pip install --no-cache-dir ".[gcs,s3]"
 COPY cloud/pyproject.toml ./cloud/
 COPY cloud/src ./cloud/src
 # [plot]: matplotlib for the digest's OP mosaic (dt_cloud.digest_plot)
-RUN pip install --no-cache-dir "./cloud[plot]"
+# [overtime]: pyrmts' multiscan kernel for the over-time groups stage (cw-run.sh 4d)
+RUN pip install --no-cache-dir "./cloud[plot,overtime]"
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
 # One image, two scheduled jobs: the GCS fleet job (`job/run.sh`, tag `latest`)

@@ -173,6 +173,27 @@ else
   echo "no R2_ENDPOINT/R2_BUCKET — skipping publish-r2" >&2
 fi
 
+# 4d. Over-time index groups (specs/obs-axis-indexing.md Phase 1): every full
+# K-scan run of indexed scans not yet in the manifest becomes one sealed
+# multi-scan group — its `(depth, path)` intervals consolidated out-of-core
+# from the scans' path-indices on the mount, published under the group's last
+# scan's layer-2 dir, footer synced as variant `over-time`, manifest row last.
+# `/api/series` then reads ⌈N/K⌉ pruned groups instead of one point per scan
+# (the < K tip stays per-scan). Each new group's scan dir is re-published to
+# R2 so the site finds the group where it serves from. Idempotent: sealed
+# groups never change, a re-run appends only.
+if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  if NEW=$(dt-cloud over-time-groups -g "$GEN" -o "$WORK/over-time" -p "/gcs/$DATA" -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}"); then
+    for gid in $(printf '%s' "$NEW" | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin)["groups"]))'); do
+      if [ -n "${R2_ENDPOINT:+set}" ] && [ -n "${R2_BUCKET:-}" ]; then
+        dt-cloud publish-r2 "$gid" || echo "WARN: publish-r2 failed for over-time group $gid" >&2
+      fi
+    done
+  else
+    echo "WARN: over-time-groups failed (the series keeps its per-scan reads)" >&2
+  fi
+fi
+
 # 4b. Warm the site's subtree + diff caches for this scan (the colo cache, plus
 # the global KV tier once `CACHE_KV` is bound in site/wrangler.toml) so the
 # first viewer gets hits instead of a multi-second compute: the home page's
