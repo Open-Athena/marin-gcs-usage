@@ -5,23 +5,25 @@ import { stringParam, useUrlState } from 'use-prms'
 import { DustHatch, Treemap as DtTreemap } from '@disk-tree/react'
 import type { CellCtx, CellStyle, OutlineGroups } from '@disk-tree/react'
 import { Avatar } from './Avatar'
-import { CopyName } from './CopyName'
+import { CopyName, copyText } from './CopyName'
+import { FaRegCopy } from 'react-icons/fa6'
+import { pathCrumbs, pathUri } from './pathCrumbs'
 import { canonId, UserChip, ghHandle, shortName } from './UserChip'
 import { dateColor, dateGradientCss, epochDaysToDate, epochDaysToMonth, inkFor, slotColor, userColor } from './colors'
 import type { UserIndexEntry } from './colors'
 import { ACTION_COLORS, MarkControls, markProvenance } from './MarkControls'
 import type { Mark, MarkAction, MarkIndex } from './marks'
-import { klcStateAt, klcKeptWithin, subtreeStateTotals, unattrLens } from './sweep'
-import type { MarkState, KlcIndex } from './sweep'
+import { subtreeStateTotals, unattrLens } from './sweep'
+import type { MarkState } from './sweep'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import type { ColorMode, Pricing, TreeNode } from './types'
 import { CLASS_NAMES, classMix, fmtN, fmtUsd, ratePerByte } from './types'
 import { SettingsMenu, useRenderer, useTiling } from './prefs'
 import { useUnits } from './units'
 
-const OUTLINE_LABELS: Record<MarkAction, string> = { keep: 'keep', keep_last_ckpt: 'last ckpt', sweep: 'sweep' }
+const OUTLINE_LABELS: Record<MarkAction, string> = { keep: 'keep', sweep: 'sweep' }
 const OUTLINE_TIP =
-  'Keep/sweep marks draw as outlines: a colored frame traces a region whose decision differs from the directory around it (amber = keep last checkpoint only). Nested frames are flips inside flips. Hover a cell for who set it; switch color to “marks” to see states as fills.'
+  'Keep/sweep marks draw as outlines: a colored frame traces a region whose decision differs from the directory around it. Nested frames are flips inside flips. Hover a cell for who set it; switch color to “marks” to see states as fills.'
 
 // Legend rows inline only the metrics toggled on (swatch + name always show).
 // URL param `?li=` — a subset of "spc" (size / percent / cost); absent = "s"
@@ -33,24 +35,33 @@ const LI_METRIC_CHIPS: [LiMetric, string, string][] = [
   ['c', '$', 'Show each legend row’s estimated storage cost ($/mo, list price)'],
 ]
 
-/** The `gs://…` path shown at the top of a pinned tooltip, with a copy-to-
- * clipboard button (eject the prefix to the CLI) and an "open ↗" that drills the
- * map to / focuses this prefix (also a shareable `?path=` URL). Its own component
- * so the copy state has somewhere to live (renderTooltip is a plain function). */
-function PathBar({ uri, onOpen }: { uri: string; onOpen?: () => void }) {
+/** The path atop a docked/pinned tooltip, as drillable per-segment crumbs: each
+ * ancestor segment drills the map to that level (the deepest — the cell itself,
+ * or a folded `(other)` — is inert, bold). A copy icon ejects the whole prefix
+ * to the CLI (via `copyText`, which also works off the tailnet dev server's
+ * insecure origin). Its own component so the copy state has somewhere to live
+ * (renderTooltip is a plain function). */
+function PathBar({ path, scheme, onDrill }: { path: TreeNode[]; scheme: string; onDrill?: (p: TreeNode[]) => void }) {
   const [copied, setCopied] = useState(false)
-  const slash = uri.lastIndexOf('/') + 1
+  const crumbs = pathCrumbs(path.slice(1).map(n => n.n))
+  const uri = pathUri(scheme, crumbs.map(c => c.name))
   return (
-    <div className="path">
-      <span className="dirname">{uri.slice(0, slash)}</span>
-      <span className="basename">{uri.slice(slash)}</span>
-      <span className="path-acts" onClick={e => e.stopPropagation()}>
-        <button
-          type="button" className="path-copy" title="Copy path to clipboard"
-          onClick={() => navigator.clipboard?.writeText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
-        >{copied ? 'copied ✓' : 'copy'}</button>
-        {onOpen && <button type="button" className="path-open" title="Focus this prefix (drill in / shareable ?path= link)" onClick={onOpen}>open ↗</button>}
+    <div className="path" onClick={e => e.stopPropagation()}>
+      <span className="crumbs">
+        <span className="dirname">{scheme}</span>
+        {crumbs.map(({ name, segs, drillable, last }, i) => (
+          <span key={i}>
+            {i > 0 && <span className="sep">/</span>}
+            {onDrill && drillable
+              ? <button type="button" className="seg" onClick={() => onDrill(path.slice(0, segs.length + 1))}>{name}</button>
+              : <span className={'seg' + (last ? ' basename' : '')}>{name}</span>}
+          </span>
+        ))}
       </span>
+      <button
+        type="button" className="path-copy" title={copied ? 'copied ✓' : 'Copy path to clipboard'} aria-label="Copy path to clipboard"
+        onClick={() => copyText(uri).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}
+      >{copied ? <span className="copied">✓</span> : <FaRegCopy aria-hidden />}</button>
     </div>
   )
 }
@@ -155,7 +166,7 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, klcIdx, viewMarkAxes, initialPath, path, onPathChange }: {
+export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnclaimed, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, markIdx, viewMarkAxes, initialPath, path, onPathChange }: {
   root: TreeNode
   mode: ColorMode
   /** Secondary color axis — see `ShadeMode`. Default `none`. */
@@ -187,8 +198,6 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   redact?: boolean
   // Mark & sweep mode (/mark): overlay keep/delete badges and marking controls.
   markIdx?: MarkIndex | null
-  // keep_last_ckpt → concrete keep/sweep decomposition (sweep.ts `klcSplits`).
-  klcIdx?: KlcIndex | null
   // Start drilled here (e.g. CW's lone bucket) — crumbs keep the ancestry.
   initialPath?: TreeNode[]
   // Controlled drill path + change reporting (upstream contract) — lets the
@@ -286,35 +295,12 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
         ink = s ? inkFor(base) : 'var(--ink)'
       } else if (mode === 'marks') {
         // Keep-axis state: paint kept (green) / swept (red); undecided cells
-        // stay grey — the review to-do, visible at a glance. A
-        // keep_last_ckpt mark decomposes into its *actual* keep/sweep: the
-        // kept step-child subtrees are green, siblings red, and a mixed cell
-        // (the mark root, a run dir holding its kept step) gets proportional
-        // stripes. Amber only when the split can't be resolved from the tree.
+        // stay grey — the review to-do, visible at a glance.
         const st = markIdx?.resolve(uriOf(kidPath))
         const m = st?.mark ?? null
         if (m && (st!.own || !ctx.hasKids)) {
           bg = ACTION_COLORS[m.action]
           ink = inkFor(bg)
-          if (m.action === 'keep_last_ckpt' && klcIdx) {
-            const split = klcIdx.get(m.prefix.endsWith('/') ? m.prefix : m.prefix + '/')
-            if (split) {
-              const uri = uriOf(kidPath)
-              const rel = klcStateAt(uri, split)
-              if (rel === 'mixed') {
-                const frac = kid.b > 0 ? Math.min(1, klcKeptWithin(uri, split) / kid.b) : 0
-                segments = [
-                  { color: ACTION_COLORS.keep, frac },
-                  { color: ACTION_COLORS.sweep, frac: 1 - frac },
-                ]
-                bg = 'var(--panel)'
-                ink = 'var(--ink)'
-              } else {
-                bg = ACTION_COLORS[rel]
-                ink = inkFor(bg)
-              }
-            }
-          }
         } else if (ctx.hasKids) {
           bg = 'var(--panel)' // container without its own mark: children carry the state
           ink = 'var(--ink)'
@@ -402,7 +388,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
           : `color-mix(in oklab, ${bg} ${depth === 1 ? 40 : 62}%, var(--surface))`
       return { bg, ink, hatch, segments, edge, opacity: dim ? 0.22 : undefined }
     },
-    [mode, shade, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx, klcIdx],
+    [mode, shade, slotOf, userIdx, dateRange, readRange, effHl, lens, markIdx],
   )
 
   // owner roll-up for the current view (user coloring only): everyone ≥1% of
@@ -424,8 +410,8 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     ].sort((a, b) => b.b - a.b)
   }
 
-  // Mark decoration is state-as-*outline* (keep green / keep-last-ckpt amber /
-  // sweep red), NOT an ✕ stamped on every descendant. A marked prefix inherits
+  // Mark decoration is state-as-*outline* (keep green / sweep red), NOT an ✕
+  // stamped on every descendant. A marked prefix inherits
   // to its whole subtree, so decorating every cell is redundant noise — an
   // outline goes only where a cell's state DIFFERS from the state its parent cell
   // already conveys: a kept (or swept) parent is outlined once, and same-state
@@ -481,7 +467,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   // nesting rule (an open key's descendants are covered) can't swallow it.
   const [outlined, setOutlined] = useState<MarkAction[]>([])
   const onDrawn = useCallback((keys: string[]) => {
-    const acts = (['keep', 'keep_last_ckpt', 'sweep'] as MarkAction[]).filter(a => keys.some(k => k.startsWith(a + '|')))
+    const acts = (['keep', 'sweep'] as MarkAction[]).filter(a => keys.some(k => k.startsWith(a + '|')))
     setOutlined(prev => (prev.length === acts.length && prev.every((a, i) => a === acts[i]) ? prev : acts))
   }, [])
   const markOutlines = useMemo<OutlineGroups<TreeNode> | undefined>(
@@ -501,46 +487,26 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     [markIdx, mode, rootMark, drillDepth],
   )
   useEffect(() => { if (!markOutlines) setOutlined([]) }, [markOutlines])
-  const markExtra = markIdx
-    ? (n: TreeNode, cellPath: TreeNode[], { w, h, chain = 0 }: { w: number; h: number; chain?: number }) => {
-        if (mode === 'marks') {
-          // The fills already ARE the state — only the KLC "both states live
-          // inside" barber-pole ring adds information here.
-          const { mark, own } = markIdx.resolve(uriOf(cellPath))
-          if (own && mark?.action === 'keep_last_ckpt' && w >= 8 && h >= 8) {
-            return <span className="mark-edge klc" />
-          }
-          return null
-        }
-        return null
-      }
-    : undefined
 
-  // Per-cell overlay. Two layers, independent of each other:
-  //   1. Dust hatch on every `(other)` fold, at ANY depth. The server builds
-  //      these tiles (view.ts: parent − Σ kept kids, with `f` = how many
-  //      children they stand in for), so they're plain nodes to the core and
-  //      never hit its own fold hatch — draw the core's `DustHatch` here so a
-  //      fold reads as "many small things", not a flat grey block.
-  //   2. The mark decoration (`markExtra`), only in mark mode.
-  const renderCellExtra = (n: TreeNode, cellPath: TreeNode[], box: { w: number; h: number; fade?: number; hasKids?: boolean; chain?: number }) => {
-    const dust = n.n.startsWith('(') && box.w >= 8 && box.h >= 8
+  // Per-cell overlay: a dust hatch on every `(other)` fold, at ANY depth. The
+  // server builds these tiles (view.ts: parent − Σ kept kids, with `f` = how
+  // many children they stand in for), so they're plain nodes to the core and
+  // never hit its own fold hatch — draw the core's `DustHatch` here so a fold
+  // reads as "many small things", not a flat grey block.
+  const renderCellExtra = (n: TreeNode, _cellPath: TreeNode[], box: { w: number; h: number; fade?: number; hasKids?: boolean; chain?: number }) =>
+    n.n.startsWith('(') && box.w >= 8 && box.h >= 8
       ? <DustHatch w={box.w} h={box.h} count={Math.max(1, n.f ?? 1)} />
       : null
-    const mark = markExtra?.(n, cellPath, box) ?? null
-    if (!dust && !mark) return null
-    return <>{dust}{mark}</>
-  }
 
   // The client-side state walk below runs from a render callback (no hook
   // memo possible); cache its last answer by inputs so a hover or outline
   // re-render doesn't re-walk the drilled subtree.
-  const stateWalk = useRef<{ node: TreeNode; uri: string; idx: MarkIndex; klc: KlcIndex | undefined; val: Record<MarkState, number> } | null>(null)
-  const walkState = (node: TreeNode, uri: string, idx: MarkIndex, klc: KlcIndex | undefined): Record<MarkState, number> => {
+  const stateWalk = useRef<{ node: TreeNode; uri: string; idx: MarkIndex; val: Record<MarkState, number> } | null>(null)
+  const walkState = (node: TreeNode, uri: string, idx: MarkIndex): Record<MarkState, number> => {
     const c = stateWalk.current
-    if (c && c.node === node && c.uri === uri && c.idx === idx && c.klc === klc) return c.val
-    const val = subtreeStateTotals(node, uri, idx, klc)
-    stateWalk.current = { node, uri, idx, klc, val }
+    if (c && c.node === node && c.uri === uri && c.idx === idx) return c.val
+    const val = subtreeStateTotals(node, uri, idx)
+    stateWalk.current = { node, uri, idx, val }
     return val
   }
   const renderRollup = (node: TreeNode, path: TreeNode[]) => {
@@ -552,19 +518,17 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     const rollup = rollupFor(node)
     if (!markIdx && !rollup.length) return null
     // MarkState totals for the current view: of the drilled subtree's bytes, how
-    // much is keep / sweep / still undecided (KLC decomposed via klcIdx;
-    // amber "last ckpt" appears only for marks the tree can't split).
+    // much is keep / sweep / still undecided.
     const stateWanted = !!markIdx && mode === 'marks'
     const atRoot = path.length <= 1
     // Exact server-side total for this exact view (root or drilled); the client
     // walk over the loaded (floored) tree is the instant fallback while the
     // exact fetch is in flight, marked ≈.
     const exact = stateWanted && viewMarkAxes ? viewMarkAxes : null
-    const state = stateWanted ? (exact ?? walkState(node, atRoot ? '' : uriOf(path), markIdx!, klcIdx ?? undefined)) : null
+    const state = stateWanted ? (exact ?? walkState(node, atRoot ? '' : uriOf(path), markIdx!)) : null
     const stateRows = state
       ? ([
           ['keep', state.keep, ACTION_COLORS.keep],
-          ['last ckpt', state.keep_last_ckpt, ACTION_COLORS.keep_last_ckpt],
           ['sweep', state.sweep, ACTION_COLORS.sweep],
           ['undecided', state.unmarked, 'var(--other)'],
         ] as [string, number, string][]).filter(([, b]) => b > 0)
@@ -773,7 +737,7 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
     )
     return (
       <>
-        <PathBar uri={uri} onOpen={n.n.startsWith('(') ? undefined : () => onPathChange?.(path)} />
+        <PathBar path={path} scheme={scheme} onDrill={onPathChange} />
         <div className="nums">
           {fmtBytes(n.b)} · {fmtN(n.o)} objects · {((100 * n.b) / root.b).toFixed(2)}% of total
           {n.d != null && <> · mean created {epochDaysToMonth(n.d)}</>}

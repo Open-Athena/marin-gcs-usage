@@ -14,6 +14,9 @@ import type { DiffData } from './DiffTreemap'
 import { ScanCombobox } from './ScanCombobox'
 import { buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
+import { FitSelect } from './FitSelect'
+import { PathPopover } from './PathPopover'
+import { pathUri } from './pathCrumbs'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
 import { useHashSpy } from './hashSpy'
@@ -25,13 +28,13 @@ import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, parseQuery } from './filterTree'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMarkIndex, useMarks } from './marks'
-import { MARK_AXES, klcSplits, useMyUser } from './sweep'
+import { MARK_AXES, useMyUser } from './sweep'
 import type { MarkAxis } from './sweep'
 import { MarkHistory } from './MarkHistory'
 import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, nearestScan, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { DEFAULT_STORE, STORES, storeForPath } from './stores'
 import { useDocTitle } from './title'
@@ -96,8 +99,8 @@ const SPANS: [string, number][] = [['1d', 1], ['3d', 3], ['7d', 7], ['14d', 14],
 
 // The mark-state axis chips (`?k=` letters), in bar order.
 const MARK_CHIPS: { f: MarkAxis; key: string; glyph: string; color: string; tip: string }[] = [
-  { f: 'keep', key: 'k', glyph: '✓', color: 'var(--mk-keep)', tip: 'Bytes under a keep decision (keep-last-ckpt counts: it splits its subtree).' },
-  { f: 'sweep', key: 's', glyph: '✕', color: 'var(--mk-del)', tip: 'Bytes marked for the sweep (keep-last-ckpt counts: it splits its subtree).' },
+  { f: 'keep', key: 'k', glyph: '✓', color: 'var(--mk-keep)', tip: 'Bytes under a keep decision.' },
+  { f: 'sweep', key: 's', glyph: '✕', color: 'var(--mk-del)', tip: 'Bytes marked for the sweep.' },
   { f: 'unmarked', key: 'u', glyph: '○', color: 'var(--ink-2)', tip: 'The review backlog — no keep/sweep decision on the prefix or any ancestor.' },
 ]
 
@@ -458,7 +461,7 @@ function AppContent() {
   // nothing across a scope, scan, or drill change, and the page below never
   // reflows; at worst `mapPath` truncates the new drill to an ancestor this
   // tree still has, until the new tree (depth-1 first, then full) replaces it.
-  // Everything derived for the drawn map (`klcIdx`, `dateRange`, `catOrder`,
+  // Everything derived for the drawn map (`dateRange`, `catOrder`,
   // the rules section) follows `mapTree`, not `tree`, so a hold doesn't
   // empty the decorations under a map that is still showing.
   const lastTree = useRef<TreeNode | null>(null)
@@ -471,12 +474,6 @@ function AppContent() {
   const mapStale = !tree && !!lastTree.current
   const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
 
-  // keep_last_ckpt → concrete keep/sweep split, resolved against the drawn
-  // tree (state cells, stripes, and the state rollup all decompose through it).
-  const klcIdx = useMemo(
-    () => (mapTree && markIdx.count ? klcSplits(mapTree, markIdx.keeps) : undefined),
-    [mapTree, markIdx],
-  )
   // The marks feed filters its (small, client-held) rows by the same name
   // query; the map's filtering is the server's.
   const pred = useMemo(() => (fq ? parseQuery(fq) : null), [fq])
@@ -878,7 +875,7 @@ function AppContent() {
         <SiteNav />
         <p className="err">
           404 — <code>/{drillPath}</code> is not a bucket or page here.{' '}
-          <Link to="/">home</Link> · <Link to="/sweep">sweep console</Link>{DEFAULT_STORE.owners && <> · <Link to="/users">users</Link></>}
+          <Link to="/">home</Link>{DEFAULT_STORE.staging && <> · <Link to="/staged">staged</Link></>} · <Link to="/sweep">sweep console</Link>{DEFAULT_STORE.owners && <> · <Link to="/users">users</Link></>}
         </p>
       </main>
     )
@@ -916,7 +913,7 @@ function AppContent() {
     : setOP(negated ? `!${shortUserKey(canonId(v))}` : shortUserKey(canonId(v)))
   const ownerSelect = (
     <>
-      <select className="tb-select" value={ownerSelVal} aria-label="Owner"
+      <FitSelect className="tb-select" value={ownerSelVal} ariaLabel="Owner"
         onChange={e => pickOwner(e.target.value)}>
         <option value="">anyone</option>
         <option value="owned">owned</option>
@@ -925,7 +922,7 @@ function AppContent() {
         {mkUsers.filter(u => u !== myUser).map(u => <option key={u} value={u}>{shortName(u)}</option>)}
         {ownerUser && !mkUsers.includes(ownerUser) && ownerUser !== myUser && <option value={ownerUser}>{shortName(ownerUser)}</option>}
         {negated && notUsers[0] && notUsers[0] !== myUser && !mkUsers.includes(notUsers[0]) && <option value={notUsers[0]}>{shortName(notUsers[0])}</option>}
-      </select>
+      </FitSelect>
       {selPerson && (
         <Explain text={negated
           ? <>Showing everyone <b>except</b> this person. Click for just theirs.</>
@@ -945,13 +942,18 @@ function AppContent() {
   // hidden (app.scss) — this IS it, kept on screen mid-scroll; the deepest
   // node's totals ride along as the suffix.
   const here = mapPath?.[mapPath.length - 1]
+  // The deepest crumb is a tap-to-open path card (the full `<scheme>…/` prefix +
+  // copy) rather than another drill link — it's where the page already is.
+  const crumbFullPath = pathUri(store.scheme, segs, true)
   const crumbs = (
     <span className="tb-path" aria-label="Drilled path">
       <Tooltip content={store.rootLabel}><button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])}>{mapTree?.n ?? store.rootLabel}</button></Tooltip>
       {segs.map((sg, i) => (
         <span key={i}>
           <span className="sep">/</span>
-          <Tooltip content={<code>{segs.slice(0, i + 1).join('/')}</code>}><button type="button" className={i === segs.length - 1 ? 'here' : ''} onClick={() => drillTo(segs.slice(0, i + 1))}>{sg}</button></Tooltip>
+          {i === segs.length - 1
+            ? <PathPopover label={sg} fullPath={crumbFullPath} />
+            : <Tooltip content={<code>{segs.slice(0, i + 1).join('/')}</code>}><button type="button" onClick={() => drillTo(segs.slice(0, i + 1))}>{sg}</button></Tooltip>}
         </span>
       ))}
     </span>
@@ -981,9 +983,9 @@ function AppContent() {
               : effMode === 'user' ? <>Dominant <b>owner</b> of each cell; the legend lists the top users of the current view.</>
               : <>Top-level directory each cell belongs to.</>
             }>
-              <select className="tb-select" value={effMode} aria-label="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
+              <FitSelect className="tb-select" value={effMode} ariaLabel="Color plots by" onChange={e => setMode(e.target.value as ColorMode)}>
                 {bar.color.map(m => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
-              </select>
+              </FitSelect>
             </Explain>
           </label>
         )}
@@ -993,10 +995,10 @@ function AppContent() {
           <label className="tb-ctl">
             <span className="lbl">shade</span>
             <Explain text={<>A perturbation <i>within</i> each cell's color, on top of the primary axis. <b>storage class</b>: darker = a larger share of cold classes (Nearline / Coldline / Archive), so within one owner's band you can see what's already cold. Off by default.</>}>
-              <select className="tb-select" value={shade} aria-label="Shade cells by" onChange={e => setSP(e.target.value === 'none' ? undefined : e.target.value)}>
+              <FitSelect className="tb-select" value={shade} ariaLabel="Shade cells by" onChange={e => setSP(e.target.value === 'none' ? undefined : e.target.value)}>
                 <option value="none">none</option>
                 <option value="class">storage class</option>
-              </select>
+              </FitSelect>
             </Explain>
           </label>
         )}
@@ -1107,7 +1109,6 @@ function AppContent() {
             lens={lens}
             scheme={store.scheme}
             markIdx={markMode ? markIdx : undefined}
-            klcIdx={markMode ? klcIdx : undefined}
             // Exact state totals only when they describe THIS view: a server
             // user-lens map gets that user's totals; the unscoped estate gets
             // the estate totals. Any client-side scoping (a pool, a mark
@@ -1156,8 +1157,7 @@ function AppContent() {
               segs={tblSegs}
               scheme={store.scheme}
               markIdx={markMode ? markIdx : undefined}
-              klcIdx={markMode ? klcIdx : undefined}
-              states={markMode ? markAxes : null}
+                states={markMode ? markAxes : null}
               clientStates={!serverLedger}
               userIdx={userIdx}
               onPickUser={u => pickUser(u, false)}
@@ -1170,6 +1170,15 @@ function AppContent() {
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
             : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in, or narrow the scope'
             : `view failed: ${rootErr.message}`}
+        </p>
+      ) : noScansYet(scansQ) ? (
+        // The list answered and is empty: no snapshot has index rows in D1,
+        // so no view will ever load — a skeleton here would spin forever.
+        // In dev this is the first-run state of `./dev --local-db` on an
+        // unseeded local D1; say how to seed it.
+        <p className="loading">
+          No scans indexed yet — the scan list names only snapshots whose index rows are in D1 (<code>index_schema</code>), and there are none.
+          {import.meta.env.DEV && <>{' '}Running <code>site/dev --local-db</code> on an empty local D1? Seed it from a prod export with <code>site/dev --refresh</code>.</>}
         </p>
       ) : (
         // First paint only — before even the depth-1 tree has landed (later
@@ -1324,7 +1333,7 @@ function AppContent() {
       {store.lifecycle && (
         <LifecycleFold
           store={store} asof={asof} prevScan={prevScan}
-          note={<>Intended state is tracked in <code>{store.lifecycle}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
+          note={<>Intended state is tracked in <code>{store.lifecycle.tracked}</code> (<code>dt-cloud lifecycle diff|push</code>).</>}
         />
       )}
 
