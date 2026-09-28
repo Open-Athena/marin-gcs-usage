@@ -48,6 +48,7 @@ STORE = Store(
     pages_project="oa-cw-s3-usage",
     production_branch="main",   # CF Pages production branch (wrangler deploys `--branch main`)
     domain="cw-s3.oa.dev",
+    dev_domain="dev.cw-s3.oa.dev",   # the dev stack (`site/deploy --dev`), app-gated since 2026-09-28
     d1_name="oa-cw-s3-usage-db",
     # Global cache tier (`CACHE_KV`, the edge cache's second tier) — cw's
     # wrangler.toml stanza is commented out until this exists; paste the
@@ -79,6 +80,8 @@ dash = CfnDashboard(
 # ---------------------------------------------------------------------------
 pulumi.export("pages_project", dash.pages.name)
 pulumi.export("custom_domain", dash.domain.name)
+if dash.dev_cname is not None:
+    pulumi.export("dev_domain", dash.dev_cname.name)
 pulumi.export("d1_database", dash.d1.name)
 if dash.kv is not None:
     pulumi.export("cache_kv", dash.kv.title)

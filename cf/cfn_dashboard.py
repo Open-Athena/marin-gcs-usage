@@ -64,6 +64,13 @@ class Store:
     production_branch: str
     domain: str                       # custom domain (→ <pages_project>.pages.dev)
     d1_name: str
+    # Custom host for the dev stack (`site/deploy --dev` = the `dev` preview
+    # branch). Pages routes custom domains to production; the documented way a
+    # preview branch gets a hostname (custom-branch-aliases) is to add the host
+    # as a custom domain on the project AND point its (proxied, same-account)
+    # CNAME at the branch alias `dev.<pages_project>.pages.dev` instead of the
+    # project host. None = pages.dev alias only.
+    dev_domain: str | None = None
     # Zero Trust Access gate, or None when the deployment does its own identity
     # (gcs.oa.dev: own Google OIDC client + emailed codes — specs/done/oidc-cutover.md).
     access: AccessApp | None = None
@@ -116,7 +123,7 @@ class CfnDashboard(pulumi.ComponentResource):
     ):
         """`import_ids` adopts pre-existing (hand-built) resources into this
         component instead of creating them: a `{key: cloudflare-import-id}` map
-        over the keys `pages`, `domain`, `cname`, `d1`, `kv`, `access-policy`,
+        over the keys `pages`, `domain`, `cname`, `dev-domain`, `dev-cname`, `d1`, `kv`, `access-policy`,
         `access-app`, `r2`, `r2-token`, `service-token`, `service-policy`. Set it
         (via config) for the first `up` on a live account,
         then clear it once the stack is authoritative. Absent → normal create.
@@ -166,6 +173,25 @@ class CfnDashboard(pulumi.ComponentResource):
             # `comment` is human free-text on the record; leave it to whoever set it.
             opts=child("cname", ignore=["comment"]),
         )
+        self.dev_domain = self.dev_cname = None
+        if store.dev_domain:
+            self.dev_domain = cloudflare.PagesDomain(
+                f"{name}-dev-domain",
+                account_id=account_id,
+                project_name=self.pages.name,
+                name=store.dev_domain,
+                opts=child("dev-domain"),
+            )
+            self.dev_cname = cloudflare.DnsRecord(
+                f"{name}-dev-cname",
+                zone_id=zone_id,
+                name=store.dev_domain,
+                type="CNAME",
+                content=f"dev.{store.pages_host}",
+                ttl=1,
+                proxied=True,
+                opts=child("dev-cname", ignore=["comment"]),
+            )
 
         # D1 database (container only; migrations stay with the app).
         self.d1 = cloudflare.D1Database(

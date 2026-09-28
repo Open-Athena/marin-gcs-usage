@@ -105,8 +105,11 @@ id = "1dbc4c60884c4f3ba61aa1aa79f494bc"
 
 # ---------------------------------------------------------------------------
 # Preview environment — the dev stack (`site/deploy --dev` → `--branch dev` →
-# https://dev.oa-cw-s3-usage.pages.dev, gated by the same Access app via its
-# `*.oa-cw-s3-usage.pages.dev` destination). Real prod data, unmerged code:
+# https://dev.cw-s3.oa.dev, a CNAME onto the branch alias
+# dev.oa-cw-s3-usage.pages.dev; `cf/` owns the record). App-gated (`AUTH_MODE =
+# "app"`: Google OIDC + emailed codes — the P4 target state, rehearsed here first;
+# the pages.dev alias additionally sits behind the Access app until P4 deletes
+# it). Real prod data, unmerged code:
 # where the R2 / KV flips and a new base get their real numbers before prod.
 # Pages rule: `vars`, `d1_databases`, `kv_namespaces` are non-inheritable — the
 # moment ONE is overridden here, ALL must be restated, so this block mirrors
@@ -123,15 +126,12 @@ migrations_dir = "migrations/cw"
 [env.preview.vars]
 ROOT_LABEL = "marin CoreWeave (dev)"
 STORE = "cw"
-AUTH_MODE = "edge"
+AUTH_MODE = "app"                     # own sign-in (specs/oidc-cutover-cw.md P3); production flips at P4
 STORE_SCHEME = "s3://"
 STORE_BUCKETS = "marin-us-east-02a,hero-checkpoints"
-EDGE_TRUSTED = "1"
 BASE_SCOPE = "cw"
 SNAPSHOTS_SUBDIR = "cw"
 STORE_PREFIXES = "listing/,snapshots/,sweep/,cw-sweep/,cw-l2/"
-ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"
-ACCESS_AUD = "1de65a9ffe270d860911b786720fefe00123e79e71ca038c311479e468dc8378"
 STAFF_DOMAIN = "openathena.ai"
 ADMIN_EMAILS = "1"
 VIEWER_DOMAINS = "coreweave.com"
