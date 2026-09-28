@@ -64,9 +64,6 @@ bytes), `-j/--json`.
 # keep specific prefixes
 dt-cloud mark gs://marin-us-east5/checkpoints/keep-me/ gs://marin-us-central2/data/gold/
 
-# keep only the newest checkpoint under each run, sweep the older ones
-dt-cloud mark -k keep_last_ckpt gs://marin-us-east5/checkpoints/my-run/
-
 # explicitly sweep (delete) a prefix
 dt-cloud mark -k sweep gs://marin-us-east5/scratch/
 
@@ -74,7 +71,7 @@ dt-cloud mark -k sweep gs://marin-us-east5/scratch/
 dt-cloud todo -p | dt-cloud mark -k keep -f -
 ```
 
-Keep actions (`-k`): `keep`, `keep_last_ckpt`, `sweep` (or `none` to leave the
+Keep actions (`-k`): `keep`, `sweep` (or `none` to leave the
 keep axis untouched and only set ownership). Other options: `-o/--owner`
 (`@me` by default — assigns the prefix to you; `""` leaves ownership untouched),
 `-m/--memo` (note stored with every action), `-n/--dry-run` (print, send
