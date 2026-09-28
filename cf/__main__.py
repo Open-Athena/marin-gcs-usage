@@ -18,7 +18,7 @@ needs any broad grant — the CF token model is per-product, per-account/zone.
 
 import pulumi
 
-from cfn_dashboard import CfnDashboard, Store
+from cfn_dashboard import BranchAlias, CfnDashboard, Store
 
 # ---------------------------------------------------------------------------
 # Config (shared, account-global)
@@ -49,6 +49,10 @@ STORE = Store(
     production_branch="main",   # CF Pages production branch (wrangler deploys `--branch main`)
     domain="gcs.oa.dev",
     d1_name="oa-gcs-usage-auth",
+    # The dev stack (`site/deploy --dev` → Pages branch `dev`, `[env.preview]`
+    # in site/wrangler.toml) at its own hostname; dev.oa-gcs-usage.pages.dev
+    # keeps resolving too. Both hosts are registered on the Google client.
+    branch_aliases=(BranchAlias(domain="dev.gcs.oa.dev", branch="dev"),),
     kv_name="oa-gcs-usage-cache",
 )
 
@@ -72,6 +76,8 @@ dash = CfnDashboard(
 # ---------------------------------------------------------------------------
 pulumi.export("pages_project", dash.pages.name)
 pulumi.export("custom_domain", dash.domain.name)
+for branch, dom in dash.branch_domains.items():
+    pulumi.export(f"{branch}_domain", dom.name)
 pulumi.export("d1_database", dash.d1.name)
 if dash.kv is not None:
     pulumi.export("cache_kv", dash.kv.title)

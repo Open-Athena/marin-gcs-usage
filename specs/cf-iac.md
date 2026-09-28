@@ -132,6 +132,7 @@ are imported and at empty preview (so any later move is a provable no-op).
 | `pages` | `PagesProject` | container only, `ignore_changes=["deployment_configs"]` |
 | `domain` | `PagesDomain` | `gcs.oa.dev` / `cw-s3.oa.dev` |
 | `cname` | `DnsRecord` | the `oa.dev` CNAME → `<project>.pages.dev`, proxied |
+| `domain:<branch>` + `cname:<branch>` | `PagesDomain` + `DnsRecord` | per `Store.branch_aliases` entry: a preview branch's own hostname, its proxied CNAME → `<branch>.<project>.pages.dev` (gcs: `dev.gcs.oa.dev` → `dev`, added 2026-09-28) |
 | `d1` | `D1Database` | container; migrations stay with the app |
 | `kv` | `WorkersKvNamespace` | **gcs only** |
 | `access-policy` + `access-app` | `ZeroTrustAccessPolicy` + `ZeroTrustAccessApplication` | gcs: `/auth/sso`, include Everyone (D1 allowlist gates); cw-s3: whole host, include OA + coreweave.com |

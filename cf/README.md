@@ -31,6 +31,10 @@ GCP job stack carries the one broad-IAM caveat; see `../../ops/gcp/gcs-usage/`.)
   wrangler fills it.**
 - `cloudflare.PagesDomain` — the custom domain (`gcs.oa.dev` / `cw-s3.oa.dev`).
 - `cloudflare.DnsRecord` — the `oa.dev` CNAME the custom domain resolves through.
+- `Store.branch_aliases` — one more `PagesDomain` + proxied `DnsRecord` per
+  preview-branch hostname, the CNAME aimed at `<branch>.<project>.pages.dev`
+  (Pages' "custom domain for a branch"). gcs: `dev.gcs.oa.dev` → branch `dev`,
+  the `site/deploy --dev` stack.
 - `cloudflare.ZeroTrustAccessApplication` + `ZeroTrustAccessPolicy` — the Access
   gate, only when a store sets `access` (cw-s3: whole host, policy = OA +
   coreweave.com email domains). gcs has **no** Access app since the 2026-09-24
