@@ -1,0 +1,52 @@
+name: Healthcheck
+
+# Live-site serving health for cw-s3.oa.dev, independent of the test suite:
+# hits the running site (latest scan) and fails if it isn't servable — the
+# class of outage a green data pipeline can still cause (a scan whose D1 index
+# footer never synced; the 2026-09-28 over-time BigInt 500s on /api/series).
+# Adapted from the gcs deployment's workflow: the same `dt-cloud healthcheck`,
+# pointed at this host and this store's `/data/cw/` snapshot subdir.
+#
+# Needs a `cw`-scoped grant token in the `CW_S3_USAGE_TOKEN` repo secret (repo
+# secrets are shared across branches, and the gcs one is `gcs`-scoped, so this
+# deployment names its own); the job skips (exit 0) when it's absent, so this
+# is inert until the secret is added. NB GitHub runs `schedule` triggers from
+# the repo's DEFAULT branch only (`gcs` here), so on `cw-s3` this fires by
+# dispatch; the hourly cadence for this host has to be a job in the default
+# branch's workflow.
+on:
+  schedule:
+    - cron: "47 * * * *" # hourly, offset from gcs's :17
+  workflow_dispatch:
+
+jobs:
+  healthcheck:
+    name: cw-s3.oa.dev serving health
+    runs-on: ubuntu-latest
+    env:
+      GCS_USAGE_TOKEN: ${{ secrets.CW_S3_USAGE_TOKEN }}
+      GCS_USAGE_URL: https://cw-s3.oa.dev
+      SNAPSHOTS_SUBDIR: cw
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # `ui/dist` must exist: dt-cloud depends on the repo-root `disk-tree`
+      # package, whose wheel force-includes `ui/dist` as `disk_tree/static`
+      # (a bare checkout has none → hatchling "Forced include not found").
+      # The CLI doesn't need the assets — same trick as ci.yml.
+      - name: Sync dt-cloud
+        run: mkdir -p ui/dist && cd cloud && uv sync
+
+      - name: Run healthcheck
+        run: |
+          if [ -z "${GCS_USAGE_TOKEN:-}" ]; then
+            echo "CW_S3_USAGE_TOKEN secret not set — skipping live healthcheck"
+            exit 0
+          fi
+          cd cloud && uv run --no-sync dt-cloud healthcheck
