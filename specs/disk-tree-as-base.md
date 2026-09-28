@@ -123,3 +123,59 @@ Plus your **in-flight, uncommitted** over-time UX (`site/src/SizeOverTime.tsx`, 
 5. Cut cw-s3.oa.dev's Pages project to `cw-s3-next`; tag the old tip `cw-s3-legacy`; rename. From then on `cw-s3 = dt/cloud + N deployment commits`, and each `/cp` pass is a rebase, not a scramble.
 
 Open for you: the D1 lineage merge (your seam) — the base has `migrations/cw` as the live lineage for both r2 and cw; gcs's lineage is the odd one out.
+
+## Update — 2026-09-28 (gcs re-fork prep; US pass from cw-s3-next + gcs)
+
+Written by the disk-tree session after `/read gcs` + `/read cw` (gcs `6c38d12`, cw-s3-next `4208ccc`, cw-s3 `d423d9f`). Same shape as the 09-23 cw-s3 section: what moved to the base today, what gcs still has that the base should own, what stays gcs's delta, then the recipe.
+
+### US'd to `cloud` today (verbatim `-x` picks from `cw-s3-next`)
+
+- `15b553f` `site/migrations/cw` 0007–0019 (the `@open-athena/auth` session model), `8145a32` OIDC + email-code Functions + in-app viewer policy (dormant without `SESSION_SECRET`), `fb528dc` `SignInPanel` wall / `/signin` / `/auth` dev proxy. Adaptation: the `[env.preview]` block (cw's dev stack: its D1 id, `ACCESS_AUD`) is **not** on the base — deployment config, carry it as delta; `f8daca8` (`site/deploy --dev`) stays with it. `ADMIN_EMAILS`/`VIEWER_DOMAINS` are in the base's `[vars]` (from `8145a32`), so the third pick's `wrangler.toml` hunk was moot.
+- `2270a05` `published` is data in meta.json (`dt-cloud stamp-published`, the data Function serves it as-is); the `job/cw-webdata.py` hunk dropped (no `job/` on the base — your producers own that line).
+- Verified in the worktree: site `tsc -b` clean, vitest 141/141, `dt-cloud` pytest (a stale venv reports `publish` has no `stamp_published` — `uv sync` first; **`wt/cw-s3-next/cloud/.venv` has the same stale state**, so `test_publish` fails there too until you resync).
+- Nothing gcs-sourced was picked yet: gcs's auth is ahead of cw's port (below), so it lands as adapted CPs, not `-x` picks.
+
+### gcs → base, to US **before** `gcs-next` is built (else it rides as site-code delta forever)
+
+Sizes are `git show --shortstat`; all are base material (generic UI / auth / dev tooling), none deployment config.
+
+| area | gcs commits | size | note |
+|---|---|---|---|
+| auth, newer than cw's port | `b9039b0` `166a78b` (pin `4c28b9d`→`7442ab0`, one `name`), `eeaf4a4` (oneTap + `auth/google/{client,onetap,onetap/nonce}.ts`), `3e0413d` (`api/auth/[[path]].ts` dev auto-sign-in), `1d53381` (already in cw's port) | ~245+/159- vs `cw-s3-next` | `sso.ts` removal (`b533957`) is the per-deploy flip — base keeps `sso.ts` while cw-s3 is on Access |
+| admin share links | `0b7b684` `cbc88e6` `917465c` `9c05854` `2ad5b67` (`gcs:read` RO scope) `bcbe09b` `9c8551d` | ~350 lines, `AdminPage.tsx` +182 | scope name `gcs:read` → `BASE_SCOPE`-derived |
+| mobile nav + controls fold | `aafc193` `593673d` `c074765` `fa0d3f8` `5ad7a04` `eff3513` `c7dca0d` | ~420 lines (`App.tsx`, `app.scss`, `SiteNav.tsx`) | IntersectionObserver-driven; 0 hits on the base |
+| help line / edu-drawer | `a800b71` `6f8e753` | 290+/58- (16 files) | `Explain` strip, `h` / SpeedDial toggle; base's `Help.tsx` is the old floating layer |
+| diff UX | `03c6e5a` | 508+/139- | `?d=` pin/duration window, first-class cells, totals drawer — check against the base's own diff review rounds (`1938833`..`7343f0e` from cw) before porting; likely overlapping |
+| over-time x-range picker | `b1c98d0` | 31+/3- | `1w / 1m / all` |
+| deletion memo per trash gesture | `9567ca0` | 64+/14- | stage batches (1:many) — the base's staged model is `plans`/`plan_items`; port as a memo column, not a new table |
+| small | `ffc9f78` created column, `474f940` treemap reflow, `5564661` `8f78ca2` hashSpy | 28 lines total | |
+| `site/dev --local-db` | `01972ad` (+`d8eff58` `allowedHosts` — check, base may have it) | 155+/94- | the off-prod pattern (local miniflare D1, `--refresh` seeds from prod). Parametrize the DB name from `wrangler.toml` (gcs hardcodes `oa-gcs-usage-auth`, strips `remote = true` via a config copy) |
+| lifecycle GCS backend | `4b65b18` | 1608+ (18 files) | `pull_gcs`/`pull_many`/anonymous-rule diff + `LifecycleFold` multi-bucket table + tests are base (the base's `lifecycle.py` is S3/CAIOS-only); `job/lifecycle/marin-*.json` snapshots are gcs delta |
+| already on the base | `9038e84` `07631a6` docked tips (`tipMode="dock"`, `renderTipDefault`), `421be22` axis convergence, `13f23bf` secrets strip, `3d6dcae` `useRowSelection`, `206c0eb` trash-can staging, the 09-17 plans seam (`eeeda8b`..`168533e`) | | via the 09-16/17 passes and the cw union |
+| **not a CP: design seams** | `_lib/plans.ts` + `api/plans` (gcs: fully-qualified `gs://marin-<bucket>/…` prefixes, plans span buckets, keep carve-outs from the actions ledger; cw/base: one bucket per run) — `convergence.md` §1/§2 | 89+/71-, 76+/50- | the base should take gcs's *shape* (qualified prefixes, multi-bucket plans) as the general one, with cw's single-bucket executor as the special case. Do this once on the base, not as a gcs delta |
+| **drop on re-fork** | `extras.ts`/`extras.py` `ck.txt` checkpoint sidecar (`index-extras.md`) | | the base retired KLC (`keep_last_ckpt`, `ck.txt`, `node.k`) on 09-21; gcs's copy goes with its history |
+
+`convergence.md` (cw, 2026-09-16) is superseded as a gate: its "one codebase, deployments as configuration" endgame *is* the re-fork onto `cloud`; its four seams (§1 sweep model, §2 ledger, §3 D1 lineage, §4 digest) are now base-side design items, listed above/below, not prerequisites for building `gcs-next`. Only the plans-shape seam materially affects gcs's delta size.
+
+### gcs delta (keep as one commit per concern on `gcs-next`)
+
+`job/**` (GCS daily `run.sh`, `batch-submit.sh`, `build.sh`, `rerg`, icon/arrow/digest-card generators + `icons/`, `assets/`, `lifecycle/marin-*.json`), `Dockerfile` + `cloudbuild.yaml` + `.gcloudignore` + `.dockerignore`, `sheet-sync/**`, `cf/` (gcs stack: `__main__.py`, `Pulumi.gcs.yaml`, `Pulumi.yaml`, `README.md`, `pyproject.toml`, `uv.lock` — **not** `cfn_dashboard.py`, see below), `.github/workflows/health.yml` + the `ci.yml` branch triggers (the base's `ci.yml`/`deploy-r2.yml` already run site tsc+vitest, engine pytest, `dt_cloud` pytest with `--extra overtime`; your `marin-test`/`site-build` jobs are the mgu variants), `site/wrangler.toml` (D1 `oa-gcs-usage-auth`, KV, `[vars]`; add `migrations_dir = "migrations/gcs"`), **`site/migrations/gcs/0001_init.sql`** (your squashed lineage replaces the base's stale 26-file `migrations/gcs/` copy — delete those in the same commit), gcs specs + ledger, `README.md`/`AGENTS.md`, `scripts/branch-audit`, `docs/img`.
+
+D1: the base's live lineage is `migrations/cw/` (0001–0019 as of today; r2 demo + cw-s3 both run it). gcs's D1 is rebaselined on `0001_init.sql`, so per-deployment lineage dirs is the honest state; `convergence.md` §3 (one lineage, applied to both) stays a later base-side merge. The base's flat `site/migrations/0001–0030` (dead copy from the 09-20 `m/gcs` hoist; no `migrations_dir` points at it) is ready to drop on `cloud` — disk-tree does that on Ryan's go.
+
+### `CfnDashboard`: two implementations, pick one home
+
+- mgu `cf/cfn_dashboard.py` — Python Pulumi, 381 lines, **live** for both stacks (gcs: 7 unchanged; cw-s3: 9 unchanged), byte-identical on `gcs` and `cw-s3-next`, written "extraction-ready / marin-agnostic".
+- disk-tree `iac/index.ts` — TS sketch, 111 lines, spec `staged-delete.md` CP8, never applied; `disk-tree iac config` emits its config from `buckets.yml`.
+
+Recommendation: the Python one moves to the base (`iac/cf/cfn_dashboard.py` + a `pyproject.toml` next to it, or `cloud/src/dt_cloud/iac/`), the TS sketch retires, and `disk-tree iac config` targets it. Each deployment's `cf/__main__.py` then imports the base's component and keeps only its `Store`. Its `service_token` support is unused by both stacks since the Zero Trust exits — drop it in the move. This is a base-side change (disk-tree session), not part of `gcs-next`.
+
+### Recipe (gcs session)
+
+Same as cw-s3's, with the US pass first:
+
+0. Wait for the disk-tree session's "gcs → base" table above to land on `cloud` (it will post the tip + `[CP cursor: gcs …]`); each row lands as an adapted CP naming the gcs commits. Meanwhile nothing on `gcs` is blocked — new gcs work keeps going on `gcs` and gets CP'd the same way (write a manifest under `~/c/disk-tree/specs/` if it's more than a fix).
+1. `git fetch dt cloud` → `git checkout -b gcs-next dt/cloud`.
+2. Re-apply the delta list above as one commit per concern (`git checkout gcs -- job Dockerfile cloudbuild.yaml .gcloudignore .dockerignore sheet-sync cf/{__main__.py,Pulumi.gcs.yaml,Pulumi.yaml,README.md,pyproject.toml,uv.lock} .github/workflows/health.yml specs/<gcs specs> …`), then the `wrangler.toml` + `migrations/gcs/0001_init.sql` commit. Don't bring `site/src`/`site/functions`/`cloud/`/`packages/` from `gcs` — after step 0 the base is the superset; anything you find missing there is a US miss, report it rather than carrying it.
+3. Verify: `pnpm -C site build`, `pnpm -C site test`, `cd cloud && mkdir -p ../ui/dist && uv sync --group test --extra overtime && pytest`, then CIC on the gcs dev stack (`site/dev --local-db` once it's on the base) against a seeded local D1.
+4. Cut gcs.oa.dev's Pages project to `gcs-next`; tag `gcs-legacy`; rename. From then on `gcs = dt/cloud + N deployment commits`.
