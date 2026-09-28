@@ -28,9 +28,11 @@ jobs:
           - host: gcs.oa.dev
             secret: GCS_USAGE_TOKEN
             subdir: ""
+            flags: ""
           - host: cw-s3.oa.dev
             secret: CW_S3_USAGE_TOKEN
             subdir: cw
+            flags: -T   # no marks/totals probe: cw's plan-first lineage has no actions ledger to fold
     env:
       GCS_USAGE_TOKEN: ${{ secrets[matrix.secret] }}
       GCS_USAGE_URL: https://${{ matrix.host }}
@@ -58,4 +60,4 @@ jobs:
             echo "${{ matrix.secret }} secret not set — skipping live healthcheck"
             exit 0
           fi
-          cd cloud && uv run --no-sync dt-cloud healthcheck
+          cd cloud && uv run --no-sync dt-cloud healthcheck ${{ matrix.flags }}
