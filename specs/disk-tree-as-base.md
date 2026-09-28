@@ -202,3 +202,13 @@ The plans-shape seam (`_lib/plans.ts`/`api/plans`, gcs's qualified multi-bucket 
 ### disk-tree (this session)
 
 Picks `[base]` commits from `cw-s3-next`/`gcs-next` verbatim as they appear (cursor per branch in the pick's message), lands the plans-shape generalization + the `cfn_dashboard.py` move + the flat `site/migrations/0001–0030` drop, and bumps `cloud`. Both branches rebase; the base grows; the deltas stay config.
+
+## Update — 2026-09-28 11:24Z (gcs cut over; both deployments on `cloud`)
+
+gcs.oa.dev serves `c988f03` (Pages deployment `b933ed2e`) = `dt/cloud@3065bdb` + 11 gcs deployment-delta commits (job/, Docker + Cloud Build, sheet-sync, `cf/`, CI triggers + `health.yml`, branch-audit + docs/img, README/AGENTS, specs + ledger, `wrangler.toml` + `migrations/gcs/0001_init.sql`, `index.html`/og/devPort, the `gcs-next` CI trigger). Every `[base]` commit the re-fork produced was picked verbatim into `cloud` and dropped out on the final rebase. Branch bookkeeping: `gcs-next` became `gcs` (force-pushed; `o/gcs-next` deleted), the retired tip is tag `gcs-legacy` (`ef804aa`), the deploy pointer is `gcs-prod` (the base's `site/deploy` names one pointer per Pages project; bare `prod` is retired). No D1 migration was needed: the remote `d1_migrations` already recorded `0001_init.sql`.
+
+Verified live: `/auth/google/client` (new client id), `/auth/google` 302 to Google, `/auth/google/onetap/nonce` 200, `/api/whoami` and `/data/scans.json` 401 unauthenticated, the wall renders with Google's in-page button + emailed code + request access. Local-db dev stack (D1 seeded from a prod export) had already rendered home / children table with the staging gesture / mark history / size-over-time / diff / `/admin` / `/sweep` / `/users`.
+
+**Deferred, on the base's list (not dropped):** the GCS lifecycle backend (cw's per-bucket diff on the base and gcs's GCS adapter are parallel evolutions of one feature — hand-merge; the gcs store entry has no `lifecycle` until then, so the home page has no lifecycle fold); the docked tip's `PathBar` (drillable crumbs + copy); the `?marks=1` marks-UI flag; `FitSelect`/`PathPopover` crumbs; ChildrenTable's `marksCol`; gcs's `looksCkpt` name heuristic (conflicts with the base's `sweep.test.ts` rule — decide); `site/refresh-db` for exports over wrangler's 2 GiB import limit; a first-run hint that `scans.json` is empty until `index_schema` rows exist.
+
+**From here:** `git fetch dt && git rebase dt/cloud` on `gcs` before new work; generic work as `[base]`-prefixed commits (disk-tree picks them verbatim; they drop out on the next rebase); deployment config as plain delta commits; never rewrite history under disk-tree's cursor.

@@ -342,3 +342,7 @@ cw-s3 `0858d6d`, cherry-picked: `cloud/src/dt_cloud/secrets.py` (`env_secret`/`s
 **dt/cloud (cursor `9165705`, 110 surveyed): nothing ported, by policy** — every commit is either the base gcs re-forks onto (`site/`+`cloud/` seams, `packages/*` superset, KLC excision, `path-index` rename, r2 layer) or disk-tree's own `ui/`/`src/disk_tree` work (staged-delete, dynamic OGI, shallow sidecar). Porting any of it onto legacy gcs is the double-adoption the handoff warns against.
 
 Tests: site + functions `tsc` clean, 71 vitest. Not CIC'd (the dev stack was down; the changes are cache headers, a URL param, and Function edge cases).
+
+### 2026-09-28 (gcs re-forked onto disk-tree `cloud`) — the peer graph collapses
+
+gcs.oa.dev and cw-s3.oa.dev both run on disk-tree `cloud` as of today (`specs/disk-tree-as-base.md`, the 11:24Z update). `gcs` is now `dt/cloud` + ~11 deployment-delta commits, rebased onto every base bump; the old branch is tag `gcs-legacy`. Scrambles between `gcs` and `cw-s3` are over: anything generic lands as a `[base]` commit on whichever deployment writes it, disk-tree picks it verbatim into `cloud`, and both deployments take it on their next rebase. What `/cp` still assesses between the two OA branches is deployment-shaped work worth mirroring as config (a `Store` flag, a `[vars]` line). The ledger's intended-delta tables above describe the retired branches; the live intended delta is the commit list `dt/cloud..gcs`.
