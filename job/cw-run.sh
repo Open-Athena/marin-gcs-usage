@@ -186,9 +186,10 @@ GEN="$GEN" WORK="$WORK/over-time" bash job/cw-overtime.sh || echo "WARN: over-ti
 # first viewer gets hits instead of a multi-second compute: the home page's
 # default requests — one subtree, the diff span chips and the previous-scan
 # pair — at the common canvas widths (`dt-cloud warm-cache`, which reads the
-# SITE_URL / SNAPSHOTS_SUBDIR exported above). cw-s3.oa.dev is whole-host
-# Access-gated, so auth is the CF Access service-token pair (or a site token);
-# skipped when neither is set. Never fatal.
+# SITE_URL / SNAPSHOTS_SUBDIR exported above). Auth is the job's machine grant
+# (`GCS_USAGE_TOKEN` ← Secret Manager `cw-s3-job-grant`, scope `cw`, minted
+# from /admin — specs/oidc-cutover-cw.md P5); the CF Access pair is the
+# pre-cutover form, kept for a rollback. Skipped when neither is set. Never fatal.
 if { [ -n "${GCS_USAGE_TOKEN:+set}" ] || { [ -n "${CF_ACCESS_CLIENT_ID:+set}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:+set}" ]; }; } \
    && [ "${REPROC:-0}" != "1" ]; then  # `:+set`: xtrace must not print the tokens
   dt-cloud warm-cache -d "$SNAP_ID" -r "gs://$DATA/snapshots/cw" \
