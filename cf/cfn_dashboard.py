@@ -10,8 +10,9 @@ instance wiring (which stores, which account/zone) stays in the consuming
 `CfnDashboard` stands up the Cloudflare resources a dashboard needs and that its
 deploy tool (`wrangler pages deploy`) does NOT own:
 
-  Pages project shell · custom domain · apex-zone CNAME · Zero Trust Access
-  application + allow policy · D1 database · optional Workers KV namespace.
+  Pages project shell · custom domain · apex-zone CNAME · preview-branch
+  aliases · Zero Trust Access application + allow policy · D1 database ·
+  optional Workers KV namespace.
 
 THE DEPLOY/CONFIG BOUNDARY (load-bearing): `wrangler pages deploy` fills the
 Pages project's *deployment_configs* — env vars, D1/KV bindings, secrets — from
@@ -58,19 +59,27 @@ class AccessApp:
 
 
 @dataclass(frozen=True)
+class BranchAlias:
+    """A custom hostname for one preview branch (Pages' "custom domain for a
+    branch"): the hostname is added as a Pages custom domain like production's,
+    but its proxied CNAME targets `<branch>.<project>.pages.dev` instead of the
+    project host — that target is the whole mechanism (an unproxied record, or
+    one aimed at the plain project host, lands on production). Sessions are
+    per host, so a dev stack gets its own sign-in at a memorable name."""
+    domain: str                       # e.g. dev.<production domain>
+    branch: str                       # the Pages preview branch it aliases
+
+
+@dataclass(frozen=True)
 class Store:
     """One deployment's Cloudflare-side facts (all non-secret; ids are public)."""
     pages_project: str
     production_branch: str
     domain: str                       # custom domain (→ <pages_project>.pages.dev)
     d1_name: str
-    # Custom host for the dev stack (`site/deploy --dev` = the `dev` preview
-    # branch). Pages routes custom domains to production; the documented way a
-    # preview branch gets a hostname (custom-branch-aliases) is to add the host
-    # as a custom domain on the project AND point its (proxied, same-account)
-    # CNAME at the branch alias `dev.<pages_project>.pages.dev` instead of the
-    # project host. None = pages.dev alias only.
-    dev_domain: str | None = None
+    # Custom hostnames for preview branches (the dev stack): each one is a
+    # PagesDomain + a proxied CNAME to `<branch>.<project>.pages.dev`.
+    branch_aliases: tuple[BranchAlias, ...] = ()
     # Zero Trust Access gate, or None when the deployment does its own identity
     # (gcs.oa.dev: own Google OIDC client + emailed codes — specs/done/oidc-cutover.md).
     access: AccessApp | None = None
@@ -123,20 +132,28 @@ class CfnDashboard(pulumi.ComponentResource):
     ):
         """`import_ids` adopts pre-existing (hand-built) resources into this
         component instead of creating them: a `{key: cloudflare-import-id}` map
-        over the keys `pages`, `domain`, `cname`, `dev-domain`, `dev-cname`, `d1`, `kv`, `access-policy`,
-        `access-app`, `r2`, `r2-token`, `service-token`, `service-policy`. Set it
+        over the keys `pages`, `domain`, `cname`, `d1`, `kv`, `access-policy`,
+        `access-app`, `r2`, `r2-token`, `service-token`, `service-policy`, and
+        `domain:<branch>` / `cname:<branch>` per branch alias. Set it
         (via config) for the first `up` on a live account,
         then clear it once the stack is authoritative. Absent → normal create.
         """
         super().__init__("oa:cfn:CfnDashboard", name, None, opts)
         imports = dict(import_ids or {})
 
-        def child(key: str, ignore: list[str] | None = None) -> ResourceOptions:
+        def child(
+            key: str,
+            ignore: list[str] | None = None,
+            depends_on: list[pulumi.Resource] | None = None,
+        ) -> ResourceOptions:
             """parent=self, plus `import_=<id>` when this key is being adopted,
             and any `ignore_changes` (for live-owned legacy/free-text fields the
             component doesn't manage)."""
             return ResourceOptions(
-                parent=self, import_=imports.get(key) or None, ignore_changes=ignore
+                parent=self,
+                import_=imports.get(key) or None,
+                ignore_changes=ignore,
+                depends_on=depends_on,
             )
 
         # Pages project — container only; wrangler owns deployment_configs.
@@ -173,24 +190,30 @@ class CfnDashboard(pulumi.ComponentResource):
             # `comment` is human free-text on the record; leave it to whoever set it.
             opts=child("cname", ignore=["comment"]),
         )
-        self.dev_domain = self.dev_cname = None
-        if store.dev_domain:
-            self.dev_domain = cloudflare.PagesDomain(
-                f"{name}-dev-domain",
+
+        # Preview-branch aliases: the same PagesDomain + CNAME pair, with the
+        # CNAME aimed at the branch's pages.dev host. The record goes first so
+        # activating the domain never has to invent one aimed at production.
+        self.branch_cnames: dict[str, cloudflare.DnsRecord] = {}
+        self.branch_domains: dict[str, cloudflare.PagesDomain] = {}
+        for alias in store.branch_aliases:
+            cname = cloudflare.DnsRecord(
+                f"{name}-{alias.branch}-cname",
+                zone_id=zone_id,
+                name=alias.domain,
+                type="CNAME",
+                content=f"{alias.branch}.{store.pages_host}",
+                ttl=1,
+                proxied=True,   # required: an unproxied alias routes to production
+                opts=child(f"cname:{alias.branch}", ignore=["comment"]),
+            )
+            self.branch_cnames[alias.branch] = cname
+            self.branch_domains[alias.branch] = cloudflare.PagesDomain(
+                f"{name}-{alias.branch}-domain",
                 account_id=account_id,
                 project_name=self.pages.name,
-                name=store.dev_domain,
-                opts=child("dev-domain"),
-            )
-            self.dev_cname = cloudflare.DnsRecord(
-                f"{name}-dev-cname",
-                zone_id=zone_id,
-                name=store.dev_domain,
-                type="CNAME",
-                content=f"dev.{store.pages_host}",
-                ttl=1,
-                proxied=True,
-                opts=child("dev-cname", ignore=["comment"]),
+                name=alias.domain,
+                opts=child(f"domain:{alias.branch}", depends_on=[cname]),
             )
 
         # D1 database (container only; migrations stay with the app).

@@ -18,7 +18,7 @@ needs any broad grant — the CF token model is per-product, per-account/zone.
 
 import pulumi
 
-from cfn_dashboard import CfnDashboard, Store
+from cfn_dashboard import BranchAlias, CfnDashboard, Store
 
 # ---------------------------------------------------------------------------
 # Config (shared, account-global)
@@ -48,7 +48,10 @@ STORE = Store(
     pages_project="oa-cw-s3-usage",
     production_branch="main",   # CF Pages production branch (wrangler deploys `--branch main`)
     domain="cw-s3.oa.dev",
-    dev_domain="dev.cw-s3.oa.dev",   # the dev stack (`site/deploy --dev`), app-gated since 2026-09-28
+    # The dev stack (`site/deploy --dev` = the `dev` preview branch, app-gated
+    # since 2026-09-28) at its own hostname; dev.oa-cw-s3-usage.pages.dev keeps
+    # resolving too. Both hosts are registered on the Google client.
+    branch_aliases=(BranchAlias(domain="dev.cw-s3.oa.dev", branch="dev"),),
     d1_name="oa-cw-s3-usage-db",
     # Global cache tier (`CACHE_KV`, the edge cache's second tier) — cw's
     # wrangler.toml stanza is commented out until this exists; paste the
@@ -80,8 +83,8 @@ dash = CfnDashboard(
 # ---------------------------------------------------------------------------
 pulumi.export("pages_project", dash.pages.name)
 pulumi.export("custom_domain", dash.domain.name)
-if dash.dev_cname is not None:
-    pulumi.export("dev_domain", dash.dev_cname.name)
+for branch, dom in dash.branch_domains.items():
+    pulumi.export(f"{branch}_domain", dom.name)
 pulumi.export("d1_database", dash.d1.name)
 if dash.kv is not None:
     pulumi.export("cache_kv", dash.kv.title)
