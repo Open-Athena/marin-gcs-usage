@@ -1,134 +1,123 @@
-# disk-tree
+# marin-gcs-usage
 
-Disk and cloud storage analyzer with caching, CLI, and web UI.
+![Treemap of the six marin-* buckets, coloured by top-level prefix](site/public/og.jpg)
 
-[![disk-tree treemap of an R2 bucket](screenshots/treemap.png)](https://r2.rbw.sh/r2/ctbk)
+*The public preview: cells are sized by bytes and coloured by top-level prefix, with names, sizes, owners, and costs omitted. The [site][gcs.oa.dev] shows all of them to signed-in users.*
 
-<p align="center"><b><a href="https://r2.rbw.sh/r2/ctbk">▶ Live demo</a></b> — interactive treemap of a 916&nbsp;GB R2 bucket (drill in, filter, compare), from <a href="https://ctbk.dev">ctbk.dev</a></p>
+Storage-usage attribution and cleanup for the Marin GCS buckets: **who is using
+what**, and a **mark & sweep** workflow to reclaim space. Browse it at
+**[gcs.oa.dev]** (Open-Athena-gated).
 
-<!-- toc -->
-- [Install](#install)
-- [Web UI](#web-ui)
-- [CLI](#cli)
-  - [Examples](#examples)
-- [Notes](#notes)
-  - [Caching](#caching)
-  - [Performance](#performance)
-<!-- /toc -->
+The identity map (`cloud/src/dt_cloud/identities.yaml`: handles, teams, login
+aliases) is curated in-repo; it maps already-public GitHub / W&B handles to a
+team bucket (`oa` / `stanford` / `communal`) and carries no emails or private
+contact info.
 
-## Install
+## Mark & sweep
 
-```bash
-pip install disk-tree
-```
+Storage across the `marin-*` buckets is reviewed by **marking prefixes to keep**
+— everything left unmarked is **swept (deleted) after the cleanup deadline**.
+Mark from the web UI at [gcs.oa.dev], or non-interactively:
 
-## Web UI
+- `dt-cloud mark` / `status` / `todo` — the CLI (bulk-mark, check a prefix's
+  effective fate, list the undecided backlog).
+- `GET /api/resolve`, `GET /api/todo`, `POST /api/actions` — the HTTP API.
 
-Start the server and open http://localhost:5001:
+**[AGENTS.md](AGENTS.md)** documents the token, CLI, and API for driving this
+autonomously (e.g. pointing an agent at your team's prefixes). Marking only
+records a decision in the ledger — nothing is deleted at mark time, and marks
+are reversible until the sweep.
 
-```bash
-disk-tree-server
-```
+## Attribution pipeline
 
-### Scan List
-
-View all cached scans, start new scans for local paths or S3 buckets:
-
-![Scan list](screenshots/scan-list.png)
-
-### Directory Browsing
-
-Browse directories with size, modification time, children, and descendant counts. Multi-select with keyboard navigation, bulk delete:
-
-![Directory listing](screenshots/directory-listing.png)
-
-### Treemap Visualization
-
-Interactive treemaps for visualizing space usage — drill into any directory, filter by name, toggle an age lens. Zero-dependency DIY-SVG/canvas ([`@rdub/treemap`](packages/treemap)), no chart lib. Try it on the [live `r2://ctbk` demo](https://r2.rbw.sh/r2/ctbk):
-
-[![Treemap](screenshots/treemap.png)](https://r2.rbw.sh/r2/ctbk)
-
-### S3 Buckets
-
-Browse and scan S3 buckets:
-
-![S3 buckets](screenshots/s3-buckets.png)
-
-## CLI
+Attribution parquets (`prefix → user/team` rows) come from two builders:
 
 ```bash
-disk-tree index --help
-# Usage: disk-tree index [OPTIONS] [URL]
-#
-# Options:
-#   -C, --no-cache-read    Force fresh scan (ignore cache)
-#   -g, --gc               Garbage collect old scans
-#   -s, --sudo             Run gfind with sudo
-#   -m, --measure-memory   Track peak memory usage
-#   --help                 Show this message and exit.
+# Path + record signals from the listing itself:
+dt-cloud build -l 'gs://<bucket>/<scan>/objects/*.parquet' -o tmp/attribution.parquet
+dt-cloud build -l <listing> -o <out> -R   # path signals only (no GETs)
 
-disk-tree scans           # List cached scans (JSON)
-disk-tree-server          # Start the web UI server
+# W&B signals (the bulk of coverage):
+dt-cloud wandb-mine -e marin-community -o tmp/wandb-runs.parquet   # full API mine (time-bisected; -E/-s/-u for parallel range workers)
+dt-cloud executor-mine -l <listing> -o tmp/executor-infos.parquet  # .executor_info sidecar GETs
+dt-cloud wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <listing> -o tmp/attribution-wandb.parquet
 ```
 
-### Examples
+Reporting and the site consume any number of attribution parquets (`-a`, repeatable):
 
-Scan an S3 bucket:
 ```bash
-disk-tree index s3://ctbk
-# 2333 files in 138 dirs, total size 45.1G
-#       4B  test.txt
-#    66.1K  favicon.ico
-#     3.9M  index.html
-#     5.5M  static
-#    11.2M  .dvc
-#    95.0M  tmp
-#   579.1M  stations
-#     1.2G  aggregated
-#     6.0G  normalized
-#    37.2G  csvs
+dt-cloud attr-report -l <listing> -a <attr...>       # per-user/team bytes + coverage; -u <user> prints their prefixes
+dt-cloud report -a <actions.json>                    # per-user mark-status CSV (the "who still needs to mark" nag list)
+dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unowned prefixes (curation queue)
+dt-cloud webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
+dt-cloud rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
 ```
 
-Scan a local directory:
-```bash
-disk-tree index /Users/ryan/c/disk-tree
-# 97 files in 47 dirs, total size 1.5M
-#       0B  disk-tree/__init__.py
-#      77B  disk-tree/requirements.txt
-#     867B  disk-tree/setup.py
-#     2.3K  disk-tree/README.md
-#    23.8K  disk-tree/disk_tree
-#   291.8K  disk-tree/screenshots
-#   580.4K  disk-tree/.git
-#   628.6K  disk-tree/www
-```
+Signals, roughly best-first (deepest-prefix-wins at join time):
 
-## Notes
+1. W&B run-config writer paths (`base_path` & friends — checkpoint/output dirs the trainer wrote)
+2. W&B run-name ↔ dir joins under `checkpoints/`/`grug/`
+3. `.executor_info` → W&B run joins
+4. `users/<seg>/` path prefixes ([marin#6790] namespacing)
+5. `.artifact.json` sidecars → `provenance.built_by`
+6. manual `prefix_owners` for big shared trees (datasets, sweep namespaces)
 
-### Caching
+Users/teams are re-resolved against the *current* `identities.yaml` at load
+time, so alias/team curation takes effect without rebuilding parquets. Unknown
+spellings resolve to their own sanitized segment with team `unknown` and are
+listed on stderr — curate them into `identities.yaml` (`dt-cloud rules`
+validates it).
 
-`disk-tree` caches scan results as Parquet files in `~/.config/disk-tree/scans/`, with metadata in `~/.config/disk-tree/disk-tree.db`. Override with `DISK_TREE_ROOT`.
+Listing-scale runs (34M+ dirs) belong on a work node, not a laptop.
 
-### Performance
+## Access ([gcs.oa.dev])
 
-- **Local filesystems**: Uses `gfind -printf` for fast stat collection (handles sparse files correctly with 512-byte block sizes)
-- **S3**: Caches `aws s3 ls --recursive` output
-- **Fresher child patching**: When viewing a parent directory, newer child scans automatically patch in updated stats
-- **Depth-based predicate pushdown**: Parquet queries filter by depth for fast loading
+The viz site is app-gated: sign in with any Google account, or have a one-time code emailed to you, and the app then checks the signed-in email against an allowlist it owns (a D1 table, edited by admins at `/admin/db/allowed_emails`; removals take effect immediately). Invited guests can also be issued personal share links. To be added, ping Ryan (Discord) or ask any admin.
+
+## Reports
+
+The daily job posts the same digest to Slack `#gcs-usage` and Discord `#gcs-usage` (Marin's server): one thread per month whose OP (month-to-date headline, per-week bullets, a class-mosaic plot) is edited in place, plus one reply per scan under a headline sender with a colour-coded trend-arrow avatar. Mondays add a week-over-week report (totals, sweep deletions, biggest movers with owners). Code: `cloud/src/dt_cloud/digest.py` (`dt-cloud digest [-P discord]`) and `weekly.py` (`dt-cloud weekly`); design notes in `specs/done/slack-digest-shape-c.md`, `specs/done/discord-digest-twin.md`, and `specs/weekly-discord-report.md`. Posting goes through [thrds] (per-message sender + attachments on both platforms).
+
+![August 2026 digest plot: total bytes over the month, and the storage-class mosaic beneath](docs/img/digest-2026-08-redacted.jpg)
+
+*The thread OP's plot for August 2026 (`python -m dt_cloud.digest_plot --redact`): the shape of the month and the class mix, with the sizes left off. The posted version carries the axis values and the running total.*
+
+## Repo layout
+
+Monorepo — a shared engine plus the Marin-specific app and site:
+
+- **`cloud/`** — the `marin-gcs-usage` package (the `dt-cloud` CLI: attribution
+  builders, reporting, the mark & sweep ledger client, access-log ingest).
+- **`src/disk_tree/`** — the [disk-tree] engine (indexing, tree aggregation,
+  storage backends) this repo is built on; installed as the root `disk-tree`
+  package.
+- **`site/`** — the [gcs.oa.dev] web app: a Cloudflare Pages SPA (treemap +
+  browse + mark UI) with Pages Functions serving `/data` and `/api/*`.
 
 ## Development
 
+The `dt-cloud` CLI lives in `cloud/`:
+
 ```bash
-# Python
+cd cloud
 uv sync
-disk-tree-server
-
-# Web UI
-cd ui
-pnpm install
-pnpm dev  # http://localhost:5180 (proxies API to :5001)
-
-# Screenshots
-cd ui
-pnpm screenshots
+uv run pytest
 ```
+
+Two marin contracts are deliberately mirrored (not imported) to keep this repo
+standalone; if either changes upstream, update in lockstep:
+
+- `cloud/src/dt_cloud/usernames.py` — `sanitize_username` rules, mirror of
+  `rigging.provenance.username_segment`
+- `cloud/src/dt_cloud/records.py` — the `.artifact.json` shape
+  (`marin.execution.artifact.ArtifactRecord`), of which only
+  `provenance.built_by` is read
+
+For the web app (`site/`), see [`site/`](site) — `./dev` runs the full local
+stack (Vite UI + `wrangler pages dev` for the Functions).
+
+[gcs.oa.dev]: https://gcs.oa.dev
+[marin]: https://github.com/marin-community/marin
+[marin#6790]: https://github.com/marin-community/marin/issues/6790
+[disk-tree]: https://github.com/runsascoded/disk-tree
+[thrds]: https://github.com/runsascoded/thrds
