@@ -179,3 +179,26 @@ Same as cw-s3's, with the US pass first:
 2. Re-apply the delta list above as one commit per concern (`git checkout gcs -- job Dockerfile cloudbuild.yaml .gcloudignore .dockerignore sheet-sync cf/{__main__.py,Pulumi.gcs.yaml,Pulumi.yaml,README.md,pyproject.toml,uv.lock} .github/workflows/health.yml specs/<gcs specs> …`), then the `wrangler.toml` + `migrations/gcs/0001_init.sql` commit. Don't bring `site/src`/`site/functions`/`cloud/`/`packages/` from `gcs` — after step 0 the base is the superset; anything you find missing there is a US miss, report it rather than carrying it.
 3. Verify: `pnpm -C site build`, `pnpm -C site test`, `cd cloud && mkdir -p ../ui/dist && uv sync --group test --extra overtime && pytest`, then CIC on the gcs dev stack (`site/dev --local-db` once it's on the base) against a seeded local D1.
 4. Cut gcs.oa.dev's Pages project to `gcs-next`; tag `gcs-legacy`; rename. From then on `gcs = dt/cloud + N deployment commits`.
+
+## Update — 2026-09-28 (ASAP path: both deployments onto `cloud` now, US'ing from the rebased branches)
+
+disk-tree `cloud` is at **`18e5a55`**, pushed (`github.com/runsascoded/disk-tree`). cw-s3.oa.dev cut over to `cw-s3-next` this morning (`cw-s3-prod` pointer, R2-served), so cw-s3 is on the base already; gcs is the one still off it. Ryan's ask: get both onto `cloud` ASAP. The serial plan above ("disk-tree US's gcs's ten chunks first, then `gcs-next`") is the slow order — each chunk is an *adapted* CP onto a `site/` gcs diverged from. Inverting it is faster and loses nothing:
+
+### cw-s3 (cw session) — today
+
+1. `git rebase --onto dt/cloud 47eee40 cw-s3-next` (or `git rebase dt/cloud`): `279089c`/`0f51d47`/`00ba9ed`/`d933836`/`18e5a55` are your `15b553f`/`8145a32`/`fb528dc`/`2270a05`/`3406185` — they drop out as already-applied. Expect a `wrangler.toml` touch (the base has `ADMIN_EMAILS`/`VIEWER_DOMAINS` in `[vars]` now; keep your `[env.preview]` + `STORE_*`).
+2. Verify (site tsc/vitest, `dt-cloud` pytest after `mkdir -p ui/dist && uv sync`), `site/deploy --dev`, then prod. From here `cw-s3-next` = `dt/cloud` + ~30 deployment commits and stays that way: **rebase onto `dt/cloud` at every base bump**, before starting new work.
+3. Anything generic you write goes on the branch as its own commit with **`[base]`** at the start of the subject (a `-x` pick target — verbatim, since the branch *is* base lineage). disk-tree picks `[base]` commits as they appear; they vanish on your next rebase. No manifests needed for these; a manifest only for something that needs adapting (deployment-shaped code that should become variant-gated).
+
+### gcs (gcs session) — build `gcs-next` now, not after the US queue
+
+1. `git checkout -b gcs-next dt/cloud` (`18e5a55`+).
+2. Deployment delta, one commit per concern, from the 09-28 list above (job/, Docker+Cloud Build, sheet-sync, `cf/` minus `cfn_dashboard.py`, `health.yml` + CI triggers, `wrangler.toml` with `migrations_dir = "migrations/gcs"`, `migrations/gcs/0001_init.sql` replacing the stale 26-file copy, specs/ledger, README/AGENTS, `scripts/branch-audit`, `docs/img`).
+3. **Re-apply gcs's base-worthy features on top of the base, one `[base]` commit per row of the 09-28 table** — the de novo factor again, in reverse: you know these features, the base's `site/` is what they must fit (cw's union shape: `Store` config gating, `packages/*` consumed, KLC gone, `path-index`). Order by value/size: auth (pin `7442ab0`, oneTap, dev auto-sign-in — on top of the OIDC port the base has), admin share links, `site/dev --local-db` (DB name from `wrangler.toml`), mobile nav/controls fold, help line, x-range picker, deletion memo (as a `plan_items` memo, not a new table), the small four; then the GCS lifecycle backend (`cloud/` + `LifecycleFold`); **diff `?d=` UX last and only after diffing against the base's diff review rounds** — it may already be there in another form. Skip `ck.txt`/extras (KLC retired). Each `[base]` commit: generic, variant-gated where gcs-specific, tests moved with it.
+4. Verify + CIC on the gcs dev stack against a seeded local D1; cut gcs.oa.dev's Pages project to `gcs-next`; tag `gcs-legacy`. From then on the same rule as cw: rebase onto `dt/cloud` at every bump; disk-tree picks your `[base]` commits verbatim and they drop out.
+
+The plans-shape seam (`_lib/plans.ts`/`api/plans`, gcs's qualified multi-bucket prefixes) is the one feature that cannot be a `[base]` commit as-is — it changes the base's contract for cw too. Carry gcs's version as a **delta** commit on `gcs-next` for now (marked `[seam: plans]`), and disk-tree generalizes the base to gcs's shape as its own change; when that lands the delta commit conflicts on rebase and gets dropped.
+
+### disk-tree (this session)
+
+Picks `[base]` commits from `cw-s3-next`/`gcs-next` verbatim as they appear (cursor per branch in the pick's message), lands the plans-shape generalization + the `cfn_dashboard.py` move + the flat `site/migrations/0001–0030` drop, and bumps `cloud`. Both branches rebase; the base grows; the deltas stay config.
