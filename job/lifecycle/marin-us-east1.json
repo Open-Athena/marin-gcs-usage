@@ -1,0 +1,101 @@
+[
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 1,
+      "matchesPrefix": [
+        "tmp/ttl=1d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 14,
+      "matchesPrefix": [
+        "tmp/ttl=14d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 2,
+      "matchesPrefix": [
+        "tmp/ttl=2d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 3,
+      "matchesPrefix": [
+        "tmp/ttl=3d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 30,
+      "matchesPrefix": [
+        "tmp/ttl=30d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 4,
+      "matchesPrefix": [
+        "tmp/ttl=4d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 5,
+      "matchesPrefix": [
+        "tmp/ttl=5d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 6,
+      "matchesPrefix": [
+        "tmp/ttl=6d/"
+      ]
+    }
+  },
+  {
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "age": 7,
+      "matchesPrefix": [
+        "tmp/ttl=7d/"
+      ]
+    }
+  }
+]
