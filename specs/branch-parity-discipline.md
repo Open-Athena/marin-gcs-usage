@@ -881,3 +881,7 @@ Surveyed `3065bdb..gcs` (17 first-parent commits: the re-fork's deployment delta
 - `0e7baf8` gcs's `cloud` merge: **not a CP** — cw did its own (`f33e59c`, same base tip family). One leak that merge left on cw and this pass fixed: `.github/workflows/build-dist.yml` had stayed at the pre-`@rdub/treemap` version; now `cloud`'s (workflows are outside `branch-audit`'s surfaces, which is why the audit didn't flag it).
 
 Base-bound from cw after this pass (for the next `cloud` pick): `6f4d700` (healthcheck subdir), `a300fe3` (over-time BigInt normalization + fallback), `27c55aa` (over-time groups producer).
+
+### 2026-09-28 — auth-bump squash closed on cw-s3 (`specs/done/auth-bump-name-squash.md`); edge mode removed from the base surface
+
+Shared with gcs (base surface, `[base]` commits for `cloud` to pick): the edge-mode removal `f6fb291` (`_lib/auth.ts`, `_lib/cfAccess.ts` deleted, `api/whoami.ts`, `src/auth.ts`, `src/AuthGate.tsx`, `vite.config.ts` — `AUTH_MODE` is `app` | `public` now; gcs's tree still carries the edge code the base has, so this lands on gcs at its next `cloud` merge). Branch-specific (intrinsic): `site/migrations/cw/0001_init.sql` (the squash, `6048548`; gcs squashed its own lineage 2026-09-25), `wrangler.toml` comments (`27ac5b5`). Base-bound from cw for the next `cloud` pick, in order: `6f4d700` (healthcheck subdir), `a300fe3` (over-time BigInt normalization + fallback), `27c55aa` (over-time groups producer), `218f4b2` (subtree/diff D1 guard), `f6fb291` (edge mode removal).
