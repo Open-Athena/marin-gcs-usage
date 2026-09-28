@@ -7,6 +7,12 @@ import { defineConfig } from 'vite'
 // Functions) is always the next port up — `./dev` derives it the same way.
 const PORT = Number(process.env.PORT ?? JSON.parse(readFileSync('package.json', 'utf8')).devPort)
 const WRANGLER = `http://localhost:${PORT + 1}`
+// `API_ORIGIN=https://r2.rbw.sh pnpm dev`: proxy the data + API paths to a
+// DEPLOYED site instead of a local wrangler — a read-only preview of UI
+// changes over real data, with no D1 seed or store creds on this machine.
+// Sign-in stays local (its callback origin must be this host).
+const API = process.env.API_ORIGIN ?? WRANGLER
+const apiProxy = API === WRANGLER ? API : { target: API, changeOrigin: true }
 
 // dev only: serve a locally-generated `tmp/series.json` (from `dt-cloud series
 // -r http://localhost:3254/data -o tmp/series.json`) at /data/series.json, so
@@ -29,16 +35,21 @@ const devSeriesIndex = {
 // CF Access gate, `app` for the app-session model, `public` for an open
 // deploy) come from the same file wrangler reads — `STORE` / `AUTH_MODE` under
 // `[vars]` in wrangler.toml — so a deployment branch declares itself in one
-// place. `VITE_STORE` / `VITE_AUTH_MODE` in the environment still override (a
-// CI build of another store, e.g. deploy-r2.yml). Neither set → the registry's
+// place. A Pages environment's overrides (`[env.<name>.vars]`, e.g. the
+// `preview` block the dev stack deploys with) apply on top when
+// `CLOUDFLARE_ENV=<name>` is set — the same variable wrangler itself reads —
+// so a preview build carries the preview's mode, not production's.
+// `VITE_STORE` / `VITE_AUTH_MODE` in the environment still override (a CI
+// build of another store, e.g. deploy-r2.yml). Neither set → the registry's
 // first store, `edge`.
-function wranglerVars(): Record<string, string> {
+function wranglerVars(env = process.env.CLOUDFLARE_ENV): Record<string, string> {
   if (!existsSync('wrangler.toml')) return {}
   const vars: Record<string, string> = {}
+  const sections = new Set(['[vars]', ...(env ? [`[env.${env}.vars]`] : [])])
   let inVars = false
   for (const raw of readFileSync('wrangler.toml', 'utf8').split('\n')) {
     const line = raw.replace(/#.*$/, '').trim()
-    if (line.startsWith('[')) { inVars = line === '[vars]'; continue }
+    if (line.startsWith('[')) { inVars = sections.has(line); continue }
     const m = inVars ? /^([A-Z_][A-Z0-9_]*)\s*=\s*"([^"]*)"$/.exec(line) : null
     if (m) vars[m[1]] = m[2]
   }
@@ -62,10 +73,10 @@ export default defineConfig({
     // to the local `wrangler pages dev` (the next port up, with GCS HMAC creds
     // in .dev.vars). Both /data and /v1/files now read live from the bucket.
     proxy: {
-      '/data': WRANGLER,
-      '/v1/files': WRANGLER,
+      '/data': apiProxy,
+      '/v1/files': apiProxy,
       // Mark & sweep console: plans/marks/sweep/whoami Functions (D1 + Batch).
-      '/api': WRANGLER,
+      '/api': apiProxy,
       // Sign-in Functions (`/auth/google*`, `/auth/email/*`). Keep the
       // browser's Host header (Vite's string-target default rewrites it to the
       // wrangler port): the OIDC callback + emailed links derive their origin
