@@ -36,12 +36,11 @@ ROOT_LABEL = "marin CoreWeave"  # the store root's crumb label (`_lib/view.ts`)
 # Deployment as configuration (the base's `vite.config.ts` reads these from
 # this file at build time; `src/stores.ts` registry key + client whoami source):
 STORE = "cw"                    # the store this build serves (`src/stores.ts`)
-AUTH_MODE = "edge"              # identity from the CF Access edge JWT until specs/oidc-cutover-cw.md P4 flips it to `app`
+AUTH_MODE = "app"                # own sign-in: Google OIDC + emailed codes (specs/oidc-cutover-cw.md P4, 2026-09-28)
 # The plan prefix shape (`_lib/plans.ts` prefixShape): CoreWeave's S3-compatible
 # buckets; explicit here so the deployment declares it rather than inheriting a default.
 STORE_SCHEME = "s3://"
 STORE_BUCKETS = "marin-us-east-02a,hero-checkpoints"
-EDGE_TRUSTED = "1"              # whole host behind CF Access: edge identities get BASE_SCOPE (`_lib/auth.ts`)
 BASE_SCOPE = "cw"
 SNAPSHOTS_SUBDIR = "cw"          # this store's snapshots: snapshots/cw/ (`_lib/shared.ts` snapshotsPrefix)
 # The store seam's read allow-list (`_lib/index.ts` storePrefixes, also honored
@@ -50,10 +49,8 @@ SNAPSHOTS_SUBDIR = "cw"          # this store's snapshots: snapshots/cw/ (`_lib/
 # records under `cw-sweep/`, so name them here (this REPLACES the defaults).
 STORE_PREFIXES = "listing/,snapshots/,sweep/,cw-sweep/,cw-l2/"
 # Zero Trust team domain whose JWTs the edge identity / get-identity accept.
-ACCESS_TEAM_DOMAIN = "https://openathena-ai-pages.cloudflareaccess.com"
 # AUD tag of the "CoreWeave usage (cw-s3.oa.dev)" Access app (`4c463052`),
 # verified against `Cf-Access-Jwt-Assertion` for the admin sweep gate.
-ACCESS_AUD = "1de65a9ffe270d860911b786720fefe00123e79e71ca038c311479e468dc8378"
 # Domain whose sign-in identities are staff (admin/sweep scope). CoreWeave
 # viewers (coreweave.com) can see the dashboard but are not staff; the
 # sweep-dispatch admin gate is the site/migrations/cw/0004 `admin_emails`
