@@ -33,6 +33,14 @@ enabled = true
 
 [vars]
 ROOT_LABEL = "marin CoreWeave"  # the store root's crumb label (`_lib/view.ts`)
+# Deployment as configuration (the base's `vite.config.ts` reads these from
+# this file at build time; `src/stores.ts` registry key + client whoami source):
+STORE = "cw"                    # the store this build serves (`src/stores.ts`)
+AUTH_MODE = "edge"              # identity from the CF Access edge JWT until specs/oidc-cutover-cw.md P4 flips it to `app`
+# The plan prefix shape (`_lib/plans.ts` prefixShape): CoreWeave's S3-compatible
+# buckets; explicit here so the deployment declares it rather than inheriting a default.
+STORE_SCHEME = "s3://"
+STORE_BUCKETS = "marin-us-east-02a,hero-checkpoints"
 EDGE_TRUSTED = "1"              # whole host behind CF Access: edge identities get BASE_SCOPE (`_lib/auth.ts`)
 BASE_SCOPE = "cw"
 SNAPSHOTS_SUBDIR = "cw"          # this store's snapshots: snapshots/cw/ (`_lib/shared.ts` snapshotsPrefix)
@@ -114,6 +122,10 @@ migrations_dir = "migrations/cw"
 
 [env.preview.vars]
 ROOT_LABEL = "marin CoreWeave (dev)"
+STORE = "cw"
+AUTH_MODE = "edge"
+STORE_SCHEME = "s3://"
+STORE_BUCKETS = "marin-us-east-02a,hero-checkpoints"
 EDGE_TRUSTED = "1"
 BASE_SCOPE = "cw"
 SNAPSHOTS_SUBDIR = "cw"
