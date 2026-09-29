@@ -53,8 +53,6 @@ for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "TIER
           "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:
         v[k] = os.environ[k]
-if os.environ.get("WEEKLY") == "1":  # force the Monday weekly report (specs/weekly-discord-report.md)
-    v["WEEKLY"] = "1"
 print(json.dumps(v))
 EOF
 }
