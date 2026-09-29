@@ -356,3 +356,15 @@ Audit after (`scripts/branch-audit gcs cloud`, merge-base = `cloud`'s tip): `pac
 ### 2026-09-28 (gcs, second `git merge cloud`) — the base's backlog day
 
 `71e1a8d`: 13 commits (`f069361..13a40d1`) — the `/staged` deletion console + the executor reading a plan, the KLC removal (`keep_last_ckpt` + `looksCkpt` gone; migration `gcs/0027` deletes those mark rows — **applied to prod D1 only on Ryan's explicit call**), the lifecycle hand-merge (`Store.lifecycle` picks the `gcs` rule adapter; gcs's fold is back on the base), `PathBar` crumbs + `FitSelect`/`PathPopover`, `refresh-db` via sqlite3, the first-run hint, the tracked push guard. No conflicts. Audit after: every parity surface `parity`; delta unchanged in shape (`job` 57, `wrangler.toml`, `migrations` 28, `specs`). Site 187 vitest, cloud 305 pytest, build clean. gcs-side follow-ups in the same push: cw's `[base]` 6f4d700 picked (its `cloud/` files only — the commit also carried an unrelated `build-dist.yml` rewrite), `AGENTS.md` loses `keep_last_ckpt`, `health.yml` runs both OA hosts hourly from the default branch.
+
+### 2026-09-28 (gcs, third `git merge cloud`) — the marks demolition
+
+`288917f` merges `227c534` (keep/sweep removed from the base: `specs/done/marks-demolition.md` on `cloud`). Conflicts, all from gcs's cherry-picks of cw's healthcheck commits vs the base deleting the totals probe: `cloud/src/dt_cloud/{cli,healthcheck}.py` + test → cloud; `site/functions/api/marks.ts` + `marks/totals.ts` → deleted; `site/wrangler.toml` → ours. Audit after: every parity surface `parity`. Site 183 vitest, cloud 257 pytest (the drop is the removed features' tests), build clean.
+
+gcs-side follow-through, found by checking every `dt-cloud` verb `job/*.sh` calls against the post-demolition CLI:
+
+- `job/run.sh` still called **`dt-cloud webdata`**, renamed `path-index` on the base on 2026-09-22 (`417101a`). Latent since the cutover: the daily job runs `gcs-usage-snapshot:latest`, last built **2026-09-17** from the pre-cutover lineage, so nothing had failed yet — the first rebuild from gcs would have. Fixed (`2e0355b`).
+- The CLI-launched sweep branch (`SWEEP=dry|real`) used the removed `-S` sign-off mode; it now takes `SWEEP_PLAN` → `sweep manifest --plan` (`33b4fa2`).
+- `AGENTS.md` / `README.md` rewritten around ownership + staged deletion; `health.yml` drops `-T`.
+
+**Deployment dependency:** `/staged`'s dispatch runs `gcs-usage-snapshot:latest` with `sweep manifest --plan`, which the 9/17 image lacks — dispatch fails inside the Batch job until `:latest` is rebuilt from gcs, and that rebuild also changes what the 07:00 daily cron runs. A test build under its own tag (`gcs-33b4fa2`) was made first; moving `:latest` is Ryan's call. `sheet-sync/` still calls the removed `dt-cloud report` (dead). Migrations `0027` + `0028` unapplied (backup: `gs://oa-gcs-usage-dvx/backups/marks-backup-2026-09-28.sql.gz`).
