@@ -158,22 +158,25 @@ if [ "${TIERS_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
-# SWEEP=dry|real (+ SWEEP_BUCKETS="marin-us-east1 …", SWEEP_DATE=<scan>): the
-# sweep executor as a Batch job launched from the CLI — the same two steps the
-# /sweep console's dispatch bridge runs (functions/api/sweep/dispatch.ts):
-# build the object-level manifest from the console's sign-offs (`-S`), then
-# execute it — dry writes would-delete/ logs; real deletes (generation-matched,
-# ≥7d soft delete required). Both record the run in D1 (`deletion_runs`).
-# Size it as n2-standard-8 (MACHINE/MEMORY_MIB on batch-submit); tokens ride
-# in env and stay out of xtrace.
+# SWEEP=dry|real + SWEEP_PLAN=<plan.json path or gs:// URL> (+ SWEEP_BUCKETS=
+# "marin-us-east1 …", SWEEP_DATE=<scan>): the sweep executor as a Batch job
+# launched from the CLI — the same two steps /staged's dispatch bridge runs
+# (functions/api/sweep/dispatch.ts, which overrides the entrypoint instead of
+# using this branch): build the object-level manifest from the plan's items
+# (`--plan`; the keep/sweep sign-off mode was removed with marks, 2026-09-28),
+# then execute it — dry writes would-delete/ logs; real deletes
+# (generation-matched, ≥7d soft delete required). Both record the run in D1
+# (`deletion_runs`). Size it as n2-standard-8 (MACHINE/MEMORY_MIB on
+# batch-submit); tokens ride in env and stay out of xtrace.
 if [ -n "${SWEEP:-}" ]; then
   [ "$SWEEP" = dry ] || [ "$SWEEP" = real ] || { echo "ERROR: SWEEP must be dry|real" >&2; exit 1; }
+  [ -n "${SWEEP_PLAN:-}" ] || { echo "ERROR: SWEEP needs SWEEP_PLAN (a plan.json; /staged's dispatch writes one per run)" >&2; exit 1; }
   sd=${SWEEP_DATE:-$DATE}
   plan="gs://$DATA/sweep/runs/gcs-sweep-$SWEEP-$(date -u +%Y%m%d-%H%M%S)z"
   bflags=()
   for b in ${SWEEP_BUCKETS:-}; do bflags+=(-b "$b"); done
   { set +x; } 2>/dev/null
-  dt-cloud sweep manifest -d "$sd" -S "${bflags[@]}" -o "$plan"
+  dt-cloud sweep manifest -d "$sd" -p "$SWEEP_PLAN" "${bflags[@]}" -o "$plan"
   if [ "$SWEEP" = real ]; then
     dt-cloud sweep execute "${bflags[@]}" --for-real "$plan"
   else
