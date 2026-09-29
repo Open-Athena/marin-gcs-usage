@@ -11,8 +11,10 @@
  *   GET /api/bench?mode=pagelookup&key=bench/<scan>/<pq>&paths=… point lookups via page index + filter
  */
 import { parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
+import { withStore } from '../_lib/stores.js'
 import { type Env, requireViewer } from '../_lib/auth.js'
 import { makeStore, openIndex, readAsks, readRects, type Row } from '../_lib/index.js'
+import { compressors } from '../_lib/zstd.js'
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
 
@@ -22,7 +24,10 @@ async function inflate(gz: Uint8Array): Promise<ArrayBuffer> {
   return await new Response(stream).arrayBuffer()
 }
 
-export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise<Response> => {
+export const onRequestGet = async (ctx0: { request: Request; env: Env }): Promise<Response> => {
+  // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
+  const ctx = withStore(ctx0)
+  if (ctx instanceof Response) return ctx
   const gated = await requireViewer(ctx as never)
   if (gated instanceof Response) return gated
   const url = new URL(ctx.request.url)
@@ -131,7 +136,7 @@ export const onRequestGet = async (ctx: { request: Request; env: Env }): Promise
         for (const { rg } of groupsFor(p)) {
           groupsRead++
           const md = { ...metadata, row_groups: [rg], num_rows: rg.num_rows }
-          const rows = await parquetReadObjects({ file, metadata: md, filter: { path: { $eq: p } }, usePageIndex })
+          const rows = await parquetReadObjects({ file, metadata: md, filter: { path: { $eq: p } }, usePageIndex, compressors })
           found += rows.length
         }
       }
