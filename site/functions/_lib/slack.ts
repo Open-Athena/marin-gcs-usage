@@ -1,6 +1,6 @@
 /**
  * Slack Web API + request verification for the staged-deletion review loop
- * (specs/staged-slack.md). Pure fetch — no SDK. The bot token is the
+ * (specs/done/staged-slack.md). Pure fetch — no SDK. The bot token is the
  * deployment's Slack app ("CoreWeave Usage Bot" on cw); the signing secret
  * authenticates interactivity callbacks (`/slack/actions`).
  */
@@ -62,11 +62,4 @@ export async function verifySlackSignature(
   let diff = 0
   for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ signature.charCodeAt(i)
   return diff === 0
-}
-
-/** The plan's exact item set as a short digest: sha-256 of the sorted
- * canonical prefixes joined by `\n`, first 16 hex. */
-export async function planDigest(prefixes: readonly string[]): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode([...prefixes].sort().join('\n')))
-  return hex(buf).slice(0, 16)
 }

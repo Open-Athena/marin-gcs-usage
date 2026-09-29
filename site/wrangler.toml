@@ -60,7 +60,7 @@ VIEWER_DOMAINS = "coreweave.com"
 # The opt-in trash model (specs/staged-delete.md): any full viewer stages
 # deletions into the shared open plan (`stage_batches`, migrations/cw/0002).
 STAGING = "1"
-# Staged-plan review in Slack (specs/staged-slack.md): one thread per staged plan
+# Staged-plan review in Slack (specs/done/staged-slack.md): one thread per staged plan
 # in #cw-s3-admin; `EXECUTOR` = the Store's executor, which says the Slack
 # buttons may dispatch (plan-sweep). Secrets: SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET.
 SLACK_ADMIN_CHANNEL = "C0C53CPM886"
@@ -102,6 +102,9 @@ id = "1dbc4c60884c4f3ba61aa1aa79f494bc"
 #   GCS_HMAC_KEY_ID / GCS_HMAC_SECRET — read-only GCS proxy creds (data + /files)
 #   GCP_SA_KEY — JSON key for `gcs-usage-dispatch@oa-internal-450019` (Batch
 #     submit/cancel for /api/sweep/*; `batch.jobsEditor` + actAs `gcs-usage-job`)
+#   SLACK_BOT_TOKEN — the deployment's Slack app bot token (`chat:write`,
+#     `users:read`, `users:read.email`); unset = no staged-plan threads
+#   SLACK_SIGNING_SECRET — that app's signing secret; unset = `/slack/actions` 503s
 
 # ---------------------------------------------------------------------------
 # Preview environment — the dev stack (`site/deploy --dev` → `--branch dev` →
@@ -136,7 +139,7 @@ VIEWER_DOMAINS = "coreweave.com"
 # The opt-in trash model (specs/staged-delete.md): any full viewer stages
 # deletions into the shared open plan (`stage_batches`, migrations/cw/0002).
 STAGING = "1"
-# Staged-plan review in Slack (specs/staged-slack.md): one thread per staged plan
+# Staged-plan review in Slack (specs/done/staged-slack.md): one thread per staged plan
 # in #cw-s3-admin; `EXECUTOR` = the Store's executor, which says the Slack
 # buttons may dispatch (plan-sweep). Secrets: SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET.
 SLACK_ADMIN_CHANNEL = "C0C53CPM886"
