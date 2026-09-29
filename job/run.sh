@@ -340,9 +340,9 @@ fi
 set -x
 
 # Serving invariant: the snapshot published + the footer synced — but is the
-# SITE actually serving this scan? `dt-cloud healthcheck` asserts
-# /api/marks/totals is 200 on the D1-index path (not the footer-parse fallback
-# that 1102'd on 2026-08-31 → /users blank), plus subtree + the data JSONs.
+# SITE actually serving this scan? `dt-cloud healthcheck` asserts the scan is
+# fresh and that subtree + the data JSONs serve (the 2026-08-31 outage was a
+# footer that never synced to D1 → the owner rollup 1102'd → /users blank).
 # Non-fatal — the snapshot data is fine, only serving would be degraded — but
 # warn to #gcs-usage so it's caught at 07:00, not via a screenshot. Needs the
 # agent token (also used by `series` below); skip quietly without it, and on

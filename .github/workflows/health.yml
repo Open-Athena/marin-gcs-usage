@@ -3,7 +3,7 @@ name: Healthcheck
 # Live-site serving health for gcs.oa.dev, independent of the test suite: hits
 # the running site (latest scan) and fails if it isn't servable — the class of
 # outage a green data pipeline can still cause (2026-08-31: a scan whose D1
-# index footer never synced → /api/marks/totals 1102 → /users blank).
+# index footer never synced → the owner rollup 1102'd → /users blank).
 #
 # Needs a read-only grant token per host in the repo secrets (`GCS_USAGE_TOKEN`,
 # `CW_S3_USAGE_TOKEN`); a matrix entry skips (exit 0) when its secret is absent.
@@ -28,11 +28,9 @@ jobs:
           - host: gcs.oa.dev
             secret: GCS_USAGE_TOKEN
             subdir: ""
-            flags: ""
           - host: cw-s3.oa.dev
             secret: CW_S3_USAGE_TOKEN
             subdir: cw
-            flags: -T   # no marks/totals probe: cw's plan-first lineage has no actions ledger to fold
     env:
       GCS_USAGE_TOKEN: ${{ secrets[matrix.secret] }}
       GCS_USAGE_URL: https://${{ matrix.host }}
@@ -60,4 +58,4 @@ jobs:
             echo "${{ matrix.secret }} secret not set — skipping live healthcheck"
             exit 0
           fi
-          cd cloud && uv run --no-sync dt-cloud healthcheck ${{ matrix.flags }}
+          cd cloud && uv run --no-sync dt-cloud healthcheck

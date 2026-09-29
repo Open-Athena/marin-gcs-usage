@@ -5,7 +5,7 @@
 *The public preview: cells are sized by bytes and coloured by top-level prefix, with names, sizes, owners, and costs omitted. The [site][gcs.oa.dev] shows all of them to signed-in users.*
 
 Storage-usage attribution and cleanup for the Marin GCS buckets: **who is using
-what**, and a **mark & sweep** workflow to reclaim space. Browse it at
+what**, and a **staged-deletion** workflow to reclaim space. Browse it at
 **[gcs.oa.dev]** (Open-Athena-gated).
 
 The identity map (`cloud/src/dt_cloud/identities.yaml`: handles, teams, login
@@ -13,20 +13,19 @@ aliases) is curated in-repo; it maps already-public GitHub / W&B handles to a
 team bucket (`oa` / `stanford` / `communal`) and carries no emails or private
 contact info.
 
-## Mark & sweep
+## Ownership & staged deletion
 
-Storage across the `marin-*` buckets is reviewed by **marking prefixes to keep**
-— everything left unmarked is **swept (deleted) after the cleanup deadline**.
-Mark from the web UI at [gcs.oa.dev], or non-interactively:
+Anyone signed in can **stage** prefixes for deletion — the trash gesture in the
+map, or `POST /api/plans/stage`; admins review the shared plan at
+[gcs.oa.dev/staged](https://gcs.oa.dev/staged) and dispatch the executor (a GCP
+Batch job, dry-run first). Nothing is deleted at stage time. Ownership is the
+other axis: admins assign prefixes to people (`POST /api/actions`), anyone can
+claim an unattributed one, and `/users` ranks everyone's estate.
 
-- `dt-cloud mark` / `status` / `todo` — the CLI (bulk-mark, check a prefix's
-  effective fate, list the undecided backlog).
-- `GET /api/resolve`, `GET /api/todo`, `POST /api/actions` — the HTTP API.
-
-**[AGENTS.md](AGENTS.md)** documents the token, CLI, and API for driving this
-autonomously (e.g. pointing an agent at your team's prefixes). Marking only
-records a decision in the ledger — nothing is deleted at mark time, and marks
-are reversible until the sweep.
+**[AGENTS.md](AGENTS.md)** documents the token and the HTTP API for driving
+this autonomously (e.g. pointing an agent at your team's prefixes). The earlier
+opt-out "mark & sweep" model (keep/sweep marks + a deadline) was retired on
+2026-09-28.
 
 ## Attribution pipeline
 
@@ -47,7 +46,6 @@ Reporting and the site consume any number of attribution parquets (`-a`, repeata
 
 ```bash
 dt-cloud attr-report -l <listing> -a <attr...>       # per-user/team bytes + coverage; -u <user> prints their prefixes
-dt-cloud report -a <actions.json>                    # per-user mark-status CSV (the "who still needs to mark" nag list)
 dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unowned prefixes (curation queue)
 dt-cloud webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
 dt-cloud rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site

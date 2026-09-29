@@ -7,8 +7,8 @@ pages_build_output_dir = "dist"
 compatibility_date = "2026-06-01"
 
 # D1: the @open-athena/auth tables (grants, access_log, access_requests,
-# profiles, pending_auth) plus the app's own (allowlist, marks + actions
-# ledger, index metadata, plans, sweeps) — one squashed lineage,
+# profiles, pending_auth) plus the app's own (allowlist, the owner ledger
+# (`actions`/`owner_prefixes`/`claims`, `owner_totals`), index metadata, plans, sweeps) — one squashed lineage,
 # `migrations/gcs/0001_init.sql`, rebaselined on both copies 2026-09-25.
 # Created with `wrangler d1 create oa-gcs-usage-auth`; apply with `wrangler d1
 # migrations apply oa-gcs-usage-auth --remote` (needs
