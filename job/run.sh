@@ -36,6 +36,9 @@ set -x
 
 DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+# The attribution roster lives with the data, not in the repo (`-i` /
+# `$DT_CLOUD_IDENTITIES`; no bundled default). Read through the job's GCS mount.
+export DT_CLOUD_IDENTITIES=${DT_CLOUD_IDENTITIES:-/gcs/$DATA/config/identities.yaml}
 SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 # INDEX_PATH: where the floor-free path index (+ its by-user/by-team variants)
 # lands; default is colocated with the listing. SCRATCH=1 marks a verification
