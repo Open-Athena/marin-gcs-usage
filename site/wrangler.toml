@@ -57,6 +57,9 @@ ADMIN_EMAILS = "1"
 # The in-app viewer policy (specs/oidc-cutover-cw.md): these domains get the
 # `cw` scope with no `allowed_emails` row.
 VIEWER_DOMAINS = "coreweave.com"
+# The opt-in trash model (specs/staged-delete.md): any full viewer stages
+# deletions into the shared open plan (`stage_batches`, migrations/cw/0002).
+STAGING = "1"
 # R2 serving (specs/r2-serving-migration.md): the same store seam the base's
 # r2.rbw.sh deploy uses (`_lib/index.ts` storeTarget/storeCreds — S3-over-R2,
 # NOT a native R2 binding, so cw matches the base byte-for-byte). The bucket is
@@ -125,6 +128,9 @@ STORE_PREFIXES = "listing/,snapshots/,sweep/,cw-sweep/,cw-l2/"
 STAFF_DOMAIN = "openathena.ai"
 ADMIN_EMAILS = "1"
 VIEWER_DOMAINS = "coreweave.com"
+# The opt-in trash model (specs/staged-delete.md): any full viewer stages
+# deletions into the shared open plan (`stage_batches`, migrations/cw/0002).
+STAGING = "1"
 # R2, flipped here first (2026-09-25) and in production on 2026-09-28
 # (specs/r2-serving-migration.md step 6): same bucket, preview-scoped secrets.
 STORE_BUCKET = "oa-cw-s3-usage-index"

@@ -87,7 +87,7 @@ const REGISTRY: Store[] = [
     base: '/data/cw',
     ogImage: '/og.jpg',
     prices: false,
-    staging: false,
+    staging: true,   // the table's trash gesture + /staged (needs `stage_batches`, migrations/cw/0002)
     owners: false,
     executor: 'plan-sweep',
     lifecycle: { tracked: 'job/cw-lifecycle.json', rules: 's3', recordedFrom: '2026-09-17' },
