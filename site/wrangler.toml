@@ -2,13 +2,14 @@
 # deploy` reads this, so bindings + vars declared here apply to the deployment
 # it creates. The deployment's own sign-in (Google OIDC + emailed codes, the
 # `@open-athena/auth` session model) gates the whole host; the D1 lineage is
-# `migrations/cw/` (auth tables + the mark & sweep tables, one baseline).
+# `migrations/cw/` (auth tables + the staged-deletion tables, from the
+# `0001_init.sql` baseline).
 name = "oa-cw-s3-usage"
 pages_build_output_dir = "dist"
 compatibility_date = "2026-06-01"
 
-# Mark & sweep store (specs/cw-sweep.md): D1 holds the keep/sweep mark ledger,
-# executed-deletion records, and the admin allowlist (site/migrations/cw/0001_init.sql).
+# Staged-deletion store (specs/staged-delete.md): D1 holds the plans, the
+# executed-deletion records, and the admin allowlist (site/migrations/cw, from `0001_init.sql`).
 # Create with `wrangler d1 create oa-cw-s3-usage-db` and paste the returned
 # database_id below, then `wrangler d1 migrations apply oa-cw-s3-usage-db
 # --remote` (needs CLOUDFLARE_ACCOUNT_ID=74981a43… + the D1-scoped token).
@@ -17,8 +18,8 @@ binding = "DB"
 database_name = "oa-cw-s3-usage-db"
 database_id = "7f1e1326-b879-4ecd-8621-846621c24f36"
 # Two D1 lineages live in site/migrations/ (one per deployment; they collide on
-# `marks` and on the folded index-footer migration). This deployment applies
-# ITS lineage only: gcs's is `migrations/gcs`.
+# the folded index-footer migration). This deployment applies ITS lineage
+# only: gcs's is `migrations/gcs`.
 migrations_dir = "migrations/cw"
 # Local dev runs against the REAL prod D1 (read-write) — dev-only: deploys
 # ignore `remote`. Needs CLOUDFLARE_API_TOKEN (direnv) + CLOUDFLARE_ACCOUNT_ID.

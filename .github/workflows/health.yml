@@ -49,4 +49,4 @@ jobs:
             echo "CW_S3_USAGE_TOKEN secret not set — skipping live healthcheck"
             exit 0
           fi
-          cd cloud && uv run --no-sync dt-cloud healthcheck -T   # plan-first store: no actions-ledger totals to probe
+          cd cloud && uv run --no-sync dt-cloud healthcheck
