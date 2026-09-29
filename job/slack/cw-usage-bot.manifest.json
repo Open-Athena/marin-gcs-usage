@@ -5,7 +5,7 @@
   },
   "display_information": {
     "name": "CoreWeave Usage Bot",
-    "description": "Storage-usage digest for the Marin CoreWeave bucket — cw-s3.oa.dev",
+    "description": "Storage-usage digest and staged-deletion review for the Marin CoreWeave buckets \u2014 cw-s3.oa.dev",
     "background_color": "#0d1117"
   },
   "features": {
@@ -25,6 +25,7 @@
         "channels:read",
         "groups:read",
         "users:read",
+        "users:read.email",
         "emoji:read"
       ]
     }
@@ -32,6 +33,10 @@
   "settings": {
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,
-    "token_rotation_enabled": false
+    "token_rotation_enabled": false,
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://cw-s3.oa.dev/slack/actions"
+    }
   }
 }
