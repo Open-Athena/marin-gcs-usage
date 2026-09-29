@@ -53,6 +53,14 @@ STORE_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-eas
 # Viewers stage deletions into a shared open plan (`POST /api/plans/stage`,
 # the children table's trash gesture); `stage_batches` exists in this D1.
 STAGING = "1"
+# Staged-plan review in Slack (specs/done/staged-slack.md): one thread per staged
+# plan in #gcs-admin, with Dry-run / Delete-for-real / Reject-batch buttons
+# (`/slack/actions`). `EXECUTOR` is gcs's `Store.executor`: without it the base
+# default (`plan-sweep`, cw's) would be dispatched to. Secrets (per environment):
+# SLACK_BOT_TOKEN (chat:write, users:read, users:read.email; unset = no threads),
+# SLACK_SIGNING_SECRET (unset = `/slack/actions` 503s).
+EXECUTOR = "sweep"
+SLACK_ADMIN_CHANNEL = "C0C579HNRFB"
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-gcs-usage`):
 #   SESSION_SECRET   — HMAC key for session cookies + IP hashing
@@ -93,6 +101,14 @@ STAFF_DOMAIN = "openathena.ai"
 STORE_SCHEME = "gs://"
 STORE_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"
 STAGING = "1"
+# Staged-plan review in Slack (specs/done/staged-slack.md): one thread per staged
+# plan in #gcs-admin, with Dry-run / Delete-for-real / Reject-batch buttons
+# (`/slack/actions`). `EXECUTOR` is gcs's `Store.executor`: without it the base
+# default (`plan-sweep`, cw's) would be dispatched to. Secrets (per environment):
+# SLACK_BOT_TOKEN (chat:write, users:read, users:read.email; unset = no threads),
+# SLACK_SIGNING_SECRET (unset = `/slack/actions` 503s).
+EXECUTOR = "sweep"
+SLACK_ADMIN_CHANNEL = "C0C579HNRFB"
 
 # The KV tier for the dev stack: same namespace as production (a shared global
 # cache is correct — same keys, same data; `CACHE_V` versions the entries).
