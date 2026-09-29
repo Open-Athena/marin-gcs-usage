@@ -10,7 +10,7 @@
 > Path ① (grant token → `/api/actions`). See `sheet-sync/README.md`.
 
 **Commitment:** keep the shared GSheet
-(`docs.google.com/spreadsheets/d/1k_11LA21g8uqMckPhkKvwrnRENVKF8yHxbW5NnUiRFc`)
+(`docs.google.com/spreadsheets/d/1k_11LA…RFc`)
 updated with the per-user "who still needs to mark & sweep" rollup, without a
 human re-exporting it. Ideally it refreshes through the day so marks people make
 show up within ~an hour.
