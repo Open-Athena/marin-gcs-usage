@@ -30,16 +30,25 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # digest died with `FileNotFoundError: 'curl'`); python:slim ships none.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends time curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+# Python deps come from the workspace lockfile (`uv.lock` at the root covers
+# the engine and `cloud/`), `--frozen`, into the image's own interpreter
+# (`UV_PROJECT_ENVIRONMENT=/usr/local`): the image runs exactly the pins the
+# tests ran. The `pip install .` this replaced resolved fresh on every build —
+# gcsfs 2026.8.1 came in that way and hung the cw job at exit (its adaptive
+# prefetcher vs a pyarrow-held `gs://` handle; `blobfs` now opts out).
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/usr/local UV_NO_CACHE=1
 # disk-tree engine (root project): fan-out listing tasks run `disk-tree
 # bulk-list`; its wheel force-includes ui/dist (built in stage 1).
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md uv.lock ./
 COPY src ./src
 COPY --from=site /repo/ui/dist ./ui/dist
-RUN pip install --no-cache-dir ".[gcs,s3]"
 COPY cloud/pyproject.toml ./cloud/
 COPY cloud/src ./cloud/src
+# `--package dt-cloud` pulls the engine (`disk-tree[gcs,s3]`) as its dependency;
+# `--no-editable`: the members are copied in, not linked.
 # [plot]: matplotlib for the digest's OP mosaic (dt_cloud.digest_plot)
-RUN pip install --no-cache-dir "./cloud[plot]"
+RUN uv sync --frozen --no-dev --no-editable --package dt-cloud --extra plot
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
 # One image, two scheduled jobs: the GCS fleet job (`job/run.sh`, tag `latest`)
