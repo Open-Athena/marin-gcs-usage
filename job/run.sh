@@ -320,7 +320,7 @@ cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
 # can show them and diff them scan to scan. `job/lifecycle/<bucket>.json` is
 # the tracked copy (`dt-cloud lifecycle diff`); a pull never fails the scan.
 LC=(); for b in "${FLEET[@]}"; do LC+=(-b "gs://$b"); done
-dt-cloud lifecycle pull "${LC[@]}" -o "/gcs/$DATA/$SNAP_PATH/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
+dt-cloud lifecycle pull -k "${LC[@]}" -o "/gcs/$DATA/$SNAP_PATH/lifecycle.json" || echo "WARN: lifecycle pull failed" >&2
 if [ "${SCRATCH:-0}" = "1" ]; then
   echo "SCRATCH — published to $SNAP_PATH + $INDEX_PATH; skipping index-sync/healthcheck/series/diff/digest" >&2
   echo "PHASE total: ${SECONDS}s (wall)" >&2
