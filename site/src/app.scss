@@ -952,7 +952,10 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 .diff-move {
   border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
   margin: 1px 2px 2px;
-  th { text-align: left; font-weight: 500; color: var(--ink-2); padding: 0 10px 0 0; }
+  // Labels and numbers both nowrap: in a narrow card the table scrolls
+  // sideways as a whole, instead of the label column collapsing to one letter
+  // per line while the nowrap numbers keep their width.
+  th { text-align: left; font-weight: 500; color: var(--ink-2); padding: 0 10px 0 0; white-space: nowrap; }
   td { text-align: right; padding: 0 0 0 12px; white-space: nowrap; }
   td.eq { color: var(--ink); }
 }
@@ -1663,6 +1666,24 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 }
 
 .children-tbl { margin-top: 10px; }
+// The diff map's table: status chips in the diff's polarity (added green,
+// removed red, first-scanned the site's blue, changed/unchanged neutral), Δ
+// columns inked the same way, dashes for the side a row doesn't exist on.
+// Wider than a phone, so it scrolls inside its own box like `#tbl`.
+#dtbl { overflow-x: auto; }
+.diff-tbl {
+  .worklist th.sortable:focus-visible { outline: 2px solid var(--s1); outline-offset: -2px; }
+  .chip { border-color: color-mix(in oklab, currentColor 45%, transparent); }
+  .st-added, .st-first, .st-removed { font-weight: 600; }
+  .st-added { color: var(--grew); }
+  .st-removed { color: var(--shrank); }
+  .st-first { color: var(--s1); }
+  .st-changed { color: var(--ink-2); }
+  .st-unchanged { color: var(--ink-3); }
+  td.first { color: var(--s1); }
+  td.zero { color: var(--ink-3); }
+  .tbl-note { margin: 6px 0 0; font-size: 12px; color: var(--ink-3); }
+}
 // Row selection (rowSelection.ts) on the children table: the checkbox
 // column, the cursor / selected row tints, and the bulk bar docked below.
 // Lifecycle table: group rows by bucket — the bucket cell shows once per group,
@@ -2233,5 +2254,51 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
     // A real delete: the danger red, filled once armed.
     &.danger { border-color: var(--danger); color: var(--danger); font-weight: 650; }
     &.danger.armed { background: var(--danger); color: #fff; }
+  }
+}
+
+// `?perf=1` time-to-render panel (dev/PerfOverlay.tsx). Sits where the help
+// card does (lower-left; the speed dial owns the lower-right), same surface.
+.perf-ov {
+  position: fixed; left: 16px; bottom: 16px; z-index: 900;
+  width: min(460px, calc(100vw - 32px));
+  max-height: min(60vh, 520px); overflow-y: auto;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid color-mix(in oklab, var(--ink-3) 45%, var(--line));
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  padding: 8px 12px 10px; font-size: 12px; line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  --pf-wait: var(--s1); --pf-decode: var(--s4); --pf-paint: var(--s2); --pf-settle: var(--s7);
+  .head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    color: var(--ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
+    .legend { display: flex; gap: 8px; text-transform: none; letter-spacing: 0; }
+    .sw::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; background: var(--pf-c); }
+    .sw.wait { --pf-c: var(--pf-wait); } .sw.decode { --pf-c: var(--pf-decode); } .sw.paint { --pf-c: var(--pf-paint); } .sw.settle { --pf-c: var(--pf-settle); }
+    .x { background: none; border: none; color: var(--ink-3); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; &:hover { color: var(--ink); } }
+    .x:first-of-type { margin-left: auto; }
+  }
+  .empty { color: var(--ink-3); }
+  .row { padding: 4px 0; border-top: 1px solid var(--line); &.failed .tot { color: var(--danger); } }
+  .hd {
+    display: flex; align-items: baseline; gap: 6px; min-width: 0;
+    b { color: var(--ink); }
+    .n { color: var(--ink-3); font-size: 11px; }
+    .key { color: var(--ink-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+    .tot { color: var(--ink); font-weight: 600; white-space: nowrap; }
+    .cache { font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--line); color: var(--ink-2); &.hit { color: var(--grew); border-color: var(--grew); } }
+  }
+  .bar {
+    display: flex; height: 8px; margin: 3px 0; border-radius: 2px; overflow: hidden;
+    background: color-mix(in oklab, var(--ink) 7%, transparent);
+    .seg { height: 100%; min-width: 1px; }
+    .seg.wait { background: var(--pf-wait); } .seg.decode { background: var(--pf-decode); }
+    .seg.paint { background: var(--pf-paint); } .seg.settle { background: var(--pf-settle); }
+    .seg.open { background: repeating-linear-gradient(90deg, var(--ink-3) 0 3px, transparent 3px 6px); opacity: 0.5; }
+  }
+  .sub {
+    display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--ink-3); font-size: 11px;
+    b { color: var(--ink-2); font-weight: 500; }
+    .srv { color: var(--ink-2); }
   }
 }
