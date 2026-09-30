@@ -19,8 +19,10 @@
 #   PARALLELISM=8 job/cw-recompress-submit.sh …                    # concurrent tasks (default 4)
 #
 # One task per scan dir (`gs://$DATA_BUCKET/cw-l2/<scan>/`, its bucket parquets;
-# the `index/` tiers underneath are not listings and are skipped by the format
-# check). Each task streams through the GCS API (no bucket mount) as the job SA.
+# the `index/` tiers underneath are not listings and are not touched). Each task
+# downloads the listings to local disk, rewrites them there, and uploads the
+# verified v2 files over the originals (no bucket mount; the job SA via ADC) —
+# `recompress` straight over gs:// URLs hangs in gcsfs's prefetcher.
 # **The R2 mirror is not touched**: if raw listings keep being mirrored,
 # `job/cw-publish-submit.sh <scans>` re-syncs them afterwards (idempotent by
 # size + md5, so it re-uploads exactly the rewritten files); if the mirror is to
@@ -56,15 +58,41 @@ cmd = (
     "set -euo pipefail\n"
     f"SCANS=({' '.join(scans)})\n"
     'SNAP_ID=${SCANS[$BATCH_TASK_INDEX]}\n'
-    'DIR="gs://$DATA_BUCKET/cw-l2/$SNAP_ID"\n'
-    'echo "task $BATCH_TASK_INDEX → recompress $DIR"\n'
-    # the bucket parquets sit directly in the scan dir; index/<gen>/ tiers are
-    # not listings (`recompress` refuses them, exit 1) so only the top level is
-    # passed — globbed with gcsfs (the image has no gcloud CLI)
-    'FILES=$(python3 -c "import gcsfs,sys; print(\\" \\".join(\\"gs://\\"+p for p in gcsfs.GCSFileSystem().glob(sys.argv[1]+\\"/*.parquet\\")))" "$DIR")\n'
-    '[ -n "$FILES" ] || { echo "no parquets under $DIR" >&2; exit 1; }\n'
-    'disk-tree listing-format $FILES\n'
-    f'disk-tree recompress {flag}$FILES\n'
+    'DIR="cw-l2/$SNAP_ID"\n'
+    'W=/work/$SNAP_ID; mkdir -p "$W"\n'
+    'echo "task $BATCH_TASK_INDEX → recompress gs://$DATA_BUCKET/$DIR (staged in $W)"\n'
+    # Stage the scan's top-level parquets (the per-bucket listings; the index/<gen>/
+    # tiers underneath are not listings) on local disk: `recompress` over a gs://
+    # URL hangs in gcsfs's prefetcher (2026-09-30: 2 h with no output on the first
+    # try, 34 s for the same pass from local disk). google-cloud-storage is in the
+    # image (publish-r2 uses it); the download and the upload both checksum.
+    "python3 - \"$DATA_BUCKET\" \"$DIR\" \"$W\" <<'PY'\n"
+    "import sys; from google.cloud import storage\n"
+    "bucket, d, w = sys.argv[1:]\n"
+    "for b in storage.Client().list_blobs(bucket, prefix=d + '/', delimiter='/'):\n"
+    "    n = b.name.rsplit('/', 1)[1]\n"
+    "    if n.endswith('.parquet'): print('  ↓', b.name, b.size, file=sys.stderr); b.download_to_filename(f'{w}/{n}')\n"
+    "PY\n"
+    'ls -l "$W"\n'
+    'disk-tree listing-format "$W"/*.parquet\n'
+    f'disk-tree recompress -j {flag}"$W"/*.parquet > "$W/report.json"\n'
+    'python3 -c "import json,sys; t=json.load(open(sys.argv[1]))[\'totals\']; print(\'recompress totals:\', json.dumps(t))" "$W/report.json"\n'
+    # Upload each rewritten file over its original (same key). Dry-run rewrites
+    # nothing, so nothing is uploaded; a failed verification leaves the original
+    # untouched locally and is a `failure` in the report (uploaded: nothing).
+    "python3 - \"$DATA_BUCKET\" \"$DIR\" \"$W\" <<'PY'\n"
+    "import json, os, sys; from google.cloud import storage\n"
+    "bucket, d, w = sys.argv[1:]\n"
+    "rep = json.load(open(f'{w}/report.json'))\n"
+    "bk = storage.Client().bucket(bucket)\n"
+    "for r in rep['results']:\n"
+    "    if r['status'] != 'rewritten': continue\n"
+    "    n = os.path.basename(r['path']); key = f'{d}/{n}'\n"
+    "    bk.blob(key).upload_from_filename(r['path'], content_type='application/octet-stream', checksum='md5')\n"
+    "    print('  ↑', key, os.path.getsize(r['path']), file=sys.stderr)\n"
+    "if rep['failures']: sys.exit('recompress failures: ' + json.dumps(rep['failures']))\n"
+    "PY\n"
+    'rm -rf "$W"\n'
 )
 spec = {
     "taskGroups": [{
@@ -80,7 +108,7 @@ spec = {
         },
     }],
     "allocationPolicy": {
-        "instances": [{"policy": {"machineType": "n2-standard-2", "bootDisk": {"type": "pd-balanced", "sizeGb": "50"}}}],
+        "instances": [{"policy": {"machineType": "n2-standard-2", "bootDisk": {"type": "pd-balanced", "sizeGb": "60"}}}],
         "serviceAccount": {"email": os.environ["SA"]},
         "location": {"allowedLocations": [f"regions/{os.environ.get('REGION', 'us-central1')}"]},
     },
