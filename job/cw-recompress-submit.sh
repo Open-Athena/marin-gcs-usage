@@ -4,12 +4,14 @@
 # phase 2): drops the derivable `uri` column and the class pivot that equals
 # `size`, re-encodes in 64K-row groups, verifies row count + a content digest
 # against the original, then swaps. Lossless; a file that fails verification is
-# left untouched and reported. Already-v2 files are skipped, so the job is
-# idempotent and re-runnable. Measured on cw's 2026-09-29T1201 listing: the
-# v2 file is ≈ 61 % of the original under Snappy (the default; zstd is off
-# until `DISK_TREE_PARQUET_CODEC=zstd` and the site's viewer can read it —
-# then ≈ 23 %). Nothing served reads these files (the site reads the index
-# tiers), so a rewrite is invisible to viewers.
+# left untouched and reported. A v2 file already under the image's codec is
+# skipped, one under another codec is re-encoded (same columns and keys), so
+# the job is idempotent and re-runnable, and a codec flip is one more run over
+# every scan. Measured on cw's 2026-09-29T1201 listing: the v2 file is ≈ 61 %
+# of the original under Snappy (the default until 2026-09-30) and ≈ 23 % under
+# zstd (the default since; `DISK_TREE_PARQUET_CODEC` in the task env overrides
+# the image's default). Nothing served reads these files (the site reads the
+# index tiers), so a rewrite is invisible to viewers.
 #
 #   job/cw-recompress-submit.sh 2026-08-19T0303 2026-08-20T0001   # these scans
 #   job/cw-recompress-submit.sh $(job/cw-recompress-submit.sh -l)  # every v1 scan
