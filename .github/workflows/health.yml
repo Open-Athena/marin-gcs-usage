@@ -41,7 +41,7 @@ jobs:
       # (a bare checkout has none → hatchling "Forced include not found").
       # The CLI doesn't need the assets — same trick as ci.yml.
       - name: Sync dt-cloud
-        run: mkdir -p ui/dist && cd cloud && uv sync
+        run: mkdir -p ui/dist && uv sync --frozen --all-packages --all-extras --all-groups
 
       - name: Run healthcheck
         run: |

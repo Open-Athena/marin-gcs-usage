@@ -32,17 +32,23 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # can only fetch with a git binary.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends time curl ca-certificates git && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-# disk-tree engine (root project): fan-out listing tasks run `disk-tree
-# bulk-list`; its wheel force-includes ui/dist (built in stage 1).
-COPY pyproject.toml README.md ./
+# Python deps from the workspace lockfile (`uv.lock` at the root covers the
+# disk-tree engine and `cloud/`, a workspace member), installed into the system
+# interpreter (`UV_PROJECT_ENVIRONMENT=/usr/local`) so `disk-tree` / `dt-cloud`
+# are on PATH as before. `--frozen`: the image runs exactly the pins CI tested
+# (the previous unpinned `pip install` resolved fresh each build — gcsfs 2026.8.1's
+# default prefetcher hung `recompress gs://` on Batch, 2026-09-30). `--package
+# dt-cloud` pulls `disk-tree[gcs,s3]` through dt-cloud's dependency; `[plot]` =
+# matplotlib for the digest's OP mosaic, `[overtime]` = pyrmts' multiscan kernel
+# (a `git+https` pin — hence git above). Same recipe as deploy/sheet-mirror/Dockerfile.
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/usr/local UV_NO_CACHE=1 UV_FROZEN=1
+COPY pyproject.toml README.md uv.lock ./
 COPY src ./src
 COPY --from=site /repo/ui/dist ./ui/dist
-RUN pip install --no-cache-dir ".[gcs,s3]"
 COPY cloud/pyproject.toml ./cloud/
 COPY cloud/src ./cloud/src
-# [plot]: matplotlib for the digest's OP mosaic (dt_cloud.digest_plot)
-# [overtime]: pyrmts' multiscan kernel for the over-time groups stage (cw-run.sh 4d)
-RUN pip install --no-cache-dir "./cloud[plot,overtime]"
+RUN uv sync --no-dev --no-editable --package dt-cloud --extra plot --extra overtime
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
 # One image, two scheduled jobs: the GCS fleet job (`job/run.sh`, tag `latest`)
