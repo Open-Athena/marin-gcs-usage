@@ -19,6 +19,8 @@ from pathlib import Path
 
 import duckdb
 
+from .index import duckdb_codec
+
 err = partial(print, file=sys.stderr)
 
 
@@ -140,7 +142,7 @@ def write_coarse_tiers(
         floors[e] = floor
         con.execute(f"CREATE TEMP TABLE coarse AS SELECT path FROM tot WHERE pb >= {floor}")
         counts[e] = con.execute("SELECT count(*) FROM coarse").fetchone()[0]
-        kv = f"(FORMAT parquet, ROW_GROUP_SIZE 8192, KV_METADATA {{coarse_floor: '{floor}'}})"
+        kv = f"(FORMAT parquet, {duckdb_codec()}, ROW_GROUP_SIZE 8192, KV_METADATA {{coarse_floor: '{floor}'}})"
         for suffix, order in (
             ("", "depth, path"),
             ("-by-user", "usr NULLS LAST, depth, path"),
@@ -197,7 +199,11 @@ def write_path_index(
     con.execute(f"SET threads={os.environ.get('DUCKDB_THREADS', '4')}")
     if tmp := os.environ.get("DUCKDB_TMP"):
         con.execute(f"SET temp_directory='{tmp}'")
-    src = prepare_listing(con, listings)
+    # A local capture's `bucket` is its scan root (`/Users/ryan`); drop the
+    # leading slash so it tiles like a bucket name (`Users/ryan`). Kept, it
+    # yields an empty first segment: a depth-1 node at path '' — the root's own
+    # path — whose parent walk never terminates.
+    src = f"(SELECT * REPLACE (ltrim(bucket, '/') AS bucket) FROM {prepare_listing(con, listings)})"
 
     # --- layer-2 dir rollups (attribution-independent; cached when dir_cache) ---
     # Everything downstream needs objects only via these two aggregates:
@@ -406,7 +412,7 @@ def write_path_index(
         # and the footer (now in D1 per index-sync) is never parsed on a cold
         # isolate, so the ~27k-group count costs nothing at read time
         # (specs/path-agnostic-serving.md §2.1).
-        rg = "(FORMAT parquet, ROW_GROUP_SIZE 8192)"
+        rg = f"(FORMAT parquet, {duckdb_codec()}, ROW_GROUP_SIZE 8192)"
         con.execute(f"COPY (SELECT {cols} FROM ptu ORDER BY depth, path) TO '{path_index}' {rg}")
         err(f"path-index: wrote {path_index}")
         _rss("path-index")

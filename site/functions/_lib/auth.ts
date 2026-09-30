@@ -81,6 +81,15 @@ export interface Env {
   SNAPSHOTS_SUBDIR?: string
   /** Dedicated SA key (Batch submit + actAs the job SA) for the sweep dispatch bridge. */
   GCP_SA_KEY?: string
+  /** Secondary stores served beside the primary (`_lib/stores.ts`,
+   *  specs/multi-store.md): `{<key>: {scope?, vars?, secrets?}}` as JSON. */
+  STORES_JSON?: string
+  /** Set only on a secondary store's env overlay (`withStore`): its key
+   *  (`index_schema.store`, cache keys); unset = the primary. */
+  STORE_KEY?: string
+  /** Set only on a secondary store's overlay: a scope its viewers need on top
+   *  of the deployment's viewer scope (`requireViewer`). */
+  STORE_SCOPE?: string
 }
 
 export interface Ctx {
@@ -124,8 +133,8 @@ async function adminRow(env: Env, email: string): Promise<boolean> {
  */
 export const scopesFor = (env: Env) => async (raw: string): Promise<string[] | null> => {
   const email = raw.toLowerCase()
-  if (email.endsWith(`@${staffDomain(env)}`)) return [GCS_SCOPE, CW_SCOPE, ADMIN_SCOPE, REQUESTS_SCOPE]
   const base = baseScope(env)
+  if (email.endsWith(`@${staffDomain(env)}`)) return allScopes(env)
   if (!env.DB) return [base]
   const admitted = viewerDomains(env).some(d => email.endsWith(`@${d}`))
     || !!(await env.DB.prepare('SELECT email FROM allowed_emails WHERE email = ?').bind(email).first())
@@ -168,9 +177,11 @@ function authIdentity(auth: Auth): Identity {
   return withAdmin({ email: auth.grant.email ?? null, name: auth.grant.name ?? null, scopes: auth.scopes, via: 'grant' })
 }
 
-/** All app scopes — granted to the local-dev identity so `/data` etc. work
- *  without a minted session. */
-const DEV_SCOPES = [GCS_SCOPE, CW_SCOPE, ADMIN_SCOPE, REQUESTS_SCOPE]
+/** All app scopes (staff, and the local-dev identity so `/data` etc. work
+ *  without a minted session): the deployment's base scope — which a store
+ *  other than gcs/cw (e.g. `laptop`) names itself — plus the fixed ones. */
+const allScopes = (env: Env): string[] =>
+  [...new Set([GCS_SCOPE, CW_SCOPE, ADMIN_SCOPE, REQUESTS_SCOPE, baseScope(env)])]
 
 export async function identify(ctx: Ctx): Promise<Identity | null> {
   // Local dev has no minted session, so `wrangler pages
@@ -181,7 +192,7 @@ export async function identify(ctx: Ctx): Promise<Identity | null> {
   // gcs.oa.dev request's URL host is never `localhost`/`127.0.0.1`.
   const host = new URL(ctx.request.url).hostname
   if (host === 'localhost' || host === '127.0.0.1') {
-    return withAdmin({ email: ctx.env.DEV_EMAIL ?? 'dev@example.test', name: null, scopes: DEV_SCOPES, via: 'session' })
+    return withAdmin({ email: ctx.env.DEV_EMAIL ?? 'dev@example.test', name: null, scopes: allScopes(ctx.env), via: 'session' })
   }
   const gate = gateFor(ctx.env)
   if (!gate) return null
@@ -216,8 +227,14 @@ export async function requireAnyScope(ctx: Ctx, scopes: string[]): Promise<Ident
 }
 /** Any authenticated viewer of this deployment (reads): the full viewer scope
  *  or the read-only tier. */
-export const requireViewer = (ctx: Ctx): Promise<Identity | Response> =>
-  requireAnyScope(ctx, [baseScope(ctx.env), baseReadScope(ctx.env)])
+export async function requireViewer(ctx: Ctx): Promise<Identity | Response> {
+  const id = await requireAnyScope(ctx, [baseScope(ctx.env), baseReadScope(ctx.env)])
+  // A secondary store may demand more (its `STORES_JSON` `scope`, e.g.
+  // staff-only `admin`); the identity is the deployment's either way.
+  const extra = ctx.env.STORE_SCOPE
+  if (id instanceof Response || !extra || id.scopes.includes(extra) || id.scopes.includes('*')) return id
+  return id.via === 'public' ? json({ error: 'unauthenticated' }, 401) : json({ error: 'forbidden' }, 403)
+}
 /** Staging (the opt-in trash proposal) and other non-admin writes: the full
  *  base scope — a read-only guest link can't. */
 export const requireStager = (ctx: Ctx): Promise<Identity | Response> => requireScope(ctx, baseScope(ctx.env))
