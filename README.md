@@ -1,84 +1,21 @@
-# marin-gcs-usage
+# cw-s3
 
-Per-user attribution and reporting for Marin GCS storage: "who is using what."
+Storage usage of Marin's CoreWeave (CAIOS) S3 buckets, served at [cw-s3.oa.dev]: treemap, sizes over time, diffs between scans, bucket lifecycle rules, and a plan-first sweep console.
 
-Private by design — the identity map (`src/dt_cloud/identities.yaml`: real
-names, teams, login aliases) and per-user usage reports stay out of the public
-[marin] repo, matching the privacy stance of marin's egress report.
+This is the `cw-s3` deployment branch of [disky]. It merges the shared `cloud` base (the `disk-tree` engine, the `dt-cloud` CLI and the viewer site) and adds the CoreWeave store on top: the scan job, the cw store's site config, sweep plans, and the `#cw-s3-usage` Slack digest.
 
-See [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md) for
-the full plan (attribution signals, join layer, weekly report integration,
-OA-gated webapp, [disk-tree] drill-down).
+## How it runs
 
-## Usage
-
-Attribution parquets (`prefix → user/team` rows) come from two builders:
-
-```bash
-# Path + record signals from the listing itself:
-dt-cloud build -l 'gs://<bucket>/<scan>/objects/*.parquet' -o tmp/attribution.parquet
-dt-cloud build -l <listing> -o <out> -R   # path signals only (no GETs)
-
-# W&B signals (the bulk of coverage):
-dt-cloud wandb-mine -e marin-community -o tmp/wandb-runs.parquet   # full API mine (time-bisected; -E/-s/-u for parallel range workers)
-dt-cloud executor-mine -l <listing> -o tmp/executor-infos.parquet  # .executor_info sidecar GETs
-dt-cloud wandb-attr -r tmp/wandb-runs.parquet -x tmp/executor-infos.parquet -l <listing> -o tmp/attribution-wandb.parquet
-```
-
-Reporting and the site consume any number of attribution parquets (`-a`, repeatable):
-
-```bash
-dt-cloud report -l <listing> -a <attr...>            # per-user/team bytes + coverage; -u <user> prints their claim list
-dt-cloud gaps -l <listing> -a <attr...> -d 2         # largest unattributed prefixes (curation queue)
-dt-cloud webdata -l <listing> -d <asof> -a <attr...> # site snapshot → site/public/data/<asof>/ (+ scans.json index)
-dt-cloud rules -o site/public/data/rules.json        # validate identities.yaml; export rules for the site
-```
-
-Signals, roughly best-first (deepest-prefix-wins at join time):
-
-1. W&B run-config writer paths (`base_path` & friends — checkpoint/output dirs the trainer wrote)
-2. W&B run-name ↔ dir joins under `checkpoints/`/`grug/`
-3. `.executor_info` → W&B run joins
-4. `users/<seg>/` path prefixes ([marin#6790] namespacing)
-5. `.artifact.json` sidecars → `provenance.built_by`
-6. manual `prefix_owners` for big shared trees (datasets, sweep namespaces)
-
-Users/teams are re-resolved against the *current* `identities.yaml` at load
-time, so alias/team curation takes effect without rebuilding parquets. Unknown
-spellings resolve to their own sanitized segment with team `unknown` and are
-listed on stderr — curate them into `identities.yaml` (`dt-cloud rules`
-validates it).
-
-Listing-scale runs (34M+ dirs) belong on a work node, not a laptop — see the
-weekly-refresh runbook in [specs/storage-cost-attribution.md](specs/storage-cost-attribution.md).
-
-## Access ([gcs.oa.dev])
-
-The viz site is gated by [Cloudflare Access][cf-access] (app "GCS usage", Open Athena CF account). The allow policy is:
-
-- any `@openathena.ai` email (Google SSO or one-time email PIN), plus
-- a whitelist of external emails — currently Percy Liang: `psl@stanford.edu`, `percyliang@gmail.com` (one-time email PIN; Google SSO is restricted to the openathena.ai org by the OAuth client's consent config)
-
-To add/remove whitelisted emails: CF dashboard → Zero Trust → Access → Applications → "GCS usage" policy (or ask Ryan). Update this list in lockstep so the policy stays reviewable here.
+- **Scan job** ([`job/cw-run.sh`], GCP Batch, every 12 h on the `:cw` image): `disk-tree bulk-list` each bucket in `CW_BUCKETS` over the CAIOS S3 endpoint, `disk-tree import -e stream`, then `dt-cloud` `index-write` / `index-sync` / `index-gc` (the path-store tiers the site reads), `publish-r2`, `lifecycle pull`, `warm-cache` and `cw-digest`.
+- **Site** ([`site/`], Cloudflare Pages project `oa-cw-s3-usage`): the viewer reads each scan's index tiers through its Pages Functions; marks, sweep plans and runs live in D1 (`oa-cw-s3-usage-db`, migrations in `site/migrations/cw/`). Sign-in is the app's own (Google OIDC or emailed codes).
+- **Digest**: one Slack thread per month in `#cw-s3-usage`, with a daily reply and an OP image (size vs quota, plus a "what changed" diff treemap).
 
 ## Development
 
-```bash
-uv sync
-uv run pytest
-```
+See [`AGENTS.md`] (also `CLAUDE.md`).
 
-Two marin contracts are deliberately mirrored (not imported) to keep this repo
-standalone; if either changes upstream, update in lockstep:
-
-- `src/dt_cloud/usernames.py` — `sanitize_username` rules, mirror of
-  `rigging.provenance.username_segment`
-- `src/dt_cloud/records.py` — the `.artifact.json` shape
-  (`marin.execution.artifact.ArtifactRecord`), of which only
-  `provenance.built_by` is read
-
-[gcs.oa.dev]: https://gcs.oa.dev
-[cf-access]: https://developers.cloudflare.com/cloudflare-one/applications/
-[marin]: https://github.com/marin-community/marin
-[marin#6790]: https://github.com/marin-community/marin/issues/6790
-[disk-tree]: https://github.com/runsascoded/disk-tree
+[cw-s3.oa.dev]: https://cw-s3.oa.dev
+[disky]: https://github.com/runsascoded/disky
+[`job/cw-run.sh`]: job/cw-run.sh
+[`site/`]: site
+[`AGENTS.md`]: AGENTS.md

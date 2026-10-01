@@ -1,5 +1,7 @@
 # R2 serving migration: colocate served artifacts with the serving Worker
 
+**Final (2026-10-01): done.** Production serves from R2 since the 2026-09-28 cutover deploy (step 6), and every scan publishes its served subset (`dt-cloud publish-r2`, `cw-run.sh` stage 4c). The status line below is the 9/23 record.
+
 Status: **phase 1 + the serve-switch scaffolding built; nothing created or deployed** (2026-09-23, §7). Direction set by the user after the walkDiff-at-scale bench: the fleet-root diff is **network-round-bound against cross-provider GCS**, not CPU-bound — so colocating the served artifacts with the CF Worker is the single biggest speedup, and it saves GCS egress. The base already serves its public Map from R2 (`r2.rbw.sh` = the `disk-tree-demo` Pages project, `wrangler.r2.toml` + `deploy-r2.yml` + `dev.r2.rbw.sh`); **cw is the outlier still serving via `S3Store` over GCS** (`_lib/index.ts`). This is cw *adopting* the base's R2 path, not inventing one.
 
 ## 1. Why
