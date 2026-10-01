@@ -1,10 +1,11 @@
 name: CI
 
+# Every long-lived branch (cloud, local and the deployments that merge them);
+# `dist/**` branches are build outputs.
 on:
   push:
-    branches: [gcs, gcs-next, cw-s3, cw-s3-next]
+    branches-ignore: ['dist/**']
   pull_request:
-    branches: [gcs, gcs-next, cw-s3, cw-s3-next]
 
 jobs:
   test:
@@ -98,8 +99,8 @@ jobs:
       - name: Test
         run: cd packages/react && pnpm test
 
-  marin-test:
-    name: dt-cloud CLI tests
+  dt-cloud-test:
+    name: dt-cloud tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -113,20 +114,19 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      # One workspace env from the root lockfile (`cloud/` is a member): the
-      # engine the viz tests import and dt-cloud, at the pins the Batch image
-      # installs `--frozen`. `--all-extras` brings the pyrmts git pins that
-      # `tests/test_overtime.py` (the over-time index producer) imports at
-      # module load.
+      # One workspace env from the root lockfile (`cloud/` is a member), at the
+      # pins the job images install `--frozen`.
       - name: Sync dt-cloud
         run: uv sync --frozen --all-packages --all-extras --all-groups
 
       - name: Run dt-cloud tests
         run: cd cloud && uv run --no-sync pytest tests -v
 
-  site-build:
-    name: Site typecheck + build
+  site:
+    name: Site typecheck, build + tests
     runs-on: ubuntu-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -135,15 +135,17 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24  # the D1 test fake uses `node:sqlite` (Node ≥ 22.5)
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # `pnpm build` = `tsc -b && vite build` — typechecks the SPA (+ referenced
-      # projects) and the Functions, then bundles. Catches a broken site/ before
-      # a manual `site/deploy` ships it.
+      # `pnpm build` = `tsc -b && vite build`: typechecks the SPA and the
+      # Functions, then bundles.
       - name: Build site (typecheck + bundle)
         run: cd site && pnpm build
+
+      - name: Site tests
+        run: cd site && timeout 900 pnpm vitest run --testTimeout=20000

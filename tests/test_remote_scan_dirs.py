@@ -33,10 +33,6 @@ def test_url_entries_are_kept_verbatim(monkeypatch, tmp_path: Path):
     assert config.configured_scan_dirs() == [m, str(tmp_path)]
 
 
-def test_url_entry_counts_as_mounted():
-    assert config._volume_mounted('memory://x/y') is True
-
-
 def test_url_first_entry_is_the_write_target(monkeypatch, tmp_path: Path):
     m = _mem()
     monkeypatch.setenv(config.DISK_TREE_SCAN_DIRS_VAR, f'{m}:{tmp_path}')
@@ -68,16 +64,14 @@ def test_resolve_falls_back_to_a_url_write_dir(monkeypatch):
     assert config.resolve_scan_blob('nope.parquet') == f'{m}/nope.parquet'
 
 
-def test_blob_reachable_distinguishes_present_from_write_dir_fallback(monkeypatch, tmp_path: Path):
-    """`blob_reachable` is True only for a blob that actually resolves; a name
-    that would only hit the write-dir fallback (the raw-`FileNotFoundError`
-    case, spec `r2-scan-target.md`) is False."""
+def test_find_blob_distinguishes_present_from_write_dir_fallback(monkeypatch, tmp_path: Path):
+    """`_find_blob` finds only a blob that actually resolves; a name that would
+    only hit the write-dir fallback is `None`."""
     m = _mem()
     (tmp_path / 'here.parquet').write_bytes(b'x')
     monkeypatch.setattr(config, 'SCANS_DIR', m)
     monkeypatch.setenv(config.DISK_TREE_SCAN_DIRS_VAR, f'{m}:{tmp_path}')
-    assert config.blob_reachable('here.parquet') is True
-    assert config.blob_reachable('gone.parquet') is False
+    assert config._find_blob('here.parquet') == str(tmp_path / 'here.parquet')
     assert config._find_blob('gone.parquet') is None
     # resolve still hands back the write-dir path for a would-be create.
     assert config.resolve_scan_blob('gone.parquet') == f'{m}/gone.parquet'
