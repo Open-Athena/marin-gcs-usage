@@ -17,7 +17,7 @@ import { ago, buildUserIndex, epochDaysToDate } from './colors'
 import { ChildrenTable } from './ChildrenTable'
 import { FitSelect } from './FitSelect'
 import { PathPopover } from './PathPopover'
-import { pathCopy, pathDisplay, pathText } from './pathCrumbs'
+import { fromUrlSegs, pathCopy, pathDisplay, pathText, toUrlSegs } from './pathCrumbs'
 import { listsObjects, openHref } from './objects'
 import { Busy, Skeleton } from './Busy'
 import { useRules } from './rules'
@@ -330,7 +330,8 @@ function AppContent() {
   // and every level of the drilled path gets its own subtree query, grafted
   // in depth order — interactive drills hit each level's cache as they go,
   // and a cold deep link fans the whole chain out in parallel.
-  const graftPath = pathname.slice((store.path === '/' ? '' : store.path).length).replace(/^\/+/, '')
+  // The URL's `~` (a store home) expanded: `/~/c` → `Users/ryan/c`.
+  const graftPath = fromUrlSegs(pathname.slice((store.path === '/' ? '' : store.path).length).split('/').filter(Boolean), store.home).join('/')
   const canW = Math.ceil((typeof window === 'undefined' ? 1280 : window.innerWidth) / 128) * 128
   // Perf-mark keys (`perf.ts`): what tells one load of a widget from another
   // on this page — path, scan(s), canvas width, scope.
@@ -491,7 +492,16 @@ function AppContent() {
   // `/marin-us-central1/ego-dex`, not `/?p=marin-us-central1/ego-dex`. View
   // options stay query params (`?c`, `?mt`, …); the section stays in the `#hash`.
   const storeBase = store.path === '/' ? '' : store.path
-  const drillPath = pathname.slice(storeBase.length).replace(/^\/+/, '')
+  // A store home reads as `~` in the URL (`/~/c`); the path itself is the
+  // expanded one (`Users/ryan/c`), and a home URL spelled out is replaced by
+  // its `~` form below.
+  const urlPath = pathname.slice(storeBase.length).replace(/^\/+/, '')
+  const drillPath = fromUrlSegs(urlPath.split('/').filter(Boolean), store.home).join('/')
+  const urlOf = (segs: string[]) => toUrlSegs(segs, store.home).join('/')
+  const canonUrlPath = urlOf(drillPath.split('/').filter(Boolean))
+  useEffect(() => {
+    if (urlPath.replace(/\/+$/, '') !== canonUrlPath) navigate({ pathname: `${storeBase}/${canonUrlPath}`, search, hash }, { replace: true })
+  }, [urlPath, canonUrlPath]) // eslint-disable-line react-hooks/exhaustive-deps
   // Per-path created-time strata for `AgeChart`, keyed on the drilled prefix so
   // it follows the drill exactly instead of showing the whole fleet at every
   // depth (specs/age-index.md). Root (`drillPath === ''`, depth 0) is the fleet
@@ -546,13 +556,13 @@ function AppContent() {
   const drillTo = (segs: string[]) => {
     const q = new URLSearchParams(search)
     q.delete('open')
-    navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search: q.size ? `?${q}` : '', hash })
+    navigate({ pathname: segs.length ? `${storeBase}/${urlOf(segs)}` : store.path, search: q.size ? `?${q}` : '', hash })
   }
   // `?open=<name>`: an object under the drilled directory, shown in the leaf
   // viewer below the map (objects.ts `openHref`). Opening pushes history, so
   // Back closes it.
   const [openP, setOpenP] = useUrlState('open', stringParam(), true)
-  const openObject = (segs: string[]) => navigate({ ...openHref(store.path, segs, search), hash })
+  const openObject = (segs: string[]) => navigate({ ...openHref(store.path, toUrlSegs(segs, store.home), search), hash })
   // Read-recency lens domain: the access-log observation window (meta), not
   // the tree's own min/max — "no reads" is only meaningful vs when logging began.
   const readRange = useMemo((): DateRange | null =>
@@ -1159,6 +1169,7 @@ function AppContent() {
               node={mapPath[mapPath.length - 1]}
               segs={tblSegs}
               scheme={store.scheme}
+              home={store.home}
               ownerIdx={ownersMode ? ownerIdx : undefined}
               userIdx={userIdx}
               onPickUser={u => pickUser(u, false)}
@@ -1291,7 +1302,7 @@ function AppContent() {
               <DiffTreemap model={diffModel} onDrill={rel => drillTo([...segs, ...rel])} onOpen={rel => openObject([...segs, ...rel])} />
               {/* The map's tabular twin: the same cells as rows, sortable; a
                   row's name drills like its cell (and scrolls the maps up). */}
-              <DiffTable model={diffModel} scheme={store.scheme} segs={segs} onDrill={rel => openPath([...segs, ...rel])} onOpen={rel => openObject([...segs, ...rel])} />
+              <DiffTable model={diffModel} scheme={store.scheme} home={store.home} segs={segs} onDrill={rel => openPath([...segs, ...rel])} onOpen={rel => openObject([...segs, ...rel])} />
               {diffStaleOther
                 ? <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />
                 : diffRefining
