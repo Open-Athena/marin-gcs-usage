@@ -418,7 +418,15 @@ def write_path_index(
     access_window: tuple[int, int] | None = None
     con.execute("CREATE TEMP TABLE access_agg (bucket VARCHAR, dir VARCHAR, aday INTEGER, ro BIGINT, rb BIGINT)")
     if access:
-        globs = "[" + ", ".join(f"'{g}'" for g in access) + "]"
+        # Shards come in two grains: `day` (DATE) before the engine's hourly
+        # aggregation (16c621a), `hour` (UTC TIMESTAMP) since. Read them as one
+        # set by name and take whichever bucket column a row has.
+        acc_src = "read_parquet([" + ", ".join(f"'{g}'" for g in access) + "], union_by_name = true)"
+        have = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {acc_src}").fetchall()}
+        grains = [e for c, e in (("day", "day"), ("hour", "CAST(hour AS DATE)")) if c in have]
+        if not grains:
+            raise ValueError(f"access shards carry neither `day` nor `hour`: {sorted(have)}")
+        aday = grains[0] if len(grains) == 1 else f"COALESCE({', '.join(grains)})"
         con.execute(
             f"""
             INSERT INTO access_agg
@@ -426,15 +434,15 @@ def write_path_index(
               CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) AS aday,
               COALESCE(SUM(n_ops) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS ro,
               COALESCE(SUM(bytes_out) FILTER (WHERE op IN ('GET', 'HEAD')), 0) AS rb
-            FROM read_parquet({globs})
-            WHERE op IN ('GET', 'HEAD', 'LIST') AND day < DATE '{asof}'
+            FROM {acc_src}
+            WHERE op IN ('GET', 'HEAD', 'LIST') AND {aday} < DATE '{asof}'
             GROUP BY 1, 2
             """
         )
         lo, hi = con.execute(
             f"SELECT CAST(floor(epoch(MIN(last_ts)) / 86400) AS INTEGER), "
-            f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM read_parquet({globs}) "
-            f"WHERE day < DATE '{asof}'"
+            f"CAST(floor(epoch(MAX(last_ts)) / 86400) AS INTEGER) FROM {acc_src} "
+            f"WHERE {aday} < DATE '{asof}'"
         ).fetchone()
         if lo is not None:
             access_window = (int(lo), int(hi))

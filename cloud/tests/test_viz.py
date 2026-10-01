@@ -179,6 +179,43 @@ def test_access_rows_on_or_after_scan_date_are_excluded(tmp_path: Path, listing:
     assert a_by_path["b1"] == rd
 
 
+def test_access_shards_of_both_grains(tmp_path: Path, listing: str, attribution: str, access: str):
+    """The access agg went from `day` to `hour` grain (engine `16c621a`); the
+    shards written before it keep `day`. A scan reads both in one glob: the
+    as-of rule applies per grain (`hour`'s date < D), and an hour-grain-only
+    set works too. Here an hour-grain read of `users/rw/ckpt` on 07-10 moves
+    the window's end and the ancestors' `last_read`; its read dated on the
+    scan date (07-20 06:00) stays out."""
+    hourly = tmp_path / "access-hourly.parquet"
+    d0710 = dt.datetime(2026, 7, 10, 14, tzinfo=dt.timezone.utc)
+    pd.DataFrame(
+        {
+            "bucket": ["b1", "b1", "b1"],
+            "path": ["users/rw/ckpt", "users", "datasets"],
+            "hour": [d0710.replace(minute=0, tzinfo=None), d0710.replace(minute=0, tzinfo=None), TS["d0720"].replace(tzinfo=None)],
+            "op": ["GET", "GET", "GET"],
+            "last_ts": [d0710, d0710, TS["d0720"]],
+            "n_ops": [1, 1, 9],
+            "bytes_out": [10, 10, 9000],
+        }
+    ).to_parquet(hourly)
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    rd3, rd10 = epoch_day(TS["d0703"]), epoch_day(d0710)
+    for name, shards, window in (
+        ("mixed", (access, str(hourly)), {"from": rd3, "to": rd10}),
+        ("hourly", (str(hourly),), {"from": rd10, "to": rd10}),
+    ):
+        pidx = tmp_path / name / "path-index.parquet"
+        pidx.parent.mkdir()
+        meta = write_path_index((listing,), tmp_path / name / "out", "2026-07-20", (attribution,), identities_path, access=shards, path_index=pidx)
+        assert meta["access"] == window
+        df = pd.read_parquet(pidx)
+        a_by_path = df[df.kind == "dir"].groupby("path")["last_read"].max().to_dict()
+        assert [a_by_path["b1"], a_by_path["b1/users/rw/ckpt"]] == [rd10, rd10]
+        assert pd.isna(a_by_path["b1/datasets"])
+
+
 def test_age_rows_carry_last_read(tmp_path: Path, listing: str, attribution: str, access: str):
     identities_path = tmp_path / "identities.yaml"
     identities_path.write_text(IDENTITIES_YAML)
