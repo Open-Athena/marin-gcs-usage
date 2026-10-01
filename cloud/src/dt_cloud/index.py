@@ -56,6 +56,21 @@ L2_REQUIRED = ("path", "size", "depth", "kind", "n_files", "n_children", "n_desc
 L2_OPTIONAL: dict[str, str] = {"mtime_mean": "DOUBLE", "created": "BIGINT", "last_read": "INTEGER"}
 #: The label column (`import --label`), right after `path` when any source has it.
 LABEL_COL = "usr"
+#: Bytes by age at the scan date (specs/row-age-strata.md): `age_b<i>` holds the
+#: bytes whose created day is under `AGE_EDGES_DAYS[i]` days old (and at least
+#: the previous edge); the last bucket is everything older. Rolled up like
+#: `size`. Only where a source computes them (`path-index`), so stores built
+#: without them keep their schema.
+AGE_EDGES_DAYS = (1, 7, 30, 91, 365, 1095)
+AGE_COLS = tuple(f"age_b{i}" for i in range(len(AGE_EDGES_DAYS) + 1))
+
+
+def age_bucket_sql(created: str, asof_day: str) -> str:
+    """The `age_b<i>` index for an object `created` (a TIMESTAMP expression) at
+    epoch day `asof_day`: a future stamp counts as the newest bucket."""
+    age = f"({asof_day} - floor(epoch({created}) / 86400))"
+    arms = " ".join(f"WHEN {age} < {e} THEN {i}" for i, e in enumerate(AGE_EDGES_DAYS))
+    return f"CASE {arms} ELSE {len(AGE_EDGES_DAYS)} END"
 PIVOT_PREFIX = "sum_storage_class_id_"
 
 # The per-path created-day strata behind a path-aware `AgeChart` (specs/age-index.md).
@@ -108,7 +123,8 @@ def store_columns(shapes: list[tuple[list[str], dict[str, str]]]) -> list[str]:
         key=lambda c: int(c[len(PIVOT_PREFIX):]),
     )
     label = [LABEL_COL] if any(LABEL_COL in cols for cols, _ in shapes) else []
-    return ["path", *label, "size", "depth", "kind", "n_files", "n_children", "n_desc", "mtime", *L2_OPTIONAL, *pivots]
+    ages = list(AGE_COLS) if any(AGE_COLS[0] in cols for cols, _ in shapes) else []
+    return ["path", *label, "size", "depth", "kind", "n_files", "n_children", "n_desc", "mtime", *L2_OPTIONAL, *ages, *pivots]
 
 
 def store_rows_sql(l2: str, bucket: str, shape: tuple[list[str], dict[str, str]], columns: list[str]) -> str:
@@ -198,6 +214,7 @@ def write_sorts(
     sort_variants: tuple[tuple[str, ...], ...] = (),
     groups: bool = True,
     row_group_rows: int = ROW_GROUP_SIZE,
+    variant_tiers: tuple[str, ...] | None = None,
 ) -> dict[str, dict]:
     """Cut the store's two sorts (+ ``sort_variants`` of each) from the union
     at ``store`` into ``out_dir`` under their served names, with the
@@ -208,23 +225,24 @@ def write_sorts(
     count per sort. A fleet the size of gcs (777M rows) needs 32K to keep
     two sorts × 120 scans under D1's 10 GB (specs/path-store.md §1.6)."""
     import pyarrow.parquet as pq
-    from disk_tree.find.groups import groups_path
+    from disk_tree.find.groups import groups_parquet_path, groups_path
     from disk_tree.find.tiers import TIERS, tier_path, write_tiers
 
     out = Path(out_dir)
     stem = str(out / "path-index")
     written = write_tiers(
         store, stem, tiers=TIERS, row_group_rows=row_group_rows,
-        sort_variants=sort_variants, con=con, groups=groups,
+        sort_variants=sort_variants, con=con, groups=groups, variant_tiers=variant_tiers,
     )
     result: dict[str, dict] = {}
     for tier in TIERS:
-        for variant in ((), *sort_variants):
+        for variant in ((), *(sort_variants if variant_tiers is None or tier in variant_tiers else ())):
             src = tier_path(stem, tier, variant)
             dst = str(out / variant_file(tier, variant))
             os.replace(src, dst)
             if groups:
                 os.replace(groups_path(src), groups_path(dst))
+                os.replace(groups_parquet_path(src), groups_parquet_path(dst))
             name = variant_name(tier, variant)
             result[name] = {"file": dst, "rows": written[src], "groups": pq.read_metadata(dst).num_row_groups}
             err(f"{name}: {written[src]:,} rows, {result[name]['groups']:,} row groups → {dst}")
@@ -392,6 +410,7 @@ def write_index(
     age_only: bool = False,
     sort_variants: tuple[tuple[str, ...], ...] = (),
     row_group_rows: int = ROW_GROUP_SIZE,
+    variant_tiers: tuple[str, ...] | None = None,
 ) -> dict:
     """Write the store's sorts (`path-index.parquet`, `path-index-bysize.parquet`,
     + `sort_variants` copies) and the age pyramid under ``out_dir`` from
@@ -418,7 +437,7 @@ def write_index(
                 "pyramid": pyramid,
                 "files": {AGE_PYRAMID_VARIANTS[b]: s["file"] for b, s in pyramid["bins"].items()},
             }
-        sorts = write_sorts(con, store, out, sort_variants=sort_variants, row_group_rows=row_group_rows)
+        sorts = write_sorts(con, store, out, sort_variants=sort_variants, row_group_rows=row_group_rows, variant_tiers=variant_tiers)
         n = sorts["path"]["rows"]
         err(f"store: {n:,} rows ({', '.join(columns)}) over {buckets}")
         pyramid = write_age_pyramid(con, store, out)

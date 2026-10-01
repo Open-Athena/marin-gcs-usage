@@ -141,9 +141,11 @@ interface Agg {
   nc: number | null
   /** All descendants (rows under the path in the `path` sort); null on v1. */
   nd: number | null
+  /** Bytes by age bucket (`Row.ages`), summed over rows; null when none had them. */
+  ag: number[] | null
 }
 
-const newAgg = (): Agg => ({ b: 0, o: 0, wts: 0, wb: 0, a: null, cb: {}, ub: {}, kind: null, nc: null, nd: null })
+const newAgg = (): Agg => ({ b: 0, o: 0, wts: 0, wb: 0, a: null, cb: {}, ub: {}, kind: null, nc: null, nd: null, ag: null })
 
 function merge(a: Agg, r: Row): void {
   a.b += r.size
@@ -160,6 +162,7 @@ function merge(a: Agg, r: Row): void {
   a.kind = r.kind
   if (r.n_children != null) a.nc = r.n_children
   if (r.n_desc != null) a.nd = r.n_desc
+  if (r.ages) a.ag = a.ag ? a.ag.map((v, i) => v + r.ages![i]) : [...r.ages]
 }
 
 function subtract(parent: Agg, kids: Agg[]): Agg {
@@ -170,6 +173,7 @@ function subtract(parent: Agg, kids: Agg[]): Agg {
   out.o = Math.max(0, parent.o - sum(a => a.o))
   out.wts = parent.wts - sum(a => a.wts)
   out.wb = Math.max(0, parent.wb - sum(a => a.wb))
+  if (parent.ag) out.ag = parent.ag.map((v, i) => Math.max(0, v - kids.reduce((s, k) => s + (k.ag?.[i] ?? 0), 0)))
   for (const key of ['cb', 'ub'] as const) {
     for (const [k, v] of Object.entries(parent[key])) {
       const r = v - kids.reduce((s, kid) => s + (kid[key][k] ?? 0), 0)
@@ -193,6 +197,7 @@ function scale(a: Agg, frac: number): Agg {
   out.kind = a.kind
   out.nc = a.nc
   out.nd = a.nd
+  out.ag = a.ag && a.ag.map(v => v * frac)
   for (const key of ['cb', 'ub'] as const) for (const [k, v] of Object.entries(a[key])) out[key][k] = v * frac
   return out
 }
@@ -201,6 +206,7 @@ function display(a: Agg): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (a.wb) out.d = Math.round(a.wts / a.wb / 86400)
   if (a.a != null) out.a = a.a
+  if (a.ag?.some(v => v > 0)) out.ag = a.ag.map(v => Math.round(v))
   const desc = (m: Record<string, number>) =>
     Object.fromEntries(Object.entries(m).sort((x, y) => y[1] - x[1]))
   if (Object.keys(a.cb).length) out.cb = desc(a.cb)
@@ -224,7 +230,7 @@ async function tryOpen(env: Env, date: string, variant: string): Promise<IndexHa
   // `path` sort is a store generation, any such pointer left for that date is
   // an earlier generation's (index-sync now retires them; older D1s still hold
   // some) and must not answer.
-  if (variant.startsWith('coarse') || variant === 'user') {
+  if (variant.startsWith('coarse')) {
     const path = await tryOpen(env, date, 'path')
     if (path && isStore(path)) {
       missing.set(ck, Date.now())
@@ -232,7 +238,18 @@ async function tryOpen(env: Env, date: string, variant: string): Promise<IndexHa
     }
   }
   try {
-    return await openIndex(env, date, variant)
+    const h = await openIndex(env, date, variant)
+    // A user-first sort left by an earlier v1 generation of a store date
+    // (index-sync now retires it) must not answer a lens; a store
+    // generation's own (`path-index -u bysize`) does.
+    if ((variant === 'user' || variant === 'bysize-user') && !isStore(h)) {
+      const path = await tryOpen(env, date, 'path')
+      if (path && isStore(path)) {
+        missing.set(ck, Date.now())
+        return null
+      }
+    }
+    return h
   } catch (e) {
     if (String((e as Error).message).includes('not synced')) {
       missing.set(ck, Date.now())
@@ -266,7 +283,9 @@ async function readSubtree(
   // more (gcs at 32K-row groups: small drills over the 700K-row cap).
   // `smallRows`: below it the `path` read is taken without planning `bysize`.
   if (isStore(pathIdx) && (nDesc == null || nDesc > smallRows)) {
-    const sized = await tryOpen(env, date, sizeVariant(pathIdx.variant))
+    // A lens prefers the user-first size sort where the scan has one (gcs
+    // writes only `bysize-user`): a user's root reads their own groups.
+    const sized = (lens ? await tryOpen(env, date, 'bysize-user') : null) ?? await tryOpen(env, date, sizeVariant(pathIdx.variant))
     if (sized) {
       const sh = withTrace(sized, tr)
       const [pp, sp] = await Promise.all([planRects(pathIdx, rects, thrAt, lens), planSizeRects(sh, rects, thrAt, lens)])
@@ -1151,13 +1170,15 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   }
 }
 
-/** The sort a lens view reads on `date`: a store generation serves the lens
- * from its own `path` sort (and `bysize` beside it), filtered per row — it
- * writes no `user` sort on gcs (`path-index -U`), and one left by an earlier
- * v1 generation of the date must not answer; a version-1 scan reads `user`. */
+/** The by-path sort a lens view reads on `date`: a version-1 scan's `user`;
+ * a store generation's own `user` copy where it wrote one, else its `path`
+ * filtered per row (a v1 `user` left on a store date never answers —
+ * `tryOpen`). Subtree reads also try the user-first `bysize-user`
+ * (`readSubtree`), which is what keeps a user's root view narrow. */
 export async function lensSort(env: Env, date: string): Promise<string> {
   const p = await tryOpen(env, date, 'path')
-  return p && isStore(p) ? 'path' : 'user'
+  if (!(p && isStore(p))) return 'user'
+  return (await tryOpen(env, date, 'user')) ? 'user' : 'path'
 }
 
 async function openFine(env: Env, date: string, sort: string, lens?: Lens): Promise<IndexHandle> {

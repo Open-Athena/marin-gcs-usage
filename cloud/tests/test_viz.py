@@ -179,43 +179,6 @@ def test_access_rows_on_or_after_scan_date_are_excluded(tmp_path: Path, listing:
     assert a_by_path["b1"] == rd
 
 
-def test_access_shards_of_both_grains(tmp_path: Path, listing: str, attribution: str, access: str):
-    """The access agg went from `day` to `hour` grain (engine `16c621a`); the
-    shards written before it keep `day`. A scan reads both in one glob: the
-    as-of rule applies per grain (`hour`'s date < D), and an hour-grain-only
-    set works too. Here an hour-grain read of `users/rw/ckpt` on 07-10 moves
-    the window's end and the ancestors' `last_read`; its read dated on the
-    scan date (07-20 06:00) stays out."""
-    hourly = tmp_path / "access-hourly.parquet"
-    d0710 = dt.datetime(2026, 7, 10, 14, tzinfo=dt.timezone.utc)
-    pd.DataFrame(
-        {
-            "bucket": ["b1", "b1", "b1"],
-            "path": ["users/rw/ckpt", "users", "datasets"],
-            "hour": [d0710.replace(minute=0, tzinfo=None), d0710.replace(minute=0, tzinfo=None), TS["d0720"].replace(tzinfo=None)],
-            "op": ["GET", "GET", "GET"],
-            "last_ts": [d0710, d0710, TS["d0720"]],
-            "n_ops": [1, 1, 9],
-            "bytes_out": [10, 10, 9000],
-        }
-    ).to_parquet(hourly)
-    identities_path = tmp_path / "identities.yaml"
-    identities_path.write_text(IDENTITIES_YAML)
-    rd3, rd10 = epoch_day(TS["d0703"]), epoch_day(d0710)
-    for name, shards, window in (
-        ("mixed", (access, str(hourly)), {"from": rd3, "to": rd10}),
-        ("hourly", (str(hourly),), {"from": rd10, "to": rd10}),
-    ):
-        pidx = tmp_path / name / "path-index.parquet"
-        pidx.parent.mkdir()
-        meta = write_path_index((listing,), tmp_path / name / "out", "2026-07-20", (attribution,), identities_path, access=shards, path_index=pidx)
-        assert meta["access"] == window
-        df = pd.read_parquet(pidx)
-        a_by_path = df[df.kind == "dir"].groupby("path")["last_read"].max().to_dict()
-        assert [a_by_path["b1"], a_by_path["b1/users/rw/ckpt"]] == [rd10, rd10]
-        assert pd.isna(a_by_path["b1/datasets"])
-
-
 def test_age_rows_carry_last_read(tmp_path: Path, listing: str, attribution: str, access: str):
     identities_path = tmp_path / "identities.yaml"
     identities_path.write_text(IDENTITIES_YAML)
@@ -333,10 +296,10 @@ def test_store_sorts(tmp_path: Path, listing: str, attribution: str):
         assert (g[0], g[5], g[8], g[9], g[11]) == (0, 200 * GB, 0, 12, 30 * GB)
     assert not pidx.with_name(".store.parquet").exists()
     assert sorted(p.name for p in tmp_path.glob("path-index*")) == [
-        "path-index-by-user.groups.json", "path-index-by-user.parquet",
-        "path-index-bysize-by-user.groups.json", "path-index-bysize-by-user.parquet",
-        "path-index-bysize.groups.json", "path-index-bysize.parquet",
-        "path-index.groups.json", "path-index.parquet",
+        "path-index-by-user.groups.json", "path-index-by-user.groups.parquet", "path-index-by-user.parquet",
+        "path-index-bysize-by-user.groups.json", "path-index-bysize-by-user.groups.parquet", "path-index-bysize-by-user.parquet",
+        "path-index-bysize.groups.json", "path-index-bysize.groups.parquet", "path-index-bysize.parquet",
+        "path-index.groups.json", "path-index.groups.parquet", "path-index.parquet",
     ]
 
 
@@ -360,7 +323,8 @@ def test_write_path_index_plain(tmp_path: Path, listing: str):
         ("b1/users/rw/ckpt/model.bin", "file", 100 * GB), ("b1/users/rw/ckpt/opt.bin", "file", 50 * GB),
     ]
     assert sorted(p.name for p in pidx.parent.glob("path-index*")) == [
-        "path-index-bysize.groups.json", "path-index-bysize.parquet", "path-index.groups.json", "path-index.parquet",
+        "path-index-bysize.groups.json", "path-index-bysize.groups.parquet", "path-index-bysize.parquet",
+        "path-index.groups.json", "path-index.groups.parquet", "path-index.parquet",
     ]
     age = json.loads((out / "age.json").read_text())
     assert sorted(age, key=lambda r: (r["d"], r["d1"])) == [
@@ -478,7 +442,8 @@ def test_store_without_user_sorts(tmp_path: Path, listing: str, attribution: str
     meta = write_path_index((listing,), out, "2026-07-20", (attribution,), identities_path, path_index=pidx, user_sorts=False, row_group_rows=2048)
     assert meta["index"] == {"rows": 12, "sorts": {"path": {"rows": 12, "groups": 1}, "bysize": {"rows": 12, "groups": 1}}}
     assert sorted(p.name for p in tmp_path.glob("path-index*")) == [
-        "path-index-bysize.groups.json", "path-index-bysize.parquet", "path-index.groups.json", "path-index.parquet",
+        "path-index-bysize.groups.json", "path-index-bysize.groups.parquet", "path-index-bysize.parquet",
+        "path-index.groups.json", "path-index.groups.parquet", "path-index.parquet",
     ]
     assert _kv(pidx) == {"tier": "path", "sort": "depth,path,usr"}
 
@@ -508,3 +473,79 @@ def test_filesystem_root_capture_splits_on_first_segment(tmp_path: Path):
         ("Applications/X.app", "dir", 1 * GB), ("Users/ryan", "dir", 2 * GB),
         ("Applications/X.app/b", "file", 1 * GB), ("Users/ryan/a.bin", "file", 2 * GB),
     ]
+
+
+def test_rows_carry_bytes_by_age(tmp_path: Path):
+    """Every row carries `age_b0`..`age_b6`: bytes by age at the scan date in
+    log buckets (<1d, <1w, <1mo, <3mo, <1y, <3y, older), rolled up like
+    `size` — a dir's buckets sum its subtree's objects, a file's one bucket
+    is its own size. The mean alone can't tell `.cargo`'s 2006-stamped
+    sources from its recent files."""
+    listing_path = tmp_path / "listing.parquet"
+    ts = lambda s: pd.Timestamp(s, tz="UTC")  # noqa: E731
+    pd.DataFrame(
+        {
+            "bucket": ["b1"] * 7,
+            "name": ["new/a", "new/b", "new/c", "mid/d", "mid/e", "old/f", "old/g"],
+            "size_bytes": [1, 2, 4, 8, 16, 32, 64],
+            "created": [ts("2026-07-20 03:00"), ts("2026-07-15"), ts("2026-07-01"), ts("2026-05-01"),
+                        ts("2026-01-01"), ts("2024-07-20"), ts("2006-07-24")],
+            "storage_class_id": [1] * 7,
+        }
+    ).to_parquet(listing_path)
+    pidx = tmp_path / "idx" / "path-index.parquet"
+    write_path_index((str(listing_path),), tmp_path / "out", "2026-07-20", path_index=pidx, age_strata=True)
+    df = pd.read_parquet(pidx)
+    ages = [f"age_b{i}" for i in range(7)]
+    assert list(df.columns) == STORE_COLS[:12] + ages + STORE_COLS[12:]
+    assert _rows(df, ["path", *ages]) == [
+        ("b1", 1, 2, 4, 8, 16, 32, 64),
+        ("b1/mid", 0, 0, 0, 8, 16, 0, 0), ("b1/new", 1, 2, 4, 0, 0, 0, 0), ("b1/old", 0, 0, 0, 0, 0, 32, 64),
+        ("b1/mid/d", 0, 0, 0, 8, 0, 0, 0), ("b1/mid/e", 0, 0, 0, 0, 16, 0, 0),
+        ("b1/new/a", 1, 0, 0, 0, 0, 0, 0), ("b1/new/b", 0, 2, 0, 0, 0, 0, 0), ("b1/new/c", 0, 0, 4, 0, 0, 0, 0),
+        ("b1/old/f", 0, 0, 0, 0, 0, 32, 0), ("b1/old/g", 0, 0, 0, 0, 0, 0, 64),
+    ]
+
+
+def test_access_aggregates_mix_day_and_hour_grain(tmp_path: Path, listing: str, attribution: str):
+    """The access aggregates' grain moved from `day` to `hour`; a glob spans
+    both shapes until the day-grain parts age out (gcs 2026-10-01: `path-index`
+    died on "schema mismatch in glob: column day"). Parts are read by name and
+    the day taken from whichever column each has — the as-of rule included."""
+    parts = tmp_path / "agg"
+    parts.mkdir()
+    pd.DataFrame({
+        "bucket": ["b1", "b1"], "path": ["users/rw/ckpt", "users"],
+        "day": [TS["d0703"].date(), TS["d0703"].date()], "op": ["GET", "GET"],
+        "last_ts": [TS["d0703"], TS["d0703"]], "n_ops": [3, 3], "bytes_out": [1000, 1000],
+    }).to_parquet(parts / "a-day.parquet")
+    pd.DataFrame({
+        "bucket": ["b1", "b1"], "path": ["datasets/raw", "datasets"],
+        "hour": [TS["d0702"], TS["d0720"]], "op": ["GET", "GET"],
+        "last_ts": [TS["d0702"], TS["d0720"]], "n_ops": [1, 9], "bytes_out": [10, 9000],
+    }).to_parquet(parts / "b-hour.parquet")
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    pidx = tmp_path / "path-index.parquet"
+    meta = write_path_index((listing,), tmp_path / "out", "2026-07-20", (attribution,), identities_path, access=(str(parts / "*.parquet"),), path_index=pidx)
+    assert meta["access"] == {"from": epoch_day(TS["d0702"]), "to": epoch_day(TS["d0703"])}
+    a_by_path = pd.read_parquet(pidx).groupby("path")["last_read"].max().to_dict()
+    assert (a_by_path["b1/users/rw/ckpt"], a_by_path["b1/datasets/raw"], a_by_path["b1/datasets"], a_by_path["b1"]) == (
+        epoch_day(TS["d0703"]), epoch_day(TS["d0702"]), epoch_day(TS["d0702"]), epoch_day(TS["d0703"]),
+    )
+
+
+def test_store_with_only_the_bysize_user_sort(tmp_path: Path, listing: str, attribution: str):
+    """`user_sort_tiers=("bysize",)` writes the two sorts plus one user-first
+    copy, `bysize` by `usr` — what a lens view's root reads (gcs writes this
+    shape: `path-index -u bysize`)."""
+    identities_path = tmp_path / "identities.yaml"
+    identities_path.write_text(IDENTITIES_YAML)
+    pidx = tmp_path / "path-index.parquet"
+    meta = write_path_index((listing,), tmp_path / "out", "2026-07-20", (attribution,), identities_path, path_index=pidx, user_sort_tiers=("bysize",))
+    assert meta["index"] == {"rows": 12, "sorts": {"path": {"rows": 12, "groups": 1}, "bysize": {"rows": 12, "groups": 1}, "bysize-user": {"rows": 12, "groups": 1}}}
+    assert sorted(p.name for p in tmp_path.glob("path-index*.parquet")) == [
+        "path-index-bysize-by-user.groups.parquet", "path-index-bysize-by-user.parquet", "path-index-bysize.groups.parquet",
+        "path-index-bysize.parquet", "path-index.groups.parquet", "path-index.parquet",
+    ]
+    assert _kv(pidx.with_name("path-index-bysize-by-user.parquet")) == {"tier": "bysize", "sort": "usr,size_bucket desc,path", "bucket": "log2"}

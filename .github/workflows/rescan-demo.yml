@@ -42,7 +42,9 @@ env:
 
 jobs:
   rescan:
-    if: github.repository == 'runsascoded/disky'  # the r2.rbw.sh demo's secrets live only there (deployment forks inherit this file)
+    # The r2.rbw.sh demo's own job: deployment branches carry this file
+    # through `cloud` merges, but their repos have none of its secrets.
+    if: github.repository == 'runsascoded/disky'
     name: Re-scan demo buckets
     runs-on: ubuntu-latest
     steps:
