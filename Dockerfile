@@ -30,7 +30,7 @@ WORKDIR /app
 # the engine and `cloud/`), `--frozen`, into the image's own interpreter
 # (`UV_PROJECT_ENVIRONMENT=/usr/local`): the image runs exactly the pins the
 # tests ran. The `pip install .` this replaced resolved fresh on every build —
-# gcsfs 2026.8.1 came in that way and hung the cw job at exit (its adaptive
+# gcsfs 2026.8.1 came in that way and hung a scan job at exit (its adaptive
 # prefetcher vs a pyarrow-held `gs://` handle; `blobfs` now opts out).
 COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/usr/local UV_NO_CACHE=1
@@ -46,9 +46,4 @@ COPY cloud/src ./cloud/src
 RUN uv sync --frozen --no-dev --no-editable --package dt-cloud --extra plot
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
-# One image, two scheduled jobs: the GCS fleet job (`job/run.sh`, tag `latest`)
-# and the CoreWeave scan job (`job/cw-run.sh`, tag `cw`). `job/build.sh` picks
-# the script by tag (`--build-arg JOB=cw-run.sh`); the default is the GCS job.
-ARG JOB=run.sh
-ENV JOB_SCRIPT=$JOB
-ENTRYPOINT ["bash", "-c", "exec bash job/$JOB_SCRIPT \"$@\"", "--"]
+ENTRYPOINT ["bash", "job/run.sh"]
