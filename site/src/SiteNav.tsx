@@ -158,10 +158,9 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
   const canAssign = useCanAssign()
   const [aboutOpen, setAboutOpen] = useState(false)
   const m = useMenu('bottom-start')
-  // The subtree's store: its own map + scan browser (`/meta`, `/meta/files`),
-  // and only the affordances it has (ownership, staging are the primary's).
+  // The subtree's store: its own map (`/meta`), and only the affordances it
+  // has (ownership, staging are the primary's).
   const store = useStore()
-  const base = store.path === '/' ? '' : store.path
   // The map is "here" at the store's root only (a drilled path is a place of
   // its own); every other page, on it or under it.
   const here = (to: string) => (to === store.path ? pathname === to : pathname === to || pathname.startsWith(to + '/'))
@@ -181,7 +180,6 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
           <FloatingFocusManager context={m.context} modal={false}>
             <div className="menu-pop" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
               {link(store.path, 'Map')}
-              {link(`${base}/files`, 'Scans')}
               {canAssign && store.owners && link('/users', 'Users')}
               {canAssign && store.owners && link('/assignments', 'Assignments')}
               {store.staging && link('/staged', 'Staged')}
@@ -237,7 +235,7 @@ function UserMenu() {
     <>
       {tokenOpen && <TokenModal onClose={() => setTokenOpen(false)} />}
       <button type="button" className="tb-avatar" ref={m.refs.setReference} {...m.getReferenceProps()} aria-label={`Signed in as ${dispName}`} title={dispName}>
-        {guest
+        {guest || ident.avatar
           ? <Avatar src={ident.avatar} name={dispName} size={26} />
           : <Avatar github={ghHandle(who)} name={shortName(who)} size={26} />}
       </button>
@@ -247,7 +245,7 @@ function UserMenu() {
             <div className="menu-pop user-menu" ref={m.refs.setFloating} style={m.floatingStyles} {...m.getFloatingProps()}>
               {guest
                 ? <GuestCard name={dispName} avatar={ident.avatar} email={ident.email} />
-                : <UserCard who={who} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />}
+                : <UserCard who={who} avatar={ident.avatar} extra={<SessionLines email={ident.email} user={myUser} emails={emails} />} />}
               <hr />
               <Explain text="Byte units, site-wide: binary (TiB) ↔ decimal (TB)">
                 <button type="button" role="menuitem" className="mi" onClick={() => toggleUnits()}>

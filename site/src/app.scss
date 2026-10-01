@@ -63,7 +63,8 @@ main {
   padding: var(--pad-t) var(--pad-x) 48px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  --main-gap: 22px;
+  gap: var(--main-gap);
 }
 header h1 { font-size: 24px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
 header .hrow {
@@ -134,6 +135,8 @@ header .hrow {
   .lbl { color: var(--ink-3); font-size: 12px; margin-right: 2px; }
   .tb-ctl, .tb-axis, .tb-scan, .tb-path { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .tb-scan .arrow { color: var(--ink-3); }
+  // The page scan's freshness beside its date picker (tip: exact publish time).
+  .tb-scan-ago { color: var(--ink-3); font-size: 12px; white-space: nowrap; cursor: default; }
   .tb-delta { font-weight: 650; text-decoration: none; font-variant-numeric: tabular-nums; &:hover { text-decoration: underline; } }
   // Drill-path crumbs: the deepest segment is inked; ancestors drill up.
   .tb-path {
@@ -194,9 +197,15 @@ header .hrow {
 .treemap .dt-treemap-bar { justify-content: flex-end; }
 .treemap .dt-treemap-crumbs { display: none !important; }
 .dt-treemap:fullscreen .dt-treemap-crumbs { display: flex !important; }
-// Zero on desktop (the controls sit in the flowing bar); a phone reserves the
-// controls-overlay height here (see the mobile `.tb-row2` overlay below).
-.tb-row2-spacer { height: 0; }
+// Gone on desktop (the controls sit in the flowing bar): a zero-height flex
+// child still costs main's 22px gap, so the map sat two gaps under the
+// controls. A phone shows it and reserves the controls-overlay height (see the
+// mobile `.tb-row2` overlay below).
+.tb-row2-spacer { display: none; }
+// The map's own bar holds only the legend (crumbs are the page's, ⛶ is the
+// footer's); with no legend it's an empty 22px strip over the map, at every
+// width.
+.treemap .dt-treemap-bar:not(:has(.dt-treemap-legend > *)) { display: none !important; }
 // The bar's pickers — also the Diff header's two scan endpoints.
 .tb-select {
   background: var(--panel); color: var(--ink);
@@ -489,6 +498,12 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.92em;
   }
+}
+.authwall .card.privacy {
+  max-width: 560px;
+  text-align: left;
+  h2 { font-size: 1.05em; margin: 1.2em 0 0.4em; color: var(--ink); }
+  p + p { margin-top: 0.6em; }
 }
 .loading { color: var(--ink-3); }
 
@@ -952,13 +967,20 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 .diff-move {
   border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
   margin: 1px 2px 2px;
-  // Labels and numbers both nowrap: in a narrow card the table scrolls
-  // sideways as a whole, instead of the label column collapsing to one letter
-  // per line while the nowrap numbers keep their width.
+  // The label is `nowrap` like the numbers: in a narrow dock the table
+  // otherwise squeezes it to one letter per line ("b / y / t / e / s").
   th { text-align: left; font-weight: 500; color: var(--ink-2); padding: 0 10px 0 0; white-space: nowrap; }
   td { text-align: right; padding: 0 0 0 12px; white-space: nowrap; }
   td.eq { color: var(--ink); }
+  @media (max-width: 640px) {
+    font-size: 11.5px;
+    th { padding-right: 6px; }
+    td { padding-left: 7px; }
+  }
 }
+// Still too wide (a ⊕ first-scanned column on a small phone): the dock scrolls
+// sideways rather than crushing a column.
+.dt-treemap-tip.dock:has(.diff-move) { overflow-x: auto; }
 // The diff tip is a line taller (path + bytes + objects + status) than the
 // main map's, so its docked panel gets more fixed height.
 .diff-tm .dt-treemap-tip.dock { --dt-dock-h: 112px; }
@@ -1007,10 +1029,10 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
 }
 @keyframes busy-spin { to { transform: rotate(360deg); } }
 .skel { width: 100%; border-radius: 6px; background: var(--panel); animation: tm-pulse 1.4s ease-in-out infinite; }
-// /files parquet cells that keep their tail: an RTL block clips at the visual
-// left (`…thoughts3_0/shard-7.parquet`); the `<bdi>` inside stays LTR.
-.files-page .cell-tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-// The full value behind a clipped table cell (/files parquet viewer, via
+// Parquet cells that keep their tail (the leaf viewer): an RTL block clips at
+// the visual left (`…thoughts3_0/shard-7.parquet`); the `<bdi>` inside stays LTR.
+.object-panel .cell-tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+// The full value behind a clipped table cell (the leaf viewer's tables, via
 // file-tree's `elide.tooltip`): a long GCS path, wrapped so it fits the panel.
 .tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
 .tooltip-content.pinned { border-color: var(--ink-3); }
@@ -1608,16 +1630,17 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     }
     .never { color: var(--never-read); font-weight: 600; filter: brightness(1.4); }
     .none { color: var(--ink-3); }
+    // Created = three columns (swatch · month · year) under one header, so
+    // every part aligns down the page; the year column is omitted when no
+    // listed row needs one.
     td.created {
       white-space: nowrap;
-      // Dot + month as a 2-col group, flush-right in the cell (a trailing
-      // empty year track used to leave dead space that shoved it left). Month
-      // track floors at 3ch so bare months align; a year suffix grows it.
-      .cm { display: inline-grid; grid-template-columns: 8px minmax(3ch, max-content); gap: 0 5px; align-items: center; justify-items: end; }
+      &.sw { padding-right: 5px; text-align: right; }
+      &.mon { padding-left: 0; padding-right: 0; text-align: left; }
+      &.yr { padding-left: 4px; text-align: left; color: var(--ink-3); font-size: 11px; }
       // A contrast ring so the pale (new) and dark (old) ends of the viridis
       // ramp both read against the row — the swatch was invisible at each end.
       i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); }
-      .yr { color: var(--ink-3); font-size: 11px; }
     }
     td.owners { white-space: nowrap; }
     // The row's actions: the trash gesture (a staging store) and the assign
@@ -2016,6 +2039,31 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 #tree-map.leaf .dt-treemap-map { flex-basis: 0 !important; height: 0; }
 #tree-map.leaf .hint { display: none; }  // "click a directory to drill in" — nothing to click
 
+// The leaf viewer (`?open=`): an opened object under the map — its name, size,
+// date and a download link over file-tree's renderer for its type.
+#object { scroll-margin-top: var(--topbar-h, 48px); }
+.object-panel {
+  margin: 8px 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 8px 12px 12px;
+  min-width: 0;
+  header {
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px;
+    .obj-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; overflow-wrap: anywhere; cursor: copy; }
+    .obj-meta { color: var(--ink-2); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    .obj-dl { font-size: 12.5px; }
+    .obj-close {
+      margin-left: auto; border: none; background: none; color: var(--ink-2);
+      font-size: 20px; line-height: 1; cursor: pointer; padding: 0 2px;
+      &:hover { color: var(--ink); }
+    }
+  }
+  .obj-uri { margin: 2px 0 8px; font-size: 11.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+  .obj-body { overflow-x: auto; max-width: 100%; }
+}
+
 // Assignments heatmap (/assignments): assigner rows × assignee columns.
 .assignments-page {
   padding: 1rem; max-width: 1100px; margin: 0 auto;
@@ -2064,7 +2112,10 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   .topbar.ctrl-hidden .tb-row2 { transform: translateY(-100%); opacity: 0; pointer-events: none; }
   // The flow spacer reserves the controls' measured height at the top so the
   // overlay covers no content there; it rides off-screen once scrolled.
-  .tb-row2-spacer { height: var(--tb-row2-h, 0); }
+  // It starts flush under row 1, where the tray does (cancelling main's flex
+  // gap above it), and leaves a tighter gap to the content below — otherwise
+  // the map sat two full gaps under the tray.
+  .tb-row2-spacer { display: block; height: var(--tb-row2-h, 0); margin: calc(-1 * var(--main-gap)) 0 -10px; }
   .topbar .brand { display: none; }
   .topbar .tb-suffix { display: none; }
   // The path clips itself with an ellipsis on wide screens; on a phone the
