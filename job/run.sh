@@ -266,15 +266,17 @@ fi
 # The path store (specs/path-store.md): its union and both sorts are written
 # beside -P and re-read once per sort, so they go to the local SSD, not the
 # GCS FUSE mount (~20-50 MB/s; the phase-0 sizing runs, 2026-09-30), and the
-# finished files are uploaded in one parallel pass. `-r 32768`: 4× fewer row
-# groups than the 8k default, so ~36 MB of D1 footer per scan; `-U`: no
-# `-by-user` sort copies (the reader prunes an owner lens by the footer's
-# u_min/u_max), halving bytes and footer rows.
+# finished files are uploaded in one parallel pass. Row groups stay at the
+# 8k default: a small drill decodes ~one group per subtree depth, so 32k
+# groups made every drill 4× dearer and hit the reader's decode cap (413s on
+# 2026-10-01); `PATH_INDEX_RG_ROWS` overrides. `-U`: no `-by-user` sort
+# copies (a lens reads `path`/`bysize` filtered by `usr`), halving bytes and
+# footer rows.
 PI_DIR="${STAGE_DIR:-/tmp}/path-index"
 mkdir -p "$PI_DIR"
 dt-cloud path-index -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
   -c "/gcs/$DATA/listing/$DATE/dir-cache" \
-  -P "$PI_DIR/path-index.parquet" -r "${PATH_INDEX_RG_ROWS:-32768}" $([ "${PATH_INDEX_USER_SORTS:-0}" = 1 ] || echo -U)
+  -P "$PI_DIR/path-index.parquet" ${PATH_INDEX_RG_ROWS:+-r "$PATH_INDEX_RG_ROWS"} $([ "${PATH_INDEX_USER_SORTS:-0}" = 1 ] || echo -U)
 echo "PHASE path-index: ${SECONDS}s (wall)" >&2
 PI_DIR="$PI_DIR" DATA="$DATA" DEST="$(dirname "$INDEX_PATH")" python3 - <<'PY'
 import os, time
@@ -390,8 +392,12 @@ fi
 # Sweep row groups of generations the pointer no longer names (a REPROC's
 # previous generation; every reader handle has expired by now), and retire
 # the floor-free row groups of scans older than the newest INDEX_RETAIN —
-# D1's 10 GB cap. A path-store scan costs ~36 MB of D1 (2 sorts × ~24k
-# groups), so 120 ≈ 4.4 GB; a pre-store scan keeps its coarse tiers. A retired
+# D1's 10 GB cap. A path-store scan costs ~145 MB of D1 (2 sorts × ~95k
+# groups at ~766 B/row) vs ~40 MB for a pre-store one, so 120 path-store scans
+# would not fit: D1 (2.5 GB on 2026-10-01) reaches ~10 GB ~50 days after the
+# switch. Lower INDEX_RETAIN to ~60 before then (8.7 GB), or land the
+# consolidated groups (specs/path-store.md §4.7). A pre-store scan keeps its
+# coarse tiers when retired. A retired
 # path-store scan has no D1 rows and its footer/groups sidecar is too big for
 # a Worker, so its deep drill waits on the cold "parquet of footers" tier
 # (specs/path-store.md §4.7) — first relevant ~120 days after the switch.
