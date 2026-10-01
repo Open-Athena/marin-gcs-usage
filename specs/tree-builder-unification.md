@@ -103,7 +103,7 @@ the ETL floor is a **payload budget** (a coarse safety net on one JSON), and
 the client's existing `minCellArea = 16px²` handles **visual dust**. What's not
 fine is the ETL floor doubling as a permanent boundary on what's knowable.
 
-This also closes `specs/mark-sweep-ui.md:56` ("marking needs to reach prefixes
+This also closes `specs/done/mark-sweep-ui.md:56` ("marking needs to reach prefixes
 below the current webdata depth cap").
 
 ## Status

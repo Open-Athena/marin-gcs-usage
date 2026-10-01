@@ -44,4 +44,4 @@ borderWidth?: (depth: number, ctx: CellCtx) => number
 - Hover/click targets unchanged (cells still own their rects; borders paint on
   top). `dust` cells (<14px min-dim) probably always shared.
 - CP target: this is a core (`packages/react`) feature — track in
-  `specs/dt-core-upstreaming.md`.
+  `specs/done/dt-core-upstreaming.md`.

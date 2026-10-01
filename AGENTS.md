@@ -126,16 +126,13 @@ GitHub handle max); sizes and $ stay behind the site's auth.
   ingest, `mark`/`status`/`todo`, `series`, `report`. Runtime-imports the
   `disk_tree` engine below.
 - `job/` — daily snapshot pipeline on **GCP Batch** (`run.sh` entrypoint,
-  `batch-submit.sh`, `build.sh` → Cloud Build image; Cloud Scheduler crons
+  `batch-submit.sh`, `build.sh` → Cloud Build image; Cloud Scheduler cron
   `gcs-usage-snapshot-daily` 07:00 UTC on the `:latest` image built from this
-  branch, and `cw-usage-snapshot` 12-hourly on the `:cw` image built from the
-  `cw-s3` branch's `job/cw-*` — live in GCP, bodies edited in place, never
-  regenerated). One branch per deployment: `specs/branch-parity-discipline.md`.
-- `packages/react/` — `@disk-tree/react` widget lib (Treemap etc.); core changes
-  here CP upstream to disk-tree (`specs/dt-core-upstreaming.md`).
-- `src/`, `ui/`, `tests/` — the vendored **disk-tree** engine + its own app and
-  tests (upstream lineage; sessions here rarely touch them, and upstream docs
-  describe them).
+  branch — live in GCP, body edited in place, never regenerated).
+- `packages/`, `src/`, `tests/` — the **disk-tree** engine and widget libs.
+  Branch model: `specs/branch-layout.md` — shared code (these, and most of
+  `site/` and `cloud/`) lands on the `cloud` base branch and merges into this
+  deployment branch, which carries only gcs's own delta.
 - `specs/` — design docs; shipped ones move to `specs/done/`.
 
 ### Dev workflow

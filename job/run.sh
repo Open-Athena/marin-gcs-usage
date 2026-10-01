@@ -233,7 +233,7 @@ A=(); for a in "${AG[@]}"; do A+=(-a "$(loc "$a")"); done
 X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 
 # GATE=1 (with REPROC=1: the date's listing is archived): the A.3 gate of
-# specs/cascade-gate.md instead of the snapshot — DT's `import -e duckdb
+# specs/done/cascade-gate.md instead of the snapshot — DT's `import -e duckdb
 # --label usr` per bucket on the same staged inputs, `cascade-a2a` against the
 # date's published path index, peak RSS + wall per bucket. Reports go to
 # gs://$DATA/gate/$DATE/; nothing is published. GATE_K = --partition-depth

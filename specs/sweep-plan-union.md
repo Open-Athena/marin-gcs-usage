@@ -1,6 +1,6 @@
 # The unified deletion model (opt-in trash) — implementation
 
-The build plan for the decided seams (`specs/gcs-toward-union.md` §5). Both
+The build plan for the decided seams (`specs/done/gcs-toward-union.md` §5). Both
 branches build to this so they converge by construction; DT upstreams the result
 into `disk_tree` (its `specs/mgu-cp-2026-09-16.md` roadmap item 3) once it runs on
 both. Written 2026-09-17; revised the same day when seam 1 flipped from plan-first

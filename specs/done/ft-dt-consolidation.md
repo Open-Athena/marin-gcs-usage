@@ -20,7 +20,7 @@ This spec makes that literal, in phases.
    branch): `foldThin` + `minCellSide` (folds tall/thin sliver cells into a
    hoverable `(+n)` tile) and `squarifyRemainder` (side-by-side long-tail
    layout; FT's OG-card path uses it). Sync state advanced in
-   `specs/dt-core-upstreaming.md`.
+   `specs/done/dt-core-upstreaming.md`.
 3. **"Any path links to `/files/<path>`"** — the treemap tooltip's `open ↗` /
    `copy` (shipped) is the down-payment; extend hrefs into the `/files`
    browser from: dashboard treemap cells (secondary action), `/user/:id`
@@ -40,7 +40,7 @@ This spec makes that literal, in phases.
 ## Architecture decisions (recorded 2026-08-31)
 
 - **DT stays vendored** (`packages/react` full copy + manual CP treadmill per
-  `specs/dt-core-upstreaming.md`). mgu is the widget's forcing workload —
+  `specs/done/dt-core-upstreaming.md`). mgu is the widget's forcing workload —
   surgery on accessors/layout/folding originates here and upstreams to DT.
   The treadmill is real toil (three commits of drift accrued in days), but
   in-tree hackability is worth it while the widget is hot.
