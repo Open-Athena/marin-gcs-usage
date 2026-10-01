@@ -376,7 +376,7 @@ fi
 if [ "${REPROC:-0}" = "1" ]; then
   echo "REPROC — skipping usage digest" >&2
 elif [ -n "${SLACK_BOT_TOKEN:+set}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then  # `:+set`: xtrace must not print the token
-  dt-cloud digest -r "gs://$DATA/snapshots" \
+  dt-cloud digest -C job/digest.yml -r "gs://$DATA/snapshots" \
     || echo "WARN: usage-digest step failed" >&2
 else
   echo "no Slack bot transport (SLACK_BOT_TOKEN+SLACK_CHANNEL) — skipping usage digest" >&2
@@ -389,7 +389,7 @@ fi
 if [ "${REPROC:-0}" = "1" ]; then
   echo "REPROC — skipping Discord digest" >&2
 elif [ -n "${DISCORD_GCS_USAGE_WEBHOOK:+set}" ] && [ -n "${DISCORD_BOT_TOKEN:+set}" ]; then  # `:+set`: xtrace must not print secrets
-  dt-cloud digest -P discord -r "gs://$DATA/snapshots" \
+  dt-cloud digest -C job/digest.yml -P discord -r "gs://$DATA/snapshots" \
     || echo "WARN: Discord digest step failed" >&2
 else
   echo "no Discord transport (DISCORD_GCS_USAGE_WEBHOOK+DISCORD_BOT_TOKEN) — skipping Discord digest" >&2

@@ -1,0 +1,26 @@
+# gcs.oa.dev's monthly digest (Slack + its Discord twin): `dt-cloud digest -C job/digest.yml`
+# (job/run.sh). Every value is explicit, so nothing here depends on cloud's built-in presets.
+# Secrets stay in the env; this file only names the env vars that hold them.
+template: gcs
+title: GCS usage
+site_url: https://gcs.oa.dev
+root: gs://{DATA_BUCKET}/snapshots
+# Slack state: gs://<data bucket>/digest/<YYYY-MM>.json
+state: digest
+# Discord state is keyed by webhook id (a webhook can only edit its own messages)
+discord_state: digest/discord/{webhook}
+discord_webhook_env: DISCORD_GCS_USAGE_WEBHOOK
+# reply avatars (colour-coded arrows) are served from the icons Pages project
+icons_base: https://gcs-usage-icons.pages.dev
+# the mosaic plot is rendered here, then `wrangler pages deploy`ed to the icons project
+icons_dir: job/icons
+plot_project: gcs-usage-icons
+plot_branch: main
+plot_base: https://gcs-usage-icons.pages.dev
+variant: sender
+# US list $/GiB-month by GCS storage class id (1 Standard / 2 Nearline / 3 Coldline / 4 Archive)
+prices:
+  "1": 0.02
+  "2": 0.01
+  "3": 0.004
+  "4": 0.0012
