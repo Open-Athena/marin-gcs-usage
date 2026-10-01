@@ -1,14 +1,12 @@
 import json
 import os
 from datetime import datetime
-from os import makedirs, remove
-from os.path import join, exists
 from typing import Optional
 
 import pandas as pd
-from sqlalchemy import Integer, String, DateTime, Float, Index, UniqueConstraint
+from sqlalchemy import Integer, String, DateTime, Index
 from sqlalchemy.orm import Mapped, mapped_column
-from utz import err, iec
+from utz import err
 
 from disk_tree import find
 from disk_tree.storage import get_backend
@@ -78,26 +76,6 @@ class ScanProgress(Base):
         return db.session.query(cls).all()
 
 
-class Diff(Base):
-    """A persisted diff index for a scan pair (`diff_index.py`)."""
-    __tablename__ = "diff"
-    __table_args__ = (UniqueConstraint('scan_a', 'scan_b'),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, init=False)
-    scan_a: Mapped[int] = mapped_column(Integer, nullable=False)
-    scan_b: Mapped[int] = mapped_column(Integer, nullable=False)
-    time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    blob: Mapped[Optional[str]] = mapped_column(String, nullable=True, default=None)
-    status: Mapped[str] = mapped_column(String, nullable=False, default='building')  # building, done, failed
-    n_rows: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
-    n_added: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
-    n_removed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
-    n_changed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
-    n_touched: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
-    seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=None)
-    error: Mapped[Optional[str]] = mapped_column(String, nullable=True, default=None)
-
-
 class Scan(Base):
     __tablename__ = "scan"
     __table_args__ = (
@@ -126,7 +104,6 @@ class Scan(Base):
         mean_mtime: bool = False,
         track_progress: bool = True,
         progress: bool = True,
-        one_fs: bool = False,
     ) -> tuple['Scan', pd.DataFrame]:
         from .db import db
 
@@ -143,7 +120,7 @@ class Scan(Base):
                 ScanProgress.update(path, items_found, items_per_sec, error_count)
 
         try:
-            result = find.index(path, sudo=sudo, mean_mtime=mean_mtime, progress_callback=progress_callback, progress=progress, one_fs=one_fs)
+            result = find.index(path, sudo=sudo, mean_mtime=mean_mtime, progress_callback=progress_callback, progress=progress)
         except Exception as e:
             if track_progress:
                 ScanProgress.finish(path, status='failed')
@@ -211,10 +188,6 @@ class Scan(Base):
             db.session.delete(scan)
             db.session.commit()
             backend.delete(blob)
-        if scans:
-            # Diff indexes referencing a deleted scan can't be served.
-            from disk_tree.cli.diff_index import gc_indexes
-            gc_indexes()
 
     @classmethod
     def load(
@@ -249,7 +222,6 @@ class Scan(Base):
         mean_mtime: bool = False,
         track_progress: bool = True,
         progress: bool = True,
-        one_fs: bool = False,
     ) -> tuple['Scan', pd.DataFrame]:
         from disk_tree.config import blob_reachable
         scan = cls.load(path)
@@ -265,12 +237,12 @@ class Scan(Base):
                 err(f"{path}: cached scan's blob {scan.blob} is unreachable (unmounted volume?), rescanning")
                 scan = None
         if not scan:
-            return cls.create(path, gc=gc, sudo=sudo, mean_mtime=mean_mtime, track_progress=track_progress, progress=progress, one_fs=one_fs)
+            return cls.create(path, gc=gc, sudo=sudo, mean_mtime=mean_mtime, track_progress=track_progress, progress=progress)
         df = scan.df()
         if mean_mtime and 'mtime_mean' not in df.columns:
             # Cached scan predates the flag — rescan rather than silently
             # serving a frame without the requested column.
             err(f"{path}: cached scan lacks `mtime_mean`, rescanning")
-            return cls.create(path, gc=gc, sudo=sudo, mean_mtime=True, track_progress=track_progress, progress=progress, one_fs=one_fs)
+            return cls.create(path, gc=gc, sudo=sudo, mean_mtime=True, track_progress=track_progress, progress=progress)
         cls.gc(path=path, cutoff=scan.time)
         return scan, df

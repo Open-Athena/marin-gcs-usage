@@ -44,13 +44,8 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      # `ui/dist` must exist: dt-cloud depends on the repo-root `disk-tree`
-      # package, whose wheel force-includes `ui/dist` as `disk_tree/static`
-      # (a bare checkout has none → hatchling "Forced include not found";
-      # every hourly run failed from the 2026-09-28 cutover to the base until
-      # this). The CLI doesn't need the assets — same trick as ci.yml.
       - name: Sync dt-cloud
-        run: mkdir -p ui/dist && uv sync --frozen --all-packages
+        run: uv sync --frozen --all-packages
 
       - name: Run healthcheck
         run: |

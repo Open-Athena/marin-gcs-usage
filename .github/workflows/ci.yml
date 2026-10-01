@@ -23,9 +23,6 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Create empty ui/dist for editable install
-        run: mkdir -p ui/dist
-
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
@@ -44,40 +41,12 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Create empty ui/dist for editable install
-        run: mkdir -p ui/dist
-
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
       - name: Run mypy
         run: uv run mypy src/disk_tree --ignore-missing-imports
         continue-on-error: true  # Don't fail build on type errors for now
-
-  ui-build:
-    name: UI Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        # pnpm version comes from root package.json's `packageManager` field;
-        # passing `version:` here on top of that is a hard error in v4.
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Type check
-        run: cd ui && pnpm tsc --noEmit
-
-      - name: Build
-        run: cd ui && pnpm build
 
   treemap-widget:
     name: "@rdub/treemap (typecheck + test)"
@@ -129,52 +98,6 @@ jobs:
       - name: Test
         run: cd packages/react && pnpm test
 
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Python setup for server
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      # Node.js setup for UI build and Playwright
-      - uses: pnpm/action-setup@v4
-        # pnpm version comes from root package.json's `packageManager` field;
-        # passing `version:` here on top of that is a hard error in v4.
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install UI dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build UI
-        run: cd ui && pnpm build
-
-      - name: Install Python dependencies
-        run: uv sync --frozen --all-extras
-
-      - name: Install Playwright browsers
-        run: cd ui && pnpm exec playwright install chromium --with-deps
-
-      - name: Run E2E tests
-        run: cd ui && pnpm test:e2e
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-report
-          path: ui/playwright-report/
-          retention-days: 7
-
   marin-test:
     name: dt-cloud CLI tests
     runs-on: ubuntu-latest
@@ -192,13 +115,11 @@ jobs:
 
       # One workspace env from the root lockfile (`cloud/` is a member): the
       # engine the viz tests import and dt-cloud, at the pins the Batch image
-      # installs `--frozen`. The root wheel force-includes `ui/dist`; stub it
-      # (the viz tests don't touch the static UI, and building it here would
-      # drag node+pnpm into a python test job). `--all-extras` brings the
-      # pyrmts git pins that `tests/test_overtime.py` (the over-time index
-      # producer) imports at module load.
+      # installs `--frozen`. `--all-extras` brings the pyrmts git pins that
+      # `tests/test_overtime.py` (the over-time index producer) imports at
+      # module load.
       - name: Sync dt-cloud
-        run: mkdir -p ui/dist && uv sync --frozen --all-packages --all-extras --all-groups
+        run: uv sync --frozen --all-packages --all-extras --all-groups
 
       - name: Run dt-cloud tests
         run: cd cloud && uv run --no-sync pytest tests -v
@@ -223,6 +144,6 @@ jobs:
 
       # `pnpm build` = `tsc -b && vite build` — typechecks the SPA (+ referenced
       # projects) and the Functions, then bundles. Catches a broken site/ before
-      # a manual `site/deploy` ships it. (cw-s3 deploys site/, not ui/.)
+      # a manual `site/deploy` ships it.
       - name: Build site (typecheck + bundle)
         run: cd site && pnpm build

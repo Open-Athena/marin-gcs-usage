@@ -2,19 +2,15 @@
 # Stage 1: build the static site (data dirs are overlaid at runtime).
 # The site is a pnpm-workspace member (with in-tree @disk-tree/react), so the
 # build context is the repo root: copy the workspace manifests + the members
-# the site needs (ui/ contributes only its package.json; its deps install
-# too — the workspace lockfile is one unit — but stay in this cached layer).
+# the site needs.
 FROM node:22-slim AS site
 WORKDIR /repo
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
-COPY ui ./ui
 COPY packages/treemap ./packages/treemap
 COPY packages/react ./packages/react
 COPY site ./site
 RUN corepack enable && pnpm install --frozen-lockfile
 RUN cd site && pnpm build
-# disk-tree's wheel force-includes its built UI (ui/dist), so build it here too
-RUN cd ui && pnpm build
 
 # Stage 2: pipeline + wrangler (node for wrangler; python for dt-cloud).
 # Node comes from the node:22-slim stage (same Debian base) — Debian's apt
@@ -39,10 +35,9 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/usr/local UV_NO_CACHE=1
 # disk-tree engine (root project): fan-out listing tasks run `disk-tree
-# bulk-list`; its wheel force-includes ui/dist (built in stage 1).
+# bulk-list`.
 COPY pyproject.toml README.md uv.lock ./
 COPY src ./src
-COPY --from=site /repo/ui/dist ./ui/dist
 COPY cloud/pyproject.toml ./cloud/
 COPY cloud/src ./cloud/src
 # `--package dt-cloud` pulls the engine (`disk-tree[gcs,s3]`) as its dependency;

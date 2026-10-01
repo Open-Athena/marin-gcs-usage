@@ -43,7 +43,7 @@ export function StagedPage() {
   const ident = useIdent()
   const admin = useIsAdmin()
   const canStage = useCanStage()
-  // Plan-first executors (cw's Batch bridge, the laptop drainer) share the
+  // Plan-first executors (cw's Batch bridge) share the
   // `/api/plan-sweep/*` console routes; gcs's `sweep` has its own.
   const planFirst = DEFAULT_STORE.executor !== 'sweep'
 
@@ -209,7 +209,9 @@ function RunRow({ r, job, admin, planFirst, busy, fmtBytes, act }: {
         {r.undo_state === 'full' && <span className="tag">undone</span>}
         {r.purge_state === 'done' && <span className="tag">purged</span>}
       </td>
-      <td>{fmtBytes(r.deleted_bytes)} <span className="dim">/ {fmtN(r.deleted_objects)}</span></td>
+      <td>
+        {fmtBytes(r.deleted_bytes)} <span className="dim">/ {fmtN(r.deleted_objects)}</span>
+      </td>
       <td>{fmtN(r.skipped_gone)}</td>
       <td><Tooltip content={iso(r.started_ts)}><span>{ago(r.started_ts)} ago</span></Tooltip></td>
       <td className="actions">
