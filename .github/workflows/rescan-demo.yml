@@ -42,6 +42,7 @@ env:
 
 jobs:
   rescan:
+    if: github.repository == 'runsascoded/disky'  # the r2.rbw.sh demo's secrets live only there (deployment forks inherit this file)
     name: Re-scan demo buckets
     runs-on: ubuntu-latest
     steps:

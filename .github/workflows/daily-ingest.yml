@@ -26,6 +26,7 @@ concurrency:
 
 jobs:
   ingest:
+    if: github.repository == 'runsascoded/disky'  # the r2.rbw.sh demo's secrets live only there (deployment forks inherit this file)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
