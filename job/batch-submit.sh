@@ -47,10 +47,10 @@ v = {
     "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
 }
 v = {k: s for k, s in v.items() if s}
-for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "TIERS_ONLY", "SWEEP", "SWEEP_PLAN", "SWEEP_DATE", "SWEEP_BUCKETS", "USER",
+for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "SWEEP", "SWEEP_PLAN", "SWEEP_DATE", "SWEEP_BUCKETS", "USER",
           "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS", "GATE", "GATE_K", "GATE_P", "GATE_THREADS", "GATE_HIST",
           "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
-          "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT"]:  # SLACK_WEBHOOK is a secretVariable (see below)
+          "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT", "INDEX_RETAIN", "PATH_INDEX_RG_ROWS", "PATH_INDEX_USER_SORTS"]:  # SLACK_WEBHOOK is a secretVariable (see below)
     if k in os.environ:
         v[k] = os.environ[k]
 print(json.dumps(v))

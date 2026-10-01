@@ -2,8 +2,9 @@
 # Daily snapshot job (GCP Batch). Chain:
 #   1. DIY fan-out: list all 6 marin-* buckets ourselves (one Batch task per
 #      bucket) → canonical listing parquet under listing/<date>/<bucket>/
-#   2. webdata: aggregate the listings (+ attribution) into the path index (+
-#      its coarse tiers) and the age/meta JSONs
+#   2. path-index: aggregate the listings (+ attribution) into the path store
+#      (every object + dir row, two sorts: `path` and `bysize`) and the
+#      age/meta JSONs
 #   3. publish snapshot JSONs to the data bucket (canonical store)
 #
 # The live site reads snapshots straight from the bucket (see
@@ -114,50 +115,6 @@ export DUCKDB_MEM_ACCESS=${DUCKDB_MEM_ACCESS:-48GB}
 if [ "${ACCESS_ONLY:-0}" = "1" ]; then
   dt-cloud access ingest ${ACCESS_ARGS:-} || exit 1
   echo "ACCESS-JOB-DONE"
-  exit 0
-fi
-
-# TIERS_ONLY=1 (backfill): derive the coarse index tiers for an archived scan
-# from its floor-free path index, publish them beside it, sync their footers
-# to D1, exit — no listing, no webdata (specs/view-serving.md §1). Sized for a
-# highmem-8: the per-path totals agg over 220M rows wants ~20 GB. The sync
-# covers every variant (not just the coarse ones): a scan indexed before the
-# footer-in-D1 sync existed has no D1 rows at all, and the scan picker lists
-# only scans D1 knows.
-if [ "${TIERS_ONLY:-0}" = "1" ]; then
-  # The floor-free index lives wherever D1 points (`index-dir`; the pre-
-  # generation layout for a scan never synced). The coarse tiers go to this
-  # run's own generation dir, and only they are synced under it: the
-  # floor-free variants keep their existing pointer.
-  { set +x; } 2>/dev/null
-  srckey=$(dt-cloud index-dir "$DATE" || true)
-  sync_ff=0
-  if [ -z "$srckey" ]; then srckey="listing/$DATE"; sync_ff=1; fi  # pre-generation layout, never synced
-  set -x
-  srcdir="/gcs/$DATA/$srckey"
-  src="$srcdir/path-index.parquet"
-  [ -f "$src" ] || { echo "ERROR: no path index for $DATE at $src" >&2; exit 1; }
-  work="${STAGE_DIR:-/tmp}/tiers/$DATE"
-  mkdir -p "$work"
-  cp "$src" "$work/path-index.parquet"
-  dt-cloud index-tiers -m "${DUCKDB_MEM:-40GB}" -t "${DUCKDB_THREADS:-8}" -P "$work/path-index.parquet" "$DATE"
-  mkdir -p "/gcs/$DATA/$INDEX_DIR"
-  cp "$work"/path-index-coarse*.parquet "/gcs/$DATA/$INDEX_DIR/"
-  { set +x; } 2>/dev/null
-  if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-    # A scan indexed before the footer-in-D1 sync existed has no D1 rows at
-    # all (the scan picker lists only scans D1 knows): sync its floor-free
-    # variants from where they are, then the fresh coarse tiers.
-    if [ "$sync_ff" = "1" ]; then
-      dt-cloud index-sync -F -d "$srcdir" -g legacy -k "$srckey" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
-    fi
-    dt-cloud index-sync -C -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" || { echo "ERROR: index-sync failed" >&2; exit 1; }
-    dt-cloud index-gc "$DATE" || echo "WARN: index-gc failed" >&2
-  else
-    echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — tiers published but not synced" >&2
-  fi
-  set -x
-  echo "TIERS-JOB-DONE $DATE"
   exit 0
 fi
 
@@ -305,9 +262,38 @@ fi
 # first aggregation of a date and reused by any re-attribution run (REPROC,
 # ledger refreshes) — those then skip the 595M-row object scans entirely.
 # Colocated with the listing (immutable per date, same lifecycle).
+#
+# The path store (specs/path-store.md): its union and both sorts are written
+# beside -P and re-read once per sort, so they go to the local SSD, not the
+# GCS FUSE mount (~20-50 MB/s; the phase-0 sizing runs, 2026-09-30), and the
+# finished files are uploaded in one parallel pass. `-r 32768`: 4× fewer row
+# groups than the 8k default, so ~36 MB of D1 footer per scan; `-U`: no
+# `-by-user` sort copies (the reader prunes an owner lens by the footer's
+# u_min/u_max), halving bytes and footer rows.
+PI_DIR="${STAGE_DIR:-/tmp}/path-index"
+mkdir -p "$PI_DIR"
 dt-cloud path-index -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
   -c "/gcs/$DATA/listing/$DATE/dir-cache" \
-  -P "/gcs/$DATA/$INDEX_PATH"
+  -P "$PI_DIR/path-index.parquet" -r "${PATH_INDEX_RG_ROWS:-32768}" $([ "${PATH_INDEX_USER_SORTS:-0}" = 1 ] || echo -U)
+echo "PHASE path-index: ${SECONDS}s (wall)" >&2
+PI_DIR="$PI_DIR" DATA="$DATA" DEST="$(dirname "$INDEX_PATH")" python3 - <<'PY'
+import os, time
+from pathlib import Path
+from google.cloud import storage
+from google.cloud.storage import transfer_manager as tm
+src, dest = Path(os.environ["PI_DIR"]), os.environ["DEST"]
+b = storage.Client().bucket(os.environ["DATA"])
+t0, tot = time.time(), 0
+for f in sorted(p for p in src.iterdir() if p.is_file() and not p.name.startswith(".")):
+    blob = b.blob(f"{dest}/{f.name}")
+    if f.stat().st_size > 256 << 20:
+        tm.upload_chunks_concurrently(str(f), blob, chunk_size=64 << 20, max_workers=16)
+    else:
+        blob.upload_from_filename(str(f))
+    tot += f.stat().st_size
+print(f"path-index upload: {tot / 1e9:.1f} GB in {time.time() - t0:.0f}s → gs://{os.environ['DATA']}/{dest}/", flush=True)
+PY
+echo "PHASE path-index upload: ${SECONDS}s (wall)" >&2
 dt-cloud rules -o /tmp/rules.json || true  # findings shouldn't block the snapshot
 echo "PHASE webdata+stage: ${SECONDS}s (wall)" >&2
 
@@ -404,11 +390,11 @@ fi
 # Sweep row groups of generations the pointer no longer names (a REPROC's
 # previous generation; every reader handle has expired by now), and retire
 # the floor-free row groups of scans older than the newest INDEX_RETAIN —
-# D1's 10 GB cap (specs/view-serving.md follow-ups): the coarse tiers stay
-# for every scan. A retired scan's deep drill falls to the footer path,
-# which exceeds the Worker's memory on a 27k-group footer (2026-09-07), so
-# the window is wide (~40 MB of D1 per scan: 120 ≈ 5 GB) until retired
-# scans read a group manifest blob instead.
+# D1's 10 GB cap. A path-store scan costs ~36 MB of D1 (2 sorts × ~24k
+# groups), so 120 ≈ 4.4 GB; a pre-store scan keeps its coarse tiers. A retired
+# path-store scan has no D1 rows and its footer/groups sidecar is too big for
+# a Worker, so its deep drill waits on the cold "parquet of footers" tier
+# (specs/path-store.md §4.7) — first relevant ~120 days after the switch.
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
   dt-cloud index-gc -r "${INDEX_RETAIN:-120}" "$DATE" || echo "WARN: index-gc failed" >&2
