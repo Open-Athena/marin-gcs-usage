@@ -269,14 +269,15 @@ fi
 # finished files are uploaded in one parallel pass. Row groups stay at the
 # 8k default: a small drill decodes ~one group per subtree depth, so 32k
 # groups made every drill 4× dearer and hit the reader's decode cap (413s on
-# 2026-10-01); `PATH_INDEX_RG_ROWS` overrides. `-U`: no `-by-user` sort
-# copies (a lens reads `path`/`bysize` filtered by `usr`), halving bytes and
-# footer rows.
+# 2026-10-01); `PATH_INDEX_RG_ROWS` overrides. `-u bysize`: one user-first
+# copy, `bysize-user`, which a lens view (a user's estate) reads so a user's
+# root decodes only their own groups; `path` stays mixed-user (a lens below
+# the root filters it per row). `PATH_INDEX_USER_SORT_TIERS` overrides.
 PI_DIR="${STAGE_DIR:-/tmp}/path-index"
 mkdir -p "$PI_DIR"
 dt-cloud path-index -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
   -c "/gcs/$DATA/listing/$DATE/dir-cache" \
-  -P "$PI_DIR/path-index.parquet" ${PATH_INDEX_RG_ROWS:+-r "$PATH_INDEX_RG_ROWS"} $([ "${PATH_INDEX_USER_SORTS:-0}" = 1 ] || echo -U)
+  -P "$PI_DIR/path-index.parquet" ${PATH_INDEX_RG_ROWS:+-r "$PATH_INDEX_RG_ROWS"} -u "${PATH_INDEX_USER_SORT_TIERS:-bysize}"
 echo "PHASE path-index: ${SECONDS}s (wall)" >&2
 PI_DIR="$PI_DIR" DATA="$DATA" DEST="$(dirname "$INDEX_PATH")" python3 - <<'PY'
 import os, time
@@ -392,18 +393,14 @@ fi
 # Sweep row groups of generations the pointer no longer names (a REPROC's
 # previous generation; every reader handle has expired by now), and retire
 # the floor-free row groups of scans older than the newest INDEX_RETAIN —
-# D1's 10 GB cap. A path-store scan costs ~145 MB of D1 (2 sorts × ~95k
-# groups at ~766 B/row) vs ~40 MB for a pre-store one, so 120 path-store scans
-# would not fit: D1 (2.5 GB on 2026-10-01) reaches ~10 GB ~50 days after the
-# switch. Lower INDEX_RETAIN to ~60 before then (8.7 GB), or land the
-# consolidated groups (specs/path-store.md §4.7). A pre-store scan keeps its
-# coarse tiers when retired. A retired
-# path-store scan has no D1 rows and its footer/groups sidecar is too big for
-# a Worker, so its deep drill waits on the cold "parquet of footers" tier
-# (specs/path-store.md §4.7) — first relevant ~120 days after the switch.
+# D1's 10 GB cap. A path-store scan costs ~218 MB of D1 (3 sorts × ~95k
+# groups at ~766 B/row), so D1 is the hot window: 30 scans ≈ 6.5 GB. A scan
+# past it keeps its pointers and is read from each tier's cold footer tier,
+# `<tier>.groups.parquet` (range-read by the site); `index-gc -r` retires a
+# variant's rows only once that file exists (specs/path-store.md §1.6).
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  dt-cloud index-gc -r "${INDEX_RETAIN:-120}" "$DATE" || echo "WARN: index-gc failed" >&2
+  dt-cloud index-gc -r "${INDEX_RETAIN:-30}" "$DATE" || echo "WARN: index-gc failed" >&2
 fi
 set -x
 
