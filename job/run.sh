@@ -37,6 +37,11 @@ set -x
 
 DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+# This deployment's D1 (site/wrangler.toml `oa-gcs-usage-auth`): index-sync,
+# index-gc and index-dir name it explicitly — the base CLI has no default D1
+# (a57f615), so a misconfigured job can't write footers into another deploy's.
+export D1_DB_ID=${D1_DB_ID:-e52398b7-5538-4bc4-83db-3355a1b5ef9a}
+export D1_DB_NAME=${D1_DB_NAME:-oa-gcs-usage-auth}
 # The attribution roster lives with the data, not in the repo (`-i` /
 # `$DT_CLOUD_IDENTITIES`; no bundled default). Read through the job's GCS mount.
 export DT_CLOUD_IDENTITIES=${DT_CLOUD_IDENTITIES:-/gcs/$DATA/config/identities.yaml}
