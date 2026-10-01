@@ -50,6 +50,9 @@ STAFF_DOMAIN = "openathena.ai"
 # `gs://marin-<bucket>/<path>/`; the six buckets the scan covers, first = primary.
 STORE_SCHEME = "gs://"
 STORE_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"
+# `/v1/objects`: members preview these buckets' objects in the map (read with
+# the store creds — `gcs-usage-browse@` holds objectViewer on each).
+OBJECT_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"
 # Viewers stage deletions into a shared open plan (`POST /api/plans/stage`,
 # the children table's trash gesture); `stage_batches` exists in this D1.
 STAGING = "1"
@@ -100,6 +103,9 @@ BASE_SCOPE = "gcs"
 STAFF_DOMAIN = "openathena.ai"
 STORE_SCHEME = "gs://"
 STORE_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"
+# `/v1/objects`: members preview these buckets' objects in the map (read with
+# the store creds — `gcs-usage-browse@` holds objectViewer on each).
+OBJECT_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"
 STAGING = "1"
 # Staged-plan review in Slack (specs/done/staged-slack.md): one thread per staged
 # plan in #gcs-admin, with Dry-run / Delete-for-real / Reject-batch buttons
