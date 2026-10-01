@@ -13,18 +13,12 @@ import { UserChip } from './UserChip'
 import { useUnits } from './units'
 import { fmtN } from './types'
 import { DEFAULT_STORE } from './stores'
+import { ago } from './colors'
 import { useCanStage, useIdent } from './auth'
 import { useRowSelection, useRowSelectionKeys } from './rowSelection'
 import { useDispatch, useExecJobs, useRunAction, useStagedPlan, useUnstage, LIVE_STATES } from './plans'
 import type { DeletionRun, ExecJob, StagedItem } from './plans'
 
-const ago = (ts: number): string => {
-  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86400) return `${Math.floor(s / 3600)}h`
-  return `${Math.floor(s / 86400)}d`
-}
 const iso = (ts: number): string => new Date(ts * 1000).toISOString()
 
 // `<scheme><bucket>/<path>/` → the treemap's URL path (below the store root).
@@ -215,7 +209,14 @@ function RunRow({ r, job, admin, planFirst, busy, fmtBytes, act }: {
         {r.undo_state === 'full' && <span className="tag">undone</span>}
         {r.purge_state === 'done' && <span className="tag">purged</span>}
       </td>
-      <td>{fmtBytes(r.deleted_bytes)} <span className="dim">/ {fmtN(r.deleted_objects)}</span></td>
+      <td>
+        {fmtBytes(r.deleted_bytes)} <span className="dim">/ {fmtN(r.deleted_objects)}</span>
+        {r.freed_bytes != null && (
+          <Tooltip content={<>What deleting this set would <b>actually</b> free, measured on the laptop: bytes it shares with a clone or hardlink outside the set (e.g. a <code>.venv</code>’s files cloned from <code>~/.cache/uv</code>) stay on disk. The size before it counts every path in full.</>}>
+            <span className="frees"> · frees <b>{fmtBytes(r.freed_bytes)}</b></span>
+          </Tooltip>
+        )}
+      </td>
       <td>{fmtN(r.skipped_gone)}</td>
       <td><Tooltip content={iso(r.started_ts)}><span>{ago(r.started_ts)} ago</span></Tooltip></td>
       <td className="actions">

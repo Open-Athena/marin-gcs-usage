@@ -20,6 +20,11 @@ export function dateColor(t: number): string {
   return `rgb(${c[0]},${c[1]},${c[2]})`
 }
 
+/** The age buckets of `TreeNode.ag`, newest first, and each one's ramp colour
+ * (the date gradient: newest yellow → oldest purple). */
+export const AGE_BUCKETS = ['<1d', '<1w', '<1mo', '<3mo', '<1y', '<3y', '≥3y']
+export const ageBucketColor = (i: number): string => dateColor(1 - i / (AGE_BUCKETS.length - 1))
+
 export const dateGradientCss = (): string =>
   `linear-gradient(90deg, ${DATE_STOPS.join(', ')})`
 
@@ -34,6 +39,15 @@ export const epochDaysToMonthShort = (d: number): string => {
   const dt = new Date(d * 86400_000)
   const y = dt.getUTCFullYear()
   return y === new Date().getUTCFullYear() ? MON[dt.getUTCMonth()] : `${MON[dt.getUTCMonth()]} ’${String(y).slice(2)}`
+}
+
+/** Compact elapsed time since epoch seconds `ts`: `42s`, `17m`, `3h`, `5d`. */
+export const ago = (ts: number): string => {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  if (s < 86400) return `${Math.floor(s / 3600)}h`
+  return `${Math.floor(s / 86400)}d`
 }
 
 /** Day-precision variant (`8/21`, year-qualified when not the current year) —
