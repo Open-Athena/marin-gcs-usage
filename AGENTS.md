@@ -269,32 +269,28 @@ WHERE depth = 2 GROUP BY path ORDER BY bytes DESC LIMIT 20;
 
 ---
 
-### Dev context — working on this repo
+### Dev context — gcs deployment
 
-Everything above is the **www/API user context** (marking data via the site's
-CLI/API). This section is for agents *developing* the repo itself. The repo is
-**public**: no emails or other PII in tracked files or commit messages (name +
-GitHub handle max); sizes and $ stay behind the site's auth.
+The API guide above is the **user context**; the shared dev guide at the top
+covers the engine, site, packages and Python setup. This section is what's
+specific to the gcs deployment. The repo is **public**: no emails or other PII
+in tracked files or commit messages (name + GitHub handle max); sizes and $
+stay behind the site's auth.
 
-#### Layout
+#### Branch
 
-- `site/` — the deployed app: Vite/React SPA (`src/`), Cloudflare Pages Functions
-  (`functions/` — auth gating, actions ledger, `/api/subtree`, `/api/path-index`,
-  `/data/*` GCS proxy, `/v1/files/*` raw-store browser), D1 migrations
-  (`migrations/`), `wrangler.toml`.
-- `cloud/` — the `dt-cloud` Python CLI (own `pyproject.toml`/venv): attribution
-  (`identities.yaml`, rules, W&B mining), `webdata` aggregation, access-log
-  ingest, `mark`/`status`/`todo`, `series`, `report`. Runtime-imports the
-  `disk_tree` engine below.
-- `job/` — daily snapshot pipeline on **GCP Batch** (`run.sh` entrypoint,
-  `batch-submit.sh`, `build.sh` → Cloud Build image; Cloud Scheduler cron
-  `gcs-usage-snapshot-daily` 07:00 UTC on the `:latest` image built from this
-  branch — live in GCP, body edited in place, never regenerated).
-- `packages/`, `src/`, `tests/` — the **disk-tree** engine and widget libs.
-  Branch model: `specs/branch-layout.md` — shared code (these, and most of
-  `site/` and `cloud/`) lands on the `cloud` base branch and merges into this
-  deployment branch, which carries only gcs's own delta.
-- `specs/` — design docs; shipped ones move to `specs/done/`.
+`gcs` is a deployment branch (`specs/branch-layout.md`): shared code lands on
+`cloud` and merges in (never rebase); this branch carries only gcs's delta —
+`job/`, `cf/` (Pulumi stack), `site/wrangler.toml`, the `site/migrations/gcs`
+D1 lineage, branding, and this section.
+
+#### Job
+
+`job/` — daily snapshot pipeline on **GCP Batch** (`run.sh` entrypoint,
+`batch-submit.sh`, `build.sh` → Cloud Build image). Cloud Scheduler cron
+`gcs-usage-snapshot-daily` 07:00 UTC runs the `:latest` image built from this
+branch (live in GCP, body edited in place, never regenerated). A rebuild is how
+`job/` or pipeline changes reach prod.
 
 #### Dev workflow
 
@@ -303,20 +299,20 @@ GitHub handle max); sizes and $ stay behind the site's auth.
 - `site/deploy` — **manual** deploy to gcs.oa.dev (pushing git does NOT deploy);
   moves the local `prod` branch pointer to the shipped SHA and pushes the branch
   + `prod` to GitHub (`o`) by default (`-P` to skip). `site/deploy --status`
-  compares deployed vs HEAD.
+  compares deployed vs HEAD; `site/deploy --dev` ships to dev.gcs.oa.dev.
 - D1 schema: `wrangler d1 migrations apply oa-gcs-usage-auth --remote` (separate
   from deploy; needs `CLOUDFLARE_ACCOUNT_ID` inline).
-- Python: `cd cloud && uv sync && uv run pytest` (viz tests need the root
-  `disk_tree` package importable).
 
 #### Data flow
 
 Daily Batch job: per-bucket DIY listings → `gs://oa-gcs-usage-dvx/listing/<date>/`
-(+ `dir-cache/`, and the index tiers under `index/<gen>/` — one generation per
-run, never overwritten, each with a `<tier>.groups.json` group manifest the
-site opens once D1 retires the tier's rows; D1's `index_schema` row is the pointer) → `webdata` aggregation →
-`snapshots/<date>/{tree,age,meta}.json` (+ `series.json`, `rules.json`). The site
-reads the bucket directly via `functions/data/[[path]].ts` — no site rebuild on
-new data. Marks and owner assignments live in D1 (actions ledger) and apply on top of the latest
-scan ("scan ≈ committed, actions ≈ WAL"). Access logs ingest on the same job for
-the read-recency lens.
+(+ `dir-cache/`) → `dt-cloud path-index` cuts the path store under
+`index/<gen>/` (one generation per run, never overwritten) and `index-sync`
+publishes its footers to D1. D1 keeps the latest 30 scans' footers
+(`INDEX_RETAIN`); older scans are read via each tier's `<tier>.groups.parquet`
+cold footer file. D1's `index_schema` row is the pointer. `webdata` writes
+`snapshots/<date>/{tree,age,meta}.json` (+ `series.json`, `rules.json`), which
+the site reads straight from the bucket (`functions/data/[[path]].ts`; no site
+rebuild on new data). Owner assignments live in D1 (actions ledger) and apply on
+top of the latest scan. Access logs ingest on the same job for the read-recency
+lens.
