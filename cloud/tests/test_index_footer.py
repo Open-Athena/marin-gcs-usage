@@ -40,9 +40,9 @@ def test_d1_query_retries_transient_401(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    _d1_query("SELECT 1", acct="acct", tok="tok")
+    _d1_query("SELECT 1", acct="acct", tok="tok", db_id="db")
     assert calls == [
-        "https://api.cloudflare.com/client/v4/accounts/acct/d1/database/" + index_footer.D1_DB_ID + "/query",
+        "https://api.cloudflare.com/client/v4/accounts/acct/d1/database/db/query",
     ] * 3
 
 
@@ -56,7 +56,7 @@ def test_d1_query_persistent_401_raises_after_all_retries(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     with pytest.raises(RuntimeError) as ei:
-        _d1_query("SELECT 1", acct="acct", tok="tok")
+        _d1_query("SELECT 1", acct="acct", tok="tok", db_id="db")
     assert str(ei.value) == (
         'D1 query failed (401): {"success":false,"errors":'
         '[{"code":10000,"message":"Authentication error"}]}'
@@ -75,19 +75,18 @@ def test_d1_query_non_retryable_status_fails_fast(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     with pytest.raises(RuntimeError):
-        _d1_query("SELECT 1", acct="acct", tok="tok")
+        _d1_query("SELECT 1", acct="acct", tok="tok", db_id="db")
     assert calls == [1]
 
 
 # --- compact `rg_json` (2026-09-06) ------------------------------------------
 
 import json
-import sqlite3
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from dt_cloud.index_footer import COMPACT_SQL, _group_rows, _schema_json
+from dt_cloud.index_footer import _group_rows, _schema_json
 
 
 def _write_index(path) -> "pq.FileMetaData":
@@ -144,44 +143,6 @@ def test_store_sort_is_version_2_and_sizes_resolve_to_size(tmp_path):
     assert [el["name"] for el in schema["schema"][1:]] == ["path", "size", "depth", "kind"]
     assert "floor_bytes" not in schema
     assert [(g["b_min"], g["b_max"], g["u_min"], g["u_max"]) for g in groups] == [(10, 30, None, None)]
-
-
-def _verbose_rg_json(md: "pq.FileMetaData", g: int) -> str:
-    """The pre-2026-09-06 thrift-shaped row (what older D1 rows hold)."""
-    rg = md.row_group(g)
-    cols = []
-    for c in range(rg.num_columns):
-        cc = rg.column(c)
-        m = {
-            "type": cc.physical_type, "encodings": list(cc.encodings), "path_in_schema": cc.path_in_schema.split("."),
-            "codec": cc.compression, "num_values": str(cc.num_values),
-            "total_uncompressed_size": str(cc.total_uncompressed_size), "total_compressed_size": str(cc.total_compressed_size),
-            "data_page_offset": str(cc.data_page_offset),
-        }
-        if cc.dictionary_page_offset is not None:
-            m["dictionary_page_offset"] = str(cc.dictionary_page_offset)
-        cols.append({"file_offset": str(cc.file_offset), "meta_data": m})
-    return json.dumps({"columns": cols, "total_byte_size": str(rg.total_byte_size), "num_rows": str(rg.num_rows)}, separators=(",", ":"))
-
-
-def test_compact_sql_rewrites_verbose_rows_to_the_synced_form(tmp_path):
-    md = _write_index(tmp_path / "i.parquet")
-    con = sqlite3.connect(":memory:")
-    con.execute("CREATE TABLE index_row_groups (date TEXT, variant TEXT, rg INTEGER, rg_json TEXT)")
-    for g in range(md.num_row_groups):
-        con.execute("INSERT INTO index_row_groups VALUES ('2026-09-01', 'path', ?, ?)", (g, _verbose_rg_json(md, g)))
-    con.execute("INSERT INTO index_row_groups VALUES ('2026-09-02', 'path', 0, ?)", (_verbose_rg_json(md, 0),))
-    con.execute(COMPACT_SQL.format(date="2026-09-01", variant="path"))
-    got = con.execute("SELECT date, rg, rg_json FROM index_row_groups ORDER BY date, rg").fetchall()
-    fresh = {r["rg"]: r["rg_json"] for r in _group_rows(md)}
-    assert got == [
-        ("2026-09-01", 0, fresh[0]),
-        ("2026-09-01", 1, fresh[1]),
-        ("2026-09-02", 0, _verbose_rg_json(md, 0)),  # other scans untouched
-    ]
-    # Idempotent: compact rows don't match the verbose-form predicate.
-    con.execute(COMPACT_SQL.format(date="2026-09-01", variant="path"))
-    assert con.execute("SELECT rg_json FROM index_row_groups WHERE date='2026-09-01' ORDER BY rg").fetchall() == [(fresh[0],), (fresh[1],)]
 
 
 def test_sync_d1_packs_inserts_greedily_under_the_byte_limit(tmp_path, monkeypatch):
@@ -467,3 +428,13 @@ def test_index_blob_backfills_the_cold_footer_from_json(tmp_path, monkeypatch):
     assert (d / "path-index.groups.parquet").read_bytes() == (tmp_path / "ref.groups.parquet").read_bytes()
     assert ref == str(tmp_path / "ref.groups.parquet")
     assert read_groups_parquet(str(d / "path-index.groups.parquet")) == (schema, rows)
+
+
+def test_d1_query_refuses_without_a_database(monkeypatch):
+    """No default D1: a deployment that forgot `$D1_DB_ID` fails instead of
+    writing into another deployment's database (it once defaulted to gcs prod)."""
+    calls: list[object] = []
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: calls.append(a) or None)
+    with pytest.raises(RuntimeError, match=r"^no D1 database: set \$D1_DB_ID"):
+        _d1_query("SELECT 1", acct="acct", tok="tok", db_id="")
+    assert calls == []

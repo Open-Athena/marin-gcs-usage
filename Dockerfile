@@ -1,20 +1,16 @@
-# Cloud Run job image for daily storage snapshots (see job/run.sh).
+# Batch job image for the CoreWeave scans (see job/cw-run.sh).
 # Stage 1: build the static site (data dirs are overlaid at runtime).
 # The site is a pnpm-workspace member (with in-tree @disk-tree/react), so the
 # build context is the repo root: copy the workspace manifests + the members
-# the site needs (ui/ contributes only its package.json; its deps install
-# too — the workspace lockfile is one unit — but stay in this cached layer).
+# the site needs.
 FROM node:22-slim AS site
 WORKDIR /repo
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
-COPY ui ./ui
 COPY packages/treemap ./packages/treemap
 COPY packages/react ./packages/react
 COPY site ./site
 RUN corepack enable && pnpm install --frozen-lockfile
 RUN cd site && pnpm build
-# disk-tree's wheel force-includes its built UI (ui/dist), so build it here too
-RUN cd ui && pnpm build
 
 # Stage 2: pipeline + wrangler (node for wrangler; python for dt-cloud).
 # Node comes from the node:22-slim stage (same Debian base) — Debian's apt
@@ -45,15 +41,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/usr/local UV_NO_CACHE=1 UV_FROZEN=1
 COPY pyproject.toml README.md uv.lock ./
 COPY src ./src
-COPY --from=site /repo/ui/dist ./ui/dist
 COPY cloud/pyproject.toml ./cloud/
 COPY cloud/src ./cloud/src
 RUN uv sync --no-dev --no-editable --package dt-cloud --extra plot --extra overtime
 COPY --from=site /repo/site/dist ./dist
 COPY job ./job
-# One image, two scheduled jobs: the GCS fleet job (`job/run.sh`, tag `latest`)
-# and the CoreWeave scan job (`job/cw-run.sh`, tag `cw`). `job/build.sh` picks
-# the script by tag (`--build-arg JOB=cw-run.sh`); the default is the GCS job.
-ARG JOB=run.sh
+# The entrypoint runs `job/$JOB` (`job/build.sh` passes `--build-arg JOB=…`):
+# the CoreWeave scan job, `cw-run.sh`, by default.
+ARG JOB=cw-run.sh
 ENV JOB_SCRIPT=$JOB
 ENTRYPOINT ["bash", "-c", "exec bash job/$JOB_SCRIPT \"$@\"", "--"]

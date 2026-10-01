@@ -266,10 +266,11 @@ def _sql_escape(s: str) -> str:
 
 # The D1 database `/query` runs one SQL string; we send multi-row INSERTs.
 # Deployment config (specs/denovo-factor.md): the site's D1, as `site/wrangler.toml`
-# binds it — `D1_DB_ID` / `D1_DB_NAME` in the job's environment (`job/cw-run.sh`
-# exports the CoreWeave pair); the defaults are the GCS deployment's.
-D1_DB_ID = os.environ.get("D1_DB_ID", "e52398b7-5538-4bc4-83db-3355a1b5ef9a")  # oa-gcs-usage-auth
-D1_DB_NAME = os.environ.get("D1_DB_NAME", "oa-gcs-usage-auth")
+# binds it — `D1_DB_ID` / `D1_DB_NAME` in the job's environment. No default:
+# every deployment names its own D1 (a default once pointed at gcs's production
+# D1, so a run that forgot it wrote there).
+D1_DB_ID = os.environ.get("D1_DB_ID", "")
+D1_DB_NAME = os.environ.get("D1_DB_NAME", "")
 
 
 def _creds() -> tuple[str, str]:
@@ -314,7 +315,9 @@ INSERT_BYTES = 64_000
 def _d1_query(sql: str, acct: str, tok: str, db_id: str = D1_DB_ID) -> list[dict]:
     """Run one SQL string against D1 over the HTTP API (no Node/wrangler).
     Returns the statement's result rows (`[]` for writes); `meta` per row batch
-    is dropped."""
+    is dropped. Refuses without a database id (`$D1_DB_ID`)."""
+    if not db_id:
+        raise RuntimeError("no D1 database: set $D1_DB_ID (and $D1_DB_NAME) to this deployment's D1")
     import time
     import urllib.error
     import urllib.request
@@ -630,22 +633,6 @@ def _pack(head: str, values: list[str], limit: int) -> list[str]:
     return out
 
 
-# In-place rewrite of rows still holding the verbose (pre-2026-09-06) thrift-shaped
-# `rg_json` object into the compact array form, with SQLite's JSON1 — no parquet
-# read, one statement per (date, variant). Old rows start with `{`.
-COMPACT_SQL = (
-    "UPDATE index_row_groups SET rg_json = json_array("
-    "CAST(json_extract(rg_json, '$.num_rows') AS INTEGER), "
-    "json_extract(rg_json, '$.columns[0].meta_data.codec'), "
-    "(SELECT json_group_array(json_array("
-    "CAST(json_extract(value, '$.meta_data.data_page_offset') AS INTEGER), "
-    "CAST(json_extract(value, '$.meta_data.total_compressed_size') AS INTEGER), "
-    "CAST(coalesce(json_extract(value, '$.meta_data.dictionary_page_offset'), '0') AS INTEGER))) "
-    "FROM json_each(index_row_groups.rg_json, '$.columns'))"
-    ") WHERE date = '{date}' AND variant = '{variant}' AND rg_json LIKE '{{%';"
-)
-
-
 def synced_variants(db_id: str = D1_DB_ID, store: str = PRIMARY_STORE) -> list[tuple[str, str]]:
     """Every (date, variant) of ``store`` with a schema row in D1 (= a complete
     sync); variants as the store names them (a secondary store's prefix off).
@@ -661,16 +648,3 @@ def synced_variants(db_id: str = D1_DB_ID, store: str = PRIMARY_STORE) -> list[t
     )
     pre = f"{store}:"
     return [(r["date"], r["variant"][len(pre):]) for r in rows if r["variant"].startswith(pre)]
-
-
-def compact_d1(date: str, variant: str, db_id: str = D1_DB_ID, store: str = PRIMARY_STORE) -> int:
-    """Compact one (date, variant)'s verbose `rg_json` rows in place; returns the
-    number of rows left in the old form afterwards (0 = done)."""
-    tok, acct = _creds()
-    variant = d1_variant(variant, store)
-    _d1_query(COMPACT_SQL.format(date=date, variant=variant), acct, tok, db_id)
-    rows = _d1_query(
-        f"SELECT count(*) AS n FROM index_row_groups WHERE date = '{date}' AND variant = '{variant}' AND rg_json LIKE '{{%';",
-        acct, tok, db_id,
-    )
-    return int(rows[0]["n"])

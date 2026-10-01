@@ -16,7 +16,7 @@ steps:
           -t "$_IMAGE" .
 images: ["$_IMAGE"]
 substitutions:
-  _JOB: run.sh   # `cw-run.sh` for the CoreWeave scan image (job/build.sh sets it by tag)
+  _JOB: cw-run.sh   # the job script the image runs (job/build.sh passes it)
 options:
   machineType: E2_HIGHCPU_8
 timeout: 1800s
