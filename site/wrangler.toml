@@ -36,7 +36,7 @@ ROOT_LABEL = "marin CoreWeave"  # the store root's crumb label (`_lib/view.ts`)
 # Deployment as configuration (the base's `vite.config.ts` reads these from
 # this file at build time; `src/stores.ts` registry key + client whoami source):
 STORE = "cw"                    # the store this build serves (`src/stores.ts`)
-AUTH_MODE = "app"                # own sign-in: Google OIDC + emailed codes (specs/oidc-cutover-cw.md P4, 2026-09-28)
+AUTH_MODE = "app"                # own sign-in: Google OIDC + emailed codes (specs/done/oidc-cutover-cw.md P4, 2026-09-28)
 # The plan prefix shape (`_lib/plans.ts` prefixShape): CoreWeave's S3-compatible
 # buckets; explicit here so the deployment declares it rather than inheriting a default.
 STORE_SCHEME = "s3://"
@@ -54,7 +54,7 @@ STORE_PREFIXES = "listing/,snapshots/,sweep/,cw-sweep/,cw-l2/"
 # allowlist on top of this (`ADMIN_EMAILS` says the table exists here).
 STAFF_DOMAIN = "openathena.ai"
 ADMIN_EMAILS = "1"
-# The in-app viewer policy (specs/oidc-cutover-cw.md): these domains get the
+# The in-app viewer policy (specs/done/oidc-cutover-cw.md): these domains get the
 # `cw` scope with no `allowed_emails` row.
 VIEWER_DOMAINS = "coreweave.com"
 # The opt-in trash model (specs/staged-delete.md): any full viewer stages
@@ -65,7 +65,7 @@ STAGING = "1"
 # buttons may dispatch (plan-sweep). Secrets: SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET.
 SLACK_ADMIN_CHANNEL = "C0C53CPM886"
 EXECUTOR = "plan-sweep"
-# R2 serving (specs/r2-serving-migration.md): the same store seam the base's
+# R2 serving (specs/done/r2-serving-migration.md): the same store seam the base's
 # r2.rbw.sh deploy uses (`_lib/index.ts` storeTarget/storeCreds — S3-over-R2,
 # NOT a native R2 binding, so cw matches the base byte-for-byte). The bucket is
 # the `r2_bucket` output of the `cw-s3` Pulumi stack (`cf/`); the job publishes
@@ -108,7 +108,7 @@ id = "1dbc4c60884c4f3ba61aa1aa79f494bc"
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-cw-s3-usage`):
 #   SESSION_SECRET   — HMAC key for session cookies + IP hashing (the app
-#     session model, specs/oidc-cutover-cw.md; absent = sign-in 503s)
+#     session model, specs/done/oidc-cutover-cw.md; absent = sign-in 503s)
 #   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET — the "cw-s3.oa.dev" OAuth Web client
 #   RESEND_API_KEY / MAIL_FROM — emailed-code sign-in (noreply@oa.dev)
 #   GCS_HMAC_KEY_ID / GCS_HMAC_SECRET — read-only GCS proxy creds (data + /files)
@@ -139,7 +139,7 @@ migrations_dir = "migrations/cw"
 [env.preview.vars]
 ROOT_LABEL = "marin CoreWeave (dev)"
 STORE = "cw"
-AUTH_MODE = "app"                     # own sign-in (specs/oidc-cutover-cw.md P3); production flips at P4
+AUTH_MODE = "app"                     # own sign-in (specs/done/oidc-cutover-cw.md P3); production flips at P4
 STORE_SCHEME = "s3://"
 STORE_BUCKETS = "marin-us-east-02a,hero-checkpoints"
 BASE_SCOPE = "cw"
@@ -157,7 +157,7 @@ STAGING = "1"
 SLACK_ADMIN_CHANNEL = "C0C53CPM886"
 EXECUTOR = "plan-sweep"
 # R2, flipped here first (2026-09-25) and in production on 2026-09-28
-# (specs/r2-serving-migration.md step 6): same bucket, preview-scoped secrets.
+# (specs/done/r2-serving-migration.md step 6): same bucket, preview-scoped secrets.
 STORE_BUCKET = "oa-cw-s3-usage-index"
 STORE_REGION = "auto"
 # Secondary store `meta` (specs/multi-store.md phase 3): the deploy's own

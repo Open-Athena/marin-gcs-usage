@@ -2,7 +2,7 @@
 # Reindex published CoreWeave scans from their persisted layer-2 parquets — no
 # re-listing (no CAIOS egress), just DuckDB over the L2 already in GCS. Produces
 # the age pyramid (+ path/coarse) tiers for scans that predate the pyramid
-# producer, so AgeChart works on every scan (specs/age-index.md). Each scan gets
+# producer, so AgeChart works on every scan (specs/done/age-index.md). Each scan gets
 # a fresh index generation and its D1 pointer flipped via index-sync, so this is
 # safe to re-run and never disturbs a scan mid-serve.
 #

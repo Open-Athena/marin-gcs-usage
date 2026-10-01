@@ -9,7 +9,7 @@ project `gcs-usage-cf` (`gs://oa-pulumi`, keyed `<project>/<stack>`), so each
 branch only ever selects its own stack.
 
 Not yet applied: adoption `up` is user-gated (see ../specs/cf-iac.md for the
-inventory and ../specs/r2-serving-migration.md for what the first `up` creates).
+inventory and ../specs/done/r2-serving-migration.md for what the first `up` creates).
 
 CI RUNS `pulumi preview` ONLY (read-only drift alarm); a human runs `up`. So the
 CI token needs only Cloudflare *read* scopes (Pages/DNS/D1/KV/R2). Nothing here
@@ -41,7 +41,7 @@ import_ids = cfg.get_object("importIds") or None
 STACK = "cw-s3"
 # cw-s3.oa.dev — OA staff + CoreWeave viewers. No Zero Trust: the app's own
 # gate authorizes (Google OIDC client + emailed codes, `VIEWER_DOMAINS` policy
-# — specs/oidc-cutover-cw.md), so there is no Access app or service token to
+# — specs/done/oidc-cutover-cw.md), so there is no Access app or service token to
 # model. The live Access app `4c463052` is hand-managed until that cutover's
 # P4, then deleted by hand, exactly as gcs's was.
 STORE = Store(
@@ -57,7 +57,7 @@ STORE = Store(
     # wrangler.toml stanza is commented out until this exists; paste the
     # `cache_kv_id` output there. NOT created yet (user-gated `up`).
     kv_name="oa-cw-s3-usage-cache",
-    # R2 serving bucket (specs/r2-serving-migration.md): the job's
+    # R2 serving bucket (specs/done/r2-serving-migration.md): the job's
     # `dt-cloud publish-r2` stage lands the served artifacts here and the
     # site reads them via `STORE_*`. NOT created yet (user-gated `up`).
     r2_bucket="oa-cw-s3-usage-index",

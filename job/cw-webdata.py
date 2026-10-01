@@ -5,7 +5,7 @@
                   [--asof 2026-08-15] [--min-frac 0.0002]
 
 One `<bucket>=<layer-2>` pair per bucket of the scan, in the deployment's
-order (specs/cw-multi-bucket.md §2): the store root wraps one node per bucket,
+order (specs/done/cw-multi-bucket.md §2): the store root wraps one node per bucket,
 one byte floor (`min_frac` × the sum) folds each bucket's small dirs, the age
 rows are the union, and meta.json carries per-bucket totals under `buckets`.
 

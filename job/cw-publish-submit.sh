@@ -2,7 +2,7 @@
 # Submit a GCP Batch array job that runs the cw job's 4c stage — `dt-cloud
 # publish-r2 <scan>` — for a list of scans: the R2 backfill over old scans, or a
 # re-publish, using the exact image + secrets the scheduled scan uses
-# (specs/r2-serving-migration.md step 4). Idempotent per scan (size + md5), so
+# (specs/done/r2-serving-migration.md step 4). Idempotent per scan (size + md5), so
 # re-running over already-published scans only moves what's missing.
 #
 #   job/cw-publish-submit.sh 2026-09-25T0001            # one scan

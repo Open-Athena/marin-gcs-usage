@@ -6,7 +6,7 @@ set; no `up` has been run, so the live resources are still hand-managed (Pages
 API / zone DNS). The first `up` adopts Pages project, custom domain, CNAME and
 D1, and creates the rest (KV cache tier, R2 bucket + token). The Zero Trust
 Access app that still gates cw-s3.oa.dev is deliberately **not** modelled: the
-host is moving off it (`../specs/oidc-cutover-cw.md`), and it is the one
+host is moving off it (`../specs/done/oidc-cutover-cw.md`), and it is the one
 resource `pulumi-cloudflare` 6.21 can't adopt anyway.
 
 **One `cf/` per deployment branch.** This is the cw-s3 branch's; the gcs
@@ -45,7 +45,7 @@ GCP job stack carries the one broad-IAM caveat; see `../../ops/gcp/gcs-usage/`.)
 - `cloudflare.D1Database` — the database resource (migrations stay with the app).
 - `cloudflare.WorkersKvNamespace` — each stack's `CACHE_KV` global cache tier (`gcs` today; `cw-s3` declared, not yet created — its `wrangler.toml` stanza stays commented until the `cache_kv_id` output exists).
 - `cloudflare.ZeroTrustAccessServiceToken` + a second, `non_identity` `ZeroTrustAccessPolicy` on the app (`cw-s3` only) — the machine identity the Batch job's warm-cache stage uses to call the site through Access; client id/secret are the secret outputs `service_token_client_id` / `service_token_client_secret`, destined for Secret Manager, never git.
-- `cloudflare.R2Bucket` + `cloudflare.ApiToken` (`cw-s3` only) — the R2 serving bucket the job publishes the served artifacts to (`dt-cloud publish-r2`) and the token whose S3-API credentials both the publish step and the site's `STORE_*` seam use: access key id = the token id, secret = sha256(token value) — exported as the secret outputs `r2_s3_access_key_id` / `r2_s3_secret_access_key`. See `../specs/r2-serving-migration.md`. The token's permission groups resolve by name at program time; a read-scoped CI token can't list them, so `pulumi preview` in CI needs `Store.r2_token_permission_group_ids` set explicitly (the two R2 bucket-item read/write group ids).
+- `cloudflare.R2Bucket` + `cloudflare.ApiToken` (`cw-s3` only) — the R2 serving bucket the job publishes the served artifacts to (`dt-cloud publish-r2`) and the token whose S3-API credentials both the publish step and the site's `STORE_*` seam use: access key id = the token id, secret = sha256(token value) — exported as the secret outputs `r2_s3_access_key_id` / `r2_s3_secret_access_key`. See `../specs/done/r2-serving-migration.md`. The token's permission groups resolve by name at program time; a read-scoped CI token can't list them, so `pulumi preview` in CI needs `Store.r2_token_permission_group_ids` set explicitly (the two R2 bucket-item read/write group ids).
 
 ## Backfill: publish step vs Sippy vs Super Slurper
 

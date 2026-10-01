@@ -5,7 +5,7 @@
 # it: the two jobs share almost no shape. The GCS job fans out over six buckets,
 # mounts all of them, needs highmem-16 + local SSD for DuckDB spill, and posts a
 # digest. This one lists a couple of buckets on a single third-party S3 endpoint
-# (`CW_BUCKETS`, specs/cw-multi-bucket.md), mounts one bucket for output, and
+# (`CW_BUCKETS`, specs/done/cw-multi-bucket.md), mounts one bucket for output, and
 # peaks under 2 GB.
 #
 #   ./job/cw-batch-submit.sh              # submit, print job id
@@ -62,7 +62,7 @@ v = {
     "CLOUDFLARE_ACCOUNT_ID": g("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
     # R2 serving bucket the 4c publish stage copies each scan's served subset
     # to (the `r2_bucket` output of the cw-s3 CF Pulumi stack; creds are the
-    # `cw-s3-r2-*` secretVariables) — specs/r2-serving-migration.md
+    # `cw-s3-r2-*` secretVariables) — specs/done/r2-serving-migration.md
     "R2_BUCKET": g("R2_BUCKET", "oa-cw-s3-usage-index"),
 }
 if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
