@@ -1,0 +1,14 @@
+# One project, one stack per deployment branch (`gcs` on gcs, `cw-s3` on cw-s3);
+# each branch's infra/gcp/ selects only its own stack. The shared components are
+# `gcp_jobs.py`, from `cloud`.
+name: gcs-usage-gcp
+description: A deployment's GCP resources — job service accounts, Secret Manager containers (no values), Cloud Scheduler crons (Batch / Cloud Run), bucket IAM
+backend:
+  url: gs://oa-pulumi
+runtime:
+  name: python
+  options:
+    toolchain: uv
+config:
+  gcs-usage-gcp:adopting:
+    description: "Import the live resources each component marks `existing` (first `up` only; then false)"

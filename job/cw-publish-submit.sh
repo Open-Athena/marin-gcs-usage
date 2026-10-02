@@ -20,7 +20,7 @@ SCANS=("$@")
 
 PROJECT=oa-internal-450019
 REGION=us-central1
-SA=gcs-usage-job@$PROJECT.iam.gserviceaccount.com
+SA=cw-s3-job@$PROJECT.iam.gserviceaccount.com
 IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:cw}
 DATA_BUCKET=${DATA_BUCKET:-oa-gcs-usage-dvx}
 R2_BUCKET=${R2_BUCKET:-oa-cw-s3-usage-index}

@@ -12,7 +12,7 @@ set -euo pipefail
 
 PROJECT=oa-internal-450019
 REGION=us-central1
-SA=gcs-usage-job@$PROJECT.iam.gserviceaccount.com
+SA=cw-s3-job@$PROJECT.iam.gserviceaccount.com
 IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:cw}
 MACHINE=${MACHINE:-n2-standard-8}
 MEMORY_MIB=${MEMORY_MIB:-30000}

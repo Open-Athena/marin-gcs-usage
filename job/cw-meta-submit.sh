@@ -12,7 +12,7 @@
 # Scheduling (once, after the first manual run is verified — the go is Ryan's):
 # its own daily Cloud Scheduler job, independent of the 12-hourly `cw-usage-
 # snapshot`. Under specs/batch-iac.md it is one more line in the ops Pulumi
-# program (`ops/gcp/gcs-usage/__main__.py`):
+# program (`infra/gcp/__main__.py`):
 #     meta = cron("cw-meta-snapshot", "0 9 * * *", "cw-meta-submit.sh")
 # which POSTs `PIN=1 DRY=1` of this script to the Batch API as the job SA. By
 # hand it is the same body via `gcloud scheduler jobs create http cw-meta-snapshot
@@ -34,7 +34,7 @@ if [ -n "${PIN:-}" ]; then unset IMAGE MACHINE MEMORY_MIB DATA_BUCKET; fi
 
 PROJECT=oa-internal-450019
 REGION=us-central1
-SA=gcs-usage-job@$PROJECT.iam.gserviceaccount.com
+SA=cw-s3-job@$PROJECT.iam.gserviceaccount.com
 IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:cw}
 # The objects here are few and large (parquet shards, JSONs): ~4.3k in R2 and
 # low millions in GCS (gcs's listing/dir-cache shards + access logs), so this is

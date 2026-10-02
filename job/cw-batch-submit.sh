@@ -17,14 +17,14 @@
 set -euo pipefail
 
 # PIN=1: emit the canonical/cron spec — drop every ambient override so the body is
-# byte-identical regardless of the caller's shell (the IaC in ops/gcp/gcs-usage
+# byte-identical regardless of the caller's shell (the IaC in infra/gcp
 # generates the Cloud Scheduler body from `PIN=1 DRY=1`). Must precede the
 # ${VAR:-default} knobs below; the python vars() honors PIN too.
 if [ -n "${PIN:-}" ]; then unset IMAGE MACHINE MEMORY_MIB DATA_BUCKET CW_BUCKET; fi
 
 PROJECT=oa-internal-450019
 REGION=us-central1
-SA=gcs-usage-job@$PROJECT.iam.gserviceaccount.com
+SA=cw-s3-job@$PROJECT.iam.gserviceaccount.com
 IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-usage-snapshot:cw}
 # Measured on a 92M-object scan: 1.1 GB RSS listing, 1.8 GB import. The lister
 # is network-bound (many concurrent range requests), so vCPUs buy more than RAM.
@@ -39,7 +39,7 @@ vars() {
 import json, os
 # PIN=1 emits the canonical/cron spec: ignore ambient overrides so the body is
 # byte-stable regardless of the caller's shell (see the PIN note at the top and
-# ops/gcp/gcs-usage). Without PIN the knobs and passthrough list stay live.
+# infra/gcp). Without PIN the knobs and passthrough list stay live.
 pin = bool(os.environ.get("PIN"))
 g = (lambda k, d="": d) if pin else os.environ.get
 v = {
