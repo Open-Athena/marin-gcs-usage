@@ -16,12 +16,12 @@ time (`chat.update` can't change them):
 - ``sender``: the headline IS the sender name, the arrow the avatar. Posted
   once, from the day's MORNING scan — the first at/after ``cfg.reply_hour``
   UTC (12:01Z = 8:01 am ET, the same calendar date in both zones) — with a
-  ~24 h delta to the prior day's reply scan; the 00:01Z scan only
-  re-converges the OP + plot.
+  ~24 h delta to the prior day's reply scan; the day's other scans only
+  re-converge the OP + plot.
 - ``body``: the headline is bold body text under a static sender/avatar, so
   the day's reply is EDITED whenever a later scan of the day lands — text and
-  sparkline agree intra-day (at the cost of the first edit's Δ spanning 12 h
-  until the day's last scan makes it 24 h).
+  sparkline agree intra-day (at the cost of the first edits' Δ spanning less than
+  a day until the day's last scan makes it ~24 h).
 
 Content + deltas: specs/cw-slack-digest.md; the engine: `digest`."""
 from __future__ import annotations
@@ -223,9 +223,10 @@ def day_rows(month: Month, variant: str, reply_hour: int) -> list[DayRow]:
 
 
 def op_body(month: Month, m: dt.date, plot_url: str | None, cfg: DigestConfig) -> str:
-    """OP markdown: month-to-date headline, per-ISO-week bullets, trailing
-    sparkline. The month/year title is NOT in the body -- it's folded into the
-    OP's sender name by the poster. ``plot_url=None`` omits the image line."""
+    """OP markdown: month-to-date headline, the latest scan's "as of" line,
+    per-ISO-week bullets, trailing sparkline. The month/year title is NOT in
+    the body -- it's folded into the OP's sender name by the poster.
+    ``plot_url=None`` omits the image line."""
     site_url, q = cfg.site_url, cfg.primary_quota
     rows, base = month.rows, month.base
     last = rows[-1]
@@ -237,6 +238,8 @@ def op_body(month: Month, m: dt.date, plot_url: str | None, cfg: DigestConfig) -
     mtd_url = _diff_url(last.scan, scan_ts(base.scan) if base is not last else None, site_url)
     lines = [
         f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {last.tb:,.0f} TiB{_quota(last.tb, q)}{_extras(last.extra, _dextra(last, base if base is not last else None))} · [dashboard]({site_url}/)",
+        # the OP is re-edited every scan, so it is the thread's live view; say which scan it reflects
+        f"_as of {_md(last.date)} {scan_ts(last.scan):%H:%M}Z_",
         "",
         "*Weekly summaries*",
     ]
