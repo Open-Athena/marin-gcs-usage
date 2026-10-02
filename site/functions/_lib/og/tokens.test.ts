@@ -1,50 +1,59 @@
 import { describe, expect, it } from 'vitest'
-import { sqliteD1 } from '../testD1'
-import { EPOCH, ogKey } from './sign'
 import { hashToken } from '@open-athena/auth'
-import { fullTier, listTokens, mint, revoke, shareKeyLive, tokenLive } from './tokens'
+import { sqliteD1 } from '../testD1'
+import { EPOCH } from './sign'
+import { fullTier, listTokens, mint, revoke, shareKeyLive } from './tokens'
 
 // 2026-10-02T12:00Z: day 274.
 const NOW = EPOCH + 274 * 86400 + 12 * 3600
 const page = (p: string) => new URL(`https://site.example.org${p}`)
+const VIEW = { path: 'marin-a/ckpt', d: '261002' }
 
-describe('og_tokens (gcs lineage through 0034, foreign keys on)', () => {
-  it('mint → full tier for exactly that view; revoke → anonymous', async () => {
+describe('og_tokens: the row is the whole truth (gcs lineage through 0034, foreign keys on)', () => {
+  it('a mint is good for exactly its view until its expiry day ends; revoking one mint leaves the others', async () => {
     const { db } = await sqliteD1('gcs')
-    const key = await ogKey('s3cret')
-    const m = await mint(db, key, 'marin GCS', page('/marin-a/ckpt?d=261002&n=50&og=stale'), 'ann@example.org', NOW, 30)
-    expect(m).toEqual({ token: m!.token, url: `https://site.example.org/marin-a/ckpt?d=261002&n=50&og=${m!.token}`, expDay: 304 })
-    const view = { path: 'marin-a/ckpt', d: '261002' }
+    const m = await mint(db, 'marin GCS', page('/marin-a/ckpt?d=261002&n=50&og=stale'), 'ann@example.org', NOW, 30, 'TokAAAAAAA')
+    const m2 = await mint(db, 'marin GCS', page('/marin-a/ckpt?d=261002'), 'bo@example.org', NOW + 60, 30, 'TokBBBBBBB')
+    expect([m, m2]).toEqual([
+      { token: 'TokAAAAAAA', url: 'https://site.example.org/marin-a/ckpt?d=261002&n=50&og=TokAAAAAAA', expDay: 304 },
+      { token: 'TokBBBBBBB', url: 'https://site.example.org/marin-a/ckpt?d=261002&og=TokBBBBBBB', expDay: 304 },
+    ])
+    const end304 = EPOCH + 305 * 86400
     expect([
-      await fullTier(db, key, 'map', view, m!.token, NOW),
-      await fullTier(db, key, 'map', { path: 'marin-a' }, m!.token, NOW),
-      await fullTier(db, key, 'map', view, null, NOW),
-    ]).toEqual([{ day: 304 }, null, null])
-    // A second mint of the same view and day: the same token, a second row.
-    const again = await mint(db, key, 'marin GCS', page('/marin-a/ckpt?d=261002'), 'bo@example.org', NOW + 60, 30)
-    expect([again!.token === m!.token, (await listTokens(db)).map(r => [r.token === m!.token, r.minted_by, r.page, r.exp_day, r.revoked_ts])]).toEqual([true, [
-      [true, 'bo@example.org', '/marin-a/ckpt?d=261002', 304, null],
-      [true, 'ann@example.org', '/marin-a/ckpt?d=261002&n=50', 304, null],
-    ]])
-    expect([await revoke(db, m!.token, 'admin@example.org', NOW + 120), await revoke(db, m!.token, 'admin@example.org', NOW + 180), await tokenLive(db, m!.token), await fullTier(db, key, 'map', view, m!.token, NOW)])
-      .toEqual([2, 0, false, null])
+      await fullTier(db, 'map', VIEW, 'TokAAAAAAA', NOW),
+      await fullTier(db, 'map', { ...VIEW, path: 'marin-a/ckpt/run-1' }, 'TokAAAAAAA', NOW),
+      await fullTier(db, 'map', { ...VIEW, path: 'marin-a' }, 'TokAAAAAAA', NOW),
+      await fullTier(db, 'map', { ...VIEW, f: 'x' }, 'TokAAAAAAA', NOW),
+      await fullTier(db, 'staged', VIEW, 'TokAAAAAAA', NOW),
+      await fullTier(db, 'map', VIEW, 'TokAAAAAAA', end304 - 1),
+      await fullTier(db, 'map', VIEW, 'TokAAAAAAA', end304),
+      await fullTier(db, 'map', VIEW, 'TokCCCCCCC', NOW),
+      await fullTier(db, 'map', VIEW, 'TokAAAAAA-', NOW),
+      await fullTier(db, 'map', VIEW, null, NOW),
+    ]).toEqual([{ day: 304 }, null, null, null, null, { day: 304 }, null, null, null, null])
+    expect([await revoke(db, 'TokAAAAAAA', 'admin@example.org', NOW + 120), await revoke(db, 'TokAAAAAAA', 'admin@example.org', NOW + 180)]).toEqual([1, 0])
+    expect([await fullTier(db, 'map', VIEW, 'TokAAAAAAA', NOW), await fullTier(db, 'map', VIEW, 'TokBBBBBBB', NOW)]).toEqual([null, { day: 304 }])
+    expect((await listTokens(db)).map(r => [r.token, r.minted_by, r.page, r.exp_day, r.revoked_by])).toEqual([
+      ['TokBBBBBBB', 'bo@example.org', '/marin-a/ckpt?d=261002', 304, null],
+      ['TokAAAAAAA', 'ann@example.org', '/marin-a/ckpt?d=261002&n=50', 304, 'admin@example.org'],
+    ])
   })
-  it('a token D1 never recorded is not honoured, however well-formed', async () => {
+  it('each mint is a fresh random token', async () => {
     const { db } = await sqliteD1('gcs')
-    const key = await ogKey('s3cret')
-    const { mintToken } = await import('./sign')
-    expect(await fullTier(db, key, 'map', { path: 'x' }, await mintToken(key, 'map', { path: 'x' }, 300), NOW)).toBe(null)
+    const a = await mint(db, 'marin GCS', page('/marin-a'), 'ann@example.org', NOW)
+    const b = await mint(db, 'marin GCS', page('/marin-a'), 'ann@example.org', NOW)
+    expect([a!.token.length, b!.token.length, a!.token === b!.token]).toEqual([10, 10, false])
   })
   it('pages without a card mint nothing', async () => {
     const { db } = await sqliteD1('gcs')
-    expect(await mint(db, await ogKey('s3cret'), 'marin GCS', page('/api/subtree'), 'ann@example.org', NOW)).toBe(null)
+    expect(await mint(db, 'marin GCS', page('/api/subtree'), 'ann@example.org', NOW)).toBe(null)
   })
 })
 
 describe('a deployment without the table (cw lineage)', () => {
   it('honours no token', async () => {
     const { db } = await sqliteD1('cw')
-    expect(await tokenLive(db, 'EZjUobkMrUuF')).toBe(false)
+    expect(await fullTier(db, 'map', VIEW, 'TokAAAAAAA', NOW)).toBe(null)
   })
 })
 

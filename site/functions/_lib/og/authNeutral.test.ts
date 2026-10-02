@@ -5,15 +5,18 @@ import { emailSub, hashToken, sessionCookie, signSession } from '@open-athena/au
 import { describe, expect, it } from 'vitest'
 import { type Env, requireViewer } from '../auth'
 import { sqliteD1 } from '../testD1'
-import { EPOCH, mintToken, ogKey } from './sign'
+import { EPOCH } from './sign'
 
 const SECRET = 'test-session-secret-0123456789abcdef'
 const KEY = 'live-share-link-key-0123456789'
+const OG = 'TokAAAAAAA'
 
 async function envWith(): Promise<Env> {
   const { db, raw } = await sqliteD1('gcs')
   raw.prepare("INSERT INTO allowed_emails (email, who, ts) VALUES ('viewer@example.org', 'admin@example.org', 1)").run()
   raw.prepare('INSERT INTO grants (id, token_hash, scopes, created_at, created_by) VALUES (?, ?, ?, ?, ?)').run('g1', await hashToken(KEY), 'gcs:read', 1, 'admin@example.org')
+  // A live preview token for the requested view, so `og=` is a real one.
+  raw.prepare('INSERT INTO og_tokens (token, kind, view, page, minted_by, minted_ts, exp_day) VALUES (?, ?, ?, ?, ?, ?, ?)').run(OG, 'map', 'path=marin-a', '/marin-a', 'viewer@example.org', 1, Math.floor((Date.now() / 1000 - EPOCH) / 86400) + 30)
   return { DB: db, SESSION_SECRET: SECRET, BASE_SCOPE: 'gcs', STAFF_DOMAIN: 'openathena.ai' } as Env
 }
 
@@ -27,7 +30,7 @@ async function outcome(url: string, headers: Record<string, string> = {}): Promi
 
 describe('og= has no effect on site auth', () => {
   it('same outcome with and without og=, for every way of (not) being signed in', async () => {
-    const og = await mintToken(await ogKey(SECRET), 'map', { path: 'marin-a' }, Math.floor((Date.now() / 1000 - EPOCH) / 86400) + 30)
+    const og = OG
     const cookie = sessionCookie(await signSession(emailSub('viewer@example.org'), SECRET, Date.now(), 3600), { name: 'oa_auth', ttlS: 3600, secure: true }).split(';')[0]
     const shapes: [string, string, Record<string, string>?][] = [
       ['anonymous', 'https://gcs.example.org/api/subtree?path=marin-a'],
