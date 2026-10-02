@@ -39,6 +39,7 @@ STORE = "gcs"                   # the store this build serves (`src/stores.ts` r
 AUTH_MODE = "app"               # the client's whoami source: the app session, no edge gate (vite.config.ts)
 ROOT_LABEL = "marin GCS"        # the store root's crumb label (`_lib/view.ts`)
 BASE_SCOPE = "gcs"              # the viewer scope this deployment grants (`_lib/auth.ts`)
+JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"  # the account sweep-dispatched Batch jobs run as (`_lib/planDispatch.ts`)
 # Snapshots live at the store root (`snapshots/<date>/`); no SNAPSHOTS_SUBDIR.
 # No EDGE_TRUSTED / ACCESS_*: the host is off Zero Trust since 2026-09-24 — the
 # app's own gate authorizes (Google OIDC client + emailed codes, D1
@@ -100,6 +101,7 @@ STORE = "gcs"
 AUTH_MODE = "app"
 ROOT_LABEL = "marin GCS (dev)"
 BASE_SCOPE = "gcs"
+JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"
 STAFF_DOMAIN = "openathena.ai"
 STORE_SCHEME = "gs://"
 STORE_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"
