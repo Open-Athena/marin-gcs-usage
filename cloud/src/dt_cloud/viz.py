@@ -188,7 +188,7 @@ def _write_store(
     attr_join = f"LEFT JOIN dir_attr t ON t.bucket = x.bucket AND t.dir = ({obj_dir})" if attr else ""
     obj_exprs = {
         "path": "x.bucket || '/' || x.name", "usr": 't."user"' if attr else "NULL::VARCHAR",
-        "size": "x.size_bytes::BIGINT", "depth": "(len(string_split(x.name, '/')) + 1)::INTEGER", "kind": "'file'",
+        "size": "x.size_bytes::BIGINT", "depth": "len(string_split(x.bucket || '/' || x.name, '/'))::INTEGER", "kind": "'file'",
         "n_files": "1::BIGINT", "n_children": "0::BIGINT", "n_desc": "0::BIGINT",
         "mtime": "coalesce(floor(epoch(coalesce(x.updated, x.created))), 0)::BIGINT",
         "mtime_mean": "floor(epoch(x.created))::DOUBLE",
@@ -295,7 +295,20 @@ def write_path_index(
     con.execute(f"SET threads={os.environ.get('DUCKDB_THREADS', '4')}")
     if tmp := os.environ.get("DUCKDB_TMP"):
         con.execute(f"SET temp_directory='{tmp}'")
-    src = prepare_listing(con, listings)
+    # A local capture's `bucket` is its scan root (`/Users/ryan`); drop the
+    # leading slash so it tiles like a bucket name (`Users/ryan`). Kept, it
+    # yields an empty first segment: a depth-1 node at path '' — the root's own
+    # path — whose parent walk never terminates. The filesystem root (`/`)
+    # strips to '' outright, so its rows re-split on their first segment
+    # (`Applications`, `Users`, … become the roots); files directly under `/`
+    # (`.file`, `.VolumeIcon.icns`) have no root to sit in and are dropped.
+    src = f"""(
+        SELECT * REPLACE (
+          CASE WHEN bucket = '' THEN split_part(name, '/', 1) ELSE bucket END AS bucket,
+          CASE WHEN bucket = '' THEN substr(name, strpos(name, '/') + 1) ELSE name END AS name)
+        FROM (SELECT * REPLACE (ltrim(bucket, '/') AS bucket) FROM {prepare_listing(con, listings)})
+        WHERE bucket <> '' OR strpos(name, '/') > 0
+    )"""
 
     # --- layer-2 dir rollups (attribution-independent; cached when dir_cache) ---
     # Everything downstream needs objects only via these two aggregates:
