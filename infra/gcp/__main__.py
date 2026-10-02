@@ -1,0 +1,160 @@
+"""gcs's GCP stack: the scan job's account, secrets, crons and bucket grants.
+
+Thin wiring over `gcp_jobs.py` (the shared components, from `cloud`). Each cron's
+Batch spec comes from this branch's own `job/*-submit.sh` under `PIN=1 DRY=1`.
+
+CI and agents run `pulumi preview` only; `up` is a human's call.
+"""
+
+from pathlib import Path
+
+import pulumi
+import pulumi_gcp as gcp
+
+from gcp_jobs import Adopt, BatchCron, JobAccount, RunJobCron, Secrets, grant_bucket
+
+cfg = pulumi.Config()
+gcp_cfg = pulumi.Config("gcp")
+project = gcp_cfg.require("project")
+region = gcp_cfg.require("region")
+adopt = Adopt(cfg.get_bool("adopting") or False)
+job_dir = Path(__file__).resolve().parents[2] / "job"
+
+STACK = "gcs"
+if pulumi.get_stack() != STACK:
+    raise ValueError(f"this branch's gcp/ manages only the {STACK!r} stack, not {pulumi.get_stack()!r}")
+
+sa = lambda account_id: f"{account_id}@{project}.iam.gserviceaccount.com"  # noqa: E731
+
+# The site's sweep console submits sweep-executor Batch jobs as this account
+# (its key is the Pages secret `GCP_SA_KEY`; keys stay out of state).
+dispatch = JobAccount(
+    "gcs-usage-dispatch",
+    project=project,
+    account_id="gcs-usage-dispatch",
+    display_name="gcs-usage sweep dispatch",
+    description="Submits sweep-executor Batch jobs from the /sweep console; Batch-submit + actAs gcs-usage-job only",
+    roles=["roles/batch.jobsEditor"],
+    acts_as_self=False,
+    adopt=adopt,
+    existing=True,
+)
+job = JobAccount(
+    "gcs-usage-job",
+    project=project,
+    account_id="gcs-usage-job",
+    display_name="Daily GCS-usage snapshot job",
+    roles=[
+        "roles/artifactregistry.reader",
+        "roles/batch.agentReporter",
+        "roles/batch.jobsEditor",
+        "roles/logging.logWriter",
+    ],
+    actors=[sa("gcs-usage-dispatch")],
+    adopt=adopt,
+    existing=True,
+)
+# The site's `/v1/files` scan browser reads the buckets as this account (an
+# HMAC key, also out of state).
+browse = JobAccount(
+    "gcs-usage-browse",
+    project=project,
+    account_id="gcs-usage-browse",
+    display_name="gcs-usage scan browser (read-only proxy)",
+    roles=[],
+    acts_as_self=False,
+    adopt=adopt,
+    existing=True,
+)
+
+secrets = Secrets(
+    "gcs-secrets",
+    project=project,
+    secrets={
+        "cf-pages-token": None,
+        "gcs-alert-slack-bot-token": None,
+        "gcs-alert-slack-webhook": None,
+        "gcs-sheet-sync-token": {"app": "gcs-usage", "role": "sheet-sync"},
+        "gcs-usage-discord-webhook": None,
+        "marin-discord-bot-token": None,
+    },
+    accessor=job.member,
+    accessor_email=job.email_literal,
+    adopt=adopt,
+    existing=True,
+)
+
+daily = BatchCron(
+    "gcs-usage-snapshot-daily",
+    project=project,
+    region=region,
+    schedule="0 7 * * *",
+    submitter=job_dir / "batch-submit.sh",
+    sa_email=job.email,
+    adopt=adopt,
+    existing=True,
+    depends_on=[secrets],
+)
+
+# The hourly D1 → Google Sheet mirror (deploy/sheet-mirror/): `deploy.sh` ships
+# the image and the rendered config; this owns the job, its trigger and IAM.
+sheet_sync = RunJobCron(
+    "gcs-sheet-sync",
+    project=project,
+    region=region,
+    job="gcs-sheet-sync",
+    trigger="gcs-sheet-sync-hourly",
+    schedule="5 * * * *",
+    time_zone="UTC",
+    sa_email=job.email_literal,
+    image=f"{region}-docker.pkg.dev/{project}/cloud-run-source-deploy/gcs-sheet-sync:latest",
+    secret_env={"GCS_USAGE_TOKEN": "gcs-sheet-sync-token"},
+    adopt=adopt,
+    existing=True,
+    opts=pulumi.ResourceOptions(depends_on=[secrets]),
+)
+
+# The scans' own bucket: snapshots, path indexes, access logs. Raw access-log
+# CSVs go Coldline at 30 days and are deleted at 180.
+DATA_BUCKET = "oa-gcs-usage-dvx"
+gcp.storage.Bucket(
+    DATA_BUCKET,
+    project=project,
+    name=DATA_BUCKET,
+    location="US-EAST1",
+    storage_class="STANDARD",
+    uniform_bucket_level_access=True,
+    soft_delete_policy=gcp.storage.BucketSoftDeletePolicyArgs(retention_duration_seconds=604800),
+    lifecycle_rules=[
+        gcp.storage.BucketLifecycleRuleArgs(
+            action=gcp.storage.BucketLifecycleRuleActionArgs(type="SetStorageClass", storage_class="COLDLINE"),
+            condition=gcp.storage.BucketLifecycleRuleConditionArgs(age=30, matches_prefixes=["access/raw/"], matches_storage_classes=["STANDARD"]),
+        ),
+        gcp.storage.BucketLifecycleRuleArgs(
+            action=gcp.storage.BucketLifecycleRuleActionArgs(type="Delete"),
+            condition=gcp.storage.BucketLifecycleRuleConditionArgs(age=180, matches_prefixes=["access/raw/"]),
+        ),
+    ],
+    opts=adopt.opts(True, f"{project}/{DATA_BUCKET}", protect=True),
+)
+grant_bucket(f"{DATA_BUCKET}-job", bucket=DATA_BUCKET, role="roles/storage.objectAdmin", member=job.member, member_email=job.email_literal, adopt=adopt, existing=True)
+grant_bucket(f"{DATA_BUCKET}-browse", bucket=DATA_BUCKET, role="roles/storage.objectViewer", member=browse.member, member_email=browse.email_literal, adopt=adopt, existing=True)
+
+# The scanned fleet (Marin's buckets, another project): the job lists and reads
+# every bucket and deletes from the swept ones (`objectUser`); the browser reads.
+FLEET = {
+    "marin-us-east1": False,
+    "marin-us-east5": True,
+    "marin-us-central1": True,
+    "marin-us-central2": True,
+    "marin-eu-west4": True,
+    "marin-us-west4": False,
+}
+for bucket, swept in FLEET.items():
+    roles = ["roles/storage.legacyBucketReader", "roles/storage.objectViewer"] + (["roles/storage.objectUser"] if swept else [])
+    for role in roles:
+        grant_bucket(f"{bucket}-job-{role.split('.')[-1]}", bucket=bucket, role=role, member=job.member, member_email=job.email_literal, adopt=adopt, existing=True)
+    grant_bucket(f"{bucket}-browse", bucket=bucket, role="roles/storage.objectViewer", member=browse.member, member_email=browse.email_literal, adopt=adopt, existing=True)
+
+pulumi.export("job_account", job.email)
+pulumi.export("crons", [daily.job.name, sheet_sync.cron.name])
