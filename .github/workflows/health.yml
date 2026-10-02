@@ -54,3 +54,14 @@ jobs:
             exit 0
           fi
           cd cloud && uv run --no-sync dt-cloud healthcheck
+
+      # The site's page loads, uncached (`-c`), as the browser sends them:
+      # fails on any 5xx or dropped request (2026-10-01: a filtered view 1102'd
+      # its whole batch while the healthcheck passed).
+      - name: Page-load probe
+        run: |
+          if [ -z "${GCS_USAGE_TOKEN:-}" ]; then
+            echo "${{ matrix.secret }} secret not set — skipping page-load probe"
+            exit 0
+          fi
+          cd cloud && uv run --no-sync dt-cloud probe -c

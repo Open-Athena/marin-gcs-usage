@@ -366,6 +366,17 @@ if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
     || echo "WARN: cache warm-up failed for $DATE" >&2
 fi
 
+# Replay the site's page loads uncached (`dt-cloud probe -c`): every response
+# a 2xx/4xx, and one cold-latency record per scan under probes/ (the time
+# series of what a first viewer waits). Same token, same gating; a failure
+# (a 5xx or a dropped request) warns but never fails the snapshot.
+if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
+  if ! dt-cloud probe -c -o "gs://$DATA/probes/"; then
+    echo "WARN: serving probe failed for $DATE" >&2
+    slack_post "⚠️ \`dt-cloud\` $DATE: a page-load probe got a 5xx or a dropped request — data is fine, some views may fail. Debug: \`dt-cloud probe -c\`."
+  fi
+fi
+
 # Converge the monthly Shape-C digest thread in Slack (specs/done/slack-digest-
 # shape-c.md): the OP + one reply per scan. Only when SLACK_BOT_TOKEN +
 # SLACK_CHANNEL are set — Shape C needs the Web API's per-message sender/avatar
