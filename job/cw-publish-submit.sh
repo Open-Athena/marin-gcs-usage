@@ -12,7 +12,9 @@
 #
 # Each task streams its scan GCS → R2 through the APIs (no bucket mount); the
 # job SA reads GCS via ADC and the R2 creds are the `cw-s3-r2-*` secrets, as
-# in cw-batch-submit.sh.
+# in cw-batch-submit.sh. It copies only the `index/<gen>/` dirs D1 points at
+# (so it reads D1: `D1_DB_ID` + the `cf-pages-token` secret) and, as the scan
+# job's 4c (`-L`), leaves the per-bucket rollups in GCS.
 set -euo pipefail
 
 if [ $# -eq 0 ]; then echo "usage: $0 <scan-id>…" >&2; exit 2; fi
@@ -37,7 +39,7 @@ cmd = (
     f"SCANS=({' '.join(scans)})\n"
     'SNAP_ID=${SCANS[$BATCH_TASK_INDEX]}\n'
     'echo "task $BATCH_TASK_INDEX → publish-r2 $SNAP_ID"\n'
-    'dt-cloud publish-r2 "$SNAP_ID"\n'
+    'dt-cloud publish-r2 -L "$SNAP_ID"\n'
     'echo PUBLISH_DONE "$SNAP_ID"'
 )
 P = os.environ["PROJECT"]
@@ -51,8 +53,16 @@ print(json.dumps({
             "maxRetryCount": 1,
             "maxRunDuration": "7200s",
             "environment": {
-                "variables": {"DATA_BUCKET": os.environ["DATA_BUCKET"], "R2_BUCKET": os.environ["R2_BUCKET"]},
+                "variables": {
+                    "DATA_BUCKET": os.environ["DATA_BUCKET"],
+                    "R2_BUCKET": os.environ["R2_BUCKET"],
+                    "LAYER2_PREFIX": "cw-l2/{scan}/",
+                    "SNAPSHOTS_SUBDIR": "cw",
+                    "D1_DB_ID": "7f1e1326-b879-4ecd-8621-846621c24f36",  # oa-cw-s3-usage-db
+                    "CLOUDFLARE_ACCOUNT_ID": os.environ.get("CLOUDFLARE_ACCOUNT_ID", "74981a43be0de7712369306c7b19133d"),
+                },
                 "secretVariables": {
+                    "CLOUDFLARE_API_TOKEN": f"projects/{P}/secrets/cf-pages-token/versions/latest",
                     "R2_ENDPOINT": f"projects/{P}/secrets/cw-s3-r2-endpoint/versions/latest",
                     "R2_ACCESS_KEY_ID": f"projects/{P}/secrets/cw-s3-r2-access-key-id/versions/latest",
                     "R2_SECRET_ACCESS_KEY": f"projects/{P}/secrets/cw-s3-r2-secret-access-key/versions/latest",

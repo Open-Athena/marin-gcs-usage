@@ -183,6 +183,21 @@ fi
 # the series keeps its per-scan reads if a group fails.
 GEN="$GEN" WORK="$WORK/over-time" bash job/cw-overtime.sh || echo "WARN: over-time groups failed (the series keeps its per-scan reads)" >&2
 
+# 4e. Delete superseded index generations' files (specs/storage-consolidation.md
+# phase 1): `index-gc` above drops only their D1 rows, so every reindex used to
+# leave its previous `cw-l2/<scan>/index/<gen>/` behind in GCS and R2. Over every
+# scan (`-R`: the row sweep ran above, for this scan): a dir goes only when no
+# `index_schema` row names it, its scan still has a pointed `path` generation,
+# and its newest object is older than the 2-day grace (an in-flight reindex is
+# never raced). The site reads generations only through their pointers, so this
+# is invisible to it. Needs D1; R2 only with its env. Never fatal.
+if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then  # `:+set`: xtrace must not print the token
+  GC_TARGETS=(-F "gs://$DATA")
+  if [ -n "${R2_ENDPOINT:+set}" ] && [ -n "${R2_BUCKET:-}" ]; then GC_TARGETS+=(-F r2); fi
+  dt-cloud index-gc -R -m 2d "${GC_TARGETS[@]}" \
+    || echo "WARN: index-gc -F failed (superseded generations stay until the next run)" >&2
+fi
+
 # 4b. Warm the site's subtree + diff caches for this scan (the colo cache, plus
 # the global KV tier once `CACHE_KV` is bound in site/wrangler.toml) so the
 # first viewer gets hits instead of a multi-second compute: the home page's

@@ -30,7 +30,9 @@ fi
 NEW=$(dt-cloud over-time-groups -g "$GEN" -o "$WORK" -p "/gcs/$DATA" -m "${DUCKDB_MEM:-16GB}" -t "${IMPORT_JOBS:-8}")
 for gid in $(printf '%s' "$NEW" | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin)["groups"]))'); do
   if [ -n "${R2_ENDPOINT:+set}" ] && [ -n "${R2_BUCKET:-}" ]; then  # `:+set`: xtrace must not print the creds
-    dt-cloud publish-r2 "$gid" || echo "WARN: publish-r2 failed for over-time group $gid (the site reads R2: the group stays invisible until a re-publish)" >&2
+    # `-L`: the group's scan rollups (`cw-l2/<gid>/<bucket>.parquet`, ~1.3 GB) stay in
+    # GCS only, as in cw-run.sh's 4c; nothing served reads them
+    dt-cloud publish-r2 -L "$gid" || echo "WARN: publish-r2 failed for over-time group $gid (the site reads R2: the group stays invisible until a re-publish)" >&2
   else
     echo "no R2_ENDPOINT/R2_BUCKET — over-time group $gid published to GCS only" >&2
   fi
