@@ -166,7 +166,7 @@ The repo is **public**: no emails or other PII in tracked files or commit messag
 ### Branches
 
 - `cw-s3` merges the local `cloud` branch (`git merge refs/heads/cloud`; bare `cloud` is ambiguous with the `cloud/` dir). Never rebase onto it.
-- Base-worthy changes made here are tagged `[base]` and cherry-picked up to `cloud` by the root session; this branch keeps only what the cw-s3 deployment runs.
+- Changes that belong in the shared base are tagged `[cloud]` (or `[local]`, for the `local` branch the m3/app deployments merge) and cherry-picked up by the root session; this branch keeps only what the cw-s3 deployment runs.
 - Migrations: one lineage, `site/migrations/cw/`. Never rename an applied migration; a migration `cloud` drops (or another branch adds) only needs its file to match what cw prod D1 has applied (`d1_migrations` records file names).
 
 ### Layout (cw-s3's own)
