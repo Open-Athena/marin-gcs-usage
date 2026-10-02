@@ -1,4 +1,4 @@
-# gcs's sheet mirror (deploy/sheet-mirror/deploy.sh site/sheet-mirror.yml).
+# gcs's sheet mirror (deploy/sheet-mirror/deploy.sh -P site/sheet-mirror.yml; infra/gcp owns its trigger + IAM).
 # Replaces the retired sheet-sync/ (hourly mark-status → Percy's sheet).
 site: https://gcs.oa.dev
 token_secret: gcs-sheet-sync-token
