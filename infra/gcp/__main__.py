@@ -3,10 +3,13 @@
 Thin wiring over `gcp_jobs.py` (the shared components, from `cloud`). Each cron's
 Batch spec comes from this branch's own `job/*-submit.sh` under `PIN=1 DRY=1`.
 
-The jobs run as their own account, `cw-s3-job`, which this stack creates; the
-secrets and crons predate it and are adopted. `legacyJobAccess` keeps gcs's
-`gcs-usage-job` on the cw secrets through the cutover: adopt with it on, then
-turn it off and `up` to drop those bindings.
+The jobs run as their own account, `cw-s3-job`, and the site's sweep console
+dispatches them as `cw-s3-dispatch` (its key is the Pages secret `GCP_SA_KEY`;
+keys stay out of state); this stack creates both. The secrets and crons predate
+them and are adopted. `legacyJobAccess` bridges the cutover: gcs's
+`gcs-usage-job` keeps the cw secrets, and gcs's `gcs-usage-dispatch` (the key
+cw-s3's Pages has now) may act as `cw-s3-job`. Adopt with it on; once the Pages
+key is `cw-s3-dispatch`'s and a cron run is good, turn it off and `up`.
 
 CI and agents run `pulumi preview` only; `up` is a human's call.
 """
@@ -14,6 +17,7 @@ CI and agents run `pulumi preview` only; `up` is a human's call.
 from pathlib import Path
 
 import pulumi
+import pulumi_gcp as gcp
 
 from gcp_jobs import Adopt, BatchCron, JobAccount, Secrets, grant_bucket, grant_secret
 
@@ -28,6 +32,16 @@ STACK = "cw-s3"
 if pulumi.get_stack() != STACK:
     raise ValueError(f"this branch's gcp/ manages only the {STACK!r} stack, not {pulumi.get_stack()!r}")
 
+dispatch = JobAccount(
+    "cw-s3-dispatch",
+    project=project,
+    account_id="cw-s3-dispatch",
+    display_name="cw-s3 sweep dispatch",
+    description="Submits sweep-executor Batch jobs from the cw-s3 sweep console; Batch-submit + actAs cw-s3-job only",
+    roles=["roles/batch.jobsEditor"],
+    acts_as_self=False,
+    adopt=adopt,
+)
 job = JobAccount(
     "cw-s3-job",
     project=project,
@@ -39,6 +53,8 @@ job = JobAccount(
         "roles/batch.jobsEditor",
         "roles/logging.logWriter",
     ],
+    actors=["cw-s3-dispatch@" + f"{project}.iam.gserviceaccount.com"],
+    actor_deps=[dispatch],
     adopt=adopt,
 )
 
@@ -66,9 +82,16 @@ secrets = Secrets(
 cf_token = grant_secret("cf-pages-token-cw-accessor", project=project, secret_id="cf-pages-token", member=job.member, member_email=job.email_literal, adopt=adopt)
 
 legacy = "gcs-usage-job@" + f"{project}.iam.gserviceaccount.com"
+legacy_dispatch = "gcs-usage-dispatch@" + f"{project}.iam.gserviceaccount.com"
 if cfg.get_bool("legacyJobAccess"):
     for sid in CW_SECRETS:
         grant_secret(f"{sid}-legacy-accessor", project=project, secret_id=sid, member=f"serviceAccount:{legacy}", member_email=legacy, adopt=adopt, existing=True)
+    gcp.serviceaccount.IAMMember(
+        "cw-s3-job-legacy-dispatch",
+        service_account_id=job.account.name,
+        role="roles/iam.serviceAccountUser",
+        member=f"serviceAccount:{legacy_dispatch}",
+    )
 
 # The jobs' work dir and snapshots live in gcs's data bucket (gcs's stack owns it).
 data = grant_bucket("oa-gcs-usage-dvx-cw-job", bucket="oa-gcs-usage-dvx", role="roles/storage.objectAdmin", member=job.member, member_email=job.email_literal, adopt=adopt)
