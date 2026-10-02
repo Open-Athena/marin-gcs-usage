@@ -101,7 +101,7 @@ scan = BatchCron(
     "cw-usage-snapshot",
     project=project,
     region=region,
-    schedule="0 */12 * * *",
+    schedule="0 */6 * * *",
     submitter=job_dir / "cw-batch-submit.sh",
     sa_email=job.email,
     adopt=adopt,
