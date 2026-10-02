@@ -2,6 +2,6 @@ config:
   gcp:project: oa-internal-450019
   gcp:region: us-central1
   gcs-usage-gcp:adopting: "false"
-  gcs-usage-gcp:legacyJobAccess: "true"
+  gcs-usage-gcp:legacyJobAccess: "false"
 secretsprovider: gcpkms://projects/oa-internal-450019/locations/global/keyRings/ops/cryptoKeys/pulumi
 encryptedkey: CiQAqKOWSFOchWhZ4W775DpXF1vcHLQ9b6V66ospY1Jte2EUNLISSQAw+4V0KZ7Qktyp1XXfqkPRRCDBxaqNZIdfbAaUuv8axO43ssqRSqDpL+QMN82pgcY/gLOzNemO9zFZaIP2NZb3frF12491gAk=
