@@ -173,7 +173,7 @@ The repo is **public**: no emails or other PII in tracked files or commit messag
 
 - `job/cw-*`: the scan job (`cw-run.sh`, submitted by `cw-batch-submit.sh`; `PIN=1 DRY=1` prints the cron body) and its one-shots (`cw-reindex*`, `cw-overtime*`, `cw-meta-*`, `cw-publish-submit.sh`, `cw-recompress-submit.sh`). `job/build.sh` builds the `:cw` image (`JOB=cw-run.sh`). `job/batch-submit.sh` is gcs's submitter, kept until the ops scheduler program takes a checkout per cron.
 - `job/icons/arrows/` + `gen-{arrow-avatars,delta-arrows}.py`: the digest's trend-arrow avatars (hosted on `gcs-usage-icons.pages.dev`); `job/icons-cw/` is where `cw-digest` renders OP plots before deploying them to that project's `cw` branch. `job/slack/`: the CoreWeave Usage Bot manifest.
-- `cloud/src/dt_cloud/cw_digest*.py`: the monthly Slack thread (`dt-cloud cw-digest -m YYYY-MM -c <channel>`, `-n` dry run).
+- `job/digest.yml`: the monthly Slack thread's config (`dt-cloud digest -T cw -C job/digest.yml -m YYYY-MM -c <channel>`, `-n` dry run; `cw-digest` = `digest -T cw`); the engine + `cw` template are `cloud`'s `digest.py` / `digest_cw.py`. `cloud/tests/test_digest_cw_config.py` pins the file to the `cw` preset.
 - `site/wrangler.toml`: the cw store's config (`STORE = "cw"`, `AUTH_MODE = "app"`, `STORE_BUCKETS`, `SNAPSHOTS_SUBDIR = "cw"`, the meta store, the plan-sweep executor). `[env.preview]` is the dev stack.
 - `cf/`: Pulumi for the `oa-cw-s3-usage` Pages project, domain, D1, KV and R2 (stack `cw-s3`).
 

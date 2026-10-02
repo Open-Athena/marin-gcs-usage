@@ -1,0 +1,36 @@
+# cw-s3's Slack usage digest (`dt-cloud digest -T cw -C job/digest.yml`): every
+# `DigestConfig` field, spelled out, so this file alone is the deployment's
+# digest policy (the `cw` preset on `cloud` can then go). Validated on load:
+# unknown keys raise. Secrets stay env-only (`SLACK_BOT_TOKEN`, `SLACK_CHANNEL`).
+template: cw
+title: CoreWeave usage
+site_url: https://cw-s3.oa.dev
+# `{DATA_BUCKET}` reads the env; the job passes `-r` anyway
+root: gs://{DATA_BUCKET}/snapshots/cw
+# keyed by channel (a staging converge never masquerades as prod) and variant
+state: digest/cw/{channel}/{variant}
+discord_state: digest/discord/{webhook}
+discord_webhook_env: null
+icons_base: https://gcs-usage-icons.pages.dev
+icons_dir: job/icons-cw
+# plots go to the icons project's `cw` preview branch, never the production
+# alias that serves the shared arrow avatars
+plot_project: gcs-usage-icons
+plot_branch: cw
+plot_base: https://cw.gcs-usage-icons.pages.dev
+# sender: the headline as the reply's sender name + a trend-arrow avatar, one
+# reply per UTC day from its first scan at/after `reply_hour` (12:01Z = 8:01 am ET)
+variant: sender
+reply_hour: 12
+# before the day's reply scan lands, its earlier scans post one provisional reply
+# (`10/3 · so far`, numbers in the body, edited in place), deleted when the
+# final reply posts
+provisional: false
+primary: marin-us-east-02a
+# quotas from CoreWeave's `cwobject_quota_info` metric, per zone: 02a = exactly
+# 910 TiB ("1 PB"); hero = the US-EAST-08A zone quota, shared with an unscanned
+# bucket, so hero's "free" overstates the zone's true headroom slightly
+buckets:
+  marin-us-east-02a: {label: 02a, quota: {bytes: 910 TiB, name: 1 PB, short: 1P}}
+  hero-checkpoints: {label: hero, quota: {bytes: 100 TiB, name: 100 TiB, short: 100Ti}}
+prices: {}
