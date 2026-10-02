@@ -25,7 +25,7 @@ reply_hour: 12
 # before the day's reply scan lands, its earlier scans post one provisional reply
 # (`10/3 · so far`, numbers in the body, edited in place), deleted when the
 # final reply posts
-provisional: false
+provisional: true
 primary: marin-us-east-02a
 # quotas from CoreWeave's `cwobject_quota_info` metric, per zone: 02a = exactly
 # 910 TiB ("1 PB"); hero = the US-EAST-08A zone quota, shared with an unscanned
