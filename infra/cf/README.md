@@ -4,7 +4,7 @@
 project, custom domain, CNAME, D1 and the deployment configs imported in place;
 cache KV created; `pulumi preview` = 7 unchanged since). `up` stays user-gated.
 
-**One `cf/` per deployment branch.** This is the gcs branch's; the cw-s3
+**One `infra/cf/` per deployment branch.** This is the gcs branch's; the cw-s3
 deployment's twin (its stack live since 2026-09-25, with the R2 serving bucket +
 token) is on the `cw-s3` branch. `cfn_dashboard.py` is the reusable,
 marin-agnostic `CfnDashboard` component, kept byte-identical across branches

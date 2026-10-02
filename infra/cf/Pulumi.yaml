@@ -1,5 +1,5 @@
 # One project, one stack per deployment branch (`gcs` here, `cw-s3` on the
-# cw-s3 branch); each branch's cf/ selects only its own stack. The gcs stack is
+# cw-s3 branch); each branch's infra/cf/ selects only its own stack. The gcs stack is
 # live (adopted 2026-09-24); `up` stays user-gated (see ../specs/cf-iac.md and
 # README.md).
 # Distinct project name from gcp/gcs-usage so the two don't collide in the

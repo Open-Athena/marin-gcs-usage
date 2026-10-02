@@ -1,6 +1,6 @@
 """gcs's Cloudflare stack, thin wiring over the CfnDashboard component.
 
-One `cf/` per deployment branch, matching the branching model: `cfn_dashboard.py`
+One `infra/cf/` per deployment branch, matching the branching model: `cfn_dashboard.py`
 is the shared, marin-agnostic component (byte-identical across branches, like
 `packages/`; extraction-ready for disk-tree's `cfn` branch) and this file is the
 branch's own instance wiring — its one `Store` + the account/zone config. The
@@ -59,8 +59,8 @@ STORE = Store(
 stack = pulumi.get_stack()
 if stack != STACK:
     raise pulumi.RunError(
-        f"this branch's cf/ wires the {STACK!r} stack only; selected {stack!r} "
-        "(the cw-s3 deployment's stack lives in the cw-s3 branch's cf/)"
+        f"this branch's infra/cf/ wires the {STACK!r} stack only; selected {stack!r} "
+        "(the cw-s3 deployment's stack lives in the cw-s3 branch's infra/cf/)"
     )
 
 dash = CfnDashboard(
