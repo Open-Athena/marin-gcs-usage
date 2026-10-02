@@ -124,6 +124,7 @@ def _write_store(
     user_sorts: bool = True,
     row_group_rows: int | None = None,
     user_sort_tiers: tuple[str, ...] | None = None,
+    search: bool = False,
 ) -> dict[str, dict]:
     """The store's sorts beside ``path_index`` (specs/path-store.md §4.3) from
     the rolled-up dir slices (``ptu``, ``dir_stats``, ``dir_attr`` when
@@ -187,7 +188,7 @@ def _write_store(
     attr_join = f"LEFT JOIN dir_attr t ON t.bucket = x.bucket AND t.dir = ({obj_dir})" if attr else ""
     obj_exprs = {
         "path": "x.bucket || '/' || x.name", "usr": 't."user"' if attr else "NULL::VARCHAR",
-        "size": "x.size_bytes::BIGINT", "depth": "(len(string_split(x.name, '/')) + 1)::INTEGER", "kind": "'file'",
+        "size": "x.size_bytes::BIGINT", "depth": "len(string_split(x.bucket || '/' || x.name, '/'))::INTEGER", "kind": "'file'",
         "n_files": "1::BIGINT", "n_children": "0::BIGINT", "n_desc": "0::BIGINT",
         "mtime": "coalesce(floor(epoch(coalesce(x.updated, x.created))), 0)::BIGINT",
         "mtime_mean": "floor(epoch(x.created))::DOUBLE",
@@ -210,7 +211,7 @@ def _write_store(
     _rss("store-l2")
     try:
         kw = {"row_group_rows": row_group_rows} if row_group_rows else {}
-        return write_sorts(con, str(store), path_index.parent, sort_variants=((("usr",),) if attr and user_sorts else ()), variant_tiers=user_sort_tiers, **kw)
+        return write_sorts(con, str(store), path_index.parent, sort_variants=((("usr",),) if attr and user_sorts else ()), variant_tiers=user_sort_tiers, search=search, **kw)
     finally:
         store.unlink()
 
@@ -241,6 +242,7 @@ def write_path_index(
     user_sorts: bool = True,
     row_group_rows: int | None = None,
     user_sort_tiers: tuple[str, ...] | None = None,
+    search: bool = False,
 ) -> dict:
     """Write age.json / meta.json under ``out_dir`` (+ the path store's sorts
     beside ``path_index``); returns meta.
@@ -250,6 +252,8 @@ def write_path_index(
     when one exists — on the mixed-user sorts a user's root view decodes the
     fleet's top rows (gcs 9/30: 413) — so gcs keeps ``("bysize",)``: one
     copy instead of two. ``row_group_rows`` overrides the 8K default.
+    ``search`` writes the search sidecars beside the `path` sort
+    (specs/path-store-search.md).
 
     ``path_index`` (``<dir>/path-index.parquet``) writes the store
     (specs/path-store.md §4.3): every dir row — every ancestor path ×
@@ -291,7 +295,20 @@ def write_path_index(
     con.execute(f"SET threads={os.environ.get('DUCKDB_THREADS', '4')}")
     if tmp := os.environ.get("DUCKDB_TMP"):
         con.execute(f"SET temp_directory='{tmp}'")
-    src = prepare_listing(con, listings)
+    # A local capture's `bucket` is its scan root (`/Users/ryan`); drop the
+    # leading slash so it tiles like a bucket name (`Users/ryan`). Kept, it
+    # yields an empty first segment: a depth-1 node at path '' — the root's own
+    # path — whose parent walk never terminates. The filesystem root (`/`)
+    # strips to '' outright, so its rows re-split on their first segment
+    # (`Applications`, `Users`, … become the roots); files directly under `/`
+    # (`.file`, `.VolumeIcon.icns`) have no root to sit in and are dropped.
+    src = f"""(
+        SELECT * REPLACE (
+          CASE WHEN bucket = '' THEN split_part(name, '/', 1) ELSE bucket END AS bucket,
+          CASE WHEN bucket = '' THEN substr(name, strpos(name, '/') + 1) ELSE name END AS name)
+        FROM (SELECT * REPLACE (ltrim(bucket, '/') AS bucket) FROM {prepare_listing(con, listings)})
+        WHERE bucket <> '' OR strpos(name, '/') > 0
+    )"""
 
     # --- layer-2 dir rollups (attribution-independent; cached when dir_cache) ---
     # Everything downstream needs objects only via these two aggregates:
@@ -506,7 +523,7 @@ def write_path_index(
     _rss("ptu")
     sorts: dict[str, dict] = {}
     if path_index is not None:
-        sorts = _write_store(con, src, path_index, attr=attr, fp_dir=fp_dir, maxseg=maxseg, user_sorts=user_sorts, row_group_rows=row_group_rows, user_sort_tiers=user_sort_tiers)
+        sorts = _write_store(con, src, path_index, attr=attr, fp_dir=fp_dir, maxseg=maxseg, user_sorts=user_sorts, row_group_rows=row_group_rows, user_sort_tiers=user_sort_tiers, search=search)
         _rss("store")
         # Provenance sidecar: the attributing prefixes' user/source/evidence.
         from .extras import write_extras

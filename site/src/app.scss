@@ -1858,7 +1858,47 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     align-items: center;
     white-space: nowrap;
     button { background: none; border: none; color: var(--ink-2); cursor: pointer; padding: 0 2px; }
+    &.ferr { color: #d33; white-space: normal; }
   }
+  input[aria-invalid='true'] { border-color: #d33; }
+  .qhelp { display: inline-flex; color: var(--ink-2); font-size: 16px; cursor: help; }
+}
+
+// A filtered response's completeness (`FilterNote.tsx`): beside the match
+// count and in the diff heading.
+.fflag {
+  font-size: 11.5px;
+  font-weight: normal;
+  color: var(--s4);
+  white-space: normal;
+  &::before { content: '· '; color: var(--ink-3); }
+}
+.fflags { margin-left: 8px; }
+
+// The filter box's syntax card (`QueryHelp.tsx`), inside a pinnable tooltip.
+.qhelp-card {
+  font-size: 12px;
+  p { margin: 4px 0; }
+  .qhelp-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    button {
+      background: none;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: inherit;
+      cursor: pointer;
+      font-size: 11.5px;
+      padding: 0 6px;
+      &.on { border-color: var(--ink-2); font-weight: 600; }
+    }
+  }
+  table { border-collapse: collapse; margin: 4px 0; }
+  td { padding: 2px 6px 2px 0; vertical-align: top; }
+  td:first-child, td:last-child { white-space: nowrap; }
+  .qhelp-note { color: var(--ink-2); }
 }
 
 // Totals footer on children/worklist tables.
@@ -2276,35 +2316,46 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
 .staged-page {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 20px 24px 48px;
+  padding: 8px 24px 48px;
+  @media (max-width: 640px) { padding: 8px 12px 40px; }
+  .staged-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .pp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 16px; flex-wrap: wrap; h2 { margin: 18px 0 4px; } }
+  .scan-pick { font-size: 13px; color: var(--ink-2); select { font: inherit; } }
+  // The staged set as a map (and the selection's, beside it when there is one).
+  .staged-maps {
+    display: grid; grid-template-columns: 1fr; gap: 16px; margin: 10px 0 14px;
+    &.two { grid-template-columns: 1fr 1fr; @media (max-width: 900px) { grid-template-columns: 1fr; } }
+    h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+    .map-box { min-width: 0;
+      .dt-treemap-map { flex-basis: 380px !important; height: 380px; @media (max-width: 640px) { flex-basis: 300px !important; height: 300px; } }
+    }
+  }
+  .fold-all { margin-left: auto; display: inline-flex; gap: 4px; }
+  .batch-head {
+    .fold { background: none; border: 0; color: var(--ink-2); cursor: pointer; padding: 0 2px; font-size: 13px; &:hover { color: var(--ink); } }
+    .memo { flex-basis: 100%; padding-left: 20px; }
+  }
+  .stage-batch.folded { margin: 6px 0; }
+  .staged-wrap { overflow-x: auto; max-width: 100%; }
+  .pg { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 13px;
+    > span { padding: 0 6px; color: var(--ink-2); }
+    button { font: inherit; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; padding: 0 8px; cursor: pointer; &:disabled { opacity: 0.4; cursor: default; } }
+  }
   h1 { font-size: 22px; margin: 10px 0 4px; }
   h2 { margin-top: 28px; }
   .sub { color: var(--ink-2); max-width: 80ch; }
   .err { color: var(--s3); }
   .dim { color: var(--ink-3); }
+  .staged-filter {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 4px; font-size: 13px;
+    input[type=search] { flex: 1 1 320px; min-width: 0; max-width: 560px; padding: 5px 8px; font: inherit; background: var(--bg-2, #1e1e1e); color: inherit; border: 1px solid var(--border, #444); border-radius: 4px; }
+    input.bad { border-color: var(--danger, #e05050); }
+    .err { color: var(--danger, #e05050); font-size: 12px; }
+    .group-by { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  }
   .staged-actions { display: flex; align-items: center; gap: 12px; margin: 6px 0 10px; font-size: 13px; .sel-all { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; } }
   .stage-batch { margin: 12px 0 18px; }
   .batch-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); .memo { color: var(--ink); } }
-  .staged-table {
-    width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 4px;
-    td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-    code { font-size: 12.5px; }
-    .nb, .user-chip { white-space: nowrap; display: inline-block; }
-    // Selection: the checkbox column is the mouse/touch handle; the path
-    // column comes second and may break anywhere, but never below a readable
-    // width — past that the table scrolls in its box instead of crushing it.
-    td.col-sel { width: 1.6em; padding-right: 0; input { margin: 0; vertical-align: middle; cursor: pointer; } }
-    td:nth-child(2) { overflow-wrap: anywhere; min-width: 16em; }
-    tbody tr { cursor: default; }
-    tr.sel td { background: color-mix(in srgb, var(--accent, #58a6ff) 14%, transparent); }
-    // The cursor is the keyboard row (j/k target) and the anchor a shift-click
-    // or shift+j/k extends *from* — a distinct concept from what's selected.
-    tr.cur td { box-shadow: inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
-    tr.cur td:first-child { box-shadow: inset 2px 0 0 var(--accent, #58a6ff), inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
-    tr.cur td:last-child { box-shadow: inset -2px 0 0 var(--accent, #58a6ff), inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
-    td.actions { width: 2em; text-align: right; }
-    .rm { background: none; border: 1px solid var(--line); border-radius: 4px; color: var(--ink-3); cursor: pointer; padding: 0 6px; &:hover { color: var(--ink); border-color: var(--ink-3); } }
-  }
   .staged-empty { color: var(--ink-3); margin: 18px 0; }
   // A wide table scrolls inside its own box; the page never scrolls sideways.
   .runs-wrap { overflow-x: auto; max-width: 100%; }
@@ -2339,6 +2390,35 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
     &.danger { border-color: var(--danger); color: var(--danger); font-weight: 650; }
     &.danger.armed { background: var(--danger); color: #fff; }
   }
+}
+
+// A table of arbitrary prefixes and their numbers at a scan (`PrefixTable`):
+// /staged's items; the action log and the map's table are to converge on it.
+.prefix-table {
+  width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 4px;
+  th { text-align: left; color: var(--ink-3); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; font-size: 12.5px; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th.sortable { cursor: pointer; user-select: none; &:hover, &.on { color: var(--ink); } }
+  td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  td.created, td.read, td.owners, td.nb { white-space: nowrap; }
+  .when .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  td.staged-by { display: table-cell; font-size: 12.5px; .user-chip { margin-right: 4px; } }
+  code { font-size: 12.5px; }
+  .nb, .user-chip { white-space: nowrap; display: inline-block; }
+  // Selection: the leading checkbox column is the mouse/touch handle; the
+  // prefix may break anywhere, but never below a readable width — past that
+  // the table scrolls in its box instead of crushing it.
+  th.col-lead, td.col-lead { width: 1.6em; padding-right: 0; input { margin: 0; vertical-align: middle; cursor: pointer; } }
+  td.pfx { overflow-wrap: anywhere; min-width: 16em; code { word-break: break-all; } }
+  tbody tr { cursor: default; }
+  tr.sel td { background: color-mix(in srgb, var(--accent, #58a6ff) 14%, transparent); }
+  // The cursor is the keyboard row (j/k target) and the anchor a shift-click
+  // or shift+j/k extends *from* — a distinct concept from what's selected.
+  tr.cur td { box-shadow: inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
+  tr.cur td:first-child { box-shadow: inset 2px 0 0 var(--accent, #58a6ff), inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
+  tr.cur td:last-child { box-shadow: inset -2px 0 0 var(--accent, #58a6ff), inset 0 2px 0 var(--accent, #58a6ff), inset 0 -2px 0 var(--accent, #58a6ff); }
+  td.actions { width: 2em; text-align: right; }
+  .rm { background: none; border: 1px solid var(--line); border-radius: 4px; color: var(--ink-3); cursor: pointer; padding: 0 6px; &:hover { color: var(--ink); border-color: var(--ink-3); } }
 }
 
 // `?perf=1` time-to-render panel (dev/PerfOverlay.tsx). Sits where the help
@@ -2384,5 +2464,35 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
     display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--ink-3); font-size: 11px;
     b { color: var(--ink-2); font-weight: 500; }
     .srv { color: var(--ink-2); }
+  }
+}
+
+.assign-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--warn, #e0a030);
+  button.danger { color: var(--danger, #e05050); border-color: currentColor; }
+}
+
+.action-log {
+  margin-top: 28px;
+  .hrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; h2 { margin: 0; font-size: 18px; } }
+  .pg { margin-left: auto; display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+  table.log {
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 8px;
+    th, td { padding: 4px 8px; border-bottom: 1px solid var(--border, #333); text-align: left; vertical-align: top; }
+    td.when { white-space: nowrap; }
+    td.prefix { font-family: var(--mono, ui-monospace, monospace); word-break: break-all; min-width: 360px; }
+    td.memo { max-width: 320px; color: var(--dim, #999); .clip { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
+    tr.retracted td:not(:nth-child(5)), tr.superseded td:not(:nth-child(5)), tr.overridden td:not(:nth-child(5)) { opacity: 0.55; }
+    tr.retracted td.prefix a { text-decoration: line-through; }
+    .status { padding: 1px 6px; border-radius: 8px; font-size: 11px; border: 1px solid currentColor; }
+    .status.live { color: var(--ok, #4caf50); }
+    .status.superseded, .status.overridden { color: var(--dim, #999); }
+    .status.retracted { color: var(--danger, #e05050); }
   }
 }
