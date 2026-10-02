@@ -1,15 +1,14 @@
 """cw-s3's Cloudflare stack, thin wiring over the CfnDashboard component.
 
-One `cf/` per deployment branch, matching the branching model: `cfn_dashboard.py`
-is the shared, marin-agnostic component (byte-identical across branches, like
-`packages/`; extraction-ready for disk-tree's `cfn` branch) and this file is the
+`cfn_dashboard.py` is the shared component (on `cloud`); this file is the
 branch's own instance wiring — its one `Store` + the account/zone config. The
 gcs deployment's twin lives on the `gcs` branch. Both stacks share the backend
 project `gcs-usage-cf` (`gs://oa-pulumi`, keyed `<project>/<stack>`), so each
 branch only ever selects its own stack.
 
-Not yet applied: adoption `up` is user-gated (see ../specs/cf-iac.md for the
-inventory and ../specs/done/r2-serving-migration.md for what the first `up` creates).
+Applied 2026-09-25 (`up -s cw-s3`: Pages, domain, CNAME and D1 adopted; KV, R2
+bucket + token created — ../../specs/done/r2-serving-migration.md); `up` stays a
+human's call.
 
 CI RUNS `pulumi preview` ONLY (read-only drift alarm); a human runs `up`. So the
 CI token needs only Cloudflare *read* scopes (Pages/DNS/D1/KV/R2). Nothing here
