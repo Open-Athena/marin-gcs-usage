@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { sqliteD1 } from '../testD1'
 import { EPOCH, ogKey } from './sign'
-import { fullTier, listTokens, mint, revoke, tokenLive } from './tokens'
+import { hashToken } from '@open-athena/auth'
+import { fullTier, listTokens, mint, revoke, shareKeyLive, tokenLive } from './tokens'
 
 // 2026-10-02T12:00Z: day 274.
 const NOW = EPOCH + 274 * 86400 + 12 * 3600
@@ -43,6 +44,31 @@ describe('og_tokens (gcs lineage through 0034, foreign keys on)', () => {
 describe('a deployment without the table (cw lineage)', () => {
   it('honours no token', async () => {
     const { db } = await sqliteD1('cw')
-    expect(await tokenLive(db, 'EZjUobkMrUuF8')).toBe(false)
+    expect(await tokenLive(db, 'EZjUobkMrUuF')).toBe(false)
+  })
+})
+
+describe('shareKeyLive: a `key=` share link earns the full card iff its bearer would get in', () => {
+  it('the gate\'s presented-token rule (a used-up redeem cap still serves a bearer); a viewer scope; nothing redeemed or touched', async () => {
+    const { db, raw } = await sqliteD1('gcs')
+    const K = (s: string) => `${s}-share-link-key-000000`
+    const grant = async (name: string, cols: Record<string, string | number> = {}) => {
+      const row: Record<string, string | number> = { id: name, token_hash: await hashToken(K(name)), scopes: 'gcs:read', created_at: 1, created_by: 'admin@example.org', ...cols }
+      const ks = Object.keys(row)
+      raw.prepare(`INSERT INTO grants (${ks.join(',')}) VALUES (${ks.map(() => '?').join(',')})`).run(...Object.values(row))
+    }
+    await grant('live')
+    await grant('viewer', { scopes: 'gcs' })
+    await grant('revoked', { revoked_at: NOW - 1 })
+    await grant('disabled', { disabled_at: NOW - 1 })
+    await grant('expired', { expires_at: NOW - 1 })
+    await grant('used-up', { max_redeems: 1, redeems: 1 })
+    await grant('other-scope', { scopes: 'cw:read' })
+    const live = (k: string | null) => shareKeyLive(db, k, ['gcs', 'gcs:read'], NOW)
+    expect([
+      await live(K('live')), await live(K('viewer')), await live(K('revoked')), await live(K('disabled')), await live(K('expired')),
+      await live(K('used-up')), await live(K('other-scope')), await live(K('unknown')), await live(null), await live('short'),
+    ]).toEqual([true, true, false, false, false, true, false, false, false, false])
+    expect(raw.prepare('SELECT SUM(redeems) AS r, COUNT(last_used_at) AS used FROM grants').all()).toEqual([{ r: 1, used: 0 }])
   })
 })
