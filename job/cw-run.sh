@@ -200,6 +200,15 @@ else
   echo "no warm-cache auth (GCS_USAGE_TOKEN, or CF_ACCESS_CLIENT_ID+SECRET) — skipping cache warm-up" >&2
 fi
 
+# 4c'. Replay the site's page loads uncached (`dt-cloud probe -c`, as the gcs
+# job does): every response a 2xx/4xx, and one cold-latency record per scan
+# under probes/cw/ (the time series of what a viewer waits past the warmed
+# cache). Same token and gating as the warm-up; never fatal.
+if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
+  dt-cloud probe -c -u "$SITE_URL" -o "gs://$DATA/probes/cw/" \
+    || echo "WARN: serving probe failed for $SNAP_ID (a 5xx or a dropped request; data is fine)" >&2
+fi
+
 # 5. Converge the monthly Shape-C digest thread in Slack (specs/cw-slack-
 # digest.md): the OP + one reply per scan, into #cw-s3-usage. Only when
 # SLACK_BOT_TOKEN + SLACK_CHANNEL are set — Shape C needs the Web API's
