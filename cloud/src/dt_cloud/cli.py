@@ -540,14 +540,20 @@ def healthcheck(date: str | None, max_age_days: int, as_json: bool, subdir: str 
 @main.command()
 @option("-b", "--budget", default=None, type=float, help="Fail a scenario whose slowest request exceeds this many seconds")
 @option("-c", "--cold", is_flag=True, help="Key subtree and diff reads past the edge cache (a random `minArea` ≈ the default), to measure uncached cost")
+@option("-d", "--date", default=None, help="Query-set mode: the scan to query (default: the truth set's)")
 @option("-j", "--json", "as_json", is_flag=True, help="Emit the run record (every request) as JSON to stdout")
+@option("-k", "--only", multiple=True, help="Query-set mode: run only these query ids (repeatable)")
 @option("-o", "--out", default=None, help="Write the run record to this path or prefix (`…/` or `gs://…/` → `<prefix><ts>.json`)")
 @option("-q", "--hit", default=None, help="Filter term the filter-hit scenario searches for (default: the largest bucket's largest child)")
+@option("-Q", "--queries", default=None, help="Query-set mode: a query set (YAML, local or gs://; `dt_cloud.bench.queryset`) to score against `-T`")
+@option("-r", "--repeat", default=1, type=int, help="Query-set mode: requests per query × view (the first decides the verdict; timings are medians)")
 @option("-s", "--subdir", default=None, help="Snapshot subdir under /data/ (default: $SNAPSHOTS_SUBDIR)")
 @option("-S", "--serial", is_flag=True, help="Send each scenario's requests one at a time (default: concurrently, as a page load does)")
 @option("-t", "--token", default=None, help="Bearer token (default: $GCS_USAGE_TOKEN; none for a public deployment like r2.rbw.sh)")
+@option("-T", "--truth", default=None, help="Query-set mode: the ground truth (`dt-cloud bench-truth -o`'s dir or gs:// prefix)")
 @option("-u", "--url", default=None, help=f"Site base URL (default: $GCS_USAGE_URL or {SITE_DEFAULT_URL})")
-def probe(budget: float | None, cold: bool, as_json: bool, out: str | None, hit: str | None, subdir: str | None, serial: bool, token: str | None, url: str | None) -> None:
+@option("-x", "--param", "params", multiple=True, help="Query-set mode: extra query params for every request, e.g. `qe=box` (repeatable)")
+def probe(budget: float | None, cold: bool, date: str | None, as_json: bool, only: tuple[str, ...], out: str | None, hit: str | None, queries: str | None, repeat: int, subdir: str | None, serial: bool, token: str | None, truth: str | None, url: str | None, params: tuple[str, ...]) -> None:
     """Replay the site's page loads (root, largest bucket, a matching and a
     non-matching path filter) against a live deployment.
 
@@ -556,6 +562,13 @@ def probe(budget: float | None, cold: bool, as_json: bool, out: str | None, hit:
     recorded. Exits nonzero on any 5xx or transport failure (and on a scenario
     over `--budget`). `-o` keeps the record, so a prefix of runs is a latency
     time series.
+
+    Query-set mode (`-Q queries.yml -T <truth>`): every query × view root of
+    the set goes to `/api/subtree?q=…&full=1`, one request at a time, and is
+    scored against the ground truth: the match-root set, the net totals, and
+    the `partial` / `approximate` flags (an inexact answer must carry one; an
+    unflagged inexact answer is a FAIL). Prints a table; exits nonzero on any
+    FAIL or error.
     """
     import fsspec
 
@@ -565,6 +578,36 @@ def probe(budget: float | None, cold: bool, as_json: bool, out: str | None, hit:
     from .site import creds
 
     base, tok = creds(token, url)
+    if queries or truth:
+        if not (queries and truth):
+            raise UsageError("query-set mode needs both -Q and -T")
+        from .bench import queryset, score as bs
+
+        cases = queryset.load(queries)
+        if only:
+            unknown = set(only) - {c.id for c in cases}
+            if unknown:
+                raise UsageError(f"unknown query ids: {sorted(unknown)}")
+            cases = [c for c in cases if c.id in only]
+        tr = bs.Truth(truth)
+        day = date or tr.summary["date"]
+        engine = bs.SubtreeEngine(http_fetch(base, tok, timeout=300), day, params="&".join(params), cold=cold)
+        err(f"probe -Q {base} @ {day}: {len(cases)} queries, {sum(len(c.views) for c in cases)} views{'; cold' if cold else ''}{f'; {params}' if params else ''}")
+        err(bs.HEADER)
+        scores = bs.run(engine, cases, tr, repeat=repeat, log=err)
+        tally = bs.tally(scores)
+        err("  ".join(f"{k}: {v}" for k, v in sorted(tally.items())))
+        rec = bs.record(base, engine, day, truth, scores, cold=cold, repeat=repeat)
+        if out:
+            path = f"{out}{rec['ts']}.json" if out.endswith("/") else out
+            with fsspec.open(path, "w") as fh:
+                json.dump(rec, fh)
+            err(f"wrote {path}")
+        if as_json:
+            print(json.dumps(rec, indent=2))
+        if tally.get("FAIL") or tally.get("error"):
+            raise SystemExit(1)
+        return
     sub = subdir if subdir is not None else os.environ.get("SNAPSHOTS_SUBDIR", "")
     fetch = http_fetch(base, tok)
     t = resolve_targets(fetch, sub, hit)
@@ -584,6 +627,62 @@ def probe(budget: float | None, cold: bool, as_json: bool, out: str | None, hit:
     if as_json:
         print(json.dumps(rec, indent=2))
     if not ok:
+        raise SystemExit(1)
+
+
+@main.command("bench-truth")
+@option("-a", "--append", is_flag=True, help="Add to (or replace queries in) an existing truth set at `-o` instead of rewriting its summary")
+@option("-c", "--check", multiple=True, help="Also compute these query ids by a full `path` scan and compare (repeatable)")
+@option("-k", "--only", multiple=True, help="Only these query ids (repeatable; with `-a`, to add queries to a set)")
+@option("-m", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-N", "--no-names", is_flag=True, help="Scan for every query (don't use the generation's v1 names file)")
+@option("-o", "--out", required=True, help="Output dir or gs:// prefix: `<id>.json` per query + `summary.json`")
+@option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs; phase 0: copy, don't mount)")
+@option("-t", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", "tmp_dir", default=None, help="DuckDB spill dir")
+@argument("queries")
+@argument("gen")
+def bench_truth(append: bool, check: tuple[str, ...], only: tuple[str, ...], mem: str, no_names: bool, out: str, stage: Path | None, threads: int, tmp_dir: str | None, queries: str, gen: str) -> None:
+    """Ground truth for a filter-bench query set over one index generation
+    (GEN: its dir, local or gs://, holding `path-index.parquet` and, for the
+    names-first method, the v1 `path-index.names.parquet`).
+
+    For each query × view root: the match roots (count, md5 of the sorted
+    list, and the list with each root's net totals when ≤ 50k), the outermost
+    excluded paths, and the net totals — the Worker's filter semantics
+    (specs/path-store-search.md §1). Heavy: run it on a VM beside the data
+    (specs/filter-query-service.md §6 phase 1).
+    """
+    import time as _time
+
+    import fsspec
+
+    from .bench import queryset, truth as bt
+
+    cases = queryset.load(queries)
+    unknown = (set(check) | set(only)) - {c.id for c in cases}
+    if unknown:
+        raise UsageError(f"unknown query ids: {sorted(unknown)}")
+    if only:
+        cases = [c for c in cases if c.id in only]
+    g = gen.rstrip("/")
+    names = None if no_names else f"{g}/path-index.names.parquet"
+    if names and not fsspec.core.url_to_fs(names)[0].exists(names):
+        err(f"no names file at {names}: scanning for every query")
+        names = None
+    path_file = f"{g}/path-index.parquet"
+    if stage:
+        path_file = bt.local_or_download(path_file, stage / "path-index.parquet")
+        names = names and bt.local_or_download(names, stage / "path-index.names.parquet")
+    con = bt.connect(threads, mem, tmp_dir)
+    t0 = _time.monotonic()
+    truths = bt.compute(cases, path_file, names, list(check), con)
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", gen)
+    meta = {"date": m.group(1) if m else None, "gen": gen, "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "s": round(_time.monotonic() - t0, 1), "threads": threads, "queries_file": queries}
+    bt.write(truths, out, meta, append=append)
+    bad = [t.id for t in truths if t.check and not t.check["identical"]]
+    err(f"wrote {out} ({len(truths)} queries, {meta['s']}s){f'; CHECK MISMATCH: {bad}' if bad else ''}")
+    if bad:
         raise SystemExit(1)
 
 
