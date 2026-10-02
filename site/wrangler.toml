@@ -40,6 +40,7 @@ PROD_HOST = "gcs.oa.dev"        # `g d` toggles with DEV_HOST (src/hosts.ts)
 DEV_HOST = "dev.gcs.oa.dev"
 AUTH_MODE = "app"               # the client's whoami source: the app session, no edge gate (vite.config.ts)
 ROOT_LABEL = "marin GCS"        # the store root's crumb label (`_lib/view.ts`)
+OG_CARDS = "1"                  # dynamic share cards for every page (specs/dogi.md)
 BASE_SCOPE = "gcs"              # the viewer scope this deployment grants (`_lib/auth.ts`)
 JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"  # the account sweep-dispatched Batch jobs run as (`_lib/planDispatch.ts`)
 # Snapshots live at the store root (`snapshots/<date>/`); no SNAPSHOTS_SUBDIR.
@@ -102,6 +103,7 @@ migrations_dir = "migrations/gcs"
 STORE = "gcs"
 AUTH_MODE = "app"
 ROOT_LABEL = "marin GCS (dev)"
+OG_CARDS = "1"
 BASE_SCOPE = "gcs"
 JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"
 STAFF_DOMAIN = "openathena.ai"
