@@ -11,7 +11,7 @@ pulumi preview -s <stack>   # read-only; `up` is a human's call
 
 ## cw-s3 stack
 
-`__main__.py` here is cw-s3.oa.dev's instance wiring (stack `cw-s3`, which it insists on; backend project `gcs-usage-cf`, shared with gcs's stack). Its one `Store` declares:
+The `cw-s3` stack runs the shared program (`stack/`; `main: stack/` in `Pulumi.yaml`, backend project `gcs-usage-cf`, shared with gcs's stack) with this deployment's values in `Pulumi.cw-s3.yaml`. They declare:
 
 - the `oa-cw-s3-usage` Pages project shell, the `cw-s3.oa.dev` custom domain + CNAME, and `dev.cw-s3.oa.dev`, a proxied CNAME onto the `dev` preview branch alias (Pages custom domains are production-only; this is the dev stack's hostname);
 - the `oa-cw-s3-usage-db` D1 database (migrations stay with the app, `site/migrations/cw/`);

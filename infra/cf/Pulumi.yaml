@@ -6,6 +6,7 @@
 # shared gs://oa-pulumi backend (keyed by <project>/<stack>).
 name: gcs-usage-cf
 description: Cloudflare resources for the storage-usage dashboards — Pages project shell, custom domain + oa.dev CNAME, D1, cache KV, and (cw-s3) the R2 serving bucket + token. Deployments + app config stay with site/deploy (wrangler).
+main: stack/
 backend:
   url: gs://oa-pulumi
 runtime:
@@ -13,5 +14,5 @@ runtime:
   options:
     toolchain: uv
 config:
-  gcs-usage-cf:oaDevZoneId:
-    description: "Cloudflare zone id for oa.dev (holds the gcs.oa.dev / cw-s3.oa.dev CNAMEs)"
+  gcs-usage-cf:zoneId:
+    description: "Cloudflare zone id for oa.dev (holds the cw-s3.oa.dev CNAME)"

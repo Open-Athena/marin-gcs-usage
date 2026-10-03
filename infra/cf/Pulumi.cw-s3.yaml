@@ -2,4 +2,11 @@ secretsprovider: gcpkms://projects/oa-internal-450019/locations/global/keyRings/
 encryptedkey: CiQAqKOWSINJrHYsrXus/JlYKzfj7Eyku7kDn4lhLmqVYIgkSXISSQAw+4V0Wv8I+LZUpLMOHyUEELuDHf0WtUCTG76ANdBNHvg9+WgD8dcz5t24/JmS/rjeGJqkp70gRK9x7MgeVthbMExVbey4wkM=
 config:
   gcs-usage-cf:accountId: 74981a43be0de7712369306c7b19133d
-  gcs-usage-cf:oaDevZoneId: 169959d6aafcbfd77764b8efafa3a509
+  gcs-usage-cf:zoneId: 169959d6aafcbfd77764b8efafa3a509
+  gcs-usage-cf:pagesProject: oa-cw-s3-usage
+  gcs-usage-cf:domain: cw-s3.oa.dev
+  gcs-usage-cf:d1Name: oa-cw-s3-usage-db
+  gcs-usage-cf:branchAliases:
+    - {domain: dev.cw-s3.oa.dev, branch: dev}
+  gcs-usage-cf:kvName: oa-cw-s3-usage-cache
+  gcs-usage-cf:r2Bucket: oa-cw-s3-usage-index
