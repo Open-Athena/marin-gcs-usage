@@ -809,6 +809,41 @@ def bench_engine(tmp_dir: str | None, engine: str, evict: bool, index: str | Non
         raise SystemExit(1)
 
 
+@main.command("serve-query")
+@option("-2", "--diff", "n_latest", flag_value=2, default=1, help="Load the two latest scans (filtered diffs between them), not just the latest")
+@option("-A", "--no-auth", is_flag=True, help="Serve without a bearer token (local use only)")
+@option("-b", "--bind", default="0.0.0.0", help="Address to listen on")
+@option("-d", "--date", "dates", multiple=True, help="Load these scans (repeatable; default: the latest under ROOT)")
+@option("-D", "--remote-detail", is_flag=True, help="Read a gs:// index's `detail.parquet` in place (ranged reads) instead of copying it")
+@option("-l", "--root-label", default=None, help="The store root's name in a tree (default: $ROOT_LABEL, else `marin GCS`)")
+@option("-M", "--mmap", is_flag=True, help="Map the index's arrays instead of reading them (a tmpfs copy then costs its RAM once)")
+@option("-p", "--port", default=None, type=int, help="Port (default: $PORT, else 8080)")
+@option("-s", "--stage", type=Path, default=None, help="Copy gs:// indexes here first (on Cloud Run: an in-memory dir, with -M)")
+@option("-t", "--threads", default=None, type=int, help="Vocabulary-scan threads (default: the CPU count)")
+@option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="The env var holding the bearer token reads must present")
+@argument("root")
+def serve_query(n_latest: int, no_auth: bool, bind: str, dates: tuple[str, ...], remote_detail: bool, root_label: str | None, mmap: bool, port: int | None,
+                stage: Path | None, threads: int | None, token_env: str, root: str) -> None:
+    """The serving box (specs/filter-query-service.md): answer the Worker's
+    filtered `/api/subtree?q=` and `/api/diff?q=` from in-memory indexes
+    (`bench-index`'s format 2), one per scan under ROOT (`<ROOT>/<date>/`,
+    local or gs://). Listens at once; `/healthz` reports `loading` until the
+    scans are in memory."""
+    import os as _os
+
+    from .box import server as bs
+
+    token = None if no_auth else bs.token_from_env(token_env)
+    if token is None and not no_auth:
+        raise UsageError(f"${token_env} is unset (or pass -A to serve without auth)")
+    box = bs.Box(
+        root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,
+        threads=threads or _os.cpu_count() or 8, root_label=root_label or _os.environ.get("ROOT_LABEL") or "marin GCS",
+        syntax=_os.environ.get("QUERY_SYNTAX") or "simple",
+    )
+    bs.serve(box, bind=bind, port=port or int(_os.environ.get("PORT") or 8080), token=token)
+
+
 def bucket_sources(specs: tuple[str, ...], default_bucket: str) -> list[tuple[str, str]]:
     """`<bucket>=<layer-2 parquet>` pairs → [(bucket, path)]; a bare path is
     ``default_bucket``'s (the single-bucket form)."""
