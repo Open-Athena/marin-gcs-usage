@@ -885,6 +885,52 @@ def serve_query(n_latest: int, no_auth: bool, bind: str, db: str | None, dates: 
     bs.serve(box, bind=bind, port=port or int(_os.environ.get("PORT") or 8080), token=token)
 
 
+@main.command("ch-bench")
+@option("-c", "--compare", "compare_to", default=None, help="Compare this run record (JSONL) with REQUESTS[0], another: per request, both p50 / max ms and matching bodies; nothing is sent")
+@option("-C", "--cold", is_flag=True, help="Drop the box's ClickHouse caches and the OS page cache before each request (on the box, as root / privileged)")
+@option("-d", "--date", default=None, help="With -Q: the scan the query set's requests ask")
+@option("-f", "--file", "req_file", default=None, help="Requests, one `NAME=/api/…` per line (beside / instead of REQUESTS)")
+@option("-n", "--trials", default=1, type=int, help="Rounds over the requests")
+@option("-o", "--out", default=None, help="Append each request's record (JSONL) here")
+@option("-Q", "--queries", default=None, help="A bench query set (YAML): every query × view as a filtered subtree request (with -d)")
+@option("-s", "--seed", default=None, type=int, help="Jitter `minArea` per (seed, request, trial): past edge caches, the same in every run with this seed")
+@option("-t", "--timeout", default=300.0, type=float, help="Per-request timeout, seconds")
+@option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="The env var holding the bearer token (none set = no auth)")
+@option("-u", "--url", default="http://localhost:8080", help="Base URL: the box's serve-query, or a site")
+@option("-U", "--ch-url", default=None, help="With -C: the box's ClickHouse (default http://localhost:8123)")
+@argument("requests", nargs=-1)
+def ch_bench(compare_to: str | None, cold: bool, date: str | None, req_file: str | None, trials: int, out: str | None, queries: str | None, seed: int | None,
+             timeout: float, token_env: str, url: str, ch_url: str | None, requests: tuple[str, ...]) -> None:
+    """Time requests against the box or a Worker, warm or cold, and compare
+    two runs' latency and bodies (specs/ch-store.md §6). REQUESTS are
+    `NAME=/api/…?…`."""
+    import os as _os
+
+    from .chstore import bench as cb
+
+    if compare_to:
+        if len(requests) != 1:
+            raise UsageError("-c A.jsonl B.jsonl")
+        for row in cb.compare(cb.load(compare_to), cb.load(requests[0])):
+            print(json.dumps(row))
+        return
+    reqs = [tuple(r.split("=", 1)) for r in requests]
+    if req_file:
+        with open(req_file) as f:
+            reqs += [tuple(line.rstrip("\n").split("=", 1)) for line in f if line.strip() and not line.startswith("#")]
+    if queries:
+        if not date:
+            raise UsageError("-Q needs -d")
+        reqs += cb.queryset_requests(queries, date)
+    if not reqs:
+        raise UsageError("no requests")
+    recs = cb.run(url, reqs, token=_os.environ.get(token_env) or None, trials=trials, seed=seed, cold=cold, ch_url=ch_url, timeout=timeout, log=err)
+    if out:
+        cb.dump(recs, out)
+    for row in cb.summary(recs):
+        print(json.dumps(row))
+
+
 @main.command("ch-ingest")
 @option("-a", "--allow-drop", is_flag=True, help="Ingest a scan lacking roots (buckets) the store has, closing them (else refused as partial)")
 @option("-B", "--db", default=None, help="The store's database (default: $CLICKHOUSE_DB, else `default`)")
