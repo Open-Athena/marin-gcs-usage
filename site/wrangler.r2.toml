@@ -21,7 +21,7 @@ compatibility_date = "2026-06-01"
 #   wrangler d1 migrations apply disk-tree-demo-db --remote
 # (needs CLOUDFLARE_ACCOUNT_ID + a D1-scoped token). The index-footer migration
 # lives in the cw lineage today; the merged lineage is mgu's convergence work
-# (specs/disk-tree-as-base.md → convergence.md seam 3).
+# (specs/done/disk-tree-as-base.md → convergence.md seam 3).
 [[d1_databases]]
 binding = "DB"
 database_name = "disk-tree-demo-db"

@@ -1,4 +1,4 @@
--- Full-info share cards (specs/dogi.md): each mint of a per-view token, for
+-- Full-info share cards (specs/done/dogi.md): each mint of a per-view token, for
 -- audit and revocation. A token (13 chars: expiry day + 64-bit tag) is
 -- deterministic per (view, expiry day), so two people minting one view on one
 -- day get the same token and two rows. A token is honoured only while a row

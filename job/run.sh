@@ -327,7 +327,7 @@ cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 echo "PHASE publish: ${SECONDS}s (wall)" >&2
 
 # Footer-in-D1: sync the path-index parquet footer into the site's D1 so the
-# reader skips the cold-isolate footer parse (specs/path-agnostic-serving.md
+# reader skips the cold-isolate footer parse (specs/done/path-agnostic-serving.md
 # §2.1). Needs CLOUDFLARE_API_TOKEN (D1 write) + CLOUDFLARE_ACCOUNT_ID — set as
 # Batch secretVariables; without them the site falls back to parsing the footer,
 # so this never blocks the snapshot. Disable xtrace for the WHOLE block first:

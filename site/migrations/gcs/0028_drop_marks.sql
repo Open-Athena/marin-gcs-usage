@@ -1,4 +1,4 @@
--- The keep/sweep mark system is retired (specs/marks-demolition.md): the
+-- The keep/sweep mark system is retired (specs/done/marks-demolition.md): the
 -- opt-in staged-deletion model (`plans` / `plan_items` / `stage_batches`,
 -- 0024–0026) is the only delete path, and the actions ledger keeps its owner
 -- axis only. Composes after 0027 (which rebuilt the pre-ledger `marks` with a

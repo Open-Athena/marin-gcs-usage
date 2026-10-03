@@ -1,4 +1,4 @@
--- A read-only allowlist tier (specs/mint-link-allowlist.md): `read_only = 1`
+-- A read-only allowlist tier (specs/done/mint-link-allowlist.md): `read_only = 1`
 -- admits the email at the base read scope (`<base>:read`, what a read-only
 -- share link carries — every read endpoint, no write) instead of the base
 -- scope. A share link minted read-only with "Allowlist" ticked writes such a

@@ -1,4 +1,4 @@
--- Staged-deletion review in Slack (specs/staged-slack.md) — the same columns
+-- Staged-deletion review in Slack (specs/done/staged-slack.md) — the same columns
 -- as cw's `migrations/cw/0005_staged_slack.sql`. Each staged plan gets one
 -- thread in the deployment's admin channel: the parent message (kept current:
 -- counts, the latest dry-run, the action buttons) and a reply per event

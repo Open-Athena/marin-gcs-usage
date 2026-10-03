@@ -70,7 +70,7 @@ def write_labels(
     identities_path: "str | Path | None",
     out_dir: "Path",
 ) -> dict[str, int]:
-    """DT's label tables (``import --label``, spec mgu-scale-unification.md
+    """DT's label tables (``import --label``, spec specs/done/mgu-scale-unification.md
     §B) from mgu's attribution: one ``labels-<bucket>.parquet`` per bucket in
     the listings, rows ``(prefix, usr)`` with ``prefix`` relative to the
     bucket (``''`` = the bucket-wide rule). Returns bucket → row count."""

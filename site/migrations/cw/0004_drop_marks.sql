@@ -1,4 +1,4 @@
--- The keep/sweep mark system is retired (specs/marks-demolition.md): the
+-- The keep/sweep mark system is retired (specs/done/marks-demolition.md): the
 -- opt-in staged-deletion model (`plans` / `plan_items` / `stage_batches`,
 -- 0001_init + 0002) is the only delete path, and nothing reads `marks` or
 -- `mark_log` any more (`/api/marks`, `/api/plan-marks` and the site's mark UI

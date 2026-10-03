@@ -42,7 +42,7 @@ Finish the 4 "seams" + fold gcs's config-delta, landing one converged `main`:
 2. Two mark ledgers → gcs's `actions` WAL; cw's marks become action kinds.
 3. Two D1 lineages → one renumbered `IF NOT EXISTS` lineage applied to both databases (the `site/migrations/{cw,gcs}/` split is the interim guard). **Unbuilt; hardest.**
 4. Two digests → engine + per-store content profile.
-Plus fold gcs's A-delta (`m/gcs:specs/cp-from-cw-s3-2026-09-16.md`, 50 files) so `cw-s3..gcs` is deployment-only.
+Plus fold gcs's A-delta (`m/specs/cp-from-cw-s3-2026-09-16.md`, 50 files) so `cw-s3..gcs` is deployment-only.
 
 gcs's fold-in BASE features (all mgu-owned): guest-chip/grant-subject auth + read-only scope + rotate, help/edu-drawer (also on cw → converge), plans-absorbs-marks refactor, page-scope-bar, lifecycle engine, over-time x-range picker, treemap reflow-on-resize.
 
@@ -126,7 +126,7 @@ CI: `.github/workflows/deploy-r2.yml` gates an auto-deploy to r2.rbw.sh on push 
 
 `/read pyrmts` established: **pyrmts** (`~/c/pyrmts`) is a mature multi-scale timeseries pyramid library — pre-compute `(shard×bin)`-tier aggregates once, serve any range×bin-budget query in O(log) bins from the edge. Python build (`pyrmts`/`pyrmts-engine`/`pyrmts-ops`) + TS serve (`pyrmts`/`pyrmts-cfw`/`pyrmts-geo`/`pyrmts-react`). A consumer provides only: (a) a pyramid config YAML, (b) a raw→base-tier ingester, (c) storage/D1 bindings, (d) thin CLI/handler shims — pyrmts owns the rest.
 
-**Full spec: [`pyrmts-adoption.md`](./pyrmts-adoption.md)** (2026-09-22) — the authoritative home for the mapping, the two-index model, the ingest/serve wiring and the open questions pyrmts is reviewing. What follows is the summary.
+**Full spec: [`pyrmts-adoption.md`](pyrmts-adoption.md)** (2026-09-22) — the authoritative home for the mapping, the two-index model, the ingest/serve wiring and the open questions pyrmts is reviewing. What follows is the summary.
 
 **Why adopt here:** it supersedes disk-tree's *three* ad-hoc things — the `write_age_pyramid` age index, the over-time index (`d249b55`, US'd from cw), and the diff-index — with one cross-consumer engine. **Two orthogonal indexes, both on by default (pyrmts correction 2026-09-22):** the **multi-scan store** bounds storage and serves the over-time line (`seriesFor`/`seriesAcrossGroups`) but does *not* give cheap diffs between arbitrary scans (a pair straddling an archive junction is O(fleet)); the **always-on diff-index** (pyrmts main `e03c490`, a dyadic changeset hierarchy) serves the diff-treemap via `diffOverSpan` in O(log N + changes-in-span). Age = the pyramid's created-date `binCol`. Keep the dTM off the MS archives.
 
