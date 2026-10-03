@@ -29,6 +29,7 @@ a scan of fewer than half the open rows (`force`)."""
 from __future__ import annotations
 
 import io
+import os
 import json
 import sys
 import time
@@ -288,8 +289,8 @@ class Ingest:
         # of about equal rows (from the stage's primary index), paired concurrently.
         ranges = self._key_ranges(self.threads * 4)
         # Each concurrent range holds an insert block per target in flight (the projection sorts it again):
-        # half the threads keeps the server well inside 16 GB.
-        par = max(1, self.threads // 2)
+        # half the threads by default (`$CH_INGEST_PAIRS` overrides; a 16 GB box pairing 1.5B rows needs fewer).
+        par = int(os.environ.get("CH_INGEST_PAIRS") or max(1, self.threads // 2))
         self.t["pair_ranges"] = len(ranges)
 
         def pair(cond: str) -> None:
@@ -297,7 +298,9 @@ class Ingest:
                 SELECT depth, path, usr, countIf(s = 1) AS nn, countIf(s = 0) AS no, anyIf(vf, s = 0) AS vf0,
                        throwIf(no > 1, 'an open version twice') AS dup, {', '.join(aggs)}
                 FROM {self.t_stage} WHERE {cond} GROUP BY {', '.join(KEY_COLS)}""",
-                           settings={"max_threads": 1, "max_insert_threads": 1, "optimize_aggregation_in_order": 1})
+                           settings={"max_threads": 1, "max_insert_threads": 1, "optimize_aggregation_in_order": 1, "max_block_size": 8192,
+                                     "max_insert_block_size": 262144, "min_insert_block_size_rows": 262144,
+                                     "min_insert_block_size_rows_for_materialized_views": 262144})
 
         from concurrent.futures import ThreadPoolExecutor
 
