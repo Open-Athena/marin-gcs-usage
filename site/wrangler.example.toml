@@ -68,6 +68,8 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_SYNTAX = "simple"                     # the path filter's default syntax (`simple` | `regex`); unset = `simple`
 # OBJECT_BUCKETS = "my-bucket"                # comma-separated scanned buckets `/v1/objects` serves to members
 # STORES_JSON = '{"meta": {"scope": "meta"}}'  # secondary stores: `{"<key>": {"scope": …, "vars": {…}, "secrets": {…}}}`
+# QUERY_BOX_URL = "https://box.example"      # the serving box (`dt-cloud serve-query`): subtree / diff / series ask it first; unset = Worker-only
+# QUERY_BOX_TIMEOUT_MS = "20000"             # per box request; past it the Worker answers
 
 # --- Plans and deletion (_lib/plans.ts, _lib/dispatch.ts) ---
 # STORE_SCHEME = "s3://"                      # the URI scheme staged prefixes carry
@@ -91,6 +93,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # secret GCP_SA_KEY                         a service-account key that submits Batch jobs and acts as JOB_SA
 # secret SLACK_BOT_TOKEN                    staged-plan threads (with SLACK_ADMIN_CHANNEL)
 # secret SLACK_SIGNING_SECRET               Slack's interactive buttons (`/slack/actions`)
+# secret QUERY_BOX_TOKEN                    the bearer secret the serving box checks (with QUERY_BOX_URL)
 #
 # Not set here:
 # builtin ASSETS                            Pages' static assets binding

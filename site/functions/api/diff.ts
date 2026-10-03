@@ -19,6 +19,7 @@ import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_
 import { ATTEN_DEFAULT, buildDiff, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
+import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
 const SCAN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
 
 export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
@@ -82,6 +83,17 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return hit
 
+    // The serving box first, when the deployment has one (`_lib/queryBox.ts`).
+    const env = ctx.env as Env & BoxEnv
+    const box = boxFor(env, url)
+    let engine = env.QUERY_BOX_URL ? 'worker;box=skip' : undefined
+    if (box) {
+      const a = await st.time('box', askBox(env, box, 'diff', url.searchParams))
+      if (a.kind === 'answer' && a.status !== 200) return boxStatus(a)
+      if (a.kind === 'answer') return await cacheStore(ctx.env, cacheKey, a.body, { 'server-timing': st.header(), 'x-query-engine': a.engine }, ctx.waitUntil?.bind(ctx))
+      engine = `worker;fallback=${a.why}`
+    }
+
     const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, query, classes, summary, depth, trace: st.trace })
     const body = JSON.stringify({
       prev: from,
@@ -93,7 +105,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
       ...diff,
       threshold: Math.round(diff.threshold),
     })
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx))
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })
