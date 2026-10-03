@@ -191,3 +191,26 @@ def test_pairing_in_key_ranges(ch_url, monkeypatch):  # noqa: F811
             assert [g[:9] + (round(g[9], 6),) + g[10:] for g in got] == [w[:9] + (round(w[9], 6),) + w[10:] for w in src_rows(pf)], d
     finally:
         Ch(ch_url, db="default", session=False).exec(f"DROP DATABASE IF EXISTS {db} SYNC")
+
+
+def test_mean_jitter_opens_no_version(ch_url, tmp_path):  # noqa: F811
+    """A mean stamp that moves by under a second (float-sum jitter between scans) is the same version;
+    a second or more is a new one."""
+    import uuid
+
+    import pyarrow as pa
+
+    def v1(path, wts):
+        pq.write_table(pa.table({"path": ["b", "c"], "depth": [1, 1], "usr": [None, None], "b": [10, 10], "o": [1, 1], "wts": wts, "wb": [10, 10],
+                                 "c2": [0, 0], "c3": [0, 0], "c4": [0, 0], "a": [None, None]}), path)
+        return str(path)
+
+    db = f"t_{uuid.uuid4().hex[:10]}"
+    Ch(ch_url, db="default", session=False).exec(f"CREATE DATABASE {db}")
+    try:
+        ch = Ch(ch_url, db=db)
+        days = [("2026-09-28", [1000.0 * 10, 1000.0 * 10]), ("2026-09-29", [1000.0 * 10 + 1e-6, 1000.0 * 10]), ("2026-09-30", [1000.0 * 10, 1002.0 * 10])]
+        recs = [ci.Ingest(ch, d, v1(tmp_path / f"{d}.parquet", w), threads=2, log=lambda *a: None).run() for d, w in days]
+        assert [(r["opened"], r["closed"]) for r in recs] == [(2, 0), (0, 0), (1, 1)]
+    finally:
+        Ch(ch_url, db="default", session=False).exec(f"DROP DATABASE IF EXISTS {db} SYNC")

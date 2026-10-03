@@ -250,8 +250,16 @@ class Ingest:
     def _pair(self) -> None:
         ch, D, tag = self.ch, self.Dl, self.tag
         ch.exec(f"CREATE TABLE {self.t_open} AS nodes")
+        # Every pairing range writes its own parts into the open partition before merges catch up.
+        ch.exec(f"ALTER TABLE {self.t_open} MODIFY SETTING parts_to_delay_insert = 100000, parts_to_throw_insert = 100000")
         ch.exec(_fan_ddl().format(t=self.t_fan))
-        changed = f"tuple({', '.join(c + '1' for c in VALUE_COLS)}) != tuple({', '.join(c + '0' for c in VALUE_COLS)})"
+        # A value change opens a version — but the size-weighted mean stamp is compared to the second:
+        # the job's parallel float sums jitter its last bits scan to scan (gcs's v1 indexes: 80% of
+        # rows "changed" that way on 2026-09-06), and the site shows it in days.
+        def cmp(c: str, side: str) -> str:
+            return f"round({c}{side})" if c == "mtime_mean" else f"{c}{side}"
+
+        changed = f"tuple({', '.join(cmp(c, '1') for c in VALUE_COLS)}) != tuple({', '.join(cmp(c, '0') for c in VALUE_COLS)})"
         new = ", ".join(f"{c}1 AS {c}" for c in VALUE_COLS)
         old = ", ".join(f"{c}0 AS {c}" for c in VALUE_COLS)
         sign_cols = "kind, size, n_files, c2, c3, c4"
@@ -279,6 +287,9 @@ class Ingest:
         # An in-order GROUP BY runs on one thread: the key space is cut into `threads × 4` ranges
         # of about equal rows (from the stage's primary index), paired concurrently.
         ranges = self._key_ranges(self.threads * 4)
+        # Each concurrent range holds an insert block per target in flight (the projection sorts it again):
+        # half the threads keeps the server well inside 16 GB.
+        par = max(1, self.threads // 2)
         self.t["pair_ranges"] = len(ranges)
 
         def pair(cond: str) -> None:
@@ -290,7 +301,7 @@ class Ingest:
 
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(self.threads) as pool:
+        with ThreadPoolExecutor(par) as pool:
             list(pool.map(pair, ranges))
         for mv in ("open", "close", "copen", "cclose"):
             ch.exec(f"DROP VIEW IF EXISTS ingest_mv_{mv}_{tag}")
