@@ -256,28 +256,69 @@ class Ingest:
         old = ", ".join(f"{c}0 AS {c}" for c in VALUE_COLS)
         sign_cols = "kind, size, n_files, c2, c3, c4"
         ch.exec(f"""CREATE MATERIALIZED VIEW ingest_mv_open_{tag} TO {self.t_open} AS
-            SELECT depth, path, usr, if(no = 1 AND NOT ({changed}), vf0, {D}) AS vf, {dt_lit(OPEN)} AS vt, {new}, {name_expr()} AS name
-            FROM {self.t_fan} WHERE nn = 1""")
+            SELECT depth, path, usr, if(no > 0 AND NOT ({changed}), vf0, {D}) AS vf, {dt_lit(OPEN)} AS vt, {new}, {name_expr()} AS name
+            FROM {self.t_fan} WHERE nn > 0""")
         ch.exec(f"""CREATE MATERIALIZED VIEW ingest_mv_close_{tag} TO nodes AS
             SELECT depth, path, usr, vf0 AS vf, {D} AS vt, {old}, {name_expr()} AS name
-            FROM {self.t_fan} WHERE no = 1 AND (nn = 0 OR {changed})""")
+            FROM {self.t_fan} WHERE no > 0 AND (nn = 0 OR {changed})""")
         ch.exec(f"""CREATE MATERIALIZED VIEW ingest_mv_copen_{tag} TO changes AS
             SELECT {D} AS at, toInt8(1) AS sign, depth, path, usr, {D} AS vf, {', '.join(f'{c}1 AS {c}' for c in sign_cols.split(', '))}, {name_expr()} AS name
-            FROM {self.t_fan} WHERE nn = 1 AND (no = 0 OR {changed})""")
+            FROM {self.t_fan} WHERE nn > 0 AND (no = 0 OR {changed})""")
         ch.exec(f"""CREATE MATERIALIZED VIEW ingest_mv_cclose_{tag} TO changes AS
             SELECT {D} AS at, toInt8(-1) AS sign, depth, path, usr, vf0 AS vf, {', '.join(f'{c}0 AS {c}' for c in sign_cols.split(', '))}, {name_expr()} AS name
-            FROM {self.t_fan} WHERE no = 1 AND (nn = 0 OR {changed})""")
-        aggs = [f"anyIf({c}, s = 1) AS {c}1" for c in VALUE_COLS] + [f"anyIf({c}, s = 0) AS {c}0" for c in VALUE_COLS]
-        ch.exec(f"""INSERT INTO {self.t_fan}
-            SELECT depth, path, usr, countIf(s = 1) AS nn, countIf(s = 0) AS no, anyIf(vf, s = 0) AS vf0,
-                   throwIf(nn > 1 OR no > 1, 'a key twice in one scan') AS dup, {', '.join(aggs)}
-            FROM {self.t_stage} GROUP BY {', '.join(KEY_COLS)}""",
-                settings={**self.set, "optimize_aggregation_in_order": 1})
+            FROM {self.t_fan} WHERE no > 0 AND (nn = 0 OR {changed})""")
+        # The scan's rows for a key (a source can hold one slice twice — v1 indexes have duplicate
+        # unattributed rows — and the Worker merges them) merged as `view.ts` `merge` would; the open
+        # side holds one version per key.
+        merged = {"kind": "anyIf(kind, s = 1)", "size": "sumIf(size, s = 1)", "n_files": "sumIf(n_files, s = 1)",
+                  "n_children": "maxIf(n_children, s = 1)", "n_desc": "maxIf(n_desc, s = 1)", "mtime": "maxIf(mtime, s = 1)",
+                  "mtime_mean": "if(nn = 1, anyIf(mtime_mean, s = 1), sumIf(mtime_mean * mtime_w, s = 1) / greatest(sumIf(mtime_w, s = 1), 1))",
+                  "mtime_w": "sumIf(mtime_w, s = 1)", "last_read": "maxIf(last_read, s = 1)",
+                  "c2": "sumIf(c2, s = 1)", "c3": "sumIf(c3, s = 1)", "c4": "sumIf(c4, s = 1)"}
+        aggs = [f"{merged[c]} AS {c}1" for c in VALUE_COLS] + [f"anyIf({c}, s = 0) AS {c}0" for c in VALUE_COLS]
+        # An in-order GROUP BY runs on one thread: the key space is cut into `threads × 4` ranges
+        # of about equal rows (from the stage's primary index), paired concurrently.
+        ranges = self._key_ranges(self.threads * 4)
+        self.t["pair_ranges"] = len(ranges)
+
+        def pair(cond: str) -> None:
+            ch.fork().exec(f"""INSERT INTO {self.t_fan}
+                SELECT depth, path, usr, countIf(s = 1) AS nn, countIf(s = 0) AS no, anyIf(vf, s = 0) AS vf0,
+                       throwIf(no > 1, 'an open version twice') AS dup, {', '.join(aggs)}
+                FROM {self.t_stage} WHERE {cond} GROUP BY {', '.join(KEY_COLS)}""",
+                           settings={"max_threads": 1, "max_insert_threads": 1, "optimize_aggregation_in_order": 1})
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(self.threads) as pool:
+            list(pool.map(pair, ranges))
         for mv in ("open", "close", "copen", "cclose"):
             ch.exec(f"DROP VIEW IF EXISTS ingest_mv_{mv}_{tag}")
         zeros = ", ".join("0" for _ in VALUE_COLS[1:])
         ch.exec(f"INSERT INTO {self.t_open} (depth, path, usr, vf, vt, {', '.join(VALUE_COLS)}, name) "
                 f"VALUES (0, '', '', {D}, {dt_lit(OPEN)}, 'dir', {zeros}, '')")
+
+    def _key_ranges(self, n: int) -> list[str]:
+        """About `n` key ranges of the stage, as WHERE conditions on `(depth, path)` (every slice of a
+        path in one range), cut at its primary index's marks."""
+        idx = f"mergeTreeIndex(currentDatabase(), {lit(self.t_stage)})"
+        marks = int(self.ch.scalar(f"SELECT count() FROM {idx}") or 0)
+        step = max(1, marks // max(1, n))
+        pts = [tuple(r) for r in self.ch.json(f"""SELECT DISTINCT depth, path FROM (
+            SELECT depth, path, row_number() OVER (ORDER BY depth, path) AS rn FROM {idx}) WHERE rn % {step} = 0 ORDER BY depth, path""")]
+
+        def ge(p: tuple) -> str:
+            return f"(depth > {p[0]} OR (depth = {p[0]} AND path >= {lit(p[1])}))"
+
+        def lt(p: tuple) -> str:
+            return f"(depth < {p[0]} OR (depth = {p[0]} AND path < {lit(p[1])}))"
+
+        if not pts:
+            return ["1"]
+        out = [lt(pts[0])]
+        out += [f"{ge(a)} AND {lt(b)}" for a, b in zip(pts, pts[1:])]
+        out.append(ge(pts[-1]))
+        return out
 
     def _names(self, first: bool) -> None:
         big = {**self.set, "max_bytes_before_external_group_by": 2_000_000_000}
@@ -299,14 +340,18 @@ class Ingest:
 
 
 def default_src(bucket: str, scan_id: str) -> str:
-    """The newest generation's `path` sort for a scan: `gs://<bucket>/listing/<date>/index/<gen>/path-index.parquet`."""
+    """The newest generation's `path` sort for a scan: `gs://<bucket>/listing/<date>/index/<gen>/path-index.parquet`,
+    else (a scan from before index generations) `listing/<date>/path-index.parquet`."""
     from google.cloud import storage
 
     date = scan_id.split("T")[0]
-    blobs = [b.name for b in storage.Client().list_blobs(bucket, prefix=f"listing/{date}/index/") if b.name.endswith("/path-index.parquet")]
-    if not blobs:
-        raise IngestError(f"no path-index.parquet under gs://{bucket}/listing/{date}/index/")
-    return f"gs://{bucket}/{max(blobs)}"
+    client = storage.Client()
+    blobs = [b.name for b in client.list_blobs(bucket, prefix=f"listing/{date}/index/") if b.name.endswith("/path-index.parquet")]
+    if blobs:
+        return f"gs://{bucket}/{max(blobs)}"
+    if client.bucket(bucket).blob(f"listing/{date}/path-index.parquet").exists():
+        return f"gs://{bucket}/listing/{date}/path-index.parquet"
+    raise IngestError(f"no path-index.parquet under gs://{bucket}/listing/{date}/")
 
 
 def sizes(ch: Ch) -> dict:

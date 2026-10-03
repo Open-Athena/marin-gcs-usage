@@ -25,9 +25,9 @@ def src_rows(pf: str) -> list[tuple]:
     out = []
     for r in t:
         mean = r.get("mtime_mean")
-        out.append((r["depth"], r["path"], r["usr"] or "", r["kind"], r["size"], r["n_files"], r["n_children"] if r.get("n_children") is not None else -1,
-                    -1, -1, 0.0 if mean is None else mean, 0 if mean is None else r["size"], -1 if r.get("last_read") is None else r["last_read"],
-                    r["sum_storage_class_id_2"], r["sum_storage_class_id_3"], r["sum_storage_class_id_4"]))
+        out.append((r["depth"], r["path"], r.get("usr") or "", r["kind"], r["size"], r["n_files"], r["n_children"] if r.get("n_children") is not None else -1,
+                    -1 if r.get("n_desc") is None else r["n_desc"], -1 if r.get("mtime") is None else r["mtime"], 0.0 if mean is None else mean, 0 if mean is None else r["size"], -1 if r.get("last_read") is None else r["last_read"],
+                    r.get("sum_storage_class_id_2") or 0, r.get("sum_storage_class_id_3") or 0, r.get("sum_storage_class_id_4") or 0))
     return sorted(out, key=lambda x: (x[0], x[1].encode(), x[2]))
 
 
@@ -129,3 +129,65 @@ def test_open_sentinel(store):
     ch = store["ch"]
     assert ch.json(f"SELECT toString(vf), path FROM nodes WHERE depth = 0") == [["2026-10-01 00:00:00", ""]]
     assert ch.json(f"SELECT count() FROM nodes WHERE vt = toDateTime('{OPEN}', 'UTC') AND depth > 0") == [[18]]
+
+
+def test_v1_source_and_duplicate_slices(ch_url, tmp_path):  # noqa: F811
+    """A v1 index (dirs only, the wire names) — whose writer could emit one
+    path's unattributed slice twice — then a v2 scan of the same tree: the
+    duplicates merge (as the Worker's `merge` sums them); at the switch every
+    dir row gets a new version (v2 adds child counts) and the objects appear."""
+    import uuid
+
+    import pyarrow as pa
+
+    v1 = tmp_path / "v1.parquet"
+    pq.write_table(pa.table({
+        "path": ["b", "b", "b", "b/u1", "b/u1"], "depth": [1, 1, 1, 2, 2], "usr": ["alice", None, None, "alice", None],
+        "b": [10, 20, 5, 10, 25], "o": [1, 2, 1, 1, 3], "wts": [10.0 * 100, 20.0 * 200, 5.0 * 300, 1000.0, None], "wb": [10, 20, 5, 10, 0],
+        "c2": [0, 0, 5, 0, 5], "c3": [0, 0, 0, 0, 0], "c4": [0, 0, 0, 0, 0], "a": [None, 7, 9, None, 9],
+    }), v1)
+    v2, _ = write_v2(tmp_path / "v2", A)
+    db = f"t_{uuid.uuid4().hex[:10]}"
+    Ch(ch_url, db="default", session=False).exec(f"CREATE DATABASE {db}")
+    try:
+        ch = Ch(ch_url, db=db)
+        r1 = ci.Ingest(ch, "2026-09-28", str(v1), threads=2, log=lambda *a: None).run()
+        r2 = ci.Ingest(ch, "2026-09-29", v2, threads=2, log=lambda *a: None).run()
+        assert [{k: r[k] for k in ("version", "rows", "opened", "closed")} for r in (r1, r2)] == [
+            {"version": 1, "rows": 4, "opened": 4, "closed": 0},
+            # Every v1 row closes (none of the 4 has a v2 twin with equal values), the 18 v2 rows open.
+            {"version": 2, "rows": 18, "opened": 18, "closed": 4},
+        ]
+        assert asof_rows(ch, "2026-09-28") == [
+            (1, "b", "", "dir", 25, 3, -1, -1, -1, (20.0 * 200 + 5.0 * 300) / 25, 25, 9, 5, 0, 0),
+            (1, "b", "alice", "dir", 10, 1, -1, -1, -1, 100.0, 10, -1, 0, 0, 0),
+            (2, "b/u1", "", "dir", 25, 3, -1, -1, -1, 0.0, 0, 9, 5, 0, 0),
+            (2, "b/u1", "alice", "dir", 10, 1, -1, -1, -1, 100.0, 10, -1, 0, 0, 0),
+        ]
+        assert ch.json("SELECT version FROM scans ORDER BY scan") == [[1], [2]]
+    finally:
+        Ch(ch_url, db="default", session=False).exec(f"DROP DATABASE IF EXISTS {db} SYNC")
+
+
+def test_pairing_in_key_ranges(ch_url, monkeypatch):  # noqa: F811
+    """The pairing cut into many key ranges (a stage of 64-row granules, 6 threads → 24
+    ranges) gives exactly the scans: the `v2-search` generation, then `v2-search-b`."""
+    import uuid
+
+    from dt_cloud.chstore import schema
+    from test_bench_truth import PATH_F
+
+    monkeypatch.setattr(ci, "STAGE", schema.STAGE + " SETTINGS index_granularity = 64")
+    path_c = PATH_F.replace("/v2-search/", "/v2-search-b/")
+    db = f"t_{uuid.uuid4().hex[:10]}"
+    Ch(ch_url, db="default", session=False).exec(f"CREATE DATABASE {db}")
+    try:
+        ch = Ch(ch_url, db=db)
+        recs = [ci.Ingest(ch, d, pf, threads=6, log=lambda *a: None).run() for d, pf in (("2026-10-01", PATH_F), ("2026-10-02", path_c))]
+        # (A precondition, not the spec: the ranges are many — their exact count follows the stage's parts.)
+        assert all(r["steps"]["pair_ranges"] > 20 for r in recs)
+        for d, pf in (("2026-10-01", PATH_F), ("2026-10-02", path_c)):
+            got = asof_rows(ch, d)
+            assert [g[:9] + (round(g[9], 6),) + g[10:] for g in got] == [w[:9] + (round(w[9], 6),) + w[10:] for w in src_rows(pf)], d
+    finally:
+        Ch(ch_url, db="default", session=False).exec(f"DROP DATABASE IF EXISTS {db} SYNC")
