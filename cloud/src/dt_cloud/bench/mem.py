@@ -47,15 +47,26 @@ from pathlib import Path
 import numpy as np
 
 from .query import Ast, Matcher, compile_query, lit, pos_everywhere
-from .terms import NameTest, regex_name_filter, seg_term
+from .terms import NameTest, regex_literal, regex_name_filter, seg_term
 
 ARRAYS = ("parent", "nid", "depth", "b", "o", "name_nodes", "name_off", "child", "child_off", "top")
+SORTS = ("vfwd", "vrev")  # optional: the vocabulary's sort orders (`sorts`)
 VOCAB = "vocab.arrow"
 META = "meta.json"
 
 
 def err(*a: object) -> None:
     print(*a, file=sys.stderr, flush=True)
+
+
+def _memmem():
+    """libc's `memmem` via ctypes (a foreign call releases the GIL)."""
+    import ctypes
+
+    f = ctypes.CDLL(None).memmem
+    f.restype = ctypes.c_void_p
+    f.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+    return f
 
 
 class Unsupported(ValueError):
@@ -101,6 +112,8 @@ def build(path_file: str, names_file: str, out: Path, *, threads: int = 16, mem:
     lower = pc.utf8_lower(names)
     with ipc.new_file(str(out / VOCAB), pa.schema([("name", pa.large_string()), ("l", pa.large_string())])) as w:
         w.write_table(pa.table({"name": names, "l": lower}))
+    for k, a in sorts(lower).items():
+        np.save(out / f"{k}.npy", a)
     del names, lower
     step("vocab", t)
 
@@ -186,6 +199,32 @@ def build(path_file: str, names_file: str, out: Path, *, threads: int = 16, mem:
     return meta
 
 
+def sorts(lower) -> dict[str, np.ndarray]:
+    """The vocabulary's sort orders for anchored name tests: ids by lowercase
+    name, and by its reversed bytes (both bytewise)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    lb = lower.cast(pa.large_binary())
+    return {
+        "vfwd": pc.sort_indices(lb).to_numpy().astype(np.int32),
+        "vrev": pc.sort_indices(pc.binary_reverse(lb)).to_numpy().astype(np.int32),
+    }
+
+
+def add_sorts(d: Path) -> dict[str, float]:
+    """Write `sorts` beside an index built without them."""
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    t0 = time.monotonic()
+    with pa.OSFile(str(d / VOCAB)) as f:
+        lower = ipc.open_file(f).read_all().column("l")
+    for k, a in sorts(lower.combine_chunks() if lower.num_chunks > 1 else lower.chunk(0)).items():
+        np.save(d / f"{k}.npy", a)
+    return {"sorts_s": round(time.monotonic() - t0, 2)}
+
+
 # --- the index -----------------------------------------------------------------------
 
 
@@ -206,7 +245,11 @@ class MemIndex:
     threads: int = 16
     chunk: int = 1 << 20
     fast: bool = True  # literal tests by `scan_literal` (False: Arrow's kernels)
+    memmem: bool = True  # `contains` by libc memmem first (False: the numpy pass only)
+    memmem_cap: int = 20_000  # hits per block past which the numpy pass takes over
     _found: dict = field(default_factory=dict)
+    vfwd: np.ndarray | None = None  # ids by lowercase name (bytewise)
+    vrev: np.ndarray | None = None  # ids by reversed lowercase name
     _raw: tuple | None = None
     _freq: np.ndarray | None = None
 
@@ -217,6 +260,9 @@ class MemIndex:
         import pyarrow.ipc as ipc
 
         arrays = {k: np.load(d / f"{k}.npy") for k in ARRAYS}
+        for k in SORTS:
+            if (d / f"{k}.npy").exists():
+                arrays[k] = np.load(d / f"{k}.npy")
         with pa.OSFile(str(d / VOCAB)) as f:
             t = ipc.open_file(f).read_all()
         # One record batch (as `build` writes it): its arrays as is, no copy.
@@ -231,6 +277,9 @@ class MemIndex:
     def nbytes(self) -> dict[str, int]:
         out = {k: int(getattr(self, k).nbytes) for k in ARRAYS}
         out["vocab"] = int(self.names.nbytes + self.lower.nbytes)
+        for k in SORTS:
+            if getattr(self, k) is not None:
+                out[k] = int(getattr(self, k).nbytes)
         return out
 
     def case_exceptions(self) -> dict[str, int]:
@@ -251,41 +300,123 @@ class MemIndex:
             _, offs, data = a.buffers()
             off = np.frombuffer(offs, np.int64)[a.offset : a.offset + len(a) + 1]
             buf = np.frombuffer(data, np.uint8)
-            # Byte frequencies from a sample: the literal search starts at its rarest byte.
+            # Bigram frequencies from a sample: the substring search starts at
+            # the literal's rarest adjacent byte pair.
             n = min(len(buf), 64 << 20)
             step = max(1, len(buf) // n)
-            self._freq = np.bincount(buf[::step][:n], minlength=256)
+            smp = buf[::step][:n].astype(np.int32)
+            self._freq = np.bincount(smp[:-1] * 256 + smp[1:], minlength=1 << 16)
             self._raw = (buf, off)
         return self._raw
 
+    def _dense(self, raw: bytes, block: int = 1 << 27) -> float:
+        """Expected hits of a literal per `scan_literal` block, from 16
+        contiguous 4 MB samples of the blob (memmem pays a Python step per
+        hit; past a few thousand per block the vectorized pass is cheaper)."""
+        buf, _ = self._blob()
+        n, w = 16, 4 << 20
+        if len(buf) <= n * w:
+            return buf.tobytes().count(raw) * block / max(1, len(buf))
+        hits = sum(buf[k : k + w].tobytes().count(raw) for k in np.linspace(0, len(buf) - w, n).astype(np.int64))
+        return hits * block / (n * w)
+
+    def _key(self, i: int, rev: bool) -> bytes:
+        buf, off = self._blob()
+        k = buf[off[i] : off[i + 1]].tobytes()
+        return k[::-1] if rev else k
+
+    def _range(self, perm: np.ndarray, lo_key: bytes, prefix: bool, rev: bool) -> np.ndarray:
+        """Ids whose (reversed) lowercase name starts with / equals `lo_key`:
+        a binary search over a sorted permutation of the vocabulary."""
+
+        def bisect(k: bytes, right: bool) -> int:
+            a, b = 0, len(perm)
+            while a < b:
+                m = (a + b) // 2
+                km = self._key(int(perm[m]), rev)
+                if km < k or (right and km == k):
+                    a = m + 1
+                else:
+                    b = m
+            return a
+
+        lo = bisect(lo_key, False)
+        if not prefix:
+            hi = bisect(lo_key, True)
+        else:
+            # The prefix's successor: bump its last byte below 0xff, drop the rest.
+            k = lo_key.rstrip(b"\xff")
+            hi = bisect(k[:-1] + bytes([k[-1] + 1]), False) if k else len(perm)
+        return np.sort(perm[lo:hi]).astype(np.int32)
+
     def scan_literal(self, op: str, lit: str, block: int = 1 << 27) -> np.ndarray:
         """Name ids whose lowercase name `contains` / `starts` / `ends` /
-        `equals` a literal, sorted: vectorized byte compares over the one
-        blob (numpy releases the GIL, so blocks run in parallel threads),
-        starting from the literal's rarest byte; a hit straddling two names
-        doesn't count."""
+        `equals` a literal, sorted. Anchored tests are binary searches over
+        the vocabulary sorted forward (`vfwd`) and by reversed bytes
+        (`vrev`); `contains` compares bytes over the one blob (numpy releases
+        the GIL, so blocks run in parallel threads), starting from the
+        literal's rarest byte pair; a hit straddling two names doesn't count."""
         buf, off = self._blob()
-        b = np.frombuffer(lit.encode(), np.uint8)
+        raw = lit.encode()
+        b = np.frombuffer(raw, np.uint8)
         L = len(b)
         if not L:
             raise Unsupported("an empty literal")
+        if op in ("starts", "equals") and self.vfwd is not None:
+            return self._range(self.vfwd, raw, op == "starts", False)
+        if op == "ends" and self.vrev is not None:
+            return self._range(self.vrev, raw[::-1], True, True)
         if op != "contains":
             lens = off[1:] - off[:-1]
             ids = np.flatnonzero(lens == L if op == "equals" else lens >= L)
             base = off[ids] if op in ("starts", "equals") else off[ids + 1] - L
-            for j in np.argsort(self._freq[b], kind="stable"):
+            for j in range(L):
                 keep = buf[base + j] == b[j]
                 ids, base = ids[keep], base[keep]
             return ids.astype(np.int32)
-        order = np.argsort(self._freq[b], kind="stable")
-        j0 = int(order[0])
+        if L == 1:
+            j0, pair = 0, None
+        else:
+            f = self._freq[b[:-1].astype(np.int32) * 256 + b[1:]]
+            j0, pair = int(np.argmin(f)), True
+        rest = [j for j in range(L) if j != j0 and not (pair and j == j0 + 1)]
+
+        mm = _memmem() if self.memmem and self._dense(raw) < self.memmem_cap // 4 else None
+        base = buf.ctypes.data
+
+        def by_memmem(lo: int) -> np.ndarray | None:
+            """libc `memmem` from hit to hit (it releases the GIL; glibc's is
+            vectorized); None past `memmem_cap` hits in the block (then the
+            vectorized pass is cheaper than a Python step per hit)."""
+            hi = min(len(buf), lo + block + L - 1)
+            out, p = [], lo
+            while p < hi:
+                r = mm(base + p, hi - p, raw, L)
+                if not r:
+                    break
+                q = r - base
+                if q >= lo + block:
+                    break
+                out.append(q)
+                if len(out) > self.memmem_cap:
+                    return None
+                p = q + 1
+            return np.array(out, np.int64)
 
         def one(lo: int) -> np.ndarray:
-            hi = min(len(buf), lo + block)
-            p = np.flatnonzero(buf[lo:hi] == b[j0]) + (lo - j0)
+            if mm is not None:
+                p = by_memmem(lo)
+                if p is not None:
+                    return p
+            hi = min(len(buf), lo + block + (1 if pair else 0))
+            c = buf[lo:hi]
+            m = c == b[j0]
+            if pair:
+                m = m[:-1] & (c[1:] == b[j0 + 1])
+            p = np.flatnonzero(m) + (lo - j0)
             p = p[(p >= 0) & (p + L <= len(buf))]
-            for j in order[1:]:
-                p = p[buf[p + int(j)] == b[j]]
+            for j in rest:
+                p = p[buf[p + j] == b[j]]
             return p
 
         with ThreadPoolExecutor(self.threads) as ex:
@@ -303,6 +434,15 @@ class MemIndex:
 
         if t.op != "regex" and not ignore_case and self.fast:
             return self.scan_literal(t.op, t.arg)
+        if t.op == "regex" and self.fast:
+            lit = regex_literal(t.arg)
+            if lit is not None:
+                # RE2 only over the names holding the regex's literal run.
+                ids = self.scan_literal(lit.op, lit.arg)
+                if not len(ids):
+                    return ids
+                ok = pc.match_substring_regex(self.lower.take(pa.array(ids)), t.arg, ignore_case=ignore_case)
+                return ids[ok.to_numpy(zero_copy_only=False)]
 
         def one(lo: int) -> np.ndarray:
             a = self.lower.slice(lo, self.chunk)
@@ -472,6 +612,28 @@ class MemIndex:
         self._found[path] = cur
         return cur
 
+    def union(self, parts: list[np.ndarray]) -> np.ndarray:
+        """Distinct node ids of several sets (each already distinct): one set
+        as is, small ones by sort, big ones by a bitmap (a sort of tens of
+        millions of ids took 16 s)."""
+        parts = [p for p in parts if len(p)]
+        if not parts:
+            return np.zeros(0, np.int32)
+        if len(parts) == 1:
+            return parts[0]
+        if sum(len(p) for p in parts) < 1 << 21:
+            return np.unique(np.concatenate(parts))
+        m = np.zeros(self.n, bool)
+        for p in parts:
+            m[p] = True
+        return np.flatnonzero(m).astype(np.int32)
+
+    def name_mask(self, t: NameTest) -> np.ndarray:
+        """A bitmap over the vocabulary: the names passing `t`."""
+        m = np.zeros(len(self.lower), bool)
+        m[self.scan(t)] = True
+        return m
+
     def mark(self, nodes: np.ndarray) -> np.ndarray:
         m = np.zeros(self.n, bool)
         m[nodes] = True
@@ -488,11 +650,38 @@ class MemIndex:
         names = tm("scan", self.scan, st.name)
         nodes = tm("nodes", self.nodes_of, names)
         if st.k and len(nodes):
-            import pyarrow.compute as pc
+            if m.kind == "sub":
+                nodes = tm("suffix", self._suffix_sub, nodes, m.text.removesuffix("/") if st.strict else m.text)
+            else:
+                import pyarrow.compute as pc
 
-            ok = tm("suffix", lambda: pc.match_substring_regex(self.segments(nodes, st.k, lower=True), st.suffix_re).to_numpy(zero_copy_only=False))
-            nodes = nodes[ok]
+                ok = tm("suffix", lambda: pc.match_substring_regex(self.segments(nodes, st.k, lower=True), st.suffix_re).to_numpy(zero_copy_only=False))
+                nodes = nodes[ok]
         return nodes, st.strict
+
+    def _suffix_sub(self, nodes: np.ndarray, text: str) -> np.ndarray:
+        """The nodes (whose name passed the last segment's test) where a
+        substring `s0/s1/…/sk` ends: `k` ancestors up, the name ends with
+        `s0` (an empty `s0` only needs the ancestor to exist), the ones
+        between equal `s1 … s(k−1)`. Tests the vocabulary once per segment
+        (a bitmap over names), then gathers up the tree; no strings built."""
+        segs = text.split("/")
+        k = len(segs) - 1
+        cur = nodes.astype(np.int32)
+        keep = np.ones(len(nodes), bool)
+        for j in range(1, k + 1):
+            cur = self.up(cur)
+            keep &= cur >= 0
+            seg = segs[k - j]
+            if j < k:
+                ok = self.name_mask(NameTest("equals", seg))
+            elif seg:
+                ok = self.name_mask(NameTest("ends", seg))
+            else:
+                continue
+            idx = np.flatnonzero(keep)
+            keep[idx] = ok[self.nid[cur[idx]]]
+        return nodes[keep]
 
     def regex_set(self, source: str, tm: "Timer | None" = None) -> np.ndarray:
         import pyarrow.compute as pc
@@ -558,9 +747,9 @@ def evaluate(ix: MemIndex, ast: Ast, view: str, v: int | None = None) -> MemResu
         cand = []
         for m in matchers:
             s, strict = start[m]
-            cand.append(ix.children(s) if strict else s)
-        x = tm("cands", lambda: np.unique(np.concatenate(cand)) if cand else np.zeros(0, np.int32))
-        x = x[tm("under", ix.under, x, v, dv)]
+            c = ix.children(s) if strict else s
+            cand.append(c[tm("under", ix.under, c, v, dv)])
+        x = tm("cands", ix.union, cand)
         held: dict[Matcher, np.ndarray] = {}
         for m in matchers:
             s, strict = start[m]

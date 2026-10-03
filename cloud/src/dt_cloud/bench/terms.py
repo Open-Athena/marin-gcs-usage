@@ -222,3 +222,39 @@ def regex_name_filter(source: str) -> RegexPlan | None:
     if not tail.rstrip("$"):
         return None
     return RegexPlan(source, ("^" if slashes else "") + tail)
+
+
+def regex_literal(pattern: str) -> NameTest | None:
+    """A literal test every name a (searched, case-insensitive) regex matches
+    must pass: its longest run of top-level literal characters, lowercased,
+    as `starts` / `ends` / `equals` when the run sits against a `^` / `$`
+    anchor, else `contains`. None when there's no such run (a top-level `|`,
+    no literals)."""
+    try:
+        items = list(P.parse(pattern, re.IGNORECASE))
+    except re.error:
+        return None
+    if any(op is C.BRANCH for op, _ in items):
+        return None
+    best: tuple[int, int] | None = None
+    i = 0
+    while i < len(items):
+        if items[i][0] is C.LITERAL:
+            j = i
+            while j < len(items) and items[j][0] is C.LITERAL:
+                j += 1
+            if best is None or j - i > best[1] - best[0]:
+                best = (i, j)
+            i = j
+        else:
+            i += 1
+    if best is None:
+        return None
+    i, j = best
+    text = "".join(chr(av) for _, av in items[i:j])
+    low = text.lower()
+    if len(low) != len(text):
+        return None
+    start = i == 1 and items[0] == (C.AT, C.AT_BEGINNING)
+    end = j == len(items) - 1 and items[-1] in ((C.AT, C.AT_END), (C.AT, C.AT_END_STRING))
+    return NameTest({(False, False): "contains", (True, False): "starts", (False, True): "ends", (True, True): "equals"}[(start, end)], low)

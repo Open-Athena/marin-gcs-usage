@@ -687,6 +687,7 @@ def bench_truth(append: bool, check: tuple[str, ...], only: tuple[str, ...], mem
 
 
 @main.command("bench-index")
+@option("-a", "--add-sorts", is_flag=True, help="Only add the vocabulary's sort orders to the index at `-o` (its `vocab.arrow` fetched from `-u` if absent); GEN is ignored")
 @option("-m", "--mem", default="90GB", help="DuckDB memory limit")
 @option("-o", "--out", type=Path, required=True, help="Local dir for the index (`.npy` arrays + `vocab.arrow` + `meta.json`)")
 @option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs)")
@@ -694,7 +695,7 @@ def bench_truth(append: bool, check: tuple[str, ...], only: tuple[str, ...], mem
 @option("-T", "--tmp", "tmp_dir", default=None, help="DuckDB spill dir")
 @option("-u", "--upload", default=None, help="Also upload the index to this gs:// prefix")
 @argument("gen")
-def bench_index(mem: str, out: Path, stage: Path | None, threads: int, tmp_dir: str | None, upload: str | None, gen: str) -> None:
+def bench_index(add_sorts: bool, mem: str, out: Path, stage: Path | None, threads: int, tmp_dir: str | None, upload: str | None, gen: str) -> None:
     """Build the serving box's in-memory index (`dt_cloud.bench.mem`) from one
     index generation (GEN: its dir, local or gs://, holding `path-index.parquet`
     and the v1 `path-index.names.parquet`). Heavy: a VM beside the data."""
@@ -702,6 +703,16 @@ def bench_index(mem: str, out: Path, stage: Path | None, threads: int, tmp_dir: 
 
     from .bench import local, mem as bm
 
+    if add_sorts:
+        if not (out / bm.VOCAB).exists():
+            if not upload:
+                raise UsageError(f"no {out / bm.VOCAB} and no -u to fetch it from")
+            local.stage_file(f"{upload.rstrip('/')}/{bm.VOCAB}", out / bm.VOCAB)
+        r = bm.add_sorts(out)
+        if upload:
+            r["upload"] = local.upload_dir(out, upload, only=[f"{k}.npy" for k in bm.SORTS])
+        print(json.dumps(r))
+        return
     g = gen.rstrip("/")
     path_file, names = f"{g}/path-index.parquet", f"{g}/path-index.names.parquet"
     if stage:

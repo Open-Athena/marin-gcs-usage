@@ -16,7 +16,7 @@ from dt_cloud.bench import truth as bt
 from dt_cloud.bench.query import glob, parse, regex, sub
 from dt_cloud.bench.queryset import parse_set
 from dt_cloud.bench.score import Truth, run, tally
-from dt_cloud.bench.terms import NameTest, RegexPlan, SegTerm, regex_name_filter, seg_term
+from dt_cloud.bench.terms import NameTest, RegexPlan, SegTerm, regex_literal, regex_name_filter, seg_term
 
 from test_bench_truth import NAMES_F, PATH_F, QUERIES
 
@@ -52,6 +52,14 @@ def test_regex_name_filter():
     # alternation, a lone `$`.
     assert [regex_name_filter(s) for s in ("step-1/.*json", "a/.*\\.json$", "x/[^a]+$", "a$|b$", "a/$", "(a/b)$", "\\w+\\W$")] == [None] * 7
     assert regex_name_filter("ckpt[^/]*/[a-z_]+\\.json\\Z") == RegexPlan("ckpt[^/]*/[a-z_]+\\.json\\Z", "^[a-z_]+\\.json\\Z")
+
+
+def test_regex_literal():
+    assert [regex_literal(r) for r in ("^[^/]*moe[^/]*$", "^step-[0-9]+$", "\\.safetensors$", "tokenizer\\.json$", "^abc$", "model-[^/]*-of-00004", "^[^/]*\\.pt")] == [
+        NameTest("contains", "moe"), NameTest("starts", "step-"), NameTest("ends", ".safetensors"), NameTest("ends", "tokenizer.json"),
+        NameTest("equals", "abc"), NameTest("contains", "-of-00004"), NameTest("contains", ".pt"),
+    ]
+    assert [regex_literal(r) for r in ("a|b", "[0-9]+", "Mixed[A-Z]")] == [None, None, NameTest("contains", "mixed")]
 
 
 # --- a generation ----------------------------------------------------------------------
@@ -224,9 +232,23 @@ def test_scan_literal_matches_arrow():
     z = np.zeros(0, np.int32)
     ix = mem.MemIndex(*([z] * 10), names=a, lower=a, threads=4, chunk=1000)
     ops = ["contains", "starts", "ends", "equals"]
-    lits = ["a", "bc", "abc", "c.-", "x0x", "zzz", "dab", "a/b", "cdab"]
+    lits = ["a", "bc", "abc", "c.-", "x0x", "zzz", "dab", "a/b", "cdab", "0"]
+    unsorted = {(op, s): ix.scan_literal(op, s, block=777).tolist() for op in ops for s in lits}
+    # The numpy pass alone, and memmem overflowing into it within a block.
+    ix.memmem = False
+    assert {(op, s): ix.scan_literal(op, s, block=777).tolist() for op in ops for s in lits} == unsorted
+    ix.memmem, ix.memmem_cap = True, 3
+    assert {(op, s): ix.scan_literal(op, s, block=777).tolist() for op in ops for s in lits} == unsorted
+    ix.memmem_cap = 20_000
+    # Regex tests prefiltered by their literal run, against RE2 over every name.
+    pats = ["^[^/]*bc[^/]*$", "^ab", "c$", "a[^/]*b", "x0+", "[0-9]"]
+    ix.fast = False
+    full = [ix.scan(NameTest("regex", r)).tolist() for r in pats]
+    ix.fast = True
+    assert [ix.scan(NameTest("regex", r)).tolist() for r in pats] == full
+    ix.vfwd, ix.vrev = mem.sorts(a).values()
     fast = {(op, s): ix.scan_literal(op, s, block=777).tolist() for op in ops for s in lits}
     ix.fast = False
-    assert fast == {(op, s): ix.scan(NameTest(op, s)).tolist() for op in ops for s in lits}
+    assert fast == unsorted == {(op, s): ix.scan(NameTest(op, s)).tolist() for op in ops for s in lits}
     # "ab" + "cd" are adjacent in the blob: "bc" holds only in "abcd" among them.
     assert ([i for i in fast[("contains", "bc")] if i >= 20000], fast[("contains", "dab")]) == ([20002], [])

@@ -137,7 +137,10 @@ def fetch(blob, dst: Path, workers: int = 32, chunk: int = 64 << 20, deadline: f
         f.truncate(size)
     ranges = [(s, min(s + chunk, size) - 1) for s in range(0, size, chunk)]
     args = (blob.bucket.name, blob.name, blob.generation, str(dst))
-    ex = cf.ProcessPoolExecutor(max_workers=workers)
+    import multiprocessing as mp
+
+    # spawn, not fork: forking a process whose gRPC threads are live aborts the children.
+    ex = cf.ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"))
     futs = [ex.submit(_get_range, *args, s, e) for s, e in ranges]
     done, pending = cf.wait(futs, timeout=deadline)
     if not pending:
@@ -191,7 +194,7 @@ def stage_file(uri: str, dst: Path, workers: int = 32) -> tuple[str, float]:
     return str(dst), s
 
 
-def upload_dir(src: Path, prefix: str, workers: int = 32) -> dict:
+def upload_dir(src: Path, prefix: str, workers: int = 32, only: list[str] | None = None) -> dict:
     from google.cloud import storage
     from google.cloud.storage import transfer_manager as tm
 
@@ -200,7 +203,7 @@ def upload_dir(src: Path, prefix: str, workers: int = 32) -> dict:
     t0 = time.monotonic()
     n = 0
     for f in sorted(src.iterdir()):
-        if not f.is_file():
+        if not f.is_file() or (only is not None and f.name not in only):
             continue
         blob = bk.blob(f"{key.rstrip('/')}/{f.name}")
         if f.stat().st_size > 256 << 20:
