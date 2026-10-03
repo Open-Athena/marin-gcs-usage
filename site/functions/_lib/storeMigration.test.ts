@@ -9,7 +9,7 @@ import { migrations, sqliteD1 } from './testD1'
 // migration is added here deliberately (and must not touch the index tables
 // this file's specs pin).
 const CASES = [
-  { lineage: 'cw', file: '0006_store_scoped_index.sql', after: ['0009_allowlist_read_only.sql'] },
+  { lineage: 'cw', file: '0006_store_scoped_index.sql', after: ['0009_allowlist_read_only.sql', '0010_og_tokens.sql'] },
   { lineage: 'gcs', file: '0030_store_scoped_index.sql', after: ['0033_allowlist_read_only.sql', '0034_og_tokens.sql'] },
 ] as const
 
