@@ -205,7 +205,10 @@ class MemIndex:
     lower: object  # pa.LargeStringArray, lowercase
     threads: int = 16
     chunk: int = 1 << 20
+    fast: bool = True  # literal tests by `scan_literal` (False: Arrow's kernels)
     _found: dict = field(default_factory=dict)
+    _raw: tuple | None = None
+    _freq: np.ndarray | None = None
 
     @classmethod
     def load(cls, d: Path, threads: int = 16) -> "MemIndex":
@@ -241,11 +244,65 @@ class MemIndex:
 
     # vocabulary
 
+    def _blob(self) -> tuple[np.ndarray, np.ndarray]:
+        """The lowercase vocabulary's (bytes, offsets), zero-copy."""
+        if self._raw is None:
+            a = self.lower
+            _, offs, data = a.buffers()
+            off = np.frombuffer(offs, np.int64)[a.offset : a.offset + len(a) + 1]
+            buf = np.frombuffer(data, np.uint8)
+            # Byte frequencies from a sample: the literal search starts at its rarest byte.
+            n = min(len(buf), 64 << 20)
+            step = max(1, len(buf) // n)
+            self._freq = np.bincount(buf[::step][:n], minlength=256)
+            self._raw = (buf, off)
+        return self._raw
+
+    def scan_literal(self, op: str, lit: str, block: int = 1 << 27) -> np.ndarray:
+        """Name ids whose lowercase name `contains` / `starts` / `ends` /
+        `equals` a literal, sorted: vectorized byte compares over the one
+        blob (numpy releases the GIL, so blocks run in parallel threads),
+        starting from the literal's rarest byte; a hit straddling two names
+        doesn't count."""
+        buf, off = self._blob()
+        b = np.frombuffer(lit.encode(), np.uint8)
+        L = len(b)
+        if not L:
+            raise Unsupported("an empty literal")
+        if op != "contains":
+            lens = off[1:] - off[:-1]
+            ids = np.flatnonzero(lens == L if op == "equals" else lens >= L)
+            base = off[ids] if op in ("starts", "equals") else off[ids + 1] - L
+            for j in np.argsort(self._freq[b], kind="stable"):
+                keep = buf[base + j] == b[j]
+                ids, base = ids[keep], base[keep]
+            return ids.astype(np.int32)
+        order = np.argsort(self._freq[b], kind="stable")
+        j0 = int(order[0])
+
+        def one(lo: int) -> np.ndarray:
+            hi = min(len(buf), lo + block)
+            p = np.flatnonzero(buf[lo:hi] == b[j0]) + (lo - j0)
+            p = p[(p >= 0) & (p + L <= len(buf))]
+            for j in order[1:]:
+                p = p[buf[p + int(j)] == b[j]]
+            return p
+
+        with ThreadPoolExecutor(self.threads) as ex:
+            pos = np.concatenate(list(ex.map(one, range(0, len(buf), block))))
+        ids = np.searchsorted(off, pos, side="right") - 1
+        ids = ids[pos + L <= off[ids + 1]]
+        return np.unique(ids).astype(np.int32)
+
     def scan(self, t: NameTest, ignore_case: bool = False) -> np.ndarray:
-        """Name ids passing `t` (lowercase names), sorted; parallel over
-        zero-copy slices of the blob."""
+        """Name ids passing `t` (lowercase names), sorted: a literal by
+        `scan_literal`, a regex by Arrow's RE2 kernel over zero-copy slices of
+        the blob in parallel threads."""
         import pyarrow as pa
         import pyarrow.compute as pc
+
+        if t.op != "regex" and not ignore_case and self.fast:
+            return self.scan_literal(t.op, t.arg)
 
         def one(lo: int) -> np.ndarray:
             a = self.lower.slice(lo, self.chunk)
@@ -422,30 +479,48 @@ class MemIndex:
 
     # matchers
 
-    def start_set(self, m: Matcher) -> tuple[np.ndarray, bool]:
+    def start_set(self, m: Matcher, tm: "Timer | None" = None) -> tuple[np.ndarray, bool]:
         """(nodes whose last k+1 segments hold `m`, strict)."""
+        tm = tm or Timer()
         st = seg_term(m)
         if st.trivial:
             raise Unsupported(f"term {m} constrains no segment")
-        nodes = self.nodes_of(self.scan(st.name))
+        names = tm("scan", self.scan, st.name)
+        nodes = tm("nodes", self.nodes_of, names)
         if st.k and len(nodes):
             import pyarrow.compute as pc
 
-            ok = pc.match_substring_regex(self.segments(nodes, st.k, lower=True), st.suffix_re).to_numpy(zero_copy_only=False)
+            ok = tm("suffix", lambda: pc.match_substring_regex(self.segments(nodes, st.k, lower=True), st.suffix_re).to_numpy(zero_copy_only=False))
             nodes = nodes[ok]
         return nodes, st.strict
 
-    def regex_set(self, source: str) -> np.ndarray:
+    def regex_set(self, source: str, tm: "Timer | None" = None) -> np.ndarray:
         import pyarrow.compute as pc
 
+        tm = tm or Timer()
         plan = regex_name_filter(source)
         if plan is None:
             raise Unsupported(f"regex {source!r}: no name filter (its tail can cross a `/` or isn't `$`-anchored)")
-        nodes = self.nodes_of(self.scan(NameTest("regex", plan.name_re), ignore_case=True))
+        names = tm("scan", self.scan, NameTest("regex", plan.name_re), ignore_case=True)
+        nodes = tm("nodes", self.nodes_of, names)
         if not len(nodes):
             return nodes
-        ok = pc.match_substring_regex(self.segments(nodes, None, lower=False), source, ignore_case=True).to_numpy(zero_copy_only=False)
+        ok = tm("verify", lambda: pc.match_substring_regex(self.segments(nodes, None, lower=False), source, ignore_case=True).to_numpy(zero_copy_only=False))
         return nodes[ok]
+
+
+class Timer:
+    """Accumulated seconds per step: `tm("step", f, *args)` runs and times `f`."""
+
+    def __init__(self):
+        self.s: dict[str, float] = {}
+
+    def __call__(self, name: str, f, *a, **kw):
+        t0 = time.monotonic()
+        try:
+            return f(*a, **kw)
+        finally:
+            self.s[name] = round(self.s.get(name, 0.0) + time.monotonic() - t0, 4)
 
 
 @dataclass
@@ -463,7 +538,8 @@ class MemResult:
 def evaluate(ix: MemIndex, ast: Ast, view: str, v: int | None = None) -> MemResult:
     """One view's answer (`truth.view_truth`'s semantics on node ids)."""
     t0 = time.monotonic()
-    v = ix.find(view) if v is None else v
+    tm = Timer()
+    v = tm("find", ix.find, view) if v is None else v
     dv = 0 if v < 0 else int(ix.depth[v])
     hit = compile_query(ast)(view)
     regex = [m for a in ast.alts for m in a if m.kind == "regex"] + [m for m in ast.neg if m.kind == "regex"]
@@ -471,24 +547,24 @@ def evaluate(ix: MemIndex, ast: Ast, view: str, v: int | None = None) -> MemResu
     if regex:
         if len(ast.alts) != 1 or len(ast.alts[0]) != 1 or ast.neg:
             raise Unsupported("a regex mixed with other terms")
-        B = ix.regex_set(regex[0].source)
+        B = ix.regex_set(regex[0].source, tm)
         stats["start"] = int(len(B))
         x = B[ix.under(B, v, dv)]
         posx, negx = np.ones(len(x), bool), np.zeros(len(x), bool)
     else:
         matchers = list(dict.fromkeys([m for a in ast.alts for m in a] + list(ast.neg)))
-        start: dict[Matcher, tuple[np.ndarray, bool]] = {m: ix.start_set(m) for m in matchers}
+        start: dict[Matcher, tuple[np.ndarray, bool]] = {m: ix.start_set(m, tm) for m in matchers}
         stats["start"] = {str(m.text or m.pieces): int(len(start[m][0])) for m in matchers}
         cand = []
         for m in matchers:
             s, strict = start[m]
             cand.append(ix.children(s) if strict else s)
-        x = np.unique(np.concatenate(cand)) if cand else np.zeros(0, np.int32)
-        x = x[ix.under(x, v, dv)]
+        x = tm("cands", lambda: np.unique(np.concatenate(cand)) if cand else np.zeros(0, np.int32))
+        x = x[tm("under", ix.under, x, v, dv)]
         held: dict[Matcher, np.ndarray] = {}
         for m in matchers:
             s, strict = start[m]
-            held[m] = ix.holds(ix.mark(s), x, strict)
+            held[m] = tm("holds", lambda: ix.holds(ix.mark(s), x, strict))
         if pos_everywhere(ast):
             posx = np.ones(len(x), bool)
         else:
@@ -508,7 +584,7 @@ def evaluate(ix: MemIndex, ast: Ast, view: str, v: int | None = None) -> MemResu
         ro = np.array([ix.o[ix.top].sum() if v < 0 else ix.o[v]], np.int64)
     else:
         s = x[posx & ~negx]
-        roots = ix.outermost(ix.mark(s), s, dv).astype(np.int64)
+        roots = tm("roots", lambda: ix.outermost(ix.mark(s), s, dv).astype(np.int64))
         rb, ro = ix.b[roots].astype(np.int64), ix.o[roots].astype(np.int64)
     e0 = x[negx]
     if len(e0):
@@ -530,6 +606,7 @@ def evaluate(ix: MemIndex, ast: Ast, view: str, v: int | None = None) -> MemResu
         ro = ro - _sum_at(pos, ix.o[e], len(roots))
     else:
         e = np.zeros(0, np.int32)
+    stats["steps"] = tm.s
     stats["s"] = round(time.monotonic() - t0, 4)
     return MemResult(bool(hit), roots, rb, ro, e, int(rb.sum()), int(ro.sum()), stats)
 

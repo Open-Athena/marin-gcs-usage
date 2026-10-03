@@ -211,3 +211,22 @@ def test_latency_summary():
     ts = [local.Timing("a", "", ms, mat, 1, {}) for ms, mat in [(10, 1), (20, 2), (30, 3), (40, 4)]] + [local.Timing("b", "", 0, 0, None, {"error": "x"})]
     assert local.latency_summary(ts) == {"n": 4, "p50_ms": 30, "p90_ms": 40, "max_ms": 40, "with_paths_p50_ms": 33, "with_paths_p90_ms": 44, "with_paths_max_ms": 44}
     assert json.loads(json.dumps(local.latency_summary([]))) == {"n": 0, "p50_ms": None, "p90_ms": None, "max_ms": None, "with_paths_p50_ms": None, "with_paths_p90_ms": None, "with_paths_max_ms": None}
+
+
+def test_scan_literal_matches_arrow():
+    # The blob scan (rarest byte first, parallel blocks, hits straddling two
+    # names dropped) against Arrow's per-string kernels, on random names.
+    import random
+
+    rng = random.Random(1)
+    names = ["".join(rng.choice("abc.-/_x0") for _ in range(rng.randint(0, 9))) for _ in range(20000)] + ["ab", "cd", "abcd", "", "zzz"]
+    a = pa.array(names, pa.large_string())
+    z = np.zeros(0, np.int32)
+    ix = mem.MemIndex(*([z] * 10), names=a, lower=a, threads=4, chunk=1000)
+    ops = ["contains", "starts", "ends", "equals"]
+    lits = ["a", "bc", "abc", "c.-", "x0x", "zzz", "dab", "a/b", "cdab"]
+    fast = {(op, s): ix.scan_literal(op, s, block=777).tolist() for op in ops for s in lits}
+    ix.fast = False
+    assert fast == {(op, s): ix.scan(NameTest(op, s)).tolist() for op in ops for s in lits}
+    # "ab" + "cd" are adjacent in the blob: "bc" holds only in "abcd" among them.
+    assert ([i for i in fast[("contains", "bc")] if i >= 20000], fast[("contains", "dab")]) == ([20002], [])
