@@ -84,6 +84,14 @@ def _memmem():
     return f
 
 
+def _ss(a: np.ndarray, q, side: str = "left") -> np.ndarray:
+    """`np.searchsorted` with the needles cast to the haystack's dtype: an
+    int64 needle against an int32 array makes numpy copy the whole array to
+    int64 first (3 GB of `parent` per call, which made every drilled view
+    take a minute)."""
+    return np.searchsorted(a, np.asarray(q).astype(a.dtype, copy=False), side=side).astype(np.int64)
+
+
 class Unsupported(ValueError):
     """A query this engine can't answer exactly (an unplannable regex, a term
     whose last segment constrains nothing)."""
@@ -455,7 +463,7 @@ class MemIndex:
         v = self.b32[ids].astype(np.int64)
         m = v == int(U32)
         if m.any():
-            v[m] = self.b_ov[np.searchsorted(self.b_ov_id, ids[m])]
+            v[m] = self.b_ov[_ss(self.b_ov_id, ids[m])]
         return v
 
     def o_of(self, ids) -> np.ndarray:
@@ -463,7 +471,7 @@ class MemIndex:
         v = self.o8[ids].astype(np.int64)
         m = v == int(U8)
         if m.any():
-            v[m] = self.o_ov[np.searchsorted(self.o_ov_id, ids[m])]
+            v[m] = self.o_ov[_ss(self.o_ov_id, ids[m])]
         return v
 
     def depth_of(self, ids) -> np.ndarray:
@@ -481,7 +489,7 @@ class MemIndex:
     def kid_range(self, nodes) -> tuple[np.ndarray, np.ndarray]:
         """Each node's children as an id range [lo, hi) (−1: the buckets)."""
         nodes = np.asarray(nodes, np.int64)
-        return np.searchsorted(self.parent, nodes, side="left"), np.searchsorted(self.parent, nodes, side="right")
+        return _ss(self.parent, nodes, "left"), _ss(self.parent, nodes, "right")
 
     def nc_of(self, nodes) -> np.ndarray:
         lo, hi = self.kid_range(nodes)
@@ -829,7 +837,7 @@ class MemIndex:
         for d in range(dv + 1, D + 1):
             if a >= b:
                 break
-            a, b = int(np.searchsorted(self.parent, a, side="left")), int(np.searchsorted(self.parent, b - 1, side="right"))
+            a, b = int(_ss(self.parent, a, "left")), int(_ss(self.parent, b - 1, "right"))
             lo[d], hi[d] = a, b
         return lo, hi
 
