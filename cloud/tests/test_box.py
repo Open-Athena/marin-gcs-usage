@@ -358,3 +358,15 @@ def test_regex_verify_on_lowercase(fixture_ix):
     orig = ix.segments(nodes, None, lower=False)
     for src in ("^bk/key", "^bk/Key/", "[A-Z]ey/", "\\.BIN$", "ttl"):
         assert ix._verify_ci(nodes, src).tolist() == pc.match_substring_regex(orig, src, ignore_case=True).to_numpy(zero_copy_only=False).tolist()
+
+
+@pytest.mark.parametrize("cap", [50_000, 10])
+def test_chunked_roots_same_answers(fixture_ix, own, monkeypatch, cap):
+    # Roots aggregated two at a time (what bounds a 20M-root query's working
+    # set) give the bodies the whole set at once gives, folding or not.
+    monkeypatch.setattr(bv, "HARD_CAP", cap)
+    cases = [(fixture_ix, e["case"]["path"], e["case"]["q"], {"min_area": e["case"].get("minArea", 12)}) for e in GOLDEN["subtree"]]
+    cases += [(own["ix"], "", "ckpt", {"owner_raw": "!alice"}), (own["ix"], "c", "f0", {"min_area": 5000, "w": 128, "h": 128})]
+    want = [body(ix, p, q, **kw) for ix, p, q, kw in cases]
+    monkeypatch.setattr(bv, "CHUNK", 2)
+    assert [body(ix, p, q, **kw) for ix, p, q, kw in cases] == want

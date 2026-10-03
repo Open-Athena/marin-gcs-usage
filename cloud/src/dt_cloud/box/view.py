@@ -46,6 +46,7 @@ ATTEN_DEFAULT = 2
 QUANT = 128
 HARD_CAP = 50_000
 REGION_READS = 24
+CHUNK = 1 << 21  # roots aggregated at a time
 LIST_CHUNK = 1 << 16
 CLASS_LETTERS = {"s": "1", "n": "2", "c": "3", "a": "4"}
 
@@ -366,7 +367,8 @@ class Read:
     deepest: int  # the read roots' deepest depth (the `(other)` threshold)
     atten: float
     roots: np.ndarray  # ids, sorted
-    net: AggSet  # per root
+    net_b: np.ndarray  # per root: net bytes
+    net_o: np.ndarray  # … and objects
     excluded: np.ndarray  # ids, sorted
     excl: AggSet  # per excluded
     hit: bool
@@ -418,6 +420,29 @@ def _cut_for(ids: np.ndarray, cu: np.ndarray, cuts: AggSet, lp: np.ndarray, lc: 
     return c, has, lost
 
 
+def _ancestor_sums(ix: MemIndex, ids: np.ndarray, net: AggSet, rd: np.ndarray, dP: int) -> tuple[np.ndarray, AggSet]:
+    """Σ of `net` (rows of root `ids` at depths `rd`) into every ancestor
+    strictly between the view root (depth `dP`) and the roots, bottom-up a
+    depth at a time: (ancestor ids, their sums; an id can repeat across
+    depths' rows only once)."""
+    out_ids: list[np.ndarray] = []
+    out_sets: list[AggSet] = []
+    p_ids, p_set = np.zeros(0, np.int64), AggSet.zeros(0)
+    for d in range(int(rd.max(initial=dP)), dP + 1, -1):
+        at = np.flatnonzero(rd == d)
+        ids_d = np.concatenate([ids[at], p_ids])
+        if not len(ids_d):
+            continue
+        set_d = _concat([net.take(at), p_set])
+        u, g = np.unique(ix.parent[ids_d].astype(np.int64), return_inverse=True)
+        p_ids, p_set = u, set_d.group_sum(g, len(u))
+        out_ids.append(p_ids)
+        out_sets.append(p_set)
+    if not out_ids:
+        return np.zeros(0, np.int64), AggSet.zeros(0)
+    return np.concatenate(out_ids), _concat(out_sets)
+
+
 def _kids_over(ix: MemIndex, F: np.ndarray, thr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """The children of each node of `F` whose raw bytes reach its `thr`
     (children are largest first, so a prefix of each range): (child ids,
@@ -467,52 +492,57 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
     if len(E):
         o = np.argsort(E)
         E, ER = E[o], ER[o]
-    RA = node_aggs(ix, roots, scope)
     EA = node_aggs(ix, E, scope)
     cu, cuts, lp, lc = _excl_cuts(ix, E, ER, EA)
-    c, has, lost = _cut_for(roots, cu, cuts, lp, lc)
-    net = RA.minus(c, has, lost)
-    tot = net.total()
+    hit = ev.hit
+    rd = np.array([dP], np.int64) if hit else ix.depth_of(roots)
+
+    def net_of(ids: np.ndarray) -> AggSet:
+        """Each root's scoped aggregate, net of the exclusions under it."""
+        c, has, lost = _cut_for(ids, cu, cuts, lp, lc)
+        return node_aggs(ix, ids, scope).minus(c, has, lost)
+
+    # One pass over the roots, CHUNK at a time (a query can hold 20M): each
+    # root's net bytes and objects, the total, and the synthesized ancestors'
+    # partial sums; the working set stays a chunk's, not the whole set's.
+    net_b = np.zeros(len(roots), np.int64)
+    net_o = np.zeros(len(roots), np.int64)
+    tot_parts: list[AggSet] = []
+    anc_parts: list[tuple[np.ndarray, AggSet]] = []
+    whole = None
+    for i in range(0, len(roots), CHUNK):
+        sl = slice(i, i + CHUNK)
+        n = net_of(roots[sl])
+        net_b[sl], net_o[sl] = n.b, n.o
+        tot_parts.append(n.total())
+        if not hit:
+            anc_parts.append(_ancestor_sums(ix, roots[sl], n, rd[sl], dP))
+        if len(roots) <= CHUNK:
+            whole = n
+    tot = _concat(tot_parts).total() if tot_parts else AggSet.zeros(1)
     if tot.b[0] <= 0:
         return None
     T = float(threshold) if threshold is not None else float(tot.b[0]) * min_area / (w * h)
-    hit = ev.hit
-    rd = np.array([dP], np.int64) if hit else ix.depth_of(roots)
     # The `(other)` threshold attenuates from the deepest of the read roots
     # (the Worker reads the REGION_READS heaviest).
-    top = np.argsort(-net.b, kind="stable")[:REGION_READS]
+    top = np.argsort(-net_b, kind="stable")[:REGION_READS]
     deepest = int(rd[top].max()) if len(top) else dP
     fold = (not hit) and len(roots) > HARD_CAP
-    draw = np.zeros(len(roots), bool) if hit else (net.b >= T if fold else np.ones(len(roots), bool))
+    draw = np.zeros(len(roots), bool) if hit else (net_b >= T if fold else np.ones(len(roots), bool))
 
     # Synthesized ancestors between the view root and the roots: Σ net roots
-    # under each, bottom-up a depth at a time.
-    anc_ids: list[np.ndarray] = []
-    anc_sets: list[AggSet] = []
-    anc_draw: list[np.ndarray] = []
+    # under each (the chunks' partial sums merged).
+    if anc_parts and sum(len(x) for x, _ in anc_parts):
+        u, g = np.unique(np.concatenate([x for x, _ in anc_parts]), return_inverse=True)
+        A_ids, A = u, _concat([y for _, y in anc_parts]).group_sum(g, len(u))
+    else:
+        A_ids, A = np.zeros(0, np.int64), AggSet.zeros(0)
+    A_draw = (A.b >= T) if fold else np.ones(len(A_ids), bool)
+    # Folded direct members per parent: roots and ancestors under the threshold.
     folded_of_id: dict[int, int] = {}
-    if not hit and len(roots):
-        p_ids, p_set, p_draw = np.zeros(0, np.int64), AggSet.zeros(0), np.zeros(0, bool)
-        for d in range(int(rd.max()), dP, -1):
-            at = np.flatnonzero(rd == d)
-            ids_d = np.concatenate([roots[at], p_ids])
-            set_d = _concat([net.take(at), p_set])
-            drawn_d = np.concatenate([draw[at], p_draw])
-            par = ix.parent[ids_d].astype(np.int64) if len(ids_d) else np.zeros(0, np.int64)
-            for pid, cnt in zip(*np.unique(par[~drawn_d], return_counts=True)):
-                folded_of_id[int(pid)] = folded_of_id.get(int(pid), 0) + int(cnt)
-            if d - 1 <= dP or not len(ids_d):
-                p_ids, p_set, p_draw = np.zeros(0, np.int64), AggSet.zeros(0), np.zeros(0, bool)
-                continue
-            u, g = np.unique(par, return_inverse=True)
-            p_ids, p_set = u, set_d.group_sum(g, len(u))
-            p_draw = p_set.b >= T if fold else np.ones(len(u), bool)
-            anc_ids.append(p_ids)
-            anc_sets.append(p_set)
-            anc_draw.append(p_draw)
-    A_ids = np.concatenate(anc_ids) if anc_ids else np.zeros(0, np.int64)
-    A = _concat(anc_sets) if anc_sets else AggSet.zeros(0)
-    A_draw = np.concatenate(anc_draw) if anc_draw else np.zeros(0, bool)
+    for ids in (roots[~draw] if not hit else np.zeros(0, np.int64), A_ids[~A_draw]):
+        for pid, cnt in zip(*np.unique(ix.parent[ids].astype(np.int64), return_counts=True)) if len(ids) else ():
+            folded_of_id[int(pid)] = folded_of_id.get(int(pid), 0) + int(cnt)
 
     # Phase 2: under each drawn root (the view root, on a hit), thresholds
     # rebased on that root's depth.
@@ -549,7 +579,7 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
     sa = np.flatnonzero(A_draw)
     sr = np.flatnonzero(draw)
     all_ids = np.concatenate([A_ids[sa], roots[sr], K_ids])
-    all_set = _concat([A.take(sa), net.take(sr), K])
+    all_set = _concat([A.take(sa), whole.take(sr) if whole is not None else net_of(roots[sr]), K])
     kind_of = np.concatenate([np.zeros(len(sa), np.int8), np.ones(len(sr), np.int8), np.full(len(K_ids), 2, np.int8)])
     paths = ix.paths(all_ids) if len(all_ids) else []
     aggs = all_set.aggs(users)
@@ -571,14 +601,14 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
     if v in folded_of_id:
         folded_of[path] = folded_of_id[v]
     if hit:
-        root_agg = net.agg(0, users)
+        root_agg = whole.agg(0, users)
         root_paths.add(path)
     else:
         root_agg = tot.agg(0, users)
         root_agg.kind, root_agg.nc = None, None
     stats["s"] = round(time.monotonic() - t0, 4)
     stats["kept"] = len(kept)
-    return Read(path, v, dP, root_agg, kept, depth, folded_of, T, deepest, float(atten), roots, net, E, EA, hit,
+    return Read(path, v, dP, root_agg, kept, depth, folded_of, T, deepest, float(atten), roots, net_b, net_o, E, EA, hit,
                 int((~draw).sum()) if fold else 0, stats, root_paths)
 
 
@@ -660,7 +690,7 @@ def match_lists(ix: MemIndex, r: Read) -> dict:
         order = np.zeros(1, np.int64)
     else:
         roots, order = _sorted_paths(ix, r.roots)
-    b, o = r.net.b.astype(np.int64), r.net.o.astype(np.int64)
+    b, o = r.net_b, r.net_o
     rank = np.empty(len(order), np.int64)
     rank[order] = np.arange(len(order))
     morder = np.lexsort((rank, -b))
@@ -794,9 +824,9 @@ def _side_lists(ix: MemIndex, r: Read | None):
     if r is None:
         return pa.array([], pa.large_string()), np.zeros(0, np.int64), np.zeros(0, np.int64)
     if r.hit:
-        return pa.array([r.path], pa.large_string()), r.net.b.astype(np.int64), r.net.o.astype(np.int64)
+        return pa.array([r.path], pa.large_string()), r.net_b, r.net_o
     arr, order = _sorted_paths(ix, r.roots)
-    return arr.take(pa.array(order)), r.net.b[order].astype(np.int64), r.net.o[order].astype(np.int64)
+    return arr.take(pa.array(order)), r.net_b[order], r.net_o[order]
 
 
 def _matched_union(ixa: MemIndex, va: Read | None, ixb: MemIndex, vb: Read | None) -> Iterator[list]:
