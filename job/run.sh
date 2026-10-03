@@ -208,6 +208,8 @@ if [ "${REPROC:-0}" != "1" ]; then
   [ -n "${LISTING_PROCS:-}" ] && LZ+=(-P "$LISTING_PROCS")
   [ -n "${LISTING_WORKERS:-}" ] && LZ+=(-w "$LISTING_WORKERS")
   for b in "${FLEET[@]}"; do LZ+=(-b "$b"); done
+  # central2's chunk weights may also come from the pre-DIY listing layout (opt-in since `cloud` dropped the default).
+  LZ+=(-L marin-us-central2=central2-listing)
   dt-cloud job submit-listing -d "$DATE" -W "${LZ[@]}"
 fi
 echo "PHASE listing-fanout: ${SECONDS}s (wall)" >&2

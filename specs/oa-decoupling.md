@@ -1,6 +1,8 @@
 # OA decoupling: OA-specific behavior leaves `cloud`, as deployment config
 
-**Status:** planned 2026-10-03 (root session), per `branch-layout.md` §0. Branch config (step 0) is out to gcs and cw-s3.
+**Status (2026-10-03):** steps 1–17 done on `cloud`, plus 18's names, comments and package name. dt-cloud carries no OA default (only a credit line in `usernames.py` mentions Marin).
+- **Next:** gcs and cw-s3 rebuild their images (one build each; their step-0 scripts cover every key), then switch to the renamed env vars at leisure. Old names (`GCS_USAGE_TOKEN`/`_URL`, `CW_BUCKET`/`_ENDPOINT`) are accepted for one release. After that, the site's job specs (`planDispatch`, `sweepDispatch`, `cwBatch`) switch to the new names too.
+- **Left:** the test fixtures' Marin-shaped bucket names (examples); the secret names (Ryan: OK as they are).
 
 ## Goal
 
