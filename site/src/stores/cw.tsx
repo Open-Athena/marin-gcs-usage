@@ -6,6 +6,12 @@ const store: Store = {
   label: 'CoreWeave',
   title: 'Marin CoreWeave usage',
   desc: 'Storage usage of the Marin CoreWeave buckets — treemap, diffs over time, and reviewed deletions.',
+  about: (
+    <p>
+      Every object in Marin’s two CoreWeave buckets (<code>marin-us-east-02a</code>, <code>hero-checkpoints</code>),
+      listed every 6 hours and summed by directory. Sizes are bytes stored; “created” is each object’s upload time.
+    </p>
+  ),
   path: '/',
   scheme: 's3://',
   base: '/data/cw',
