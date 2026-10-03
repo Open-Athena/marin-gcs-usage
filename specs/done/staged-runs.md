@@ -101,3 +101,15 @@ IAM: none new — the dispatch account already submits Batch jobs and acts as th
 ### Emptied batches
 
 `planDetail` (staging deployments) adds `emptied`: each stage batch with no items left, with what became of what it staged — absorbed into a later batch (an insert audit whose `old_json.absorbed` names it), unstaged (a delete audit), or covered from the start (the gesture's `covered`). `/staged` renders each as one collapsed line among the batches.
+
+## Done
+
+- Server (`90edcb68`): `_lib/sweepUndo.ts` + `api/sweep/undo.ts`; `sweepJobSpec` / `submitSweepJob` / `undoScript` / `RUN_ID_RE` / `jobStampOf` in `_lib/sweepDispatch.ts` (the dispatch now also sets `PLAN_ID`); `sweepJobView` + undo jobs in `api/sweep/jobs.ts`; ops in `api/plan-sweep/jobs.ts`; `runDetail` + `emptiedBatches` in `_lib/plans.ts`, `GET /api/plans/run?id=` in `api/plans/[[path]].ts`.
+- Client (`0c00b27d`): `src/runs.ts` (pure: `EXEC_CAPS`, `runJobId`, `joinRuns`, `plannedOf`, `sumProgress`, `loggedOf`, `verifyRun`, `runControls`, …), `src/StagedRuns.tsx` (runs table + run detail), `src/plans.ts` hooks (`usePlanList`, `useClosePlan`, `useRunDetail`, `useRunFiles`, `useStagedPlan(live, id)`, the bucket cut in `useDispatch`, `RunAction`), `src/StagedPage.tsx` (plan picker, close plan, bucket cut, emptied lines, the runs section).
+- Tests: `functions/_lib/stagedRuns.test.ts` (undo gate, run buckets, the undo route end to end with a generated SA key and stubbed GCP — refusals before any GCP call, the exact submitted spec, the row update, a failed submit; `sweepJobView`; `/api/plans/run`; emptied-batch replay, pure and through `/api/plans/staged`), `functions/_lib/sweepDispatch.test.ts` (`sweepJobSpec`, `undoScript`, stamps / run ids), `src/runs.test.ts`.
+
+### Notes
+
+- `undo_state = 'partial'` on submit mirrors plan-sweep's undo; the row reads "partly undone" if the undo job dies before `record_undo` (the console shows "undoing" while the job is live). Re-running an undo is safe (already-live names are left alone).
+- IAM: nothing new was granted. The job account restores through `objectUser` (`storage.objects.restore`, checked by every real run's preflight) and records to D1 with the same `cf-pages-token` secret a run uses; the dispatch account only submits the job.
+- The gcs API guide in `CLAUDE.md` (deployment-branch text) doesn't list `POST /api/sweep/undo` / `GET /api/plans/run` yet.
