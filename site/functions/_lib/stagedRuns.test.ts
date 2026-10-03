@@ -44,12 +44,12 @@ describe('undoGate — a finished real run, inside its window, not already undon
   })
 })
 
-// A gcs D1 with plan 1 and one finished real run of it.
+// A D1 (the cw lineage: the sweep schema is shared) with plan 1 and one finished real run of it.
 async function gcsDb({ buckets = B1 as string | null, deadline = NOW + 100 as number | null, mode = 'real' } = {}) {
-  const { db, raw } = await sqliteD1('gcs')
+  const { db, raw } = await sqliteD1('cw')
   await db.prepare("INSERT INTO plans (id, name, state, created_by, created_ts) VALUES (1, 'Staged', 'open', 'ann', 1)").run()
   await db.prepare(`
-    INSERT INTO deletion_runs (run_id, plan, scan, head, exec_head, actor, mode, started_ts, finished_ts, deleted_bytes, deleted_objects,
+    INSERT INTO deletion_runs (run_id, manifest, scan, head, exec_head, actor, mode, started_ts, finished_ts, deleted_bytes, deleted_objects,
       skipped_gone, skipped_overwritten, drift_dirs, undo_deadline, log_dir, buckets, plan_id)
     VALUES (?, 'gs://my-data/sweep/runs/gcs-sweep-real-20260928-120000z', '2026-09-28', 0, 0, 'ann', ?, 100, 200, 3000, 3, 1, 0, 0, ?,
       'gs://my-data/sweep/runs/gcs-sweep-real-20260928-120000z', ?, 1)
@@ -235,7 +235,7 @@ describe('emptied stage batches — replayed from the plan_items audit trail', (
   })
 
   it('end to end: two gestures, the second stages the first\'s ancestor; /api/plans/staged carries it', async () => {
-    const { db } = await sqliteD1('gcs')
+    const { db } = await sqliteD1('cw')
     const s1 = await stageItems(db, [`gs://${B1}/runs/a/`, `gs://${B1}/runs/b/`], 'ann', 'old runs', SHAPE)
     const s2 = await stageItems(db, [`gs://${B1}/runs/`], 'bob', 'all of runs', SHAPE)
     expect([s1, s2]).toEqual([
