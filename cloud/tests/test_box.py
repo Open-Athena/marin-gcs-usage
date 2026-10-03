@@ -200,22 +200,14 @@ def test_subtree_scoped(own):
 @pytest.mark.parametrize("i", range(len(GOLDEN["subtree"])))
 def test_subtree_parity(i, fixture_ix):
     """Every case's body equals the Worker's, less the fields only one side
-    has (`tier` / `index`, the Worker's coverage flags), except where the
-    Worker is wrong: a NOT-only query at the store root, where its
-    `rootFor('')` drops every exclusion (specs/filter-query-service.md §6.1)."""
+    has (`tier` / `index`, the Worker's coverage flags). (A NOT-only query at
+    the store root agrees too since the Worker's `rootFor('')` fix, 10f553e:
+    both subtract the six `ttl` roots.)"""
     e = GOLDEN["subtree"][i]
     c, want = e["case"], e["body"]
     got = body(fixture_ix, c["path"], c["q"], date=want["date"], w=c.get("w", 1280), h=c.get("h", 896), min_area=c.get("minArea", 12), atten=c.get("atten", 2), max_depth=c.get("depth"))
     drop = {"tier", "index", "partial", "partialReason", "approximate", "approximateReason"}
     got, want = ({k: v for k, v in b.items() if k not in drop and v is not None} for b in (got, want))
-    if (c["q"], c["path"]) == ("-ttl", ""):
-        # The Worker: the store's whole total, no tree. The box: less the
-        # six `ttl` roots (7,352,542 B / 8 objects).
-        assert (want["tree"]["b"], want["tree"]["o"], want["nodes"], got["tree"]["b"], got["tree"]["o"], got["excluded"]) == (
-            29339231, 6020, 0, 29339231 - 7352542, 6020 - 8,
-            ["bk/fill/zz-TTL-b", "bk/fill/zz-ttl-a", "bk/iris/TTL-misc", "bk/tmp/ttl=14d", "bk/tmp/ttl=7d", "zz/Checkpoints/ttl"],
-        )
-        return
     assert got == want
 
 
