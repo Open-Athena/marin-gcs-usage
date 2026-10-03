@@ -4,7 +4,8 @@
 # $SB/src (uploaded by `job/serving-box-submit.sh`), outputs go to $SB/out/$BENCH_JOB.
 #
 #   serving-box-bench.sh build   # build the mem index from GEN, upload it, score it (warm from NVMe)
-#   serving-box-bench.sh target  # on the target VM size: mem cold from GCS + warm from NVMe,
+#   serving-box-bench.sh target  # on the target VM size: mem cold from GCS + warm from NVMe (+ mapped: STEPS=…,mmap;
+#                                # + `serve-query` scored over HTTP: STEPS=…,serve),
 #                                # DuckDB names-first, then both through gcsfuse / rclone mounts
 set -uo pipefail
 MODE=${1:?build|target|py}
@@ -63,6 +64,26 @@ target)
   dtc bench-engine -e mem -i "$INDEX/" -s /stage/cold -t "$THREADS" -n mem-gcs -Q $Q -T $T -o $runs "$GEN" 2>&1 | tee $OUT/mem-gcs.log
   step "mem, warm from NVMe (page cache dropped)"
   dtc bench-engine -e mem -i /stage/cold/mem-index -E -t "$THREADS" -n mem-nvme -k tomat -k step -Q $Q -T $T -o $runs "$GEN" 2>&1 | tee $OUT/mem-nvme.log
+  if [[ ,$STEPS, == *,mmap,* ]]; then
+  step "mem, mapped from NVMe (page cache dropped): every query"
+  dtc bench-engine -e mem -M -i /stage/cold/mem-index -E -t "$THREADS" -n mem-mmap -Q $Q -T $T -o $runs "$GEN" 2>&1 | tee $OUT/mem-mmap.log
+  fi
+  if [[ ,$STEPS, == *,serve,* ]]; then
+  step "serve-query over the staged index, scored through HTTP (probe -Q: full responses)"
+  mkdir -p /stage/root && ln -sfn /stage/cold/mem-index "/stage/root/${SCAN:-2026-10-01}"
+  QUERY_BOX_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+  export QUERY_BOX_TOKEN
+  python3 -u -m dt_cloud.cli serve-query -p 8080 -t "$THREADS" /stage/root > $OUT/serve.log 2>&1 &
+  spid=$!
+  for _ in $(seq 120); do curl -sf localhost:8080/healthz > /dev/null && break; sleep 1; done
+  t0=$(date +%s.%N)
+  curl -sf -H "Authorization: Bearer $QUERY_BOX_TOKEN" localhost:8080/warm | tee $OUT/warm.json; echo
+  echo "warm_s $(python3 -c "print(round($(date +%s.%N) - $t0, 2))")" | tee -a $OUT/serve-mem.txt
+  grep -E 'VmRSS|VmHWM' /proc/$spid/status | tee -a $OUT/serve-mem.txt
+  GCS_USAGE_TOKEN=$QUERY_BOX_TOKEN dtc probe -Q $Q -T $T -u http://127.0.0.1:8080 ${PROBE_ARGS:-} -o $runs 2>&1 | tee $OUT/probe-box.log
+  grep -E 'VmRSS|VmHWM' /proc/$spid/status | tee -a $OUT/serve-mem.txt
+  kill $spid
+  fi
   rm -rf /stage/cold
   fi
   if [[ ,$STEPS, == *,duckdb,* ]]; then

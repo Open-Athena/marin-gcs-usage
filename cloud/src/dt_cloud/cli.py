@@ -687,32 +687,22 @@ def bench_truth(append: bool, check: tuple[str, ...], only: tuple[str, ...], mem
 
 
 @main.command("bench-index")
-@option("-a", "--add-sorts", is_flag=True, help="Only add the vocabulary's sort orders to the index at `-o` (its `vocab.arrow` fetched from `-u` if absent); GEN is ignored")
 @option("-m", "--mem", default="90GB", help="DuckDB memory limit")
-@option("-o", "--out", type=Path, required=True, help="Local dir for the index (`.npy` arrays + `vocab.arrow` + `meta.json`)")
+@option("-o", "--out", type=Path, required=True, help="Local dir for the index (`.npy` arrays + `detail.parquet` + `meta.json`)")
 @option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs)")
 @option("-t", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-T", "--tmp", "tmp_dir", default=None, help="DuckDB spill dir")
 @option("-u", "--upload", default=None, help="Also upload the index to this gs:// prefix")
 @argument("gen")
-def bench_index(add_sorts: bool, mem: str, out: Path, stage: Path | None, threads: int, tmp_dir: str | None, upload: str | None, gen: str) -> None:
-    """Build the serving box's in-memory index (`dt_cloud.bench.mem`) from one
-    index generation (GEN: its dir, local or gs://, holding `path-index.parquet`
-    and the v1 `path-index.names.parquet`). Heavy: a VM beside the data."""
+def bench_index(mem: str, out: Path, stage: Path | None, threads: int, tmp_dir: str | None, upload: str | None, gen: str) -> None:
+    """Build the serving box's in-memory index (`dt_cloud.bench.mem`, format
+    2) from one index generation (GEN: its dir, local or gs://, holding
+    `path-index.parquet` and the v1 `path-index.names.parquet`). Heavy: a VM
+    beside the data."""
     import fsspec
 
     from .bench import local, mem as bm
 
-    if add_sorts:
-        if not (out / bm.VOCAB).exists():
-            if not upload:
-                raise UsageError(f"no {out / bm.VOCAB} and no -u to fetch it from")
-            local.stage_file(f"{upload.rstrip('/')}/{bm.VOCAB}", out / bm.VOCAB)
-        r = bm.add_sorts(out)
-        if upload:
-            r["upload"] = local.upload_dir(out, upload, only=[f"{k}.npy" for k in bm.SORTS])
-        print(json.dumps(r))
-        return
     g = gen.rstrip("/")
     path_file, names = f"{g}/path-index.parquet", f"{g}/path-index.names.parquet"
     if stage:
@@ -734,6 +724,7 @@ def bench_index(add_sorts: bool, mem: str, out: Path, stage: Path | None, thread
 @option("-E", "--evict", is_flag=True, help="Drop the index / generation files from the page cache before loading (a warm-from-disk load)")
 @option("-i", "--index", default=None, help="`-e mem`: the index dir (local, a mount, or gs:// → copied to `-s` first)")
 @option("-k", "--only", multiple=True, help="Run only these query ids (repeatable)")
+@option("-M", "--mmap", is_flag=True, help="`-e mem`: map the index's arrays instead of reading them (pages load as queries touch them)")
 @option("-m", "--mem", default="48GB", help="DuckDB memory limit (`-e duckdb`)")
 @option("-n", "--name", default=None, help="Engine label in the record (e.g. `duckdb@gcsfuse`)")
 @option("-o", "--out", default=None, help="Write the run record to this path or prefix (`…/` → `<prefix><name>-<ts>.json`)")
@@ -744,7 +735,7 @@ def bench_index(add_sorts: bool, mem: str, out: Path, stage: Path | None, thread
 @option("-T", "--truth", required=True, help="The ground truth (`bench-truth -o`'s dir or gs:// prefix)")
 @option("-U", "--url", default=None, help="`-e ch`: ClickHouse's HTTP endpoint (default http://localhost:8123)")
 @argument("gen")
-def bench_engine(cold: bool, tmp_dir: str | None, engine: str, evict: bool, index: str | None, only: tuple[str, ...], mem: str, name: str | None, out: str | None, queries: str, repeat: int, stage: Path | None, threads: int, truth: str, url: str | None, gen: str) -> None:
+def bench_engine(cold: bool, tmp_dir: str | None, engine: str, evict: bool, index: str | None, only: tuple[str, ...], mmap: bool, mem: str, name: str | None, out: str | None, queries: str, repeat: int, stage: Path | None, threads: int, truth: str, url: str | None, gen: str) -> None:
     """Score a serving-box engine in-process against a query set's ground
     truth (specs/filter-query-service.md §6 phase 2): load time, resident
     memory, per-answer latency (roots + totals; root paths timed apart) and
@@ -763,7 +754,7 @@ def bench_engine(cold: bool, tmp_dir: str | None, engine: str, evict: bool, inde
         cases = [c for c in cases if c.id in only]
     tr = bs.Truth(truth)
     try:
-        ix, kind, load = serve.load_engine(engine, gen, index=index, stage=stage, evict=evict, threads=threads, mem=mem, tmp_dir=tmp_dir, url=url, cold=cold)
+        ix, kind, load = serve.load_engine(engine, gen, index=index, stage=stage, evict=evict, threads=threads, mem=mem, tmp_dir=tmp_dir, url=url, cold=cold, mmap=mmap)
     except ValueError as e:
         raise UsageError(str(e)) from e
     if engine == "mem":
@@ -846,6 +837,41 @@ def bench_serve(tmp_dir: str | None, engine: str, evict: bool, host: str, index:
         raise UsageError(str(e)) from e
     err(f"bench-serve {engine}: loaded in {load['total_s']}s; {json.dumps(load)}")
     serve.serve(local.LocalEngine(kind, ix, name=engine), cases, tr, load, host=host, port=port)
+
+
+@main.command("serve-query")
+@option("-2", "--diff", "n_latest", flag_value=2, default=1, help="Load the two latest scans (filtered diffs between them), not just the latest")
+@option("-A", "--no-auth", is_flag=True, help="Serve without a bearer token (local use only)")
+@option("-b", "--bind", default="0.0.0.0", help="Address to listen on")
+@option("-d", "--date", "dates", multiple=True, help="Load these scans (repeatable; default: the latest under ROOT)")
+@option("-D", "--remote-detail", is_flag=True, help="Read a gs:// index's `detail.parquet` in place (ranged reads) instead of copying it")
+@option("-l", "--root-label", default=None, help="The store root's name in a tree (default: $ROOT_LABEL, else `marin GCS`)")
+@option("-M", "--mmap", is_flag=True, help="Map the index's arrays instead of reading them (a tmpfs copy then costs its RAM once)")
+@option("-p", "--port", default=None, type=int, help="Port (default: $PORT, else 8080)")
+@option("-s", "--stage", type=Path, default=None, help="Copy gs:// indexes here first (on Cloud Run: an in-memory dir, with -M)")
+@option("-t", "--threads", default=None, type=int, help="Vocabulary-scan threads (default: the CPU count)")
+@option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="The env var holding the bearer token reads must present")
+@argument("root")
+def serve_query(n_latest: int, no_auth: bool, bind: str, dates: tuple[str, ...], remote_detail: bool, root_label: str | None, mmap: bool, port: int | None,
+                stage: Path | None, threads: int | None, token_env: str, root: str) -> None:
+    """The serving box (specs/filter-query-service.md): answer the Worker's
+    filtered `/api/subtree?q=` and `/api/diff?q=` from in-memory indexes
+    (`bench-index`'s format 2), one per scan under ROOT (`<ROOT>/<date>/`,
+    local or gs://). Listens at once; `/healthz` reports `loading` until the
+    scans are in memory."""
+    import os as _os
+
+    from .box import server as bs
+
+    token = None if no_auth else bs.token_from_env(token_env)
+    if token is None and not no_auth:
+        raise UsageError(f"${token_env} is unset (or pass -A to serve without auth)")
+    box = bs.Box(
+        root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,
+        threads=threads or _os.cpu_count() or 8, root_label=root_label or _os.environ.get("ROOT_LABEL") or "marin GCS",
+        syntax=_os.environ.get("QUERY_SYNTAX") or "simple",
+    )
+    bs.serve(box, bind=bind, port=port or int(_os.environ.get("PORT") or 8080), token=token)
 
 
 def bucket_sources(specs: tuple[str, ...], default_bucket: str) -> list[tuple[str, str]]:

@@ -39,6 +39,7 @@ def load_engine(
     tmp_dir: str | None = None,
     url: str | None = None,
     cold: bool = False,
+    mmap: bool = False,
 ) -> tuple[object, str, dict]:
     """(the engine's index object, `LocalEngine` kind, load stats)."""
     from . import local, mem as bm
@@ -58,11 +59,12 @@ def load_engine(
         if evict:
             bm.evict(d)
         t1 = time.monotonic()
-        ix = bm.MemIndex.load(d, threads=threads)
+        ix = bm.MemIndex.load(d, threads=threads, mmap=mmap)
         load["load_s"] = round(time.monotonic() - t1, 2)
+        load["mmap"] = mmap
         load["nbytes"] = ix.nbytes()
         load["nodes"] = ix.n
-        load["names"] = len(ix.names)
+        load["names"] = ix.V
         kind = "mem"
     elif engine == "duckdb":
         from . import duck
