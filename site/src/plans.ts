@@ -170,10 +170,10 @@ export function useUnstage(planId: number | null) {
  *  what a real run would delete; a real run deletes, recoverably. */
 export function useDispatch(planId: number | null) {
   const qc = useQueryClient()
-  return useMutation<{ job_id: string }, Error, { mode: 'dry' | 'real'; date: string; buckets?: string[] }>({
-    mutationFn: ({ mode, date, buckets }) => {
+  return useMutation<{ job_id: string }, Error, { mode: 'dry' | 'real'; date: string; buckets?: string[]; machine?: string }>({
+    mutationFn: ({ mode, date, buckets, machine }) => {
       if (planId == null) throw new Error('nothing staged')
-      return call(`${EXEC_API}/dispatch`, 'POST', { plan_id: planId, mode, date, ...(buckets ? { buckets } : {}) })
+      return call(`${EXEC_API}/dispatch`, 'POST', { plan_id: planId, mode, date, ...(buckets ? { buckets } : {}), ...(machine ? { machine } : {}) })
     },
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['plans'] }); void qc.invalidateQueries({ queryKey: ['sweep-jobs'] }) },
   })

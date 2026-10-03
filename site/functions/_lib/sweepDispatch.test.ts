@@ -70,7 +70,7 @@ describe('sweepScript — the Batch container\'s bash', () => {
 
 describe('sweepJobSpec — the Batch spec every gcs executor job shares (a run, an undo)', () => {
   it('the image runs the script as the job account, beside its buckets, per-job env first', () => {
-    const cfg = { project: 'my-project', image: 'img:1', cfAccountId: 'acct', dataBucket: 'my-data' }
+    const cfg = { project: 'my-project', image: 'img:1', cfAccountId: 'acct', dataBucket: 'my-data', d1DbId: 'd1-id', d1DbName: 'my-db' }
     expect(sweepJobSpec({
       cfg, jobSa: 'job@my-project.iam.gserviceaccount.com', region: 'us-east1', script: 'echo hi',
       actor: 'ann', siteUrl: 'https://site.example', env: { OP: 'undo', TARGET_RUN: '2026-09-28-p1/20260928T120000Z' },
@@ -85,7 +85,7 @@ describe('sweepJobSpec — the Batch spec every gcs executor job shares (a run, 
           environment: {
             variables: {
               OP: 'undo', TARGET_RUN: '2026-09-28-p1/20260928T120000Z',
-              USER: 'ann', CLOUDFLARE_ACCOUNT_ID: 'acct', DATA_BUCKET: 'my-data', SITE_URL: 'https://site.example',
+              USER: 'ann', CLOUDFLARE_ACCOUNT_ID: 'acct', DATA_BUCKET: 'my-data', D1_DB_ID: 'd1-id', D1_DB_NAME: 'my-db', SITE_URL: 'https://site.example',
             },
             secretVariables: {
               SITE_TOKEN: 'projects/my-project/secrets/gcs-sheet-sync-token/versions/latest',
