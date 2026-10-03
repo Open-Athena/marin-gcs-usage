@@ -17,7 +17,7 @@ for i in "${!days[@]}"; do
   next=${days[$((i + 1))]:-}
   [ -n "$next" ] && { fetch "$next" & pf=$!; }
   t0=$(date +%s)
-  docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/src --entrypoint python3 "$IMAGE" -u -m dt_cloud.cli \
+  docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/src -e CH_INGEST_PAIRS="${CH_INGEST_PAIRS:-}" --entrypoint python3 "$IMAGE" -u -m dt_cloud.cli \
     ch-ingest -d "$d" -F -t "${THREADS:-8}" "$d.parquet" >> /data/ingest.jsonl 2>> /data/ingest.log
   echo "ingested $d rc=$? in $(( $(date +%s) - t0 ))s (src $(cat "/data/in/$d.src"))" >> /data/ingest.log
   rm -f "/data/in/$d.parquet"

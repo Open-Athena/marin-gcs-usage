@@ -76,7 +76,7 @@ push)
 ingest)
   IP=$(ip)
   shift
-  vssh "sudo nohup bash -c 'THREADS=${THREADS:-8} /data/ingest-days.sh $*' > /dev/null 2>&1 < /dev/null & echo started"
+  vssh "sudo nohup bash -c 'THREADS=${THREADS:-8} CH_INGEST_PAIRS=${CH_INGEST_PAIRS:-} /data/ingest-days.sh $*' > /dev/null 2>&1 < /dev/null & echo started"
   ;;
 serve)
   IP=$(ip)
