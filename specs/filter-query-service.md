@@ -1,6 +1,6 @@
 # Serving box: a stateful query backend behind the Worker
 
-Status: proposed (2026-10-02). Supersedes this spec's earlier scale-to-zero Cloud Run design (after [phase 0]). Reviewed by the root session. Owner: the gcs session. Code lands on `cloud` (shared); a deployment opts in with its own VM.
+Status: proposed (2026-10-02); phases 1–3 done 2026-10-03 (§6.1–6.3). Supersedes this spec's earlier scale-to-zero Cloud Run design (after [phase 0]). Reviewed by the root session. Owner: the gcs session. Code lands on `cloud` (shared); a deployment opts in with its own VM.
 
 ## 1. Why
 
@@ -97,7 +97,7 @@ The Worker's search sidecars become an optional fast path: selective queries sta
    - **Ground truth:** `dt-cloud bench-truth <queries> <gen> -o <truth>` (Batch, n2-highmem-16). Names-first (phase 0's method, v1 `rgs`) wherever the index's lemma bounds the candidates; a one-pass `path` scan for the rest (a term ending in `/`, `regex`), keeping only rows where a half of the predicate becomes true (a regex: every row it holds on). `-c <id>` computes a query both ways and compares. Per query × view: the match roots (count, md5 of the sorted list, the list with each root's net totals when ≤ 50k), the outermost excluded paths, and net totals, with the Worker's semantics (root hit, NOT subtraction; specs/path-store-search.md §1). gcs 2026-10-01: `gs://oa-gcs-usage-dvx/scratch/bench/truth/2026-10-01/`.
    - **Scoring:** `dt-cloud probe -Q <queries> -T <truth> [-c] [-r N] [-x qe=…] [-u <base>]` sends every query × view to `/api/subtree?q=&qs=&full=1`, one at a time, and scores it: `exact` (root set and net totals match, unflagged), `exact*` (exact but flagged), `flagged` (inexact, flagged `partial` / `approximate`), **`FAIL` (inexact and unflagged: a correctness bug)**, `refused` (a 413), `error`. Wall and `server-timing` latency per request; a JSON record per run (`-o …/runs/`). The engine is pluggable (`bench.score.Engine`): the deployed Worker, a local `wrangler` stack with another index variant, the box, or a `qe=` override are all the same `SubtreeEngine` at another base URL or with another param.
 2. **Prototype the engines** (§4.2) on a Batch or dev VM against the harness: the Worker index (v1, v2, templated), DuckDB names-first, and the custom in-memory index; cache layers per §4.3. Pick. Done 2026-10-03 for the box's two engines and two cache layers (results and the pick in §6.2); the Worker index variants weren't re-run.
-3. **`dt-cloud serve-query`**, with parity tests (the shared AST case table, run against the vitest fixtures).
+3. **`dt-cloud serve-query`**, with parity tests (the shared AST case table, run against the vitest fixtures). Done 2026-10-03, with the index slimmed first (§6.3).
 4. **Worker hand-off** behind `QUERY_BOX_URL` (absent = today's behaviour), the `qe=` override, and probe scenarios.
    - **The tier selector is only `QUERY_BOX_URL`**, set or unset in a deployment's `[vars]`. Unset means Worker-only, the `cloud` default. There is no tier enum; the local tier is the app build.
    - **Every filtered response names its engine and time** in a header, Worker-only ones included (e.g. `x-query-engine: worker;dur=1234`, `box;dur=…`), so `dt-cloud probe` compares tiers across deployments with no config.
@@ -276,7 +276,7 @@ Reading it:
 
 - **Engine: the custom in-memory index (`mem`).** It is exact on all 105 cases. On 8 vCPU it answers in 0.44 s at the median, 2.1 s at p90 and 5.2 s at worst (the 20M-root `step-` / `.npy` at the store root); selective terms take 0.03–0.5 s. DuckDB names-first is exact too, but its broad terms cost 14–91 s: it is the fallback for a generation that isn't loaded, not the primary.
 - **Cache layer: gcsfuse's file cache on the local SSD**, LRU by size (`--file-cache-max-size-mb` about 300 GB). It holds the latest ~7 generations' index files (40 GB each) and the parquet the fallback reads, and it gave the fastest cold load (89 s to RAM). rclone's sparse cache only pays off for DuckDB-style range reads, and it makes them 10–20× slower cold.
-- **VM size: n2-highmem-16 (128 GB), not -8, if diffs go through the box.** One generation holds 40.6 GB resident and peaks at 49 GB. A diff needs two generations, which is over 64 GB even on a diet:
+- **VM size: n2-highmem-16 (128 GB), not -8, if diffs go through the box.** (Superseded by §6.3: the slimmed index holds two scans in n2-highmem-8.) One generation holds 40.6 GB resident and peaks at 49 GB. A diff needs two generations, which is over 64 GB even on a diet:
   - sharing one vocabulary across consecutive generations saves 14 GB on the second;
   - dropping the children CSR, which filters don't use, saves 6 GB;
   - an exceptions map for the original-case names saves about 3 GB (57M of the 127M names have upper case, 3.3 GB).
@@ -286,10 +286,143 @@ Reading it:
 - **Expected latency behind the Worker**, as measured on n2-highmem-8 (n2-highmem-16 should be no slower): 0.05–0.5 s for anchored and selective terms, 1–2 s for dense substrings, and about 5 s for the 20M-root sets at the store root, plus the Worker→tunnel→box hop (unmeasured). Against today's Worker (§6.1: median 6.9 s, 71 of 105 flagged), every answer would be exact and unflagged. The box's response draws a tree, so it never lists millions of roots: the bench's 62 s to list `step-`'s 18.7M root paths doesn't apply.
 - **Sizes that need the box.** gcs (778M rows) does. cw-s3 is 12× smaller (about 63M rows per scan): its Worker-only cold probe takes 4.7 s at the root, 5.2 s at a bucket, 6.8 s for a filter hit and 1.5 s for a miss. Scaled by rows, cw's `mem` index would be about 3.3 GB, small enough for a small VM, or for gcs's box. Whether cw needs a box at all depends on how often its filters come back flagged; the per-scan cold-probe records landing under `gs://oa-gcs-usage-dvx/probes/cw/` will show that.
 
+### 6.3 Phase 3 results: the slim index and `dt-cloud serve-query` on gcs 2026-10-01
+
+The index was slimmed first, since its size decides where the box can run. Then `dt-cloud serve-query` serves it over HTTP. Both ran on Batch against the phase-1 truth, on the box's size (n2-highmem-8, one local SSD).
+
+**Code** (on `cloud`; gcs's Batch wrappers `job/serving-box-{submit,bench}.sh` gained `STEPS=…,mmap,serve`):
+
+- `dt_cloud.bench.mem`, index format 2 (`dt-cloud bench-index` writes it; format 1 no longer loads).
+- `dt_cloud.box.view` ports `view.ts`'s filter branch, `buildView` and `buildDiff`; `dt_cloud.box.server` serves it.
+- `dt-cloud serve-query`, and `deploy/serve-query/Dockerfile`.
+
+#### The index, format 2
+
+Where the 40.4 GB went (§6.2's table) and what each structure became. 778,372,702 nodes, 127,349,049 names:
+
+| structure | format 1 | format 2 | how |
+|---|---:|---:|---|
+| node → parent | 3.1 | 3.1 | int32; nodes renumbered breadth-first (depth, parent, bytes descending), so `parent` is non-decreasing |
+| node → children (`child`, `child_off`) | 6.2 | 0 | a node's children are one id range, found by binary search on `parent`, already largest first |
+| node → depth | 0.8 | 0 | a depth is an id range (`dstart`) |
+| node → name (`nid`) | 3.1 | 3.1 | int32 |
+| bytes `b` | 6.2 | 3.1 | uint32, plus an overflow table for the 289,184 nodes past 4 GiB |
+| objects `o` | 3.1 | 0.8 | uint8, plus an overflow table for the 370,541 nodes past 254 |
+| name → nodes | 3.6 | 3.6 | unchanged |
+| vocabulary | 13.2 | 7.3 | lowercase blob (5.6) + offsets (1.0); the original case as one bit per byte (0.7), plus the 75,006 names whose case isn't plain ASCII stored whole (7 MB) |
+| vocabulary sort orders | 1.0 | 1.0 | unchanged |
+| **resident** | **40.4** | **22.1** | 28 bytes per node, from 52 |
+| cold detail (`detail.parquet`) | — | 3.8 | not loaded. Per node: owner, kind, mean write time, last read, class bytes. Read by row group for the nodes a response shows, plus every root (the root and ancestors' totals). |
+
+Owner slices are in the detail: 3,254 paths have more than one, kept slice by slice in `slices.parquet`. The response's per-node fields (`d`, `a`, `cb`, `us`) and the `o=` / `cl=` scopes come from them.
+
+Not done, still levers:
+
+- `parent` by rank over a bitmap (−2.7 GB);
+- 32-bit vocabulary offsets (−0.5 GB);
+- one vocabulary shared by consecutive scans (−7 GB on the second).
+
+None is needed for the targets below.
+
+#### Measured (n2-highmem-8: 8 vCPU, 64 GB)
+
+| | format 1 (§6.2) | format 2 |
+|---|---|---|
+| exact, in-process (`bench-engine`) | 105 / 105 | **105 / 105** (read, and mapped with `-M`) |
+| exact through HTTP (`probe -Q` against `serve-query`, full responses) | — | **105 / 105** |
+| latency p50 / p90 / max (roots + totals, in-process) | 0.44 / 2.1 / 5.2 s | **0.44 / 1.9 / 4.9 s** |
+| `serve-query` time to first byte p50 / p90 / max (search, aggregates, tree, every root path sorted) | — | 1.29 / 3.3 / 82 s; 1.23 / 3.3 / 5.1 s without the three answers of over 1M roots |
+| resident after load | 40.6 GB | **22.4 GB (20.9 GiB)** |
+| peak, `bench-engine` (it lists every root path) | 49.4 GB | 31.2 GB |
+| peak, `serve-query` over all 105 cases | — | 30.4 GB (28.3 GiB): 21.1 GiB loaded, 7.2 GiB more for the 20M-root answers |
+| cold load: GCS → local SSD → RAM | 138 s (120 s copy + 18 s) | **102–109 s** (94–101 s parallel copy of 25.9 GB, index and detail, + 8 s read) |
+| warm load from local SSD, page cache dropped | 55 s | **30 s** |
+| mapped (`-M`) | — | 0.14 s, then pages fault in as queries touch them: the first pass's p50 / max was 0.67 / 10.6 s (before the regex fix below) |
+| `serve-query` `/warm` from local SSD, page cache warm | — | 7 s |
+| build | 21 min | 36 min on n2-highmem-32 (vocabulary 7.3 min with its sorts and case bits, nodes 15.3, arrays and renumbering 7.3, detail 3.1) |
+
+Three bugs surfaced on the real data, all fixed and retested:
+
+- **Drilled views took 25–127 s.** `np.searchsorted` with an int64 needle on the int32 `parent` copies the whole array to int64 first: 3 GB per child-range lookup. The needles are now cast to the haystack's dtype.
+- **Regex verification was 5–7× slower.** Rebuilding original-case paths cost it (`/step-[0-9]+$`: 0.18 → 1.19 s). A case-insensitive regex is now tested on the lowercase paths; only paths holding a case exception are re-tested on their original case.
+- **`serve-query` peaked at 33 GB.** The 20M-root answers held every root's full aggregate at once. Roots are now aggregated 2M at a time.
+
+Reading it:
+
+- **One scan fits a Cloud Run instance.** It holds 20.9 GiB resident; the worst request (the 20M-root `step-` / `.npy` at the store root) takes the process to 28.3 GiB of the 32 GiB.
+  - On Cloud Run the files sit in the in-memory filesystem, so `-s /tmp/… -M` maps them and their RAM counts once.
+  - `-D` leaves the 3.8 GB detail on GCS, read by range.
+- **Two scans fit 64 GB, so n2-highmem-8 serves diffs.** 2 × 20.9 GiB resident, plus one request's working set (7.2 GiB at worst, measured), comes to about 49 GiB of the 62 GiB a container gets. §6.2's n2-highmem-16 isn't needed.
+- **Latency is unchanged in-process.** Through HTTP, the server time grows with the number of match roots, about 5–10 µs per root. The time goes to listing every root's path, sorted, for `matches` and `matched`: it equals the bench's path-listing time (`config.json`: 528K roots, 3.7 s; `/step-[0-9]+$`: 317K, 1.7 s).
+  - Reading the detail isn't the cost. Two variants barely moved the server p50, so neither was kept (the published index's detail is the 16K-row variant):
+    - 16K-row detail groups: 1.27 → 1.23 s;
+    - the detail as fixed-width mapped columns (13.2 GB): → 1.17 s.
+  - Faster listing would build paths from shared ancestors, or the lists could be capped (§7).
+- **Where the 20M-root answers go.** They take ~82 s and a response of about 1.5 GB, because `matches` and `matched` list every root, streamed.
+  - The Worker's contract has no cap on those lists; it never got there, since its budgets cut the search.
+  - Either the contract caps them, or the Worker forwards such a query asking for the tree only (§7).
+
+**`serve-query`** answers `/api/subtree?q=` and `/api/diff?q=` with the Worker's bodies and scoping params (`path`, `w`/`h`, `minArea`, `atten`, `depth`, `o=`, `cl=`, `qs=`; `top`, `summary` on a diff).
+
+- **Headers:** every response carries `x-query-engine: box;dur=…` and `server-timing`.
+- **Errors, so the Worker can fall back:**
+  - a scan that isn't loaded: 409;
+  - a lens: 409;
+  - a regex no name filter plans: 501;
+  - still loading: 503 with `retry-after`.
+- **`/healthz`:** `loading | ready | error` and the scans loaded; no auth.
+- **`/warm`:** blocks until loaded. On Cloud Run with request-based billing, an instance has CPU only while a request is in flight.
+- **Auth:** reads need `Authorization: Bearer $QUERY_BOX_TOKEN`.
+- **Scans:** `ROOT/<date>/` index dirs, local or `gs://`. The latest loads by default; `-2` adds the one before, for diffs.
+
+Deliberate differences from the Worker (the `dt_cloud.box.view` docstring):
+
+- **Every match is found:** no `partial` / `approximate`, `truncated: false`.
+- **Past 50K roots** the ones under the forest threshold fold into their parent's `(other)` (`folded: n`). Below 50K every root is drawn, as the Worker does.
+- **A NOT-only query at the store root subtracts.** The Worker's `rootFor('')` doesn't (§6.1).
+- **The diff's lookups are exact and uncapped**, and a store-root match covers the paths under it.
+- **Ties** between equal-sized siblings are ordered by path.
+
+**Parity.** `site/functions/_lib/boxParity.test.ts` writes the Worker's bodies for 39 subtree and 3 diff cases over the `v2-search` fixture (`box-parity.json`). `cloud/tests/test_box.py` answers the same cases with the box and asserts equality field by field, except `tier` / `index` and the coverage flags. All are equal but one: the store-root NOT-only case, where the box's answer is asserted against the Worker's error.
+
+The tests also cover:
+
+- the owner and class scopes, on a generation with multi-slice paths;
+- the overflow columns and case exceptions;
+- chunked aggregation;
+- a diff with changes;
+- the server's statuses.
+
+**Batch spend this phase:** one build (n2-highmem-32, about 50 min), four n2-highmem-8 bench runs and one detail rewrite, about $3. With phase 2's ~$5, the serving box's Batch total is about $8.
+
 ## 7. Open questions
 
 - **AST compiler:** where it lives. TS (Worker) and Python or a compiled language (box) both need it. Keep one AST JSON schema with a shared case table.
 - **Retention of the Worker's sidecars**, if any are built daily: last ~7 scans plus pinned dates.
+- **Caps on `matches` / `matched`:** the box lists every root, so a 20M-root answer (`step-`, `.npy` at the store root) is a 1.5 GB response and ~80 s of listing (§6.3); the Worker never got there, since its budgets cut the search. The contract could cap the lists, with a count and a flag, or the Worker could ask for the tree only.
 - **Anchors in the simple syntax:** `^tomat` / `tomat$` as sugar. `/tomat` and `tomat/` already work as segment-start and segment-end matches.
+
+## 8. Deployment modes and costs
+
+`serve-query` runs unchanged in each mode. The Worker's only switch is `QUERY_BOX_URL` (§6, phase 4). The numbers below are for gcs, with one scan at about 21 GiB resident and a cold load of about 100 s from GCS (§6.3).
+
+- **Cloud Run, request-based billing:** 8 vCPU / 32 GiB per instance (the maximum). One scan fits; diffs don't (32 GiB is one scan). Diffs fall back to the Worker.
+  - **Price:** $0.000024 per vCPU-second plus $0.0000025 per GiB-second, while the instance handles a request. That's $0.000272 per second for 8 vCPU / 32 GiB, about $0.98 per busy hour. An idle instance that isn't a min instance is free.
+  - **Cold start:** an instance starting from zero loads the scan, about 100 s, which is about $0.03 per cold start. Requests in the meantime get 503s, and the Worker answers them.
+    - The caller (the Worker on a 503, or the daily job after publish) holds `/warm` open, which keeps the instance's CPU.
+    - The files go to the in-memory filesystem with `-s /tmp/idx -M`, so they cost their RAM once. `-D` keeps the detail on GCS.
+  - **Usage example:** 1,000 filtered views a day at ~1.5 s each is about 25 busy minutes a day. With a cold start or two a day, that's about $14 a month.
+  - It's the cheapest mode at low use, and the worst first query: up to two minutes of Worker answers while the instance loads.
+- **GCE VM:** n2-highmem-8 (64 GB), one or two scans, so diffs too. The prices are §5's:
+  - **24/7:** about $380 a month on demand, about $240 with a 1-year commitment. n2-highmem-4 (32 GB, half the price) holds one scan, with less CPU for the vocabulary scan.
+  - **Stop/start on a schedule:** billed only while running. Business hours, about 50 h a week, cost about $115 a month. Each start reloads from GCS in about 100 s; a local SSD doesn't keep its data across a stop.
+  - **Spot:** discounted and preemptible. The MIG's autohealing restarts it, and each restart reloads the scan (~100 s) while the Worker answers.
+  - **1-year commitment:** only worth it 24/7, and once a month of use has been measured (§4.4).
+- **A small or local box, for small fleets:** the index costs about 28 bytes a node, plus the detail on disk.
+  - cw-s3 (about 63M rows per scan) needs about 1.8 GB resident. Any small VM holds it, or a laptop or home box behind the tunnel, at roughly $0–50 a month.
+  - The local tier is the app build (§6, phase 4).
+- **The Worker-only tier:** no box, no cost beyond the Worker. Filters come back `partial` / `approximate` past the search budgets (§6.1: 71 of 105 flagged on gcs, median 6.9 s). This is the default when `QUERY_BOX_URL` is unset.
+
+**Recommendation for gcs:** Cloud Run first, at about $10–20 a month. It answers single-scan filters, with diffs left to the Worker. Move to a stop/started or committed n2-highmem-8 only if the cold starts or the missing diffs show up in the probes. Provisioning either is phase 5, and needs a go.
 
 [phase 0]: filter-query-service-p0.md
