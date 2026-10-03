@@ -46,7 +46,7 @@ class Timing:
 
 @dataclass
 class LocalEngine:
-    """`score.Engine` over an in-process `evaluate`: `kind` is `mem` or `duck`."""
+    """`score.Engine` over an in-process `evaluate`: `kind` is `mem`, `duck` or `ch`."""
 
     kind: str
     ix: object
@@ -57,10 +57,13 @@ class LocalEngine:
         self.name = self.name or self.kind
 
     def answer(self, case: Case, view: str) -> Answer:
-        from . import duck, mem
+        from . import ch, duck, mem
 
         try:
             ast = parse(case.q, case.qs)
+            prepare = getattr(self.ix, "prepare", None)
+            if prepare:
+                prepare()
             t0 = time.monotonic()
             if self.kind == "mem":
                 r = mem.evaluate(self.ix, ast, view)
@@ -68,19 +71,23 @@ class LocalEngine:
                 r = self.ix.evaluate(ast, view)
             ms = round((time.monotonic() - t0) * 1000)
             t1 = time.monotonic()
-            if self.kind == "mem":
-                import pyarrow as pa
+            if self.kind == "ch":
+                listed, n, md5 = self.ix.roots_summary(LIST_MAX)
+                roots, kw = (listed, {}) if listed is not None else ([], {"n_roots": n, "roots_md5": md5})
+            else:
+                if self.kind == "mem":
+                    import pyarrow as pa
 
-                arr = pa.array([view], pa.large_string()) if r.hit else self.ix.paths_arrow(np.asarray(r.roots), sort=True)
-            else:
-                arr = self.ix.roots_arrow()
-            n = len(arr)
-            if n <= LIST_MAX:
-                roots, kw = arr.to_pylist(), {}
-            else:
-                roots, kw = [], {"n_roots": n, "roots_md5": md5_sorted(arr)}
+                    arr = pa.array([view], pa.large_string()) if r.hit else self.ix.paths_arrow(np.asarray(r.roots), sort=True)
+                else:
+                    arr = self.ix.roots_arrow()
+                n = len(arr)
+                if n <= LIST_MAX:
+                    roots, kw = arr.to_pylist(), {}
+                else:
+                    roots, kw = [], {"n_roots": n, "roots_md5": md5_sorted(arr)}
             mat = round((time.monotonic() - t1) * 1000)
-        except (mem.Unsupported, duck.Unsupported, QueryError, KeyError) as e:
+        except (mem.Unsupported, ch.Unsupported, QueryError, KeyError) as e:
             self.timings.append(Timing(case.id, view, 0, 0, None, {"error": str(e)}))
             return Answer(501, 0, None, 0, None, None, None, reason=str(e))
         self.timings.append(Timing(case.id, view, ms, mat, n, r.stats))

@@ -729,7 +729,8 @@ def bench_index(add_sorts: bool, mem: str, out: Path, stage: Path | None, thread
 
 @main.command("bench-engine")
 @option("-d", "--tmp-dir", default=None, help="DuckDB spill dir (`-e duckdb`)")
-@option("-e", "--engine", type=Choice(["mem", "duckdb"]), required=True, help="`mem`: the custom in-memory index (`-i`); `duckdb`: names-first over GEN's parquet")
+@option("-C", "--cold", is_flag=True, help="`-e ch`: drop ClickHouse's caches and the OS page cache before every answer (needs root)")
+@option("-e", "--engine", type=Choice(["mem", "duckdb", "ch"]), required=True, help="`mem`: the custom in-memory index (`-i`); `duckdb`: names-first over GEN's parquet; `ch`: ClickHouse (`-U`; tables from `bench-ch-export`)")
 @option("-E", "--evict", is_flag=True, help="Drop the index / generation files from the page cache before loading (a warm-from-disk load)")
 @option("-i", "--index", default=None, help="`-e mem`: the index dir (local, a mount, or gs:// → copied to `-s` first)")
 @option("-k", "--only", multiple=True, help="Run only these query ids (repeatable)")
@@ -739,21 +740,20 @@ def bench_index(add_sorts: bool, mem: str, out: Path, stage: Path | None, thread
 @option("-Q", "--queries", required=True, help="The query set (YAML, local or gs://)")
 @option("-r", "--repeat", default=1, type=int, help="Answers per query × view (the first decides the verdict; timings are medians)")
 @option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs)")
-@option("-t", "--threads", default=16, type=int, help="Threads (vocabulary scan; DuckDB)")
+@option("-t", "--threads", default=16, type=int, help="Threads (vocabulary scan; DuckDB; ClickHouse `max_threads`)")
 @option("-T", "--truth", required=True, help="The ground truth (`bench-truth -o`'s dir or gs:// prefix)")
+@option("-U", "--url", default=None, help="`-e ch`: ClickHouse's HTTP endpoint (default http://localhost:8123)")
 @argument("gen")
-def bench_engine(tmp_dir: str | None, engine: str, evict: bool, index: str | None, only: tuple[str, ...], mem: str, name: str | None, out: str | None, queries: str, repeat: int, stage: Path | None, threads: int, truth: str, gen: str) -> None:
+def bench_engine(cold: bool, tmp_dir: str | None, engine: str, evict: bool, index: str | None, only: tuple[str, ...], mem: str, name: str | None, out: str | None, queries: str, repeat: int, stage: Path | None, threads: int, truth: str, url: str | None, gen: str) -> None:
     """Score a serving-box engine in-process against a query set's ground
     truth (specs/filter-query-service.md §6 phase 2): load time, resident
     memory, per-answer latency (roots + totals; root paths timed apart) and
     the verdicts `probe -Q` gives the Worker. Exits nonzero on any inexact
     answer or error.
     """
-    import time as _time
-
     import fsspec
 
-    from .bench import local, mem as bm, queryset, score as bs
+    from .bench import local, mem as bm, queryset, score as bs, serve
 
     cases = queryset.load(queries)
     if only:
@@ -762,52 +762,22 @@ def bench_engine(tmp_dir: str | None, engine: str, evict: bool, index: str | Non
             raise UsageError(f"unknown query ids: {sorted(unknown)}")
         cases = [c for c in cases if c.id in only]
     tr = bs.Truth(truth)
-    g = gen.rstrip("/")
-    load: dict = {"rss_before": bm.rss()}
-    t0 = _time.monotonic()
+    try:
+        ix, kind, load = serve.load_engine(engine, gen, index=index, stage=stage, evict=evict, threads=threads, mem=mem, tmp_dir=tmp_dir, url=url, cold=cold)
+    except ValueError as e:
+        raise UsageError(str(e)) from e
     if engine == "mem":
-        if not index:
-            raise UsageError("-e mem needs -i")
-        d = Path(index)
-        if index.startswith("gs://"):
-            if not stage:
-                raise UsageError("a gs:// index needs -s")
-            d = stage / "mem-index"
-            load["download"] = local.download_dir(index, d)
-        if evict:
-            bm.evict(d)
-        t1 = _time.monotonic()
-        ix = bm.MemIndex.load(d, threads=threads)
-        load["load_s"] = round(_time.monotonic() - t1, 2)
-        load["nbytes"] = ix.nbytes()
-        load["nodes"] = ix.n
-        load["names"] = len(ix.names)
         load["case_exceptions"] = ix.case_exceptions()
-    else:
-        path_file, names = f"{g}/path-index.parquet", f"{g}/path-index.names.parquet"
-        if stage and g.startswith("gs://"):
-            path_file, s1 = local.stage_file(path_file, stage / "path-index.parquet")
-            names, s2 = local.stage_file(names, stage / "path-index.names.parquet")
-            load["download"] = {"path_s": s1, "names_s": s2}
-        if evict:
-            bm.evict(Path(path_file).parent)
-        from .bench import duck
-
-        ix = duck.DuckIndex(path_file, names, threads=threads, mem=mem, tmp=tmp_dir)
-        load.update(ix.stats)
-        load["duckdb_memory"] = ix.memory()
-    load["total_s"] = round(_time.monotonic() - t0, 2)
-    load["rss"] = bm.rss()
     label = name or engine
     err(f"bench-engine {label}: loaded in {load['total_s']}s; {json.dumps(load)}")
-    eng = local.LocalEngine("mem" if engine == "mem" else "duck", ix, name=label)
+    eng = local.LocalEngine(kind, ix, name=label)
     err(bs.HEADER)
     scores = bs.run(eng, cases, tr, repeat=repeat, log=err)
     tally = bs.tally(scores)
     lat = local.latency_summary(eng.timings)
     err("  ".join(f"{k}: {v}" for k, v in sorted(tally.items())) + f"  {json.dumps(lat)}")
     rec = bs.record(f"local:{engine}", eng, tr.summary.get("date"), truth, scores, cold=False, repeat=repeat)
-    rec.update(gen=gen, index=index, load=load, latency=lat, rss_end=bm.rss(), threads=threads, timings=[asdict(t) for t in eng.timings])
+    rec.update(gen=gen, index=index, cold=cold, load=load, latency=lat, rss_end=bm.rss(), threads=threads, timings=[asdict(t) for t in eng.timings])
     if out:
         path = f"{out}{label}-{rec['ts']}.json" if out.endswith("/") else out
         with fsspec.open(path, "w") as fh:
@@ -815,6 +785,67 @@ def bench_engine(tmp_dir: str | None, engine: str, evict: bool, index: str | Non
         err(f"wrote {path}")
     if set(tally) - {"exact"}:
         raise SystemExit(1)
+
+
+@main.command("bench-ch-export")
+@option("-i", "--index", required=True, help="The `mem` index dir built from GEN (local, or gs:// → copied to `-s` first)")
+@option("-o", "--out", type=Path, required=True, help="Local output dir (`nodes-NNNN.parquet`, `names.parquet`)")
+@option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs)")
+@option("-u", "--upload", default=None, help="Also upload the output to this gs:// prefix")
+@argument("gen")
+def bench_ch_export(index: str, out: Path, stage: Path | None, upload: str | None, gen: str) -> None:
+    """Export a generation as interval-encoded nodes for the ClickHouse engine
+    (`dt_cloud.bench.ch`): each node's depth-first `pre` / `post`, name id,
+    totals and path, plus the lowercase vocabulary. Needs the `mem` index's
+    arrays in memory (~30 GB for gcs)."""
+    from .bench import ch, local
+
+    d = Path(index)
+    if index.startswith("gs://"):
+        if not stage:
+            raise UsageError("a gs:// index needs -s")
+        d = stage / "mem-index"
+        d.mkdir(parents=True, exist_ok=True)
+        for k in ("parent", "depth", "nid", "b", "o"):
+            local.stage_file(f"{index.rstrip('/')}/{k}.npy", d / f"{k}.npy")
+        local.stage_file(f"{index.rstrip('/')}/vocab.arrow", d / "vocab.arrow")
+    path_file = f"{gen.rstrip('/')}/path-index.parquet"
+    if stage:
+        path_file, _ = local.stage_file(path_file, stage / "path-index.parquet")
+    st = ch.export(d, path_file, out)
+    if upload:
+        st["upload"] = local.upload_dir(out, upload)
+    print(json.dumps(st))
+
+
+@main.command("bench-serve")
+@option("-d", "--tmp-dir", default=None, help="DuckDB spill dir (`-e duckdb`)")
+@option("-e", "--engine", type=Choice(["mem", "duckdb", "ch"]), required=True, help="As `bench-engine -e`")
+@option("-E", "--evict", is_flag=True, help="Drop the index files from the page cache before loading")
+@option("-H", "--host", default="0.0.0.0", help="Listen address")
+@option("-i", "--index", default=None, help="`-e mem`: the index dir (local, a mount, or gs:// → copied to `-s` first)")
+@option("-m", "--mem", default="48GB", help="DuckDB memory limit (`-e duckdb`)")
+@option("-p", "--port", default=8765, type=int, help="Listen port")
+@option("-Q", "--queries", required=True, help="The query set (YAML, local or gs://)")
+@option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs)")
+@option("-t", "--threads", default=16, type=int, help="Threads (vocabulary scan; DuckDB; ClickHouse `max_threads`)")
+@option("-T", "--truth", required=True, help="The ground truth (`bench-truth -o`'s dir or gs:// prefix)")
+@option("-U", "--url", default=None, help="`-e ch`: ClickHouse's HTTP endpoint (default http://localhost:8123)")
+@argument("gen")
+def bench_serve(tmp_dir: str | None, engine: str, evict: bool, host: str, index: str | None, mem: str, port: int, queries: str, stage: Path | None, threads: int, truth: str, url: str | None, gen: str) -> None:
+    """Load an engine once and answer bench queries over HTTP (`GET /health`,
+    `GET /run?k=<id>&r=N`): the long-lived process the suspend/resume and
+    stop/start experiments time (specs/serving-options.md)."""
+    from .bench import local, queryset, score as bs, serve
+
+    cases = queryset.load(queries)
+    tr = bs.Truth(truth)
+    try:
+        ix, kind, load = serve.load_engine(engine, gen, index=index, stage=stage, evict=evict, threads=threads, mem=mem, tmp_dir=tmp_dir, url=url)
+    except ValueError as e:
+        raise UsageError(str(e)) from e
+    err(f"bench-serve {engine}: loaded in {load['total_s']}s; {json.dumps(load)}")
+    serve.serve(local.LocalEngine(kind, ix, name=engine), cases, tr, load, host=host, port=port)
 
 
 def bucket_sources(specs: tuple[str, ...], default_bucket: str) -> list[tuple[str, str]]:
