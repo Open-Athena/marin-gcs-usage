@@ -73,7 +73,16 @@ def prefix_sql(i: str) -> str:
     return f"arrayStringConcat(arraySlice(splitByChar('/', path), 1, {i}), '/')"
 
 
-PARENT = "substring(path, 1, greatest(0, length(path) - position(reverse(path), '/')))"
+PARENT = "if(position(path, '/') = 0, '', substring(path, 1, length(path) - position(reverse(path), '/')))"
+# A path's bytes are split over at most this many owner slices (gcs 2026-10-03: 25), so a path over a
+# threshold has a slice over `thr / MAX_SLICES`: the `size` minmax index prunes a level's read to the
+# granules holding one (the Worker's `bysize` read, in effect) before the path's slices are summed.
+MAX_SLICES = 64
+
+
+def over(depth_cond: str, asof: str, cond: str, thr: float) -> str:
+    """The paths at one depth (`depth_cond`), inside `cond`, that can clear `thr`: a set for `path IN`."""
+    return f"(SELECT DISTINCT path FROM nodes WHERE {depth_cond} AND {asof} AND {cond} AND size >= {thr / MAX_SLICES!r})"
 
 
 # --- aggregates ---------------------------------------------------------------------
@@ -217,9 +226,17 @@ def root_read(ch: Ch, s: Scan, path: str) -> Agg | None:
     return agg_of(rows[0][0]) if rows and rows[0][0] else None
 
 
+# Up to this many parents a level's read is an OR of their `path` ranges (primary-key pruning); past it,
+# a parent-set test per row (evaluating thousands of ranges per row cost seconds), the granules then
+# pruned by depth and the `size` index alone.
+RANGE_PARENTS = 32
+
+
 def _level_cond(parents: list[str], d: int, path: str) -> str:
     if path == "" and d == 1:
         return "1"
+    if len(parents) > RANGE_PARENTS:
+        return f"{PARENT} IN ({', '.join(lit(p) for p in parents)})"
     return "(" + " OR ".join(under(p) for p in parents) + ")"
 
 
@@ -239,8 +256,8 @@ def plain_view(ch: Ch, s: Scan, path: str, *, w: int, h: int, min_area: float, a
     while frontier and (max_depth is None or d <= dP + max_depth) and len(v.kept) <= 4 * HARD_CAP:
         thr = v.thr_at(d)
         cond = _level_cond(frontier, d, path)
-        rows = ch.json(f"""SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE depth = {d} AND {s.asof} AND {cond}
-            GROUP BY path HAVING sum(size) >= {thr!r} ORDER BY path""")
+        rows = ch.json(f"""SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE depth = {d} AND {s.asof}
+            AND path IN {over(f"depth = {d}", s.asof, cond, thr)} GROUP BY path HAVING sum(size) >= {thr!r} ORDER BY path""")
         nxt = []
         for p, sl in rows:
             a = agg_of(sl)
@@ -447,10 +464,14 @@ def filter_view(ch: Ch, pr: Prep, *, w: int, h: int, min_area: float, atten: flo
             if not want:
                 break
             thr = {p: T * atten ** max(0, d + 1 - rd_of[p] - 1) for p, d in want}
-            cond = " OR ".join(f"(depth = {d + 1} AND {under(p)})" for p, d in want)
+            by_depth: dict[int, list[str]] = {}
+            for p, d in want:
+                by_depth.setdefault(d + 1, []).append(p)
+            cond = " OR ".join(f"(depth = {d} AND {_level_cond(ps, d, '-')})" for d, ps in by_depth.items())
             rows = ch.json(f"""SELECT k.path, k.depth, {', '.join('k.' + c for c in AGG_COLS.split(', '))}, c.n, c.b, c.o, c.wts, c.wb, c.a, c.c2, c.c3, c.c4, c.ub,
                     l.lost, e.x
-                FROM (SELECT path, any(depth) AS depth, {AGG} FROM nodes WHERE {s.asof} AND ({cond}) GROUP BY path HAVING b >= {min(thr.values())!r}) AS k
+                FROM (SELECT path, any(depth) AS depth, {AGG} FROM nodes WHERE {s.asof} AND depth IN ({", ".join(str(x) for x in sorted({d + 1 for _, d in want}))})
+                      AND path IN {over("1", s.asof, f"({cond})", min(thr.values()))} GROUP BY path HAVING b >= {min(thr.values())!r}) AS k
                 LEFT JOIN cut_{sfx} AS c ON c.path = k.path LEFT JOIN lost_{sfx} AS l ON l.path = k.path
                 LEFT JOIN (SELECT path, 1 AS x FROM ex_{sfx}) AS e ON e.path = k.path ORDER BY k.path""")
             nxt = []

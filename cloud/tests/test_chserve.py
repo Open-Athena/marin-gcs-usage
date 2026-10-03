@@ -98,6 +98,24 @@ def test_diff_changes_parity(i, fx):
     assert strip(got) == strip(want)
 
 
+def test_parent_set_reads(fx, fixture_ix, monkeypatch):
+    """Levels read by parent set (as wide frontiers are) instead of `path` ranges: the same bodies."""
+    monkeypatch.setattr(cs, "RANGE_PARENTS", 0)
+    for e in GOLDEN["plain"]:
+        c = e["case"]
+        got = subtree(fx, SA, c["path"], None, w=c.get("w", 1280), h=c.get("h", 896), min_area=c.get("minArea", 12), atten=c.get("atten", 2), max_depth=c.get("depth"))
+        assert strip(got) == strip(e["body"]), c
+    for e in GOLDEN["diffC"]:
+        c = e["case"]
+        got = diff(fx, SA, SC, c["path"], c.get("q"), w=c.get("w", 1280), h=c.get("h", 896), min_area=c.get("minArea", 12), atten=c.get("atten", 2),
+                   top=c.get("top", 500), depth=c.get("depth"), summary=c.get("summary", False))
+        assert strip(got) == strip(e["body"]), c
+    for e in GOLDEN["subtree"]:
+        c = e["case"]
+        got = subtree(fx, SA, c["path"], c["q"], w=c.get("w", 1280), h=c.get("h", 896), min_area=c.get("minArea", 12), atten=c.get("atten", 2), max_depth=c.get("depth"))
+        assert strip(got) == strip(e["body"]), c
+
+
 @pytest.mark.parametrize("i", range(len(GOLDEN["series"])))
 def test_series_parity(i, fx):
     e = GOLDEN["series"][i]

@@ -56,6 +56,7 @@ NODES = f"""CREATE TABLE IF NOT EXISTS {{t}} (
     vt DateTime('UTC'),
     {VALUES_DDL},
     name String CODEC(ZSTD(3)),
+    INDEX size_mm size TYPE minmax GRANULARITY 1,
     PROJECTION by_name (SELECT * ORDER BY name, depth, path, usr, vf)
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(vt)
