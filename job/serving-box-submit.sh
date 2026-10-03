@@ -8,7 +8,7 @@
 #   job/serving-box-submit.sh target                # n2-highmem-8: the box's size
 #   job/serving-box-submit.sh py x.py [args…]       # n2-highmem-16: a one-off script (tmp/x.py, staged)
 #
-# Env: MACHINE, GEN, INDEX, THREADS, DUCK_MEM, ENGINE_THREADS, STEPS (target: mem,duckdb,mounts), LAYERS, MOUNT_MEM (forwarded); DRY=1 prints the spec.
+# Env: MACHINE, GEN, INDEX, THREADS, DUCK_MEM, ENGINE_THREADS, STEPS (target: mem,mmap,serve,duckdb,mounts), LAYERS, MOUNT_MEM, SCAN, PROBE_ARGS (forwarded); DRY=1 prints the spec.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODE=${1:?build|target}
@@ -35,7 +35,7 @@ fi
 env_json=$(python3 - "$JOB_ID" <<'EOF'
 import json, os, sys
 v = {"BENCH_JOB": sys.argv[1]}
-for k in ["GEN", "INDEX", "THREADS", "DUCK_MEM", "ENGINE_THREADS", "STEPS", "LAYERS", "MOUNT_MEM"]:
+for k in ["GEN", "INDEX", "THREADS", "DUCK_MEM", "ENGINE_THREADS", "STEPS", "LAYERS", "MOUNT_MEM", "SCAN", "PROBE_ARGS"]:
     if os.environ.get(k):
         v[k] = os.environ[k]
 print(json.dumps(v))
