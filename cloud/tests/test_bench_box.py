@@ -157,7 +157,7 @@ def test_build(gen):
     assert ix.paths(ix.top) == ["b", "c"]
     assert ix.paths(ix.children(ix.top[:1])) == ["b/ckpts", "b/xtomat", "b/Tomat", "b/run"]
     s = ix.find("b/ckpts/checkpoints")
-    assert (ix.paths(ix.children(np.array([s]))), int(ix.b[s]), int(ix.o[s])) == (
+    assert (ix.paths(ix.children(np.array([s]))), ix.b1(s), ix.o1(s)) == (
         ["b/ckpts/checkpoints/step-200", "b/ckpts/checkpoints/step-100"], 350, 3,
     )
 
@@ -229,8 +229,9 @@ def test_scan_literal_matches_arrow():
     rng = random.Random(1)
     names = ["".join(rng.choice("abc.-/_x0") for _ in range(rng.randint(0, 9))) for _ in range(20000)] + ["ab", "cd", "abcd", "", "zzz"]
     a = pa.array(names, pa.large_string())
-    z = np.zeros(0, np.int32)
-    ix = mem.MemIndex(*([z] * 10), names=a, lower=a, threads=4, chunk=1000)
+    ix = mem.MemIndex.from_names(a, threads=4, chunk=1000)
+    srt = (ix.vfwd, ix.vrev)
+    ix.vfwd = ix.vrev = None
     ops = ["contains", "starts", "ends", "equals"]
     lits = ["a", "bc", "abc", "c.-", "x0x", "zzz", "dab", "a/b", "cdab", "0"]
     unsorted = {(op, s): ix.scan_literal(op, s, block=777).tolist() for op in ops for s in lits}
@@ -246,7 +247,8 @@ def test_scan_literal_matches_arrow():
     full = [ix.scan(NameTest("regex", r)).tolist() for r in pats]
     ix.fast = True
     assert [ix.scan(NameTest("regex", r)).tolist() for r in pats] == full
-    ix.vfwd, ix.vrev = mem.sorts(a).values()
+    assert [x.tolist() for x in srt] == [x.tolist() for x in mem.sorts(a).values()]
+    ix.vfwd, ix.vrev = srt
     fast = {(op, s): ix.scan_literal(op, s, block=777).tolist() for op in ops for s in lits}
     ix.fast = False
     assert fast == unsorted == {(op, s): ix.scan(NameTest(op, s)).tolist() for op in ops for s in lits}
