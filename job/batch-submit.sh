@@ -64,7 +64,7 @@ if not pin:  # one-off overrides forwarded only for manual submits, never the cr
     for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "SWEEP", "SWEEP_PLAN", "SWEEP_DATE", "SWEEP_BUCKETS", "USER",
               "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS", "GATE", "GATE_K", "GATE_P", "GATE_THREADS", "GATE_HIST",
               "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
-              "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT", "INDEX_RETAIN", "PATH_INDEX_RG_ROWS", "PATH_INDEX_USER_SORT_TIERS", "PATH_INDEX_SEARCH"]:  # SLACK_WEBHOOK is a secretVariable (see below)
+              "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT", "INDEX_RETAIN", "PATH_INDEX_RG_ROWS", "PATH_INDEX_USER_SORT_TIERS", "PATH_INDEX_SEARCH", "CH_STORE_URL"]:  # SLACK_WEBHOOK is a secretVariable (see below)
         if k in os.environ:
             v[k] = os.environ[k]
 print(json.dumps(v))
