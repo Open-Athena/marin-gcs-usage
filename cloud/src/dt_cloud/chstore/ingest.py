@@ -298,6 +298,17 @@ class Ingest:
         return {"scan": self.id, "version": v, "rows": rows, "opened": opened, "closed": closed, "s": round(s, 2)}
 
 
+def default_src(bucket: str, scan_id: str) -> str:
+    """The newest generation's `path` sort for a scan: `gs://<bucket>/listing/<date>/index/<gen>/path-index.parquet`."""
+    from google.cloud import storage
+
+    date = scan_id.split("T")[0]
+    blobs = [b.name for b in storage.Client().list_blobs(bucket, prefix=f"listing/{date}/index/") if b.name.endswith("/path-index.parquet")]
+    if not blobs:
+        raise IngestError(f"no path-index.parquet under gs://{bucket}/listing/{date}/index/")
+    return f"gs://{bucket}/{max(blobs)}"
+
+
 def sizes(ch: Ch) -> dict:
     """On-disk bytes per table (projections included), and the open / closed split of `nodes`."""
     out: dict = {}

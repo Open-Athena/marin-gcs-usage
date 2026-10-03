@@ -840,25 +840,29 @@ def bench_serve(tmp_dir: str | None, engine: str, evict: bool, host: str, index:
 
 
 @main.command("serve-query")
-@option("-2", "--diff", "n_latest", flag_value=2, default=1, help="Load the two latest scans (filtered diffs between them), not just the latest")
+@option("-2", "--diff", "n_latest", flag_value=2, default=1, help="`-e mem`: load the two latest scans (filtered diffs between them), not just the latest")
 @option("-A", "--no-auth", is_flag=True, help="Serve without a bearer token (local use only)")
 @option("-b", "--bind", default="0.0.0.0", help="Address to listen on")
-@option("-d", "--date", "dates", multiple=True, help="Load these scans (repeatable; default: the latest under ROOT)")
-@option("-D", "--remote-detail", is_flag=True, help="Read a gs:// index's `detail.parquet` in place (ranged reads) instead of copying it")
+@option("-B", "--db", default=None, help="`-e ch`: the store's database (default: $CLICKHOUSE_DB, else `default`)")
+@option("-d", "--date", "dates", multiple=True, help="`-e mem`: load these scans (repeatable; default: the latest under ROOT)")
+@option("-D", "--remote-detail", is_flag=True, help="`-e mem`: read a gs:// index's `detail.parquet` in place (ranged reads) instead of copying it")
+@option("-e", "--engine", type=Choice(["mem", "ch"]), default="mem", help="`mem`: in-memory indexes under ROOT (filtered reads); `ch`: the ClickHouse store at ROOT's URL (every scan; plain and filtered reads, series)")
 @option("-l", "--root-label", default=None, help="The store root's name in a tree (default: $ROOT_LABEL, else `marin GCS`)")
-@option("-M", "--mmap", is_flag=True, help="Map the index's arrays instead of reading them (a tmpfs copy then costs its RAM once)")
+@option("-M", "--mmap", is_flag=True, help="`-e mem`: map the index's arrays instead of reading them (a tmpfs copy then costs its RAM once)")
 @option("-p", "--port", default=None, type=int, help="Port (default: $PORT, else 8080)")
-@option("-s", "--stage", type=Path, default=None, help="Copy gs:// indexes here first (on Cloud Run: an in-memory dir, with -M)")
-@option("-t", "--threads", default=None, type=int, help="Vocabulary-scan threads (default: the CPU count)")
+@option("-s", "--stage", type=Path, default=None, help="`-e mem`: copy gs:// indexes here first (on Cloud Run: an in-memory dir, with -M)")
+@option("-t", "--threads", default=None, type=int, help="Vocabulary-scan threads / ClickHouse `max_threads` (default: the CPU count)")
 @option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="The env var holding the bearer token reads must present")
 @argument("root")
-def serve_query(n_latest: int, no_auth: bool, bind: str, dates: tuple[str, ...], remote_detail: bool, root_label: str | None, mmap: bool, port: int | None,
-                stage: Path | None, threads: int | None, token_env: str, root: str) -> None:
-    """The serving box (specs/filter-query-service.md): answer the Worker's
-    filtered `/api/subtree?q=` and `/api/diff?q=` from in-memory indexes
+def serve_query(n_latest: int, no_auth: bool, bind: str, db: str | None, dates: tuple[str, ...], remote_detail: bool, engine: str, root_label: str | None,
+                mmap: bool, port: int | None, stage: Path | None, threads: int | None, token_env: str, root: str) -> None:
+    """The serving box (specs/filter-query-service.md, specs/ch-store.md):
+    answer the Worker's `/api/subtree` and `/api/diff` (and, `-e ch`,
+    `/api/series`). `-e mem`: filtered reads from in-memory indexes
     (`bench-index`'s format 2), one per scan under ROOT (`<ROOT>/<date>/`,
-    local or gs://). Listens at once; `/healthz` reports `loading` until the
-    scans are in memory."""
+    local or gs://); listens at once, `/healthz` reports `loading` until the
+    scans are in memory. `-e ch`: ROOT is the ClickHouse HTTP URL of a store
+    `ch-ingest` fills; every ingested scan is served."""
     import os as _os
 
     from .box import server as bs
@@ -866,12 +870,59 @@ def serve_query(n_latest: int, no_auth: bool, bind: str, dates: tuple[str, ...],
     token = None if no_auth else bs.token_from_env(token_env)
     if token is None and not no_auth:
         raise UsageError(f"${token_env} is unset (or pass -A to serve without auth)")
-    box = bs.Box(
-        root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,
-        threads=threads or _os.cpu_count() or 8, root_label=root_label or _os.environ.get("ROOT_LABEL") or "marin GCS",
-        syntax=_os.environ.get("QUERY_SYNTAX") or "simple",
-    )
+    label = root_label or _os.environ.get("ROOT_LABEL") or "marin GCS"
+    syntax = _os.environ.get("QUERY_SYNTAX") or "simple"
+    if engine == "ch":
+        from .chstore.serve import Store
+
+        box = bs.ChBox(Store(root, db=db or _os.environ.get("CLICKHOUSE_DB") or "default", threads=threads or _os.cpu_count() or 8, root_label=label,
+                             syntax=syntax))
+    else:
+        box = bs.Box(
+            root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,
+            threads=threads or _os.cpu_count() or 8, root_label=label, syntax=syntax,
+        )
     bs.serve(box, bind=bind, port=port or int(_os.environ.get("PORT") or 8080), token=token)
+
+
+@main.command("ch-ingest")
+@option("-a", "--allow-drop", is_flag=True, help="Ingest a scan lacking roots (buckets) the store has, closing them (else refused as partial)")
+@option("-B", "--db", default=None, help="The store's database (default: $CLICKHOUSE_DB, else `default`)")
+@option("-d", "--date", "scan_id", required=True, help="The scan id (`YYYY-MM-DD[THHMM]`)")
+@option("-f", "--force", is_flag=True, help="Ingest a scan of fewer than half the open rows (else refused as partial)")
+@option("-F", "--server-file", is_flag=True, help="SRC is a path under the ClickHouse server's `user_files_path`, read server-side (fastest on the box itself)")
+@option("-g", "--data-bucket", default=None, help="Where the default SRC lives (default: $DATA_BUCKET)")
+@option("-s", "--stage", type=Path, default=None, help="Copy a gs:// SRC here first (it's then streamed to the server)")
+@option("-t", "--threads", default=8, type=int, help="ClickHouse `max_threads` / `max_insert_threads`")
+@option("-U", "--url", default=None, help="ClickHouse's HTTP endpoint (default: $CLICKHOUSE_URL, else http://localhost:8123)")
+@argument("src", required=False)
+def ch_ingest(allow_drop: bool, db: str | None, scan_id: str, force: bool, server_file: bool, data_bucket: str | None, stage: Path | None, threads: int,
+              url: str | None, src: str | None) -> None:
+    """Ingest one scan into the ClickHouse store (specs/ch-store.md §3): its
+    path store's `path` sort (SRC: a v2 store generation or a v1 index;
+    default the newest generation's under `gs://<bucket>/listing/<date>/index/`)
+    diffed against the open versions — new versions opened, changed and
+    deleted ones closed. Idempotent: an ingested scan is a no-op, an
+    interrupted one is redone. Prints the scan's record (rows, versions
+    opened / closed, seconds per step) as JSON."""
+    import os as _os
+
+    from .chstore import ingest as ci
+    from .chstore.client import DEFAULT_URL, Ch
+
+    if src is None:
+        bucket = data_bucket or _os.environ.get("DATA_BUCKET")
+        if not bucket:
+            raise UsageError("no SRC and no data bucket (-g / $DATA_BUCKET)")
+        src = ci.default_src(bucket, scan_id)
+        err(f"ch-ingest {scan_id}: {src}")
+    ch = Ch(url or _os.environ.get("CLICKHOUSE_URL") or DEFAULT_URL, db=db or _os.environ.get("CLICKHOUSE_DB") or "default", timeout=7200)
+    try:
+        rec = ci.Ingest(ch, scan_id, src, server_file=server_file, force=force, allow_drop=allow_drop, threads=threads, stage_dir=stage).run()
+    except ci.IngestError as e:
+        raise UsageError(str(e)) from e
+    rec["sizes"] = ci.sizes(ch)
+    print(json.dumps(rec))
 
 
 def bucket_sources(specs: tuple[str, ...], default_bucket: str) -> list[tuple[str, str]]:

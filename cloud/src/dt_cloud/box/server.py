@@ -246,6 +246,145 @@ def diff(box: Box, qs: dict):
 ROUTES = {"/api/subtree": subtree, "/api/diff": diff}
 
 
+# --- the ClickHouse engine (`-e ch`, specs/ch-store.md §4) ------------------------------
+
+
+def _set(e: threading.Event) -> threading.Event:
+    e.set()
+    return e
+
+
+@dataclass
+class ChBox:
+    """The ClickHouse store as the box's engine: every ingested scan, plain
+    and filtered reads, series. Nothing to load; `/healthz` asks the store."""
+
+    store: object  # chstore.serve.Store
+    state: str = "ready"
+    error: str | None = None
+    done: threading.Event = field(default_factory=lambda: _set(threading.Event()))
+    gate: threading.Semaphore = field(default_factory=lambda: threading.Semaphore(4))
+
+    @property
+    def root_label(self) -> str:
+        return self.store.root_label
+
+    def start(self) -> None:
+        pass
+
+    def health(self) -> dict:
+        try:
+            scans = self.store.scans(refresh=True)
+        except Exception as e:  # noqa: BLE001 — reported, the process stays up
+            return {"state": "error", "engine": "ch", "error": f"{type(e).__name__}: {e}"[:500], "scans": []}
+        return {"state": "ready", "engine": "ch", "scans": [{"date": s.id, "version": s.version} for s in scans.values()]}
+
+
+def _ch_query(box: ChBox, qs: dict):
+    """`q=` (optional for the store), and the scopes it doesn't serve."""
+    if qs.get("lens"):
+        raise HttpError(409, "a user lens isn't served by the box")
+    if qs.get("o", [""])[0] or qs.get("cl", [""])[0] or qs.get("by", [""])[0]:
+        raise HttpError(501, "owner / class scopes aren't served by the ch engine")
+    q = qs.get("q", [""])[0]
+    try:
+        ast = parse(q, qs.get("qs", [""])[0] or box.store.syntax)
+    except QueryError as e:
+        raise HttpError(400, f"bad query: {e}") from e
+    return (q, ast) if ast is not None else (None, None)
+
+
+def _ch_scan(box: ChBox, date: str):
+    s = box.store.scan(date)
+    if s is None:
+        raise HttpError(409, f"scan {date} not in the store")
+    return s
+
+
+def ch_subtree(box: ChBox, qs: dict):
+    from ..chstore import serve as cs
+
+    date = qs.get("date", [""])[0]
+    if not SCAN_RE.match(date):
+        raise HttpError(400, "bad date")
+    path = _path(qs)
+    w, h = _quant(qs, "w", 1280), _quant(qs, "h", 800)
+    min_area, atten = _num(qs, "minArea", bv.MIN_AREA_DEFAULT), _num(qs, "atten", bv.ATTEN_DEFAULT)
+    depth = int(_num(qs, "depth", 0)) or None
+    q, ast = _ch_query(box, qs)
+    s = _ch_scan(box, date)
+    ch = box.store.session()
+    if ast is None:
+        v = cs.plain_view(ch, s, path, w=w, h=h, min_area=min_area, atten=atten, max_depth=depth)
+    else:
+        pr = cs.filter_prepare(ch, s, path, ast)
+        v = cs.filter_view(ch, pr, w=w, h=h, min_area=min_area, atten=atten, max_depth=depth) if pr else None
+    yield from cs.subtree_body(ch, v, date=date, path=path, w=w, h=h, min_area=min_area, atten=atten, q=q, root_label=box.root_label)
+
+
+def ch_diff(box: ChBox, qs: dict):
+    from ..chstore import serve as cs
+
+    prev, curr = qs.get("from", [""])[0], qs.get("to", [""])[0]
+    if not SCAN_RE.match(prev) or not SCAN_RE.match(curr):
+        raise HttpError(400, "bad from/to")
+    if prev >= curr:
+        raise HttpError(400, "from must precede to")
+    path = _path(qs)
+    w, h = _quant(qs, "w", 1280), _quant(qs, "h", 800)
+    min_area, atten = _num(qs, "minArea", bv.MIN_AREA_DEFAULT), _num(qs, "atten", bv.ATTEN_DEFAULT)
+    top = int(min(5000, _num(qs, "top", 500)))
+    depth = int(_num(qs, "depth", 0)) or None
+    q, ast = _ch_query(box, qs)
+    sa, sb = _ch_scan(box, prev), _ch_scan(box, curr)
+    yield from cs.diff_body(box.store.session(), sa, sb, path=path, w=w, h=h, min_area=min_area, atten=atten, top=top, ast=ast, q=q,
+                            summary=qs.get("summary", [""])[0] == "1", depth=depth)
+
+
+def parse_paths(values: list[str]) -> list[str]:
+    """`filter.ts` `parsePaths`: comma lists and repeats, trailing slashes dropped, blanks and repeats removed."""
+    out: list[str] = []
+    for v in values:
+        for p in v.split(","):
+            p = re.sub(r"/+$", "", p.strip())
+            if p and p not in out:
+                out.append(p)
+    return out
+
+
+def ch_series(box: ChBox, qs: dict):
+    """`/api/series`: one point per ingested scan. The Worker passes the scans
+    it knows (`n`, `first`, `last`); a store that doesn't hold exactly those
+    is a 409, so the Worker answers instead."""
+    from ..chstore import serve as cs
+
+    if qs.get("lens"):
+        raise HttpError(409, "a user lens isn't served by the box")
+    if qs.get("o", [""])[0] or qs.get("cl", [""])[0]:
+        raise HttpError(501, "owner / class scopes aren't served by the ch engine")
+    path = _path(qs)
+    paths = parse_paths(qs.get("paths", []))
+    if any(".." in p or p.startswith("/") for p in paths):
+        raise HttpError(400, "bad paths")
+    split = qs.get("split", [""])[0]
+    if split and split != "roots":
+        raise HttpError(400, "bad split (want roots)")
+    if split and (path or paths):
+        raise HttpError(400, "split=roots is for the unscoped store root only")
+    scans = list(box.store.scans(refresh=True).values())
+    first, last, n = qs.get("first", [""])[0], qs.get("last", [""])[0], qs.get("n", [""])[0]
+    if first or last or n:
+        held = [s.id for s in scans if (not first or s.id >= first) and (not last or s.id <= last)]
+        if (first and first not in held) or (last and last not in held) or (n and str(len(held)) != n):
+            raise HttpError(409, f"the store holds {len(held)} scans in [{first or '…'}, {last or '…'}], not the Worker's {n or '?'}")
+        keep = set(held)
+        scans = [s for s in scans if s.id in keep]
+    yield cs.series_body(box.store.session(), scans, path=path, paths=paths, split=bool(split))
+
+
+CH_ROUTES = {"/api/subtree": ch_subtree, "/api/diff": ch_diff, "/api/series": ch_series}
+
+
 def make_handler(box: Box, token: str | None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -292,7 +431,7 @@ def make_handler(box: Box, token: str | None):
                 box.start()
                 box.done.wait()
                 return self._send(200 if box.state == "ready" else 500, json.dumps(box.health()), t0, state=box.state)
-            route = ROUTES.get(u.path)
+            route = (CH_ROUTES if isinstance(box, ChBox) else ROUTES).get(u.path)
             if route is None:
                 return self._send(404, "not found", t0, "text/plain")
             box.start()
@@ -309,6 +448,10 @@ def make_handler(box: Box, token: str | None):
                 return self._send(501, f"not supported by the box: {e}", t0, "text/plain")
             except bv.BadRequest as e:
                 return self._send(400, str(e), t0, "text/plain")
+            except (OSError, RuntimeError) as e:
+                # The store unreachable or failing (ClickHouse down, a query error): the Worker answers.
+                err(f"serve-query: {u.path}: {type(e).__name__}: {str(e)[:500]}")
+                return self._send(503, f"backend error: {type(e).__name__}", t0, "text/plain", {"retry-after": "10"})
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("transfer-encoding", "chunked")
@@ -331,11 +474,12 @@ def _chain(first, rest):
     yield from rest
 
 
-def serve(box: Box, *, bind: str, port: int, token: str | None) -> None:
+def serve(box: "Box | ChBox", *, bind: str, port: int, token: str | None) -> None:
     box.start()
     httpd = ThreadingHTTPServer((bind, port), make_handler(box, token))
     httpd.daemon_threads = True
-    err(f"serve-query: listening on {bind}:{port} ({'bearer auth' if token else 'NO auth'}), scans from {box.root}")
+    src = f"the ClickHouse store at {box.store.url} ({box.store.db})" if isinstance(box, ChBox) else f"scans from {box.root}"
+    err(f"serve-query: listening on {bind}:{port} ({'bearer auth' if token else 'NO auth'}), {src}")
     httpd.serve_forever()
 
 

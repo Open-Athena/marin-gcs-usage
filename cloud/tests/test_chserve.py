@@ -122,3 +122,93 @@ def test_diff_with_changes(ch_url, two, tmp_path_factory):  # noqa: F811
         assert {k: v for k, v in got.items() if k != "tier"} == {k: v for k, v in want.items() if k != "tier"}
     finally:
         Ch(ch_url, db="default", session=False).exec(f"DROP DATABASE IF EXISTS {db} SYNC")
+
+
+# --- the server (`serve-query -e ch`) ----------------------------------------------------
+
+
+def start(box) -> tuple[str, object]:
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from dt_cloud.box import server as bs
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), bs.make_handler(box, "s3cret"))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{httpd.server_address[1]}", httpd
+
+
+@pytest.fixture(scope="module")
+def server(fx):
+    from dt_cloud.box import server as bs
+
+    url, httpd = start(bs.ChBox(fx))
+    yield url
+    httpd.shutdown()
+
+
+def get(url: str, token: str | None = "s3cret") -> tuple[int, str, str]:
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, r.headers["x-query-engine"].split(";")[0], r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, (e.headers["x-query-engine"] or "").split(";")[0], e.read().decode()
+
+
+def test_server(server, fx):
+    st, eng, b = get(f"{server}/healthz", token=None)
+    assert (st, eng, json.loads(b)) == (200, "box", {"state": "ready", "engine": "ch", "scans": [
+        {"date": SA, "version": 2}, {"date": SB, "version": 2}, {"date": SC, "version": 2}]})
+    # The Worker's bodies: a plain subtree (w/h quantized up as the Worker does), a filtered one, a diff, a series.
+    st, eng, b = get(f"{server}/api/subtree?date={SA}&path=bk&w=1200&h=850")
+    assert (st, eng, strip(json.loads(b))) == (200, "box", strip(GOLDEN["plain"][1]["body"]))
+    st, _, b = get(f"{server}/api/subtree?date={SA}&path=bk/tmp&q=ttl&h=896")
+    assert (st, strip(json.loads(b))) == (200, strip(subtree(fx, SA, "bk/tmp", "ttl")))
+    st, _, b = get(f"{server}/api/diff?from={SA}&to={SC}&path=&h=896")
+    assert (st, strip(json.loads(b))) == (200, strip(GOLDEN["diffC"][0]["body"]))
+    st, _, b = get(f"{server}/api/series?path=bk&n=3&first={SA}&last={SC}")
+    assert (st, json.loads(b)) == (200, GOLDEN["series"][1]["body"])
+    assert [get(f"{server}{u}", token=t) for u, t in (
+        (f"/api/subtree?date={SA}&path=bk", None),
+        ("/api/subtree?date=2026-09-01&path=bk", "s3cret"),
+        (f"/api/diff?from=2026-09-30&to={SA}", "s3cret"),
+        (f"/api/subtree?date={SA}&path=nope", "s3cret"),
+        (f"/api/diff?from={SA}&to={SC}&path=nope", "s3cret"),
+        (f"/api/subtree?date={SA}&path=bk&q=ab", "s3cret"),
+        (f"/api/subtree?date={SA}&q=a/.*json&qs=regex", "s3cret"),
+        (f"/api/subtree?date={SA}&lens=user:alice", "s3cret"),
+        (f"/api/subtree?date={SA}&o=unowned", "s3cret"),
+        (f"/api/series?path=bk&n=4&first={SA}&last={SC}", "s3cret"),
+        ("/api/series?path=bk&split=roots", "s3cret"),
+        ("/api/subtree?date=bad", "s3cret"),
+    )] == [
+        (401, "box", "unauthorized"),
+        (409, "box", "scan 2026-09-01 not in the store"),
+        (409, "box", "scan 2026-09-30 not in the store"),
+        (404, "box", "path not found"),
+        (404, "box", "path not found in either scan"),
+        (400, "box", "bad query: type at least 3 characters (“ab”)"),
+        (501, "box", "not supported by the box: regex 'a/.*json': no name filter (its tail can cross a `/` or isn't `$`-anchored)"),
+        (409, "box", "a user lens isn't served by the box"),
+        (501, "box", "owner / class scopes aren't served by the ch engine"),
+        (409, "box", f"the store holds 3 scans in [{SA}, {SC}], not the Worker's 4"),
+        (400, "box", "split=roots is for the unscoped store root only"),
+        (400, "box", "bad date"),
+    ]
+
+
+def test_server_store_down():
+    """ClickHouse unreachable: a 503 the Worker falls back on, and an `error` health."""
+    from dt_cloud.box import server as bs
+
+    url, httpd = start(bs.ChBox(cs.Store("http://127.0.0.1:9", root_label="root")))
+    try:
+        st, _, b = get(f"{url}/healthz", token=None)
+        assert (st, json.loads(b)["state"]) == (500, "error")
+        assert get(f"{url}/api/subtree?date={SA}&path=bk") == (503, "box", "backend error: URLError")
+    finally:
+        httpd.shutdown()
