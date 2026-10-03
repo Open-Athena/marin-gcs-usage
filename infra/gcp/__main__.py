@@ -108,7 +108,7 @@ sheet_sync = RunJobCron(
     time_zone="UTC",
     sa_email=job.email_literal,
     image=f"{region}-docker.pkg.dev/{project}/cloud-run-source-deploy/gcs-sheet-sync:latest",
-    secret_env={"GCS_USAGE_TOKEN": "gcs-sheet-sync-token"},
+    secret_env={"SITE_TOKEN": "gcs-sheet-sync-token"},
     adopt=adopt,
     existing=True,
     opts=pulumi.ResourceOptions(depends_on=[secrets]),
