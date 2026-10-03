@@ -104,7 +104,7 @@ cat > "$spec" <<EOF
           "R2_SECRET_ACCESS_KEY": "projects/$PROJECT/secrets/cw-s3-r2-secret-access-key/versions/latest",
           "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/cw-s3-slack-bot-token/versions/latest",
           "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
-          "GCS_USAGE_TOKEN": "projects/$PROJECT/secrets/cw-s3-job-grant/versions/latest"
+          "SITE_TOKEN": "projects/$PROJECT/secrets/cw-s3-job-grant/versions/latest"
         }
       }
     }

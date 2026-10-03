@@ -17,9 +17,10 @@
 # with a plain boot disk is enough. The bytes that matter are transient listing
 # shards (~10 GB), not DuckDB spill.
 #
-# Env: CW_BUCKETS (space-separated, the first is the primary — the quota bucket,
-# the sweep/lifecycle default; specs/done/cw-multi-bucket.md), CW_BUCKET (the primary;
-# defaults to CW_BUCKETS' first), CW_ENDPOINT, DATA_BUCKET, SNAP_ID (default: UTC
+# Env: SCAN_BUCKETS (space-separated, the first is the primary — the quota bucket,
+# the sweep/lifecycle default; specs/done/cw-multi-bucket.md), SWEEP_BUCKET (the primary;
+# defaults to SCAN_BUCKETS' first), SWEEP_S3_ENDPOINT (each also read under its old
+# name, CW_BUCKETS / CW_BUCKET / CW_ENDPOINT), DATA_BUCKET, SNAP_ID (default: UTC
 # YYYY-MM-DDTHHMM at listing start), LISTING_PROCS/WORKERS,
 # AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY (injected from Secret Manager by
 # cw-batch-submit.sh).
@@ -32,7 +33,7 @@ set -euxo pipefail
 # xtrace off for the block: `${!n}` would print the values.
 { set +x; } 2>/dev/null
 for n in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN DISCORD_BOT_TOKEN \
-         DISCORD_GCS_USAGE_WEBHOOK GCS_USAGE_TOKEN SLACK_BOT_TOKEN SLACK_WEBHOOK \
+         DISCORD_GCS_USAGE_WEBHOOK SITE_TOKEN GCS_USAGE_TOKEN SLACK_BOT_TOKEN SLACK_WEBHOOK \
          CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET; do
   if [ -n "${!n+set}" ]; then
     v=${!n}; v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
@@ -40,6 +41,10 @@ for n in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN DISCORD_BO
   fi
 done
 unset n v
+# The site token's old name (`GCS_USAGE_TOKEN`) is what the scheduler body still
+# passes until its next `pulumi up`; carry it under the new one.
+if [ -z "${SITE_TOKEN+set}" ] && [ -n "${GCS_USAGE_TOKEN+set}" ]; then export SITE_TOKEN=$GCS_USAGE_TOKEN; fi
+unset GCS_USAGE_TOKEN
 set -x
 
 # Deployment config for the shared CLI (cloud/src/dt_cloud/{index_footer,warm}.py).
@@ -52,11 +57,12 @@ export LAYER2_PREFIX=${LAYER2_PREFIX:-'cw-l2/{scan}/'}   # this store's layer-2 
 export WARM_PATHS=${WARM_PATHS:-",marin-us-east-02a,marin-us-east-02a/marin,marin-us-east-02a/tmp,marin-us-east-02a/iris,hero-checkpoints,hero-checkpoints/tmp,hero-checkpoints/marin"}
 
 # Every bucket in the scan; the primary first. The scheduler body sets only
-# CW_BUCKET (the primary), so the list's default here IS the deployment's.
-BUCKETS=${CW_BUCKETS:-"marin-us-east-02a hero-checkpoints"}
-BUCKET=${CW_BUCKET:-${BUCKETS%% *}}
-export CW_BUCKET=$BUCKET
-ENDPOINT=${CW_ENDPOINT:-https://cwobject.com}
+# the primary, so the list's default here IS the deployment's.
+BUCKETS=${SCAN_BUCKETS:-${CW_BUCKETS:-"marin-us-east-02a hero-checkpoints"}}
+BUCKET=${SWEEP_BUCKET:-${CW_BUCKET:-${BUCKETS%% *}}}
+ENDPOINT=${SWEEP_S3_ENDPOINT:-${CW_ENDPOINT:-https://cwobject.com}}
+export SCAN_BUCKETS=$BUCKETS SWEEP_BUCKET=$BUCKET SWEEP_S3_ENDPOINT=$ENDPOINT
+unset CW_BUCKETS CW_BUCKET CW_ENDPOINT
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
 export DATA_BUCKET=$DATA
 PROCS=${LISTING_PROCS:-8}
@@ -107,7 +113,7 @@ ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536
 # groups are bounded at write time (see find/bulk.py) so each merge source
 # decodes one 64K group rather than the whole shard -- that bound is what
 # keeps this in ~2 GB.
-SRC=()  # <bucket>=<layer-2>, in CW_BUCKETS order
+SRC=()  # <bucket>=<layer-2>, in SCAN_BUCKETS order
 for b in $BUCKETS; do
   disk-tree bulk-list -a "s3://$b" -E "$ENDPOINT" \
     -o "$WORK/listing/$b" -P "$PROCS" -w "$WORKERS" -x clear
@@ -205,22 +211,22 @@ fi
 # default requests — one subtree, the diff span chips and the previous-scan
 # pair — at the common canvas widths (`dt-cloud warm-cache`, which reads the
 # SITE_URL / SNAPSHOTS_SUBDIR exported above). Auth is the job's machine grant
-# (`GCS_USAGE_TOKEN` ← Secret Manager `cw-s3-job-grant`, scope `cw`, minted
+# (`SITE_TOKEN` ← Secret Manager `cw-s3-job-grant`, scope `cw`, minted
 # from /admin — specs/done/oidc-cutover-cw.md P5); the CF Access pair is the
 # pre-cutover form, kept for a rollback. Skipped when neither is set. Never fatal.
-if { [ -n "${GCS_USAGE_TOKEN:+set}" ] || { [ -n "${CF_ACCESS_CLIENT_ID:+set}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:+set}" ]; }; } \
+if { [ -n "${SITE_TOKEN:+set}" ] || { [ -n "${CF_ACCESS_CLIENT_ID:+set}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:+set}" ]; }; } \
    && [ "${REPROC:-0}" != "1" ]; then  # `:+set`: xtrace must not print the tokens
   dt-cloud warm-cache -d "$SNAP_ID" -r "gs://$DATA/snapshots/cw" \
     || echo "WARN: cache warm-up failed for $SNAP_ID" >&2
 else
-  echo "no warm-cache auth (GCS_USAGE_TOKEN, or CF_ACCESS_CLIENT_ID+SECRET) — skipping cache warm-up" >&2
+  echo "no warm-cache auth (SITE_TOKEN, or CF_ACCESS_CLIENT_ID+SECRET) — skipping cache warm-up" >&2
 fi
 
 # 4c'. Replay the site's page loads uncached (`dt-cloud probe -c`, as the gcs
 # job does): every response a 2xx/4xx, and one cold-latency record per scan
 # under probes/cw/ (the time series of what a viewer waits past the warmed
 # cache). Same token and gating as the warm-up; never fatal.
-if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
+if [ -n "${SITE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
   dt-cloud probe -c -u "$SITE_URL" -o "gs://$DATA/probes/cw/" \
     || echo "WARN: serving probe failed for $SNAP_ID (a 5xx or a dropped request; data is fine)" >&2
 fi

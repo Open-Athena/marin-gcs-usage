@@ -24,8 +24,8 @@ jobs:
     name: cw-s3.oa.dev serving health
     runs-on: ubuntu-latest
     env:
-      GCS_USAGE_TOKEN: ${{ secrets.CW_S3_USAGE_TOKEN }}
-      GCS_USAGE_URL: https://cw-s3.oa.dev
+      SITE_TOKEN: ${{ secrets.CW_S3_USAGE_TOKEN }}
+      SITE_URL: https://cw-s3.oa.dev
       SNAPSHOTS_SUBDIR: cw
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
 
       - name: Run healthcheck
         run: |
-          if [ -z "${GCS_USAGE_TOKEN:-}" ]; then
+          if [ -z "${SITE_TOKEN:-}" ]; then
             echo "CW_S3_USAGE_TOKEN secret not set — skipping live healthcheck"
             exit 0
           fi

@@ -35,13 +35,17 @@ set -euxo pipefail
 # trailing newline — see cw-run.sh). xtrace off for the block.
 { set +x; } 2>/dev/null
 for n in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY \
-         CLOUDFLARE_API_TOKEN GCS_USAGE_TOKEN SLACK_BOT_TOKEN; do
+         CLOUDFLARE_API_TOKEN SITE_TOKEN GCS_USAGE_TOKEN SLACK_BOT_TOKEN; do
   if [ -n "${!n+set}" ]; then
     v=${!n}; v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
     export "$n=$v"
   fi
 done
 unset n v
+# The site token's old name (`GCS_USAGE_TOKEN`) is what the scheduler body still
+# passes until its next `pulumi up`; carry it under the new one.
+if [ -z "${SITE_TOKEN+set}" ] && [ -n "${GCS_USAGE_TOKEN+set}" ]; then export SITE_TOKEN=$GCS_USAGE_TOKEN; fi
+unset GCS_USAGE_TOKEN
 set -x
 
 STORE=meta

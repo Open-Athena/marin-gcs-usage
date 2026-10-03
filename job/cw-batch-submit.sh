@@ -5,7 +5,7 @@
 # it: the two jobs share almost no shape. The GCS job fans out over six buckets,
 # mounts all of them, needs highmem-16 + local SSD for DuckDB spill, and posts a
 # digest. This one lists a couple of buckets on a single third-party S3 endpoint
-# (`CW_BUCKETS`, specs/done/cw-multi-bucket.md), mounts one bucket for output, and
+# (`SCAN_BUCKETS`, specs/done/cw-multi-bucket.md), mounts one bucket for output, and
 # peaks under 2 GB.
 #
 #   ./job/cw-batch-submit.sh              # submit, print job id
@@ -20,7 +20,7 @@ set -euo pipefail
 # byte-identical regardless of the caller's shell (the IaC in infra/gcp
 # generates the Cloud Scheduler body from `PIN=1 DRY=1`). Must precede the
 # ${VAR:-default} knobs below; the python vars() honors PIN too.
-if [ -n "${PIN:-}" ]; then unset IMAGE MACHINE MEMORY_MIB DATA_BUCKET CW_BUCKET; fi
+if [ -n "${PIN:-}" ]; then unset IMAGE MACHINE MEMORY_MIB DATA_BUCKET SWEEP_BUCKET; fi
 
 PROJECT=oa-internal-450019
 REGION=us-central1
@@ -31,7 +31,6 @@ IMAGE=${IMAGE:-us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/gcs-u
 MACHINE=${MACHINE:-n2-standard-8}
 MEMORY_MIB=${MEMORY_MIB:-30000}
 DATA_BUCKET=${DATA_BUCKET:-oa-gcs-usage-dvx}
-CW_BUCKET=${CW_BUCKET:-marin-us-east-02a}
 JOB_ID=${JOB_ID:-cw-scan-$(date -u +%Y%m%d-%H%M%S)}
 
 vars() {
@@ -43,8 +42,8 @@ import json, os
 pin = bool(os.environ.get("PIN"))
 g = (lambda k, d="": d) if pin else os.environ.get
 v = {
-    "CW_BUCKET": g("CW_BUCKET", "marin-us-east-02a"),
-    "CW_ENDPOINT": g("CW_ENDPOINT", "https://cwobject.com"),
+    "SWEEP_BUCKET": g("SWEEP_BUCKET", "marin-us-east-02a"),
+    "SWEEP_S3_ENDPOINT": g("SWEEP_S3_ENDPOINT", "https://cwobject.com"),
     "DATA_BUCKET": g("DATA_BUCKET", "oa-gcs-usage-dvx"),
     "WORK_DIR": g("WORK_DIR", "/stage/cw"),
     # boto/aws-sdk needs a region even though CAIOS ignores it
@@ -66,7 +65,7 @@ v = {
     "R2_BUCKET": g("R2_BUCKET", "oa-cw-s3-usage-index"),
 }
 if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
-    for k in ["CW_BUCKETS", "SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
+    for k in ["SCAN_BUCKETS", "SNAP_ID", "LISTING_PROCS", "LISTING_WORKERS", "IMPORT_JOBS"]:
         if k in os.environ:
             v[k] = os.environ[k]
 print(json.dumps(v))
@@ -101,7 +100,7 @@ cat > "$spec" <<EOF
           "AWS_SECRET_ACCESS_KEY": "projects/$PROJECT/secrets/cw-s3-secret-access-key/versions/latest",
           "SLACK_BOT_TOKEN": "projects/$PROJECT/secrets/cw-s3-slack-bot-token/versions/latest",
           "CLOUDFLARE_API_TOKEN": "projects/$PROJECT/secrets/cf-pages-token/versions/latest",
-          "GCS_USAGE_TOKEN": "projects/$PROJECT/secrets/cw-s3-job-grant/versions/latest",
+          "SITE_TOKEN": "projects/$PROJECT/secrets/cw-s3-job-grant/versions/latest",
           "R2_ENDPOINT": "projects/$PROJECT/secrets/cw-s3-r2-endpoint/versions/latest",
           "R2_ACCESS_KEY_ID": "projects/$PROJECT/secrets/cw-s3-r2-access-key-id/versions/latest",
           "R2_SECRET_ACCESS_KEY": "projects/$PROJECT/secrets/cw-s3-r2-secret-access-key/versions/latest"
