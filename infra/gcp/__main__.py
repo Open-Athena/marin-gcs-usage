@@ -146,12 +146,12 @@ grant_bucket(f"{DATA_BUCKET}-dispatch", bucket=DATA_BUCKET, role="roles/storage.
 # The scanned fleet (Marin's buckets, another project): the job lists and reads
 # every bucket and deletes from the swept ones (`objectUser`); the browser reads.
 FLEET = {
-    "marin-us-east1": False,
+    "marin-us-east1": True,
     "marin-us-east5": True,
     "marin-us-central1": True,
     "marin-us-central2": True,
     "marin-eu-west4": True,
-    "marin-us-west4": False,
+    "marin-us-west4": True,
 }
 for bucket, swept in FLEET.items():
     roles = ["roles/storage.legacyBucketReader", "roles/storage.objectViewer"] + (["roles/storage.objectUser"] if swept else [])
