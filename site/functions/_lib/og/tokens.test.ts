@@ -38,6 +38,17 @@ describe('og_tokens: the row is the whole truth (gcs lineage through 0034, forei
       ['TokAAAAAAA', 'ann@example.org', '/marin-a/ckpt?d=261002&n=50', 304, 'admin@example.org'],
     ])
   })
+  it('a non-admin revokes only their own mints', async () => {
+    const { db } = await sqliteD1('gcs')
+    await mint(db, 'marin GCS', page('/marin-a'), 'ann@example.org', NOW, 30, 'TokAAAAAAA')
+    await mint(db, 'marin GCS', page('/marin-a'), 'bo@example.org', NOW, 30, 'TokBBBBBBB')
+    expect([
+      await revoke(db, 'TokBBBBBBB', 'ann@example.org', NOW, 'ann@example.org'),
+      await revoke(db, 'TokAAAAAAA', 'ann@example.org', NOW, 'ann@example.org'),
+      await fullTier(db, 'map', { path: 'marin-a' }, 'TokAAAAAAA', NOW),
+      await fullTier(db, 'map', { path: 'marin-a' }, 'TokBBBBBBB', NOW),
+    ]).toEqual([0, 1, null, { day: 304 }])
+  })
   it('each mint is a fresh random token', async () => {
     const { db } = await sqliteD1('gcs')
     const a = await mint(db, 'marin GCS', page('/marin-a'), 'ann@example.org', NOW)
