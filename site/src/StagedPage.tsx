@@ -78,11 +78,16 @@ export function StagedPage() {
   const items = useMemo(() => staged.data?.items ?? [], [staged.data])
   const batches = useMemo(() => staged.data?.batches ?? [], [staged.data])
   const runs = staged.data?.runs ?? []
-  const anyLive = runs.some(r => LIVE_STATES.has(jobs.data?.[r.run_id]?.state ?? '') || (!r.finished_ts && !jobs.data?.[r.run_id]))
-  useEffect(() => setLive(anyLive), [anyLive])
-
   const unstage = useUnstage(plan?.id ?? null)
   const dispatch = useDispatch(plan?.id ?? null)
+  // A just-dispatched job before its executor records its run row (gcs's does
+  // that from inside Batch, once the VM is up): shown under the buttons, and
+  // it keeps the jobs list polling until the row appears.
+  const pendingJob = dispatch.data?.job_id && !runs.some(r => r.run_id === dispatch.data?.job_id) ? dispatch.data.job_id : null
+  const pendingState = pendingJob ? jobs.data?.[pendingJob]?.state : undefined
+  const anyLive = !!pendingJob || runs.some(r => LIVE_STATES.has(jobs.data?.[r.run_id]?.state ?? '') || (!r.finished_ts && !jobs.data?.[r.run_id]))
+  useEffect(() => setLive(anyLive), [anyLive])
+
   const runAction = useRunAction()
   const busy = unstage.isPending || dispatch.isPending || runAction.isPending
 
@@ -313,6 +318,11 @@ export function StagedPage() {
                       <button type="button" onClick={() => setArmed(false)}>cancel</button>
                     </>}
               </div>
+              {pendingJob && (
+                <p className="dispatch-pending">
+                  Dispatched <code>{pendingJob}</code> · {(pendingState ?? 'submitted').toLowerCase()}. Its run appears below once the job starts (a few minutes while Batch brings up the VM).
+                </p>
+              )}
               <p className="dispatch-note dim">A run reads the scan you pick and deletes only what it listed; new objects since are left alone.</p>
             </div>
           )}
