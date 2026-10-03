@@ -964,8 +964,31 @@ class MemIndex:
         nodes = tm("nodes", self.nodes_of, names)
         if not len(nodes):
             return nodes
-        ok = tm("verify", lambda: pc.match_substring_regex(self.segments(nodes, None, lower=False), source, ignore_case=True).to_numpy(zero_copy_only=False))
+        ok = tm("verify", self._verify_ci, nodes, source)
         return nodes[ok]
+
+    def _verify_ci(self, nodes: np.ndarray, source: str) -> np.ndarray:
+        """A case-insensitive regex on each node's full path. Tested on the
+        lowercase paths (no case to rebuild): a name differs from its
+        lowercase only in ASCII letters unless it is a case exception, so
+        the answer is the same; a path holding an exception is re-tested on
+        its original case."""
+        import pyarrow.compute as pc
+
+        ok = pc.match_substring_regex(self.segments(nodes, None, lower=True), source, ignore_case=True).to_numpy(zero_copy_only=False)
+        if len(self.case_ex_id):
+            ex = np.zeros(len(nodes), bool)
+            cur = np.asarray(nodes, np.int64)
+            while (cur >= 0).any():
+                live = np.flatnonzero(cur >= 0)
+                nid = self.nid[cur[live]]
+                pos = np.minimum(_ss(self.case_ex_id, nid), len(self.case_ex_id) - 1)
+                ex[live] |= self.case_ex_id[pos] == nid
+                cur = self.up(cur)
+            if ex.any():
+                idx = np.flatnonzero(ex)
+                ok[idx] = pc.match_substring_regex(self.segments(nodes[idx], None, lower=False), source, ignore_case=True).to_numpy(zero_copy_only=False)
+        return ok
 
 
 # --- the cold detail -----------------------------------------------------------------

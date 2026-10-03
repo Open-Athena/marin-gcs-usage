@@ -345,3 +345,16 @@ def test_fold_past_hard_cap(own, monkeypatch):
         {"threshold": 31, "nodes": 1, "folded": 100, "truncated": False}, 100, [{"path": "c/many/f000", "b": 1, "o": 1}, {"path": "c/many/f001", "b": 1, "o": 1}],
         {"n": "c", "k": "dir", "b": 100, "o": 100, "d": 20000, "c": [{"n": "many", "k": "dir", "b": 100, "o": 100, "d": 20000}]},
     )
+
+
+def test_regex_verify_on_lowercase(fixture_ix):
+    # A case-insensitive regex tested on the lowercase paths (and a path
+    # holding a case exception, the Kelvin-sign `Key`, on its original case)
+    # holds exactly where it holds on the original paths.
+    import pyarrow.compute as pc
+
+    ix = fixture_ix
+    nodes = np.arange(ix.n)
+    orig = ix.segments(nodes, None, lower=False)
+    for src in ("^bk/key", "^bk/Key/", "[A-Z]ey/", "\\.BIN$", "ttl"):
+        assert ix._verify_ci(nodes, src).tolist() == pc.match_substring_regex(orig, src, ignore_case=True).to_numpy(zero_copy_only=False).tolist()
