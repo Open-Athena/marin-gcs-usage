@@ -25,6 +25,7 @@ export D1_DB_ID=${D1_DB_ID:-7f1e1326-b879-4ecd-8621-846621c24f36}
 export D1_DB_NAME=${D1_DB_NAME:-oa-cw-s3-usage-db}
 export INDEX_VARIANTS=${INDEX_VARIANTS:-path}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+export DATA_BUCKET=$DATA
 ROOT="/gcs/$DATA/cw-l2"
 WORK_ROOT=${WORK_DIR:-/stage}/reindex
 

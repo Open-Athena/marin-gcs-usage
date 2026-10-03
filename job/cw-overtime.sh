@@ -21,6 +21,7 @@ export D1_DB_NAME=${D1_DB_NAME:-oa-cw-s3-usage-db}
 export LAYER2_PREFIX=${LAYER2_PREFIX:-'cw-l2/{scan}/'}
 export SNAPSHOTS_SUBDIR=${SNAPSHOTS_SUBDIR:-cw}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+export DATA_BUCKET=$DATA
 GEN=${GEN:-$(date -u +%Y%m%dT%H%M%SZ)}
 WORK=${WORK:-${WORK_DIR:-/stage}/over-time}
 if [ -z "${CLOUDFLARE_API_TOKEN:+set}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then

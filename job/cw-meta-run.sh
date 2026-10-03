@@ -56,6 +56,7 @@ export LAYER2_PREFIX=${LAYER2_PREFIX:-"$STORE-l2/{scan}/"}          # this store
 
 ROOTS=${META_ROOTS:-"gcs://oa-gcs-usage-dvx r2://oa-cw-s3-usage-index"}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+export DATA_BUCKET=$DATA
 PROCS=${LISTING_PROCS:-4}
 WORKERS=${LISTING_WORKERS:-4}
 SNAP_ID=${SNAP_ID:-$(date -u +%Y-%m-%dT%H%M)}

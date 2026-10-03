@@ -58,6 +58,7 @@ BUCKET=${CW_BUCKET:-${BUCKETS%% *}}
 export CW_BUCKET=$BUCKET
 ENDPOINT=${CW_ENDPOINT:-https://cwobject.com}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+export DATA_BUCKET=$DATA
 PROCS=${LISTING_PROCS:-8}
 WORKERS=${LISTING_WORKERS:-8}
 # Snapshot ids are sub-daily: the bucket can move >40 TiB between morning and
