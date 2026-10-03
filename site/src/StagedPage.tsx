@@ -39,6 +39,7 @@ import { joinRuns, LIVE_STATES, viewLive } from './runs'
 import { RunsSection } from './StagedRuns'
 import { type PrefixSortKey, type PrefixStat, relAgo, sortPrefixRows, usePrefixes } from './prefixes'
 import { stagedTree } from './stagedTree'
+import { machineFor } from '../functions/_lib/sweepMachines'
 
 const iso = (ts: number): string => new Date(ts * 1000).toISOString()
 const store = DEFAULT_STORE
@@ -213,12 +214,13 @@ export function StagedPage() {
   // digest names, so a real run needs a dry run of the same cut.
   const [bucketsOff, setBucketsOff] = useState<ReadonlySet<string>>(new Set())
   const perBucket = useMemo(() => {
-    const m = new Map<string, { n: number; b: number }>()
+    const m = new Map<string, { n: number; b: number; o: number }>()
     for (const r of rows) {
       const bkt = prefixToPath(r.prefix).split('/')[0]
-      const e = m.get(bkt) ?? { n: 0, b: 0 }
+      const e = m.get(bkt) ?? { n: 0, b: 0, o: 0 }
       e.n++
       e.b += r.stat?.b ?? 0
+      e.o += r.stat?.o ?? 0
       m.set(bkt, e)
     }
     return m
@@ -227,6 +229,9 @@ export function StagedPage() {
   const onBuckets = planBuckets.filter(b => !bucketsOff.has(b))
   const cut = CAPS.bucketCut && onBuckets.length < planBuckets.length ? onBuckets : undefined
   const cutItems = cut ? onBuckets.reduce((n, b) => n + perBucket.get(b)!.n, 0) : items.length
+  // The executor holds a bucket's manifest in memory: a bucket with tens of
+  // millions of planned objects needs the big machine (gcs only).
+  const machine = CAPS.bucketCut ? machineFor(Math.max(0, ...onBuckets.map(b => perBucket.get(b)!.o))) : undefined
 
   const total = (rs: Row[]) => rs.reduce((t, r) => ({ b: t.b + (r.stat?.b ?? 0), o: t.o + (r.stat?.o ?? 0), gone: t.gone + (stats && !r.stat ? 1 : 0) }), { b: 0, o: 0, gone: 0 })
   const all = total(shownRows)
@@ -407,11 +412,11 @@ export function StagedPage() {
                 </details>
               )}
               <div className="dispatch-btns">
-                <button type="button" className="dry" disabled={busy || !date || !onBuckets.length} onClick={() => dispatch.mutate({ mode: 'dry', date, buckets: cut })}>dispatch dry-run</button>
+                <button type="button" className="dry" disabled={busy || !date || !onBuckets.length} onClick={() => dispatch.mutate({ mode: 'dry', date, buckets: cut, machine })}>dispatch dry-run</button>
                 {!armed
                   ? <button type="button" className="danger" disabled={busy || !date || !onBuckets.length} onClick={() => setArmed(true)}>real delete…</button>
                   : <>
-                      <button type="button" className="danger armed" disabled={busy} onClick={() => dispatch.mutate({ mode: 'real', date, buckets: cut }, { onSuccess: () => setArmed(false) })}>
+                      <button type="button" className="danger armed" disabled={busy} onClick={() => dispatch.mutate({ mode: 'real', date, buckets: cut, machine }, { onSuccess: () => setArmed(false) })}>
                         confirm REAL delete of {cutItems} {cutItems === 1 ? 'prefix' : 'prefixes'}{cut && <> ({onBuckets.length} of {planBuckets.length} buckets)</>}
                       </button>
                       <button type="button" onClick={() => setArmed(false)}>cancel</button>
@@ -422,7 +427,7 @@ export function StagedPage() {
                   Dispatched <code>{pendingJob}</code> · {(pendingState ?? 'submitted').toLowerCase()}. Its run appears below once the job starts (a few minutes while Batch brings up the VM).
                 </p>
               )}
-              <p className="dispatch-note dim">A run reads the scan you pick and deletes only what it listed; new objects since are left alone.</p>
+              <p className="dispatch-note dim">A run reads the scan you pick and deletes only what it listed; new objects since are left alone.{machine && <> Runs on <code>{machine}</code>.</>}</p>
             </div>
           )}
         </>

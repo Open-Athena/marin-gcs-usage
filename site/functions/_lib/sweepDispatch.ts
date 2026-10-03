@@ -27,6 +27,7 @@ import { type DispatchErr, type DispatchReq, type ExecEnv, type Executor, type P
 import { batchJobsUrl, batchRegionFor, gcpToken } from './gcp.js'
 import { bucketOf, NO_SHAPE, type PlanBucketsSnapshot, prefixShape, snapshotPlanBuckets } from './plans.js'
 import { listSweepJobs, reflectSweepRuns } from './sweepReflect.js'
+import { DEFAULT_SWEEP_MACHINE, SWEEP_MACHINES, type SweepMachine } from './sweepMachines.js'
 
 /** A run's dir in the data bucket (`DATA_BUCKET`). */
 export const runDir = (cfg: Pick<BatchConfig, 'dataBucket'>, jobId: string): string => `gs://${cfg.dataBucket}/sweep/runs/${jobId}`
@@ -81,7 +82,7 @@ export const undoScript = (): string => [
 ].join('\n')
 
 export interface SweepJobSpec {
-  cfg: Pick<BatchConfig, 'project' | 'image' | 'cfAccountId' | 'dataBucket'>
+  cfg: Pick<BatchConfig, 'project' | 'image' | 'cfAccountId' | 'dataBucket' | 'd1DbId' | 'd1DbName'>
   /** The service account the job runs as (`JOB_SA`). */
   jobSa: string
   region: string
@@ -91,19 +92,20 @@ export interface SweepJobSpec {
   siteUrl: string
   /** Per-job variables, ahead of the shared ones. */
   env: Record<string, string>
+  machine?: SweepMachine
 }
 
 /** The Batch job spec every gcs executor job shares (a sweep run, an undo):
  * the executor image running `bash -c <script>` as the job account, in the
  * region of its buckets, with the D1 + site credentials from Secret Manager. */
-export const sweepJobSpec = ({ cfg, jobSa, region, script, actor, siteUrl, env }: SweepJobSpec): unknown => {
+export const sweepJobSpec = ({ cfg, jobSa, region, script, actor, siteUrl, env, machine = DEFAULT_SWEEP_MACHINE }: SweepJobSpec): unknown => {
   const SECRET = (name: string) => `projects/${cfg.project}/secrets/${name}/versions/latest`
   return {
     taskGroups: [{
       taskCount: 1,
       taskSpec: {
         runnables: [{ container: { imageUri: cfg.image, entrypoint: '/bin/bash', commands: ['-c', script] } }],
-        computeResource: { cpuMilli: 8000, memoryMib: 60000 },
+        computeResource: SWEEP_MACHINES[machine],
         maxRetryCount: 0,
         // 72 h: the 35M-object bucket needs ~10 h of deletes at the bucket's
         // write ceiling on top of its listing; 4 h (the old cap) fit only east5.
@@ -117,6 +119,9 @@ export const sweepJobSpec = ({ cfg, jobSa, region, script, actor, siteUrl, env }
             // `sweep manifest`'s listing root (`gs://$DATA_BUCKET`): dt-cloud
             // has no default bucket (specs/oa-decoupling.md steps 9–10)
             DATA_BUCKET: cfg.dataBucket,
+            // where `sweep execute` / `sweep undo` record the run (no default D1)
+            D1_DB_ID: cfg.d1DbId,
+            D1_DB_NAME: cfg.d1DbName,
             SITE_URL: siteUrl,
           },
           secretVariables: {
@@ -127,7 +132,7 @@ export const sweepJobSpec = ({ cfg, jobSa, region, script, actor, siteUrl, env }
       },
     }],
     allocationPolicy: {
-      instances: [{ policy: { machineType: 'n2-highmem-8', bootDisk: { type: 'pd-balanced', sizeGb: '100' } } }],
+      instances: [{ policy: { machineType: machine, bootDisk: { type: 'pd-balanced', sizeGb: '100' } } }],
       serviceAccount: { email: jobSa },
       location: { allowedLocations: [`regions/${region}`] },
     },
@@ -158,7 +163,7 @@ async function prepare(env: ExecEnv, db: D1Database, req: DispatchReq): Promise<
   if (!env.GCP_SA_KEY) return refuse(503, 'dispatch not configured (GCP_SA_KEY secret missing)')
   if (!env.JOB_SA) return refuse(503, 'dispatch not configured (JOB_SA var missing)')
   const jobSa = env.JOB_SA
-  const cfg = batchConfig(env, ['GCP_PROJECT', 'DATA_BUCKET', 'SWEEP_IMAGE', 'CF_ACCOUNT_ID'])
+  const cfg = batchConfig(env, ['GCP_PROJECT', 'DATA_BUCKET', 'SWEEP_IMAGE', 'CF_ACCOUNT_ID', 'D1_DB_ID'])
   if ('missing' in cfg) return refuse(503, notConfigured('dispatch', cfg.missing))
   const shape = prefixShape(env)
   if (!shape) return refuse(503, `dispatch ${NO_SHAPE}`)
@@ -179,7 +184,7 @@ async function prepare(env: ExecEnv, db: D1Database, req: DispatchReq): Promise<
     const plan = runDir(cfg, jobId)
     const script = sweepScript({ cfg, mode: req.mode, jobId, buckets, plan: planJsonPath(cfg, jobId) })
     const spec = sweepJobSpec({
-      cfg, jobSa, region, script, actor: req.actor, siteUrl: req.siteUrl,
+      cfg, jobSa, region, script, actor: req.actor, siteUrl: req.siteUrl, machine: req.machine,
       env: {
         SWEEP_DATE: date,
         // the plan the job runs: `/api/sweep/jobs` places a job whose run row
