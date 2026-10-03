@@ -43,6 +43,15 @@ ROOT_LABEL = "marin GCS"        # the store root's crumb label (`_lib/view.ts`)
 OG_CARDS = "1"                  # dynamic share cards for every page (specs/done/dogi.md)
 BASE_SCOPE = "gcs"              # the viewer scope this deployment grants (`_lib/auth.ts`)
 JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"  # the account sweep-dispatched Batch jobs run as (`_lib/planDispatch.ts`)
+# Deployment resources (specs/oa-decoupling.md): `cloud` carries no defaults for these.
+STORE_BUCKET = "oa-gcs-usage-dvx"     # the path store's bucket (`_lib/index.ts`)
+DATA_BUCKET = "oa-gcs-usage-dvx"      # sweep runs / plans data (`sweepDispatch`, `api/sweep/*`)
+GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
+# Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
+BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:latest"
+CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
+REPO_URL = "https://github.com/Open-Athena/marin-gcs-usage"  # the GitHub link (`SiteKbd`/`SiteNav`)
 # Snapshots live at the store root (`snapshots/<date>/`); no SNAPSHOTS_SUBDIR.
 # No EDGE_TRUSTED / ACCESS_*: the host is off Zero Trust since 2026-09-24 — the
 # app's own gate authorizes (Google OIDC client + emailed codes, D1
@@ -106,6 +115,14 @@ ROOT_LABEL = "marin GCS (dev)"
 OG_CARDS = "1"
 BASE_SCOPE = "gcs"
 JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"
+# Deployment resources (specs/oa-decoupling.md): `cloud` carries no defaults for these.
+STORE_BUCKET = "oa-gcs-usage-dvx"     # the path store's bucket (`_lib/index.ts`)
+DATA_BUCKET = "oa-gcs-usage-dvx"      # sweep runs / plans data (`sweepDispatch`, `api/sweep/*`)
+GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
+# Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
+BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:latest"
+CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 STAFF_DOMAIN = "openathena.ai"
 STORE_SCHEME = "gs://"
 STORE_BUCKETS = "marin-us-central2,marin-us-central1,marin-us-east1,marin-us-east5,marin-us-west4,marin-eu-west4"
