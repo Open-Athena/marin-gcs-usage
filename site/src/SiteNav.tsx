@@ -21,7 +21,8 @@ import { MdMenu } from 'react-icons/md'
 import { Link, useLocation } from 'react-router-dom'
 import { AboutModal } from './About'
 import { Avatar } from './Avatar'
-import { AUTH_MODE, signInUrl, useCanAssign, useIdent, useSignOut } from './auth'
+import { AUTH_MODE, signInUrl, useCanAssign, useCanStage, useIdent, useSignOut } from './auth'
+import { ShareDialog } from './ShareDialog'
 import { useRegistry } from './identities'
 import { REPO_URL } from './SiteKbd'
 import { useMyUser, useUserEmails } from './owners'
@@ -157,6 +158,10 @@ function useMenu(placement: 'bottom-start' | 'bottom-end') {
 function NavMenu({ extra }: { extra?: MenuEntry[] }) {
   const { pathname } = useLocation()
   const canAssign = useCanAssign()
+  // Full viewers share with a detailed preview (guest links can't: a token
+  // outlives the session that minted it).
+  const canShare = useCanStage()
+  const [shareOpen, setShareOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const m = useMenu('bottom-start')
   // The subtree's store: its own map (`/meta`), and only the affordances it
@@ -173,6 +178,7 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
   return (
     <>
       {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
+      {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
       <button type="button" className="tb-menu-btn" ref={m.refs.setReference} {...m.getReferenceProps()} aria-label="Site menu" title="Site menu">
         <MdMenu aria-hidden />
       </button>
@@ -198,6 +204,9 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
                 </>
               )}
               <hr />
+              {canShare && (
+                <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setShareOpen(true) }}>Share…</button>
+              )}
               <button type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); setAboutOpen(true) }}>About — the data, axes &amp; colors</button>
               {extra?.map(e => (
                 <button key={e.key} type="button" role="menuitem" className="mi" onClick={() => { m.setOpen(false); e.onClick() }}>{e.label}</button>

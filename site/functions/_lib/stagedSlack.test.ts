@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { fmtBytes, nameSlug, renderParent, runEvent, stageEvent, type RunRow } from './stagedSlack.js'
+import { PLAN_SENDER, fmtBytes, nameSlug, personSender, renderParent, runEvent, stageEvent, stagedCardUrl, type RunRow } from './stagedSlack.js'
+import { sqliteD1 } from './testD1.js'
 
 const run = (o: Partial<RunRow>): RunRow => ({
   run_id: 'cw-sweep-dry-1', mode: 'dry', scan: '2026-09-28T1201', actor: 'ann@openathena.ai', started_ts: 100,
@@ -67,7 +68,7 @@ describe('mentions and sizes', () => {
       ':wastebasket: *<@UA> staged 1 prefix*',
       '*51.0 TiB* · 179,327,698 objects at scan 2026-10-02',
       '> old runs',
-      '• `gs://b/x/`',
+      '```b/x/```',
     ]])
   })
 })
@@ -76,5 +77,40 @@ describe('nameSlug: a Slack name as the canonical owner id', () => {
   it('lowercase, accents folded, other runs to one dash', () => {
     expect(['Chi-Heem Wong', 'Percy Liang', 'José  Núñez', ' Will Held (he/him) '].map(nameSlug))
       .toEqual(['chi-heem-wong', 'percy-liang', 'jose-nunez', 'will-held-he-him'])
+  })
+})
+
+describe('senders', () => {
+  it('an event posts as the person (their Slack avatar), else their local part with a generic icon', () => {
+    expect([
+      personSender('a.b@x.org', { mention: '<@UA>', name: 'Ann Bee', image: 'https://img/a.png' }, 'staged'),
+      personSender('c.d@x.org', undefined, 'staged'),
+      PLAN_SENDER,
+    ]).toEqual([
+      { username: 'Ann Bee · staged', icon_url: 'https://img/a.png' },
+      { username: 'c.d · staged', icon_emoji: ':bust_in_silhouette:' },
+      { username: 'Staged deletions', icon_emoji: ':wastebasket:' },
+    ])
+  })
+})
+
+describe('the plan card', () => {
+  const base = { planId: 7, siteUrl: 'https://site.example.org', items: 3, batches: 2, stagers: [] as string[], digest: 'D1', actions: true, closed: false, runs: [] as RunRow[] }
+  const types = (blocks: unknown[]) => blocks.map(b => (b as { type: string }).type)
+  it('an image block last, only with an image and items', () => {
+    const v = { ...base, image: 'https://site.example.org/og/staged.png?v=abc&sig=x' }
+    expect([types(renderParent(v).blocks), renderParent(v).blocks[3], types(renderParent({ ...v, items: 0 }).blocks), types(renderParent(base).blocks)]).toEqual([
+      ['section', 'section', 'actions', 'image'],
+      { type: 'image', image_url: 'https://site.example.org/og/staged.png?v=abc&sig=x', alt_text: 'Plan #7: the staged prefixes as a treemap, coloured by owner' },
+      ['section', 'section', 'actions'],
+      ['section', 'section', 'actions'],
+    ])
+  })
+  it('no card without cards on, nor without a token table to back it (the cw lineage); the gcs lineage case is in og/revocation.test.ts', async () => {
+    const { db } = await sqliteD1('cw')
+    expect([
+      await stagedCardUrl({ SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789'),
+      await stagedCardUrl({ OG_CARDS: '1', SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789'),
+    ]).toEqual([null, null])
   })
 })

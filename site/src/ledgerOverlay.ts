@@ -1,4 +1,4 @@
-// The ownership ledger applied to the map (specs/path-agnostic-serving.md
+// The ownership ledger applied to the map (specs/done/path-agnostic-serving.md
 // §2.3, "Owner coloring: applied client-side"): `/api/subtree` serves each
 // node's owner split (`us`) as the scan attributed it — the committed
 // state — and this overlays the live assignments (the WAL) on the drawn
@@ -14,7 +14,7 @@
 // can't see is an assigned prefix strictly inside an undrawn tile or a fold —
 // that tile keeps its own cover until a drill draws the prefix (it is below
 // the view's pixel floor, so its color share is too).
-import type { OwnerIndex } from './owners'
+import type { OwnerIndex } from './ownerIndex'
 import type { TreeNode } from './types'
 
 /** Owner → bytes, with the unowned remainder under a key no user id can be. */
