@@ -52,6 +52,22 @@ class Answer:
     tier: str | None = None
     cache: str | None = None
     url: str = ""
+    # An in-process engine with a huge root set gives its count and md5 (of
+    # the sorted list) instead of the list (`roots` then holds none of it).
+    n_roots: int | None = None
+    roots_md5: str | None = None
+
+    @property
+    def answered(self) -> bool:
+        return self.roots is not None or self.n_roots is not None
+
+    @property
+    def count(self) -> int | None:
+        return self.n_roots if self.n_roots is not None else (None if self.roots is None else len(self.roots))
+
+    @property
+    def md5(self) -> str:
+        return self.roots_md5 or md5_paths(self.roots or [])
 
 
 class Engine(Protocol):
@@ -154,11 +170,11 @@ def score(case: Case, view: str, answers: list[Answer], truth: dict, listed: lis
     a = answers[0]
     flagged = a.partial or a.approximate
     want_n = truth["roots"]
-    if a.roots is None:
+    if not a.answered:
         verdict, missing, extra, be, oe = "refused" if a.status == 413 else "error", None, None, None, None
     else:
-        same = len(a.roots) == want_n and md5_paths(a.roots) == truth["md5"]
-        if listed is not None:
+        same = a.count == want_n and a.md5 == truth["md5"]
+        if listed is not None and a.n_roots is None:
             got, want = set(a.roots), set(listed)
             missing, extra = len(want - got), len(got - want)
         else:
@@ -166,11 +182,11 @@ def score(case: Case, view: str, answers: list[Answer], truth: dict, listed: lis
         be, oe = _rel(a.b, truth["bytes"]), _rel(a.o, truth["objects"])
         exact = same and within(a.b, truth["bytes"]) and within(a.o, truth["objects"])
         # A view whose matches hold no bytes is drawn empty: no roots, 0 B.
-        if not exact and truth["bytes"] == 0 and not a.roots and a.b == 0:
+        if not exact and truth["bytes"] == 0 and not a.count and a.b == 0:
             exact = True
         verdict = ("exact*" if flagged else "exact") if exact else ("flagged" if flagged else "FAIL")
     return Score(
-        case.id, case.q, case.qs, view, verdict, None if a.roots is None else len(a.roots), want_n, missing, extra, be, oe,
+        case.id, case.q, case.qs, view, verdict, a.count, want_n, missing, extra, be, oe,
         a.partial, a.approximate, a.reason, a.status, [x.ms for x in answers], [x.server_ms for x in answers], a.truncated, a.tier,
     )
 
@@ -221,7 +237,7 @@ def run(engine: Engine, cases: list[Case], truth: Truth, *, repeat: int = 1, log
 
 
 def _same(a: Answer, want: dict) -> bool:
-    return a.roots is not None and len(a.roots) == want["roots"] and md5_paths(a.roots) == want["md5"]
+    return a.answered and a.count == want["roots"] and a.md5 == want["md5"]
 
 
 def _pct(x: float | None) -> str:

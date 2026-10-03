@@ -686,6 +686,126 @@ def bench_truth(append: bool, check: tuple[str, ...], only: tuple[str, ...], mem
         raise SystemExit(1)
 
 
+@main.command("bench-index")
+@option("-m", "--mem", default="90GB", help="DuckDB memory limit")
+@option("-o", "--out", type=Path, required=True, help="Local dir for the index (`.npy` arrays + `vocab.arrow` + `meta.json`)")
+@option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs)")
+@option("-t", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", "tmp_dir", default=None, help="DuckDB spill dir")
+@option("-u", "--upload", default=None, help="Also upload the index to this gs:// prefix")
+@argument("gen")
+def bench_index(mem: str, out: Path, stage: Path | None, threads: int, tmp_dir: str | None, upload: str | None, gen: str) -> None:
+    """Build the serving box's in-memory index (`dt_cloud.bench.mem`) from one
+    index generation (GEN: its dir, local or gs://, holding `path-index.parquet`
+    and the v1 `path-index.names.parquet`). Heavy: a VM beside the data."""
+    import fsspec
+
+    from .bench import local, mem as bm
+
+    g = gen.rstrip("/")
+    path_file, names = f"{g}/path-index.parquet", f"{g}/path-index.names.parquet"
+    if stage:
+        path_file, _ = local.stage_file(path_file, stage / "path-index.parquet")
+        names, _ = local.stage_file(names, stage / "path-index.names.parquet")
+    meta = bm.build(path_file, names, out, threads=threads, mem=mem, tmp=tmp_dir)
+    if upload:
+        meta["upload"] = local.upload_dir(out, upload)
+        (out / bm.META).write_text(json.dumps(meta, indent=1))
+        with fsspec.open(f"{upload.rstrip('/')}/{bm.META}", "w") as fh:
+            fh.write(json.dumps(meta, indent=1))
+    print(json.dumps(meta, indent=1))
+
+
+@main.command("bench-engine")
+@option("-d", "--tmp-dir", default=None, help="DuckDB spill dir (`-e duckdb`)")
+@option("-e", "--engine", type=Choice(["mem", "duckdb"]), required=True, help="`mem`: the custom in-memory index (`-i`); `duckdb`: names-first over GEN's parquet")
+@option("-E", "--evict", is_flag=True, help="Drop the index / generation files from the page cache before loading (a warm-from-disk load)")
+@option("-i", "--index", default=None, help="`-e mem`: the index dir (local, a mount, or gs:// → copied to `-s` first)")
+@option("-k", "--only", multiple=True, help="Run only these query ids (repeatable)")
+@option("-m", "--mem", default="48GB", help="DuckDB memory limit (`-e duckdb`)")
+@option("-n", "--name", default=None, help="Engine label in the record (e.g. `duckdb@gcsfuse`)")
+@option("-o", "--out", default=None, help="Write the run record to this path or prefix (`…/` → `<prefix><name>-<ts>.json`)")
+@option("-Q", "--queries", required=True, help="The query set (YAML, local or gs://)")
+@option("-r", "--repeat", default=1, type=int, help="Answers per query × view (the first decides the verdict; timings are medians)")
+@option("-s", "--stage", type=Path, default=None, help="Copy gs:// inputs here first (parallel ranged GETs)")
+@option("-t", "--threads", default=16, type=int, help="Threads (vocabulary scan; DuckDB)")
+@option("-T", "--truth", required=True, help="The ground truth (`bench-truth -o`'s dir or gs:// prefix)")
+@argument("gen")
+def bench_engine(tmp_dir: str | None, engine: str, evict: bool, index: str | None, only: tuple[str, ...], mem: str, name: str | None, out: str | None, queries: str, repeat: int, stage: Path | None, threads: int, truth: str, gen: str) -> None:
+    """Score a serving-box engine in-process against a query set's ground
+    truth (specs/filter-query-service.md §6 phase 2): load time, resident
+    memory, per-answer latency (roots + totals; root paths timed apart) and
+    the verdicts `probe -Q` gives the Worker. Exits nonzero on any inexact
+    answer or error.
+    """
+    import time as _time
+
+    import fsspec
+
+    from .bench import local, mem as bm, queryset, score as bs
+
+    cases = queryset.load(queries)
+    if only:
+        unknown = set(only) - {c.id for c in cases}
+        if unknown:
+            raise UsageError(f"unknown query ids: {sorted(unknown)}")
+        cases = [c for c in cases if c.id in only]
+    tr = bs.Truth(truth)
+    g = gen.rstrip("/")
+    load: dict = {"rss_before": bm.rss()}
+    t0 = _time.monotonic()
+    if engine == "mem":
+        if not index:
+            raise UsageError("-e mem needs -i")
+        d = Path(index)
+        if index.startswith("gs://"):
+            if not stage:
+                raise UsageError("a gs:// index needs -s")
+            d = stage / "mem-index"
+            load["download"] = local.download_dir(index, d)
+        if evict:
+            bm.evict(d)
+        t1 = _time.monotonic()
+        ix = bm.MemIndex.load(d, threads=threads)
+        load["load_s"] = round(_time.monotonic() - t1, 2)
+        load["nbytes"] = ix.nbytes()
+        load["nodes"] = ix.n
+        load["names"] = len(ix.names)
+        load["case_exceptions"] = ix.case_exceptions()
+    else:
+        path_file, names = f"{g}/path-index.parquet", f"{g}/path-index.names.parquet"
+        if stage and g.startswith("gs://"):
+            path_file, s1 = local.stage_file(path_file, stage / "path-index.parquet")
+            names, s2 = local.stage_file(names, stage / "path-index.names.parquet")
+            load["download"] = {"path_s": s1, "names_s": s2}
+        if evict:
+            bm.evict(Path(path_file).parent)
+        from .bench import duck
+
+        ix = duck.DuckIndex(path_file, names, threads=threads, mem=mem, tmp=tmp_dir)
+        load.update(ix.stats)
+        load["duckdb_memory"] = ix.memory()
+    load["total_s"] = round(_time.monotonic() - t0, 2)
+    load["rss"] = bm.rss()
+    label = name or engine
+    err(f"bench-engine {label}: loaded in {load['total_s']}s; {json.dumps(load)}")
+    eng = local.LocalEngine("mem" if engine == "mem" else "duck", ix, name=label)
+    err(bs.HEADER)
+    scores = bs.run(eng, cases, tr, repeat=repeat, log=err)
+    tally = bs.tally(scores)
+    lat = local.latency_summary(eng.timings)
+    err("  ".join(f"{k}: {v}" for k, v in sorted(tally.items())) + f"  {json.dumps(lat)}")
+    rec = bs.record(f"local:{engine}", eng, tr.summary.get("date"), truth, scores, cold=False, repeat=repeat)
+    rec.update(gen=gen, index=index, load=load, latency=lat, rss_end=bm.rss(), threads=threads, timings=[asdict(t) for t in eng.timings])
+    if out:
+        path = f"{out}{label}-{rec['ts']}.json" if out.endswith("/") else out
+        with fsspec.open(path, "w") as fh:
+            json.dump(rec, fh)
+        err(f"wrote {path}")
+    if set(tally) - {"exact"}:
+        raise SystemExit(1)
+
+
 def bucket_sources(specs: tuple[str, ...], default_bucket: str) -> list[tuple[str, str]]:
     """`<bucket>=<layer-2 parquet>` pairs → [(bucket, path)]; a bare path is
     ``default_bucket``'s (the single-bucket form)."""
