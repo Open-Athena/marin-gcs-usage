@@ -1,6 +1,7 @@
 // /staged — the opt-in deletion console (specs/staged-delete.md; the OA build
 // plan `sweep-plan-union.md` checkpoint 4). Trash gestures on the map's table
-// stage prefixes into one shared open plan; this page shows that plan — a
+// stage prefixes into one shared set (an open plan, internally — plans are
+// bookkeeping, never shown); this page shows that set — a
 // treemap of everything staged (and of the selection), then each gesture's
 // batch with who/when/memo, its items sized at a scan — lets a stager take
 // their own back, and lets an admin dry-run or really dispatch it to the
@@ -8,15 +9,14 @@
 // bridge, or gcs's sweep bridge). Non-admins see everything read-only.
 // Nothing is deleted by inaction: no deadline, no auto-sweep.
 //
-// Below the plan, its runs (`StagedRuns.tsx`, specs/staged-runs.md): live
-// progress, totals, undo windows, files and logs, and the run controls the
-// executor offers (`CAPS`). `?plan=<id>` shows another plan — a closed one
-// keeps its runs (and their undo windows) reachable; an admin closes the open
-// plan from here. A gesture whose prefixes all went (absorbed by a later
+// Below it, every run (`StagedRuns.tsx`, specs/staged-runs.md), whatever it
+// was dispatched against: live progress, totals, undo windows, files and
+// logs, and the run controls the executor offers (`CAPS`); `?run=<id>` opens
+// one (the Slack thread links there). A gesture whose prefixes all went (absorbed by a later
 // ancestor, taken back) folds to one line.
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { boolParam, optIntParam, stringParam, useUrlState } from 'use-prms'
+import { boolParam, stringParam, useUrlState } from 'use-prms'
 import { SiteNav } from './SiteNav'
 import { SiteKbd } from './SiteKbd'
 import { Tooltip } from './Tooltip'
@@ -33,7 +33,7 @@ import { useCanStage, useIdent } from './auth'
 import { applyLedger } from './ledgerOverlay'
 import { useOwnerIndex, useOwners } from './owners'
 import { useRowSelection, useRowSelectionKeys } from './rowSelection'
-import { CAPS, useClosePlan, useDispatch, useExecJobs, usePlanList, useRunAction, useStagedPlan, useUnstage } from './plans'
+import { CAPS, useDispatch, useExecJobs, useRunAction, useStagedPlan, useUnstage } from './plans'
 import type { EmptiedBatch, StagedItem } from './plans'
 import { joinRuns, LIVE_STATES, viewLive } from './runs'
 import { RunsSection } from './StagedRuns'
@@ -95,16 +95,11 @@ export function StagedPage() {
   const admin = useIsAdmin()
   const canStage = useCanStage()
 
-  // `?plan=<id>`: a plan other than the shared open one (a closed plan keeps
-  // its runs, and their undo windows, reachable here).
-  const [planP, setPlanP] = useUrlState('plan', optIntParam)
   const [live, setLive] = useState(false)
-  const staged = useStagedPlan(live, planP)
-  const plans = usePlanList()
+  const staged = useStagedPlan(live, null)
   const jobs = useExecJobs(live)
   const jobList = useMemo(() => jobs.data?.jobs ?? [], [jobs.data])
   const plan = staged.data?.plan ?? null
-  const closed = plan?.state === 'closed'
   const items = useMemo(() => staged.data?.items ?? [], [staged.data])
   const batches = useMemo(() => staged.data?.batches ?? [], [staged.data])
   const emptied = useMemo(() => staged.data?.emptied ?? [], [staged.data])
@@ -112,8 +107,7 @@ export function StagedPage() {
   const runs = useMemo(() => staged.data?.runs ?? [], [staged.data])
   const unstage = useUnstage(plan?.id ?? null)
   const dispatch = useDispatch(plan?.id ?? null)
-  const closePlan = useClosePlan()
-  const views = useMemo(() => joinRuns(runs, jobList, plan?.id ?? null), [runs, jobList, plan?.id])
+  const views = useMemo(() => joinRuns(runs, jobList), [runs, jobList])
   // A just-dispatched job before the jobs list shows it (or its executor
   // records its run row — gcs's does that from inside Batch, once the VM is
   // up): shown under the buttons, and it keeps the page polling meanwhile.
@@ -127,7 +121,7 @@ export function StagedPage() {
   useEffect(() => setLive(anyLive), [anyLive])
 
   const runAction = useRunAction()
-  const busy = unstage.isPending || dispatch.isPending || runAction.isPending || closePlan.isPending
+  const busy = unstage.isPending || dispatch.isPending || runAction.isPending
 
   // The scan everything on the page is sized at — and the one a dispatch reads.
   const [scans, setScans] = useState<string[]>([])
@@ -146,7 +140,7 @@ export function StagedPage() {
   })
   const userIdx = useMemo(() => buildUserIndex(metaQ.data?.users ?? []), [metaQ.data])
   const ownerIdx = useOwnerIndex(useOwners(!!store.owners).data)
-  const error = unstage.error ?? dispatch.error ?? runAction.error ?? closePlan.error ?? staged.error ?? statsQ.error
+  const error = unstage.error ?? dispatch.error ?? runAction.error ?? staged.error ?? statsQ.error
 
   const rows: Row[] = useMemo(() => items.map(it => ({ ...it, name: it.prefix, to: `/${prefixToPath(it.prefix)}`, stat: stats?.[it.prefix] })), [items, stats])
   // The view lives in the URL, so a link carries it: `?q=hedy|grace&s=-b`
@@ -201,13 +195,11 @@ export function StagedPage() {
   useRowSelectionKeys(sel, 'staged', 'Staged')
   const selected = items.filter(it => sel.selected.has(it.prefix)).map(it => it.prefix)
   const mine = (it: StagedItem) => !!ident && it.added_by === ident.email
-  const canRemove = (it: StagedItem) => !closed && (admin || (canStage && mine(it)))
+  const canRemove = (it: StagedItem) => admin || (canStage && mine(it))
   const removable = selected.filter(p => { const it = items.find(i => i.prefix === p); return it ? canRemove(it) : false })
 
   const [armed, setArmed] = useState(false)
   useEffect(() => setArmed(false), [plan?.id, items.length])
-  const [closeArmed, setCloseArmed] = useState(false)
-  useEffect(() => setCloseArmed(false), [plan?.id])
 
   // A dispatch may be cut to some of the plan's buckets (`CAPS.bucketCut`):
   // unchecked buckets stay out of the run. The cut's prefixes are what its
@@ -262,26 +254,16 @@ export function StagedPage() {
         {admin ? ' Dry-run first to see what a real run would delete; a real run deletes recoverably.' : ' An admin reviews and dispatches from here.'}
       </p>
       {error && <p className="staged-err" role="alert">{error.message}</p>}
-      {(planP != null || (plans.data?.length ?? 0) > 1) && (
-        <label className="plan-pick">plan{' '}
-          <select value={planP ?? ''} onChange={e => setPlanP(e.target.value ? Number(e.target.value) : null)} aria-label="plan">
-            <option value="">the open plan (where staging lands)</option>
-            {(plans.data ?? []).map(p => <option key={p.id} value={p.id}>#{p.id}{p.name !== 'Staged' ? ` “${p.name}”` : ''} · {p.state} · {p.items} {p.items === 1 ? 'item' : 'items'} · {p.runs} {p.runs === 1 ? 'run' : 'runs'}</option>)}
-          </select>
-          {closed && <span className="dim"> · closed: read-only, its runs (and their undo windows) stay here</span>}
-        </label>
-      )}
       {plan?.note && <p className="plan-note">{plan.note}</p>}
 
       {staged.isLoading ? <p className="loading">loading…</p> : !plan || !items.length ? (
-        <p className="staged-empty">{plan && closed ? `Plan #${plan.id} is closed, with nothing left in it.` : 'Nothing is staged.'}</p>
+        <p className="staged-empty">Nothing is staged.</p>
       ) : (
         <>
           <div className="pp-head">
             <h2>
               {shownRows.length !== items.length && <>{shownRows.length} of </>}{items.length} {items.length === 1 ? 'prefix' : 'prefixes'}
               {stats && <> · {fmtBytes(all.b)}{shownRows.length !== items.length && <span className="dim"> of {fmtBytes(everything.b)}</span>} · {fmtN(all.o)} objects</>}
-              <span className="dim"> · plan #{plan.id}{plan.name !== 'Staged' && <> “{plan.name}”</>} · {closed && plan.closed_ts ? <>closed {relAgo(plan.closed_ts)}</> : <>open since {relAgo(plan.created_ts).replace(/ ago$/, '')}</>}</span>
             </h2>
             <label className="scan-pick">sized at scan <select value={date} onChange={e => setDate(e.target.value)} aria-label="scan">{scans.map(s => <option key={s}>{s}</option>)}</select>
               {sizesNote && <span className="dim"> {sizesNote}</span>}
@@ -392,7 +374,7 @@ export function StagedPage() {
             )
           })}
 
-          {admin && !closed && (
+          {admin && (
             <div className="dispatch" id="dispatch">
               <h3>Dispatch</h3>
               <label>scan <select value={date} onChange={e => setDate(e.target.value)}>{scans.map(s => <option key={s}>{s}</option>)}</select></label>
@@ -433,33 +415,17 @@ export function StagedPage() {
         </>
       )}
 
-      {admin && plan && !closed && (
-        <div className="close-plan">
-          {!closeArmed
-            ? <Tooltip content="Close this plan: its items stay with it (read-only, under the plan picker, with its runs), and the next trash gesture opens a fresh plan.">
-                <button type="button" disabled={busy} onClick={() => setCloseArmed(true)}>close plan…</button>
-              </Tooltip>
-            : <>
-                <button type="button" className="danger armed" disabled={busy} onClick={() => closePlan.mutate(plan.id, { onSuccess: () => { setCloseArmed(false); setPlanP(plan.id) } })}>confirm: close plan #{plan.id}</button>
-                <button type="button" onClick={() => setCloseArmed(false)}>cancel</button>
-              </>}
-        </div>
-      )}
-
-      {plan && (
-        <RunsSection
-          planId={plan.id}
-          runs={runs}
-          jobs={jobList}
-          configured={jobs.data?.configured ?? true}
-          jobsError={jobs.error}
-          admin={admin}
-          busy={busy}
-          act={a => runAction.mutate(a)}
-          fmtBytes={fmtBytes}
-          refreshing={staged.isFetching || jobs.isFetching}
-        />
-      )}
+      <RunsSection
+        runs={runs}
+        jobs={jobList}
+        configured={jobs.data?.configured ?? true}
+        jobsError={jobs.error}
+        admin={admin}
+        busy={busy}
+        act={a => runAction.mutate(a)}
+        fmtBytes={fmtBytes}
+        refreshing={staged.isFetching || jobs.isFetching}
+      />
       <SiteKbd />
     </main>
   )

@@ -2420,6 +2420,7 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
     td.actions { white-space: nowrap; > * + * { margin-left: 6px; } }
     tr.live td.rid { font-weight: 600; }
     tr.run-detail-row > td { background: var(--panel); padding: 8px 12px 12px; }
+    tr.run.linked > td { background: color-mix(in srgb, var(--accent, #4a9eff) 14%, transparent); }
   }
   .run-detail {
     font-size: 13px;
