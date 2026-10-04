@@ -9,7 +9,8 @@
   of their `vt` and never touched again. Sorted `(depth, path, usr, vf)`:
   a subtree at one depth is one primary-key range. The `by_name` projection
   (the same rows sorted by the lowercase last segment) is the filter's
-  name → nodes access path.
+  name → nodes access path; `by_parent` (sorted `(depth, parent, size)`)
+  makes "a level's children over a threshold" one short range per parent.
 - `changes`: every opened (`sign = 1`, at its `vf`) and closed (`sign = −1`,
   at its `vt`) version, sorted `(at, depth, path, …)`: the change-keyed
   access path. Whatever moved between scans D1 and D2 is the rows with
@@ -56,8 +57,10 @@ NODES = f"""CREATE TABLE IF NOT EXISTS {{t}} (
     vt DateTime('UTC'),
     {VALUES_DDL},
     name String CODEC(ZSTD(3)),
+    parent String DEFAULT if(position(path, '/') = 0, '', substring(path, 1, length(path) - position(reverse(path), '/'))) CODEC(ZSTD(3)),
     INDEX size_mm size TYPE minmax GRANULARITY 1,
-    PROJECTION by_name (SELECT * ORDER BY name, depth, path, usr, vf)
+    PROJECTION by_name (SELECT * ORDER BY name, depth, path, usr, vf),
+    PROJECTION by_parent (SELECT * ORDER BY depth, parent, size)
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(vt)
 ORDER BY (depth, path, usr, vf)

@@ -226,18 +226,12 @@ def root_read(ch: Ch, s: Scan, path: str) -> Agg | None:
     return agg_of(rows[0][0]) if rows and rows[0][0] else None
 
 
-# Up to this many parents a level's read is an OR of their `path` ranges (primary-key pruning); past it,
-# a parent-set test per row (evaluating thousands of ranges per row cost seconds), the granules then
-# pruned by depth and the `size` index alone.
-RANGE_PARENTS = 32
-
-
 def _level_cond(parents: list[str], d: int, path: str) -> str:
+    """The children of `parents` (at depth `d`): a parent set, which the `by_parent` projection's
+    `(depth, parent, size)` order turns into one range per parent (its children over a size bound)."""
     if path == "" and d == 1:
         return "1"
-    if len(parents) > RANGE_PARENTS:
-        return f"{PARENT} IN ({', '.join(lit(p) for p in parents)})"
-    return "(" + " OR ".join(under(p) for p in parents) + ")"
+    return f"parent IN ({', '.join(lit(p) for p in sorted(parents))})"
 
 
 def plain_view(ch: Ch, s: Scan, path: str, *, w: int, h: int, min_area: float, atten: float, max_depth: int | None = None,
