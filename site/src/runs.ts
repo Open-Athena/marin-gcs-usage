@@ -114,7 +114,7 @@ export interface RunView {
  * its job (by `runJobId`) and its ops; then the plan's run jobs no row
  * accounts for yet (dispatched, the executor not yet recording — or died
  * before it did). */
-export function joinRuns(runs: readonly DeletionRun[], jobs: readonly ExecJob[], planId: number | null): RunView[] {
+export function joinRuns(runs: readonly DeletionRun[], jobs: readonly ExecJob[]): RunView[] {
   const byId = new Map(jobs.map(j => [j.job_id, j]))
   const joined = new Set<string>()
   const views: RunView[] = runs.map(run => {
@@ -124,7 +124,7 @@ export function joinRuns(runs: readonly DeletionRun[], jobs: readonly ExecJob[],
     return { key: run.run_id, run, ...(job ? { job } : {}), ops: jobs.filter(j => j.op && j.op !== 'sweep' && j.target === run.run_id) }
   })
   const orphans: RunView[] = jobs
-    .filter(j => (j.op ?? 'sweep') === 'sweep' && planId != null && j.plan_id === planId && !joined.has(j.job_id))
+    .filter(j => (j.op ?? 'sweep') === 'sweep' && !joined.has(j.job_id))
     .map(job => ({ key: job.job_id, job, ops: [] }))
   const at = (v: RunView) => v.run?.started_ts ?? (v.job?.created ? Date.parse(v.job.created) / 1000 : 0)
   return [...views, ...orphans].sort((a, b) => at(b) - at(a))

@@ -5,7 +5,8 @@
 // offers (`CAPS`). A row expands into the run's detail: D1 totals, the
 // planned set, the logged decisions per bucket, the checks between them, and
 // its bands.
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { stringParam, useUrlState } from 'use-prms'
 import { Link } from 'react-router-dom'
 import { Tooltip } from './Tooltip'
 import { UserChip } from './UserChip'
@@ -24,14 +25,15 @@ const utc = (ts: number): string => new Date(ts * 1000).toISOString().slice(0, 1
 const BUCKET_PREFIX = commonBucketPrefix(DEFAULT_STORE.buckets)
 const shortBucket = (b: string): string => (BUCKET_PREFIX && b.startsWith(BUCKET_PREFIX) ? b.slice(BUCKET_PREFIX.length) : b)
 
+const rowId = (key: string): string => `run-${key.replace(/[^A-Za-z0-9_-]+/g, '-')}`
+
 /** The run dir a view reads its files from (`runFilesRel`), when it has one. */
 const dirOf = (v: RunView): string | null => {
   const d = v.run?.log_dir ?? v.job?.plan ?? v.job?.run
   return d ? runFilesRel(d) : null
 }
 
-export function RunsSection({ planId, runs, jobs, configured, jobsError, admin, busy, act, fmtBytes, refreshing }: {
-  planId: number
+export function RunsSection({ runs, jobs, configured, jobsError, admin, busy, act, fmtBytes, refreshing }: {
   runs: DeletionRun[]
   jobs: ExecJob[]
   configured: boolean
@@ -42,7 +44,7 @@ export function RunsSection({ planId, runs, jobs, configured, jobsError, admin, 
   fmtBytes: (b: number) => string
   refreshing: boolean
 }) {
-  const views = useMemo(() => joinRuns(runs, jobs, planId), [runs, jobs, planId])
+  const views = useMemo(() => joinRuns(runs, jobs), [runs, jobs])
   // What each run planned (`plan-summary.json`, absent until its manifest
   // step ran), and each live run's per-bucket progress.
   const planRels = views.flatMap(v => { const d = dirOf(v); return d ? [`${d}plan-summary.json`] : [] })
@@ -70,6 +72,20 @@ export function RunsSection({ planId, runs, jobs, configured, jobsError, admin, 
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set())
   const now = Math.floor(Date.now() / 1000)
   const cols = 16
+
+  // `?run=<id>` (a run id, or its Batch job's): page to that row, open its
+  // detail, scroll to it — once, when it first appears.
+  const [runP] = useUrlState('run', stringParam())
+  const landed = useRef<string | null>(null)
+  const target = runP ? views.findIndex(v => v.key === runP || v.job?.job_id === runP) : -1
+  useEffect(() => {
+    if (target < 0 || landed.current === runP) return
+    landed.current = runP ?? null
+    const v = views[target]
+    setPage(Math.floor(target / pageSize))
+    if (v.run) setOpen(o => new Set(o).add(v.key))
+    requestAnimationFrame(() => document.getElementById(rowId(v.key))?.scrollIntoView({ block: 'center' }))
+  }, [target, runP, views, pageSize])
 
   if (!views.length) return null
   return (
@@ -114,7 +130,7 @@ export function RunsSection({ planId, runs, jobs, configured, jobsError, admin, 
               const jobId = job?.job_id ?? v.key
               return (
                 <Fragment key={v.key}>
-                  <tr id={`run-${v.key.replace(/[^A-Za-z0-9_-]+/g, '-')}`} className={['run', mode, state.toLowerCase(), failed ? 'failed' : '', live ? 'live' : ''].filter(Boolean).join(' ')}>
+                  <tr id={rowId(v.key)} className={['run', mode, state.toLowerCase(), failed ? 'failed' : '', live ? 'live' : '', v.key === views[target]?.key ? 'linked' : ''].filter(Boolean).join(' ')}>
                     <td>{r && <button type="button" className="fold" aria-expanded={isOpen} aria-label={isOpen ? 'hide run detail' : 'show run detail'} onClick={toggle}>{isOpen ? '▾' : '▸'}</button>}</td>
                     <td className="rid"><code>{(r?.run_id ?? jobId).replace(/^[a-z0-9]+-sweep-(dry|real)-/, '')}</code></td>
                     <td>{actor && <UserChip who={actor} size={16} />}</td>

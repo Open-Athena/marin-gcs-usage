@@ -24,23 +24,25 @@ describe('runJobId — the Batch job behind a run', () => {
   })
 })
 
-describe('joinRuns — one row per run (+ its job and ops), then the plan\'s unrecorded jobs', () => {
-  it('joins by job id, attaches undo ops, keeps only this plan\'s orphan jobs, newest first', () => {
+describe('joinRuns — one row per run (+ its job and ops), then every unrecorded run job', () => {
+  it('joins by job id, attaches undo ops, then the unrecorded run jobs (any plan, or none), newest first', () => {
     const older = run({ run_id: '2026-09-26-p3/20260926T000000Z', started_ts: 500, log_dir: 'gs://data/sweep/runs/gcs-sweep-dry-20260926-000000z', mode: 'dry' })
     const jobs = [
       job({ job_id: GCS_JOB, state: 'SUCCEEDED', plan_id: 3 }),
       job({ job_id: 'gcs-undo-20260929-000000z', op: 'undo', target: GCS_RUN, state: 'RUNNING' }),
       job({ job_id: 'gcs-sweep-dry-20260930-000000z', state: 'QUEUED', plan_id: 3, created: '2026-09-30T00:00:00Z' }),
       job({ job_id: 'gcs-sweep-dry-20260930-010000z', state: 'QUEUED', plan_id: 4, created: '2026-09-30T01:00:00Z' }),
-      job({ job_id: 'gcs-sweep-dry-20250101-000000z', state: 'SUCCEEDED', plan_id: null }),
+      job({ job_id: 'gcs-sweep-dry-20250101-000000z', state: 'SUCCEEDED', plan_id: null, created: '2025-01-01T00:00:00Z' }),
     ]
-    const views = joinRuns([older, run()], jobs, 3)
+    const views = joinRuns([older, run()], jobs)
     expect(views.map(v => [v.key, v.job?.job_id ?? null, v.ops.map(o => o.job_id)])).toEqual([
+      ['gcs-sweep-dry-20260930-010000z', 'gcs-sweep-dry-20260930-010000z', []],
       ['gcs-sweep-dry-20260930-000000z', 'gcs-sweep-dry-20260930-000000z', []],
+      ['gcs-sweep-dry-20250101-000000z', 'gcs-sweep-dry-20250101-000000z', []],
       [GCS_RUN, GCS_JOB, ['gcs-undo-20260929-000000z']],
       ['2026-09-26-p3/20260926T000000Z', null, []],
     ])
-    expect(views.map(viewState)).toEqual(['QUEUED', 'SUCCEEDED', 'DONE'])
+    expect(views.map(viewState)).toEqual(['QUEUED', 'QUEUED', 'SUCCEEDED', 'SUCCEEDED', 'DONE'])
   })
 })
 

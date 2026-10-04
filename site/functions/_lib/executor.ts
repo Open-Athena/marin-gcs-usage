@@ -14,7 +14,7 @@
 import type { D1Database } from '@cloudflare/workers-types'
 import { type DispatchErr, type DispatchReq, type ExecEnv, type Executor, refuse } from './dispatch.js'
 import { planDigest, planRuns, realGate, type RunRow } from './plans.js'
-import { announceFinished, notifyPlan, runEvent } from './stagedSlack.js'
+import { announceFinished, notifyPlan } from './stagedSlack.js'
 import { planSweep } from './planDispatch.js'
 import { sweep } from './sweepDispatch.js'
 
@@ -102,7 +102,7 @@ export async function notifyDispatched(env: ExecEnv, r: DispatchOk, via: string,
     run_id: r.job_id, mode: r.mode, scan: r.date, actor: r.actor, started_ts: 0, finished_ts: null,
     deleted_bytes: 0, deleted_objects: 0, skipped_gone: 0, skipped_overwritten: 0, plan_digest: r.digest,
   }
-  await notifyPlan(env, env.DB, r.plan_id, siteUrl, { text: runEvent(row, 'dispatched', via) })
+  await notifyPlan(env, env.DB, r.plan_id, siteUrl, { run: row, phase: 'dispatched', via })
 }
 
 /** An HTTP route's JSON for a dispatch result (the shape /staged reads). */
