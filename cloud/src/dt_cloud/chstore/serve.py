@@ -601,15 +601,22 @@ def diff_body(ch: Ch, sa: Scan, sb: Scan, *, path: str, w: int, h: int, min_area
               q: str | None, summary: bool = False, depth: int | None = None) -> Iterator[str]:
     """`/api/diff`'s body (`buildDiff`), plain or filtered, streamed."""
     dP = depth_of(path)
-    kw = dict(w=w, h=h, min_area=min_area, atten=atten, max_depth=depth)
+    # A summary is the totals alone: no level below P is read.
+    kw = dict(w=w, h=h, min_area=min_area, atten=atten, max_depth=0 if summary else depth)
     head = {"prev": sa.id, "curr": sb.id, "path": path, **({"q": q} if q is not None else {})}
     if ast is None:
         ra, rb = root_read(ch, sa, path), root_read(ch, sb, path)
         if ra is None and rb is None:
             raise NotFound(path)
         T = max(ra.b if ra else 0, rb.b if rb else 0) * min_area / (w * h)
-        va = plain_view(ch, sa, path, threshold=T, root=ra, **kw) if ra else None
-        vb = plain_view(ch, sb, path, threshold=T, root=rb, **kw) if rb else None
+        # The two sides read concurrently, each on its own session.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(2) as pool:
+            fa = pool.submit(plain_view, ch.fork(), sa, path, threshold=T, root=ra, **kw) if ra else None
+            fb = pool.submit(plain_view, ch.fork(), sb, path, threshold=T, root=rb, **kw) if rb else None
+            va = fa.result() if fa else None
+            vb = fb.result() if fb else None
     else:
         ra, rb = _exists(ch, sa, path), _exists(ch, sb, path)
         if not ra and not rb:
