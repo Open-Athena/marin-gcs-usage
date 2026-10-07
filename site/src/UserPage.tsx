@@ -196,14 +196,14 @@ function UsersMap({ meta, owned, redact = false }: {
         // still route through the SPA below.
         cellHref={n =>
           n.id ? `/user/${n.id}`
-          : n.pool ? '/?o=unowned'
+          : n.pool ? '/?o'
           : undefined}
         onCellClick={(n) => {
           if (redact) return true
           // Every tile goes somewhere sane: users to their page, the
           // unattributed pool to the matching home lens.
           if (n.id) navigate(`/user/${n.id}`)
-          else if (n.pool) navigate('/?o=unowned')
+          else if (n.pool) navigate('/?o')
           return true
         }}
       />
