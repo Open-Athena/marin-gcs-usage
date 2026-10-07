@@ -46,6 +46,8 @@ export interface EmptiedBatch extends StageBatch {
   covered: number
   absorbed: { into: number; n: number }[]
   unstaged: number
+  /** Taken out by the real run that deleted them. */
+  deleted: number
 }
 export interface StagedPlan { plan: PlanSummary | null; items: StagedItem[]; batches: StageBatch[]; emptied?: EmptiedBatch[]; runs: DeletionRun[] }
 /** A plan as `GET /api/plans` lists it. */

@@ -8,7 +8,7 @@
  * fails the gesture that caused it.
  */
 import type { D1Database } from '@cloudflare/workers-types'
-import { type FinishedRun, type Gate, planDigest, planRuns, realGate, type RunRow } from './plans.js'
+import { type FinishedRun, type Gate, planDigest, planRuns, realGate, type RunRow, unstageDeleted } from './plans.js'
 import { slackApi, slackReady, type SlackEnv } from './slack.js'
 import type { Env } from './auth.js'
 import { pathScans, storeReady } from './index.js'
@@ -459,7 +459,10 @@ export async function refreshThread(env: NotifyEnv, db: D1Database, planId: numb
 export async function announceFinished(env: NotifyEnv, db: D1Database, runs: readonly FinishedRun[], siteUrl: string): Promise<void> {
   for (const { run_id, ok } of runs) {
     const r = await db.prepare('SELECT * FROM deletion_runs WHERE run_id = ?').bind(run_id).first<RunRow & { plan_id: number | null }>()
-    if (r?.plan_id != null) await notifyPlan(env, db, r.plan_id, siteUrl, { run: r, phase: ok ? 'finished' : 'failed' })
+    if (r?.plan_id == null) continue
+    // What the run deleted leaves the queue before the thread re-renders.
+    await unstageDeleted(db, r.plan_id)
+    await notifyPlan(env, db, r.plan_id, siteUrl, { run: r, phase: ok ? 'finished' : 'failed' })
   }
 }
 

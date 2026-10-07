@@ -95,6 +95,7 @@ function EmptiedLine({ e, batches }: { e: EmptiedBatch; batches: Map<number, { c
       </span>
     )
   })
+  if (e.deleted) parts.push(<span key="d">{n(e.deleted)} deleted</span>)
   if (e.unstaged) parts.push(<span key="u">{n(e.unstaged)} unstaged</span>)
   if (e.covered) parts.push(<span key="c">{n(e.covered)} already covered by a staged ancestor</span>)
   if (!parts.length) parts.push(<span key="none">nothing new (already staged)</span>)
