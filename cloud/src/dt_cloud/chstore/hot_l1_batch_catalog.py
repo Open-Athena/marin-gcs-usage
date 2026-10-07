@@ -12,8 +12,8 @@ from pathlib import Path
 from re import fullmatch
 from typing import Iterable
 
-from .hot_frequency import MAX_CHARS
-from .hot_frequency_registry import QUALIFICATION, UNION_SCHEMA, union_header
+from .hot_frequency import within
+from .hot_frequency_registry import QUALIFICATION, UNION_SCHEMA, length_domain, union_header
 
 from .hot_l1_catalog import CatalogRequest, SCOPE, _Bucket, _Entry, _integer, _object, _unique_object
 
@@ -50,10 +50,10 @@ def _entry(
     row: dict,
     target: str,
     date: str,
-    max_chars: int,
+    max_chars: int | None,
 ) -> _Entry:
     pattern = _literal(row.get("pattern"))
-    if pattern != row["pattern"] or len(pattern) > max_chars:
+    if pattern != row["pattern"] or not within(len(pattern), max_chars):
         raise ValueError("batch catalog artifact literals must be normalized and within registry max_chars")
     raw = row.get("buckets")
     if not isinstance(raw, list) or not 1 <= len(raw) <= 6:
@@ -86,7 +86,7 @@ class _Snapshot:
     registry_date: str | None
     snapshot_db: str
     threshold_paths: int
-    max_chars: int
+    max_chars: int | None
     entries: tuple[_Entry, ...]
     references: tuple[tuple[str, str, str], ...]
     native: tuple[tuple[str, object], ...]
@@ -133,8 +133,8 @@ def _snapshot(value: object) -> _Snapshot:
         registry_date = _date(header["date"])
         if queries.get("registry_date", registry_date) != registry_date:
             raise ValueError("batch catalog registry date declarations disagree")
-    threshold, max_chars = _integer(header["threshold_paths"], "threshold_paths"), _integer(header["max_chars"], "max_chars")
-    if threshold == 0 or not 1 <= max_chars <= MAX_CHARS:
+    threshold, max_chars = _integer(header["threshold_paths"], "threshold_paths"), header["max_chars"]
+    if threshold == 0 or not length_domain(max_chars):
         raise ValueError("batch catalog registry threshold/max_chars is invalid")
     count = _integer(body.get("compiled_patterns"), "compiled_patterns")
     raw = body.get("results")

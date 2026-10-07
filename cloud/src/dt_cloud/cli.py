@@ -1777,7 +1777,7 @@ def serve_hot_l1(
 
 @main.command("ch-hot-frequency-union")
 @option("-c", "--max-patterns", default=500_000, type=IntRange(min=1, max=500_000), help="Complete union pattern cap; exceeding it refuses before writing")
-@option("-k", "--max-chars", required=True, type=IntRange(min=1, max=32), help="Requested complete union depth; every source must cover it")
+@option("-k", "--max-chars", required=True, type=IntRange(min=0, max=32), help="Requested complete union depth; every source must cover it (0 = the complete length domain: every source a complete census)")
 @option("-o", "--out", required=True, type=Path, help="Fresh private complete union JSONL artifact; never overwrites")
 @option("-s", "--source", multiple=True, required=True, type=(Path, Path), help="Accepted single-date CENSUS QUERIES pair; repeat for distinct dates (one pair = that scan's own registry)")
 @option("-t", "--threshold", required=True, type=IntRange(min=1), help="Hot if any source date qualifies; cannot be below any source census minimum")
@@ -1793,7 +1793,7 @@ def ch_hot_frequency_union(
     """Union dated exact registries without claiming every query is hot on each scan."""
     from .chstore.hot_frequency_union import union
 
-    print(json.dumps(union(source, threshold, max_chars, out, max_patterns=max_patterns,
+    print(json.dumps(union(source, threshold, max_chars or None, out, max_patterns=max_patterns,
                            **({} if target is None else {"target": target}))))
 
 
@@ -1834,7 +1834,7 @@ def ch_hot_frequency_compare(
 
 
 @main.command("ch-hot-frequency-report")
-@option("-k", "--max-chars", multiple=True, type=IntRange(min=1, max=32), help="Grid depth; repeat (default 7,12,16), never above the completed census depth")
+@option("-k", "--max-chars", multiple=True, type=IntRange(min=0, max=32), help="Grid depth; repeat (default 7,12,16), never above the completed census depth (0 = every length, from a complete census)")
 @option("-n", "--pattern", multiple=True, help="Literal frequency to report; repeat (default .json,zarr.json,.npy)")
 @option("-t", "--threshold", multiple=True, type=IntRange(min=1), help="Grid minimum matching paths; repeat (default 100k,300k,1M), never below source threshold")
 @argument("census", type=Path)
@@ -1850,7 +1850,7 @@ def ch_hot_frequency_report(
     from .chstore.hot_frequency_report import report
 
     print(json.dumps(report(census, queries, thresholds=threshold or (100_000, 300_000, 1_000_000),
-                            lengths=max_chars or (7, 12, 16), patterns=pattern or (".json", "zarr.json", ".npy"))))
+                            lengths=tuple(chars or None for chars in max_chars) or (7, 12, 16), patterns=pattern or (".json", "zarr.json", ".npy"))))
 
 
 @main.command("ch-daily-name-index")
@@ -1888,7 +1888,7 @@ def ch_daily_name_index(
 @option("-e", "--native", type=Path, help="Run the per-length passes in this `native/hot_frequency.cpp` binary (with `-f`): one streamed GROUP BY, no staged tables")
 @option("-f", "--daily-source", type=Path, help="Explicit accepted global daily scalar source manifest instead of frozen history/name IDs")
 @option("-h", "--threshold-cut", multiple=True, type=IntRange(min=1), help="Additional direct-path threshold to count from the same minimum-threshold census")
-@option("-k", "--max-chars", default=7, type=IntRange(min=1, max=32), help="Enumerate threshold-hot name substrings up to this length (maximum 32 characters)")
+@option("-k", "--max-chars", default=7, type=IntRange(min=0, max=32), help="Enumerate threshold-hot name substrings up to this length (maximum 32 characters); 0 = every length until none is hot (the complete domain; needs `-e`)")
 @option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query memory budget")
 @option("-n", "--pattern", multiple=True, help="Selected literals to report if threshold-hot and within max length")
 @option("-o", "--out", required=True, type=Path, help="New private dev-node JSON census artifact; never overwrites")
@@ -1924,7 +1924,7 @@ def ch_hot_frequency_census(
     from .chstore.hot_frequency_bench import bench
 
     source = {} if daily_source is None else {'daily_source': daily_source, 'wall_seconds': wall_seconds, 'staging_gib': staging_gib, 'native': native}
-    print(json.dumps(bench(url, target, date, threshold, max_chars, out, memory_gib=memory_gib,
+    print(json.dumps(bench(url, target, date, threshold, max_chars or None, out, memory_gib=memory_gib,
                            seconds=timeout_seconds, spill_gib=spill_gib, pids=rss_pid, patterns=pattern,
                            queries_out=queries_out, thresholds=threshold_cut, max_patterns=max_patterns, **source)))
 

@@ -6,7 +6,7 @@ from json import loads
 from pathlib import Path
 from re import fullmatch
 
-from .hot_frequency import MAX_CHARS
+from .hot_frequency import MAX_CHARS, within
 from .hot_l1_catalog import _unique_object
 from .narrow import identifier
 
@@ -31,6 +31,17 @@ def integer(value: object, minimum: int = 0) -> bool:
     return type(value) is int and value >= minimum
 
 
+def length_domain(value: object) -> bool:
+    """A registry's declared length domain: 1..MAX_CHARS, or None (complete:
+    every length, so a miss of any length is below the threshold)."""
+    return value is None or (integer(value, 1) and value <= MAX_CHARS)
+
+
+def covers(source: int | None, requested: int | None) -> bool:
+    """A source census's length domain contains the requested one."""
+    return source is None or (requested is not None and requested <= source)
+
+
 def iso_date(value: object) -> bool:
     if not isinstance(value, str):
         return False
@@ -46,7 +57,7 @@ def union_header(header: object, target: str) -> dict:
     if (not isinstance(header, dict) or set(header) != {"schema", "target", "dates", "threshold_paths", "max_chars", "max_patterns", "sources", "frequency_semantics"} or
             header["schema"] != UNION_SCHEMA or header["target"] != target or
             header["frequency_semantics"] != FREQUENCY_SEMANTICS or
-            not integer(header["threshold_paths"], 1) or not integer(header["max_chars"], 1) or header["max_chars"] > MAX_CHARS or
+            not integer(header["threshold_paths"], 1) or not length_domain(header["max_chars"]) or
             not integer(header["max_patterns"], 1) or header["max_patterns"] > UNION_CAP):
         raise ValueError(message)
     dates, sources = header["dates"], header["sources"]
@@ -62,7 +73,7 @@ def union_header(header: object, target: str) -> dict:
                 (declared and not isinstance(source["target"], str)) or
                 source["date"] != date or not isinstance(source["snapshot_db"], str) or
                 not integer(source["threshold_paths"], 1) or source["threshold_paths"] > header["threshold_paths"] or
-                not integer(source["max_chars"], 1) or not header["max_chars"] <= source["max_chars"] <= MAX_CHARS):
+                not length_domain(source["max_chars"]) or not covers(source["max_chars"], header["max_chars"])):
             raise ValueError(message)
         identifier(source["snapshot_db"])
         if declared:
@@ -105,7 +116,7 @@ def load_queries(
                 raise ValueError("union batch date must be a source date and cannot use a single registry_date override")
         elif (not isinstance(header, dict) or set(header) != {"schema", "target", "date", "threshold_paths", "max_chars"} or
                 header["schema"] != V1_SCHEMA or header["target"] != target or header["date"] != expected_date or
-                not integer(header["threshold_paths"], 1) or not integer(header["max_chars"], 1) or header["max_chars"] > MAX_CHARS):
+                not integer(header["threshold_paths"], 1) or not length_domain(header["max_chars"])):
             raise ValueError("batch requires a matching completed hot-frequency query export header")
         known = {date: 0 for date in header["dates"]} if union else {}
         previous = None
@@ -119,7 +130,7 @@ def load_queries(
             if not isinstance(row, dict) or set(row) != {"chars", "pattern", "direct_matching_paths"}:
                 raise ValueError("hot query export contains an invalid query record")
             pattern, chars = row["pattern"], row["chars"]
-            if (not isinstance(pattern, str) or not integer(chars, 1) or chars > header["max_chars"] or
+            if (not isinstance(pattern, str) or not integer(chars, 1) or not within(chars, header["max_chars"]) or
                     len(pattern) != chars or "/" in pattern or "\0" in pattern or pattern.lower() != pattern or pattern in seen):
                 raise ValueError(f"hot query export literals must be unique, normalized, NUL/slash-free hot queries of lengths 1..{MAX_CHARS}")
             pattern.encode("utf-8")

@@ -13,7 +13,8 @@ from itertools import combinations
 from json import dumps, loads
 from pathlib import Path
 
-from .hot_frequency_registry import FREQUENCY_SEMANTICS, UNION_CAP, UNION_SCHEMA, union_header
+from .hot_frequency import within
+from .hot_frequency_registry import FREQUENCY_SEMANTICS, UNION_CAP, UNION_SCHEMA, covers, union_header
 from .hot_frequency_report import _validated_report, integer
 from .hot_l1_catalog import _unique_object
 from .narrow import identifier
@@ -22,7 +23,7 @@ from .narrow import identifier
 def union(
     sources: tuple[tuple[Path, Path], ...],
     threshold: int,
-    max_chars: int,
+    max_chars: int | None,
     out: Path,
     *,
     max_patterns: int = UNION_CAP,
@@ -32,9 +33,12 @@ def union(
 
     Known below-requested-threshold frequencies stay exact. Absent source
     literals get None, which means below that source's minimum, not zero.
+    `max_chars` None is the complete length domain; every source must be a
+    complete census then.
     """
     integer(threshold, "union threshold", 1)
-    integer(max_chars, "union maximum length", 1)
+    if max_chars is not None:
+        integer(max_chars, "union maximum length", 1)
     if integer(max_patterns, "union accepted-pattern cap", 1) > UNION_CAP:
         raise ValueError("union accepted-pattern cap cannot exceed 500000")
     if not sources:
@@ -45,6 +49,8 @@ def union(
     for census, queries in sources:
         raw, export = census.read_bytes(), queries.read_bytes()
         result, rows = _validated_report(census, queries, raw, export, thresholds=(threshold,), lengths=(max_chars,), patterns=())
+        if not covers(result["provenance"]["queries"]["header"]["max_chars"], max_chars):
+            raise ValueError("union length domain exceeds a source census")
         doc = loads(raw, object_pairs_hook=_unique_object)
         accepted.append((result, rows, doc.get("accepted_hot_pattern_cap")))
     accepted.sort(key=lambda item: item[0]["date"])
@@ -66,8 +72,8 @@ def union(
             "threshold_paths": original["threshold_paths"], "max_chars": original["max_chars"], "accepted_hot_pattern_cap": cap,
             "census": {key: result["provenance"]["census"][key] for key in ("sha256", "bytes")},
             "queries": {key: result["provenance"]["queries"][key] for key in ("sha256", "bytes", "patterns")}})
-        frequencies[result["date"]] = {row["pattern"]: row["direct_matching_paths"] for row in rows if row["chars"] <= max_chars}
-        candidates.update(row["pattern"] for row in rows if row["chars"] <= max_chars and row["direct_matching_paths"] >= threshold)
+        frequencies[result["date"]] = {row["pattern"]: row["direct_matching_paths"] for row in rows if within(row["chars"], max_chars)}
+        candidates.update(row["pattern"] for row in rows if within(row["chars"], max_chars) and row["direct_matching_paths"] >= threshold)
         if len(candidates) > max_patterns:
             raise ValueError("union exceeds its accepted-pattern cap; no complete export")
     header = union_header({"schema": UNION_SCHEMA, "target": target, "dates": dates,

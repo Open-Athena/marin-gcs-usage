@@ -11,7 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dt_cloud.chstore import client, hot_frequency_bench, hot_frequency_daily as module
+from dt_cloud.chstore import client, hot_frequency_bench, hot_frequency_daily as module, hot_frequency_report
 from dt_cloud.chstore.daily_scalar import build, manifest_bytes
 from dt_cloud.chstore.hot_frequency_registry import load_queries
 from dt_cloud.cli import main
@@ -291,6 +291,57 @@ def test_native_actual_date_hot_qualification_full_export_and_in_order_pipeline(
         probe.checkpoint()
     finally:
         probe.close()
+
+
+@pytest.mark.parametrize('day', list(PATHS))
+def test_native_complete_length_domain(fresh: tuple, tmp_path: Path, day: str) -> None:
+    # `max_chars` None: every length until one has no hot pattern, so a miss of
+    # any length is below the threshold. The census layers run through that
+    # first empty length, and the export is the brute force over all lengths.
+    native = environ.get('HF_NATIVE_BINARY')
+    if not native:
+        pytest.skip('HF_NATIVE_BINARY not set')
+    ch, target = fresh
+    parquet, source, census_out, export = [tmp_path / name for name in ('input.parquet', 'source.json', 'census.json', 'queries.jsonl')]
+    write_tree(parquet, day)
+    pinned = descriptor(parquet)
+    pinned['date'] = day
+    source.write_bytes(manifest_bytes(build(ch, target, parquet, pinned, min_free_bytes=1)))
+    weighted = Counter(name.rsplit('/', 1)[-1].lower() for name in ['', *PATHS[day]])
+    expected = {}
+    for chars in range(1, max(map(len, weighted)) + 1):
+        counts = Counter()
+        for name, weight in weighted.items():
+            counts.update({name[pos:pos + chars]: weight for pos in range(max(0, len(name) - chars + 1))})
+        expected.update({(chars, gram): count for gram, count in counts.items() if count >= 2})
+    longest, top = max(expected)
+    result = hot_frequency_bench.bench(ch.url, target, day, 2, None, census_out, daily_source=source, queries_out=export,
+                                     patterns=(top, 'x' * 20), seconds=30, wall_seconds=120, native=Path(native))
+    rows = [loads(line) for line in export.read_text().splitlines()]
+    assert rows == [{'schema': 'hot-frequency-queries-v1', 'target': target, 'date': day, 'threshold_paths': 2, 'max_chars': None},
+                    *[{'chars': chars, 'pattern': gram, 'direct_matching_paths': value} for (chars, gram), value in sorted(expected.items())],
+                    {'complete': True, 'patterns': len(expected)}]
+    assert ([(layer['chars'], layer['hot_patterns']) for layer in result['lengths']] ==
+            [*[(chars, sum(k == chars for k, _ in expected)) for chars in range(1, longest + 1)], (longest + 1, 0)])
+    assert (result['max_chars'], result['selected_patterns']) == (None, [
+        {'pattern': top, 'hot': True, 'direct_matching_paths': expected[longest, top]},
+        {'pattern': 'x' * 20, 'hot': False, 'direct_matching_paths': None},
+    ])
+    header, literals = load_queries(export, target, day, allow_union=False)
+    assert (header['max_chars'], len(literals)) == (None, len(expected))
+    report = hot_frequency_report.report(census_out, export, thresholds=(2,), lengths=(None,), patterns=(top, 'x' * 40))
+    assert (report['grid'], report['selected_literals']) == (
+        [{'threshold_paths': 2, 'max_chars': None, 'literals': len(expected),
+          'literal_utf8_bytes': sum(len(gram.encode()) for _, gram in expected),
+          'export_records_raw_bytes': sum(len(line.encode()) + 1 for line in export.read_text().splitlines()[1:-1])}],
+        [{'pattern': top, 'enumerated': True, 'registered': True, 'direct_matching_paths': expected[longest, top], 'cold_upper_bound_exclusive': None},
+         {'pattern': 'x' * 40, 'enumerated': True, 'registered': False, 'direct_matching_paths': None, 'cold_upper_bound_exclusive': 2}])
+
+
+def test_complete_length_domain_needs_the_native_engine(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r'^the complete length domain needs the native engine \(`-e`\)$'):
+        hot_frequency_bench.bench('http://fixture.invalid:8123', 'fresh', '2026-10-06', 2, None, tmp_path / 'census.json',
+                                  daily_source=tmp_path / 'source.json')
 
 
 def test_cli_daily_source_exact_forwarding_without_changing_frozen_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

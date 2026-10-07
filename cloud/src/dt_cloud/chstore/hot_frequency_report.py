@@ -10,7 +10,7 @@ from json import loads
 from math import isfinite
 from pathlib import Path
 
-from .hot_frequency import MAX_CHARS
+from .hot_frequency import MAX_CHARS, within
 from .hot_frequency_registry import PinnedExport as _PinnedExport, load_queries
 from .hot_l1_catalog import _unique_object
 from .narrow import identifier
@@ -54,18 +54,24 @@ def _validated_report(
     # completion footer using these already-pinned bytes, without reopening disk.
     header, registered = load_queries(_PinnedExport(queries_raw), target, date, allow_union=False)
     minimum, maximum = header["threshold_paths"], header["max_chars"]
-    if body.get("threshold_paths") != minimum or type(body.get("threshold_paths")) is not int or body.get("max_chars") != maximum or type(body.get("max_chars")) is not int:
+    if (body.get("threshold_paths") != minimum or type(body.get("threshold_paths")) is not int or body.get("max_chars") != maximum or
+            (maximum is not None and type(body.get("max_chars")) is not int)):
         raise ValueError("census and export threshold/maximum length disagree")
     if not thresholds or any(type(cut) is not int or cut < minimum for cut in thresholds):
         raise ValueError("report thresholds must be nonempty integers at least the source minimum")
-    if not lengths or any(type(chars) is not int or not 1 <= chars <= maximum for chars in lengths):
+    # A None length is the complete domain, which only a complete census covers.
+    if not lengths or any(chars != maximum if chars is None else type(chars) is not int or not chars >= 1 or not within(chars, maximum)
+                          for chars in lengths):
         raise ValueError("report lengths must be nonempty integers within the completed source depth")
-    thresholds, lengths = tuple(sorted(set(thresholds))), tuple(sorted(set(lengths)))
+    thresholds = tuple(sorted(set(thresholds)))
+    lengths = tuple(sorted(set(lengths), key=lambda chars: (chars is None, chars or 0)))
     if any(not isinstance(pattern, str) or not pattern or "/" in pattern or "\0" in pattern for pattern in patterns):
         raise ValueError("selected report literals must be nonempty NUL/slash-free names")
     patterns = tuple(dict.fromkeys(pattern.lower() for pattern in patterns))
-    if any(len(pattern) > MAX_CHARS for pattern in patterns):
-        raise ValueError(f"selected report literals must contain at most {MAX_CHARS} characters")
+    # A complete census classifies literals of any length (up to the serving literal limit).
+    limit = MAX_CHARS if maximum is not None else 512
+    if any(len(pattern) > limit for pattern in patterns):
+        raise ValueError(f"selected report literals must contain at most {limit} characters")
     for pattern in patterns:
         pattern.encode("utf-8")
     meta = body.get("queries")
@@ -79,7 +85,10 @@ def _validated_report(
     if tuple(row["pattern"] for row in rows) != registered:
         raise ValueError("pinned export records disagree with validated registry")
     layers = body.get("lengths")
-    if not isinstance(layers, list) or len(layers) != maximum:
+    # A complete census's layers run through its first empty length.
+    if (not isinstance(layers, list) or
+            (len(layers) != maximum if maximum is not None else not layers or
+             len(layers) != max((row["chars"] for row in rows), default=0) + 1)):
         raise ValueError("census must cover every completed length")
     cuts = body.get("thresholds_paths", [])
     if not isinstance(cuts, list) or any(type(cut) is not int or cut < minimum for cut in cuts) or (cuts and (cuts != sorted(set(cuts)) or cuts[0] != minimum)):
@@ -107,7 +116,7 @@ def _validated_report(
     for selected in body.get("selected_patterns", []):
         if (not isinstance(selected, dict) or not isinstance(selected.get("pattern"), str) or
                 not selected["pattern"] or selected["pattern"] != selected["pattern"].lower() or
-                "/" in selected["pattern"] or "\0" in selected["pattern"] or len(selected["pattern"]) > maximum or
+                "/" in selected["pattern"] or "\0" in selected["pattern"] or not within(len(selected["pattern"]), maximum) or
                 selected.get("hot") is not (selected["pattern"] in frequencies) or
                 selected.get("direct_matching_paths") != frequencies.get(selected["pattern"]) or
                 (selected["pattern"] in frequencies and type(selected.get("direct_matching_paths")) is not int)):
@@ -116,7 +125,7 @@ def _validated_report(
     grid = []
     for cut in thresholds:
         for chars in lengths:
-            selected = [row for row in rows if row["chars"] <= chars and row["direct_matching_paths"] >= cut]
+            selected = [row for row in rows if within(row["chars"], chars) and row["direct_matching_paths"] >= cut]
             grid.append({"threshold_paths": cut, "max_chars": chars, "literals": len(selected),
                          "literal_utf8_bytes": sum(row["literal_bytes"] for row in selected),
                          "export_records_raw_bytes": sum(row["record_bytes"] for row in selected)})
@@ -129,9 +138,9 @@ def _validated_report(
                        "validation": "complete export plus exact census/header/layer/count/byte agreement; not an independent source scan"},
         "grid": grid,
         "byte_definition": "original query-record line bytes including newline; excludes header/footer; not materialized drill storage",
-        "selected_literals": [{"pattern": pattern, "enumerated": len(pattern) <= maximum,
+        "selected_literals": [{"pattern": pattern, "enumerated": within(len(pattern), maximum),
                                "registered": pattern in frequencies, "direct_matching_paths": frequencies.get(pattern),
-                               "cold_upper_bound_exclusive": minimum if len(pattern) <= maximum and pattern not in frequencies else None}
+                               "cold_upper_bound_exclusive": minimum if within(len(pattern), maximum) and pattern not in frequencies else None}
                               for pattern in patterns],
         "actual_build": {"threshold_paths": minimum, "max_chars": maximum,
                          "weighted_names_s": duration(body.get("weighted_names_s"), "weighted_names_s"),
@@ -169,7 +178,8 @@ def compare(
     if any(not isinstance(doc, dict) for doc in docs):
         raise ValueError("comparison requires two accepted census artifacts")
     threshold = max(integer(doc.get("threshold_paths"), "census threshold", 1) for doc in docs)
-    length = min(integer(doc.get("max_chars"), "census maximum length", 1) for doc in docs)
+    bounded = [integer(doc.get("max_chars"), "census maximum length", 1) for doc in docs if doc.get("max_chars") is not None]
+    length = min(bounded) if bounded else None
     validated = [_validated_report(census, queries, raw, export, thresholds=(threshold,), lengths=(length,), patterns=())
                  for (census, queries), (raw, export) in zip(pairs, pinned, strict=True)]
     reports = [result for result, _ in validated]
@@ -177,7 +187,7 @@ def compare(
     if identities[0] != identities[1]:
         raise ValueError("census controls must have the same target, date and snapshot database")
     catalogs = [sorted((row["chars"], row["pattern"], row["direct_matching_paths"]) for row in rows
-                       if row["chars"] <= length and row["direct_matching_paths"] >= threshold)
+                       if within(row["chars"], length) and row["direct_matching_paths"] >= threshold)
                 for _, rows in validated]
     if catalogs[0] != catalogs[1]:
         raise ValueError("accepted census controls disagree in the complete common T/L frequency domain")

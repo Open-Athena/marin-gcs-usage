@@ -19,18 +19,21 @@ DATES = ["2026-10-04", "2026-10-05"]
 FREQUENCIES = [{"a": 20, "c": 12, "d": 50, "z": 5}, {"b": 30, "c": 8, "d": 60}]
 
 
-def source(directory: Path, date: str, frequencies: dict[str, int], *, target: str = "fixture") -> tuple[Path, Path]:
+def source(directory: Path, date: str, frequencies: dict[str, int], *, target: str = "fixture", max_chars: int | None = 2) -> tuple[Path, Path]:
+    """`max_chars` None: a complete census, its layers through the first empty length."""
     directory.mkdir()
-    rows = [{"chars": len(pattern), "pattern": pattern, "direct_matching_paths": frequency} for pattern, frequency in sorted(frequencies.items())]
-    header = {"schema": "hot-frequency-queries-v1", "target": target, "date": date, "threshold_paths": 5, "max_chars": 2}
+    rows = [{"chars": len(pattern), "pattern": pattern, "direct_matching_paths": frequency}
+            for pattern, frequency in sorted(frequencies.items(), key=lambda item: (len(item[0]), item[0]))]
+    header = {"schema": "hot-frequency-queries-v1", "target": target, "date": date, "threshold_paths": 5, "max_chars": max_chars}
+    layers = range(1, (max_chars or max(map(len, frequencies)) + 1) + 1)
     raw = (dumps(header) + "\n" + "".join(dumps(row) + "\n" for row in rows) + dumps({"complete": True, "patterns": len(rows)}) + "\n").encode()
     body = {"schema": "hot-frequency-v1", "target": target, "date": date,
-        "snapshot_db": "snapshot_" + date.replace("-", ""), "scope": SCOPE, "threshold_paths": 5, "max_chars": 2,
+        "snapshot_db": "snapshot_" + date.replace("-", ""), "scope": SCOPE, "threshold_paths": 5, "max_chars": max_chars,
         "persistent_index_created": False, "accepted_hot_pattern_cap": 500_000, "weighted_names_s": 1,
         "queries": {"patterns": len(rows), "bytes": len(raw), "export_s": .1}, "selected_patterns": [],
         "lengths": [{"chars": chars, "hot_patterns": len(group), "hot_query_utf8_bytes": sum(len(row["pattern"].encode()) for row in group),
                      "sum_hot_direct_matching_paths": sum(row["direct_matching_paths"] for row in group), "elapsed_s": 1,
-                     "pruned_by_empty_prefix": False} for chars in (1, 2) for group in ([row for row in rows if row["chars"] == chars],)]}
+                     "pruned_by_empty_prefix": False} for chars in layers for group in ([row for row in rows if row["chars"] == chars],)]}
     census, queries = directory / "census.json", directory / "queries.jsonl"
     census.write_text(dumps(body) + "\n")
     queries.write_bytes(raw)
@@ -137,6 +140,29 @@ def test_union_loader_refuses_partial_or_invalid_source_targets(sources, tmp_pat
     out.write_text("".join(dumps(row) + "\n" for row in records))
     with pytest.raises(ValueError):
         load_queries(out, "logical_store", DATES[0])
+
+
+def test_complete_length_domain_union(tmp_path: Path) -> None:
+    # Complete censuses (`max_chars` None) union in the complete domain, keeping
+    # every length; a bounded union over them keeps its bound.
+    complete = tuple(source(tmp_path / str(index), date, {**frequencies, "dd": 9 + index}, max_chars=None)
+                     for index, (date, frequencies) in enumerate(zip(DATES, FREQUENCIES, strict=True)))
+    whole = union(complete, 10, None, tmp_path / "complete.jsonl")
+    header, patterns = load_queries(tmp_path / "complete.jsonl", "fixture", DATES[0])
+    assert (whole["max_chars"], header["max_chars"], [source["max_chars"] for source in header["sources"]], patterns) == (
+        None, None, [None, None], ("a", "b", "c", "d", "dd"))
+    assert loads((tmp_path / "complete.jsonl").read_text().splitlines()[5]) == {
+        "chars": 2, "pattern": "dd", "direct_matching_paths": {"2026-10-04": 9, "2026-10-05": 10}}
+    bounded = union(complete, 10, 1, tmp_path / "bounded.jsonl")
+    header, patterns = load_queries(tmp_path / "bounded.jsonl", "fixture", DATES[0])
+    assert (bounded["max_chars"], header["max_chars"], [source["max_chars"] for source in header["sources"]], patterns) == (
+        1, 1, [None, None], ("a", "b", "c", "d"))
+
+
+def test_complete_union_refuses_a_bounded_source(sources, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="^report lengths must be nonempty integers within the completed source depth$"):
+        union(sources, 10, None, tmp_path / "out.jsonl")
+    assert not (tmp_path / "out.jsonl").exists()
 
 
 def test_union_without_sources_refuses(tmp_path: Path) -> None:

@@ -18,7 +18,7 @@ def bench(
     target: str,
     date: str,
     threshold: int,
-    max_chars: int,
+    max_chars: int | None,
     out: Path,
     *,
     memory_gib: int = 8,
@@ -44,6 +44,8 @@ def bench(
         raise ValueError("hot query export must be a distinct new artifact")
     if native is not None and daily_source is None:
         raise ValueError('the native hot-frequency engine reads a daily source (`-f`)')
+    if max_chars is None and native is None:
+        raise ValueError('the complete length domain needs the native engine (`-e`)')
     raw = None
     if daily_source is not None:
         from .hot_frequency_daily import DailyCensusCh, census as daily_census, source_bytes

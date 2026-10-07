@@ -18,13 +18,20 @@ from .narrow import disk_reserve, identifier
 MAX_CHARS = 32
 
 
+def within(chars: int, max_chars: int | None) -> bool:
+    """A length inside a census's domain: `max_chars` None is the complete
+    domain (every length, until one has no hot pattern)."""
+    return max_chars is None or chars <= max_chars
+
+
 def validate_limits(
     threshold: int,
-    max_chars: int,
+    max_chars: int | None,
     thresholds: tuple[int, ...],
     max_patterns: int,
 ) -> tuple[int, ...]:
-    if type(threshold) is not int or threshold < 1 or type(max_chars) is not int or not 1 <= max_chars <= MAX_CHARS:
+    if (type(threshold) is not int or threshold < 1 or
+            (max_chars is not None and (type(max_chars) is not int or not 1 <= max_chars <= MAX_CHARS))):
         raise ValueError("hot-frequency census requires a positive integer threshold and 1..32 characters")
     if any(type(cut) is not int or cut < threshold for cut in thresholds):
         raise ValueError("hot-frequency threshold cuts must be integers at least the minimum threshold")
@@ -115,6 +122,8 @@ def census_weighted(
     for name in (target, database, weighted):
         identifier(name)
     cuts = validate_limits(threshold, max_chars, thresholds, max_patterns)
+    if max_chars is None:
+        raise ValueError("the complete length domain needs the native census engine")
     patterns = normalize_patterns(patterns)
     names, paths, separators = ch.json(f"SELECT count(),sum(c),countIf(position(l,'/') > 0) FROM {weighted}")[0]
     if expected_paths is not None and paths != expected_paths:

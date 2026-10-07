@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from .client import Ch, lit
 from .daily_scalar import manifest_bytes
-from .hot_frequency import census_weighted, normalize_patterns, validate_limits
+from .hot_frequency import census_weighted, normalize_patterns, validate_limits, within
 from .hot_registry_selection import DOCUMENT_LIMIT, _source
 from .narrow import disk_reserve, identifier
 
@@ -171,7 +171,7 @@ def native_census(
     date: str,
     raw: bytes,
     threshold: int,
-    max_chars: int,
+    max_chars: int | None,
     binary: Path,
     patterns: tuple[str, ...] = (),
     *,
@@ -184,7 +184,11 @@ def native_census(
     ClickHouse groups the snapshot's lowercase basenames (one statement, no staged
     tables) and streams `(l, c)` as RowBinary into the binary, which validates the
     names (separators, NUL, UTF-8), counts, and writes the hot patterns. Returns the
-    census body and the query export's pattern lines (`chars` then bytewise order)."""
+    census body and the query export's pattern lines (`chars` then bytewise order).
+
+    `max_chars` None is the complete length domain: every length until one has
+    no hot pattern (that empty length is the census's last layer), so any
+    unlisted literal, of any length, is below the threshold."""
     from json import loads
     from subprocess import PIPE, Popen
     from sys import stderr
@@ -204,7 +208,7 @@ def native_census(
     marker()
     started = monotonic()
     stages: list[dict] = []
-    proc = Popen([str(binary), str(threshold), str(max_chars), str(threads), str(max_patterns)], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    proc = Popen([str(binary), str(threshold), str(max_chars or 0), str(threads), str(max_patterns)], stdin=PIPE, stdout=PIPE, stderr=PIPE)
     out: list[bytes] = []
     err: list[bytes] = []
 
@@ -256,7 +260,8 @@ def native_census(
     parsed = [loads(row) for row in rows]
     timing = {stage['chars']: stage['count_s'] + stage['assign_s'] for stage in stages if stage['stage'] == 'hot-substrings'}
     lengths, empty = [], False
-    for chars in range(1, max_chars + 1):
+    last = max_chars or max((row['chars'] for row in parsed), default=0) + 1
+    for chars in range(1, last + 1):
         hot = [row for row in parsed if row['chars'] == chars]
         layer = {'chars': chars, 'hot_patterns': len(hot),
                  'hot_query_utf8_bytes': sum(len(row['pattern'].encode()) for row in hot),
@@ -273,7 +278,7 @@ def native_census(
         'threshold_paths': threshold, 'max_chars': max_chars, 'distinct_names': read['distinct_names'], 'paths': read['paths'],
         'weighted_names_s': read['elapsed_s'], 'lengths': lengths,
         'selected_patterns': [{'pattern': pattern, 'hot': pattern in found, 'direct_matching_paths': found.get(pattern)}
-                              for pattern in patterns if len(pattern) <= max_chars],
+                              for pattern in patterns if within(len(pattern), max_chars)],
         'temporary_index': 'none: one streamed GROUP BY', 'persistent_index_created': False,
         'native_s': monotonic() - started,
     }
