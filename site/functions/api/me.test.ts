@@ -44,9 +44,11 @@ const { onRequestGet: estate } = await import('./estate')
 
 afterEach(() => { keys.length = 0 })
 
-/** A gcs D1 with one `user_emails` row (alan's sign-in → `alan-turing`). */
+/** A D1 with gcs's `user_emails` table (`cloud` carries only the cw lineage)
+ * and one row (alan's sign-in → `alan-turing`). */
 async function db(): Promise<D1Database> {
-  const { db } = await sqliteD1('gcs')
+  const { db, raw } = await sqliteD1('cw')
+  raw.exec('CREATE TABLE user_emails (email TEXT PRIMARY KEY, user TEXT NOT NULL, who TEXT NOT NULL, ts INTEGER NOT NULL)')
   await db.prepare('INSERT INTO user_emails (email, user, who, ts) VALUES (?, ?, ?, ?)').bind('alan@example.test', 'alan-turing', 'admin', 0).run()
   return db
 }
