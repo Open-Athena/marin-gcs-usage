@@ -292,6 +292,7 @@ class ChBox:
     name_summary_runtime: object | None = None
     dated_l1_generation: Path | None = None
     dated_name_store: str | None = None
+    dated_cold: bool = False
     dated_name_summary_runtime: object | None = None
 
     @property
@@ -303,6 +304,8 @@ class ChBox:
             raise ValueError("dated root generation and explicit logical store are required together")
         if self.dated_l1_generation is not None and not self.name_summary_enabled:
             raise ValueError("dated roots require the existing stitched name-summary lane")
+        if self.dated_cold and self.dated_l1_generation is None:
+            raise ValueError("dated cold fallback requires a dated root generation")
         if self.name_summary_enabled and (self.hot_l1_generation is None or self.narrow_target is None):
             raise ValueError("name summary requires a published hot L1 generation and numeric target")
         if (self.hot_l2_artifact is None) != (self.hot_l2_check is None):
@@ -383,9 +386,20 @@ class ChBox:
 
             published = load(self.dated_l1_generation)
             paths = tuple(path for _, _, path in self.name_summary_runtime.binding.buckets)
+            cold = {}
+            if self.dated_cold:
+                from ..chstore import daily_name_index
+                from ..chstore.client import Ch
+
+                ch = Ch(self.store.url, timeout=10, max_execution_time=10)
+                try:
+                    cold = {day: daily_name_index.load(ch, catalog.metadata()["source"]["snapshot_db"])
+                            for day, catalog in published.catalogs.items()}
+                finally:
+                    ch.close()
             self.dated_name_summary_runtime = DatedNameSummaryRuntime(
                 self.name_summary_runtime, published,
-                logical_store=self.dated_name_store, bucket_paths=paths,
+                logical_store=self.dated_name_store, bucket_paths=paths, cold=cold,
             )
 
     def narrow_covers(self, path: str, *dates: str) -> bool:

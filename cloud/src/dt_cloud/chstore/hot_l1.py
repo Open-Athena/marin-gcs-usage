@@ -61,10 +61,13 @@ def build(
     max_postings: int | None = None,
     max_roots: int | None = None,
     min_free_bytes: int = 20 << 30,
+    daily: bool = False,
 ) -> dict:
     """Complete immediate-bucket bytes/objects for one slash-free literal.
 
-    Requires an audited immutable global frozen dictionary/snapshot. The
+    Requires an audited immutable global frozen dictionary/snapshot, or with
+    `daily` one completed daily scalar target carrying its own name index
+    (`daily_name_index`): the target is then its own snapshot database. The
     caller chooses offline memory, spill and statement limits; no vocabulary
     sampling or cap is substituted for a complete accepted answer. Optional
     name/direct-posting caps refuse before directory sorting. They bound
@@ -81,12 +84,20 @@ def build(
         raise CoarseRequest('hot L1 requires a valid UTF-8 literal without NUL') from None
     validate_caps(max_names, max_postings, max_roots)
     start = monotonic()
-    manifest = loads(ch.scalar(f"SELECT doc FROM {target}.history_manifest"))
-    if manifest["prefix"] != "":
-        raise CoarseRequest("hot L1 requires a global frozen target")
-    if date not in manifest["dates"]:
-        raise CoarseRequest("scan outside the frozen index")
-    db = identifier(manifest["dbs"][manifest["dates"].index(date)])
+    if daily:
+        manifest = loads(ch.scalar(f"SELECT doc FROM {target}.name_index_manifest"))
+        if manifest["prefix"] != "" or manifest["complete"] is not True or manifest["target"] != target:
+            raise CoarseRequest("hot L1 requires a complete global daily name index")
+        if date != manifest["date"]:
+            raise CoarseRequest("scan outside the daily name index")
+        db = target
+    else:
+        manifest = loads(ch.scalar(f"SELECT doc FROM {target}.history_manifest"))
+        if manifest["prefix"] != "":
+            raise CoarseRequest("hot L1 requires a global frozen target")
+        if date not in manifest["dates"]:
+            raise CoarseRequest("scan outside the frozen index")
+        db = identifier(manifest["dbs"][manifest["dates"].index(date)])
     pattern = pattern.lower()
     buckets = _buckets(ch, target)
     tag = uuid4().hex

@@ -14,6 +14,7 @@ from json import loads
 from pathlib import Path
 from threading import BoundedSemaphore, Event, Lock, Thread
 from time import monotonic
+from typing import Callable
 from uuid import uuid4
 
 from .client import Ch, lit
@@ -260,6 +261,21 @@ class NameSummaryRuntime:
         if len(hot) == len(dates):
             sides = [hot[day] for day in dates]
             return sides[0] if len(sides) == 1 else _diff(*sides)
+
+        def compute(source: DeadlineCh, checkpoint: Callable[[], None]) -> dict:
+            sides = []
+            for day in dates:
+                checkpoint()
+                sides.append(hot[day] if day in hot else _view(self.binding, build(source, self.binding.target, day, pattern, **CAPS), 'bounded-name-postings', day, pattern))
+            checkpoint()
+            return sides[0] if len(sides) == 1 else _diff(*sides)
+
+        return self.bounded(self.binding.target, compute)
+
+    def bounded(self, target: str, compute: Callable[[DeadlineCh, Callable[[], None]], object]) -> object:
+        """Run `compute` in the one cold slot under the total compute deadline,
+        with owned-query cancellation and verified cleanup (or quarantine).
+        `compute(source, checkpoint)`; `checkpoint()` raises once the deadline passed."""
         if self.quarantined:
             raise SummaryBusy('name summary cold lane is quarantined; catalog reads remain available')
         if not self.gate.acquire(blocking=False):
@@ -267,10 +283,14 @@ class NameSummaryRuntime:
         deadline, stopped, finished, done = monotonic() + COMPUTE_SECONDS, Event(), Event(), Event()
         outcome = []
 
+        def checkpoint() -> None:
+            if stopped.is_set() or monotonic() >= deadline:
+                raise SummaryDeadline('name summary exceeded its total compute deadline; no partial result')
+
         def run() -> None:
             source, body, error, clean, timer = None, None, None, False, None
             try:
-                source = DeadlineCh(self.url, self.binding.target, deadline, stopped, 'name_summary_' + uuid4().hex)
+                source = DeadlineCh(self.url, target, deadline, stopped, 'name_summary_' + uuid4().hex)
 
                 def watchdog() -> None:
                     if not finished.wait(max(0, deadline - monotonic())):
@@ -284,14 +304,7 @@ class NameSummaryRuntime:
 
                 timer = Thread(target=watchdog, name='name-summary-deadline', daemon=True)
                 timer.start()
-                sides = []
-                for day in dates:
-                    if stopped.is_set() or monotonic() >= deadline:
-                        raise SummaryDeadline('name summary exceeded its total compute deadline; no partial result')
-                    sides.append(hot[day] if day in hot else _view(self.binding, build(source, self.binding.target, day, pattern, **CAPS), 'bounded-name-postings', day, pattern))
-                if stopped.is_set() or monotonic() >= deadline:
-                    raise SummaryDeadline('name summary exceeded its total compute deadline; no partial result')
-                body = sides[0] if len(sides) == 1 else _diff(*sides)
+                body = compute(source, checkpoint)
             except BaseException as failure:
                 stopped.set()
                 error = failure if isinstance(failure, SummaryUnavailable) else SummaryUnavailable('bounded name summary unavailable or over budget; no partial result')

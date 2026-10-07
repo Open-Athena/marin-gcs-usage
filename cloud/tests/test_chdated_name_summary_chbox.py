@@ -111,6 +111,7 @@ def test_registry_failures_never_expose_partial_metadata(failure: str) -> None:
     ({'dated_l1_generation': Path('daily')}, 'dated root generation and explicit logical store are required together'),
     ({'dated_name_store': 'gcs_fleet'}, 'dated root generation and explicit logical store are required together'),
     ({'dated_l1_generation': Path('daily'), 'dated_name_store': 'gcs_fleet'}, 'dated roots require the existing stitched name-summary lane'),
+    ({'dated_cold': True}, 'dated cold fallback requires a dated root generation'),
 ])
 def test_startup_refuses_incomplete_dated_opt_in_before_io(fields: dict, error: str) -> None:
     with pytest.raises(ValueError) as caught:
@@ -127,8 +128,8 @@ def test_startup_loads_dated_generation_once_with_explicit_legacy_scope(tmp_path
         calls.append(('load', root))
         return pinned
 
-    def compose(old, published, *, logical_store, bucket_paths):
-        calls.append(('compose', old is legacy, published is pinned, logical_store, bucket_paths))
+    def compose(old, published, *, logical_store, bucket_paths, cold):
+        calls.append(('compose', old is legacy, published is pinned, logical_store, bucket_paths, cold))
         return daily
 
     monkeypatch.setattr(dated_hot_l1_publish, 'load', load)
@@ -138,7 +139,7 @@ def test_startup_loads_dated_generation_once_with_explicit_legacy_scope(tmp_path
                    dated_l1_generation=tmp_path / 'daily', dated_name_store='gcs_fleet')
     box.start()
     box.start()
-    assert calls == [('load', tmp_path / 'daily'), ('compose', True, True, 'gcs_fleet', ('a', 'b'))]
+    assert calls == [('load', tmp_path / 'daily'), ('compose', True, True, 'gcs_fleet', ('a', 'b'), {})]
     assert box.name_summary_runtime is legacy
     assert box.dated_name_summary_runtime is daily
 
@@ -148,6 +149,7 @@ def test_startup_loads_dated_generation_once_with_explicit_legacy_scope(tmp_path
     (['-f', 'gcs_fleet'], '--dated-l1-generation and --dated-name-store are required together'),
     (['-G', 'daily', '-f', 'gcs_fleet'], '--dated-l1-generation requires --engine ch and --name-summary'),
     (['-e', 'ch', '-G', 'daily', '-f', 'gcs_fleet'], '--dated-l1-generation requires --engine ch and --name-summary'),
+    (['-e', 'ch', '-L', '-g', 'old', '-N', 'fleet', '-C'], '--dated-cold requires --dated-l1-generation'),
 ])
 def test_cli_refuses_incomplete_daily_selection(args: list[str], error: str) -> None:
     result = CliRunner().invoke(main, ['serve-query', '-A', *args, 'unused'])
@@ -158,7 +160,25 @@ def test_cli_refuses_incomplete_daily_selection(args: list[str], error: str) -> 
 
 def test_cli_forwards_explicit_dated_flags_only(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
-    monkeypatch.setattr(bs, 'serve', lambda box, **kwargs: calls.append((box.name_summary_enabled, box.dated_l1_generation, box.dated_name_store)))
-    result = CliRunner().invoke(main, ['serve-query', '-A', '-e', 'ch', '-L', '-g', 'old', '-N', 'fleet', '-G', 'daily', '-f', 'gcs_fleet', 'unused'])
-    assert (result.exit_code, result.stdout, result.stderr) == (0, '', '')
-    assert calls == [(True, Path('daily'), 'gcs_fleet')]
+    monkeypatch.setattr(bs, 'serve', lambda box, **kwargs: calls.append((box.name_summary_enabled, box.dated_l1_generation, box.dated_name_store, box.dated_cold)))
+    for extra in ([], ['-C']):
+        result = CliRunner().invoke(main, ['serve-query', '-A', '-e', 'ch', '-L', '-g', 'old', '-N', 'fleet', '-G', 'daily', '-f', 'gcs_fleet', *extra, 'unused'])
+        assert (result.exit_code, result.stdout, result.stderr) == (0, '', '')
+    assert calls == [(True, Path('daily'), 'gcs_fleet', False), (True, Path('daily'), 'gcs_fleet', True)]
+
+
+def test_startup_binds_each_dated_scans_name_index_with_cold_opt_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dt_cloud.chstore import daily_name_index
+
+    legacy, daily, calls = Runtime(), DatedRuntime(), []
+    legacy.binding = SimpleNamespace(buckets=((1, 3, 'a'), (4, 5, 'b')))
+    catalog = SimpleNamespace(metadata=lambda: {'source': {'snapshot_db': 'daily_scalar_oct06'}})
+    pinned = SimpleNamespace(catalogs={'2026-10-06': catalog})
+    monkeypatch.setattr(dated_hot_l1_publish, 'load', lambda root: pinned)
+    monkeypatch.setattr(daily_name_index, 'load', lambda ch, target: calls.append(('index', target)) or {'target': target})
+    monkeypatch.setattr(dated_name_summary, 'DatedNameSummaryRuntime', lambda old, published, *, logical_store, bucket_paths, cold: calls.append(('compose', cold)) or daily)
+    box = bs.ChBox(Store(), name_summary_enabled=True, name_summary_runtime=legacy, hot_l1_generation=tmp_path / 'old',
+                   hot_l1_catalog=SimpleNamespace(target='fleet'), narrow_target='fleet', narrow_manifest={},
+                   dated_l1_generation=tmp_path / 'daily', dated_name_store='gcs_fleet', dated_cold=True)
+    box.start()
+    assert calls == [('index', 'daily_scalar_oct06'), ('compose', {'2026-10-06': {'target': 'daily_scalar_oct06'}})]

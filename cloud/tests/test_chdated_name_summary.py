@@ -271,3 +271,83 @@ def test_bad_complete_body_refuses_and_releases_new_slots_without_old_work(sourc
         reader.diff('2026-10-05', '2026-10-06', 'foo')
     assert (str(caught.value), sources.events) == (message, [('daily.view', '2026-10-06', 'foo')])
     assert_slots_free(reader)
+
+
+def cold_index(day: str = '2026-10-06') -> dict:
+    source = raw_daily(day)['source']
+    return {'schema': 'daily-name-index-v1', 'complete': True, 'target': source['snapshot_db'], 'logical_store': 'gcs_fleet', 'date': day,
+            'prefix': '', 'names': 5, 'postings': 11, 'buckets': [{'path': 'a', 'pre': 1, 'post': 4}, {'path': 'b', 'pre': 5, 'post': 10}],
+            'source_manifest_sha256': source['source_manifest_sha256'], 'source_manifest_bytes': 99, 'stages': {}}
+
+
+def cold_runtime(sources, monkeypatch: pytest.MonkeyPatch) -> DatedNameSummaryRuntime:
+    from dt_cloud.chstore import dated_name_summary
+
+    def bounded(target: str, compute):
+        sources.events.append(('legacy.bounded', target))
+        return compute('owned-source', lambda: sources.events.append(('checkpoint',)))
+
+    def build(source, target, day, pattern, *, daily, **caps):
+        sources.events.append(('build', source, target, day, pattern, daily, caps))
+        rows = [{'pre': 1, 'post': 4, 'path': 'a', 'b': 5, 'o': 1}, {'pre': 5, 'post': 10, 'path': 'b', 'b': 0, 'o': 2}]
+        return {'schema': 'hot-l1-v1', 'target': target, 'snapshot_db': target, 'date': day, 'pattern': pattern.lower(), 'exact': True,
+                'incremental': False, 'scope': SCOPE, 'root': {'b': 5, 'o': 3}, 'buckets': rows, 'all_buckets_covered': False,
+                'stages': {'vocabulary_s': 0.1}, 'work_bounds': {'max_names': 1, 'max_postings': 2, 'max_outer_roots': 3}, 'direct_matching_rows': 3}
+
+    sources.legacy.bounded = bounded
+    monkeypatch.setattr(dated_name_summary, 'build', build)
+    result = DatedNameSummaryRuntime(sources.legacy, sources.published, logical_store='gcs_fleet', bucket_paths=('b', 'a'),
+                                     cold={'2026-10-06': cold_index()})
+    sources.runtime = result
+    return result
+
+
+def test_unregistered_new_literal_is_bounded_over_the_scans_own_name_index(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = cold_runtime(sources, monkeypatch)
+    source = raw_daily()['source']
+    assert reader.view('2026-10-06', 'UnKnown') == {
+        **expected_daily(pattern='unknown'), 'plan': 'bounded-name-postings',
+        'root': {'b': 5, 'o': 3}, 'buckets': [{'path': 'a', 'pre': 1, 'post': 4, 'b': 5, 'o': 1}, {'path': 'b', 'pre': 5, 'post': 10, 'b': 0, 'o': 2}],
+        'source': "bounded dated name postings over the scan's own name index; directory rollups are atomic",
+        'validation': {'description': "bounded exact first-hit coverage over the scan's own name index; no per-request source oracle",
+                       'source_prefix_proofs_checked': True, 'independent_full_catalog_source_oracle': False},
+    }
+    assert sources.events == [
+        ('legacy.bounded', source['snapshot_db']), ('checkpoint',),
+        ('build', 'owned-source', source['snapshot_db'], '2026-10-06', 'unknown', True, {'max_names': 200_000, 'max_postings': 100_000, 'max_roots': 100_000}),
+        ('checkpoint',),
+    ]
+
+
+def test_mixed_diff_cold_new_side_then_legacy_old_side(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = cold_runtime(sources, monkeypatch)
+    result = reader.diff('2026-10-05', '2026-10-06', 'unknown')
+    assert (result['before']['plan'], result['after']['plan'], result['delta']) == ('catalog', 'bounded-name-postings', {'b': -1, 'o': 0})
+    assert [event[0] for event in sources.events] == ['legacy.bounded', 'checkpoint', 'build', 'checkpoint', 'legacy.view']
+
+
+def test_registered_new_literal_stays_on_the_catalog_with_a_cold_index(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = cold_runtime(sources, monkeypatch)
+    assert (reader.view('2026-10-06', 'foo'), sources.events) == (expected_daily(), [('daily.view', '2026-10-06', 'foo')])
+
+
+def test_metadata_advertises_cold_plan_only_for_indexed_scans(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = {row['date']: row for row in cold_runtime(sources, monkeypatch).metadata()['dates']}
+    assert [(day, row['plans']) for day, row in sorted(rows.items())] == [
+        ('2026-10-04', ['catalog', 'bounded-name-postings']), ('2026-10-05', ['catalog', 'bounded-name-postings']), ('2026-10-06', ['catalog', 'bounded-name-postings']),
+    ]
+
+
+@pytest.mark.parametrize('change', [
+    lambda index: index.update(source_manifest_sha256='0' * 64),
+    lambda index: index.update(target='elsewhere'),
+    lambda index: index.update(date='2026-10-07'),
+    lambda index: index.update(complete=False),
+    lambda index: index.update(buckets=[{'path': 'a', 'pre': 1, 'post': 10}]),
+])
+def test_boot_refuses_cold_index_bound_to_another_source(sources, change) -> None:
+    index = cold_index()
+    change(index)
+    with pytest.raises(ValueError) as caught:
+        DatedNameSummaryRuntime(sources.legacy, sources.published, logical_store='gcs_fleet', bucket_paths=('b', 'a'), cold={'2026-10-06': index})
+    assert str(caught.value) == 'dated name summary cold name index differs from its scan catalog source'

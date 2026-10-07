@@ -1,8 +1,12 @@
 """Dated catalog stitching; old-only bodies and compute budgets stay unchanged.
 
 An explicit logical-store/bucket binding is operator authority. Daily numeric
-geometry is snapshot-local; mixed comparisons align only bucket paths. New
-scans never trigger cold discovery, and no new bucket detail is advertised.
+geometry is snapshot-local; mixed comparisons align only bucket paths. A new
+scan answers an unregistered literal only when it carries a completed name
+index bound to its catalog's exact source (`daily_name_index`): bounded cold
+discovery over that scan's own postings, in the legacy lane's one cold slot
+and compute budget. Without one, an unregistered literal is refused. No new
+bucket detail is advertised.
 """
 
 from copy import deepcopy
@@ -11,15 +15,21 @@ from threading import BoundedSemaphore
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from .hot_l1 import build
 from .hot_l1_batch_catalog import _date, _literal
 from .hot_l1_catalog import CatalogRequest, SCOPE
-from .name_summary import SummaryBusy, SummaryUnavailable
+from .name_summary import CAPS, SummaryBusy, SummaryUnavailable
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .dated_hot_l1_publish import PublishedDatedL1
     from .name_summary import NameSummaryRuntime
 
 CAPABILITIES = {'bucket_drill': False, 'child_drill': False, 'fallback': False}
+COLD_SOURCE = "bounded dated name postings over the scan's own name index; directory rollups are atomic"
+COLD_VALIDATION = {'description': "bounded exact first-hit coverage over the scan's own name index; no per-request source oracle",
+                   'source_prefix_proofs_checked': True, 'independent_full_catalog_source_oracle': False}
 
 
 def _weights(value: object) -> dict:
@@ -37,7 +47,9 @@ class DatedNameSummaryRuntime:
         *,
         logical_store: str,
         bucket_paths: tuple[str, ...],
+        cold: 'Mapping[str, dict] | None' = None,
     ) -> None:
+        """`cold`: new scan date → its `daily_name_index.load` manifest."""
         if (not isinstance(logical_store, str) or not fullmatch('[a-z][a-z0-9_]*', logical_store) or
                 not isinstance(bucket_paths, tuple) or not 1 <= len(bucket_paths) <= 6 or
                 any(not isinstance(p, str) or not p or '/' in p or '\0' in p for p in bucket_paths) or
@@ -72,6 +84,15 @@ class DatedNameSummaryRuntime:
                 raise ValueError('dated name summary requires original registry qualification dates')
             for day in qualification:
                 _date(day)
+        cold = dict(cold or {})
+        for day, index in cold.items():
+            source = source_metadata.get(day, {}).get('source', {})
+            if (day not in catalogs or not isinstance(index, dict) or index.get('schema') != 'daily-name-index-v1' or
+                    index.get('complete') is not True or index.get('date') != day or index.get('logical_store') != logical_store or
+                    index.get('target') != source.get('snapshot_db') or index.get('source_manifest_sha256') != source.get('source_manifest_sha256') or
+                    sorted(row.get('path') for row in index.get('buckets', [])) != list(self.bucket_paths)):
+                raise ValueError('dated name summary cold name index differs from its scan catalog source')
+        self.cold = MappingProxyType({day: deepcopy(index) for day, index in cold.items()})
         self.legacy, self.daily = legacy, MappingProxyType(catalogs)
         self.old_dates, self.new_patterns = old_dates, MappingProxyType(new_patterns)
         self.dates = tuple(sorted((*old_dates, *catalogs)))
@@ -83,9 +104,12 @@ class DatedNameSummaryRuntime:
         for day in self.dates:
             if day in self.daily:
                 metadata = self._source_metadata[day]
-                rows.append({'date': day, 'plans': ['catalog'], 'kind': 'daily-scalar-source-v1',
-                             'registry': deepcopy(metadata['registry']), 'source': deepcopy(metadata['source']),
-                             'generation': self._manifest['generation']})
+                row = {'date': day, 'plans': ['catalog'], 'kind': 'daily-scalar-source-v1',
+                       'registry': deepcopy(metadata['registry']), 'source': deepcopy(metadata['source']),
+                       'generation': self._manifest['generation']}
+                if day in self.cold:
+                    row['plans'].append('bounded-name-postings')
+                rows.append(row)
             else:
                 registry = self._old_registry[day]
                 qualification = registry.get('registry_dates', [registry.get('registry_date')])
@@ -96,7 +120,7 @@ class DatedNameSummaryRuntime:
                 'bucket_paths': list(self.bucket_paths), 'dates': rows, 'levels': 1, 'scope': SCOPE,
                 'daily_catalog_slots': 2, 'legacy': self.legacy.metadata(), 'capabilities': dict(CAPABILITIES)}
 
-    def _envelope(self, body: dict, day: str, pattern: str, *, daily: bool) -> dict:
+    def _envelope(self, body: dict, day: str, pattern: str, *, daily: bool, cold: bool = False) -> dict:
         if (body.get('date') != day or body.get('pattern') != pattern or body.get('path') != '' or
                 body.get('exact') is not True or body.get('incremental') is not False or type(body.get('levels')) is not int or body.get('levels') != 1 or body.get('scope') != SCOPE or
                 body.get('schema') != ('dated-hot-l1-v1' if daily else 'name-summary-v1') or (daily and body.get('logical_store') != self.logical_store)):
@@ -121,7 +145,10 @@ class DatedNameSummaryRuntime:
             if not isinstance(body.get('source'), dict):
                 raise SummaryUnavailable('dated name summary returned invalid source identity')
             identity = {**deepcopy(body['source']), 'kind': 'daily-scalar-source-v1', 'generation': self._manifest['generation']}
-            result.update(plan='catalog', target=identity['target'], source='published dated precomputed batch artifact')
+            if cold:
+                result.update(plan='bounded-name-postings', target=identity['target'], source=COLD_SOURCE)
+            else:
+                result.update(plan='catalog', target=identity['target'], source='published dated precomputed batch artifact')
         else:
             if not isinstance(body.get('source_identity'), dict):
                 raise SummaryUnavailable('dated name summary returned invalid source identity')
@@ -142,14 +169,19 @@ class DatedNameSummaryRuntime:
         if len(dates) == 2 and dates[0] >= dates[1]:
             raise CatalogRequest('dated name summary baseline must precede the selected scan')
         new_dates = [day for day in dates if day in self.daily]
-        if any(pattern not in self.new_patterns[day] for day in new_dates):
+        cold = [day for day in new_dates if pattern not in self.new_patterns[day]]
+        if any(day not in self.cold for day in cold):
             raise CatalogRequest('dated name summary new scan/literal is not registered; no cold fallback')
-        if not self.catalog_gate.acquire(blocking=False):
-            raise SummaryBusy('dated name summary daily catalog slots busy; retry shortly')
-        try:
-            sides = {day: self._envelope(self.daily[day].view(day, pattern), day, pattern, daily=True) for day in new_dates}
-        finally:
-            self.catalog_gate.release()
+        sides = {}
+        if len(cold) < len(new_dates):
+            if not self.catalog_gate.acquire(blocking=False):
+                raise SummaryBusy('dated name summary daily catalog slots busy; retry shortly')
+            try:
+                sides = {day: self._envelope(self.daily[day].view(day, pattern), day, pattern, daily=True) for day in new_dates if day not in cold}
+            finally:
+                self.catalog_gate.release()
+        if cold:
+            sides.update(self._cold(cold, pattern))
         # Never hold new catalog slots while legacy cold discovery owns its
         # existing combined compute budget and independently admitted lane.
         for day in dates:
@@ -166,6 +198,34 @@ class DatedNameSummaryRuntime:
                 'delta': delta(before['root'], after['root']), 'capabilities': dict(CAPABILITIES),
                 'buckets': [{'path': path, 'before': {key: a[key] for key in fields}, 'after': {key: b[key] for key in fields},
                              'delta': delta(a, b)} for path, a, b in zip(self.bucket_paths, before['buckets'], after['buckets'], strict=True)]}
+
+    def _cold(self, days: list[str], pattern: str) -> dict:
+        """Bounded discovery over each new scan's own name index, in the legacy
+        lane's one cold slot and one total compute budget."""
+        def compute(source, checkpoint) -> dict:
+            raw = {}
+            for day in days:
+                checkpoint()
+                raw[day] = build(source, self.cold[day]['target'], day, pattern, daily=True, **CAPS)
+            checkpoint()
+            return raw
+
+        raw = self.legacy.bounded(self.cold[days[0]]['target'], compute)
+        sides = {}
+        for day in days:
+            body, metadata = raw[day], self.daily[day].metadata()
+            if body.get('snapshot_db') != metadata['source']['snapshot_db']:
+                raise SummaryUnavailable('dated name summary cold source changed; no partial result')
+            # The catalog body's shape and pinned scan identity; only the plan,
+            # its source description and validation differ.
+            envelope = {'schema': 'dated-hot-l1-v1', 'logical_store': self.logical_store, 'date': body.get('date'),
+                        'pattern': body.get('pattern'), 'path': '', 'exact': body.get('exact'), 'incremental': body.get('incremental'),
+                        'levels': 1, 'scope': body.get('scope'), 'root': body.get('root'),
+                        'buckets': [{key: row.get(key) for key in ('path', 'pre', 'post', 'b', 'o')} for row in body.get('buckets', [])],
+                        'source': metadata['source'], 'registry': metadata['registry'], 'validation': dict(COLD_VALIDATION),
+                        'capabilities': dict(CAPABILITIES)}
+            sides[day] = self._envelope(envelope, day, pattern, daily=True, cold=True)
+        return sides
 
     def view(self, date: str, pattern: str, *, path: str = '') -> dict:
         if date in self.old_dates:

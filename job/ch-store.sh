@@ -22,6 +22,7 @@
 # HOT_L2_ARTIFACT and HOT_L2_CHECK together select an accepted bucket-drill artifact.
 # NAME_SUMMARY=1 opts into bounded stitched root summaries with HOT_L1_GENERATION and NARROW_TARGET.
 # DATED_L1_GENERATION and DATED_NAME_STORE together add accepted daily catalogs; require NAME_SUMMARY=1.
+# DATED_COLD=1 answers their unregistered literals over each scan's own name index (`ch-daily-name-index`).
 # NARROW_TARGET opts into numeric history; NARROW_{RICH_NAME,DIRECTORY_PARENT}_INDEX=1 select completed indexes.
 # NARROW_RICH_NAME_VARIANT selects a completed rich-name variant and requires NARROW_RICH_NAME_INDEX=1.
 set -euo pipefail
@@ -133,6 +134,11 @@ serve)
       exit 2
     fi
   fi
+  case ${DATED_COLD:-0} in
+    0) ;;
+    1) if [ -z "${DATED_L1_GENERATION:-}" ]; then printf '%s\n' 'DATED_COLD requires DATED_L1_GENERATION' >&2; exit 2; fi ;;
+    *) printf '%s\n' 'DATED_COLD must be 0 or 1' >&2; exit 2 ;;
+  esac
   for SERVE_INDEX in NARROW_RICH_NAME_INDEX NARROW_DIRECTORY_PARENT_INDEX; do
     case ${!SERVE_INDEX:-0} in
       0) ;;
@@ -163,6 +169,7 @@ serve)
   fi
   if [ "${NAME_SUMMARY:-0}" = 1 ]; then CATALOG_ARGS+=(-L); fi
   if [ -n "${DATED_L1_GENERATION:-}" ]; then CATALOG_ARGS+=(-G "$DATED_L1_GENERATION" -f "$DATED_NAME_STORE"); fi
+  if [ "${DATED_COLD:-0}" = 1 ]; then CATALOG_ARGS+=(-C); fi
   if [ -n "${NARROW_TARGET:-}" ]; then NARROW_ARGS+=(-N "$NARROW_TARGET"); fi
   if [ "${NARROW_RICH_NAME_INDEX:-0}" = 1 ]; then NARROW_ARGS+=(-i); fi
   if [ -n "${NARROW_RICH_NAME_VARIANT:-}" ]; then NARROW_ARGS+=(-v "$NARROW_RICH_NAME_VARIANT"); fi

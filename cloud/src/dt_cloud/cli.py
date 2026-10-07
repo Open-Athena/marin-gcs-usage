@@ -845,6 +845,7 @@ def bench_serve(tmp_dir: str | None, engine: str, evict: bool, host: str, index:
 @option("-b", "--bind", default="0.0.0.0", help="Address to listen on")
 @option("-B", "--db", default=None, help="`-e ch`: the store's database (default: $CLICKHOUSE_DB, else `default`)")
 @option("-c", "--concurrency", type=IntRange(min=1), default=2, help="Maximum simultaneous backend responses, including streaming (default: 2; reduce on memory-constrained machines)")
+@option("-C", "--dated-cold", is_flag=True, help="`-e ch -G GENERATION`: answer each dated scan's unregistered literals by bounded discovery over its completed name index (`ch-daily-name-index`); refuses to start if any is absent")
 @option("-d", "--date", "dates", multiple=True, help="`-e mem`: load these scans (repeatable; default: the latest under ROOT)")
 @option("-D", "--remote-detail", is_flag=True, help="`-e mem`: read a gs:// index's `detail.parquet` in place (ranged reads) instead of copying it")
 @option("-e", "--engine", type=Choice(["mem", "ch"]), default="mem", help="`mem`: in-memory indexes under ROOT (filtered reads); `ch`: the ClickHouse store at ROOT's URL (every scan; plain and filtered reads, series)")
@@ -873,6 +874,7 @@ def serve_query(
     bind: str,
     db: str | None,
     concurrency: int,
+    dated_cold: bool,
     dates: tuple[str, ...],
     remote_detail: bool,
     engine: str,
@@ -921,6 +923,8 @@ def serve_query(
         raise UsageError("--dated-l1-generation and --dated-name-store are required together")
     if dated_l1_generation is not None and (engine != "ch" or not name_summary):
         raise UsageError("--dated-l1-generation requires --engine ch and --name-summary")
+    if dated_cold and dated_l1_generation is None:
+        raise UsageError("--dated-cold requires --dated-l1-generation")
     if (hot_l2_artifact is None) != (hot_l2_check is None):
         raise UsageError("--hot-l2-artifact and --hot-l2-check are required together")
     if hot_l2_artifact is not None and engine != "ch":
@@ -943,7 +947,7 @@ def serve_query(
                        narrow_name_index=narrow_name_index, narrow_name_variant=narrow_name_variant, narrow_parent_index=narrow_parent_index,
                        narrow_plan=narrow_plan, hot_l1_generation=hot_l1_generation,
                        hot_l2_artifact=hot_l2_artifact, hot_l2_check=hot_l2_check, name_summary_enabled=name_summary,
-                       dated_l1_generation=dated_l1_generation, dated_name_store=dated_name_store)
+                       dated_l1_generation=dated_l1_generation, dated_name_store=dated_name_store, dated_cold=dated_cold)
     else:
         box = bs.Box(
             root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,
@@ -1847,6 +1851,34 @@ def ch_hot_frequency_report(
 
     print(json.dumps(report(census, queries, thresholds=threshold or (100_000, 300_000, 1_000_000),
                             lengths=max_chars or (7, 12, 16), patterns=pattern or (".json", "zarr.json", ".npy"))))
+
+
+@main.command("ch-daily-name-index")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=24), help="Per-statement memory budget")
+@option("-s", "--spill-gib", default=4, type=IntRange(min=1, max=16), help="External GROUP BY / sort threshold per statement")
+@option("-w", "--timeout-seconds", default=3600, type=IntRange(min=1, max=7200), help="Per-statement deadline; throws, never marks a partial index complete")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_daily_name_index(
+    memory_gib: int,
+    spill_gib: int,
+    timeout_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Add a completed daily scalar TARGET's own bounded name postings
+    (`names`, `nodes_by_name`, `name_index_manifest`): the cold fallback
+    `serve-query -C` uses for that scan's unregistered literals. Fresh
+    construction only; prints the completion manifest."""
+    from .chstore import daily_name_index
+    from .chstore.client import Ch
+
+    ch = Ch(url, timeout=timeout_seconds + 60)
+    try:
+        body = daily_name_index.build(ch, target, memory_bytes=memory_gib << 30, spill_bytes=spill_gib << 30, query_seconds=timeout_seconds)
+    finally:
+        ch.close()
+    print(json.dumps(body, indent=2))
 
 
 @main.command("ch-hot-frequency-census")
