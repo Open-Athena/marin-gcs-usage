@@ -1,0 +1,146 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
+import { datedNameRequest, loadName, loadNameRegistry, nameHasDetail, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
+
+const request = { date: '2026-10-06', name: 'datakit', from: '2026-10-05' }
+const scans = ['2026-10-04', '2026-10-05', '2026-10-06']
+const view = (body: ReturnType<typeof dailyNameFixture> | ReturnType<typeof mixedDatedNameDiff>['before']) => ({ target: body.target, date: body.date, pattern: body.pattern, root: body.root, buckets: [...body.buckets].sort((a, b) => a.path < b.path ? -1 : 1) })
+const execution = (body: ReturnType<typeof dailyNameFixture> | ReturnType<typeof mixedDatedNameDiff>['before']) => ({ plan: body.plan, source: body.source, validation: body.validation, source_identity: body.source_identity, ...('registry' in body ? { registry: body.registry } : {}) })
+afterEach(() => vi.unstubAllGlobals())
+
+describe('independently numbered dated root summaries', () => {
+  it('accepts mixed sources, path-aligns all buckets and preserves each side’s own identity and intervals', () => {
+    const body = mixedDatedNameDiff(), result = parseName(body, request)
+    expect(result).toEqual({ before: view(body.before), after: view(body.after), delta: { b: 2, o: 1 },
+      execution: { before: execution(body.before), after: execution(body.after) }, logical_store: 'gcs', capabilities: datedCapabilities })
+    expect(result.after.buckets.map(row => [row.path, row.pre, row.post])).toEqual([
+      ['bucket-a', 16, 18], ['bucket-b', 13, 15], ['bucket-c', 10, 12], ['bucket-d', 7, 9], ['bucket-e', 4, 6], ['bucket-f', 1, 3],
+    ])
+    expect(nameHasDetail(result)).toBe(false)
+  })
+  it('accepts zero matches without a fake frozen history identity or drill capability', () => {
+    const body = dailyNameFixture(); body.root = { b: 0, o: 0 }; body.buckets.forEach(row => { row.b = 0; row.o = 0 })
+    expect(parseName(body, { date: request.date, name: request.name })).toEqual({ after: view(body), execution: { after: execution(body) }, logical_store: 'gcs', capabilities: datedCapabilities })
+    expect(nameHasDetail(parseName(body, { date: request.date, name: request.name }))).toBe(false)
+  })
+  it('accepts two independently pinned daily catalog dates, without enabling detail', () => {
+    const body = mixedDatedNameDiff(), before = dailyNameFixture('2026-10-06')
+    body.after.date = '2026-10-07'; body.date = '2026-10-07'; body.from = '2026-10-06'
+    Object.assign(before.source_identity, { target: 'earlier_daily', snapshot_db: 'earlier_daily', generation: 'e'.repeat(32) }); before.target = 'earlier_daily'
+    before.buckets.forEach((row, i) => { row.pre = 1 + 5 * i; row.post = 5 + 5 * i })
+    Object.assign(body, { before, delta: { b: 0, o: 0 }, buckets: body.after.buckets.map(row => {
+      const a = before.buckets.find(a => a.path === row.path)!
+      return { path: row.path, before: { pre: a.pre, post: a.post, b: a.b, o: a.o }, after: { pre: row.pre, post: row.post, b: row.b, o: row.o }, delta: { b: 0, o: 0 } }
+    }) })
+    const result = parseName(body, { date: '2026-10-07', name: 'datakit', from: '2026-10-06' })
+    expect(result).toEqual({ before: view(before), after: view(body.after), delta: { b: 0, o: 0 }, execution: { before: execution(before), after: execution(body.after) }, logical_store: 'gcs', capabilities: datedCapabilities })
+    expect(nameHasDetail(result)).toBe(false)
+  })
+  it.each(['wrong root', 'missing bucket', 'duplicate path', 'geometry gap', 'unsafe scalar', 'wrong snapshot', 'wrong date', 'wrong literal', 'fake history', 'false source proof', 'oracle claim', 'drill claim', 'missing registry', 'zero threshold', 'extra top field'])('refuses %s, not a partial or zero result', issue => {
+    const body = dailyNameFixture()
+    if (issue === 'wrong root') body.root.b++
+    if (issue === 'missing bucket') body.buckets.pop()
+    if (issue === 'duplicate path') body.buckets[0].path = body.buckets[1].path
+    if (issue === 'geometry gap') body.buckets[0].post++
+    if (issue === 'unsafe scalar') body.buckets[0].o = Number.MAX_SAFE_INTEGER + 1
+    if (issue === 'wrong snapshot') body.source_identity.snapshot_db = 'different'
+    if (issue === 'wrong date') body.date = '2026-10-07'
+    if (issue === 'wrong literal') body.pattern = 'other'
+    if (issue === 'fake history') Object.assign(body.source_identity, { history_manifest_sha256: 'f'.repeat(64) })
+    if (issue === 'false source proof') body.source_identity.source_prefix_proofs_checked = false
+    if (issue === 'oracle claim') body.validation.independent_full_catalog_source_oracle = true
+    if (issue === 'drill claim') body.capabilities.bucket_drill = true
+    if (issue === 'missing registry') Object.assign(body, { registry: undefined })
+    if (issue === 'zero threshold') body.registry.threshold_paths = 0
+    if (issue === 'extra top field') Object.assign(body, { fallback: true })
+    expect(() => parseName(body, { date: request.date, name: request.name })).toThrow(Error)
+  })
+  it.each(['store', 'date', 'root delta', 'bucket delta', 'side bounds', 'side weights', 'missing row', 'different paths'])('refuses inconsistent paired %s', issue => {
+    const body = mixedDatedNameDiff()
+    if (issue === 'store') body.before.logical_store = 'other'
+    if (issue === 'date') body.from = '2026-10-04'
+    if (issue === 'root delta') body.delta.o++
+    if (issue === 'bucket delta') body.buckets[0].delta.o++
+    if (issue === 'side bounds') body.buckets[0].after.pre = body.buckets[0].before.pre
+    if (issue === 'side weights') body.buckets[0].before.b++
+    if (issue === 'missing row') body.buckets.pop()
+    if (issue === 'different paths') body.after.buckets[0].path = 'bucket-unknown'
+    expect(() => parseName(body, request)).toThrow('Name summary returned an invalid dated contract.')
+  })
+})
+
+describe('scan-specific availability', () => {
+  const expectedOld = { dated: false, dates: scans.slice(0, 2).map(date => ({ date, plans: ['catalog', 'bounded-name-postings'], kind: 'frozen-history' })) }
+  const expected = { dated: true, logical_store: 'gcs', bucket_paths: Array.from('abcdef', letter => `bucket-${letter}`),
+    dates: [...expectedOld.dates.map(row => ({ ...row, qualification_dates: scans.slice(0, 2) })), { date: scans[2], plans: ['catalog'], kind: 'daily-scalar-source-v1', qualification_dates: scans.slice(0, 2), source_identity: dailyNameFixture().source_identity, registry: dailyNameFixture().registry }] }
+  it('separates available scan dates from registry qualification dates and preserves old metadata', () => {
+    expect(parseNameRegistry(legacyNameRegistry())).toEqual(expectedOld)
+    expect(parseNameRegistry(datedNameRegistry())).toEqual(expected)
+    expect(nameRequest(new URLSearchParams(), scans)).toEqual({ date: '2026-10-05', name: 'datakit' })
+    expect(nameRequest(new URLSearchParams('date=2026-10-06&name=DATAKIT&from=2026-10-05'), scans)).toEqual(request)
+    expect(datedNameRequest(new URLSearchParams('date=2026-10-08&name=A%26B'))).toEqual({ date: '2026-10-08', name: 'a&b' })
+  })
+  it.each(['new cold fallback', 'missing legacy day', 'invalid source hash', 'fake history source', 'invalid qualification date', 'false drill capability', 'extra field'])('refuses %s metadata', issue => {
+    const body = datedNameRegistry()
+    if (issue === 'new cold fallback') body.dates[2].plans.push('bounded-name-postings')
+    if (issue === 'missing legacy day') body.dates.splice(0, 1)
+    const daily = body.dates[2]
+    if (issue === 'invalid source hash' && 'source' in daily) Object.assign(daily.source, { source_manifest_sha256: 'invalid' })
+    if (issue === 'fake history source' && 'source' in daily) Object.assign(daily.source, { history_manifest_sha256: 'a'.repeat(64) })
+    if (issue === 'invalid qualification date') Object.assign(daily.registry, { qualification_dates: ['2026-02-30'] })
+    if (issue === 'false drill capability') body.capabilities.fallback = true
+    if (issue === 'extra field') Object.assign(body, { fallback: true })
+    expect(() => parseNameRegistry(body)).toThrow('Name summary returned an invalid dated contract.')
+  })
+  it.each(['logical store', 'bucket paths', 'scan plan', 'source generation', 'artifact hash', 'source hash', 'source bytes'])('binds cached results to metadata %s rather than displaying a valid but unrelated scope', issue => {
+    const result = parseName(mixedDatedNameDiff(), request), registry = parseNameRegistry(datedNameRegistry())
+    if (issue === 'logical store') result.logical_store = 'different'
+    if (issue === 'bucket paths') result.after.buckets[0].path = 'other-bucket'
+    if (issue === 'scan plan') registry.dates[2].plans = ['bounded-name-postings']
+    if (issue === 'source generation') result.execution.after.source_identity.generation = 'e'.repeat(32)
+    if (issue === 'artifact hash') result.execution.after.source_identity.artifact_sha256 = 'e'.repeat(64)
+    if (issue === 'source hash') result.execution.after.source_identity.source_manifest_sha256 = 'e'.repeat(64)
+    if (issue === 'source bytes') result.execution.after.source_identity.artifact_bytes = 2000
+    expect(() => nameResultForRegistry(result, registry)).toThrow(issue === 'scan plan' ? 'Name summary returned a different scan or execution plan from the available-scan registry.' : issue === 'logical store' || issue === 'bucket paths' ? 'Name summary returned a different logical store or bucket set from the available-scan registry.' : 'Name summary returned a different pinned daily source from the available-scan registry.')
+  })
+  it('rejects oversized or recursive dated metadata rather than walking an unbounded availability graph', () => {
+    const oversized = datedNameRegistry(); oversized.dates = Array.from({ length: 67 }, () => oversized.dates[2])
+    const recursive = datedNameRegistry(); Object.assign(recursive, { legacy: datedNameRegistry() })
+    expect(() => parseNameRegistry(oversized)).toThrow('Name summary returned an invalid dated contract.')
+    expect(() => parseNameRegistry(recursive)).toThrow('Name summary returned an invalid dated contract.')
+  })
+  it.each(['qualification dates', 'qualification target', 'threshold', 'registered count'])('binds daily response %s to metadata rather than pretending current-scan hot qualification', issue => {
+    const body = mixedDatedNameDiff()
+    if (issue === 'qualification dates') body.after.registry.qualification_dates = ['2026-10-05']
+    if (issue === 'qualification target') body.after.registry.target = 'other_registry'
+    if (issue === 'threshold') body.after.registry.threshold_paths = 200000
+    if (issue === 'registered count') body.after.registry.patterns = 4
+    expect(() => nameResultForRegistry(parseName(body, request), parseNameRegistry(datedNameRegistry()))).toThrow('Name summary returned different registry qualification from the available-scan registry.')
+  })
+  it.each(['date=2026-02-30', 'date=0000-01-01', 'date=2026-10-06&from=2026-10-06', 'date=2026-10-06&from=2026-10-07', 'name=a%2Fb', 'name=', 'date=2026-10-06&date=2026-10-05', 'owner=other'])('refuses invalid dated request %s', params => {
+    expect(() => datedNameRequest(new URLSearchParams(params))).toThrow(Error)
+  })
+  it('rejects an unavailable date before traffic, while legacy defaults remain frozen', async () => {
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher)
+    expect(() => nameRequest(new URLSearchParams('date=2026-10-06'))).toThrow('Only the frozen 2026-10-04 and 2026-10-05 scans are available.')
+    await expect(loadName({ date: '2026-10-07', name: 'datakit' }, undefined, scans)).rejects.toEqual(new Error('This scan is unavailable in the name-summary registry; it is not a zero-match result.'))
+    expect(fetcher.mock.calls).toEqual([])
+  })
+  it('fetches metadata and a selected dated comparison with exact parameter encoding', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(datedNameRegistry()))).mockResolvedValueOnce(new Response(JSON.stringify(mixedDatedNameDiff())))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await loadNameRegistry()).toEqual(expected)
+    expect(await loadName(request, undefined, scans)).toEqual(parseName(mixedDatedNameDiff(), request))
+    expect(fetcher.mock.calls).toEqual([['/api/name-summary-registry', { signal: undefined }], ['/api/name-summary?date=2026-10-06&name=datakit&from=2026-10-05', { signal: undefined }]])
+  })
+  it('refuses unavailable daily literals explicitly, with no fallback request', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('private details', { status: 400 })); vi.stubGlobal('fetch', fetcher)
+    await expect(loadName(request, undefined, scans)).rejects.toEqual(new Error('This literal or scan is unavailable for the selected name-summary plan; it is not a zero-match result.'))
+    expect(fetcher.mock.calls).toEqual([['/api/name-summary?date=2026-10-06&name=datakit&from=2026-10-05', { signal: undefined }]])
+  })
+  it.each([[401, 'Sign in to view available name-summary scans.'], [503, 'Available name-summary scans could not be loaded. Try again; no dates or zero results have been inferred.']] as const)('metadata status %s does not invent dates', async (status, message) => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('private details', { status })); vi.stubGlobal('fetch', fetcher)
+    await expect(loadNameRegistry()).rejects.toEqual(new Error(message))
+    expect(fetcher.mock.calls).toEqual([['/api/name-summary-registry', { signal: undefined }]])
+  })
+})

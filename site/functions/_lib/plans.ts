@@ -353,6 +353,7 @@ export interface RunRow {
   skipped_overwritten: number
   plan_digest: string | null
   undo_deadline?: number | null
+  log_dir?: string | null
 }
 
 export type Gate =

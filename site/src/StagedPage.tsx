@@ -26,19 +26,24 @@ import { ownerShares } from './OwnerBar'
 import { encodeSort, filterStaged, parseSort } from './stagedFilter'
 import { PrefixTable, TimeCell } from './PrefixTable'
 import { useUnits } from './units'
-import { fmtN, type Meta, type TreeNode } from './types'
+import { fmtBytesPrecise, fmtN, type Meta, type TreeNode } from './types'
 import { DEFAULT_STORE } from './stores'
 import { buildUserIndex } from './colors'
 import { useCanStage, useIdent } from './auth'
 import { applyLedger } from './ledgerOverlay'
 import { useOwnerIndex, useOwners } from './owners'
 import { useRowSelection, useRowSelectionKeys } from './rowSelection'
-import { CAPS, useDispatch, useExecJobs, useRunAction, useStagedPlan, useUnstage } from './plans'
+import { CAPS, useDispatch, useExecJobs, usePrefixHistory, useRunAction, useRunFiles, useStagedPlan, useUnstage } from './plans'
 import type { EmptiedBatch, StagedItem } from './plans'
-import { joinRuns, LIVE_STATES, viewLive } from './runs'
+import { joinRuns, LIVE_STATES, runFilesRel, viewBuckets, viewLive, type ProgressFile } from './runs'
+import { PrefixRecovery } from './PrefixRecovery'
+import { prefixExecution } from './prefixExecution'
+import type { PrefixExecution } from './prefixExecution'
 import { RunsSection } from './StagedRuns'
 import { type PrefixSortKey, type PrefixStat, relAgo, sortPrefixRows, usePrefixes } from './prefixes'
-import { stagedTree } from './stagedTree'
+import { batchCompletion, batchIsCollapsed, isCurrentlyStaged, stagedMapTree, stagedState, type StagedState } from './stagedCompletion'
+import { batchAnchor } from './runHistory'
+import { useLocation } from 'react-router-dom'
 import { machineFor } from '../functions/_lib/sweepMachines'
 
 const iso = (ts: number): string => new Date(ts * 1000).toISOString()
@@ -53,6 +58,13 @@ const prefixToPath = (prefix: string): string => {
 /** Rows per batch page; the flat (filtered or ungrouped) table pages longer. */
 const PAGE = 20
 const FLAT_PAGE = 50
+
+const stateLabel: Partial<Record<StagedState, string>> = { deleted: '✓ Deleted', empty: 'Empty at scan', recorded: 'Deletion recorded', running: 'Running' }
+
+function PrefixStatus({ state, execution }: { state: StagedState; execution: PrefixExecution }) {
+  const label = state === 'restored' && execution?.kind === 'recorded' ? execution.undone >= execution.objects ? 'Restored' : 'Partly restored' : stateLabel[state]
+  return label ? <span className={`staged-status ${state}`}>{label}</span> : null
+}
 
 /** A user id or email as its search text: the canonical id and the display name. */
 const searchName = (who: string) => `${canonId(who)} ${shortName(who)}`
@@ -79,7 +91,7 @@ function EmptiedLine({ e, batches }: { e: EmptiedBatch; batches: Map<number, { c
     const into = batches.get(a.into)
     return (
       <span key={`a${a.into}`}>
-        {n(a.n)} absorbed into {into ? <><UserChip who={into.created_by} size={16} />'s batch <Tooltip content={iso(into.created_ts)}><span>{relAgo(into.created_ts)}</span></Tooltip></> : <>batch #{a.into}</>}
+        {n(a.n)} absorbed into <a href={`#${batchAnchor(a.into)}`}>{into ? <>{shortName(into.created_by)}’s batch <Tooltip content={iso(into.created_ts)}><span>{relAgo(into.created_ts)}</span></Tooltip></> : <>batch #{a.into}</>}</a>
       </span>
     )
   })
@@ -90,7 +102,7 @@ function EmptiedLine({ e, batches }: { e: EmptiedBatch; batches: Map<number, { c
 }
 
 export function StagedPage() {
-  const { fmtBytes } = useUnits()
+  const { fmtBytes, units, suffixB } = useUnits()
   const ident = useIdent()
   const admin = useIsAdmin()
   const canStage = useCanStage()
@@ -119,6 +131,16 @@ export function StagedPage() {
   const anyLive = !!pendingJob
     || views.some(v => viewLive(v) || v.ops.some(o => LIVE_STATES.has(o.state)) || (v.run && !v.run.finished_ts && !v.job))
   useEffect(() => setLive(anyLive), [anyLive])
+  const history = usePrefixHistory(plan?.id ?? null, anyLive)
+  const progressTargets = views.filter(v => v.run?.mode === 'real' && v.run.plan_id === plan?.id && !v.run.finished_ts && (!v.job || viewLive(v)) && v.run.log_dir)
+    .flatMap(v => viewBuckets(v).map(bucket => ({ bucket, run: v.run!, rel: `${runFilesRel(v.run!.log_dir!)}progress/${bucket}.json` })))
+  const progressQs = useRunFiles<ProgressFile>(progressTargets.map(t => t.rel), anyLive)
+  const rowExecution = (r: Row) => {
+    const bucket = prefixToPath(r.prefix).split('/')[0]
+    const ix = progressTargets.findIndex(t => t.bucket === bucket && t.run.started_ts >= r.added_ts)
+    const progress = ix >= 0 ? progressQs[ix]?.data : null
+    return prefixExecution(r.prefix, history.data?.bands ?? [], progress ? { runId: progressTargets[ix].run.run_id, progress } : undefined, Date.now() / 1000)
+  }
 
   const runAction = useRunAction()
   const busy = unstage.isPending || dispatch.isPending || runAction.isPending
@@ -140,7 +162,7 @@ export function StagedPage() {
   })
   const userIdx = useMemo(() => buildUserIndex(metaQ.data?.users ?? []), [metaQ.data])
   const ownerIdx = useOwnerIndex(useOwners(!!store.owners).data)
-  const error = unstage.error ?? dispatch.error ?? runAction.error ?? staged.error ?? statsQ.error
+  const error = unstage.error ?? dispatch.error ?? runAction.error ?? staged.error ?? statsQ.error ?? history.error
 
   const rows: Row[] = useMemo(() => items.map(it => ({ ...it, name: it.prefix, to: `/${prefixToPath(it.prefix)}`, stat: stats?.[it.prefix] })), [items, stats])
   // The view lives in the URL, so a link carries it: `?q=hedy|grace&s=-b`
@@ -180,20 +202,39 @@ export function StagedPage() {
       .sort((a, b) => (b.batch?.created_ts ?? 0) - (a.batch?.created_ts ?? 0))
   }, [shownRows, batches, emptied, sP, flat]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Collapsed batches and each batch's page.
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const outcomes = new Map(rows.map(r => {
+    const execution = rowExecution(r)
+    return [r.prefix, { execution, state: stagedState(r.stat, !!stats, execution) }]
+  }))
+  const completion = new Map(groups.map(g => [String(g.id ?? 'none'), batchCompletion(g.rows.map(r => outcomes.get(r.prefix)!.state))]))
+  const activeRows = rows.filter(r => isCurrentlyStaged(outcomes.get(r.prefix)!.state))
+  const activePrefixes = new Set(activeRows.map(r => r.prefix))
+  // Defaults follow completion, while explicit open/closed choices survive polling.
+  const [folds, setFolds] = useState<Record<string, boolean>>({})
   const [pages, setPages] = useState<Record<string, number>>({})
+  const { hash } = useLocation()
+  useEffect(() => {
+    if (!/^#batch-\d+$/.test(hash)) return
+    setFlat(false)
+    setQ(undefined)
+    const key = hash.slice('#batch-'.length)
+    setFolds(f => ({ ...f, [key]: false }))
+    requestAnimationFrame(() => document.getElementById(hash.slice(1))?.scrollIntoView({ block: 'start' }))
+  }, [hash, batches.length, setFlat, setQ])
   const gkey = (g: Group) => String(g.id ?? 'none')
+  const defaultFoldKey = groups.map(g => `${gkey(g)}:${completion.get(gkey(g))!.settled}`).join(',')
+  const collapsed = useMemo(() => new Set(groups.filter(g => batchIsCollapsed(completion.get(gkey(g))!.settled, folds[gkey(g)], hash === `#${batchAnchor(g.id)}`, flat)).map(gkey)), [groups, defaultFoldKey, folds, hash, flat]) // eslint-disable-line react-hooks/exhaustive-deps
+  const foldable = groups.filter(g => !g.emptied)
   const pageSize = flat ? FLAT_PAGE : PAGE
   const pageOf = (g: Group) => Math.min(pages[gkey(g)] ?? 0, Math.max(0, Math.ceil(g.rows.length / pageSize) - 1))
   // What's on screen, in order: the rows selection and j/k walk.
   const visible = useMemo(
-    () => groups.flatMap(g => collapsed.has(gkey(g)) ? [] : g.rows.slice(pageOf(g) * pageSize, (pageOf(g) + 1) * pageSize)),
-    [groups, collapsed, pages, pageSize], // eslint-disable-line react-hooks/exhaustive-deps
+    () => groups.flatMap(g => collapsed.has(gkey(g)) ? [] : g.rows.slice(pageOf(g) * pageSize, (pageOf(g) + 1) * pageSize).filter(r => activePrefixes.has(r.prefix))),
+    [groups, collapsed, pages, pageSize, activePrefixes], // eslint-disable-line react-hooks/exhaustive-deps
   )
   const sel = useRowSelection(visible, r => r.prefix)
   useRowSelectionKeys(sel, 'staged', 'Staged')
-  const selected = items.filter(it => sel.selected.has(it.prefix)).map(it => it.prefix)
+  const selected = activeRows.filter(it => sel.selected.has(it.prefix)).map(it => it.prefix)
   const mine = (it: StagedItem) => !!ident && it.added_by === ident.email
   const canRemove = (it: StagedItem) => admin || (canStage && mine(it))
   const removable = selected.filter(p => { const it = items.find(i => i.prefix === p); return it ? canRemove(it) : false })
@@ -207,7 +248,7 @@ export function StagedPage() {
   const [bucketsOff, setBucketsOff] = useState<ReadonlySet<string>>(new Set())
   const perBucket = useMemo(() => {
     const m = new Map<string, { n: number; b: number; o: number }>()
-    for (const r of rows) {
+    for (const r of activeRows) {
       const bkt = prefixToPath(r.prefix).split('/')[0]
       const e = m.get(bkt) ?? { n: 0, b: 0, o: 0 }
       e.n++
@@ -216,28 +257,36 @@ export function StagedPage() {
       m.set(bkt, e)
     }
     return m
-  }, [rows])
+  }, [activeRows])
   const planBuckets = [...perBucket.keys()].sort()
   const onBuckets = planBuckets.filter(b => !bucketsOff.has(b))
   const cut = CAPS.bucketCut && onBuckets.length < planBuckets.length ? onBuckets : undefined
-  const cutItems = cut ? onBuckets.reduce((n, b) => n + perBucket.get(b)!.n, 0) : items.length
+  const cutItems = cut ? onBuckets.reduce((n, b) => n + perBucket.get(b)!.n, 0) : activeRows.length
   // The executor holds a bucket's manifest in memory: a bucket with tens of
   // millions of planned objects needs the big machine (gcs only).
   const machine = CAPS.bucketCut ? machineFor(Math.max(0, ...onBuckets.map(b => perBucket.get(b)!.o))) : undefined
 
   const total = (rs: Row[]) => rs.reduce((t, r) => ({ b: t.b + (r.stat?.b ?? 0), o: t.o + (r.stat?.o ?? 0), gone: t.gone + (stats && !r.stat ? 1 : 0) }), { b: 0, o: 0, gone: 0 })
-  const all = total(shownRows)
-  const everything = total(rows)
+  const activeShownRows = shownRows.filter(r => activePrefixes.has(r.prefix))
+  const all = total(activeShownRows)
+  const everything = total(activeRows)
   const selRows = rows.filter(r => sel.selected.has(r.prefix))
   const selTotal = total(selRows)
 
   const overlay = (t: TreeNode) => (ownerIdx.count ? applyLedger(t, ownerIdx, store.scheme) : t)
-  const shownPrefixes = useMemo(() => shownRows.map(r => r.prefix), [shownRows])
-  const tree = useMemo(() => (stats && shownPrefixes.length ? overlay(stagedTree(shownPrefixes, stats, 'staged')) : null), [shownPrefixes, stats, ownerIdx]) // eslint-disable-line react-hooks/exhaustive-deps
+  const shownPrefixes = useMemo(() => activeShownRows.map(r => r.prefix), [activeShownRows])
+  const tree = useMemo(() => {
+    const t = stats && shownPrefixes.length ? stagedMapTree(shownPrefixes, stats, 'staged') : null
+    return t ? overlay(t) : null
+  }, [shownPrefixes, stats, ownerIdx]) // eslint-disable-line react-hooks/exhaustive-deps
   const selKey = selected.join('\n')
-  const selTree = useMemo(() => (stats && selected.length ? overlay(stagedTree(selected, stats, 'selected')) : null), [selKey, stats, ownerIdx]) // eslint-disable-line react-hooks/exhaustive-deps
+  const selTree = useMemo(() => {
+    const t = stats && selected.length ? stagedMapTree(selected, stats, 'selected') : null
+    return t ? overlay(t) : null
+  }, [selKey, stats, ownerIdx]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const sizesNote = !date ? null : statsQ.isLoading ? 'sizing…' : stats ? null : 'sizes unavailable'
+  const loadingContents = items.length > 0 && (!date || statsQ.isLoading || history.isLoading || progressQs.some(query => query.isLoading))
 
   return (
     <main className="staged-page">
@@ -249,21 +298,23 @@ export function StagedPage() {
         </span>
       </div>
       <p className="sub">
-        Nothing here is deleted until an admin dispatches it — staging is opt-in, with no deadline. Stage prefixes
-        from the table under the map (the trash icon); a memo travels with each gesture.
+        Files are not deleted until an admin dispatches a deletion job. Stage prefixes
+        from a directory’s table (the trash icon); a memo travels with each gesture.
         {admin ? ' Dry-run first to see what a real run would delete; a real run deletes recoverably.' : ' An admin reviews and dispatches from here.'}
       </p>
       {error && <p className="staged-err" role="alert">{error.message}</p>}
       {plan?.note && <p className="plan-note">{plan.note}</p>}
 
-      {staged.isLoading ? <p className="loading">loading…</p> : !plan || !items.length ? (
+      {staged.isLoading || loadingContents ? <>
+        <p className="loading" role="status">Loading staged paths…</p>
+      </> : !plan || (!items.length && !groups.length) ? (
         <p className="staged-empty">Nothing is staged.</p>
       ) : (
         <>
           <div className="pp-head">
             <h2>
-              {shownRows.length !== items.length && <>{shownRows.length} of </>}{items.length} {items.length === 1 ? 'prefix' : 'prefixes'}
-              {stats && <> · {fmtBytes(all.b)}{shownRows.length !== items.length && <span className="dim"> of {fmtBytes(everything.b)}</span>} · {fmtN(all.o)} objects</>}
+              {activeShownRows.length !== activeRows.length && <>{activeShownRows.length} of </>}{activeRows.length} staged {activeRows.length === 1 ? 'path' : 'paths'}
+              {stats && <> · {fmtBytes(everything.b)} · {fmtN(everything.o)} objects</>}
             </h2>
             <label className="scan-pick">sized at scan <select value={date} onChange={e => setDate(e.target.value)} aria-label="scan">{scans.map(s => <option key={s}>{s}</option>)}</select>
               {sizesNote && <span className="dim"> {sizesNote}</span>}
@@ -271,11 +322,13 @@ export function StagedPage() {
             </label>
           </div>
 
-          <div className={`staged-maps${selTree ? ' two' : ''}`}>
+          {tree && <p className="dim staged-sizing-note">Map and size columns are snapshots at the selected scan, not live remaining totals. Execution / recovery updates while a run is active; older jobs report bucket progress only, with exact prefix totals recorded when the run ends.</p>}
+
+          {tree ? <div className={`staged-maps${selTree ? ' two' : ''}`}>
             <section className="staged-map">
               <h3>{q.trim() ? <>staged, matching “{q.trim()}”</> : 'everything staged'}</h3>
               <div className="map-box">
-                {tree ? <Treemap key={`all:${date}`} root={tree} mode="user" userIdx={userIdx} dateRange={null} scheme={store.scheme} /> : <p className="dim">{sizesNote ?? 'nothing to draw'}</p>}
+                <Treemap key={`all:${date}`} root={tree} mode="user" userIdx={userIdx} dateRange={null} scheme={store.scheme} />
               </div>
             </section>
             {selTree && (
@@ -286,10 +339,13 @@ export function StagedPage() {
                 </div>
               </section>
             )}
-          </div>
+          </div> : stats ? <section className="staged-no-map" aria-live="polite">
+            <h3>{activeShownRows.length ? 'No sized rectangles to draw' : 'Nothing is staged.'}</h3>
+            {activeShownRows.length > 0 && <p>{fmtN(all.o)} zero-byte objects at scan {date}.</p>}
+          </section> : <p className="dim">{sizesNote ?? 'Sizing staged prefixes…'}</p>}
 
           <div className="staged-filter">
-            <input type="search" value={q} onChange={e => setQ(e.target.value || undefined)} placeholder="filter: hedy|grace, isoflop -nemotron, owner:will, staged-by:david"
+            <input type="search" value={q} onChange={e => setQ(e.target.value || undefined)} placeholder={activeRows.length ? 'filter: hedy|grace, isoflop -nemotron, owner:will, staged-by:david' : 'filter batch history…'}
               aria-label="filter staged prefixes" className={filtered.error ? 'bad' : undefined} />
             {filtered.error && <span className="err">{filtered.error}</span>}
             <Tooltip content={q.trim() ? 'A filter shows one table across batches.' : 'One table per staging gesture (who, when, note), or one table of everything.'}>
@@ -298,27 +354,28 @@ export function StagedPage() {
           </div>
 
           <div className="staged-actions">
-            <label className="sel-all"><input type="checkbox" checked={sel.pageAll} onChange={sel.togglePage} aria-label="select all shown" /> {sel.selected.size ? `${sel.selected.size} selected · ${fmtBytes(selTotal.b)}` : 'select'}</label>
+            {activeShownRows.length > 0 && <label className="sel-all"><input type="checkbox" checked={sel.pageAll} onChange={sel.togglePage} aria-label="select all shown" /> {sel.selected.size ? `${sel.selected.size} selected · ${fmtBytes(selTotal.b)}` : 'select'}</label>}
             {sel.selected.size > 0 && <button type="button" onClick={sel.clear}>deselect</button>}
             {removable.length > 0 && (
               <button type="button" disabled={busy} onClick={() => unstage.mutate(removable, { onSuccess: () => sel.clear() })}>unstage {removable.length}</button>
             )}
             {!flat && <span className="fold-all">
-              <button type="button" disabled={collapsed.size === 0} onClick={() => setCollapsed(new Set())} aria-label="expand all batches">▾ all</button>
-              <button type="button" disabled={collapsed.size === groups.length} onClick={() => setCollapsed(new Set(groups.map(gkey)))} aria-label="collapse all batches">▸ all</button>
+              <button type="button" disabled={foldable.every(g => !collapsed.has(gkey(g)))} onClick={() => setFolds(Object.fromEntries(groups.map(g => [gkey(g), false])))} aria-label="expand all batches">▾ all</button>
+              <button type="button" disabled={foldable.every(g => collapsed.has(gkey(g)))} onClick={() => setFolds(Object.fromEntries(groups.map(g => [gkey(g), true])))} aria-label="collapse all batches">▸ all</button>
             </span>}
           </div>
 
           {groups.map(g => {
             const k = gkey(g)
             const open = !collapsed.has(k)
+            const status = completion.get(k)!
             const t = total(g.rows)
             const pg = pageOf(g)
             const np = Math.max(1, Math.ceil(g.rows.length / pageSize))
             const setPg = (p: number) => setPages(ps => ({ ...ps, [k]: p }))
             const shown = g.rows.slice(pg * pageSize, (pg + 1) * pageSize)
             if (g.emptied) return (
-              <section key={k} className="stage-batch folded emptied">
+              <section key={k} id={batchAnchor(g.id)} className="stage-batch folded emptied">
                 <div className="batch-head">
                   <span className="fold dim" aria-hidden>·</span>
                   <UserChip who={g.emptied.created_by} size={18} /> staged <Tooltip content={iso(g.emptied.created_ts)}><span>{relAgo(g.emptied.created_ts)}</span></Tooltip>
@@ -328,14 +385,16 @@ export function StagedPage() {
               </section>
             )
             return (
-              <section key={k} className={`stage-batch${open ? '' : ' folded'}`}>
+              <section key={k} id={batchAnchor(g.id)} className={`stage-batch${open ? '' : ' folded'}${status.settled && status.deleted > 0 ? ' completed' : ''}`}>
                 {g.id !== -1 && <div className="batch-head">
                   <button type="button" className="fold" aria-expanded={open} aria-label={open ? 'collapse batch' : 'expand batch'}
-                    onClick={() => setCollapsed(c => { const n = new Set(c); if (open) n.add(k); else n.delete(k); return n })}>{open ? '▾' : '▸'}</button>
+                    onClick={() => setFolds(f => ({ ...f, [k]: open }))}>{open ? '▾' : '▸'}</button>
+                  {(status.deleted > 0 || status.empty === g.rows.length) && <span className={`staged-status ${status.deleted > 0 ? 'deleted' : 'empty'}`}>{status.settled && status.deleted > 0 ? '✓ Deleted' : status.deleted > 0 ? `${status.deleted} deleted` : 'Empty at scan'}</span>}
                   {g.batch
                     ? <><UserChip who={g.batch.created_by} size={18} /> staged <Tooltip content={iso(g.batch.created_ts)}><span>{relAgo(g.batch.created_ts)}</span></Tooltip></>
                     : <span className="dim">staged earlier</span>}
-                  <span className="dim">· {g.rows.length} {g.rows.length === 1 ? 'prefix' : 'prefixes'}{stats && <> · {fmtBytes(t.b)}</>}</span>
+                  <span className="dim">· {g.rows.length} {g.rows.length === 1 ? 'prefix' : 'prefixes'}{status.deleted > 0 && <> · {status.deleted} with logged deletions</>}{status.empty > 0 && <> · {status.empty} empty at scan</>}{stats && t.b > 0 && <> · {fmtBytes(t.b)} at scan</>}</span>
+                  {g.id != null && <a className="batch-permalink" href={`#${batchAnchor(g.id)}`} aria-label={`Link to batch ${g.id}`}>#{g.id}</a>}
                   {g.batch?.note && <i className="memo">{g.batch.note}</i>}
                 </div>}
                 {(open || g.id === -1) && (
@@ -349,15 +408,19 @@ export function StagedPage() {
                       ownerIdx={ownerIdx}
                       loading={!stats}
                       extra={[{
+                        key: 'execution', label: 'execution / recovery', className: 'nb',
+                        cell: r => <PrefixRecovery execution={outcomes.get(r.prefix)!.execution} fmtBytes={fmtBytes} />,
+                      }, {
                         key: 'staged', label: 'staged', className: 'nb staged-by', sort: r => r.added_ts,
                         cell: r => <>{r.added_by !== g.batch?.created_by && <UserChip who={r.added_by} size={16} />}<TimeCell ts={r.added_ts} /></>,
                       }]}
+                      namePrefix={r => <PrefixStatus {...outcomes.get(r.prefix)!} />}
                       lead={{
                         header: null,
-                        cell: r => <input type="checkbox" checked={sel.selected.has(r.prefix)} onChange={() => { const i = visible.indexOf(r); sel.toggle(i); sel.commit() }} aria-label={`select ${r.prefix}`} />,
+                        cell: r => activePrefixes.has(r.prefix) ? <input type="checkbox" checked={sel.selected.has(r.prefix)} onChange={() => { const i = visible.indexOf(r); if (i >= 0) { sel.toggle(i); sel.commit() } }} aria-label={`select ${r.prefix}`} /> : null,
                       }}
-                      rowProps={r => { const i = visible.indexOf(r); return { ref: sel.rowRef(i), ...sel.rowProps(i) } }}
-                      trail={r => canRemove(r) && <button type="button" className="rm" title="unstage" disabled={busy} onClick={() => unstage.mutate([r.prefix])}>×</button>}
+                      rowProps={r => { const i = visible.indexOf(r); const state = outcomes.get(r.prefix)!.state; if (i < 0) return { className: `staged-${state}` }; const props = sel.rowProps(i); return { ref: sel.rowRef(i), ...props, className: `${props.className ?? ''} staged-${state}` } }}
+                      trail={r => activePrefixes.has(r.prefix) && canRemove(r) && <Tooltip content="Unstage this prefix (does not stop a dispatched run)"><button type="button" className="rm" aria-label="Unstage prefix" disabled={busy} onClick={() => unstage.mutate([r.prefix])}>×</button></Tooltip>}
                     />
                     {np > 1 && (
                       <div className="pg">
@@ -374,11 +437,11 @@ export function StagedPage() {
             )
           })}
 
-          {admin && (
+          {admin && activeRows.length > 0 && (
             <div className="dispatch" id="dispatch">
               <h3>Dispatch</h3>
               <label>scan <select value={date} onChange={e => setDate(e.target.value)}>{scans.map(s => <option key={s}>{s}</option>)}</select></label>
-              {CAPS.bucketCut && planBuckets.length > 1 && (
+              {activeRows.length > 0 && CAPS.bucketCut && planBuckets.length > 1 && (
                 <details className="dispatch-buckets" open={!!cut}>
                   <summary className="dim">limit this run to some buckets{cut ? <> — <b>{onBuckets.length} of {planBuckets.length}</b> checked</> : ''}</summary>
                   {planBuckets.map(b => {
@@ -394,9 +457,9 @@ export function StagedPage() {
                 </details>
               )}
               <div className="dispatch-btns">
-                <button type="button" className="dry" disabled={busy || !date || !onBuckets.length} onClick={() => dispatch.mutate({ mode: 'dry', date, buckets: cut, machine })}>dispatch dry-run</button>
+                <button type="button" className="dry" disabled={busy || !date || !activeRows.length || !onBuckets.length} onClick={() => dispatch.mutate({ mode: 'dry', date, buckets: cut, machine })}>dispatch dry-run</button>
                 {!armed
-                  ? <button type="button" className="danger" disabled={busy || !date || !onBuckets.length} onClick={() => setArmed(true)}>real delete…</button>
+                  ? <button type="button" className="danger" disabled={busy || !date || !activeRows.length || !onBuckets.length} onClick={() => setArmed(true)}>real delete…</button>
                   : <>
                       <button type="button" className="danger armed" disabled={busy} onClick={() => dispatch.mutate({ mode: 'real', date, buckets: cut, machine }, { onSuccess: () => setArmed(false) })}>
                         confirm REAL delete of {cutItems} {cutItems === 1 ? 'prefix' : 'prefixes'}{cut && <> ({onBuckets.length} of {planBuckets.length} buckets)</>}
@@ -423,7 +486,7 @@ export function StagedPage() {
         admin={admin}
         busy={busy}
         act={a => runAction.mutate(a)}
-        fmtBytes={fmtBytes}
+        fmtBytes={b => fmtBytesPrecise(b, units, suffixB)}
         refreshing={staged.isFetching || jobs.isFetching}
       />
       <SiteKbd />

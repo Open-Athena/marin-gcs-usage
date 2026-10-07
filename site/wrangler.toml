@@ -47,9 +47,11 @@ JOB_SA = "gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com"  # the accou
 STORE_BUCKET = "oa-gcs-usage-dvx"     # the path store's bucket (`_lib/index.ts`)
 DATA_BUCKET = "oa-gcs-usage-dvx"      # sweep runs / plans data (`sweepDispatch`, `api/sweep/*`)
 GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
+GCP_LOG_VIEW = "projects/oa-internal-450019/locations/global/buckets/_Default/views/gcs-sweep-task-logs"
 # Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
 BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
-SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:latest"
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:2c6047a4f8f00f7730b6b1c323d99e03274581b8fa375d69b31d93e207022fba"
+SWEEP_PACING = "guided"   # Feedback control within the cold-ramp envelope; adaptive after benchmark validation.
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
 D1_DB_NAME = "oa-gcs-usage-auth"
@@ -111,6 +113,11 @@ database_id = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"
 migrations_dir = "migrations/gcs"
 
 [env.preview.vars]
+QUERY_BOX_HOT_L1 = "1"
+QUERY_BOX_HOT_L2 = "1"
+QUERY_BOX_NAME_SUMMARY = "1"
+QUERY_BOX_DATED_NAMES = "1"
+QUERY_BOX_HOT_L1_URL = "https://liver-separation-premier-impression.trycloudflare.com"
 STORE = "gcs"
 AUTH_MODE = "app"
 ROOT_LABEL = "marin GCS (dev)"
@@ -123,7 +130,8 @@ DATA_BUCKET = "oa-gcs-usage-dvx"      # sweep runs / plans data (`sweepDispatch`
 GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
 # Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
 BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
-SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:latest"
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:2c6047a4f8f00f7730b6b1c323d99e03274581b8fa375d69b31d93e207022fba"
+SWEEP_PACING = "guided"
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
 D1_DB_NAME = "oa-gcs-usage-auth"
