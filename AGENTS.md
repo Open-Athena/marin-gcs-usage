@@ -222,6 +222,20 @@ curl -X POST https://gcs.oa.dev/api/plans/stage \
   -d '{"prefixes":["gs://marin-us-east5/scratch/old-run/","gs://marin-us-central2/tmp/2025/"],"note":"superseded by run 42"}'
 ```
 
+#### Deletion runs (what was deleted, and asking for an undo)
+
+Every run, dry or real, is readable by any signed-in viewer; only admins dispatch, stop or undo one.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/plans/staged` | The open plan's items, plus `runs`: every deletion run (dry and real), with totals and its `undo_deadline`. |
+| `GET /api/sweep/jobs` | The executor's Batch jobs (runs and undos), live state included. |
+| `GET /api/plans/run?id=<run_id>` | One run: its record + one row per deleted prefix (`prefix, bytes, objects, gone, overwritten, undone_objects`). |
+| `GET /api/plans/prefix-history?id=<plan_id>` | Each staged prefix of a plan → the real run(s) that deleted it. |
+| `GET /v1/files/list?prefix=sweep/runs/<run_id>/` | A run's directory (plan, per-bucket manifests of the exact objects + generations deleted); fetch a file with `/v1/files/get?path=…`. |
+
+Deleted objects stay recoverable for 7 days from their deletion (each run's `undo_deadline`). To get something back, send an admin the run id and the prefixes (a reply on the run's Slack/Discord thread, or a DM); an agent can assemble that list from the endpoints above. `/runs/<run_id>` is the same run as a page.
+
 #### Ownership
 
 | Method & path | Purpose |
