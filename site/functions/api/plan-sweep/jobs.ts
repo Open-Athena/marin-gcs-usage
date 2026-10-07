@@ -9,7 +9,7 @@ import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireViewer } from "../../_lib/auth.js"
 import { batchConfig, type BatchEnv, notConfigured } from "../../_lib/batchConfig.js"
 import { runGsPath } from "../../_lib/cwBatch.js"
-import { gcpToken } from "../../_lib/gcp.js"
+import { batchLogsUrl, gcpToken } from "../../_lib/gcp.js"
 import { NO_SHAPE, prefixShape } from "../../_lib/plans.js"
 import { jobIdOf, listBatchJobs, reflectRuns, sweepJobs } from "../../_lib/runReflect.js"
 import { announceFinished, type NotifyEnv } from "../../_lib/stagedSlack.js"
@@ -41,14 +41,21 @@ export const onRequestGet = async (ctx: Ctx & { env: Env; waitUntil?: (p: Promis
     }
   }
 
-  const out = sweepJobs(jobs).map(j => {
+  // The sweep runs, then the undo / purge ops on them (`op`, `target` = the
+  // run id), which /staged shows on their run's row while they're live.
+  const ops = jobs.filter(j => /\/jobs\/cw-(undo|purge)-/.test(j.name)).slice(0, 20)
+  const out = [...sweepJobs(jobs), ...ops].map(j => {
     const jobId = jobIdOf(j)
     const vars = j.taskGroups?.[0]?.taskSpec?.environment?.variables ?? {}
     const ev = j.status?.statusEvents ?? []
     const dur = j.status?.runDuration
+    const op = vars.OP === "undo" || vars.OP === "purge" ? vars.OP : "sweep"
     return {
       job_id: jobId,
-      mode: jobId.startsWith("cw-sweep-real-") ? "real" : "dry",
+      op,
+      target: op === "sweep" ? null : vars.TARGET_RUN ?? null,
+      plan_id: null,
+      mode: op !== "sweep" || jobId.startsWith("cw-sweep-real-") ? "real" : "dry",
       state: j.status?.state ?? "UNKNOWN",
       created: j.createTime,
       updated: j.updateTime ?? null,
@@ -56,7 +63,7 @@ export const onRequestGet = async (ctx: Ctx & { env: Env; waitUntil?: (p: Promis
       date: vars.SWEEP_DATE ?? null,
       run: runGsPath(cfg, jobId),
       last_event: ev.length ? ev[ev.length - 1].description ?? null : null,
-      logs: `https://console.cloud.google.com/logs/query;query=${encodeURIComponent(`labels.job_uid="${j.uid}"`)}?project=${cfg.project}`,
+      logs: batchLogsUrl(cfg.project, j.uid, j.createTime),
     }
   })
   return json({ jobs: out, configured: true, region: cfg.region }, 200, { "cache-control": "private, max-age=10" })

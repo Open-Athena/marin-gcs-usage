@@ -16,7 +16,10 @@ Key goals:
 ### Python Backend (`src/disk_tree/`)
 
 **Listing** (`find/bulk*.py`): `bulk-list` shards a bucket's object listing (`gcs://`, `s3://`,
-`r2://` via its S3 endpoint) across worker processes into layer-1 listing parquet shards.
+`r2://` via its S3 endpoint) across worker processes into layer-1 listing parquet shards. The
+canonical columns are `bucket, name, size_bytes, created, storage_class_id, generation`; generation
+is the exact GCS object identity (nullable for S3/R2 and old listings), retained so a reviewed
+deletion manifest can never resolve to a replacement object at the same path.
 
 **Aggregation** (`find/import_listing.py`, `find/index.py`, `find/aggregate_{duckdb,stream}.py`):
 `import` aggregates a listing bottom-up into the canonical layer-2 frame — columns `path`, `size`,

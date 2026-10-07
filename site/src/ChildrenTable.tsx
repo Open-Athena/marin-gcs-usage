@@ -70,7 +70,10 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   const canStage = useCanStage()
   const stage = useStage()
   const assigning = !!ownerIdx && store.owners && canAssign
-  const showSel = staging ? canStage : assigning
+  // At the store root every row is a whole bucket (on a `*` store, a whole
+  // top-level root), which a plan item can't name: no trash there.
+  const canTrash = staging && segs.length > 0
+  const showSel = staging ? canStage && (canTrash || assigning) : assigning
   const trash = (uri: string, k: TreeNode['k']) => stage.mutate({ prefixes: [actionPrefix(uri, k)] })
   // One memo for the whole multi-select gesture (stored on the stage batch).
   const [memo, setMemo] = useState('')
@@ -173,7 +176,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
     <span className="sel-bar">
       <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}
       <span className="acts">
-        {staging && (<>
+        {canTrash && (<>
           <Tooltip content="Optional: one note for this deletion — why these prefixes go. Stored with the batch, visible to the admin who dispatches.">
             <input className="memo" value={memo} onChange={e => setMemo(e.target.value)} placeholder="note (optional)" aria-label="deletion note" />
           </Tooltip>
@@ -293,7 +296,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
                     )}
                     {!synthetic && acts(k) && (
                       <>
-                        {staging && (
+                        {canTrash && (
                           <Tooltip content="Stage this prefix for deletion — an admin approves and dispatches from /staged">
                             <button type="button" className="trash" onClick={() => trash(uri, k.k)} aria-label="trash"><FaRegTrashCan /></button>
                           </Tooltip>
@@ -320,6 +323,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
         </tfoot>
       </table>
       {pager && <div className="pager">{pager}</div>}
+      {stage.error && <p className="err stage-err">Couldn’t stage: {stage.error.message}</p>}
       {/* The selection bar docks BELOW the table (sticky), so making a
           selection never shifts the rows you're clicking. The dock is ALWAYS
           rendered when the table is actionable — its height is reserved even
