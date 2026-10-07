@@ -227,7 +227,7 @@ curl -X POST https://gcs.oa.dev/api/plans/stage \
 | Method & path | Purpose |
 |---|---|
 | `GET /api/owners?date=<scan>` | Per-user owned bytes + storage-class mix for a scan (what `/users` ranks): `{ scan, head, bytes, objects, users: { <id>: { b, mix } } }`. |
-| `GET /api/estate?date=<scan>&user=<id>` | One user's estate: `{ user, date, head, bytes, objects, mix, claims }` (`claims` = the assignments behind it). |
+| `GET /api/estate?date=<scan>&user=<id>` | One user's estate: `{ user, date, head, bytes, objects, mix, assignments }`. |
 | `GET /api/assignments?date=<scan>` | The assigner × assignee matrix (who assigned what to whom, in bytes). |
 | `GET /api/actions` | The live ownership ledger: `{ owners: [...] }`, every expanded prefix joined to the action that set it. |
 | `POST /api/actions` | Assign: append one action or an array (≤500): `{ pattern, owner, memo?, scan? }` — `owner` is a user id (as `/api/owners` keys them), `'@me'` resolves to you, `null` clears. Prefix patterns only. The newest assignment on a prefix or any ancestor wins. |
