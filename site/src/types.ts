@@ -44,9 +44,9 @@ export interface UserInfo {
 
 /** Bytes some person owns under a node (Σ of its user slices). */
 export const userBytes = (n: Pick<TreeNode, 'us'>): number => (n.us ?? []).reduce((s, [, b]) => s + b, 0)
-/** Bytes nobody owns under a node — the unclaimed pool. Ownership has one
+/** Bytes nobody owns under a node — the unowned pool. Ownership has one
  * axis (a person or nobody); there is no group facet. */
-export const unclaimedBytes = (n: Pick<TreeNode, 'b' | 'us'>): number => Math.max(0, n.b - userBytes(n))
+export const unownedBytes = (n: Pick<TreeNode, 'b' | 'us'>): number => Math.max(0, n.b - userBytes(n))
 
 export interface AgeRow {
   d: number   // created day, epoch days (site aggregates to day/week/month)
@@ -71,6 +71,15 @@ export const MODE_LABELS: Record<ColorMode, string> = {
   tree: 'tree',
 }
 
+/** Physical container measurements from the capture, not summed path sizes. */
+export interface DiskSpace {
+  capacity: number
+  used: number
+  free: number
+  device: string
+  captured_at: string
+}
+
 export interface Meta {
   asof: string
   generated: string
@@ -80,6 +89,7 @@ export interface Meta {
   class_bytes: Record<string, number>
   users?: UserInfo[]
   user_class_bytes?: Record<string, Record<string, number>>
+  disk_space?: DiskSpace
   /** Access-log observation window (epoch days) — bounds the read-recency lens. */
   access?: { from: number; to: number }
 }
