@@ -1,4 +1,8 @@
-"""Explicit date-qualified unions of accepted single-date census registries."""
+"""Explicit date-qualified unions of accepted single-date census registries.
+
+A one-source union is a scan's own registry: membership is exactly that
+scan's threshold-hot literals, in the format a registry selection pins.
+"""
 
 from hashlib import sha256
 from itertools import combinations
@@ -27,8 +31,8 @@ def union(
     integer(max_chars, "union maximum length", 1)
     if integer(max_patterns, "union accepted-pattern cap", 1) > UNION_CAP:
         raise ValueError("union accepted-pattern cap cannot exceed 500000")
-    if len(sources) < 2:
-        raise ValueError("union requires at least two distinct dated source censuses")
+    if not sources:
+        raise ValueError("union requires at least one dated source census")
     if out.exists():
         raise ValueError("union output must be a new artifact")
     accepted = []

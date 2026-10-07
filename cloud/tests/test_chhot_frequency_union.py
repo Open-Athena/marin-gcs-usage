@@ -83,6 +83,34 @@ def test_exact_date_vectors_qualification_overlap_bytes_and_deterministic_order(
     assert another.read_bytes() == raw
 
 
+def test_single_source_union_is_that_scans_own_registry(sources, tmp_path: Path) -> None:
+    out = tmp_path / "own.jsonl"
+    census, queries = sources[1]
+    declaration = expected_header(sources)["sources"][1]
+    header = {"schema": UNION_SCHEMA, "target": "fixture", "dates": [DATES[1]], "threshold_paths": 10, "max_chars": 2,
+              "max_patterns": 500_000, "sources": [declaration], "frequency_semantics": FREQUENCY_SEMANTICS}
+    rows = [{"chars": 1, "pattern": "b", "direct_matching_paths": {DATES[1]: 30}},
+            {"chars": 1, "pattern": "d", "direct_matching_paths": {DATES[1]: 60}}]
+    raw = ((dumps(header, ensure_ascii=False, separators=(",", ":")) + "\n") +
+           "".join(dumps(row, separators=(",", ":")) + "\n" for row in rows) + '{"complete":true,"patterns":2}\n').encode()
+    result = union(((census, queries),), 10, 2, out)
+    assert out.read_bytes() == raw
+    assert (result["registry_dates"], result["patterns"], result["per_date"], result["overlap"]) == (
+        [DATES[1]], 2, [{"date": DATES[1], "threshold_hot_patterns": 2, "known_frequencies": 2, "below_source_minimum_patterns": 0}], [])
+    assert load_queries(out, "fixture", DATES[1]) == (header, ("b", "d"))
+    with pytest.raises(ValueError) as caught:
+        load_queries(out, "fixture", DATES[0])
+    assert str(caught.value) == "union batch date must be a source date and cannot use a single registry_date override"
+
+
+def test_union_without_sources_refuses(tmp_path: Path) -> None:
+    out = tmp_path / "none.jsonl"
+    with pytest.raises(ValueError) as caught:
+        union((), 10, 2, out)
+    assert str(caught.value) == "union requires at least one dated source census"
+    assert out.exists() is False
+
+
 @pytest.mark.parametrize("kind,message", [
     ("cap", "union exceeds its accepted-pattern cap; no complete export"),
     ("below", "report thresholds must be nonempty integers at least the source minimum"),

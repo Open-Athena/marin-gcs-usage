@@ -1775,7 +1775,7 @@ def serve_hot_l1(
 @option("-c", "--max-patterns", default=500_000, type=IntRange(min=1, max=500_000), help="Complete union pattern cap; exceeding it refuses before writing")
 @option("-k", "--max-chars", required=True, type=IntRange(min=1, max=32), help="Requested complete union depth; every source must cover it")
 @option("-o", "--out", required=True, type=Path, help="Fresh private complete union JSONL artifact; never overwrites")
-@option("-s", "--source", multiple=True, required=True, type=(Path, Path), help="Accepted single-date CENSUS QUERIES pair; repeat for distinct dates")
+@option("-s", "--source", multiple=True, required=True, type=(Path, Path), help="Accepted single-date CENSUS QUERIES pair; repeat for distinct dates (one pair = that scan's own registry)")
 @option("-t", "--threshold", required=True, type=IntRange(min=1), help="Hot if any source date qualifies; cannot be below any source census minimum")
 def ch_hot_frequency_union(
     max_patterns: int,

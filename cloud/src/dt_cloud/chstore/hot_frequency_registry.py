@@ -50,7 +50,7 @@ def union_header(header: object, target: str) -> dict:
             not integer(header["max_patterns"], 1) or header["max_patterns"] > UNION_CAP):
         raise ValueError(message)
     dates, sources = header["dates"], header["sources"]
-    if (not isinstance(dates, list) or len(dates) < 2 or any(not iso_date(date) for date in dates) or dates != sorted(set(dates)) or
+    if (not isinstance(dates, list) or not dates or any(not iso_date(date) for date in dates) or dates != sorted(set(dates)) or
             not isinstance(sources, list) or len(sources) != len(dates)):
         raise ValueError(message)
     for date, source in zip(dates, sources, strict=True):
