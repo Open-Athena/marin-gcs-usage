@@ -166,6 +166,30 @@ public:
     }
 };
 
+// Well-formed UTF-8 (no overlongs, surrogates or code points past U+10FFFF) —
+// the daily census refuses anything else, as `isValidUTF8` would.
+static bool valid_utf8(std::string_view s) {
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    const auto* end = p + s.size();
+    while (p < end) {
+        const unsigned c = *p;
+        if (c < 0x80) { ++p; continue; }
+        unsigned n, cp;
+        if (c >= 0xC2 && c <= 0xDF) n = 1, cp = c & 0x1F;
+        else if (c >= 0xE0 && c <= 0xEF) n = 2, cp = c & 0x0F;
+        else if (c >= 0xF0 && c <= 0xF4) n = 3, cp = c & 0x07;
+        else return false;
+        if (end - p <= n) return false;
+        for (unsigned i = 1; i <= n; ++i) {
+            if ((p[i] & 0xC0) != 0x80) return false;
+            cp = cp << 6 | (p[i] & 0x3F);
+        }
+        if ((n == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) || (n == 3 && (cp < 0x10000 || cp > 0x10FFFF))) return false;
+        p += n + 1;
+    }
+    return true;
+}
+
 struct Vocabulary {
     std::vector<char> text;
     std::vector<uint64_t> offset{0};  // byte offset of each name; one past the last
@@ -190,6 +214,7 @@ static Vocabulary read_vocabulary() {
         const std::string_view s(v.text.data() + at, size);
         if (s.find('/') != std::string_view::npos) fail("basename vocabulary contains a path separator");
         if (s.find('\0') != std::string_view::npos) fail("basename vocabulary contains NUL");
+        if (!valid_utf8(s)) fail("basename vocabulary contains invalid UTF-8");
         boundaries(s, b);
         v.offset.push_back(at + size);
         v.cp.push_back(v.cp.back() + (b.size() - 1));

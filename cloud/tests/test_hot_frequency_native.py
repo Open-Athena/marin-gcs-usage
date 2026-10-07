@@ -83,8 +83,16 @@ def test_random_unicode_matches_brute_force(binary: Path, seed: int) -> None:
         assert census(binary, rows, threshold, 6) == brute(rows, threshold, 6)
 
 
-def test_refuses_separators_and_pattern_cap(binary: Path) -> None:
+def raw_rows(rows: list[tuple[bytes, int]]) -> bytes:
+    return b''.join(bytes([len(raw)]) + raw + count.to_bytes(8, 'little') for raw, count in rows)
+
+
+def test_refuses_separators_invalid_utf8_and_pattern_cap(binary: Path) -> None:
     done = run([str(binary), '1', '3', '2'], input=row_binary([('a/b', 1)]), capture_output=True)
     assert (done.returncode, done.stderr.decode()) == (1, 'hot-frequency: basename vocabulary contains a path separator\n')
+    # A lone continuation byte, an overlong '/', a surrogate, a code point past U+10FFFF.
+    for bad in (b'a\x80', b'\xc0\xaf', b'\xed\xa0\x80', b'\xf4\x90\x80\x80'):
+        done = run([str(binary), '1', '3', '2'], input=raw_rows([(bad, 1)]), capture_output=True)
+        assert (done.returncode, done.stderr.decode()) == (1, 'hot-frequency: basename vocabulary contains invalid UTF-8\n')
     done = run([str(binary), '1', '3', '2', '2'], input=row_binary([('abc', 1)]), capture_output=True)
     assert (done.returncode, done.stderr.decode().splitlines()[-1]) == (1, 'hot-frequency: accepted-pattern cap exceeded at length 1')

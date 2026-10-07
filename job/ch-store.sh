@@ -220,7 +220,7 @@ test)
   IP=$(ip)
   shift
   vssh "sudo mkdir -p /data/test-checkout && sudo gcloud storage rsync -r '$X/test-checkout' /data/test-checkout > /dev/null 2>&1 && \
-    sudo gcloud storage cp '$X/scripts/tests.sh' /data/tests.sh > /dev/null 2>&1 && sudo env $(printf '%q ' "HL1_NATIVE_BINARY=${HL1_NATIVE_BINARY:-}" "HL2_NATIVE_BINARY=${HL2_NATIVE_BINARY:-}" "HL2_NATIVE_SOURCE_BINARY=${HL2_NATIVE_SOURCE_BINARY:-}") bash /data/tests.sh $(printf '%q ' "$@")"
+    sudo gcloud storage cp '$X/scripts/tests.sh' /data/tests.sh > /dev/null 2>&1 && sudo env $(printf '%q ' "HL1_NATIVE_BINARY=${HL1_NATIVE_BINARY:-}" "HF_NATIVE_BINARY=${HF_NATIVE_BINARY:-}" "HL2_NATIVE_BINARY=${HL2_NATIVE_BINARY:-}" "HL2_NATIVE_SOURCE_BINARY=${HL2_NATIVE_SOURCE_BINARY:-}") bash /data/tests.sh $(printf '%q ' "$@")"
   ;;
 delete)
   gcloud compute instances delete "$VM" "${G[@]}" -q --delete-disks=all

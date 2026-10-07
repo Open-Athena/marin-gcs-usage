@@ -6,6 +6,7 @@ TEST_IMAGE=$(cat /data/image)
 exec docker run --rm --network host -v /data:/data \
   -e PYTHONPATH=/data/src -e CLICKHOUSE_URL=http://localhost:8123 \
   -e HL1_NATIVE_BINARY="${HL1_NATIVE_BINARY:-}" \
+  -e HF_NATIVE_BINARY="${HF_NATIVE_BINARY:-}" \
   -e HL2_NATIVE_BINARY="${HL2_NATIVE_BINARY:-}" \
   -e HL2_NATIVE_SOURCE_BINARY="${HL2_NATIVE_SOURCE_BINARY:-}" \
   --entrypoint bash "$TEST_IMAGE" -c '

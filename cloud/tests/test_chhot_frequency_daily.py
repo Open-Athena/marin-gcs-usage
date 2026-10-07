@@ -1,5 +1,6 @@
 from collections import Counter
 from hashlib import sha256
+from os import environ
 from json import dumps, loads
 from pathlib import Path
 from re import MULTILINE, findall
@@ -236,8 +237,14 @@ def write_tree(path: Path, day: str) -> None:
     pq.write_table(pa.table(columns), path, row_group_size=2)
 
 
+@pytest.mark.parametrize('engine', ['ch', 'native'])
 @pytest.mark.parametrize('day', list(PATHS))
-def test_native_actual_date_hot_qualification_full_export_and_in_order_pipeline(fresh: tuple, tmp_path: Path, day: str) -> None:
+def test_native_actual_date_hot_qualification_full_export_and_in_order_pipeline(fresh: tuple, tmp_path: Path, day: str, engine: str) -> None:
+    # `native`: the per-length passes in `native/hot_frequency.cpp` (`HF_NATIVE_BINARY`, built
+    # like `HL1_NATIVE_BINARY`) must export exactly what ClickHouse's own passes do.
+    native = environ.get('HF_NATIVE_BINARY') if engine == 'native' else None
+    if engine == 'native' and not native:
+        pytest.skip('HF_NATIVE_BINARY not set')
     ch, target = fresh
     parquet, source, census_out, export = [tmp_path / name for name in ('input.parquet', 'source.json', 'census.json', 'queries.jsonl')]
     write_tree(parquet, day)
@@ -246,7 +253,8 @@ def test_native_actual_date_hot_qualification_full_export_and_in_order_pipeline(
     body = build(ch, target, parquet, pinned, min_free_bytes=1)
     source.write_bytes(manifest_bytes(body))
     result = hot_frequency_bench.bench(ch.url, target, day, 2, 16, census_out, daily_source=source,
-                                     queries_out=export, patterns=('aa', 'zarr', 'Å😀', 'datakit'), seconds=30, wall_seconds=120)
+                                     queries_out=export, patterns=('aa', 'zarr', 'Å😀', 'datakit'), seconds=30, wall_seconds=120,
+                                     **({'native': Path(native)} if native else {}))
     weighted = Counter(name.rsplit('/', 1)[-1].lower() for name in ['', *PATHS[day]])
     expected = {}
     for chars in range(1, 17):
@@ -266,6 +274,8 @@ def test_native_actual_date_hot_qualification_full_export_and_in_order_pipeline(
         for pattern in ('aa', 'zarr', 'å😀', 'datakit')]
     assert census_out.stat().st_mode & 0o777 == export.stat().st_mode & 0o777 == 0o600
     assert ch.scalar(f'SELECT doc FROM {target}.source_manifest') == source.read_text()[:-1]
+    if native:
+        return
 
     probe = module.DailyCensusCh(ch.url, db=target, wall_seconds=30, staging_bytes=1 << 30, max_execution_time=10, max_threads=4)
     try:
@@ -293,4 +303,4 @@ def test_cli_daily_source_exact_forwarding_without_changing_frozen_defaults(tmp_
     assert calls == [(('http://localhost:8123', 'daily_target', '2026-10-06', 100000, 16, tmp_path / 'census.json'),
                      {'memory_gib': 8, 'seconds': 600, 'spill_gib': 16, 'pids': (), 'patterns': (),
                       'queries_out': tmp_path / 'queries.jsonl', 'thresholds': (), 'max_patterns': 500000,
-                      'daily_source': tmp_path / 'source.json', 'wall_seconds': 3600, 'staging_gib': 16})]
+                      'daily_source': tmp_path / 'source.json', 'wall_seconds': 3600, 'staging_gib': 16, 'native': None})]

@@ -32,6 +32,8 @@ def bench(
     daily_source: Path | None = None,
     wall_seconds: int = 3600,
     staging_gib: int = 16,
+    native: Path | None = None,
+    native_threads: int = 8,
 ) -> dict:
     if not 1 <= memory_gib <= 8 or not 1 <= seconds <= 600 or not 1 <= spill_gib <= 16:
         raise ValueError("hot frequency census requires 1..8 GiB memory, 1..600 seconds and 1..16 GiB spill")
@@ -40,6 +42,8 @@ def bench(
         raise ValueError("hot frequency artifact already exists")
     if queries_out is not None and (queries_out == out or queries_out.exists()):
         raise ValueError("hot query export must be a distinct new artifact")
+    if native is not None and daily_source is None:
+        raise ValueError('the native hot-frequency engine reads a daily source (`-f`)')
     raw = None
     if daily_source is not None:
         from .hot_frequency_daily import DailyCensusCh, census as daily_census, source_bytes
@@ -89,12 +93,22 @@ def bench(
                 export_s += monotonic() - start
                 print(dumps({"stage": "export-hot-substrings", "chars": chars, "exported_patterns": written}), file=stderr)
 
-            export = {"on_hot_table": export_layer} if output is not None else {}
-            selected_census = census if raw is None else daily_census
-            source_arg = () if raw is None else (raw,)
-            body = selected_census(ch, target, date, *source_arg, threshold, max_chars, patterns=patterns,
-                          progress=lambda stage: print(dumps(stage), file=stderr),
-                          thresholds=thresholds, max_patterns=max_patterns, **export)
+            if native is not None:
+                from .hot_frequency_daily import native_census
+                body, rows = native_census(ch, target, date, raw, threshold, max_chars, native, patterns,
+                                           threads=native_threads, progress=lambda stage: print(dumps(stage), file=stderr),
+                                           thresholds=thresholds, max_patterns=max_patterns)
+                if output is not None:
+                    start = monotonic()
+                    output.writelines(rows)
+                    written, export_s = len(rows), monotonic() - start
+            else:
+                export = {"on_hot_table": export_layer} if output is not None else {}
+                selected_census = census if raw is None else daily_census
+                source_arg = () if raw is None else (raw,)
+                body = selected_census(ch, target, date, *source_arg, threshold, max_chars, patterns=patterns,
+                              progress=lambda stage: print(dumps(stage), file=stderr),
+                              thresholds=thresholds, max_patterns=max_patterns, **export)
             if output is not None:
                 if written != sum(layer["hot_patterns"] for layer in body["lengths"]):
                     raise RuntimeError("hot query export count disagrees with complete census")

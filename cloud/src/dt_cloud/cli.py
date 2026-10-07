@@ -1853,6 +1853,7 @@ def ch_hot_frequency_report(
 @option("-b", "--staging-gib", default=16, type=IntRange(min=1, max=32), help="Daily-source active temporary-table coexistence cap; checked at stage boundaries")
 @option("-c", "--max-patterns", default=500_000, type=IntRange(min=1), help="Cumulative accepted hot-pattern cap; exceeding it fails without a complete artifact")
 @option("-d", "--date", required=True, help="Frozen global scan date")
+@option("-e", "--native", type=Path, help="Run the per-length passes in this `native/hot_frequency.cpp` binary (with `-f`): one streamed GROUP BY, no staged tables")
 @option("-f", "--daily-source", type=Path, help="Explicit accepted global daily scalar source manifest instead of frozen history/name IDs")
 @option("-h", "--threshold-cut", multiple=True, type=IntRange(min=1), help="Additional direct-path threshold to count from the same minimum-threshold census")
 @option("-k", "--max-chars", default=7, type=IntRange(min=1, max=32), help="Enumerate threshold-hot name substrings up to this length (maximum 32 characters)")
@@ -1871,6 +1872,7 @@ def ch_hot_frequency_census(
     staging_gib: int,
     max_patterns: int,
     date: str,
+    native: Path | None,
     daily_source: Path | None,
     threshold_cut: tuple[int, ...],
     max_chars: int,
@@ -1889,7 +1891,7 @@ def ch_hot_frequency_census(
     """Exact full-fleet threshold-hot substring counts, pruning cold prefixes."""
     from .chstore.hot_frequency_bench import bench
 
-    source = {} if daily_source is None else {'daily_source': daily_source, 'wall_seconds': wall_seconds, 'staging_gib': staging_gib}
+    source = {} if daily_source is None else {'daily_source': daily_source, 'wall_seconds': wall_seconds, 'staging_gib': staging_gib, 'native': native}
     print(json.dumps(bench(url, target, date, threshold, max_chars, out, memory_gib=memory_gib,
                            seconds=timeout_seconds, spill_gib=spill_gib, pids=rss_pid, patterns=pattern,
                            queries_out=queries_out, thresholds=threshold_cut, max_patterns=max_patterns, **source)))

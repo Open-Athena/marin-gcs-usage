@@ -163,3 +163,126 @@ def census(
                                    'snapshot_db': target, 'nodes': body['nodes'], 'source': body['source'],
                                    'validation': body['validation'], 'independent_frequency_source_oracle': False}
     return result
+
+
+def native_census(
+    ch: DailyCensusCh,
+    target: str,
+    date: str,
+    raw: bytes,
+    threshold: int,
+    max_chars: int,
+    binary: Path,
+    patterns: tuple[str, ...] = (),
+    *,
+    threads: int = 8,
+    progress: Callable[[dict], None] | None = None,
+    thresholds: tuple[int, ...] = (),
+    max_patterns: int = 500_000,
+) -> tuple[dict, list[bytes]]:
+    """The same qualification with the per-length passes in `native/hot_frequency.cpp`:
+    ClickHouse groups the snapshot's lowercase basenames (one statement, no staged
+    tables) and streams `(l, c)` as RowBinary into the binary, which validates the
+    names (separators, NUL, UTF-8), counts, and writes the hot patterns. Returns the
+    census body and the query export's pattern lines (`chars` then bytewise order)."""
+    from json import loads
+    from subprocess import PIPE, Popen
+    from sys import stderr
+    from threading import Thread
+
+    cuts = validate_limits(threshold, max_chars, thresholds, max_patterns)
+    patterns = normalize_patterns(patterns)
+    body = source_body(raw, target, date)
+    if not binary.is_file():
+        raise ValueError('native hot-frequency binary is not a regular file')
+
+    def marker() -> None:
+        found = ch.json(f"SELECT length(doc),if(length(doc)<={DOCUMENT_LIMIT},doc,'') FROM {target}.source_manifest LIMIT 2")
+        if found != [[len(raw) - 1, raw.decode('utf-8')[:-1]]]:
+            raise ValueError('daily hot-frequency source marker changed or differs from the pinned source')
+
+    marker()
+    started = monotonic()
+    stages: list[dict] = []
+    proc = Popen([str(binary), str(threshold), str(max_chars), str(threads), str(max_patterns)], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    out: list[bytes] = []
+    err: list[bytes] = []
+
+    def drain_out() -> None:
+        out.append(proc.stdout.read())
+
+    def drain_err() -> None:
+        for line in proc.stderr:
+            err.append(line)
+            if line.startswith(b'{'):
+                stage = loads(line)
+                stages.append(stage)
+                if progress is not None:
+                    progress({'engine': 'native', **stage})
+
+    readers = [Thread(target=drain_out), Thread(target=drain_err)]
+    for reader in readers:
+        reader.start()
+    try:
+        sql = (f"SELECT lowerUTF8(arrayElement(splitByChar('/',assumeNotNull(path)),-1)) AS l,count() AS c "
+               f"FROM {target}.nodes GROUP BY l")
+        for chunk in ch.stream(sql, fmt='RowBinary', settings={'max_bytes_before_external_group_by': 4 << 30}):
+            proc.stdin.write(chunk)
+            ch.check_wall()
+        proc.stdin.close()
+        while proc.poll() is None:
+            ch.check_wall()
+            for reader in readers:
+                reader.join(timeout=1)
+    except BaseException:
+        proc.kill()
+        raise
+    finally:
+        for reader in readers:
+            reader.join()
+    if proc.wait() != 0:
+        raise RuntimeError('native hot-frequency failed: ' + b''.join(err).decode(errors='replace').strip())
+    lines = out[0].splitlines(keepends=True)
+    header, footer, rows = loads(lines[0]), loads(lines[-1]), lines[1:-1]
+    if header != {'schema': 'hot-frequency-queries-v1', 'engine': 'native', 'threshold_paths': threshold, 'max_chars': max_chars}:
+        raise RuntimeError('native hot-frequency header disagrees with the request')
+    if footer != {'complete': True, 'patterns': len(rows)}:
+        raise RuntimeError('native hot-frequency output is incomplete')
+    read = next(stage for stage in stages if stage['stage'] == 'read')
+    if read['paths'] != body['nodes']:
+        raise ValueError('daily hot-frequency weighted path count differs from its accepted source')
+    marker()
+
+    parsed = [loads(row) for row in rows]
+    timing = {stage['chars']: stage['count_s'] + stage['assign_s'] for stage in stages if stage['stage'] == 'hot-substrings'}
+    lengths, empty = [], False
+    for chars in range(1, max_chars + 1):
+        hot = [row for row in parsed if row['chars'] == chars]
+        layer = {'chars': chars, 'hot_patterns': len(hot),
+                 'hot_query_utf8_bytes': sum(len(row['pattern'].encode()) for row in hot),
+                 'sum_hot_direct_matching_paths': sum(row['direct_matching_paths'] for row in hot),
+                 'elapsed_s': timing.get(chars, 0.), 'pruned_by_empty_prefix': empty}
+        if cuts:
+            layer['threshold_counts'] = [{'threshold_paths': cut, 'hot_patterns': sum(row['direct_matching_paths'] >= cut for row in hot)} for cut in cuts]
+        lengths.append(layer)
+        empty = empty or not hot
+    found = {row['pattern']: row['direct_matching_paths'] for row in parsed}
+    result = {
+        'schema': 'hot-frequency-v1', 'engine': 'native', 'target': target, 'snapshot_db': target, 'date': date,
+        'scope': 'complete snapshot lowercase basename substrings; direct paths, not inherited coverage or occurrence windows',
+        'threshold_paths': threshold, 'max_chars': max_chars, 'distinct_names': read['distinct_names'], 'paths': read['paths'],
+        'weighted_names_s': read['elapsed_s'], 'lengths': lengths,
+        'selected_patterns': [{'pattern': pattern, 'hot': pattern in found, 'direct_matching_paths': found.get(pattern)}
+                              for pattern in patterns if len(pattern) <= max_chars],
+        'temporary_index': 'none: one streamed GROUP BY', 'persistent_index_created': False,
+        'native_s': monotonic() - started,
+    }
+    if cuts:
+        result['thresholds_paths'] = list(cuts)
+    result['source_provenance'] = {'kind': 'accepted global daily scalar nodes; no historical/name-ID ingestion',
+                                   'logical_store': body['logical_store'], 'qualification_date': date,
+                                   'source_manifest_sha256': sha256(raw).hexdigest(), 'source_manifest_bytes': len(raw),
+                                   'snapshot_db': target, 'nodes': body['nodes'], 'source': body['source'],
+                                   'validation': body['validation'], 'independent_frequency_source_oracle': False}
+    print(f'native hot-frequency: {len(rows)} patterns in {result["native_s"]:.1f}s', file=stderr)
+    return result, rows
