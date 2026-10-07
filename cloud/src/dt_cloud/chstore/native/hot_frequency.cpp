@@ -14,13 +14,16 @@
 // only counted where both were hot.
 //
 // Integer-only passes: each length's hot patterns get dense ids, and one id per
-// code-point position (`uint16`, so ≤ 65,534 hot patterns per length) holds the
-// id of the hot window starting there (or NONE). A (k+1)-window is exactly the
+// code-point position (`uint16`; `uint32` when a length has more than 65,534
+// hot patterns) holds the id of the hot window starting there (or NONE). A (k+1)-window is exactly the
 // pair (its k-prefix's id, its k-suffix's id) — the two overlap in k−1 code
 // points — so counting a length is an integer-keyed tally of adjacent id pairs,
 // and assigning the next ids rewrites the array in place, left to right.
 //
 //   hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS] < rows > queries.jsonl
+//
+// MAX_CHARS 0: every length, until one has no hot pattern (the census is then
+// complete: a pattern of any length is hot iff it is listed).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -248,26 +251,28 @@ static void json_string(std::string& out, std::string_view s) {
     out.push_back('"');
 }
 
-int main(int argc, char** argv) try {
-    if (argc < 4 || argc > 5) fail("usage: hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS] < rows");
-    const uint64_t threshold = std::stoull(argv[1]);
-    const unsigned max_chars = static_cast<unsigned>(std::stoul(argv[2]));
-    const unsigned threads = static_cast<unsigned>(std::stoul(argv[3]));
-    const uint64_t max_patterns = argc == 5 ? std::stoull(argv[4]) : 500000;
-    if (!threshold || !max_chars || max_chars > 32 || !threads) fail("bad arguments");
+// Raised when a length's hot patterns overflow the id width; the census reruns wider.
+struct Widen {
+    unsigned chars;
+};
 
-    double t0 = now();
-    const Vocabulary v = read_vocabulary();
-    const size_t n = v.names();
-    std::fprintf(stderr, "{\"stage\":\"read\",\"distinct_names\":%zu,\"paths\":%llu,\"bytes\":%zu,\"code_points\":%llu,\"elapsed_s\":%.3f}\n",
-                 n, (unsigned long long)v.paths, v.text.size(), (unsigned long long)v.cp.back(), now() - t0);
-
-    using Id = uint16_t;
-    constexpr Id NONE = 0xFFFF;
-    std::vector<Id> id(v.cp.back(), NONE);  // id[cp[j] + i]: the current length's hot window at i
-    std::vector<std::vector<std::string>> hot(max_chars + 1);
-    std::vector<std::vector<uint64_t>> hot_sum(max_chars + 1);
+struct Census {
+    std::vector<std::vector<std::string>> hot{{}};  // hot[k]: length k's patterns, in key order
+    std::vector<std::vector<uint64_t>> sum{{}};
     uint64_t accepted = 0;
+};
+
+// The per-length passes with `Id`-wide window ids: `uint16_t` (2 bytes per
+// code point) unless some length has more than 65,534 hot patterns, then
+// `uint32_t` (twice the memory).
+template <class Id>
+static Census census(const Vocabulary& v, uint64_t threshold, unsigned max_chars, unsigned threads, uint64_t max_patterns) {
+    constexpr Id NONE = static_cast<Id>(~Id(0));
+    constexpr unsigned SHIFT = 8 * sizeof(Id);
+    constexpr uint64_t LOW = (uint64_t(1) << SHIFT) - 1;
+    const size_t n = v.names();
+    std::vector<Id> id(v.cp.back(), NONE);  // id[cp[j] + i]: the current length's hot window at i
+    Census c;
     constexpr size_t CHUNK = 1 << 14;
     auto parallel = [&](auto body) {
         std::atomic<size_t> cursor{0};
@@ -285,20 +290,22 @@ int main(int argc, char** argv) try {
         std::vector<std::pair<uint64_t, uint64_t>> kept;
         merged.each([&](uint64_t key, uint64_t sum) { if (sum >= threshold) kept.emplace_back(key, sum); });
         std::sort(kept.begin(), kept.end());
-        if (kept.size() >= NONE) fail("more than 65,534 hot patterns at length " + std::to_string(k));
-        accepted += kept.size();
-        if (accepted > max_patterns) fail("accepted-pattern cap exceeded at length " + std::to_string(k));
+        if (kept.size() >= NONE) throw Widen{k};
+        c.accepted += kept.size();
+        if (c.accepted > max_patterns) fail("accepted-pattern cap exceeded at length " + std::to_string(k));
         Ids ids(kept.size());
+        c.hot.emplace_back();
+        c.sum.emplace_back();
         for (uint32_t x = 0; x < kept.size(); ++x) {
             ids.put(kept[x].first, x);
-            hot[k].push_back(spell(kept[x].first));
-            hot_sum[k].push_back(kept[x].second);
+            c.hot[k].push_back(spell(kept[x].first));
+            c.sum[k].push_back(kept[x].second);
         }
-        std::fprintf(stderr, "{\"stage\":\"hot-substrings\",\"chars\":%u,\"candidates\":%zu,\"hot_patterns\":%zu,", k, merged.size(), kept.size());
+        std::fprintf(stderr, "{\"stage\":\"hot-substrings\",\"id_bytes\":%zu,\"chars\":%u,\"candidates\":%zu,\"hot_patterns\":%zu,", sizeof(Id), k, merged.size(), kept.size());
         return ids;
     };
 
-    for (unsigned k = 1; k <= max_chars; ++k) {
+    for (unsigned k = 1; !max_chars || k <= max_chars; ++k) {
         const double start = now();
         std::vector<Tally> local(threads);
         // Count: length 1 by each code point's bytes (packed, ≤ 4); length k > 1
@@ -321,7 +328,7 @@ int main(int argc, char** argv) try {
                 }
                 const Id* w = id.data() + base;
                 for (uint32_t i = 0; i + k <= len; ++i)
-                    if (w[i] != NONE && w[i + 1] != NONE) local[t].add_once(uint64_t(w[i]) << 16 | w[i + 1], v.weight[j], j + 1);
+                    if (w[i] != NONE && w[i + 1] != NONE) local[t].add_once(uint64_t(w[i]) << SHIFT | w[i + 1], v.weight[j], j + 1);
             }
         });
         const double counted = now();
@@ -333,9 +340,10 @@ int main(int argc, char** argv) try {
         };
         Ids ids = k == 1
             ? keep(k, local, [](uint64_t key) { return std::string(reinterpret_cast<const char*>(&key), strnlen(reinterpret_cast<const char*>(&key), 4)); })
-            : keep(k, local, [&](uint64_t key) { return hot[k - 1][key >> 16] + last_cp(hot[k - 1][key & 0xFFFF]); });
+            : keep(k, local, [&](uint64_t key) { return c.hot[k - 1][key >> SHIFT] + last_cp(c.hot[k - 1][key & LOW]); });
+        const bool last = c.hot[k].empty() || k == max_chars;
         // Assign: the ids of this length's hot windows, in place.
-        if (k < max_chars && !hot[k].empty()) {
+        if (!last) {
             parallel([&](unsigned, size_t lo, size_t hi) {
                 std::vector<uint32_t> b;
                 for (size_t j = lo; j < hi; ++j) {
@@ -354,30 +362,53 @@ int main(int argc, char** argv) try {
                         continue;
                     }
                     for (uint32_t i = 0; i + k <= len; ++i)
-                        w[i] = w[i] != NONE && w[i + 1] != NONE ? static_cast<Id>(ids.get(uint64_t(w[i]) << 16 | w[i + 1], NONE)) : NONE;
+                        w[i] = w[i] != NONE && w[i + 1] != NONE ? static_cast<Id>(ids.get(uint64_t(w[i]) << SHIFT | w[i + 1], NONE)) : NONE;
                     w[len - k + 1] = NONE;  // one fewer window at this length
                 }
             });
         }
         std::fprintf(stderr, "\"count_s\":%.3f,\"assign_s\":%.3f}\n", counted - start, now() - counted);
-        if (hot[k].empty()) break;
+        if (last) break;
+    }
+    return c;
+}
+
+int main(int argc, char** argv) try {
+    if (argc < 4 || argc > 5) fail("usage: hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS] < rows");
+    const uint64_t threshold = std::stoull(argv[1]);
+    const unsigned max_chars = static_cast<unsigned>(std::stoul(argv[2]));
+    const unsigned threads = static_cast<unsigned>(std::stoul(argv[3]));
+    const uint64_t max_patterns = argc == 5 ? std::stoull(argv[4]) : 500000;
+    if (!threshold || !threads) fail("bad arguments");
+
+    double t0 = now();
+    const Vocabulary v = read_vocabulary();
+    std::fprintf(stderr, "{\"stage\":\"read\",\"distinct_names\":%zu,\"paths\":%llu,\"bytes\":%zu,\"code_points\":%llu,\"elapsed_s\":%.3f}\n",
+                 v.names(), (unsigned long long)v.paths, v.text.size(), (unsigned long long)v.cp.back(), now() - t0);
+
+    Census c;
+    try {
+        c = census<uint16_t>(v, threshold, max_chars, threads, max_patterns);
+    } catch (const Widen& w) {
+        std::fprintf(stderr, "{\"stage\":\"widen\",\"chars\":%u,\"id_bytes\":4}\n", w.chars);
+        c = census<uint32_t>(v, threshold, max_chars, threads, max_patterns);
     }
 
     std::string out = "{\"schema\": \"hot-frequency-queries-v1\", \"engine\": \"native\", \"threshold_paths\": " + std::to_string(threshold) +
-                      ", \"max_chars\": " + std::to_string(max_chars) + "}\n";
-    for (unsigned k = 1; k <= max_chars; ++k) {
-        std::vector<size_t> order(hot[k].size());
+                      ", \"max_chars\": " + (max_chars ? std::to_string(max_chars) : "null") + "}\n";
+    for (size_t k = 1; k < c.hot.size(); ++k) {
+        std::vector<size_t> order(c.hot[k].size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return hot[k][a] < hot[k][b]; });
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return c.hot[k][a] < c.hot[k][b]; });
         for (size_t i : order) {
             out += "{\"chars\":" + std::to_string(k) + ",\"pattern\":";
-            json_string(out, hot[k][i]);
-            out += ",\"direct_matching_paths\":" + std::to_string(hot_sum[k][i]) + "}\n";
+            json_string(out, c.hot[k][i]);
+            out += ",\"direct_matching_paths\":" + std::to_string(c.sum[k][i]) + "}\n";
         }
     }
-    out += "{\"complete\": true, \"patterns\": " + std::to_string(accepted) + "}\n";
+    out += "{\"complete\": true, \"patterns\": " + std::to_string(c.accepted) + "}\n";
     if (std::fwrite(out.data(), 1, out.size(), stdout) != out.size() || std::fflush(stdout)) fail("output write failed");
-    std::fprintf(stderr, "{\"stage\":\"done\",\"patterns\":%llu,\"elapsed_s\":%.3f}\n", (unsigned long long)accepted, now() - t0);
+    std::fprintf(stderr, "{\"stage\":\"done\",\"patterns\":%llu,\"elapsed_s\":%.3f}\n", (unsigned long long)c.accepted, now() - t0);
     return 0;
 } catch (const std::exception& e) {
     std::fprintf(stderr, "hot-frequency: %s\n", e.what());

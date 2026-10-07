@@ -50,7 +50,7 @@ def brute(rows: list[tuple[str, int]], threshold: int, max_chars: int) -> list[d
 def census(binary: Path, rows: list[tuple[str, int]], threshold: int, max_chars: int, threads: int = 3) -> list[dict]:
     done = run([str(binary), str(threshold), str(max_chars), str(threads)], input=row_binary(rows), capture_output=True, check=True)
     lines = [loads(line) for line in done.stdout.decode().splitlines()]
-    assert lines[0] == {'schema': 'hot-frequency-queries-v1', 'engine': 'native', 'threshold_paths': threshold, 'max_chars': max_chars}
+    assert lines[0] == {'schema': 'hot-frequency-queries-v1', 'engine': 'native', 'threshold_paths': threshold, 'max_chars': max_chars or None}
     assert lines[-1] == {'complete': True, 'patterns': len(lines) - 2}
     return lines[1:-1]
 
@@ -81,6 +81,32 @@ def test_random_unicode_matches_brute_force(binary: Path, seed: int) -> None:
     rows = sorted({''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 12))): rng.randint(1, 9) for _ in range(400)}.items())
     for threshold in (1, 40, 300):
         assert census(binary, rows, threshold, 6) == brute(rows, threshold, 6)
+
+
+@pytest.mark.parametrize('seed', range(2))
+def test_unbounded_length_is_complete(binary: Path, seed: int) -> None:
+    # `MAX_CHARS 0` runs until a length has no hot pattern: the brute force over every length.
+    rng = Random(seed)
+    stems = ['model-0000', 'checkpoint_', '.safetensors']
+    rows = sorted({''.join(rng.choice(stems) for _ in range(rng.randint(1, 4))) + rng.choice('abc'): rng.randint(1, 9) for _ in range(300)}.items())
+    longest = max(len(name) for name, _ in rows)
+    for threshold in (20, 200):
+        assert census(binary, rows, threshold, 0) == brute(rows, threshold, longest)
+
+
+def test_widens_ids_past_65534_patterns(binary: Path) -> None:
+    # 70,000 distinct 3-character names at threshold 1: length 3 has 70,000 hot
+    # patterns, past `uint16` ids, so the census reruns with `uint32` ids.
+    alphabet = [chr(c) for c in range(0x4E00, 0x4E00 + 50)]
+    rows = [(a + b + c, 1) for a in alphabet for b in alphabet for c in alphabet][:70000]
+    done = run([str(binary), '1', '0', '4'], input=row_binary(rows), capture_output=True, check=True)
+    stages = [loads(line) for line in done.stderr.decode().splitlines()]
+    assert [(x['stage'], x.get('chars'), x.get('id_bytes')) for x in stages if x['stage'] != 'read'] == [
+        ('hot-substrings', 1, 2), ('hot-substrings', 2, 2), ('widen', 3, 4),
+        ('hot-substrings', 1, 4), ('hot-substrings', 2, 4), ('hot-substrings', 3, 4), ('hot-substrings', 4, 4), ('done', None, None),
+    ]
+    lines = [loads(line) for line in done.stdout.decode().splitlines()]
+    assert lines[1:-1] == brute(rows, 1, 3)
 
 
 def raw_rows(rows: list[tuple[bytes, int]]) -> bytes:
