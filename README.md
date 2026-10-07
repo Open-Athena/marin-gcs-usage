@@ -15,6 +15,8 @@ contact info.
 
 ## Ownership & staged deletion
 
+> **Using an agent?** Point it at **[API.md](API.md)** (also served at **<https://gcs.oa.dev/llms.txt>**) and ask it to find your stuff, stage what's deletable, and assign what you know the owner of. It covers the token, the HTTP API, and copy-pasteable `curl` + `jq` recipes.
+
 Anyone signed in can **stage** prefixes for deletion — the trash gesture in the
 map, or `POST /api/plans/stage`; admins review the shared plan at
 [gcs.oa.dev/staged](https://gcs.oa.dev/staged) and dispatch the executor (a GCP
@@ -22,10 +24,8 @@ Batch job, dry-run first). Nothing is deleted at stage time. Ownership is the
 other axis: anyone signed in can assign a prefix to anyone, themselves included
 (`POST /api/actions`), and `/users` ranks everyone's estate.
 
-**[AGENTS.md](AGENTS.md)** documents the token and the HTTP API for driving
-this autonomously (e.g. pointing an agent at your team's prefixes). The earlier
-opt-out "mark & sweep" model (keep/sweep marks + a deadline) was retired on
-2026-09-28.
+The earlier opt-out "mark & sweep" model (keep/sweep marks + a deadline) was
+retired on 2026-09-28.
 
 ## Attribution pipeline
 
