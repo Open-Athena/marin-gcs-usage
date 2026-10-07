@@ -34,7 +34,7 @@ import { QueryHelpTip } from './QueryHelp'
 import { FilterFlags, FilterNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMyUser, useOwnerIndex, useOwners } from './owners'
-import { applyLedger } from './ledgerOverlay'
+import { applyLedger, restrictToPool } from './ledgerOverlay'
 import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import { canvasWidth } from './canvas'
@@ -495,7 +495,13 @@ function AppContent() {
   // server-side (`ownerLens`), so it is left as served.
   const heldTree = tree ?? lastTree.current
   const mapTree = useMemo(
-    () => (heldTree && ownersMode && ownerMode !== 'user' ? applyLedger(heldTree, ownerIdx, store.scheme, canonId) : heldTree),
+    () => {
+      if (!heldTree || !ownersMode || ownerMode === 'user') return heldTree
+      const t = applyLedger(heldTree, ownerIdx, store.scheme, canonId)
+      // `?o=owned|unowned` is served as the scan attributed it: assignments
+      // since then move bytes in or out of the pool, not just recolor them.
+      return ownerMode === 'owned' || ownerMode === 'unowned' ? restrictToPool(t, ownerMode) : t
+    },
     [heldTree, ownersMode, ownerMode, ownerIdx, store.scheme],
   )
   // What the map shows vs. what the page asked for: a held previous tree

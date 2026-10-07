@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyLedger } from './ledgerOverlay'
+import { applyLedger, restrictToPool } from './ledgerOverlay'
 import { ownerIndex, type OwnerRow } from './owners'
 import { unownedBytes, type TreeNode } from './types'
 
@@ -119,5 +119,60 @@ describe('applyLedger', () => {
     const out2 = applyLedger(scan(), idx(row('gs://marin-us-central2/tomat/y/', 'Will', 1)), 'gs://', u => u.toLowerCase())
     expect(out2.c![0].us).toEqual([['will', 450]])
     expect(out2.c![0].c![0].c![1].us).toEqual([['will', 150]])
+  })
+})
+
+describe('restrictToPool — an owned/unowned view after the ledger', () => {
+  // What `?o=unowned` serves: each node's scan-unowned bytes, no owner split.
+  const unowned = (): TreeNode => ({
+    n: 'gs://', b: 600, o: 8, c: [
+      { n: 'marin-us-central2', b: 400, o: 6, cb: { 4: 200 }, c: [
+        { n: 'tomat', b: 300, o: 4, c: [
+          { n: 'x', b: 150, o: 2 },
+          { n: 'y', b: 150, o: 2 },
+        ] },
+        { n: '(other)', b: 50, o: 1, f: 3 },
+      ] },
+      { n: 'marin-eu-west4', b: 200, o: 2, c: [
+        { n: 'z', b: 200, o: 2 },
+      ] },
+    ],
+  })
+
+  it('a later assignment leaves the unowned view: its bytes, objects and classes come off every ancestor', () => {
+    const t = applyLedger(unowned(), idx(row('gs://marin-us-central2/tomat/x/', 'ryan', 1), row('gs://marin-eu-west4/', 'will', 1)), 'gs://')
+    expect(restrictToPool(t, 'unowned')).toEqual({
+      n: 'gs://', b: 250, o: 4, c: [
+        { n: 'marin-us-central2', b: 250, o: 4, cb: { 4: 125 }, c: [
+          { n: 'tomat', b: 150, o: 2, c: [
+            { n: 'y', b: 150, o: 2 },
+          ] },
+          { n: '(other)', b: 50, o: 1, f: 3 },
+        ] },
+      ],
+    })
+  })
+
+  it('no assignment touches the view: the same object', () => {
+    const t = unowned()
+    expect(restrictToPool(applyLedger(t, idx(), 'gs://'), 'unowned')).toBe(t)
+  })
+
+  it('owned keeps only the owned bytes, with an assignment’s', () => {
+    const t = applyLedger(scan(), idx(row('gs://marin-us-central2/tomat/y/', 'ryan', 1)), 'gs://')
+    expect(restrictToPool(t, 'owned')).toEqual({
+      n: 'gs://', b: 850, o: 9, us: [['ryan', 550], ['will', 300]], c: [
+        { n: 'marin-us-central2', b: 450, o: 5, us: [['will', 300], ['ryan', 150]], c: [
+          { n: 'tomat', b: 250, o: 3, us: [['ryan', 150], ['will', 100]], c: [
+            { n: 'x', b: 100, o: 1, us: [['will', 100]] },
+            { n: 'y', b: 150, o: 2, us: [['ryan', 150]] },
+          ] },
+          { n: 'other', b: 200, o: 2, us: [['will', 200]] },
+        ] },
+        { n: 'marin-eu-west4', b: 400, o: 4, us: [['ryan', 400]], c: [
+          { n: 'tomat', b: 400, o: 4, us: [['ryan', 400]] },
+        ] },
+      ],
+    })
   })
 })
