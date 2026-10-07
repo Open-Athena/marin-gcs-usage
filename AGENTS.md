@@ -244,10 +244,7 @@ curl -X POST https://gcs.oa.dev/api/plans/stage \
 Human-facing pages, same data: [`/staged`](https://gcs.oa.dev/staged) is the
 deletion console, [`/users`](https://gcs.oa.dev/users) the per-user estate
 ranking, `/user/<id>` one user's estate, `/assignments` the assignment heatmap,
-and [`/files`](https://gcs.oa.dev/files) browses the raw store with an
-in-browser parquet viewer (e.g.
-[`/files/listing/2026-08-28/path-index.parquet`](https://gcs.oa.dev/files/listing/2026-08-28/path-index.parquet)
-— schema + row-group paging over HTTP ranges).
+and `/runs/<id>` one deletion run (progress, logs, what it deleted, recovery).
 
 ```sql
 -- DuckDB, straight against prod (httpfs sends HEAD + range GETs, so a
