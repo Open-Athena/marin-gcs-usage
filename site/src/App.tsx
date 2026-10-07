@@ -208,7 +208,7 @@ function AppContent() {
   // drill); cosmetics (`?c=`, `?s=`, `?n=`) replace.
   const [oP, setOP] = useUrlState('o', stringParam(), true)
   // `?by=<assigner>` — the /assignments heatmap cell lens: with a user owner
-  // lens, fold only the claims that assigner made. Only meaningful alongside a
+  // lens, fold only the assignments that assigner made. Only meaningful alongside a
   // person in `?o=`.
   const [byP] = useUrlState('by', stringParam())
   // `?s=` — the secondary "shade by" axis, a perturbation within each cell's
@@ -250,7 +250,7 @@ function AppContent() {
   }
   const viewUser = ownerUser
   // Every scope axis is applied server-side by /api/subtree (specs/
-  // view-serving.md §2): a user (`lens=user:`, the live claims folded in), a
+  // view-serving.md §2): a user (`lens=user:`, the live assignments folded in), a
   // pool (`o=`), the classes (`cl=`), the name filter (`q=`). The client
   // receives exactly the current view and only draws it.
   const lensUser = viewUser
@@ -330,7 +330,7 @@ function AppContent() {
   const endIsLatest = !!asof && asof === scans[0]
   const endPinned = dP !== undefined
   // Presets past the history's reach — nearest scan more than a quarter of
-  // the span off, or already claimed by a shorter preset — are dropped
+  // the span off, or already assigned by a shorter preset — are dropped
   // rather than mislabeled.
   const spanPicks = useMemo(() => {
     if (!asof) return []
@@ -787,7 +787,7 @@ function AppContent() {
     [meta],
   )
 
-  // Legend-row pins land on the owner axis (a user, or the unclaimed pool).
+  // Legend-row pins land on the owner axis (a user, or the unowned pool).
   // `switchMode`: a ⌘K pick from any coloring jumps to an axis where the pick
   // is visible; a legend-row click is already on such an axis and must not
   // move it.
@@ -795,7 +795,7 @@ function AppContent() {
     setOwnerUser(u)
     if (switchMode && mode !== 'user') setMode('user')
   }
-  const pickUnclaimed = () => setOP('unowned')
+  const pickUnowned = () => setOP('unowned')
   const clearHl = () => setOP(undefined)
 
   useActions({
@@ -827,8 +827,8 @@ function AppContent() {
       handler: () => { const s = drillPath.split('/').filter(Boolean); if (s.length) drillTo(s.slice(0, -1)) },
     },
     'owner:me': { label: 'Owner: my files', group: 'Scope', handler: () => setOP('me') },
-    'owner:claimed': { label: 'Owner: owned only', group: 'Scope', handler: () => setOP('owned') },
-    'owner:unclaimed': { label: 'Owner: unowned only', group: 'Scope', handler: () => setOP('unowned') },
+    'owner:owned': { label: 'Owner: owned only', group: 'Scope', handler: () => setOP('owned') },
+    'owner:unowned': { label: 'Owner: unowned only', group: 'Scope', handler: () => setOP('unowned') },
     'lens:classes': {
       label: 'Storage-class lens (hatch colder-class bytes)',
       group: 'View',
@@ -1155,7 +1155,7 @@ function AppContent() {
             readRange={readRange}
             hl={effHl}
             onPickUser={u => pickUser(u, false)}
-            onPickUnclaimed={pickUnclaimed}
+            onPickUnowned={pickUnowned}
             onClearHl={clearHl}
             pricing={pricing}
             lens={lens}

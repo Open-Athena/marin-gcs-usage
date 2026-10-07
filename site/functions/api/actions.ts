@@ -54,7 +54,7 @@ function validate(b: ActionBody, shape: PrefixShape): { error: string } | {
   // Touching the axis = the key is present (null = clear); `set_owner` may
   // also be passed explicitly.
   if (!(b.set_owner ?? 'owner' in b)) return bad('action must set an owner (null to clear)')
-  // '@me' = resolve the actor's canonical user id server-side (claims).
+  // '@me' = resolve the actor's canonical user id server-side (assignments).
   const owner = b.owner ?? null
   if (owner !== null && (typeof owner !== 'string' || owner.length > 128)) return bad('owner must be a user id')
   const memo = b.memo?.slice(0, 1024) ?? null
