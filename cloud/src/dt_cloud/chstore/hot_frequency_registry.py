@@ -53,13 +53,20 @@ def union_header(header: object, target: str) -> dict:
     if (not isinstance(dates, list) or not dates or any(not iso_date(date) for date in dates) or dates != sorted(set(dates)) or
             not isinstance(sources, list) or len(sources) != len(dates)):
         raise ValueError(message)
+    source_keys = {"date", "snapshot_db", "threshold_paths", "max_chars", "accepted_hot_pattern_cap", "census", "queries"}
+    # Either no source declares a physical target (all share header.target),
+    # or every source does (header.target is an explicit logical binding).
+    declared = isinstance(sources[0], dict) and "target" in sources[0]
     for date, source in zip(dates, sources, strict=True):
-        if (not isinstance(source, dict) or set(source) != {"date", "snapshot_db", "threshold_paths", "max_chars", "accepted_hot_pattern_cap", "census", "queries"} or
+        if (not isinstance(source, dict) or set(source) != (source_keys | {"target"} if declared else source_keys) or
+                (declared and not isinstance(source["target"], str)) or
                 source["date"] != date or not isinstance(source["snapshot_db"], str) or
                 not integer(source["threshold_paths"], 1) or source["threshold_paths"] > header["threshold_paths"] or
                 not integer(source["max_chars"], 1) or not header["max_chars"] <= source["max_chars"] <= MAX_CHARS):
             raise ValueError(message)
         identifier(source["snapshot_db"])
+        if declared:
+            identifier(source["target"])
         for field, keys in (("census", {"sha256", "bytes"}), ("queries", {"sha256", "bytes", "patterns"})):
             proof = source[field]
             if (not isinstance(proof, dict) or set(proof) != keys or not isinstance(proof["sha256"], str) or

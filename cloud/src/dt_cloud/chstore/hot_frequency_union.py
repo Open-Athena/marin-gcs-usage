@@ -2,6 +2,10 @@
 
 A one-source union is a scan's own registry: membership is exactly that
 scan's threshold-hot literals, in the format a registry selection pins.
+Sources from different physical stores need an explicit logical `target`
+binding; each source then declares its own physical target. Per-date
+frequencies stay null below a source's minimum, so a literal registered
+because another date qualified it is never claimed hot on this date.
 """
 
 from hashlib import sha256
@@ -12,6 +16,7 @@ from pathlib import Path
 from .hot_frequency_registry import FREQUENCY_SEMANTICS, UNION_CAP, UNION_SCHEMA, union_header
 from .hot_frequency_report import _validated_report, integer
 from .hot_l1_catalog import _unique_object
+from .narrow import identifier
 
 
 def union(
@@ -21,6 +26,7 @@ def union(
     out: Path,
     *,
     max_patterns: int = UNION_CAP,
+    target: str | None = None,
 ) -> dict:
     """Write one deterministic fresh complete export, with no database access.
 
@@ -42,15 +48,21 @@ def union(
         doc = loads(raw, object_pairs_hook=_unique_object)
         accepted.append((result, rows, doc.get("accepted_hot_pattern_cap")))
     accepted.sort(key=lambda item: item[0]["date"])
-    target, dates = accepted[0][0]["target"], [result["date"] for result, _, _ in accepted]
+    dates = [result["date"] for result, _, _ in accepted]
     if len(set(dates)) != len(dates):
         raise ValueError("union source scan dates must be unique")
-    if any(result["target"] != target for result, _, _ in accepted):
-        raise ValueError("union sources require the same frozen target")
+    if target is None:
+        target = accepted[0][0]["target"]
+        if any(result["target"] != target for result, _, _ in accepted):
+            raise ValueError("union sources require the same frozen target unless an explicit logical target binds them")
+        declared_targets = False
+    else:
+        identifier(target)
+        declared_targets = True
     declarations, frequencies, candidates = [], {}, set()
     for result, rows, cap in accepted:
         original = result["provenance"]["queries"]["header"]
-        declarations.append({"date": result["date"], "snapshot_db": result["snapshot_db"],
+        declarations.append({"date": result["date"], **({"target": result["target"]} if declared_targets else {}), "snapshot_db": result["snapshot_db"],
             "threshold_paths": original["threshold_paths"], "max_chars": original["max_chars"], "accepted_hot_pattern_cap": cap,
             "census": {key: result["provenance"]["census"][key] for key in ("sha256", "bytes")},
             "queries": {key: result["provenance"]["queries"][key] for key in ("sha256", "bytes", "patterns")}})

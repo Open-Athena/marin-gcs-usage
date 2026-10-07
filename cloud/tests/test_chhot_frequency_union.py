@@ -103,6 +103,42 @@ def test_single_source_union_is_that_scans_own_registry(sources, tmp_path: Path)
     assert str(caught.value) == "union batch date must be a source date and cannot use a single registry_date override"
 
 
+def test_explicit_logical_target_binds_mixed_stores_with_honest_per_date_qualification(sources, tmp_path: Path) -> None:
+    out = tmp_path / "mixed.jsonl"
+    other = source(tmp_path / "other", DATES[1], FREQUENCIES[1], target="other_fixture")
+    expected = expected_header((sources[0], other))
+    for declaration, physical in zip(expected["sources"], ("fixture", "other_fixture"), strict=True):
+        declaration["target"] = physical
+    header = {**expected, "target": "logical_store"}
+    result = union((other, sources[0]), 10, 2, out, target="logical_store")
+    lines = out.read_bytes().splitlines()
+    assert loads(lines[0]) == header
+    assert [loads(line) for line in lines[1:]] == [*ROWS, {"complete": True, "patterns": 4}]
+    # "c" is registered because 10-04 qualifies it (12); 10-05 keeps its exact
+    # below-threshold 8, and "a" is null on 10-05: never claimed hot there.
+    assert result["per_date"] == [
+        {"date": DATES[0], "threshold_hot_patterns": 3, "known_frequencies": 3, "below_source_minimum_patterns": 1},
+        {"date": DATES[1], "threshold_hot_patterns": 2, "known_frequencies": 3, "below_source_minimum_patterns": 1}]
+    assert load_queries(out, "logical_store", DATES[1]) == (header, ("a", "b", "c", "d"))
+    with pytest.raises(ValueError) as caught:
+        load_queries(out, "fixture", DATES[1])
+    assert str(caught.value) == "union registry requires matching sorted dates and complete valid source provenance"
+
+
+@pytest.mark.parametrize("kind", ["partial", "invalid"])
+def test_union_loader_refuses_partial_or_invalid_source_targets(sources, tmp_path: Path, kind: str) -> None:
+    out = tmp_path / "mixed.jsonl"
+    union(sources, 10, 2, out, target="logical_store")
+    records = [loads(line) for line in out.read_bytes().splitlines()]
+    if kind == "partial":
+        del records[0]["sources"][1]["target"]
+    else:
+        records[0]["sources"][1]["target"] = "not an identifier"
+    out.write_text("".join(dumps(row) + "\n" for row in records))
+    with pytest.raises(ValueError):
+        load_queries(out, "logical_store", DATES[0])
+
+
 def test_union_without_sources_refuses(tmp_path: Path) -> None:
     out = tmp_path / "none.jsonl"
     with pytest.raises(ValueError) as caught:
@@ -118,7 +154,7 @@ def test_union_without_sources_refuses(tmp_path: Path) -> None:
     ("source-cap", "completed export exceeds its accepted pattern cap"),
     ("source-incomplete", "hot query export lacks a valid exact-count completion footer"),
     ("duplicate", "union source scan dates must be unique"),
-    ("target", "union sources require the same frozen target"),
+    ("target", "union sources require the same frozen target unless an explicit logical target binds them"),
 ])
 def test_refused_union_never_writes_partial_output(sources, tmp_path: Path, kind: str, message: str) -> None:
     selected, threshold, chars, cap = sources, 10, 2, 500_000

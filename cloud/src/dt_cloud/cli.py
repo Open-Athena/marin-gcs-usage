@@ -1777,17 +1777,20 @@ def serve_hot_l1(
 @option("-o", "--out", required=True, type=Path, help="Fresh private complete union JSONL artifact; never overwrites")
 @option("-s", "--source", multiple=True, required=True, type=(Path, Path), help="Accepted single-date CENSUS QUERIES pair; repeat for distinct dates (one pair = that scan's own registry)")
 @option("-t", "--threshold", required=True, type=IntRange(min=1), help="Hot if any source date qualifies; cannot be below any source census minimum")
+@option("-T", "--target", help="Explicit logical registry binding for sources from different physical stores; each source then declares its own target")
 def ch_hot_frequency_union(
     max_patterns: int,
     max_chars: int,
     out: Path,
     source: tuple[tuple[Path, Path], ...],
     threshold: int,
+    target: str | None,
 ) -> None:
     """Union dated exact registries without claiming every query is hot on each scan."""
     from .chstore.hot_frequency_union import union
 
-    print(json.dumps(union(source, threshold, max_chars, out, max_patterns=max_patterns)))
+    print(json.dumps(union(source, threshold, max_chars, out, max_patterns=max_patterns,
+                           **({} if target is None else {"target": target}))))
 
 
 @main.command("ch-hot-frequency-equivalence")
