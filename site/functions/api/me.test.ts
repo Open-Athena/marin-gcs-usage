@@ -3,6 +3,7 @@ import type { D1Database } from '@cloudflare/workers-types'
 import type { Env } from '../_lib/auth'
 import { sqliteD1 } from '../_lib/testD1'
 import { ownerIdFor, resolveUser } from '../_lib/me'
+import { CACHE_V } from '../_lib/edgeCache'
 
 // `me` resolution (`_lib/me.ts`) and its cache keys: a `lens=user:me` read
 // must key the shared edge cache on the caller's resolved id — the same key
@@ -114,21 +115,21 @@ describe('`lens=user:me` keys the cache on the resolved id', () => {
     await subtree(at(alan, `${S}&lens=user:me`))
     await subtree(at(alan, `${S}&lens=user:alan-turing`))
     await subtree(at(await envAs('grace@example.test'), `${S}&lens=user:me`))
-    const key = (l: string) => `https://subtree.cache/v2/2026-10-01/marin-a?w=1280&h=768&a=12&t=2&l=${l}&o=&b=&D=&cl=&x=0&F=1&qs=&q=&head=7&g=g1`
+    const key = (l: string) => `https://subtree.cache/v${CACHE_V}/2026-10-01/marin-a?w=1280&h=768&a=12&t=2&l=${l}&o=&b=&D=&cl=&x=0&F=1&qs=&q=&head=7&g=g1`
     expect(keys).toEqual([key('user:alan-turing'), key('user:alan-turing'), key('user:grace')])
   })
   it('/api/diff', async () => {
     const alan = await envAs('alan@example.test')
     await diff(at(alan, `${D}&lens=user:me`))
     await diff(at(alan, `${D}&lens=user:alan-turing`))
-    const key = 'https://diff.cache/v2/2026-09-01/2026-10-01/marin-a?w=1280&h=896&a=12&t=2&n=500&l=user:alan-turing&o=&cl=&qs=&q=&head=7&s=0&D=&g=g1'
+    const key = `https://diff.cache/v${CACHE_V}/2026-09-01/2026-10-01/marin-a?w=1280&h=896&a=12&t=2&n=500&l=user:alan-turing&o=&cl=&qs=&q=&head=7&s=0&D=&g=g1`
     expect(keys).toEqual([key, key])
   })
   it('/api/series', async () => {
     const alan = await envAs('alan@example.test')
     await series(at(alan, `${T}&lens=user:me`))
     await series(at(alan, `${T}&lens=user:alan-turing`))
-    const key = 'https://series.cache/v2/marin-a?P=&l=user:alan-turing&o=&cl=&s=&d=2026-10-01&x=&head=7&g=g1'
+    const key = `https://series.cache/v${CACHE_V}/marin-a?P=&l=user:alan-turing&o=&cl=&s=&d=2026-10-01&x=&head=7&g=g1`
     expect(keys).toEqual([key, key])
   })
   it('`me` with nobody to resolve (an identity-less cache warm) is a 400, never a cache read', async () => {
