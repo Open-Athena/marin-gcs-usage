@@ -91,7 +91,7 @@ describe('poolLens', () => {
   })
 
   it('unowned: the scan’s unowned bytes outside every assignment, plus a release’s', () => {
-    const pl = poolLens(CLAIMS, 'unowned')!
+    const pl = poolLens(CLAIMS, 'unowned')!.b
     // root: 400 scan-unowned − top A/C/R/E's (20 + 0 + 6 + 40) = 334, + R's 6
     expect(pl.value('b', 1000, 400)).toBe(340)
     expect(pl.value('b/c/d/z', 10, 5)).toBe(0) // under v's D: owned, whatever the scan said
@@ -102,19 +102,31 @@ describe('poolLens', () => {
   })
 
   it('owned: every assigned band whole, the scan’s owned bytes elsewhere — the complement of unowned', () => {
-    const pl = poolLens(CLAIMS, 'owned')!
+    const pl = poolLens(CLAIMS, 'owned')!.b
     // root: 600 scan-owned − top A/C/R/E's (80 + 200 + 4 + 20) = 296, + bands
     // A−B 60, B 40, C−D 150, D 50, E−G 30, G 30, R's owned slice 4
     expect(pl.value('b', 1000, 600)).toBe(660)
-    expect(pl.value('b', 1000, 600) + poolLens(CLAIMS, 'unowned')!.value('b', 1000, 400)).toBe(1000)
+    expect(pl.value('b', 1000, 600) + poolLens(CLAIMS, 'unowned')!.b.value('b', 1000, 400)).toBe(1000)
     expect(pl.value('b/c/d/z', 10, 5)).toBe(10)
   })
 
   it('owned except u: owned minus u’s lens', () => {
-    const pl = poolLens(CLAIMS, { not: ['u'] })!
+    const pl = poolLens(CLAIMS, { not: ['u'] })!.b
     // root: 250 scan-owned-by-others − top A/C's (50 + 80) = 120, + A−B 60, D 50
     expect(pl.value('b', 1000, 250)).toBe(230)
     expect(pl.value('b', 1000, 250) + ownerLens(CLAIMS, 'u')!.value('b', 1000, 350)).toBe(660)
     expect(pl.value('b/a/x/y', 9, 0)).toBe(0) // u's B
+  })
+
+  it('objects fold too, so owned + unowned objects are the total (an assignment’s in-pool objects follow its in-pool bytes)', () => {
+    // Every assignment holds 1 object (`assignment`); A's 100 B are 20% scan-unowned, so 0.2 of its object is.
+    const [un, ow] = (['unowned', 'owned'] as const).map(p => poolLens(CLAIMS, p)!.o)
+    const ALL = 50
+    const UNOWNED = 30 // the scan's unowned objects at the root
+    expect(un.value('b', ALL, UNOWNED) + ow.value('b', ALL, ALL - UNOWNED)).toBeCloseTo(ALL, 9)
+    // root, unowned: 30 − top A/C/R/E's unowned objects (0.2 + 0 + 0.6 + 2/3) + R's band (0.6)
+    expect(un.value('b', ALL, UNOWNED)).toBeCloseTo(30 - 0.2 - 0.6 - 2 / 3 + 0.6, 9)
+    // An assigned leaf: all its objects leave unowned and join owned.
+    expect([un.value('b/c/d/z', 7, 7), ow.value('b/c/d/z', 7, 0)]).toEqual([0, 7])
   })
 })
