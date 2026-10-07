@@ -4,10 +4,11 @@ import { sqliteD1 } from './testD1'
 
 describe('D1 run-progress history', () => {
   it('returns chronological samples and rejects absent/unknown run IDs', async () => {
-    const { db } = await sqliteD1('gcs')
-    await db.prepare(`INSERT INTO deletion_runs (run_id, plan, scan, head, exec_head, actor, mode, started_ts, finished_ts,
-      deleted_bytes, deleted_objects, skipped_gone, skipped_overwritten, drift_dirs, log_dir)
-      VALUES ('r', 'plan', 'scan', 0, 0, 'actor', 'real', 1, NULL, 0, 0, 0, 0, 0, 'dir')`).run()
+    const { db } = await sqliteD1('cw')
+    await db.prepare("INSERT INTO plans (id, name, state, created_by, created_ts) VALUES (1, 'Staged', 'open', 'ann', 1)").run()
+    await db.prepare(`INSERT INTO deletion_runs (run_id, manifest, scan, head, exec_head, actor, mode, started_ts, finished_ts,
+      deleted_bytes, deleted_objects, skipped_gone, skipped_overwritten, drift_dirs, log_dir, plan_id)
+      VALUES ('r', 'plan', 'scan', 0, 0, 'actor', 'real', 1, NULL, 0, 0, 0, 0, 0, 'dir', 1)`).run()
     const stmt = db.prepare('INSERT OR IGNORE INTO deletion_progress VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     await stmt.bind('r', 'b', 130, 30, 300, 0, 0, 0, 0, 1).run()
     await stmt.bind('r', 'b', 100, 0, 0, 0, 0, 0, 0, 0).run()

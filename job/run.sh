@@ -50,6 +50,8 @@ export ACCESS_BUCKETS=${ACCESS_BUCKETS:-"marin-us-central1 marin-us-central2 mar
 export WARM_PATHS=${WARM_PATHS:-",marin-us-central2,marin-us-east5,marin-us-central1,marin-eu-west4,marin-us-west4,marin-us-east1"}
 # The scanned fleet (`submit-listing -b`, one per bucket).
 FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-us-east1 marin-us-west4)
+# Production buckets the scratch delete benchmarks refuse to target (`sweep_delete_benchmark`).
+export PROTECTED_BUCKETS=${PROTECTED_BUCKETS-marin-*}
 # This deployment's D1 (site/wrangler.toml `oa-gcs-usage-auth`): index-sync,
 # index-gc and index-dir name it explicitly — the base CLI has no default D1
 # (a57f615), so a misconfigured job can't write footers into another deploy's.

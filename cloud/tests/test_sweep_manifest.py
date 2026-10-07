@@ -19,7 +19,7 @@ from dt_cloud.staged_plan import CATEGORIES, StagedPlan, parse_plan
 from dt_cloud.sweep_manifest import MANIFEST_SCHEMA, ManifestProgress, build_manifests, minimal_bands, scan_shard
 
 DATE = "2026-09-01"
-B1, B2, B3 = "marin-us-central2", "marin-eu-west4", "marin-us-west4"
+B1, B2, B3 = "data-us-central2", "data-eu-west4", "data-us-west4"
 PLAN = {
     "plan_id": 7,
     "name": "Staged",
@@ -156,7 +156,7 @@ def test_progress_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     progress.active = {"new.parquet": 15.0, "old.parquet": 11.0}
     monkeypatch.setattr(sweep_manifest.time, "monotonic", lambda: 40.0)
     assert progress.message() == (
-        "manifest progress: 30s elapsed · phase=writing (30s) marin-us-central2"
+        "manifest progress: 30s elapsed · phase=writing (30s) data-us-central2"
         " · shards scanned=12/20, written=9/20 · 100,000 input objects, 20,000 eligible"
         " · active readers=2/4, window=8 · oldest reader=old.parquet (29s)"
         " · scan worker-seconds=0.0, write-seconds=0.0"

@@ -403,7 +403,7 @@ def wandb_mine(
 
 @main.command("path-index")
 @option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node user overlays")
-@option("-c", "--dir-cache", "dir_cache", type=Path, default=None, help="Layer-2 cache dir (dir-stats/age-days parquet): attribution-independent rollups reused by re-attribution runs — see specs/dir-agg-cache.md")
+@option("-c", "--dir-cache", "dir_cache", type=Path, default=None, help="Layer-2 cache dir (dir-stats/age-days parquet): attribution-independent rollups reused by re-attribution runs — see gcs:specs/dir-agg-cache.md")
 @option("-d", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
 @option("-i", "--identities", "identities_path", envvar=IDENTITIES_ENV, default=None, help=f"identities.yaml path or URL, needed with -a (${IDENTITIES_ENV}): the deployment's roster, kept outside the repo")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
@@ -1565,7 +1565,8 @@ def sweep_benchmark_manifest(
 def sweep_benchmark_delete(workers: int, methods: tuple[str, ...], objects: int, verified_soft_delete_days: int | None, target: str) -> None:
     """Create and delete bounded synthetic scratch data; never production data.
 
-    TARGET must be gs://<non-marin-bucket>/sweep/smoke-tests/delete-<unique-id>.
+    TARGET must be gs://<bucket>/sweep/smoke-tests/delete-<unique-id>, outside
+    `PROTECTED_BUCKETS` (comma-separated globs; required, '' for none).
     It must be empty and the bucket must retain soft deletes for seven days.
     """
     from .sweep_delete_benchmark import benchmark_deletes

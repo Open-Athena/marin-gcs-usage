@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from fnmatch import fnmatchcase
+from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -19,11 +21,23 @@ from .sweep_xml import XmlDeleter
 err = partial(print, file=sys.stderr)
 
 
-def scratch_target(url: str) -> tuple[str, str]:
+def protected_buckets(env: Mapping[str, str] = os.environ) -> list[str]:
+    """`PROTECTED_BUCKETS`: comma-separated globs of the deployment's production
+    buckets, which the benchmark must never touch. Required (`''` = none), so a
+    deployment can't skip the guard by omission."""
+    if "PROTECTED_BUCKETS" not in env:
+        raise ValueError("delete benchmark needs PROTECTED_BUCKETS (globs of production buckets to refuse; '' for none)")
+    return [g.strip() for g in env["PROTECTED_BUCKETS"].split(",") if g.strip()]
+
+
+def scratch_target(url: str, env: Mapping[str, str] = os.environ) -> tuple[str, str]:
     parsed = urlsplit(url)
     prefix = parsed.path.lstrip("/").rstrip("/")
-    if parsed.scheme != "gs" or not parsed.netloc or parsed.netloc.startswith("marin-") or parsed.query or parsed.fragment:
-        raise ValueError("delete benchmark requires a gs:// scratch URL outside marin-* buckets")
+    if parsed.scheme != "gs" or not parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("delete benchmark requires a gs:// scratch URL")
+    globs = protected_buckets(env)
+    if any(fnmatchcase(parsed.netloc, g) for g in globs):
+        raise ValueError(f"delete benchmark refuses {parsed.netloc}: a protected bucket ({', '.join(globs)})")
     if not re.fullmatch(r"sweep/smoke-tests/delete-[a-z0-9][a-z0-9-]*", prefix):
         raise ValueError("delete benchmark prefix must be sweep/smoke-tests/delete-<unique-id>")
     return parsed.netloc, prefix

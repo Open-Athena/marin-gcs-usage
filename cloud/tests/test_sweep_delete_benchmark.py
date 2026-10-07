@@ -5,8 +5,14 @@ import pytest
 from dt_cloud.sweep_delete_benchmark import benchmark_deletes, scratch_target
 
 
+@pytest.fixture(autouse=True)
+def protected(monkeypatch):
+    monkeypatch.setenv("PROTECTED_BUCKETS", "prod-*, archive")
+
+
 @pytest.mark.parametrize("url", [
-    "gs://marin-us-central2/sweep/smoke-tests/delete-test",
+    "gs://prod-us-central2/sweep/smoke-tests/delete-test",
+    "gs://archive/sweep/smoke-tests/delete-test",
     "gs://data-bucket/production/",
     "gs://data-bucket/sweep/smoke-tests/delete-*",
     "gs://data-bucket/sweep/smoke-tests/delete-",
@@ -27,3 +33,17 @@ def test_scratch_target_is_exact_and_trailing_slash_is_normalized():
 def test_benchmark_is_bounded_before_client_creation(objects, workers):
     with pytest.raises(ValueError, match="^benchmark objects must be 1..100000 and workers 1..64$"):
         benchmark_deletes("gs://data-bucket/sweep/smoke-tests/delete-test", objects, workers)
+
+
+def test_protected_bucket_refusal_names_the_globs():
+    with pytest.raises(ValueError) as exc:
+        scratch_target("gs://prod-eu/sweep/smoke-tests/delete-a")
+    assert str(exc.value) == "delete benchmark refuses prod-eu: a protected bucket (prod-*, archive)"
+
+
+def test_protected_buckets_must_be_configured(monkeypatch):
+    monkeypatch.delenv("PROTECTED_BUCKETS")
+    with pytest.raises(ValueError) as exc:
+        scratch_target("gs://data-bucket/sweep/smoke-tests/delete-a")
+    assert str(exc.value) == "delete benchmark needs PROTECTED_BUCKETS (globs of production buckets to refuse; '' for none)"
+    assert scratch_target("gs://data-bucket/sweep/smoke-tests/delete-a", {"PROTECTED_BUCKETS": ""}) == ("data-bucket", "sweep/smoke-tests/delete-a")

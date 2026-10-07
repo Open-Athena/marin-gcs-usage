@@ -41,7 +41,7 @@ def test_d1_history_insert_is_idempotent_and_quotes_ids(monkeypatch) -> None:
 
     db = sqlite3.connect(":memory:")
     db.execute("CREATE TABLE deletion_runs(run_id TEXT PRIMARY KEY)")
-    sql = (Path(__file__).parents[2] / "site/migrations/gcs/0035_run_progress.sql").read_text()
+    sql = (Path(__file__).parents[2] / "site/migrations/cw/0011_run_progress.sql").read_text()
     db.executescript(sql)
     monkeypatch.setattr(index_footer, "_creds", lambda: ("token", "account"))
     monkeypatch.setattr("dt_cloud.sweep_progress._creds", lambda: ("token", "account"))

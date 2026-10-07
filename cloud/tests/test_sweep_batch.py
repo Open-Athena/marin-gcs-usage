@@ -13,7 +13,7 @@ from dt_cloud.sweep_batch import build_batch_manifests, submit_batch_jobs
 
 def _dry_run(tmp_path):
     plan = tmp_path / "20261004-p12"
-    log = plan / "would-delete" / "marin-us-central2"
+    log = plan / "would-delete" / "data-us-central2"
     log.mkdir(parents=True)
     table = pa.table({
         "name": ["a/x", "a,comma", "a/gone"],
@@ -25,7 +25,7 @@ def _dry_run(tmp_path):
     (plan / "would-delete-summary.json").write_text(json.dumps({
         "for_real": False,
         "buckets": {
-            "marin-us-central2": {
+            "data-us-central2": {
                 "decisions": {"delete": 2, "skipped_gone": 1},
                 "delete_bytes": 30,
             },
@@ -37,25 +37,25 @@ def _dry_run(tmp_path):
 def test_build_batch_manifest_is_generation_pinned_and_quoted(tmp_path):
     plan = _dry_run(tmp_path)
     summary = build_batch_manifests(str(plan))
-    path = plan / "batch-manifest" / "marin-us-central2" / "part-00000.csv"
+    path = plan / "batch-manifest" / "data-us-central2" / "part-00000.csv"
     rows = list(csv.reader(io.StringIO(path.read_text())))
     assert rows == [
         ["bucket", "name", "generation"],
-        ["marin-us-central2", "a/x", "111"],
-        ["marin-us-central2", "a,comma", "222"],
+        ["data-us-central2", "a/x", "111"],
+        ["data-us-central2", "a,comma", "222"],
     ]
-    bucket = summary["buckets"]["marin-us-central2"]
+    bucket = summary["buckets"]["data-us-central2"]
     assert {k: bucket[k] for k in ("objects", "bytes", "source_parts", "manifest_location")} == {
         "objects": 2,
         "bytes": 30,
         "source_parts": 1,
-        "manifest_location": f"{plan}/batch-manifest/marin-us-central2/part-*.csv",
+        "manifest_location": f"{plan}/batch-manifest/data-us-central2/part-*.csv",
     }
     assert bucket["parts"] == [{
         "path": "part-00000.csv",
         "objects": 2,
         "bytes": 30,
-        "sha256": "256788b5d8a9836af94e6a4301f922e8c727df283d602910acb59379be5125fd",
+        "sha256": "de295e24651f69db0426bb24253ce2680d9e1d20e0731cdca9db265357463492",
     }]
 
 
@@ -69,31 +69,31 @@ def test_build_refuses_to_replace_reviewed_manifest(tmp_path):
 
 def test_build_refuses_a_delete_without_generation(tmp_path):
     plan = _dry_run(tmp_path)
-    part = plan / "would-delete" / "marin-us-central2" / "part-00000.parquet"
+    part = plan / "would-delete" / "data-us-central2" / "part-00000.parquet"
     table = pq.read_table(part).set_column(2, "generation", pa.array([111, 0, 0], type=pa.int64()))
     pq.write_table(table, part)
     with pytest.raises(SystemExit) as exc:
         build_batch_manifests(str(plan))
-    assert str(exc.value) == "marin-us-central2: a delete decision has no live generation; refusing an unsafe Batch manifest"
+    assert str(exc.value) == "data-us-central2: a delete decision has no live generation; refusing an unsafe Batch manifest"
 
 
 def test_build_skips_buckets_with_no_approved_deletes(tmp_path):
     plan = _dry_run(tmp_path)
     summary_path = plan / "would-delete-summary.json"
     summary = json.loads(summary_path.read_text())
-    summary["buckets"]["marin-us-east5"] = {"decisions": {}, "delete_bytes": 0}
+    summary["buckets"]["data-us-east5"] = {"decisions": {}, "delete_bytes": 0}
     summary_path.write_text(json.dumps(summary))
     result = build_batch_manifests(str(plan))
-    assert list(result["buckets"]) == ["marin-us-central2"]
+    assert list(result["buckets"]) == ["data-us-central2"]
     assert sorted(str(path.relative_to(plan)) for path in plan.rglob("*")) == [
         "batch-manifest",
-        "batch-manifest/marin-us-central2",
-        "batch-manifest/marin-us-central2/part-00000.csv",
+        "batch-manifest/data-us-central2",
+        "batch-manifest/data-us-central2/part-00000.csv",
         "batch-manifest/summary.json",
         "would-delete",
         "would-delete-summary.json",
-        "would-delete/marin-us-central2",
-        "would-delete/marin-us-central2/part-00000.parquet",
+        "would-delete/data-us-central2",
+        "would-delete/data-us-central2/part-00000.parquet",
     ]
 
 
@@ -121,31 +121,31 @@ def test_submit_is_dry_by_default_and_uses_one_bucket_manifest(tmp_path):
     build_batch_manifests(str(plan))
     summary_path = plan / "batch-manifest" / "summary.json"
     summary = json.loads(summary_path.read_text())
-    summary["buckets"]["marin-us-central2"]["manifest_location"] = (
-        "gs://oa-gcs-usage-dvx/sweep/run/batch-manifest/marin-us-central2/part-*.csv"
+    summary["buckets"]["data-us-central2"]["manifest_location"] = (
+        "gs://my-data/sweep/run/batch-manifest/data-us-central2/part-*.csv"
     )
     summary_path.write_text(json.dumps(summary))
     http = Http()
-    result = submit_batch_jobs(str(plan), project="oa-internal-450019", http=http)
+    result = submit_batch_jobs(str(plan), project="my-project", http=http)
     assert result == {
         "source": str(plan),
-        "project": "oa-internal-450019",
+        "project": "my-project",
         "dry_run": True,
         "jobs": [{
-            "bucket": "marin-us-central2",
-            "job_id": "gcs-sweep-batch-dry-20261004-p12-marin-us-central2",
+            "bucket": "data-us-central2",
+            "job_id": "gcs-sweep-batch-dry-20261004-p12-data-us-central2",
             "operation": {"name": "operations/op-1"},
         }],
     }
     assert http.calls == [(
-        "https://storagebatchoperations.googleapis.com/v1/projects/oa-internal-450019/locations/global/jobs",
+        "https://storagebatchoperations.googleapis.com/v1/projects/my-project/locations/global/jobs",
         {
-            "params": {"jobId": "gcs-sweep-batch-dry-20261004-p12-marin-us-central2"},
+            "params": {"jobId": "gcs-sweep-batch-dry-20261004-p12-data-us-central2"},
             "json": {
                 "description": f"disk-tree reviewed sweep: {plan}",
                 "bucketList": {"buckets": [{
-                    "bucket": "marin-us-central2",
-                    "manifest": {"manifestLocation": "gs://oa-gcs-usage-dvx/sweep/run/batch-manifest/marin-us-central2/part-*.csv"},
+                    "bucket": "data-us-central2",
+                    "manifest": {"manifestLocation": "gs://my-data/sweep/run/batch-manifest/data-us-central2/part-*.csv"},
                 }]},
                 "deleteObject": {"permanentObjectDeletionEnabled": False},
                 "dryRun": True,
