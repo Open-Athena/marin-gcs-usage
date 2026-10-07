@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest'
 import type { AssignmentRow } from './ownerBands.js'
 import { ownerLens, poolLens } from './owners.js'
 
-const assignment = (prefix: string, owner: string | null, ts: number, bytes: number, us: Record<string, number>): AssignmentRow =>
-  ({ prefix, owner, ts, action_id: ts, bytes, objects: 1, us })
+const assignment = (prefix: string, owner: string | null, ts: number, bytes: number, us: Record<string, number>, objects = 1, uo: Record<string, number> = {}): AssignmentRow =>
+  ({ prefix, owner, ts, action_id: ts, bytes, objects, us, uo })
 
 // U = 'u'. A (v's) holds B (u's, newer, nested); C (u's) holds D (v's, newer,
 // nested); R is a release; E (u's) holds G (w's, OLDER, so E repaints it).
@@ -91,7 +91,7 @@ describe('poolLens', () => {
   })
 
   it('unowned: the scan’s unowned bytes outside every assignment, plus a release’s', () => {
-    const pl = poolLens(CLAIMS, 'unowned')!.b
+    const pl = poolLens(CLAIMS, 'unowned')!
     // root: 400 scan-unowned − top A/C/R/E's (20 + 0 + 6 + 40) = 334, + R's 6
     expect(pl.value('b', 1000, 400)).toBe(340)
     expect(pl.value('b/c/d/z', 10, 5)).toBe(0) // under v's D: owned, whatever the scan said
@@ -102,31 +102,33 @@ describe('poolLens', () => {
   })
 
   it('owned: every assigned band whole, the scan’s owned bytes elsewhere — the complement of unowned', () => {
-    const pl = poolLens(CLAIMS, 'owned')!.b
+    const pl = poolLens(CLAIMS, 'owned')!
     // root: 600 scan-owned − top A/C/R/E's (80 + 200 + 4 + 20) = 296, + bands
     // A−B 60, B 40, C−D 150, D 50, E−G 30, G 30, R's owned slice 4
     expect(pl.value('b', 1000, 600)).toBe(660)
-    expect(pl.value('b', 1000, 600) + poolLens(CLAIMS, 'unowned')!.b.value('b', 1000, 400)).toBe(1000)
+    expect(pl.value('b', 1000, 600) + poolLens(CLAIMS, 'unowned')!.value('b', 1000, 400)).toBe(1000)
     expect(pl.value('b/c/d/z', 10, 5)).toBe(10)
   })
 
   it('owned except u: owned minus u’s lens', () => {
-    const pl = poolLens(CLAIMS, { not: ['u'] })!.b
+    const pl = poolLens(CLAIMS, { not: ['u'] })!
     // root: 250 scan-owned-by-others − top A/C's (50 + 80) = 120, + A−B 60, D 50
     expect(pl.value('b', 1000, 250)).toBe(230)
     expect(pl.value('b', 1000, 250) + ownerLens(CLAIMS, 'u')!.value('b', 1000, 350)).toBe(660)
     expect(pl.value('b/a/x/y', 9, 0)).toBe(0) // u's B
   })
 
-  it('objects fold too, so owned + unowned objects are the total (an assignment’s in-pool objects follow its in-pool bytes)', () => {
-    // Every assignment holds 1 object (`assignment`); A's 100 B are 20% scan-unowned, so 0.2 of its object is.
-    const [un, ow] = (['unowned', 'owned'] as const).map(p => poolLens(CLAIMS, p)!.o)
-    const ALL = 50
-    const UNOWNED = 30 // the scan's unowned objects at the root
-    expect(un.value('b', ALL, UNOWNED) + ow.value('b', ALL, ALL - UNOWNED)).toBeCloseTo(ALL, 9)
-    // root, unowned: 30 − top A/C/R/E's unowned objects (0.2 + 0 + 0.6 + 2/3) + R's band (0.6)
-    expect(un.value('b', ALL, UNOWNED)).toBeCloseTo(30 - 0.2 - 0.6 - 2 / 3 + 0.6, 9)
-    // An assigned leaf: all its objects leave unowned and join owned.
-    expect([un.value('b/c/d/z', 7, 7), ow.value('b/c/d/z', 7, 0)]).toEqual([0, 7])
+  it('objects fold exactly from the manifest’s per-user counts (`uo`), so owned + unowned objects are the total', () => {
+    // A (v's) holds 10 objects, 3 of them u's and 4 v's (3 unowned); B (u's, inside A) 2, 1 v's.
+    const rows = [
+      assignment('gs://b/a/', 'v', 10, 100, { u: 30, v: 50 }, 10, { u: 3, v: 4 }),
+      assignment('gs://b/a/x/', 'u', 20, 40, { u: 5, v: 35 }, 2, { v: 1 }),
+    ]
+    const [un, ow] = (['unowned', 'owned'] as const).map(p => poolLens(rows, p)!.o)
+    // root: 50 objects, 20 scan-unowned. A's 3 unowned leave; B's own unowned
+    // object went with A, nothing comes back (B is u's).
+    expect([un.value('b', 50, 20), ow.value('b', 50, 30)]).toEqual([17, 33])
+    // u's lens: residual u objects outside A (30 − 3 − 0 … A is v's, so its 3 u objects leave) + B whole
+    expect(ownerLens(rows, 'u')!.o.value('b', 50, 12)).toBe(12 - 3 + 2)
   })
 })

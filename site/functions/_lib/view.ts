@@ -30,7 +30,7 @@
  */
 import type { Env } from './auth.js'
 import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, type Trace, withTrace } from './index.js'
-import { ownerLens, type OwnerLens, poolLens, type PoolLens } from './owners.js'
+import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
 import { type SearchFound, type SearchLimits, searchRoots } from './search.js'
@@ -441,7 +441,7 @@ async function assignerMap(env: Env): Promise<Map<string, string>> {
     return m
   }, 10_000)
 }
-async function ownerLensFor(env: Env, date: string, lens: Lens, by?: string): Promise<OwnerLens | null> {
+async function ownerLensFor(env: Env, date: string, lens: Lens, by?: string): Promise<FoldedLens | null> {
   let assignments = await ownerAssignments(env, date)
   if (by) {
     const emap = await assignerMap(env)
@@ -451,7 +451,7 @@ async function ownerLensFor(env: Env, date: string, lens: Lens, by?: string): Pr
 }
 
 /** An owner pool's ledger fold for a scan (null: no pool, or no assignments). */
-async function poolLensFor(env: Env, date: string, owner: OwnerScope | undefined): Promise<PoolLens | null> {
+async function poolLensFor(env: Env, date: string, owner: OwnerScope | undefined): Promise<FoldedLens | null> {
   if (!owner || !(await hasLedger(env))) return null
   return poolLens(await ownerAssignments(env, date), owner, await loadRegistry(env))
 }
@@ -461,9 +461,9 @@ async function poolLensFor(env: Env, date: string, owner: OwnerScope | undefined
  * moved any (the common case), else shaped like the in-pool rows (stretched by
  * the bands assigned in) or, when none, like the subtree total. An unowned
  * node has no owners to split. */
-function poolAgg(pl: PoolLens, owner: OwnerScope, path: string, all: Agg | null, mine: Agg): Agg {
+function poolAgg(pl: FoldedLens, owner: OwnerScope, path: string, all: Agg | null, mine: Agg): Agg {
   if (!all) return mine
-  const vb = pl.b.value(path, all.b, mine.b)
+  const vb = pl.value(path, all.b, mine.b)
   const vo = Math.round(pl.o.value(path, all.o, mine.o))
   if (Math.abs(vb - mine.b) < 0.5 && vo === mine.o) return mine
   if (vb <= 0 && vo <= 0) return newAgg()
@@ -481,12 +481,17 @@ function poolAgg(pl: PoolLens, owner: OwnerScope, path: string, all: Agg | null,
  * assignments below add bytes that slice never had. Every byte is U's, so the
  * per-user split is U alone. `mine` null = the node was not read (an unread
  * ancestor of an assigned region): its bytes are its bands below. */
-function lensAgg(ol: OwnerLens, user: string, path: string, all: Agg | null, mine: Agg | null): Agg {
+function lensAgg(ol: FoldedLens, user: string, path: string, all: Agg | null, mine: Agg | null): Agg {
   const v = ol.value(path, all?.b ?? null, mine?.b ?? null)
   if (v <= 0) return newAgg()
   const shape = all ?? mine
   const out = shape && shape.b > 0 ? scale(shape, v / shape.b) : newAgg()
   if (!shape || shape.b <= 0) out.b = v
+  // Objects from their own fold. It wants the total exactly where the bytes
+  // fold does, except under a cover U holds every byte of but not every
+  // object of (zero-byte objects attributed to others): unread there, so
+  // those keep the byte-proportional count.
+  if (all || !ol.o.needsTotal(path) || ol.o.isAssigned(path)) out.o = Math.round(ol.o.value(path, all?.o ?? null, mine?.o ?? null))
   out.ub = { [user]: out.b }
   return out
 }
@@ -513,7 +518,7 @@ interface Read {
   excl?: Map<string, Agg>
   firstPaint?: boolean
   /** The assignments fold behind a user lens (null: no lens, or no assignments). */
-  ownerLens: OwnerLens | null
+  ownerLens: FoldedLens | null
   /** A path's scoped share of its total (owner pool / lens applied). `all` =
    * the subtree total (null under a lens where the path's cover isn't U's);
    * `mine` = the rows the sort's lens/pool kept (null = unread, lens only). */

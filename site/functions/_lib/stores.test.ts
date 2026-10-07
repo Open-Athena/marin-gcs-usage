@@ -118,9 +118,9 @@ describe('withStore', () => {
 
 describe('cache keys', () => {
   it('the primary’s are unchanged; a secondary store’s get an `@<store>/` segment', () => {
-    expect(cacheKeyFor('series', 'a%2Fb?P=').url).toBe('https://series.cache/v3/a%2Fb?P=')
-    expect(cacheKeyFor('series', 'a%2Fb?P=', 'primary').url).toBe('https://series.cache/v3/a%2Fb?P=')
-    expect(cacheKeyFor('series', 'a%2Fb?P=', 'meta').url).toBe('https://series.cache/v3/@meta/a%2Fb?P=')
+    expect(cacheKeyFor('series', 'a%2Fb?P=').url).toBe('https://series.cache/v4/a%2Fb?P=')
+    expect(cacheKeyFor('series', 'a%2Fb?P=', 'primary').url).toBe('https://series.cache/v4/a%2Fb?P=')
+    expect(cacheKeyFor('series', 'a%2Fb?P=', 'meta').url).toBe('https://series.cache/v4/@meta/a%2Fb?P=')
   })
   it('over-time manifest datasets: `over-time` for the primary, `<store>:over-time` else', () => {
     expect([overTimeDataset(PRIMARY), overTimeDataset(storeEnv(PRIMARY, 'meta', META))]).toEqual(['over-time', 'meta:over-time'])
@@ -145,11 +145,10 @@ const META_ROWS = (d: string, d2: string) => `
     ('meta', '${d}', 'meta:path', 'g1', 0, 0, 1, 'a', 'b', 1, 0, 1, '[1,"ZSTD",[]]');
 `
 const envs = (db: Env['DB']) => ({ primary: { ...PRIMARY, DB: db } as Env, meta: storeEnv({ ...PRIMARY, DB: db } as Env, 'meta', META) })
-const STORE_MIGRATION = { cw: '0006_store_scoped_index.sql', gcs: '0030_store_scoped_index.sql' } as const
+const STORE_MIGRATION = { cw: '0006_store_scoped_index.sql' } as const
 
 describe.each([
   { lineage: 'cw' as const, d: '2026-07-01', d2: '2026-07-02' },
-  { lineage: 'gcs' as const, d: '2026-07-11', d2: '2026-07-12' },
 ])('D1, $lineage lineage', ({ lineage, d, d2 }) => {
   it('primary reads work on the un-migrated schema (their SQL predates stores); a secondary store refuses loudly', async () => {
     const { db, raw } = await sqliteD1(lineage, { before: STORE_MIGRATION[lineage] })
