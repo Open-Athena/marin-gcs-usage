@@ -15,6 +15,7 @@ from dt_cloud import digest as DG
 
 CONFIG = Path(__file__).parents[2] / "job" / "digest.yml"
 TIB = 1024**4
+Q08A = DG.Quota(100 * TIB, "100 TiB", "100Ti")  # US-EAST-08A, shared by its buckets
 CW = DG.DigestConfig(
     template="cw",
     title="CoreWeave usage",
@@ -34,7 +35,10 @@ CW = DG.DigestConfig(
     primary="marin-us-east-02a",
     buckets={
         "marin-us-east-02a": DG.Bucket("02a", DG.Quota(910 * TIB, "1 PB", "1P")),
-        "hero-checkpoints": DG.Bucket("hero", DG.Quota(100 * TIB, "100 TiB", "100Ti")),
+        "hero-checkpoints": DG.Bucket("hero", Q08A, "08a"),
+        "marin-us-east-06a": DG.Bucket("06a"),
+        "rhoarnet-us-east-08a": DG.Bucket("rhoarnet", Q08A, "08a"),
+        "marin-us-west-04a": DG.Bucket("04a"),
     },
     prices={},
 )
@@ -57,7 +61,7 @@ def test_dry_run_with_config(monkeypatch, tmp_path: Path):
     cfg = yaml.safe_load(CONFIG.read_text())
     names = {"marin-us-east-02a": P, "hero-checkpoints": HERO}
     cfg["primary"] = names[cfg["primary"]]
-    cfg["buckets"] = {names[b]: v for b, v in cfg["buckets"].items()}
+    cfg["buckets"] = {names.get(b, b): v for b, v in cfg["buckets"].items()}
     config = tmp_path / "digest.yml"
     config.write_text(yaml.safe_dump(cfg))
     root = cw_root(tmp_path)

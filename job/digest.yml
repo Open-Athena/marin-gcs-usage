@@ -27,10 +27,14 @@ reply_hour: 12
 # final reply posts
 provisional: true
 primary: marin-us-east-02a
-# quotas from CoreWeave's `cwobject_quota_info` metric, per zone: 02a = exactly
-# 910 TiB ("1 PB"); hero = the US-EAST-08A zone quota, shared with an unscanned
-# bucket, so hero's "free" overstates the zone's true headroom slightly
+# quotas from CoreWeave's `cwobject_quota_info` metric, which is per ZONE: 02a =
+# exactly 910 TiB ("1 PB"); US-EAST-08A = 100 TiB shared by hero-checkpoints and
+# rhoarnet-us-east-08a (`zone: 08a`, one tail clause against the zone's quota).
+# 06a and 04a show raw TiB until their zone quotas are read off the same metric.
 buckets:
   marin-us-east-02a: {label: 02a, quota: {bytes: 910 TiB, name: 1 PB, short: 1P}}
-  hero-checkpoints: {label: hero, quota: {bytes: 100 TiB, name: 100 TiB, short: 100Ti}}
+  hero-checkpoints: {label: hero, zone: 08a, quota: {bytes: 100 TiB, name: 100 TiB, short: 100Ti}}
+  marin-us-east-06a: {label: 06a}
+  rhoarnet-us-east-08a: {label: rhoarnet, zone: 08a, quota: {bytes: 100 TiB, name: 100 TiB, short: 100Ti}}
+  marin-us-west-04a: {label: 04a}
 prices: {}

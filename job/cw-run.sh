@@ -54,11 +54,11 @@ export INDEX_VARIANTS=${INDEX_VARIANTS:-path}                           # no use
 export SITE_URL=${SITE_URL:-https://cw-s3.oa.dev}
 export SNAPSHOTS_SUBDIR=${SNAPSHOTS_SUBDIR:-cw}                          # snapshots/cw/ (site/wrangler.toml says the same)
 export LAYER2_PREFIX=${LAYER2_PREFIX:-'cw-l2/{scan}/'}   # this store's layer-2 dir (`dt-cloud publish-r2 -l`; the base's is listing/{scan}/index/)
-export WARM_PATHS=${WARM_PATHS:-",marin-us-east-02a,marin-us-east-02a/marin,marin-us-east-02a/tmp,marin-us-east-02a/iris,hero-checkpoints,hero-checkpoints/tmp,hero-checkpoints/marin"}
+export WARM_PATHS=${WARM_PATHS:-",marin-us-east-02a,marin-us-east-02a/marin,marin-us-east-02a/tmp,marin-us-east-02a/iris,hero-checkpoints,hero-checkpoints/tmp,hero-checkpoints/marin,marin-us-east-06a,marin-us-east-06a/marin,rhoarnet-us-east-08a,marin-us-west-04a"}
 
 # Every bucket in the scan; the primary first. The scheduler body sets only
 # the primary, so the list's default here IS the deployment's.
-BUCKETS=${SCAN_BUCKETS:-${CW_BUCKETS:-"marin-us-east-02a hero-checkpoints"}}
+BUCKETS=${SCAN_BUCKETS:-${CW_BUCKETS:-"marin-us-east-02a hero-checkpoints marin-us-east-06a rhoarnet-us-east-08a marin-us-west-04a"}}
 BUCKET=${SWEEP_BUCKET:-${CW_BUCKET:-${BUCKETS%% *}}}
 ENDPOINT=${SWEEP_S3_ENDPOINT:-${CW_ENDPOINT:-https://cwobject.com}}
 export SCAN_BUCKETS=$BUCKETS SWEEP_BUCKET=$BUCKET SWEEP_S3_ENDPOINT=$ENDPOINT
@@ -79,12 +79,8 @@ DATE=${SNAP_ID%%T*}
 # or SLACK_WEBHOOK); `set +x` first so the token never hits the xtrace log.
 # Alerts go to SLACK_ALERT_CHANNEL (#gcs-usage-alerts, as the GCS job) when
 # set, so they don't land in the #cw-s3-usage digest thread's channel.
-fail_alert() {
-  local rc=$1 line=$2 cmd=$3
-  { set +x; } 2>/dev/null
-  local msg="❌ CoreWeave scan job failed ($SNAP_ID): \`${cmd}\` exited $rc at cw-run.sh:$line"
-  [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
-  local chan="${SLACK_ALERT_CHANNEL:-${SLACK_CHANNEL:-}}"
+slack_alert() {
+  local msg=$1 chan="${SLACK_ALERT_CHANNEL:-${SLACK_CHANNEL:-}}"
   if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "$chan" ]; then
     curl -sS -X POST https://slack.com/api/chat.postMessage \
       -H "Authorization: Bearer $SLACK_BOT_TOKEN" -H 'Content-type: application/json; charset=utf-8' \
@@ -94,7 +90,33 @@ fail_alert() {
       -d "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$msg")" >/dev/null || true
   fi
 }
+fail_alert() {
+  local rc=$1 line=$2 cmd=$3
+  { set +x; } 2>/dev/null
+  local msg="❌ CoreWeave scan job failed ($SNAP_ID): \`${cmd}\` exited $rc at cw-run.sh:$line"
+  [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
+  slack_alert "$msg"
+}
 trap 'fail_alert $? $LINENO "$BASH_COMMAND"' ERR
+
+# Every bucket the CAIOS key can list is either scanned or empty. A non-empty
+# one outside SCAN_BUCKETS (a new zone's bucket) is billed storage the site
+# would silently miss, so it alerts each run until it's added. Never fatal (an
+# empty bucket can't be scanned: bulk-list writes no shards for it).
+UNSCANNED=$(python3 - "$ENDPOINT" $BUCKETS <<'PY' || echo "?"
+import sys, boto3
+endpoint, *scanned = sys.argv[1:]
+s3 = boto3.client("s3", endpoint_url=endpoint)
+names = sorted(b["Name"] for b in s3.list_buckets()["Buckets"])
+print(" ".join(n for n in names if n not in scanned and s3.list_objects_v2(Bucket=n, MaxKeys=1).get("KeyCount")))
+PY
+)
+if [ -n "$UNSCANNED" ]; then
+  echo "WARN: unscanned non-empty buckets: $UNSCANNED" >&2
+  { set +x; } 2>/dev/null
+  slack_alert "⚠️ CoreWeave scan ($SNAP_ID): non-empty CAIOS bucket(s) not in SCAN_BUCKETS: \`$UNSCANNED\` (\`?\` = the ListBuckets check itself failed)"
+  set -x
+fi
 
 WORK=${WORK_DIR:-/stage/cw-$SNAP_ID}
 mkdir -p "$WORK"
