@@ -100,6 +100,7 @@ One gate (`_lib/auth.ts`, `@open-athena/auth` over D1): `identify` → `Identity
 - `/auth/google` (+ `/callback`, `/onetap`) — Google OIDC → email session; `/auth/email/*` — emailed code / magic link → email session
 - `/api/auth/*` — the package's routes: `whoami`, `exchange` (`?key=` share link → grant session), `logout`, request-access, admin grant/request/log console
 - `/api/token` — a session's personal agent token (a non-expiring Bearer grant: the base scope + assign, never admin; grants can't mint one)
+- `/api/me` — the caller's canonical owner id (`_lib/me.ts`): what `user=me` / `lens=user:me` / `owner: '@me'` resolve to
 
 ## Development
 
@@ -162,137 +163,15 @@ Tests build their listing fixtures inline (`tmp_path` parquets). CI and the job 
 
 ---
 
-## Marin GCS usage — ownership & staged deletion: API for agents
+## Marin GCS usage — API for agents
 
-This repo powers <https://gcs.oa.dev>: **who owns what** across the `marin-*`
-GCS buckets, and a **staged-deletion** workflow to reclaim space. Anyone
-signed in can **stage** prefixes for deletion (the trash gesture in the UI, or
-the API below); admins review the shared plan at [`/staged`](https://gcs.oa.dev/staged)
-and dispatch the executor. **Nothing is deleted at stage time** — staging is a
-proposal, reversible until an admin runs it. Ownership is the other axis:
-anyone signed in can **assign** a prefix to anyone (themselves included), or
-clear an assignment; the ledger records who did what.
-
-(The earlier opt-out "mark & sweep" model — keep/sweep marks plus a deadline —
-was retired 2026-09-28; `dt-cloud mark|status|todo` and `/api/marks*`,
-`/api/resolve`, `/api/todo` are gone.)
-
-### 1. Get a token
-
-Every write is authenticated as **you** by a personal bearer token.
-
-- **Browser:** sign in at <https://gcs.oa.dev> with your `@openathena.ai` (or
-  whitelisted) email, then reveal/mint your token from the user menu (top-right).
-- **API:** `POST /api/token` from a signed-in browser session mints (or rotates)
-  it; the raw token is shown **once**. `GET /api/token` reports status (never the
-  token); `DELETE /api/token` revokes it.
-
-The token carries the `gcs` and `gcs:assign` scopes (least privilege — it can
-read, stage and assign, not administer). Revoking it is instant.
-Share links (guest access) can't assign.
-
-```bash
-export GCS_USAGE_TOKEN=…        # the token you copied
-export GCS_USAGE_URL=https://gcs.oa.dev   # the site
-```
-
-Prefixes are always `gs://marin-<bucket>/<dir>/…/` — **directory prefixes only**
-(trailing slash), one of the six `marin-*` buckets.
-
-### 2. HTTP API
-
-All under `https://gcs.oa.dev`. Reads are open to any signed-in viewer; writes
-need `Authorization: Bearer $GCS_USAGE_TOKEN`.
-
-#### Staged deletion
-
-| Method & path | Purpose |
-|---|---|
-| `POST /api/plans/stage` | Stage prefixes: `{ prefixes: [...], note? }` → `201 { plan_id, batch_id, staged, covered, absorbed }`. A prefix under an already-staged ancestor comes back as `covered` (nothing to add); staging an ancestor `absorbs` its staged descendants (the plan keeps the ancestor). Any signed-in stager. |
-| `GET /api/plans/staged` | The shared open plan, grouped the way `/staged` shows it: items with who/when/note, and the runs against it. |
-| `DELETE /api/plans/<id>/items` | Unstage: `{ prefixes: [...] }`. Stagers may remove their own items; admins any. |
-| `GET /api/plans`, `GET /api/plans/<id>` | Plans and one plan's items / batches / runs. |
-| `POST /api/plans`, `PATCH /api/plans/<id>`, `POST /api/plans/<id>/items` | Admin curation (create, close `{ state: 'closed' }`, add items). |
-| `POST /api/sweep/dispatch` | Admin: run the executor over a plan — `{ plan_id, mode: 'dry' \| 'real', date, buckets? }` → a GCP Batch job; `GET /api/sweep/jobs` lists runs, `POST /api/sweep/stop` stops one. |
-
-```bash
-# stage two prefixes for deletion
-curl -X POST https://gcs.oa.dev/api/plans/stage \
-  -H "Authorization: Bearer $GCS_USAGE_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"prefixes":["gs://marin-us-east5/scratch/old-run/","gs://marin-us-central2/tmp/2025/"],"note":"superseded by run 42"}'
-```
-
-#### Deletion runs (what was deleted, and asking for an undo)
-
-Every run, dry or real, is readable by any signed-in viewer; only admins dispatch, stop or undo one.
-
-| Method & path | Purpose |
-|---|---|
-| `GET /api/plans/staged` | The open plan's items, plus `runs`: every deletion run (dry and real), with totals and its `undo_deadline`. |
-| `GET /api/sweep/jobs` | The executor's Batch jobs (runs and undos), live state included. |
-| `GET /api/plans/run?id=<run_id>` | One run: its record + one row per deleted prefix (`prefix, bytes, objects, gone, overwritten, undone_objects`). |
-| `GET /api/plans/prefix-history?id=<plan_id>` | Each staged prefix of a plan → the real run(s) that deleted it. |
-| `GET /v1/files/list?prefix=sweep/runs/<run_id>/` | A run's directory (plan, per-bucket manifests of the exact objects + generations deleted); fetch a file with `/v1/files/get?path=…`. |
-
-Deleted objects stay recoverable for 7 days from their deletion (each run's `undo_deadline`). To get something back, send an admin the run id and the prefixes (a reply on the run's Slack/Discord thread, or a DM); an agent can assemble that list from the endpoints above. `/runs/<run_id>` is the same run as a page.
-
-#### Ownership
-
-| Method & path | Purpose |
-|---|---|
-| `GET /api/owners?date=<scan>` | Per-user owned bytes + storage-class mix for a scan (what `/users` ranks): `{ scan, head, bytes, objects, users: { <id>: { b, mix } } }`. |
-| `GET /api/estate?date=<scan>&user=<id>` | One user's estate: `{ user, date, head, bytes, objects, mix, assignments }`. |
-| `GET /api/assignments?date=<scan>` | The assigner × assignee matrix (who assigned what to whom, in bytes). |
-| `GET /api/actions` | The live ownership ledger: `{ owners: [...] }`, every expanded prefix joined to the action that set it. |
-| `POST /api/actions` | Assign: append one action or an array (≤500): `{ pattern, owner, memo?, scan? }` — `owner` is a user id (as `/api/owners` keys them), `'@me'` resolves to you, `null` clears. Prefix patterns only. The newest assignment on a prefix or any ancestor wins. |
-
-```bash
-# assign a prefix to yourself, with a note on why
-curl -X POST https://gcs.oa.dev/api/actions \
-  -H "Authorization: Bearer $GCS_USAGE_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"pattern":"gs://marin-us-east5/checkpoints/my-run/","owner":"@me","memo":"my sweep"}'
-```
-
-#### Data
-
-| Method & path | Purpose |
-|---|---|
-| `GET /data/scans.json`, `/data/<scan>/{tree,age,meta}.json`, `/data/rules.json` | The published per-scan artifacts the UI renders (tree = size-floored rollup; meta = totals + per-user/class bytes). |
-| `GET /api/subtree?date=&path=&w=&h=` | Pixel-budget subtree of any path — UI-shaped `TreeNode`s (`{n,b,o,d,a,us,cb,c}`; unowned = `b` − Σ `us`), folded to what a w×h canvas can draw. What the treemap drills with. |
-| `GET/HEAD /api/path-index?date=` | The **floor-free** path index behind `/api/subtree`, as raw parquet with HTTP Range support — bring your own query engine (see below). One row per rolled-up path × owner slice: `(path, depth, usr, b, o, wts, wb, c2, c3, c4, a)`, sorted `(depth, path)`; `usr` NULL = unowned. |
-| `GET /v1/files/<path>` | Raw scan-store proxy (range-supporting) over `listing/` + `snapshots/` — the per-object listing parquets, `dir-cache/`, the index tiers (`index/<gen>/path-index*.parquet`; older scans have them at `listing/<date>/` directly), and published snapshot JSONs, addressed by bucket path. |
-
-Human-facing pages, same data: [`/staged`](https://gcs.oa.dev/staged) is the
-deletion console, [`/users`](https://gcs.oa.dev/users) the per-user estate
-ranking, `/user/<id>` one user's estate, `/assignments` the assignment heatmap,
-and `/runs/<id>` one deletion run (progress, logs, what it deleted, recovery).
-
-```sql
--- DuckDB, straight against prod (httpfs sends HEAD + range GETs, so a
--- depth/path predicate only fetches the row groups it needs):
-CREATE SECRET (TYPE http, EXTRA_HTTP_HEADERS MAP {'Authorization': 'Bearer <token>'});
-SELECT path, sum(b) AS bytes FROM read_parquet('https://gcs.oa.dev/api/path-index?date=2026-08-26')
-WHERE depth = 2 GROUP BY path ORDER BY bytes DESC LIMIT 20;
-```
-
-### Notes for agents
-
-- **Staging is reversible until dispatch.** Unstage any time (`DELETE
-  /api/plans/<id>/items`); only an admin's `real` run deletes, and runs are
-  undoable for a window afterwards (see `/staged`).
-- **Browse first:** `/api/subtree` (or the parquet index) tells you what a prefix
-  holds and who owns it; stage the deepest prefixes that name what you mean,
-  not a fat ancestor — an ancestor absorbs everything under it.
-- **Explain yourself:** the `note` on a stage batch is what the reviewing admin
-  reads on `/staged`.
-- There is no client CLI for staging; the surviving `dt-cloud` verbs are the
-  pipeline's and the executor's (`healthcheck`, `sweep manifest --plan`, …).
+The user-facing guide (token, HTTP API, recipes for finding, staging and assigning prefixes) lives in [`API.md`](API.md), which the gcs build also serves unauthenticated at <https://gcs.oa.dev/llms.txt> (the `llms-txt` plugin in `site/vite.config.ts`). Document API changes there, not here.
 
 ---
 
 ### Dev context — gcs deployment
 
-The API guide above is the **user context**; the shared dev guide at the top
+`API.md` is the **user context**; the shared dev guide at the top
 covers the engine, site, packages and Python setup. This section is what's
 specific to the gcs deployment. The repo is **public**: no emails or other PII
 in tracked files or commit messages (name + GitHub handle max); sizes and $
