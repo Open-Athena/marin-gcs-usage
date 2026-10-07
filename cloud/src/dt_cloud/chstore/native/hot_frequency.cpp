@@ -11,9 +11,14 @@
 //
 // Exactness of the pruning: a name containing a k-gram contains its
 // (k−1)-prefix and (k−1)-suffix, so both are at least as frequent; a k-gram is
-// only counted where both were hot. The alive bitset marks, per code-point
-// position, whether the current length's window starting there is hot, so
-// each length touches only extensions of hot windows.
+// only counted where both were hot.
+//
+// Integer-only passes: each length's hot patterns get dense ids, and one id per
+// code-point position (`uint16`, so ≤ 65,534 hot patterns per length) holds the
+// id of the hot window starting there (or NONE). A (k+1)-window is exactly the
+// pair (its k-prefix's id, its k-suffix's id) — the two overlap in k−1 code
+// points — so counting a length is an integer-keyed tally of adjacent id pairs,
+// and assigning the next ids rewrites the array in place, left to right.
 //
 //   hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS] < rows > queries.jsonl
 #include <algorithm>
@@ -78,69 +83,87 @@ public:
 // Code-point boundaries of one name, as ClickHouse's UTF-8 functions see them:
 // a lead byte starts a code point, continuation bytes (10xxxxxx) don't.
 static void boundaries(std::string_view s, std::vector<uint32_t>& out) {
-    out.clear();
+    out.resize(s.size() + 1);
+    uint32_t n = 0;
     for (uint32_t i = 0; i < s.size(); ++i)
-        if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) out.push_back(i);
-    out.push_back(static_cast<uint32_t>(s.size()));
+        if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) out[n++] = i;
+    out[n++] = static_cast<uint32_t>(s.size());
+    out.resize(n);
 }
 
-static uint64_t hash_bytes(std::string_view s) {
-    uint64_t h = 1469598103934665603ull ^ (s.size() * 0x9E3779B97F4A7C15ull);
-    size_t i = 0;
-    for (; i + 8 <= s.size(); i += 8) {
-        uint64_t w;
-        std::memcpy(&w, s.data() + i, 8);
-        h = (h ^ w) * 0x100000001B3ull;
-        h ^= h >> 29;
-    }
-    uint64_t tail = 0;
-    std::memcpy(&tail, s.data() + i, s.size() - i);
-    h = (h ^ tail) * 0x100000001B3ull;
-    h ^= h >> 32;
-    h *= 0xD6E8FEB86659FD93ull;
-    h ^= h >> 32;
-    return h;
-}
-
-// Open-addressing map from a window (a view into the name buffer) to its path sum.
-class Counts {
-    struct Slot { uint64_t hash; const char* data; uint32_t size; uint64_t sum; };
+// Integer-keyed tally: key → path sum, each name adding at most once (`last`:
+// the name index + 1 that last added — no per-name sort or set).
+class Tally {
+    struct Slot { uint64_t key; uint64_t sum; uint64_t last; };
+    static constexpr uint64_t EMPTY = ~uint64_t(0);
     std::vector<Slot> slots;
     size_t used = 0;
+    static uint64_t mix(uint64_t x) {
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdull;
+        x ^= x >> 33;
+        return x;
+    }
     void grow() {
-        std::vector<Slot> old(slots.size() ? slots.size() * 2 : 1 << 16, Slot{0, nullptr, 0, 0});
+        std::vector<Slot> old(slots.size() ? slots.size() * 2 : 1 << 12, Slot{EMPTY, 0, 0});
         old.swap(slots);
         used = 0;
-        for (const Slot& s : old) if (s.data) insert(s.hash, s.data, s.size, s.sum);
+        for (const Slot& s : old) if (s.key != EMPTY) *find(s.key) = s, ++used;
+    }
+    Slot* find(uint64_t key) {
+        const size_t mask = slots.size() - 1;
+        for (size_t i = mix(key) & mask;; i = (i + 1) & mask)
+            if (slots[i].key == key || slots[i].key == EMPTY) return &slots[i];
     }
 public:
-    Counts() { grow(); }
-    void insert(uint64_t hash, const char* data, uint32_t size, uint64_t add) {
+    Tally() { grow(); }
+    void add_once(uint64_t key, uint64_t add, uint64_t name) {
         if ((used + 1) * 10 > slots.size() * 7) grow();
-        const size_t mask = slots.size() - 1;
-        for (size_t i = hash & mask;; i = (i + 1) & mask) {
-            Slot& s = slots[i];
-            if (!s.data) {
-                s = Slot{hash, data, size, add};
-                ++used;
-                return;
-            }
-            if (s.hash == hash && s.size == size && std::memcmp(s.data, data, size) == 0) {
-                s.sum += add;
-                return;
-            }
-        }
+        Slot* s = find(key);
+        if (s->key == EMPTY) { *s = Slot{key, add, name}; ++used; return; }
+        if (s->last != name) { s->sum += add; s->last = name; }
     }
-    bool contains(uint64_t hash, const char* data, uint32_t size) const {
-        const size_t mask = slots.size() - 1;
-        for (size_t i = hash & mask;; i = (i + 1) & mask) {
-            const Slot& s = slots[i];
-            if (!s.data) return false;
-            if (s.hash == hash && s.size == size && std::memcmp(s.data, data, size) == 0) return true;
-        }
+    void add(uint64_t key, uint64_t sum) {
+        if ((used + 1) * 10 > slots.size() * 7) grow();
+        Slot* s = find(key);
+        if (s->key == EMPTY) { *s = Slot{key, sum, 0}; ++used; return; }
+        s->sum += sum;
     }
-    template <class F> void each(F f) const { for (const Slot& s : slots) if (s.data) f(s.hash, s.data, s.size, s.sum); }
+    template <class F> void each(F f) const { for (const Slot& s : slots) if (s.key != EMPTY) f(s.key, s.sum); }
     size_t size() const { return used; }
+};
+
+// Read-only key → id (built single-threaded, probed concurrently).
+class Ids {
+    struct Slot { uint64_t key; uint32_t id; };
+    static constexpr uint64_t EMPTY = ~uint64_t(0);
+    std::vector<Slot> slots;
+    static uint64_t mix(uint64_t x) {
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdull;
+        x ^= x >> 33;
+        return x;
+    }
+public:
+    explicit Ids(size_t n) {
+        size_t cap = 16;
+        while (cap < n * 2 + 2) cap *= 2;
+        slots.assign(cap, Slot{EMPTY, 0});
+    }
+    void put(uint64_t key, uint32_t id) {
+        const size_t mask = slots.size() - 1;
+        size_t i = mix(key) & mask;
+        while (slots[i].key != EMPTY) i = (i + 1) & mask;
+        slots[i] = Slot{key, id};
+    }
+    // NONE when absent.
+    uint32_t get(uint64_t key, uint32_t none) const {
+        const size_t mask = slots.size() - 1;
+        for (size_t i = mix(key) & mask;; i = (i + 1) & mask) {
+            if (slots[i].key == key) return slots[i].id;
+            if (slots[i].key == EMPTY) return none;
+        }
+    }
 };
 
 struct Vocabulary {
@@ -175,15 +198,6 @@ static Vocabulary read_vocabulary() {
     }
     return v;
 }
-
-class Bits {
-    std::vector<uint64_t> words;
-public:
-    explicit Bits(uint64_t n) : words((n + 64) / 64) {}
-    bool get(uint64_t i) const { return words[i >> 6] >> (i & 63) & 1; }
-    // Concurrent writers touch different names, but adjacent names share words.
-    void set(uint64_t i) { __atomic_fetch_or(&words[i >> 6], uint64_t(1) << (i & 63), __ATOMIC_RELAXED); }
-};
 
 static void json_string(std::string& out, std::string_view s) {
     out.push_back('"');
@@ -223,91 +237,105 @@ int main(int argc, char** argv) try {
     std::fprintf(stderr, "{\"stage\":\"read\",\"distinct_names\":%zu,\"paths\":%llu,\"bytes\":%zu,\"code_points\":%llu,\"elapsed_s\":%.3f}\n",
                  n, (unsigned long long)v.paths, v.text.size(), (unsigned long long)v.cp.back(), now() - t0);
 
-    Bits alive(v.cp.back());  // alive[cp[j] + i]: the previous length's window at i is hot
-    std::vector<std::vector<std::string_view>> hot(max_chars + 1);
+    using Id = uint16_t;
+    constexpr Id NONE = 0xFFFF;
+    std::vector<Id> id(v.cp.back(), NONE);  // id[cp[j] + i]: the current length's hot window at i
+    std::vector<std::vector<std::string>> hot(max_chars + 1);
     std::vector<std::vector<uint64_t>> hot_sum(max_chars + 1);
     uint64_t accepted = 0;
-    Counts previous;
+    constexpr size_t CHUNK = 1 << 14;
+    auto parallel = [&](auto body) {
+        std::atomic<size_t> cursor{0};
+        std::vector<std::thread> pool;
+        for (unsigned t = 0; t < threads; ++t)
+            pool.emplace_back([&, t] {
+                for (size_t lo; (lo = cursor.fetch_add(CHUNK)) < n;) body(t, lo, std::min(n, lo + CHUNK));
+            });
+        for (auto& th : pool) th.join();
+    };
+    // Keep the hot keys (≥ threshold) of a merged tally, in key order, as the length's patterns.
+    auto keep = [&](unsigned k, const std::vector<Tally>& local, auto spell) -> Ids {
+        Tally merged;
+        for (const Tally& t : local) t.each([&](uint64_t key, uint64_t sum) { merged.add(key, sum); });
+        std::vector<std::pair<uint64_t, uint64_t>> kept;
+        merged.each([&](uint64_t key, uint64_t sum) { if (sum >= threshold) kept.emplace_back(key, sum); });
+        std::sort(kept.begin(), kept.end());
+        if (kept.size() >= NONE) fail("more than 65,534 hot patterns at length " + std::to_string(k));
+        accepted += kept.size();
+        if (accepted > max_patterns) fail("accepted-pattern cap exceeded at length " + std::to_string(k));
+        Ids ids(kept.size());
+        for (uint32_t x = 0; x < kept.size(); ++x) {
+            ids.put(kept[x].first, x);
+            hot[k].push_back(spell(kept[x].first));
+            hot_sum[k].push_back(kept[x].second);
+        }
+        std::fprintf(stderr, "{\"stage\":\"hot-substrings\",\"chars\":%u,\"candidates\":%zu,\"hot_patterns\":%zu,", k, merged.size(), kept.size());
+        return ids;
+    };
 
     for (unsigned k = 1; k <= max_chars; ++k) {
         const double start = now();
-        if (k > 1 && hot[k - 1].empty()) break;
-        // Pass 1: count each candidate window once per name, per thread.
-        std::vector<Counts> local(threads);
-        std::atomic<size_t> next{0};
-        constexpr size_t CHUNK = 1 << 14;
-        auto count = [&](unsigned t) {
+        std::vector<Tally> local(threads);
+        // Count: length 1 by each code point's bytes (packed, ≤ 4); length k > 1
+        // by the adjacent (k−1)-ids (prefix, suffix), both hot.
+        parallel([&](unsigned t, size_t lo, size_t hi) {
             std::vector<uint32_t> b;
-            std::vector<std::pair<uint64_t, std::string_view>> seen;
-            Counts& out = local[t];
-            for (size_t lo; (lo = next.fetch_add(CHUNK)) < n;) {
-                for (size_t j = lo, hi = std::min(n, lo + CHUNK); j < hi; ++j) {
+            for (size_t j = lo; j < hi; ++j) {
+                const uint64_t base = v.cp[j];
+                const uint32_t len = static_cast<uint32_t>(v.cp[j + 1] - base);
+                if (len < k) continue;
+                if (k == 1) {
                     const std::string_view s = v.name(j);
                     boundaries(s, b);
-                    const uint32_t len = static_cast<uint32_t>(b.size() - 1);
-                    if (len < k) continue;
-                    seen.clear();
-                    const uint64_t base = v.cp[j];
-                    for (uint32_t i = 0; i + k <= len; ++i) {
-                        if (k > 1 && !(alive.get(base + i) && alive.get(base + i + 1))) continue;
-                        const std::string_view w = s.substr(b[i], b[i + k] - b[i]);
-                        seen.emplace_back(hash_bytes(w), w);
+                    for (uint32_t i = 0; i < len; ++i) {
+                        uint64_t key = 0;
+                        std::memcpy(&key, s.data() + b[i], b[i + 1] - b[i]);
+                        local[t].add_once(key, v.weight[j], j + 1);
                     }
-                    if (seen.empty()) continue;
-                    std::sort(seen.begin(), seen.end());
-                    for (size_t x = 0; x < seen.size(); ++x) {
-                        if (x && seen[x] == seen[x - 1]) continue;
-                        out.insert(seen[x].first, seen[x].second.data(), static_cast<uint32_t>(seen[x].second.size()), v.weight[j]);
-                    }
+                    continue;
                 }
+                const Id* w = id.data() + base;
+                for (uint32_t i = 0; i + k <= len; ++i)
+                    if (w[i] != NONE && w[i + 1] != NONE) local[t].add_once(uint64_t(w[i]) << 16 | w[i + 1], v.weight[j], j + 1);
             }
-        };
-        {
-            std::vector<std::thread> pool;
-            for (unsigned t = 0; t < threads; ++t) pool.emplace_back(count, t);
-            for (auto& th : pool) th.join();
-        }
-        Counts merged;
-        for (const Counts& c : local) c.each([&](uint64_t h, const char* d, uint32_t sz, uint64_t sum) { merged.insert(h, d, sz, sum); });
-        const size_t candidates = merged.size();
-        local.clear();
-        Counts current;
-        merged.each([&](uint64_t h, const char* d, uint32_t sz, uint64_t sum) {
-            if (sum < threshold) return;
-            current.insert(h, d, sz, sum);
-            hot[k].emplace_back(d, sz);
-            hot_sum[k].push_back(sum);
         });
-        accepted += hot[k].size();
-        if (accepted > max_patterns) fail("accepted-pattern cap exceeded at length " + std::to_string(k));
         const double counted = now();
-        // Pass 2: the next length's alive bits — this length's hot windows.
+        // A (k+1)-pattern's spelling: its prefix, then its suffix's last code point.
+        auto last_cp = [](const std::string& x) {
+            size_t i = x.size() - 1;
+            while (i > 0 && (static_cast<unsigned char>(x[i]) & 0xC0) == 0x80) --i;
+            return x.substr(i);
+        };
+        Ids ids = k == 1
+            ? keep(k, local, [](uint64_t key) { return std::string(reinterpret_cast<const char*>(&key), strnlen(reinterpret_cast<const char*>(&key), 4)); })
+            : keep(k, local, [&](uint64_t key) { return hot[k - 1][key >> 16] + last_cp(hot[k - 1][key & 0xFFFF]); });
+        // Assign: the ids of this length's hot windows, in place.
         if (k < max_chars && !hot[k].empty()) {
-            Bits next_alive(v.cp.back());
-            std::atomic<size_t> cursor{0};
-            auto mark = [&]() {
+            parallel([&](unsigned, size_t lo, size_t hi) {
                 std::vector<uint32_t> b;
-                for (size_t lo; (lo = cursor.fetch_add(CHUNK)) < n;) {
-                    for (size_t j = lo, hi = std::min(n, lo + CHUNK); j < hi; ++j) {
+                for (size_t j = lo; j < hi; ++j) {
+                    const uint64_t base = v.cp[j];
+                    const uint32_t len = static_cast<uint32_t>(v.cp[j + 1] - base);
+                    Id* w = id.data() + base;
+                    if (len < k) continue;
+                    if (k == 1) {
                         const std::string_view s = v.name(j);
                         boundaries(s, b);
-                        const uint32_t len = static_cast<uint32_t>(b.size() - 1);
-                        const uint64_t base = v.cp[j];
-                        for (uint32_t i = 0; i + k <= len; ++i) {
-                            if (k > 1 && !(alive.get(base + i) && alive.get(base + i + 1))) continue;
-                            const std::string_view w = s.substr(b[i], b[i + k] - b[i]);
-                            if (current.contains(hash_bytes(w), w.data(), static_cast<uint32_t>(w.size()))) next_alive.set(base + i);
+                        for (uint32_t i = 0; i < len; ++i) {
+                            uint64_t key = 0;
+                            std::memcpy(&key, s.data() + b[i], b[i + 1] - b[i]);
+                            w[i] = static_cast<Id>(ids.get(key, NONE));
                         }
+                        continue;
                     }
+                    for (uint32_t i = 0; i + k <= len; ++i)
+                        w[i] = w[i] != NONE && w[i + 1] != NONE ? static_cast<Id>(ids.get(uint64_t(w[i]) << 16 | w[i + 1], NONE)) : NONE;
+                    w[len - k + 1] = NONE;  // one fewer window at this length
                 }
-            };
-            std::vector<std::thread> pool;
-            for (unsigned t = 0; t < threads; ++t) pool.emplace_back(mark);
-            for (auto& th : pool) th.join();
-            alive = std::move(next_alive);
+            });
         }
-        std::fprintf(stderr, "{\"stage\":\"hot-substrings\",\"chars\":%u,\"candidates\":%zu,\"hot_patterns\":%zu,\"count_s\":%.3f,\"mark_s\":%.3f}\n",
-                     k, candidates, hot[k].size(), counted - start, now() - counted);
+        std::fprintf(stderr, "\"count_s\":%.3f,\"assign_s\":%.3f}\n", counted - start, now() - counted);
+        if (hot[k].empty()) break;
     }
 
     std::string out = "{\"schema\": \"hot-frequency-queries-v1\", \"engine\": \"native\", \"threshold_paths\": " + std::to_string(threshold) +
