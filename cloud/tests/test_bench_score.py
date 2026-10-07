@@ -9,7 +9,7 @@ import urllib.parse
 import pytest
 
 from dt_cloud.bench.queryset import Case
-from dt_cloud.bench.score import SubtreeEngine, Truth, line, md5_paths, record, run, tally
+from dt_cloud.bench.score import Answer, SubtreeEngine, Truth, line, md5_paths, record, run, score, tally
 from dt_cloud.probe import Resp
 
 DATE = "2026-10-01"
@@ -27,6 +27,7 @@ TRUTH = {
     "approx": [view("", ["bk/p"], 10, 1)],
     "empty": [view("", ["bk/e"], 0, 1)],
     "wide": [view("", ["bk/w"], 10, 1)],
+    "capped": [view("", ["bk/a", "bk/b", "bk/c"], 60, 3)],
 }
 CASES = [
     Case("ckpt", "ckpt -tmp", "simple", ("", "bk"), ""),
@@ -43,7 +44,7 @@ CASES = [
 def truth(tmp_path):
     (tmp_path / "summary.json").write_text(json.dumps({"date": DATE, "queries": [{"id": k, "views": v} for k, v in TRUTH.items()]}))
     for k, vs in TRUTH.items():
-        lists = {"miss": [["bk/x", 10, 1]], "wrong": [["bk/q", 10, 1]]}
+        lists = {"miss": [["bk/x", 10, 1]], "wrong": [["bk/q", 10, 1]], "capped": [["bk/a", 10, 1], ["bk/b", 20, 1], ["bk/c", 30, 1]]}
         (tmp_path / f"{k}.json").write_text(json.dumps({"id": k, "views": [{**v, "list": lists.get(k)} for v in vs]}))
     return Truth(str(tmp_path))
 
@@ -62,6 +63,7 @@ ANSWERS = {
     ("ppp.*", ""): (200, body(["bk/p"], 10, 1, approximate=True, approximateReason="regex")),
     ("eee", ""): (200, body([], 0, 0)),
     ("www", ""): (413, b"query too wide: drill deeper or raise minArea"),
+    ("cap", ""): (200, body(["bk/a"], 60, 3, matchesTotal=3, matchesTruncated=True)),
 }
 
 
@@ -100,6 +102,26 @@ def test_run(truth):
         "tally": {"exact": 3, "flagged": 1, "FAIL": 1, "error": 1, "exact*": 1, "refused": 1},
     }
     assert rec["results"][2]["reason"] == "search budget"
+
+
+def test_bounded_match_list_only_verifies_totals(truth):
+    scores = run(SubtreeEngine(fetch, DATE), [Case("capped", "cap", "simple", ("",), "")], truth)
+    s = scores[0]
+    assert [s.verdict, s.roots, s.roots_want, s.missing, s.extra, s.b_err, s.o_err, s.roots_truncated] == [
+        "totals", 3, 3, None, 0, 0.0, 0.0, True,
+    ]
+
+
+@pytest.mark.parametrize("roots,count,b,listed,verdict,extra", [
+    (["bk/a"], 3, 60, None, "totals", None),
+    (["bk/x"], 3, 60, ["bk/a", "bk/b", "bk/c"], "FAIL", 1),
+    (["bk/a"], 2, 60, ["bk/a", "bk/b", "bk/c"], "FAIL", 0),
+    (["bk/a"], 3, 55, ["bk/a", "bk/b", "bk/c"], "FAIL", 0),
+])
+def test_bounded_match_list_validation(roots, count, b, listed, verdict, extra):
+    answer = Answer(200, 10, 8, 100, roots, b, 3, n_roots=count, roots_truncated=True)
+    result = score(Case("capped", "cap", "simple", ("",), ""), "", [answer], TRUTH["capped"][0], listed)
+    assert (result.verdict, result.missing, result.extra) == (verdict, None, extra)
 
 
 def test_truth_missing_query(truth):

@@ -21,7 +21,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
+from typing import Callable
 
 UA = "dt-cloud-probe/1.0"
 LABELS = {"tier", "index", "partial", "partialReason", "approximate", "approximateReason", "firstPaint"}
@@ -42,6 +44,7 @@ class Rec:
     bytes: int
     sha: str | None
     cold: bool
+    clients: int = 1
 
 
 def normalize(body: bytes) -> str | None:
@@ -100,22 +103,54 @@ def fetch(base: str, path: str, token: str | None, timeout: float) -> tuple[int,
     return status, round((time.monotonic() - t0) * 1000), dict(hd), body
 
 
-def run(base: str, requests: list[tuple[str, str]], *, token: str | None, trials: int = 1, seed: int | None = None, cold: bool = False,
-        ch_url: str | None = None, timeout: float = 300, log=None) -> list[Rec]:
+def run(
+    base: str,
+    requests: list[tuple[str, str]],
+    *,
+    token: str | None,
+    trials: int = 1,
+    seed: int | None = None,
+    cold: bool = False,
+    ch_url: str | None = None,
+    timeout: float = 300,
+    log: Callable[[str], None] | None = None,
+    record_path: str | None = None,
+    parallel: int = 1,
+) -> list[Rec]:
+    """Record completed requests immediately; parallel mode is warm-only."""
+    if parallel <= 0 or trials <= 0:
+        raise ValueError("parallel clients and trials must be positive")
+    if cold and parallel > 1:
+        raise ValueError("independent per-request cold resets cannot overlap parallel requests")
+
+    def request(
+        name: str,
+        path: str,
+        trial: int,
+    ) -> Rec:
+        p = with_jitter(path, name, trial, seed) if seed is not None else path
+        if cold:
+            drop_caches(ch_url or "http://localhost:8123")
+        status, ms, hd, body = fetch(base, p, token, timeout)
+        hd = {k.lower(): v for k, v in hd.items()}
+        st = hd.get("server-timing") or ""
+        return Rec(name, trial, p, status, ms, hd.get("x-query-engine"), st[:200] or None, hd.get("x-cache"), len(body),
+                   normalize(body) if status == 200 else None, cold, clients=parallel)
+
     out: list[Rec] = []
-    for trial in range(trials):
-        for name, path in requests:
-            p = with_jitter(path, name, trial, seed) if seed is not None else path
-            if cold:
-                drop_caches(ch_url or "http://localhost:8123")
-            status, ms, hd, body = fetch(base, p, token, timeout)
-            hd = {k.lower(): v for k, v in hd.items()}
-            st = hd.get("server-timing") or ""
-            rec = Rec(name, trial, p, status, ms, hd.get("x-query-engine"), st[:200] or None, hd.get("x-cache"), len(body),
-                      normalize(body) if status == 200 else None, cold)
-            out.append(rec)
-            if log:
-                log(f"{name:<40} t{trial} {status} {ms:>7} ms {len(body):>10} B {rec.engine or ''} {rec.sha or ''}")
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        for trial in range(trials):
+            if parallel == 1:
+                completed = (request(name, path, trial) for name, path in requests)
+            else:
+                futures = [pool.submit(request, name, path, trial) for name, path in requests]
+                completed = (future.result() for future in as_completed(futures))
+            for rec in completed:
+                out.append(rec)
+                if record_path:
+                    dump([rec], record_path)
+                if log:
+                    log(f"{rec.name:<40} t{trial} {rec.status} {rec.ms:>7} ms {rec.bytes:>10} B {rec.engine or ''} {rec.sha or ''}")
     return out
 
 
@@ -141,17 +176,37 @@ def summary(recs: list[Rec]) -> list[dict]:
 
 
 def compare(a: list[Rec], b: list[Rec]) -> list[dict]:
-    """Per request name: both sides' p50 / max ms and how many trials' bodies matched (normalized)."""
+    """Pair identical requests; count failed/non-JSON trials as unverified.
+
+    Cache state and client concurrency may differ for an intentional A/B,
+    but request names, trials and URL parameters must match exactly.
+    """
+    def index(rows: list[Rec]) -> dict[tuple[str, int], Rec]:
+        if not rows:
+            raise ValueError("an empty HTTP run cannot be compared")
+        result = {}
+        for row in rows:
+            key = (row.name, row.trial)
+            if key in result:
+                raise ValueError(f"duplicate HTTP request case: {key}")
+            result[key] = row
+        return result
+
+    cases_a, cases_b = index(a), index(b)
+    if cases_a.keys() != cases_b.keys():
+        raise ValueError("HTTP workloads differ; names and trials must match")
+    for key, row in cases_a.items():
+        if row.url != cases_b[key].url:
+            raise ValueError(f"HTTP request parameters differ: {key}")
     sa = {r["name"]: r for r in summary(a)}
     sb = {r["name"]: r for r in summary(b)}
-    shas_b = {(r.name, r.trial): r.sha for r in b}
     out = []
     for name in sa:
         rs = [r for r in a if r.name == name]
-        same = sum(1 for r in rs if r.sha is not None and shas_b.get((r.name, r.trial)) == r.sha)
-        both = sum(1 for r in rs if r.sha is not None and shas_b.get((r.name, r.trial)) is not None)
-        out.append({"name": name, "a_p50": sa[name]["p50"], "a_max": sa[name]["max"], "b_p50": sb.get(name, {}).get("p50"),
-                    "b_max": sb.get(name, {}).get("max"), "exact": f"{same}/{both}"})
+        same = sum(1 for r in rs if r.status == cases_b[(r.name, r.trial)].status == 200
+                   and r.sha is not None and cases_b[(r.name, r.trial)].sha == r.sha)
+        out.append({"name": name, "a_p50": sa[name]["p50"], "a_max": sa[name]["max"], "b_p50": sb[name]["p50"],
+                    "b_max": sb[name]["max"], "exact": f"{same}/{len(rs)}"})
     return out
 
 

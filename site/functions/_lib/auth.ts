@@ -18,7 +18,7 @@
  */
 import { type Auth, createGate, type Gate, hasScope, type Subject } from '@open-athena/auth'
 import { d1AuditSink, d1GrantStore, d1ProfileStore, d1RequestStore } from '@open-athena/auth/d1'
-import type { D1Database } from '@cloudflare/workers-types'
+import type { D1Database, KVNamespace } from '@cloudflare/workers-types'
 
 export interface Env {
   DB?: D1Database

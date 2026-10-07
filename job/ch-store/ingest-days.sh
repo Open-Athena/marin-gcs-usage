@@ -4,7 +4,7 @@
 # Each scan's newest index generation's `path` sort is copied into ClickHouse's
 # user_files (/data/in/) first; the next scan's copy overlaps this scan's ingest.
 #   ingest-days.sh 2026-09-04 … 2026-10-03
-set -uo pipefail
+set -euo pipefail
 B=gs://oa-gcs-usage-dvx/listing
 IMAGE=$(cat /data/image)
 # The newest generation's; scans before index generations (≤ 2026-09-06) keep it beside the listing.
@@ -17,9 +17,14 @@ for i in "${!days[@]}"; do
   next=${days[$((i + 1))]:-}
   [ -n "$next" ] && { fetch "$next" & pf=$!; }
   t0=$(date +%s)
-  docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/src -e CH_INGEST_PAIRS="${CH_INGEST_PAIRS:-}" --entrypoint python3 "$IMAGE" -u -m dt_cloud.cli \
-    ch-ingest -d "$d" -F -t "${THREADS:-8}" "$d.parquet" >> /data/ingest.jsonl 2>> /data/ingest.log
-  echo "ingested $d rc=$? in $(( $(date +%s) - t0 ))s (src $(cat "/data/in/$d.src"))" >> /data/ingest.log
+  if docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/src -e CH_INGEST_PAIRS="${CH_INGEST_PAIRS:-}" --entrypoint python3 "$IMAGE" -u -m dt_cloud.cli \
+    ch-ingest -d "$d" -F -t "${THREADS:-8}" "$d.parquet" >> /data/ingest.jsonl 2>> /data/ingest.log; then
+    echo "ingested $d rc=0 in $(( $(date +%s) - t0 ))s (src $(cat "/data/in/$d.src"))" >> /data/ingest.log
+  else
+    rc=$?
+    echo "ingest failed $d rc=$rc in $(( $(date +%s) - t0 ))s (src $(cat "/data/in/$d.src"))" >> /data/ingest.log
+    exit "$rc"
+  fi
   rm -f "/data/in/$d.parquet"
   [ -n "$next" ] && wait "$pf"
 done

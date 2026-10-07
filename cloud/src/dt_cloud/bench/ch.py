@@ -66,10 +66,20 @@ def like_lit(s: str, pre: str = "%", post: str = "%") -> str:
     return lit(pre + esc + post)
 
 
-def name_sql(t: NameTest, col: str = "l") -> str:
+def name_sql(
+    t: NameTest,
+    col: str = "l",
+    *,
+    trigram: bool = False,
+) -> str:
     """A `terms.NameTest` on a lowercase-name column. Literal tests are
     `LIKE` patterns, which the text index can serve."""
     if t.op == "contains":
+        # Only callers with a known ngrams(3) index may use token semantics.
+        # One ASCII alphanumeric trigram is exactly a substring; longer
+        # needles need ordering/repetition checks and retain LIKE rechecks.
+        if trigram and len(t.arg) == 3 and t.arg.isascii() and t.arg.isalnum():
+            return f"hasAllTokens({col}, [{lit(t.arg)}])"
         return f"{col} LIKE {like_lit(t.arg)}"
     if t.op == "starts":
         return f"startsWith({col}, {lit(t.arg)})"
@@ -94,6 +104,12 @@ def pos_sql(ast: Ast) -> str:
     return "(" + " OR ".join("(" + " AND ".join(matcher_sql(m) for m in a) + ")" for a in ast.alts) + ")"
 
 
+def literal_name_only(ast: Ast) -> bool:
+    """One unanchored substring: passing the last-name test proves a hit."""
+    return not ast.neg and len(ast.alts) == 1 and len(ast.alts[0]) == 1 \
+        and ast.alts[0][0].kind == "sub" and "/" not in ast.alts[0][0].text
+
+
 def neg_sql(ast: Ast) -> str:
     if not ast.neg:
         return "0"
@@ -114,7 +130,8 @@ class ChIndex:
     """The engine: a ClickHouse session over HTTP (temporary tables per
     answer), `max_threads` = `threads`."""
 
-    def __init__(self, url: str = DEFAULT_URL, *, threads: int = 8, db: str = "default", max_stems: int = 5000, cold: bool = False):
+    def __init__(self, url: str = DEFAULT_URL, *, threads: int = 8, db: str = "default", max_stems: int = 5000, cold: bool = False,
+                 bounded_view: str | None = None, path_free: bool = False, trigram_names: bool = False):
         self.url = url.rstrip("/")
         self.cold = cold
         self.session = uuid.uuid4().hex
@@ -122,10 +139,16 @@ class ChIndex:
         self.max_stems = max_stems
         self._views: dict[str, tuple[int, int, int, int, int]] = {}
         self._hit_view: str | None = None
+        self.path_free = path_free
+        self.trigram_names = trigram_names
+        self._path_free_candidates = False
         t = time.monotonic()
-        self.n = int(self.one("SELECT count() FROM nodes")[0])
-        sb, so = self.one("SELECT sum(b), sum(o) FROM nodes WHERE depth = 1")
-        self._views[""] = (-1, self.n - 1, 0, int(sb), int(so))
+        self.bounded_view = bounded_view
+        self.n = None
+        if bounded_view is None:
+            self.n = int(self.one("SELECT count() FROM nodes")[0])
+            sb, so = self.one("SELECT sum(b), sum(o) FROM nodes WHERE depth = 1")
+            self._views[""] = (-1, self.n - 1, 0, int(sb), int(so))
         self.stats = {"init_s": round(time.monotonic() - t, 2), "nodes": self.n, "url": self.url}
 
     # transport
@@ -171,10 +194,12 @@ class ChIndex:
     def view(self, view: str) -> tuple[int, int, int, int, int]:
         """(pre, post, depth, b, o) of a view root; the store root is
         (−1, n−1, 0, Σ buckets)."""
+        if self.bounded_view is not None and view != self.bounded_view:
+            raise Unsupported("the bounded index only serves its declared view")
         if view not in self._views:
             name = view.rsplit("/", 1)[-1].lower()
             r = self.rows(f"""SELECT pre, post, depth, b, o FROM nodes_by_name
-                WHERE nid IN (SELECT nid FROM names WHERE l = {lit(name)}) AND depth = {view.count('/') + 1} AND path = {lit(view)}""")
+                WHERE nid IN (SELECT nid FROM names WHERE l = {lit(name)}) AND depth = {0 if view == '' else view.count('/') + 1} AND path = {lit(view)}""")
             if len(r) != 1:
                 raise KeyError(f"view {view!r}: {len(r)} nodes")
             self._views[view] = tuple(int(x) for x in r[0])  # type: ignore[assignment]
@@ -184,14 +209,23 @@ class ChIndex:
 
     def _cands(self, cond: str, flags: str, lo: int, hi: int) -> None:
         self.tmp("cn", f"SELECT nid FROM names WHERE {cond}")
-        self.tmp("cr", f"""SELECT pre, post, depth, b, o, path, {flags} FROM (
-            SELECT pre, post, depth, b, o, path, lowerUTF8(path) AS lp FROM nodes_by_name
+        cols = "pre, post, depth, b, o" + ("" if self._path_free_candidates else ", path")
+        source = cols + ("" if self._path_free_candidates else ", lowerUTF8(path) AS lp")
+        self.tmp("cr", f"""SELECT {cols}, {flags} FROM (
+            SELECT {source} FROM nodes_by_name
             WHERE nid IN (SELECT nid FROM cn) AND pre > {lo} AND pre <= {hi})""")
 
     def evaluate(self, ast: Ast, view: str) -> ChResult:
         t0 = time.monotonic()
         stats: dict = {}
         vpre, vpost, dv, vb, vo = self.view(view)
+        self._path_free_candidates = False
+        hit = bool(compile_query(ast)(view))
+        if hit and not ast.neg:
+            self._hit_view = view
+            self.tmp("roots", f"SELECT toUInt32({max(vpre, 0)}) AS pre, toUInt32({vpost}) AS post, toInt64({vb}) AS b, toInt64({vo}) AS o")
+            return ChResult(True, 1, vb, vo, 0, {"view_shortcut": True, "path_free_candidates": False,
+                                               "cands_s": 0.0, "roots_s": 0.0, "s": round(time.monotonic() - t0, 4)})
         regex = [m for a in ast.alts for m in a if m.kind == "regex"] + [m for m in ast.neg if m.kind == "regex"]
         if regex:
             if len(ast.alts) != 1 or len(ast.alts[0]) != 1 or ast.neg:
@@ -210,8 +244,12 @@ class ChIndex:
             terms = {m: seg_term(m) for m in matchers}
             if any(t.trivial for t in terms.values()):
                 raise Unsupported("a term that constrains no segment")
-            flags = f"{pos_sql(ast)} AS p, {neg_sql(ast)} AS n"
-            self._cands("(" + " OR ".join(name_sql(t.name) for t in terms.values()) + ")", flags, vpre, vpost)
+            # For one literal substring without a slash, a passing last name
+            # proves the full positive predicate. No path bytes are needed
+            # for discovery; AND/NOT, anchors, globs and regex keep full flags.
+            self._path_free_candidates = self.path_free and literal_name_only(ast)
+            flags = "1 AS p, 0 AS n" if self._path_free_candidates else f"{pos_sql(ast)} AS p, {neg_sql(ast)} AS n"
+            self._cands("(" + " OR ".join(name_sql(t.name, trigram=self.trigram_names) for t in terms.values()) + ")", flags, vpre, vpost)
             strict = [t for t in terms.values() if t.strict]
             if strict:
                 import re
@@ -228,7 +266,7 @@ class ChIndex:
                     self.exec(f"""INSERT INTO cr SELECT pre, post, depth, b, o, path, {flags} FROM (
                         SELECT pre, post, depth, b, o, path, lowerUTF8(path) AS lp FROM nodes WHERE {rng})""")
         stats["cands_s"] = round(time.monotonic() - t0, 3)
-        hit = bool(compile_query(ast)(view))
+        stats["path_free_candidates"] = self._path_free_candidates
         # A node is in `cr` twice only when a stem's child also passed a name test.
         src = "(SELECT pre, any(post) AS post, any(b) AS b, any(o) AS o, any(p) AS p, any(n) AS n FROM cr GROUP BY pre)" if stats.get("stems") else "cr"
         outer = """SELECT pre, post, b, o FROM (
@@ -258,12 +296,18 @@ class ChIndex:
         stats["s"] = round(time.monotonic() - t0, 4)
         return ChResult(hit, n, rb - eb, ro - eo, ne, stats)
 
+    def root_paths_sql(self) -> str:
+        """Late paths from the same name ranges, or the path-bearing candidates."""
+        if self._path_free_candidates:
+            return "SELECT path FROM nodes_by_name WHERE nid IN (SELECT nid FROM cn) AND pre IN (SELECT pre FROM roots)"
+        return "SELECT any(path) AS path FROM cr WHERE pre IN (SELECT pre FROM roots) GROUP BY pre"
+
     def roots_summary(self, list_max: int) -> tuple[list[str] | None, int, str | None]:
         """The last answer's roots: (sorted list, n, None) up to `list_max`,
         else (None, n, md5 of the sorted, newline-joined list)."""
         if self._hit_view is not None:
             return [self._hit_view], 1, None
-        paths = "(SELECT any(path) AS path FROM cr WHERE pre IN (SELECT pre FROM roots) GROUP BY pre)"
+        paths = f"({self.root_paths_sql()})"
         n = int(self.one("SELECT count() FROM roots")[0])
         if n <= list_max:
             out = self.exec(f"SELECT path FROM {paths} ORDER BY path", fmt="JSONCompact")

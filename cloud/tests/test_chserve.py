@@ -40,22 +40,67 @@ def subtree(st: cs.Store, date: str, path: str, q: str | None, **kw) -> dict:
     w, h = kw.pop("w", 1280), kw.pop("h", 896)
     ma, at = kw.pop("min_area", 12), kw.pop("atten", 2)
     md = kw.pop("max_depth", None)
+    match_limit = kw.pop("match_limit", None)
     ch = st.session()
     s = st.scan(date)
     if q is None:
         v = cs.plain_view(ch, s, path, w=w, h=h, min_area=ma, atten=at, max_depth=md)
     else:
-        pr = cs.filter_prepare(ch, s, path, parse_simple(q, min_term=1))
+        pr = cs.filter_prepare(ch, s, path, parse_simple(q, min_term=1), compact=st.root_plan == "compact")
         v = cs.filter_view(ch, pr, w=w, h=h, min_area=ma, atten=at, max_depth=md) if pr else None
-    return json.loads("".join(cs.subtree_body(ch, v, date=date, path=path, w=w, h=h, min_area=ma, atten=at, q=q, root_label=st.root_label)))
+    return json.loads("".join(cs.subtree_body(
+        ch, v, date=date, path=path, w=w, h=h, min_area=ma, atten=at, q=q,
+        root_label=st.root_label, match_limit=match_limit,
+    )))
+
+
+def test_numeric_diff_match_union_uses_ids_not_path_membership():
+    from types import SimpleNamespace
+
+    a = SimpleNamespace(prep=SimpleNamespace(sfx="a"))
+    b = SimpleNamespace(prep=SimpleNamespace(sfx="b"))
+    assert cs._matched_union_src(a, b, key="pre") == "SELECT path, b, o FROM rn_b UNION ALL SELECT path, b, o FROM rn_a WHERE pre NOT IN (SELECT pre FROM rn_b)"
+    assert cs._matched_union_src(a, b) == "SELECT path, b, o FROM rn_b UNION ALL SELECT path, b, o FROM rn_a WHERE path NOT IN (SELECT path FROM rn_b)"
+    assert cs._matched_union_src(None, b, key="pre") == "SELECT path, b, o FROM rn_b"
+    assert cs._matched_union_src(a, None, key="pre") == "SELECT path, b, o FROM rn_a"
+
+
+def test_diff_match_union_rejects_unknown_key():
+    with pytest.raises(ValueError) as caught:
+        cs._matched_union_src(None, None, key="bad")
+    assert str(caught.value) == "diff match key must be path or pre"
+
+
+def test_numeric_diff_union_preserves_newer_values_and_path_order(ch_url, ch_db):  # noqa: F811
+    from types import SimpleNamespace
+
+    ch = Ch(ch_url, db=ch_db)
+    try:
+        ch.tmp("rn_union_a", "SELECT toUInt32(99) AS pre, 'b/a' AS path, 10 AS b, 1 AS o UNION ALL SELECT 10,'b/a.',30,3 UNION ALL SELECT 6,'b/z',40,4")
+        ch.tmp("rn_union_b", "SELECT toUInt32(99) AS pre, 'b/a' AS path, 20 AS b, 2 AS o UNION ALL SELECT 1000,'b/new',50,5")
+        a = SimpleNamespace(prep=SimpleNamespace(sfx="union_a"))
+        b = SimpleNamespace(prep=SimpleNamespace(sfx="union_b"))
+        want = [["b/a", 20, 2], ["b/a.", 30, 3], ["b/new", 50, 5], ["b/z", 40, 4]]
+        for key in ("pre", "path"):
+            src = cs._matched_union_src(a, b, key=key)
+            assert ch.json(f"SELECT path, b, o FROM ({src}) ORDER BY path") == want
+            assert ch.scalar(f"SELECT count() FROM ({src})") == "4"
+            rows = ch.exec(cs._matched_union_sql(src, 2), fmt="TSVRaw")
+            assert [json.loads(line) for line in rows.splitlines()] == [
+                {"path": "b/a", "b": 20, "o": 2},
+                {"path": "b/a.", "b": 30, "o": 3},
+            ]
+    finally:
+        ch.close()
 
 
 def diff(st: cs.Store, a: str, b: str, path: str, q: str | None, **kw) -> dict:
     ch = st.session()
     ast = parse_simple(q, min_term=1) if q is not None else None
+    match_limit = kw.pop("match_limit", None)
     return json.loads("".join(cs.diff_body(ch, st.scan(a), st.scan(b), path=path, w=kw.pop("w", 1280), h=kw.pop("h", 896), min_area=kw.pop("min_area", 12),
                                            atten=kw.pop("atten", 2), top=kw.pop("top", 500), ast=ast, q=q, depth=kw.pop("depth", None),
-                                           summary=kw.pop("summary", False))))
+                                           summary=kw.pop("summary", False), match_limit=match_limit, compact=st.root_plan == "compact")))
 
 
 def strip(b: dict) -> dict:
@@ -72,12 +117,58 @@ def test_filtered_subtree(i, fx, fixture_ix):  # noqa: F811
     assert got == strip(box_body(fixture_ix, c["path"], c["q"], date=SA, **kw))
 
 
+@pytest.mark.parametrize("plan", ["rich", "compact"])
+def test_compact_roots_fold_ancestors_exactly(plan, fx, fixture_ix, monkeypatch):  # noqa: F811
+    """The compact plan omits rich aggregates of small ancestors, but preserves their folded counts
+    and the complete match lists; compare the full response to the independently evaluated mem index."""
+    monkeypatch.setattr(cs, "HARD_CAP", 2)
+    monkeypatch.setattr(bv, "HARD_CAP", 2)
+    monkeypatch.setattr(fx, "root_plan", plan)
+    got = strip(subtree(fx, SA, "", "f00*1", min_area=10000))
+    assert got == strip(box_body(fixture_ix, "", "f00*1", date=SA, min_area=10000))
+    assert [got["folded"], len(got["matches"])] == [226, 271]
+
+
+def test_folded_counts_require_a_visible_root():
+    with pytest.raises(ValueError) as caught:
+        cs.folded_counts_sql("a", "anc_a", 5., [])
+    assert str(caught.value) == "folded counts require the view root"
+
+
+def test_folded_counts_bound_client_rows(ch_url, ch_db):  # noqa: F811
+    ch = Ch(ch_url, db=ch_db)
+    try:
+        ch.tmp("rn_counts", "SELECT * FROM values('path String, b Int64', ('bucket/shown/hit', 1), ('bucket/hidden/deep/hit', 1), ('bucket/shown/keep', 10))")
+        ch.tmp("anc_counts", "SELECT * FROM values('path String, b Int64', ('bucket/hidden', 2), ('bucket/hidden/deep', 1), ('bucket/shown', 10))")
+        original = f"""SELECT par, count() FROM (SELECT {cs.PARENT} AS par FROM rn_counts WHERE b < 5
+            UNION ALL SELECT {cs.PARENT} AS par FROM anc_counts WHERE b < 5) GROUP BY par ORDER BY par"""
+        assert ch.json(original) == [["bucket", 1], ["bucket/hidden", 1], ["bucket/hidden/deep", 1], ["bucket/shown", 1]]
+        bounded = cs.folded_counts_sql("counts", "anc_counts", 5., ["bucket/shown", "bucket", "bucket/shown"])
+        assert ch.json(bounded + " ORDER BY par") == [["bucket", 1], ["bucket/shown", 1]]
+    finally:
+        ch.close()
+
+
 @pytest.mark.parametrize("i", range(len(GOLDEN["diff"])))
 def test_filtered_diff(i, fx):
     e = GOLDEN["diff"][i]
     c, want = e["case"], e["body"]
     got = diff(fx, SA, SB, c["path"], c["q"], depth=c.get("depth"))
     assert strip(got) == strip(want)
+
+
+def test_file_directory_collision_is_still_an_ancestor(ch_url, ch_db):  # noqa: F811
+    """A path can name both a blob and a prefix. `any(kind)` may choose file; its
+    nonzero child count must still suppress a matched descendant as a second root."""
+    ch = Ch(ch_url, db=ch_db)
+    try:
+        ch.tmp("collision", """SELECT t.1 AS path, t.2 AS depth, t.3 AS kind, t.4 AS nc FROM
+            (SELECT arrayJoin([tuple('bucket/a', 2, 'file', 1), tuple('bucket/a/b', 3, 'file', 0),
+                               tuple('bucket/c', 2, 'file', 0)]) AS t)""")
+        roots = ch.json(cs._window_outer("SELECT * FROM collision", "path") + " ORDER BY path")
+        assert roots == [["bucket/a"], ["bucket/c"]]
+    finally:
+        ch.close()
 
 
 @pytest.mark.parametrize("i", range(len(GOLDEN["plain"])))
@@ -124,6 +215,25 @@ def test_diff_with_changes(ch_url, two, tmp_path_factory):  # noqa: F811
         Ch(ch_url, db="default", session=False).exec(f"DROP DATABASE IF EXISTS {db} SYNC")
 
 
+def test_match_lists_can_be_bounded(fx):
+    full = subtree(fx, SA, "", "f00*1")
+    bounded = subtree(fx, SA, "", "f00*1", match_limit=2)
+    assert [bounded["matches"], bounded["matched"], bounded["matchesTotal"], bounded["matchesTruncated"]] == [
+        full["matches"][:2],
+        full["matched"][:2],
+        271,
+        True,
+    ]
+
+    full_diff = diff(fx, SA, SB, "", "ttl")
+    bounded_diff = diff(fx, SA, SB, "", "ttl", match_limit=2)
+    assert [bounded_diff["matched"], bounded_diff["matchesTotal"], bounded_diff["matchesTruncated"]] == [
+        full_diff["matched"][:2],
+        6,
+        True,
+    ]
+
+
 # --- the server (`serve-query -e ch`) ----------------------------------------------------
 
 
@@ -168,6 +278,9 @@ def test_server(server, fx):
     assert (st, eng, strip(json.loads(b))) == (200, "box", strip(GOLDEN["plain"][1]["body"]))
     st, _, b = get(f"{server}/api/subtree?date={SA}&path=bk/tmp&q=ttl&h=896")
     assert (st, strip(json.loads(b))) == (200, strip(subtree(fx, SA, "bk/tmp", "ttl")))
+    st, _, b = get(f"{server}/api/subtree?date={SA}&path=&q=f00*1&matchLimit=2")
+    bounded = json.loads(b)
+    assert [st, bounded["matchesTotal"], bounded["matchesTruncated"], len(bounded["matches"]), len(bounded["matched"])] == [200, 271, True, 2, 2]
     st, _, b = get(f"{server}/api/diff?from={SA}&to={SC}&path=&h=896")
     assert (st, strip(json.loads(b))) == (200, strip(GOLDEN["diffC"][0]["body"]))
     st, _, b = get(f"{server}/api/series?path=bk&n=3&first={SA}&last={SC}")

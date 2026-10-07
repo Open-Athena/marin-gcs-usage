@@ -47,3 +47,20 @@ def test_literals():
         "l = 'ab'",
         "match(l, 'ab')",
     ]
+
+
+def test_direct_trigram_lookup_is_exact_and_schema_opt_in():
+    assert [name_sql(NameTest("contains", value), trigram=True) for value in ("abc", "000", "ABC", "ab", "abcd", "a_b", "漢字語")] == [
+        "hasAllTokens(l, ['abc'])",
+        "hasAllTokens(l, ['000'])",
+        "hasAllTokens(l, ['ABC'])",
+        "l LIKE '%ab%'",
+        "l LIKE '%abcd%'",
+        "l LIKE '%a\\\\_b%'",
+        "l LIKE '%漢字語%'",
+    ]
+    assert name_sql(NameTest("contains", "abc")) == "l LIKE '%abc%'"
+    assert name_sql(NameTest("contains", "abc"), col="name", trigram=True) == "hasAllTokens(name, ['abc'])"
+    assert [name_sql(NameTest(op, "abc"), trigram=True) for op in ("starts", "ends", "equals", "regex")] == [
+        "startsWith(l, 'abc')", "endsWith(l, 'abc')", "l = 'abc'", "match(l, 'abc')",
+    ]

@@ -3,7 +3,7 @@ import type { Env } from '../_lib/auth'
 import { sqliteD1 } from '../_lib/testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from '../_lib/testStore'
 import { SEARCH_FILES, searchKey } from '../_lib/search'
-import { BOX_MAX_BYTES, withProvenance } from '../_lib/queryBox'
+import { BOX_MAX_BYTES, boxFor, withProvenance } from '../_lib/queryBox'
 import { onRequestGet as subtree } from './subtree'
 import { onRequestGet as diff } from './diff'
 import { onRequestGet as series } from './series'
@@ -60,6 +60,33 @@ describe('QUERY_BOX_URL unset', () => {
     const asked = mockBox(() => { throw new Error('no box') })
     const r = await call(subtree, `date=${A}&path=bk&q=ttl`, base)
     expect([r.status, r.engine, asked]).toEqual([200, null, []])
+  })
+  it('a coarse-only URL does not fetch or alter canonical subtree, diff or series answers', async () => {
+    const asked = mockBox(() => { throw new Error('canonical requests must not fetch') })
+    const env = { ...base, QUERY_BOX_COARSE: '1', QUERY_BOX_COARSE_URL: 'https://coarse.test', QUERY_BOX_TOKEN: 'tok' }
+    const routes = [subtree, diff, series] as Route[]
+    const queries = [`date=${A}&path=bk&q=ttl`, `from=${A}&to=${C}&path=bk`, 'path=bk']
+    for (const [i, route] of routes.entries()) {
+      const original = await call(route, queries[i], base)
+      const isolated = await call(route, queries[i], env)
+      expect(isolated).toEqual(original)
+      expect(isolated.engine).toEqual(null)
+    }
+    expect(asked).toEqual([])
+  })
+})
+
+describe('coarse endpoint isolation', () => {
+  it('selects only the endpoint for the requested contract', () => {
+    const url = new URL('https://site.test/api/coarse')
+    const cases = [
+      [base, null, null],
+      [{ ...base, QUERY_BOX_COARSE_URL: 'https://coarse.test/' }, null, 'https://coarse.test'],
+      [{ ...base, QUERY_BOX_URL: 'https://canonical.test/' }, 'https://canonical.test', 'https://canonical.test'],
+      [{ ...base, QUERY_BOX_URL: 'https://canonical.test/', QUERY_BOX_COARSE_URL: 'https://coarse.test/' }, 'https://canonical.test', 'https://coarse.test'],
+    ] as const
+    expect(cases.map(([env]) => [boxFor(env, url), boxFor(env, url, 'coarse')]))
+      .toEqual(cases.map(([, canonical, coarse]) => [canonical, coarse]))
   })
 })
 

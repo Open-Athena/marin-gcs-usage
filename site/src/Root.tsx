@@ -4,6 +4,7 @@ import { HelpCard, HelpProvider } from './Help'
 import { AdminDbPage } from './AdminDbPage'
 import { AdminPage } from './AdminPage'
 import App from './App'
+import { CoarsePage } from './CoarsePage'
 import { AuthGate, SignInPage } from './AuthGate'
 import { PrivacyPage } from './PrivacyPage'
 import { FilesRedirect } from './FilesRedirect'
@@ -44,6 +45,7 @@ export default function Root() {
       {/* The wall as a page (ungated): where the inline "sign in" links go. */}
       <Route path="/signin" element={<SignInPage />} />
       <Route path="/privacy" element={<PrivacyPage />} />
+      <Route path="/coarse" element={<AuthGate><CoarsePage /></AuthGate>} />
       <Route path="/admin" element={<AuthGate><AdminPage /></AuthGate>} />
       <Route path="/admin/db" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />

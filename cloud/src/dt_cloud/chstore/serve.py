@@ -4,7 +4,7 @@ scan, and `/api/series` — what `dt-cloud serve-query -e ch` serves.
 
 Every answer is a few statements on one ClickHouse session (temporary tables
 for a filter's candidates, roots and exclusions). A scan is "as of" its
-datetime `D`: the versions with `vf <= D < vt`.
+datetime `D`: the versions opened by `D` and not closed by `D` (`schema.live`).
 
 - **Plain view** (`view.ts` `readView`'s plain branch): P's own slices, the
   threshold `P.b · minArea / (w·h)` attenuated per level, then one read per
@@ -15,8 +15,9 @@ datetime `D`: the versions with `vf <= D < vt`.
 - **Filter view** (the box's `filter_view`, `dt_cloud.box.view`): candidates
   by name (`names` → the `by_name` projection), roots = the outermost of
   `pos ∧ ¬neg`, exclusions = the outermost of `neg` charged to the root
-  holding them — both one window pass in `k` order (the path with `/` as
-  `\\0`, so a subtree is contiguous) — then the per-root attenuated subtree
+  holding them. Outermost roots use candidate-directory ancestor membership;
+  charging exclusions uses a window pass in `k` order (the path with `/` as
+  `\\0`, so a subtree is contiguous). The per-root attenuated subtree is
   drawn level by level as above.
 - **Diff** (`buildDiff`): both sides' views at one threshold, the same walk,
   and exact point lookups for names one side lacks.
@@ -38,7 +39,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from ..bench.ch import name_sql, neg_sql, pos_sql
 from ..bench.mem import Unsupported
@@ -46,7 +47,7 @@ from ..bench.query import Ast, compile_query
 from ..bench.terms import regex_name_filter, seg_term
 from ..box.view import HARD_CAP, REGION_READS, Agg, NotFound, build_tree, js_round, kids_index, num, owner_json, parent_of
 from .client import Ch, lit
-from .schema import dt_lit
+from .schema import OPEN, dt_lit, live, scan_epochs
 
 ENGINE = "ch"
 MAX_STEMS = 5000
@@ -80,9 +81,10 @@ PARENT = "if(position(path, '/') = 0, '', substring(path, 1, length(path) - posi
 MAX_SLICES = 64
 
 
-def over(depth_cond: str, asof: str, cond: str, thr: float) -> str:
+def over(depth_cond: str, s: "Scan", cond: str, thr: float) -> str:
     """The paths at one depth (`depth_cond`), inside `cond`, that can clear `thr`: a set for `path IN`."""
-    return f"(SELECT DISTINCT path FROM nodes WHERE {depth_cond} AND {asof} AND {cond} AND size >= {thr / MAX_SLICES!r})"
+    where = f"{depth_cond} AND {cond}"
+    return f"(SELECT DISTINCT path FROM nodes WHERE {where} AND {s.live(where)} AND size >= {thr / MAX_SLICES!r})"
 
 
 # --- aggregates ---------------------------------------------------------------------
@@ -150,22 +152,25 @@ class Scan:
     id: str
     dt: str
     version: int
+    epoch: str
 
     @property
     def lit(self) -> str:
         return dt_lit(self.dt)
 
-    @property
-    def asof(self) -> str:
-        return f"vf <= {self.lit} AND vt > {self.lit}"
+    def live(self, restrict: str = "1") -> str:
+        """The versions this scan sees, among the rows `restrict` (on columns `closures` shares) bounds."""
+        return live(self.lit, restrict, since=dt_lit(self.epoch))
 
 
 class Store:
     """A store database behind one ClickHouse server."""
 
-    def __init__(self, url: str, *, db: str = "default", threads: int = 8, root_label: str = "marin GCS", syntax: str = "simple", timeout: float = 300):
+    def __init__(self, url: str, *, db: str = "default", threads: int = 8, root_label: str = "marin GCS", syntax: str = "simple", timeout: float = 300,
+                 root_plan: str = "rich"):
         self.url, self.db, self.threads = url, db, threads
         self.root_label, self.syntax, self.timeout = root_label, syntax, timeout
+        self.root_plan = root_plan
         self._scans: dict[str, Scan] | None = None
         self._at = 0.0
 
@@ -175,8 +180,8 @@ class Store:
 
     def scans(self, refresh: bool = False) -> dict[str, Scan]:
         if refresh or self._scans is None or time.monotonic() - self._at > 60:
-            rows = Ch(self.url, db=self.db, session=False, timeout=30).json("SELECT id, toString(scan), version FROM scans FINAL ORDER BY scan")
-            self._scans = {i: Scan(i, d, v) for i, d, v in rows}
+            rows = scan_epochs(Ch(self.url, db=self.db, session=False, timeout=30))
+            self._scans = {ident: Scan(ident, dt, version, epoch) for ident, dt, version, _, epoch in rows}
             self._at = time.monotonic()
         return self._scans
 
@@ -213,7 +218,7 @@ def root_read(ch: Ch, s: Scan, path: str) -> Agg | None:
     """P's aggregate over its own slices (the store root: every depth-1 row,
     `nc` = their count); None = not in the scan."""
     if path == "":
-        rows = ch.json(f"SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE depth = 1 AND {s.asof} GROUP BY path ORDER BY path")
+        rows = ch.json(f"SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE depth = 1 AND {s.live("depth = 1")} GROUP BY path ORDER BY path")
         if not rows:
             return None
         a = Agg()
@@ -222,7 +227,8 @@ def root_read(ch: Ch, s: Scan, path: str) -> Agg | None:
                 merge_slice(a, x)
         a.nc = len(rows)
         return a
-    rows = ch.json(f"SELECT groupArray(tuple({SLICE})) FROM nodes WHERE depth = {depth_of(path)} AND path = {lit(path)} AND {s.asof}")
+    pt = f"depth = {depth_of(path)} AND path = {lit(path)}"
+    rows = ch.json(f"SELECT groupArray(tuple({SLICE})) FROM nodes WHERE {pt} AND {s.live(pt)}")
     return agg_of(rows[0][0]) if rows and rows[0][0] else None
 
 
@@ -250,8 +256,8 @@ def plain_view(ch: Ch, s: Scan, path: str, *, w: int, h: int, min_area: float, a
     while frontier and (max_depth is None or d <= dP + max_depth) and len(v.kept) <= 4 * HARD_CAP:
         thr = v.thr_at(d)
         cond = _level_cond(frontier, d, path)
-        rows = ch.json(f"""SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE depth = {d} AND {s.asof}
-            AND path IN {over(f"depth = {d}", s.asof, cond, thr)} GROUP BY path HAVING sum(size) >= {thr!r} ORDER BY path""")
+        rows = ch.json(f"""SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE depth = {d} AND {s.live(f"depth = {d} AND {cond}")}
+            AND path IN {over(f"depth = {d}", s, cond, thr)} GROUP BY path HAVING sum(size) >= {thr!r} ORDER BY path""")
         nxt = []
         for p, sl in rows:
             a = agg_of(sl)
@@ -260,7 +266,7 @@ def plain_view(ch: Ch, s: Scan, path: str, *, w: int, h: int, min_area: float, a
                 nxt.append(p)
         if s.version < 2 and frontier:
             # A v1 row has no child count: `(other)`'s `f` is the folded children counted.
-            for par, n in ch.json(f"""SELECT {PARENT} AS par, count() FROM (SELECT path FROM nodes WHERE depth = {d} AND {s.asof} AND {cond}
+            for par, n in ch.json(f"""SELECT {PARENT} AS par, count() FROM (SELECT path FROM nodes WHERE depth = {d} AND {cond} AND {s.live(f"depth = {d} AND {cond}")}
                     GROUP BY path HAVING sum(size) > 0 AND sum(size) < {thr!r}) GROUP BY par"""):
                 v.folded_of[par] = v.folded_of.get(par, 0) + n
         frontier = nxt
@@ -292,22 +298,47 @@ class Prep:
     total: Agg
     root: Agg | None
     stats: dict
+    node_where: str | None = None
 
 
-def _window_outer(src: str, cols: str) -> str:
-    """The outermost rows of `src` (which has `path`) — a row is nested iff a
-    preceding row's subtree, in `k` order, holds it."""
-    return f"""SELECT {cols} FROM (
-        SELECT *, max(e) OVER (ORDER BY k ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS mp
-        FROM (SELECT *, concat(replaceAll(path, '/', '\\0'), '\\0') AS k, concat(k, '\\xff') AS e FROM ({src})))
-    WHERE mp <= k"""
+def _root_slices(pr: Prep, condition: str = "1") -> str:
+    """Raw slices of the discovered roots. Compact discovery stores no per-path owner maps;
+    these are aggregated only for the totals, drawn roots, and synthesized ancestors."""
+    where = pr.node_where
+    return (f"SELECT n.* FROM (SELECT * FROM nodes WHERE {where} AND {pr.scan.live(where)}) AS n "
+            f"LEFT SEMI JOIN (SELECT depth, path FROM rn_{pr.sfx} WHERE {condition}) AS r USING (depth, path)")
 
 
-def filter_prepare(ch: Ch, s: Scan, path: str, ast: Ast, sfx: str = "a") -> Prep | None:
+def _window_outer(src: str, cols: str, ancestor_condition: str = "kind = 'dir' OR nc != 0") -> str:
+    """The outermost rows of `src` (which has `path`): no strict ancestor is also in `src`.
+
+    The former running-max window was elegant but retained 18–20M long paths
+    plus their aggregate columns (20.6 GiB on gcs). The path-only membership
+    set holds only directory-capable candidates. Object stores can hold both `a` and `a/b`;
+    when directory/file slices share a path, `any(kind)` can pick `file`, but its maximum child
+    count still identifies the prefix. On blob-heavy queries this avoids putting millions
+    of ordinary leaf file paths in the set. Bulky values stay on disk.
+    """
+    return f"""SELECT {cols} FROM ({src})
+    WHERE NOT arrayExists(i -> {prefix_sql('i')} IN (SELECT path FROM ({src}) WHERE {ancestor_condition}), range(1, depth))"""
+
+
+def filter_prepare(ch: Ch, s: Scan, path: str, ast: Ast, sfx: str = "a", *, compact: bool = False, candidate_ordered: bool = True) -> Prep | None:
     """Candidates, roots and exclusions of `ast` under P in scan `s`; None =
     nothing matched (or nothing left net of the exclusions)."""
     t0 = time.monotonic()
     st: dict = {}
+    # A broad term can produce 20M roots on gcs. These intermediates must be
+    # spillable/disk-backed; Memory-engine temporary tables made those exact
+    # queries fail even when GROUP BY itself could spill.
+    def tmp(
+        name: str,
+        sql: str,
+        *,
+        ordered: bool = True,
+    ) -> None:
+        ch.tmp(name, sql, disk=True, ordered=ordered)
+
     dP = depth_of(path)
     hit = bool(compile_query(ast)(path))
     root = root_read(ch, s, path)
@@ -335,7 +366,29 @@ def filter_prepare(ch: Ch, s: Scan, path: str, ast: Ast, sfx: str = "a") -> Prep
     in_view = "depth >= 1" if path == "" else f"startsWith(path, {lit(path + '/')})"
     base = "path, depth, usr, kind, size, n_files, n_children, mtime_mean, mtime_w, last_read, c2, c3, c4, lowerUTF8(path) AS lp"
     agg_cands = lambda src: f"SELECT path, any(depth) AS depth, any(p) AS p, any(n) AS n, {AGG} FROM (SELECT *, {flags} FROM ({src})) GROUP BY path"  # noqa: E731
-    ch.tmp(f"cr0_{sfx}", agg_cands(f"SELECT {base} FROM nodes WHERE name IN (SELECT l FROM names WHERE {name_cond}) AND {s.asof} AND {in_view}"))
+    by_name = f"name IN (SELECT l FROM names WHERE {name_cond}) AND {in_view}"
+    if compact and not hit and not ast.neg and not strict:
+        # A broad positive query can have 20M roots. Discovery only needs path, depth and size;
+        # materializing every root's weighted timestamps and owner map costs both RAM and disk.
+        tmp(f"cr0_{sfx}", f"""SELECT path, any(depth) AS depth, any(p) AS p, sum(size) AS b, sum(n_files) AS o, max(kind = 'dir' OR n_children != 0) AS can_ancestor
+            FROM (SELECT path, depth, kind, size, n_files, n_children, {flags} FROM
+                (SELECT path, depth, kind, size, n_files, n_children, lowerUTF8(path) AS lp FROM nodes WHERE {by_name} AND {s.live(by_name)})) GROUP BY path""", ordered=candidate_ordered)
+        st["cands_s"] = round(time.monotonic() - t0, 3)
+        st["cands"] = int(ch.scalar(f"SELECT count() FROM cr0_{sfx}") or 0)
+        tmp(f"rn_{sfx}", _window_outer(f"SELECT * FROM cr0_{sfx} WHERE p", "path, depth, b, o", "can_ancestor"))
+        n_roots = int(ch.scalar(f"SELECT count() FROM rn_{sfx}") or 0)
+        if not n_roots:
+            return None
+        # Empty typed exclusion tables keep the later level walk shared with the general plan.
+        tmp(f"ex_{sfx}", f"SELECT path, depth, '' AS rp, toUInt8(0) AS rd, {AGG} FROM nodes WHERE 0 GROUP BY path, depth")
+        tmp(f"cut_{sfx}", f"SELECT path, toUInt64(0) AS n, {SUM_COLS} FROM ex_{sfx}")
+        tmp(f"lost_{sfx}", f"SELECT path, toUInt64(0) AS lost FROM ex_{sfx}")
+        pr = Prep(sfx, s, path, dP, False, n_roots, 0, Agg(), root, st, node_where=by_name)
+        pr.total = agg_row(ch.json(f"SELECT {AGG} FROM ({_root_slices(pr)})")[0], synth=True)
+        st["roots"], st["excluded"] = n_roots, 0
+        st["s"] = round(time.monotonic() - t0, 3)
+        return pr if pr.total.b > 0 else None
+    tmp(f"cr0_{sfx}", agg_cands(f"SELECT {base} FROM nodes WHERE {by_name} AND {s.live(by_name)}"), ordered=candidate_ordered)
     cr = f"cr0_{sfx}"
     st["cands_s"] = round(time.monotonic() - t0, 3)
     if strict:
@@ -348,52 +401,60 @@ def filter_prepare(ch: Ch, s: Scan, path: str, ast: Ast, sfx: str = "a") -> Prep
             raise Unsupported(f"{len(stems)} stems")
         if stems:
             rng = " OR ".join(f"(depth = {d + 1} AND {under(p)})" for p, d in stems)
-            ch.tmp(f"cr1_{sfx}", agg_cands(f"SELECT {base} FROM nodes WHERE {s.asof} AND ({rng})"))
-            ch.tmp(f"cr_{sfx}", f"SELECT path, any(depth) AS depth, any(p) AS p, any(n) AS n, any(b) AS b, any(o) AS o, any(wts) AS wts, "
-                   f"any(wb) AS wb, any(a) AS a, any(c2) AS c2, any(c3) AS c3, any(c4) AS c4, any(ub) AS ub, any(kind) AS kind, any(nc) AS nc "
-                   f"FROM (SELECT * FROM cr0_{sfx} UNION ALL SELECT * FROM cr1_{sfx}) GROUP BY path")
+            tmp(f"cr1_{sfx}", agg_cands(f"SELECT {base} FROM nodes WHERE ({rng}) AND {s.live(rng)}"), ordered=candidate_ordered)
+            tmp(f"cr_{sfx}", f"SELECT path, any(depth) AS depth, any(p) AS p, any(n) AS n, any(b) AS b, any(o) AS o, any(wts) AS wts, "
+                f"any(wb) AS wb, any(a) AS a, any(c2) AS c2, any(c3) AS c3, any(c4) AS c4, any(ub) AS ub, any(kind) AS kind, any(nc) AS nc "
+                f"FROM (SELECT * FROM cr0_{sfx} UNION ALL SELECT * FROM cr1_{sfx}) GROUP BY path", ordered=candidate_ordered)
             cr = f"cr_{sfx}"
     st["cands"] = int(ch.scalar(f"SELECT count() FROM {cr}") or 0)
-    cols = f"path, depth, k, {AGG_COLS}"
+    has_neg = bool(ast.neg)
+    cols = f"path, depth, concat(replaceAll(path, '/', '\\0'), '\\0') AS k, {AGG_COLS}"
+    direct_roots = not hit and not has_neg
     # Roots: the view itself on a hit, else the outermost of `pos ∧ ¬neg`.
     if hit:
-        ch.tmp(f"rt_{sfx}", f"SELECT {lit(path)} AS path, toUInt8({dP}) AS depth, concat(replaceAll({lit(path)}, '/', '\\0'), '\\0') AS k")
+        tmp(f"rt_{sfx}", f"SELECT {lit(path)} AS path, toUInt8({dP}) AS depth, concat(replaceAll({lit(path)}, '/', '\\0'), '\\0') AS k")
+    elif direct_roots:
+        # With no exclusions the outer roots are already their net rows. Do
+        # not store the path-derived `k`, then copy the 20M-row table again
+        # into `rn`: on gcs those two avoidable writes were >6 GiB.
+        tmp(f"rn_{sfx}", _window_outer(f"SELECT * FROM {cr} WHERE p", f"path, depth, {AGG_COLS}"))
     else:
-        ch.tmp(f"rt_{sfx}", _window_outer(f"SELECT * FROM {cr} WHERE p AND NOT n", cols))
+        tmp(f"rt_{sfx}", _window_outer(f"SELECT * FROM {cr} WHERE p AND NOT n", cols))
     # Exclusions: the outermost of `neg`, each charged to the root holding it.
     xcols = ", ".join("x." + c + " AS " + c for c in AGG_COLS.split(", "))
     if ast.neg:
-        ch.tmp(f"exo_{sfx}", _window_outer(f"SELECT * FROM {cr} WHERE n", cols))
+        tmp(f"exo_{sfx}", _window_outer(f"SELECT * FROM {cr} WHERE n", cols))
     if ast.neg and hit:
         # Every exclusion is strictly under the view, the one root.
-        ch.tmp(f"ex_{sfx}", f"SELECT x.path AS path, x.depth AS depth, {lit(path)} AS rp, toUInt8({dP}) AS rd, {xcols} FROM exo_{sfx} AS x")
-    elif ast.neg:
-        ch.tmp(f"ex_{sfx}", f"""SELECT x.path AS path, x.depth AS depth, r.rr.2 AS rp, r.rr.3 AS rd, {xcols}
+        tmp(f"ex_{sfx}", f"SELECT x.path AS path, x.depth AS depth, {lit(path)} AS rp, toUInt8({dP}) AS rd, {xcols} FROM exo_{sfx} AS x")
+    elif has_neg:
+        tmp(f"ex_{sfx}", f"""SELECT x.path AS path, x.depth AS depth, r.rr.2 AS rp, r.rr.3 AS rd, {xcols}
             FROM exo_{sfx} AS x INNER JOIN (
                 SELECT path, rr FROM (
                     SELECT path, k, r, max(if(r = 1, tuple(k, path, depth), tuple('', '', toUInt8(0)))) OVER (ORDER BY k, r DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rr
                     FROM (SELECT path, depth, k, 1 AS r FROM rt_{sfx} UNION ALL SELECT path, depth, k, 0 AS r FROM exo_{sfx}))
                 WHERE r = 0 AND rr.1 != '' AND startsWith(k, rr.1) AND k != rr.1) AS r ON r.path = x.path""")
     else:
-        ch.tmp(f"ex_{sfx}", f"SELECT '' AS path, toUInt8(0) AS depth, '' AS rp, toUInt8(0) AS rd, {AGG_COLS} FROM {cr} WHERE 0")
+        tmp(f"ex_{sfx}", f"SELECT '' AS path, toUInt8(0) AS depth, '' AS rp, toUInt8(0) AS rd, {AGG_COLS} FROM {cr} WHERE 0")
     n_ex = int(ch.scalar(f"SELECT count() FROM ex_{sfx}") or 0)
     # Cuts: each exclusion's aggregate on every node from its parent up to its root; lost children per parent.
-    ch.tmp(f"cut_{sfx}", f"""SELECT anc AS path, n, {SUM_COLS} FROM (SELECT anc, count() AS n, {SUM_AGG} FROM ex_{sfx}
+    tmp(f"cut_{sfx}", f"""SELECT anc AS path, n, {SUM_COLS} FROM (SELECT anc, count() AS n, {SUM_AGG} FROM ex_{sfx}
         ARRAY JOIN arrayMap(i -> {prefix_sql('i')}, range(rd, depth)) AS anc GROUP BY anc)""")
-    ch.tmp(f"lost_{sfx}", f"SELECT par AS path, lost FROM (SELECT {PARENT} AS par, count() AS lost FROM ex_{sfx} GROUP BY par)")
+    tmp(f"lost_{sfx}", f"SELECT par AS path, lost FROM (SELECT {PARENT} AS par, count() AS lost FROM ex_{sfx} GROUP BY par)")
     # Each root's net aggregate (`minus`): less its cut, less its lost children.
     if hit:
         cut = _cut_of(ch, sfx, path)
         lost = int(ch.scalar(f"SELECT lost FROM lost_{sfx} WHERE path = {lit(path)}") or 0)
         net = minus(root, cut, lost)
-        ch.tmp(f"rn_{sfx}", f"SELECT {lit(path)} AS path, toUInt8({dP}) AS depth, toInt64({js_round(net.b)}) AS b, toInt64({js_round(net.o)}) AS o")
+        tmp(f"rn_{sfx}", f"SELECT {lit(path)} AS path, toUInt8({dP}) AS depth, toInt64({js_round(net.b)}) AS b, toInt64({js_round(net.o)}) AS o")
         total, n_roots = net, 1
-    else:
-        ch.tmp(f"rn_{sfx}", f"""SELECT r.path AS path, r.depth AS depth, r.b - c.b AS b, greatest(0, r.o - c.o) AS o, r.wts - c.wts AS wts,
+    elif not direct_roots:
+        tmp(f"rn_{sfx}", f"""SELECT r.path AS path, r.depth AS depth, r.b - c.b AS b, greatest(0, r.o - c.o) AS o, r.wts - c.wts AS wts,
                 greatest(0, r.wb - c.wb) AS wb, r.a AS a, r.c2 - c.c2 AS c2, r.c3 - c.c3 AS c3, r.c4 - c.c4 AS c4,
                 if(c.n > 0, mapFilter((u, x) -> x > 0, mapSubtract(r.ub, c.ub)), r.ub) AS ub, r.kind AS kind,
                 if(r.nc < 0, r.nc, greatest(0, r.nc - l.lost)) AS nc
             FROM rt_{sfx} AS r LEFT JOIN cut_{sfx} AS c ON c.path = r.path LEFT JOIN lost_{sfx} AS l ON l.path = r.path""")
+    if not hit:
         row = ch.json(f"SELECT count(), {SUM_AGG} FROM rn_{sfx}")[0]
         n_roots = row[0]
         if not n_roots:
@@ -409,6 +470,21 @@ def filter_prepare(ch: Ch, s: Scan, path: str, ast: Ast, sfx: str = "a") -> Prep
 def _cut_of(ch: Ch, sfx: str, p: str) -> Agg | None:
     r = ch.json(f"SELECT n, b, o, wts, wb, a, c2, c3, c4, ub FROM cut_{sfx} WHERE path = {lit(p)}")
     return agg_row(r[0][1:], synth=True) if r else None
+
+
+def folded_counts_sql(
+    sfx: str,
+    ancestors: str,
+    threshold: float,
+    parents: Iterable[str],
+) -> str:
+    """Only rendered parents consume folded counts; never return hidden ones."""
+    keys = ",".join(lit(path) for path in sorted(set(parents)))
+    if not keys:
+        raise ValueError("folded counts require the view root")
+    return f"""SELECT par, count() FROM (SELECT {PARENT} AS par FROM rn_{sfx} WHERE b < {threshold!r}
+        UNION ALL SELECT {PARENT} AS par FROM {ancestors} WHERE b < {threshold!r})
+        WHERE par IN ({keys}) GROUP BY par"""
 
 
 def filter_view(ch: Ch, pr: Prep, *, w: int, h: int, min_area: float, atten: float, max_depth: int | None = None,
@@ -433,22 +509,37 @@ def filter_view(ch: Ch, pr: Prep, *, w: int, h: int, min_area: float, atten: flo
     else:
         root_agg = Agg(pr.total.b, pr.total.o, pr.total.wts, pr.total.wb, pr.total.a, dict(pr.total.cb), dict(pr.total.ub))
         v.root_agg = root_agg
-        drawn = ch.json(f"SELECT path, depth, {AGG_COLS} FROM rn_{sfx}" + (f" WHERE b >= {T!r}" if fold else ""))
+        if pr.node_where is not None:
+            drawn = ch.json(f"SELECT path, any(depth) AS depth, {AGG} FROM ({_root_slices(pr, f'b >= {T!r}' if fold else '1')}) GROUP BY path")
+        else:
+            drawn = ch.json(f"SELECT path, depth, {AGG_COLS} FROM rn_{sfx}" + (f" WHERE b >= {T!r}" if fold else ""))
         F = []
         for p, d, *r in drawn:
             kept[p], depth[p] = agg_row(r), d
             v.root_paths.add(p)
             F.append((p, d))
         # Synthesized ancestors between P and the roots: Σ net roots under each.
-        anc = f"""SELECT anc AS path, toUInt8(length(splitByChar('/', anc))) AS depth, {SUM_COLS} FROM (SELECT anc, {SUM_AGG} FROM rn_{sfx}
-            ARRAY JOIN arrayMap(i -> {prefix_sql('i')}, range({dP + 1}, depth)) AS anc GROUP BY anc)"""
-        ch.tmp(f"anc_{sfx}", anc)
+        if pr.node_where is not None:
+            # Group ancestor keys/bytes first. Otherwise exploding raw owner slices builds millions
+            # of rich ancestor states even when the canvas draws only a few thousand of them.
+            ch.tmp(f"anc0_{sfx}", f"""SELECT anc AS path, sum(b) AS b FROM rn_{sfx}
+                ARRAY JOIN arrayMap(i -> {prefix_sql('i')}, range({dP + 1}, depth)) AS anc GROUP BY anc""", disk=True)
+            ancestor_src = f"({_root_slices(pr)})"
+            ancestor_agg = AGG
+            ancestor_cond = f"WHERE anc IN (SELECT path FROM anc0_{sfx}" + (f" WHERE b >= {T!r})" if fold else ")")
+        else:
+            ancestor_src = f"rn_{sfx}"
+            ancestor_agg = SUM_AGG
+            ancestor_cond = ""
+        anc = f"""SELECT anc AS path, toUInt8(length(splitByChar('/', anc))) AS depth, {SUM_COLS} FROM (SELECT anc, {ancestor_agg} FROM {ancestor_src}
+            ARRAY JOIN arrayMap(i -> {prefix_sql('i')}, range({dP + 1}, depth)) AS anc {ancestor_cond} GROUP BY anc)"""
+        ch.tmp(f"anc_{sfx}", anc, disk=True)
         for p, d, *r in ch.json(f"SELECT path, depth, b, o, wts, wb, a, c2, c3, c4, ub FROM anc_{sfx}" + (f" WHERE b >= {T!r}" if fold else "")):
             kept[p], depth[p] = agg_row(r, synth=True), d
         if fold:
             v.folded = pr.n_roots - len(drawn)
-            for par, n in ch.json(f"""SELECT par, count() FROM (SELECT {PARENT} AS par FROM rn_{sfx} WHERE b < {T!r}
-                    UNION ALL SELECT {PARENT} AS par FROM anc_{sfx} WHERE b < {T!r}) GROUP BY par"""):
+            folded_ancestors = f"anc0_{sfx}" if pr.node_where is not None else f"anc_{sfx}"
+            for par, n in ch.json(folded_counts_sql(sfx, folded_ancestors, T, (path, *kept))):
                 v.folded_of[par] = n
     # Phase 2: under each drawn root (the view, on a hit), thresholds rebased on its depth.
     if not (max_depth is not None and max_depth <= 0):
@@ -464,8 +555,8 @@ def filter_view(ch: Ch, pr: Prep, *, w: int, h: int, min_area: float, atten: flo
             cond = " OR ".join(f"(depth = {d} AND {_level_cond(ps, d, '-')})" for d, ps in by_depth.items())
             rows = ch.json(f"""SELECT k.path, k.depth, {', '.join('k.' + c for c in AGG_COLS.split(', '))}, c.n, c.b, c.o, c.wts, c.wb, c.a, c.c2, c.c3, c.c4, c.ub,
                     l.lost, e.x
-                FROM (SELECT path, any(depth) AS depth, {AGG} FROM nodes WHERE {s.asof} AND depth IN ({", ".join(str(x) for x in sorted({d + 1 for _, d in want}))})
-                      AND path IN {over("1", s.asof, f"({cond})", min(thr.values()))} GROUP BY path HAVING b >= {min(thr.values())!r}) AS k
+                FROM (SELECT path, any(depth) AS depth, {AGG} FROM nodes WHERE depth IN ({", ".join(str(x) for x in sorted({d + 1 for _, d in want}))})
+                      AND path IN {over("1", s, f"({cond})", min(thr.values()))} AND {s.live(f"({cond})")} GROUP BY path HAVING b >= {min(thr.values())!r}) AS k
                 LEFT JOIN cut_{sfx} AS c ON c.path = k.path LEFT JOIN lost_{sfx} AS l ON l.path = k.path
                 LEFT JOIN (SELECT path, 1 AS x FROM ex_{sfx}) AS e ON e.path = k.path ORDER BY k.path""")
             nxt = []
@@ -517,8 +608,15 @@ def _list(ch: Ch, sql: str) -> Iterator[str]:
     return lines_as_list(ch.stream(sql))
 
 
-def matched_sql(sfx: str) -> str:
-    return f"SELECT concat('{{\"path\":', toJSONString(path), ',\"b\":', toString(b), ',\"o\":', toString(o), '}}') FROM rn_{sfx} ORDER BY b DESC, path"
+def _limited(sql: str, limit: int | None) -> str:
+    return sql + (f" LIMIT {max(0, limit)}" if limit is not None else "")
+
+
+def matched_sql(sfx: str, limit: int | None = None) -> str:
+    return _limited(
+        f"SELECT concat('{{\"path\":', toJSONString(path), ',\"b\":', toString(b), ',\"o\":', toString(o), '}}') FROM rn_{sfx} ORDER BY b DESC, path",
+        limit,
+    )
 
 
 def tree_name(path: str, root_label: str) -> str:
@@ -526,7 +624,7 @@ def tree_name(path: str, root_label: str) -> str:
 
 
 def subtree_body(ch: Ch, v: View | None, *, date: str, path: str, w: int, h: int, min_area: float, atten: float, q: str | None,
-                 root_label: str) -> Iterator[str]:
+                 root_label: str, match_limit: int | None = None) -> Iterator[str]:
     """`/api/subtree`'s body (key order as `api/subtree.ts`), streamed."""
     head = {"date": date, "path": path, "w": w, "h": h, "minArea": num(min_area), "atten": num(atten)}
     if v is None:
@@ -541,13 +639,15 @@ def subtree_body(ch: Ch, v: View | None, *, date: str, path: str, w: int, h: int
         yield _jdump({**pre, "tree": tree})
         return
     pr = v.prep
-    yield _jdump({**pre, "q": q})[:-1] + ',"matches":'
-    yield from _list(ch, f"SELECT toJSONString(path) FROM rn_{pr.sfx} ORDER BY path")
+    lists_truncated = match_limit is not None and pr.n_roots > match_limit
+    list_meta = {"matchesTotal": pr.n_roots, "matchesTruncated": True} if lists_truncated else {}
+    yield _jdump({**pre, **list_meta, "q": q})[:-1] + ',"matches":'
+    yield from _list(ch, _limited(f"SELECT toJSONString(path) FROM rn_{pr.sfx} ORDER BY path", match_limit))
     yield ',"matched":'
-    yield from _list(ch, matched_sql(pr.sfx))
+    yield from _list(ch, matched_sql(pr.sfx, match_limit))
     if pr.n_ex:
         yield ',"excluded":'
-        yield from _list(ch, f"SELECT toJSONString(path) FROM ex_{pr.sfx} ORDER BY path")
+        yield from _list(ch, _limited(f"SELECT toJSONString(path) FROM ex_{pr.sfx} ORDER BY path", match_limit))
     yield ',"tree":' + _jdump(tree) + "}"
 
 
@@ -581,7 +681,7 @@ def _lookups(ch: Ch, s: Scan, v: View, asks: list[tuple[str, int]]) -> tuple[dic
     if not todo:
         return out, 0
     keys = ",".join(f"({d}, {lit(cp)})" for cp, d in todo)
-    found = {p: agg_of(sl) for p, sl in ch.json(f"SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE {s.asof} AND (depth, path) IN ({keys}) GROUP BY path")}
+    found = {p: agg_of(sl) for p, sl in ch.json(f"SELECT path, groupArray(tuple({SLICE})) FROM nodes WHERE (depth, path) IN ({keys}) AND {s.live(f"(depth, path) IN ({keys})")} GROUP BY path")}
     cuts: dict = {}
     if pr is not None and pr.n_ex and found:
         alist = "[" + ",".join(lit(p) for p in found) + "]"
@@ -598,12 +698,10 @@ def _lookups(ch: Ch, s: Scan, v: View, asks: list[tuple[str, int]]) -> tuple[dic
 
 
 def diff_body(ch: Ch, sa: Scan, sb: Scan, *, path: str, w: int, h: int, min_area: float, atten: float, top: int, ast: Ast | None,
-              q: str | None, summary: bool = False, depth: int | None = None) -> Iterator[str]:
+              q: str | None, summary: bool = False, depth: int | None = None, match_limit: int | None = None, compact: bool = False) -> Iterator[str]:
     """`/api/diff`'s body (`buildDiff`), plain or filtered, streamed."""
-    dP = depth_of(path)
     # A summary is the totals alone: no level below P is read.
     kw = dict(w=w, h=h, min_area=min_area, atten=atten, max_depth=0 if summary else depth)
-    head = {"prev": sa.id, "curr": sb.id, "path": path, **({"q": q} if q is not None else {})}
     if ast is None:
         ra, rb = root_read(ch, sa, path), root_read(ch, sb, path)
         if ra is None and rb is None:
@@ -621,8 +719,8 @@ def diff_body(ch: Ch, sa: Scan, sb: Scan, *, path: str, w: int, h: int, min_area
         ra, rb = _exists(ch, sa, path), _exists(ch, sb, path)
         if not ra and not rb:
             raise NotFound(path)
-        pa_ = filter_prepare(ch, sa, path, ast, "a") if ra else None
-        pb_ = filter_prepare(ch, sb, path, ast, "b") if rb else None
+        pa_ = filter_prepare(ch, sa, path, ast, "a", compact=compact) if ra else None
+        pb_ = filter_prepare(ch, sb, path, ast, "b", compact=compact) if rb else None
         va = filter_view(ch, pa_, **kw) if pa_ else None
         vb = filter_view(ch, pb_, **kw) if pb_ else None
         if va and vb and va.threshold != vb.threshold:
@@ -631,7 +729,30 @@ def diff_body(ch: Ch, sa: Scan, sb: Scan, *, path: str, w: int, h: int, min_area
                 va = filter_view(ch, pa_, threshold=shared, **kw)
             else:
                 vb = filter_view(ch, pb_, threshold=shared, **kw)
-        T = (vb or va).threshold if (va or vb) else 0
+    yield from views_diff_body(ch, sa, sb, va, vb, path=path, top=top, ast=ast, q=q, summary=summary, depth=depth, match_limit=match_limit)
+
+
+def views_diff_body(
+    ch: Ch,
+    sa: Scan,
+    sb: Scan,
+    va: View | None,
+    vb: View | None,
+    *,
+    path: str,
+    top: int,
+    ast: Ast | None,
+    q: str | None,
+    summary: bool = False,
+    depth: int | None = None,
+    match_limit: int | None = None,
+    lookup: Callable | None = None,
+    matched_key: str = "path",
+) -> Iterator[str]:
+    """Serialize prepared views; numeric models may share a match identity key."""
+    dP = depth_of(path)
+    head = {"prev": sa.id, "curr": sb.id, "path": path, **({"q": q} if q is not None else {})}
+    T = (vb or va).threshold if (va or vb) else 0
     if not va and not vb:
         body = {**head, "rows": [], "total_a": 0, "total_b": 0, "objects_a": 0, "objects_b": 0, "threshold": 0, "tier": "none",
                 **({"matched": []} if ast is not None else {}), "expansions": 0, "truncated": False, "lookups": 0, "lookups_capped": False}
@@ -647,7 +768,7 @@ def diff_body(ch: Ch, sa: Scan, sb: Scan, *, path: str, w: int, h: int, min_area
     rows: list[dict] = []
     expansions = lookups = 0
     if not summary:
-        rows, expansions, lookups = _walk(ch, sa, sb, va, vb, path, dP, depth)
+        rows, expansions, lookups = _walk(ch, sa, sb, va, vb, path, dP, depth, lookup=lookup)
     frontier = sorted((r for r in rows if not r.get("x") and r["s"] != "unchanged"), key=lambda r: -abs(r["b"] - r["a"]))
     skeleton = [r for r in rows if r.get("x")]
     pre = {**head, "rows": skeleton + frontier[:top], **totals}
@@ -655,29 +776,48 @@ def diff_body(ch: Ch, sa: Scan, sb: Scan, *, path: str, w: int, h: int, min_area
     if ast is None:
         yield _jdump({**pre, **tail})
         return
-    yield _jdump(pre)[:-1] + ',"matched":'
-    yield from _list(ch, _matched_union_sql(va, vb))
+    matched_src = _matched_union_src(va, vb, key=matched_key)
+    n_matches = int(ch.scalar(f"SELECT count() FROM ({matched_src})") or 0)
+    lists_truncated = match_limit is not None and n_matches > match_limit
+    list_meta = {"matchesTotal": n_matches, "matchesTruncated": True} if lists_truncated else {}
+    yield _jdump({**pre, **list_meta})[:-1] + ',"matched":'
+    yield from _list(ch, _matched_union_sql(matched_src, match_limit))
     yield "," + _jdump(tail)[1:]
 
 
 def _exists(ch: Ch, s: Scan, path: str) -> bool:
     if path == "":
-        return bool(ch.scalar(f"SELECT count() FROM nodes WHERE depth = 1 AND {s.asof}") not in (None, "0"))
-    return bool(ch.scalar(f"SELECT count() FROM nodes WHERE depth = {depth_of(path)} AND path = {lit(path)} AND {s.asof}") not in (None, "0"))
+        return bool(ch.scalar(f"SELECT count() FROM nodes WHERE depth = 1 AND {s.live('depth = 1')}") not in (None, "0"))
+    pt = f"depth = {depth_of(path)} AND path = {lit(path)}"
+    return bool(ch.scalar(f"SELECT count() FROM nodes WHERE {pt} AND {s.live(pt)}") not in (None, "0"))
 
 
-def _matched_union_sql(va: View | None, vb: View | None) -> str:
-    """Both sides' `matched`, by path; the newer side's entry for a path in both."""
-    obj = "concat('{\"path\":', toJSONString(path), ',\"b\":', toString(b), ',\"o\":', toString(o), '}')"
+def _matched_union_src(
+    va: View | None,
+    vb: View | None,
+    *,
+    key: str = "path",
+) -> str:
+    """Both sides' match roots; the newer entry wins for a shared identity.
+
+    Numeric callers guarantee one shared path dictionary for both dates.
+    Using its IDs lets the count prune path strings; serialization still sorts
+    by path, not by DFS rank, and keeps exactly the canonical matched list.
+    """
+    if key not in ("path", "pre"):
+        raise ValueError("diff match key must be path or pre")
     if va and vb:
         a, b = va.prep.sfx, vb.prep.sfx
-        src = f"SELECT path, b, o FROM rn_{b} UNION ALL SELECT path, b, o FROM rn_{a} WHERE path NOT IN (SELECT path FROM rn_{b})"
-    else:
-        src = f"SELECT path, b, o FROM rn_{(va or vb).prep.sfx}"
-    return f"SELECT {obj} FROM ({src}) ORDER BY path"
+        return f"SELECT path, b, o FROM rn_{b} UNION ALL SELECT path, b, o FROM rn_{a} WHERE {key} NOT IN (SELECT {key} FROM rn_{b})"
+    return f"SELECT path, b, o FROM rn_{(va or vb).prep.sfx}"
 
 
-def _walk(ch: Ch, sa: Scan, sb: Scan, va: View | None, vb: View | None, path: str, dP: int, depth: int | None) -> tuple[list, int, int]:
+def _matched_union_sql(src: str, limit: int | None = None) -> str:
+    obj = "concat('{\"path\":', toJSONString(path), ',\"b\":', toString(b), ',\"o\":', toString(o), '}')"
+    return _limited(f"SELECT {obj} FROM ({src}) ORDER BY path", limit)
+
+
+def _walk(ch: Ch, sa: Scan, sb: Scan, va: View | None, vb: View | None, path: str, dP: int, depth: int | None, *, lookup: Callable | None = None) -> tuple[list, int, int]:
     """`buildDiff`'s level-by-level walk (the box's `diff_body`)."""
     kids_a = kids_index(va.kept, path) if va else {}
     kids_b = kids_index(vb.kept, path) if vb else {}
@@ -720,7 +860,7 @@ def _walk(ch: Ch, sa: Scan, sb: Scan, va: View | None, vb: View | None, path: st
                 continue
             asks = [(cp, it["d"] + 1) for it, _, names in plans for cp in names if cp not in v.kept]
             if asks:
-                got, n = _lookups(ch, s, v, asks)
+                got, n = (lookup or _lookups)(ch, s, v, asks)
                 lookups += n
                 for cp, ag in got.items():
                     found[(side, cp)] = ag
@@ -760,11 +900,14 @@ def series_points(ch: Ch, scans: list[Scan], path: str, paths: list[str], split:
     its slices valid then (`split`: per depth-1 root too)."""
     targets = paths or [path]
     if split or targets == [""]:
-        q = "SELECT path, toString(vf), toString(vt), size, n_files FROM nodes WHERE depth = 1"
+        where = "depth = 1"
     else:
         keys = ",".join(f"({depth_of(p)}, {lit(p)})" for p in targets)
-        q = f"SELECT path, toString(vf), toString(vt), size, n_files FROM nodes WHERE depth > 0 AND (depth, path) IN ({keys})"
-    rows = ch.json(q)
+        where = f"(depth, path) IN ({keys})"
+    # Every version of the paths, each with its end (a closure's `vt`, else open).
+    rows = ch.json(f"""SELECT n.path, toString(n.vf), toString(if(c.vt = 0, {dt_lit(OPEN)}, c.vt)), n.size, n.n_files
+        FROM (SELECT depth, path, usr, vf, size, n_files FROM nodes WHERE {where}) AS n
+        LEFT JOIN (SELECT depth, path, usr, vf, vt FROM closures WHERE {where}) AS c USING (depth, path, usr, vf)""")
     points: list[dict] = []
     by_date: dict[str, list] = {}
     for s in scans:

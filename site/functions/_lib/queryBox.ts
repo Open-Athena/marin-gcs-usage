@@ -18,6 +18,10 @@ export interface BoxEnv {
   QUERY_BOX_TOKEN?: string
   /** Per-request budget, ms (default `BOX_TIMEOUT_MS`). */
   QUERY_BOX_TIMEOUT_MS?: string
+  /** Explicit dev-only opt-in for the separate coarse basename prototype. */
+  QUERY_BOX_COARSE?: string
+  /** Optional coarse-only endpoint; never enables canonical box routing. */
+  QUERY_BOX_COARSE_URL?: string
 }
 
 export const BOX_TIMEOUT_MS = 20_000
@@ -37,8 +41,8 @@ export type BoxAnswer =
 /** Whether this request goes to the box at all: a box is configured, the
  * request is for the primary store, and carries no scope the box declines
  * (a user lens, owner / class pools). */
-export function boxFor(env: Env & BoxEnv, url: URL): string | null {
-  const base = env.QUERY_BOX_URL
+export function boxFor(env: Env & BoxEnv, url: URL, route: 'canonical' | 'coarse' = 'canonical'): string | null {
+  const base = route === 'coarse' ? env.QUERY_BOX_COARSE_URL ?? env.QUERY_BOX_URL : env.QUERY_BOX_URL
   if (!base || env.STORE_KEY) return null
   for (const k of ['lens', 'o', 'cl', 'by']) if (url.searchParams.get(k)) return null
   return base.replace(/\/+$/, '')
@@ -46,7 +50,7 @@ export function boxFor(env: Env & BoxEnv, url: URL): string | null {
 
 /** One request to the box: `route` with `params` (the client's query, plus
  * anything the Worker adds). */
-export async function askBox(env: Env & BoxEnv, base: string, route: 'subtree' | 'diff' | 'series', params: URLSearchParams): Promise<BoxAnswer> {
+export async function askBox(env: Env & BoxEnv, base: string, route: 'subtree' | 'diff' | 'series' | 'coarse', params: URLSearchParams, maxBytes = BOX_MAX_BYTES): Promise<BoxAnswer> {
   const ms = Number(env.QUERY_BOX_TIMEOUT_MS) || BOX_TIMEOUT_MS
   const headers: Record<string, string> = env.QUERY_BOX_TOKEN ? { authorization: `Bearer ${env.QUERY_BOX_TOKEN}` } : {}
   let res: Response
@@ -65,12 +69,12 @@ export async function askBox(env: Env & BoxEnv, base: string, route: 'subtree' |
     return { kind: 'fallback', why: String(res.status) }
   }
   const len = Number(res.headers.get('content-length'))
-  if (len > BOX_MAX_BYTES) {
+  if (len > maxBytes) {
     await res.body?.cancel()
     return { kind: 'fallback', why: 'too-big' }
   }
   try {
-    const body = await readCapped(res, BOX_MAX_BYTES)
+    const body = await readCapped(res, maxBytes)
     if (body == null) return { kind: 'fallback', why: 'too-big' }
     return { kind: 'answer', status: res.status, body, engine: res.headers.get('x-query-engine') ?? 'box' }
   } catch (e) {

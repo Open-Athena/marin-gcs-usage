@@ -20,7 +20,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
-from click import Choice, UsageError, argument, group, option
+from click import Choice, FloatRange, IntRange, UsageError, argument, group, option
 
 from .identity import IDENTITIES_ENV, load_identities
 from .site import DEFAULT_URL as SITE_DEFAULT_URL
@@ -844,18 +844,58 @@ def bench_serve(tmp_dir: str | None, engine: str, evict: bool, host: str, index:
 @option("-A", "--no-auth", is_flag=True, help="Serve without a bearer token (local use only)")
 @option("-b", "--bind", default="0.0.0.0", help="Address to listen on")
 @option("-B", "--db", default=None, help="`-e ch`: the store's database (default: $CLICKHOUSE_DB, else `default`)")
+@option("-c", "--concurrency", type=IntRange(min=1), default=2, help="Maximum simultaneous backend responses, including streaming (default: 2; reduce on memory-constrained machines)")
 @option("-d", "--date", "dates", multiple=True, help="`-e mem`: load these scans (repeatable; default: the latest under ROOT)")
 @option("-D", "--remote-detail", is_flag=True, help="`-e mem`: read a gs:// index's `detail.parquet` in place (ranged reads) instead of copying it")
 @option("-e", "--engine", type=Choice(["mem", "ch"]), default="mem", help="`mem`: in-memory indexes under ROOT (filtered reads); `ch`: the ClickHouse store at ROOT's URL (every scan; plain and filtered reads, series)")
+@option("-f", "--dated-name-store", help="`-e ch -L -G GENERATION`: explicit logical store binding for new dated roots")
+@option("-g", "--hot-l1-generation", type=Path, help="`-e ch`: pin this published hot L1 catalog once; separate scan-free root-only route")
+@option("-G", "--dated-l1-generation", type=Path, help="`-e ch -L -f STORE`: pin an accepted dated-root publication; new scans remain catalog-only")
+@option("-H", "--hot-l2-artifact", type=Path, help="`-e ch -J CHECK`: pin an explicitly accepted paired L2 artifact; separate scan-free bucket-only route")
+@option("-i", "--narrow-rich-name-index", "narrow_name_index", is_flag=True, help="`-e ch -N TARGET`: opt into its completed rich name-order index")
+@option("-j", "--narrow-directory-parent-index", "narrow_parent_index", is_flag=True, help="`-e ch -N TARGET`: opt into its completed immutable directory parent index")
+@option("-J", "--hot-l2-check", type=Path, help="`-e ch -H ARTIFACT`: matching complete L2 acceptance proof; required together")
+@option("-k", "--narrow-plan", type=Choice(["legacy", "visible"]), default="legacy", help="`-e ch -N TARGET`: numeric serving plan; visible enables leaf/ancestor/fold reductions")
 @option("-l", "--root-label", default=None, help="The store root's name in a tree (default: $ROOT_LABEL, else `marin GCS`)")
+@option("-L", "--name-summary", is_flag=True, help="`-e ch -g GENERATION -N TARGET`: opt into stitched exact root summaries with bounded ordinary queries")
 @option("-M", "--mmap", is_flag=True, help="`-e mem`: map the index's arrays instead of reading them (a tmpfs copy then costs its RAM once)")
+@option("-N", "--narrow-target", help="`-e ch`: experimental numeric history for its bounded prefix/descendants and selected dates; canonical fallback elsewhere")
 @option("-p", "--port", default=None, type=int, help="Port (default: $PORT, else 8080)")
+@option("-r", "--root-plan", type=Choice(["rich", "compact"]), default="rich", help="`-e ch`: retain rich candidate aggregates (default), or discover positive roots with compact rows and reread their slices via a semijoin")
 @option("-s", "--stage", type=Path, default=None, help="`-e mem`: copy gs:// indexes here first (on Cloud Run: an in-memory dir, with -M)")
 @option("-t", "--threads", default=None, type=int, help="Vocabulary-scan threads / ClickHouse `max_threads` (default: the CPU count)")
 @option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="The env var holding the bearer token reads must present")
+@option("-v", "--narrow-rich-name-variant", "narrow_name_variant", help="`-e ch -N TARGET -i`: select a completed isolated rich name-index variant (e.g. g64)")
 @argument("root")
-def serve_query(n_latest: int, no_auth: bool, bind: str, db: str | None, dates: tuple[str, ...], remote_detail: bool, engine: str, root_label: str | None,
-                mmap: bool, port: int | None, stage: Path | None, threads: int | None, token_env: str, root: str) -> None:
+def serve_query(
+    n_latest: int,
+    no_auth: bool,
+    bind: str,
+    db: str | None,
+    concurrency: int,
+    dates: tuple[str, ...],
+    remote_detail: bool,
+    engine: str,
+    dated_name_store: str | None,
+    hot_l1_generation: Path | None,
+    dated_l1_generation: Path | None,
+    hot_l2_artifact: Path | None,
+    narrow_name_index: bool,
+    narrow_parent_index: bool,
+    hot_l2_check: Path | None,
+    narrow_plan: str,
+    root_label: str | None,
+    name_summary: bool,
+    mmap: bool,
+    narrow_target: str | None,
+    port: int | None,
+    root_plan: str,
+    stage: Path | None,
+    threads: int | None,
+    token_env: str,
+    narrow_name_variant: str | None,
+    root: str,
+) -> None:
     """The serving box (specs/filter-query-service.md, specs/ch-store.md):
     answer the Worker's `/api/subtree` and `/api/diff` (and, `-e ch`,
     `/api/series`). `-e mem`: filtered reads from in-memory indexes
@@ -864,6 +904,7 @@ def serve_query(n_latest: int, no_auth: bool, bind: str, db: str | None, dates: 
     scans are in memory. `-e ch`: ROOT is the ClickHouse HTTP URL of a store
     `ch-ingest` fills; every ingested scan is served."""
     import os as _os
+    from threading import Semaphore
 
     from .box import server as bs
 
@@ -872,15 +913,42 @@ def serve_query(n_latest: int, no_auth: bool, bind: str, db: str | None, dates: 
         raise UsageError(f"${token_env} is unset (or pass -A to serve without auth)")
     label = root_label or _os.environ.get("ROOT_LABEL") or "marin GCS"
     syntax = _os.environ.get("QUERY_SYNTAX") or "simple"
+    if hot_l1_generation is not None and engine != "ch":
+        raise UsageError("--hot-l1-generation requires --engine ch")
+    if name_summary and (engine != "ch" or hot_l1_generation is None or not narrow_target):
+        raise UsageError("--name-summary requires --engine ch, --hot-l1-generation and --narrow-target")
+    if (dated_l1_generation is None) != (dated_name_store is None):
+        raise UsageError("--dated-l1-generation and --dated-name-store are required together")
+    if dated_l1_generation is not None and (engine != "ch" or not name_summary):
+        raise UsageError("--dated-l1-generation requires --engine ch and --name-summary")
+    if (hot_l2_artifact is None) != (hot_l2_check is None):
+        raise UsageError("--hot-l2-artifact and --hot-l2-check are required together")
+    if hot_l2_artifact is not None and engine != "ch":
+        raise UsageError("--hot-l2-artifact/--hot-l2-check require --engine ch")
+    if narrow_target and engine != "ch":
+        raise UsageError("--narrow-target requires --engine ch")
+    if narrow_name_index and (engine != "ch" or not narrow_target):
+        raise UsageError("--narrow-rich-name-index requires --engine ch and --narrow-target")
+    if narrow_parent_index and (engine != "ch" or not narrow_target):
+        raise UsageError("--narrow-directory-parent-index requires --engine ch and --narrow-target")
+    if narrow_plan != "legacy" and (engine != "ch" or not narrow_target):
+        raise UsageError("--narrow-plan requires --engine ch and --narrow-target")
+    if narrow_name_variant is not None and not narrow_name_index:
+        raise UsageError("--narrow-rich-name-variant requires --narrow-rich-name-index")
     if engine == "ch":
         from .chstore.serve import Store
 
         box = bs.ChBox(Store(root, db=db or _os.environ.get("CLICKHOUSE_DB") or "default", threads=threads or _os.cpu_count() or 8, root_label=label,
-                             syntax=syntax))
+                             syntax=syntax, root_plan=root_plan), gate=Semaphore(concurrency), narrow_target=narrow_target,
+                       narrow_name_index=narrow_name_index, narrow_name_variant=narrow_name_variant, narrow_parent_index=narrow_parent_index,
+                       narrow_plan=narrow_plan, hot_l1_generation=hot_l1_generation,
+                       hot_l2_artifact=hot_l2_artifact, hot_l2_check=hot_l2_check, name_summary_enabled=name_summary,
+                       dated_l1_generation=dated_l1_generation, dated_name_store=dated_name_store)
     else:
         box = bs.Box(
             root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,
             threads=threads or _os.cpu_count() or 8, root_label=label, syntax=syntax,
+            gate=Semaphore(concurrency),
         )
     bs.serve(box, bind=bind, port=port or int(_os.environ.get("PORT") or 8080), token=token)
 
@@ -890,30 +958,59 @@ def serve_query(n_latest: int, no_auth: bool, bind: str, db: str | None, dates: 
 @option("-C", "--cold", is_flag=True, help="Drop the box's ClickHouse caches and the OS page cache before each request (on the box, as root / privileged)")
 @option("-d", "--date", default=None, help="With -Q: the scan the query set's requests ask")
 @option("-f", "--file", "req_file", default=None, help="Requests, one `NAME=/api/…` per line (beside / instead of REQUESTS)")
+@option("-j", "--parallel", default=1, type=IntRange(min=1), help="Maximum simultaneous HTTP clients; warm-only, recorded per request")
+@option("-m", "--rss-pid", "rss_pids", multiple=True, type=IntRange(min=1), help="Same-host Linux PID to sample during requests (repeatable; requires -M)")
+@option("-M", "--rss-out", type=Path, help="New JSONL file for 0.5-s RSS samples; existing files refused (requires -m)")
 @option("-n", "--trials", default=1, type=int, help="Rounds over the requests")
 @option("-o", "--out", default=None, help="Append each request's record (JSONL) here")
 @option("-Q", "--queries", default=None, help="A bench query set (YAML): every query × view as a filtered subtree request (with -d)")
+@option("-r", "--proc-root", type=Path, default=Path("/hostproc"), help="Linux proc mount for sampled PIDs; the dev wrapper exposes host /proc here")
 @option("-s", "--seed", default=None, type=int, help="Jitter `minArea` per (seed, request, trial): past edge caches, the same in every run with this seed")
 @option("-t", "--timeout", default=300.0, type=float, help="Per-request timeout, seconds")
 @option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="The env var holding the bearer token (none set = no auth)")
 @option("-u", "--url", default="http://localhost:8080", help="Base URL: the box's serve-query, or a site")
 @option("-U", "--ch-url", default=None, help="With -C: the box's ClickHouse (default http://localhost:8123)")
 @argument("requests", nargs=-1)
-def ch_bench(compare_to: str | None, cold: bool, date: str | None, req_file: str | None, trials: int, out: str | None, queries: str | None, seed: int | None,
-             timeout: float, token_env: str, url: str, ch_url: str | None, requests: tuple[str, ...]) -> None:
+def ch_bench(
+    compare_to: str | None,
+    cold: bool,
+    date: str | None,
+    req_file: str | None,
+    parallel: int,
+    rss_pids: tuple[int, ...],
+    rss_out: Path | None,
+    trials: int,
+    out: str | None,
+    queries: str | None,
+    proc_root: Path,
+    seed: int | None,
+    timeout: float,
+    token_env: str,
+    url: str,
+    ch_url: str | None,
+    requests: tuple[str, ...],
+) -> None:
     """Time requests against the box or a Worker, warm or cold, and compare
     two runs' latency and bodies (specs/ch-store.md §6). REQUESTS are
     `NAME=/api/…?…`."""
     import os as _os
+    from contextlib import nullcontext
 
     from .chstore import bench as cb
+    from .chstore.resources import RssMonitor
 
+    if bool(rss_pids) != bool(rss_out):
+        raise UsageError("--rss-pid and --rss-out are required together")
+    if compare_to and rss_pids:
+        raise UsageError("RSS monitoring is only for live benchmark runs")
     if compare_to:
         if len(requests) != 1:
             raise UsageError("-c A.jsonl B.jsonl")
         for row in cb.compare(cb.load(compare_to), cb.load(requests[0])):
             print(json.dumps(row))
         return
+    if cold and parallel > 1:
+        raise UsageError("independent per-request cold resets cannot overlap parallel requests")
     reqs = [tuple(r.split("=", 1)) for r in requests]
     if req_file:
         with open(req_file) as f:
@@ -924,11 +1021,1900 @@ def ch_bench(compare_to: str | None, cold: bool, date: str | None, req_file: str
         reqs += cb.queryset_requests(queries, date)
     if not reqs:
         raise UsageError("no requests")
-    recs = cb.run(url, reqs, token=_os.environ.get(token_env) or None, trials=trials, seed=seed, cold=cold, ch_url=ch_url, timeout=timeout, log=err)
-    if out:
-        cb.dump(recs, out)
+    observer = nullcontext()
+    if rss_pids:
+        assert rss_out is not None
+        observer = RssMonitor(rss_pids, rss_out, proc_root=proc_root)
+    with observer as monitor:
+        recs = cb.run(url, reqs, token=_os.environ.get(token_env) or None, trials=trials, seed=seed, cold=cold, ch_url=ch_url, timeout=timeout, log=err, record_path=out, parallel=parallel)
     for row in cb.summary(recs):
         print(json.dumps(row))
+    if monitor is not None:
+        print(json.dumps({"resource_samples": monitor.summary()}))
+
+
+@main.command("ch-narrow-build")
+@option("-B", "--db", default="default", help="Source historical store database")
+@option("-a", "--audit", "audit_after", is_flag=True, help="Run the full-domain read-only audit sequentially after successful construction; do not cut over serving")
+@option("-b", "--snapshot-ranges", default=0, type=IntRange(min=0), help="Bound snapshot closure sets with N sampled key ranges (0: one whole-domain query)")
+@option("-d", "--date", "dates", multiple=True, required=True, help="Frozen scan ids to include (repeatable)")
+@option("-e", "--interval-engine", type=Choice(["numpy", "stream"]), default="numpy", help="Interval builder: N RAM arrays or external tree sort + O(depth) stack")
+@option("-f", "--min-free-gib", default=64, type=IntRange(min=0), help="Stop before another build stage if disk free space falls below this reserve (not a hard quota)")
+@option("-m", "--max-nodes", default=50_000_000, type=int, help="Refuse interval construction above this union size")
+@option("-p", "--prefix", required=True, help="Frozen subtree including its root; pass an empty string for the global fleet")
+@option("-R", "--resume-from", type=Choice(["snapshots-partial", "snapshots", "paths", "intervals", "names", "dictionary"]), help="Reuse a completed checkpoint; partial snapshots/names require matching successful query logs")
+@option("-t", "--threads", default=8, type=int, help="ClickHouse threads")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@option("-u", "--union-engine", type=Choice(["group", "merge"]), default="group", help="Path union: hash aggregation or sorted full joins")
+@argument("target")
+def ch_narrow_build(
+    db: str,
+    audit_after: bool,
+    snapshot_ranges: int,
+    dates: tuple[str, ...],
+    interval_engine: str,
+    min_free_gib: int,
+    max_nodes: int,
+    prefix: str,
+    resume_from: str | None,
+    threads: int,
+    url: str,
+    union_engine: str,
+    target: str,
+) -> None:
+    """Experimental frozen-scan ID/interval index. Creates new TARGET databases;
+    refuses existing names, retains partial builds. Heavy: run on a dev node."""
+    from .chstore.narrow import audit as audit_build, build
+    from .chstore.serve import Store
+
+    result = build(Store(url, db=db, threads=threads, timeout=7200), target, prefix, dates,
+                   max_nodes=max_nodes, interval_engine=interval_engine, min_free_bytes=min_free_gib << 30,
+                   union_engine=union_engine, resume_from=resume_from, snapshot_ranges=snapshot_ranges, log=err)
+    if audit_after:
+        err("full-domain audit: starting after successful construction")
+        result = {**result, "audit": audit_build(url, target)}
+        err("full-domain audit: passed")
+    print(json.dumps(result))
+
+
+@main.command("ch-narrow-dictionary-checkpoint")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_dictionary_checkpoint(url: str, target: str) -> None:
+    """Explicit recovery for a completed pre-checkpoint dictionary; refuses an existing marker."""
+    from .chstore.client import Ch
+    from .chstore.narrow import dictionary_checkpoint
+
+    ch = Ch(url, timeout=7200)
+    try:
+        print(json.dumps(dictionary_checkpoint(ch, target)))
+    finally:
+        ch.close()
+
+
+@main.command("ch-narrow-intervals")
+@option("-c", "--checkpoint", is_flag=True, help="Publish a completed hierarchy checkpoint (requires -T intervals and paths_manifest)")
+@option("-e", "--order-engine", type=Choice(["segments", "escaped"]), default="escaped", help="Tree preorder sort key: segment array or equivalent escaped byte string")
+@option("-p", "--prefix", required=True, help="Existing experimental union's root")
+@option("-T", "--table", default="intervals_stream", help="New result table; refuses an existing table")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_intervals(
+    checkpoint: bool,
+    order_engine: str,
+    prefix: str,
+    table: str,
+    url: str,
+    target: str,
+) -> None:
+    """Benchmark disk-backed intervals over an existing experimental IDs table."""
+    from .chstore.client import Ch
+    from .chstore.narrow import stream_intervals
+
+    ch = Ch(url, timeout=7200)
+    try:
+        print(json.dumps(stream_intervals(ch, target, prefix, table=table, order_engine=order_engine, checkpoint=checkpoint)))
+    finally:
+        ch.close()
+
+
+@main.command("ch-narrow-bench")
+@option("-c", "--compare", is_flag=True, help="Verify complete root identities and totals against the historical store")
+@option("-C", "--cold", is_flag=True, help="Drop CH and OS caches before each experimental AND canonical discovery (dev node/root only)")
+@option("-H", "--history", "historical", is_flag=True, help="Query the coalesced version tables, not the frozen snapshots")
+@option("-M", "--no-metadata-paths", "metadata_paths", is_flag=True, flag_value=False, default=True, help="Component A/B: omit path strings from the timed rich payload read; NOT complete serving")
+@option("-n", "--trials", default=2, type=int, help="Rounds per frozen scan")
+@option("-o", "--out", type=Path, help="Append per-query JSONL records")
+@option("-P", "--no-path-free", "path_free", is_flag=True, flag_value=False, default=True, help="Disable the numeric-only candidate shortcut for single literal substrings (A/B baseline)")
+@option("-Q", "--queries", required=True, help="Benchmark query YAML; evaluate each query at the frozen subtree")
+@option("-r", "--rich-name-index", "name_index", is_flag=True, help="Use the explicitly built rich name-order index for eligible literal roots (A/B)")
+@option("-t", "--threads", default=8, type=int, help="ClickHouse threads")
+@option("-T", "--truth", help="DATE=DIR: independent benchmark truth for one frozen scan")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_bench(
+    compare: bool,
+    cold: bool,
+    historical: bool,
+    metadata_paths: bool,
+    trials: int,
+    out: Path | None,
+    path_free: bool,
+    queries: str,
+    name_index: bool,
+    threads: int,
+    truth: str | None,
+    url: str,
+    target: str,
+) -> None:
+    """Discovery + full-root materialization + late metadata; NOT treemap latency.
+    Ignore the YAML's view list: this bounded experiment uses its one prefix."""
+    from .bench.queryset import load
+    from .bench.score import Truth
+    from .chstore import narrow
+    from .chstore.bench import drop_caches
+    from .chstore.client import Ch
+    from .chstore.serve import Store
+
+    narrow.identifier(target)
+    manifest = json.loads(Ch(url, db=target).scalar("SELECT doc FROM history_manifest" if historical else "SELECT doc FROM manifest"))
+    store = Store(url, db=manifest["source_db"], threads=threads)
+    truth_date, truth_set = None, None
+    if truth:
+        truth_date, sep, uri = truth.partition("=")
+        if not sep or truth_date not in manifest["dates"] or not uri:
+            raise UsageError("-T needs DATE=DIR for one of the frozen dates")
+        truth_set = Truth(uri)
+    expected = {}
+    baseline = {}
+    cases = load(queries)
+    for trial in range(trials):
+        for date, db in zip(manifest["dates"], manifest["dbs"], strict=True):
+            for case in cases:
+                if cold:
+                    drop_caches(url)
+                row = {"date": date, "query": case.id, "query_text": case.q, "syntax": case.qs, "trial": trial, "prefix": manifest["prefix"], "path_free": path_free, "cold": cold, "name_index": name_index, "threads": threads, "metadata_paths": metadata_paths}
+                row.update(narrow.evaluate(url, db, manifest["prefix"], case.q, case.qs, threads, path_free=path_free, name_index=name_index, metadata_paths=metadata_paths))
+                if compare:
+                    key = date, case.id
+                    if key not in expected or cold:
+                        if cold:
+                            drop_caches(url)
+                        baseline[key] = {}
+                        expected[key] = narrow.compare(store, date, manifest["prefix"], case.q, case.qs, timings=baseline[key])
+                    actual = {k: row[k] for k in ("roots", "n", "md5", "b", "o")}
+                    row["exact"] = actual == expected[key]
+                    row["baseline"] = baseline[key]
+                if truth_set is not None and date == truth_date:
+                    # Some queries override the YAML's default views; their
+                    # truth may not cover this experiment's frozen prefix.
+                    want = next((v for v in truth_set.by_id[case.id]["views"] if v["view"] == manifest["prefix"]), None)
+                    row["truth_covered"] = want is not None
+                    if want is not None:
+                        row["truth_exact"] = narrow.signature(row) == {"n": want["roots"], "md5": want["md5"], "b": want["bytes"], "o": want["objects"]}
+                line = json.dumps(row)
+                print(json.dumps({k: v for k, v in row.items() if k != "roots"}), flush=True)
+                if out:
+                    with out.open("a") as f:
+                        f.write(line + "\n")
+                if compare and not row["exact"]:
+                    raise ValueError(f"narrow result mismatch: {date} / {case.id}; actual {narrow.signature(row)}, expected {narrow.signature(expected[key])}")
+                if row.get("truth_exact") is False:
+                    raise ValueError(f"independent truth mismatch: {date} / {case.id}; actual {narrow.signature(row)}, expected {want}")
+
+
+@main.command("ch-raw-inventory")
+@argument("path", type=Path)
+def ch_raw_inventory(path: Path) -> None:
+    """Summarize saved `gcloud storage ls -l` raw-shard metadata; no content reads."""
+    from .chstore.inventory import raw_shards
+
+    with path.open() as f:
+        print(json.dumps(raw_shards(f), indent=2))
+
+
+@main.command("ch-narrow-rich-name-index")
+@option("-f", "--min-free-gib", default=64, type=IntRange(min=0), help="Disk reserve before building the rich access path")
+@option("-g", "--granularity", default=8192, type=IntRange(min=1), help="Rows per rich name-index granule; smaller ranges trade read amplification for more marks/seeks")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@option("-v", "--variant", help="Isolated table/view/checkpoint suffix for granularity A/B; keeps the default index intact")
+@argument("target")
+def ch_narrow_rich_name_index(
+    min_free_gib: int,
+    granularity: int,
+    url: str,
+    variant: str | None,
+    target: str,
+) -> None:
+    """Experimental rich (name-ID, path-ID, vf) index over an existing history."""
+    from .chstore.narrow import rich_name_index
+
+    print(json.dumps(rich_name_index(url, target, granularity=granularity, min_free_bytes=min_free_gib << 30, variant=variant)))
+
+
+@main.command("ch-ancestry-build")
+@option("-d", "--date", required=True, help="Selected scan date in an existing numeric history")
+@option("-f", "--min-free-gib", default=64, type=IntRange(min=0), help="Disk reserve before the new experimental table")
+@option("-T", "--table", default="ancestry_nodes", help="New name-ordered scalar table; refuses an existing table")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_ancestry_build(
+    date: str,
+    min_free_gib: int,
+    table: str,
+    url: str,
+    target: str,
+) -> None:
+    """Experimental inline parent IDs; no incremental allocator or production writes."""
+    from .chstore.ancestry import build
+
+    print(json.dumps(build(url, target, date, table=table, min_free_bytes=min_free_gib << 30)))
+
+
+@main.command("ch-narrow-numeric-parent-index")
+@option("-f", "--min-free-gib", default=64, type=IntRange(min=0), help="Disk reserve before streaming all frozen path parent links")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_numeric_parent_index(
+    min_free_gib: int,
+    url: str,
+    target: str,
+) -> None:
+    """Build immutable numeric parents once; no path decoding or production writes."""
+    from .chstore.narrow import numeric_parent_index
+
+    print(json.dumps(numeric_parent_index(url, target, min_free_bytes=min_free_gib << 30)))
+
+
+@main.command("ch-narrow-parent-index")
+@option("-f", "--min-free-gib", default=64, type=IntRange(min=0), help="Disk reserve before copying immutable directory parent IDs")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_parent_index(
+    min_free_gib: int,
+    url: str,
+    target: str,
+) -> None:
+    """Build a compact frozen directory-parent access path; no production routing."""
+    from .chstore.narrow import directory_parent_index
+
+    print(json.dumps(directory_parent_index(url, target, min_free_bytes=min_free_gib << 30)))
+
+
+@main.command("ch-narrow-parent-bench")
+@option("-b", "--batch-rows", default=1_000_000, type=IntRange(min=1, max=1_000_000), help="Frozen preorder span per rich-source read")
+@option("-j", "--numeric-join", default="grace_hash", type=Choice(["grace_hash", "full_sorting_merge"]), help="Numeric join algorithm; string baseline always uses grace_hash")
+@option("-o", "--out", type=Path, help="Append each exact paired component result as JSONL")
+@option("-s", "--start", "starts", multiple=True, required=True, type=IntRange(min=0), help="First frozen preorder key (repeat for several regions)")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_parent_bench(
+    batch_rows: int,
+    numeric_join: str,
+    out: Path | None,
+    starts: tuple[int, ...],
+    url: str,
+    target: str,
+) -> None:
+    """Compare rich-source parent joins; NOT full history construction or serving."""
+    from .chstore.narrow import parent_benchmark
+
+    for row in parent_benchmark(url, target, starts, batch_rows=batch_rows, numeric_join=numeric_join):
+        print(json.dumps(row), flush=True)
+        if out:
+            with out.open("a") as f:
+                f.write(json.dumps(row) + "\n")
+
+
+@main.command("ch-ancestry-bench")
+@option("-c", "--compare", is_flag=True, help="Verify uncapped roots and totals against canonical history")
+@option("-C", "--cold", is_flag=True, help="Reset CH/OS caches independently before both engines (dev node/root only)")
+@option("-n", "--trials", default=2, type=IntRange(min=1), help="Rounds per query")
+@option("-o", "--out", type=Path, help="Append completed root fingerprints and timings as JSONL")
+@option("-Q", "--queries", required=True, help="Single-literal query YAML; uses the experiment's prefix")
+@option("-t", "--threads", default=8, type=IntRange(min=1), help="Same ClickHouse thread limit for experimental and canonical discovery")
+@option("-T", "--table", default="ancestry_nodes", help="Completed experimental scalar table")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_ancestry_bench(
+    compare: bool,
+    cold: bool,
+    trials: int,
+    out: Path | None,
+    queries: str,
+    threads: int,
+    table: str,
+    url: str,
+    target: str,
+) -> None:
+    """Opaque-ID ancestry discovery + fingerprints; NOT complete responses."""
+    from .bench.queryset import load
+    from .chstore import ancestry, narrow
+    from .chstore.bench import drop_caches
+    from .chstore.client import Ch
+    from .chstore.serve import Store
+
+    narrow.identifier(target)
+    ch = Ch(url, db=target)
+    try:
+        source = json.loads(ch.scalar("SELECT doc FROM history_manifest"))["source_db"]
+    finally:
+        ch.close()
+    store = Store(url, db=source, threads=threads)
+    cases = load(queries)
+    for trial in range(trials):
+        for case in cases:
+            if cold:
+                drop_caches(url)
+            row = {"query": case.id, "trial": trial, "cold": cold, "threads": threads,
+                   **ancestry.evaluate(url, target, table, case.q, case.qs, threads=threads)}
+            if compare:
+                if cold:
+                    drop_caches(url)
+                timings = {}
+                expected = narrow.compare(store, row["date"], row["prefix"], case.q, case.qs, timings=timings)
+                row["exact"] = {k: row[k] for k in ("roots", "n", "md5", "b", "o")} == expected
+                row["baseline"] = timings
+            print(json.dumps({k: v for k, v in row.items() if k != "roots"}), flush=True)
+            if out:
+                with out.open("a") as f:
+                    f.write(json.dumps(row) + "\n")
+            if compare and not row["exact"]:
+                raise ValueError(f"ancestry result mismatch: {row['date']} / {case.id}")
+
+
+@main.command("ch-narrow-coalesce-bench")
+@option("-b", "--batch-rows", default=1_000_000, type=IntRange(min=1, max=1_000_000), help="Bound each read-only preorder range")
+@option("-k", "--table", default="metadata", type=Choice(["nodes", "metadata"]), help="Scalar or rich versions; metadata requires completed numeric parent links")
+@option("-n", "--trials", default=2, type=IntRange(min=1), help="Rounds, alternating window/pair plan order")
+@option("-o", "--out", type=Path, help="New JSONL file; refuses existing files")
+@option("-s", "--start", "starts", multiple=True, required=True, type=IntRange(min=0), help="Range start ID; repeat for several bounded cases")
+@option("-t", "--threads", default=2, type=IntRange(min=1), help="Equal query thread limit")
+@option("-T", "--temp-dir", default="/data/tmp/ch-coalesce-bench", type=Path, help="Dev-node scratch for exact streamed comparison; temporary data removed on exit")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_coalesce_bench(
+    batch_rows: int,
+    table: str,
+    trials: int,
+    out: Path | None,
+    starts: tuple[int, ...],
+    threads: int,
+    temp_dir: Path,
+    url: str,
+    target: str,
+) -> None:
+    """Read-only two-snapshot coalescing A/B on a dev node; no history publication."""
+    from contextlib import nullcontext
+
+    from .chstore.client import Ch
+    from .chstore.coalesce import benchmark
+
+    ch = Ch(url, db=target, timeout=7200)
+    try:
+        with out.open("x") if out else nullcontext(None) as stream:
+            def emit(row: dict) -> None:
+                line = json.dumps(row)
+                print(line, flush=True)
+                if stream is not None:
+                    stream.write(line + "\n")
+                    stream.flush()
+
+            benchmark(ch, target, starts, table=table, batch_rows=batch_rows, threads=threads,
+                      trials=trials, temp_dir=temp_dir, emit=emit)
+    finally:
+        ch.close()
+
+
+@main.command("ch-narrow-history")
+@option("-R", "--resume-publication", is_flag=True, help="Publish a completed streamed-hierarchy build only after exact query-log and row-count validation; never replay data writes")
+@option("-a", "--numeric-ancestors", is_flag=True, help="Stream frozen directory ancestor arrays in one O(depth) pass instead of repeated string joins (A/B)")
+@option("-b", "--batch-rows", default=1_000_000, type=IntRange(min=1), help="Preorder span per hierarchy/history batch; bounds aggregation and parent joins")
+@option("-e", "--coalescer", default="window", type=Choice(["window", "pair"]), help="Opt-in pair plan requires exactly two selected scans; window supports general episodes")
+@option("-f", "--min-free-gib", default=64, type=IntRange(min=0), help="Stop before another history stage if disk free space falls below this reserve (not a hard quota)")
+@option("-j", "--build-threads", default=2, type=IntRange(min=1), help="Thread limit for bounded history joins/windows/sorts; keeps the 8-GiB query limit")
+@option("-p", "--numeric-parents", is_flag=True, help="Build/reuse all frozen numeric parent links instead of repeated string-parent joins (A/B)")
+@option("-t", "--threads", default=8, type=int, help="ClickHouse threads")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_history(
+    resume_publication: bool,
+    numeric_ancestors: bool,
+    batch_rows: int,
+    coalescer: str,
+    min_free_gib: int,
+    build_threads: int,
+    numeric_parents: bool,
+    threads: int,
+    url: str,
+    target: str,
+) -> None:
+    """Coalesce an experimental snapshot build into query-time SCD2 views."""
+    from .chstore.narrow import history
+    from .chstore.serve import Store
+
+    print(json.dumps(history(Store(url, threads=threads, timeout=7200), target, batch_rows=batch_rows,
+                             build_threads=build_threads, min_free_bytes=min_free_gib << 30, numeric_parents=numeric_parents,
+                             numeric_ancestors=numeric_ancestors, coalescer=coalescer, resume_publication=resume_publication, log=err)))
+
+
+@main.command("ch-narrow-hierarchy-stream")
+@option("-f", "--min-free-gib", default=64, type=IntRange(min=0), help="Require this disk reserve before creating a new table (not a hard quota)")
+@option("-T", "--table", default="hierarchy_stream", help="New result table; refuses existing or partial tables")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_hierarchy_stream(
+    min_free_gib: int,
+    table: str,
+    url: str,
+    target: str,
+) -> None:
+    """Build frozen numeric ancestors from completed parent_paths; run remotely."""
+    from .chstore.client import Ch
+    from .chstore.narrow import stream_hierarchy
+
+    ch = Ch(url, timeout=7200)
+    try:
+        print(json.dumps(stream_hierarchy(ch, target, table=table, min_free_bytes=min_free_gib << 30)))
+    finally:
+        ch.close()
+
+
+@main.command("ch-narrow-coarse-bench")
+@option("-a", "--contains", is_flag=True, help="Interpret --name as a basename substring (benchmark only; refuses matching directories)")
+@option("-b", "--before", "date0", help="Also serve and independently verify a two-date coarse diff")
+@option("-c", "--compare", is_flag=True, help="Verify complete heavy-child sets and parent totals against an independent posting scan")
+@option("-C", "--cold", is_flag=True, help="Reset data caches independently before optimized/oracle reads; prefix remains resident")
+@option("-d", "--date", required=True, help="One completed frozen historical scan")
+@option("-k", "--child-budget", default=64, type=IntRange(min=1, max=256), help="Maximum byte-quantile positions per view")
+@option("-l", "--levels", default=1, type=IntRange(min=1, max=4), help="Experimental batched refinement at a fixed global threshold")
+@option("-m", "--materialize", is_flag=True, help="Build a session-only preorder disk cache for a suffix experiment")
+@option("-n", "--name", required=True, help="One exact leaf basename")
+@option("-o", "--out", type=Path, help="Write private view bodies to this scratch directory")
+@option("-p", "--path", "paths", multiple=True, help="Explicit view path; otherwise root plus two large directory drills")
+@option("-r", "--prepared-set", is_flag=True, help="Benchmark a reusable session Set engine for vocabulary membership")
+@option("-s", "--suffix", is_flag=True, help="Interpret --name as a basename suffix (benchmark only; no serving change)")
+@option("-t", "--threads", default=8, type=IntRange(min=1), help="Equal query thread limits")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_coarse_bench(
+    contains: bool,
+    date0: str | None,
+    compare: bool,
+    cold: bool,
+    date: str,
+    child_budget: int,
+    levels: int,
+    materialize: bool,
+    name: str,
+    out: Path | None,
+    paths: tuple[str, ...],
+    prepared_set: bool,
+    suffix: bool,
+    threads: int,
+    url: str,
+    target: str,
+) -> None:
+    """Exact coarse-directory prototype; no normal serving changes."""
+    from .chstore.coarse import bench
+
+    print(json.dumps(bench(url, target, date, name, budget=child_budget, cold=cold, compare=compare, paths=paths, out=out, threads=threads, date0=date0, suffix=suffix, contains=contains, materialize=materialize, levels=levels, prepared_set=prepared_set)))
+
+
+@main.command("ch-hot-name-scopes")
+@option("-d", "--date", required=True, help="Frozen scan date")
+@option("-n", "--name", required=True, help="Exact basename whose first eight postings provide possible benchmark scopes")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_name_scopes(
+    date: str,
+    name: str,
+    url: str,
+    target: str,
+) -> None:
+    """Find bounded complete parents; not a representative corpus sample."""
+    from .chstore.hot_names import find_scopes
+
+    print(json.dumps(find_scopes(url, target, date, name)))
+
+
+@main.command("ch-hot-name-hash-bench")
+@option("-l", "--leaves", default=8192, type=IntRange(min=1, max=16_000), help="Deterministic hash-named leaves in a complete synthetic tree")
+@option("-n", "--pattern", multiple=True, required=True, help="Name literal <=7 chars")
+@option("-t", "--threshold", multiple=True, required=True, type=IntRange(min=1), help="Minimum direct-matching paths to materialize")
+def ch_hot_name_hash_bench(
+    leaves: int,
+    pattern: tuple[str, ...],
+    threshold: tuple[int, ...],
+) -> None:
+    """Bounded synthetic hash workload; run on the dev node."""
+    from .chstore.hot_names import bench_nodes, hash_fixture
+
+    print(json.dumps({"scope": "complete deterministic synthetic hash tree; not fleet acceptance", **bench_nodes(hash_fixture(leaves), threshold, pattern)}))
+
+
+@main.command("ch-hot-name-bench")
+@option("-d", "--date", required=True, help="Frozen scan date")
+@option("-n", "--pattern", multiple=True, required=True, help="One name-only literal <=7 chars; repeat for several queries")
+@option("-p", "--path", required=True, help="Complete subtree with <=20K union nodes")
+@option("-t", "--threshold", multiple=True, required=True, type=IntRange(min=1), help="Materialize substrings matching at least this many local paths")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_name_bench(
+    date: str,
+    pattern: tuple[str, ...],
+    path: str,
+    threshold: tuple[int, ...],
+    url: str,
+    target: str,
+) -> None:
+    """Bounded hot-substring aggregates with exact three-level partition checks."""
+    from .chstore.hot_names import bench
+
+    print(json.dumps(bench(url, target, date, path, threshold, pattern)))
+
+
+@main.command("ch-hot-l1-bench")
+@option("-d", "--date", required=True, help="Frozen global scan date")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query memory budget")
+@option("-n", "--pattern", required=True, help="One case-insensitive name substring without slashes")
+@option("-N", "--max-names", type=IntRange(min=1), help="Optional matching-vocabulary guard; refuse rather than truncate")
+@option("-o", "--out", required=True, type=Path, help="New private dev-node JSON artifact; never overwrites")
+@option("-p", "--rss-pid", multiple=True, type=IntRange(min=1), help="Host process RSS to monitor; output beside artifact")
+@option("-P", "--max-postings", type=IntRange(min=1), help="Optional direct dated node guard before directory sorting; no descendant expansion")
+@option("-r", "--reference-batch", type=Path, help="Explicit trusted completed native batch artifact; replaces independent full-source oracle")
+@option("-R", "--max-roots", type=IntRange(min=1), help="Optional deduplicated outer-directory guard; refuse rather than truncate")
+@option("-s", "--spill-gib", default=8, type=IntRange(min=1, max=16), help="Offline temporary-disk budget per query")
+@option("-w", "--timeout-seconds", default=300, type=IntRange(min=1, max=600), help="Per-statement offline deadline; throws, not partial")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_l1_bench(
+    date: str,
+    memory_gib: int,
+    pattern: str,
+    max_names: int | None,
+    out: Path,
+    rss_pid: tuple[int, ...],
+    max_postings: int | None,
+    reference_batch: Path | None,
+    max_roots: int | None,
+    spill_gib: int,
+    timeout_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Exact global L1 hot-query aggregate; offline prototype, not serving."""
+    from .chstore.hot_l1_bench import bench
+
+    print(json.dumps(bench(url, target, date, pattern, out, memory_gib=memory_gib, seconds=timeout_seconds,
+                           spill_gib=spill_gib, pids=rss_pid, reference_batch=reference_batch,
+                           **{key: value for key, value in (('max_names', max_names), ('max_postings', max_postings), ('max_roots', max_roots)) if value is not None})))
+
+
+@main.command("ch-hot-l1-batch-bench")
+@option("-b", "--binary", type=Path, help="Explicit precompiled native executable; requires --engine stream")
+@option("-d", "--date", required=True, help="Frozen global scan date")
+@option("-e", "--engine", type=Choice(["sql", "stream"]), default="sql", help="Batch construction engine; stream requires --binary")
+@option("-g", "--registry-date", help="Explicit source date of a reused hot-query registry; does not imply historical threshold coverage")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query memory budget")
+@option("-o", "--out", required=True, type=Path, help="New private batch L1 JSON artifact; never overwrites")
+@option("-p", "--rss-pid", multiple=True, type=IntRange(min=1), help="Host process RSS to monitor; output beside artifact")
+@option("-q", "--queries", required=True, type=Path, help="Completed matching-date hot-query JSONL export")
+@option("-r", "--reference", multiple=True, type=Path, help="Independently checked same-date single-query L1 artifact")
+@option("-s", "--spill-gib", default=8, type=IntRange(min=1, max=16), help="Offline temporary-disk budget per query")
+@option("-w", "--timeout-seconds", default=600, type=IntRange(min=1, max=3600), help="Offline per-statement deadline; errors, not partial results")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_l1_batch_bench(
+    binary: Path | None,
+    date: str,
+    engine: str,
+    registry_date: str | None,
+    memory_gib: int,
+    out: Path,
+    rss_pid: tuple[int, ...],
+    queries: Path,
+    reference: tuple[Path, ...],
+    spill_gib: int,
+    timeout_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Batch all registered hot predicates into exact L1 scalar summaries."""
+    from .chstore.hot_l1_batch_bench import bench
+
+    print(json.dumps(bench(url, target, date, queries, out, memory_gib=memory_gib,
+                           seconds=timeout_seconds, spill_gib=spill_gib, pids=rss_pid, references=reference,
+                           registry_date=registry_date, engine=engine, binary=binary)))
+
+
+@main.command("ch-hot-l1-read")
+@option("-d", "--date", required=True, help="Registered scan date")
+@option("-D", "--compare-from", help="Registered earlier scan date for an exact signed diff")
+@option("-n", "--pattern", required=True, help="Registered case-insensitive name substring")
+@option("-p", "--path", default="", help="Root only; unmaterialized drills are explicitly refused")
+@argument("artifacts", nargs=-1, required=True, type=Path)
+def ch_hot_l1_read(
+    date: str,
+    compare_from: str | None,
+    pattern: str,
+    path: str,
+    artifacts: tuple[Path, ...],
+) -> None:
+    """Read exact L1 summaries/diffs without ClickHouse or a scan fallback."""
+    from .chstore.hot_l1_catalog import HotL1Catalog
+
+    catalog = HotL1Catalog.load(artifacts)
+    body = catalog.diff(compare_from, date, pattern, path=path) if compare_from else catalog.view(date, pattern, path=path)
+    print(json.dumps(body))
+
+
+@main.command("ch-hot-l1-prefix-audit")
+@option("-a", "--accepted", required=True, type=Path, help="Accepted complete batch artifact to bind snapshot identity and node count")
+@option("-b", "--binary", required=True, type=Path, help="Native engine with --prefix-audit support")
+@option("-d", "--date", required=True, help="Frozen scan date")
+@option("-o", "--out", required=True, type=Path, help="New private completed prefix-closure proof JSON")
+@option("-w", "--timeout-seconds", default=1800, type=IntRange(min=1, max=3600), help="Offline per-statement deadline")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_l1_prefix_audit(
+    accepted: Path,
+    binary: Path,
+    date: str,
+    out: Path,
+    timeout_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Prove per-date immediate-parent presence without rebuilding predicates."""
+    from .chstore.hot_l1_prefix_audit import bench
+
+    print(json.dumps(bench(url, target, date, accepted, out, binary=binary, seconds=timeout_seconds)))
+
+
+@main.command("ch-hot-l1-batch-read")
+@option("-d", "--date", required=True, help="Registered scan date")
+@option("-D", "--compare-from", help="Registered earlier scan date for an exact signed diff")
+@option("-n", "--pattern", required=True, help="Registered case-insensitive name substring")
+@option("-p", "--path", default="", help="Root only; unmaterialized drills are explicitly refused")
+@argument("artifacts", nargs=-1, required=True, type=Path)
+def ch_hot_l1_batch_read(
+    date: str,
+    compare_from: str | None,
+    pattern: str,
+    path: str,
+    artifacts: tuple[Path, ...],
+) -> None:
+    """Read registered SQL/native L1 batch summaries without a scan fallback."""
+    from .chstore.hot_l1_batch_catalog import HotL1BatchCatalog
+
+    catalog = HotL1BatchCatalog.load(artifacts)
+    body = catalog.diff(compare_from, date, pattern, path=path) if compare_from else catalog.view(date, pattern, path=path)
+    print(json.dumps(body))
+
+
+@main.command("ch-hot-l1-publish")
+@option("-o", "--root", required=True, type=Path, help="Explicit private local catalog root; atomically publishes current.json")
+@option("-p", "--prefix-proof", multiple=True, type=Path, help="Optional complete prefix proofs; when supplied must cover every published scan")
+@argument("artifacts", nargs=-1, required=True, type=Path)
+def ch_hot_l1_publish(
+    root: Path,
+    prefix_proof: tuple[Path, ...],
+    artifacts: tuple[Path, ...],
+) -> None:
+    """Publish completed referenced batch artifacts as one immutable generation."""
+    from .chstore.hot_l1_publish import publish
+
+    print(json.dumps(publish(artifacts, root, prefix_proofs=prefix_proof)))
+
+
+@main.command("ch-hot-l1-http-bench")
+@option("-a", "--all-registered", is_flag=True, help="Verify the requested scan's entire registered predicate catalog; mutually exclusive with --pattern")
+@option("-d", "--date", required=True, help="Registered requested scan date")
+@option("-D", "--compare-from", help="Registered earlier scan date for complete diff-body acceptance")
+@option("-g", "--generation-root", required=True, type=Path, help="Published private local catalog root to pin once")
+@option("-n", "--pattern", multiple=True, help="Explicit registered literal; repeatable, mutually exclusive with --all-registered")
+@option("-o", "--out", required=True, type=Path, help="New compact HTTP benchmark JSON; never overwrites")
+@option("-t", "--trials", default=3, type=IntRange(min=1), help="Verified responses per registered query")
+@option("-T", "--token-env", required=True, help="Environment variable containing bearer token; token is never logged")
+@option("-w", "--timeout-seconds", default=30, type=IntRange(min=1), help="HTTP request timeout in seconds")
+@option("-U", "--url", required=True, help="Explicit standalone hot L1 HTTP base URL")
+def ch_hot_l1_http_bench(
+    all_registered: bool,
+    date: str,
+    compare_from: str | None,
+    generation_root: Path,
+    pattern: tuple[str, ...],
+    out: Path,
+    trials: int,
+    token_env: str,
+    timeout_seconds: int,
+    url: str,
+) -> None:
+    """Verify every complete registered HTTP response against a pinned reader."""
+    from .chstore.hot_l1_http_bench import bench
+
+    if bool(pattern) == all_registered:
+        raise UsageError("HTTP benchmark requires either --pattern or --all-registered, not both")
+    print(json.dumps(bench(generation_root, url, date, pattern, out, token_env=token_env,
+                           compare_from=compare_from, trials=trials, timeout=timeout_seconds, all_registered=all_registered)))
+
+
+@main.command("serve-hot-l1")
+@option("-A", "--no-auth", is_flag=True, help="Serve without bearer authentication; numeric loopback bind only")
+@option("-b", "--bind", default="127.0.0.1", help="Address to listen on; isolated from normal query serving")
+@option("-g", "--generation-root", type=Path, help="Published local generation root to pin once; mutually exclusive with artifact paths")
+@option("-p", "--port", default=8082, type=IntRange(min=1, max=65535), help="Standalone dev HTTP port")
+@option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="Environment variable containing the required bearer token")
+@argument("artifacts", nargs=-1, type=Path)
+def serve_hot_l1(
+    no_auth: bool,
+    bind: str,
+    generation_root: Path | None,
+    port: int,
+    token_env: str,
+    artifacts: tuple[Path, ...],
+) -> None:
+    """Serve registered root L1 batch queries/diffs without ClickHouse."""
+    from .chstore.hot_l1_http import serve, token_from_env
+
+    if bool(artifacts) == (generation_root is not None):
+        raise UsageError("hot L1 serving requires either explicit artifacts or generation_root, not both")
+    token = None if no_auth else token_from_env(token_env)
+    if token is None and not no_auth:
+        raise UsageError(f"${token_env} is unset (or pass -A for loopback-only no-auth serving)")
+    if no_auth:
+        from .chstore.hot_l1_http import _loopback
+
+        if not _loopback(bind):
+            raise UsageError("hot L1 no-auth serving requires a numeric loopback bind")
+    serve(artifacts, generation_root=generation_root, bind=bind, port=port, token=token)
+
+
+@main.command("ch-hot-frequency-union")
+@option("-c", "--max-patterns", default=500_000, type=IntRange(min=1, max=500_000), help="Complete union pattern cap; exceeding it refuses before writing")
+@option("-k", "--max-chars", required=True, type=IntRange(min=1, max=32), help="Requested complete union depth; every source must cover it")
+@option("-o", "--out", required=True, type=Path, help="Fresh private complete union JSONL artifact; never overwrites")
+@option("-s", "--source", multiple=True, required=True, type=(Path, Path), help="Accepted single-date CENSUS QUERIES pair; repeat for distinct dates")
+@option("-t", "--threshold", required=True, type=IntRange(min=1), help="Hot if any source date qualifies; cannot be below any source census minimum")
+def ch_hot_frequency_union(
+    max_patterns: int,
+    max_chars: int,
+    out: Path,
+    source: tuple[tuple[Path, Path], ...],
+    threshold: int,
+) -> None:
+    """Union dated exact registries without claiming every query is hot on each scan."""
+    from .chstore.hot_frequency_union import union
+
+    print(json.dumps(union(source, threshold, max_chars, out, max_patterns=max_patterns)))
+
+
+@main.command("ch-hot-frequency-equivalence")
+@option("-o", "--out", required=True, type=Path, help="Fresh private full alias-proof report; no registry or kernel mutation")
+@option("-s", "--expected-sha256", help="Expected complete union-export SHA256")
+@argument("queries", type=Path)
+def ch_hot_frequency_equivalence(
+    out: Path,
+    expected_sha256: str | None,
+    queries: Path,
+) -> None:
+    """Size exact date-bound substring aliases in a completed union registry."""
+    from .chstore.hot_frequency_equivalence import report
+
+    body = report(queries, out, expected_sha256=expected_sha256)
+    savings = [{'date': row['date'], **{side + '_percent': None if bound is None else round(100 * bound['numerator'] / bound['denominator'], 6)
+                                      for side, bound in row['removed_fraction_bounds'].items()}} for row in body['direct_hit_work']]
+    print(json.dumps({**{key: body[key] for key in ('schema', 'dates', 'patterns', 'classes', 'aliases_removed', 'nontrivial_classes', 'accepted_for_kernel')},
+                      'direct_hit_work_savings_percent_bounds': savings, 'out': str(out)}))
+
+
+@main.command("ch-hot-frequency-compare")
+@argument("census_a", type=Path)
+@argument("queries_a", type=Path)
+@argument("census_b", type=Path)
+@argument("queries_b", type=Path)
+def ch_hot_frequency_compare(
+    census_a: Path,
+    queries_a: Path,
+    census_b: Path,
+    queries_b: Path,
+) -> None:
+    """Compare all exact literal frequencies in two controls' common T/L domain."""
+    from .chstore.hot_frequency_report import compare
+
+    print(json.dumps(compare(census_a, queries_a, census_b, queries_b)))
+
+
+@main.command("ch-hot-frequency-report")
+@option("-k", "--max-chars", multiple=True, type=IntRange(min=1, max=32), help="Grid depth; repeat (default 7,12,16), never above the completed census depth")
+@option("-n", "--pattern", multiple=True, help="Literal frequency to report; repeat (default .json,zarr.json,.npy)")
+@option("-t", "--threshold", multiple=True, type=IntRange(min=1), help="Grid minimum matching paths; repeat (default 100k,300k,1M), never below source threshold")
+@argument("census", type=Path)
+@argument("queries", type=Path)
+def ch_hot_frequency_report(
+    max_chars: tuple[int, ...],
+    pattern: tuple[str, ...],
+    threshold: tuple[int, ...],
+    census: Path,
+    queries: Path,
+) -> None:
+    """Validate local complete artifacts and report exact T/L catalog sizing."""
+    from .chstore.hot_frequency_report import report
+
+    print(json.dumps(report(census, queries, thresholds=threshold or (100_000, 300_000, 1_000_000),
+                            lengths=max_chars or (7, 12, 16), patterns=pattern or (".json", "zarr.json", ".npy"))))
+
+
+@main.command("ch-hot-frequency-census")
+@option("-b", "--staging-gib", default=16, type=IntRange(min=1, max=32), help="Daily-source active temporary-table coexistence cap; checked at stage boundaries")
+@option("-c", "--max-patterns", default=500_000, type=IntRange(min=1), help="Cumulative accepted hot-pattern cap; exceeding it fails without a complete artifact")
+@option("-d", "--date", required=True, help="Frozen global scan date")
+@option("-f", "--daily-source", type=Path, help="Explicit accepted global daily scalar source manifest instead of frozen history/name IDs")
+@option("-h", "--threshold-cut", multiple=True, type=IntRange(min=1), help="Additional direct-path threshold to count from the same minimum-threshold census")
+@option("-k", "--max-chars", default=7, type=IntRange(min=1, max=32), help="Enumerate threshold-hot name substrings up to this length (maximum 32 characters)")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query memory budget")
+@option("-n", "--pattern", multiple=True, help="Selected literals to report if threshold-hot and within max length")
+@option("-o", "--out", required=True, type=Path, help="New private dev-node JSON census artifact; never overwrites")
+@option("-p", "--rss-pid", multiple=True, type=IntRange(min=1), help="Host process RSS to monitor; output beside artifact")
+@option("-q", "--queries-out", type=Path, help="New private JSONL hot-predicate export with mandatory completion footer")
+@option("-s", "--spill-gib", default=8, type=IntRange(min=1, max=16), help="Offline temporary-disk budget per query")
+@option("-t", "--threshold", required=True, type=IntRange(min=1), help="Minimum direct matching paths; not occurrences or bytes")
+@option("-v", "--wall-seconds", default=3600, type=IntRange(min=1, max=7200), help="Daily-source nonrenewable total census deadline, plus at most sixty cleanup seconds")
+@option("-w", "--timeout-seconds", default=600, type=IntRange(min=1, max=600), help="Per-statement offline deadline; throws, not partial")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_frequency_census(
+    staging_gib: int,
+    max_patterns: int,
+    date: str,
+    daily_source: Path | None,
+    threshold_cut: tuple[int, ...],
+    max_chars: int,
+    memory_gib: int,
+    pattern: tuple[str, ...],
+    out: Path,
+    rss_pid: tuple[int, ...],
+    queries_out: Path | None,
+    spill_gib: int,
+    threshold: int,
+    wall_seconds: int,
+    timeout_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Exact full-fleet threshold-hot substring counts, pruning cold prefixes."""
+    from .chstore.hot_frequency_bench import bench
+
+    source = {} if daily_source is None else {'daily_source': daily_source, 'wall_seconds': wall_seconds, 'staging_gib': staging_gib}
+    print(json.dumps(bench(url, target, date, threshold, max_chars, out, memory_gib=memory_gib,
+                           seconds=timeout_seconds, spill_gib=spill_gib, pids=rss_pid, patterns=pattern,
+                           queries_out=queries_out, thresholds=threshold_cut, max_patterns=max_patterns, **source)))
+
+
+@main.command("ch-hot-l2-pair-bench")
+@option("-a", "--all-registered", is_flag=True, help="Explicitly attempt all registered predicates; output guards may refuse")
+@option("-b", "--binary", required=True, type=Path, help="Explicit native paired L2 executable")
+@option("-c", "--budget", default=64, type=IntRange(min=1, max=4096), help="Heavy-child budget per query and bucket root")
+@option("-C", "--source-client", type=Path, help="Explicit immutable multicall ClickHouse binary for loopback TCP sources; no ambient credentials/config")
+@option("-d", "--date", required=True, help="After scan date")
+@option("-D", "--before-date", required=True, help="Earlier scan date")
+@option("-e", "--max-cells", default=10_000_000, type=IntRange(min=1, max=10_000_000), help="Native sparse-output hard cap, not a fit guarantee")
+@option("-f", "--max-frames", default=500_000, type=IntRange(min=1, max=500_000), help="Complete depth-2 union frame guard")
+@option("-l", "--stdout-mib", default=512, type=IntRange(min=1, max=512), help="Native stdout byte cap")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Per-source CH query memory budget; two concurrent sources")
+@option("-n", "--pattern", multiple=True, help="Registered literal; repeat, or use --all-registered")
+@option("-o", "--out", required=True, type=Path, help="New private experiment artifact, never a catalog publication")
+@option("-p", "--prefix-proof", multiple=True, required=True, type=Path, help="Artifact-bound proof; exactly one for each date")
+@option("-q", "--queries", required=True, type=Path, help="Same completed query export as both accepted references")
+@option("-r", "--reference", multiple=True, required=True, type=Path, help="Accepted native L1 artifact; exactly one for each date")
+@option("-s", "--spill-gib", default=8, type=IntRange(min=1, max=8), help="Per-source temporary-disk budget")
+@option("-w", "--timeout-seconds", default=3600, type=IntRange(min=1, max=3600), help="Per-source statement deadline; never partial")
+@option("-W", "--wall-seconds", default=4500, type=IntRange(min=1, max=4500), help="Native experiment wall guard plus bounded cleanup")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_l2_pair_bench(
+    all_registered: bool,
+    binary: Path,
+    budget: int,
+    source_client: Path | None,
+    date: str,
+    before_date: str,
+    max_cells: int,
+    max_frames: int,
+    stdout_mib: int,
+    memory_gib: int,
+    pattern: tuple[str, ...],
+    out: Path,
+    prefix_proof: tuple[Path, ...],
+    queries: Path,
+    reference: tuple[Path, ...],
+    spill_gib: int,
+    timeout_seconds: int,
+    wall_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Offline paired sparse L2 experiment; fixed per-bucket thresholds only."""
+    from .chstore.hot_l2_pair_stream import bench
+
+    body = bench(url, target, before_date, date, reference, prefix_proof, queries, out,
+                 binary=binary, patterns=pattern, all_registered=all_registered, budget=budget,
+                 memory_gib=memory_gib, spill_gib=spill_gib, seconds=timeout_seconds,
+                 wall_seconds=wall_seconds, max_frames=max_frames, max_cells=max_cells,
+                 max_output_bytes=stdout_mib << 20,
+                 **({'source_client': source_client} if source_client is not None else {}))
+    print(json.dumps({key: body[key] for key in ('schema', 'dates', 'registered_predicates', 'registered_frames', 'query_subset', 'timings')} | {'out': str(out), 'cells': len(body['cells'])}))
+
+
+@main.command("ch-hot-registry-select")
+@option("-i", "--source-manifest", required=True, type=Path, help="Completed global daily scalar source manifest to pin")
+@option("-l", "--logical-store", required=True, help="Explicit logical store binding, distinct from the registry's physical target")
+@option("-o", "--out", required=True, type=Path, help="Fresh private mode-0600 selection envelope; never overwrites")
+@option("-r", "--registry", required=True, type=Path, help="Original complete dated-union registry JSONL; read only, never rewritten")
+def ch_hot_registry_select(
+    source_manifest: Path,
+    logical_store: str,
+    out: Path,
+    registry: Path,
+) -> None:
+    """Pin unchanged union membership to an explicitly accepted daily source."""
+    from hashlib import sha256
+    from .chstore.daily_scalar import manifest_bytes
+    from .chstore.hot_registry_selection import DOCUMENT_LIMIT, REGISTRY_LIMIT, envelope
+
+    if out.exists() or out.is_symlink() or not out.parent.is_dir():
+        raise ValueError("registry selection output must be fresh with an existing parent directory")
+    with registry.open("rb") as source:
+        registry_raw = source.read(REGISTRY_LIMIT + 1)
+    with source_manifest.open("rb") as source:
+        source_raw = source.read(DOCUMENT_LIMIT + 1)
+    body = envelope(registry_raw, source_raw, logical_store=logical_store)
+    raw = manifest_bytes(body)
+    descriptor = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = None
+            os.fchmod(output.fileno(), 0o600)
+            output.write(raw)
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        out.unlink()
+        raise
+    print(json.dumps({"schema": body["schema"], "date": body["build_source"]["date"], "patterns": body["registry"]["patterns"],
+                      "selection_sha256": sha256(raw).hexdigest(), "selection_bytes": len(raw)}))
+
+
+@main.command("ch-dated-hot-l1-publish")
+@option("-a", "--artifact", multiple=True, required=True, type=Path, help="Complete private dated native L1 artifact; repeat for each scan")
+@option("-b", "--bucket-path", multiple=True, required=True, help="Explicit complete bucket path scope; repeat for each bucket")
+@option("-l", "--logical-store", required=True, help="Explicit logical store shared by all dated artifacts")
+@option("-p", "--proof", multiple=True, required=True, type=Path, help="Artifact-bound selected full-source proof; repeat for each scan")
+@argument("root", type=Path)
+def ch_dated_hot_l1_publish(
+    artifact: tuple[Path, ...],
+    bucket_path: tuple[str, ...],
+    logical_store: str,
+    proof: tuple[Path, ...],
+    root: Path,
+) -> None:
+    """Atomically publish accepted dated L1 files; no routing or deployment."""
+    from .chstore.dated_hot_l1_publish import publish
+
+    body = publish(artifact, root, proofs=proof, logical_store=logical_store, bucket_paths=bucket_path)
+    print(json.dumps({"schema": body["schema"], "generation": body["generation"], "dates": body["dates"],
+                      "artifacts": len(body["artifacts"]), "artifact_bytes": sum(row["bytes"] for row in body["artifacts"]),
+                      "proof_bytes": sum(row["bytes"] for row in body["proofs"])}))
+
+
+@main.command("ch-dated-hot-l1-build")
+@option("-b", "--binary", required=True, type=Path, help="Explicit native L1 executable to pin by SHA256")
+@option("-i", "--source-manifest", required=True, type=Path, help="Pinned completed global daily scalar source manifest")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-statement memory cap")
+@option("-o", "--out", required=True, type=Path, help="Fresh private dated L1 artifact; never overwrites")
+@option("-r", "--registry", required=True, type=Path, help="Original completed dated-union registry JSONL; never rewritten")
+@option("-s", "--selection", required=True, type=Path, help="Explicit registry-to-daily-source selection envelope")
+@option("-t", "--timeout-seconds", default=1800, type=IntRange(min=1, max=3600), help="Per-statement deadline, not an overall build SLA")
+@option("-T", "--spill-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query simultaneous temporary disk cap")
+@option("-U", "--url", default="http://127.0.0.1:8123", help="Existing development ClickHouse HTTP endpoint")
+def ch_dated_hot_l1_build(
+    binary: Path,
+    source_manifest: Path,
+    memory_gib: int,
+    out: Path,
+    registry: Path,
+    selection: Path,
+    timeout_seconds: int,
+    spill_gib: int,
+    url: str,
+) -> None:
+    """Build root-only dated L1 with unchanged registry qualification; no publication."""
+    from hashlib import sha256
+    from .chstore.client import Ch
+    from .chstore.dated_hot_l1 import build
+    from .chstore.hot_registry_selection import load
+
+    if out.exists() or out.is_symlink() or not out.parent.is_dir():
+        raise ValueError("dated L1 output must be fresh with an existing parent directory")
+    pinned = load(selection, registry, source_manifest)
+    ch = Ch(url, timeout=timeout_seconds + 60, max_threads=4, max_memory_usage=memory_gib << 30,
+            max_temporary_data_on_disk_size_for_query=spill_gib << 30,
+            max_execution_time=timeout_seconds, timeout_before_checking_execution_speed=0, timeout_overflow_mode="throw")
+    try:
+        body = build(ch, pinned, binary=binary, out=out)
+        digest, size = sha256(), 0
+        with out.open("rb") as artifact:
+            while chunk := artifact.read(1 << 20):
+                digest.update(chunk)
+                size += len(chunk)
+        print(json.dumps({"schema": body["schema"], "date": body["date"], "patterns": len(pinned.patterns),
+                          "artifact_bytes": size, "artifact_sha256": digest.hexdigest(), "stages": body["stages"]}))
+    finally:
+        ch.close()
+
+
+@main.command("ch-dated-hot-l1-check")
+@option("-m", "--memory-gib", default=4, type=IntRange(min=1, max=8), help="Per-statement oracle memory cap")
+@option("-n", "--pattern", multiple=True, required=True, help="Registered literal to check independently; repeat, one to eight unique names")
+@option("-o", "--out", required=True, type=Path, help="Fresh private mode-0600 selected-source proof; never overwrites")
+@option("-t", "--timeout-seconds", default=600, type=IntRange(min=1, max=600), help="Per-statement oracle deadline, not an overall SLA")
+@option("-U", "--url", default="http://127.0.0.1:8123", help="Development ClickHouse HTTP endpoint")
+@argument("artifact", type=Path)
+def ch_dated_hot_l1_check(
+    memory_gib: int,
+    pattern: tuple[str, ...],
+    out: Path,
+    timeout_seconds: int,
+    url: str,
+    artifact: Path,
+) -> None:
+    """Check selected dated L1 roots against complete independent source scans."""
+    from hashlib import sha256
+    from math import isfinite
+    from .chstore.client import Ch
+    from .chstore.daily_scalar import manifest_bytes
+    from .chstore.dated_hot_l1 import DatedHotL1Catalog
+    from .chstore.dated_hot_l1_check import check
+    from .chstore.hot_l1_batch_catalog import _literal
+
+    if out.exists() or out.is_symlink() or not out.parent.is_dir():
+        raise ValueError("dated L1 check output must be fresh with an existing parent directory")
+    patterns = tuple(_literal(value) for value in pattern)
+    if not 1 <= len(patterns) <= 8 or len(set(patterns)) != len(patterns):
+        raise ValueError("dated L1 check requires one to eight unique registered literals")
+    catalog = DatedHotL1Catalog.load(artifact)
+    registered = frozenset(catalog.selection.patterns)
+    if any(value not in registered for value in patterns):
+        raise ValueError("dated L1 check requires one to eight unique registered literals")
+    ch = Ch(url, db=catalog.selection.snapshot_db, timeout=timeout_seconds + 60, max_threads=1,
+            max_memory_usage=memory_gib << 30, max_execution_time=timeout_seconds,
+            timeout_before_checking_execution_speed=0, timeout_overflow_mode="throw")
+    try:
+        body = check(ch, catalog, patterns)
+        if (body.get("schema") != "dated-hot-l1-check-v1" or body.get("complete") is not True or
+                body.get("date") != catalog.date or type(body.get("source_nodes")) is not int or body["source_nodes"] != catalog.selection.nodes or
+                type(body.get("selected_patterns_checked")) is not int or body["selected_patterns_checked"] != len(patterns) or
+                type(body.get("check_s")) not in (int, float) or not isfinite(body["check_s"]) or body["check_s"] < 0):
+            raise ValueError("dated L1 checker did not return a complete matching selected-source proof")
+        raw = manifest_bytes(body)
+        descriptor = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                descriptor = None
+                os.fchmod(output.fileno(), 0o600)
+                output.write(raw)
+        except BaseException:
+            if descriptor is not None:
+                os.close(descriptor)
+            out.unlink()
+            raise
+        print(json.dumps({key: body[key] for key in ("schema", "date", "source_nodes", "selected_patterns_checked", "check_s")} |
+                         {"proof_sha256": sha256(raw).hexdigest(), "proof_bytes": len(raw)}))
+    finally:
+        ch.close()
+
+
+@main.command("ch-daily-scalar-build")
+@option("-b", "--owned-gib", default=35, type=IntRange(min=1, max=35), help="Owned table budget checked at stage boundaries, not an in-flight disk quota")
+@option("-e", "--order-plan", default="window", type=Choice(["window", "physical"]), help="Explicit ID ordering plan; physical uses bounded tree-sorted staging and audited serial numbering")
+@option("-f", "--reserve-gib", default=20, type=IntRange(min=20), help="Minimum free disk before and after each construction stage")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Per-statement memory cap")
+@option("-n", "--max-nodes", default=1000000, type=IntRange(min=1, max=(1 << 32) - 1), help="Complete selected subtree node cap; never samples")
+@option("-o", "--out", required=True, type=Path, help="Fresh private accepted-source manifest output")
+@option("-p", "--prefix", default="", help="Exact complete subtree; empty means the global fleet")
+@option("-r", "--resume-evidence", type=Path, help="Explicit private query-log provenance for a failed raw/scalar-only global build; never automatic")
+@option("-s", "--source-descriptor", required=True, type=Path, help="Pinned local input length/SHA256/date/store/generation descriptor")
+@option("-S", "--sort-spill-mib", default=256, type=IntRange(min=1, max=2048), help="External-sort run threshold within the unchanged memory cap (at most one quarter)")
+@option("-t", "--timeout-seconds", default=1800, type=IntRange(min=1, max=3600), help="Per-statement execution deadline, not an overall build SLA")
+@option("-T", "--spill-gib", default=8, type=IntRange(min=1, max=8), help="Per-query simultaneous temporary disk cap")
+@option("-U", "--url", default="http://127.0.0.1:8123", help="Existing development ClickHouse HTTP endpoint")
+@argument("target")
+@argument("parquet", type=Path)
+def ch_daily_scalar_build(
+    owned_gib: int,
+    order_plan: str,
+    reserve_gib: int,
+    memory_gib: int,
+    max_nodes: int,
+    out: Path,
+    prefix: str,
+    resume_evidence: Path | None,
+    source_descriptor: Path,
+    sort_spill_mib: int,
+    timeout_seconds: int,
+    spill_gib: int,
+    url: str,
+    target: str,
+    parquet: Path,
+) -> None:
+    """Build date-local scalar geometry only; no live routing or publication."""
+    from .chstore.client import Ch
+    from .chstore.daily_scalar import build, manifest_bytes
+    from .chstore.hot_l1_catalog import _unique_object
+
+    if out.exists() or out.is_symlink() or not out.parent.is_dir():
+        raise ValueError("daily scalar output must be fresh with an existing parent directory")
+    if sort_spill_mib << 20 > (memory_gib << 30) // 4:
+        raise ValueError("daily scalar sort threshold must not exceed one quarter of its memory cap")
+    with source_descriptor.open("rb") as source:
+        raw = source.read((64 << 10) + 1)
+    if len(raw) > 64 << 10:
+        raise ValueError("daily scalar descriptor exceeds 64 KiB")
+    descriptor = json.loads(raw, object_pairs_hook=_unique_object)
+    resume = None
+    if resume_evidence is not None:
+        with resume_evidence.open("rb") as source:
+            resume_raw = source.read((64 << 10) + 1)
+        if len(resume_raw) > 64 << 10:
+            raise ValueError("daily scalar resume evidence exceeds 64 KiB")
+        resume = json.loads(resume_raw, object_pairs_hook=_unique_object)
+    ch = Ch(url)
+    try:
+        body = build(ch, target, parquet, descriptor, prefix=prefix, max_nodes=max_nodes,
+                     memory_bytes=memory_gib << 30, spill_bytes=spill_gib << 30,
+                     query_seconds=timeout_seconds, max_owned_bytes=owned_gib << 30,
+                     min_free_bytes=reserve_gib << 30,
+                     resume=resume, sort_spill_bytes=sort_spill_mib << 20, order_plan=order_plan,
+                     progress=lambda message: print(message, file=sys.stderr, flush=True))
+        with os.fdopen(os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as output:
+            output.write(manifest_bytes(body))
+        print(json.dumps({key: body[key] for key in ("schema", "complete", "date", "target", "prefix", "source_rows", "selected_source_rows", "nodes", "stages")} | {"out": str(out)}))
+    finally:
+        ch.close()
+
+
+@main.command("ch-daily-scalar-check")
+@option("-n", "--max-nodes", default=1000000, type=IntRange(min=1, max=1000000), help="Complete source oracle cap; never samples larger sources")
+@option("-o", "--out", required=True, type=Path, help="Fresh private whole-subtree acceptance proof")
+@option("-t", "--timeout-seconds", default=180, type=IntRange(min=1, max=600), help="Per-statement CH read deadline, not whole-file checksum time")
+@option("-U", "--url", default="http://127.0.0.1:8123", help="Existing development ClickHouse HTTP endpoint")
+@argument("manifest", type=Path)
+@argument("parquet", type=Path)
+def ch_daily_scalar_check(
+    max_nodes: int,
+    out: Path,
+    timeout_seconds: int,
+    url: str,
+    manifest: Path,
+    parquet: Path,
+) -> None:
+    """Verify every bounded scalar node against an independent Parquet oracle."""
+    from .chstore.daily_scalar_check import check
+
+    print(json.dumps(check(manifest, parquet, url, out, max_nodes=max_nodes, seconds=timeout_seconds)))
+
+
+@main.command("ch-daily-scalar-audit-bench")
+@option("-s", "--seconds", default=120, type=IntRange(min=1, max=300), help="Total read/compute wall budget; cleanup may use ten further seconds")
+@option("-t", "--trials", default=1, type=IntRange(min=1, max=3), help="Original/fused pairs over the complete accepted source, alternating order")
+@option("-U", "--url", default="http://127.0.0.1:8123", help="Existing development ClickHouse HTTP endpoint")
+@argument("manifest", type=Path)
+def ch_daily_scalar_audit_bench(
+    seconds: int,
+    trials: int,
+    url: str,
+    manifest: Path,
+) -> None:
+    """Compare bounded complete-tree audit emitters without writing source tables."""
+    from .chstore.client import Ch
+    from .chstore.daily_scalar_audit_bench import bench
+
+    ch = Ch(url)
+    try:
+        print(json.dumps(bench(ch, manifest, trials=trials, seconds=seconds)))
+    finally:
+        ch.close()
+
+
+@main.command("ch-name-summary-http-check")
+@option("-c", "--clickhouse-url", required=True, help="ClickHouse HTTP endpoint for small startup identity reads only")
+@option("-d", "--date", required=True, help="Pinned requested scan date")
+@option("-D", "--from-date", help="Optional earlier pinned baseline scan")
+@option("-f", "--logical-store", help="Explicit store binding; requires --dated-generation-root")
+@option("-g", "--generation-root", required=True, type=Path, help="Private published generation root to pin once")
+@option("-G", "--dated-generation-root", type=Path, help="Optional accepted daily root publication; requires --logical-store")
+@option("-n", "--pattern", multiple=True, required=True, help="Selected literal; repeat, at most sixteen")
+@option("-o", "--out", required=True, type=Path, help="New private compact whole-body acceptance artifact")
+@option("-r", "--reference", multiple=True, type=Path, help="Explicit independently accepted cold L1 benchmark; repeat for every cold dated side")
+@option("-t", "--trials", default=3, type=IntRange(min=1, max=10), help="Sequential responses per selected query")
+@option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="Bearer token environment variable; never logged")
+@option("-w", "--timeout-seconds", default=8, type=FloatRange(min=0, min_open=True, max=8), help="Total HTTP response deadline, capped at eight seconds")
+@option("-U", "--url", required=True, help="Explicit backend HTTP(S) origin, without path/query/credentials")
+def ch_name_summary_http_check(
+    clickhouse_url: str,
+    date: str,
+    from_date: str | None,
+    logical_store: str | None,
+    generation_root: Path,
+    dated_generation_root: Path | None,
+    pattern: tuple[str, ...],
+    out: Path,
+    reference: tuple[Path, ...],
+    trials: int,
+    token_env: str,
+    timeout_seconds: float,
+    url: str,
+) -> None:
+    """Check stitched HTTP bodies against pinned hot and independent cold refs."""
+    from .chstore.name_summary_http_check import check
+
+    if (dated_generation_root is None) != (logical_store is None):
+        raise UsageError("--dated-generation-root and --logical-store are required together")
+    print(json.dumps(check(generation_root, clickhouse_url, url, date, pattern, out,
+                           references=reference, compare_from=from_date, trials=trials,
+                           token_env=token_env, timeout=timeout_seconds,
+                           dated_generation_root=dated_generation_root, logical_store=logical_store)))
+
+
+@main.command("ch-hot-l2-http-bench")
+@option("-a", "--all-registered", is_flag=True, help="Check every accepted predicate; mutually exclusive with -n")
+@option("-d", "--date", required=True, help="Accepted scan date")
+@option("-D", "--from-date", help="Optional accepted baseline; same/reversed comparisons allowed")
+@option("-n", "--pattern", multiple=True, help="Registered literal; repeat or explicitly choose -a")
+@option("-o", "--out", required=True, type=Path, help="Fresh private compact parity/timing artifact")
+@option("-p", "--path", multiple=True, help="Declared bucket path; default all accepted buckets")
+@option("-t", "--trials", default=1, type=IntRange(min=1, max=100), help="Sequential trials per predicate/bucket")
+@option("-w", "--timeout-seconds", default=30, type=FloatRange(min=0, min_open=True, max=30), help="Total per-response HTTP deadline")
+@option("-T", "--token-env", default="QUERY_BOX_TOKEN", help="Bearer token environment variable; never logged")
+@option("-U", "--url", required=True, help="Explicit backend HTTP(S) origin, not a frontend default")
+@argument("artifact", type=Path)
+@argument("check", type=Path)
+def ch_hot_l2_http_bench(
+    all_registered: bool,
+    date: str,
+    from_date: str | None,
+    pattern: tuple[str, ...],
+    out: Path,
+    path: tuple[str, ...],
+    trials: int,
+    timeout_seconds: float,
+    token_env: str,
+    url: str,
+    artifact: Path,
+    check: Path,
+) -> None:
+    """Whole-body HTTP parity against one accepted paired L2 ARTIFACT CHECK."""
+    from .chstore.hot_l2_http_bench import bench
+
+    print(json.dumps(bench(artifact, check, url, date, pattern, out, token_env=token_env,
+                           paths=path, compare_from=from_date, trials=trials,
+                           timeout=timeout_seconds, all_registered=all_registered)))
+
+
+@main.command("ch-hot-l2-pair-compare")
+@option("-o", "--out", required=True, type=Path, help="New private bound subset-parity proof; never overwrites")
+@argument("reference", type=Path)
+@argument("check", type=Path)
+@argument("candidate", type=Path)
+def ch_hot_l2_pair_compare(
+    out: Path,
+    reference: Path,
+    check: Path,
+    candidate: Path,
+) -> None:
+    """Compare accepted subset REFERENCE CHECK against a larger CANDIDATE."""
+    from .chstore.hot_l2_pair_compare import compare
+
+    body = compare(reference, check, candidate, out)
+    print(json.dumps({**{key: body[key] for key in ('schema', 'complete', 'queries_compared', 'cells_compared', 'candidate_queries', 'candidate_cells', 'compare_s')}, 'out': str(out)}))
+
+
+@main.command("ch-hot-l2-pair-check")
+@option("-c", "--max-cells", default=4, type=IntRange(min=0, max=4), help="Optional scoped oracle cells, at most one per non-control query")
+@option("-o", "--out", required=True, type=Path, help="New private acceptance artifact; never overwrites")
+@option("-s", "--max-span", default=1_000_000, type=IntRange(min=1, max=1_000_000), help="Maximum union preorder span for a selected-cell oracle")
+@option("-w", "--timeout-seconds", default=30, type=IntRange(min=15, max=30), help="Statement deadline, throwing rather than accepting partials")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("artifact", type=Path)
+def ch_hot_l2_pair_check(
+    max_cells: int,
+    out: Path,
+    max_span: int,
+    timeout_seconds: int,
+    url: str,
+    artifact: Path,
+) -> None:
+    """Bounded paired L2 source checks; input provenance paths are operator-trusted."""
+    from .chstore.hot_l2_pair_check import check
+
+    body = check(url, artifact, out, seconds=timeout_seconds, max_span=max_span, max_cells=max_cells)
+    print(json.dumps({'schema': body['schema'], 'dates': body['dates'], 'complete': body['complete'],
+                      'covered_frames': body['covered_control']['frames_checked'],
+                      'selected_cells_checked': sum(row['checked'] for row in body['selected_cells']), 'out': str(out)}))
+
+
+@main.command("ch-hot-frequency-prune-bench")
+@option("-a", "--census", required=True, type=Path, help="Accepted complete control census JSON")
+@option("-d", "--date", required=True, help="Same frozen scan as the accepted export")
+@option("-k", "--prune-chars", default=7, type=IntRange(min=1, max=31), help="Complete seed layer before pruning names once")
+@option("-l", "--max-chars", type=IntRange(min=2, max=32), help="Last layer to validate; default only prune length plus one")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query memory budget")
+@option("-o", "--out", required=True, type=Path, help="New private experiment JSON; never overwrites")
+@option("-p", "--rss-pid", multiple=True, type=IntRange(min=1), help="Same-host RSS process to monitor")
+@option("-q", "--queries", required=True, type=Path, help="Accepted complete hot-query JSONL export")
+@option("-s", "--spill-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query temporary-disk budget")
+@option("-t", "--threshold", required=True, type=IntRange(min=1), help="Exact same minimum threshold as the accepted export")
+@option("-w", "--timeout-seconds", default=600, type=IntRange(min=1, max=600), help="Per-statement deadline; throws, never partial")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_hot_frequency_prune_bench(
+    census: Path,
+    date: str,
+    prune_chars: int,
+    max_chars: int | None,
+    memory_gib: int,
+    out: Path,
+    rss_pid: tuple[int, ...],
+    queries: Path,
+    spill_gib: int,
+    threshold: int,
+    timeout_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Measure one seeded weighted-name prune, with complete per-layer parity."""
+    from .chstore.hot_frequency_prune_bench import bench
+
+    print(json.dumps(bench(url, target, date, threshold, prune_chars, census, queries, out,
+                           max_chars=max_chars, memory_gib=memory_gib, seconds=timeout_seconds,
+                           spill_gib=spill_gib, pids=rss_pid)))
+
+
+@main.command("ch-pattern-frequency-census")
+@option("-d", "--date", required=True, help="Frozen scan date")
+@option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=8), help="Offline per-query memory budget, not a serving constraint")
+@option("-n", "--pattern", multiple=True, required=True, help="Selected name-only literal <=7 characters; at most16 queries")
+@option("-o", "--rss-out", type=Path, help="New same-host RSS JSONL artifact; requires --rss-pid")
+@option("-p", "--rss-pid", multiple=True, type=IntRange(min=1), help="Host process to monitor; repeat for simultaneous RSS")
+@option("-q", "--profile", is_flag=True, help="Include completed query memory/I/O profile from system.query_log")
+@option("-s", "--spill-gib", default=8, type=IntRange(min=1, max=16), help="Offline temporary-sort disk budget")
+@option("-w", "--timeout-seconds", default=180, type=IntRange(min=1, max=600), help="Offline server query deadline; throws, never partial")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_pattern_frequency_census(
+    date: str,
+    memory_gib: int,
+    pattern: tuple[str, ...],
+    rss_out: Path | None,
+    rss_pid: tuple[int, ...],
+    profile: bool,
+    spill_gib: int,
+    timeout_seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Read-only exact selected short-pattern frequencies, not coverage aggregates."""
+    from .chstore.query_census import pattern_frequency_bench
+
+    print(json.dumps(pattern_frequency_bench(url, target, date, pattern, memory_gib=memory_gib,
+                                            seconds=timeout_seconds, spill_gib=spill_gib,
+                                            pids=rss_pid, rss_out=rss_out, profile=profile)))
+
+
+@main.command("ch-name-frequency-census")
+@option("-d", "--date", required=True, help="Frozen scan date")
+@option("-t", "--threshold", multiple=True, required=True, type=IntRange(min=1), help="Count exact names reused at least this many times")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_name_frequency_census(
+    date: str,
+    threshold: tuple[int, ...],
+    url: str,
+    target: str,
+) -> None:
+    """Read-only full-snapshot exact-name reuse, not substring support."""
+    from .chstore.query_census import frequency_bench
+
+    print(json.dumps(frequency_bench(url, target, date, threshold)))
+
+
+@main.command("ch-short-query-census")
+@option("-b", "--name-budget", default=100_000, type=IntRange(min=1, max=100_000), help="Maximum hash-sampled names; excess refuses before substring expansion")
+@option("-n", "--max-chars", default=7, type=IntRange(min=1, max=7), help="Measure lengths 1 through this many Unicode characters")
+@option("-s", "--sample-modulus", default=8192, type=IntRange(min=1), help="Keep names with cityHash64(nid) modulo this equal to zero")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_short_query_census(
+    name_budget: int,
+    max_chars: int,
+    sample_modulus: int,
+    url: str,
+    target: str,
+) -> None:
+    """Short-query storage sizing; no sampled query-answer claims."""
+    from .chstore.query_census import bench
+
+    print(json.dumps(bench(url, target, max_chars, sample_modulus, name_budget)))
+
+
+@main.command("ch-scoped-pattern-bench")
+@option("-C", "--cold", is_flag=True, help="Reset data caches separately before construction, view and oracle")
+@option("-d", "--date", required=True, help="Frozen scan date")
+@option("-n", "--pattern", required=True, help="One case-insensitive basename substring literal")
+@option("-p", "--path", required=True, help="Complete subtree; refuses a union interval over 1M nodes")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_scoped_pattern_bench(
+    cold: bool,
+    date: str,
+    pattern: str,
+    path: str,
+    url: str,
+    target: str,
+) -> None:
+    """Subtree-first broad leaf predicate screen; no live serving changes."""
+    from .chstore.scoped_pattern import bench
+
+    print(json.dumps(bench(url, target, date, path, pattern, cold=cold)))
+
+
+@main.command("ch-identity-publish-bench")
+@option("-g", "--groups", default=100, type=IntRange(min=1, max=10_000), help="Synthetic directories")
+@option("-n", "--leaves", default=1000, type=IntRange(min=1), help="Initial files per directory; <=1M bootstrap paths")
+@option("-o", "--out", required=True, type=Path, help="New private dev-node scratch directory; existing paths refused")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+def ch_identity_publish_bench(
+    groups: int,
+    leaves: int,
+    out: Path,
+    url: str,
+) -> None:
+    """Bounded synthetic durable-identity screen, not scan ingestion or FTS."""
+    from .chstore.identity_publish import bench
+
+    print(json.dumps(bench(url, out, groups, leaves)))
+
+
+@main.command("ch-order-key-posting-history-bench")
+@option("-b", "--before", required=True, help="Earlier frozen scan")
+@option("-C", "--cold", is_flag=True, help="Reset caches independently before optimized/oracle reads")
+@option("-d", "--date", required=True, help="Later frozen scan")
+@option("-n", "--name", required=True, help="One exact leaf basename, case-insensitive")
+@option("-p", "--path", required=True, help="Complete subtree scope; refuses more than 300K union postings")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_order_key_posting_history_bench(
+    before: str,
+    cold: bool,
+    date: str,
+    name: str,
+    path: str,
+    url: str,
+    target: str,
+) -> None:
+    """Complete scoped historical scalar screen; no row sampling or TM claim."""
+    from .chstore.key_history import posting_bench
+
+    print(json.dumps(posting_bench(url, target, before, date, name, path, cold=cold)))
+
+
+@main.command("ch-order-key-history-bench")
+@option("-C", "--cold", is_flag=True, help="Reset data caches independently before delta/snapshot reads")
+@option("-g", "--groups", default=100, type=IntRange(min=2, max=10_000), help="Synthetic directory count")
+@option("-n", "--leaves", default=1000, type=IntRange(min=1), help="Initial leaves per directory; union capped at 300K")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+def ch_order_key_history_bench(
+    cold: bool,
+    groups: int,
+    leaves: int,
+    url: str,
+) -> None:
+    """Bounded stable-key additive-history screen, not incremental serving."""
+    from .chstore.order_keys import history_bench
+
+    print(json.dumps(history_bench(url, groups, leaves, cold=cold)))
+
+
+@main.command("ch-order-key-sample-bench")
+@option("-C", "--cold", is_flag=True, help="Reset data caches independently before each range read")
+@option("-d", "--date", required=True, help="Frozen scan date")
+@option("-n", "--sample-rows", default=100_000, type=IntRange(min=1, max=1_000_000), help="Explicit geometry sample cap; this is never full-query acceptance")
+@option("-p", "--path", required=True, help="Existing subtree to sample in preorder")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_order_key_sample_bench(
+    cold: bool,
+    date: str,
+    sample_rows: int,
+    path: str,
+    url: str,
+    target: str,
+) -> None:
+    """Bounded real-data lineage geometry microbenchmark, not FTS parity."""
+    from .chstore.order_keys import sample_bench
+
+    print(json.dumps(sample_bench(url, target, date, path, sample_rows=sample_rows, cold=cold)))
+
+
+@main.command("ch-order-key-bench")
+@option("-C", "--cold", is_flag=True, help="Reset data caches independently before each numeric/lineage range read")
+@option("-d", "--depth", default=12, type=IntRange(min=2, max=32), help="Root-to-leaf key length")
+@option("-g", "--groups", default=100, type=IntRange(min=2, max=10_000), help="Synthetic directory count")
+@option("-n", "--leaves", default=1000, type=IntRange(min=1, max=10_000), help="Files per directory; total must be <=1M leaves")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+def ch_order_key_bench(
+    cold: bool,
+    depth: int,
+    groups: int,
+    leaves: int,
+    url: str,
+) -> None:
+    """Synthetic stable lineage-key geometry, not incremental serving."""
+    from .chstore.order_keys import bench
+
+    print(json.dumps(bench(url, groups, leaves, depth, cold=cold)))
+
+
+@main.command("ch-stable-id-bench")
+@option("-g", "--groups", default=100, type=IntRange(min=1, max=10_000), help="Synthetic new directory count")
+@option("-n", "--leaves", default=1000, type=IntRange(min=1, max=10_000), help="Synthetic files per new directory; total input must be <=1M rows")
+@option("-t", "--trials", default=3, type=IntRange(min=1, max=5), help="Repeat the same reservation/input and compare complete binding fingerprints")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+def ch_stable_id_bench(
+    groups: int,
+    leaves: int,
+    trials: int,
+    url: str,
+) -> None:
+    """Synthetic stable-ID staging only; no reservation or publication."""
+    from .chstore.stable_ids import bench
+
+    print(json.dumps(bench(url, groups, leaves, trials=trials)))
+
+
+@main.command("ch-coverage-bench")
+@option("-a", "--oracle-rows", default=100_000, type=IntRange(min=1, max=1_000_000), help="Independent QA candidate/child row budget; never affects contributing rows in the optimized answer")
+@option("-b", "--before", "date0", help="Also verify a two-date coverage partition")
+@option("-B", "--cold-build", is_flag=True, help="Reset data caches independently before each date's root-index construction")
+@option("-c", "--compare", is_flag=True, help="Verify byte/object partitions with a full-path/string-ancestor oracle")
+@option("-C", "--cold", is_flag=True, help="Reset data caches independently before views and oracles")
+@option("-d", "--date", required=True, help="One frozen scan date")
+@option("-g", "--root-plan", default="interval", type=Choice(["interval", "ancestry"]), help="Numeric interval dedup, or experimental selected-parent opaque-ID ancestry; query ranges still use frozen DFS")
+@option("-k", "--child-budget", default=64, type=IntRange(min=1, max=256), help="Maximum heavy children")
+@option("-n", "--pattern", required=True, help="One case-insensitive full-path substring literal without slashes")
+@option("-o", "--out", help="Write private bodies to this remote scratch directory")
+@option("-p", "--path", "paths", multiple=True, help="Explicit subtree; otherwise root and two large drills")
+@option("-r", "--resident-roots", is_flag=True, help="Use packed outer-root prefix totals and rank selection without request-time root tables")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("target")
+def ch_coverage_bench(
+    oracle_rows: int,
+    date0: str | None,
+    cold_build: bool,
+    compare: bool,
+    cold: bool,
+    date: str,
+    root_plan: str,
+    child_budget: int,
+    pattern: str,
+    out: str | None,
+    paths: tuple[str, ...],
+    resident_roots: bool,
+    url: str,
+    target: str,
+) -> None:
+    """Directory-hit coverage prototype; bytes/objects only, no serving change."""
+    from .chstore.coverage import bench
+
+    print(json.dumps(bench(url, target, date, pattern, budget=child_budget, cold=cold, compare=compare, paths=paths, out=out, date0=date0, resident_roots=resident_roots, oracle_rows=oracle_rows, root_plan=root_plan, cold_build=cold_build)))
+
+
+@main.command("ch-narrow-range-bench")
+@option("-b", "--block-rows", default=4096, type=IntRange(min=1024), help="Preorder positions per sparse summary block")
+@option("-C", "--cold", is_flag=True, help="Reset data caches independently before optimized/oracle reads; prefix remains resident")
+@option("-d", "--date", required=True, help="One completed frozen historical scan")
+@option("-n", "--name", required=True, help="One exact leaf basename, not substring search")
+@option("-t", "--threads", default=8, type=IntRange(min=1), help="Equal query thread limits")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_range_bench(
+    block_rows: int,
+    cold: bool,
+    date: str,
+    name: str,
+    threads: int,
+    url: str,
+    target: str,
+) -> None:
+    """Bounded scalar range-aggregation experiment; no live serving changes."""
+    from .chstore.range_bench import bench
+
+    print(json.dumps(bench(url, target, date, name, block_rows=block_rows, cold=cold, threads=threads)))
+
+
+@main.command("ch-narrow-response-bench")
+@option("-a", "--ancestor-preaggregate", is_flag=True, help="Experimental sibling aggregation before ancestor expansion; complete-body parity required")
+@option("-B", "--bounded-joins", is_flag=True, help="Experimental 512-MiB GraceHash policy for response joins and disk-backed broad ancestor totals; root plan may override")
+@option("-c", "--compare", is_flag=True, help="Verify complete parsed bodies against canonical historical serving")
+@option("-C", "--cold", is_flag=True, help="Drop CH and OS caches before each experimental AND canonical response (dev node/root only)")
+@option("-d", "--date", "dates", multiple=True, required=True, help="Selected scan date (repeatable)")
+@option("-e", "--fold-parent-pruning", is_flag=True, help="Read folded ancestor links through visible parent IDs (A/B)")
+@option("-f", "--compare-first", is_flag=True, help="Run canonical references once before timed repetitions, keeping warm optimized runs separate (requires -c)")
+@option("-i", "--io-device", help="Same-host block device (e.g. sda): record whole-device counter deltas around each optimized response from /hostproc/diskstats")
+@option("-j", "--directory-parent-index", "parent_index", is_flag=True, help="Use explicitly built immutable directory links for folded-parent lookup (A/B)")
+@option("-J", "--root-join", type=Choice(["default", "hash", "grace_hash", "full_sorting_merge"]), default="default", help="Experimental rich-root join plan; explicit plans keep narrow roots on the right, grace_hash spills at 512 MiB")
+@option("-k", "--visible-intervals", is_flag=True, help="Join rich roots to a bounded map of visible ancestor intervals (A/B)")
+@option("-l", "--leaf-intervals", is_flag=True, help="Join interval endpoints only for non-leaf roots; leaf post equals pre (A/B)")
+@option("-n", "--trials", default=2, type=int, help="Rounds per query/scan")
+@option("-o", "--out", type=Path, help="Append compact per-response JSONL records")
+@option("-p", "--previous", help="Produce a diff from this scan instead of a subtree")
+@option("-P", "--no-path-free", "path_free", is_flag=True, flag_value=False, default=True, help="Disable the numeric-only candidate shortcut for single literal substrings (A/B baseline)")
+@option("-q", "--query-id", "query_ids", multiple=True, help="Only these query IDs, in YAML order (repeatable); unknown IDs are refused")
+@option("-Q", "--queries", required=True, help="Query YAML; uses the experiment's frozen prefix")
+@option("-r", "--rich-name-index", "name_index", is_flag=True, help="Use the explicitly built rich name-order index for eligible literal roots (A/B)")
+@option("-t", "--threads", default=8, type=int, help="ClickHouse threads")
+@option("-T", "--comparison-dir", type=Path, default=Path("tmp/ch-response-references"), help="Scratch parent for temporary canonical body files with -f; files removed on exit")
+@option("-u", "--ancestor-bottom-up", is_flag=True, help="Experimental scalar ancestor rollup one directory level at a time")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@option("-v", "--name-index-variant", help="Completed isolated rich name-index variant (requires -r); recorded in each response result")
+@option("-w", "--reference-timeout", type=IntRange(min=1), help="Canonical benchmark-only per-statement wall-clock limit in seconds; throws on timeout, HTTP gets 60s grace; does not change live/optimized serving")
+@argument("target")
+def ch_narrow_response_bench(
+    ancestor_preaggregate: bool,
+    bounded_joins: bool,
+    compare: bool,
+    cold: bool,
+    dates: tuple[str, ...],
+    fold_parent_pruning: bool,
+    compare_first: bool,
+    io_device: str | None,
+    parent_index: bool,
+    root_join: str,
+    visible_intervals: bool,
+    leaf_intervals: bool,
+    trials: int,
+    out: Path | None,
+    previous: str | None,
+    path_free: bool,
+    query_ids: tuple[str, ...],
+    queries: str,
+    name_index: bool,
+    threads: int,
+    comparison_dir: Path,
+    ancestor_bottom_up: bool,
+    url: str,
+    name_index_variant: str | None,
+    reference_timeout: int | None,
+    target: str,
+) -> None:
+    """Complete historical subtree/diff bodies; initialization and serialization included."""
+    from contextlib import nullcontext
+
+    from .bench.queryset import load
+    from .chstore import narrow, narrow_serve
+    from .chstore.bench import drop_caches, normalize
+    from .chstore.client import Ch
+    from .chstore.response_bench import reference_bodies, save_mismatch
+    from .chstore.resources import disk_delta, read_disk
+    from .chstore.serve import Store
+
+    narrow.identifier(target)
+    if compare_first and not compare:
+        raise UsageError("--compare-first requires --compare")
+    if name_index_variant is not None:
+        narrow.identifier(name_index_variant)
+        if not name_index:
+            raise UsageError("a rich name-index variant requires -r/--rich-name-index")
+    manifest = json.loads(Ch(url, db=target).scalar("SELECT doc FROM history_manifest"))
+    if any(d not in manifest["dates"] for d in (*dates, *([previous] if previous else []))):
+        raise UsageError("all requested dates must be in the experimental history")
+    store = Store(url, db=manifest["source_db"], threads=threads)
+    cases = load(queries)
+    if query_ids:
+        unknown = sorted(set(query_ids) - {case.id for case in cases})
+        if unknown:
+            raise UsageError(f"unknown query IDs: {', '.join(unknown)}")
+        cases = [case for case in cases if case.id in query_ids]
+    if io_device is not None:
+        read_disk(io_device)  # Refuse unavailable host counters before running references.
+    budget = {"reference_timeout": reference_timeout} if reference_timeout is not None else {}
+    root_plan = {"root_join": root_join} if root_join != "default" else {}
+    if bounded_joins:
+        root_plan["bounded_joins"] = True
+    if leaf_intervals:
+        root_plan["leaf_intervals"] = True
+    if visible_intervals:
+        root_plan["visible_intervals"] = True
+    if fold_parent_pruning:
+        root_plan["fold_parent_pruning"] = True
+    if ancestor_bottom_up:
+        root_plan["ancestor_bottom_up"] = True
+    references = reference_bodies(store, dates, manifest["prefix"], cases, root=comparison_dir, previous=previous, **budget,
+                                  reset=(lambda: drop_caches(url)) if cold else None, log=err) if compare_first else nullcontext({})
+    with references as paths:
+        for trial in range(trials):
+            for date in dates:
+                for case in cases:
+                    if cold:
+                        drop_caches(url)
+                    io_before = read_disk(io_device) if io_device is not None else None
+                    result = narrow_serve.response(url, target, date, case.q, previous=previous, syntax=case.qs, threads=threads,
+                                                   path_free=path_free, name_index=name_index, parent_index=parent_index,
+                                                   name_index_variant=name_index_variant, ancestor_preaggregate=ancestor_preaggregate, **root_plan)
+                    if io_before is not None:
+                        result["device_io"] = disk_delta(io_before, read_disk(io_device))
+                    body = result.pop("body")
+                    row = {"date": date, "previous": previous, "query": case.id, "query_text": case.q, "syntax": case.qs,
+                           "trial": trial, "prefix": manifest["prefix"], "cold": cold, "threads": threads, **result,
+                           "path_free": path_free, "name_index": name_index, "name_index_variant": name_index_variant,
+                           "parent_index": parent_index, "ancestor_preaggregate": ancestor_preaggregate,
+                           "comparison_phase": "first" if compare_first else "interleaved" if compare else "none",
+                           "sha": normalize(json.dumps(body).encode())}
+                    if reference_timeout is not None:
+                        row["reference_timeout_s"] = reference_timeout
+                    if root_join != "default":
+                        row["root_join"] = root_join
+                    if bounded_joins:
+                        row["bounded_joins"] = True
+                    if leaf_intervals:
+                        row["leaf_intervals"] = True
+                    if visible_intervals:
+                        row["visible_intervals"] = True
+                    if fold_parent_pruning:
+                        row["fold_parent_pruning"] = True
+                    if ancestor_bottom_up:
+                        row["ancestor_bottom_up"] = True
+                    if compare:
+                        if compare_first:
+                            with paths[date, case.id].open() as reference:
+                                baseline = json.load(reference)
+                        else:
+                            err(f"optimized {date} / {case.id}: {row['response_s']}s (canonical verification pending)")
+                            if cold:
+                                drop_caches(url)
+                            baseline = narrow_serve.compare_response(store, date, manifest["prefix"], case.q, previous=previous, syntax=case.qs, **budget)
+                        canonical_body = baseline.pop("body")
+                        row["exact"] = body == canonical_body
+                        if not row["exact"]:
+                            row["mismatch_dir"] = str(save_mismatch(comparison_dir, body, canonical_body))
+                        row["baseline"] = baseline
+                    line = json.dumps(row)
+                    print(line, flush=True)
+                    if out:
+                        with out.open("a") as f:
+                            f.write(line + "\n")
+                    if compare and not row["exact"]:
+                        raise ValueError(f"complete response mismatch: {date} / {previous} / {case.id}")
+
+
+@main.command("ch-narrow-summary")
+@option("-n", "--nonempty", is_flag=True, help="Only queries with at least one root")
+@argument("path")
+def ch_narrow_summary(nonempty: bool, path: str) -> None:
+    """Summarize a frozen ID benchmark JSONL (PATH or - for stdin), without root lists."""
+    from contextlib import nullcontext
+
+    import fsspec
+
+    from .chstore.narrow import summarize
+
+    with nullcontext(sys.stdin) if path == "-" else fsspec.open(path, "r") as f:
+        rows = (json.loads(line) for line in f if line.strip())
+        print(json.dumps(summarize(row for row in rows if not nonempty or row["n"] > 0), indent=2))
+
+
+@main.command("ch-narrow-compare")
+@argument("before", type=Path)
+@argument("after", type=Path)
+def ch_narrow_compare(before: Path, after: Path) -> None:
+    """Pair saved uncapped discovery/component JSONL; NOT complete responses."""
+    from .chstore.narrow import compare_discovery_runs
+
+    records = []
+    for path in (before, after):
+        with path.open() as f:
+            records.append([json.loads(line) for line in f if line.strip()])
+    print(json.dumps(compare_discovery_runs(*records), indent=2))
+
+
+@main.command("ch-narrow-parent-check")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_parent_check(url: str, target: str) -> None:
+    """Read-only sorted parent validation; heavy, do not overlap remote jobs."""
+    from time import monotonic
+
+    from .chstore.client import Ch
+    from .chstore.narrow import missing_parent_keys
+
+    ch = Ch(url, timeout=7200)
+    try:
+        start = monotonic()
+        missing = missing_parent_keys(ch, target)
+        if missing:
+            raise ValueError(f"union lacks parents: {missing}")
+        print(json.dumps({"target": target, "missing": missing, "seconds": round(monotonic() - start, 3)}))
+    finally:
+        ch.close()
+
+
+@main.command("ch-narrow-progress")
+@option("-U", "--url", default="http://localhost:8123", help="ClickHouse URL (an SSH forward is sufficient)")
+@argument("target")
+def ch_narrow_progress(url: str, target: str) -> None:
+    """Read-only active stages, table sizes, disk reserve and recent failures."""
+    from .chstore.narrow import progress
+
+    print(json.dumps(progress(url, target), indent=2))
+
+
+@main.command("ch-narrow-audit")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_audit(url: str, target: str) -> None:
+    """Read-only full-domain numbering/count audit. Heavy: run on a dev node,
+    separately from construction and latency benchmarks; not query truth."""
+    from .chstore.narrow import audit
+
+    print(json.dumps(audit(url, target)))
+
+
+@main.command("ch-narrow-response-summary")
+@argument("path")
+def ch_narrow_response_summary(path: str) -> None:
+    """Summarize complete-response experiment JSONL (PATH or - for stdin)."""
+    from contextlib import nullcontext
+
+    import fsspec
+
+    from .chstore.narrow_serve import summarize
+
+    with nullcontext(sys.stdin) if path == "-" else fsspec.open(path, "r") as f:
+        print(json.dumps(summarize([json.loads(line) for line in f if line.strip()]), indent=2))
+
+
+@main.command("ch-narrow-query-profile")
+@option("-m", "--min-ms", default=100, type=IntRange(min=0), help="Minimum completed-statement duration in milliseconds")
+@option("-n", "--limit", default=50, type=IntRange(min=1), help="Maximum recent statements")
+@option("-s", "--seconds", default=900, type=IntRange(min=1), help="Query-log lookback in seconds; no log flush or query replay")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("target")
+def ch_narrow_query_profile(
+    min_ms: int,
+    limit: int,
+    seconds: int,
+    url: str,
+    target: str,
+) -> None:
+    """Read recent numeric/history-view statement costs; SQL may include private paths."""
+    from .chstore.narrow import query_profile
+
+    print(json.dumps(query_profile(url, target, seconds=seconds, limit=limit, min_ms=min_ms), indent=2))
+
+
+@main.command("ch-narrow-response-compare")
+@argument("before", type=Path)
+@argument("after", type=Path)
+def ch_narrow_response_compare(before: Path, after: Path) -> None:
+    """Pair complete-body A/B records, requiring equal workloads and bodies."""
+    from .chstore.narrow_serve import compare_runs
+
+    records = []
+    for path in (before, after):
+        with path.open() as f:
+            records.append([json.loads(line) for line in f if line.strip()])
+    print(json.dumps(compare_runs(*records), indent=2))
 
 
 @main.command("ch-ingest")
@@ -938,11 +2924,12 @@ def ch_bench(compare_to: str | None, cold: bool, date: str | None, req_file: str
 @option("-f", "--force", is_flag=True, help="Ingest a scan of fewer than half the open rows (else refused as partial)")
 @option("-F", "--server-file", is_flag=True, help="SRC is a path under the ClickHouse server's `user_files_path`, read server-side (fastest on the box itself)")
 @option("-g", "--data-bucket", default=None, help="Where the default SRC lives (default: $DATA_BUCKET)")
+@option("-j", "--pairs", default=None, type=IntRange(min=1), help="Simultaneous ingest key ranges; overrides CH_INGEST_PAIRS (else half the threads)")
 @option("-s", "--stage", type=Path, default=None, help="Copy a gs:// SRC here first (it's then streamed to the server)")
 @option("-t", "--threads", default=8, type=int, help="ClickHouse `max_threads` / `max_insert_threads`")
 @option("-U", "--url", default=None, help="ClickHouse's HTTP endpoint (default: $CLICKHOUSE_URL, else http://localhost:8123)")
 @argument("src", required=False)
-def ch_ingest(allow_drop: bool, db: str | None, scan_id: str, force: bool, server_file: bool, data_bucket: str | None, stage: Path | None, threads: int,
+def ch_ingest(allow_drop: bool, db: str | None, scan_id: str, force: bool, server_file: bool, data_bucket: str | None, pairs: int | None, stage: Path | None, threads: int,
               url: str | None, src: str | None) -> None:
     """Ingest one scan into the ClickHouse store (specs/ch-store.md §3): its
     path store's `path` sort (SRC: a v2 store generation or a v1 index;
@@ -964,11 +2951,87 @@ def ch_ingest(allow_drop: bool, db: str | None, scan_id: str, force: bool, serve
         err(f"ch-ingest {scan_id}: {src}")
     ch = Ch(url or _os.environ.get("CLICKHOUSE_URL") or DEFAULT_URL, db=db or _os.environ.get("CLICKHOUSE_DB") or "default", timeout=7200)
     try:
-        rec = ci.Ingest(ch, scan_id, src, server_file=server_file, force=force, allow_drop=allow_drop, threads=threads, stage_dir=stage).run()
+        rec = ci.Ingest(ch, scan_id, src, server_file=server_file, force=force, allow_drop=allow_drop, threads=threads, pairs=pairs, stage_dir=stage).run()
     except ci.IngestError as e:
         raise UsageError(str(e)) from e
     rec["sizes"] = ci.sizes(ch)
     print(json.dumps(rec))
+
+
+@main.command("ch-ingest-plan-bench")
+@option("-B", "--db", default="default", help="Published historical store database")
+@option("-d", "--date", "scan_id", required=True, help="Published scan to replay as read-only changed-row SELECTs")
+@option("-i", "--range-index", "indices", multiple=True, required=True, type=IntRange(min=0), help="Zero-based sampled key range; repeat for several bounded cases")
+@option("-n", "--trials", default=2, type=IntRange(min=1), help="Rounds, alternating plan order")
+@option("-o", "--out", type=Path, help="New JSONL output file; refuses existing files")
+@option("-s", "--samples", default=128, type=IntRange(min=1), help="Primary-mark samples used to derive bounded key ranges")
+@option("-t", "--threads", default=4, type=IntRange(min=1), help="Equal thread limit for all compared plans")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("server_file")
+def ch_ingest_plan_bench(
+    db: str,
+    scan_id: str,
+    indices: tuple[int, ...],
+    trials: int,
+    out: Path | None,
+    samples: int,
+    threads: int,
+    url: str,
+    server_file: str,
+) -> None:
+    """Read-only epoch/spill/join A/B over an independently audited staged source.
+
+    Does not ingest, upload, reset caches or publish changes. Verification
+    compares full sorted-row fingerprints separately from timed SELECTs.
+    """
+    from contextlib import nullcontext
+
+    from .chstore.client import Ch
+    from .chstore.ingest_bench import benchmark
+
+    ch = Ch(url, db=db, timeout=7200, max_threads=threads, max_memory_usage=8 << 30)
+    try:
+        with out.open("x") if out else nullcontext() as output:
+            def emit(row: dict) -> None:
+                line = json.dumps(row)
+                print(line, flush=True)
+                if output is not None:
+                    output.write(line + "\n")
+                    output.flush()
+
+            benchmark(ch, scan_id, server_file, indices, samples=samples, threads=threads, trials=trials, emit=emit)
+    finally:
+        ch.close()
+
+
+@main.command("ch-ingest-root-audit")
+@option("-B", "--db", default="default", help="Published historical store database")
+@option("-d", "--date", "scan_id", required=True, help="Exact published scan id")
+@option("-t", "--threads", default=2, type=IntRange(min=1), help="ClickHouse query threads")
+@option("-U", "--url", default="http://localhost:8123", help="Dev node ClickHouse URL")
+@argument("server_file")
+def ch_ingest_root_audit(
+    db: str,
+    scan_id: str,
+    threads: int,
+    url: str,
+    server_file: str,
+) -> None:
+    """Compare every bucket/owner root value with an already-staged source.
+
+    Read-only; does not validate all descendants or publish a scan. SERVER_FILE
+    is relative to the ClickHouse server's user_files_path.
+    """
+    from .chstore.client import Ch
+    from .chstore.ingest import IngestError, audit_roots
+
+    ch = Ch(url, db=db, max_threads=threads, max_memory_usage=1 << 30)
+    try:
+        print(json.dumps(audit_roots(ch, scan_id, server_file)))
+    except IngestError as error:
+        raise UsageError(str(error)) from error
+    finally:
+        ch.close()
 
 
 def bucket_sources(specs: tuple[str, ...], default_bucket: str) -> list[tuple[str, str]]:

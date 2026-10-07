@@ -375,7 +375,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; threshold?: number; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -510,15 +510,18 @@ function AppContent() {
   // its own per-path index, below).
   const matchedRoots = useMemo((): string[] | undefined => {
     if (!fq) return undefined
-    const m = subtreeQs[subtreeQs.length - 1]?.data?.matched ?? subtreeQs[0]?.data?.matched
-    return m?.map(x => x.path)
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? subtreeQs[0]?.data
+    // A bounded transport list is not a safe predicate for table actions or
+    // a historical series. The map/totals are still exact; those secondary
+    // consumers stay disabled rather than silently using a subset.
+    return d?.matchesTruncated ? undefined : d?.matched?.map(x => x.path)
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, matchesTotal: d.matchesTotal, matchesTruncated: d.matchesTruncated }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
@@ -1091,7 +1094,7 @@ function AppContent() {
           </span>
         )}
         {fq && fMatches.length > 0 && (
-          <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
+          <BulkBar matches={fMatches} total={fCoverage?.matchesTotal} incomplete={fCoverage?.matchesTruncated} scheme={store.scheme} query={fq} />
         )}
       </SiteNav>
 
@@ -1237,6 +1240,7 @@ function AppContent() {
       <SizeOverTime
         scopeLabel={store.rootLabel}
         paths={matchedRoots}
+        pathsTotal={fCoverage?.matchesTotal}
         filterLabel={fq ?? undefined}
         scans={scans} prefix={drillPath}
         user={ownerUser}

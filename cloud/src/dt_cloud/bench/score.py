@@ -12,6 +12,7 @@ other engines plug in by implementing `answer`.
 - `exact` — the root set (count + md5 of the sorted paths) and the net totals
   (bytes, objects) match the truth, and nothing was flagged;
 - `exact*` — exact, but flagged `partial` / `approximate` (conservative);
+- `totals` — exact declared root count and net totals, but a capped list prevents verification of the full root set;
 - `flagged` — inexact and flagged: a degraded answer that says so;
 - `FAIL` — inexact and **not** flagged: a silently short (or wrong) answer, a
   correctness bug;
@@ -56,6 +57,10 @@ class Answer:
     # the sorted list) instead of the list (`roots` then holds none of it).
     n_roots: int | None = None
     roots_md5: str | None = None
+    # The transport returned only a declared subset of the roots, with
+    # `n_roots` carrying the exact total. This is distinct from a tree walk's
+    # `truncated` flag: the tree and totals can remain exact.
+    roots_truncated: bool = False
 
     @property
     def answered(self) -> bool:
@@ -114,11 +119,13 @@ def parse_subtree(body: bytes, view: str, status: int, ms: int, server_ms: int |
     (net of exclusions when there are any) either way."""
     d = json.loads(body)
     roots = d["matches"] if "matches" in d else [view]
+    roots_truncated = bool(d.get("matchesTruncated"))
     reasons = " · ".join(x for x in (d.get("partialReason"), d.get("approximateReason")) if x) or None
     return Answer(
         status, ms, server_ms, size, roots, int(d["tree"]["b"]), int(d["tree"]["o"]),
         partial=bool(d.get("partial")), approximate=bool(d.get("approximate")), reason=reasons,
         truncated=bool(d.get("truncated")), tier=d.get("tier"), cache=cache, url=url,
+        n_roots=int(d["matchesTotal"]) if roots_truncated else None, roots_truncated=roots_truncated,
     )
 
 
@@ -142,6 +149,7 @@ class Score:
     ms: list[int]
     server_ms: list[int | None]
     truncated: bool
+    roots_truncated: bool
     tier: str | None
 
     @property
@@ -173,21 +181,30 @@ def score(case: Case, view: str, answers: list[Answer], truth: dict, listed: lis
     if not a.answered:
         verdict, missing, extra, be, oe = "refused" if a.status == 413 else "error", None, None, None, None
     else:
-        same = a.count == want_n and a.md5 == truth["md5"]
+        if a.roots_truncated:
+            # `matches` is now an explicitly auxiliary, bounded list. Check
+            # its subset has no false positives when the truth list is
+            # available. Count + totals cannot prove the omitted paths are
+            # correct: never report full root-set exactness from them alone.
+            extra = len(set(a.roots or []) - set(listed)) if listed is not None else None
+            missing = None
+            same = a.count == want_n and extra in (None, 0)
+        else:
+            same = a.count == want_n and a.md5 == truth["md5"]
         if listed is not None and a.n_roots is None:
             got, want = set(a.roots), set(listed)
             missing, extra = len(want - got), len(got - want)
-        else:
+        elif not a.roots_truncated:
             missing = extra = None
         be, oe = _rel(a.b, truth["bytes"]), _rel(a.o, truth["objects"])
         exact = same and within(a.b, truth["bytes"]) and within(a.o, truth["objects"])
         # A view whose matches hold no bytes is drawn empty: no roots, 0 B.
         if not exact and truth["bytes"] == 0 and not a.count and a.b == 0:
             exact = True
-        verdict = ("exact*" if flagged else "exact") if exact else ("flagged" if flagged else "FAIL")
+        verdict = ("totals" if a.roots_truncated else ("exact*" if flagged else "exact")) if exact else ("flagged" if flagged else "FAIL")
     return Score(
         case.id, case.q, case.qs, view, verdict, a.count, want_n, missing, extra, be, oe,
-        a.partial, a.approximate, a.reason, a.status, [x.ms for x in answers], [x.server_ms for x in answers], a.truncated, a.tier,
+        a.partial, a.approximate, a.reason, a.status, [x.ms for x in answers], [x.server_ms for x in answers], a.truncated, a.roots_truncated, a.tier,
     )
 
 

@@ -140,11 +140,13 @@ const fmtPct = (y: number) => {
   return a === 0 ? '0%' : signed(y, `${a >= 10 ? a.toFixed(0) : a.toFixed(1)}%`)
 }
 
-export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, filterLabel }: {
+export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, pathsTotal, filterLabel }: {
   /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
   scopeLabel?: string
   /** The page filter's match roots: the series is their sum per scan. */
   paths?: string[]
+  /** Exact count when the server bounded the auxiliary match list. */
+  pathsTotal?: number
   /** The filter text, for the subtitle. */
   filterLabel?: string
   scans: string[]
@@ -195,7 +197,8 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
   const scope = (user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : '') + (paths?.length ? `&paths=${encodeURIComponent(paths.join(','))}` : '') + (split ? '&split=roots' : '')
   // A filter with more match roots than one series request charts: say so,
   // rather than send a request the server refuses (or the URL can't carry).
-  const tooMany = (paths?.length ?? 0) > SERIES_MAX_PATHS
+  const nPaths = pathsTotal ?? paths?.length ?? 0
+  const tooMany = nPaths > SERIES_MAX_PATHS
   // The subtree's store: its key in the query key (two mounted stores may
   // share a prefix spelling), its `store=` on the request.
   const store = useStore()
@@ -374,7 +377,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
       )}
       {seriesQ.isError && <p className="sub"><i>series unavailable</i></p>}
       {tooMany ? (
-        <p className="loading">size over time charts up to {SERIES_MAX_PATHS} matches; this filter has {paths!.length.toLocaleString()}. Narrow it to chart.</p>
+        <p className="loading">size over time charts up to {SERIES_MAX_PATHS} matches; this filter has {nPaths.toLocaleString()}. Narrow it to chart.</p>
       ) : allZero ? (
         <p className="loading">
           {user ? <><b>{shortName(user)}</b> owns nothing{prefix ? <> under <code>{prefix}</code></> : ''} in any scan</>

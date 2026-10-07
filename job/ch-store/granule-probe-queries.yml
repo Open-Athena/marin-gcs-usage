@@ -1,0 +1,11 @@
+# Initial complete-response granularity A/B: two broad cases plus a root-hit
+# control that must retain the normal preorder metadata path. Follow a positive
+# signal with stress-queries.yml and the original workload; this is not that gate.
+views: [marin-us-central2]
+queries:
+  - id: zarr-json
+    q: zarr.json
+  - id: numeric-000
+    q: "000"
+  - id: root-hit
+    q: central2

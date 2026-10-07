@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,6 +17,42 @@ import uuid
 from typing import Iterable, Iterator
 
 DEFAULT_URL = "http://localhost:8123"
+
+
+def rowbinary_strings(chunks: Iterable[bytes]) -> Iterator[bytes]:
+    """Decode a single RowBinary String column without collecting the result.
+
+    Keep only an incomplete record between chunks. Reject malformed UInt64
+    length prefixes and oversized records rather than buffering indefinitely.
+    """
+    pending = b""
+    for chunk in chunks:
+        data, pos = pending + chunk, 0
+        while pos < len(data):
+            start, length, shift = pos, 0, 0
+            while pos < len(data):
+                byte = data[pos]
+                pos += 1
+                if shift > 63 or (shift == 63 and byte > 1):
+                    raise ValueError("invalid RowBinary string length")
+                length |= (byte & 127) << shift
+                if not byte & 128:
+                    break
+                shift += 7
+            else:
+                pos = start
+                break
+            if length > 64 << 20:
+                raise ValueError("RowBinary string exceeds 64 MiB")
+            end = pos + length
+            if end > len(data):
+                pos = start
+                break
+            yield data[pos:end]
+            pos = end
+        pending = data[pos:]
+    if pending:
+        raise ValueError("truncated RowBinary string stream")
 
 
 class ChError(RuntimeError):
@@ -29,6 +66,17 @@ def lit(s: str) -> str:
     return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
+def statement_timeout_settings(seconds: int) -> dict[str, str]:
+    """A cooperative wall-clock query limit that throws, never returns partials.
+
+    ClickHouse cannot interrupt every aggregation/analysis phase immediately;
+    callers must still inspect server activity after a transport timeout.
+    """
+    if seconds <= 0:
+        raise ValueError("statement timeout must be positive")
+    return {"max_execution_time": str(seconds), "timeout_before_checking_execution_speed": "0", "timeout_overflow_mode": "throw"}
+
+
 class Ch:
     """One ClickHouse session over HTTP. `settings` ride on every statement."""
 
@@ -39,6 +87,7 @@ class Ch:
         self.settings: dict[str, str] = {"database": db, **{k: str(v) for k, v in settings.items()}}
         if session:
             self.settings.update(session_id=uuid.uuid4().hex, session_timeout="600")
+        self._tmp: list[str] = []
         self.headers: dict[str, str] = {}
         user, pw = os.environ.get("CLICKHOUSE_USER"), os.environ.get("CLICKHOUSE_PASSWORD")
         if user:
@@ -106,7 +155,41 @@ class Ch:
         except urllib.error.HTTPError as e:
             raise ChError(e.code, e.read().decode(errors="replace"), sql) from None
 
-    def tmp(self, name: str, sql: str, settings: dict | None = None) -> None:
-        """A session temporary table from a SELECT."""
+    def tmp(
+        self,
+        name: str,
+        sql: str,
+        settings: dict | None = None,
+        *,
+        disk: bool = False,
+        ordered: bool = True,
+        order_by: str | tuple[str, ...] | None = None,
+        set_index: bool = False,
+    ) -> None:
+        """A session temporary table from a SELECT. `disk` uses a MergeTree for results that can
+        hold millions of rows. Keep path ordering for bounded alphabetical reads, but candidates
+        consumed in full can avoid sorting with `ordered=False`. The default is Memory."""
+        if order_by is not None:
+            columns = (order_by,) if isinstance(order_by, str) else order_by
+            if not disk or not isinstance(columns, tuple) or not columns or any(
+                not isinstance(column, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", column) for column in columns
+            ):
+                raise ValueError("temporary order key requires disk and SQL identifiers")
+        if set_index and (disk or order_by is not None):
+            raise ValueError("Set temporary table cannot also use a disk order")
         self.exec(f"DROP TEMPORARY TABLE IF EXISTS {name}", settings=settings)
-        self.exec(f"CREATE TEMPORARY TABLE {name} ENGINE = Memory AS {sql}", settings=settings)
+        key = f"({','.join(order_by)})" if isinstance(order_by, tuple) else order_by or ("path" if ordered else "tuple()")
+        engine = "Set SETTINGS persistent = 0" if set_index else f"MergeTree ORDER BY {key}" if disk else "Memory"
+        self._tmp.append(name)
+        self.exec(f"CREATE TEMPORARY TABLE {name} ENGINE = {engine} AS {sql}", settings=settings)
+
+    def close(self) -> None:
+        """Drop this session's temporary tables now instead of retaining their RAM/disk until its timeout."""
+        for name in reversed(self._tmp):
+            try:
+                self.exec(f"DROP TEMPORARY TABLE IF EXISTS {name}")
+            except (OSError, RuntimeError):
+                # The session timeout remains the cleanup fallback when the
+                # client disconnected or ClickHouse itself became unavailable.
+                pass
+        self._tmp.clear()
