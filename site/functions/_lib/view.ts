@@ -30,7 +30,7 @@
  */
 import type { Env } from './auth.js'
 import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, type Trace, withTrace } from './index.js'
-import { ownerLens, type OwnerLens, poolLens } from './owners.js'
+import { ownerLens, type OwnerLens, poolLens, type PoolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
 import { type SearchFound, type SearchLimits, searchRoots } from './search.js'
@@ -451,23 +451,26 @@ async function ownerLensFor(env: Env, date: string, lens: Lens, by?: string): Pr
 }
 
 /** An owner pool's ledger fold for a scan (null: no pool, or no assignments). */
-async function poolLensFor(env: Env, date: string, owner: OwnerScope | undefined): Promise<OwnerLens | null> {
+async function poolLensFor(env: Env, date: string, owner: OwnerScope | undefined): Promise<PoolLens | null> {
   if (!owner || !(await hasLedger(env))) return null
   return poolLens(await ownerAssignments(env, date), owner, await loadRegistry(env))
 }
 
-/** A node in an owner pool once assignments apply: the pool's bytes there
- * (`pl.value`), exactly its in-pool rows when no assignment moved any (the
- * common case), else shaped like the in-pool rows (stretched by the bands
- * assigned in) or, when none, like the subtree total. An unowned node has no
- * owners to split. */
-function poolAgg(pl: OwnerLens, owner: OwnerScope, path: string, all: Agg | null, mine: Agg): Agg {
+/** A node in an owner pool once assignments apply: the pool's bytes and
+ * objects there (`pl.b` / `pl.o`), exactly its in-pool rows when no assignment
+ * moved any (the common case), else shaped like the in-pool rows (stretched by
+ * the bands assigned in) or, when none, like the subtree total. An unowned
+ * node has no owners to split. */
+function poolAgg(pl: PoolLens, owner: OwnerScope, path: string, all: Agg | null, mine: Agg): Agg {
   if (!all) return mine
-  const v = pl.value(path, all.b, mine.b)
-  if (Math.abs(v - mine.b) < 0.5) return mine
-  if (v <= 0) return newAgg()
+  const vb = pl.b.value(path, all.b, mine.b)
+  const vo = Math.round(pl.o.value(path, all.o, mine.o))
+  if (Math.abs(vb - mine.b) < 0.5 && vo === mine.o) return mine
+  if (vb <= 0 && vo <= 0) return newAgg()
   const shape = mine.b > 0 ? mine : all
-  const out = scale(shape, v / shape.b)
+  const out = shape.b > 0 ? scale(shape, vb / shape.b) : { ...newAgg(), kind: shape.kind, nc: shape.nc, nd: shape.nd }
+  out.b = vb
+  out.o = vo
   if (owner === 'unowned') out.ub = {}
   return out
 }
