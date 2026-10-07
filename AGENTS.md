@@ -99,7 +99,7 @@ from two workspace packages:
 One gate (`_lib/auth.ts`, `@open-athena/auth` over D1): `identify` → `Identity` (`via: session | grant | public`), `requireViewer` / `requireStager` / `requireAdmin`.
 - `/auth/google` (+ `/callback`, `/onetap`) — Google OIDC → email session; `/auth/email/*` — emailed code / magic link → email session
 - `/api/auth/*` — the package's routes: `whoami`, `exchange` (`?key=` share link → grant session), `logout`, request-access, admin grant/request/log console
-- `/api/token` — a session's personal agent token (a non-expiring Bearer grant, the base scope only; grants can't mint one)
+- `/api/token` — a session's personal agent token (a non-expiring Bearer grant: the base scope + assign, never admin; grants can't mint one)
 
 ## Development
 
@@ -170,7 +170,8 @@ signed in can **stage** prefixes for deletion (the trash gesture in the UI, or
 the API below); admins review the shared plan at [`/staged`](https://gcs.oa.dev/staged)
 and dispatch the executor. **Nothing is deleted at stage time** — staging is a
 proposal, reversible until an admin runs it. Ownership is the other axis:
-admins **assign** prefixes to people; anyone can **claim** an unattributed one.
+anyone signed in can **assign** a prefix to anyone (themselves included), or
+clear an assignment; the ledger records who did what.
 
 (The earlier opt-out "mark & sweep" model — keep/sweep marks plus a deadline —
 was retired 2026-09-28; `dt-cloud mark|status|todo` and `/api/marks*`,
@@ -186,9 +187,9 @@ Every write is authenticated as **you** by a personal bearer token.
   it; the raw token is shown **once**. `GET /api/token` reports status (never the
   token); `DELETE /api/token` revokes it.
 
-The token carries only the `gcs` scope (least privilege — it can read and stage,
-not administer), and re-checks your email on every request, so revoking it or
-removing your access is instant.
+The token carries the `gcs` and `gcs:assign` scopes (least privilege — it can
+read, stage and assign, not administer). Revoking it is instant.
+Share links (guest access) can't assign.
 
 ```bash
 export GCS_USAGE_TOKEN=…        # the token you copied
@@ -226,11 +227,17 @@ curl -X POST https://gcs.oa.dev/api/plans/stage \
 | Method & path | Purpose |
 |---|---|
 | `GET /api/owners?date=<scan>` | Per-user owned bytes + storage-class mix for a scan (what `/users` ranks): `{ scan, head, bytes, objects, users: { <id>: { b, mix } } }`. |
-| `GET /api/estate?date=<scan>&user=<id>` | One user's estate: `{ user, date, head, bytes, objects, mix, claims }`. |
+| `GET /api/estate?date=<scan>&user=<id>` | One user's estate: `{ user, date, head, bytes, objects, mix, claims }` (`claims` = the assignments behind it). |
 | `GET /api/assignments?date=<scan>` | The assigner × assignee matrix (who assigned what to whom, in bytes). |
 | `GET /api/actions` | The live ownership ledger: `{ owners: [...] }`, every expanded prefix joined to the action that set it. |
-| `POST /api/actions` | **Admin.** Append one action or an array: `{ pattern, owner, memo?, scan? }` — `owner: '@me'` resolves to you, `null` clears. Prefix patterns only. |
-| `POST /api/claims` | Claim an unattributed prefix as yours: `{ prefix }`; `{ prefix, release: true }` releases. |
+| `POST /api/actions` | Assign: append one action or an array (≤500): `{ pattern, owner, memo?, scan? }` — `owner` is a user id (as `/api/owners` keys them), `'@me'` resolves to you, `null` clears. Prefix patterns only. The newest assignment on a prefix or any ancestor wins. |
+
+```bash
+# assign a prefix to yourself, with a note on why
+curl -X POST https://gcs.oa.dev/api/actions \
+  -H "Authorization: Bearer $GCS_USAGE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"pattern":"gs://marin-us-east5/checkpoints/my-run/","owner":"@me","memo":"my sweep"}'
+```
 
 #### Data
 
