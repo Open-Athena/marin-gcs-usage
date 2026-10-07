@@ -129,6 +129,21 @@ cd /app
 # node, leaving the orchestrator's 128G free for ingest. A row-heavy chunk blew
 # the earlier 24GB cap.
 export DUCKDB_MEM_ACCESS=${DUCKDB_MEM_ACCESS:-48GB}
+# A short, read-only sweep re-list benchmark. This runs in the same image,
+# identity, region, and machine family as the executor, but neither builds a
+# new manifest nor writes to a target bucket. The result JSON defaults beside
+# the source plan so it survives the Batch VM.
+if [ -n "${SWEEP_BENCHMARK_PLAN:-}" ]; then
+  [ -n "${SWEEP_BENCHMARK_BUCKET:-}" ] || { echo "ERROR: SWEEP_BENCHMARK_PLAN needs SWEEP_BENCHMARK_BUCKET" >&2; exit 1; }
+  benchmark_args=(-b "$SWEEP_BENCHMARK_BUCKET")
+  for w in ${SWEEP_BENCHMARK_WORKERS:-8 16 32 64}; do benchmark_args+=(-j "$w"); done
+  benchmark_args+=(-n "${SWEEP_BENCHMARK_ROOTS:-128}")
+  benchmark_args+=(-r "${SWEEP_BENCHMARK_RESULTS_PER_ROOT:-50000}")
+  benchmark_out=${SWEEP_BENCHMARK_OUT:-${SWEEP_BENCHMARK_PLAN%/}/benchmark-$SWEEP_BENCHMARK_BUCKET-$(date -u +%Y%m%dT%H%M%SZ).json}
+  dt-cloud sweep benchmark "${benchmark_args[@]}" -o "$benchmark_out" "$SWEEP_BENCHMARK_PLAN"
+  echo "SWEEP-BENCHMARK-DONE $benchmark_out"
+  exit 0
+fi
 # ACCESS_ONLY (backlog backfill): serial ingest, then exit — no snapshot.
 if [ "${ACCESS_ONLY:-0}" = "1" ]; then
   dt-cloud access ingest ${ACCESS_ARGS:-} || exit 1

@@ -12,3 +12,11 @@ runtime:
 config:
   gcs-usage-gcp:adopting:
     description: "Import the live resources each component marks `existing` (first `up` only; then false)"
+  gcs-usage-gcp:batchDeleteEdition:
+    description: "Storage Intelligence edition for managed batch deletion: DISABLED (default), TRIAL, or STANDARD"
+  gcs-usage-gcp:fleetProject:
+    description: "Project that owns the target buckets and is billed for their bucket-filtered Storage Intelligence enrollment"
+  gcs-usage-gcp:taskLogsLocation:
+    description: "Existing Logging bucket's location for the site-readable task-log view (default global)"
+  gcs-usage-gcp:taskLogsBucket:
+    description: "Existing Logging bucket for the site-readable task-log view (default _Default)"

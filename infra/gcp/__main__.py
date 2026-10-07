@@ -11,7 +11,8 @@ from pathlib import Path
 import pulumi
 import pulumi_gcp as gcp
 
-from gcp_jobs import Adopt, BatchCron, JobAccount, RunJobCron, Secrets, grant_bucket
+from gcp_jobs import Adopt, BatchCron, JobAccount, RunJobCron, Secrets, StorageBatchDelete, grant_bucket
+from task_logs import TaskLogView
 
 cfg = pulumi.Config()
 gcp_cfg = pulumi.Config("gcp")
@@ -39,6 +40,16 @@ dispatch = JobAccount(
     adopt=adopt,
     existing=True,
 )
+task_logs = TaskLogView(
+    "gcs-sweep-task-logs",
+    project=project,
+    location=cfg.get("taskLogsLocation") or "global",
+    bucket=cfg.get("taskLogsBucket") or "_Default",
+    view_id="gcs-sweep-task-logs",
+    job_uid_prefix="gcs-sweep-",
+    reader=dispatch.member,
+)
+pulumi.export("task_log_view", task_logs.path)
 job = JobAccount(
     "gcs-usage-job",
     project=project,
@@ -158,6 +169,24 @@ for bucket, swept in FLEET.items():
     for role in roles:
         grant_bucket(f"{bucket}-job-{role.split('.')[-1]}", bucket=bucket, role=role, member=job.member, member_email=job.email_literal, adopt=adopt, existing=True)
     grant_bucket(f"{bucket}-browse", bucket=bucket, role="roles/storage.objectViewer", member=browse.member, member_email=browse.email_literal, adopt=adopt, existing=True)
+
+# Managed object deletion is deliberately opt-in: Storage Intelligence is
+# billed per managed object after its one-time 30-day trial. When enabled, the
+# shared component owns the API, service identity, least-scope bucket grants,
+# and bucket-filtered Intelligence config. The actual jobs use the reviewed
+# DR's generation-pinned CSV manifests, never prefix selection.
+batch_delete_edition = (cfg.get("batchDeleteEdition") or "DISABLED").upper()
+if batch_delete_edition != "DISABLED":
+    batch_delete = StorageBatchDelete(
+        "gcs-sweep-batch-delete",
+        control_project=project,
+        fleet_project=cfg.require("fleetProject"),
+        buckets=[bucket for bucket, swept in FLEET.items() if swept],
+        manifest_bucket=DATA_BUCKET,
+        submitter=dispatch.member,
+        edition=batch_delete_edition,
+    )
+    pulumi.export("storage_batch_service_agent", batch_delete.agent.email)
 
 pulumi.export("job_account", job.email)
 pulumi.export("crons", [daily.job.name, sheet_sync.cron.name])
