@@ -14,7 +14,7 @@ export function dailyNameFixture(date = '2026-10-06') {
     exact: true, incremental: false, levels: 1, scope: HOT_SCOPE, plan: 'catalog', source: 'published dated precomputed batch artifact',
     source_identity: { target: 'daily_fixture', snapshot_db: 'daily_fixture', generation: 'b'.repeat(32), artifact_sha256: 'c'.repeat(64),
       artifact_bytes: 1000, source_manifest_sha256: 'd'.repeat(64), source_prefix_proofs_checked: true, kind: 'daily-scalar-source-v1' },
-    registry: { qualification_dates: [...HOT_DATES], target: 'fixture', patterns: 3, threshold_paths: 100000, max_chars: 16, selection_contract: selection },
+    registry: { qualification_dates: [...HOT_DATES], target: 'fixture', patterns: 3, threshold_paths: 100000, max_chars: 16 as number | null, selection_contract: selection },
     validation: { description: 'bound audited scalar source; not an independent full-catalog oracle', source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false },
     capabilities: { ...datedCapabilities }, root: { b: 10, o: 6 },
     // Reverse path order in DFS, and different interval widths from the frozen fixture.

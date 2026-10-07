@@ -36,7 +36,12 @@ describe('independently numbered dated root summaries', () => {
     expect(result).toEqual({ before: view(before), after: view(body.after), delta: { b: 0, o: 0 }, execution: { before: execution(before), after: execution(body.after) }, logical_store: 'gcs', capabilities: datedCapabilities })
     expect(nameHasDetail(result)).toBe(false)
   })
-  it.each(['wrong root', 'missing bucket', 'duplicate path', 'geometry gap', 'unsafe scalar', 'wrong snapshot', 'wrong date', 'wrong literal', 'fake history', 'false source proof', 'oracle claim', 'drill claim', 'missing registry', 'zero threshold', 'extra top field'])('refuses %s, not a partial or zero result', issue => {
+  it('accepts a complete-length registry (`max_chars: null`: a miss of any length is below the threshold)', () => {
+    const body = dailyNameFixture(); body.registry.max_chars = null
+    expect(parseName(body, { date: request.date, name: request.name })).toEqual({ after: view(body), execution: { after: execution(body) }, logical_store: 'gcs', capabilities: datedCapabilities })
+    expect(execution(body).registry).toEqual({ qualification_dates: ['2026-10-04', '2026-10-05'], target: 'fixture', patterns: 3, threshold_paths: 100000, max_chars: null, selection_contract: 'membership on declared qualification dates; no current-scan frequency claim' })
+  })
+  it.each(['wrong root', 'missing bucket', 'duplicate path', 'geometry gap', 'unsafe scalar', 'wrong snapshot', 'wrong date', 'wrong literal', 'fake history', 'false source proof', 'oracle claim', 'drill claim', 'missing registry', 'zero threshold', 'zero length', 'extra top field'])('refuses %s, not a partial or zero result', issue => {
     const body = dailyNameFixture()
     if (issue === 'wrong root') body.root.b++
     if (issue === 'missing bucket') body.buckets.pop()
@@ -52,6 +57,7 @@ describe('independently numbered dated root summaries', () => {
     if (issue === 'drill claim') body.capabilities.bucket_drill = true
     if (issue === 'missing registry') Object.assign(body, { registry: undefined })
     if (issue === 'zero threshold') body.registry.threshold_paths = 0
+    if (issue === 'zero length') body.registry.max_chars = 0
     if (issue === 'extra top field') Object.assign(body, { fallback: true })
     expect(() => parseName(body, { date: request.date, name: request.name })).toThrow(Error)
   })
