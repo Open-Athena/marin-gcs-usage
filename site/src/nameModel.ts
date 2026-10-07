@@ -69,6 +69,11 @@ function capabilities(value: unknown) {
   if (!keys(body, ['bucket_drill', 'child_drill', 'fallback']) || Object.values(body).some(value => value !== false)) fail()
   return { bucket_drill: false, child_drill: false, fallback: false } as const
 }
+/** A daily scan's plans: its registered catalog, or bounded discovery over its own name index. */
+const DAILY_SOURCES: Record<NamePlan, string> = {
+  catalog: 'published dated precomputed batch artifact',
+  'bounded-name-postings': "bounded dated name postings over the scan's own name index; directory rollups are atomic",
+}
 function dailyIdentity(value: unknown) {
   const body = record(value)
   if (!keys(body, ['target', 'snapshot_db', 'generation', 'artifact_sha256', 'artifact_bytes', 'source_manifest_sha256', 'source_prefix_proofs_checked', 'kind']) ||
@@ -86,12 +91,13 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
     return { ...checked, source_identity: { ...checked.source_identity, kind: 'frozen-history' } }
   }
   const checked = dailyIdentity(identity), validation = record(body.validation)
-  if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'registry', 'validation', 'capabilities', 'root', 'buckets']) || body.plan !== 'catalog' || body.source !== 'published dated precomputed batch artifact' ||
+  const plan = body.plan === 'catalog' || body.plan === 'bounded-name-postings' ? body.plan : fail()
+  if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'registry', 'validation', 'capabilities', 'root', 'buckets']) || body.source !== DAILY_SOURCES[plan] ||
       !keys(validation, ['description', 'source_prefix_proofs_checked', 'independent_full_catalog_source_oracle']) ||
       typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false ||
       body.target !== checked.target) fail()
   const registry = registryBinding(body.registry, true)
-  return { plan: 'catalog', source: body.source, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked, registry }
+  return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked, registry }
 }
 function datedView(value: unknown): { view: HotView; execution: NameExecution; store: string } {
   const body = record(value)
@@ -186,7 +192,7 @@ export function parseNameRegistry(value: unknown): NameRegistry {
       const original = record(body.legacy)
       if (!keys(row, ['date', 'plans', 'kind', 'registry']) || JSON.stringify(row.plans) !== JSON.stringify(['catalog', 'bounded-name-postings']) || !legacy.dates.some(day => day.date === row.date) || registry.target !== original.target || registry.patterns !== record(original.catalog_patterns)[row.date as string]) fail()
     } else {
-      if (row.kind !== 'daily-scalar-source-v1' || !keys(row, ['date', 'plans', 'kind', 'registry', 'source', 'generation']) || JSON.stringify(row.plans) !== '["catalog"]' || legacy.dates.some(day => day.date === row.date)) fail()
+      if (row.kind !== 'daily-scalar-source-v1' || !keys(row, ['date', 'plans', 'kind', 'registry', 'source', 'generation']) || !['["catalog"]', '["catalog","bounded-name-postings"]'].includes(JSON.stringify(row.plans)) || legacy.dates.some(day => day.date === row.date)) fail()
       source_identity = dailyIdentity({ ...record(row.source), kind: row.kind, generation: row.generation })
     }
     return { date: row.date as string, plans: row.plans as NamePlan[], kind: row.kind as NameScan['kind'], qualification_dates: [...registry.qualification_dates], ...(source_identity ? { source_identity, registry } : {}) }

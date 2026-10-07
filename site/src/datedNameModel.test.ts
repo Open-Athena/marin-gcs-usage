@@ -55,6 +55,22 @@ describe('independently numbered dated root summaries', () => {
     if (issue === 'extra top field') Object.assign(body, { fallback: true })
     expect(() => parseName(body, { date: request.date, name: request.name })).toThrow(Error)
   })
+  it('accepts a daily scan\'s bounded answer over its own name index, bound to the same pinned scan and registry', () => {
+    const body = { ...dailyNameFixture(), plan: 'bounded-name-postings', source: "bounded dated name postings over the scan's own name index; directory rollups are atomic" }
+    const result = parseName(body, { date: request.date, name: request.name })
+    expect(result).toEqual({ after: view(body), execution: { after: execution(body) }, logical_store: 'gcs', capabilities: datedCapabilities })
+    expect(nameHasDetail(result)).toBe(false)
+    const registry = datedNameRegistry(); registry.dates[2].plans = ['catalog', 'bounded-name-postings']
+    expect(nameResultForRegistry(result, parseNameRegistry(registry))).toBe(result)
+    expect(() => nameResultForRegistry(result, parseNameRegistry(datedNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
+  })
+  it.each(['catalog source', 'frozen source', 'unknown plan'])('refuses a daily bounded answer with a mismatched %s', issue => {
+    const body = { ...dailyNameFixture(), plan: 'bounded-name-postings', source: "bounded dated name postings over the scan's own name index; directory rollups are atomic" }
+    if (issue === 'catalog source') body.source = 'published dated precomputed batch artifact'
+    if (issue === 'frozen source') body.source = 'bounded dated name postings; directory rollups are atomic'
+    if (issue === 'unknown plan') body.plan = 'scan'
+    expect(() => parseName(body, { date: request.date, name: request.name })).toThrow('Name summary returned an invalid dated contract.')
+  })
   it.each(['store', 'date', 'root delta', 'bucket delta', 'side bounds', 'side weights', 'missing row', 'different paths'])('refuses inconsistent paired %s', issue => {
     const body = mixedDatedNameDiff()
     if (issue === 'store') body.before.logical_store = 'other'
@@ -80,9 +96,9 @@ describe('scan-specific availability', () => {
     expect(nameRequest(new URLSearchParams('date=2026-10-06&name=DATAKIT&from=2026-10-05'), scans)).toEqual(request)
     expect(datedNameRequest(new URLSearchParams('date=2026-10-08&name=A%26B'))).toEqual({ date: '2026-10-08', name: 'a&b' })
   })
-  it.each(['new cold fallback', 'missing legacy day', 'invalid source hash', 'fake history source', 'invalid qualification date', 'false drill capability', 'extra field'])('refuses %s metadata', issue => {
+  it.each(['cold plan without catalog', 'missing legacy day', 'invalid source hash', 'fake history source', 'invalid qualification date', 'false drill capability', 'extra field'])('refuses %s metadata', issue => {
     const body = datedNameRegistry()
-    if (issue === 'new cold fallback') body.dates[2].plans.push('bounded-name-postings')
+    if (issue === 'cold plan without catalog') body.dates[2].plans = ['bounded-name-postings']
     if (issue === 'missing legacy day') body.dates.splice(0, 1)
     const daily = body.dates[2]
     if (issue === 'invalid source hash' && 'source' in daily) Object.assign(daily.source, { source_manifest_sha256: 'invalid' })
