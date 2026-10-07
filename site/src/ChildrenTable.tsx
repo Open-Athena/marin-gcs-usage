@@ -158,7 +158,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
     const synthetic = k.n.startsWith('(')
     const kidSegs = [...segs, k.n]
     const uri = scheme + kidSegs.join('/')
-    const cl = ownerIdx && !synthetic ? ownerIdx.claimOf(uri) : null
+    const cl = ownerIdx && !synthetic ? ownerIdx.assignmentOf(uri) : null
     const to = rowTarget(segs, k.n, k.k, synthetic)
     return { k, synthetic, kidSegs, uri, to, shares: ownerShares(k), cl, si: selectable.indexOf(k) }
     // eslint-disable-next-line react-hooks/exhaustive-deps

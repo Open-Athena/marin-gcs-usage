@@ -29,7 +29,7 @@ export function OwnerControls({ uri, idx, node, lensed, userIdx, onPickUser }: {
     return null
   }
   const prefix = uri.endsWith('/') ? uri : uri + '/'
-  const cl = idx.claimOf(uri)
+  const cl = idx.assignmentOf(uri)
   // Ownership: the assignment if there is one; otherwise the scan's
   // attribution — one person by name, a mix as a bar (OwnerBar).
   const shares = ownerShares(node ?? { n: '', b: 0, o: 0 } as TreeNode)
