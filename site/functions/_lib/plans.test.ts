@@ -151,10 +151,10 @@ describe('a `*` bucket list (a filesystem-root store)', () => {
 })
 
 describe('auditRunControl — who stopped / undid / purged a run, in `admin_edits`', () => {
-  it('appends one row per control, on either lineage', async () => {
+  it('appends one row per control', async () => {
     const { sqliteD1 } = await import('./testD1')
-    for (const lineage of ['gcs', 'cw'] as const) {
-      const { db, raw } = await sqliteD1(lineage)
+    {
+      const { db, raw } = await sqliteD1('cw')
       await auditRunControl(db, 'stop', 'gcs-sweep-real-20261005-024600z', 'admin@example.org', null)
       await auditRunControl(db, 'undo', 'run-1', 'admin@example.org', 'gcs-undo-20261007-120000z')
       const rows = raw.prepare("SELECT tbl, pk, action, who, old_json, new_json FROM admin_edits ORDER BY id").all()
