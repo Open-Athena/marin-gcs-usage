@@ -2086,7 +2086,7 @@ def ch_dated_hot_l1_build(
                 digest.update(chunk)
                 size += len(chunk)
         print(json.dumps({"schema": body["schema"], "date": body["date"], "patterns": len(pinned.patterns),
-                          "artifact_bytes": size, "artifact_sha256": digest.hexdigest(), "stages": body["stages"]}))
+                          "aliases": len(body.get("aliases", [])), "artifact_bytes": size, "artifact_sha256": digest.hexdigest(), "stages": body["stages"]}))
     finally:
         ch.close()
 

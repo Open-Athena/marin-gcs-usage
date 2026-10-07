@@ -50,7 +50,7 @@ def mocked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_exact_cli_forwarding_and_summary_never_emits_usage_weights(mocked, extra: list[str], settings: dict) -> None:
     result = CliRunner().invoke(main, mocked.args + ['-U', 'http://dev-ch:8123', *extra])
     assert (result.exit_code, result.exception) == (0, None)
-    assert loads(result.output) == {'schema': 'dated-hot-l1-native-v1', 'date': '2026-10-06', 'patterns': 2,
+    assert loads(result.output) == {'schema': 'dated-hot-l1-native-v1', 'date': '2026-10-06', 'patterns': 2, 'aliases': 0,
                                    'artifact_bytes': len(mocked.raw), 'artifact_sha256': sha256(mocked.raw).hexdigest(), 'stages': {'build_s': .25}}
     assert mocked.calls == [('load', Path('selection.json'), Path('registry.jsonl'), Path('source.json')),
                             ('client', 'http://dev-ch:8123', settings), ('build', True, True, Path('native'), mocked.out), ('close',)]

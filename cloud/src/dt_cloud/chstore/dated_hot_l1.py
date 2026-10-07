@@ -3,6 +3,11 @@
 The accepted supplied scalar source and native kernel are trusted. Structural
 checks and selected controls do not constitute a full-catalog source oracle.
 This module does not publish generations, ingest history or provide fallback.
+
+When the registry's frequencies were counted on this scan, literals with the
+same match set as a shorter one (`match_sets.aliases`) are not recomputed:
+the artifact (`v2`) lists `aliases` and holds results for the roots only, and
+the reader answers an alias with its root's body under the queried literal.
 """
 
 from copy import deepcopy
@@ -20,8 +25,10 @@ from .hot_l1_batch_catalog import _date, _literal
 from .hot_l1_batch_stream import aggregate_source
 from .hot_l1_catalog import CatalogRequest, SCOPE, _unique_object
 from .hot_registry_selection import RegistrySelection, validate as validate_selection
+from .match_sets import aliases as match_set_aliases
 
 SCHEMA = 'dated-hot-l1-native-v1'
+ALIAS_SCHEMA = 'dated-hot-l1-native-v2'
 LIMIT = 64 << 20
 VALIDATION = {
     'description': 'complete registered native L1 over the bound audited scalar source; not an independent full-catalog source oracle',
@@ -71,7 +78,9 @@ def _source_binding(ch: Ch, selection: RegistrySelection) -> None:
 def _validated(body: dict) -> tuple[RegistrySelection, dict[str, dict]]:
     required = {'schema', 'complete', 'exact', 'incremental', 'levels', 'scope', 'logical_store', 'date', 'target', 'snapshot_db',
                 'selection', 'registry_utf8', 'source_manifest_utf8', 'results', 'native', 'binary', 'source_query_id', 'stages', 'validation'}
-    if (not isinstance(body, dict) or set(body) != required or body['schema'] != SCHEMA or body['complete'] is not True or
+    aliased = isinstance(body, dict) and body.get('schema') == ALIAS_SCHEMA
+    if (not isinstance(body, dict) or set(body) != (required | {'aliases'} if aliased else required) or
+            body['schema'] not in (SCHEMA, ALIAS_SCHEMA) or body['complete'] is not True or
             body['exact'] is not True or body['incremental'] is not False or type(body['levels']) is not int or body['levels'] != 1 or body['scope'] != SCOPE):
         raise ValueError('dated L1 requires a complete exact root-only native artifact')
     if not isinstance(body['registry_utf8'], str) or not isinstance(body['source_manifest_utf8'], str) or not isinstance(body['selection'], dict):
@@ -85,6 +94,12 @@ def _validated(body: dict) -> tuple[RegistrySelection, dict[str, dict]]:
     if (body['logical_store'], body['date'], body['target'], body['snapshot_db']) != (
             selection.logical_store, selection.date, selection.target, selection.snapshot_db):
         raise ValueError('dated L1 logical store/date/source identity differs from the pinned selection')
+    # A v2 artifact's aliases are recomputed from the pinned registry, never
+    # trusted; a v1 artifact computed every literal.
+    aliases = _aliases(selection) if aliased else {}
+    if aliased and (not aliases or body['aliases'] != [[alias, root] for alias, root in aliases.items()]):
+        raise ValueError('dated L1 match-set aliases differ from the pinned registry\'s own-scan frequencies')
+    roots = tuple(pattern for pattern in selection.patterns if pattern not in aliases)
     if body['validation'] != VALIDATION or any(type(body['validation'][key]) is not bool for key in ('source_prefix_proofs_checked', 'independent_full_catalog_source_oracle')):
         raise ValueError('dated L1 must retain its truthful source-validation limitations')
     binary = body['binary']
@@ -98,18 +113,18 @@ def _validated(body: dict) -> tuple[RegistrySelection, dict[str, dict]]:
         raise ValueError('dated L1 requires complete native process statistics without a duplicate matrix')
     for key in ('nodes_read', 'registered_predicates', 'peak_stack', 'peak_active', 'native_peak_rss_bytes'):
         _integer(native[key], 'native.' + key)
-    if (native['nodes_read'] != selection.nodes or native['registered_predicates'] != len(selection.patterns) or
-            native['peak_stack'] > selection.nodes or native['peak_active'] > len(selection.patterns)):
+    if (native['nodes_read'] != selection.nodes or native['registered_predicates'] != len(roots) or
+            native['peak_stack'] > selection.nodes or native['peak_active'] > len(roots)):
         raise ValueError('dated L1 native counts differ from the complete source/registry')
     if (not isinstance(body['source_query_id'], str) or fullmatch('hot_l1_stream_[a-f0-9]{32}', body['source_query_id']) is None or
             not isinstance(body['stages'], dict) or set(body['stages']) != {'before_source_binding_s', 'aggregate_s', 'after_source_binding_s', 'build_s'} or
             not all(_duration(value) for value in body['stages'].values())):
         raise ValueError('dated L1 requires valid owned query identity and stage timings')
     results = body['results']
-    if not isinstance(results, list) or len(results) != len(selection.patterns):
+    if not isinstance(results, list) or len(results) != len(roots):
         raise ValueError('dated L1 results must contain complete ordered registry membership')
     entries, global_root = {}, source_body['root']
-    for predicate_id, (pattern, result) in enumerate(zip(selection.patterns, results, strict=True), 1):
+    for predicate_id, (pattern, result) in enumerate(zip(roots, results, strict=True), 1):
         if (not isinstance(result, dict) or set(result) != {'predicate_id', 'pattern', 'root', 'buckets'} or
                 type(result['predicate_id']) is not int or result['predicate_id'] != predicate_id or result['pattern'] != pattern):
             raise ValueError('dated L1 result IDs/literals differ from the original ordered registry')
@@ -127,7 +142,13 @@ def _validated(body: dict) -> tuple[RegistrySelection, dict[str, dict]]:
         if root != sums or any(root[key] > global_root[key] for key in ('b', 'o')):
             raise ValueError('dated L1 root/bucket conservation exceeds the accepted complete source')
         entries[pattern] = result
+    for alias, root in aliases.items():
+        entries[alias] = entries[root]
     return selection, entries
+
+
+def _aliases(selection: RegistrySelection) -> dict[str, str]:
+    return match_set_aliases(selection.registry_raw, selection.date, selection.snapshot_db)
 
 
 def build(
@@ -149,13 +170,15 @@ def build(
     stage = monotonic()
     _source_binding(ch, selection)
     before_s = monotonic() - stage
-    aggregate = aggregate_source(ch, selection.snapshot_db, selection.patterns, [list(row) for row in selection.buckets], selection.nodes, binary=binary)
+    aliases = _aliases(selection)
+    roots = tuple(pattern for pattern in selection.patterns if pattern not in aliases)
+    aggregate = aggregate_source(ch, selection.snapshot_db, roots, [list(row) for row in selection.buckets], selection.nodes, binary=binary)
     stage = monotonic()
     _source_binding(ch, selection)
     after_s = monotonic() - stage
     if _binary(binary) != binary_identity:
         raise ValueError('dated L1 native binary changed during construction')
-    body = {'schema': SCHEMA, 'complete': True, 'exact': True, 'incremental': False, 'levels': 1, 'scope': SCOPE,
+    body = {'schema': ALIAS_SCHEMA if aliases else SCHEMA, 'complete': True, 'exact': True, 'incremental': False, 'levels': 1, 'scope': SCOPE,
             'logical_store': selection.logical_store, 'date': selection.date, 'target': selection.target, 'snapshot_db': selection.snapshot_db,
             'selection': selection.metadata(), 'registry_utf8': selection.registry_raw.decode('utf-8'),
             'source_manifest_utf8': selection.source_manifest_raw.decode('utf-8'),
@@ -163,7 +186,8 @@ def build(
             'source_query_id': aggregate['source_query_id'],
             'stages': {'before_source_binding_s': round(before_s, 6), 'aggregate_s': aggregate['aggregate_s'],
                        'after_source_binding_s': round(after_s, 6), 'build_s': round(monotonic() - start, 6)},
-            'validation': dict(VALIDATION)}
+            'validation': dict(VALIDATION),
+            **({'aliases': [[alias, root] for alias, root in aliases.items()]} if aliases else {})}
     _validated(body)
     raw = manifest_bytes(body)
     if len(raw) > LIMIT:
