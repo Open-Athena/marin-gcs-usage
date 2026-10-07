@@ -42,7 +42,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   segs: string[]
   scheme: string
   /** The ownership ledger (`Store.owners`): assignments show as the row's
-   *  owner, and admins assign from the actions column. */
+   *  owner, and anyone who may assign (`useCanAssign`) does so from the actions column. */
   ownerIdx?: OwnerIndex | null
   userIdx?: Map<string, UserIndexEntry>
   onPickUser?: (u: string) => void
@@ -63,7 +63,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   const PAGE = PAGE_SIZES.includes(nP) ? nP : 20
   // A staging store (`Store.staging`): full viewers — not read-only guest
   // links — select + trash (stage for deletion; an admin approves later).
-  // Owner assignment (`Store.owners`) is an admin's, alongside. Both are the
+  // Owner assignment (`Store.owners`) is any signed-in viewer's, alongside. Both are the
   // subtree's store's flags: a secondary store has neither.
   const store = useStore()
   const staging = store.staging

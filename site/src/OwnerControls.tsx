@@ -11,7 +11,7 @@ import { ClassBar, OwnerBar, ownerShares } from './OwnerBar'
 // tooltip and above the map for the current drill root. Shows the node's
 // effective owner (an assignment from the ledger, most-recent-wins over
 // ancestor assignments, else the scan's attribution) with provenance, and the
-// assign control for admins.
+// assign control for anyone who may assign (`useCanAssign`).
 
 /**
  * `node`: the tree node behind `uri`, when the caller has it — feeds the
