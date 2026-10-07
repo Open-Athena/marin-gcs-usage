@@ -79,6 +79,7 @@ export async function dispatchPlan(
   const digest = await planDigest(prep.prefixes)
 
   let date = req.date
+  let reviewed: RunRow | undefined
   if (req.mode === 'real') {
     await refreshRuns(env, db, req.siteUrl, ex)
     const gate = realGate(await planRuns(db, req.planId), digest, prep.prefixes.length)
@@ -87,10 +88,11 @@ export async function dispatchPlan(
       return refuse(409, `not deleting: a real run uses its dry-run's scan (${gate.dry.scan}, ${gate.dry.run_id}), not ${date}`)
     }
     date = gate.dry.scan
+    reviewed = gate.dry
   }
   if (date === undefined) throw new Error('unreachable: a dry run without a date was refused above')
 
-  const launched = await prep.launch(date, digest)
+  const launched = await prep.launch(date, digest, reviewed)
   if ('ok' in launched) return launched
   return { ok: true, job_id: launched.job_id, plan_id: req.planId, mode: req.mode, date, actor: req.actor, digest, extra: launched.extra }
 }
