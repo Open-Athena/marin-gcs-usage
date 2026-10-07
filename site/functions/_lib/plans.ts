@@ -162,6 +162,8 @@ export interface EmptiedBatch extends StageBatchRow {
   covered: number
   absorbed: { into: number; n: number }[]
   unstaged: number
+  /** Taken out by the real run that deleted them (`unstageDeleted`). */
+  deleted: number
 }
 
 /** The plan's emptied stage batches, by replaying its `plan_items` audit trail
@@ -171,8 +173,8 @@ export function emptiedBatches(batches: readonly StageBatchRow[], items: readonl
   const parse = (s: string | null): Record<string, unknown> => { try { return (s ? JSON.parse(s) : {}) as Record<string, unknown> } catch { return {} } }
   const strs = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
   const owner = new Map<string, number | null>()
-  const fate = new Map<number, { staged: number; covered: number; absorbed: Map<number, number>; unstaged: number }>()
-  const of = (b: number) => { let f = fate.get(b); if (!f) fate.set(b, f = { staged: 0, covered: 0, absorbed: new Map(), unstaged: 0 }); return f }
+  const fate = new Map<number, { staged: number; covered: number; absorbed: Map<number, number>; unstaged: number; deleted: number }>()
+  const of = (b: number) => { let f = fate.get(b); if (!f) fate.set(b, f = { staged: 0, covered: 0, absorbed: new Map(), unstaged: 0, deleted: 0 }); return f }
   for (const e of edits) {
     const o = parse(e.old_json)
     const n = parse(e.new_json)
@@ -192,16 +194,17 @@ export function emptiedBatches(batches: readonly StageBatchRow[], items: readonl
       }
       if (batch != null) of(batch).covered += strs(n.covered).length
     } else if (e.action === 'delete') {
+      const byRun = typeof o.deleted_by === 'string'
       for (const p of strs(o.prefixes)) {
         const was = owner.get(p)
-        if (was != null) of(was).unstaged++
+        if (was != null) { if (byRun) of(was).deleted++; else of(was).unstaged++ }
         owner.delete(p)
       }
     }
   }
   return batches.filter(b => !live.has(b.id)).map(b => {
-    const f = fate.get(b.id) ?? { staged: 0, covered: 0, absorbed: new Map<number, number>(), unstaged: 0 }
-    return { ...b, staged: f.staged, covered: f.covered, absorbed: [...f.absorbed].map(([into, n]) => ({ into, n })).sort((x, y) => x.into - y.into), unstaged: f.unstaged }
+    const f = fate.get(b.id) ?? { staged: 0, covered: 0, absorbed: new Map<number, number>(), unstaged: 0, deleted: 0 }
+    return { ...b, staged: f.staged, covered: f.covered, absorbed: [...f.absorbed].map(([into, n]) => ({ into, n })).sort((x, y) => x.into - y.into), unstaged: f.unstaged, deleted: f.deleted }
   })
 }
 
@@ -311,6 +314,40 @@ export async function audit(
       oldJson == null ? null : JSON.stringify(oldJson),
       newJson == null ? null : JSON.stringify(newJson))
     .run()
+}
+
+/** Take out of plan `planId` every item a finished real run of it fully
+ * deleted since the item was staged: a band with no objects written or
+ * rewritten during the run (`drift_new_objects`, `overwritten`), not undone.
+ * A drifted or overwritten prefix stays queued (its new objects were never
+ * reviewed; the next dry-run sees them). One `admin_edits` row per run
+ * (`deleted_by`), so `/staged` shows those batches as deleted, not unstaged.
+ * An undo deliberately does not re-stage: restoring means "keep these".
+ * Idempotent; returns the prefixes removed. */
+export async function unstageDeleted(db: D1Database, planId: number): Promise<string[]> {
+  const { results } = await db.prepare(`
+    SELECT i.prefix, min(r.run_id) AS run_id FROM plan_items i
+    JOIN deletion_bands b ON b.prefix = i.prefix
+    JOIN deletion_runs r ON r.run_id = b.run_id
+    WHERE i.plan_id = ? AND r.plan_id = i.plan_id AND r.mode = 'real' AND r.finished_ts IS NOT NULL
+      AND r.started_ts >= i.added_ts AND b.drift_new_objects = 0 AND b.overwritten = 0 AND b.undone_objects = 0
+    GROUP BY i.prefix ORDER BY i.prefix
+  `).bind(planId).all<{ prefix: string; run_id: string }>()
+  const byRun = new Map<string, string[]>()
+  for (const r of results) byRun.set(r.run_id, [...(byRun.get(r.run_id) ?? []), r.prefix])
+  for (const [run, prefixes] of byRun) {
+    await db.batch(prefixes.map(p => db.prepare('DELETE FROM plan_items WHERE plan_id = ? AND prefix = ?').bind(planId, p)))
+    await audit(db, 'plan_items', String(planId), 'delete', `run:${run}`, { prefixes, deleted_by: run }, null)
+  }
+  return results.map(r => r.prefix)
+}
+
+/** `unstageDeleted` on the open plan, if any: the executors' job polls call
+ * it every time, so a run's deletions settle even when its finish was
+ * reflected before this existed (or by another reader). */
+export async function settleOpenPlan(db: D1Database): Promise<string[]> {
+  const id = await openPlanId(db)
+  return id == null ? [] : unstageDeleted(db, id)
 }
 
 /** A run control (stop / undo / purge) into the audit log: who, when, and the
