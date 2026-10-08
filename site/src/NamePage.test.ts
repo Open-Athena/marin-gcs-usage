@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
-import { NamePage, scanList } from './NamePage'
+import { NamePage, catalogDomain, scanList } from './NamePage'
 import { nameDiff, nameFixture } from './nameTestFixtures'
 import { parseName, parseNameRegistry } from './nameModel'
 import { dailyNameFixture, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
@@ -153,4 +153,11 @@ it('failed request shows a nonzero-result error with no maps or table', () => {
 it('lists few scans and summarizes many', () => {
   expect([scanList(['2026-10-04', '2026-10-05', '2026-10-06']), scanList(Array.from({ length: 68 }, (_, i) => new Date(Date.UTC(2026, 6, 30 + i)).toISOString().slice(0, 10)))])
     .toEqual(['2026-10-04, 2026-10-05, 2026-10-06', '68 scans, 2026-07-30 to 2026-10-05'])
+})
+
+it('describes a cost-weighted registry by the on-demand rows it bounds', () => {
+  const registry = { qualification_dates: ['2026-10-06'], target: 'catalog', patterns: 3, selection_contract: 'membership on declared qualification dates; no current-scan frequency claim',
+    threshold_rows: 100000, name_rows: 256, max_chars: null, short_chars: 2 }
+  expect(catalogDomain(registry)).toBe('≥100,000 index rows to answer on demand (256 per name), or at most 2 characters')
+  expect(catalogDomain({ ...registry, threshold_rows: undefined, name_rows: undefined, threshold_paths: 100000 })).toBe('≥100,000 matching paths, or at most 2 characters')
 })

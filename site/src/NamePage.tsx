@@ -17,7 +17,10 @@ export function NamePlanStatus({ result }: { result: NameResult }) {
 }
 /** A registry's domain in words: the threshold, and the short literals registered whatever their frequency. */
 export function catalogDomain(registry: NameQualification): string {
-  return `≥${registry.threshold_paths!.toLocaleString('en-US')} matching paths${registry.short_chars ? `, or at most ${registry.short_chars} characters` : ''}`
+  const threshold = registry.threshold_rows !== undefined
+    ? `≥${registry.threshold_rows.toLocaleString('en-US')} index rows to answer on demand (${registry.name_rows!.toLocaleString('en-US')} per name)`
+    : `≥${registry.threshold_paths!.toLocaleString('en-US')} matching paths`
+  return `${threshold}${registry.short_chars ? `, or at most ${registry.short_chars} characters` : ''}`
 }
 /** Every date when few; otherwise the count and range (the select lists each one). */
 export function scanList(dates: readonly string[]): string {

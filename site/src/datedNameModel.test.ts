@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { consolidatedCatalogFixture, consolidatedCatalogNameRegistry, consolidatedCatalogRegistry, consolidatedCatalogSource, consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
+import type { NameQualification } from './nameModel'
 import { datedNameRequest, loadName, loadNameRegistry, nameHasDetail, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
 
 const request = { date: '2026-10-06', name: 'datakit', from: '2026-10-05' }
@@ -47,6 +48,17 @@ describe('independently numbered dated root summaries', () => {
     expect(parsed.execution.after.registry).toEqual({ qualification_dates: ['2026-10-04', '2026-10-05'], target: 'fixture', patterns: 3, threshold_paths: 100000, max_chars: null, short_chars: 2, selection_contract: 'membership on declared qualification dates; no current-scan frequency claim' })
     const zero = dailyNameFixture(); Object.assign(zero.registry, { short_chars: 0 })
     expect(() => parseName(zero, { date: request.date, name: request.name })).toThrow()
+  })
+  it('accepts a cost-weighted registry (`threshold_rows` with `name_rows`: on-demand postings rows) in place of `threshold_paths`, and refuses a mix or a missing per-name charge', () => {
+    const body = dailyNameFixture(); const { threshold_paths: _, ...rest } = body.registry
+    body.registry = { ...rest, max_chars: null, short_chars: 2, threshold_rows: 100000, name_rows: 256 } as unknown as typeof body.registry
+    const parsed = parseName(body, { date: request.date, name: request.name }) as { execution: { after: { registry?: NameQualification } } }
+    expect(parsed.execution.after.registry).toEqual({ qualification_dates: ['2026-10-04', '2026-10-05'], target: 'fixture', patterns: 3, threshold_rows: 100000, name_rows: 256, max_chars: null, short_chars: 2, selection_contract: 'membership on declared qualification dates; no current-scan frequency claim' })
+    const mixed = dailyNameFixture(); Object.assign(mixed.registry, { threshold_rows: 100000, name_rows: 256 })
+    expect(() => parseName(mixed, { date: request.date, name: request.name })).toThrow()
+    const bare = dailyNameFixture(); const { threshold_paths: __, ...others } = bare.registry
+    bare.registry = { ...others, threshold_rows: 100000 } as unknown as typeof bare.registry
+    expect(() => parseName(bare, { date: request.date, name: request.name })).toThrow()
   })
   it.each(['wrong root', 'missing bucket', 'duplicate path', 'geometry gap', 'unsafe scalar', 'wrong snapshot', 'wrong date', 'wrong literal', 'fake history', 'false source proof', 'oracle claim', 'drill claim', 'missing registry', 'zero threshold', 'zero length', 'extra top field'])('refuses %s, not a partial or zero result', issue => {
     const body = dailyNameFixture()
