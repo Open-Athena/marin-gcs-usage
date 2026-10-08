@@ -79,3 +79,16 @@ def test_build_through_an_earlier_scan_then_append_equals_full(store):
     assert mega_names.append(ch, LAST, ["upto"])["date"] == LAST
     assert ({t.removeprefix("upto_"): v for t, v in mega_names.digest(ch, "upto").items()}
             == {t.removeprefix("whole_"): v for t, v in mega_names.digest(ch, "whole").items()} != {t.removeprefix("upto_"): v for t, v in before.items()})
+
+
+def test_binding_geometry_is_bucket_preorder_or_ordinal(store):
+    """Buckets in path order from 1, each spanning itself and its `n_desc` descendants; a scan recording no descendant
+    counts (this fixture's, like scans before the 09-30 format) gets one ordinal position per bucket."""
+    ch = store["ch"]
+    head = {"schema": "mega-name-binding-v1", "target": ch.db, "postings": "all", "through": LAST}
+    assert mega_names.binding(ch, "all") == {**head, "geometry": {day: [[1, 1, "b"], [2, 2, "c"]] for day in DAYS}, "ordinal": list(DAYS)}
+    ch.exec("ALTER TABLE nodes UPDATE n_desc = if(path = 'b', 11, 2) WHERE depth = 1 SETTINGS mutations_sync = 2")
+    try:
+        assert mega_names.binding(ch, "all") == {**head, "geometry": {day: [[1, 12, "b"], [13, 15, "c"]] for day in DAYS}, "ordinal": []}
+    finally:
+        ch.exec("ALTER TABLE nodes UPDATE n_desc = -1 WHERE depth = 1 SETTINGS mutations_sync = 2")

@@ -354,7 +354,8 @@ def test_boot_refuses_cold_index_bound_to_another_source(sources, change) -> Non
 
 
 MEGA = {'schema': 'mega-name-binding-v1', 'target': 'default', 'postings': 'm', 'through': '2026-10-06',
-        'geometry': {'2026-09-15': [[1, 2, 'a'], [3, 9, 'b']], '2026-10-05': [[1, 5, 'a'], [6, 8, 'b']], '2026-10-06': [[1, 4, 'a'], [5, 10, 'b']]}}
+        'geometry': {'2026-09-15': [[1, 1, 'a'], [2, 2, 'b']], '2026-10-01': [[1, 2, 'a'], [3, 9, 'b']], '2026-10-05': [[1, 5, 'a'], [6, 8, 'b']],
+                     '2026-10-06': [[1, 4, 'a'], [5, 10, 'b']]}, 'ordinal': ['2026-09-15']}
 MEGA_VALIDATION = {'description': "bounded exact first-hit coverage over the consolidated store's name index; no per-request source oracle",
                    'source_prefix_proofs_checked': True, 'independent_full_catalog_source_oracle': False}
 
@@ -382,12 +383,14 @@ def test_metadata_adds_consolidated_scans_and_the_daily_cold_plan(sources, monke
     rows = mega_runtime(sources, monkeypatch).metadata()['dates']
     assert [(row['date'], row['kind'], row['plans']) for row in rows] == [
         ('2026-09-15', 'consolidated-store-v1', ['bounded-name-postings']),
+        ('2026-10-01', 'consolidated-store-v1', ['bounded-name-postings']),
         ('2026-10-04', 'frozen-history', ['catalog', 'bounded-name-postings']),
         ('2026-10-05', 'frozen-history', ['catalog', 'bounded-name-postings']),
         ('2026-10-06', 'daily-scalar-source-v1', ['catalog', 'bounded-name-postings']),
     ]
     assert rows[0] == {'date': '2026-09-15', 'plans': ['bounded-name-postings'], 'kind': 'consolidated-store-v1',
-                       'source': {'target': 'default', 'postings': 'm', 'through': '2026-10-06'}}
+                       'source': {'target': 'default', 'postings': 'm', 'through': '2026-10-06', 'geometry': 'ordinal'}}
+    assert rows[1]['source'] == {'target': 'default', 'postings': 'm', 'through': '2026-10-06', 'geometry': 'preorder'}
 
 
 def test_unregistered_daily_literal_answers_from_the_consolidated_store(sources, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -401,11 +404,11 @@ def test_unregistered_daily_literal_answers_from_the_consolidated_store(sources,
 
 
 def test_a_scan_without_catalogs_answers_any_literal_from_the_consolidated_store(sources, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert mega_runtime(sources, monkeypatch).view('2026-09-15', 'foo') == {
-        'schema': 'dated-name-summary-v1', 'logical_store': 'gcs_fleet', 'date': '2026-09-15', 'pattern': 'foo', 'path': '', 'exact': True,
+    assert mega_runtime(sources, monkeypatch).view('2026-10-01', 'foo') == {
+        'schema': 'dated-name-summary-v1', 'logical_store': 'gcs_fleet', 'date': '2026-10-01', 'pattern': 'foo', 'path': '', 'exact': True,
         'incremental': False, 'levels': 1, 'scope': SCOPE, 'plan': 'bounded-name-postings', 'target': 'default',
         'source': 'bounded name postings over the consolidated store; directory rollups are atomic', 'validation': MEGA_VALIDATION,
-        'source_identity': {'kind': 'consolidated-store-v1', 'target': 'default', 'postings': 'm', 'through': '2026-10-06'},
+        'source_identity': {'kind': 'consolidated-store-v1', 'target': 'default', 'postings': 'm', 'through': '2026-10-06', 'geometry': 'preorder'},
         'root': {'b': 5, 'o': 3}, 'buckets': [{'path': 'a', 'pre': 1, 'post': 2, 'b': 4, 'o': 2}, {'path': 'b', 'pre': 3, 'post': 9, 'b': 1, 'o': 1}],
         'capabilities': dict(CAPABILITIES),
     }
@@ -427,8 +430,9 @@ def test_registered_daily_literal_stays_on_the_catalog_with_the_consolidated_sto
 
 @pytest.mark.parametrize('change,message', [
     (lambda mega: mega['geometry'].update({'2026-10-06': [[1, 5, 'a'], [6, 10, 'b']]}), 'dated name summary consolidated geometry differs from its scan catalog'),
-    (lambda mega: mega['geometry'].update({'2026-09-15': [[1, 2, 'a'], [4, 9, 'b']]}), 'dated name summary consolidated geometry is incomplete'),
-    (lambda mega: mega['geometry'].update({'2026-09-15': [[1, 2, 'a']]}), 'dated name summary consolidated geometry is incomplete'),
+    (lambda mega: mega['geometry'].update({'2026-10-01': [[1, 2, 'a'], [4, 9, 'b']]}), 'dated name summary consolidated geometry is incomplete'),
+    (lambda mega: mega['geometry'].update({'2026-10-01': [[1, 2, 'a']]}), 'dated name summary consolidated geometry is incomplete'),
+    (lambda mega: mega.update(ordinal=['2026-10-06']), 'dated name summary consolidated binding is invalid'),
     (lambda mega: mega.update(through='2026-10-05'), 'dated name summary consolidated geometry is incomplete'),
     (lambda mega: mega.update(postings='m; DROP'), 'dated name summary consolidated binding is invalid'),
 ])

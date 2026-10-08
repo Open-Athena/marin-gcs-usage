@@ -234,8 +234,9 @@ def scan_bound(ch: Ch, date: str) -> tuple[str, str]:
 
 def binding(ch: Ch, stem: str) -> dict:
     """What a server needs to answer from `stem`'s postings: the newest scan both they and `name_spans` are logged
-    through, and every published scan's bucket geometry up to it (preorder over paths: a bucket spans its own row and
-    its `n_desc` descendants, buckets in path order from 1), as `{date: [[pre, post, path], …]}`."""
+    through, and every published scan's bucket geometry up to it, as `{date: [[pre, post, path], …]}` (buckets in path
+    order from 1): `preorder` over paths where the scan records `n_desc` (a bucket spans its own row and its
+    descendants), else (scans before the 09-30 format) `ordinal`, one position per bucket, listed in `ordinal`."""
     if not stem.isidentifier():
         raise ValueError("postings stem must be an identifier")
     marks = [_through(ch, target) for target in ("name_spans", stem)]
@@ -246,15 +247,20 @@ def binding(ch: Ch, stem: str) -> dict:
         CROSS JOIN (SELECT n.path, n.vf, n.n_desc, c.vt FROM (SELECT path, usr, vf, n_desc FROM nodes WHERE depth = 1) AS n
             LEFT JOIN (SELECT path, usr, vf, vt FROM closures WHERE depth = 1) AS c USING (path, usr, vf) SETTINGS join_use_nulls = 1) AS v
         WHERE v.vf <= s.scan AND (v.vt IS NULL OR v.vt > s.scan) GROUP BY d, v.path ORDER BY d, v.path""")
-    scans: dict[str, list[list]] = {}
+    scans: dict[str, list[tuple[str, int]]] = {}
     for d, path, n_desc in rows:
-        day = scans.setdefault(d, [])
-        pre = day[-1][1] + 1 if day else 1
-        day.append([pre, pre + int(n_desc), path])
-    geometry = {d[:10]: day for d, day in scans.items()}
-    if len(geometry) != len(scans):
-        raise ValueError("the consolidated name index serves one scan per date")
-    return {"schema": "mega-name-binding-v1", "target": ch.db, "postings": stem, "through": through[:10], "geometry": geometry}
+        scans.setdefault(d, []).append((path, int(n_desc)))
+    geometry, ordinal = {}, []
+    for d, buckets in scans.items():
+        if any(n_desc < 0 for _, n_desc in buckets):
+            ordinal.append(d[:10])
+        day = geometry.setdefault(d[:10], [])
+        if day:
+            raise ValueError("the consolidated name index serves one scan per date")
+        for path, n_desc in buckets:
+            pre = day[-1][1] + 1 if day else 1
+            day.append([pre, pre if d[:10] in ordinal else pre + n_desc, path])
+    return {"schema": "mega-name-binding-v1", "target": ch.db, "postings": stem, "through": through[:10], "geometry": geometry, "ordinal": ordinal}
 
 
 def buckets(ch: Ch, D: str, since: str) -> list[str]:

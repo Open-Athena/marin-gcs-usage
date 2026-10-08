@@ -122,6 +122,8 @@ class DatedNameSummaryRuntime:
                 not isinstance(mega.get('geometry'), dict) or not mega['geometry']):
             raise ValueError('dated name summary consolidated binding is invalid')
         _date(mega.get('through'))
+        if not isinstance(mega.get('ordinal'), list) or any(day not in mega['geometry'] or day in catalogs for day in mega['ordinal']):
+            raise ValueError('dated name summary consolidated binding is invalid')
         for day, rows in mega['geometry'].items():
             _date(day)
             if (day > mega['through'] or not isinstance(rows, list) or sorted(row[2] for row in rows) != list(self.bucket_paths) or
@@ -133,12 +135,17 @@ class DatedNameSummaryRuntime:
                 raise ValueError('dated name summary consolidated geometry differs from its scan catalog')
         return deepcopy(mega)
 
+    def _mega_source(self, day: str) -> dict:
+        """A consolidated scan's identity: the store, its postings and coverage, and whether its bucket bounds are path
+        preorder or (a scan recording no descendant counts) one ordinal position per bucket."""
+        return {**{key: self.mega[key] for key in ('target', 'postings', 'through')},
+                'geometry': 'ordinal' if day in self.mega['ordinal'] else 'preorder'}
+
     def metadata(self) -> dict:
         rows = []
         for day in self.dates:
             if day in self.mega_dates:
-                rows.append({'date': day, 'plans': ['bounded-name-postings'], 'kind': 'consolidated-store-v1',
-                             'source': {key: self.mega[key] for key in ('target', 'postings', 'through')}})
+                rows.append({'date': day, 'plans': ['bounded-name-postings'], 'kind': 'consolidated-store-v1', 'source': self._mega_source(day)})
             elif day in self.daily:
                 metadata = self._source_metadata[day]
                 row = {'date': day, 'plans': ['catalog'], 'kind': 'daily-scalar-source-v1',
@@ -180,7 +187,7 @@ class DatedNameSummaryRuntime:
             raise SummaryUnavailable('dated name summary bucket/root weights do not conserve')
         result = deepcopy(body)
         if consolidated:
-            identity = {'kind': 'consolidated-store-v1', **{key: self.mega[key] for key in ('target', 'postings', 'through')}}
+            identity = {'kind': 'consolidated-store-v1', **self._mega_source(day)}
             result.update(plan='bounded-name-postings', target=identity['target'], source=cold)
         elif daily:
             if not isinstance(body.get('source'), dict):
