@@ -287,7 +287,8 @@ interface Event { text: string; blocks?: unknown[]; sender?: Sender }
  * by `slack:staged` and reused while it has a week left, so revoking that row
  * on /admin reverts the thread's card on its next fetch. */
 export async function stagedCardUrl(env: NotifyEnv & { OG_CARDS?: string; SESSION_SECRET?: string }, db: D1Database, siteUrl: string, digest: string, now = Math.floor(Date.now() / 1000)): Promise<string | null> {
-  if (!env.OG_CARDS || !env.SESSION_SECRET || !siteUrl) return null
+  // Slack fetches the image itself, so a non-https origin (a local stack) gets none: its URL would fail the post (`invalid_blocks`).
+  if (!env.OG_CARDS || !env.SESSION_SECRET || !siteUrl.startsWith('https://')) return null
   const key = await ogKey(env.SESSION_SECRET)
   const tok = await serverToken(db, 'staged', {}, '/staged', 'slack:staged', now, IMAGE_TTL_DAYS).catch(() => null)
   if (!tok) return null

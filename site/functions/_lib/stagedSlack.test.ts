@@ -154,12 +154,14 @@ describe('the plan card', () => {
       ['section', 'section', 'actions'],
     ])
   })
-  it('no card without cards on; with them, a full card backed by a fresh `og_tokens` row (cw `0010`)', async () => {
+  it('no card without cards on, nor for a non-https origin (Slack fetches it); with them, a full card backed by a fresh `og_tokens` row (cw `0010`)', async () => {
     const { db, raw } = await sqliteD1('cw')
     const off = await stagedCardUrl({ SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789', 1790000000)
+    const local = await stagedCardUrl({ OG_CARDS: '1', SESSION_SECRET: 's3cret' }, db, 'http://localhost:3254', 'abcdef0123456789', 1790000000)
     const on = await stagedCardUrl({ OG_CARDS: '1', SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789', 1790000000)
     const rows = raw.prepare('SELECT token, kind, view, page, minted_by, minted_ts, exp_day FROM og_tokens').all() as { token: string }[]
-    expect([off, on?.replace(/t=\w{10}&/, 't=<token>&').replace(/sig=\w+$/, 'sig=<sig>'), rows.map(r => ({ ...r, token: r.token.length }))]).toEqual([
+    expect([off, local, on?.replace(/t=\w{10}&/, 't=<token>&').replace(/sig=\w+$/, 'sig=<sig>'), rows.map(r => ({ ...r, token: r.token.length }))]).toEqual([
+      null,
       null,
       'https://site.example.org/og/staged.png?t=<token>&v=abcdef01&sig=<sig>',
       [{ token: 10, kind: 'staged', view: '', page: '/staged', minted_by: 'slack:staged', minted_ts: 1790000000, exp_day: 293 }],
