@@ -130,11 +130,11 @@ describe('stage replies coalesce per stager', () => {
     await notifyPlan(env, db, 1, SITE, await stage(db, 4, run(4, 1)), { now: 2500 + 901 })
     expect(events(calls)).toEqual([
       `reactions? ${PARENT}`,
-      `post in ${PARENT}: :wastebasket: *Ann Bee* staged 2 paths · *2.0 TiB* · 20 objects\n\`b/ckpt/run-1/step-0/\` 1.0 TiB, \`b/ckpt/run-1/step-1/\` 1.0 TiB`,
+      `post in ${PARENT}: :wastebasket: *Ann Bee* staged 2 paths · *2.0 TiB* · 20 objects\nin \`b/ckpt/run-1/\`: \`step-0/\` 1.0 TiB, \`step-1/\` 1.0 TiB`,
       `reactions? ${PARENT}`,
-      `update 200.000001: :wastebasket: *Ann Bee* staged 5 paths in 2 batches · *5.0 TiB* · 50 objects\n\`b/ckpt/run-2/\` (3) 3.0 TiB, \`b/ckpt/run-1/\` (2) 2.0 TiB\n> old ckpts`,
+      `update 200.000001: :wastebasket: *Ann Bee* staged 5 paths in 2 batches · *5.0 TiB* · 50 objects\nin \`b/ckpt/\`: \`run-2/\` (3) 3.0 TiB, \`run-1/\` (2) 2.0 TiB\n> old ckpts`,
       `reactions? ${PARENT}`,
-      `update 200.000001: :wastebasket: *Ann Bee* staged 6 paths in 3 batches · *6.0 TiB* · 60 objects\n\`b/ckpt/run-2/\` (3) 3.0 TiB, \`b/ckpt/run-1/\` (2) 2.0 TiB, \`b/ckpt/run-3/step-0/\` 1.0 TiB\n> old ckpts`,
+      `update 200.000001: :wastebasket: *Ann Bee* staged 6 paths in 3 batches · *6.0 TiB* · 60 objects\nin \`b/ckpt/\`: \`run-2/\` (3) 3.0 TiB, \`run-1/\` (2) 2.0 TiB, \`run-3/step-0/\` 1.0 TiB\n> old ckpts`,
       `reactions? ${PARENT}`,
       `post in ${PARENT}: :wastebasket: *Ann Bee* staged 1 path · *1.0 TiB* · 10 objects\n\`b/ckpt/run-4/step-0/\` 1.0 TiB`,
     ])
@@ -177,7 +177,7 @@ describe('stage replies coalesce per stager', () => {
       raw.prepare('SELECT id, reply_id FROM stage_batches WHERE id < 100 ORDER BY id').all(),
     ]).toEqual([
       1,
-      ':wastebasket: *Ann Bee* staged 2 paths in 2 batches · *2.0 TiB* · 20 objects\n`b/ckpt/run-1/step-0/` 1.0 TiB, `b/ckpt/run-2/step-0/` 1.0 TiB',
+      ':wastebasket: *Ann Bee* staged 2 paths in 2 batches · *2.0 TiB* · 20 objects\nin `b/ckpt/`: `run-1/step-0/` 1.0 TiB, `run-2/step-0/` 1.0 TiB',
       [{ id: 1, slack_ts: '200.000001', open: 1 }],
       [{ id: 1, reply_id: 1 }, { id: 2, reply_id: 1 }],
     ])
@@ -225,7 +225,7 @@ describe('a ✅ on the parent rotates the thread', () => {
       `post in ${NEW}: :wastebasket: *Ann Bee* staged 1 path · *1.0 TiB* · 10 objects\n\`b/ckpt/run-2/step-0/\` 1.0 TiB`,
       `reactions? ${NEW}`,
       `update ${NEW}: ${PARENT_TEXT(5, 4, '5.0 TiB', '50')}`,
-      `update 200.000003: :wastebasket: *Ann Bee* staged 2 paths in 2 batches · *2.0 TiB* · 20 objects\n\`b/ckpt/run-2/step-0/\` 1.0 TiB, \`b/ckpt/run-3/step-0/\` 1.0 TiB`,
+      `update 200.000003: :wastebasket: *Ann Bee* staged 2 paths in 2 batches · *2.0 TiB* · 20 objects\nin \`b/ckpt/\`: \`run-2/step-0/\` 1.0 TiB, \`run-3/step-0/\` 1.0 TiB`,
     ])
     expect(raw.prepare('SELECT slack_channel, slack_ts FROM plans').all()).toEqual([{ slack_channel: CH, slack_ts: NEW }])
   })
@@ -288,9 +288,9 @@ describe('no mentions in automatic posts', () => {
     ]).toEqual([
       200,
       [
-        `post in ${PARENT}: :wastebasket: *Ann Bee* staged 2 paths · *2.0 TiB* · 20 objects\n\`b/ckpt/run-1/step-0/\` 1.0 TiB, \`b/ckpt/run-1/step-1/\` 1.0 TiB`,
+        `post in ${PARENT}: :wastebasket: *Ann Bee* staged 2 paths · *2.0 TiB* · 20 objects\nin \`b/ckpt/run-1/\`: \`step-0/\` 1.0 TiB, \`step-1/\` 1.0 TiB`,
         `post in ${PARENT}: :test_tube: Dry-run dispatched by Ann Bee via www on scan ${SCAN} (<${SITE}/staged?run=dry-1|dry-1>)`,
-        `update 200.000001: :wastebasket: *Ann Bee* staged 2 paths · *2.0 TiB* · 20 objects\n\`b/ckpt/run-1/step-0/\` 1.0 TiB, \`b/ckpt/run-1/step-1/\` 1.0 TiB`,
+        `update 200.000001: :wastebasket: *Ann Bee* staged 2 paths · *2.0 TiB* · 20 objects\nin \`b/ckpt/run-1/\`: \`step-0/\` 1.0 TiB, \`step-1/\` 1.0 TiB`,
         `post in ${PARENT}: :no_entry_sign: Ann Bee rejected 1 batch (2 paths unstaged)`,
         'update 200.000001: :wastebasket: *Ann Bee* staged 1 batch · nothing left staged',
       ],
