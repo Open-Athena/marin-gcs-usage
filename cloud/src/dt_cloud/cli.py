@@ -4994,3 +4994,8 @@ def publish_r2(
         listings=not no_listings,
         pointed=pointed,
     )
+
+
+from .static_names import cli as _static_names  # noqa: E402
+
+main.add_command(_static_names)
