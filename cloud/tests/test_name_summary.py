@@ -515,3 +515,31 @@ def test_cold_statements_use_the_configured_thread_count(monkeypatch: pytest.Mon
     monkeypatch.setattr(module, 'COLD_THREADS', 12)
     ch = module.DeadlineCh('http://loopback:8123', 'fleet', monotonic() + 5, Event(), 'name_summary_' + 'd' * 32)
     assert (ch.settings['max_threads'], ch.settings['max_execution_time']) == ('12', '5.0')
+
+
+@pytest.mark.parametrize('counts,ok', [(['1', '1', '0'], True), (['1'] * 1000, False)])
+def test_quiescence_waits_briefly_for_finished_owned_queries_to_leave_the_process_list(monkeypatch: pytest.MonkeyPatch, counts, ok) -> None:
+    """A query whose result was already read can stay in `system.processes` for a moment while it finalizes: that
+    is not unverified cleanup (which quarantines the lane), so verification polls briefly before refusing."""
+    remaining = list(counts)
+
+    class Control:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def scalar(self, sql):
+            return remaining.pop(0)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, 'Ch', Control)
+    monkeypatch.setattr(module, 'QUIESCENCE_SECONDS', .2)
+    source = SimpleNamespace(url='http://unused:8123', db='fleet', owned_ids=lambda: ('owned_0001',))
+    if ok:
+        module.cancel_owned(source, cancel=False)
+        assert remaining == []
+    else:
+        with pytest.raises(module.SummaryUnavailable) as caught:
+            module.cancel_owned(source, cancel=False)
+        assert (str(caught.value), len(remaining) < 1000) == ('name summary query quiescence could not be verified', True)

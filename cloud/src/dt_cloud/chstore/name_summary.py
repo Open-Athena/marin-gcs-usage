@@ -32,6 +32,8 @@ COMPUTE_SECONDS = 5.0
 # up to 16 (`NAME_SUMMARY_COLD_THREADS` overrides).
 COLD_THREADS = int(environ.get('NAME_SUMMARY_COLD_THREADS') or min(16, cpu_count() or 4))
 CLEANUP_SECONDS = 2.0
+# A finished query can linger in `system.processes` while it finalizes; quiescence polls this long before refusing.
+QUIESCENCE_SECONDS = 1.0
 # A quarantined lane re-verifies after every owned query's own
 # `max_execution_time` has run out (a late-dispatched one carries it too), then
 # at twice and three times that; failing all three, it stays quarantined.
@@ -159,8 +161,11 @@ def cancel_owned(source: DeadlineCh, *, cancel: bool) -> None:
     try:
         if cancel:
             control.exec(f'KILL QUERY WHERE query_id IN ({selected}) SYNC', fmt=None)
-        if control.scalar(f'SELECT count() FROM system.processes WHERE query_id IN ({selected})') != '0':
-            raise SummaryUnavailable('name summary query quiescence could not be verified')
+        deadline = monotonic() + QUIESCENCE_SECONDS
+        while control.scalar(f'SELECT count() FROM system.processes WHERE query_id IN ({selected})') != '0':
+            if monotonic() >= deadline:
+                raise SummaryUnavailable('name summary query quiescence could not be verified')
+            Event().wait(.02)
     finally:
         control.close()
 
@@ -336,6 +341,7 @@ class NameSummaryRuntime:
                 body = compute(source, checkpoint)
             except BaseException as failure:
                 stopped.set()
+                print(f'name summary: cold computation failed: {type(failure).__name__}: {str(failure)[:300]}', file=stderr)
                 error = failure if isinstance(failure, SummaryUnavailable) else SummaryUnavailable('bounded name summary unavailable or over budget; no partial result')
             finally:
                 finished.set()
