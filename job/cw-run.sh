@@ -102,19 +102,35 @@ trap 'fail_alert $? $LINENO "$BASH_COMMAND"' ERR
 # Every bucket the CAIOS key can list is either scanned or empty. A non-empty
 # one outside SCAN_BUCKETS (a new zone's bucket) is billed storage the site
 # would silently miss, so it alerts each run until it's added. Never fatal (an
-# empty bucket can't be scanned: bulk-list writes no shards for it).
-UNSCANNED=$(python3 - "$ENDPOINT" $BUCKETS <<'PY' || echo "?"
+# empty bucket can't be scanned: bulk-list writes no shards for it). CAIOS
+# rejects path-style object calls (`PathStyleRequestNotAllowed`), so the client
+# is virtual-hosted, as `sweep.py` / `bulk_s3.py` build theirs. A failed check
+# alerts too, naming the step and the error, never a bucket list.
+UNSCANNED=$(python3 - "$ENDPOINT" $BUCKETS <<'PY' || echo "check failed: python exited $?"
 import sys, boto3
+from botocore.config import Config
 endpoint, *scanned = sys.argv[1:]
-s3 = boto3.client("s3", endpoint_url=endpoint)
-names = sorted(b["Name"] for b in s3.list_buckets()["Buckets"])
-print(" ".join(n for n in names if n not in scanned and s3.list_objects_v2(Bucket=n, MaxKeys=1).get("KeyCount")))
+s3 = boto3.client("s3", endpoint_url=endpoint, config=Config(s3={"addressing_style": "virtual"}))
+try:
+    names = sorted(b["Name"] for b in s3.list_buckets()["Buckets"])
+except Exception as e:
+    sys.exit(print(f"check failed: ListBuckets: {type(e).__name__}: {e}"))
+out = []
+for n in names:
+    if n in scanned:
+        continue
+    try:
+        if s3.list_objects_v2(Bucket=n, MaxKeys=1).get("KeyCount"):
+            out.append(n)
+    except Exception as e:
+        out.append(f"{n} (check failed: ListObjectsV2: {type(e).__name__}: {e})")
+print(" ".join(out))
 PY
 )
 if [ -n "$UNSCANNED" ]; then
-  echo "WARN: unscanned non-empty buckets: $UNSCANNED" >&2
+  echo "WARN: unscanned-bucket check: $UNSCANNED" >&2
   { set +x; } 2>/dev/null
-  slack_alert "⚠️ CoreWeave scan ($SNAP_ID): non-empty CAIOS bucket(s) not in SCAN_BUCKETS: \`$UNSCANNED\` (\`?\` = the ListBuckets check itself failed)"
+  slack_alert "⚠️ CoreWeave scan ($SNAP_ID): non-empty CAIOS bucket(s) not in SCAN_BUCKETS: \`$UNSCANNED\`"
   set -x
 fi
 
