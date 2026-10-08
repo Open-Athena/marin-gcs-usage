@@ -8,6 +8,8 @@
 #   job/static-names.sh run KIND TASKS ARGS…      # one Batch job of TASKS tasks, each `dt-cloud static-names KIND -m /gcs/$B ARGS…`;
 #                                                 # waits for it and exits nonzero unless every task succeeded
 #   job/static-names.sh wait JOB                  # wait for a submitted job
+#   job/static-names.sh r2 GEN [ARGS…]            # `static-names r2-copy -g GEN` on the ch-store VM (it holds the R2 keys, /data/r2-index.env),
+#                                                 # from the staged source tree; GCS → R2 bucket oa-gcs-usage-index, idempotent
 #   job/static-names.sh ch-answers DATES TERMS    # reference answers from the ch-store VM's ClickHouse (`mega_names.answer`, postings `m`),
 #                                                 # read-only, sequential; DATES comma-separated, TERMS a file of literals; JSON lines on stdout
 #
@@ -61,6 +63,15 @@ wait_job() {
 
 case ${1:?stage-src|run|wait|ch-answers} in
 stage-src) stage_src ;;
+r2)
+  GEN=${2:?GEN}
+  shift 2
+  SRC=${SRC:-$(stage_src)}
+  job/ch-store.sh sh "sudo rm -rf /data/sn/src && sudo mkdir -p /data/sn/src && sudo gcloud storage cp -r --verbosity=error gs://$B/static-names/src/$SRC/dt_cloud /data/sn/src/ && \
+    sudo docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/sn/src:/data/src --env-file /data/r2-index.env \
+      -e R2_ENDPOINT=https://74981a43be0de7712369306c7b19133d.r2.cloudflarestorage.com -e R2_BUCKET=oa-gcs-usage-index \
+      --entrypoint nice \$(cat /data/image) -n 10 python3 -u -m dt_cloud.static_names r2-copy -g $GEN $(printf '%q ' "$@")"
+  ;;
 ch-answers)
   job/ch-store.sh sh "sudo mkdir -p /data/sn && sudo tee /data/sn/ch-answers.py > /dev/null" < job/static-names/ch-answers.py
   job/ch-store.sh sh "sudo tee /data/sn/terms.txt > /dev/null" < "${3:?TERMS}"

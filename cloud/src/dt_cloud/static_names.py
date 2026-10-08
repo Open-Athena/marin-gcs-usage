@@ -1142,6 +1142,38 @@ def r2_copy_cmd(bucket, gen, dry_run, workers) -> None:
     print(json.dumps({"gen": gen, "objects": len(objs), "copied": len(todo), "bytes": total, "s": round(monotonic() - t0, 1)}))
 
 
+@cli.command("compare-answers")
+@argument("ch_jsonl")
+@argument("static_jsonl")
+def compare_answers_cmd(ch_jsonl, static_jsonl) -> None:
+    """Compare `query` answers with ClickHouse's (`job/static-names.sh ch-answers`): per (term, date), the
+    nonzero buckets' bytes and objects must be equal. Prints a JSON report (with each term's I/O); exit 1
+    on any difference."""
+    ref = {}
+    for line in Path(ch_jsonl).read_text().splitlines():
+        if line.startswith("{"):
+            d = json.loads(line)
+            ref[(d["q"], d["date"])] = {k: list(v) for k, v in d["buckets"].items()}
+    pairs, diffs, terms = 0, {}, {}
+    for line in Path(static_jsonl).read_text().splitlines():
+        if not line.startswith("{"):
+            continue
+        d = json.loads(line)
+        terms[d["q"]] = {**d["io"], "rows_matching": d["rows_matching"], "s": d.get("s")}
+        for date, buckets in d["answers"].items():
+            mine = {k: v for k, v in buckets.items() if v[0] or v[1]}
+            if (d["q"], date) not in ref:
+                continue
+            pairs += 1
+            if mine != ref[(d["q"], date)]:
+                diffs[f"{d['q']} {date}"] = {"static": mine, "ch": ref[(d["q"], date)]}
+    missing = sorted(f"{q} {d}" for q, d in ref if q not in terms)
+    report = {"pairs": pairs, "equal": pairs - len(diffs), "missing": missing, "diff": diffs, "terms": terms}
+    print(json.dumps(report, indent=1))
+    if diffs or missing or not pairs:
+        raise SystemExit(1)
+
+
 @cli.command("query")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
