@@ -45,6 +45,8 @@ from click import IntRange, argument, group, option
 err = partial(print, file=sys.stderr, flush=True)
 
 DATA_BUCKET = "oa-gcs-usage-dvx"
+#: Intermediates (the suffix shuffle, its markers): us-east1, no soft delete, objects deleted at 7 days.
+SCRATCH_BUCKET = "oa-gcs-usage-scratch"
 PREFIX = "static-names"
 OPEN = 4291747200  # 2106-01-01 00:00:00 UTC: a version's `vt` while open (`chstore.schema.OPEN`)
 U64 = 1 << 64
@@ -979,10 +981,11 @@ def plan_shards_cmd(bucket, gen, target_rows, tasks) -> None:
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
+@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the shuffle (`sxmap/`, `sxmap-done/`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
-def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, tmp) -> None:
+def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, scratch, tmp) -> None:
     """Expand ranges' intervals into suffix rows tagged with their shard, written per reduce task
-    (`sxmap/g###/`); a range's `sxmap-done/r####.json` marks it done."""
+    (`gs://SCRATCH/static-names/GEN/sxmap/g###/`); a range's `sxmap-done/r####.json` there marks it done."""
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
@@ -994,7 +997,7 @@ def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_tas
     else:
         t = _task(index)
         todo = list(range(t * per_task, min((t + 1) * per_task, ranges["k"])))
-    b = storage.Client().bucket(bucket)
+    b = storage.Client().bucket(scratch)
     con = connect(threads, mem, tmp)
     for i in todo:
         mark = f"{prefix}/sxmap-done/r{i:04d}.json"
@@ -1004,7 +1007,7 @@ def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_tas
         src = f"{mount}/{PREFIX}/{ig}/intervals/r{i:04d}.parquet"
         outp = Path(out) / f"m{i}"
         doc = map_range(src, plan, i, outp, con)
-        upload_tree(outp, bucket, prefix)
+        upload_tree(outp, scratch, prefix)
         shutil.rmtree(outp)
         b.blob(mark).upload_from_string(json.dumps(doc) + "\n")
         print(json.dumps(doc), flush=True)
@@ -1019,20 +1022,21 @@ def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_tas
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-P", "--partial", is_flag=True, help="Accept fewer mapped ranges than ranges (a dev build over some ranges)")
+@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the shuffle (mounted beside -m: `<-m>/../SCRATCH`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill + partition dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def shards_cmd(bucket, gen, index, mount, mem, out, threads, partial, tmp, no_upload) -> None:
+def shards_cmd(bucket, gen, index, mount, mem, out, threads, partial, scratch, tmp, no_upload) -> None:
     """Build one task group's suffix shards (and their sidecars) from its map outputs."""
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
     plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
     t = _task(index)
-    done = sum(1 for _ in storage.Client().list_blobs(bucket, prefix=f"{prefix}/sxmap-done/"))
+    done = sum(1 for _ in storage.Client().list_blobs(scratch, prefix=f"{prefix}/sxmap-done/"))
     k = plan.get("ranges")
     if k is not None and done != k and not partial:
         raise SystemExit(f"{done} of {k} ranges mapped: pass -P for a partial (dev) build")
-    files = sorted(str(f) for f in (Path(mount) / prefix / "sxmap" / f"g{t:03d}").glob("*.parquet"))
+    files = sorted(str(f) for f in (Path(mount).parent / scratch / prefix / "sxmap" / f"g{t:03d}").glob("*.parquet"))
     outp = Path(out) / f"t{t}"
     doc = build_shards(files, plan, t, outp, threads=threads, mem=mem, tmp=Path(tmp))
     if not no_upload:
@@ -1183,7 +1187,7 @@ def verify_intervals_cmd(bucket, gen, only, ch_tsv) -> None:
         raise SystemExit(1)
 
 
-R2_SERVED = ("sx/", "sidecar.parquet", "shards.json", "scans.json")
+R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json")
 
 
 @cli.command("r2-copy")
