@@ -1885,30 +1885,86 @@ def ch_mega_names(
         print(json.dumps(record), flush=True)
 
 
+def _mega_settings(memory_gib: int, threads: int) -> dict:
+    return {"max_threads": threads, "max_insert_threads": threads, "max_memory_usage": memory_gib << 30,
+            "max_bytes_before_external_group_by": memory_gib << 29, "max_bytes_before_external_sort": memory_gib << 29,
+            "join_algorithm": "full_sorting_merge"}
+
+
 @main.command("ch-mega-names-build")
 @option("-D", "--db", default="default", help="Consolidated store database")
+@option("-e", "--end", help="Index only scans through this date (`ch-mega-names-append` adds later ones); default every published scan")
 @option("-m", "--memory-gib", default=64, type=IntRange(min=1, max=200), help="Per-statement memory cap")
+@option("-O", "--no-optimize", is_flag=True, help="Leave the postings' parts unmerged")
 @option("-s", "--start", help="Span start (scan date): keep only versions live on or after it; default all time")
 @option("-S", "--spans", is_flag=True, help="Also (re)build `name_spans`")
 @option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads")
 @option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
 @argument("stem", required=False)
-def ch_mega_names_build(db: str, memory_gib: int, start: str | None, spans: bool, threads: int, url: str, stem: str | None) -> None:
+def ch_mega_names_build(
+    db: str,
+    end: str | None,
+    memory_gib: int,
+    no_optimize: bool,
+    start: str | None,
+    spans: bool,
+    threads: int,
+    url: str,
+    stem: str | None,
+) -> None:
     """Build the consolidated store's name index: STEM's name-sorted postings
     (`{STEM}_nodes`, `{STEM}_closures`; `-s` limits them to a span), and/or the
-    `name_spans` vocabulary filter (`-S`). Prints sizes and timings as JSON."""
+    `name_spans` vocabulary filter (`-S`). Logs each in `name_index_log`; prints
+    sizes and timings as JSON."""
     from .chstore import mega_names
     from .chstore.client import Ch
 
-    settings = {"max_threads": threads, "max_insert_threads": threads, "max_memory_usage": memory_gib << 30,
-                "max_bytes_before_external_group_by": memory_gib << 29, "max_bytes_before_external_sort": memory_gib << 29,
-                "join_algorithm": "full_sorting_merge"}
+    settings = _mega_settings(memory_gib, threads)
     ch = Ch(url, db=db, timeout=7200)
     try:
         if spans:
-            print(json.dumps({"name_spans": mega_names.build_spans(ch, settings)}), flush=True)
+            print(json.dumps({"name_spans": mega_names.build_spans(ch, settings, end=end)}), flush=True)
         if stem:
-            print(json.dumps({"postings": mega_names.build_postings(ch, stem, start, settings)}), flush=True)
+            print(json.dumps({"postings": mega_names.build_postings(ch, stem, start, settings, end=end, optimize=not no_optimize)}), flush=True)
+    finally:
+        ch.close()
+
+
+@main.command("ch-mega-names-append")
+@option("-D", "--db", default="default", help="Consolidated store database")
+@option("-m", "--memory-gib", default=64, type=IntRange(min=1, max=200), help="Per-statement memory cap")
+@option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("date")
+@argument("stems", nargs=-1)
+def ch_mega_names_append(db: str, memory_gib: int, threads: int, url: str, date: str, stems: tuple[str, ...]) -> None:
+    """Daily upkeep: add DATE's (already ingested) opened versions and closures
+    to `name_spans` and each STEM's postings. Refuses a target not logged
+    through an earlier scan. Prints rows and timings as JSON."""
+    from .chstore import mega_names
+    from .chstore.client import Ch
+
+    ch = Ch(url, db=db, timeout=7200)
+    try:
+        print(json.dumps(mega_names.append(ch, date, list(stems), _mega_settings(memory_gib, threads))), flush=True)
+    finally:
+        ch.close()
+
+
+@main.command("ch-mega-names-digest")
+@option("-D", "--db", default="default", help="Consolidated store database")
+@option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("stems", nargs=-1, required=True)
+def ch_mega_names_digest(db: str, threads: int, url: str, stems: tuple[str, ...]) -> None:
+    """Order- and part-insensitive content digests of postings STEMs (or
+    `name_spans`, per name after combining rows), as JSON."""
+    from .chstore import mega_names
+    from .chstore.client import Ch
+
+    ch = Ch(url, db=db, timeout=7200)
+    try:
+        print(json.dumps({stem: mega_names.digest(ch, stem, {"max_threads": threads}) for stem in stems}), flush=True)
     finally:
         ch.close()
 

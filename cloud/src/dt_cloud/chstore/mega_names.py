@@ -26,6 +26,7 @@ strings rather than a frozen preorder."""
 
 from __future__ import annotations
 
+from json import dumps
 from time import monotonic
 
 from ..bench.ch import like_lit
@@ -37,34 +38,103 @@ SCOPE = "case-insensitive substring within names; directory hits cover descendan
 FOREVER = "toDateTime('2106-01-01 00:00:00', 'UTC')"
 
 
-def build_spans(ch: Ch, settings: dict | None = None) -> dict:
-    """`name_spans(l, first, last)`: each name's live span over every published scan, a superset of the scans it is
-    live on: opened at its earliest version, live until its last version closes (`last` = never while any is open).
-    Two per-name aggregations, no join: a name is still open iff it has more versions than closures. Rebuilt whole
-    (an append would update only the names its opened and closed versions carry)."""
+SPANS_SCHEMA = f"""(l String, first SimpleAggregateFunction(min, DateTime('UTC')), versions SimpleAggregateFunction(sum, UInt64),
+    closed SimpleAggregateFunction(sum, UInt64), closed_last SimpleAggregateFunction(max, DateTime('UTC')),
+    INDEX tl l TYPE text(tokenizer = ngrams(3)) GRANULARITY 100000000) ENGINE = AggregatingMergeTree ORDER BY l"""
+LOG = "name_index_log"
+
+
+def _bound(column: str, start: str | None = None, end: str | None = None, *, day: str | None = None) -> str:
+    """A `vf`/`vt` predicate: one scan (`day`), or a `(start, end]` window (either side open)."""
+    if day is not None:
+        return f"{column} = {day}"
+    parts = [f"{column} > {start}"] if start else []
+    parts += [f"{column} <= {end}"] if end else []
+    return " AND ".join(parts) or "1"
+
+
+def _span_rows(nodes: str, closures: str) -> str:
+    """Per-name span aggregates of some versions and some closures, as rows `name_spans` sums: a version contributes
+    its `vf` and a count, a closure a count and its `vt`. Neutral elements fill the other side, so the deltas of any
+    set of scans add up to the spans of their union."""
+    return f"""SELECT name AS l, min(vf) AS first, count() AS versions, toUInt64(0) AS closed, toDateTime(0, 'UTC') AS closed_last
+        FROM nodes WHERE {nodes} GROUP BY name
+        UNION ALL
+        SELECT name AS l, {FOREVER} AS first, toUInt64(0) AS versions, count() AS closed, max(vt) AS closed_last
+        FROM closures WHERE {closures} GROUP BY name"""
+
+
+def span_live(D: str) -> str:
+    """The HAVING clause over `name_spans` grouped by `l`: the name's span covers scan `D` (opened by it, and some
+    version still open or last closed after it)."""
+    return f"min(first) <= {D} AND if(sum(versions) > sum(closed), {FOREVER}, max(closed_last)) > {D}"
+
+
+def _log(ch: Ch, settings: dict | None = None) -> None:
+    ch.exec(f"""CREATE TABLE IF NOT EXISTS {LOG} (stem String, through DateTime('UTC'), op LowCardinality(String), at DateTime('UTC') DEFAULT now(),
+        doc String) ENGINE = MergeTree ORDER BY (stem, through)""", settings=settings)
+
+
+def _through(ch: Ch, stem: str, settings: dict | None = None) -> str | None:
+    """The newest scan `stem` covers (a DateTime literal), from the log; None = never logged."""
+    _log(ch, settings)
+    row = ch.one(f"SELECT count(), toString(max(through)) FROM {LOG} WHERE stem = {lit(stem)}", settings)
+    return dt_lit(row[1]) if int(row[0]) else None
+
+
+def _newest(ch: Ch, end: str | None = None) -> str:
+    """The newest published scan (at or before `end`, a date) as a DateTime literal."""
+    scans = [dt for _, dt, _, _, _ in scan_epochs(ch) if end is None or dt[:10] <= end]
+    if not scans:
+        raise CoarseRequest(f"no published scan{f' on or before {end}' if end else ''}")
+    return dt_lit(max(scans))
+
+
+def build_spans(ch: Ch, settings: dict | None = None, *, end: str | None = None) -> dict:
+    """`name_spans`: per name, its earliest version, version and closure counts and last closure, over every published
+    scan (through `end`, a date). A name's live span (`span_live`) is a superset of the scans it is live on: opened at
+    its earliest version, live until its last version closes, never closed while it has more versions than closures.
+    The columns are sums/min/max, so daily upkeep (`append`) adds the day's rows and merges (or the readers' GROUP BY)
+    combine them; a full build is one such row per name."""
     start = monotonic()
+    E = _newest(ch, end)
     ch.exec("DROP TABLE IF EXISTS name_spans_build", settings=settings)
-    ch.exec(f"""CREATE TABLE name_spans_build (l String, first DateTime('UTC'), last DateTime('UTC'),
-        INDEX tl l TYPE text(tokenizer = ngrams(3)) GRANULARITY 100000000) ENGINE = MergeTree ORDER BY l AS
-        SELECT n.l AS l, n.first AS first, if(n.versions > c.closed, {FOREVER}, c.last) AS last
-        FROM (SELECT name AS l, min(vf) AS first, count() AS versions FROM nodes GROUP BY name) AS n
-        LEFT JOIN (SELECT name AS l, count() AS closed, max(vt) AS last FROM closures GROUP BY name) AS c USING l""", settings=settings)
+    ch.exec(f"CREATE TABLE name_spans_build {SPANS_SCHEMA}", settings=settings)
+    ch.exec(f"""INSERT INTO name_spans_build SELECT l, min(first), sum(versions), sum(closed), max(closed_last)
+        FROM ({_span_rows(_bound('vf', end=E), _bound('vt', end=E))}) GROUP BY l""", settings=settings)
     ch.exec("EXCHANGE TABLES name_spans_build AND name_spans" if ch.scalar("EXISTS TABLE name_spans") == "1"
             else "RENAME TABLE name_spans_build TO name_spans", settings=settings)
     ch.exec("DROP TABLE IF EXISTS name_spans_build", settings=settings)
-    names, still_open = (int(x) for x in ch.one(f"SELECT count(), countIf(last = {FOREVER}) FROM name_spans", settings))
-    return {"names": names, "open": still_open, "build_s": round(monotonic() - start, 3)}
+    names, still_open = (int(x) for x in ch.one("SELECT count(), countIf(versions > closed) FROM name_spans", settings))
+    body = {"names": names, "open": still_open, "through": E.split("'")[1], "build_s": round(monotonic() - start, 3)}
+    if _through(ch, "name_spans", settings):
+        ch.exec(f"DELETE FROM {LOG} WHERE stem = 'name_spans'", settings=settings)
+    ch.exec(f"INSERT INTO {LOG} (stem, through, op, doc) VALUES ('name_spans', {E}, 'build', {lit(json_doc(body))})", settings=settings)
+    return body
 
 
-def build_postings(ch: Ch, stem: str, start: str | None = None, settings: dict | None = None) -> dict:
+def json_doc(body: dict) -> str:
+    return dumps(body, sort_keys=True)
+
+
+def build_postings(
+    ch: Ch,
+    stem: str,
+    start: str | None = None,
+    settings: dict | None = None,
+    *,
+    end: str | None = None,
+    optimize: bool = True,
+) -> dict:
     """`{stem}_nodes` / `{stem}_closures`: the store's versions and closures re-sorted by name, in 256-row granules and
     without per-scan partitions, so one name costs a granule or two however many scans hold it. With `start` (a scan
     date), only versions still live on or after it, and the closures that can close them: the index of a span
-    `[start, newest]`. Daily upkeep appends the day's opened versions and closures (`ingest` already isolates them)."""
-    if not stem.isidentifier():
-        raise ValueError("postings stem must be an identifier")
+    `[start, newest]`; with `end`, only scans through it (`append` adds later ones). `optimize` merges to one part."""
+    if not stem.isidentifier() or stem == "name_spans":
+        raise ValueError("postings stem must be an identifier other than `name_spans`")
     begin = monotonic()
     S = dt_lit(f"{start} 00:00:00") if start else None
+    E = _newest(ch, end)
     nodes, closures = f"{stem}_nodes", f"{stem}_closures"
     for t in (nodes, closures):
         ch.exec(f"DROP TABLE IF EXISTS {t}", settings=settings)
@@ -72,8 +142,8 @@ def build_postings(ch: Ch, stem: str, start: str | None = None, settings: dict |
     # hash set of every earlier closure.
     source = (f"""SELECT n.name, n.vf, n.depth, n.path, n.usr, n.size, n.n_files FROM nodes AS n
         LEFT JOIN (SELECT depth, path, usr, vf, toUInt8(1) AS gone FROM closures WHERE vt <= {S}) AS c USING (depth, path, usr, vf)
-        WHERE c.gone = 0"""
-              if S else "SELECT name, vf, depth, path, usr, size, n_files FROM nodes")
+        WHERE c.gone = 0 AND n.vf <= {E}"""
+              if S else f"SELECT name, vf, depth, path, usr, size, n_files FROM nodes WHERE vf <= {E}")
     stage = monotonic()
     ch.exec(f"""CREATE TABLE {nodes} (name String, vf DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
         size Int64, n_files Int64) ENGINE = MergeTree ORDER BY (name, vf, depth, path, usr) SETTINGS index_granularity = 256
@@ -82,15 +152,74 @@ def build_postings(ch: Ch, stem: str, start: str | None = None, settings: dict |
     stage = monotonic()
     ch.exec(f"""CREATE TABLE {closures} (name String, vt DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
         vf DateTime('UTC')) ENGINE = MergeTree ORDER BY (name, vt, depth, path, usr) SETTINGS index_granularity = 256
-        AS SELECT name, vt, depth, path, usr, vf FROM closures{f" WHERE vt > {S}" if S else ""}""", settings=settings)
+        AS SELECT name, vt, depth, path, usr, vf FROM closures WHERE {_bound('vt', S, E)}""", settings=settings)
     closures_s = round(monotonic() - stage, 3)
-    ch.exec(f"OPTIMIZE TABLE {nodes} FINAL", settings=settings)
-    ch.exec(f"OPTIMIZE TABLE {closures} FINAL", settings=settings)
-    sizes = {t: dict(zip(("rows", "bytes"), (int(x) for x in ch.one(
-        f"SELECT sum(rows), sum(bytes_on_disk) FROM system.parts WHERE active AND database = currentDatabase() AND table = {lit(t)}", settings))))
-        for t in (nodes, closures)}
-    return {"stem": stem, "start": start, "sizes": sizes, "stages": {"nodes_s": nodes_s, "closures_s": closures_s},
-            "build_s": round(monotonic() - begin, 3)}
+    if optimize:
+        ch.exec(f"OPTIMIZE TABLE {nodes} FINAL", settings=settings)
+        ch.exec(f"OPTIMIZE TABLE {closures} FINAL", settings=settings)
+    body = {"stem": stem, "start": start, "through": E.split("'")[1], "sizes": sizes(ch, (nodes, closures), settings),
+            "stages": {"nodes_s": nodes_s, "closures_s": closures_s}, "build_s": round(monotonic() - begin, 3)}
+    if _through(ch, stem, settings):
+        ch.exec(f"DELETE FROM {LOG} WHERE stem = {lit(stem)}", settings=settings)
+    ch.exec(f"INSERT INTO {LOG} (stem, through, op, doc) VALUES ({lit(stem)}, {E}, 'build', {lit(json_doc(body))})", settings=settings)
+    return body
+
+
+def sizes(ch: Ch, tables, settings: dict | None = None) -> dict:
+    return {t: dict(zip(("rows", "bytes", "parts"), (int(x) for x in ch.one(
+        f"SELECT sum(rows), sum(bytes_on_disk), count() FROM system.parts WHERE active AND database = currentDatabase() AND table = {lit(t)}", settings))))
+        for t in tables}
+
+
+def append(ch: Ch, date: str, stems: list[str], settings: dict | None = None) -> dict:
+    """Daily upkeep: add scan `date`'s opened versions and closures (`nodes`/`closures` partitions `vf`/`vt` = the
+    scan, i.e. work proportional to the day's changes) to each postings stem, and their per-name span deltas to
+    `name_spans`. Each target must be logged through an earlier scan (refused otherwise, so an append never repeats);
+    the day's rows are staged in a side table and attached whole (`ATTACH PARTITION tuple() FROM`), then logged."""
+    D, _ = scan_bound(ch, date)
+    begin = monotonic()
+    out = {"date": date, "targets": {}}
+    for stem in ("name_spans", *stems):
+        through = _through(ch, stem, settings)
+        if through is None:
+            raise CoarseRequest(f"`{stem}` has no build in `{LOG}`; build it before appending")
+        if ch.scalar(f"SELECT {D} > {through}", settings) != "1":
+            raise CoarseRequest(f"`{stem}` already covers {date} (logged through {through.split(chr(39))[1]})")
+    for stem in ("name_spans", *stems):
+        stage = monotonic()
+        if stem == "name_spans":
+            adds = {"name_spans": (f"CREATE TABLE {{t}} {SPANS_SCHEMA}",
+                                   f"SELECT l, min(first), sum(versions), sum(closed), max(closed_last) FROM ({_span_rows(_bound('vf', day=D), _bound('vt', day=D))}) GROUP BY l")}
+        else:
+            adds = {f"{stem}_nodes": (f"CREATE TABLE {{t}} AS {stem}_nodes", f"SELECT name, vf, depth, path, usr, size, n_files FROM nodes WHERE vf = {D}"),
+                    f"{stem}_closures": (f"CREATE TABLE {{t}} AS {stem}_closures", f"SELECT name, vt, depth, path, usr, vf FROM closures WHERE vt = {D}")}
+        rows = {}
+        for table, (create, select) in adds.items():
+            side = f"{table}_add"
+            ch.exec(f"DROP TABLE IF EXISTS {side}", settings=settings)
+            ch.exec(create.format(t=side), settings=settings)
+            ch.exec(f"INSERT INTO {side} {select}", settings=settings)
+            rows[table] = int(ch.scalar(f"SELECT count() FROM {side}", settings))
+        for table in adds:
+            ch.exec(f"ALTER TABLE {table} ATTACH PARTITION tuple() FROM {table}_add", settings=settings)
+            ch.exec(f"DROP TABLE {table}_add", settings=settings)
+        body = {"rows": rows, "append_s": round(monotonic() - stage, 3)}
+        ch.exec(f"INSERT INTO {LOG} (stem, through, op, doc) VALUES ({lit(stem)}, {D}, 'append', {lit(json_doc(body))})", settings=settings)
+        out["targets"][stem] = body
+    out["append_s"] = round(monotonic() - begin, 3)
+    return out
+
+
+def digest(ch: Ch, stem: str, settings: dict | None = None) -> dict:
+    """Order- and part-insensitive content digests: postings rows as a multiset; `name_spans` per name after
+    combining its rows (so an appended index equals a full build however its parts merged)."""
+    if stem == "name_spans":
+        q = {"name_spans": """SELECT count(), sum(cityHash64(l, f, v, c, cl)) FROM (SELECT l, min(first) AS f, sum(versions) AS v,
+            sum(closed) AS c, max(closed_last) AS cl FROM name_spans GROUP BY l)"""}
+    else:
+        q = {f"{stem}_nodes": f"SELECT count(), sum(cityHash64(name, vf, depth, path, usr, size, n_files)) FROM {stem}_nodes",
+             f"{stem}_closures": f"SELECT count(), sum(cityHash64(name, vt, depth, path, usr, vf)) FROM {stem}_closures"}
+    return {t: [int(x) for x in ch.one(sql, settings)] for t, sql in q.items()}
 
 
 def scan_bound(ch: Ch, date: str) -> tuple[str, str]:
@@ -131,7 +260,8 @@ def answer(
     limit = f" LIMIT {max_names + 1}" if max_names is not None else ""
     # Names live on the scan (a superset, by `name_spans`), else every name ever seen.
     spans = ch.scalar("EXISTS TABLE name_spans") == "1"
-    source = f"name_spans WHERE l LIKE {like_lit(pattern)} AND first <= {D} AND last > {D}" if spans else f"names WHERE l LIKE {like_lit(pattern)}"
+    source = (f"name_spans WHERE l LIKE {like_lit(pattern)} GROUP BY l HAVING {span_live(D)}" if spans
+              else f"names WHERE l LIKE {like_lit(pattern)}")
     ch.tmp(vocabulary, f"SELECT l FROM {source}{limit}", settings)
     n_names = int(ch.scalar(f"SELECT count() FROM {vocabulary}", settings))
     if max_names is not None and n_names > max_names:
