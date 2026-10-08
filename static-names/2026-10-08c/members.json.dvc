@@ -1,0 +1,9 @@
+outs:
+- path: members.json
+meta:
+  computation:
+    cmd: dt-cloud static-names catalog members -g 2026-10-08c -V 100000 > members.json
+    deps:
+      census.json: ''
+    git_deps:
+      ../../cloud/src/dt_cloud/static_catalog.py: ''

@@ -1,0 +1,10 @@
+outs:
+- path: catalog-cells.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_catalog JOB_ID=sn-2026-10-08c-answers-$(date -u +%H%M%S) ../../job/static-names.sh run answers 32 -g 2026-10-08c > /dev/null && dt-cloud static-names manifest -g 2026-10-08c catalog/cells > catalog-cells.json
+    deps:
+      members.json: ''
+      suffixes.json: ''
+    git_deps:
+      ../../cloud/src/dt_cloud/static_catalog.py: ''
