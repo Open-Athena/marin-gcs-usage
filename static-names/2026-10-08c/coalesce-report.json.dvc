@@ -1,0 +1,7 @@
+outs:
+- path: coalesce-report.json
+meta:
+  computation:
+    cmd: dt-cloud static-names coalesce-report -g 2026-10-08c -H 2026-10-08 -v 100000 -v 150000 -v 250000 > coalesce-report.json
+    deps:
+      cintervals.json: ''

@@ -1,0 +1,7 @@
+outs:
+- path: ranges.json
+meta:
+  computation:
+    cmd: cp ../2026-10-08/ranges.json ranges.json && gcloud storage cp --verbosity=error ranges.json gs://oa-gcs-usage-dvx/static-names/2026-10-08c/ranges.json
+    deps:
+      ../2026-10-08/ranges.json: ''

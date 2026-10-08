@@ -1,0 +1,11 @@
+outs:
+- path: cintervals.json
+meta:
+  computation:
+    cmd: gcloud storage cp --verbosity=error ../../job/static-names/terms.txt gs://oa-gcs-usage-dvx/static-names/2026-10-08c/terms.txt && SPOT=1 JOB_ID=sn-2026-10-08c-coalesce-$(date -u +%H%M%S) ../../job/static-names.sh run coalesce 32 -g 2026-10-08c -I 2026-10-08 -n 8 -t /gcs/oa-gcs-usage-dvx/static-names/2026-10-08c/terms.txt > /dev/null && dt-cloud static-names manifest -g 2026-10-08c cintervals chist cstats > cintervals.json
+    deps:
+      ../2026-10-08/intervals.json: ''
+      ranges.json: ''
+    git_deps:
+      ../../cloud/src/dt_cloud/static_names.py: ''
+      ../../job/static-names/terms.txt: ''

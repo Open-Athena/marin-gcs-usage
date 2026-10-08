@@ -1,0 +1,9 @@
+outs:
+- path: census.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_catalog JOB_ID=sn-2026-10-08c-census-$(date -u +%H%M%S) ../../job/static-names.sh run census 32 -g 2026-10-08c -f 50000 > /dev/null && dt-cloud static-names manifest -g 2026-10-08c catalog/census > census.json
+    deps:
+      suffixes.json: ''
+    git_deps:
+      ../../cloud/src/dt_cloud/static_catalog.py: ''
