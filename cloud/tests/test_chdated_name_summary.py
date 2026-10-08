@@ -442,3 +442,110 @@ def test_boot_refuses_a_consolidated_binding_that_does_not_fit(sources, monkeypa
     with pytest.raises(ValueError) as caught:
         mega_runtime(sources, monkeypatch, mega)
     assert str(caught.value) == message
+
+
+CATALOG = {'schema': 'mega-catalog-binding-v1', 'target': 'default', 'stem': 'catalog', 'through': '2026-10-06', 'threshold': 100_000, 'short': 2,
+           'members': {'2026-09-15': 60_000, '2026-10-01': 70_001, '2026-10-04': 70_002, '2026-10-05': 70_003, '2026-10-06': 70_662}}
+CATALOG_VALIDATION = {'description': "exact first-hit totals appended from each scan's changes; checked against single-scan builds offline, no per-request source oracle",
+                      'source_prefix_proofs_checked': True, 'independent_full_catalog_source_oracle': False}
+CATALOG_REGISTRY = {'qualification_dates': ['2026-10-01'], 'target': 'catalog', 'patterns': 70_001,
+                    'selection_contract': 'membership on declared qualification dates; no current-scan frequency claim',
+                    'threshold_paths': 100_000, 'max_chars': None, 'short_chars': 2}
+
+
+def catalog_runtime(sources, monkeypatch: pytest.MonkeyPatch, catalog: dict = CATALOG, cells: dict | None = None) -> DatedNameSummaryRuntime:
+    """The consolidated runtime with a catalog whose registered literals are `cells`' keys: `(day, term) → (paths, {bucket: (b, o)})`."""
+    from dt_cloud.chstore import dated_name_summary
+
+    registered = {('2026-10-01', '3p'): (1_234_567, {'b': (900, 7)})} if cells is None else cells
+
+    def view(ch, stem, day, term, settings=None):
+        sources.events.append(('catalog.view', ch.db, stem, day, term))
+        if isinstance(registered, BaseException):
+            raise registered
+        return registered.get((day, term))
+
+    monkeypatch.setattr(dated_name_summary.mega_catalog, 'view', view)
+    monkeypatch.setattr(dated_name_summary, 'Ch', lambda url, *, db, **settings: SimpleNamespace(db=db))
+    mega_runtime(sources, monkeypatch)
+    sources.legacy.url = 'http://localhost:8123'
+    result = DatedNameSummaryRuntime(sources.legacy, sources.published, logical_store='gcs_fleet', bucket_paths=('b', 'a'),
+                                     mega=deepcopy(MEGA), catalog=deepcopy(catalog))
+    sources.runtime = result
+    return result
+
+
+def test_metadata_advertises_the_consolidated_catalog_on_the_scans_it_covers(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = {row['date']: row for row in catalog_runtime(sources, monkeypatch, {**CATALOG, 'members': {'2026-10-01': 70_001}}).metadata()['dates']}
+    assert rows['2026-10-01'] == {'date': '2026-10-01', 'plans': ['catalog', 'bounded-name-postings'], 'kind': 'consolidated-store-v1',
+                                  'source': {'target': 'default', 'postings': 'm', 'through': '2026-10-06', 'geometry': 'preorder', 'catalog': 'catalog'},
+                                  'registry': CATALOG_REGISTRY}
+    assert rows['2026-09-15'] == {'date': '2026-09-15', 'plans': ['bounded-name-postings'], 'kind': 'consolidated-store-v1',
+                                  'source': {'target': 'default', 'postings': 'm', 'through': '2026-10-06', 'geometry': 'ordinal'}}
+    assert [(day, row['kind'], row['plans']) for day, row in sorted(rows.items())][2:] == [
+        ('2026-10-04', 'frozen-history', ['catalog', 'bounded-name-postings']),
+        ('2026-10-05', 'frozen-history', ['catalog', 'bounded-name-postings']),
+        ('2026-10-06', 'daily-scalar-source-v1', ['catalog', 'bounded-name-postings']),
+    ]
+
+
+def consolidated(day: str, pattern: str, plan: str, buckets: list[dict], source: str, validation: dict, **extra) -> dict:
+    return {'schema': 'dated-name-summary-v1', 'logical_store': 'gcs_fleet', 'date': day, 'pattern': pattern, 'path': '', 'exact': True,
+            'incremental': False, 'levels': 1, 'scope': SCOPE, 'plan': plan, 'target': 'default', 'source': source, 'validation': validation,
+            'source_identity': {'kind': 'consolidated-store-v1', 'target': 'default', 'postings': 'm', 'through': '2026-10-06', 'geometry': 'preorder', 'catalog': 'catalog'},
+            'root': {key: sum(row[key] for row in buckets) for key in ('b', 'o')}, 'buckets': buckets, 'capabilities': dict(CAPABILITIES), **extra}
+
+
+def test_a_registered_literal_answers_from_the_consolidated_catalog(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = catalog_runtime(sources, monkeypatch)
+    assert reader.view('2026-10-01', '3P') == consolidated(
+        '2026-10-01', '3p', 'catalog', [{'path': 'a', 'pre': 1, 'post': 2, 'b': 0, 'o': 0}, {'path': 'b', 'pre': 3, 'post': 9, 'b': 900, 'o': 7}],
+        "the consolidated catalog: every scan's registered literals precomputed in the store", CATALOG_VALIDATION, registry=CATALOG_REGISTRY)
+    assert sources.events == [('catalog.view', 'default', 'catalog', '2026-10-01', '3p')]
+
+
+def test_an_unregistered_literal_falls_to_the_consolidated_name_index_with_its_registry(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = catalog_runtime(sources, monkeypatch)
+    assert reader.view('2026-10-01', 'foo') == consolidated(
+        '2026-10-01', 'foo', 'bounded-name-postings', [{'path': 'a', 'pre': 1, 'post': 2, 'b': 4, 'o': 2}, {'path': 'b', 'pre': 3, 'post': 9, 'b': 1, 'o': 1}],
+        'bounded name postings over the consolidated store; directory rollups are atomic', MEGA_VALIDATION, registry=CATALOG_REGISTRY)
+    assert sources.events == [('catalog.view', 'default', 'catalog', '2026-10-01', 'foo'), ('legacy.bounded', 'default'), ('checkpoint',),
+                              ('mega.answer', 'owned-source', '2026-10-01', 'foo', 'm', 200_000), ('checkpoint',)]
+
+
+def test_a_diff_of_two_cataloged_scans_never_enters_the_cold_lane(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = catalog_runtime(sources, monkeypatch, cells={('2026-10-01', 'foo'): (200_000, {'a': (10, 1)})})
+    result = reader.diff('2026-10-01', '2026-10-06', 'foo')
+    after = expected_daily()['root']
+    assert (result['before']['plan'], result['after']['plan'], result['delta']) == ('catalog', 'catalog', {'b': after['b'] - 10, 'o': after['o'] - 1})
+    assert sources.events == [('daily.view', '2026-10-06', 'foo'), ('catalog.view', 'default', 'catalog', '2026-10-01', 'foo')]
+
+
+def test_an_unavailable_catalog_refuses_rather_than_computing(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = catalog_runtime(sources, monkeypatch, cells=OSError('connection refused'))
+    with pytest.raises(SummaryUnavailable) as caught:
+        reader.view('2026-10-01', 'foo')
+    assert str(caught.value) == 'dated name summary consolidated catalog is unavailable; no partial result'
+    assert sources.events == [('catalog.view', 'default', 'catalog', '2026-10-01', 'foo')]
+
+
+def test_catalog_cells_outside_the_scan_geometry_refuse(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = catalog_runtime(sources, monkeypatch, cells={('2026-10-01', 'foo'): (200_000, {'zz': (10, 1)})})
+    with pytest.raises(SummaryUnavailable) as caught:
+        reader.view('2026-10-01', 'foo')
+    assert str(caught.value) == 'dated name summary consolidated answer has buckets outside its bound geometry; no partial result'
+
+
+@pytest.mark.parametrize('change', [
+    lambda catalog: catalog.update(target='elsewhere'),
+    lambda catalog: catalog.update(stem='catalog; DROP'),
+    lambda catalog: catalog.update(threshold=0),
+    lambda catalog: catalog['members'].update({'2026-10-01': 0}),
+    lambda catalog: catalog['members'].update({'2026-13-01': 5}),
+])
+def test_boot_refuses_a_catalog_binding_that_does_not_fit(sources, monkeypatch: pytest.MonkeyPatch, change) -> None:
+    catalog = deepcopy(CATALOG)
+    change(catalog)
+    with pytest.raises(ValueError) as caught:
+        catalog_runtime(sources, monkeypatch, catalog)
+    assert str(caught.value) == 'dated name summary consolidated catalog binding is invalid'

@@ -858,6 +858,7 @@ def bench_serve(tmp_dir: str | None, engine: str, evict: bool, host: str, index:
 @option("-J", "--hot-l2-check", type=Path, help="`-e ch -H ARTIFACT`: matching complete L2 acceptance proof; required together")
 @option("-k", "--narrow-plan", type=Choice(["legacy", "visible"]), default="legacy", help="`-e ch -N TARGET`: numeric serving plan; visible enables leaf/ancestor/fold reductions")
 @option("-l", "--root-label", default=None, help="The store root's name in a tree (default: $ROOT_LABEL, else `marin GCS`)")
+@option("-K", "--mega-catalog", help="`-e ch -P POSTINGS`: answer literals registered on consolidated-only scans from this consolidated catalog (`ch-mega-catalog-build`)")
 @option("-L", "--name-summary", is_flag=True, help="`-e ch -g GENERATION -N TARGET`: opt into stitched exact root summaries with bounded ordinary queries")
 @option("-M", "--mmap", is_flag=True, help="`-e mem`: map the index's arrays instead of reading them (a tmpfs copy then costs its RAM once)")
 @option("-N", "--narrow-target", help="`-e ch`: experimental numeric history for its bounded prefix/descendants and selected dates; canonical fallback elsewhere")
@@ -888,6 +889,7 @@ def serve_query(
     hot_l2_check: Path | None,
     narrow_plan: str,
     root_label: str | None,
+    mega_catalog: str | None,
     name_summary: bool,
     mmap: bool,
     narrow_target: str | None,
@@ -929,6 +931,8 @@ def serve_query(
         raise UsageError("--dated-cold requires --dated-l1-generation")
     if mega_postings and dated_l1_generation is None:
         raise UsageError("--mega-postings requires --dated-l1-generation")
+    if mega_catalog and not mega_postings:
+        raise UsageError("--mega-catalog requires --mega-postings")
     if (hot_l2_artifact is None) != (hot_l2_check is None):
         raise UsageError("--hot-l2-artifact and --hot-l2-check are required together")
     if hot_l2_artifact is not None and engine != "ch":
@@ -952,7 +956,7 @@ def serve_query(
                        narrow_plan=narrow_plan, hot_l1_generation=hot_l1_generation,
                        hot_l2_artifact=hot_l2_artifact, hot_l2_check=hot_l2_check, name_summary_enabled=name_summary,
                        dated_l1_generation=dated_l1_generation, dated_name_store=dated_name_store, dated_cold=dated_cold,
-                       mega_postings=mega_postings)
+                       mega_postings=mega_postings, mega_catalog=mega_catalog)
     else:
         box = bs.Box(
             root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,
