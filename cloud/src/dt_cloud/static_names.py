@@ -512,37 +512,75 @@ def plan_shards(hists: list[Path], target_rows: int, tasks: int) -> dict:
         groups[-1].append(s["i"])
         acc += s["rows"]
     biggest = max(rows, key=lambda r: r[1]) if rows else (None, 0)
-    return {"target_rows": target_rows, "total_rows": total, "prefixes": len(rows), "largest_prefix": list(biggest),
+    return {"ranges": len(hists), "target_rows": target_rows, "total_rows": total, "prefixes": len(rows), "largest_prefix": list(biggest),
             "shards": [{k: s[k] for k in ("i", "lo", "hi", "rows", "prefixes")} for s in shards],
             "tasks": [{"t": t, "shards": g, "rows": sum(shards[i]["rows"] for i in g)} for t, g in enumerate(groups)]}
 
 
-def build_shards(intervals: list[str], plan: dict, t: int, out: Path, *, threads: int, mem: str, tmp: Path) -> dict:
-    """Task `t`'s shards: one pass over every interval (depth ≥ 1) keeps the suffix positions whose
-    first three characters fall in the task's shards, partitioned by shard on local disk; then each
-    shard is sorted `(s, path, usr, vf)` and written as `sx/s####.parquet` in `SX_RG`-row groups, with
-    its per-row-group sidecar `sidecar/s####.parquet`."""
+def suffix_sql(files: list[str], rng: str | None = None) -> str:
+    """Every suffix position of three or more characters of the intervals' lowercase names (depth ≥ 1),
+    as `(s, depth, path, usr, vf, vt, size, n_files, p3)` rows (`p3` = the suffix's first three
+    characters), optionally restricted to a `p3` range."""
+    lst = "[" + ", ".join(q(f) for f in files) + "]"
+    return f"""SELECT substring(l, p) AS s, depth, path, usr, vf, vt, size, n_files, p3 FROM (
+            SELECT *, substring(l, p, 3) AS p3 FROM (
+                SELECT depth, path, usr, vf, vt, size, n_files, l, unnest(generate_series(1, length(l) - 2)) AS p
+                FROM (SELECT depth, path, usr, vf, vt, size, n_files, {NAME} AS l FROM read_parquet({lst}) WHERE depth >= 1)
+                WHERE length(l) >= 3)
+            {f'WHERE {rng}' if rng else ''})"""
+
+
+def _shard_table(con, plan: dict) -> None:
+    """`sh(lo, shard, grp)`: each shard's first prefix and the task group building it (for an ASOF join)."""
+    grp = {i: t["t"] for t in plan["tasks"] for i in t["shards"]}
+    con.execute("DROP TABLE IF EXISTS sh")
+    con.execute("CREATE TABLE sh (lo VARCHAR, shard INTEGER, grp INTEGER)")
+    con.executemany("INSERT INTO sh VALUES (?, ?, ?)", [(s["lo"], s["i"], grp[s["i"]]) for s in plan["shards"]])
+
+
+def map_range(interval_file: str, plan: dict, i: int, out: Path, con) -> dict:
+    """The map side of the suffix shuffle: one range's intervals → its suffix rows tagged with their shard,
+    written per task group as `sxmap/g###/r####-*.parquet` under `out` (each group's reduce task reads
+    only its own directory), so the intervals are expanded once in all, not once per task."""
+    t0 = monotonic()
+    _shard_table(con, plan)
+    part = out / f"map-{i}"
+    if part.exists():
+        shutil.rmtree(part)
+    out.mkdir(parents=True, exist_ok=True)
+    con.execute(f"""COPY (SELECT x.s, x.depth, x.path, x.usr, x.vf, x.vt, x.size, x.n_files, sh.shard, sh.grp
+        FROM ({suffix_sql([interval_file])}) AS x ASOF JOIN sh ON x.p3 >= sh.lo
+    ) TO {q(str(part))} (FORMAT parquet, PARTITION_BY (grp), COMPRESSION zstd)""")
+    rows = 0
+    for d in sorted(part.glob("grp=*")):
+        g = int(d.name.split("=")[1])
+        dst = out / "sxmap" / f"g{g:03d}"
+        dst.mkdir(parents=True, exist_ok=True)
+        for k, f in enumerate(sorted(d.glob("*.parquet"))):
+            rows += pq.ParquetFile(f).metadata.num_rows
+            shutil.move(str(f), dst / f"r{i:04d}-{k}.parquet")
+    shutil.rmtree(part)
+    doc = {"range": i, "rows": rows, "s": round(monotonic() - t0, 1)}
+    err(f"map range {i}: {rows:,} suffix rows in {doc['s']}s")
+    return doc
+
+
+def build_shards(inputs: list[str], plan: dict, t: int, out: Path, *, threads: int, mem: str, tmp: Path) -> dict:
+    """The reduce side: task `t`'s map outputs (`sxmap/g{t}/`, rows tagged with their shard) partitioned
+    by shard on local disk in one pass; then each shard sorted `(s, path, usr, vf)` and written as
+    `sx/s####.parquet` in `SX_RG`-row groups, with its per-row-group sidecar `sidecar/s####.parquet`."""
     t0 = monotonic()
     task = plan["tasks"][t]
     shards = [plan["shards"][i] for i in task["shards"]]
-    lo, hi = shards[0]["lo"], shards[-1]["hi"]
     con = connect(threads, mem, tmp)
-    con.execute("CREATE TABLE sh (lo VARCHAR, shard INTEGER)")
-    con.executemany("INSERT INTO sh VALUES (?, ?)", [(s["lo"], s["i"]) for s in shards])
-    files = "[" + ", ".join(q(f) for f in intervals) + "]"
-    rng = f"p3 >= {q(lo)}" + (f" AND p3 < {q(hi)}" if hi is not None else "")
     part = tmp / f"part-{t}"
     if part.exists():
         shutil.rmtree(part)
-    con.execute(f"""COPY (
-        SELECT substring(x.l, x.p) AS s, x.depth, x.path, x.usr, x.vf, x.vt, x.size, x.n_files, sh.shard
-        FROM (SELECT *, substring(l, p, 3) AS p3 FROM (
-                SELECT depth, path, usr, vf, vt, size, n_files, l, unnest(generate_series(1, length(l) - 2)) AS p
-                FROM (SELECT depth, path, usr, vf, vt, size, n_files, {NAME} AS l FROM read_parquet({files}) WHERE depth >= 1)
-                WHERE length(l) >= 3)
-              WHERE {rng}) AS x
-        ASOF JOIN sh ON x.p3 >= sh.lo
-    ) TO {q(str(part))} (FORMAT parquet, PARTITION_BY (shard), COMPRESSION zstd)""")
+    tmp.mkdir(parents=True, exist_ok=True)
+    lst = "[" + ", ".join(q(f) for f in inputs) + "]"
+    if inputs:
+        con.execute(f"""COPY (SELECT s, depth, path, usr, vf, vt, size, n_files, shard FROM read_parquet({lst}))
+            TO {q(str(part))} (FORMAT parquet, PARTITION_BY (shard), COMPRESSION zstd)""")
     t_pass = monotonic() - t0
     docs = []
     for s in shards:
@@ -929,28 +967,72 @@ def plan_shards_cmd(bucket, gen, target_rows, tasks) -> None:
         print(json.dumps(plan_shards(sorted(paths), target_rows, tasks), indent=1))
 
 
-@cli.command("shards")
+@cli.command("suffix-map")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
-@option("-g", "--gen", required=True, help="Generation")
+@option("-f", "--force", is_flag=True, help="Redo ranges already mapped")
+@option("-g", "--gen", required=True, help="Generation (its `shards.json` plan; intervals from -I or GEN)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-I", "--intervals-gen", help="Generation whose intervals to read (default: GEN)")
 @option("-m", "--mount", required=True, help="Local mount of the bucket")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-P", "--partial", is_flag=True, help="Accept fewer intervals files than ranges (a dev build over some ranges)")
-@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill + partition dir")
-@option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def shards_cmd(bucket, gen, index, intervals_gen, mount, mem, out, threads, partial, tmp, no_upload) -> None:
-    """Build one task group's suffix shards (and their sidecars)."""
+@option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, tmp) -> None:
+    """Expand ranges' intervals into suffix rows tagged with their shard, written per reduce task
+    (`sxmap/g###/`); a range's `sxmap-done/r####.json` marks it done."""
+    from google.cloud import storage
+
     prefix = f"{PREFIX}/{gen}"
     plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
     ig = intervals_gen or gen
     ranges = read_json(f"gs://{bucket}/{PREFIX}/{ig}/ranges.json")
-    files = sorted(str(f) for f in (Path(mount) / PREFIX / ig / "intervals").glob("r*.parquet"))
-    if len(files) != ranges["k"] and not partial:
-        raise SystemExit(f"{len(files)} of {ranges['k']} ranges' intervals under {ig}: pass -P for a partial (dev) build")
+    if only:
+        todo = [int(x) for x in only.split(",")]
+    else:
+        t = _task(index)
+        todo = list(range(t * per_task, min((t + 1) * per_task, ranges["k"])))
+    b = storage.Client().bucket(bucket)
+    con = connect(threads, mem, tmp)
+    for i in todo:
+        mark = f"{prefix}/sxmap-done/r{i:04d}.json"
+        if not force and b.blob(mark).exists():
+            err(f"map range {i}: already mapped")
+            continue
+        src = f"{mount}/{PREFIX}/{ig}/intervals/r{i:04d}.parquet"
+        outp = Path(out) / f"m{i}"
+        doc = map_range(src, plan, i, outp, con)
+        upload_tree(outp, bucket, prefix)
+        shutil.rmtree(outp)
+        b.blob(mark).upload_from_string(json.dumps(doc) + "\n")
+        print(json.dumps(doc), flush=True)
+
+
+@cli.command("shards")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-o", "--out", default="/stage/out", help="Local output dir")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-P", "--partial", is_flag=True, help="Accept fewer mapped ranges than ranges (a dev build over some ranges)")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill + partition dir")
+@option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
+def shards_cmd(bucket, gen, index, mount, mem, out, threads, partial, tmp, no_upload) -> None:
+    """Build one task group's suffix shards (and their sidecars) from its map outputs."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
     t = _task(index)
+    done = sum(1 for _ in storage.Client().list_blobs(bucket, prefix=f"{prefix}/sxmap-done/"))
+    k = plan.get("ranges")
+    if k is not None and done != k and not partial:
+        raise SystemExit(f"{done} of {k} ranges mapped: pass -P for a partial (dev) build")
+    files = sorted(str(f) for f in (Path(mount) / prefix / "sxmap" / f"g{t:03d}").glob("*.parquet"))
     outp = Path(out) / f"t{t}"
     doc = build_shards(files, plan, t, outp, threads=threads, mem=mem, tmp=Path(tmp))
     if not no_upload:

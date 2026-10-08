@@ -231,9 +231,13 @@ def test_shards_and_reader(fixture, tmp_path):
     _build(root, scans, ranges, build)
     plan = sn.plan_shards(sorted((build / "hist").glob("*.parquet")), target_rows=40, tasks=3)
     assert [s["lo"] for s in plan["shards"]] == sorted(s["lo"] for s in plan["shards"])
-    files = [str(build / "intervals" / f"r{r['i']:04d}.parquet") for r in ranges["ranges"]]
+    mapped = tmp_path / "map"
+    con = sn.connect(2, "1GB", tmp_path / "tmp")
+    for r in ranges["ranges"]:
+        sn.map_range(str(build / "intervals" / f"r{r['i']:04d}.parquet"), plan, r["i"], mapped, con)
     out = tmp_path / "out"
     for t in range(len(plan["tasks"])):
+        files = sorted(str(f) for f in (mapped / "sxmap" / f"g{t:03d}").glob("*.parquet"))
         sn.build_shards(files, plan, t, out, threads=2, mem="1GB", tmp=tmp_path / "tmp")
     # every suffix row, by brute force over the oracle's versions
     expected = []
