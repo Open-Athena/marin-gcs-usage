@@ -6,12 +6,14 @@ export interface NameExecution {
   plan: NamePlan
   source: string
   validation: Record<string, unknown> & { description: string }
-  source_identity: { generation?: string; snapshot_db?: string; history_manifest_sha256?: string; kind?: NameScanKind; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true; postings?: string; through?: string; geometry?: 'preorder' | 'ordinal' }
+  source_identity: { generation?: string; snapshot_db?: string; history_manifest_sha256?: string; kind?: NameScanKind; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true; postings?: string; through?: string; geometry?: 'preorder' | 'ordinal'; catalog?: string }
   registry?: NameQualification
 }
 export interface NameResult extends HotResult { execution: { after: NameExecution; before?: NameExecution }; logical_store?: string; capabilities?: { bucket_drill: false; child_drill: false; fallback: false } }
-/** `consolidated-store-v1`: a scan with no catalog, every literal answered on demand from the store's one consolidated name index.
- * Its bucket bounds are path preorder, or (a scan recording no descendant counts) one `ordinal` position per bucket. */
+/** `consolidated-store-v1`: a scan only the store holds. With the store's consolidated catalog (`catalog` in its identity),
+ * literals registered on the scan itself answer from it and the rest on demand from the store's one consolidated name
+ * index; without one, every literal answers on demand. Its bucket bounds are path preorder, or (a scan recording no
+ * descendant counts) one `ordinal` position per bucket. */
 export type NameScanKind = 'frozen-history' | 'daily-scalar-source-v1' | 'consolidated-store-v1'
 export interface NameScan { date: string; plans: NamePlan[]; kind: NameScanKind; qualification_dates?: string[]; source_identity?: NameExecution['source_identity']; registry?: NameQualification }
 export interface NameRegistry { dated: boolean; dates: NameScan[]; logical_store?: string; bucket_paths?: string[] }
@@ -74,15 +76,23 @@ function capabilities(value: unknown) {
 }
 /** A daily scan's plans: its registered catalog, or bounded discovery over its own name index or the consolidated store's. */
 const CONSOLIDATED_SOURCE = 'bounded name postings over the consolidated store; directory rollups are atomic'
+const CONSOLIDATED_CATALOG_SOURCE = "the consolidated catalog: every scan's registered literals precomputed in the store"
 const DAILY_SOURCES: Record<NamePlan, string[]> = {
   catalog: ['published dated precomputed batch artifact'],
   'bounded-name-postings': ["bounded dated name postings over the scan's own name index; directory rollups are atomic", CONSOLIDATED_SOURCE],
 }
 function consolidatedIdentity(value: unknown) {
-  const body = record(value)
-  if (!keys(body, ['kind', 'target', 'postings', 'through', 'geometry']) || body.kind !== 'consolidated-store-v1' || !id(body.target) || !id(body.postings) || !iso(body.through) ||
-      (body.geometry !== 'preorder' && body.geometry !== 'ordinal')) fail()
-  return { kind: 'consolidated-store-v1' as const, target: body.target as string, postings: body.postings as string, through: body.through as string, geometry: body.geometry as 'preorder' | 'ordinal' }
+  const body = record(value), cataloged = 'catalog' in body
+  if (!keys(body, ['kind', 'target', 'postings', 'through', 'geometry', ...(cataloged ? ['catalog'] : [])]) || body.kind !== 'consolidated-store-v1' || !id(body.target) || !id(body.postings) || !iso(body.through) ||
+      (body.geometry !== 'preorder' && body.geometry !== 'ordinal') || (cataloged && !id(body.catalog))) fail()
+  return { kind: 'consolidated-store-v1' as const, target: body.target as string, postings: body.postings as string, through: body.through as string, geometry: body.geometry as 'preorder' | 'ordinal',
+    ...(cataloged ? { catalog: body.catalog as string } : {}) }
+}
+/** A consolidated catalog's registry is the scan's own census: qualified on that scan alone, named by the catalog. */
+function catalogRegistry(value: unknown, date: unknown, catalog: string): NameQualification {
+  const registry = registryBinding(value, true)
+  if (JSON.stringify(registry.qualification_dates) !== JSON.stringify([date]) || registry.target !== catalog) fail()
+  return registry
 }
 const validationKeys = ['description', 'source_prefix_proofs_checked', 'independent_full_catalog_source_oracle']
 function dailyIdentity(value: unknown) {
@@ -103,11 +113,13 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
   }
   const validation = record(body.validation)
   if (identity.kind === 'consolidated-store-v1') {
-    const checked = consolidatedIdentity(identity)
-    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets']) ||
-        body.plan !== 'bounded-name-postings' || body.source !== CONSOLIDATED_SOURCE || body.target !== checked.target || !keys(validation, validationKeys) ||
+    const checked = consolidatedIdentity(identity), catalog = checked.catalog
+    const plan = body.plan === 'catalog' && catalog ? 'catalog' : body.plan === 'bounded-name-postings' ? 'bounded-name-postings' : fail()
+    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets', ...(catalog ? ['registry'] : [])]) ||
+        body.source !== (plan === 'catalog' ? CONSOLIDATED_CATALOG_SOURCE : CONSOLIDATED_SOURCE) || body.target !== checked.target || !keys(validation, validationKeys) ||
         typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false) fail()
-    return { plan: 'bounded-name-postings', source: CONSOLIDATED_SOURCE, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked }
+    return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked,
+      ...(catalog ? { registry: catalogRegistry(body.registry, body.date, catalog) } : {}) }
   }
   const checked = dailyIdentity(identity)
   const plan = body.plan === 'catalog' || body.plan === 'bounded-name-postings' ? body.plan : fail()
@@ -210,10 +222,13 @@ export function parseNameRegistry(value: unknown): NameRegistry {
     const row = record(value)
     if (!iso(row.date)) fail()
     if (row.kind === 'consolidated-store-v1') {
-      if (!keys(row, ['date', 'plans', 'kind', 'source']) || JSON.stringify(row.plans) !== JSON.stringify(['bounded-name-postings']) || legacy.dates.some(day => day.date === row.date)) fail()
-      const source_identity = consolidatedIdentity({ ...record(row.source), kind: row.kind })
+      const source_identity = consolidatedIdentity({ ...record(row.source), kind: row.kind }), catalog = source_identity.catalog
+      const plans: NamePlan[] = catalog ? ['catalog', 'bounded-name-postings'] : ['bounded-name-postings']
+      if (!keys(row, ['date', 'plans', 'kind', 'source', ...(catalog ? ['registry'] : [])]) || JSON.stringify(row.plans) !== JSON.stringify(plans) || legacy.dates.some(day => day.date === row.date)) fail()
       if (source_identity.through < (row.date as string)) fail()
-      return { date: row.date as string, plans: ['bounded-name-postings'] as NamePlan[], kind: 'consolidated-store-v1' as const, source_identity }
+      if (!catalog) return { date: row.date as string, plans, kind: 'consolidated-store-v1' as const, source_identity }
+      const registry = catalogRegistry(row.registry, row.date, catalog)
+      return { date: row.date as string, plans, kind: 'consolidated-store-v1' as const, qualification_dates: [...registry.qualification_dates], source_identity, registry }
     }
     const registry = registryBinding(row.registry, row.kind === 'daily-scalar-source-v1')
     let source_identity: NameExecution['source_identity'] | undefined

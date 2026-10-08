@@ -41,6 +41,24 @@ export function consolidatedNameRegistry() {
   body.dates[2].plans = ['catalog', 'bounded-name-postings']
   return { ...body, dates: [{ date: '2026-09-15', plans: ['bounded-name-postings'], kind: 'consolidated-store-v1', source: { target: 'default', postings: 'm', through: '2026-10-06', geometry: 'preorder' } }, ...body.dates] }
 }
+export const consolidatedCatalogSource = "the consolidated catalog: every scan's registered literals precomputed in the store"
+export function consolidatedCatalogRegistry(date = '2026-10-01') {
+  return { qualification_dates: [date], target: 'catalog', patterns: 70_001, selection_contract: 'membership on declared qualification dates; no current-scan frequency claim',
+    threshold_paths: 100_000, max_chars: null, short_chars: 2 }
+}
+/** A consolidated scan's answer with the store's catalog bound: registered literals from it, the rest on demand. */
+export function consolidatedCatalogFixture(plan: 'catalog' | 'bounded-name-postings', date = '2026-10-01') {
+  const body = consolidatedNameFixture(date)
+  return { ...body, plan, source: plan === 'catalog' ? consolidatedCatalogSource : consolidatedSource,
+    source_identity: { ...body.source_identity, catalog: 'catalog' }, registry: consolidatedCatalogRegistry(date),
+    ...(plan === 'catalog' ? { validation: { description: "exact first-hit totals appended from each scan's changes; checked against single-scan builds offline, no per-request source oracle", source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false } } : {}) }
+}
+/** The dated registry with a consolidated scan the store's catalog covers. */
+export function consolidatedCatalogNameRegistry() {
+  const body = consolidatedNameRegistry()
+  return { ...body, dates: [body.dates[0], { date: '2026-10-01', plans: ['catalog', 'bounded-name-postings'], kind: 'consolidated-store-v1',
+    source: { target: 'default', postings: 'm', through: '2026-10-06', geometry: 'preorder', catalog: 'catalog' }, registry: consolidatedCatalogRegistry() }, ...body.dates.slice(1)] }
+}
 export function mixedDatedNameDiff() {
   const old = nameFixture('catalog'), before = { ...old, schema: 'dated-name-summary-v1', logical_store: 'gcs',
     source_identity: { ...old.source_identity, generation: 'a'.repeat(32), kind: 'frozen-history' }, capabilities: { ...datedCapabilities } }, after = dailyNameFixture()

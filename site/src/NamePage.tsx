@@ -4,7 +4,7 @@ import { HotMaps } from './HotMaps'
 import { HotSearchForm, HotTotals } from './HotPage'
 import { SiteKbd } from './SiteKbd'
 import type { HotRequest } from './hotModel'
-import { loadName, loadNameRegistry, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameResult } from './nameModel'
+import { loadName, loadNameRegistry, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
 import { useDocTitle } from './title'
 import './hot.scss'
 
@@ -14,6 +14,10 @@ export function NamePlanStatus({ result }: { result: NameResult }) {
   return <div aria-label="Name-summary execution plan">{sides.map(({ view, execution }) => <p className="hot-note" key={view.date}>
     {view.date}: {execution.plan === 'catalog' ? 'Catalog (precomputed)' : 'Bounded name postings (on demand)'}. {execution.source} — {execution.validation.description}
   </p>)}</div>
+}
+/** A registry's domain in words: the threshold, and the short literals registered whatever their frequency. */
+export function catalogDomain(registry: NameQualification): string {
+  return `≥${registry.threshold_paths!.toLocaleString('en-US')} matching paths${registry.short_chars ? `, or at most ${registry.short_chars} characters` : ''}`
 }
 /** Every date when few; otherwise the count and range (the select lists each one). */
 export function scanList(dates: readonly string[]): string {
@@ -33,6 +37,7 @@ export function NamePage() {
   if (request && query.data) try { result = nameResultForRegistry(query.data, registry.data!) } catch (error) { issue = (error as Error).message }
   const detail = result && nameHasDetail(result) ? request : undefined
   const consolidated = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'consolidated-store-v1') ?? []
+  const uncataloged = consolidated.filter(row => !row.plans.includes('catalog')), cataloged = consolidated.filter(row => row.plans.includes('catalog'))
   const catalogOnly = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'daily-scalar-source-v1' && !row.plans.includes('bounded-name-postings')) ?? []
   return <main className="hot-page">
     <header><Link to="/">marin GCS</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
@@ -40,7 +45,8 @@ export function NamePage() {
     {dates && !registry.error && <HotSearchForm key={rawParams.toString()} params={params} dates={registry.data?.dated ? dates : undefined} onSearch={setParams} />}
     {registry.data && !registry.error && <p id="hot-availability" className="hot-note">{catalogOnly.length
       ? `${catalogOnly.map(row => `${row.date}: catalog literals only, using membership qualified on ${row.qualification_dates!.join(', ')}`).join('. ')}—not a current-scan frequency claim. Other literals are unavailable for those scans, not zero matches; no on-demand fallback.`
-      : consolidated.length ? `${consolidated.map(row => row.date).join(' and ')}: no prepared catalog; every literal is answered on demand from the consolidated name index, and requests exceeding the work budget fail explicitly, not as zero matches.`
+      : uncataloged.length ? `${uncataloged.map(row => row.date).join(' and ')}: no prepared catalog; every literal is answered on demand from the consolidated name index, and requests exceeding the work budget fail explicitly, not as zero matches.`
+      : cataloged.length ? `${cataloged.map(row => row.date).join(' and ')}: literals registered on the scan itself (${catalogDomain(cataloged[0].registry!)}) use the consolidated catalog; others are below that threshold and answer on demand from the consolidated name index, and requests exceeding the work budget fail explicitly, not as zero matches.`
       : 'Catalog literals use prepared summaries. Other literals use bounded name postings on demand; requests exceeding the work budget fail explicitly, not as zero matches. No unbounded fleet scan.'}</p>}
     <p className="hot-note">With a baseline, coverage is computed for each snapshot; change is the selected scan minus the baseline, not only paths that changed.</p>
     {issue && <p role="alert">{issue}</p>}

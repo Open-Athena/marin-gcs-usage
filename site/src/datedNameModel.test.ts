@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
+import { consolidatedCatalogFixture, consolidatedCatalogNameRegistry, consolidatedCatalogRegistry, consolidatedCatalogSource, consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
 import { datedNameRequest, loadName, loadNameRegistry, nameHasDetail, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
 
 const request = { date: '2026-10-06', name: 'datakit', from: '2026-10-05' }
@@ -115,6 +115,32 @@ describe('independently numbered dated root summaries', () => {
     if (issue === 'registry') row.registry = dailyNameFixture().registry
     if (issue === 'through before date') row.source = { target: 'default', postings: 'm', through: '2026-09-14', geometry: 'preorder' }
     if (issue === 'legacy day') row.date = '2026-10-04'
+    expect(() => parseNameRegistry(body)).toThrow('Name summary returned an invalid dated contract.')
+  })
+  it.each(['catalog', 'bounded-name-postings'] as const)('accepts a consolidated scan the store\'s catalog covers, answered by its %s plan with the scan\'s own registry', plan => {
+    const body = consolidatedCatalogFixture(plan), result = parseName(body, { date: '2026-10-01', name: 'datakit' })
+    expect(result).toEqual({ after: view(body), execution: { after: { plan, source: plan === 'catalog' ? consolidatedCatalogSource : consolidatedSource, validation: body.validation,
+      source_identity: body.source_identity, registry: consolidatedCatalogRegistry() } }, logical_store: 'gcs', capabilities: datedCapabilities })
+    const registry = parseNameRegistry(consolidatedCatalogNameRegistry())
+    expect(registry.dates[1]).toEqual({ date: '2026-10-01', plans: ['catalog', 'bounded-name-postings'], kind: 'consolidated-store-v1', qualification_dates: ['2026-10-01'],
+      source_identity: body.source_identity, registry: consolidatedCatalogRegistry() })
+    expect(nameResultForRegistry(result, registry)).toBe(result)
+    expect(() => nameResultForRegistry(result, parseNameRegistry(consolidatedNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
+  })
+  it.each(['qualification date', 'catalog target', 'missing registry', 'postings source on the catalog plan', 'catalog plan without a catalog'])('refuses a consolidated catalog answer with a mismatched %s', issue => {
+    const body: Record<string, unknown> & ReturnType<typeof consolidatedCatalogFixture> = consolidatedCatalogFixture('catalog')
+    if (issue === 'qualification date') body.registry = consolidatedCatalogRegistry('2026-10-02')
+    if (issue === 'catalog target') body.registry = { ...consolidatedCatalogRegistry(), target: 'other' }
+    if (issue === 'missing registry') delete (body as Record<string, unknown>).registry
+    if (issue === 'postings source on the catalog plan') body.source = consolidatedSource
+    if (issue === 'catalog plan without a catalog') body.source_identity = consolidatedNameFixture('2026-10-01').source_identity as typeof body.source_identity
+    expect(() => parseName(body, { date: '2026-10-01', name: 'datakit' })).toThrow('Name summary returned an invalid dated contract.')
+  })
+  it.each(['qualification date', 'missing registry', 'postings-only plans'])('refuses catalog-covered consolidated metadata with a %s', issue => {
+    const body = consolidatedCatalogNameRegistry(), row: Record<string, unknown> = body.dates[1]
+    if (issue === 'qualification date') row.registry = consolidatedCatalogRegistry('2026-09-15')
+    if (issue === 'missing registry') delete row.registry
+    if (issue === 'postings-only plans') row.plans = ['bounded-name-postings']
     expect(() => parseNameRegistry(body)).toThrow('Name summary returned an invalid dated contract.')
   })
   it.each(['store', 'date', 'root delta', 'bucket delta', 'side bounds', 'side weights', 'missing row', 'different paths'])('refuses inconsistent paired %s', issue => {
