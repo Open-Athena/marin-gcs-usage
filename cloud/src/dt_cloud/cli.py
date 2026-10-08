@@ -1781,6 +1781,7 @@ def serve_hot_l1(
 @option("-o", "--out", required=True, type=Path, help="Fresh private complete union JSONL artifact; never overwrites")
 @option("-s", "--source", multiple=True, required=True, type=(Path, Path), help="Accepted single-date CENSUS QUERIES pair; repeat for distinct dates (one pair = that scan's own registry)")
 @option("-t", "--threshold", required=True, type=IntRange(min=1), help="Hot if any source date qualifies; cannot be below any source census minimum")
+@option("-S", "--short-chars", default=0, type=IntRange(min=0, max=32), help="Also register every literal of at most this many characters the sources list (their short-literal domains must cover it), whatever its frequency")
 @option("-T", "--target", help="Explicit logical registry binding for sources from different physical stores; each source then declares its own target")
 def ch_hot_frequency_union(
     max_patterns: int,
@@ -1788,12 +1789,13 @@ def ch_hot_frequency_union(
     out: Path,
     source: tuple[tuple[Path, Path], ...],
     threshold: int,
+    short_chars: int,
     target: str | None,
 ) -> None:
     """Union dated exact registries without claiming every query is hot on each scan."""
     from .chstore.hot_frequency_union import union
 
-    print(json.dumps(union(source, threshold, max_chars or None, out, max_patterns=max_patterns,
+    print(json.dumps(union(source, threshold, max_chars or None, out, max_patterns=max_patterns, short_chars=short_chars,
                            **({} if target is None else {"target": target}))))
 
 
@@ -1853,6 +1855,34 @@ def ch_hot_frequency_report(
                             lengths=tuple(chars or None for chars in max_chars) or (7, 12, 16), patterns=pattern or (".json", "zarr.json", ".npy"))))
 
 
+@main.command("ch-mega-names")
+@option("-d", "--date", "dates", multiple=True, required=True, help="Published scan date in the consolidated store; repeat")
+@option("-D", "--db", default="default", help="Consolidated store database")
+@option("-n", "--pattern", "patterns", multiple=True, required=True, help="Slash-free literal; repeat")
+@option("-r", "--reference", multiple=True, type=(str, str), help="DATE TARGET to compare against: a frozen snapshot target, or `daily:TARGET` for a daily scalar target's own name index; repeat")
+@option("-t", "--threads", default=8, type=IntRange(min=1, max=64), help="ClickHouse max_threads per statement")
+@option("-T", "--trials", default=1, type=IntRange(min=1, max=10), help="Runs per (date, literal); the first is the coldest")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+def ch_mega_names(
+    dates: tuple[str, ...],
+    db: str,
+    patterns: tuple[str, ...],
+    reference: tuple[tuple[str, str], ...],
+    threads: int,
+    trials: int,
+    url: str,
+) -> None:
+    """Name-substring bucket totals for any published scan from the consolidated
+    store (`nodes`/`closures` `by_name` projections, `names` vocabulary): one
+    JSON record per (date, literal) with stage timings, optionally checked
+    against a per-scan or frozen index's answer."""
+    from .chstore import mega_names
+
+    refs = {d: (t.removeprefix("daily:"), t.startswith("daily:")) for d, t in reference}
+    for record in mega_names.bench(url, db, list(dates), list(patterns), threads=threads, trials=trials, references=refs):
+        print(json.dumps(record), flush=True)
+
+
 @main.command("ch-daily-name-index")
 @option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=24), help="Per-statement memory budget")
 @option("-s", "--spill-gib", default=4, type=IntRange(min=1, max=16), help="External GROUP BY / sort threshold per statement")
@@ -1895,6 +1925,7 @@ def ch_daily_name_index(
 @option("-p", "--rss-pid", multiple=True, type=IntRange(min=1), help="Host process RSS to monitor; output beside artifact")
 @option("-q", "--queries-out", type=Path, help="New private JSONL hot-predicate export with mandatory completion footer")
 @option("-s", "--spill-gib", default=8, type=IntRange(min=1, max=16), help="Offline temporary-disk budget per query")
+@option("-S", "--short-chars", default=0, type=IntRange(min=0, max=32), help="Also list every literal of at most this many characters present (≥ 1 path), whatever its frequency: the short-literal domain, precomputed by cost (needs `-e`)")
 @option("-t", "--threshold", required=True, type=IntRange(min=1), help="Minimum direct matching paths; not occurrences or bytes")
 @option("-v", "--wall-seconds", default=3600, type=IntRange(min=1, max=7200), help="Daily-source nonrenewable total census deadline, plus at most sixty cleanup seconds")
 @option("-w", "--timeout-seconds", default=600, type=IntRange(min=1, max=600), help="Per-statement offline deadline; throws, not partial")
@@ -1914,6 +1945,7 @@ def ch_hot_frequency_census(
     rss_pid: tuple[int, ...],
     queries_out: Path | None,
     spill_gib: int,
+    short_chars: int,
     threshold: int,
     wall_seconds: int,
     timeout_seconds: int,
@@ -1923,7 +1955,10 @@ def ch_hot_frequency_census(
     """Exact full-fleet threshold-hot substring counts, pruning cold prefixes."""
     from .chstore.hot_frequency_bench import bench
 
-    source = {} if daily_source is None else {'daily_source': daily_source, 'wall_seconds': wall_seconds, 'staging_gib': staging_gib, 'native': native}
+    source = {} if daily_source is None else {'daily_source': daily_source, 'wall_seconds': wall_seconds, 'staging_gib': staging_gib, 'native': native,
+                                              'short_chars': short_chars}
+    if short_chars and daily_source is None:
+        raise UsageError('the short-literal domain (`-S`) needs the native engine (`-f`, `-e`)')
     print(json.dumps(bench(url, target, date, threshold, max_chars or None, out, memory_gib=memory_gib,
                            seconds=timeout_seconds, spill_gib=spill_gib, pids=rss_pid, patterns=pattern,
                            queries_out=queries_out, thresholds=threshold_cut, max_patterns=max_patterns, **source)))
