@@ -67,10 +67,12 @@ r2)
   GEN=${2:?GEN}
   shift 2
   SRC=${SRC:-$(stage_src)}
+  EXTRA=""
+  if [ "$#" -gt 0 ]; then EXTRA=$(printf '%q ' "$@"); fi
   job/ch-store.sh sh "sudo rm -rf /data/sn/src && sudo mkdir -p /data/sn/src && sudo gcloud storage cp -r --verbosity=error gs://$B/static-names/src/$SRC/dt_cloud /data/sn/src/ && \
     sudo docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/sn/src:/data/src --env-file /data/r2-index.env \
       -e R2_ENDPOINT=https://74981a43be0de7712369306c7b19133d.r2.cloudflarestorage.com -e R2_BUCKET=oa-gcs-usage-index \
-      --entrypoint nice \$(cat /data/image) -n 10 python3 -u -m dt_cloud.static_names r2-copy -g $GEN $(printf '%q ' "$@")"
+      --entrypoint nice \$(cat /data/image) -n 10 python3 -u -m dt_cloud.static_names r2-copy -g $GEN $EXTRA"
   ;;
 ch-answers)
   job/ch-store.sh sh "sudo mkdir -p /data/sn && sudo tee /data/sn/ch-answers.py > /dev/null" < job/static-names/ch-answers.py
