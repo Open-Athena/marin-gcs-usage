@@ -249,30 +249,35 @@ export interface Answer { rows_read: number; rows_matching: number; answers: Rec
 
 /** The first-hit filter and per-bucket sums over decoded suffix rows, per date (`Reader.answer`). */
 export function answerRows(cols: SxColumns, key: string, dates: string[]): Answer {
-  const hit: number[] = []
+  // Everything but liveness is date-independent, so it is decided once per row: the name match, the
+  // `(path, usr, vf)` dedup (one version = one `vt`, so a kept duplicate is live exactly when the first
+  // is), depth, and the parent test. Each date then only checks `vf ≤ D < vt` over the first hits.
+  let matching = 0
+  const seen = new Set<string>(), first: number[] = []
   for (let i = 0; i < cols.s.length; i++) {
     if (!cols.s[i].startsWith(key)) continue
-    const p = cols.path[i]
-    if (p.slice(p.lastIndexOf('/') + 1).toLowerCase().includes(key)) hit.push(i)
+    const p = cols.path[i], slash = p.lastIndexOf('/')
+    if (!p.slice(slash + 1).toLowerCase().includes(key)) continue
+    matching++
+    if (cols.depth[i] < 1) continue
+    const k = `${p}\0${cols.usr[i]}\0${cols.vf[i]}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    if ((slash < 0 ? '' : p.slice(0, slash)).toLowerCase().includes(key)) continue
+    first.push(i)
   }
+  const bucket = first.map(i => { const p = cols.path[i], s = p.indexOf('/'); return s < 0 ? p : p.slice(0, s) })
   const answers: Record<string, Totals> = {}
   for (const d of dates) {
-    const D = BigInt(scanMs(d))
-    const seen = new Set<string>(), totals: Totals = {}
-    for (const i of hit) {
-      if (!(cols.vf[i] <= D && D < cols.vt[i]) || cols.depth[i] < 1) continue
-      const p = cols.path[i], k = `${p}\0${cols.usr[i]}\0${cols.vf[i]}`
-      if (seen.has(k)) continue
-      seen.add(k)
-      const slash = p.lastIndexOf('/')
-      if ((slash < 0 ? '' : p.slice(0, slash)).toLowerCase().includes(key)) continue
-      const first = p.indexOf('/'), bucket = first < 0 ? p : p.slice(0, first)
-      const t = totals[bucket] ??= [0n, 0n]
+    const D = BigInt(scanMs(d)), totals: Totals = {}
+    first.forEach((i, j) => {
+      if (!(cols.vf[i] <= D && D < cols.vt[i])) return
+      const t = totals[bucket[j]] ??= [0n, 0n]
       t[0] += cols.size[i]; t[1] += cols.n_files[i]
-    }
+    })
     answers[d] = Object.fromEntries(Object.keys(totals).sort().map(b => [b, totals[b]]))
   }
-  return { rows_read: cols.s.length, rows_matching: hit.length, answers }
+  return { rows_read: cols.s.length, rows_matching: matching, answers }
 }
 
 // --- storage seam (R2 in the Worker, files in tests) -------------------------------------------
