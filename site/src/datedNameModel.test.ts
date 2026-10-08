@@ -41,6 +41,13 @@ describe('independently numbered dated root summaries', () => {
     expect(parseName(body, { date: request.date, name: request.name })).toEqual({ after: view(body), execution: { after: execution(body) }, logical_store: 'gcs', capabilities: datedCapabilities })
     expect(execution(body).registry).toEqual({ qualification_dates: ['2026-10-04', '2026-10-05'], target: 'fixture', patterns: 3, threshold_paths: 100000, max_chars: null, selection_contract: 'membership on declared qualification dates; no current-scan frequency claim' })
   })
+  it('accepts a short-literal domain (`short_chars`: every literal that short is registered whatever its frequency) and refuses a zero one', () => {
+    const body = dailyNameFixture(); Object.assign(body.registry, { max_chars: null, short_chars: 2 })
+    const parsed = parseName(body, { date: request.date, name: request.name }) as { execution: { after: { registry?: unknown } } }
+    expect(parsed.execution.after.registry).toEqual({ qualification_dates: ['2026-10-04', '2026-10-05'], target: 'fixture', patterns: 3, threshold_paths: 100000, max_chars: null, short_chars: 2, selection_contract: 'membership on declared qualification dates; no current-scan frequency claim' })
+    const zero = dailyNameFixture(); Object.assign(zero.registry, { short_chars: 0 })
+    expect(() => parseName(zero, { date: request.date, name: request.name })).toThrow()
+  })
   it.each(['wrong root', 'missing bucket', 'duplicate path', 'geometry gap', 'unsafe scalar', 'wrong snapshot', 'wrong date', 'wrong literal', 'fake history', 'false source proof', 'oracle claim', 'drill claim', 'missing registry', 'zero threshold', 'zero length', 'extra top field'])('refuses %s, not a partial or zero result', issue => {
     const body = dailyNameFixture()
     if (issue === 'wrong root') body.root.b++

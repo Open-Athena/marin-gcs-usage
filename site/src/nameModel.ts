@@ -1,7 +1,7 @@
 import { HOT_DATES, HOT_SCOPE, hotRequest, parseRootSummary, type HotBucket, type HotRequest, type HotResult, type HotView, type HotWeights } from './hotModel'
 
 export type NamePlan = 'catalog' | 'bounded-name-postings'
-export interface NameQualification { qualification_dates: string[]; target: string; patterns: number; selection_contract: string; threshold_paths?: number; max_chars?: number | null }
+export interface NameQualification { qualification_dates: string[]; target: string; patterns: number; selection_contract: string; threshold_paths?: number; max_chars?: number | null; short_chars?: number }
 export interface NameExecution {
   plan: NamePlan
   source: string
@@ -167,9 +167,12 @@ export async function loadName(
 
 function registryBinding(value: unknown, daily: boolean): NameQualification {
   const body = record(value)
-  if (!keys(body, ['qualification_dates', 'target', 'patterns', 'selection_contract', ...(daily ? ['threshold_paths', 'max_chars'] : [])]) || !id(body.target) || integer(body.patterns) < 1 || !Array.isArray(body.qualification_dates) || !body.qualification_dates.length || body.qualification_dates.some(day => !iso(day)) || new Set(body.qualification_dates).size !== body.qualification_dates.length || body.selection_contract !== 'membership on declared qualification dates; no current-scan frequency claim' || (daily && (integer(body.threshold_paths) < 1 || (body.max_chars !== null && (integer(body.max_chars) < 1 || integer(body.max_chars) > 512))))) fail()
+  // A daily registry may declare a short-literal domain: every literal of at most `short_chars` characters is registered whatever its frequency.
+  const short = daily && 'short_chars' in body
+  if (!keys(body, ['qualification_dates', 'target', 'patterns', 'selection_contract', ...(daily ? ['threshold_paths', 'max_chars'] : []), ...(short ? ['short_chars'] : [])]) || !id(body.target) || integer(body.patterns) < 1 || !Array.isArray(body.qualification_dates) || !body.qualification_dates.length || body.qualification_dates.some(day => !iso(day)) || new Set(body.qualification_dates).size !== body.qualification_dates.length || body.selection_contract !== 'membership on declared qualification dates; no current-scan frequency claim' || (daily && (integer(body.threshold_paths) < 1 || (body.max_chars !== null && (integer(body.max_chars) < 1 || integer(body.max_chars) > 512))))) fail()
   return { qualification_dates: body.qualification_dates.map(day => iso(day) ? day : fail()), target: body.target, patterns: integer(body.patterns), selection_contract: body.selection_contract,
-    ...(daily ? { threshold_paths: integer(body.threshold_paths), max_chars: body.max_chars === null ? null : integer(body.max_chars) } : {}) }
+    ...(daily ? { threshold_paths: integer(body.threshold_paths), max_chars: body.max_chars === null ? null : integer(body.max_chars) } : {}),
+    ...(short ? { short_chars: integer(body.short_chars) < 1 ? fail() : integer(body.short_chars) } : {}) }
 }
 export function parseNameRegistry(value: unknown): NameRegistry {
   const body = record(value)
