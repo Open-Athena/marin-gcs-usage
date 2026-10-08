@@ -1,0 +1,11 @@
+outs:
+- path: intervals.json
+meta:
+  computation:
+    cmd: SPOT=1 JOB_ID=sn-2026-10-08-intervals-$(date -u +%H%M%S) ../../job/static-names.sh run intervals 32 -g 2026-10-08 -n 8 > /dev/null && dt-cloud static-names manifest -g 2026-10-08 intervals hist digest > intervals.json
+    deps:
+      scans.json: ''
+      ranges.json: ''
+    git_deps:
+      ../../cloud/src/dt_cloud/static_names.py: ''
+      ../../job/static-names.sh: ''

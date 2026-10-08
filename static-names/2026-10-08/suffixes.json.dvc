@@ -1,0 +1,11 @@
+outs:
+- path: suffixes.json
+meta:
+  computation:
+    cmd: SPOT=1 JOB_ID=sn-2026-10-08-map-$(date -u +%H%M%S) ../../job/static-names.sh run suffix-map 32 -g 2026-10-08 -n 8 > /dev/null && SPOT=1 JOB_ID=sn-2026-10-08-shards-$(date -u +%H%M%S) ../../job/static-names.sh run shards 32 -g 2026-10-08 > /dev/null && dt-cloud static-names sidecar -g 2026-10-08 > suffixes.json
+    deps:
+      intervals.json: ''
+      shards.json: ''
+    git_deps:
+      ../../cloud/src/dt_cloud/static_names.py: ''
+      ../../job/static-names.sh: ''

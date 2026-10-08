@@ -93,6 +93,39 @@ LSM-style, no server:
 - **Inputs.** The day's opened and closed versions are what `ch-ingest` already computes; the same diff can come from consecutive path-index files with DuckDB on Batch, so ClickHouse is not required for upkeep either.
 - **Initial build.** The prototype's 31M rows took ~105 s; the full 16.5B is ~530× that, roughly 3–6 hours of sort and export on the 32-vCPU VM or a Batch job, once.
 
+## Pipeline: rebuilt from primary sources on GCP Batch
+
+`dt-cloud static-names` (`cloud/src/dt_cloud/static_names.py`), driven by `job/static-names.sh` (us-east1, beside the data; the gcs job image pinned by digest; this checkout's committed `dt_cloud` tree staged content-addressed under `gs://oa-gcs-usage-dvx/static-names/src/<tree>/`), tracked by DVX stages in `static-names/<gen>/`. Nothing reads ClickHouse except the verification stages.
+
+| Stage (DVX out) | What | Where it runs |
+|---|---|---|
+| `scans.json` | each scan date's newest `path` sort (`listing/<date>/[index/<gen>/]path-index.parquet`, the rule `ch-ingest` uses), pinned by GCS generation, size, md5/crc32c, with its source format (61 v1, 9 v2) | laptop (footer reads) |
+| `ranges.json` | 256 `(depth, path)` key ranges of about equal input rows (row-group starts of the newest v1 and v2 scans, weighted by scan count), each a few conjunctive filters so DuckDB prunes every scan's row groups | laptop |
+| `intervals.json` | per range: every scan's rows in the range, merged per key as `ch-ingest` merges them, then pyrmts' gaps-and-islands (a new version when any value changes, the weighted mean stamp compared to the second with banker's rounding, or the key was absent in between) → `intervals/r####.parquet` (`depth, path, usr, vf, vt` + values, sorted), `hist/` (suffix rows per 3-character prefix) and `digest/` (per scan: opened/closed counts and md5 sums) | Batch: 32 tasks × 8 ranges |
+| `verify-intervals.json` | per scan, opened and closed counts and order-insensitive digests vs ClickHouse `m_nodes`/`m_closures` | the ch-store VM, read-only |
+| `shards.json` | shard plan from the histograms: runs of 3-character prefixes of ≤ 50M suffix rows (a prefix is never split, so a literal's range is in one file), in 32 contiguous task groups | laptop |
+| `suffixes.json` | `suffix-map` expands each range's intervals once into `(s, …, shard)` rows written per reduce task; `shards` partitions its task's rows by shard and writes each sorted `(s, path, usr, vf)` as `sx/s####.parquet` (8K-row groups, zstd, `usr` dictionary) plus its sidecar; `sidecar` concatenates `sidecar.parquet` `(file, rg, s_min, s_max, offset, length, rows)` (from the rows written, not truncated statistics) and checks the shards don't overlap | Batch: 32 + 32 tasks |
+| `verify-answers.json` | `query` (sidecar → one ranged read per file → first-hit filter → per-bucket sums) vs `mega_names.answer(…, postings='m')` per (term, date) | laptop + VM |
+| `r2.dvc` (side effect) | `r2-copy`: `sx/`, `sidecar.parquet`, `shards.json`, `scans.json` → R2 `oa-gcs-usage-index` under the same keys, skipping what is there with the same size and md5 | the ch-store VM (holds the R2 keys), `nice`d |
+
+Outputs: `gs://oa-gcs-usage-dvx/static-names/<gen>/{scans,ranges,shards}.json, intervals/, hist/, digest/, sxmap/ (intermediate), sx/, sidecar/, sidecar.parquet`. Everything is written through pyarrow in fixed row-group sizes under a total sort order, so a rerun over the same inputs and image is byte-identical. `append -f GEN` adds the next scan to a range's intervals (open versions × the scan, a full join) and writes the day's opened/closed versions as `delta/<date>/r####.parquet`, the daily delta source.
+
+Run: `cd static-names/<gen> && PATH=$REPO/.venv/bin:$PATH dvx run verify-answers.json.dvc` (then `r2.dvc`).
+
+### Validation runs (2026-10-08)
+
+- **Local** (`cloud/tests/test_static_names.py`): intervals equal a sequential-ingest oracle (v1/v2 mix, duplicate v1 rows, absence gaps, rounding ties) at 1 and 4 ranges; ranges partition the key space; `append` is byte-identical to a rebuild (intervals and histogram files) with matching digests and delta; suffix rows equal brute force; the reader's per-bucket first-hit answers equal brute force for every date; the restated kernel equals pyrmts' `_intervals_sql`.
+- **Intervals, real data**: ranges 0, 100, 200 (one task, n2-highmem-16) — 7.59M, 2.92M and 3.03M intervals in 383 s (first range: includes parsing all 70 footers), 247 s and 232 s. Per scan opened and closed counts and digests **equal ClickHouse on all 70 scans for all three ranges** (`nodes`/`closures` restricted to each range).
+- **Append, real data**: range 100 built over 69 scans then appended 10-08 is byte-identical (md5) to the 70-scan build.
+- **Suffix shards, real data** (the three ranges' intervals, 13.5M versions → 513M suffix rows, 11 shards): 50M-row shards sort and write in ~55 s each; files are 12–17.6 B/row (pyarrow zstd), 6.9 GB for 513M rows; sidecar 62,674 row groups, 2.6 MB.
+
+### Extrapolation to the full build (before launching it)
+
+- Intervals: 256 ranges × ~250 s ≈ 18 task-hours of n2-highmem-16 → 32 tasks ≈ 35–45 min wall; ~$20 on demand, ~$6 spot. Output ~10–15 GB (8 B/version measured).
+- Suffix rows: the three dev ranges average 38 suffix rows per version (long podcast names); `name_spans` gives 16.5B in all. Files at 12–15 B/row → **~200–250 GB** (the prototype's ClickHouse export was 25–28 B/row; the estimate above of 410–460 GB is superseded).
+- Suffix map: one expansion of all 1.15B versions; reduce: ~330 shards × ~1 min sort/write plus each task's partition pass, 32 tasks ≈ 30–45 min wall; ~$15–30 on demand.
+- R2: ~200–250 GB at GCS egress ≈ $25–30 once; ~$3–4/month stored.
+
 ## Alternatives compared
 
 | Design | Size | Round trips per rare query | Bytes per rare query | Verdict |

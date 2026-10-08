@@ -1,0 +1,8 @@
+outs:
+- path: verify-intervals.json
+meta:
+  computation:
+    cmd: dt-cloud static-names ch-digest-sql -n m_nodes -c m_closures ranges.json | ../../job/ch-store.sh sql - > ../../tmp/static-names-ch-digest-2026-10-08.tsv && dt-cloud static-names verify-intervals -g 2026-10-08 ../../tmp/static-names-ch-digest-2026-10-08.tsv > verify-intervals.json
+    deps:
+      intervals.json: ''
+      ranges.json: ''

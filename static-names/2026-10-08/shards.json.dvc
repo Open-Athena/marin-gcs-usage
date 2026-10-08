@@ -1,0 +1,9 @@
+outs:
+- path: shards.json
+meta:
+  computation:
+    cmd: dt-cloud static-names plan-shards -g 2026-10-08 -n 50000000 -t 32 > shards.json && gcloud storage cp --verbosity=error shards.json gs://oa-gcs-usage-dvx/static-names/2026-10-08/shards.json
+    deps:
+      intervals.json: ''
+    git_deps:
+      ../../cloud/src/dt_cloud/static_names.py: ''
