@@ -154,6 +154,27 @@ grant_bucket(f"{DATA_BUCKET}-browse", bucket=DATA_BUCKET, role="roles/storage.ob
 # submitting the job (`_lib/sweepDispatch.ts`): create-only, no read/overwrite/delete.
 grant_bucket(f"{DATA_BUCKET}-dispatch", bucket=DATA_BUCKET, role="roles/storage.objectCreator", member=dispatch.member, member_email=dispatch.email_literal, adopt=adopt)
 
+# Pipeline intermediates (e.g. the static name-search shuffle): no soft delete,
+# so a deleted intermediate stops billing at once, and anything left behind is
+# deleted after 7 days. Nothing here is a source of truth.
+SCRATCH_BUCKET = "oa-gcs-usage-scratch"
+scratch = gcp.storage.Bucket(
+    SCRATCH_BUCKET,
+    project=project,
+    name=SCRATCH_BUCKET,
+    location="US-EAST1",
+    storage_class="STANDARD",
+    uniform_bucket_level_access=True,
+    soft_delete_policy=gcp.storage.BucketSoftDeletePolicyArgs(retention_duration_seconds=0),
+    lifecycle_rules=[
+        gcp.storage.BucketLifecycleRuleArgs(
+            action=gcp.storage.BucketLifecycleRuleActionArgs(type="Delete"),
+            condition=gcp.storage.BucketLifecycleRuleConditionArgs(age=7),
+        ),
+    ],
+)
+grant_bucket(f"{SCRATCH_BUCKET}-job", bucket=scratch.name, role="roles/storage.objectAdmin", member=job.member, member_email=job.email_literal, adopt=adopt)
+
 # The scanned fleet (Marin's buckets, another project): the job lists and reads
 # every bucket and deletes from the swept ones (`objectUser`); the browser reads.
 FLEET = {
