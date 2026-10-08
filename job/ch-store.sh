@@ -9,6 +9,8 @@
 #   job/ch-store.sh ingest DATE…         # background: ch-ingest each scan in order (job/ch-store/ingest-days.sh)
 #   job/ch-store.sh daily [-n]           # background: catch the store, name index and catalog up to gcs's newest scan, then restart serving (job/ch-store/daily.sh; -n prints the plan in the foreground)
 #   job/ch-store.sh daily-timer on|off   # the VM's hourly `ch-daily` systemd timer running daily.sh (off by default)
+#   job/ch-store.sh tunnel               # (re)start `cloudflared` for the named tunnel (`infra/cf` `queryBoxHost`, gcs: gcs-query.oa.dev); its token
+#                                        # comes from the gcs CF stack's secret output on stdin (`pulumi stack output -s gcs --show-secrets query_box_tunnel_token | job/ch-store.sh tunnel`), never echoed
 #   job/ch-store.sh serve                # (re)start serve-query -e ch on :8080 (bearer token in /data/token; SERVE_SRC=/data/src-x serves a separately staged source tree)
 #   job/ch-store.sh py ARGS…             # `python3 -m dt_cloud.cli ARGS` in the image on the VM (privileged, host network)
 #   job/ch-store.sh py-bg TAG ARGS…      # detached CLI job; refuses an existing tag, retains exit state/logs
@@ -112,6 +114,11 @@ daily)
   IP=$(ip)
   if [ "${2:-}" = -n ]; then vssh "sudo /data/daily.sh -n"
   else vssh "sudo nohup /data/daily.sh > /dev/null 2>&1 < /dev/null & echo started; tail -3 /data/daily/daily.log 2>/dev/null"; fi
+  ;;
+tunnel)
+  IP=$(ip)
+  tr -d '\n' | vssh "sudo sh -c 'umask 077; { printf TUNNEL_TOKEN=; cat; echo; } > /data/tunnel.env'"
+  vssh "sudo docker rm -f ch-named-tunnel > /dev/null 2>&1; sudo docker run -d --name ch-named-tunnel --restart unless-stopped --network host --env-file /data/tunnel.env cloudflare/cloudflared:latest tunnel --no-autoupdate run > /dev/null && echo started"
   ;;
 daily-timer)
   IP=$(ip)
