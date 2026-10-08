@@ -28,7 +28,7 @@ export function NamePage() {
   let result: NameResult | undefined
   if (request && query.data) try { result = nameResultForRegistry(query.data, registry.data!) } catch (error) { issue = (error as Error).message }
   const detail = result && nameHasDetail(result) ? request : undefined
-  const catalogOnly = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'daily-scalar-source-v1') ?? []
+  const catalogOnly = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'daily-scalar-source-v1' && !row.plans.includes('bounded-name-postings')) ?? []
   return <main className="hot-page">
     <header><Link to="/">marin GCS</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {dates.join(', ')}.</p>}</header>
     <p className="hot-scope">Case-insensitive literal substring within any path component name; no slash-crossing. Matching directories cover their descendants, counted once. Exact bytes and object counts, including zero-byte objects.</p>
@@ -43,7 +43,7 @@ export function NamePage() {
     {request && !issue && query.isPending && <p role="status">Loading exact name summary…</p>}
     {request && !issue && query.error && <p role="alert">{query.error.message}</p>}
     {request && !issue && result && <><NamePlanStatus result={result} /><HotMaps result={result} request={detail} /><HotTotals result={result} request={detail} />
-      <p className="hot-note">{detail ? 'Prepared bucket detail is available through the map actions and table links.' : result.capabilities ? 'These dated root summaries have exact bucket totals only; no prepared bucket detail, deeper drill-down or fallback.' : 'This on-demand result has root and bucket totals only; no prepared bucket detail or deeper drill-down.'}</p></>}
+      <p className="hot-note">{detail ? 'Prepared bucket detail is available through the map actions and table links.' : result.capabilities ? 'These dated root summaries have exact bucket totals only; no prepared bucket detail or deeper drill-down.' : 'This on-demand result has root and bucket totals only; no prepared bucket detail or deeper drill-down.'}</p></>}
     <footer>No owner or Boolean filters in this preview. The <Link to="/hot">catalog-only preview</Link> and main <Link to="/">storage map</Link> are unchanged.</footer>
     <SiteKbd />
   </main>

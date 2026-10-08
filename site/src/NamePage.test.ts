@@ -58,6 +58,17 @@ it('offers only metadata dates and retains the mixed-date URL baseline without f
     expect([...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)).toEqual([])
   } finally { client.clear() }
 })
+it('a daily scan with its own name index is not "catalog literals only": other literals are answered on demand', () => {
+  const client = new QueryClient(), registry = datedNameRegistry(), body = dailyNameFixture()
+  registry.dates[registry.dates.length - 1].plans = ['catalog', 'bounded-name-postings']
+  client.setQueryData(['name-summary-registry'], parseNameRegistry(registry))
+  client.setQueryData(['name-summary', body.date, body.pattern, undefined], parseName(body, { date: body.date, name: body.pattern }))
+  try {
+    const html = render(client, '/names?date=2026-10-06&name=datakit')
+    expect(html.match(/<p id="hot-availability" class="hot-note">(.*?)<\/p>/)?.[1]).toBe('Catalog literals use prepared summaries. Other literals use bounded name postings on demand; requests exceeding the work budget fail explicitly, not as zero matches. No unbounded fleet scan.')
+    expect([...html.matchAll(/<p class="hot-note">(.*?)<\/p>/g)].map(([, text]) => text).at(-1)).toBe('These dated root summaries have exact bucket totals only; no prepared bucket detail or deeper drill-down.')
+  } finally { client.clear() }
+})
 it('single dated scan reload has no baseline and preserves zero-byte object counts in the exact table', () => {
   const client = new QueryClient(), body = dailyNameFixture(); body.root = { b: 0, o: 2 }; body.buckets.forEach(row => { row.b = 0; row.o = row.path === 'bucket-b' ? 2 : 0 })
   client.setQueryData(['name-summary-registry'], parseNameRegistry(datedNameRegistry()))
