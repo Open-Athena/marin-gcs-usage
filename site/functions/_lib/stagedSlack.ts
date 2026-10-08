@@ -175,13 +175,39 @@ export function topFolders(prefixes: readonly string[], stats: Record<string, Pr
     if (g) { g.k++; g.b += b } else groups.set(key, { k: 1, b, only: p })
   }
   const sorted = [...groups].sort(([ka, a], [kb, b]) => (stats ? b.b - a.b : 0) || b.k - a.k || (ka < kb ? -1 : ka > kb ? 1 : 0))
-  const shown = sorted.slice(0, n).map(([key, g]) => {
-    const name = `\`${shortPath(g.k === 1 ? g.only : key)}\``
+  const top = sorted.slice(0, n).map(([key, g]) => ({ path: unscheme(g.k === 1 ? g.only : key), g }))
+  // The folder every shown path shares, named once; each path then reads
+  // from there, so what tells them apart (usually a run name) survives.
+  const shared = top.length > 1 ? commonFolder(top.map(t => t.path)) : ''
+  const root = shared.split('/').filter(Boolean).length > 1 ? shared : ''  // just the bucket: not worth a line of its own
+  const shown = top.map(({ path, g }) => {
+    const name = `\`${root ? relPath(path.slice(root.length)) : shortPath(path)}\``
     const count = g.k > 1 ? ` (${fmtN(g.k)})` : ''
     return `${name}${count}${stats ? ` ${fmtBytes(g.b)}` : ''}`
   })
   const more = sorted.length - shown.length
-  return shown.join(', ') + (more > 0 ? `, +${fmtN(more)} more` : '')
+  return (root ? `in \`${shortPath(root)}\`: ` : '') + shown.join(', ') + (more > 0 ? `, +${fmtN(more)} more` : '')
+}
+
+/** The deepest folder (ending in `/`) that every path lies under; '' if none. */
+export function commonFolder(paths: readonly string[]): string {
+  if (!paths.length) return ''
+  let c = paths[0]
+  for (const p of paths.slice(1)) { let i = 0; while (i < c.length && i < p.length && c[i] === p[i]) i++; c = c.slice(0, i) }
+  const cut = c.lastIndexOf('/')
+  const root = cut < 0 ? '' : c.slice(0, cut + 1)
+  // A shown path equal to the root would read as empty: back off one level.
+  return paths.some(p => p === root) ? root.slice(0, root.slice(0, -1).lastIndexOf('/') + 1) : root
+}
+
+/** A path relative to a shared folder, for a phone-width line: past `max`
+ *  chars, its first folder (the one that tells siblings apart; a long one
+ *  elided in its middle), `…`, and its last. */
+export function relPath(rel: string, max = 52): string {
+  if (rel.length <= max) return rel
+  const segs = rel.replace(/\/$/, '').split('/')
+  const first = segs[0].length > 40 ? `${segs[0].slice(0, 24)}…${segs[0].slice(-14)}` : segs[0]
+  return segs.length === 1 ? `${first}/` : segs.length === 2 ? `${first}/${segs[1]}/` : `${first}/…/${segs[segs.length - 1]}/`
 }
 
 /** A stage reply: one stager's batches (one, or several coalesced). */

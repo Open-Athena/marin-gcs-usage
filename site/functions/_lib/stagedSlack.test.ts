@@ -114,6 +114,14 @@ describe('stage replies: compact, phone-width', () => {
       .toEqual(['marin-us-central2/…/llama-8b-tootsie-run-42/step-12000/', 'b/short/path/'])
     expect(topFolders(['gs://b/x/'], { 'gs://b/x/': { b: 0, o: 0 } })).toBe('`b/x/` 0 B')
   })
+  it('sibling paths under a shared folder: the folder once, then each from there, so long run names still tell them apart', () => {
+    const iso = 'gs://marin-us-central2/checkpoints/isoflop'
+    const r1 = `${iso}/isoflop-9e+19-d2048-L21-B32-nemo-wider-depth-adapt/checkpoints`
+    const r2 = `${iso}/isoflop-3e+19-d1792-L18-B16-nemo-wider-depth-adapt/checkpoints`
+    const st = { [`${r1}/step-10000/`]: { b: 2 ** 40, o: 1 }, [`${r2}/step-10000/`]: { b: 2 ** 41, o: 1 } }
+    expect(topFolders([`${r1}/step-10000/`, `${r2}/step-10000/`], st)).toBe(
+      'in `marin-us-central2/checkpoints/isoflop/`: `isoflop-3e+19-d1792-L18-…er-depth-adapt/…/step-10000/` 2.0 TiB, `isoflop-9e+19-d2048-L21-…er-depth-adapt/…/step-10000/` 1.0 TiB')
+  })
   it('a pre-coalescing reply rejects its one batch; nothing left staged → no reject button', () => {
     const legacy = reply({ replyId: null, batchId: 9, prefixes: ['gs://b/x/'] })
     const gone = reply({ batches: 2, prefixes: [] })
