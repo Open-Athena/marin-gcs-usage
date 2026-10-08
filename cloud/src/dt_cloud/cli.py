@@ -1705,18 +1705,26 @@ def sweep_recovery_check(limit: int, prefixes: tuple[str, ...]) -> None:
 
 @sweep.command("undo")
 @option("-b", "--bucket", "only_buckets", multiple=True, help="Only these buckets")
-@option("-n", "--dry-run", is_flag=True, help="List what would be restored; call nothing")
+@option("-B", "--bulk", is_flag=True, help="Restore whole logged dirs with `objects.bulkRestore`, each gated by an exactness precheck (dirs failing it, and anything left unrestored, go per-object)")
+@option("-n", "--dry-run", is_flag=True, help="List what would be restored; call nothing (with -B: run the precheck, report bulk vs per-object)")
+@option("-o", "--bulk-ops", default=4, type=int, help="Concurrent bulk-restore operations (-B)")
 @option("-p", "--prefix", "prefixes", multiple=True, help="Only objects under these prefixes (gs://bucket/dir/); default: everything the run deleted")
-@option("-w", "--workers", default=16, type=int, help="Concurrent restore calls")
+@option("-w", "--workers", default=16, type=int, help="Concurrent restore calls (and, with -B, precheck/verify listings)")
 @option("--no-record", is_flag=True, help="Skip the D1 undo_state / undone_objects update")
 @argument("run")
-def sweep_undo(only_buckets: tuple[str, ...], dry_run: bool, prefixes: tuple[str, ...], workers: int, no_record: bool, run: str) -> None:
+def sweep_undo(only_buckets: tuple[str, ...], bulk: bool, dry_run: bool, bulk_ops: int, prefixes: tuple[str, ...], workers: int, no_record: bool, run: str) -> None:
     """Restore what a real run deleted, from its `deleted/` logs — the
     soft-delete restore of exactly the logged generations, valid until the
     run's recorded `undo_deadline`. Actual retention starts per object at
     deletion, so that record is not an object-level guarantee. RUN is the D1
     run id (`<scan>-p<plan_id>/<utc stamp>`, as /staged lists it) or the run's
-    gs:// log dir. Re-runnable: names already live again are left alone."""
+    gs:// log dir. Re-runnable: names already live again are left alone.
+
+    `-B` restores per directory with GCS bulk restore, filtered to the run's
+    deletion window (the D1 row's started/finished times, else the log dir's
+    final `progress/<bucket>.json`); a dir goes bulk only when every object
+    soft-deleted under it in that window is in the run's log (see
+    `sweep_exec.undo_run`)."""
     from .index_footer import _creds, _d1_query, _q
     from .sweep_exec import record_undo, undo_run
 
@@ -1724,7 +1732,7 @@ def sweep_undo(only_buckets: tuple[str, ...], dry_run: bool, prefixes: tuple[str
     try:
         tok, acct = _creds()
         rows = _d1_query(
-            "SELECT run_id, mode, undo_deadline, undo_state, log_dir, deleted_objects FROM deletion_runs "
+            "SELECT run_id, mode, started_ts, finished_ts, undo_deadline, undo_state, log_dir, deleted_objects FROM deletion_runs "
             f"WHERE run_id = {_q(run)} OR log_dir = {_q(run)}", acct, tok,
         )
         row = rows[0] if rows else None
@@ -1741,7 +1749,11 @@ def sweep_undo(only_buckets: tuple[str, ...], dry_run: bool, prefixes: tuple[str
     if row is not None:
         err(f"undo {row['run_id']}: {row['deleted_objects']:,} deleted objects, undo_state={row['undo_state']}, "
             f"window until {dt.datetime.fromtimestamp(deadline, dt.timezone.utc):%Y-%m-%d %H:%MZ}" if deadline else f"undo {row['run_id']}")
-    summary = undo_run(log_dir, only_buckets=only_buckets, prefixes=prefixes, dry_run=dry_run, workers=workers, deadline=deadline)
+    window = (int(row["started_ts"]), int(row["finished_ts"])) if row is not None and row.get("started_ts") and row.get("finished_ts") else None
+    summary = undo_run(
+        log_dir, only_buckets=only_buckets, prefixes=prefixes, dry_run=dry_run, workers=workers, deadline=deadline,
+        bulk=bulk, window=window, bulk_ops=bulk_ops,
+    )
     if row is not None and not no_record and not dry_run:
         try:
             err(f"recorded undo_state={record_undo(row['run_id'], summary, int(row['deleted_objects'] or 0))}")
