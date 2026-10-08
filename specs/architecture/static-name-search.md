@@ -78,7 +78,11 @@ The read for `q` is `Σ over names containing q of versions × occurrences` rows
 
 - **Sidecar.** At 4K rows per group, 16.5B rows is ~4M row groups; their parquet footer metadata is ~1.3 KB each (measured), so files are split by suffix prefix (e.g. first two characters, a few hundred files of ~1–2 GB) and the per-group `(s_min, s_max, file, byte range)` index goes to D1 (or KV shards). That is the same footers-in-D1 pattern the path store already uses (`index-sync`), so a query is: one D1 lookup (the group range for `q`) → one R2 ranged GET (≤ a few MB) → decode, filter, sum.
 - **Decode.** ~100K rows / 3 MB compressed decodes to ~25 MB with hyparquet, within a Worker's 128 MB; the CPU is the filter over ~100K rows (the prototype's 0.6 s is pure Python). Lambda or Cloud Run are not needed.
-- Not measured: Worker → R2 latency (needs an R2 bucket, not created). Laptop → GCS already shows 0.1–0.4 s for the range read.
+- **Worker → R2, measured 2026-10-08** (dev Pages Functions `/api/static-bench`, colo EWR, bucket `oa-gcs-usage-index` in ENAM; the prototype files under `proto/static/`):
+  - one ranged GET, 56 KB–3 MB: first touch 130–840 ms, repeat typically 60–280 ms (outliers to ~840 ms); 4–6 ranges issued in parallel: ~230 ms total;
+  - hyparquet decode (fzstd, 6 columns) of ~100–125K rows (`5418`, `48.parquet`, `nk080`): typically 150–430 ms, with spikes to 1.2–1.7 s; 4–22K rows: 10–75 ms;
+  - footer parse: 9.0 MB (4K-row groups) takes ~0.9 s, 1.8 MB (16K) 0.2 s, which is why production reads the per-group index from D1 and never parses a footer;
+  - so a ~100K-row term is ~0.3–0.7 s end to end (vs 3.8–5 s cold on ClickHouse); decode, not the fetch, dominates, and it scales with `V`.
 
 ### Daily upkeep
 
