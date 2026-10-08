@@ -56,6 +56,38 @@ def build_spans(ch: Ch, settings: dict | None = None) -> dict:
     return {"names": names, "open": still_open, "build_s": round(monotonic() - start, 3)}
 
 
+def build_postings(ch: Ch, stem: str, start: str | None = None, settings: dict | None = None) -> dict:
+    """`{stem}_nodes` / `{stem}_closures`: the store's versions and closures re-sorted by name, in 256-row granules and
+    without per-scan partitions, so one name costs a granule or two however many scans hold it. With `start` (a scan
+    date), only versions still live on or after it, and the closures that can close them: the index of a span
+    `[start, newest]`. Daily upkeep appends the day's opened versions and closures (`ingest` already isolates them)."""
+    if not stem.isidentifier():
+        raise ValueError("postings stem must be an identifier")
+    begin = monotonic()
+    S = dt_lit(f"{start} 00:00:00") if start else None
+    nodes, closures = f"{stem}_nodes", f"{stem}_closures"
+    for t in (nodes, closures):
+        ch.exec(f"DROP TABLE IF EXISTS {t}", settings=settings)
+    keep = f" WHERE (depth, path, usr, vf) NOT IN (SELECT depth, path, usr, vf FROM closures WHERE vt <= {S})" if S else ""
+    stage = monotonic()
+    ch.exec(f"""CREATE TABLE {nodes} (name String, vf DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
+        size Int64, n_files Int64) ENGINE = MergeTree ORDER BY (name, vf, depth, path, usr) SETTINGS index_granularity = 256
+        AS SELECT name, vf, depth, path, usr, size, n_files FROM nodes{keep}""", settings=settings)
+    nodes_s = round(monotonic() - stage, 3)
+    stage = monotonic()
+    ch.exec(f"""CREATE TABLE {closures} (name String, vt DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
+        vf DateTime('UTC')) ENGINE = MergeTree ORDER BY (name, vt, depth, path, usr) SETTINGS index_granularity = 256
+        AS SELECT name, vt, depth, path, usr, vf FROM closures{f" WHERE vt > {S}" if S else ""}""", settings=settings)
+    closures_s = round(monotonic() - stage, 3)
+    ch.exec(f"OPTIMIZE TABLE {nodes} FINAL", settings=settings)
+    ch.exec(f"OPTIMIZE TABLE {closures} FINAL", settings=settings)
+    sizes = {t: dict(zip(("rows", "bytes"), (int(x) for x in ch.one(
+        f"SELECT sum(rows), sum(bytes_on_disk) FROM system.parts WHERE active AND database = currentDatabase() AND table = {lit(t)}", settings))))
+        for t in (nodes, closures)}
+    return {"stem": stem, "start": start, "sizes": sizes, "stages": {"nodes_s": nodes_s, "closures_s": closures_s},
+            "build_s": round(monotonic() - begin, 3)}
+
+
 def scan_bound(ch: Ch, date: str) -> tuple[str, str]:
     """`date`'s published scan as a DateTime literal, and its rebaseline epoch."""
     for _, dt, _, _, epoch in scan_epochs(ch):
@@ -77,9 +109,11 @@ def answer(
     *,
     max_names: int | None = None,
     max_postings: int | None = None,
+    postings: str | None = None,
     settings: dict | None = None,
 ) -> dict:
-    """Bucket bytes/objects of the first hits of `pattern` on `date`'s scan."""
+    """Bucket bytes/objects of the first hits of `pattern` on `date`'s scan: from the store's own `by_name`
+    projections, or the name-sorted `{postings}_nodes` / `{postings}_closures` (`build_postings`)."""
     if not isinstance(pattern, str) or not pattern or "/" in pattern or "\0" in pattern or len(pattern) > 512:
         raise CoarseRequest("name totals need one nonempty literal without slashes or NUL, at most 512 characters")
     pattern = pattern.lower()
@@ -100,11 +134,16 @@ def answer(
     stages["vocabulary_s"] = round(monotonic() - stage, 6)
     stage = monotonic()
     restrict = f"name IN (SELECT l FROM {vocabulary})"
-    first = f"position(lowerUTF8(parent), {lit(pattern)}) = 0"
+    parent = "if(position(path, '/') = 0, '', substring(path, 1, length(path) - position(reverse(path), '/')))"
+    first = f"position(lowerUTF8({parent}), {lit(pattern)}) = 0"
+    if postings is None:
+        where = f"nodes WHERE {restrict} AND depth >= 1 AND {live(D, restrict, since)}"
+    else:
+        where = (f"{postings}_nodes WHERE {restrict} AND vf >= {since} AND vf <= {D} AND depth >= 1 AND (depth, path, usr, vf) NOT IN "
+                 f"(SELECT depth, path, usr, vf FROM {postings}_closures WHERE {restrict} AND vt <= {D})")
     rows = ch.json(f"""
         SELECT splitByChar('/', path)[1] AS bucket, count(), sumIf(size, {first}), sumIf(n_files, {first})
-        FROM nodes WHERE {restrict} AND depth >= 1 AND {live(D, restrict, since)}
-        GROUP BY bucket
+        FROM {where} GROUP BY bucket
     """, settings) if n_names else []
     postings = sum(int(row[1]) for row in rows)
     if max_postings is not None and postings > max_postings:
@@ -139,6 +178,7 @@ def bench(
     threads: int,
     trials: int = 1,
     references: dict[str, tuple[str, bool]] | None = None,
+    postings: str | None = None,
 ):
     """Per `(date, pattern)`: the consolidated answer `trials` times (first = coldest), and, where `references` names
     a target for the date, whether its buckets equal that index's. Yields one record each."""
@@ -150,11 +190,11 @@ def bench(
             for _ in range(trials):
                 ch = Ch(url, db=db)
                 try:
-                    body = answer(ch, date, pattern, settings=settings)
+                    body = answer(ch, date, pattern, postings=postings, settings=settings)
                 finally:
                     ch.close()
                 runs.append({"build_s": body["build_s"], **body["stages"]})
-            record = {"date": date, "pattern": pattern.lower(), "threads": threads, "runs": runs,
+            record = {"date": date, "pattern": pattern.lower(), "threads": threads, "postings": postings, "runs": runs,
                       "vocabulary_names": body["vocabulary_names"], "matching_slice_rows": body["matching_slice_rows"],
                       "root": body["root"]}
             if references and date in references:

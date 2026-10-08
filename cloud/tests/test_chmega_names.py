@@ -59,12 +59,24 @@ def vocabulary(request, store):
     return request.param
 
 
-def test_every_substring_on_every_day_equals_brute_force(store, vocabulary):
+@pytest.fixture(params=[None, ("all", None), ("since0930", "2026-09-30")])
+def postings(request, store):
+    """The store's own projections, or name-sorted postings of all time or of a span (whose days are from its start)."""
+    if request.param is None:
+        return None, list(DAYS)
+    stem, start = request.param
+    body = mega_names.build_postings(store["ch"], stem, start)
+    assert body["sizes"][f"{stem}_nodes"]["rows"] > 0
+    return stem, [day for day in DAYS if start is None or day >= start]
+
+
+def test_every_substring_on_every_day_equals_brute_force(store, vocabulary, postings):
     ch, rows = store["ch"], store["rows"]
+    stem, days = postings
     mismatches = []
-    for day in DAYS:
+    for day in days:
         for p in patterns(rows):
-            got = mega_names.answer(ch, day, p)
+            got = mega_names.answer(ch, day, p, postings=stem)
             if {"root": got["root"], "buckets": got["buckets"]} != brute(rows[day], p):
                 mismatches.append((day, p))
     assert mismatches == []

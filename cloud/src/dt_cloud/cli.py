@@ -1859,6 +1859,7 @@ def ch_hot_frequency_report(
 @option("-d", "--date", "dates", multiple=True, required=True, help="Published scan date in the consolidated store; repeat")
 @option("-D", "--db", default="default", help="Consolidated store database")
 @option("-n", "--pattern", "patterns", multiple=True, required=True, help="Slash-free literal; repeat")
+@option("-P", "--postings", help="Name-sorted postings stem (`ch-mega-names-build`); default: the store's own `by_name` projections")
 @option("-r", "--reference", multiple=True, type=(str, str), help="DATE TARGET to compare against: a frozen snapshot target, or `daily:TARGET` for a daily scalar target's own name index; repeat")
 @option("-t", "--threads", default=8, type=IntRange(min=1, max=64), help="ClickHouse max_threads per statement")
 @option("-T", "--trials", default=1, type=IntRange(min=1, max=10), help="Runs per (date, literal); the first is the coldest")
@@ -1867,6 +1868,7 @@ def ch_mega_names(
     dates: tuple[str, ...],
     db: str,
     patterns: tuple[str, ...],
+    postings: str | None,
     reference: tuple[tuple[str, str], ...],
     threads: int,
     trials: int,
@@ -1879,8 +1881,36 @@ def ch_mega_names(
     from .chstore import mega_names
 
     refs = {d: (t.removeprefix("daily:"), t.startswith("daily:")) for d, t in reference}
-    for record in mega_names.bench(url, db, list(dates), list(patterns), threads=threads, trials=trials, references=refs):
+    for record in mega_names.bench(url, db, list(dates), list(patterns), threads=threads, trials=trials, references=refs, postings=postings):
         print(json.dumps(record), flush=True)
+
+
+@main.command("ch-mega-names-build")
+@option("-D", "--db", default="default", help="Consolidated store database")
+@option("-m", "--memory-gib", default=64, type=IntRange(min=1, max=200), help="Per-statement memory cap")
+@option("-s", "--start", help="Span start (scan date): keep only versions live on or after it; default all time")
+@option("-S", "--spans", is_flag=True, help="Also (re)build `name_spans`")
+@option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("stem", required=False)
+def ch_mega_names_build(db: str, memory_gib: int, start: str | None, spans: bool, threads: int, url: str, stem: str | None) -> None:
+    """Build the consolidated store's name index: STEM's name-sorted postings
+    (`{STEM}_nodes`, `{STEM}_closures`; `-s` limits them to a span), and/or the
+    `name_spans` vocabulary filter (`-S`). Prints sizes and timings as JSON."""
+    from .chstore import mega_names
+    from .chstore.client import Ch
+
+    settings = {"max_threads": threads, "max_insert_threads": threads, "max_memory_usage": memory_gib << 30,
+                "max_bytes_before_external_group_by": memory_gib << 29, "max_bytes_before_external_sort": memory_gib << 29,
+                "join_algorithm": "full_sorting_merge"}
+    ch = Ch(url, db=db, timeout=7200)
+    try:
+        if spans:
+            print(json.dumps({"name_spans": mega_names.build_spans(ch, settings)}), flush=True)
+        if stem:
+            print(json.dumps({"postings": mega_names.build_postings(ch, stem, start, settings)}), flush=True)
+    finally:
+        ch.close()
 
 
 @main.command("ch-daily-name-index")
