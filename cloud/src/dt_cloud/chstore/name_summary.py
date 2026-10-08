@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date as Date
 from hashlib import sha256
 from json import loads
+from os import cpu_count, environ
 from pathlib import Path
 from sys import stderr
 from threading import BoundedSemaphore, Event, Lock, Thread
@@ -27,6 +28,9 @@ from .hot_l1_publish import load_pinned, pin
 from .narrow import identifier
 
 COMPUTE_SECONDS = 5.0
+# ClickHouse threads per cold statement: the one cold slot may use the node,
+# up to 16 (`NAME_SUMMARY_COLD_THREADS` overrides).
+COLD_THREADS = int(environ.get('NAME_SUMMARY_COLD_THREADS') or min(16, cpu_count() or 4))
 CLEANUP_SECONDS = 2.0
 # A quarantined lane re-verifies after every owned query's own
 # `max_execution_time` has run out (a late-dispatched one carries it too), then
@@ -86,7 +90,7 @@ class DeadlineCh(Ch):
     """Existing HTTP/session client with owned IDs and a nonrenewable deadline."""
 
     def __init__(self, url: str, target: str, deadline: float, stopped: Event, request_id: str) -> None:
-        super().__init__(url, db=target, timeout=COMPUTE_SECONDS, max_threads=4, max_memory_usage=4 << 30,
+        super().__init__(url, db=target, timeout=COMPUTE_SECONDS, max_threads=COLD_THREADS, max_memory_usage=4 << 30,
                          max_execution_time=COMPUTE_SECONDS, timeout_before_checking_execution_speed=0,
                          timeout_overflow_mode='throw', max_bytes_before_external_sort=256 << 20,
                          max_bytes_ratio_before_external_sort=0, max_bytes_before_external_group_by=256 << 20,

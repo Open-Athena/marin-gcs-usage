@@ -4,6 +4,7 @@ from copy import deepcopy
 from hashlib import sha256
 from io import BytesIO
 from json import dumps
+from os import cpu_count, environ
 from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
@@ -506,3 +507,11 @@ def test_real_runtime_tiny_fleet_exact_cold_diff_then_forced_expiry_no_orphans(
     finally:
         probe.close()
     assert runtime.view('2026-10-05', '.json')['plan'] == 'catalog'
+
+
+def test_cold_statements_use_the_configured_thread_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The one cold slot may use the node (up to 16 threads); the env overrides it.
+    assert module.COLD_THREADS == int(environ.get('NAME_SUMMARY_COLD_THREADS') or min(16, cpu_count() or 4))
+    monkeypatch.setattr(module, 'COLD_THREADS', 12)
+    ch = module.DeadlineCh('http://loopback:8123', 'fleet', monotonic() + 5, Event(), 'name_summary_' + 'd' * 32)
+    assert (ch.settings['max_threads'], ch.settings['max_execution_time']) == ('12', '5.0')
