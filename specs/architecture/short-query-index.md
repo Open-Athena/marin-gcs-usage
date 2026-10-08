@@ -429,3 +429,7 @@ Active Oct 6 tables total **19,566,121,249 bytes**, of which final nodes use **3
 [ch-ngrams]: https://clickhouse.com/docs/reference/functions/regular-functions/splitting-merging-functions#ngrams
 [hot-frequency-source]: ../../cloud/src/dt_cloud/chstore/hot_frequency.py
 [batch-catalog]: ../../cloud/src/dt_cloud/chstore/hot_l1_batch_catalog.py
+
+## Oct 6 at the complete length domain, keyed by match set
+
+`ch-hot-frequency-census -k 0` (native, `MAX_CHARS 0`) on Oct 6 runs every length until none is hot: the longest hot literal is 39 characters, 54,789 literals in all (48,748 at L16), 4m35s from census start to registry. Its union (`-k 0`, `max_chars: null`) makes every registry miss, at any length, a proof of fewer than T direct paths; there is no unclassified long-literal edge. 26,587 literals share their match set with a shorter literal (equal own-scan count to a (k−1)-prefix or suffix), so the dated L1 build computes 28,202 roots: **508 s** against 644 s for the 48,748-literal L16 build (the 606M-node source stream is the floor), 22 MB artifact, 234 MB native peak RSS. Every one of the 48,748 L16 literals resolves to bucket summaries identical to the own-census L16 generation (0 mismatches); the four-literal full-source check passes. Published privately at `/data/dated-l1-oct06-catalog-complete-a`; serving activation is manual.
