@@ -1,0 +1,10 @@
+outs:
+- path: catalog-answers.jsonl
+meta:
+  computation:
+    cmd: dt-cloud static-names catalog query -g 2026-10-08c -x -d 2026-10-08 -d 2026-10-06 -d 2026-10-01 -d 2026-09-30 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30  -t ../../job/static-names/catalog-terms.txt > catalog-answers.jsonl
+    deps:
+      catalog.json: ''
+      suffixes.json: ''
+    git_deps:
+      ../../job/static-names/catalog-terms.txt: ''

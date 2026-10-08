@@ -1,0 +1,8 @@
+outs:
+- path: census-check.json
+meta:
+  computation:
+    cmd: dt-cloud static-names catalog census-check -g 2026-10-08c -f 50000 > census-check.json
+    deps:
+      census.json: ''
+      cintervals.json: ''

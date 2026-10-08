@@ -1,0 +1,9 @@
+outs:
+- path: verify-catalog-ch.json
+meta:
+  computation:
+    cmd: cat ../2026-10-08/ch-answers.jsonl ch-catalog-answers.jsonl > ../../tmp/sn-2026-10-08c-ch-ref.jsonl && dt-cloud static-names catalog verify -V 100000 ../../tmp/sn-2026-10-08c-ch-ref.jsonl catalog-answers.jsonl > verify-catalog-ch.json
+    deps:
+      ../2026-10-08/ch-answers.jsonl: ''
+      ch-catalog-answers.jsonl: ''
+      catalog-answers.jsonl: ''

@@ -1,0 +1,10 @@
+outs:
+- path: brute-answers.jsonl
+meta:
+  computation:
+    cmd: gcloud storage cp --verbosity=error ../../job/static-names/catalog-terms.txt gs://oa-gcs-usage-dvx/static-names/2026-10-08c/catalog-terms.txt && SPOT=1 MODULE=static_catalog JOB_ID=sn-2026-10-08c-brute-$(date -u +%H%M%S) ../../job/static-names.sh run brute 7 -g 2026-10-08c -d 2026-10-08 -d 2026-10-06 -d 2026-10-01 -d 2026-09-30 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30  -t /gcs/oa-gcs-usage-dvx/static-names/2026-10-08c/catalog-terms.txt > /dev/null && gcloud storage cat gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/brute/2026-10-08.jsonl gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/brute/2026-10-06.jsonl gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/brute/2026-10-01.jsonl gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/brute/2026-09-30.jsonl gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/brute/2026-09-15.jsonl gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/brute/2026-08-15.jsonl gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/brute/2026-07-30.jsonl > brute-answers.jsonl
+    deps:
+      scans.json: ''
+    git_deps:
+      ../../job/static-names/catalog-terms.txt: ''
+      ../../cloud/src/dt_cloud/static_catalog.py: ''

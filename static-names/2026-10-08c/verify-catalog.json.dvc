@@ -1,0 +1,8 @@
+outs:
+- path: verify-catalog.json
+meta:
+  computation:
+    cmd: dt-cloud static-names catalog verify -V 100000 brute-answers.jsonl catalog-answers.jsonl > verify-catalog.json
+    deps:
+      brute-answers.jsonl: ''
+      catalog-answers.jsonl: ''
