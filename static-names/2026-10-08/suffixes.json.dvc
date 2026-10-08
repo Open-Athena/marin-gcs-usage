@@ -13,4 +13,4 @@ meta:
       intervals.json: 7c9452d7769175794c331c41e23fda73
       shards.json: 2f5e5ee54e702649d3208692017c3cb1
     git_deps:
-      ../../cloud/src/dt_cloud/static_names.py: 84d358aa5846338d95ae528dcee032268f94e399
+      ../../cloud/src/dt_cloud/static_names.py: e086788e1075af541102619371cf27e7194156e2

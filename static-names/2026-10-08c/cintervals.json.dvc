@@ -14,5 +14,5 @@ meta:
       ../2026-10-08/intervals.json: 7c9452d7769175794c331c41e23fda73
       ranges.json: 0e64092bfd59936b30b9f7b42738edd6
     git_deps:
-      ../../cloud/src/dt_cloud/static_names.py: 84d358aa5846338d95ae528dcee032268f94e399
+      ../../cloud/src/dt_cloud/static_names.py: e086788e1075af541102619371cf27e7194156e2
       ../../job/static-names/terms.txt: 2ee0d00ce5a1d496a76f296275755f3b404c8b65

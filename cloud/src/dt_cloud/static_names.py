@@ -1392,7 +1392,10 @@ def verify_intervals_cmd(bucket, gen, only, ch_tsv) -> None:
         raise SystemExit(1)
 
 
-R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json")
+#: What the Worker reads (`r2-copy`): the shards, their sidecars, the plan and scans, and the catalog's served files
+#: (not its census or per-shard cells).
+R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", "catalog/cells.parquet", "catalog/index.parquet",
+             "catalog/meta.json", "catalog/members.json")
 
 
 @cli.command("r2-copy")
