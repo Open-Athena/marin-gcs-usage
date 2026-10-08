@@ -49,7 +49,7 @@ describe('static names reader', () => {
         sMin: meta.map(cs => cs[0].statistics!.min_value),
         sMax: meta.map(cs => cs[0].statistics!.max_value),
         rows: md.row_groups.map(rg => Number(rg.num_rows)),
-        chunks: meta.flatMap(cs => cs.map(c => [Number(c.data_page_offset), Number(c.total_compressed_size), Number(c.dictionary_page_offset ?? 0)])),
+        chunks: meta.flatMap(cs => cs.flatMap(c => [Number(c.data_page_offset), Number(c.total_compressed_size), Number(c.dictionary_page_offset ?? 0)])),
       })
     }
     const b = bytes('sx/s0000.parquet'), flen = new DataView(b, b.byteLength - 8).getUint32(0, true)

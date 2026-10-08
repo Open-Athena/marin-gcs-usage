@@ -73,9 +73,9 @@ const NC = SX_COLUMNS.length
 const ZSTD = 6
 
 /** One shard's row groups: `s` min/max (exact: the writer's statistics are untruncated, `is_*_exact`),
- *  rows, and per column chunk `[data_page_offset, total_compressed_size, dictionary_page_offset | 0]`
- *  (`chunks[g * NC + c]`) — the only column metadata hyparquet reads. */
-export interface GroupIndex { size: number; sMin: string[]; sMax: string[]; rows: number[]; chunks: [number, number, number][] }
+ *  rows, and per column chunk `data_page_offset, total_compressed_size, dictionary_page_offset | 0` — the
+ *  only column metadata hyparquet reads — flat: column `c` of group `g` at `chunks[(g * NC + c) * 3]`. */
+export interface GroupIndex { size: number; sMin: string[]; sMax: string[]; rows: number[]; chunks: number[] }
 
 /** A minimal Thrift compact-protocol walker over a parquet footer: only the fields the index needs are
  *  decoded; everything else (schema, encodings, page statistics, size statistics, kv metadata) is skipped. */
@@ -168,7 +168,7 @@ export function groupIndex(footer: Uint8Array, size: number): GroupIndex {
             if (min == null || max == null) throw new Error('sx footer: a row group has no exact `s` statistics')
             idx.sMin.push(min); idx.sMax.push(max)
           }
-          idx.chunks.push([dpo, total, dict])
+          idx.chunks.push(dpo, total, dict)
         })
         if (nCols !== NC) throw new Error(`sx footer: ${nCols} columns, expected ${NC}`)
         return true
@@ -192,7 +192,7 @@ export function selectGroups(idx: GroupIndex, key: string): [number, number] {
 export function groupSpan(idx: GroupIndex, a: number, b: number): [number, number] {
   let start = Infinity, end = 0
   for (let g = a; g < b; g++) for (let c = 0; c < NC; c++) {
-    const [dpo, total, dict] = idx.chunks[g * NC + c]
+    const k = (g * NC + c) * 3, dpo = idx.chunks[k], total = idx.chunks[k + 1], dict = idx.chunks[k + 2]
     const s = dict > 0 ? Math.min(dict, dpo) : dpo
     start = Math.min(start, s); end = Math.max(end, s + total)
   }
@@ -203,21 +203,17 @@ export function groupSpan(idx: GroupIndex, a: number, b: number): [number, numbe
 
 export interface SxColumns { s: string[]; depth: number[]; path: string[]; usr: string[]; vf: bigint[]; vt: bigint[]; size: bigint[]; n_files: bigint[] }
 
-/** Decode groups `[a, b)` from their bytes (`buf` holds the file's `[start, start + buf.byteLength)`). */
-export async function decodeGroups(idx: GroupIndex, a: number, b: number, buf: ArrayBuffer, start: number): Promise<SxColumns> {
-  const row_groups = [] as RowGroup[]
-  let n = 0
-  for (let g = a; g < b; g++) {
-    n += idx.rows[g]
-    row_groups.push({
-      num_rows: BigInt(idx.rows[g]),
-      columns: SX_COLUMNS.map((name, c) => {
-        const [dpo, total, dict] = idx.chunks[g * NC + c]
-        return { meta_data: { type: SX_TYPES[c], path_in_schema: [name], codec: 'ZSTD', data_page_offset: BigInt(dpo), total_compressed_size: BigInt(total), ...(dict ? { dictionary_page_offset: BigInt(dict) } : {}) } }
-      }),
-    } as unknown as RowGroup)
-  }
-  const metadata = { version: 1, schema: SX_SCHEMA, num_rows: BigInt(n), row_groups, metadata_length: 0 } as unknown as FileMetaData
+/** Decode one row group `g` from the fetched bytes (`buf` holds the file's `[start, start + buf.byteLength)`). */
+export async function decodeGroup(idx: GroupIndex, g: number, buf: ArrayBuffer, start: number): Promise<SxColumns> {
+  const n = idx.rows[g]
+  const group = {
+    num_rows: BigInt(n),
+    columns: SX_COLUMNS.map((name, c) => {
+      const k = (g * NC + c) * 3, dict = idx.chunks[k + 2]
+      return { meta_data: { type: SX_TYPES[c], path_in_schema: [name], codec: 'ZSTD', data_page_offset: BigInt(idx.chunks[k]), total_compressed_size: BigInt(idx.chunks[k + 1]), ...(dict ? { dictionary_page_offset: BigInt(dict) } : {}) } }
+    }),
+  } as unknown as RowGroup
+  const metadata = { version: 1, schema: SX_SCHEMA, num_rows: BigInt(n), row_groups: [group], metadata_length: 0 } as unknown as FileMetaData
   const file = {
     byteLength: idx.size,
     slice(s: number, e?: number) {
@@ -247,37 +243,53 @@ export function scanMs(id: string): number {
 export type Totals = Record<string, [bigint, bigint]>
 export interface Answer { rows_read: number; rows_matching: number; answers: Record<string, Totals> }
 
-/** The first-hit filter and per-bucket sums over decoded suffix rows, per date (`Reader.answer`). */
-export function answerRows(cols: SxColumns, key: string, dates: string[]): Answer {
-  // Everything but liveness is date-independent, so it is decided once per row: the name match, the
-  // `(path, usr, vf)` dedup (one version = one `vt`, so a kept duplicate is live exactly when the first
-  // is), depth, and the parent test. Each date then only checks `vf ≤ D < vt` over the first hits.
-  let matching = 0
-  const seen = new Set<string>(), first: number[] = []
-  for (let i = 0; i < cols.s.length; i++) {
-    if (!cols.s[i].startsWith(key)) continue
-    const p = cols.path[i], slash = p.lastIndexOf('/')
-    if (!p.slice(slash + 1).toLowerCase().includes(key)) continue
-    matching++
-    if (cols.depth[i] < 1) continue
-    const k = `${p}\0${cols.usr[i]}\0${cols.vf[i]}`
-    if (seen.has(k)) continue
-    seen.add(k)
-    if ((slash < 0 ? '' : p.slice(0, slash)).toLowerCase().includes(key)) continue
-    first.push(i)
+/** The first-hit fold (`Reader.answer`), fed one decoded row group at a time so only first hits are held.
+ *  Everything but liveness is decided once per row: the suffix and name match, depth, the `(path, usr, vf)`
+ *  dedup (a version's rows whose suffix starts with the key are its occurrences of the key, so only a name
+ *  holding it twice or more is remembered) and the parent test; each date then checks `vf ≤ D < vt` over
+ *  the first hits. */
+export class FirstHits {
+  rows_read = 0
+  rows_matching = 0
+  private seen = new Set<string>()
+  private buckets: string[] = []
+  private bucketOf = new Map<string, number>()
+  private hit: { b: number; vf: bigint; vt: bigint; size: bigint; n: bigint }[] = []
+  constructor(readonly key: string) {}
+  add(cols: SxColumns): void {
+    const key = this.key
+    this.rows_read += cols.path.length
+    for (let i = 0; i < cols.path.length; i++) {
+      if (!cols.s[i].startsWith(key)) continue
+      const p = cols.path[i], slash = p.lastIndexOf('/'), name = p.slice(slash + 1).toLowerCase()
+      const at = name.indexOf(key)
+      if (at < 0) continue
+      this.rows_matching++
+      if (cols.depth[i] < 1) continue
+      if (name.indexOf(key, at + 1) >= 0) {
+        const k = `${p}\0${cols.usr[i]}\0${cols.vf[i]}`
+        if (this.seen.has(k)) continue
+        this.seen.add(k)
+      }
+      if ((slash < 0 ? '' : p.slice(0, slash)).toLowerCase().includes(key)) continue
+      const first = p.indexOf('/'), bucket = first < 0 ? p : p.slice(0, first)
+      let b = this.bucketOf.get(bucket)
+      if (b === undefined) { b = this.buckets.length; this.buckets.push(bucket); this.bucketOf.set(bucket, b) }
+      this.hit.push({ b, vf: cols.vf[i], vt: cols.vt[i], size: cols.size[i], n: cols.n_files[i] })
+    }
   }
-  const bucket = first.map(i => { const p = cols.path[i], s = p.indexOf('/'); return s < 0 ? p : p.slice(0, s) })
-  const answers: Record<string, Totals> = {}
-  for (const d of dates) {
-    const D = BigInt(scanMs(d)), totals: Totals = {}
-    first.forEach((i, j) => {
-      if (!(cols.vf[i] <= D && D < cols.vt[i])) return
-      const t = totals[bucket[j]] ??= [0n, 0n]
-      t[0] += cols.size[i]; t[1] += cols.n_files[i]
-    })
-    answers[d] = Object.fromEntries(Object.keys(totals).sort().map(b => [b, totals[b]]))
+  answer(dates: string[]): Answer {
+    const answers: Record<string, Totals> = {}
+    for (const d of dates) {
+      const D = BigInt(scanMs(d)), sums: [bigint, bigint][] = this.buckets.map(() => [0n, 0n]), live = this.buckets.map(() => false)
+      for (const h of this.hit) {
+        if (!(h.vf <= D && D < h.vt)) continue
+        sums[h.b][0] += h.size; sums[h.b][1] += h.n; live[h.b] = true
+      }
+      answers[d] = Object.fromEntries(this.buckets.map((name, b) => [name, b] as const).filter(([, b]) => live[b]).sort(([x], [y]) => x < y ? -1 : x > y ? 1 : 0).map(([name, b]) => [name, sums[b]]))
+    }
+    return { rows_read: this.rows_read, rows_matching: this.rows_matching, answers }
   }
-  return { rows_read: cols.s.length, rows_matching: matching, answers }
 }
 
 // --- storage seam (R2 in the Worker, files in tests) -------------------------------------------
@@ -299,7 +311,7 @@ export interface IndexCache { get(file: string): Promise<GroupIndex | null>; put
 export class StaticNames {
   private shards?: Promise<Shard[]>
   private indexes = new Map<string, Promise<GroupIndex>>()
-  constructor(readonly blobs: Blobs, readonly cache?: IndexCache, readonly clock: () => Promise<number> = async () => Date.now(), readonly maxIndexes = 24) {}
+  constructor(readonly blobs: Blobs, readonly cache?: IndexCache, readonly clock: () => Promise<number> = async () => Date.now(), readonly maxIndexes = 8) {}
 
   plan(): Promise<Shard[]> {
     this.shards ??= this.blobs.json<{ shards: Shard[] }>('shards.json').then(d => d.shards).catch(e => { this.shards = undefined; throw e })
@@ -360,10 +372,21 @@ export class StaticNames {
     const buf = await this.blobs.range(shardFile(ext.shard.i), start, end - start)
     io.bytes = buf.byteLength
     await lap('fetch')
-    const cols = await decodeGroups(ext.idx, ext.a, ext.b, buf, start)
+    // One group at a time: peak memory is one group's columns plus the first hits, not the whole range.
+    const fold = new FirstHits(key)
+    let decode = 0
+    for (let g = ext.a; g < ext.b; g++) {
+      const t1 = await this.clock()
+      const cols = await decodeGroup(ext.idx, g, buf, start)
+      const t2 = await this.clock()
+      decode += t2 - t1
+      fold.add(cols)
+    }
     await lap('decode')
-    const answer = answerRows(cols, key, dates)
-    await lap('filter')
+    io.ms.filter = io.ms.decode - decode
+    io.ms.decode = decode
+    const answer = fold.answer(dates)
+    await lap('answer')
     io.rows_read = answer.rows_read
     io.rows_matching = answer.rows_matching
     return { io, answer }
@@ -386,7 +409,7 @@ export function r2Blobs(r2: R2Bucket, prefix = STATIC_PREFIX): Blobs {
 
 /** The colo's Cache API as the group-index tier between isolates (JSON; ~1 MB per shard). */
 export function cacheIndexes(cache: Cache, prefix = STATIC_PREFIX): IndexCache {
-  const url = (file: string) => `https://static-names.invalid/${prefix}/${file}.index.json`
+  const url = (file: string) => `https://static-names.invalid/${prefix}/${file}.index-v2.json`
   return {
     async get(file) {
       const r = await cache.match(url(file))
