@@ -15,7 +15,7 @@ from dt_cloud import digest as DG
 
 CONFIG = Path(__file__).parents[2] / "job" / "digest.yml"
 TIB = 1024**4
-Q08A = DG.Quota(100 * TIB, "100 TiB", "100Ti")  # US-EAST-08A, shared by its buckets
+Q100 = DG.Quota(100 * TIB, "100 TiB", "100Ti")  # US-EAST-{06A,08A}, US-WEST-04A (08A shared by its buckets)
 CW = DG.DigestConfig(
     template="cw",
     title="CoreWeave usage",
@@ -35,10 +35,10 @@ CW = DG.DigestConfig(
     primary="marin-us-east-02a",
     buckets={
         "marin-us-east-02a": DG.Bucket("02a", DG.Quota(910 * TIB, "1 PB", "1P")),
-        "hero-checkpoints": DG.Bucket("hero", Q08A, "08a"),
-        "marin-us-east-06a": DG.Bucket("06a"),
-        "rhoarnet-us-east-08a": DG.Bucket("rhoarnet", Q08A, "08a"),
-        "marin-us-west-04a": DG.Bucket("04a"),
+        "hero-checkpoints": DG.Bucket("hero", Q100, "08a"),
+        "marin-us-east-06a": DG.Bucket("06a", Q100),
+        "rhoarnet-us-east-08a": DG.Bucket("rhoarnet", Q100, "08a"),
+        "marin-us-west-04a": DG.Bucket("04a", Q100),
     },
     prices={},
 )
