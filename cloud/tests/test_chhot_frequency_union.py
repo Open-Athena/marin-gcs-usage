@@ -19,16 +19,19 @@ DATES = ["2026-10-04", "2026-10-05"]
 FREQUENCIES = [{"a": 20, "c": 12, "d": 50, "z": 5}, {"b": 30, "c": 8, "d": 60}]
 
 
-def source(directory: Path, date: str, frequencies: dict[str, int], *, target: str = "fixture", max_chars: int | None = 2) -> tuple[Path, Path]:
-    """`max_chars` None: a complete census, its layers through the first empty length."""
+def source(directory: Path, date: str, frequencies: dict[str, int], *, target: str = "fixture", max_chars: int | None = 2,
+           short_chars: int = 0) -> tuple[Path, Path]:
+    """`max_chars` None: a complete census, its layers through the first empty length.
+    `short_chars`: its short-literal domain (listed whatever the frequency)."""
+    short = {"short_chars": short_chars} if short_chars else {}
     directory.mkdir()
     rows = [{"chars": len(pattern), "pattern": pattern, "direct_matching_paths": frequency}
             for pattern, frequency in sorted(frequencies.items(), key=lambda item: (len(item[0]), item[0]))]
-    header = {"schema": "hot-frequency-queries-v1", "target": target, "date": date, "threshold_paths": 5, "max_chars": max_chars}
+    header = {"schema": "hot-frequency-queries-v1", "target": target, "date": date, "threshold_paths": 5, "max_chars": max_chars, **short}
     layers = range(1, (max_chars or max(map(len, frequencies)) + 1) + 1)
     raw = (dumps(header) + "\n" + "".join(dumps(row) + "\n" for row in rows) + dumps({"complete": True, "patterns": len(rows)}) + "\n").encode()
     body = {"schema": "hot-frequency-v1", "target": target, "date": date,
-        "snapshot_db": "snapshot_" + date.replace("-", ""), "scope": SCOPE, "threshold_paths": 5, "max_chars": max_chars,
+        "snapshot_db": "snapshot_" + date.replace("-", ""), "scope": SCOPE, "threshold_paths": 5, "max_chars": max_chars, **short,
         "persistent_index_created": False, "accepted_hot_pattern_cap": 500_000, "weighted_names_s": 1,
         "queries": {"patterns": len(rows), "bytes": len(raw), "export_s": .1}, "selected_patterns": [],
         "lengths": [{"chars": chars, "hot_patterns": len(group), "hot_query_utf8_bytes": sum(len(row["pattern"].encode()) for row in group),
@@ -159,6 +162,42 @@ def test_complete_length_domain_union(tmp_path: Path) -> None:
         1, 1, [None, None], ("a", "b", "c", "d"))
 
 
+def test_short_literal_domain_registers_every_short_literal_whatever_its_frequency(tmp_path: Path) -> None:
+    # Sources whose short domain is 1 list "q"/"r" below their threshold (5); a
+    # `short_chars` 1 union registers them with exact dated frequencies (None =
+    # absent there), and longer literals still qualify by the union threshold.
+    complete = (source(tmp_path / "0", DATES[0], {"a": 20, "q": 1, "dd": 9}, max_chars=None, short_chars=1),
+                source(tmp_path / "1", DATES[1], {"b": 30, "r": 2, "dd": 10}, max_chars=None, short_chars=1))
+    report = union(complete, 10, None, tmp_path / "short.jsonl", short_chars=1)
+    header, patterns = load_queries(tmp_path / "short.jsonl", "fixture", DATES[0])
+    lines = [loads(line) for line in (tmp_path / "short.jsonl").read_text().splitlines()]
+    assert (report["short_chars"], report["short_patterns"], header["short_chars"],
+            [source["short_chars"] for source in header["sources"]], patterns) == (1, 4, 1, [1, 1], ("a", "b", "q", "r", "dd"))
+    assert lines[1:-1] == [
+        {"chars": 1, "pattern": "a", "direct_matching_paths": {"2026-10-04": 20, "2026-10-05": None}},
+        {"chars": 1, "pattern": "b", "direct_matching_paths": {"2026-10-04": None, "2026-10-05": 30}},
+        {"chars": 1, "pattern": "q", "direct_matching_paths": {"2026-10-04": 1, "2026-10-05": None}},
+        {"chars": 1, "pattern": "r", "direct_matching_paths": {"2026-10-04": None, "2026-10-05": 2}},
+        {"chars": 2, "pattern": "dd", "direct_matching_paths": {"2026-10-04": 9, "2026-10-05": 10}},
+    ]
+    # Without a short domain the union is threshold-hot only, and refuses a domain its sources lack.
+    assert load_queries(Path(union(complete, 10, None, tmp_path / "hot.jsonl")["queries"]["path"]), "fixture", DATES[0])[1] == ("a", "b", "dd")
+    with pytest.raises(ValueError, match="^union short-literal domain exceeds a source census$"):
+        union(complete, 10, None, tmp_path / "two.jsonl", short_chars=2)
+    assert not (tmp_path / "two.jsonl").exists()
+
+
+def test_below_threshold_rows_outside_a_short_domain_refuse(tmp_path: Path) -> None:
+    census, queries = source(tmp_path / "0", DATES[0], {"a": 20, "q": 1}, max_chars=None)
+    with pytest.raises(ValueError, match="^hot query export literals must be unique"):
+        load_queries(queries, "fixture", DATES[0], allow_union=False)
+    census, queries = source(tmp_path / "1", DATES[0], {"a": 20, "q": 1, "qq": 1}, max_chars=None, short_chars=1)
+    with pytest.raises(ValueError, match="^hot query export literals must be unique"):
+        load_queries(queries, "fixture", DATES[0], allow_union=False)
+    census, queries = source(tmp_path / "2", DATES[0], {"a": 20, "q": 1}, max_chars=None, short_chars=1)
+    assert load_queries(queries, "fixture", DATES[0], allow_union=False)[1] == ("a", "q")
+
+
 def test_complete_union_refuses_a_bounded_source(sources, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="^report lengths must be nonempty integers within the completed source depth$"):
         union(sources, 10, None, tmp_path / "out.jsonl")
@@ -256,7 +295,7 @@ def test_union_cli_exact_forwarding_and_output(monkeypatch: pytest.MonkeyPatch, 
     result = CliRunner().invoke(main, ["ch-hot-frequency-union", "-s", *map(str, sources[0]), "-s", *map(str, sources[1]),
                                       "-t", "10", "-k", "2", "-c", "100", "-o", str(out)])
     assert (result.exit_code, result.stdout, result.stderr) == (0, '{"schema": "fixture-union", "complete": true}\n', "")
-    assert calls == [((sources, 10, 2, out), {"max_patterns": 100})]
+    assert calls == [((sources, 10, 2, out), {"max_patterns": 100, "short_chars": 0})]
 
 
 def batch_artifact(header: dict, date: str) -> dict:

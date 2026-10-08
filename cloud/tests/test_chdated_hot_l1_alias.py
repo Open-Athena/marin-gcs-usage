@@ -52,7 +52,10 @@ def oracle(totals: dict[str, tuple[int, int]], pattern: str) -> dict:
     return {path: tuple(pair) for path, pair in sorted(buckets.items())}
 
 
-def test_alias_answers_equal_an_independent_oracle(fresh: tuple, tmp_path: Path) -> None:
+@pytest.mark.parametrize('short_chars', [0, 2])
+def test_alias_answers_equal_an_independent_oracle(fresh: tuple, tmp_path: Path, short_chars: int) -> None:
+    # `short_chars` 2: every 1-2-character literal present is registered whatever
+    # its frequency (the short-literal domain), and still answers exactly.
     census_binary, l1_binary = environ.get('HF_NATIVE_BINARY'), environ.get('HL1_NATIVE_BINARY')
     if not census_binary or not l1_binary:
         pytest.skip('HF_NATIVE_BINARY and HL1_NATIVE_BINARY are required')
@@ -62,10 +65,16 @@ def test_alias_answers_equal_an_independent_oracle(fresh: tuple, tmp_path: Path)
     source.write_bytes(manifest_bytes(build(ch, target, parquet, descriptor(parquet), min_free_bytes=1)))
     census, queries, registry = tmp_path / 'census.json', tmp_path / 'queries.jsonl', tmp_path / 'registry.jsonl'
     hot_frequency_bench.bench(ch.url, target, DAY, 2, None, census, daily_source=source, queries_out=queries,
-                              seconds=30, wall_seconds=120, native=Path(census_binary))
-    union(((census, queries),), 2, None, registry)
+                              seconds=30, wall_seconds=120, native=Path(census_binary), short_chars=short_chars)
+    union(((census, queries),), 2, None, registry, short_chars=short_chars)
     registry_raw, source_raw = registry.read_bytes(), source.read_bytes()
     selection = validate(manifest_bytes(envelope(registry_raw, source_raw, logical_store='gcs')), registry_raw, source_raw)
+
+    basenames = {name.rsplit('/', 1)[-1].lower() for name in PATHS}
+    short = {name[pos:pos + chars] for name in basenames for chars in (1, 2) for pos in range(len(name) - chars + 1)}
+    assert {pattern for pattern in selection.patterns if len(pattern) <= 2} >= (short if short_chars else set())
+    # Below-threshold (1-path) literals are registered only within the short domain.
+    assert any(sum(pattern in name.rsplit('/', 1)[-1].lower() for name in PATHS) < 2 for pattern in selection.patterns) is bool(short_chars)
 
     found = aliases(registry_raw, DAY, target)
     roots = tuple(pattern for pattern in selection.patterns if pattern not in found)

@@ -57,6 +57,8 @@ def _validated_report(
     if (body.get("threshold_paths") != minimum or type(body.get("threshold_paths")) is not int or body.get("max_chars") != maximum or
             (maximum is not None and type(body.get("max_chars")) is not int)):
         raise ValueError("census and export threshold/maximum length disagree")
+    if body.get("short_chars") != header.get("short_chars"):
+        raise ValueError("census and export short-literal domains disagree")
     if not thresholds or any(type(cut) is not int or cut < minimum for cut in thresholds):
         raise ValueError("report thresholds must be nonempty integers at least the source minimum")
     # A None length is the complete domain, which only a complete census covers.

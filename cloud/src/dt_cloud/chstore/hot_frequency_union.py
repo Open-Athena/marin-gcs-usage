@@ -14,7 +14,7 @@ from json import dumps, loads
 from pathlib import Path
 
 from .hot_frequency import within
-from .hot_frequency_registry import FREQUENCY_SEMANTICS, UNION_CAP, UNION_SCHEMA, covers, union_header
+from .hot_frequency_registry import FREQUENCY_SEMANTICS, UNION_CAP, UNION_SCHEMA, covers, short_domain, union_header
 from .hot_frequency_report import _validated_report, integer
 from .hot_l1_catalog import _unique_object
 from .narrow import identifier
@@ -28,13 +28,16 @@ def union(
     *,
     max_patterns: int = UNION_CAP,
     target: str | None = None,
+    short_chars: int = 0,
 ) -> dict:
     """Write one deterministic fresh complete export, with no database access.
 
     Known below-requested-threshold frequencies stay exact. Absent source
     literals get None, which means below that source's minimum, not zero.
     `max_chars` None is the complete length domain; every source must be a
-    complete census then.
+    complete census then. `short_chars` S > 0 also registers every literal of
+    at most S characters a source lists (its short-literal domain, which must
+    cover S), whatever its frequency.
     """
     integer(threshold, "union threshold", 1)
     if max_chars is not None:
@@ -45,12 +48,16 @@ def union(
         raise ValueError("union requires at least one dated source census")
     if out.exists():
         raise ValueError("union output must be a new artifact")
+    if short_chars and (integer(short_chars, "union short-literal domain", 1) and not covers(max_chars, short_chars)):
+        raise ValueError("union short-literal domain exceeds its length domain")
     accepted = []
     for census, queries in sources:
         raw, export = census.read_bytes(), queries.read_bytes()
         result, rows = _validated_report(census, queries, raw, export, thresholds=(threshold,), lengths=(max_chars,), patterns=())
         if not covers(result["provenance"]["queries"]["header"]["max_chars"], max_chars):
             raise ValueError("union length domain exceeds a source census")
+        if short_domain(result["provenance"]["queries"]["header"]) < short_chars:
+            raise ValueError("union short-literal domain exceeds a source census")
         doc = loads(raw, object_pairs_hook=_unique_object)
         accepted.append((result, rows, doc.get("accepted_hot_pattern_cap")))
     accepted.sort(key=lambda item: item[0]["date"])
@@ -70,15 +77,17 @@ def union(
         original = result["provenance"]["queries"]["header"]
         declarations.append({"date": result["date"], **({"target": result["target"]} if declared_targets else {}), "snapshot_db": result["snapshot_db"],
             "threshold_paths": original["threshold_paths"], "max_chars": original["max_chars"], "accepted_hot_pattern_cap": cap,
+            **({"short_chars": original["short_chars"]} if "short_chars" in original else {}),
             "census": {key: result["provenance"]["census"][key] for key in ("sha256", "bytes")},
             "queries": {key: result["provenance"]["queries"][key] for key in ("sha256", "bytes", "patterns")}})
         frequencies[result["date"]] = {row["pattern"]: row["direct_matching_paths"] for row in rows if within(row["chars"], max_chars)}
-        candidates.update(row["pattern"] for row in rows if within(row["chars"], max_chars) and row["direct_matching_paths"] >= threshold)
+        candidates.update(row["pattern"] for row in rows if within(row["chars"], max_chars) and
+                          (row["direct_matching_paths"] >= threshold or row["chars"] <= short_chars))
         if len(candidates) > max_patterns:
             raise ValueError("union exceeds its accepted-pattern cap; no complete export")
     header = union_header({"schema": UNION_SCHEMA, "target": target, "dates": dates,
-        "threshold_paths": threshold, "max_chars": max_chars, "max_patterns": max_patterns,
-        "sources": declarations, "frequency_semantics": FREQUENCY_SEMANTICS}, target)
+        "threshold_paths": threshold, "max_chars": max_chars, **({"short_chars": short_chars} if short_chars else {}),
+        "max_patterns": max_patterns, "sources": declarations, "frequency_semantics": FREQUENCY_SEMANTICS}, target)
     rows = [{"chars": len(pattern), "pattern": pattern,
              "direct_matching_paths": {date: frequencies[date].get(pattern) for date in dates}}
             for pattern in sorted(candidates, key=lambda value: (len(value), value))]
@@ -90,6 +99,7 @@ def union(
     qualifying = {date: {row["pattern"] for row in rows if row["direct_matching_paths"][date] is not None and row["direct_matching_paths"][date] >= threshold} for date in dates}
     return {"schema": "hot-frequency-union-report-v1", "complete": True, "target": target, "registry_dates": dates,
         "threshold_paths": threshold, "max_chars": max_chars, "patterns": len(rows),
+        **({"short_chars": short_chars, "short_patterns": sum(row["chars"] <= short_chars for row in rows)} if short_chars else {}),
         "literal_utf8_bytes": sum(len(row["pattern"].encode()) for row in rows), "export_records_raw_bytes": sum(map(len, records)),
         "per_date": [{"date": date, "threshold_hot_patterns": len(qualifying[date]),
                       "known_frequencies": sum(row["direct_matching_paths"][date] is not None for row in rows),

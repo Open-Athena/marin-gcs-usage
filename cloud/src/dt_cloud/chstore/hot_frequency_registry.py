@@ -42,6 +42,23 @@ def covers(source: int | None, requested: int | None) -> bool:
     return source is None or (requested is not None and requested <= source)
 
 
+def short_domain(header: dict) -> int:
+    """A registry's short-literal domain: every literal of at most this many
+    characters present on the scan (≥ 1 path) is listed whatever its frequency
+    (precomputed by cost: a substring index can't serve them); 0 when absent."""
+    if "short_chars" not in header:
+        return 0
+    value = header["short_chars"]
+    if not integer(value, 1) or not covers(header["max_chars"], value):
+        raise ValueError("registry short-literal domain must be a positive length within its length domain")
+    return value
+
+
+def listed(chars: int, frequency: object, threshold: int, short: int) -> bool:
+    """A listed literal's frequency: threshold-hot, or present within the short domain."""
+    return integer(frequency, threshold) or (chars <= short and integer(frequency, 1))
+
+
 def iso_date(value: object) -> bool:
     if not isinstance(value, str):
         return False
@@ -54,12 +71,13 @@ def iso_date(value: object) -> bool:
 def union_header(header: object, target: str) -> dict:
     """Check bounded source provenance without asserting an independent scan."""
     message = "union registry requires matching sorted dates and complete valid source provenance"
-    if (not isinstance(header, dict) or set(header) != {"schema", "target", "dates", "threshold_paths", "max_chars", "max_patterns", "sources", "frequency_semantics"} or
+    if (not isinstance(header, dict) or set(header) - {"short_chars"} != {"schema", "target", "dates", "threshold_paths", "max_chars", "max_patterns", "sources", "frequency_semantics"} or
             header["schema"] != UNION_SCHEMA or header["target"] != target or
             header["frequency_semantics"] != FREQUENCY_SEMANTICS or
             not integer(header["threshold_paths"], 1) or not length_domain(header["max_chars"]) or
             not integer(header["max_patterns"], 1) or header["max_patterns"] > UNION_CAP):
         raise ValueError(message)
+    short = short_domain(header)
     dates, sources = header["dates"], header["sources"]
     if (not isinstance(dates, list) or not dates or any(not iso_date(date) for date in dates) or dates != sorted(set(dates)) or
             not isinstance(sources, list) or len(sources) != len(dates)):
@@ -69,7 +87,8 @@ def union_header(header: object, target: str) -> dict:
     # or every source does (header.target is an explicit logical binding).
     declared = isinstance(sources[0], dict) and "target" in sources[0]
     for date, source in zip(dates, sources, strict=True):
-        if (not isinstance(source, dict) or set(source) != (source_keys | {"target"} if declared else source_keys) or
+        if (not isinstance(source, dict) or set(source) - {"short_chars"} != (source_keys | {"target"} if declared else source_keys) or
+                (short and short_domain({**source, "max_chars": source.get("max_chars")}) < short) or
                 (declared and not isinstance(source["target"], str)) or
                 source["date"] != date or not isinstance(source["snapshot_db"], str) or
                 not integer(source["threshold_paths"], 1) or source["threshold_paths"] > header["threshold_paths"] or
@@ -114,10 +133,11 @@ def load_queries(
             union_header(header, target)
             if registry_date is not None or date not in header["dates"]:
                 raise ValueError("union batch date must be a source date and cannot use a single registry_date override")
-        elif (not isinstance(header, dict) or set(header) != {"schema", "target", "date", "threshold_paths", "max_chars"} or
+        elif (not isinstance(header, dict) or set(header) - {"short_chars"} != {"schema", "target", "date", "threshold_paths", "max_chars"} or
                 header["schema"] != V1_SCHEMA or header["target"] != target or header["date"] != expected_date or
                 not integer(header["threshold_paths"], 1) or not length_domain(header["max_chars"])):
             raise ValueError("batch requires a matching completed hot-frequency query export header")
+        short = short_domain(header)
         known = {date: 0 for date in header["dates"]} if union else {}
         previous = None
         for line in source:
@@ -140,13 +160,13 @@ def load_queries(
             frequency = row["direct_matching_paths"]
             if union:
                 if (not isinstance(frequency, dict) or set(frequency) != set(header["dates"]) or
-                        any(value is not None and not integer(value, declaration["threshold_paths"])
+                        any(value is not None and not listed(chars, value, declaration["threshold_paths"], short)
                             for declaration in header["sources"] for value in (frequency[declaration["date"]],)) or
-                        not any(value is not None and value >= header["threshold_paths"] for value in frequency.values())):
+                        not any(value is not None and (value >= header["threshold_paths"] or chars <= short) for value in frequency.values())):
                     raise ValueError("union query requires valid dated frequencies qualifying on at least one source date")
                 for date, value in frequency.items():
                     known[date] += value is not None
-            elif not integer(frequency, header["threshold_paths"]):
+            elif not listed(chars, frequency, header["threshold_paths"], short):
                 raise ValueError(f"hot query export literals must be unique, normalized, NUL/slash-free hot queries of lengths 1..{MAX_CHARS}")
             patterns.append(pattern)
             seen.add(pattern)

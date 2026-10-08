@@ -179,6 +179,7 @@ def native_census(
     progress: Callable[[dict], None] | None = None,
     thresholds: tuple[int, ...] = (),
     max_patterns: int = 500_000,
+    short_chars: int = 0,
 ) -> tuple[dict, list[bytes]]:
     """The same qualification with the per-length passes in `native/hot_frequency.cpp`:
     ClickHouse groups the snapshot's lowercase basenames (one statement, no staged
@@ -188,13 +189,19 @@ def native_census(
 
     `max_chars` None is the complete length domain: every length until one has
     no hot pattern (that empty length is the census's last layer), so any
-    unlisted literal, of any length, is below the threshold."""
+    unlisted literal, of any length, is below the threshold.
+
+    `short_chars` S > 0 also lists every literal of at most S characters with
+    at least one direct path (the short-literal domain, precomputed by cost);
+    longer literals are unchanged."""
     from json import loads
     from subprocess import PIPE, Popen
     from sys import stderr
     from threading import Thread
 
     cuts = validate_limits(threshold, max_chars, thresholds, max_patterns)
+    if type(short_chars) is not int or short_chars < 0 or (max_chars is not None and short_chars > max_chars):
+        raise ValueError('short-literal domain must be 0..max_chars characters')
     patterns = normalize_patterns(patterns)
     body = source_body(raw, target, date)
     if not binary.is_file():
@@ -208,7 +215,7 @@ def native_census(
     marker()
     started = monotonic()
     stages: list[dict] = []
-    proc = Popen([str(binary), str(threshold), str(max_chars or 0), str(threads), str(max_patterns)], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    proc = Popen([str(binary), str(threshold), str(max_chars or 0), str(threads), str(max_patterns), str(short_chars)], stdin=PIPE, stdout=PIPE, stderr=PIPE)
     out: list[bytes] = []
     err: list[bytes] = []
 
@@ -248,7 +255,8 @@ def native_census(
         raise RuntimeError('native hot-frequency failed: ' + b''.join(err).decode(errors='replace').strip())
     lines = out[0].splitlines(keepends=True)
     header, footer, rows = loads(lines[0]), loads(lines[-1]), lines[1:-1]
-    if header != {'schema': 'hot-frequency-queries-v1', 'engine': 'native', 'threshold_paths': threshold, 'max_chars': max_chars}:
+    if header != {'schema': 'hot-frequency-queries-v1', 'engine': 'native', 'threshold_paths': threshold, 'max_chars': max_chars,
+                  **({'short_chars': short_chars} if short_chars else {})}:
         raise RuntimeError('native hot-frequency header disagrees with the request')
     if footer != {'complete': True, 'patterns': len(rows)}:
         raise RuntimeError('native hot-frequency output is incomplete')
@@ -275,7 +283,8 @@ def native_census(
     result = {
         'schema': 'hot-frequency-v1', 'engine': 'native', 'target': target, 'snapshot_db': target, 'date': date,
         'scope': 'complete snapshot lowercase basename substrings; direct paths, not inherited coverage or occurrence windows',
-        'threshold_paths': threshold, 'max_chars': max_chars, 'distinct_names': read['distinct_names'], 'paths': read['paths'],
+        'threshold_paths': threshold, 'max_chars': max_chars, **({'short_chars': short_chars} if short_chars else {}),
+        'distinct_names': read['distinct_names'], 'paths': read['paths'],
         'weighted_names_s': read['elapsed_s'], 'lengths': lengths,
         'selected_patterns': [{'pattern': pattern, 'hot': pattern in found, 'direct_matching_paths': found.get(pattern)}
                               for pattern in patterns if within(len(pattern), max_chars)],

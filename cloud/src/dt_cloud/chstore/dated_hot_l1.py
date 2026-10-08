@@ -226,7 +226,8 @@ class DatedHotL1Catalog:
         return {'schema': 'dated-hot-l1-registry-v1', 'logical_store': self.logical_store, 'scan_date': self.date,
                 'source': deepcopy(self._identity), 'registry': {'qualification_dates': list(self.selection.qualification_dates),
                 'target': self.selection.registry_target, 'patterns': len(self.selection.patterns), 'threshold_paths': header['threshold_paths'],
-                'max_chars': header['max_chars'], 'selection_contract': 'membership on declared qualification dates; no current-scan frequency claim'},
+                'max_chars': header['max_chars'], **({'short_chars': header['short_chars']} if 'short_chars' in header else {}),
+                'selection_contract': 'membership on declared qualification dates; no current-scan frequency claim'},
                 'bucket_paths': list(self.paths), 'levels': 1, 'scope': SCOPE,
                 'validation': dict(VALIDATION), 'capabilities': {'bucket_drill': False, 'child_drill': False, 'fallback': False}}
 

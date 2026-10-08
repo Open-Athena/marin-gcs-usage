@@ -20,10 +20,16 @@
 // points — so counting a length is an integer-keyed tally of adjacent id pairs,
 // and assigning the next ids rewrites the array in place, left to right.
 //
-//   hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS] < rows > queries.jsonl
+//   hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS [SHORT_CHARS]] < rows > queries.jsonl
 //
 // MAX_CHARS 0: every length, until one has no hot pattern (the census is then
 // complete: a pattern of any length is hot iff it is listed).
+//
+// SHORT_CHARS S > 0 also lists every pattern of at most S code points present
+// in some name (at least one path), whatever its frequency: the short-literal
+// domain, precomputed by cost (a substring index can't serve them) rather than
+// by count. Only threshold-hot patterns seed longer lengths, so the pruning,
+// and every pattern longer than S, are unchanged; the header declares S.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -266,7 +272,7 @@ struct Census {
 // code point) unless some length has more than 65,534 hot patterns, then
 // `uint32_t` (twice the memory).
 template <class Id>
-static Census census(const Vocabulary& v, uint64_t threshold, unsigned max_chars, unsigned threads, uint64_t max_patterns) {
+static Census census(const Vocabulary& v, uint64_t threshold, unsigned max_chars, unsigned short_chars, unsigned threads, uint64_t max_patterns) {
     constexpr Id NONE = static_cast<Id>(~Id(0));
     constexpr unsigned SHIFT = 8 * sizeof(Id);
     constexpr uint64_t LOW = (uint64_t(1) << SHIFT) - 1;
@@ -283,25 +289,37 @@ static Census census(const Vocabulary& v, uint64_t threshold, unsigned max_chars
             });
         for (auto& th : pool) th.join();
     };
-    // Keep the hot keys (≥ threshold) of a merged tally, in key order, as the length's patterns.
+    // A merged tally's listed keys, in key order: the hot ones (≥ threshold)
+    // and, within the short domain, every one. Ids go to the patterns that seed
+    // the next length — all of them below the short domain's last length,
+    // else the hot ones — and come first in `c.hot[k]`, so an id indexes it.
+    size_t seeded = 0;
     auto keep = [&](unsigned k, const std::vector<Tally>& local, auto spell) -> Ids {
         Tally merged;
         for (const Tally& t : local) t.each([&](uint64_t key, uint64_t sum) { merged.add(key, sum); });
-        std::vector<std::pair<uint64_t, uint64_t>> kept;
-        merged.each([&](uint64_t key, uint64_t sum) { if (sum >= threshold) kept.emplace_back(key, sum); });
-        std::sort(kept.begin(), kept.end());
-        if (kept.size() >= NONE) throw Widen{k};
-        c.accepted += kept.size();
+        std::vector<std::pair<uint64_t, uint64_t>> seeds, extra;
+        merged.each([&](uint64_t key, uint64_t sum) {
+            if (sum >= threshold || k < short_chars) seeds.emplace_back(key, sum);
+            else if (k <= short_chars) extra.emplace_back(key, sum);
+        });
+        std::sort(seeds.begin(), seeds.end());
+        if (seeds.size() >= NONE) throw Widen{k};
+        c.accepted += seeds.size() + extra.size();
         if (c.accepted > max_patterns) fail("accepted-pattern cap exceeded at length " + std::to_string(k));
-        Ids ids(kept.size());
+        Ids ids(seeds.size());
         c.hot.emplace_back();
         c.sum.emplace_back();
-        for (uint32_t x = 0; x < kept.size(); ++x) {
-            ids.put(kept[x].first, x);
-            c.hot[k].push_back(spell(kept[x].first));
-            c.sum[k].push_back(kept[x].second);
+        for (uint32_t x = 0; x < seeds.size(); ++x) {
+            ids.put(seeds[x].first, x);
+            c.hot[k].push_back(spell(seeds[x].first));
+            c.sum[k].push_back(seeds[x].second);
         }
-        std::fprintf(stderr, "{\"stage\":\"hot-substrings\",\"id_bytes\":%zu,\"chars\":%u,\"candidates\":%zu,\"hot_patterns\":%zu,", sizeof(Id), k, merged.size(), kept.size());
+        for (const auto& [key, sum] : extra) {
+            c.hot[k].push_back(spell(key));
+            c.sum[k].push_back(sum);
+        }
+        seeded = seeds.size();
+        std::fprintf(stderr, "{\"stage\":\"hot-substrings\",\"id_bytes\":%zu,\"chars\":%u,\"candidates\":%zu,\"hot_patterns\":%zu,", sizeof(Id), k, merged.size(), seeds.size() + extra.size());
         return ids;
     };
 
@@ -341,7 +359,7 @@ static Census census(const Vocabulary& v, uint64_t threshold, unsigned max_chars
         Ids ids = k == 1
             ? keep(k, local, [](uint64_t key) { return std::string(reinterpret_cast<const char*>(&key), strnlen(reinterpret_cast<const char*>(&key), 4)); })
             : keep(k, local, [&](uint64_t key) { return c.hot[k - 1][key >> SHIFT] + last_cp(c.hot[k - 1][key & LOW]); });
-        const bool last = c.hot[k].empty() || k == max_chars;
+        const bool last = (seeded == 0 && k >= short_chars) || k == max_chars;
         // Assign: the ids of this length's hot windows, in place.
         if (!last) {
             parallel([&](unsigned, size_t lo, size_t hi) {
@@ -374,12 +392,13 @@ static Census census(const Vocabulary& v, uint64_t threshold, unsigned max_chars
 }
 
 int main(int argc, char** argv) try {
-    if (argc < 4 || argc > 5) fail("usage: hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS] < rows");
+    if (argc < 4 || argc > 6) fail("usage: hot-frequency THRESHOLD MAX_CHARS THREADS [MAX_PATTERNS [SHORT_CHARS]] < rows");
     const uint64_t threshold = std::stoull(argv[1]);
     const unsigned max_chars = static_cast<unsigned>(std::stoul(argv[2]));
     const unsigned threads = static_cast<unsigned>(std::stoul(argv[3]));
-    const uint64_t max_patterns = argc == 5 ? std::stoull(argv[4]) : 500000;
-    if (!threshold || !threads) fail("bad arguments");
+    const uint64_t max_patterns = argc >= 5 ? std::stoull(argv[4]) : 500000;
+    const unsigned short_chars = argc == 6 ? static_cast<unsigned>(std::stoul(argv[5])) : 0;
+    if (!threshold || !threads || (max_chars && short_chars > max_chars)) fail("bad arguments");
 
     double t0 = now();
     const Vocabulary v = read_vocabulary();
@@ -388,14 +407,15 @@ int main(int argc, char** argv) try {
 
     Census c;
     try {
-        c = census<uint16_t>(v, threshold, max_chars, threads, max_patterns);
+        c = census<uint16_t>(v, threshold, max_chars, short_chars, threads, max_patterns);
     } catch (const Widen& w) {
         std::fprintf(stderr, "{\"stage\":\"widen\",\"chars\":%u,\"id_bytes\":4}\n", w.chars);
-        c = census<uint32_t>(v, threshold, max_chars, threads, max_patterns);
+        c = census<uint32_t>(v, threshold, max_chars, short_chars, threads, max_patterns);
     }
 
     std::string out = "{\"schema\": \"hot-frequency-queries-v1\", \"engine\": \"native\", \"threshold_paths\": " + std::to_string(threshold) +
-                      ", \"max_chars\": " + (max_chars ? std::to_string(max_chars) : "null") + "}\n";
+                      ", \"max_chars\": " + (max_chars ? std::to_string(max_chars) : "null") +
+                      (short_chars ? ", \"short_chars\": " + std::to_string(short_chars) : "") + "}\n";
     for (size_t k = 1; k < c.hot.size(); ++k) {
         std::vector<size_t> order(c.hot[k].size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;

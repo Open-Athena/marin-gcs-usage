@@ -34,6 +34,7 @@ def bench(
     staging_gib: int = 16,
     native: Path | None = None,
     native_threads: int = 8,
+    short_chars: int = 0,
 ) -> dict:
     if not 1 <= memory_gib <= 8 or not 1 <= seconds <= 600 or not 1 <= spill_gib <= 16:
         raise ValueError("hot frequency census requires 1..8 GiB memory, 1..600 seconds and 1..16 GiB spill")
@@ -46,6 +47,8 @@ def bench(
         raise ValueError('the native hot-frequency engine reads a daily source (`-f`)')
     if max_chars is None and native is None:
         raise ValueError('the complete length domain needs the native engine (`-e`)')
+    if short_chars and native is None:
+        raise ValueError('the short-literal domain needs the native engine (`-e`)')
     raw = None
     if daily_source is not None:
         from .hot_frequency_daily import DailyCensusCh, census as daily_census, source_bytes
@@ -79,7 +82,8 @@ def bench(
                 if raw is not None:
                     fchmod(output.fileno(), 0o600)
                 output.write((dumps({"schema": "hot-frequency-queries-v1", "target": target, "date": date,
-                                     "threshold_paths": threshold, "max_chars": max_chars}) + "\n").encode())
+                                     "threshold_paths": threshold, "max_chars": max_chars,
+                                     **({"short_chars": short_chars} if short_chars else {})}) + "\n").encode())
 
             def export_layer(chars: int, table: str) -> None:
                 nonlocal written, export_s
@@ -99,7 +103,7 @@ def bench(
                 from .hot_frequency_daily import native_census
                 body, rows = native_census(ch, target, date, raw, threshold, max_chars, native, patterns,
                                            threads=native_threads, progress=lambda stage: print(dumps(stage), file=stderr),
-                                           thresholds=thresholds, max_patterns=max_patterns)
+                                           thresholds=thresholds, max_patterns=max_patterns, short_chars=short_chars)
                 if output is not None:
                     start = monotonic()
                     output.writelines(rows)

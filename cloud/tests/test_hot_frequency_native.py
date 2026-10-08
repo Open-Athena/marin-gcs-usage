@@ -38,19 +38,21 @@ def row_binary(rows: list[tuple[str, int]]) -> bytes:
     return bytes(out)
 
 
-def brute(rows: list[tuple[str, int]], threshold: int, max_chars: int) -> list[dict]:
+def brute(rows: list[tuple[str, int]], threshold: int, max_chars: int, short_chars: int = 0) -> list[dict]:
     sums: dict[str, int] = {}
     for name, count in rows:
         for gram in {name[i:i + k] for k in range(1, max_chars + 1) for i in range(len(name) - k + 1)}:
             sums[gram] = sums.get(gram, 0) + count
-    hot = [(len(g), g.encode(), g, s) for g, s in sums.items() if s >= threshold]
+    hot = [(len(g), g.encode(), g, s) for g, s in sums.items() if s >= threshold or len(g) <= short_chars]
     return [{'chars': k, 'pattern': g, 'direct_matching_paths': s} for k, _, g, s in sorted(hot)]
 
 
-def census(binary: Path, rows: list[tuple[str, int]], threshold: int, max_chars: int, threads: int = 3) -> list[dict]:
-    done = run([str(binary), str(threshold), str(max_chars), str(threads)], input=row_binary(rows), capture_output=True, check=True)
+def census(binary: Path, rows: list[tuple[str, int]], threshold: int, max_chars: int, threads: int = 3, short_chars: int = 0) -> list[dict]:
+    args = [str(binary), str(threshold), str(max_chars), str(threads)] + (['500000', str(short_chars)] if short_chars else [])
+    done = run(args, input=row_binary(rows), capture_output=True, check=True)
     lines = [loads(line) for line in done.stdout.decode().splitlines()]
-    assert lines[0] == {'schema': 'hot-frequency-queries-v1', 'engine': 'native', 'threshold_paths': threshold, 'max_chars': max_chars or None}
+    assert lines[0] == {'schema': 'hot-frequency-queries-v1', 'engine': 'native', 'threshold_paths': threshold, 'max_chars': max_chars or None,
+                        **({'short_chars': short_chars} if short_chars else {})}
     assert lines[-1] == {'complete': True, 'patterns': len(lines) - 2}
     return lines[1:-1]
 
@@ -92,6 +94,21 @@ def test_unbounded_length_is_complete(binary: Path, seed: int) -> None:
     longest = max(len(name) for name, _ in rows)
     for threshold in (20, 200):
         assert census(binary, rows, threshold, 0) == brute(rows, threshold, longest)
+
+
+@pytest.mark.parametrize('seed', range(3))
+@pytest.mark.parametrize('max_chars', [0, 6])
+def test_short_domain_lists_every_short_literal_and_keeps_longer_ones_hot_only(binary: Path, seed: int, max_chars: int) -> None:
+    # SHORT_CHARS 2: every 1-2 code-point literal present (≥ 1 path) is listed whatever
+    # its frequency; longer ones exactly as without it (threshold-hot only).
+    rng = Random(seed)
+    alphabet = 'ab.-_é日🙂"\\\t'
+    rows = sorted({''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 12))): rng.randint(1, 9) for _ in range(400)}.items())
+    longest = max_chars or max(len(name) for name, _ in rows)
+    for threshold in (40, 300, 10 ** 9):
+        listed = census(binary, rows, threshold, max_chars, short_chars=2)
+        assert listed == brute(rows, threshold, longest, short_chars=2)
+        assert [row for row in listed if row['chars'] > 2] == [row for row in census(binary, rows, threshold, max_chars) if row['chars'] > 2]
 
 
 def test_widens_ids_past_65534_patterns(binary: Path) -> None:

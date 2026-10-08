@@ -354,4 +354,4 @@ def test_cli_daily_source_exact_forwarding_without_changing_frozen_defaults(tmp_
     assert calls == [(('http://localhost:8123', 'daily_target', '2026-10-06', 100000, 16, tmp_path / 'census.json'),
                      {'memory_gib': 8, 'seconds': 600, 'spill_gib': 16, 'pids': (), 'patterns': (),
                       'queries_out': tmp_path / 'queries.jsonl', 'thresholds': (), 'max_patterns': 500000,
-                      'daily_source': tmp_path / 'source.json', 'wall_seconds': 3600, 'staging_gib': 16, 'native': None})]
+                      'daily_source': tmp_path / 'source.json', 'wall_seconds': 3600, 'staging_gib': 16, 'native': None, 'short_chars': 0})]
