@@ -1976,6 +1976,114 @@ def ch_mega_names_digest(db: str, threads: int, url: str, stems: tuple[str, ...]
         ch.close()
 
 
+@main.command("ch-mega-catalog-build")
+@option("-c", "--census-binary", required=True, help="`native/hot_frequency.cpp` executable")
+@option("-d", "--delta-binary", required=True, help="`native/catalog_delta.cpp` executable")
+@option("-D", "--db", default="default", help="Consolidated store database")
+@option("-e", "--through", help="Stop after this scan date; default every published scan")
+@option("-m", "--memory-gib", default=64, type=IntRange(min=1, max=200), help="Per-statement memory cap")
+@option("-p", "--parallel", default=16, type=IntRange(min=1, max=64), help="Concurrent streams into the delta kernel")
+@option("-P", "--postings", help="Answer first-time literals from this consolidated name index stem (`ch-mega-names-build`); default one scan pass")
+@option("-s", "--short", default=2, type=IntRange(min=0, max=8), help="Register every literal of at most this many characters")
+@option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads, and the census's threads")
+@option("-T", "--threshold", default=100_000, type=IntRange(min=1), help="Register literals with at least this many direct paths")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("stem")
+def ch_mega_catalog_build(
+    census_binary: str,
+    delta_binary: str,
+    db: str,
+    through: str | None,
+    memory_gib: int,
+    parallel: int,
+    postings: str | None,
+    short: int,
+    threads: int,
+    threshold: int,
+    url: str,
+    stem: str,
+) -> None:
+    """The consolidated catalog STEM (`mega_catalog`): every scan's registry and
+    first-hit bucket totals as versions, each scan appended from its changes
+    (base scans from their live rows). Resumes after the scans already logged;
+    prints one JSON record per scan."""
+    from pathlib import Path
+
+    from .chstore import mega_catalog
+    from .chstore.client import Ch
+
+    ch = Ch(url, db=db, timeout=14400)
+    try:
+        mega_catalog.build(ch, stem, census_binary=Path(census_binary), delta_binary=Path(delta_binary), postings=postings, through=through,
+                           threshold=threshold, short=short, threads=threads, parallel=parallel, settings=_mega_settings(memory_gib, threads),
+                           progress=lambda body: print(json.dumps(body), flush=True))
+    finally:
+        ch.close()
+
+
+@main.command("ch-mega-catalog-check")
+@option("-c", "--census-binary", help="`native/hot_frequency.cpp` executable (with `-f`)")
+@option("-d", "--delta-binary", help="`native/catalog_delta.cpp` executable (with `-f`)")
+@option("-D", "--db", default="default", help="Consolidated store database")
+@option("-f", "--fresh", is_flag=True, help="Compare with the scan's catalog computed from its live rows alone")
+@option("-g", "--generation", help="Compare with this published dated L1 generation's catalog for the scan")
+@option("-m", "--memory-gib", default=64, type=IntRange(min=1, max=200), help="Per-statement memory cap")
+@option("-p", "--parallel", default=16, type=IntRange(min=1, max=64), help="Concurrent streams into the delta kernel (with `-f`)")
+@option("-q", "--queries", help="With `-g`: the census queries (JSONL) whose counts the generation's registry came from")
+@option("-s", "--short", default=2, type=IntRange(min=0, max=8), help="Short-literal domain (with `-f`)")
+@option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads, and the census's threads")
+@option("-T", "--threshold", default=100_000, type=IntRange(min=1), help="Registry threshold (with `-f`)")
+@option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@argument("stem")
+@argument("dates", nargs=-1, required=True)
+def ch_mega_catalog_check(
+    census_binary: str | None,
+    delta_binary: str | None,
+    db: str,
+    fresh: bool,
+    generation: str | None,
+    memory_gib: int,
+    parallel: int,
+    queries: str | None,
+    short: int,
+    threads: int,
+    threshold: int,
+    url: str,
+    stem: str,
+    dates: tuple[str, ...],
+) -> None:
+    """Exactness of the consolidated catalog STEM on each DATE: registry,
+    counts and nonzero bucket totals against a fresh single-scan build (`-f`)
+    and/or a published dated catalog (`-g`, with its census counts `-q`).
+    Prints one JSON record per (date, reference)."""
+    from pathlib import Path
+    from time import monotonic
+
+    from .chstore import mega_catalog
+    from .chstore.client import Ch
+
+    if fresh and not (census_binary and delta_binary):
+        raise UsageError("-f needs -c and -d")
+    if bool(generation) != bool(queries):
+        raise UsageError("-g and -q go together")
+    settings = _mega_settings(memory_gib, threads)
+    ch = Ch(url, db=db, timeout=14400)
+    try:
+        for date in dates:
+            start = monotonic()
+            got = mega_catalog.snapshot(ch, stem, date, settings)
+            read_s = round(monotonic() - start, 3)
+            if fresh:
+                want, stats = mega_catalog.fresh(ch, date, census_binary=Path(census_binary), delta_binary=Path(delta_binary), threshold=threshold,
+                                                 short=short, threads=threads, parallel=parallel, settings=settings)
+                print(json.dumps({"date": date, "reference": "fresh", "snapshot_s": read_s, **stats, **mega_catalog.compare(got, want)}), flush=True)
+            if generation:
+                want = mega_catalog.published(Path(generation), Path(queries), date)
+                print(json.dumps({"date": date, "reference": generation, "snapshot_s": read_s, **mega_catalog.compare(got, want)}), flush=True)
+    finally:
+        ch.close()
+
+
 @main.command("ch-daily-name-index")
 @option("-m", "--memory-gib", default=8, type=IntRange(min=1, max=24), help="Per-statement memory budget")
 @option("-s", "--spill-gib", default=4, type=IntRange(min=1, max=16), help="External GROUP BY / sort threshold per statement")
