@@ -68,6 +68,49 @@ What remains slow:
 - **Literals whose names carry many versions** (`5418`: 19.8K names, 108K versions over all time) read a 256-row granule per name: 2–3 s. Fewer parts (the 10/4–6 table kept 19 after `OPTIMIZE`) and smaller granules are the next levers.
 - **Hot-on-the-day literals** are slow by construction (`3p` on Oct 4: 10.4M live names, 19.6M rows, ~10 s); they are catalog literals there and never reach this path.
 
+## Daily upkeep
+
+`ch-mega-names-append DATE STEM…` (`mega_names.append`) adds one ingested scan to the name index: the `nodes` partition `vf = D` (versions it opened) and the `closures` partition `vt = D` (versions it closed) go into each postings stem as a staged side table attached whole, and their per-name deltas into `name_spans`. `name_spans` is an `AggregatingMergeTree` of `(l, min first, sum versions, sum closed, max closed_last)`; a name is live on D when `min(first) <= D` and either `sum(versions) > sum(closed)` or `max(closed_last) > D`, so readers `GROUP BY l` and appended rows need no rewrite. `name_index_log` records what each target covers; an append at or before it is refused, so a scan is never added twice.
+
+Verification on the VM (2026-10-08): `name_spans` and postings `m` built through Oct 5 (91 s and 117 s unmerged), then Oct 6 appended:
+
+| Target | Rows appended | Wall |
+| --- | ---: | ---: |
+| `name_spans` | 44,208,945 name deltas | 13.6 s |
+| `m_nodes` / `m_closures` | 2,635,102 / 125,927,390 | 9.7 s |
+
+`m` then equals the all-time build `all` exactly (`ch-mega-names-digest`: 1,149,549,991 / 543,418,112 rows, identical order-insensitive digests), and `name_spans` equals a full rebuild per name (136,869,079 names). Oct 6 is the heaviest day there is (126M closures); an ordinary day is ~3M opened and ~1.5M closed. A final merge after the append (`OPTIMIZE … FINAL`) took 152 s + 374 s; it is optional (readers are correct over any number of parts).
+
+## Serving
+
+`serve-query -P STEM` (`MEGA_POSTINGS=STEM job/ch-store.sh serve`) binds the dated name-summary runtime to the consolidated index (`mega_names.binding`: the stem's and `name_spans`' coverage, and each covered scan's bucket geometry from depth-1 `n_desc`). In the existing bounded cold lane (one slot, 5 s, 16 threads, 200K-name budget):
+
+- a daily scan's unregistered literal answers from the consolidated index instead of the scan's own name index (its geometry must equal the catalog's at boot);
+- every scan without a frozen or daily catalog becomes available as `consolidated-store-v1`: every literal on demand, no catalog. Scans that have catalogs keep them.
+
+### Served latency (Oct 6, the workstream-A T-curve picks, 8 per band, through `/api/name-summary`)
+
+Same box and lane (16 threads, 5 s); "per-day" is the scan's own name index (`ch-daily-name-index`), "consolidated" is `m` (all 68 scans, merged). Cold drops the OS page cache before each request. Wall seconds, p50 / max:
+
+| Paths per literal | per-day cold | consolidated cold | per-day warm | consolidated warm |
+| --- | ---: | ---: | ---: | ---: |
+| 8.5K–10K | 1.99 / 2.21 | 0.80 / 0.90 | 0.64 / 1.78 | 0.48 / 0.72 |
+| 25K–30K | 1.50 / 2.86 | 0.61 / 2.92 | 0.49 / 1.04 | 0.31 / 2.69 |
+| 85K–100K | 2.25 / 3.49 | 0.60 / 3.83 | 0.65 / 1.39 | 0.37 / 3.39 |
+
+All 48 answered. The consolidated index removes the cold floor (the per-scan `nodes_by_name` page misses): median cold latency drops 2.5–3.7×. Its tail is the same shape as before, driven by distinct matching names (`48.parquet` 3.4 s, `nk080` 2.9 s, `bb-` 2.7 s warm: the postings join over every version those names ever had).
+
+Scans with no catalog (every literal on demand):
+
+| Literal | Sep 15 cold / warm | Oct 1 cold / warm |
+| --- | ---: | ---: |
+| `3p` | 3.58 / 3.59 | refused: > 200K names |
+| `6h` | 1.52 / 0.81 | 1.33 / 1.05 |
+| `5418` | 4.78 / 4.20 | deadline (5 s) |
+| `gof`, `nk080`, `116.tok` | 0.30–0.83 / 0.09–0.44 | not run: lane quarantined after the deadline |
+
+A request that hits the 5 s deadline is cancelled and its HTTP transport can't be proven idle, so the lane quarantines and recovers ~7 s later; requests in that window get 503 (busy), never a partial answer. A finished query that lingered in `system.processes` used to quarantine the lane the same way after a *successful* answer (`bb-`, every time); verification now polls for up to 1 s.
+
 ## Precomputed catalogs day to day
 
 Bucket answers (`(literal, bucket)` cells of the dated L1 catalogs) change a lot between consecutive scans, because a bucket total moves whenever anything under a busy literal changes:
@@ -83,8 +126,8 @@ Interval-coding cells would save about 4× on a 22 MB/day artifact: not worth it
 
 Ship the consolidated store as the one source for below-threshold name search, dropping per-scan name indexes and per-scan scalar databases:
 
-1. Daily: append the scan (`ch-ingest`, ~9–13 min), then append its opened versions/closures to the name postings and refresh `name_spans` for the names they carry (both O(changes); to implement).
-2. Serve below-T literals for any scan with `mega_names.answer(..., postings=…)` behind the existing bounded lane (name and row budgets, deadline).
+1. Daily: append the scan (`ch-ingest`, ~9–13 min), then `ch-mega-names-append` (O(changes): 23 s for the 126M-closure Oct 6).
+2. Serve below-T literals for any scan from the consolidated index (`serve-query -P`) behind the existing bounded lane (name budget, deadline).
 3. Precompute 1–2 character literals with the catalog, so on-demand reads always use the trigram index.
 4. Keep catalogs per scan for now; revisit interval-coding at drill-tile granularity.
 
