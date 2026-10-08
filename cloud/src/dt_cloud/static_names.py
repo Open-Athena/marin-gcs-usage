@@ -938,15 +938,18 @@ def plan_shards_cmd(bucket, gen, target_rows, tasks) -> None:
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-P", "--partial", is_flag=True, help="Accept fewer intervals files than ranges (a dev build over some ranges)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill + partition dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def shards_cmd(bucket, gen, index, intervals_gen, mount, mem, out, threads, tmp, no_upload) -> None:
+def shards_cmd(bucket, gen, index, intervals_gen, mount, mem, out, threads, partial, tmp, no_upload) -> None:
     """Build one task group's suffix shards (and their sidecars)."""
     prefix = f"{PREFIX}/{gen}"
     plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
     ig = intervals_gen or gen
     ranges = read_json(f"gs://{bucket}/{PREFIX}/{ig}/ranges.json")
-    files = [f"{mount}/{PREFIX}/{ig}/intervals/r{r['i']:04d}.parquet" for r in ranges["ranges"]]
+    files = sorted(str(f) for f in (Path(mount) / PREFIX / ig / "intervals").glob("r*.parquet"))
+    if len(files) != ranges["k"] and not partial:
+        raise SystemExit(f"{len(files)} of {ranges['k']} ranges' intervals under {ig}: pass -P for a partial (dev) build")
     t = _task(index)
     outp = Path(out) / f"t{t}"
     doc = build_shards(files, plan, t, outp, threads=threads, mem=mem, tmp=Path(tmp))
@@ -1096,6 +1099,47 @@ def verify_intervals_cmd(bucket, gen, only, ch_tsv) -> None:
     print(json.dumps(report, indent=1))
     if diff:
         raise SystemExit(1)
+
+
+R2_SERVED = ("sx/", "sidecar.parquet", "shards.json", "scans.json")
+
+
+@cli.command("r2-copy")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Source GCS bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-n", "--dry-run", is_flag=True, help="List what would be copied")
+@option("-w", "--workers", default=8, type=int, help="Parallel copies")
+def r2_copy_cmd(bucket, gen, dry_run, workers) -> None:
+    """Copy the generation's served files (shards, sidecar, plan, scans) GCS → R2 under the same keys,
+    skipping objects already there with the same size and md5 (`publish.copy_one`'s streaming copy,
+    the GCS md5 stamped as metadata). R2 via `R2_ENDPOINT`, `R2_BUCKET` and AWS_* (or R2_*) keys."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import publish as pub
+
+    prefix = f"{PREFIX}/{gen}"
+    objs = [o for o in pub.list_source(bucket, [prefix + "/"]) if o.key.removeprefix(prefix + "/").startswith(R2_SERVED)]
+    s3, r2 = pub.r2_client(), pub.r2_bucket()
+    with ThreadPoolExecutor(workers) as ex:
+        todo = [o for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
+    total = sum(o.size for o in todo)
+    err(f"r2-copy {gen}: {len(objs)} objects, {len(todo)} to copy ({total:,} B)")
+    if dry_run:
+        for o in todo:
+            print(o.key)
+        return
+    t0 = monotonic()
+
+    def one(o):
+        pub.copy_one(bucket, s3, r2, o)
+        return o
+
+    done = 0
+    with ThreadPoolExecutor(workers) as ex:
+        for o in ex.map(one, todo):
+            done += o.size
+            err(f"  → {o.key} ({o.size:,} B; {done / total:.1%}, {done / max(monotonic() - t0, 1e-9) / 1e6:.0f} MB/s)")
+    print(json.dumps({"gen": gen, "objects": len(objs), "copied": len(todo), "bytes": total, "s": round(monotonic() - t0, 1)}))
 
 
 @cli.command("query")
