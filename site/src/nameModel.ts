@@ -77,6 +77,9 @@ function capabilities(value: unknown) {
 /** A daily scan's plans: its registered catalog, or bounded discovery over its own name index or the consolidated store's. */
 const CONSOLIDATED_SOURCE = 'bounded name postings over the consolidated store; directory rollups are atomic'
 const CONSOLIDATED_CATALOG_SOURCE = "the consolidated catalog: every scan's registered literals precomputed in the store"
+/** A consolidated scan's below-catalog literal answered by the Worker from the static suffix shards on R2
+ *  (`functions/_lib/staticNames.ts`, dev `NAME_SUMMARY_STATIC=1`), not the query box. */
+export const STATIC_SOURCE = 'static suffix postings on R2, one ranged read by the Worker; directory rollups are atomic'
 const DAILY_SOURCES: Record<NamePlan, string[]> = {
   catalog: ['published dated precomputed batch artifact'],
   'bounded-name-postings': ["bounded dated name postings over the scan's own name index; directory rollups are atomic", CONSOLIDATED_SOURCE],
@@ -116,7 +119,7 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
     const checked = consolidatedIdentity(identity), catalog = checked.catalog
     const plan = body.plan === 'catalog' && catalog ? 'catalog' : body.plan === 'bounded-name-postings' ? 'bounded-name-postings' : fail()
     if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets', ...(catalog ? ['registry'] : [])]) ||
-        body.source !== (plan === 'catalog' ? CONSOLIDATED_CATALOG_SOURCE : CONSOLIDATED_SOURCE) || body.target !== checked.target || !keys(validation, validationKeys) ||
+        (plan === 'catalog' ? body.source !== CONSOLIDATED_CATALOG_SOURCE : body.source !== CONSOLIDATED_SOURCE && body.source !== STATIC_SOURCE) || body.target !== checked.target || !keys(validation, validationKeys) ||
         typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false) fail()
     return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked,
       ...(catalog ? { registry: catalogRegistry(body.registry, body.date, catalog) } : {}) }

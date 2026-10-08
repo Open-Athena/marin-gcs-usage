@@ -1,8 +1,9 @@
 import { json } from './auth.js'
 import { HotQueryError, hotParams, privateHeaders, type HotL1Env } from './hotL1.js'
 import { datedNameRequest, nameRequest, parseName, parseNameRegistry } from '../../src/nameModel.js'
+import { type StaticNameEnv, withStatic } from './nameSummaryStatic.js'
 
-export type NameSummaryEnv = HotL1Env & { QUERY_BOX_NAME_SUMMARY?: string; QUERY_BOX_DATED_NAMES?: string }
+export type NameSummaryEnv = HotL1Env & StaticNameEnv & { QUERY_BOX_NAME_SUMMARY?: string; QUERY_BOX_DATED_NAMES?: string }
 export const NAME_MAX_BYTES = 64 << 10
 export const NAME_TIMEOUT_MS = 8000
 export function nameSummaryParams(url: URL, dated = false): URLSearchParams {
@@ -15,7 +16,8 @@ export function nameRegistryParams(url: URL): void {
 }
 const unavailable = (retry = '1'): Response => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': retry })
 export async function askNameSummary(env: NameSummaryEnv, params: URLSearchParams): Promise<Response> {
-  return askNameBackend(env, params)
+  if (env.QUERY_BOX_DATED_NAMES !== '1') return askNameBackend(env, params)
+  return withStatic(env, params, p => askNameBackend(env, p))
 }
 export async function askNameSummaryRegistry(env: NameSummaryEnv): Promise<Response> {
   return askNameBackend(env)

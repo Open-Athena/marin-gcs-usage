@@ -119,6 +119,7 @@ QUERY_BOX_NAME_SUMMARY = "1"
 QUERY_BOX_DATED_NAMES = "1"
 QUERY_BOX_HOT_L1_URL = "https://gcs-query.oa.dev"
 STATIC_BENCH = "1"   # /api/static-bench: R2 read timings for the static name-search prototype
+NAME_SUMMARY_STATIC = "1"   # /api/name-summary: below-catalog literals on consolidated scans from the static suffix shards (INDEX_R2), not the query box
 STORE = "gcs"
 AUTH_MODE = "app"
 ROOT_LABEL = "marin GCS (dev)"

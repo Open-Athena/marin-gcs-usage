@@ -96,6 +96,12 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_BOX_NAME_SUMMARY = "1"              # optional bounded name summaries; private approved preview only, same URL/token
 # QUERY_BOX_DATED_NAMES = "1"               # opt in only after dated catalogs/proofs are accepted; new scans may be catalog-only
 # QUERY_BOX_HOT_L1_URL = "https://catalog.example"  # existing operator-managed VM/tunnel
+# NAME_SUMMARY_STATIC = "1"                 # dated name summaries: below-catalog literals on consolidated scans from the static suffix shards in INDEX_R2 (`_lib/staticNames.ts`)
+# STATIC_MAX_ROWS = "400000"                # the static reader's ceiling on suffix rows per query (default 400K; the catalog threshold bounds it lower)
+# STATIC_BENCH = "1"                        # dev: `/api/static-bench`, R2 read timings over INDEX_R2
+# [[r2_buckets]]                            # Worker-served indexes (the static name-search shards)
+# binding = "INDEX_R2"
+# bucket_name = "<index bucket>"
 # OG_CARDS = "1"                              # any value: every page gets its own preview card; unset = the static `og.jpg`
 
 # Secrets — `wrangler pages secret put`, never in this file:
