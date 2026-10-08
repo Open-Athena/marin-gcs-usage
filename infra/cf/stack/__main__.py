@@ -120,3 +120,38 @@ if captures_bucket:
         moved_from_root=cfg.get_bool("capturesMovedFromRoot") or False,
     )
     pulumi.export("captures_queue", trigger.queue.queue_name)
+
+# The query box (`dt-cloud serve-query` on the ch-store VM) behind a named tunnel:
+# a stable hostname, no inbound port on the VM. `cloudflared` on the VM runs with
+# the tunnel's token (the secret output below, piped to the VM, never git); the
+# box itself still checks its bearer token.
+query_host = cfg.get("queryBoxHost")
+if query_host:
+    tunnel = cloudflare.ZeroTrustTunnelCloudflared(
+        "query-box-tunnel",
+        account_id=account_id,
+        name=f"{pulumi.get_stack()}-query-box",
+        config_src="cloudflare",
+    )
+    cloudflare.ZeroTrustTunnelCloudflaredConfig(
+        "query-box-tunnel-config",
+        account_id=account_id,
+        tunnel_id=tunnel.id,
+        config=cloudflare.ZeroTrustTunnelCloudflaredConfigConfigArgs(ingresses=[
+            cloudflare.ZeroTrustTunnelCloudflaredConfigConfigIngressArgs(
+                hostname=query_host, service=cfg.get("queryBoxService") or "http://localhost:8080"),
+            cloudflare.ZeroTrustTunnelCloudflaredConfigConfigIngressArgs(service="http_status:404"),
+        ]),
+    )
+    cloudflare.DnsRecord(
+        "query-box-cname",
+        zone_id=zone_id,
+        name=query_host,
+        type="CNAME",
+        content=tunnel.id.apply(lambda i: f"{i}.cfargotunnel.com"),
+        ttl=1,
+        proxied=True,
+    )
+    pulumi.export("query_box_host", query_host)
+    pulumi.export("query_box_tunnel_token", pulumi.Output.secret(tunnel.id.apply(
+        lambda i: cloudflare.get_zero_trust_tunnel_cloudflared_token(account_id=account_id, tunnel_id=i).token)))
