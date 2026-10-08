@@ -111,6 +111,76 @@ Scans with no catalog (every literal on demand):
 
 A request that hits the 5 s deadline is cancelled and its HTTP transport can't be proven idle, so the lane quarantines and recovers ~7 s later; requests in that window get 503 (busy), never a partial answer. A finished query that lingered in `system.processes` used to quarantine the lane the same way after a *successful* answer (`bb-`, every time); verification now polls for up to 1 s.
 
+## Consolidated catalog ("mega-catalog")
+
+`chstore/mega_catalog.py`, `ch-mega-catalog-build`, `ch-mega-catalog-check`, `serve-query -K` (`MEGA_CATALOG`). Every scan in the store gets its own catalog — its registry (every literal with ≥ T = 100K direct name-substring paths at any length, plus every literal of ≤ 2 characters present at all: the complete length domain) and each registered literal's first-hit bucket bytes/objects — kept as versions in four tables of the store, appended from each scan's changes.
+
+### Design as built
+
+| Table | Rows | Holds |
+| --- | --- | --- |
+| `catalog_names (l, d, n)` | per name per scan it changes | the change in the name's live paths at scan `d`; a base scan holds full counts. Summed from the latest base through D: D's weighted vocabulary |
+| `catalog_multi (depth, path, d)` | paths that ever had ≥ 2 live owner slices in the epoch | every other path has at most one live slice, so its day's events decide it |
+| `catalog_terms (term, vf, member, paths)` | a version when a tracked literal's registration or count changes | the registry: member on D = the newest version at or before D |
+| `catalog_cells (term, bucket, vf, b, o)` | a version when a tracked literal's bucket total changes | first-hit totals; the newest version at or before D |
+
+Every literal ever registered stays **tracked**: its cells keep moving while it is below the threshold, so re-registration costs nothing. A literal registered for the first time (an **entrant**) gets a complete answer from the consolidated name index (`mega_names.answer`, ≤ 400 per scan), else from one pass over the scan.
+
+**Appending scan D** costs its churn, not the scan:
+
+1. **Counts** (`counts_append`): each path the day's `changes` touch moves its name by `[live after] − [live before]`. A path not in `catalog_multi` had at most one live slice, so only-closes is −1 and closes-and-opens is 0 (its opened slices are live after); only-opens is +1 unless a slice was already live. Only those pure opens, plus touched multi-slice paths, are read from the store, as versions opened minus closures (no version join). Reading every touched path instead cost 394 s on Oct 6 and exceeded 64 GiB on Aug 17.
+2. **Registry**: the native census (`native/hot_frequency.cpp`) over the maintained vocabulary (`SELECT l, sum(n) … GROUP BY l`), exactly as the single-scan census over the scan's paths.
+3. **Answers**: the day's signed `changes` rows stream through `native/catalog_delta.cpp` (16 streams over primary-key ranges): one Aho–Corasick automaton over every tracked literal; a row adds `sign·(size, n_files)` to each literal its name contains and its parent path does not. That equals the change in first-hit totals because a directory's rollup is its own version: when anything under it changes, its old version closes and a new one opens.
+4. **Versions**: only changed registrations and cells are written; the scan is logged in `name_index_log` (stem `catalog`), and a rerun drops an unlogged scan's partial rows first.
+
+A **base scan** (the store's first, or a source-format switch, where `ingest` records no `changes`) computes all three from its live rows. The census stays a full pass over the vocabulary rather than incremental: a watermark scheme (exact counts kept down to T/2, a positive-delta census to catch risers) is sound, but a literal crossing up from below the watermark still needs an exact recount over every name containing it, which on an upload-heavy day is a vocabulary pass anyway, and it adds drift state. The census is 12 s at the v1 store's 15M names.
+
+### Backfill (2026-10-08, n2-highmem-32, 16 kernel streams, census 32 threads)
+
+All 68 scans, Jul 30 – Oct 6, in 4,259 s of processing (71 min) — against ~13 min per scan for a single-scan catalog build from its own scalar database (~14.7 h for 68, plus building those databases).
+
+| Scans | Wall p50 (max) | Counts | Census | Delta kernel | Entrants | Registered | Versions written per scan (terms / cells) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Jul 30 base (211.5M paths) | 297 s | 216 s (hash grouping; now in key order) | 12 s | — | 70 s (full pass) | 10,862 | 10,862 / 48,268 |
+| 60 v1 appends | 15 s (447 s, Aug 25) | 1.7 s | 11.8 s | 0.5 s (42 s, Aug 17) | median 0 (272 on Aug 25: 387 s one by one) | 10,724–11,207 | 5,307 / 16,294 |
+| Sep 30 base (777.1M paths) | 738 s | 351 s | 147 s | — | 237 s (full pass) | 98,085 | 96,143 / 262,610 |
+| 6 v2 appends | 267 s (375 s, Oct 6) | 13 s (77 s, Oct 6) | 144 s | 2.7 s (113 s, Oct 6) | 92 s (~58 a day, one by one) | 70,662–98,242 | 17,614 / 80,336 |
+
+Oct 6 is the deletion day: 127.8M touched paths, of which only 1.84M (pure opens and multi-slice paths) were read from the store; Aug 17 rewrote 71.8M v1 directories and read 11,958. Each scan's net path change matches its scan's slice-count change to within the multi-slice paths (Oct 3: +1,401,026 both ways; Oct 5: −53,635,710 paths vs −53,635,889 slices).
+
+Sizes: what is served — `catalog_terms` (553,774 rows) and `catalog_cells` (1,819,081 rows) — is **24 MB for all 68 scans**; Oct 6's single-scan catalog artifact alone is 30 MB. The appender's state, `catalog_names` (220M rows), is 1.44 GB; `catalog_multi` 0.3 MB.
+
+The v2 append is now census-bound (144 s: 86 s of it reading the 126M-name vocabulary) plus first-time registrations (~1.6 s each from the name index). Next levers: read the vocabulary in key order, and answer a scan's entrants in one batched postings pass.
+
+### Exactness on real data
+
+| Scan | Reference | Registered | Result |
+| --- | --- | ---: | --- |
+| Oct 6 | the published `dated-l1-oct06-catalog-complete-b` (independent: per-scan scalar database, `hot-l1-stream` kernel) and its census counts | 70,662 | equal: registry, every count, every nonzero bucket total |
+| Sep 15 (v1) | a fresh single-scan build from its live rows (`ch-mega-catalog-check -f`, 410 s) | 10,725 | equal |
+| Oct 3 (v2) | a fresh single-scan build from its live rows (1,011 s) | 98,242 | equal |
+
+A fresh build of Oct 6 from live rows exceeds the 64 GiB statement cap: its live-path step anti-joins against every v2 closure through Oct 6 (~130M, the deletion days) in one set. Oct 6 is covered by the independent published catalog above; a fresh check there needs its live-path step split by key range too. Locally (`cloud/tests/test_chmega_catalog.py`): every scan of a five-day fixture equals a brute-force catalog over every substring of every name, a fresh build, a resumed build and a mid-history base; disabling the multi-slice rule fails six of the seven tests.
+
+
+### Served (dev, `serve-query -P m -K catalog`, 1 cold slot, 16 threads, 5 s)
+
+The 24 T-curve picks plus `3p 6h 5418 gof nk080 116.tok`, through `/api/name-summary` on the node, cold (page cache dropped before each) then warm. Wall seconds, p50 / max per band (all bands below T, so on demand):
+
+| Scan | 8.5–10K cold | 25–30K cold | 85–100K cold | 8.5–10K warm | 25–30K warm | 85–100K warm |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Oct 6 (daily catalog) | 0.84 / 0.94 | 0.61 / 3.02 | 0.63 / 4.13 | 0.50 / 0.71 | 0.32 / 2.83 | 0.40 / 3.52 |
+| Oct 1 (consolidated catalog) | 0.80 / 0.90 | 0.59 / 2.99 | 0.60 / 3.92 | 0.50 / 0.73 | 0.32 / 2.90 | 0.39 / 3.29 |
+| Sep 15 (consolidated catalog) | 0.39 / 0.64 | 0.36 / 3.00 | 0.62 / 0.84 | 0.16 / 0.37 | 0.12 / 2.80 | 0.29 / 0.48 |
+
+| Literal | Oct 1 cold / warm | Sep 15 cold / warm | Before the catalog (Oct 1) |
+| --- | --- | --- | --- |
+| `3p`, `6h` | catalog, 29–38 ms / 26–37 ms | catalog, 31–36 ms / 22–33 ms | refused (> 200K names); 1.3 s |
+| `5418` | deadline (5 s) / 4.94 s | 4.71 s / 3.72 s | deadline, then the lane quarantined |
+| `gof`, `nk080`, `116.tok` | 0.16–3.97 s / 0.09–2.20 s | 0.30–0.82 s / 0.10–0.43 s | not run (quarantined) |
+
+89 of 90 requests answered (all 30 warm on each scan; the miss is `5418` cold on Oct 1 and Oct 6, which exceeds the 5 s deadline). A deadline now fails only that request: in a back-to-back burst on Oct 1 (`5418 3p gof 5418 nk080 6h`) all six answered, where the same sequence before returned three instant 503s after the deadline. `5418` (below T: tens of thousands of names with many versions) is the one literal still at the budget cold.
+
 ## Precomputed catalogs day to day
 
 Bucket answers (`(literal, bucket)` cells of the dated L1 catalogs) change a lot between consecutive scans, because a bucket total moves whenever anything under a busy literal changes:
@@ -124,13 +194,12 @@ Interval-coding cells would save about 4× on a 22 MB/day artifact: not worth it
 
 ## Recommendation
 
-Ship the consolidated store as the one source for below-threshold name search, dropping per-scan name indexes and per-scan scalar databases:
+Ship the consolidated store as the one source for name search over every scan, dropping per-scan name indexes, per-scan catalogs and per-scan scalar databases:
 
-1. Daily: append the scan (`ch-ingest`, ~9–13 min), then `ch-mega-names-append` (O(changes): 23 s for the 126M-closure Oct 6).
-2. Serve below-T literals for any scan from the consolidated index (`serve-query -P`) behind the existing bounded lane (name budget, deadline).
-3. Precompute 1–2 character literals with the catalog, so on-demand reads always use the trigram index.
-4. Keep catalogs per scan for now; revisit interval-coding at drill-tile granularity.
+1. Daily: append the scan (`ch-ingest`, ~9–13 min), then `ch-mega-names-append` (O(changes): 23 s for the 126M-closure Oct 6), then `ch-mega-catalog-build -e DATE catalog` (one append: ~15 s at the v1 store's size, ~4–6 min at v2's, census-bound).
+2. Serve registered literals of every scan from the consolidated catalog (`serve-query -K catalog`), and the rest — below the threshold, by the scan's own census — from the consolidated name index (`-P`) behind the bounded lane (name budget, deadline; a deadline now fails only its own request).
+3. Keep the per-scan catalogs only where they already exist (Oct 4–6) until the consolidated catalog replaces them in serving.
 
-Storage: one all-time name index (17 GB) replaces 9.5 GB per scan, and grows by a day's churn.
+Storage: one all-time name index (17 GB) replaces 9.5 GB per scan; the catalog for every scan is 24 MB served plus 1.44 GB of appender state. Both grow by a day's churn.
 
 [clickhouse.md]: clickhouse.md
