@@ -206,9 +206,10 @@ def test_deadline_client_unique_owned_ids_no_next_statement_after_expiry_and_str
     source._tmp = ['hot_l1_names_owned', 'hot_l1_postings_owned']
     source.cleanup()
     assert calls == [
-        ('SELECT 1', {'query_id': 'owned_0001', 'max_execution_time': 5., 'timeout_before_checking_execution_speed': 0, 'timeout_overflow_mode': 'throw'}, 5.),
-        ('SELECT 2', {'query_id': 'owned_0002', 'max_execution_time': .5, 'timeout_before_checking_execution_speed': 0, 'timeout_overflow_mode': 'throw'}, .5),
-        *[(f'DROP TEMPORARY TABLE IF EXISTS {table}', {'query_id': f'owned_{i:04d}', 'max_execution_time': 2., 'timeout_before_checking_execution_speed': 0, 'timeout_overflow_mode': 'throw'}, 2.) for i, table in enumerate(['hot_l1_postings_owned', 'hot_l1_names_owned'], 3)],
+        # The socket outlives each statement's own limit by the transport grace (1 s): ClickHouse reports the timeout.
+        ('SELECT 1', {'query_id': 'owned_0001', 'max_execution_time': 5., 'timeout_before_checking_execution_speed': 0, 'timeout_overflow_mode': 'throw'}, 6.),
+        ('SELECT 2', {'query_id': 'owned_0002', 'max_execution_time': .5, 'timeout_before_checking_execution_speed': 0, 'timeout_overflow_mode': 'throw'}, 1.5),
+        *[(f'DROP TEMPORARY TABLE IF EXISTS {table}', {'query_id': f'owned_{i:04d}', 'max_execution_time': 2., 'timeout_before_checking_execution_speed': 0, 'timeout_overflow_mode': 'throw'}, 3.) for i, table in enumerate(['hot_l1_postings_owned', 'hot_l1_names_owned'], 3)],
     ]
     assert (source.owned_ids(), source._tmp, source.cleanup_deadline, source.settings['session_timeout']) == (('owned_0001', 'owned_0002', 'owned_0003', 'owned_0004'), [], None, '60')
 
@@ -484,7 +485,9 @@ def test_real_runtime_tiny_fleet_exact_cold_diff_then_forced_expiry_no_orphans(
     assert (body['schema'], body['delta'], len(sources), sources[0]._tmp, runtime.quarantined) == ('name-summary-diff-v1', {'b': -54, 'o': -6}, 1, [], False)
     module.cancel_owned(sources[0], cancel=False)
 
-    # One tiny sleep (no large rows/scan) outlives the fixed transport deadline.
+    # One tiny sleep (no large rows/scan) outlives the deadline. ClickHouse ends it (the statement's own limit, or the
+    # watchdog's KILL) and says so over the open connection, so its cleanup is verified: the expired request alone
+    # fails, and the slot serves the very next one rather than quarantining.
     def slow(source, *args, **kwargs):
         source.tmp('name_summary_expiry_temp', 'SELECT toUInt64(1) AS n')
         source.exec('SELECT sleep(0.2)')
@@ -495,15 +498,13 @@ def test_real_runtime_tiny_fleet_exact_cold_diff_then_forced_expiry_no_orphans(
     with pytest.raises(module.SummaryDeadline) as caught:
         runtime.view('2026-10-05', 'cold-expiry')
     assert str(caught.value) == 'name summary exceeded its total compute deadline; no partial result'
-    limit = monotonic() + 3
-    while not runtime.quarantined and monotonic() < limit:
-        sleep(.01)
-    assert (runtime.quarantined, runtime.gate.acquire(blocking=False)) == (True, False)
     expired = sources[1]
-    module.cancel_owned(expired, cancel=False)
     probe = Ch(ch_url, db=ch_db, session=False, timeout=1, session_id=expired.settings['session_id'])
     try:
-        assert probe.scalar('EXISTS TABLE name_summary_expiry_temp') == '0'
+        monkeypatch.setattr(module, 'build', lambda *args, **kwargs: build(*args, **kwargs, min_free_bytes=0))
+        monkeypatch.setattr(module, 'COMPUTE_SECONDS', 5.)
+        assert runtime.view('2026-10-05', 'json')['plan'] == 'bounded-name-postings'
+        assert (runtime.quarantined, expired.transport_uncertain, probe.scalar('EXISTS TABLE name_summary_expiry_temp')) == (False, False, '0')
     finally:
         probe.close()
     assert runtime.view('2026-10-05', '.json')['plan'] == 'catalog'
@@ -543,3 +544,16 @@ def test_quiescence_waits_briefly_for_finished_owned_queries_to_leave_the_proces
         with pytest.raises(module.SummaryUnavailable) as caught:
             module.cancel_owned(source, cancel=False)
         assert (str(caught.value), len(remaining) < 1000) == ('name summary query quiescence could not be verified', True)
+
+
+def test_a_request_waits_briefly_for_the_slot_a_finishing_request_releases(runtime: SimpleNamespace) -> None:
+    """A request arriving while the previous one's owned work is still being cancelled and verified is served once the
+    slot frees (within `SLOT_WAIT_SECONDS`), not refused as busy."""
+    from threading import Timer
+
+    state = runtime
+    assert state.runtime.gate.acquire(blocking=False) is True
+    Timer(.2, state.runtime.gate.release).start()
+    start = monotonic()
+    assert state.runtime.view('2026-10-05', 'datakit') == expected_view(state, '2026-10-05', 'datakit', 'bounded-name-postings')
+    assert .15 < monotonic() - start < module.SLOT_WAIT_SECONDS

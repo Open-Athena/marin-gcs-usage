@@ -32,6 +32,13 @@ COMPUTE_SECONDS = 5.0
 # up to 16 (`NAME_SUMMARY_COLD_THREADS` overrides).
 COLD_THREADS = int(environ.get('NAME_SUMMARY_COLD_THREADS') or min(16, cpu_count() or 4))
 CLEANUP_SECONDS = 2.0
+# The client's socket outlives each statement's own `max_execution_time` by this much, so a statement that runs out
+# (or that the watchdog kills) ends with ClickHouse's error over the open connection: a known outcome, verified
+# cleanup, no quarantine. Only a server that doesn't answer at all leaves the transport uncertain.
+TRANSPORT_GRACE_SECONDS = 1.0
+# A request waits this long (within its own deadline) for the one cold slot, e.g. while the previous request's owned
+# work is being cancelled and verified, before reporting it busy.
+SLOT_WAIT_SECONDS = 1.0
 # A finished query can linger in `system.processes` while it finalizes; quiescence polls this long before refusing.
 QUIESCENCE_SECONDS = 1.0
 # A quarantined lane re-verifies after every owned query's own
@@ -111,7 +118,7 @@ class DeadlineCh(Ch):
                 raise SummaryDeadline('name summary exceeded its total compute deadline; no partial result')
             query = f'{self.request_id}_{len(self.ids) + 1:04d}'
             self.ids.append(query)
-            self.timeout = remaining
+            self.timeout = remaining + TRANSPORT_GRACE_SECONDS
         selected = {**(settings or {}), 'query_id': query, 'max_execution_time': remaining,
                     'timeout_before_checking_execution_speed': 0, 'timeout_overflow_mode': 'throw'}
         try:
@@ -312,9 +319,13 @@ class NameSummaryRuntime:
         `compute(source, checkpoint)`; `checkpoint()` raises once the deadline passed."""
         if self.quarantined:
             raise SummaryBusy('name summary cold lane is quarantined; catalog reads remain available')
-        if not self.gate.acquire(blocking=False):
+        deadline = monotonic() + COMPUTE_SECONDS
+        if not self.gate.acquire(timeout=min(SLOT_WAIT_SECONDS, COMPUTE_SECONDS / 2)):
             raise SummaryBusy('name summary cold serving slot busy; retry shortly')
-        deadline, stopped, finished, done = monotonic() + COMPUTE_SECONDS, Event(), Event(), Event()
+        if self.quarantined:
+            self.gate.release()
+            raise SummaryBusy('name summary cold lane is quarantined; catalog reads remain available')
+        stopped, finished, done = Event(), Event(), Event()
         outcome = []
 
         def checkpoint() -> None:
