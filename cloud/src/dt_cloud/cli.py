@@ -1990,8 +1990,10 @@ def ch_mega_names_digest(db: str, threads: int, url: str, stems: tuple[str, ...]
 @option("-P", "--postings", help="Answer first-time literals from this consolidated name index stem (`ch-mega-names-build`); default one scan pass")
 @option("-s", "--short", default=2, type=IntRange(min=0, max=8), help="Register every literal of at most this many characters")
 @option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads, and the census's threads")
-@option("-T", "--threshold", default=100_000, type=IntRange(min=1), help="Register literals with at least this many direct paths")
+@option("-T", "--threshold", default=100_000, type=IntRange(min=1), help="Register literals with at least this much census weight (`-w`)")
 @option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
+@option("-w", "--weight", default="paths", type=Choice(["paths", "rows"]), help="Census weight: direct live paths, or on-demand postings rows (needs `-P`'s index to read them)")
+@option("-W", "--name-rows", default=256, type=IntRange(min=0), help="With `-w rows`: postings rows charged per name on top of its own")
 @argument("stem")
 def ch_mega_catalog_build(
     census_binary: str,
@@ -2005,6 +2007,8 @@ def ch_mega_catalog_build(
     threads: int,
     threshold: int,
     url: str,
+    weight: str,
+    name_rows: int,
     stem: str,
 ) -> None:
     """The consolidated catalog STEM (`mega_catalog`): every scan's registry and
@@ -2019,8 +2023,8 @@ def ch_mega_catalog_build(
     ch = Ch(url, db=db, timeout=14400)
     try:
         mega_catalog.build(ch, stem, census_binary=Path(census_binary), delta_binary=Path(delta_binary), postings=postings, through=through,
-                           threshold=threshold, short=short, threads=threads, parallel=parallel, settings=_mega_settings(memory_gib, threads),
-                           progress=lambda body: print(json.dumps(body), flush=True))
+                           threshold=threshold, short=short, weight=weight, name_rows=name_rows, threads=threads, parallel=parallel,
+                           settings=_mega_settings(memory_gib, threads), progress=lambda body: print(json.dumps(body), flush=True))
     finally:
         ch.close()
 
@@ -2034,9 +2038,9 @@ def ch_mega_catalog_build(
 @option("-m", "--memory-gib", default=64, type=IntRange(min=1, max=200), help="Per-statement memory cap")
 @option("-p", "--parallel", default=16, type=IntRange(min=1, max=64), help="Concurrent streams into the delta kernel (with `-f`)")
 @option("-q", "--queries", help="With `-g`: the census queries (JSONL) whose counts the generation's registry came from")
-@option("-s", "--short", default=2, type=IntRange(min=0, max=8), help="Short-literal domain (with `-f`)")
+@option("-s", "--short", type=IntRange(min=0, max=8), help="Short-literal domain (with `-f`; default the stem's)")
 @option("-t", "--threads", default=32, type=IntRange(min=1, max=64), help="ClickHouse max_threads, and the census's threads")
-@option("-T", "--threshold", default=100_000, type=IntRange(min=1), help="Registry threshold (with `-f`)")
+@option("-T", "--threshold", type=IntRange(min=1), help="Registry threshold (with `-f`; default the stem's, as its census weight)")
 @option("-U", "--url", default="http://localhost:8123", help="Dev ClickHouse URL")
 @argument("stem")
 @argument("dates", nargs=-1, required=True)
@@ -2049,9 +2053,9 @@ def ch_mega_catalog_check(
     memory_gib: int,
     parallel: int,
     queries: str | None,
-    short: int,
+    short: int | None,
     threads: int,
-    threshold: int,
+    threshold: int | None,
     url: str,
     stem: str,
     dates: tuple[str, ...],
@@ -2078,8 +2082,11 @@ def ch_mega_catalog_check(
             got = mega_catalog.snapshot(ch, stem, date, settings)
             read_s = round(monotonic() - start, 3)
             if fresh:
-                want, stats = mega_catalog.fresh(ch, date, census_binary=Path(census_binary), delta_binary=Path(delta_binary), threshold=threshold,
-                                                 short=short, threads=threads, parallel=parallel, settings=settings)
+                bound = mega_catalog.binding(ch, stem)
+                want, stats = mega_catalog.fresh(ch, date, census_binary=Path(census_binary), delta_binary=Path(delta_binary),
+                                                 threshold=threshold or bound["threshold"], short=bound["short"] if short is None else short,
+                                                 weight=bound["weight"], name_rows=bound.get("name_rows", mega_catalog.NAME_ROWS),
+                                                 threads=threads, parallel=parallel, settings=settings)
                 print(json.dumps({"date": date, "reference": "fresh", "snapshot_s": read_s, **stats, **mega_catalog.compare(got, want)}), flush=True)
             if generation:
                 want = mega_catalog.published(Path(generation), Path(queries), date)

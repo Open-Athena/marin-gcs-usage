@@ -174,11 +174,13 @@ class DatedNameSummaryRuntime:
                 **({'catalog': self.catalog['stem']} if day in self.catalog_dates else {})}
 
     def _catalog_registry(self, day: str) -> dict:
-        """The scan's own registry: its census, at the catalog's threshold over the complete length domain."""
+        """The scan's own registry: its census, at the catalog's threshold over the complete length domain — in direct
+        live paths, or (`weight` `rows`) in the on-demand postings rows a literal costs, `name_rows` per name included."""
+        weight = ({'threshold_rows': self.catalog['threshold'], 'name_rows': self.catalog['name_rows']} if self.catalog.get('weight') == 'rows'
+                  else {'threshold_paths': self.catalog['threshold']})
         return {'qualification_dates': [day], 'target': self.catalog['stem'], 'patterns': self.catalog['members'][day],
                 'selection_contract': 'membership on declared qualification dates; no current-scan frequency claim',
-                'threshold_paths': self.catalog['threshold'], 'max_chars': None,
-                **({'short_chars': self.catalog['short']} if self.catalog['short'] else {})}
+                **weight, 'max_chars': None, **({'short_chars': self.catalog['short']} if self.catalog['short'] else {})}
 
     def metadata(self) -> dict:
         rows = []

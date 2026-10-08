@@ -61,6 +61,14 @@ from .schema import dt_lit, live, scan_epochs
 
 THRESHOLD = 100_000
 SHORT = 2
+# What a literal's census count measures: `paths`, its direct matching paths live on the scan; or `rows`, what
+# answering it on demand costs — the consolidated name index's postings rows of its names through the scan (versions
+# opened by it plus closures by it, every name seen by then) plus `NAME_ROWS` per name (a name's postings occupy at
+# least one granule in each table). A non-member's on-demand answer is then bounded by the threshold in these units,
+# on every scan: the reader's vocabulary (`mega_names.span_live`) is a subset of the names seen by the scan, and it
+# reads no version opened or closed after it.
+WEIGHTS = ("paths", "rows")
+NAME_ROWS = 256
 # Entrants (literals registered for the first time) above this many are answered by one pass over the scan, not one
 # consolidated-index query each (~1.4 s each, near the threshold: Aug 25's 272 took 387 s; a pass over that 220M-row
 # scan takes ~70 s).
@@ -79,6 +87,7 @@ def tables(stem: str) -> dict[str, str]:
         f"{stem}_multi": "(depth UInt8, path String CODEC(ZSTD(3)), d DateTime('UTC')) ENGINE = MergeTree PARTITION BY d ORDER BY (depth, path)",
         f"{stem}_terms": "(term String, vf DateTime('UTC'), member UInt8, paths UInt64) ENGINE = MergeTree ORDER BY (term, vf)",
         f"{stem}_cells": "(term String, bucket String, vf DateTime('UTC'), b Int64, o Int64) ENGINE = MergeTree ORDER BY (term, bucket, vf)",
+        f"{stem}_cost": "(l String, d DateTime('UTC'), n Int64) ENGINE = MergeTree PARTITION BY d ORDER BY (l, d)",
     }
 
 
@@ -135,7 +144,7 @@ def drop(ch: Ch, stem: str, settings: dict | None = None) -> None:
 
 def _discard(ch: Ch, stem: str, scan: Scan, settings: dict | None = None) -> None:
     """Drop what an interrupted run wrote for `scan` (it is not logged)."""
-    for table in (f"{stem}_names", f"{stem}_multi"):
+    for table in (f"{stem}_names", f"{stem}_multi", f"{stem}_cost"):
         ch.exec(f"ALTER TABLE {table} DROP PARTITION {lit(scan.dt.split(chr(39))[1])}", settings=settings)
     for table in (f"{stem}_terms", f"{stem}_cells"):
         ch.exec(f"DELETE FROM {table} WHERE vf = {scan.dt}", settings={**(settings or {}), "mutations_sync": 2})
@@ -204,6 +213,24 @@ def counts_append(ch: Ch, stem: str, scan: Scan, settings: dict | None = None) -
 def vocabulary_sql(stem: str, scan: Scan) -> str:
     """`(l, c)`: every name live on the scan and its live paths — the census's weighted vocabulary."""
     return f"""SELECT l, toUInt64(sum(n)) AS c FROM {stem}_names WHERE d >= {scan.start} AND d <= {scan.dt}
+        GROUP BY l HAVING sum(n) > 0"""
+
+
+def cost_append(ch: Ch, stem: str, scan: Scan, settings: dict | None = None) -> dict:
+    """Per-name postings rows the scan adds: the versions it opens and the closures it records (the store's `vf` /
+    `vt` partitions, which the consolidated name index copies by name)."""
+    D = scan.dt
+    ch.exec(f"""INSERT INTO {stem}_cost SELECT name, {D}, toInt64(count()) FROM (
+            SELECT name FROM nodes WHERE vf = {D} UNION ALL SELECT name FROM closures WHERE vt = {D}
+        ) GROUP BY name""", settings=settings)
+    return {"names": int(ch.scalar(f"SELECT count() FROM {stem}_cost WHERE d = {D}", settings)),
+            "rows": int(ch.scalar(f"SELECT sum(n) FROM {stem}_cost WHERE d = {D}", settings) or 0)}
+
+
+def cost_vocabulary_sql(stem: str, scan: Scan, name_rows: int = NAME_ROWS) -> str:
+    """`(l, c)`: every name seen by the scan and its postings rows through it, plus `name_rows` — the cost census's
+    vocabulary. Not epoch-bounded: a reader on the scan reads closures from every earlier epoch."""
+    return f"""SELECT l, toUInt64(sum(n) + {int(name_rows)}) AS c FROM {stem}_cost WHERE d <= {scan.dt}
         GROUP BY l HAVING sum(n) > 0"""
 
 
@@ -416,20 +443,32 @@ def process(
     postings: str | None,
     threshold: int = THRESHOLD,
     short: int = SHORT,
+    weight: str = "paths",
+    name_rows: int = NAME_ROWS,
     threads: int = 32,
     parallel: int = 16,
     settings: dict | None = None,
 ) -> dict:
-    """One scan: counts, registry, answers, versions, log."""
+    """One scan: counts (and, weighted by `rows`, postings costs), registry, answers, versions, log."""
+    if weight not in WEIGHTS:
+        raise ValueError(f"weight must be one of {WEIGHTS}")
     begin = monotonic()
     stages: dict[str, float] = {}
     _discard(ch, stem, scan, settings)
+    counts = cost = None
+    if weight == "paths":
+        stage = monotonic()
+        counts = counts_base(ch, stem, scan, settings) if scan.base else counts_append(ch, stem, scan, settings)
+        stages["counts_s"] = round(monotonic() - stage, 3)
+        log(f"catalog {scan.date}: counts {counts} ({stages['counts_s']} s)")
+    else:
+        stage = monotonic()
+        cost = cost_append(ch, stem, scan, settings)
+        stages["cost_s"] = round(monotonic() - stage, 3)
+        log(f"catalog {scan.date}: postings rows {cost} ({stages['cost_s']} s)")
     stage = monotonic()
-    counts = counts_base(ch, stem, scan, settings) if scan.base else counts_append(ch, stem, scan, settings)
-    stages["counts_s"] = round(monotonic() - stage, 3)
-    log(f"catalog {scan.date}: counts {counts} ({stages['counts_s']} s)")
-    stage = monotonic()
-    registry, census_stats = census(ch, vocabulary_sql(stem, scan), census_binary, threshold=threshold, short=short, threads=threads, settings=settings)
+    vocabulary = cost_vocabulary_sql(stem, scan, name_rows) if weight == "rows" else vocabulary_sql(stem, scan)
+    registry, census_stats = census(ch, vocabulary, census_binary, threshold=threshold, short=short, threads=threads, settings=settings)
     stages["census_s"] = round(monotonic() - stage, 3)
     log(f"catalog {scan.date}: census {census_stats}")
     tracked = sorted(state.terms)
@@ -455,7 +494,8 @@ def process(
     stage = monotonic()
     written = commit(ch, stem, scan, state, registry, answers, full=full, settings=settings)
     stages["commit_s"] = round(monotonic() - stage, 3)
-    body = {"date": scan.date, "base": scan.base, "threshold": threshold, "short": short, "counts": counts, "census": census_stats, "members": len(registry),
+    body = {"date": scan.date, "base": scan.base, "threshold": threshold, "short": short, "weight": weight,
+            **({"name_rows": name_rows, "cost": cost} if weight == "rows" else {}), "counts": counts, "census": census_stats, "members": len(registry),
             "tracked": len(state.terms), "entrants": len(entrants), "entrant_plan": entrant_plan if entrants or scan.base else None,
             **written, "stages": stages, "scan_s": round(monotonic() - begin, 3)}
     ch.exec(f"INSERT INTO {LOG} (stem, through, op, doc) VALUES ({lit(stem)}, {scan.dt}, {lit('base' if scan.base else 'append')}, {lit(json_doc(body))})",
@@ -473,6 +513,8 @@ def build(
     through: str | None = None,
     threshold: int = THRESHOLD,
     short: int = SHORT,
+    weight: str = "paths",
+    name_rows: int = NAME_ROWS,
     threads: int = 32,
     parallel: int = 16,
     settings: dict | None = None,
@@ -489,7 +531,8 @@ def build(
         if through is not None and scan.date > through:
             break
         body = process(ch, stem, scan, state, census_binary=census_binary, delta_binary=delta_binary, postings=postings,
-                       threshold=threshold, short=short, threads=threads, parallel=parallel, settings=settings)
+                       threshold=threshold, short=short, weight=weight, name_rows=name_rows, threads=threads, parallel=parallel,
+                       settings=settings)
         out.append(body)
         if progress is not None:
             progress(body)
@@ -509,13 +552,15 @@ def binding(ch: Ch, stem: str) -> dict:
     for through, doc in rows:
         body = loads(doc)
         members[through[:10]] = body["members"]
-        params.add((body["threshold"], body["short"]))
+        weight = body.get("weight", "paths")
+        params.add((body["threshold"], body["short"], weight, body.get("name_rows") if weight == "rows" else None))
     published = [s.date for s in scans(ch) if s.date <= max(members)]
     if len(params) != 1 or list(members) != published:
         raise ValueError(f"catalog `{stem}` does not cover every published scan through {max(members)} with one registry")
-    (threshold, short), = params
+    (threshold, short, weight, name_rows), = params
     return {"schema": "mega-catalog-binding-v1", "target": ch.db, "stem": stem, "through": max(members),
-            "threshold": threshold, "short": short, "members": members}
+            "threshold": threshold, "short": short, "weight": weight, **({"name_rows": name_rows} if weight == "rows" else {}),
+            "members": members}
 
 
 def view(ch: Ch, stem: str, date: str, term: str, settings: dict | None = None) -> tuple[int, dict[str, tuple[int, int]]] | None:
@@ -550,18 +595,24 @@ def fresh(
     delta_binary: Path,
     threshold: int = THRESHOLD,
     short: int = SHORT,
+    weight: str = "paths",
+    name_rows: int = NAME_ROWS,
     threads: int = 32,
     parallel: int = 16,
     settings: dict | None = None,
 ) -> tuple[dict[str, tuple[int, dict[str, tuple[int, int]]]], dict]:
-    """The scan's catalog computed from its live rows alone (no tables written, no earlier scan): the reference an
-    appended catalog must equal."""
+    """The scan's catalog computed from its live rows alone (no tables written, no earlier scan; weighted by `rows`,
+    the costs counted over the store's versions and closures through it): the reference an appended catalog must
+    equal."""
     scan = next(s for s in scans(ch) if s.date == date)
     begin = monotonic()
     tag = uuid4().hex[:12]
     paths = f"catalog_fresh_{tag}"
     ch.tmp(paths, _live_paths(scan), {**(settings or {}), **IN_ORDER}, disk=True, order_by=("depth", "path"))
     vocabulary = f"SELECT name AS l, toUInt64(count()) AS c FROM {paths} GROUP BY name"
+    if weight == "rows":
+        vocabulary = f"""SELECT name AS l, toUInt64(count() + {int(name_rows)}) AS c FROM (
+            SELECT name FROM nodes WHERE vf <= {scan.dt} UNION ALL SELECT name FROM closures WHERE vt <= {scan.dt}) GROUP BY name"""
     registry, census_stats = census(ch, vocabulary, census_binary, threshold=threshold, short=short, threads=threads, settings=settings)
     ch.exec(f"DROP TEMPORARY TABLE {paths}", settings=settings)
     ch._tmp.remove(paths)

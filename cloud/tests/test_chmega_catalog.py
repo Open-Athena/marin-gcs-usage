@@ -143,3 +143,81 @@ def test_view_reads_one_scan(store, binaries):
     assert "ckpt" not in snap  # 2 paths, below the fixture's threshold
     assert mc.view(store["ch"], "cat_view", "2026-10-02", "ckpt") is None
     assert mc.view(store["ch"], "cat_view", "2026-10-02", "zzz") is None
+
+
+# — weighted by on-demand cost (`weight="rows"`) ——————————————————————————
+
+ROWS_THRESHOLD, NAME_ROWS = 6, 1
+
+
+def name_rows(ch: Ch, day: str) -> dict[str, int]:
+    """Each name seen by `day`'s scan and its postings rows through it (versions opened, closures recorded)."""
+    D = f"toDateTime('{day} 00:00:00', 'UTC')"
+    return {n: int(c) for n, c in ch.json(f"""SELECT name, count() FROM (SELECT name FROM nodes WHERE vf <= {D}
+        UNION ALL SELECT name FROM closures WHERE vt <= {D}) GROUP BY name""")}
+
+
+def expected_rows(ch: Ch, day: str, rows: list[tuple]) -> dict[str, tuple[int, dict[str, tuple[int, int]]]]:
+    """The scan's cost-weighted catalog by brute force: every substring of every name seen by the scan, weighted by
+    its names' postings rows plus `NAME_ROWS` each; registered at `ROWS_THRESHOLD`, or at most `SHORT` characters."""
+    seen = name_rows(ch, day)
+    candidates = {n[i:j] for n in seen for i in range(len(n)) for j in range(i + 1, len(n) + 1)}
+    out = {}
+    for t in candidates:
+        weight = sum(c + NAME_ROWS for n, c in seen.items() if t in n)
+        if weight >= ROWS_THRESHOLD or len(t) <= SHORT:
+            body = brute(rows, t)
+            out[t] = (weight, {row["path"]: (row["b"], row["o"]) for row in body["buckets"] if (row["b"], row["o"]) != (0, 0)})
+    return out
+
+
+def build_rows(store, binaries, stem: str, through: str | None = None) -> list[dict]:
+    return mc.build(store["ch"], stem, census_binary=binaries["census"], delta_binary=binaries["delta"], postings="all", through=through,
+                    threshold=ROWS_THRESHOLD, short=SHORT, weight="rows", name_rows=NAME_ROWS, threads=2, parallel=3)
+
+
+def test_rows_weighted_every_scan_equals_brute_force(store, binaries):
+    mc.drop(store["ch"], "cat_rows")
+    log = build_rows(store, binaries, "cat_rows")
+    assert [(row["date"], row["weight"], row["counts"]) for row in log] == [(day, "rows", None) for day in DAYS]
+    for day, rows in store["rows"].items():
+        assert mc.snapshot(store["ch"], "cat_rows", day) == expected_rows(store["ch"], day, rows), day
+    assert {k: v for k, v in mc.binding(store["ch"], "cat_rows").items() if k != "members"} == {
+        "schema": "mega-catalog-binding-v1", "target": store["ch"].db, "stem": "cat_rows", "through": "2026-10-03",
+        "threshold": ROWS_THRESHOLD, "short": SHORT, "weight": "rows", "name_rows": NAME_ROWS}
+
+
+def test_rows_weighted_non_members_read_less_than_the_threshold(store, binaries):
+    """The guarantee itself, against what the on-demand reader reads: for every literal not registered on a scan,
+    the postings rows of its vocabulary there (`span_live` names; versions opened by the scan, closures by it) plus
+    `NAME_ROWS` per name stay below the threshold."""
+    mc.drop(store["ch"], "cat_bound")
+    build_rows(store, binaries, "cat_bound")
+    ch = store["ch"]
+    for day in DAYS:
+        D = f"toDateTime('{day} 00:00:00', 'UTC')"
+        live = {l for (l,) in ch.json(f"SELECT l FROM name_spans GROUP BY l HAVING {mega_names.span_live(D)}")}
+        read = {n: int(c) for n, c in ch.json(f"""SELECT name, count() FROM (SELECT name FROM all_nodes WHERE vf <= {D}
+            UNION ALL SELECT name FROM all_closures WHERE vt <= {D}) GROUP BY name""")}
+        members = set(mc.snapshot(ch, "cat_bound", day))
+        candidates = {n[i:j] for n in live for i in range(len(n)) for j in range(i + 1, len(n) + 1)}
+        over = {t: cost for t in candidates - members
+                if (cost := sum(read.get(n, 0) + NAME_ROWS for n in live if t in n)) >= ROWS_THRESHOLD}
+        assert over == {}, day
+
+
+def test_rows_weighted_fresh_build_equals_appended(store, binaries):
+    mc.drop(store["ch"], "cat_rows_fresh")
+    build_rows(store, binaries, "cat_rows_fresh")
+    for day in DAYS:
+        got, _ = mc.fresh(store["ch"], day, census_binary=binaries["census"], delta_binary=binaries["delta"], threshold=ROWS_THRESHOLD,
+                          short=SHORT, weight="rows", name_rows=NAME_ROWS, threads=2, parallel=3)
+        assert got == mc.snapshot(store["ch"], "cat_rows_fresh", day), day
+
+
+def test_rows_weighted_resumed_build_equals_one_build(store, binaries):
+    mc.drop(store["ch"], "cat_rows_resume")
+    build_rows(store, binaries, "cat_rows_resume", through="2026-10-01")
+    build_rows(store, binaries, "cat_rows_resume")
+    for day, rows in store["rows"].items():
+        assert mc.snapshot(store["ch"], "cat_rows_resume", day) == expected_rows(store["ch"], day, rows), day

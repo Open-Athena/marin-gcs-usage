@@ -181,6 +181,64 @@ The 24 T-curve picks plus `3p 6h 5418 gof nk080 116.tok`, through `/api/name-sum
 
 89 of 90 requests answered (all 30 warm on each scan; the miss is `5418` cold on Oct 1 and Oct 6, which exceeds the 5 s deadline). A deadline now fails only that request: in a back-to-back burst on Oct 1 (`5418 3p gof 5418 nk080 6h`) all six answered, where the same sequence before returned three instant 503s after the deadline. `5418` (below T: tens of thousands of names with many versions) is the one literal still at the budget cold.
 
+## Below-T cost: what an on-demand answer reads (2026-10-08)
+
+`5418` is below T on every scan (~28K live paths on Oct 6) yet took >5 s cold. Measured over 40 non-member literals
+(10K–400K all-time postings rows, chosen across bands and name counts) on Oct 6, Oct 1 and Aug 15, the served
+postings statement alone (`mega_names.answer`'s), cold = page cache + ClickHouse caches dropped, n2-highmem-32,
+16 threads. Every variant's answers equal the current one's on all 120 (term, date) pairs. Scripts:
+`tmp/cost/{candidates,curve,segtree,ranges}.py` (worktree scratch); data on the VM under `/data/cost-curve/`.
+
+**What drives it.** Not live paths, not all-time postings rows, not names:
+
+| `m_*` layout | date | warm p50 / max (s) | cold p50 / max (s) | corr(warm, rows read) |
+|---|---|---:|---:|---:|
+| 16 parts (as appended) | Oct 6 | 1.15 / 2.13 | 3.47 / 4.95 | 0.87 |
+| | Oct 1 | 1.05 / 2.60 | 3.19 / 5.67 | 0.87 |
+| | Aug 15 | 0.20 / 1.74 | 1.14 / 3.37 | 0.98 |
+| merged to 1 part (`OPTIMIZE FINAL`, 6 min) | Oct 6 | 1.04 / 2.11 | 3.68 / 5.36 | 0.79 |
+| | Oct 1 | 0.98 / 2.35 | 3.53 / 5.66 | 0.79 |
+| | Aug 15 | 0.19 / 1.49 | 1.18 / 3.36 | 0.96 |
+
+- Merging cut rows read 2.3× (Σ 342M → 149M on Oct 6) and changed latency little: rows read are dominated by
+  one 256-row granule per matching name per table (per part, before the merge), not by versions.
+- Warm latency tracks rows read (CPU). Cold latency does not track rows, bytes, names or a granule estimate
+  (`Σ(rows + 256)` per name: corr 0.1–0.5): it is page-cache misses at the names' positions in the sort order.
+  Literals whose names sort apart (hex/shard numbers: `11979`, 3.7K names, 4.2 s; `c296`, 10K names, 4.1 s) cost
+  far more per name than ones whose names cluster (`pio`, 96K names, 1.7 s; `motio`, 59K, 1.4 s). Mark-cache
+  reload is ~0.4 s of it (`5418`: 4.4 s with marks cached, 4.9 s without; 1.9 s warm).
+- So no per-name census weight bounds cold latency: a weight that covered `11979` (~1 ms per scattered name)
+  would register every literal in a few thousand names. The bound that holds is operational: the all-time
+  postings are ~18 GB compressed on a 251 GB box, so keep them resident (warm max ≤ 2.6 s over the curve at
+  8–16 threads), and treat cold as the post-restart case.
+
+**Segment tree over the scan axis** (scans numbered 0..N−1, H = 128 leaves; a closed version stored at the
+canonical nodes of its `[vf, vt)` — 4.18 per version over the full data, so 2.28B tree rows + 608M open rows =
+1.7× today's 1.70B; a query reads D's 8 root-to-leaf nodes plus the open table `vf ≤ D`, no closure anti-join).
+At true density (every name in `[part-0, part-1)` of the full postings: 64.6M versions, 41.2M closures, 13.1M
+names; tree 1.50 GB vs 1.35 GB, 1.11× bytes), 12 shard-number literals:
+
+| date | Σ rows read current → tree | Σ cold (s) | Σ warm (s) |
+|---|---|---|---|
+| Oct 6 | 26.6M → 27.1M (×1.02) | 22.5 → 14.8 (×0.66) | 8.91 → 6.39 |
+| Oct 1 | 26.6M → 27.1M (×1.02) | 22.3 → 14.8 (×0.66) | 8.96 → 6.40 |
+| Aug 15 | 26.4M → 14.2M (×0.54) | 18.2 → 16.0 (×0.88) | 8.24 → 5.16 |
+
+Rows read stay far above live-at-D (`5418` Oct 6: 4.0M read for 10,463 live): the floor is ~1.8 granules per
+matching name in any 256-row-granule layout. The tree's gain is dropping the closures table and its hash join:
+~1.5× cold and ~1.4× warm on recent dates, ~1.1× / 1.6× on old ones, for 1.6–1.8× rows, 1.1× bytes, and an upkeep
+that rewrites ~4 rows per closed version (delete the open row, insert the canonical copies). Not built full-size.
+(pyrmts's multi-scan encoder (b) reads plain interval rows with an overlap filter; this dyadic observation-axis
+index is a candidate pyrmts feature.)
+
+**Cost-weighted census, implemented but not built** (`ch-mega-catalog-build -w rows -W NAME_ROWS`): a literal's
+weight is its names' postings rows through the scan (`{stem}_cost`, per name per scan: versions opened plus
+closures recorded) plus `NAME_ROWS` per name, over every name seen by the scan (a superset of `span_live`'s, so a
+non-member's on-demand read is bounded on every scan, past and future); membership is monotone. `serve-query`
+reports it as `threshold_rows` + `name_rows`, which `/names` accepts. Tests: brute force, fresh, resumed, and the
+bound itself (every non-member's read below the threshold); they fail without closures in the weight. Given the
+cold findings above it bounds rows read (warm), not cold latency, so it is paused pending a decision.
+
 ## Precomputed catalogs day to day
 
 Bucket answers (`(literal, bucket)` cells of the dated L1 catalogs) change a lot between consecutive scans, because a bucket total moves whenever anything under a busy literal changes:
