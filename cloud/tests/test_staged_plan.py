@@ -82,6 +82,28 @@ def test_malformed_plan_raises(bad: object) -> None:
         parse_plan(bad)
 
 
+def test_as_of_groups_by_bucket_like_sweep() -> None:
+    plan = parse_plan({**PLAN, "as_of": {f"gs://{E1}/ckpt/old/": "2026-10-06", f"gs://{W4}/tmp/x": "2026-10-07T0600"}})
+    assert plan == StagedPlan(
+        plan_id=12,
+        name="Staged",
+        sweep={W4: ("tmp/x/",), E1: ("ckpt/old/",)},
+        as_of={E1: {"ckpt/old/": "2026-10-06"}, W4: {"tmp/x/": "2026-10-07T0600"}},
+    )
+
+
+@pytest.mark.parametrize(("as_of", "error"), [
+    ([], "as_of must be an object of prefix -> scan date"),
+    ({f"gs://{E1}/other/": "2026-10-06"}, f"as_of names 'gs://{E1}/other/', which is not a sweep item"),
+    ({f"gs://{E1}/ckpt/old/": "yesterday"}, f"as_of['gs://{E1}/ckpt/old/'] must be a scan date, got 'yesterday'"),
+    ({f"gs://{E1}/ckpt/old/": 20261006}, f"as_of['gs://{E1}/ckpt/old/'] must be a scan date, got 20261006"),
+])
+def test_malformed_as_of_raises(as_of: object, error: str) -> None:
+    with pytest.raises(PlanError) as e:
+        parse_plan({**PLAN, "as_of": as_of})
+    assert str(e.value) == error
+
+
 T0 = int(dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc).timestamp())
 
 
@@ -150,6 +172,7 @@ def test_manifest_from_plan_spans_buckets(listing: Path, tmp_path: Path, monkeyp
         "plan_id": 12,
         "plan_name": "Staged",
         "approved": [f"gs://{W4}/tmp/x/", f"gs://{E1}/ckpt/old/"],
+        "as_of": {},
         "buckets": {
             W4: {
                 "objects": 3, "dirs": 2,

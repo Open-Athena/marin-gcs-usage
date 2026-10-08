@@ -14,6 +14,11 @@ consumes this manifest.
 A key is swept iff some plan prefix covers it. The layer-2 parquet has no
 ETag, so the run's overwrite guard keys off (size, mtime) captured here, not a
 version id.
+
+A plan item staged "as of" another scan than the pinned one (plan.json
+`as_of`) holds back what changed since: a key under it is swept only if that
+scan's layer-2 has it with the same mtime (the layer-2 has no generation).
+What is held back is counted as `skipped_after_as_of`.
 """
 from __future__ import annotations
 
@@ -23,9 +28,9 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import duckdb
 
@@ -72,6 +77,8 @@ class Plan:
     bucket: str
     sweep: list[str]
     plan_id: int | None = None
+    #: The scan each item was staged against, by relative prefix (absent = the pinned scan).
+    as_of: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> None:
         if not self.sweep:
@@ -102,6 +109,7 @@ def load_plan(path: str | Path) -> Plan:
         bucket=bucket,
         sweep=[normalize_prefix(p, bucket) for p in d.get("sweep", [])],
         plan_id=d.get("plan_id"),
+        as_of={normalize_prefix(p, bucket): str(scan) for p, scan in (d.get("as_of") or {}).items()},
     )
     plan.validate()
     return plan
@@ -149,9 +157,17 @@ def _eligible_query() -> str:
     """
 
 
-def build_manifest(l2_path: str, plan: Plan, out_dir: str) -> dict:
-    """Expand `plan` against the layer-2 parquet at `l2_path` into an object-level
-    manifest under `out_dir` (`manifest/<bucket>.parquet` + `plan-summary.json`).
+def build_manifest(
+    l2_path: str,
+    plan: Plan,
+    out_dir: str,
+    date: str | None = None,
+    l2_for: Callable[[str], str] | None = None,
+) -> dict:
+    """Expand `plan` against the layer-2 parquet at `l2_path` (scan `date`) into
+    an object-level manifest under `out_dir` (`manifest/<bucket>.parquet` +
+    `plan-summary.json`). An item staged as of another scan keeps only the keys
+    that scan's layer-2 (`l2_for(scan)`) has with the same mtime.
 
     Returns the summary dict. Deletes nothing; pure read + artifact write.
     """
@@ -160,16 +176,48 @@ def build_manifest(l2_path: str, plan: Plan, out_dir: str) -> dict:
     (out / "manifest").mkdir(parents=True, exist_ok=True)
     manifest_path = out / "manifest" / f"{plan.bucket}.parquet"
 
+    held = {p: scan for p, scan in plan.as_of.items() if p in plan.sweep and scan != date}
+    if held and l2_for is None:
+        raise SweepError(f"plan items staged as of other scans ({', '.join(sorted(set(held.values())))}) need their layer-2s")
+    current = [p for p in plan.sweep if p not in held]
+
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{os.environ.get('DUCKDB_MEM', '8GB')}'")
     con.execute("SET VARIABLE L2 = ?", [l2_path])
-    params = {"sweep": plan.sweep}
-    con.execute(
-        f"COPY ({_eligible_query()} ORDER BY name) TO '{manifest_path}' (FORMAT PARQUET)",
-        params,
-    )
-    objects, byts = con.execute(
-        f"SELECT count(*), coalesce(sum(size_bytes), 0) FROM read_parquet('{manifest_path}')"
+    params: dict = {"sweep": plan.sweep}
+    query = _eligible_query()
+    if held:
+        # A held key (under a held item, under no current one) stays only if
+        # its item's `as_of` layer-2 vouches for it: same path, same mtime.
+        by_scan: dict[str, list[str]] = {}
+        for p, scan in sorted(held.items()):
+            by_scan.setdefault(scan, []).append(p)
+        refs = []
+        for i, (scan, prefixes) in enumerate(sorted(by_scan.items())):
+            con.execute(f"SET VARIABLE AS_OF_{i} = ?", [l2_for(scan)])
+            params[f"held_{i}"] = prefixes
+            refs.append(
+                f"SELECT path, mtime FROM read_parquet(getvariable('AS_OF_{i}')) WHERE kind = 'file'"
+                f" AND len(list_filter($held_{i}, p -> starts_with(path, p))) > 0"
+            )
+        params["held"] = sorted(held)
+        params["current"] = current
+        query = f"""
+            WITH e AS ({query}), ref AS ({' UNION ALL '.join(refs)})
+            SELECT e.*, (
+              len(list_filter($held, p -> starts_with(e.name, p))) > 0
+              AND len(list_filter($current, p -> starts_with(e.name, p))) = 0
+              AND NOT EXISTS (SELECT 1 FROM ref WHERE ref.path = e.name AND ref.mtime = e.mtime)
+            ) AS skip
+            FROM e
+        """
+    else:
+        query = f"SELECT *, false AS skip FROM ({query})"
+    con.execute(f"CREATE TEMP TABLE m AS {query}", params)
+    con.execute(f"COPY (SELECT * EXCLUDE (skip) FROM m WHERE NOT skip ORDER BY name) TO '{manifest_path}' (FORMAT PARQUET)")
+    objects, byts, skipped, skipped_bytes = con.execute(
+        "SELECT count(*) FILTER (WHERE NOT skip), coalesce(sum(size_bytes) FILTER (WHERE NOT skip), 0),"
+        " count(*) FILTER (WHERE skip), coalesce(sum(size_bytes) FILTER (WHERE skip), 0) FROM m"
     ).fetchone()
 
     summary = {
@@ -177,8 +225,10 @@ def build_manifest(l2_path: str, plan: Plan, out_dir: str) -> dict:
         "name": plan.name,
         "bucket": plan.bucket,
         "sweep": plan.sweep,
+        "as_of": dict(sorted(held.items())),
         "objects": int(objects),
         "bytes": int(byts),
+        "skipped_after_as_of": {"objects": int(skipped), "bytes": int(skipped_bytes)},
         "manifest": str(manifest_path),
     }
     (out / "plan-summary.json").write_text(json.dumps(summary, indent=2) + "\n")

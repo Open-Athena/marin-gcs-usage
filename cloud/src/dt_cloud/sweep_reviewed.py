@@ -95,6 +95,17 @@ def _prepare_reviewed(
     reviewed_approved = sorted(original.get("approved", []))
     if original.get("plan_id") != plan.plan_id or reviewed_approved not in (approved, cut_approved):
         raise ValueError("reviewed DR does not match the current staged plan")
+    # The DR's manifest honored the items' `as_of` scans as they were then; a
+    # DR from before an item carried one (or with another) never held back
+    # what changed after it.
+    held = {
+        f"gs://{bucket}/{rel}": scan
+        for bucket, scans in plan.as_of.items()
+        for rel, scan in scans.items()
+        if scan != original.get("date") and f"gs://{bucket}/{rel}" in reviewed_approved
+    }
+    if original.get("as_of", {}) != held:
+        raise ValueError("reviewed DR predates the staged items' as_of scans; dry-run the plan again")
     expected_buckets = sorted(bucket for bucket, entry in original["buckets"].items() if entry.get("eligible", {}).get("objects", 0))
     if original.get("diagnostic") or dry.get("diagnostic") or dry.get("for_real") is not False or sorted(dry.get("buckets", {})) != expected_buckets:
         raise ValueError("reviewed execution requires a completed, non-diagnostic DR")
