@@ -128,7 +128,7 @@ Run: `cd static-names/<gen> && PATH=$REPO/.venv/bin:$PATH dvx run verify-answers
 
 **Answers**: `verify-answers.json`: **259 of 259 (term, date) pairs equal** `mega_names.answer(…, postings='m')` bucket by bucket (bytes and objects; buckets with zero on both sides omitted) — 37 literals (`5418`, `nk080`, `48.parquet`, `gof`, `11979`, `pio`, `54181`, `48.parquet.crc`, `0.0.73`, `116.tok`, `bb-`, `rt-0003`, `s__marin-us-centr`, `xican`, `_hypocris`, and 22 random 4–8-character substrings of hash-sampled names, `job/static-names/terms.txt`) on 2026-10-08, 10-06, 10-01, 09-30, 09-15, 08-15 and 07-30. Every literal's rows were one ranged read of one file: median 0.39 MB, max 3.07 MB (`nk080`); e.g. `5418` 15 row groups / 1.44 MB / 122,880 rows read for 109,281 matching, `s__marin-us-centr` 28 / 1.13 MB / 229,376 for 228,729, `48.parquet.crc` 1 / 65 KB.
 
-**R2**: `r2.dvc` copies `sx/`, `sidecar.parquet`, `shards.json`, `scans.json` (325 objects, 150.6 GB) to `oa-gcs-usage-index` under `static-names/2026-10-08/`.
+**R2**: `r2.dvc` copied `sx/`, `sidecar.parquet`, `shards.json`, `scans.json` (325 objects, 150.6 GB) to `oa-gcs-usage-index` under `static-names/2026-10-08/` from the ch-store VM in 21 min (119 MB/s, 8 streams, `nice`d; the VM's load stayed under 1); a rerun finds 0 to copy (size and GCS md5 match). Egress ≈ 150 GB × ~$0.12 ≈ $18.
 
 Gotcha: DVX `git_deps` make a stage stale when the file changes. The Batch driver (`job/static-names.sh`) was a git dep of the intervals/suffix stages, and a one-line fix to it made a later `dvx run r2.dvc` start rebuilding from intervals (it was caught after an all-skip intervals job). Only `static_names.py` is a content dep now; the image pin rides in the driver's committed text.
 
