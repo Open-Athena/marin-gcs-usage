@@ -8,8 +8,9 @@ path`) make it a name index over all of them at once: no per-scan index.
 
 A literal (case-insensitive, no slash) answers on scan `D` as:
 
-1. vocabulary: the lowercase basenames containing it (`names`, trigram index
-   for three or more characters);
+1. vocabulary: the lowercase basenames containing it whose live span covers
+   `D` (`name_spans`, trigram index for three or more characters; without
+   it, every name ever seen: `names`);
 2. postings: the rows with one of those names, live on `D` (`schema.live`:
    opened by `D`, not closed by `D`, both sides read by name). A path is one
    row per owner slice (`usr`; `''` = unowned); its totals are their sum;
@@ -33,6 +34,26 @@ from .coarse import CoarseRequest
 from .schema import dt_lit, live, scan_epochs
 
 SCOPE = "case-insensitive substring within names; directory hits cover descendants; bytes/objects only"
+FOREVER = "toDateTime('2106-01-01 00:00:00', 'UTC')"
+
+
+def build_spans(ch: Ch, settings: dict | None = None) -> dict:
+    """`name_spans(l, first, last)`: each name's live span over every published scan, a superset of the scans it is
+    live on: opened at its earliest version, live until its last version closes (`last` = never while any is open).
+    Two per-name aggregations, no join: a name is still open iff it has more versions than closures. Rebuilt whole
+    (an append would update only the names its opened and closed versions carry)."""
+    start = monotonic()
+    ch.exec("DROP TABLE IF EXISTS name_spans_build", settings=settings)
+    ch.exec(f"""CREATE TABLE name_spans_build (l String, first DateTime('UTC'), last DateTime('UTC'),
+        INDEX tl l TYPE text(tokenizer = ngrams(3)) GRANULARITY 100000000) ENGINE = MergeTree ORDER BY l AS
+        SELECT n.l AS l, n.first AS first, if(n.versions > c.closed, {FOREVER}, c.last) AS last
+        FROM (SELECT name AS l, min(vf) AS first, count() AS versions FROM nodes GROUP BY name) AS n
+        LEFT JOIN (SELECT name AS l, count() AS closed, max(vt) AS last FROM closures GROUP BY name) AS c USING l""", settings=settings)
+    ch.exec("EXCHANGE TABLES name_spans_build AND name_spans" if ch.scalar("EXISTS TABLE name_spans") == "1"
+            else "RENAME TABLE name_spans_build TO name_spans", settings=settings)
+    ch.exec("DROP TABLE IF EXISTS name_spans_build", settings=settings)
+    names, still_open = (int(x) for x in ch.one(f"SELECT count(), countIf(last = {FOREVER}) FROM name_spans", settings))
+    return {"names": names, "open": still_open, "build_s": round(monotonic() - start, 3)}
 
 
 def scan_bound(ch: Ch, date: str) -> tuple[str, str]:
@@ -69,7 +90,10 @@ def answer(
     stage = monotonic()
     vocabulary = f"mega_names_{abs(hash((date, pattern, start))):x}"
     limit = f" LIMIT {max_names + 1}" if max_names is not None else ""
-    ch.tmp(vocabulary, f"SELECT l FROM names WHERE l LIKE {like_lit(pattern)}{limit}", settings)
+    # Names live on the scan (a superset, by `name_spans`), else every name ever seen.
+    spans = ch.scalar("EXISTS TABLE name_spans") == "1"
+    source = f"name_spans WHERE l LIKE {like_lit(pattern)} AND first <= {D} AND last > {D}" if spans else f"names WHERE l LIKE {like_lit(pattern)}"
+    ch.tmp(vocabulary, f"SELECT l FROM {source}{limit}", settings)
     n_names = int(ch.scalar(f"SELECT count() FROM {vocabulary}", settings))
     if max_names is not None and n_names > max_names:
         raise CoarseRequest(f"vocabulary exceeds its {max_names:,}-name work budget")
@@ -93,7 +117,7 @@ def answer(
     out = [{"path": p, "b": totals.get(p, (0, 0))[0], "o": totals.get(p, (0, 0))[1]} for p in paths]
     return {"schema": "mega-name-totals-v1", "date": date, "pattern": pattern, "exact": True, "scope": SCOPE,
             "root": {"b": sum(r["b"] for r in out), "o": sum(r["o"] for r in out)}, "buckets": out,
-            "vocabulary_names": n_names, "matching_slice_rows": postings, "stages": stages,
+            "vocabulary_names": n_names, "vocabulary": "name_spans" if spans else "names", "matching_slice_rows": postings, "stages": stages,
             "build_s": round(monotonic() - start, 6)}
 
 
@@ -102,7 +126,7 @@ def reference(ch: Ch, target: str, date: str, pattern: str, *, daily: bool) -> d
     from .hot_l1 import build
 
     start = monotonic()
-    body = build(ch.fork(db=target), target, date, pattern, daily=daily)
+    body = build(ch, target, date, pattern, daily=daily)
     return {"buckets": {row["path"]: (row["b"], row["o"]) for row in body["buckets"]}, "build_s": round(monotonic() - start, 6)}
 
 

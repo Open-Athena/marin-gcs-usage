@@ -49,7 +49,17 @@ def patterns(rows_by_day: dict) -> list[str]:
     return sorted({n[i:i + k] for n in names for k in (1, 2, 3) for i in range(len(n) - k + 1)} | {"zzz", "u1", "ckpt", "huge.bin"})
 
 
-def test_every_substring_on_every_day_equals_brute_force(store):
+@pytest.fixture(params=["names", "name_spans"])
+def vocabulary(request, store):
+    ch = store["ch"]
+    if request.param == "name_spans":
+        mega_names.build_spans(ch)
+    else:
+        ch.exec("DROP TABLE IF EXISTS name_spans")
+    return request.param
+
+
+def test_every_substring_on_every_day_equals_brute_force(store, vocabulary):
     ch, rows = store["ch"], store["rows"]
     mismatches = []
     for day in DAYS:
@@ -85,3 +95,13 @@ def test_refuses_unpublished_scan_and_budgets(store):
     with pytest.raises(CoarseRequest) as caught:
         mega_names.answer(store["ch"], "2026-09-30", ".", max_names=2)
     assert str(caught.value) == "vocabulary exceeds its 2-name work budget"
+
+
+def test_spans_drop_names_no_longer_live(store):
+    """`n.bin` is new on 09-30 and gone on 10-01 (`b/u3/` dropped): with spans it leaves 10-01's vocabulary."""
+    ch = store["ch"]
+    ch.exec("DROP TABLE IF EXISTS name_spans")
+    before = [mega_names.answer(ch, day, "n.bin")["vocabulary_names"] for day in DAYS]
+    assert mega_names.build_spans(ch)["names"] == int(ch.scalar("SELECT uniqExact(name) FROM nodes"))
+    after = [mega_names.answer(ch, day, "n.bin")["vocabulary_names"] for day in DAYS]
+    assert (before, after) == ([1, 1, 1], [0, 1, 0])
