@@ -768,12 +768,93 @@ def query_cmd(bucket, dates, gen, terms_file, also_static, terms) -> None:
             out["source"] = "catalog"
         elif reader is not None and len(t) >= 3:
             r = reader.answer(t, list(dates))
-            out = {"q": r["q"], "source": "static", "io": r["io"], "answers": r["answers"]}
+            out = {"q": r["q"], "source": "static", "io": r["io"], "rows_matching_range": r["rows_matching"], "answers": r["answers"]}
         else:
             out = {"q": t.lower(), "source": "none" if len(t) >= 3 else "absent-short",
                    "answers": {d: {} for d in dates} if len(t) < 3 else None}
         out["s"] = round(monotonic() - t0, 3)
         print(json.dumps(out), flush=True)
+
+
+@cli.command("verify")
+@option("-V", "--max-rows", required=True, type=int, help="The catalog's V: a statically answered literal's range must hold at most this many rows")
+@argument("ref_jsonl")
+@argument("answers_jsonl")
+def verify_cmd(max_rows, ref_jsonl, answers_jsonl) -> None:
+    """Compare `query -x` answers with reference answers (`brute` or `ch-answers` JSON lines): per (term, date)
+    the nonzero buckets' bytes and objects must be equal; every term answered statically must have a range of at
+    most V rows, and every term of one or two characters must come from the catalog (or be absent from every
+    name). Prints a JSON report; exit 1 on any failure."""
+    ref: dict[tuple[str, str], dict] = {}
+    for line in Path(ref_jsonl).read_text().splitlines():
+        if line.startswith("{"):
+            d = json.loads(line)
+            ref[(d["q"], d["date"])] = {k: list(v) for k, v in d["buckets"].items() if v[0] or v[1]}
+    pairs, diffs, terms, bound = 0, {}, {}, []
+    for line in Path(answers_jsonl).read_text().splitlines():
+        if not line.startswith("{"):
+            continue
+        d = json.loads(line)
+        src = d["source"]
+        terms[d["q"]] = {"source": src, **({"rows": d["rows"], "cells": d["cells"]} if src == "catalog" else {}),
+                         **({"rows_read": d["io"]["rows_read"], "groups": d["io"]["groups"], "bytes": d["io"]["bytes"]} if src == "static" else {}),
+                         "s": d.get("s")}
+        if src == "static":
+            n = d["rows_matching_range"]
+            terms[d["q"]]["range_rows"] = n
+            if n > max_rows:
+                bound.append(d["q"])
+        if src not in ("catalog", "static", "absent-short"):
+            bound.append(d["q"])
+        for date, buckets in (d["answers"] or {}).items():
+            if (d["q"], date) not in ref:
+                continue
+            pairs += 1
+            mine = {k: v for k, v in buckets.items() if v[0] or v[1]}
+            if mine != ref[(d["q"], date)]:
+                diffs[f"{d['q']} {date}"] = {"answer": mine, "ref": ref[(d["q"], date)]}
+    missing = sorted(f"{t} {dt}" for t, dt in ref if t not in terms)
+    by_source: dict[str, int] = {}
+    for v in terms.values():
+        by_source[v["source"]] = by_source.get(v["source"], 0) + 1
+    report = {"pairs": pairs, "equal": pairs - len(diffs), "terms": len(terms), "by_source": by_source, "max_rows": max_rows,
+              "static_max_range_rows": max((v.get("range_rows", 0) for v in terms.values()), default=0), "bound_violations": bound,
+              "missing": missing, "diff": diffs, "per_term": terms}
+    print(json.dumps(report, indent=1))
+    if diffs or missing or bound or not pairs:
+        raise SystemExit(1)
+
+
+@cli.command("census-check")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-f", "--floor", "floor_rows", default=50_000, type=int, help="The census floor")
+@option("-g", "--gen", required=True, help="Generation (its `catalog/census/` and `chist/`)")
+def census_check_cmd(bucket, floor_rows, gen) -> None:
+    """The census's three-character prefixes (counted from the sorted shards) against the coalesce stage's
+    histograms (counted from the versions, independently): the same prefixes at or above the floor, the same
+    rows. Prints a JSON report; exit 1 on any difference."""
+    import tempfile
+
+    import duckdb
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    client = storage.Client()
+    with tempfile.TemporaryDirectory() as d:
+        for sub in ("catalog/census", "chist"):
+            (Path(d) / sub).mkdir(parents=True)
+            for blob in client.list_blobs(bucket, prefix=f"{prefix}/{sub}/"):
+                blob.download_to_filename(str(Path(d) / sub / Path(blob.name).name))
+        con = duckdb.connect()
+        census_rows = dict(con.execute(f"SELECT q, rows FROM read_parquet({q(d + '/catalog/census/*.parquet')}) WHERE length(q) = 3").fetchall())
+        hist = dict(con.execute(f"SELECT p3, sum(n)::BIGINT FROM read_parquet({q(d + '/chist/*.parquet')}) GROUP BY p3 HAVING sum(n) >= {floor_rows}").fetchall())
+        nodes = con.execute(f"SELECT count(*), max(length(q)), sum(rows) FILTER (WHERE length(q) = 3) FROM read_parquet({q(d + '/catalog/census/*.parquet')})").fetchone()
+    diff = {k: [census_rows.get(k), hist.get(k)] for k in sorted(set(census_rows) | set(hist)) if census_rows.get(k) != hist.get(k)}
+    report = {"gen": gen, "floor": floor_rows, "prefixes3": len(hist), "nodes": nodes[0], "max_len": nodes[1], "rows3": nodes[2],
+              "equal": not diff, "diff": dict(list(diff.items())[:50])}
+    print(json.dumps(report, indent=1))
+    if diff:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
