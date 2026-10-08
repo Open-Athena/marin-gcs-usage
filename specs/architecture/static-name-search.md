@@ -62,8 +62,8 @@ From `name_spans` (all 139.6M names, 1.15B versions):
 | Suffix positions ≥ 3 characters | 5.61B |
 | Suffix rows (Σ positions × versions) | **16.5B** (14.3 per version) |
 | Parquet zstd, measured on the prototype | 25–28 B/row |
-| **Estimated total** | **~410–460 GB** |
-| R2 storage at $0.015/GB-month | ~$6–7/month |
+| **Estimated total** | ~410–460 GB at the prototype's 25–28 B/row; **built: 150.6 GB** (9.1 B/row, pyarrow zstd) |
+| R2 storage at $0.015/GB-month | ~$2.3/month (as built) |
 
 Almost all of each row is the `path` string. Storing a parent-path id with a dictionary would shrink it, but needs a second lookup for the first-hit test; not worth it at these prices.
 
@@ -108,7 +108,7 @@ LSM-style, no server:
 | `verify-answers.json` | `query` (sidecar → one ranged read per file → first-hit filter → per-bucket sums) vs `mega_names.answer(…, postings='m')` per (term, date) | laptop + VM |
 | `r2.dvc` (side effect) | `r2-copy`: `sx/`, `sidecar.parquet`, `shards.json`, `scans.json` → R2 `oa-gcs-usage-index` under the same keys, skipping what is there with the same size and md5 | the ch-store VM (holds the R2 keys), `nice`d |
 
-Outputs: `gs://oa-gcs-usage-dvx/static-names/<gen>/{scans,ranges,shards}.json, intervals/, hist/, digest/, sxmap/ (intermediate), sx/, sidecar/, sidecar.parquet`. Everything is written through pyarrow in fixed row-group sizes under a total sort order, so a rerun over the same inputs and image is byte-identical. `append -f GEN` adds the next scan to a range's intervals (open versions × the scan, a full join) and writes the day's opened/closed versions as `delta/<date>/r####.parquet`, the daily delta source.
+Outputs: `gs://oa-gcs-usage-dvx/static-names/<gen>/{scans,ranges,shards}.json, intervals/, hist/, digest/, sxmap/ (intermediate: 180 GB for 2026-10-08, deleted with its `sxmap-done/` markers once the shards were verified; the suffixes stage reruns map and reduce together), sx/, sidecar/, sidecar.parquet`. Everything is written through pyarrow in fixed row-group sizes under a total sort order, so a rerun over the same inputs and image is byte-identical. `append -f GEN` adds the next scan to a range's intervals (open versions × the scan, a full join) and writes the day's opened/closed versions as `delta/<date>/r####.parquet`, the daily delta source.
 
 Run: `cd static-names/<gen> && PATH=$REPO/.venv/bin:$PATH dvx run verify-answers.json.dvc` (then `r2.dvc`).
 
@@ -124,7 +124,15 @@ Run: `cd static-names/<gen> && PATH=$REPO/.venv/bin:$PATH dvx run verify-answers
 
 **Intervals**: one Batch job, 32 spot n2-highmem-16 tasks × 8 ranges, 38 min wall (2,291 s); 256 ranges at 150–841 s (median 193 s), 14.9 task-hours ≈ **$5 spot** (~$17 on demand). 1,153,480,980 intervals, 11.1 GB (9.6 B/version). **Verification: every scan's opened (1,153,480,980 in all) and closed (545,152,608) versions equal ClickHouse `m_nodes`/`m_closures` exactly, counts and digests, all 70 scans** (`verify-intervals.json`, 60 s on the VM).
 
-### Extrapolation to the full build (before launching it)
+**Suffix shards**: `suffix-map` (32 spot tasks × 8 ranges) 33 min wall (6,238 s of mapping in all; one range, 1,042 s, set the tail: tasks take 8 consecutive ranges, so the long-named podcast ranges cluster), then `shards` (32 spot tasks) 14 min wall; plan + sidecar merge on the laptop in seconds. **16,501,534,337 suffix rows** (= the plan's histogram total and the map's row count), **322 files, 150.6 GB (9.1 B/row)**, largest 1.47 GB (prefix `son`, 232M rows, the one prefix over the 50M target), 2,014,505 row groups; `sidecar.parquet` 38.9 MB. Batch for the whole build: at most ~45 spot VM-hours (32 VMs × each job's wall time, an upper bound) ≈ **$10–15**, plus ~3 on-demand VM-hours of dev runs.
+
+**Answers**: `verify-answers.json`: **259 of 259 (term, date) pairs equal** `mega_names.answer(…, postings='m')` bucket by bucket (bytes and objects; buckets with zero on both sides omitted) — 37 literals (`5418`, `nk080`, `48.parquet`, `gof`, `11979`, `pio`, `54181`, `48.parquet.crc`, `0.0.73`, `116.tok`, `bb-`, `rt-0003`, `s__marin-us-centr`, `xican`, `_hypocris`, and 22 random 4–8-character substrings of hash-sampled names, `job/static-names/terms.txt`) on 2026-10-08, 10-06, 10-01, 09-30, 09-15, 08-15 and 07-30. Every literal's rows were one ranged read of one file: median 0.39 MB, max 3.07 MB (`nk080`); e.g. `5418` 15 row groups / 1.44 MB / 122,880 rows read for 109,281 matching, `s__marin-us-centr` 28 / 1.13 MB / 229,376 for 228,729, `48.parquet.crc` 1 / 65 KB.
+
+**R2**: `r2.dvc` copies `sx/`, `sidecar.parquet`, `shards.json`, `scans.json` (325 objects, 150.6 GB) to `oa-gcs-usage-index` under `static-names/2026-10-08/`.
+
+Gotcha: DVX `git_deps` make a stage stale when the file changes. The Batch driver (`job/static-names.sh`) was a git dep of the intervals/suffix stages, and a one-line fix to it made a later `dvx run r2.dvc` start rebuilding from intervals (it was caught after an all-skip intervals job). Only `static_names.py` is a content dep now; the image pin rides in the driver's committed text.
+
+### Extrapolation written before the full build
 
 - Intervals: 256 ranges × ~250 s ≈ 18 task-hours of n2-highmem-16 → 32 tasks ≈ 35–45 min wall; ~$20 on demand, ~$6 spot. Output ~10–15 GB (8 B/version measured).
 - Suffix rows: the three dev ranges average 38 suffix rows per version (long podcast names); `name_spans` gives 16.5B in all. Files at 12–15 B/row → **~200–250 GB** (the prototype's ClickHouse export was 25–28 B/row; the estimate above of 410–460 GB is superseded).
@@ -158,4 +166,6 @@ Nothing on the query path: catalog lookups are static (`mega-index.md`), rare te
 - `job/ch-store/static-name-proto.sql`: the prototype build (prefixes `541`, `nk0`, `48.`, `gof`).
 - `job/ch-store/static-name-query.py`: the one-range reader and per-date answers.
 - `job/ch-store/static-name-term-stats.sh`, `static-name-terms.txt`: the per-term table.
+- `cloud/src/dt_cloud/static_names.py` (`dt-cloud static-names …`), `cloud/tests/test_static_names.py`, `job/static-names.sh`, `job/static-names/{ch-answers.py,terms.txt}`, `static-names/<gen>/*.dvc` (the DVX stages).
+- Built data: `gs://oa-gcs-usage-dvx/static-names/2026-10-08/` and R2 `oa-gcs-usage-index` `static-names/2026-10-08/`.
 - Prototype data: `default.sx_names`, `default.sx_rows`, `default.sx_proto` on the VM; `gs://oa-gcs-usage-dvx/scratch/bench/ch-store/static/sx-{4096,16384}.parquet` (1.5 GiB).
