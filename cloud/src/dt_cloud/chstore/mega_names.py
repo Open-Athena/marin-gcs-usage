@@ -143,13 +143,20 @@ def answer(
     first = f"position(lowerUTF8({parent}), {lit(pattern)}) = 0"
     if postings is None:
         where = f"nodes WHERE {restrict} AND depth >= 1 AND {live(D, restrict, since)}"
+        run = settings
     else:
-        where = (f"{postings}_nodes WHERE {restrict} AND vf >= {since} AND vf <= {D} AND depth >= 1 AND (depth, path, usr, vf) NOT IN "
-                 f"(SELECT depth, path, usr, vf FROM {postings}_closures WHERE {restrict} AND vt <= {D})")
+        # Both sides narrowed by name first (PREWHERE: the primary key), then the few closures joined as a hash table:
+        # 1.3 s for Oct 6 `5418` against 2.9 s for a tuple `NOT IN`.
+        where = f"""(SELECT depth, path, usr, vf, size, n_files FROM {postings}_nodes
+                PREWHERE {restrict} AND vf >= {since} AND vf <= {D} WHERE depth >= 1) AS n
+            LEFT JOIN (SELECT depth, path, usr, vf, toUInt8(1) AS gone FROM {postings}_closures
+                PREWHERE {restrict} AND vt <= {D}) AS c USING (depth, path, usr, vf)
+            WHERE c.gone = 0"""
+        run = {**(settings or {}), "join_algorithm": "hash", "join_use_nulls": 0}
     rows = ch.json(f"""
         SELECT splitByChar('/', path)[1] AS bucket, count(), sumIf(size, {first}), sumIf(n_files, {first})
         FROM {where} GROUP BY bucket
-    """, settings) if n_names else []
+    """, run) if n_names else []
     postings = sum(int(row[1]) for row in rows)
     if max_postings is not None and postings > max_postings:
         raise CoarseRequest(f"matching slice rows exceed their {max_postings:,}-row work budget")
