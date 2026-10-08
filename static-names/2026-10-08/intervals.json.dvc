@@ -13,4 +13,3 @@ meta:
       ranges.json: 0e64092bfd59936b30b9f7b42738edd6
     git_deps:
       ../../cloud/src/dt_cloud/static_names.py: 43326e6172a9bb07f730ff57f68e678830839d4b
-      ../../job/static-names.sh: 121ec0b6157a0565446737c7613174e267cac36d
