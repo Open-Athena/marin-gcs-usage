@@ -6,11 +6,14 @@ export interface NameExecution {
   plan: NamePlan
   source: string
   validation: Record<string, unknown> & { description: string }
-  source_identity: { generation: string; snapshot_db: string; history_manifest_sha256?: string; kind?: 'frozen-history' | 'daily-scalar-source-v1'; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true }
+  source_identity: { generation?: string; snapshot_db?: string; history_manifest_sha256?: string; kind?: NameScanKind; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true; postings?: string; through?: string; geometry?: 'preorder' | 'ordinal' }
   registry?: NameQualification
 }
 export interface NameResult extends HotResult { execution: { after: NameExecution; before?: NameExecution }; logical_store?: string; capabilities?: { bucket_drill: false; child_drill: false; fallback: false } }
-export interface NameScan { date: string; plans: NamePlan[]; kind: 'frozen-history' | 'daily-scalar-source-v1'; qualification_dates?: string[]; source_identity?: NameExecution['source_identity']; registry?: NameQualification }
+/** `consolidated-store-v1`: a scan with no catalog, every literal answered on demand from the store's one consolidated name index.
+ * Its bucket bounds are path preorder, or (a scan recording no descendant counts) one `ordinal` position per bucket. */
+export type NameScanKind = 'frozen-history' | 'daily-scalar-source-v1' | 'consolidated-store-v1'
+export interface NameScan { date: string; plans: NamePlan[]; kind: NameScanKind; qualification_dates?: string[]; source_identity?: NameExecution['source_identity']; registry?: NameQualification }
 export interface NameRegistry { dated: boolean; dates: NameScan[]; logical_store?: string; bucket_paths?: string[] }
 export function namePageParams(params: URLSearchParams): URLSearchParams {
   const next = new URLSearchParams(params)
@@ -69,11 +72,19 @@ function capabilities(value: unknown) {
   if (!keys(body, ['bucket_drill', 'child_drill', 'fallback']) || Object.values(body).some(value => value !== false)) fail()
   return { bucket_drill: false, child_drill: false, fallback: false } as const
 }
-/** A daily scan's plans: its registered catalog, or bounded discovery over its own name index. */
-const DAILY_SOURCES: Record<NamePlan, string> = {
-  catalog: 'published dated precomputed batch artifact',
-  'bounded-name-postings': "bounded dated name postings over the scan's own name index; directory rollups are atomic",
+/** A daily scan's plans: its registered catalog, or bounded discovery over its own name index or the consolidated store's. */
+const CONSOLIDATED_SOURCE = 'bounded name postings over the consolidated store; directory rollups are atomic'
+const DAILY_SOURCES: Record<NamePlan, string[]> = {
+  catalog: ['published dated precomputed batch artifact'],
+  'bounded-name-postings': ["bounded dated name postings over the scan's own name index; directory rollups are atomic", CONSOLIDATED_SOURCE],
 }
+function consolidatedIdentity(value: unknown) {
+  const body = record(value)
+  if (!keys(body, ['kind', 'target', 'postings', 'through', 'geometry']) || body.kind !== 'consolidated-store-v1' || !id(body.target) || !id(body.postings) || !iso(body.through) ||
+      (body.geometry !== 'preorder' && body.geometry !== 'ordinal')) fail()
+  return { kind: 'consolidated-store-v1' as const, target: body.target as string, postings: body.postings as string, through: body.through as string, geometry: body.geometry as 'preorder' | 'ordinal' }
+}
+const validationKeys = ['description', 'source_prefix_proofs_checked', 'independent_full_catalog_source_oracle']
 function dailyIdentity(value: unknown) {
   const body = record(value)
   if (!keys(body, ['target', 'snapshot_db', 'generation', 'artifact_sha256', 'artifact_bytes', 'source_manifest_sha256', 'source_prefix_proofs_checked', 'kind']) ||
@@ -90,10 +101,18 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
     const checked = execution(body)
     return { ...checked, source_identity: { ...checked.source_identity, kind: 'frozen-history' } }
   }
-  const checked = dailyIdentity(identity), validation = record(body.validation)
+  const validation = record(body.validation)
+  if (identity.kind === 'consolidated-store-v1') {
+    const checked = consolidatedIdentity(identity)
+    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets']) ||
+        body.plan !== 'bounded-name-postings' || body.source !== CONSOLIDATED_SOURCE || body.target !== checked.target || !keys(validation, validationKeys) ||
+        typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false) fail()
+    return { plan: 'bounded-name-postings', source: CONSOLIDATED_SOURCE, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked }
+  }
+  const checked = dailyIdentity(identity)
   const plan = body.plan === 'catalog' || body.plan === 'bounded-name-postings' ? body.plan : fail()
-  if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'registry', 'validation', 'capabilities', 'root', 'buckets']) || body.source !== DAILY_SOURCES[plan] ||
-      !keys(validation, ['description', 'source_prefix_proofs_checked', 'independent_full_catalog_source_oracle']) ||
+  if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'registry', 'validation', 'capabilities', 'root', 'buckets']) || !DAILY_SOURCES[plan].includes(body.source as string) ||
+      !keys(validation, validationKeys) ||
       typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false ||
       body.target !== checked.target) fail()
   const registry = registryBinding(body.registry, true)
@@ -184,12 +203,19 @@ export function parseNameRegistry(value: unknown): NameRegistry {
     if (Object.keys(counts).sort().join() !== [...body.dates as string[]].sort().join() || Object.values(counts).some(count => integer(count) < 1)) fail()
     return { dated: false, dates: (body.dates as string[]).map(date => ({ date, plans: ['catalog', 'bounded-name-postings'], kind: 'frozen-history' })) }
   }
-  if (body.schema !== 'dated-name-summary-registry-v1' || !keys(body, ['schema', 'logical_store', 'bucket_paths', 'dates', 'levels', 'scope', 'daily_catalog_slots', 'legacy', 'capabilities']) || !id(body.logical_store) || body.levels !== 1 || body.scope !== HOT_SCOPE || body.daily_catalog_slots !== 2 || !Array.isArray(body.bucket_paths) || body.bucket_paths.length !== 6 || new Set(body.bucket_paths).size !== 6 || body.bucket_paths.some(path => typeof path !== 'string' || !path || path.includes('/') || path.includes('\0')) || !Array.isArray(body.dates) || !body.dates.length || body.dates.length > 66) fail()
+  if (body.schema !== 'dated-name-summary-registry-v1' || !keys(body, ['schema', 'logical_store', 'bucket_paths', 'dates', 'levels', 'scope', 'daily_catalog_slots', 'legacy', 'capabilities']) || !id(body.logical_store) || body.levels !== 1 || body.scope !== HOT_SCOPE || body.daily_catalog_slots !== 2 || !Array.isArray(body.bucket_paths) || body.bucket_paths.length !== 6 || new Set(body.bucket_paths).size !== 6 || body.bucket_paths.some(path => typeof path !== 'string' || !path || path.includes('/') || path.includes('\0')) || !Array.isArray(body.dates) || !body.dates.length || body.dates.length > 400) fail()
   capabilities(body.capabilities)
   if (record(body.legacy).schema !== 'name-summary-registry-v1') fail()
   const legacy = parseNameRegistry(body.legacy), dates: NameScan[] = (body.dates as unknown[]).map(value => {
-    const row = record(value), registry = registryBinding(row.registry, row.kind === 'daily-scalar-source-v1')
+    const row = record(value)
     if (!iso(row.date)) fail()
+    if (row.kind === 'consolidated-store-v1') {
+      if (!keys(row, ['date', 'plans', 'kind', 'source']) || JSON.stringify(row.plans) !== JSON.stringify(['bounded-name-postings']) || legacy.dates.some(day => day.date === row.date)) fail()
+      const source_identity = consolidatedIdentity({ ...record(row.source), kind: row.kind })
+      if (source_identity.through < (row.date as string)) fail()
+      return { date: row.date as string, plans: ['bounded-name-postings'] as NamePlan[], kind: 'consolidated-store-v1' as const, source_identity }
+    }
+    const registry = registryBinding(row.registry, row.kind === 'daily-scalar-source-v1')
     let source_identity: NameExecution['source_identity'] | undefined
     if (row.kind === 'frozen-history') {
       const original = record(body.legacy)

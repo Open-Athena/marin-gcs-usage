@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
+import { consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
 import { datedNameRequest, loadName, loadNameRegistry, nameHasDetail, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
 
 const request = { date: '2026-10-06', name: 'datakit', from: '2026-10-05' }
 const scans = ['2026-10-04', '2026-10-05', '2026-10-06']
-const view = (body: ReturnType<typeof dailyNameFixture> | ReturnType<typeof mixedDatedNameDiff>['before']) => ({ target: body.target, date: body.date, pattern: body.pattern, root: body.root, buckets: [...body.buckets].sort((a, b) => a.path < b.path ? -1 : 1) })
-const execution = (body: ReturnType<typeof dailyNameFixture> | ReturnType<typeof mixedDatedNameDiff>['before']) => ({ plan: body.plan, source: body.source, validation: body.validation, source_identity: body.source_identity, ...('registry' in body ? { registry: body.registry } : {}) })
+const view = (body: ReturnType<typeof dailyNameFixture> | ReturnType<typeof mixedDatedNameDiff>['before'] | ReturnType<typeof consolidatedNameFixture>) => ({ target: body.target, date: body.date, pattern: body.pattern, root: body.root, buckets: [...body.buckets].sort((a, b) => a.path < b.path ? -1 : 1) })
+const execution = (body: ReturnType<typeof dailyNameFixture> | ReturnType<typeof mixedDatedNameDiff>['before'] | ReturnType<typeof consolidatedNameFixture>) => ({ plan: body.plan, source: body.source, validation: body.validation, source_identity: body.source_identity, ...('registry' in body ? { registry: body.registry } : {}) })
 afterEach(() => vi.unstubAllGlobals())
 
 describe('independently numbered dated root summaries', () => {
@@ -84,6 +84,39 @@ describe('independently numbered dated root summaries', () => {
     if (issue === 'unknown plan') body.plan = 'scan'
     expect(() => parseName(body, { date: request.date, name: request.name })).toThrow('Name summary returned an invalid dated contract.')
   })
+  it('accepts a daily scan\'s bounded answer over the consolidated store, bound to the same pinned scan and registry', () => {
+    const body = { ...dailyNameFixture(), plan: 'bounded-name-postings', source: consolidatedSource }
+    const result = parseName(body, { date: request.date, name: request.name })
+    expect(result).toEqual({ after: view(body), execution: { after: execution(body) }, logical_store: 'gcs', capabilities: datedCapabilities })
+    expect(nameResultForRegistry(result, parseNameRegistry(consolidatedNameRegistry()))).toBe(result)
+  })
+  it('accepts a scan only the consolidated store holds: on demand, no registry qualification, pinned to the store\'s postings', () => {
+    const body = consolidatedNameFixture(), result = parseName(body, { date: '2026-09-15', name: 'datakit' })
+    expect(result).toEqual({ after: view(body), execution: { after: { plan: 'bounded-name-postings', source: consolidatedSource, validation: body.validation, source_identity: body.source_identity } }, logical_store: 'gcs', capabilities: datedCapabilities })
+    const registry = parseNameRegistry(consolidatedNameRegistry())
+    expect(registry.dates[0]).toEqual({ date: '2026-09-15', plans: ['bounded-name-postings'], kind: 'consolidated-store-v1', source_identity: body.source_identity })
+    expect(nameResultForRegistry(result, registry)).toBe(result)
+    const moved = parseName({ ...body, source_identity: { ...body.source_identity, postings: 'other' } }, { date: '2026-09-15', name: 'datakit' })
+    expect(() => nameResultForRegistry(moved, registry)).toThrow('Name summary returned a different pinned daily source from the available-scan registry.')
+  })
+  it.each(['catalog plan', 'own-index source', 'registry', 'unknown postings', 'through date', 'geometry kind'])('refuses a consolidated answer with a mismatched %s', issue => {
+    const body: Record<string, unknown> & ReturnType<typeof consolidatedNameFixture> = consolidatedNameFixture()
+    if (issue === 'catalog plan') body.plan = 'catalog'
+    if (issue === 'own-index source') body.source = "bounded dated name postings over the scan's own name index; directory rollups are atomic"
+    if (issue === 'registry') body.registry = dailyNameFixture().registry
+    if (issue === 'unknown postings') Object.assign(body.source_identity, { postings: 'Bad-Name' })
+    if (issue === 'through date') Object.assign(body.source_identity, { through: '2026-13-01' })
+    if (issue === 'geometry kind') Object.assign(body.source_identity, { geometry: 'approximate' })
+    expect(() => parseName(body, { date: '2026-09-15', name: 'datakit' })).toThrow('Name summary returned an invalid dated contract.')
+  })
+  it.each(['catalog plan', 'registry', 'through before date', 'legacy day'])('refuses consolidated metadata with a %s', issue => {
+    const body = consolidatedNameRegistry(), row: Record<string, unknown> = body.dates[0]
+    if (issue === 'catalog plan') row.plans = ['catalog', 'bounded-name-postings']
+    if (issue === 'registry') row.registry = dailyNameFixture().registry
+    if (issue === 'through before date') row.source = { target: 'default', postings: 'm', through: '2026-09-14', geometry: 'preorder' }
+    if (issue === 'legacy day') row.date = '2026-10-04'
+    expect(() => parseNameRegistry(body)).toThrow('Name summary returned an invalid dated contract.')
+  })
   it.each(['store', 'date', 'root delta', 'bucket delta', 'side bounds', 'side weights', 'missing row', 'different paths'])('refuses inconsistent paired %s', issue => {
     const body = mixedDatedNameDiff()
     if (issue === 'store') body.before.logical_store = 'other'
@@ -133,7 +166,7 @@ describe('scan-specific availability', () => {
     expect(() => nameResultForRegistry(result, registry)).toThrow(issue === 'scan plan' ? 'Name summary returned a different scan or execution plan from the available-scan registry.' : issue === 'logical store' || issue === 'bucket paths' ? 'Name summary returned a different logical store or bucket set from the available-scan registry.' : 'Name summary returned a different pinned daily source from the available-scan registry.')
   })
   it('rejects oversized or recursive dated metadata rather than walking an unbounded availability graph', () => {
-    const oversized = datedNameRegistry(); oversized.dates = Array.from({ length: 67 }, () => oversized.dates[2])
+    const oversized = datedNameRegistry(); oversized.dates = Array.from({ length: 401 }, () => oversized.dates[2])
     const recursive = datedNameRegistry(); Object.assign(recursive, { legacy: datedNameRegistry() })
     expect(() => parseNameRegistry(oversized)).toThrow('Name summary returned an invalid dated contract.')
     expect(() => parseNameRegistry(recursive)).toThrow('Name summary returned an invalid dated contract.')

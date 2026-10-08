@@ -28,6 +28,19 @@ export function datedNameRegistry() {
     { date: daily.date, plans: ['catalog'], kind: 'daily-scalar-source-v1', registry: daily.registry, source, generation }],
     levels: 1, scope: HOT_SCOPE, daily_catalog_slots: 2, legacy: legacyNameRegistry(), capabilities: { ...datedCapabilities } }
 }
+export const consolidatedSource = 'bounded name postings over the consolidated store; directory rollups are atomic'
+export function consolidatedNameFixture(date = '2026-09-15') {
+  const { registry: _registry, ...daily } = dailyNameFixture(date)
+  return { ...daily, target: 'default', plan: 'bounded-name-postings', source: consolidatedSource,
+    source_identity: { kind: 'consolidated-store-v1', target: 'default', postings: 'm', through: '2026-10-06', geometry: 'preorder' },
+    validation: { description: "bounded exact first-hit coverage over the consolidated store's name index; no per-request source oracle", source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false } }
+}
+/** The dated registry with one older scan only the consolidated store holds, and the daily scan's cold plan over it. */
+export function consolidatedNameRegistry() {
+  const body = datedNameRegistry()
+  body.dates[2].plans = ['catalog', 'bounded-name-postings']
+  return { ...body, dates: [{ date: '2026-09-15', plans: ['bounded-name-postings'], kind: 'consolidated-store-v1', source: { target: 'default', postings: 'm', through: '2026-10-06', geometry: 'preorder' } }, ...body.dates] }
+}
 export function mixedDatedNameDiff() {
   const old = nameFixture('catalog'), before = { ...old, schema: 'dated-name-summary-v1', logical_store: 'gcs',
     source_identity: { ...old.source_identity, generation: 'a'.repeat(32), kind: 'frozen-history' }, capabilities: { ...datedCapabilities } }, after = dailyNameFixture()

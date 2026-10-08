@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
-import { NamePage } from './NamePage'
+import { NamePage, scanList } from './NamePage'
 import { nameDiff, nameFixture } from './nameTestFixtures'
 import { parseName, parseNameRegistry } from './nameModel'
 import { dailyNameFixture, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
@@ -149,4 +149,8 @@ it('failed request shows a nonzero-result error with no maps or table', () => {
     expect([...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)).toEqual(['Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.'])
     expect([...html.matchAll(/<table\b/g)]).toEqual([]); expect(roots).toEqual([])
   } finally { client.clear() }
+})
+it('lists few scans and summarizes many', () => {
+  expect([scanList(['2026-10-04', '2026-10-05', '2026-10-06']), scanList(Array.from({ length: 68 }, (_, i) => new Date(Date.UTC(2026, 6, 30 + i)).toISOString().slice(0, 10)))])
+    .toEqual(['2026-10-04, 2026-10-05, 2026-10-06', '68 scans, 2026-07-30 to 2026-10-05'])
 })
