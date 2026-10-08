@@ -74,6 +74,7 @@ INDEX_SCHEMA = pa.schema([
     pa.field("offset", pa.int64(), nullable=False),
     pa.field("length", pa.int64(), nullable=False),
     pa.field("rows", pa.int32(), nullable=False),
+    pa.field("chunks", pa.list_(pa.int64()), nullable=False),
 ])
 #: A suffix row's decoded size, roughly: its strings plus the fixed-width columns (the decode cost the Worker pays).
 UBYTES = "(strlen(s) + strlen(path) + strlen(usr) + 41)"
@@ -482,20 +483,33 @@ def gcs_catalog(bucket: str, prefix: str) -> Catalog:
 
 
 def write_cells(batches, out: Path) -> tuple[int, pa.Table]:
-    """Write sorted cell batches as `CELL_RG`-row groups and cut their index."""
-    from .static_names import sidecar_rows
-
-    stats: list[tuple[str, str, int]] = []
+    """Write sorted cell batches as `CELL_RG`-row groups and cut their index: per row group its exact first and
+    last `q`, byte span, rows, and per column `(data_page_offset, total_compressed_size, dictionary_page_offset
+    or 0)` — what a reader needs to decode a group without the footer."""
+    stats: list[tuple[str, str]] = []
 
     def on_group(g: pa.Table) -> None:
         col = g.column("q")
-        stats.append((col[0].as_py(), col[g.num_rows - 1].as_py(), g.num_rows))
+        stats.append((col[0].as_py(), col[g.num_rows - 1].as_py()))
 
     rows = write_sorted(batches, out, CELL_SCHEMA, CELL_RG, on_group=on_group, dictionary=["bucket"])
-    side = sidecar_rows(out, "cells.parquet", stats)
-    index = pa.table({"rg": side.column("rg"), "q_min": side.column("s_min"), "q_max": side.column("s_max"), "offset": side.column("offset"),
-                      "length": side.column("length"), "rows": side.column("rows")}, schema=INDEX_SCHEMA)
-    return rows, index
+    md = pq.ParquetFile(out).metadata
+    if md.num_row_groups != len(stats):
+        raise RuntimeError(f"{out}: {md.num_row_groups} row groups, {len(stats)} recorded")
+    cols = {k: [] for k in INDEX_SCHEMA.names}
+    for g in range(md.num_row_groups):
+        rg = md.row_group(g)
+        chunks, starts, ends = [], [], []
+        for c in range(rg.num_columns):
+            cc = rg.column(c)
+            dict_off = cc.dictionary_page_offset or 0
+            start = min(dict_off, cc.data_page_offset) if dict_off else cc.data_page_offset
+            chunks += [cc.data_page_offset, cc.total_compressed_size, dict_off]
+            starts.append(start)
+            ends.append(start + cc.total_compressed_size)
+        for k, v in zip(INDEX_SCHEMA.names, (g, stats[g][0], stats[g][1], min(starts), max(ends) - min(starts), rg.num_rows, chunks)):
+            cols[k].append(v)
+    return rows, pa.table(cols, schema=INDEX_SCHEMA)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
