@@ -62,8 +62,11 @@ from .schema import dt_lit, live, scan_epochs
 THRESHOLD = 100_000
 SHORT = 2
 # Entrants (literals registered for the first time) above this many are answered by one pass over the scan, not one
-# consolidated-index query each.
-ENTRANT_QUERIES = 400
+# consolidated-index query each (~1.4 s each, near the threshold: Aug 25's 272 took 387 s; a pass over that 220M-row
+# scan takes ~70 s).
+ENTRANT_QUERIES = 64
+# Kernel key ranges per concurrent stream (`kernel`).
+RANGES_PER_STREAM = 4
 # `nodes` is sorted by `(depth, path, …)`: grouping its slices by path streams instead of hashing every path.
 IN_ORDER = {"optimize_aggregation_in_order": 1}
 
@@ -276,13 +279,16 @@ def kernel(
 ) -> dict[str, dict[str, tuple[int, int]]]:
     """Σ sign·(size, n_files) of each literal's first hits over `source` — a FROM/WHERE body over rows with `path`,
     `depth`, `size`, `n_files` and a `sign` expression (`… AS sign` selectable) — per bucket, nonzero only.
-    `parallel` streams over disjoint `(depth, path)` key ranges (cut at `nodes`' primary marks, so each prunes by
-    the primary key), each through its own `catalog-delta`."""
+    `parallel` concurrent streams over `RANGES_PER_STREAM`× as many disjoint `(depth, path)` key ranges (cut at
+    `nodes`' primary marks, so each prunes by the primary key), each through its own `catalog-delta`: the marks span
+    the whole history, so a scan's rows fall unevenly into them, and a pool of small ranges keeps every stream busy."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from .ingest import sample_bounds
 
     if not terms:
         return {}
-    ranges = sample_bounds(ch, parallel)
+    ranges = sample_bounds(ch, parallel * RANGES_PER_STREAM)
     with TemporaryDirectory(prefix="catalog-delta-") as tmp:
         terms_file = Path(tmp) / "terms"
         terms_file.write_bytes(b"".join(_varstring(t) for t in terms))
@@ -308,11 +314,8 @@ def kernel(
                 proc.kill()
                 results[i] = e
 
-        threads = [Thread(target=one, args=(i,)) for i in range(len(ranges))]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        with ThreadPoolExecutor(parallel) as pool:
+            list(pool.map(one, range(len(ranges))))
     totals: dict[str, dict[str, list[int]]] = {}
     for result in results:
         if isinstance(result, BaseException):
