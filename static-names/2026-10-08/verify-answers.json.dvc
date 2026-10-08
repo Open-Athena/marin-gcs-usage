@@ -1,10 +1,16 @@
 outs:
-- path: verify-answers.json
+- md5: 68e9991303f8f8728c6cd03b4c5aa815
+  size: 5063
+  hash: md5
+  path: verify-answers.json
 meta:
   computation:
-    cmd: dt-cloud static-names query -g 2026-10-08 -d 2026-10-08 -d 2026-10-06 -d 2026-10-01 -d 2026-09-30 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30 $(cat ../../job/static-names/terms.txt) > ../../tmp/static-names-answers-2026-10-08.jsonl && dt-cloud static-names compare-answers ch-answers.jsonl ../../tmp/static-names-answers-2026-10-08.jsonl > verify-answers.json
+    cmd: dt-cloud static-names query -g 2026-10-08 -d 2026-10-08 -d 2026-10-06 -d
+      2026-10-01 -d 2026-09-30 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30 $(cat ../../job/static-names/terms.txt)
+      > ../../tmp/static-names-answers-2026-10-08.jsonl && dt-cloud static-names compare-answers
+      ch-answers.jsonl ../../tmp/static-names-answers-2026-10-08.jsonl > verify-answers.json
     deps:
-      suffixes.json: ''
-      ch-answers.jsonl: ''
+      suffixes.json: 55adf91534cf88ed7aaa6c8ca9e65ffa
+      ch-answers.jsonl: 911164fa40959b02dacb277424168fb7
     git_deps:
-      ../../job/static-names/terms.txt: ''
+      ../../job/static-names/terms.txt: 2ee0d00ce5a1d496a76f296275755f3b404c8b65
