@@ -164,34 +164,35 @@ def counts_base(ch: Ch, stem: str, scan: Scan, settings: dict | None = None) -> 
 
 def counts_append(ch: Ch, stem: str, scan: Scan, settings: dict | None = None) -> dict:
     """Per-name live-path changes from the scan's `changes`: a touched path moves its name by
-    `[live after] − [live before]`. A path with no opened slice that isn't in `{stem}_multi` had at most one live
-    slice, which this scan closes: −1. Every other touched path is read exactly; one left with two or more live slices
+    `[live after] − [live before]`. A path not in `{stem}_multi` never had two live slices, so it had at most one and
+    the day's own events decide it: only closes → −1; closes and opens → 0, with its opened slices live after; only
+    opens → +1 unless a slice was already live, read from the store along with every touched `{stem}_multi` path
+    (live slices = versions opened minus closures, so no version join). A path left with two or more live slices
     joins `{stem}_multi`."""
     D, S = scan.dt, scan.since
     tag = uuid4().hex[:12]
-    touched, exact, read = (f"catalog_{part}_{tag}" for part in ("touched", "exact", "read"))
-    ch.tmp(touched, f"""SELECT depth, path, any(name) AS name, countIf(sign > 0) AS opens FROM changes
-        WHERE at = {D} AND depth >= 1 GROUP BY depth, path""", settings, disk=True, order_by=("depth", "path"))
-    ch.tmp(exact, f"""SELECT depth, path, name FROM {touched} WHERE opens > 0
-        OR (depth, path) IN (SELECT depth, path FROM {stem}_multi WHERE d >= {scan.start} AND d < {D})""", settings, disk=True, order_by=("depth", "path"))
-    keys = f"(depth, path) IN (SELECT depth, path FROM {exact})"
-    ch.tmp(read, f"""SELECT depth, path, any(name) AS name,
-            countIf(vf < {D} AND (vt = toDateTime(0, 'UTC') OR vt >= {D})) AS before,
-            countIf(vt = toDateTime(0, 'UTC') OR vt > {D}) AS after
-        FROM (SELECT depth, path, usr, vf, name FROM nodes WHERE {keys} AND vf >= {S} AND vf <= {D}) AS n
-        LEFT JOIN (SELECT depth, path, usr, vf, vt FROM closures WHERE {keys} AND vf >= {S} AND vt <= {D}) AS c
-        USING (depth, path, usr, vf) GROUP BY depth, path""", {**(settings or {}), "join_use_nulls": 0}, disk=True, order_by=("depth", "path"))
+    touched, lookup, read = (f"catalog_{part}_{tag}" for part in ("touched", "lookup", "read"))
+    ch.tmp(touched, f"""SELECT depth, path, any(name) AS name, countIf(sign > 0) AS opens, countIf(sign < 0) AS closes,
+            (depth, path) IN (SELECT depth, path FROM {stem}_multi WHERE d >= {scan.start} AND d < {D}) AS multi
+        FROM changes WHERE at = {D} AND depth >= 1 GROUP BY depth, path""", {**(settings or {}), **IN_ORDER}, disk=True, order_by=("depth", "path"))
+    ch.tmp(lookup, f"SELECT depth, path FROM {touched} WHERE multi OR closes = 0", settings, disk=True, order_by=("depth", "path"))
+    keys = f"(depth, path) IN (SELECT depth, path FROM {lookup})"
+    ch.tmp(read, f"""SELECT depth, path, any(name) AS name, sum(b) AS before, sum(a) AS after FROM (
+            SELECT depth, path, name, toInt64(vf < {D}) AS b, toInt64(1) AS a FROM nodes WHERE {keys} AND vf >= {S} AND vf <= {D}
+            UNION ALL SELECT depth, path, name, -toInt64(vt < {D}) AS b, toInt64(-1) AS a FROM closures WHERE {keys} AND vf >= {S} AND vt <= {D}
+        ) GROUP BY depth, path""", settings, disk=True, order_by=("depth", "path"))
     ch.exec(f"""INSERT INTO {stem}_names SELECT name, {D}, sum(n) AS n FROM (
-            SELECT name, toInt64(-1) AS n FROM {touched} WHERE (depth, path) NOT IN (SELECT depth, path FROM {exact})
+            SELECT name, if(opens = 0, toInt64(-1), toInt64(0)) AS n FROM {touched} WHERE NOT multi AND closes > 0
             UNION ALL SELECT name, toInt64(after > 0) - toInt64(before > 0) AS n FROM {read}
         ) GROUP BY name HAVING n != 0""", settings=settings)
-    ch.exec(f"INSERT INTO {stem}_multi SELECT depth, path, {D} FROM {read} WHERE after > 1", settings=settings)
+    ch.exec(f"""INSERT INTO {stem}_multi SELECT depth, path, {D} FROM {read} WHERE after > 1
+        UNION ALL SELECT depth, path, {D} FROM {touched} WHERE NOT multi AND closes > 0 AND opens > 1""", settings=settings)
     out = {"touched": int(ch.scalar(f"SELECT count() FROM {touched}", settings)),
-           "exact": int(ch.scalar(f"SELECT count() FROM {exact}", settings)),
+           "read": int(ch.scalar(f"SELECT count() FROM {lookup}", settings)),
            "names": int(ch.scalar(f"SELECT count() FROM {stem}_names WHERE d = {D}", settings)),
            "net": int(ch.scalar(f"SELECT sum(n) FROM {stem}_names WHERE d = {D}", settings) or 0),
            "multi_new": int(ch.scalar(f"SELECT count() FROM {stem}_multi WHERE d = {D}", settings))}
-    for table in (read, exact, touched):
+    for table in (read, lookup, touched):
         ch.exec(f"DROP TEMPORARY TABLE {table}", settings=settings)
         ch._tmp.remove(table)
     return out
