@@ -1899,6 +1899,7 @@ def _mega_settings(memory_gib: int, threads: int) -> dict:
 @main.command("ch-mega-names-build")
 @option("-D", "--db", default="default", help="Consolidated store database")
 @option("-e", "--end", help="Index only scans through this date (`ch-mega-names-append` adds later ones); default every published scan")
+@option("-g", "--granularity", default=256, type=IntRange(min=8, max=8192), help="Postings rows per index granule")
 @option("-m", "--memory-gib", default=64, type=IntRange(min=1, max=200), help="Per-statement memory cap")
 @option("-O", "--no-optimize", is_flag=True, help="Leave the postings' parts unmerged")
 @option("-s", "--start", help="Span start (scan date): keep only versions live on or after it; default all time")
@@ -1909,6 +1910,7 @@ def _mega_settings(memory_gib: int, threads: int) -> dict:
 def ch_mega_names_build(
     db: str,
     end: str | None,
+    granularity: int,
     memory_gib: int,
     no_optimize: bool,
     start: str | None,
@@ -1930,7 +1932,7 @@ def ch_mega_names_build(
         if spans:
             print(json.dumps({"name_spans": mega_names.build_spans(ch, settings, end=end)}), flush=True)
         if stem:
-            print(json.dumps({"postings": mega_names.build_postings(ch, stem, start, settings, end=end, optimize=not no_optimize)}), flush=True)
+            print(json.dumps({"postings": mega_names.build_postings(ch, stem, start, settings, end=end, optimize=not no_optimize, granularity=granularity)}), flush=True)
     finally:
         ch.close()
 

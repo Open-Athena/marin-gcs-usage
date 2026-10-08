@@ -125,11 +125,13 @@ def build_postings(
     *,
     end: str | None = None,
     optimize: bool = True,
+    granularity: int = 256,
 ) -> dict:
     """`{stem}_nodes` / `{stem}_closures`: the store's versions and closures re-sorted by name, in 256-row granules and
     without per-scan partitions, so one name costs a granule or two however many scans hold it. With `start` (a scan
     date), only versions still live on or after it, and the closures that can close them: the index of a span
-    `[start, newest]`; with `end`, only scans through it (`append` adds later ones). `optimize` merges to one part."""
+    `[start, newest]`; with `end`, only scans through it (`append` adds later ones). `optimize` merges to one part;
+    `granularity` is rows per index granule."""
     if not stem.isidentifier() or stem == "name_spans":
         raise ValueError("postings stem must be an identifier other than `name_spans`")
     begin = monotonic()
@@ -146,12 +148,12 @@ def build_postings(
               if S else f"SELECT name, vf, depth, path, usr, size, n_files FROM nodes WHERE vf <= {E}")
     stage = monotonic()
     ch.exec(f"""CREATE TABLE {nodes} (name String, vf DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
-        size Int64, n_files Int64) ENGINE = MergeTree ORDER BY (name, vf, depth, path, usr) SETTINGS index_granularity = 256
+        size Int64, n_files Int64) ENGINE = MergeTree ORDER BY (name, vf, depth, path, usr) SETTINGS index_granularity = {granularity}
         AS {source}""", settings={**(settings or {}), "join_algorithm": "full_sorting_merge", "join_use_nulls": 0})
     nodes_s = round(monotonic() - stage, 3)
     stage = monotonic()
     ch.exec(f"""CREATE TABLE {closures} (name String, vt DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
-        vf DateTime('UTC')) ENGINE = MergeTree ORDER BY (name, vt, depth, path, usr) SETTINGS index_granularity = 256
+        vf DateTime('UTC')) ENGINE = MergeTree ORDER BY (name, vt, depth, path, usr) SETTINGS index_granularity = {granularity}
         AS SELECT name, vt, depth, path, usr, vf FROM closures WHERE {_bound('vt', S, E)}""", settings=settings)
     closures_s = round(monotonic() - stage, 3)
     if optimize:
