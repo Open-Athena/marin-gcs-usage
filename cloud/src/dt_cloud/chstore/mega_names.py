@@ -230,6 +230,31 @@ def scan_bound(ch: Ch, date: str) -> tuple[str, str]:
     raise CoarseRequest(f"no published scan on {date}")
 
 
+def binding(ch: Ch, stem: str) -> dict:
+    """What a server needs to answer from `stem`'s postings: the newest scan both they and `name_spans` are logged
+    through, and every published scan's bucket geometry up to it (preorder over paths: a bucket spans its own row and
+    its `n_desc` descendants, buckets in path order from 1), as `{date: [[pre, post, path], …]}`."""
+    if not stem.isidentifier():
+        raise ValueError("postings stem must be an identifier")
+    marks = [_through(ch, target) for target in ("name_spans", stem)]
+    if None in marks:
+        raise ValueError(f"`{stem}` or `name_spans` has no build in `{LOG}`")
+    through = min(mark.split("'")[1] for mark in marks)
+    rows = ch.json(f"""SELECT toString(s.scan) AS d, v.path, max(v.n_desc) FROM (SELECT scan FROM scans FINAL WHERE scan <= {dt_lit(through)}) AS s
+        CROSS JOIN (SELECT n.path, n.vf, n.n_desc, c.vt FROM (SELECT path, usr, vf, n_desc FROM nodes WHERE depth = 1) AS n
+            LEFT JOIN (SELECT path, usr, vf, vt FROM closures WHERE depth = 1) AS c USING (path, usr, vf) SETTINGS join_use_nulls = 1) AS v
+        WHERE v.vf <= s.scan AND (v.vt IS NULL OR v.vt > s.scan) GROUP BY d, v.path ORDER BY d, v.path""")
+    scans: dict[str, list[list]] = {}
+    for d, path, n_desc in rows:
+        day = scans.setdefault(d, [])
+        pre = day[-1][1] + 1 if day else 1
+        day.append([pre, pre + int(n_desc), path])
+    geometry = {d[:10]: day for d, day in scans.items()}
+    if len(geometry) != len(scans):
+        raise ValueError("the consolidated name index serves one scan per date")
+    return {"schema": "mega-name-binding-v1", "target": ch.db, "postings": stem, "through": through[:10], "geometry": geometry}
+
+
 def buckets(ch: Ch, D: str, since: str) -> list[str]:
     """The depth-1 paths (buckets) live on the scan."""
     restrict = "depth = 1"

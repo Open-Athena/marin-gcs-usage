@@ -293,6 +293,7 @@ class ChBox:
     dated_l1_generation: Path | None = None
     dated_name_store: str | None = None
     dated_cold: bool = False
+    mega_postings: str | None = None
     dated_name_summary_runtime: object | None = None
 
     @property
@@ -306,6 +307,8 @@ class ChBox:
             raise ValueError("dated roots require the existing stitched name-summary lane")
         if self.dated_cold and self.dated_l1_generation is None:
             raise ValueError("dated cold fallback requires a dated root generation")
+        if self.mega_postings and self.dated_l1_generation is None:
+            raise ValueError("the consolidated name index requires a dated root generation")
         if self.name_summary_enabled and (self.hot_l1_generation is None or self.narrow_target is None):
             raise ValueError("name summary requires a published hot L1 generation and numeric target")
         if (self.hot_l2_artifact is None) != (self.hot_l2_check is None):
@@ -397,9 +400,19 @@ class ChBox:
                             for day, catalog in published.catalogs.items()}
                 finally:
                     ch.close()
+            mega = None
+            if self.mega_postings:
+                from ..chstore import mega_names
+                from ..chstore.client import Ch
+
+                ch = Ch(self.store.url, db=self.store.db, timeout=60, max_execution_time=60)
+                try:
+                    mega = mega_names.binding(ch, self.mega_postings)
+                finally:
+                    ch.close()
             self.dated_name_summary_runtime = DatedNameSummaryRuntime(
                 self.name_summary_runtime, published,
-                logical_store=self.dated_name_store, bucket_paths=paths, cold=cold,
+                logical_store=self.dated_name_store, bucket_paths=paths, cold=cold, mega=mega,
             )
 
     def narrow_covers(self, path: str, *dates: str) -> bool:

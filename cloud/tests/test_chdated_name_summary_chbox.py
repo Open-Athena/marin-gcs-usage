@@ -128,8 +128,8 @@ def test_startup_loads_dated_generation_once_with_explicit_legacy_scope(tmp_path
         calls.append(('load', root))
         return pinned
 
-    def compose(old, published, *, logical_store, bucket_paths, cold):
-        calls.append(('compose', old is legacy, published is pinned, logical_store, bucket_paths, cold))
+    def compose(old, published, *, logical_store, bucket_paths, cold, mega):
+        calls.append(("compose", old is legacy, published is pinned, logical_store, bucket_paths, cold, mega))
         return daily
 
     monkeypatch.setattr(dated_hot_l1_publish, 'load', load)
@@ -139,7 +139,7 @@ def test_startup_loads_dated_generation_once_with_explicit_legacy_scope(tmp_path
                    dated_l1_generation=tmp_path / 'daily', dated_name_store='gcs_fleet')
     box.start()
     box.start()
-    assert calls == [('load', tmp_path / 'daily'), ('compose', True, True, 'gcs_fleet', ('a', 'b'), {})]
+    assert calls == [('load', tmp_path / 'daily'), ('compose', True, True, 'gcs_fleet', ('a', 'b'), {}, None)]
     assert box.name_summary_runtime is legacy
     assert box.dated_name_summary_runtime is daily
 
@@ -176,9 +176,9 @@ def test_startup_binds_each_dated_scans_name_index_with_cold_opt_in(tmp_path: Pa
     pinned = SimpleNamespace(catalogs={'2026-10-06': catalog})
     monkeypatch.setattr(dated_hot_l1_publish, 'load', lambda root: pinned)
     monkeypatch.setattr(daily_name_index, 'load', lambda ch, target: calls.append(('index', target)) or {'target': target})
-    monkeypatch.setattr(dated_name_summary, 'DatedNameSummaryRuntime', lambda old, published, *, logical_store, bucket_paths, cold: calls.append(('compose', cold)) or daily)
+    monkeypatch.setattr(dated_name_summary, 'DatedNameSummaryRuntime', lambda old, published, *, logical_store, bucket_paths, cold, mega: calls.append(("compose", cold, mega)) or daily)
     box = bs.ChBox(Store(), name_summary_enabled=True, name_summary_runtime=legacy, hot_l1_generation=tmp_path / 'old',
                    hot_l1_catalog=SimpleNamespace(target='fleet'), narrow_target='fleet', narrow_manifest={},
                    dated_l1_generation=tmp_path / 'daily', dated_name_store='gcs_fleet', dated_cold=True)
     box.start()
-    assert calls == [('index', 'daily_scalar_oct06'), ('compose', {'2026-10-06': {'target': 'daily_scalar_oct06'}})]
+    assert calls == [('index', 'daily_scalar_oct06'), ('compose', {'2026-10-06': {'target': 'daily_scalar_oct06'}}, None)]

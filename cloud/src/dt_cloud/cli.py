@@ -862,6 +862,7 @@ def bench_serve(tmp_dir: str | None, engine: str, evict: bool, host: str, index:
 @option("-M", "--mmap", is_flag=True, help="`-e mem`: map the index's arrays instead of reading them (a tmpfs copy then costs its RAM once)")
 @option("-N", "--narrow-target", help="`-e ch`: experimental numeric history for its bounded prefix/descendants and selected dates; canonical fallback elsewhere")
 @option("-p", "--port", default=None, type=int, help="Port (default: $PORT, else 8080)")
+@option("-P", "--mega-postings", help="`-e ch -G GENERATION`: answer below-catalog literals (and every literal on scans without a catalog) from the store's consolidated name index, these postings (`ch-mega-names-build`/`-append`), in the bounded cold lane")
 @option("-r", "--root-plan", type=Choice(["rich", "compact"]), default="rich", help="`-e ch`: retain rich candidate aggregates (default), or discover positive roots with compact rows and reread their slices via a semijoin")
 @option("-s", "--stage", type=Path, default=None, help="`-e mem`: copy gs:// indexes here first (on Cloud Run: an in-memory dir, with -M)")
 @option("-t", "--threads", default=None, type=int, help="Vocabulary-scan threads / ClickHouse `max_threads` (default: the CPU count)")
@@ -891,6 +892,7 @@ def serve_query(
     mmap: bool,
     narrow_target: str | None,
     port: int | None,
+    mega_postings: str | None,
     root_plan: str,
     stage: Path | None,
     threads: int | None,
@@ -925,6 +927,8 @@ def serve_query(
         raise UsageError("--dated-l1-generation requires --engine ch and --name-summary")
     if dated_cold and dated_l1_generation is None:
         raise UsageError("--dated-cold requires --dated-l1-generation")
+    if mega_postings and dated_l1_generation is None:
+        raise UsageError("--mega-postings requires --dated-l1-generation")
     if (hot_l2_artifact is None) != (hot_l2_check is None):
         raise UsageError("--hot-l2-artifact and --hot-l2-check are required together")
     if hot_l2_artifact is not None and engine != "ch":
@@ -947,7 +951,8 @@ def serve_query(
                        narrow_name_index=narrow_name_index, narrow_name_variant=narrow_name_variant, narrow_parent_index=narrow_parent_index,
                        narrow_plan=narrow_plan, hot_l1_generation=hot_l1_generation,
                        hot_l2_artifact=hot_l2_artifact, hot_l2_check=hot_l2_check, name_summary_enabled=name_summary,
-                       dated_l1_generation=dated_l1_generation, dated_name_store=dated_name_store, dated_cold=dated_cold)
+                       dated_l1_generation=dated_l1_generation, dated_name_store=dated_name_store, dated_cold=dated_cold,
+                       mega_postings=mega_postings)
     else:
         box = bs.Box(
             root=root, dates=list(dates) or None, n_latest=n_latest, stage=stage, mmap=mmap, remote_detail=remote_detail,

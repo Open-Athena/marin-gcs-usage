@@ -77,7 +77,7 @@ def sources():
                 state.change(body)
             return body
         return SimpleNamespace(date=day, paths=('a', 'b'), logical_store='gcs_fleet',
-                               selection=SimpleNamespace(patterns=('foo', 'zero', 'empty', 'datakit')), view=view,
+                               selection=SimpleNamespace(patterns=('foo', 'zero', 'empty', 'datakit'), buckets=((1, 4, 'a'), (5, 10, 'b'))), view=view,
                                metadata=lambda: {'registry': deepcopy(REGISTRY), 'source': deepcopy(raw_daily(day)['source'])})
     state.daily_catalog = daily
     state.legacy = SimpleNamespace(binding=SimpleNamespace(dates=tuple((day, 'old_' + day.replace('-', '')) for day in OLD_DATES),
@@ -351,3 +351,90 @@ def test_boot_refuses_cold_index_bound_to_another_source(sources, change) -> Non
     with pytest.raises(ValueError) as caught:
         DatedNameSummaryRuntime(sources.legacy, sources.published, logical_store='gcs_fleet', bucket_paths=('b', 'a'), cold={'2026-10-06': index})
     assert str(caught.value) == 'dated name summary cold name index differs from its scan catalog source'
+
+
+MEGA = {'schema': 'mega-name-binding-v1', 'target': 'default', 'postings': 'm', 'through': '2026-10-06',
+        'geometry': {'2026-09-15': [[1, 2, 'a'], [3, 9, 'b']], '2026-10-05': [[1, 5, 'a'], [6, 8, 'b']], '2026-10-06': [[1, 4, 'a'], [5, 10, 'b']]}}
+MEGA_VALIDATION = {'description': "bounded exact first-hit coverage over the consolidated store's name index; no per-request source oracle",
+                   'source_prefix_proofs_checked': True, 'independent_full_catalog_source_oracle': False}
+
+
+def mega_runtime(sources, monkeypatch: pytest.MonkeyPatch, mega: dict = MEGA) -> DatedNameSummaryRuntime:
+    from dt_cloud.chstore import dated_name_summary
+
+    def bounded(target: str, compute):
+        sources.events.append(('legacy.bounded', target))
+        return compute('owned-source', lambda: sources.events.append(('checkpoint',)))
+
+    def answer(source, day, pattern, *, postings, max_names):
+        sources.events.append(('mega.answer', source, day, pattern, postings, max_names))
+        rows = [{'path': 'a', 'b': 4, 'o': 2}, {'path': 'b', 'b': 1, 'o': 1}]
+        return {'schema': 'mega-name-totals-v1', 'date': day, 'pattern': pattern.lower(), 'exact': True, 'root': {'b': 5, 'o': 3}, 'buckets': rows}
+
+    sources.legacy.bounded = bounded
+    monkeypatch.setattr(dated_name_summary.mega_names, 'answer', answer)
+    result = DatedNameSummaryRuntime(sources.legacy, sources.published, logical_store='gcs_fleet', bucket_paths=('b', 'a'), mega=deepcopy(mega))
+    sources.runtime = result
+    return result
+
+
+def test_metadata_adds_consolidated_scans_and_the_daily_cold_plan(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = mega_runtime(sources, monkeypatch).metadata()['dates']
+    assert [(row['date'], row['kind'], row['plans']) for row in rows] == [
+        ('2026-09-15', 'consolidated-store-v1', ['bounded-name-postings']),
+        ('2026-10-04', 'frozen-history', ['catalog', 'bounded-name-postings']),
+        ('2026-10-05', 'frozen-history', ['catalog', 'bounded-name-postings']),
+        ('2026-10-06', 'daily-scalar-source-v1', ['catalog', 'bounded-name-postings']),
+    ]
+    assert rows[0] == {'date': '2026-09-15', 'plans': ['bounded-name-postings'], 'kind': 'consolidated-store-v1',
+                       'source': {'target': 'default', 'postings': 'm', 'through': '2026-10-06'}}
+
+
+def test_unregistered_daily_literal_answers_from_the_consolidated_store(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = mega_runtime(sources, monkeypatch)
+    assert reader.view('2026-10-06', 'UnKnown') == {
+        **expected_daily(pattern='unknown'), 'plan': 'bounded-name-postings', 'root': {'b': 5, 'o': 3},
+        'buckets': [{'path': 'a', 'pre': 1, 'post': 4, 'b': 4, 'o': 2}, {'path': 'b', 'pre': 5, 'post': 10, 'b': 1, 'o': 1}],
+        'source': 'bounded name postings over the consolidated store; directory rollups are atomic', 'validation': MEGA_VALIDATION,
+    }
+    assert sources.events == [('legacy.bounded', 'default'), ('checkpoint',), ('mega.answer', 'owned-source', '2026-10-06', 'unknown', 'm', 200_000), ('checkpoint',)]
+
+
+def test_a_scan_without_catalogs_answers_any_literal_from_the_consolidated_store(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert mega_runtime(sources, monkeypatch).view('2026-09-15', 'foo') == {
+        'schema': 'dated-name-summary-v1', 'logical_store': 'gcs_fleet', 'date': '2026-09-15', 'pattern': 'foo', 'path': '', 'exact': True,
+        'incremental': False, 'levels': 1, 'scope': SCOPE, 'plan': 'bounded-name-postings', 'target': 'default',
+        'source': 'bounded name postings over the consolidated store; directory rollups are atomic', 'validation': MEGA_VALIDATION,
+        'source_identity': {'kind': 'consolidated-store-v1', 'target': 'default', 'postings': 'm', 'through': '2026-10-06'},
+        'root': {'b': 5, 'o': 3}, 'buckets': [{'path': 'a', 'pre': 1, 'post': 2, 'b': 4, 'o': 2}, {'path': 'b', 'pre': 3, 'post': 9, 'b': 1, 'o': 1}],
+        'capabilities': dict(CAPABILITIES),
+    }
+
+
+def test_diff_across_consolidated_and_daily_scans_is_one_bounded_computation(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = mega_runtime(sources, monkeypatch).diff('2026-09-15', '2026-10-06', 'unknown')
+    assert (result['before']['source_identity']['kind'], result['after']['source_identity']['kind'], result['delta']) == (
+        'consolidated-store-v1', 'daily-scalar-source-v1', {'b': 0, 'o': 0})
+    assert [event[:3] for event in sources.events] == [('legacy.bounded', 'default'), ('checkpoint',),
+                                                       ('mega.answer', 'owned-source', '2026-10-06'), ('checkpoint',),
+                                                       ('mega.answer', 'owned-source', '2026-09-15'), ('checkpoint',)]
+
+
+def test_registered_daily_literal_stays_on_the_catalog_with_the_consolidated_store(sources, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = mega_runtime(sources, monkeypatch)
+    assert (reader.view('2026-10-06', 'foo'), sources.events) == (expected_daily(), [('daily.view', '2026-10-06', 'foo')])
+
+
+@pytest.mark.parametrize('change,message', [
+    (lambda mega: mega['geometry'].update({'2026-10-06': [[1, 5, 'a'], [6, 10, 'b']]}), 'dated name summary consolidated geometry differs from its scan catalog'),
+    (lambda mega: mega['geometry'].update({'2026-09-15': [[1, 2, 'a'], [4, 9, 'b']]}), 'dated name summary consolidated geometry is incomplete'),
+    (lambda mega: mega['geometry'].update({'2026-09-15': [[1, 2, 'a']]}), 'dated name summary consolidated geometry is incomplete'),
+    (lambda mega: mega.update(through='2026-10-05'), 'dated name summary consolidated geometry is incomplete'),
+    (lambda mega: mega.update(postings='m; DROP'), 'dated name summary consolidated binding is invalid'),
+])
+def test_boot_refuses_a_consolidated_binding_that_does_not_fit(sources, monkeypatch: pytest.MonkeyPatch, change, message) -> None:
+    mega = deepcopy(MEGA)
+    change(mega)
+    with pytest.raises(ValueError) as caught:
+        mega_runtime(sources, monkeypatch, mega)
+    assert str(caught.value) == message
