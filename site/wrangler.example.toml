@@ -70,6 +70,8 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # STORES_JSON = '{"meta": {"scope": "meta"}}'  # secondary stores: `{"<key>": {"scope": …, "vars": {…}, "secrets": {…}}}`
 # QUERY_BOX_URL = "https://box.example"      # the serving box (`dt-cloud serve-query`): subtree / diff / series ask it first; unset = Worker-only
 # QUERY_BOX_TIMEOUT_MS = "20000"             # per box request; past it the Worker answers
+# QUERY_BOX_COARSE = "1"                    # dev-only `/api/coarse` (the `/coarse` viewer); unset = 404
+# QUERY_BOX_COARSE_URL = "https://box.example"  # where `/api/coarse` asks; unset = QUERY_BOX_URL
 
 # --- Plans and deletion (_lib/plans.ts, _lib/dispatch.ts) ---
 # STORE_SCHEME = "s3://"                      # the URI scheme staged prefixes carry
