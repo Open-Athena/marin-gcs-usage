@@ -244,6 +244,169 @@ def assemble(con, short_events_glob: str, short_vocab_glob: str, shard_cells_glo
             "bytes": (out / "cells.parquet").stat().st_size, "index_bytes": (out / "index.parquet").stat().st_size, "cell_rg": CELL_RG}
 
 
+# ── Appending a scan ───────────────────────────────────────────────────────
+
+
+def expand_sql(versions_sql: str) -> str:
+    """Suffix rows (≥ 3 characters, depth ≥ 1) of `versions_sql`'s rows `(depth, path, t0, t1, size, n_files,
+    sign)`, as `member_events` input."""
+    return f"""SELECT substring(l, p) AS s, depth, path, t0, t1, size, n_files, sign FROM (
+            SELECT depth, path, t0, t1, size, n_files, sign, l, unnest(generate_series(1, length(l) - 2)) AS p
+            FROM (SELECT *, {NAME} AS l FROM ({versions_sql}) WHERE depth >= 1) WHERE length(l) >= 3)"""
+
+
+def delta_versions_sql(files: list[str], point: bool) -> str:
+    """Coalesced delta rows (`cdelta/<date>/*.parquet`) as versions: an opened one `+` at its `vf`, a closed
+    one `−` at its `vt` (both point events: `t1` NULL) when `point`; else just the opened ones as intervals
+    `[vf, vt)` (their rows, for counting)."""
+    lst = "[" + ", ".join(q(f) for f in files) + "]"
+    if point:
+        return f"""SELECT depth, path, CASE WHEN op = 1 THEN vf ELSE vt END AS t0, NULL::BIGINT AS t1, size, n_files, op::BIGINT AS sign
+            FROM read_parquet({lst})"""
+    return f"SELECT depth, path, vf AS t0, vt AS t1, size, n_files, 1::BIGINT AS sign FROM read_parquet({lst}) WHERE op = 1"
+
+
+class BaseShards:
+    """A base generation's suffix shards, read through its sidecar: upper bounds and exact counts of a
+    prefix's range rows, and the range's rows themselves (whole row groups)."""
+
+    def __init__(self, root: str, sidecar: pa.Table):
+        side = sidecar.sort_by([("file", "ascending"), ("rg", "ascending")]).to_pylist()
+        self.root, self.groups = root, side
+        self.mins = [g["s_min"] for g in side]
+        self.maxs = [g["s_max"] for g in side]
+        acc, cum = 0, [0]
+        for g in side:
+            acc += g["rows"]
+            cum.append(acc)
+        self.cum = cum
+        self.files: dict[str, pq.ParquetFile] = {}
+
+    def span(self, key: str) -> tuple[int, int]:
+        from bisect import bisect_left
+
+        a = bisect_left(self.maxs, key)
+        return a, max(a, bisect_left(self.mins, key + "\U0010ffff"))
+
+    def upper(self, key: str) -> int:
+        """Rows of the row groups that can hold suffixes starting with `key` (≥ its range's rows)."""
+        a, b = self.span(key)
+        return self.cum[b] - self.cum[a]
+
+    def _pf(self, file: str) -> pq.ParquetFile:
+        if file not in self.files:
+            self.files[file] = pq.ParquetFile(f"{self.root}/{file}")
+        return self.files[file]
+
+    def exact(self, key: str) -> int:
+        """The range's rows: the groups strictly inside it whole, the two edge groups decoded (`s` only)."""
+        a, b = self.span(key)
+        if a == b:
+            return 0
+        n = self.cum[b - 1] - self.cum[a + 1] if b - a > 2 else 0
+        for g in sorted({a, b - 1}):
+            info = self.groups[g]
+            col = self._pf(info["file"]).read_row_group(info["rg"], columns=["s"]).column("s").to_pylist()
+            n += sum(1 for x in col if x.startswith(key))
+        return n
+
+    def rows(self, keys: list[str]) -> pa.Table:
+        """Every row of the row groups spanning any of `keys`' ranges (each group once), sx columns."""
+        want: set[int] = set()
+        for k in keys:
+            a, b = self.span(k)
+            want.update(range(a, b))
+        tables = []
+        for g in sorted(want):
+            info = self.groups[g]
+            tables.append(self._pf(info["file"]).read_row_group(info["rg"], columns=["s", "depth", "path", "vf", "vt", "size", "n_files"]))
+        return pa.concat_tables(tables) if tables else pa.table({f.name: pa.array([], f.type) for f in SX_SCHEMA if f.name != "usr"})
+
+
+def _insert(con, table: str, rows: list[tuple]) -> None:
+    if rows:
+        con.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(rows[0]))})", rows)
+
+
+def append(con, *, prev: Path, base: BaseShards, deltas: list[list[str]], V: int, out: Path) -> dict:
+    """The catalog of `base` plus the scans of `deltas` (each a scan's coalesced delta files, oldest first), from
+    `prev` (`cells.parquet`: the catalog of `base` plus all but the last delta) — equal to rebuilding it.
+
+    Membership: a literal of three or more characters is a member iff its range rows — `base`'s plus every
+    delta's opened versions' — exceed `V`. Every prefix whose rows could (`base.upper` + delta rows > `V`) is
+    found level by level over the deltas' opened suffix rows; for those not already members, `base.exact`
+    decides. A new member's cells are built from its whole history (`base`'s rows in its range as intervals,
+    every delta's opens and closes as point events); an existing one's get the last scan's events added;
+    every one- and two-character literal gets the last scan's events, and those first seen there join."""
+    t0 = monotonic()
+    last = deltas[-1]
+    # previous state: members (header rows) and their cells as events
+    con.execute("DROP TABLE IF EXISTS pc")
+    con.execute(f"CREATE TABLE pc AS SELECT * FROM read_parquet({q(str(prev / 'cells.parquet'))})")
+    con.execute("CREATE OR REPLACE TABLE pmem AS SELECT q, b AS rows FROM pc WHERE bucket = ''")
+    con.execute("""CREATE OR REPLACE TABLE pev AS SELECT q, bucket, vf AS t, (b - coalesce(lag(b) OVER w, 0))::HUGEINT AS db,
+            (o - coalesce(lag(o) OVER w, 0))::HUGEINT AS dn FROM pc WHERE bucket <> '' WINDOW w AS (PARTITION BY q, bucket ORDER BY vf)""")
+    # every delta's opened suffix rows: who could cross V
+    all_files = [f for d in deltas for f in d]
+    con.execute(f"CREATE OR REPLACE TABLE xo AS SELECT s, t0 FROM ({expand_sql(delta_versions_sql(all_files, point=False))})")
+    D = con.execute(f"SELECT max(CASE WHEN op = 1 THEN vf ELSE vt END) FROM read_parquet([{', '.join(q(f) for f in last)}])").fetchone()[0]
+    cand: list[tuple[str, int, int]] = []  # (q, rows over all deltas, rows of the last)
+    L = 3
+    while True:
+        lvl = con.execute(f"""SELECT left(s, {L}) AS q, count(*), count(*) FILTER (WHERE t0 = {D}) FROM xo WHERE length(s) >= {L}
+            GROUP BY q""").fetchall()
+        keep = [(k, n, nl) for k, n, nl in lvl if base.upper(k) + n > V]
+        if not keep:
+            break
+        cand += keep
+        con.execute("CREATE OR REPLACE TABLE ck (q VARCHAR)")
+        con.executemany("INSERT INTO ck VALUES (?)", [(k,) for k, _, _ in keep])
+        con.execute(f"CREATE OR REPLACE TABLE xo AS SELECT s, t0 FROM xo SEMI JOIN ck ON left(xo.s, {L}) = ck.q WHERE length(s) > {L}")
+        L += 1
+    prev_rows = dict(con.execute("SELECT q, rows FROM pmem").fetchall())
+    new_members: list[tuple[str, int]] = []
+    rows_now: dict[str, int] = {}
+    for k, n, nl in cand:
+        if k in prev_rows:
+            rows_now[k] = prev_rows[k] + nl
+        else:
+            r = base.exact(k) + n
+            if r > V:
+                new_members.append((k, r))
+    con.execute("CREATE OR REPLACE TABLE nmem (q VARCHAR, rows BIGINT)")
+    _insert(con, "nmem", new_members)
+    con.execute("CREATE OR REPLACE TABLE lmem (q VARCHAR, rows BIGINT)")
+    _insert(con, "lmem", [(k, r) for k, r in prev_rows.items() if r >= 0 and k not in rows_now and len(k) >= 3])
+    _insert(con, "lmem", list(rows_now.items()))
+    # the last scan's events for existing long members
+    point_last = delta_versions_sql(last, point=True)
+    member_events(con, expand_sql(point_last), "lmem")
+    con.execute("CREATE OR REPLACE TABLE lev AS SELECT * FROM ev")
+    # new long members: their whole history
+    if new_members:
+        con.register("base_rows", base.rows([k for k, _ in new_members]))
+        hist = f"""{sx_rows_sql('base_rows')} UNION ALL {expand_sql(delta_versions_sql(all_files, point=True))}"""
+        member_events(con, hist, "nmem")
+        con.unregister("base_rows")
+    else:
+        con.execute("DELETE FROM ev")
+    con.execute("CREATE OR REPLACE TABLE nev AS SELECT * FROM ev")
+    # short literals: the last scan's events, and any first seen
+    short_events(con, point_last)
+    con.execute(f"""CREATE OR REPLACE TABLE amem AS SELECT q, rows FROM lmem UNION ALL SELECT q, rows FROM nmem
+        UNION ALL SELECT q, -1::BIGINT FROM (SELECT q FROM pmem WHERE rows = -1 UNION SELECT q FROM ({short_vocab_sql(delta_versions_sql(last, point=False))}))""")
+    con.execute("""CREATE OR REPLACE TABLE aev AS SELECT * FROM pev UNION ALL SELECT * FROM lev UNION ALL SELECT * FROM nev
+        UNION ALL SELECT q, bucket, t, db, dn FROM sev""")
+    out.mkdir(parents=True, exist_ok=True)
+    rows, index = write_cells(_batches(con, f"SELECT * FROM ({cells_sql('aev', 'amem')}) ORDER BY q, bucket, vf"), out / "cells.parquet")
+    pq.write_table(index, out / "index.parquet", compression=CODEC)
+    doc = {"scan": int(D), "cells_rows": rows, "candidates": len(cand), "new_members": len(new_members),
+           "members": con.execute("SELECT count(*) FROM amem").fetchone()[0], "s": round(monotonic() - t0, 1)}
+    for t in ("pc", "pmem", "pev", "xo", "ck", "nmem", "lmem", "lev", "nev", "amem", "aev", "ev", "sev"):
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    return doc
+
+
 # ── Reading the catalog (the Worker's logic) ───────────────────────────────
 
 

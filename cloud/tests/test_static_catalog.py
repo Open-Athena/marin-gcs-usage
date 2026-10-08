@@ -145,3 +145,78 @@ def test_brute_sql_equals_oracle(fixture):  # noqa: F811
             if b_ or o_:
                 got[term][bkt] = [b_, o_]
         assert got == {t: _brute_answer(oracle, t, s["id"]) for t in terms}, s["id"]
+
+
+def _gen(root, scans: dict, tmp, v: int):
+    """A generation over `scans`: intervals, coalesced versions, shards and its catalog at `v` (the build path)."""
+    ranges = sn.plan_ranges(scans, 2, str(root))
+    build = tmp / "build"
+    _build(root, scans, ranges, build)
+    con = sn.connect(2, "1GB", tmp / "tmp")
+    for r in ranges["ranges"]:
+        sn.coalesce_range(str(build / "intervals" / f"r{r['i']:04d}.parquet"), r["i"], build, con)
+    plan = sn.plan_shards(sorted((build / "chist").glob("*.parquet")), target_rows=60, tasks=2)
+    mapped, out = tmp / "map", tmp / "out"
+    for r in ranges["ranges"]:
+        sn.map_range(str(build / "cintervals" / f"r{r['i']:04d}.parquet"), plan, r["i"], mapped, con)
+    rg, sn.SX_RG = sn.SX_RG, 5
+    try:
+        for t in range(len(plan["tasks"])):
+            files = sorted(str(f) for f in (mapped / "sxmap" / f"g{t:03d}").glob("*.parquet"))
+            sn.build_shards(files, plan, t, out, threads=2, mem="1GB", tmp=tmp / "tmp")
+    finally:
+        sn.SX_RG = rg
+    cat = tmp / "cat"
+    for s in plan["shards"]:
+        name = f"s{s['i']:04d}"
+        nodes = sc.census(con, f"read_parquet({sn.q(str(out / 'sx' / f'{name}.parquet'))})", v + 1)
+        con.execute("CREATE OR REPLACE TABLE mem (q VARCHAR, rows BIGINT)")
+        con.executemany("INSERT INTO mem VALUES (?, ?)", [(r["q"], r["rows"]) for r in nodes.to_pylist() if r["rows"] > v])
+        sc.shard_cells(con, str(out / "sx" / f"{name}.parquet"), "mem", cat / "cells" / f"{name}.parquet", chunk_rows=11)
+    for r in ranges["ranges"]:
+        sc.range_short(con, str(build / "cintervals" / f"r{r['i']:04d}.parquet"), cat / "short", f"r{r['i']:04d}")
+    sc.assemble(con, str(cat / "short/events/*.parquet"), str(cat / "short/vocab/*.parquet"), str(cat / "cells/*.parquet"), cat / "final")
+    side = pa.concat_tables([pq.read_table(f) for f in sorted((out / "sidecar").glob("*.parquet"))])
+    return {"ranges": ranges, "build": build, "out": out, "final": cat / "final", "side": side, "con": con}
+
+
+@pytest.mark.parametrize("v", [2, 5])
+@pytest.mark.parametrize("k", [1, 2])
+def test_append_equals_rebuild(fixture, tmp_path, v, k):  # noqa: F811
+    """A base generation's catalog appended with its next `k` scans' coalesced deltas, one at a time, is
+    byte-identical to the catalog rebuilt over every scan."""
+    root, scans, merged = fixture
+    n = len(scans["scans"])
+    full = _gen(root, scans, tmp_path / "full", v)
+    base_scans = {"bucket": "b", "scans": scans["scans"][:n - k]}
+    base = _gen(root, base_scans, tmp_path / "base", v)
+    con = base["con"]
+    shards = sc.BaseShards(str(base["out"]), base["side"])
+    prev_c = {r["i"]: base["build"] / "cintervals" / f"r{r['i']:04d}.parquet" for r in base["ranges"]["ranges"]}
+    prev_i = {r["i"]: base["build"] / "intervals" / f"r{r['i']:04d}.parquet" for r in base["ranges"]["ranges"]}
+    prev_cat = base["final"]
+    deltas: list[list[str]] = []
+    crossed = 0
+    for j in range(n - k, n):
+        scan = scans["scans"][j]
+        step = tmp_path / f"step{j}"
+        files = []
+        for r in base["ranges"]["ranges"]:
+            name = f"r{r['i']:04d}"
+            sn.append_range(prev_i[r["i"]], scan, base["ranges"], r["i"], step, bucket="b", mount=str(root), threads=2, mem="1GB", tmp=step / "tmp")
+            sn.coalesce_append(prev_c[r["i"]], step / "delta" / scan["id"] / f"{name}.parquet", scan, step, r["i"], con)
+            prev_i[r["i"]] = step / "intervals" / f"{name}.parquet"
+            prev_c[r["i"]] = step / "cintervals" / f"{name}.parquet"
+            files.append(str(step / "cdelta" / scan["id"] / f"{name}.parquet"))
+        deltas.append(files)
+        doc = sc.append(con, prev=prev_cat, base=shards, deltas=deltas, V=v, out=step / "cat")
+        crossed += doc["new_members"]
+        prev_cat = step / "cat"
+    got = pq.read_table(prev_cat / "cells.parquet").to_pylist()
+    want = pq.read_table(full["final"] / "cells.parquet").to_pylist()
+    assert got == want
+    assert (prev_cat / "cells.parquet").read_bytes() == (full["final"] / "cells.parquet").read_bytes()
+    assert (prev_cat / "index.parquet").read_bytes() == (full["final"] / "index.parquet").read_bytes()
+    assert doc["members"] == sum(1 for r in want if r["bucket"] == "")
+    if v == 5:
+        assert crossed > 0  # literals crossed V on an append: their whole history came from the base shards and deltas
