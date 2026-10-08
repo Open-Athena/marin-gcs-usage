@@ -7,6 +7,8 @@
 #   job/ch-store.sh push                 # this checkout's dt_cloud / disk_tree + job/ch-store/* → the VM
 #   job/ch-store.sh push-src             # Python sources only; do not re-upload/re-copy unchanged node scripts
 #   job/ch-store.sh ingest DATE…         # background: ch-ingest each scan in order (job/ch-store/ingest-days.sh)
+#   job/ch-store.sh daily [-n]           # background: catch the store, name index and catalog up to gcs's newest scan, then restart serving (job/ch-store/daily.sh; -n prints the plan in the foreground)
+#   job/ch-store.sh daily-timer on|off   # the VM's hourly `ch-daily` systemd timer running daily.sh (off by default)
 #   job/ch-store.sh serve                # (re)start serve-query -e ch on :8080 (bearer token in /data/token; SERVE_SRC=/data/src-x serves a separately staged source tree)
 #   job/ch-store.sh py ARGS…             # `python3 -m dt_cloud.cli ARGS` in the image on the VM (privileged, host network)
 #   job/ch-store.sh py-bg TAG ARGS…      # detached CLI job; refuses an existing tag, retains exit state/logs
@@ -105,6 +107,37 @@ push|push-src)
     PUSH_SYNC+=" && sudo gcloud storage cp '$X/scripts/*' /data/ > /dev/null 2>&1 && sudo chmod +x /data/*.sh"
   fi
   vssh "$PUSH_SYNC && echo pushed"
+  ;;
+daily)
+  IP=$(ip)
+  if [ "${2:-}" = -n ]; then vssh "sudo /data/daily.sh -n"
+  else vssh "sudo nohup /data/daily.sh > /dev/null 2>&1 < /dev/null & echo started; tail -3 /data/daily/daily.log 2>/dev/null"; fi
+  ;;
+daily-timer)
+  IP=$(ip)
+  case ${2:-} in
+    on)
+      vssh "sudo tee /etc/systemd/system/ch-daily.service > /dev/null <<'UNIT'
+[Unit]
+Description=ch-store: catch up to gcs's newest scan (/data/daily.sh)
+[Service]
+Type=oneshot
+ExecStart=/data/daily.sh
+UNIT
+sudo tee /etc/systemd/system/ch-daily.timer > /dev/null <<'UNIT'
+[Unit]
+Description=ch-store daily catch-up, hourly (a no-op until gcs publishes a new scan)
+[Timer]
+OnCalendar=hourly
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+sudo systemctl daemon-reload && sudo systemctl enable --now ch-daily.timer && systemctl list-timers ch-daily.timer --no-pager"
+      ;;
+    off) vssh "sudo systemctl disable --now ch-daily.timer && echo off" ;;
+    *) printf '%s\n' 'usage: daily-timer on|off' >&2; exit 2 ;;
+  esac
   ;;
 ingest)
   IP=$(ip)
