@@ -50,7 +50,7 @@ flowchart LR
 
 The original implementation stores versions of `(depth,path,owner slice)`. A new or changed slice appends a full `nodes` row with opening scan `vf`. A vanished or changed slice appends a small `closures` record naming the old version and its closing scan `vt`; old node rows are not normally rewritten. The `changes` table contains signed ordinary day-to-day events, while `scans` advertises completed ingestion. This is an SCD-2-style interval model implemented with separate immutable opening and closing records, rather than mutations to each old row. [Schema][schema] and [ingestion][ingest] are authoritative.
 
-An as-of read selects versions with `vf <= D` and excludes their closure keys with `vt <= D`. Path/name/parent restrictions are applied to both sides so a narrow query does not join all historical closures. A proven complete rebaseline supplies a lower epoch bound; a mere source-format change does not prove every path reopened. `by_name` and `by_parent` projections support search candidates and thresholded child walks; the lowercase-name vocabulary has a trigram text index.
+An as-of read selects versions with `vf <= D` and excludes their closure keys with `vt <= D`. Path/name/parent restrictions are applied to both sides so a narrow query does not join all historical closures. A proven complete rebaseline supplies a lower epoch bound; a mere source-format change does not prove every path reopened. The store now runs through 10-06 and carries a consolidated name index over every scan; see [mega-index]. `by_name` and `by_parent` projections support search candidates and thresholded child walks; the lowercase-name vocabulary has a trigram text index.
 
 The last ingest measured 81.6 minutes on this VM, excluding the already-staged source download. It published 129 bounded ranges with two ranges admitted concurrently. Query caps and explicit aggregation/join spilling avoided the earlier memory failure, but profiling still showed substantial aggregation spill work and approximately two query-accounted cores over the pairing wall time. This is not evidence that changing the disk alone solves ingestion, nor a production throughput target.
 
@@ -179,3 +179,4 @@ The synthetic 100K identity screen publishes bootstrap bindings in 0.369 seconds
 [key-history]: ../../cloud/src/dt_cloud/chstore/key_history.py
 [reservations]: ../../cloud/src/dt_cloud/chstore/reservations.py
 [identity-publish]: ../../cloud/src/dt_cloud/chstore/identity_publish.py
+[mega-index]: mega-index.md
