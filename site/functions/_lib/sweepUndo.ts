@@ -51,6 +51,7 @@ export async function undoSweepRun(
   actor: string,
   siteUrl: string,
   now: Date = new Date(),
+  { bulk = false }: { bulk?: boolean } = {},
 ): Promise<UndoOk | DispatchErr> {
   if (!env.DB) return refuse(503, 'undo not configured (no D1 binding)')
   if (!env.GCP_SA_KEY) return refuse(503, 'undo not configured (GCP_SA_KEY secret missing)')
@@ -68,7 +69,7 @@ export async function undoSweepRun(
   const region = batchRegionFor(cfg, await runBuckets(db, row!))
   const jobId = `gcs-undo-${jobStampOf(now)}z`
   const spec = sweepJobSpec({
-    cfg, jobSa: env.JOB_SA, region, script: undoScript(), actor, siteUrl,
+    cfg, jobSa: env.JOB_SA, region, script: undoScript({ bulk }), actor, siteUrl,
     env: { OP: 'undo', TARGET_RUN: runId },
   })
   const token = await gcpToken(env.GCP_SA_KEY)
