@@ -9,7 +9,9 @@ itself, keyed by the scan's own preorder geometry:
 - `names(nid, l)`: each distinct lowercase basename once, trigram text index,
   `nid = sipHash64(l)`; the build refuses any hash collision, so a `nid`
   names exactly one basename (no 606M-row join to dense ids).
-- `nodes_by_name(nid, pre, post, b, o)`: every node, sorted `(nid, pre)`.
+- `nodes_by_name(nid, pre, post, b, o)`: every node, sorted `(nid, pre)`, in
+  256-row granules: a literal's names hash across the whole key range, so each
+  costs a granule (Oct 6 `3p`: 6.7M rows read at 256, 194M at 8192).
 
 `name_index_manifest` marks completion and binds the index to the exact
 source-manifest bytes; the serving lane refuses an index bound to anything
@@ -36,7 +38,7 @@ def statements(target: str) -> dict[str, str]:
         'names': f"""CREATE TABLE {target}.names (nid UInt64, l String, INDEX tl l TYPE text(tokenizer = ngrams(3)))
             ENGINE = MergeTree ORDER BY l AS SELECT sipHash64(l) AS nid, l FROM (SELECT {BASENAME} AS l FROM {target}.nodes GROUP BY l)""",
         'nodes_by_name': f"""CREATE TABLE {target}.nodes_by_name (nid UInt64, pre UInt32, post UInt32, b UInt64, o UInt64)
-            ENGINE = MergeTree ORDER BY (nid, pre) AS SELECT sipHash64({BASENAME}) AS nid, pre, post, b, o FROM {target}.nodes""",
+            ENGINE = MergeTree ORDER BY (nid, pre) SETTINGS index_granularity = 256 AS SELECT sipHash64({BASENAME}) AS nid, pre, post, b, o FROM {target}.nodes""",
     }
 
 
