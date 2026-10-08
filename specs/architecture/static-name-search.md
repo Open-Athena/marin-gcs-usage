@@ -116,8 +116,13 @@ Run: `cd static-names/<gen> && PATH=$REPO/.venv/bin:$PATH dvx run verify-answers
 
 - **Local** (`cloud/tests/test_static_names.py`): intervals equal a sequential-ingest oracle (v1/v2 mix, duplicate v1 rows, absence gaps, rounding ties) at 1 and 4 ranges; ranges partition the key space; `append` is byte-identical to a rebuild (intervals and histogram files) with matching digests and delta; suffix rows equal brute force; the reader's per-bucket first-hit answers equal brute force for every date; the restated kernel equals pyrmts' `_intervals_sql`.
 - **Intervals, real data**: ranges 0, 100, 200 (one task, n2-highmem-16) — 7.59M, 2.92M and 3.03M intervals in 383 s (first range: includes parsing all 70 footers), 247 s and 232 s. Per scan opened and closed counts and digests **equal ClickHouse on all 70 scans for all three ranges** (`nodes`/`closures` restricted to each range).
-- **Append, real data**: range 100 built over 69 scans then appended 10-08 is byte-identical (md5) to the 70-scan build.
+- **Append, real data**: ranges 0 and 100 built over 69 scans then appended 10-08 (range 0: 1,822 opened, 1,557 closed) are byte-identical (md5), intervals and histograms, to the 70-scan build.
+- **Reproducibility**: the dev shards built twice by two code paths (one pass per task; then the map/reduce shuffle) are byte-identical, all 11 files and the sidecar.
 - **Suffix shards, real data** (the three ranges' intervals, 13.5M versions → 513M suffix rows, 11 shards): 50M-row shards sort and write in ~55 s each; files are 12–17.6 B/row (pyarrow zstd), 6.9 GB for 513M rows; sidecar 62,674 row groups, 2.6 MB.
+
+### Full build, 2026-10-08 (gen `2026-10-08`, 70 scans 07-30 → 10-08)
+
+**Intervals**: one Batch job, 32 spot n2-highmem-16 tasks × 8 ranges, 38 min wall (2,291 s); 256 ranges at 150–841 s (median 193 s), 14.9 task-hours ≈ **$5 spot** (~$17 on demand). 1,153,480,980 intervals, 11.1 GB (9.6 B/version). **Verification: every scan's opened (1,153,480,980 in all) and closed (545,152,608) versions equal ClickHouse `m_nodes`/`m_closures` exactly, counts and digests, all 70 scans** (`verify-intervals.json`, 60 s on the VM).
 
 ### Extrapolation to the full build (before launching it)
 

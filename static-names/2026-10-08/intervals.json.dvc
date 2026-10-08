@@ -1,11 +1,16 @@
 outs:
-- path: intervals.json
+- md5: 7c9452d7769175794c331c41e23fda73
+  size: 136870
+  hash: md5
+  path: intervals.json
 meta:
   computation:
-    cmd: SPOT=1 JOB_ID=sn-2026-10-08-intervals-$(date -u +%H%M%S) ../../job/static-names.sh run intervals 32 -g 2026-10-08 -n 8 > /dev/null && dt-cloud static-names manifest -g 2026-10-08 intervals hist digest > intervals.json
+    cmd: SPOT=1 JOB_ID=sn-2026-10-08-intervals-$(date -u +%H%M%S) ../../job/static-names.sh
+      run intervals 32 -g 2026-10-08 -n 8 > /dev/null && dt-cloud static-names manifest
+      -g 2026-10-08 intervals hist digest > intervals.json
     deps:
-      scans.json: ''
-      ranges.json: ''
+      scans.json: 6c08bc2c84a7f155ed1a86b5f183aea7
+      ranges.json: 0e64092bfd59936b30b9f7b42738edd6
     git_deps:
-      ../../cloud/src/dt_cloud/static_names.py: ''
-      ../../job/static-names.sh: ''
+      ../../cloud/src/dt_cloud/static_names.py: 43326e6172a9bb07f730ff57f68e678830839d4b
+      ../../job/static-names.sh: 121ec0b6157a0565446737c7613174e267cac36d

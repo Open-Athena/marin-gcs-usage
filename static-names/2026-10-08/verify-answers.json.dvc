@@ -2,9 +2,9 @@ outs:
 - path: verify-answers.json
 meta:
   computation:
-    cmd: D=2026-10-08,2026-10-06,2026-10-01,2026-09-30,2026-09-15,2026-08-15,2026-07-30; ../../job/static-names.sh ch-answers $D ../../job/static-names/terms.txt > ../../tmp/static-names-ch-answers-2026-10-08.jsonl && dt-cloud static-names query -g 2026-10-08 $(echo $D | sed 's/^/-d /; s/,/ -d /g') $(cat ../../job/static-names/terms.txt) > ../../tmp/static-names-answers-2026-10-08.jsonl && dt-cloud static-names compare-answers ../../tmp/static-names-ch-answers-2026-10-08.jsonl ../../tmp/static-names-answers-2026-10-08.jsonl > verify-answers.json
+    cmd: dt-cloud static-names query -g 2026-10-08 -d 2026-10-08 -d 2026-10-06 -d 2026-10-01 -d 2026-09-30 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30 $(cat ../../job/static-names/terms.txt) > ../../tmp/static-names-answers-2026-10-08.jsonl && dt-cloud static-names compare-answers ch-answers.jsonl ../../tmp/static-names-answers-2026-10-08.jsonl > verify-answers.json
     deps:
       suffixes.json: ''
+      ch-answers.jsonl: ''
     git_deps:
       ../../job/static-names/terms.txt: ''
-      ../../job/static-names/ch-answers.py: ''

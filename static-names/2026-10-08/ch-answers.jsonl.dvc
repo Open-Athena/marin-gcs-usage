@@ -1,0 +1,10 @@
+outs:
+- path: ch-answers.jsonl
+meta:
+  computation:
+    cmd: ../../job/static-names.sh ch-answers 2026-10-08,2026-10-06,2026-10-01,2026-09-30,2026-09-15,2026-08-15,2026-07-30 $PWD/../../job/static-names/terms.txt > ch-answers.jsonl
+    deps:
+      scans.json: ''
+    git_deps:
+      ../../job/static-names/terms.txt: ''
+      ../../job/static-names/ch-answers.py: ''

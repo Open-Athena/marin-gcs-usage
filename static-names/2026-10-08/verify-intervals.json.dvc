@@ -1,8 +1,14 @@
 outs:
-- path: verify-intervals.json
+- md5: 80e556ef01132d851063e0ab826f3971
+  size: 143
+  hash: md5
+  path: verify-intervals.json
 meta:
   computation:
-    cmd: dt-cloud static-names ch-digest-sql -n m_nodes -c m_closures ranges.json | ../../job/ch-store.sh sql - > ../../tmp/static-names-ch-digest-2026-10-08.tsv && dt-cloud static-names verify-intervals -g 2026-10-08 ../../tmp/static-names-ch-digest-2026-10-08.tsv > verify-intervals.json
+    cmd: dt-cloud static-names ch-digest-sql -n m_nodes -c m_closures ranges.json
+      | ../../job/ch-store.sh sql - > ../../tmp/static-names-ch-digest-2026-10-08.tsv
+      && dt-cloud static-names verify-intervals -g 2026-10-08 ../../tmp/static-names-ch-digest-2026-10-08.tsv
+      > verify-intervals.json
     deps:
-      intervals.json: ''
-      ranges.json: ''
+      intervals.json: 7c9452d7769175794c331c41e23fda73
+      ranges.json: 0e64092bfd59936b30b9f7b42738edd6
