@@ -7,7 +7,7 @@
 #   job/ch-store.sh push                 # this checkout's dt_cloud / disk_tree + job/ch-store/* → the VM
 #   job/ch-store.sh push-src             # Python sources only; do not re-upload/re-copy unchanged node scripts
 #   job/ch-store.sh ingest DATE…         # background: ch-ingest each scan in order (job/ch-store/ingest-days.sh)
-#   job/ch-store.sh serve                # (re)start serve-query -e ch on :8080 (bearer token in /data/token)
+#   job/ch-store.sh serve                # (re)start serve-query -e ch on :8080 (bearer token in /data/token; SERVE_SRC=/data/src-x serves a separately staged source tree)
 #   job/ch-store.sh py ARGS…             # `python3 -m dt_cloud.cli ARGS` in the image on the VM (privileged, host network)
 #   job/ch-store.sh py-bg TAG ARGS…      # detached CLI job; refuses an existing tag, retains exit state/logs
 #   job/ch-store.sh py-status TAG        # read-only Docker job state (JSON); no environment/token output
@@ -182,7 +182,7 @@ serve)
       ;;
     *) printf '%s\n' 'NARROW_PLAN must be legacy or visible' >&2; exit 2 ;;
   esac
-  SERVE_CMD="docker run -d --name serve-query --restart unless-stopped --network host -v /data:/data -e PYTHONPATH=/data/src \
+  SERVE_CMD="docker run -d --name serve-query --restart unless-stopped --network host -v /data:/data -e PYTHONPATH=${SERVE_SRC:-/data/src} \
     -e QUERY_BOX_TOKEN=\$(cat /data/token) --entrypoint python3 \$(cat /data/image) -u -m dt_cloud.cli \
     $(printf '%q ' serve-query -e ch -p 8080 -c "${CONCURRENCY:-2}" -t "${THREADS:-8}" -r "${ROOT_PLAN:-rich}" "${CATALOG_ARGS[@]}" "${NARROW_ARGS[@]}" http://localhost:8123)"
   vssh "sudo docker rm -f serve-query > /dev/null 2>&1; sudo bash -c $(printf '%q' "$SERVE_CMD")"
