@@ -3,7 +3,7 @@
 Published artifacts and the separately audited frozen source stay immutable.
 Startup compares their identities/geometry, not all billion source values.
 One cold worker owns its CH session until verified cleanup; an unverified
-cleanup quarantines the lane. A response deadline does not imply that CH can
+cleanup quarantines the lane until a later re-verification succeeds. A response deadline does not imply that CH can
 interrupt every analysis phase instantly. No source oracle runs per request.
 """
 
@@ -12,6 +12,7 @@ from datetime import date as Date
 from hashlib import sha256
 from json import loads
 from pathlib import Path
+from sys import stderr
 from threading import BoundedSemaphore, Event, Lock, Thread
 from time import monotonic
 from typing import Callable
@@ -27,6 +28,11 @@ from .narrow import identifier
 
 COMPUTE_SECONDS = 5.0
 CLEANUP_SECONDS = 2.0
+# A quarantined lane re-verifies after every owned query's own
+# `max_execution_time` has run out (a late-dispatched one carries it too), then
+# at twice and three times that; failing all three, it stays quarantined.
+RECOVERY_SECONDS = COMPUTE_SECONDS + CLEANUP_SECONDS
+RECOVERY_ATTEMPTS = 3
 CAPS = {'max_names': 200_000, 'max_postings': 100_000, 'max_roots': 100_000}
 
 
@@ -196,6 +202,25 @@ class NameSummaryRuntime:
         self.catalog, self.binding, self.url = catalog, binding, url
         self.registered = {day: frozenset(catalog.registered_patterns(day)) for day, _ in binding.dates}
         self.gate, self.hot_gate, self.quarantined = BoundedSemaphore(1), BoundedSemaphore(2), False
+        self.recovery_seconds = RECOVERY_SECONDS
+
+    def _recover(self, source: 'DeadlineCh | None') -> None:
+        """Reopen a quarantined slot once its owned work is verifiably gone: kill
+        and check the exact owned query IDs, drop the owned temporary tables."""
+        for attempt in range(1, RECOVERY_ATTEMPTS + 1):
+            Event().wait(self.recovery_seconds * attempt)
+            try:
+                if source is not None:
+                    cancel_owned(source, cancel=True)
+                    source.cleanup()
+                    cancel_owned(source, cancel=False)
+            except BaseException:
+                continue
+            print(f'name summary: cold lane recovered (attempt {attempt})', file=stderr)
+            self.quarantined = False
+            self.gate.release()
+            return
+        print('name summary: cold lane recovery failed; quarantined until restart', file=stderr)
 
     @property
     def target(self) -> str:
@@ -331,6 +356,7 @@ class NameSummaryRuntime:
                     self.gate.release()
                 else:
                     self.quarantined = True
+                    Thread(target=self._recover, args=(source,), name='name-summary-recover', daemon=True).start()
                 outcome.append(error if error is not None else body)
                 done.set()
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
 from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 
@@ -71,6 +72,7 @@ def runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(module, 'build', build)
     monkeypatch.setattr(module, 'uuid4', lambda: SimpleNamespace(hex='c' * 32))
     state.runtime = module.NameSummaryRuntime(catalog, binding, 'http://loopback:8123')
+    state.runtime.recovery_seconds = 3600  # quarantine stays put unless a test shortens it
     return state
 
 
@@ -324,6 +326,45 @@ def test_real_publisher_pins_proofs_once_and_optional_verified_pair_avoids_repar
     with pytest.raises(ValueError) as caught:
         module.NameSummaryRuntime.load(root, 'http://source:8123', target='fleet', catalog=loaded.catalog)
     assert str(caught.value) == 'name summary catalog reuse requires its exact verified pinned manifest'
+
+
+def wait_for(predicate: Callable[[], bool], seconds: float = 3) -> bool:
+    deadline = monotonic() + seconds
+    while not predicate() and monotonic() < deadline:
+        sleep(.01)
+    return predicate()
+
+
+def test_quarantine_recovers_once_owned_work_verifiably_gone(runtime: SimpleNamespace) -> None:
+    state = runtime
+    state.runtime.recovery_seconds = .2
+    state.clean_fail = True
+    with pytest.raises(module.SummaryUnavailable) as caught:
+        state.runtime.view('2026-10-05', 'datakit')
+    assert (str(caught.value), state.runtime.quarantined) == ('name summary cleanup could not be verified; cold lane quarantined', True)
+    with pytest.raises(module.SummaryBusy) as caught:
+        state.runtime.view('2026-10-05', 'datakit')
+    assert str(caught.value) == 'name summary cold lane is quarantined; catalog reads remain available'
+    state.calls.clear()
+    state.clean_fail = False
+    assert wait_for(lambda: not state.runtime.quarantined) is True
+    # The recovery re-killed and re-verified the same owned client, then dropped its tables.
+    assert state.calls == [('cancel', True), ('cleanup',), ('cancel', False)]
+    assert state.runtime.view('2026-10-05', 'datakit') == expected_view(state, '2026-10-05', 'datakit', 'bounded-name-postings')
+    assert (state.runtime.quarantined, state.runtime.gate.acquire(blocking=False)) == (False, True)
+
+
+def test_quarantine_stays_when_every_recovery_attempt_fails(runtime: SimpleNamespace) -> None:
+    state = runtime
+    state.runtime.recovery_seconds = .01
+    state.clean_fail = True
+    with pytest.raises(module.SummaryUnavailable):
+        state.runtime.view('2026-10-05', 'datakit')
+    state.calls.clear()
+    assert wait_for(lambda: state.calls.count(('cleanup',)) == module.RECOVERY_ATTEMPTS) is True
+    sleep(.1)
+    assert state.calls == [('cancel', True), ('cleanup',)] * module.RECOVERY_ATTEMPTS
+    assert (state.runtime.quarantined, state.runtime.gate.acquire(blocking=False)) == (True, False)
 
 
 @pytest.mark.parametrize('failure', ['cap', 'wrong_literal', 'transport', 'cancel'])
