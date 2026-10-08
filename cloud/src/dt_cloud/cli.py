@@ -1196,15 +1196,20 @@ def plan_sweep_manifest(date: str, l2_path: str | None, out: str, plan_path: str
     """Expand a curated PLAN (json) into an object-level deletion manifest.
 
     Deletes nothing; reads the pinned layer-2 parquet and writes
-    manifest/<bucket>.parquet + plan-summary.json under --out."""
+    manifest/<bucket>.parquet + plan-summary.json under --out. An item staged
+    as of another scan (plan.json `as_of`) keeps only the keys that scan's
+    layer-2 (`cw-l2/<scan>/<bucket>.parquet`) has with the same mtime."""
     import json
 
     from .sweep import build_manifest, load_plan
 
     plan = load_plan(plan_path)
-    if l2_path is None:
-        l2_path = f"/gcs/{data_bucket()}/cw-l2/{date}/{plan.bucket}.parquet"
-    summary = build_manifest(l2_path, plan, out)
+
+    def l2_for(scan: str) -> str:
+        return f"/gcs/{data_bucket()}/cw-l2/{scan}/{plan.bucket}.parquet"
+
+    # Items staged as of another scan are checked against that scan's layer-2.
+    summary = build_manifest(l2_path or l2_for(date), plan, out, date=date, l2_for=l2_for)
     err(f"manifest: {summary['objects']} objects, {summary['bytes']} bytes -> {summary['manifest']}")
     print(json.dumps(summary))
 
@@ -1292,8 +1297,10 @@ def sweep_manifest(only_buckets: tuple[str, ...], date: str, workers: int, out: 
     the pinned listing (every shard in parallel, row groups outside the staged
     prefixes pruned — `sweep_manifest.py`) and write per-bucket parquets of the
     ELIGIBLE keys — every key under a staged prefix — plus a category summary.
-    The plan is the whole intent: nothing carves out. Pure read + artifact
-    write — deletes nothing."""
+    The plan is the whole intent: nothing carves out. An item staged as of
+    another scan (plan.json `as_of`) keeps only the keys that scan's listing
+    has with the same generation (else `created`); the rest are counted as
+    `skipped_after_as_of`. Pure read + artifact write — deletes nothing."""
     import time
 
     import fsspec
@@ -1315,11 +1322,14 @@ def sweep_manifest(only_buckets: tuple[str, ...], date: str, workers: int, out: 
     summary: dict = {
         "date": date, "plan_id": sp.plan_id, "plan_name": sp.name,
         "approved": [a for b in buckets for a in sp.bands(b)],
+        # items staged as of another scan: their objects must be unchanged
+        # in that scan too (else `skipped_after_as_of`)
+        "as_of": {f"gs://{b}/{rel}": scan for b in buckets for rel, scan in sorted(sp.as_of.get(b, {}).items()) if scan != date},
         "buckets": {},
     }
 
     t0 = time.monotonic()
-    summary["buckets"] = build_manifests(root, date, {b: sp.sweep[b] for b in buckets}, out, workers=workers or None)
+    summary["buckets"] = build_manifests(root, date, {b: sp.sweep[b] for b in buckets}, out, workers=workers or None, as_of=sp.as_of)
     err(f"manifest: {time.monotonic() - t0:.0f}s")
 
     tot = {c: [0, 0] for c in CATEGORIES}

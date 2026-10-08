@@ -6,7 +6,7 @@
 //   PATCH  /api/plans/:id          { state: 'closed' }                     admin
 //   POST   /api/plans/:id/items    { prefixes: [...], note? }              admin
 //   DELETE /api/plans/:id/items    { prefixes: [...] }                     admin
-//   POST   /api/plans/stage        { prefixes: [...], note? } -> { plan_id, batch_id, staged, covered, absorbed }
+//   POST   /api/plans/stage        { prefixes: [...], note?, as_of? } -> { plan_id, batch_id, staged, covered, absorbed, as_of }
 //                                                                          stager (`STAGING` deployments)
 //   GET    /api/plans/staged       the shared open plan (+ items, batches, emptied batches, runs), or { plan: null }   viewer
 //   GET    /api/plans/run?id=<run> one run's record + its per-band rows      viewer
@@ -19,6 +19,7 @@
 import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireAdmin, requireStager, requireViewer } from "../../_lib/auth.js"
 import { audit, canonicalPrefix, NO_SHAPE, openPlanId, planDetail, type PlanRow, type PrefixShape, prefixShape, runDetail, stageItems } from "../../_lib/plans.js"
+import { pathScans } from "../../_lib/index.js"
 import { notifyPlan, refreshThread, type NotifyEnv } from "../../_lib/stagedSlack.js"
 
 type Env = AuthEnv & NotifyEnv & { DB?: D1Database }
@@ -152,8 +153,18 @@ export const onRequest = async (ctx: Ctx & { env: Env; waitUntil?: Bg }): Promis
       ? (body.prefixes as unknown[]).filter((x): x is string => typeof x === "string")
       : []
     const note = typeof body.note === "string" ? body.note : null
+    // The scan the gesture stages against: a named scan date that exists,
+    // else the latest scan (none synced yet = null: the dispatch scan stands in).
+    const scans = (await pathScans(ctx.env, true)).results.map(r => r.date)
+    let asOf: string | null = scans.at(-1) ?? null
+    if (body.as_of !== undefined && body.as_of !== null) {
+      if (typeof body.as_of !== "string" || !scans.includes(body.as_of)) {
+        return json({ error: `as_of must be a scan date (${scans.length ? `latest ${scans.at(-1)}` : "no scans yet"})`, as_of: body.as_of }, 400)
+      }
+      asOf = body.as_of
+    }
     const by = gated.email ?? gated.name ?? "guest"
-    const res = await stageItems(db, prefixes, by, note, shape)
+    const res = await stageItems(db, prefixes, by, note, shape, asOf)
     if ("error" in res) return json(res, 400)
     // Announce the batch in the plan's Slack thread (specs/done/staged-slack.md),
     // after the response — a Slack hiccup never fails the gesture.

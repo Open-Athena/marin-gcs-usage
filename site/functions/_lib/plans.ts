@@ -72,11 +72,23 @@ export function canonicalPrefix(raw: string, shape: PrefixShape, bucket: string 
  * end in `/`, so `s3://b/a/` covers `s3://b/a/x/` and not `s3://b/ab/`. */
 export const covers = (a: string, b: string): boolean => b === a || b.startsWith(a.endsWith('/') ? a : `${a}/`)
 
+/** Some member of `set` other than `p` itself covers `p` (`covers`). Every
+ * such member is a cut of `p` at one of its `/`s (with or without the slash),
+ * so this probes those cuts — O(|p|), not O(|set|). */
+export function coveredBy(p: string, set: ReadonlySet<string>): boolean {
+  for (let i = p.indexOf('/'); i >= 0; i = p.indexOf('/', i + 1)) {
+    if (set.has(p.slice(0, i))) return true
+    if (i + 1 < p.length && set.has(p.slice(0, i + 1))) return true
+  }
+  return false
+}
+
 /** The prefixes of `all` that no other member covers — the set a delete
  * actually acts on. A staged dir and a staged descendant of it would count
  * (and delete) the descendant twice; the no-nesting rule keeps one. */
 export function uncovered(all: readonly string[]): string[] {
-  return all.filter(p => !all.some(o => o !== p && covers(o, p)))
+  const set = new Set(all)
+  return all.filter(p => !coveredBy(p, set))
 }
 
 /** Stage prefixes for deletion — the opt-in trash model's proposal step
@@ -86,6 +98,12 @@ export function uncovered(all: readonly string[]): string[] {
  * (a fact about the action), and every prefix in the call points at it — the
  * 1:many an admin reads back as "trashed together by X: <memo>". A re-staged
  * prefix keeps its first batch (`INSERT OR IGNORE`).
+ *
+ * `asOf` is the scan the gesture stages against (a scan date; the caller
+ * validates it): every new item records it as `plan_items.as_of`, and the
+ * executor deletes only objects present, unchanged, in both that scan and the
+ * dispatch scan. A re-staged prefix keeps its first `as_of`. The gesture is
+ * one D1 transaction: on any failure nothing of it is written.
  *
  * No nesting (`covers`): a prefix already under a staged ancestor is skipped
  * (`covered`), and staging an ancestor absorbs its staged descendants
@@ -97,7 +115,8 @@ export async function stageItems(
   who: string,
   note: string | null,
   shape: PrefixShape,
-): Promise<{ plan_id: number; batch_id: number; staged: string[]; covered: string[]; absorbed: string[] } | { error: string }> {
+  asOf: string | null,
+): Promise<{ plan_id: number; batch_id: number; staged: string[]; covered: string[]; absorbed: string[]; as_of: string | null } | { error: string }> {
   const prefixes: string[] = []
   for (const r of rawPrefixes) {
     const c = canonicalPrefix(r, shape)
@@ -106,28 +125,45 @@ export async function stageItems(
   }
   if (!prefixes.length) return { error: 'prefixes required' }
   const ts = Math.floor(Date.now() / 1000)
-  let plan = await db.prepare("SELECT id FROM plans WHERE state = 'open' ORDER BY created_ts DESC LIMIT 1").first<{ id: number }>()
-  if (!plan) {
-    plan = (await db.prepare(
-      "INSERT INTO plans (name, note, state, created_by, created_ts) VALUES ('Staged', NULL, 'open', ?, ?) RETURNING id",
-    ).bind(who, ts).first<{ id: number }>())!
-    await audit(db, 'plans', String(plan.id), 'insert', who, null, { name: 'Staged', auto: true })
-  }
-  const have = (await db.prepare('SELECT prefix FROM plan_items WHERE plan_id = ?').bind(plan.id).all<{ prefix: string }>()).results.map(r => r.prefix)
+  const open = await db.prepare("SELECT id FROM plans WHERE state = 'open' ORDER BY created_ts DESC LIMIT 1").first<{ id: number }>()
+  const have = open
+    ? (await db.prepare('SELECT prefix FROM plan_items WHERE plan_id = ?').bind(open.id).all<{ prefix: string }>()).results.map(r => r.prefix)
+    : []
   const { staged, covered, absorbed } = planStaging(have, uncovered(prefixes))
-  const batch = (await db.prepare(
-    'INSERT INTO stage_batches (plan_id, note, created_by, created_ts) VALUES (?, ?, ?, ?) RETURNING id',
-  ).bind(plan.id, note, who, ts).first<{ id: number }>())!
-  for (const p of absorbed) {
-    await db.prepare('DELETE FROM plan_items WHERE plan_id = ? AND prefix = ?').bind(plan.id, p).run()
+
+  // Every write below is ONE `db.batch` — one D1 transaction, all or nothing
+  // (a request cut off mid-gesture used to leave a partial batch). Ids minted
+  // inside it are read back as `MAX(id)`: both tables are AUTOINCREMENT, so
+  // the row just inserted holds the largest id, and D1 serializes
+  // transactions, so no other writer interleaves. The item inserts and the
+  // absorbed deletes are one statement each over `json_each` (no per-prefix
+  // round trip, no bind-count limit).
+  const planId = open ? String(Number(open.id)) : '(SELECT MAX(id) FROM plans)'
+  const batchId = '(SELECT MAX(id) FROM stage_batches)'
+  const edit = 'INSERT INTO admin_edits (tbl, pk, action, who, ts, old_json, new_json)'
+  const stmts = []
+  if (!open) {
+    stmts.push(
+      db.prepare("INSERT INTO plans (name, note, state, created_by, created_ts) VALUES ('Staged', NULL, 'open', ?, ?)").bind(who, ts),
+      db.prepare(`${edit} SELECT 'plans', CAST(${planId} AS TEXT), 'insert', ?, ?, NULL, ?`)
+        .bind(who, ts, JSON.stringify({ name: 'Staged', auto: true })),
+    )
   }
-  for (const p of staged) {
-    await db.prepare(
-      'INSERT OR IGNORE INTO plan_items (plan_id, prefix, batch_id, added_by, added_ts) VALUES (?, ?, ?, ?, ?)',
-    ).bind(plan.id, p, batch.id, who, ts).run()
+  stmts.push(db.prepare(`INSERT INTO stage_batches (plan_id, note, created_by, created_ts) VALUES (${planId}, ?, ?, ?)`).bind(note, who, ts))
+  if (absorbed.length) {
+    stmts.push(db.prepare(`DELETE FROM plan_items WHERE plan_id = ${planId} AND prefix IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(absorbed)))
   }
-  await audit(db, 'plan_items', String(plan.id), 'insert', who, absorbed.length ? { absorbed } : null, { staged, covered, batch_id: batch.id, note })
-  return { plan_id: plan.id, batch_id: batch.id, staged, covered, absorbed }
+  // A re-staged prefix keeps its row — first batch, first `as_of` (`OR IGNORE`).
+  stmts.push(db.prepare(
+    `INSERT OR IGNORE INTO plan_items (plan_id, prefix, batch_id, added_by, added_ts, as_of)
+     SELECT ${planId}, value, ${batchId}, ?, ?, ? FROM json_each(?)`,
+  ).bind(who, ts, asOf, JSON.stringify(staged)))
+  stmts.push(db.prepare(`${edit} SELECT 'plan_items', CAST(${planId} AS TEXT), 'insert', ?, ?, ?, json_set(?, '$.batch_id', ${batchId})`)
+    .bind(who, ts, absorbed.length ? JSON.stringify({ absorbed }) : null, JSON.stringify({ staged, covered, batch_id: 0, note, as_of: asOf })))
+  stmts.push(db.prepare(`SELECT ${planId} AS plan_id, ${batchId} AS batch_id`))
+  const out = await db.batch<{ plan_id: number; batch_id: number }>(stmts)
+  const ids = out[out.length - 1].results[0]
+  return { plan_id: ids.plan_id, batch_id: ids.batch_id, staged, covered, absorbed, as_of: asOf }
 }
 
 /** The no-nesting rule for one gesture against a plan's current items (pure):
@@ -135,19 +171,22 @@ export async function stageItems(
  * prefixes an existing item already names, `absorbed` = existing items a new
  * prefix covers (to remove). A prefix already in the plan stays as it is. */
 export function planStaging(have: readonly string[], add: readonly string[]): { staged: string[]; covered: string[]; absorbed: string[] } {
+  const haveSet = new Set(have)
   const staged: string[] = []
   const covered: string[] = []
   for (const p of add) {
-    if (have.includes(p)) { staged.push(p); continue }
-    if (have.some(h => covers(h, p))) covered.push(p)
+    if (haveSet.has(p)) { staged.push(p); continue }
+    if (coveredBy(p, haveSet)) covered.push(p)
     else staged.push(p)
   }
-  const absorbed = have.filter(h => !staged.includes(h) && staged.some(p => covers(p, h)))
+  const stagedSet = new Set(staged)
+  const absorbed = have.filter(h => !stagedSet.has(h) && coveredBy(h, stagedSet))
   return { staged, covered, absorbed }
 }
 
 export interface StageBatchRow { id: number; plan_id: number; note: string | null; created_by: string; created_ts: number }
-export interface PlanItemRow { prefix: string; note: string | null; added_by: string; added_ts: number; batch_id: number | null }
+/** `as_of`: the scan the item was staged against (NULL = before `as_of` existed). */
+export interface PlanItemRow { prefix: string; note: string | null; added_by: string; added_ts: number; batch_id: number | null; as_of: string | null }
 
 /** A `plan_items` audit row (`admin_edits`, `tbl = 'plan_items'`, pk = the plan id). */
 export interface PlanEdit { action: string; old_json: string | null; new_json: string | null }
@@ -217,11 +256,11 @@ export async function planDetail(db: D1Database, id: number, staging: boolean): 
   if (!plan) return null
   const items = staging
     ? await db.prepare(
-      `SELECT i.prefix, COALESCE(i.note, b.note) AS note, i.added_by, i.added_ts, i.batch_id
+      `SELECT i.prefix, COALESCE(i.note, b.note) AS note, i.added_by, i.added_ts, i.batch_id, i.as_of
        FROM plan_items i LEFT JOIN stage_batches b ON b.id = i.batch_id
        WHERE i.plan_id = ? ORDER BY i.added_ts DESC, i.prefix`,
     ).bind(id).all<PlanItemRow>()
-    : await db.prepare('SELECT prefix, note, added_by, added_ts, NULL AS batch_id FROM plan_items WHERE plan_id = ? ORDER BY added_ts DESC, prefix').bind(id).all<PlanItemRow>()
+    : await db.prepare('SELECT prefix, note, added_by, added_ts, NULL AS batch_id, as_of FROM plan_items WHERE plan_id = ? ORDER BY added_ts DESC, prefix').bind(id).all<PlanItemRow>()
   const batches = staging
     ? (await db.prepare('SELECT * FROM stage_batches WHERE plan_id = ? ORDER BY created_ts DESC').bind(id).all<StageBatchRow>()).results
     : []
@@ -289,14 +328,24 @@ export interface PlanBucketsSnapshot {
   name: string
   sweep: string[]
   buckets: string[]
+  /** Each item's `as_of` scan, keyed like `sweep` (items staged before
+   * `as_of` existed are absent: the dispatch scan stands in). The executor
+   * deletes only objects unchanged in both that scan and the dispatch scan. */
+  as_of: Record<string, string>
+}
+
+/** A plan's items with their `as_of` scans, prefix-sorted. */
+async function planItems(db: D1Database, planId: number): Promise<{ prefix: string; as_of: string | null }[]> {
+  return (await db.prepare("SELECT prefix, as_of FROM plan_items WHERE plan_id = ? ORDER BY prefix").bind(planId).all<{ prefix: string; as_of: string | null }>()).results
 }
 
 export async function snapshotPlanBuckets(db: D1Database, planId: number, shape: PrefixShape): Promise<PlanBucketsSnapshot | null> {
   const plan = await db.prepare("SELECT id, name FROM plans WHERE id = ?").bind(planId).first<{ id: number; name: string }>()
   if (!plan) return null
-  const items = await db.prepare("SELECT prefix FROM plan_items WHERE plan_id = ? ORDER BY prefix").bind(planId).all<{ prefix: string }>()
-  const sweep = items.results.map(r => r.prefix)
-  return { plan_id: planId, name: plan.name, sweep, buckets: Object.keys(planBuckets(sweep, shape.buckets)) }
+  const items = await planItems(db, planId)
+  const sweep = items.map(r => r.prefix)
+  const as_of = Object.fromEntries(items.filter(r => r.as_of).map(r => [r.prefix, r.as_of!]))
+  return { plan_id: planId, name: plan.name, sweep, buckets: Object.keys(planBuckets(sweep, shape.buckets)), as_of }
 }
 
 export async function audit(
@@ -363,16 +412,19 @@ export const auditRunControl = (
 
 /** Snapshot a plan into the executor's plan.json: the plan's one bucket
  * (`planBucket`; throws `PlanSpansBuckets`) and the relative sweep prefixes
- * (the plan's items — the whole intent; nothing carves out). Returns null if
- * the plan is missing. */
+ * (the plan's items — the whole intent; nothing carves out), with each
+ * item's `as_of` scan (keyed by the relative prefix). Returns null if the plan
+ * is missing. */
 export async function snapshotPlan(db: D1Database, planId: number, shape: PrefixShape): Promise<
-  { plan_id: number; name: string; bucket: string; sweep: string[] } | null
+  { plan_id: number; name: string; bucket: string; sweep: string[]; as_of: Record<string, string> } | null
 > {
   const plan = await db.prepare("SELECT id, name FROM plans WHERE id = ?").bind(planId).first<{ id: number; name: string }>()
   if (!plan) return null
-  const items = await db.prepare("SELECT prefix FROM plan_items WHERE plan_id = ? ORDER BY prefix").bind(planId).all<{ prefix: string }>()
-  const { bucket, sweep } = planBucket(items.results.map(r => r.prefix), shape.buckets)
-  return { plan_id: planId, name: plan.name, bucket, sweep }
+  const items = await planItems(db, planId)
+  const { bucket, sweep } = planBucket(items.map(r => r.prefix), shape.buckets)
+  // keyed by the relative prefix, as `sweep` is (`planBucket` keeps order)
+  const as_of = Object.fromEntries(items.flatMap((r, i) => r.as_of ? [[sweep[i], r.as_of]] : []))
+  return { plan_id: planId, name: plan.name, bucket, sweep, as_of }
 }
 
 // ── The real-deletion gate (specs/done/staged-slack.md) ─────────────────────────

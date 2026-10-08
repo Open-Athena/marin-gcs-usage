@@ -41,6 +41,8 @@ export interface OwnerPost {
 // otherwise care which scan is showing).
 let currentScan: string | undefined
 export const setCurrentScan = (s?: string) => { currentScan = s }
+/** The scan the viewer is looking at (a staging gesture is "as of" it). */
+export const getCurrentScan = (): string | undefined => currentScan
 
 export function useOwnerMutations() {
   const qc = useQueryClient()
