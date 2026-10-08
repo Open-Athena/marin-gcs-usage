@@ -193,7 +193,8 @@ export const onRequest = async (ctx: Ctx & { env: Env; waitUntil?: Bg }): Promis
   }
 
   // /api/plans/:id/slack — admin: re-render the plan's Slack thread (parent,
-  // and the stage-batch replies named by `{ replies: { <batch_id>: <ts> } }`),
+  // every coalesced stage reply, and the pre-coalescing stage-batch replies
+  // named by `{ replies: { <batch_id>: <ts> } }`),
   // e.g. after the message format changes. Edits don't notify anyone.
   if (segs.length === 2 && segs[1] === "slack" && method === "POST") {
     const gated = await requireAdmin(ctx)

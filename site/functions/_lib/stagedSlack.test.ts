@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PLAN_SENDER, queueWasEmpty, fmtBytes, nameSlug, personSender, renderParent, runEvent, runUrl, stageEvent, stagedCardUrl, type RunRow } from './stagedSlack.js'
+import { closedParent, PLAN_SENDER, queueWasEmpty, fmtBytes, personSender, renderParent, runEvent, runUrl, shortPath, sizeOf, stageReply, stagedCardUrl, topFolders, type RunRow } from './stagedSlack.js'
 import { sqliteD1 } from './testD1.js'
 
 const run = (o: Partial<RunRow>): RunRow => ({
@@ -57,8 +57,8 @@ describe('run events', () => {
     const site = 'https://cw-s3.oa.dev'
     const link = '<https://cw-s3.oa.dev/staged?run=cw-sweep-dry-1|cw-sweep-dry-1>'
     expect(runEvent(run({ finished_ts: null }), 'dispatched', { via: 'Slack' })).toBe(':test_tube: Dry-run dispatched by ann via Slack on scan 2026-09-28T1201 (`cw-sweep-dry-1`)')
-    expect(runEvent(run({ finished_ts: null }), 'dispatched', { via: 'www', mentions: { 'ann@openathena.ai': '<@U1>' }, siteUrl: site }))
-      .toBe(`:test_tube: Dry-run dispatched by <@U1> via www on scan 2026-09-28T1201 (${link})`)
+    expect(runEvent(run({ finished_ts: null }), 'dispatched', { via: 'www', names: { 'ann@openathena.ai': 'Ann Example' }, siteUrl: site }))
+      .toBe(`:test_tube: Dry-run dispatched by Ann Example via www on scan 2026-09-28T1201 (${link})`)
     expect(runEvent(run({ skipped_gone: 2 }), 'finished', { siteUrl: site })).toBe(`:test_tube: Dry-run ${link} finished: would delete *2.0 TiB* / 1,234 objects (gone since scan: 2, overwritten: 0).`)
     expect(runEvent(run({ mode: 'real', run_id: 'cw-sweep-real-1', undo_deadline: 1_790_604_800 }), 'finished')).toBe(':white_check_mark: Real deletion `cw-sweep-real-1` finished: deleted *2.0 TiB* / 1,234 objects; undoable until 2026-09-28 14:13Z (www).')
     expect(runEvent(run({ plan_digest: '' }), 'failed', { siteUrl: site })).toBe(`:x: Dry-run ${link} ended without a result (its Batch job stopped before the run summary); check its logs in www.`)
@@ -67,39 +67,71 @@ describe('run events', () => {
   })
 })
 
-describe('mentions and sizes', () => {
+describe('names and sizes (plain text, never a mention)', () => {
   const base = { planId: 7, siteUrl: 'https://cw-s3.oa.dev', items: 3, batches: 2, stagers: [] as string[], digest: 'D1', actions: true, closed: false, runs: [] as RunRow[] }
-  const size = { scan: '2026-10-02', b: 51 * 2 ** 40, o: 179327698, empty: 5, owners: [{ label: '<@U1>', b: 16 * 2 ** 40 }, { label: 'hedy-lamarr', b: 6 * 2 ** 40 }] }
-  it('the parent names stagers by mention (else the local part) and carries the size line', () => {
-    const v = { ...base, stagers: ['a.b@x.org', 'c.d@x.org'], mentions: { 'a.b@x.org': '<@UA>' }, size }
+  const size = { scan: '2026-10-02', b: 51 * 2 ** 40, o: 179327698, empty: 5, owners: [{ label: 'Grace Hopper', b: 16 * 2 ** 40 }, { label: 'hedy-lamarr', b: 6 * 2 ** 40 }] }
+  it('the parent names stagers by Slack name (else the local part) and carries the size line', () => {
+    const v = { ...base, stagers: ['A.B@x.org', 'c.d@x.org'], names: { 'a.b@x.org': 'Ann Bee' }, size }
     expect((renderParent(v).blocks[0] as { text: { text: string } }).text.text.split('\n')).toEqual([
       `*Staged for deletion* · plan #${base.planId} · ${base.items} prefixes in ${base.batches} batches`,
-      'staged by <@UA>, c.d',
-      '*51.0 TiB* · 179,327,698 objects at scan 2026-10-02 · 5 empty · owners: <@U1> 16.0 TiB, hedy-lamarr 6.0 TiB',
+      'staged by Ann Bee, c.d',
+      '*51.0 TiB* · 179,327,698 objects at scan 2026-10-02 · 5 empty · owners: Grace Hopper 16.0 TiB, hedy-lamarr 6.0 TiB',
     ])
   })
-  it('a stage reply: mention, size line, then the note and prefixes', () => {
-    const e = stageEvent({ planId: 1, batchId: 2, by: 'a.b@x.org', prefixes: ['gs://b/x/'], covered: 0, note: 'old runs', siteUrl: 'https://s', mentions: { 'a.b@x.org': '<@UA>' }, size: { ...size, empty: 0, owners: [] } })
-    expect([e.text, (e.blocks[0] as { text: { text: string } }).text.text.split('\n')]).toEqual(['<@UA> staged 1 prefix', [
-      ':wastebasket: *<@UA> staged 1 prefix*',
-      '*51.0 TiB* · 179,327,698 objects at scan 2026-10-02',
-      '> old runs',
-      '```b/x/```',
-    ]])
+  it('sizeOf: totals over every prefix, absent or zero = empty, owners by attributed bytes', () => {
+    const at = { scan: 'S', stats: { 'gs://b/a/': { b: 5, o: 2, us: [['u1', 3], ['u2', 2]] as [string, number][] }, 'gs://b/c/': { b: 4, o: 1, us: [['u2', 4]] as [string, number][] }, 'gs://b/z/': { b: 0, o: 0 } } }
+    expect(sizeOf(at, ['gs://b/a/', 'gs://b/c/', 'gs://b/z/', 'gs://b/gone/'], u => u.toUpperCase(), 1)).toEqual({ scan: 'S', b: 9, o: 3, empty: 2, owners: [{ label: 'U2', b: 6 }] })
   })
 })
 
-describe('nameSlug: a Slack name as the canonical owner id', () => {
-  it('lowercase, accents folded, other runs to one dash', () => {
-    expect(['Grace Hopper', 'Hedy Lamarr', 'Émilie  du Châtelet', ' Alan Turing (he/him) '].map(nameSlug))
-      .toEqual(['grace-hopper', 'hedy-lamarr', 'emilie-du-chatelet', 'alan-turing-he-him'])
+describe('stage replies: compact, phone-width', () => {
+  const T = 2 ** 40
+  const stats = (sizes: Record<string, number>) => Object.fromEntries(Object.entries(sizes).map(([p, b]) => [p, { b, o: b / T * 10 }]))
+  const reply = (o: Partial<Parameters<typeof stageReply>[0]>) => stageReply({ planId: 1, replyId: 3, by: 'Ann Bee', batches: 1, prefixes: [], stats: null, note: null, siteUrl: 'https://s', ...o })
+  const lines = (m: { blocks: unknown[] }) => (m.blocks[0] as { text: { text: string } }).text.text.split('\n')
+  const buttons = (m: { blocks: unknown[] }) => (m.blocks[1] as { elements: { action_id: string; value?: string; text: { text: string } }[] }).elements.map(e => [e.action_id, e.value ?? null, e.text.text])
+
+  it('a few prefixes: themselves, by size; the latest note, on one line', () => {
+    const ps = ['gs://b/x/', 'gs://b/y/']
+    const m = reply({ prefixes: ps, stats: stats({ 'gs://b/x/': T, 'gs://b/y/': 3 * T }), note: 'old\nruns' })
+    expect([m.text, lines(m), buttons(m)]).toEqual([
+      'Ann Bee staged 2 paths · 4.0 TiB',
+      [':wastebasket: *Ann Bee* staged 2 paths · *4.0 TiB* · 40 objects', '`b/y/` 3.0 TiB, `b/x/` 1.0 TiB', '> old runs'],
+      [['staged_reject', '1:r3', 'Reject batch'], ['staged_open', null, 'View in www']],
+    ])
+  })
+  it('many: grouped by parent folder, the top 3 and how many more; unsized, by count', () => {
+    const ps = [...['a', 'b', 'c'].map(s => `gs://b/r1/${s}/`), ...['a', 'b'].map(s => `gs://b/r2/${s}/`), 'gs://b/r3/a/', 'gs://b/r4/a/']
+    const m = reply({ prefixes: ps, batches: 4 })
+    expect([m.text, lines(m), buttons(m)]).toEqual([
+      'Ann Bee staged 7 paths in 4 batches',
+      [':wastebasket: *Ann Bee* staged 7 paths in 4 batches', '`b/r1/` (3), `b/r2/` (2), `b/r3/a/`, +1 more'],
+      [['staged_reject', '1:r3', 'Reject 4 batches'], ['staged_open', null, 'View in www']],
+    ])
+  })
+  it('long paths keep the bucket and the last two folders', () => {
+    expect([shortPath('gs://marin-us-central2/checkpoints/some-team/llama-8b-tootsie-run-42/step-12000/'), shortPath('gs://b/short/path/')])
+      .toEqual(['marin-us-central2/…/llama-8b-tootsie-run-42/step-12000/', 'b/short/path/'])
+    expect(topFolders(['gs://b/x/'], { 'gs://b/x/': { b: 0, o: 0 } })).toBe('`b/x/` 0 B')
+  })
+  it('a pre-coalescing reply rejects its one batch; nothing left staged → no reject button', () => {
+    const legacy = reply({ replyId: null, batchId: 9, prefixes: ['gs://b/x/'] })
+    const gone = reply({ batches: 2, prefixes: [] })
+    expect([buttons(legacy), [gone.text, lines(gone), buttons(gone)]]).toEqual([
+      [['staged_reject', '1:9', 'Reject batch'], ['staged_open', null, 'View in www']],
+      ['Ann Bee staged 2 batches: nothing left staged', [':wastebasket: *Ann Bee* staged 2 batches · nothing left staged'], [['staged_open', null, 'View in www']]],
+    ])
+  })
+  it('the old parent, once the plan moved on', () => {
+    const m = closedParent(4, 'https://s', 'https://ws.slack.com/archives/C/p1')
+    expect([m.text, lines(m)]).toEqual(['Staged plan #4: continued in a new thread', ['*Staged plan #4* · this thread is done; continued in <https://ws.slack.com/archives/C/p1|a new thread>.']])
   })
 })
 
 describe('senders', () => {
   it('an event posts as the person (their Slack avatar), else their local part with a generic icon', () => {
     expect([
-      personSender('a.b@x.org', { mention: '<@UA>', name: 'Ann Bee', image: 'https://img/a.png' }, 'staged'),
+      personSender('a.b@x.org', { name: 'Ann Bee', image: 'https://img/a.png' }, 'staged'),
       personSender('c.d@x.org', undefined, 'staged'),
       PLAN_SENDER,
     ]).toEqual([
