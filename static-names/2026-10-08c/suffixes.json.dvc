@@ -1,10 +1,17 @@
 outs:
-- path: suffixes.json
+- md5: 3472744b97aced097ed9acd99b9cd783
+  size: 43742
+  hash: md5
+  path: suffixes.json
 meta:
   computation:
-    cmd: SPOT=1 JOB_ID=sn-2026-10-08c-map-$(date -u +%H%M%S) ../../job/static-names.sh run suffix-map 32 -g 2026-10-08c -I 2026-10-08 -C -n 8 > /dev/null && SPOT=1 JOB_ID=sn-2026-10-08c-shards-$(date -u +%H%M%S) ../../job/static-names.sh run shards 32 -g 2026-10-08c > /dev/null && dt-cloud static-names sidecar -g 2026-10-08c > suffixes.json
+    cmd: SPOT=1 JOB_ID=sn-2026-10-08c-map-$(date -u +%H%M%S) ../../job/static-names.sh
+      run suffix-map 32 -g 2026-10-08c -I 2026-10-08 -C -n 8 > /dev/null && SPOT=1
+      JOB_ID=sn-2026-10-08c-shards-$(date -u +%H%M%S) ../../job/static-names.sh run
+      shards 32 -g 2026-10-08c > /dev/null && dt-cloud static-names sidecar -g 2026-10-08c
+      > suffixes.json
     deps:
-      cintervals.json: ''
-      shards.json: ''
+      cintervals.json: 507b62fa89d4e26f31847040c9c86711
+      shards.json: 0c2910ed936dadb29ab6151dd5e56ec6
     git_deps:
-      ../../cloud/src/dt_cloud/static_names.py: ''
+      ../../cloud/src/dt_cloud/static_names.py: 84d358aa5846338d95ae528dcee032268f94e399

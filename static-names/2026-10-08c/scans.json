@@ -1,0 +1,705 @@
+{
+ "bucket": "oa-gcs-usage-dvx",
+ "scans": [
+  {
+   "id": "2026-07-30",
+   "src": "listing/2026-07-30/path-index.parquet",
+   "generation": 1788713787662423,
+   "size": 7116955210,
+   "md5": "31447bb35b35015519ac4b0c114163cb",
+   "crc32c": "InCyZA==",
+   "ts": 1785369600,
+   "version": 1
+  },
+  {
+   "id": "2026-07-31",
+   "src": "listing/2026-07-31/path-index.parquet",
+   "generation": 1788717281543525,
+   "size": 7119351277,
+   "md5": "4822f515134bb074e6ce4215bcb903c0",
+   "crc32c": "QIriyQ==",
+   "ts": 1785456000,
+   "version": 1
+  },
+  {
+   "id": "2026-08-01",
+   "src": "listing/2026-08-01/path-index.parquet",
+   "generation": 1788717325938183,
+   "size": 7123248142,
+   "md5": "ab2b752fbbcbec34f4943fbbdf49b6a5",
+   "crc32c": "dWi/AQ==",
+   "ts": 1785542400,
+   "version": 1
+  },
+  {
+   "id": "2026-08-02",
+   "src": "listing/2026-08-02/path-index.parquet",
+   "generation": 1788717309280121,
+   "size": 7124202429,
+   "md5": "4f093ae541c376da176ec7d3a51b5cbd",
+   "crc32c": "tg+URw==",
+   "ts": 1785628800,
+   "version": 1
+  },
+  {
+   "id": "2026-08-03",
+   "src": "listing/2026-08-03/path-index.parquet",
+   "generation": 1788717169346276,
+   "size": 7126327926,
+   "md5": "a20870fbb8dd2448eb53b533d5575eb4",
+   "crc32c": "sOEUeA==",
+   "ts": 1785715200,
+   "version": 1
+  },
+  {
+   "id": "2026-08-04",
+   "src": "listing/2026-08-04/path-index.parquet",
+   "generation": 1788717271324347,
+   "size": 7127667588,
+   "md5": "022ad9a214a84c3474e29efab14b1c9c",
+   "crc32c": "XMf/QA==",
+   "ts": 1785801600,
+   "version": 1
+  },
+  {
+   "id": "2026-08-05",
+   "src": "listing/2026-08-05/path-index.parquet",
+   "generation": 1788720438306535,
+   "size": 7130594774,
+   "md5": "4fbd0ccdd69cf00d0ecc57b2b2412fa9",
+   "crc32c": "AOxRtQ==",
+   "ts": 1785888000,
+   "version": 1
+  },
+  {
+   "id": "2026-08-06",
+   "src": "listing/2026-08-06/path-index.parquet",
+   "generation": 1788720459240480,
+   "size": 7129079865,
+   "md5": "c207003f67e734485b5612feedd7f472",
+   "crc32c": "wX15eg==",
+   "ts": 1785974400,
+   "version": 1
+  },
+  {
+   "id": "2026-08-07",
+   "src": "listing/2026-08-07/path-index.parquet",
+   "generation": 1788720484838036,
+   "size": 7138691144,
+   "md5": "7ca7bae628884d3e0cf9016b6fe33468",
+   "crc32c": "OxsWNQ==",
+   "ts": 1786060800,
+   "version": 1
+  },
+  {
+   "id": "2026-08-08",
+   "src": "listing/2026-08-08/path-index.parquet",
+   "generation": 1788720466498110,
+   "size": 7141765178,
+   "md5": "dd163ff05b8821818cd49374a04e63a1",
+   "crc32c": "L0iRiQ==",
+   "ts": 1786147200,
+   "version": 1
+  },
+  {
+   "id": "2026-08-09",
+   "src": "listing/2026-08-09/path-index.parquet",
+   "generation": 1788720469190266,
+   "size": 7141204183,
+   "md5": "f7db095ab867b36fdf4e338019becfdb",
+   "crc32c": "Oxkh4g==",
+   "ts": 1786233600,
+   "version": 1
+  },
+  {
+   "id": "2026-08-11",
+   "src": "listing/2026-08-11/path-index.parquet",
+   "generation": 1788723417787772,
+   "size": 7144395981,
+   "md5": "3e90fd29dfa2f29ee3fbf001361253f7",
+   "crc32c": "S+rr7Q==",
+   "ts": 1786406400,
+   "version": 1
+  },
+  {
+   "id": "2026-08-12",
+   "src": "listing/2026-08-12/path-index.parquet",
+   "generation": 1788723325063661,
+   "size": 7145683797,
+   "md5": "f5ed73fc9514f21d814398adacde6140",
+   "crc32c": "tvZjzw==",
+   "ts": 1786492800,
+   "version": 1
+  },
+  {
+   "id": "2026-08-13",
+   "src": "listing/2026-08-13/path-index.parquet",
+   "generation": 1788713837644030,
+   "size": 7147586201,
+   "md5": "a74833d2c52787bbce2a55d77b404f48",
+   "crc32c": "Kvb1sg==",
+   "ts": 1786579200,
+   "version": 1
+  },
+  {
+   "id": "2026-08-14",
+   "src": "listing/2026-08-14/path-index.parquet",
+   "generation": 1788723320838642,
+   "size": 7149427862,
+   "md5": "987630ca19374cad8b9853e50f6a75b6",
+   "crc32c": "h3AN/Q==",
+   "ts": 1786665600,
+   "version": 1
+  },
+  {
+   "id": "2026-08-15",
+   "src": "listing/2026-08-15/path-index.parquet",
+   "generation": 1788723285092829,
+   "size": 7149395977,
+   "md5": "73c82c18bf51822b58c221f7b5a91c5c",
+   "crc32c": "yAKMrA==",
+   "ts": 1786752000,
+   "version": 1
+  },
+  {
+   "id": "2026-08-16",
+   "src": "listing/2026-08-16/path-index.parquet",
+   "generation": 1788723306471706,
+   "size": 7150526968,
+   "md5": "ed417929a2a8552fb78463ccf539d562",
+   "crc32c": "YCcWXA==",
+   "ts": 1786838400,
+   "version": 1
+  },
+  {
+   "id": "2026-08-17",
+   "src": "listing/2026-08-17/path-index.parquet",
+   "generation": 1788726290797433,
+   "size": 7140534192,
+   "md5": "14a7b8f6ea7fc097a73f5ac98f81bf9e",
+   "crc32c": "sKLg8Q==",
+   "ts": 1786924800,
+   "version": 1
+  },
+  {
+   "id": "2026-08-18",
+   "src": "listing/2026-08-18/path-index.parquet",
+   "generation": 1788726257771666,
+   "size": 7141758143,
+   "md5": "6735df7a22e997692862a983c4a25d46",
+   "crc32c": "EezGGw==",
+   "ts": 1787011200,
+   "version": 1
+  },
+  {
+   "id": "2026-08-19",
+   "src": "listing/2026-08-19/path-index.parquet",
+   "generation": 1788726273890661,
+   "size": 7143777088,
+   "md5": "69459131401ad4c90dd024890bd985a3",
+   "crc32c": "YL1aHQ==",
+   "ts": 1787097600,
+   "version": 1
+  },
+  {
+   "id": "2026-08-20",
+   "src": "listing/2026-08-20/path-index.parquet",
+   "generation": 1788726267936952,
+   "size": 7145396636,
+   "md5": "517c604c5344d5a2d843c96d5472d9b4",
+   "crc32c": "gR7+jQ==",
+   "ts": 1787184000,
+   "version": 1
+  },
+  {
+   "id": "2026-08-21",
+   "src": "listing/2026-08-21/path-index.parquet",
+   "generation": 1788726267412845,
+   "size": 7149655304,
+   "md5": "8b07e32ef776b62558e71ea2c76e8807",
+   "crc32c": "XSflMA==",
+   "ts": 1787270400,
+   "version": 1
+  },
+  {
+   "id": "2026-08-22",
+   "src": "listing/2026-08-22/path-index.parquet",
+   "generation": 1788729082031008,
+   "size": 7152101476,
+   "md5": "9d9b1d01cce64eb8534636a140914ec4",
+   "crc32c": "Hg3S5A==",
+   "ts": 1787356800,
+   "version": 1
+  },
+  {
+   "id": "2026-08-23",
+   "src": "listing/2026-08-23/path-index.parquet",
+   "generation": 1788729105425844,
+   "size": 7153940804,
+   "md5": "cf8eeba5fc3fccbe89e80fdb85446493",
+   "crc32c": "4xFS+A==",
+   "ts": 1787443200,
+   "version": 1
+  },
+  {
+   "id": "2026-08-24",
+   "src": "listing/2026-08-24/path-index.parquet",
+   "generation": 1788729114781707,
+   "size": 7156778316,
+   "md5": "9c27294d096766a5e3a5af457742de3c",
+   "crc32c": "VRUM8A==",
+   "ts": 1787529600,
+   "version": 1
+  },
+  {
+   "id": "2026-08-25",
+   "src": "listing/2026-08-25/path-index.parquet",
+   "generation": 1788713972320903,
+   "size": 7510303515,
+   "md5": "dd0a3da18846cad19ff7a001bc52f987",
+   "crc32c": "OOQJdw==",
+   "ts": 1787616000,
+   "version": 1
+  },
+  {
+   "id": "2026-08-26",
+   "src": "listing/2026-08-26/path-index.parquet",
+   "generation": 1788728649586423,
+   "size": 7542745760,
+   "md5": "7cd48956175d1ee0e140b44d3e29feb2",
+   "crc32c": "hyj1bw==",
+   "ts": 1787702400,
+   "version": 1
+  },
+  {
+   "id": "2026-08-27",
+   "src": "listing/2026-08-27/path-index.parquet",
+   "generation": 1788728631981992,
+   "size": 7542577075,
+   "md5": "4fcf52a64caf9d39f27390408c7f975b",
+   "crc32c": "QRcn7A==",
+   "ts": 1787788800,
+   "version": 1
+  },
+  {
+   "id": "2026-08-28",
+   "src": "listing/2026-08-28/path-index.parquet",
+   "generation": 1788731789575520,
+   "size": 7544087569,
+   "md5": "c8cd3a92bc34bd58fad394f50812a3c6",
+   "crc32c": "zvVDHQ==",
+   "ts": 1787875200,
+   "version": 1
+  },
+  {
+   "id": "2026-08-29",
+   "src": "listing/2026-08-29/path-index.parquet",
+   "generation": 1788095742190054,
+   "size": 7600986381,
+   "md5": "18a86b67ed3b10bef9adf9da3ddbede6",
+   "crc32c": "5zjCBg==",
+   "ts": 1787961600,
+   "version": 1
+  },
+  {
+   "id": "2026-08-30",
+   "src": "listing/2026-08-30/path-index.parquet",
+   "generation": 1788106172381997,
+   "size": 7601532722,
+   "md5": "19619d9a58419e27bfad60ae45848e36",
+   "crc32c": "uiHyCQ==",
+   "ts": 1788048000,
+   "version": 1
+  },
+  {
+   "id": "2026-08-31",
+   "src": "listing/2026-08-31/path-index.parquet",
+   "generation": 1788180575153731,
+   "size": 7603102336,
+   "md5": "a2eb31c174e9975c55c3b3d402eecec6",
+   "crc32c": "rCC8Kw==",
+   "ts": 1788134400,
+   "version": 1
+  },
+  {
+   "id": "2026-09-01",
+   "src": "listing/2026-09-01/path-index.parquet",
+   "generation": 1788257711907959,
+   "size": 7603325875,
+   "md5": "202f8cce45b5eaa89dbc9fd97f332b1a",
+   "crc32c": "Os75Jg==",
+   "ts": 1788220800,
+   "version": 1
+  },
+  {
+   "id": "2026-09-02",
+   "src": "listing/2026-09-02/path-index.parquet",
+   "generation": 1788337606876381,
+   "size": 7605318273,
+   "md5": "e3376b9bf5dc397df8a02309cda48e5d",
+   "crc32c": "bkmQvQ==",
+   "ts": 1788307200,
+   "version": 1
+  },
+  {
+   "id": "2026-09-03",
+   "src": "listing/2026-09-03/path-index.parquet",
+   "generation": 1788424012754316,
+   "size": 7604899287,
+   "md5": "d603f2984c4029a2a38e5548a2881fd0",
+   "crc32c": "n/3mEA==",
+   "ts": 1788393600,
+   "version": 1
+  },
+  {
+   "id": "2026-09-04",
+   "src": "listing/2026-09-04/path-index.parquet",
+   "generation": 1788510422966749,
+   "size": 7602308100,
+   "md5": "50958162220f3ac973c40b9c748af81e",
+   "crc32c": "Sm0gpw==",
+   "ts": 1788480000,
+   "version": 1
+  },
+  {
+   "id": "2026-09-05",
+   "src": "listing/2026-09-05/path-index.parquet",
+   "generation": 1788698014182949,
+   "size": 7603713916,
+   "md5": "a3a7e7e2a2367f8de9543c08a48bd3bf",
+   "crc32c": "slwXuQ==",
+   "ts": 1788566400,
+   "version": 1
+  },
+  {
+   "id": "2026-09-06",
+   "src": "listing/2026-09-06/path-index.parquet",
+   "generation": 1788709969447162,
+   "size": 7548265012,
+   "md5": "53c2067fe1f1db06f24df5c9b166449a",
+   "crc32c": "K8RpYw==",
+   "ts": 1788652800,
+   "version": 1
+  },
+  {
+   "id": "2026-09-07",
+   "src": "listing/2026-09-07/index/20260907T070112Z/path-index.parquet",
+   "generation": 1788768259321353,
+   "size": 7518682996,
+   "md5": "3aba621e21a86d0d607f98dc0271674b",
+   "crc32c": "mMRx6Q==",
+   "ts": 1788739200,
+   "version": 1
+  },
+  {
+   "id": "2026-09-08",
+   "src": "listing/2026-09-08/index/20260908T070155Z/path-index.parquet",
+   "generation": 1788854995253026,
+   "size": 7521863978,
+   "md5": "ae8b0beac46b56f1bfefdfd54206ec50",
+   "crc32c": "gKkJdw==",
+   "ts": 1788825600,
+   "version": 1
+  },
+  {
+   "id": "2026-09-09",
+   "src": "listing/2026-09-09/index/20260909T070125Z/path-index.parquet",
+   "generation": 1788941281942112,
+   "size": 7521621662,
+   "md5": "6b0174ed325593543c84edea28cc771a",
+   "crc32c": "FQEr5g==",
+   "ts": 1788912000,
+   "version": 1
+  },
+  {
+   "id": "2026-09-10",
+   "src": "listing/2026-09-10/index/20260910T070205Z/path-index.parquet",
+   "generation": 1789027669014120,
+   "size": 7521047009,
+   "md5": "6bba3f212a4d1a5a780c8082492d7715",
+   "crc32c": "delhKw==",
+   "ts": 1788998400,
+   "version": 1
+  },
+  {
+   "id": "2026-09-11",
+   "src": "listing/2026-09-11/index/20260911T070236Z/path-index.parquet",
+   "generation": 1789114146638162,
+   "size": 7518994383,
+   "md5": "4bb2472ec5fe667cc71af4ff1647c0e2",
+   "crc32c": "muR5Og==",
+   "ts": 1789084800,
+   "version": 1
+  },
+  {
+   "id": "2026-09-12",
+   "src": "listing/2026-09-12/index/20260912T110331Z/path-index.parquet",
+   "generation": 1789214705665161,
+   "size": 7437220680,
+   "md5": "d5ef95da748c7a4344dc33da3840444b",
+   "crc32c": "ATcXuw==",
+   "ts": 1789171200,
+   "version": 1
+  },
+  {
+   "id": "2026-09-13",
+   "src": "listing/2026-09-13/index/20260913T070158Z/path-index.parquet",
+   "generation": 1789287148314207,
+   "size": 7439289091,
+   "md5": "de739b420562fc8e4634dcf27fd7b588",
+   "crc32c": "Valdgg==",
+   "ts": 1789257600,
+   "version": 1
+  },
+  {
+   "id": "2026-09-14",
+   "src": "listing/2026-09-14/index/20260914T070201Z/path-index.parquet",
+   "generation": 1789373068449361,
+   "size": 7439087919,
+   "md5": "eb9220de5480cdf5484d1f13066109b2",
+   "crc32c": "2aFa2g==",
+   "ts": 1789344000,
+   "version": 1
+  },
+  {
+   "id": "2026-09-15",
+   "src": "listing/2026-09-15/index/20260915T070117Z/path-index.parquet",
+   "generation": 1789459189366620,
+   "size": 7439819811,
+   "md5": "0166e737bc204da009ba43b6bcc68be5",
+   "crc32c": "zstoyg==",
+   "ts": 1789430400,
+   "version": 1
+  },
+  {
+   "id": "2026-09-16",
+   "src": "listing/2026-09-16/index/20260916T070159Z/path-index.parquet",
+   "generation": 1789549119535241,
+   "size": 7439695429,
+   "md5": "6f09b143006e870b199b2dc9d80b5c2b",
+   "crc32c": "9JhQxw==",
+   "ts": 1789516800,
+   "version": 1
+  },
+  {
+   "id": "2026-09-17",
+   "src": "listing/2026-09-17/index/20260917T070152Z/path-index.parquet",
+   "generation": 1789632247346442,
+   "size": 7440072840,
+   "md5": "4082881e1a137c4173f05658643e48f6",
+   "crc32c": "OpNmEA==",
+   "ts": 1789603200,
+   "version": 1
+  },
+  {
+   "id": "2026-09-18",
+   "src": "listing/2026-09-18/index/20260918T070210Z/path-index.parquet",
+   "generation": 1789718662667915,
+   "size": 7441039884,
+   "md5": "38f9b509803efc3f0db383c55167992c",
+   "crc32c": "yfWa7w==",
+   "ts": 1789689600,
+   "version": 1
+  },
+  {
+   "id": "2026-09-19",
+   "src": "listing/2026-09-19/index/20260919T070156Z/path-index.parquet",
+   "generation": 1789805473816860,
+   "size": 7442663750,
+   "md5": "422ba660afb76975044b17d4329c463c",
+   "crc32c": "11R6Cg==",
+   "ts": 1789776000,
+   "version": 1
+  },
+  {
+   "id": "2026-09-20",
+   "src": "listing/2026-09-20/index/20260920T070154Z/path-index.parquet",
+   "generation": 1789891209405823,
+   "size": 7445818091,
+   "md5": "9d9343d1148bd561aa6f5a595b226165",
+   "crc32c": "EHJC9g==",
+   "ts": 1789862400,
+   "version": 1
+  },
+  {
+   "id": "2026-09-21",
+   "src": "listing/2026-09-21/index/20260921T070156Z/path-index.parquet",
+   "generation": 1789977867718879,
+   "size": 7447010894,
+   "md5": "5d0517d847414c9d9a743254f87f8d24",
+   "crc32c": "NiyWfg==",
+   "ts": 1789948800,
+   "version": 1
+  },
+  {
+   "id": "2026-09-22",
+   "src": "listing/2026-09-22/index/20260922T070156Z/path-index.parquet",
+   "generation": 1790064200270757,
+   "size": 7448932415,
+   "md5": "30421a497ca5a17919471453f56db7bc",
+   "crc32c": "/PFhyg==",
+   "ts": 1790035200,
+   "version": 1
+  },
+  {
+   "id": "2026-09-23",
+   "src": "listing/2026-09-23/index/20260923T070151Z/path-index.parquet",
+   "generation": 1790150723593012,
+   "size": 7445254908,
+   "md5": "256026c8ed9e0f40e665ba031a0371fe",
+   "crc32c": "D4Wa+w==",
+   "ts": 1790121600,
+   "version": 1
+  },
+  {
+   "id": "2026-09-24",
+   "src": "listing/2026-09-24/index/20260924T070145Z/path-index.parquet",
+   "generation": 1790236998908785,
+   "size": 7476108492,
+   "md5": "70d026284c38036f88e2dad5c280a087",
+   "crc32c": "cb85RQ==",
+   "ts": 1790208000,
+   "version": 1
+  },
+  {
+   "id": "2026-09-25",
+   "src": "listing/2026-09-25/index/20260925T070152Z/path-index.parquet",
+   "generation": 1790323578332610,
+   "size": 7483395329,
+   "md5": "fef9eef3c2f96654e9323c7561a3d193",
+   "crc32c": "VlM7oA==",
+   "ts": 1790294400,
+   "version": 1
+  },
+  {
+   "id": "2026-09-26",
+   "src": "listing/2026-09-26/index/20260926T070148Z/path-index.parquet",
+   "generation": 1790409591051591,
+   "size": 7483856251,
+   "md5": "f7fbff7c196c58305845e8432735760f",
+   "crc32c": "L0kbCQ==",
+   "ts": 1790380800,
+   "version": 1
+  },
+  {
+   "id": "2026-09-27",
+   "src": "listing/2026-09-27/index/20260927T070155Z/path-index.parquet",
+   "generation": 1790498019381984,
+   "size": 7484739144,
+   "md5": "f3b041adbb11b909409d8731149b58fc",
+   "crc32c": "n+tKBw==",
+   "ts": 1790467200,
+   "version": 1
+  },
+  {
+   "id": "2026-09-28",
+   "src": "listing/2026-09-28/index/20260928T070159Z/path-index.parquet",
+   "generation": 1790584351658474,
+   "size": 7485317902,
+   "md5": "6739e3f33b3cee8e0353b17ae076d129",
+   "crc32c": "FLol5Q==",
+   "ts": 1790553600,
+   "version": 1
+  },
+  {
+   "id": "2026-09-29",
+   "src": "listing/2026-09-29/index/20260929T070148Z/path-index.parquet",
+   "generation": 1790668791440720,
+   "size": 7486543036,
+   "md5": "ed0692b9c4bafa097fb580c6925e7ae8",
+   "crc32c": "HsxG1Q==",
+   "ts": 1790640000,
+   "version": 1
+  },
+  {
+   "id": "2026-09-30",
+   "src": "listing/2026-09-30/index/20261001T105853Z/path-index.parquet",
+   "generation": 1790854398874636,
+   "size": 8263880452,
+   "md5": null,
+   "crc32c": "TFRDaA==",
+   "ts": 1790726400,
+   "version": 2
+  },
+  {
+   "id": "2026-10-01",
+   "src": "listing/2026-10-01/index/20261002T113031Z/path-index.parquet",
+   "generation": 1790948313040066,
+   "size": 8291520946,
+   "md5": null,
+   "crc32c": "lxXKyQ==",
+   "ts": 1790812800,
+   "version": 2
+  },
+  {
+   "id": "2026-10-02",
+   "src": "listing/2026-10-02/index/20261002T070117Z/path-index.parquet",
+   "generation": 1790930254376144,
+   "size": 8324082233,
+   "md5": null,
+   "crc32c": "cQ4bIQ==",
+   "ts": 1790899200,
+   "version": 2
+  },
+  {
+   "id": "2026-10-03",
+   "src": "listing/2026-10-03/index/20261003T070638Z/path-index.parquet",
+   "generation": 1791016614914530,
+   "size": 8350474745,
+   "md5": null,
+   "crc32c": "UUavWA==",
+   "ts": 1790985600,
+   "version": 2
+  },
+  {
+   "id": "2026-10-04",
+   "src": "listing/2026-10-04/index/20261004T070148Z/path-index.parquet",
+   "generation": 1791102609179577,
+   "size": 8382013007,
+   "md5": null,
+   "crc32c": "0IHqBQ==",
+   "ts": 1791072000,
+   "version": 2
+  },
+  {
+   "id": "2026-10-05",
+   "src": "listing/2026-10-05/index/20261005T070145Z/path-index.parquet",
+   "generation": 1791188978347875,
+   "size": 8155078434,
+   "md5": null,
+   "crc32c": "4gAdDQ==",
+   "ts": 1791158400,
+   "version": 2
+  },
+  {
+   "id": "2026-10-06",
+   "src": "listing/2026-10-06/index/20261006T070146Z/path-index.parquet",
+   "generation": 1791273883783213,
+   "size": 7548966570,
+   "md5": null,
+   "crc32c": "xEzwEA==",
+   "ts": 1791244800,
+   "version": 2
+  },
+  {
+   "id": "2026-10-07",
+   "src": "listing/2026-10-07/index/20261007T070402Z/path-index.parquet",
+   "generation": 1791360394293853,
+   "size": 7571726965,
+   "md5": null,
+   "crc32c": "BaUiLQ==",
+   "ts": 1791331200,
+   "version": 2
+  },
+  {
+   "id": "2026-10-08",
+   "src": "listing/2026-10-08/index/20261008T070217Z/path-index.parquet",
+   "generation": 1791446807179122,
+   "size": 7594912166,
+   "md5": null,
+   "crc32c": "Dv6f/w==",
+   "ts": 1791417600,
+   "version": 2
+  }
+ ]
+}

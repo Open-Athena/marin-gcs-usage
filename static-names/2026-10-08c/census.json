@@ -1,0 +1,1839 @@
+{
+ "gen": "2026-10-08c",
+ "catalog/census": [
+  {
+   "key": "catalog/census/s0000.parquet",
+   "size": 6067,
+   "md5": "99e4aa7984a6557acf343fdc6a273fb3",
+   "crc32c": "87O/Dw==",
+   "generation": 1791496784435438
+  },
+  {
+   "key": "catalog/census/s0001.parquet",
+   "size": 5323,
+   "md5": "020a7b632c6e419ce2699366012318b5",
+   "crc32c": "HZmKeg==",
+   "generation": 1791496798974474
+  },
+  {
+   "key": "catalog/census/s0002.parquet",
+   "size": 6872,
+   "md5": "f180187d46424bb8bc950411c0e5348a",
+   "crc32c": "Zaacew==",
+   "generation": 1791496818476409
+  },
+  {
+   "key": "catalog/census/s0003.parquet",
+   "size": 6135,
+   "md5": "80359b57430a411d016098d4d7bb0ee0",
+   "crc32c": "PrkLCQ==",
+   "generation": 1791496836003341
+  },
+  {
+   "key": "catalog/census/s0004.parquet",
+   "size": 4647,
+   "md5": "a86ddd4ddb8a59ca3e3f244389abc536",
+   "crc32c": "IDYrlw==",
+   "generation": 1791496850600332
+  },
+  {
+   "key": "catalog/census/s0005.parquet",
+   "size": 6225,
+   "md5": "83c1cade065cee5a478aea440b4276b1",
+   "crc32c": "eVX7/w==",
+   "generation": 1791496867020443
+  },
+  {
+   "key": "catalog/census/s0006.parquet",
+   "size": 5514,
+   "md5": "97d17ddf3fec1fd1e1dd6b86c4923419",
+   "crc32c": "zRKaMA==",
+   "generation": 1791496885784225
+  },
+  {
+   "key": "catalog/census/s0007.parquet",
+   "size": 4289,
+   "md5": "9290dad8dcf2267140d2dddd0359568c",
+   "crc32c": "Lw3A8w==",
+   "generation": 1791496896368025
+  },
+  {
+   "key": "catalog/census/s0008.parquet",
+   "size": 3338,
+   "md5": "0cf7e702d576b3474048c4d0b7b32012",
+   "crc32c": "fitlHQ==",
+   "generation": 1791496907688836
+  },
+  {
+   "key": "catalog/census/s0009.parquet",
+   "size": 4629,
+   "md5": "f84bed24466bb89217e1899ada40c14d",
+   "crc32c": "Vana5g==",
+   "generation": 1791496922572790
+  },
+  {
+   "key": "catalog/census/s0010.parquet",
+   "size": 1132,
+   "md5": "83524e59726260e2e5cf61898ae662da",
+   "crc32c": "2sy5LQ==",
+   "generation": 1791496801223874
+  },
+  {
+   "key": "catalog/census/s0011.parquet",
+   "size": 1232,
+   "md5": "26b412f417518229fa30496c8f8dd360",
+   "crc32c": "HshGJQ==",
+   "generation": 1791496805112417
+  },
+  {
+   "key": "catalog/census/s0012.parquet",
+   "size": 1389,
+   "md5": "876328cde336875a4791f3ab8c9d37fb",
+   "crc32c": "atDz0Q==",
+   "generation": 1791496879100779
+  },
+  {
+   "key": "catalog/census/s0013.parquet",
+   "size": 1139,
+   "md5": "6a025d52e61f561b6182d369e44e4fca",
+   "crc32c": "QtmJTA==",
+   "generation": 1791496888927446
+  },
+  {
+   "key": "catalog/census/s0014.parquet",
+   "size": 1222,
+   "md5": "a454c3d91d2a0442fb873ad2af0801e2",
+   "crc32c": "4cRi/g==",
+   "generation": 1791496778318102
+  },
+  {
+   "key": "catalog/census/s0015.parquet",
+   "size": 1093,
+   "md5": "4b4d0ebc6a50cea3ea0ce40f2364a396",
+   "crc32c": "Wzh9yQ==",
+   "generation": 1791496795554446
+  },
+  {
+   "key": "catalog/census/s0016.parquet",
+   "size": 1467,
+   "md5": "3026759781bb398796b983691f2a4e08",
+   "crc32c": "ZNyN5w==",
+   "generation": 1791496798608874
+  },
+  {
+   "key": "catalog/census/s0017.parquet",
+   "size": 1093,
+   "md5": "97d1d8ad54d5ee99452c565dd988e94c",
+   "crc32c": "lKwRDw==",
+   "generation": 1791496821119918
+  },
+  {
+   "key": "catalog/census/s0018.parquet",
+   "size": 5742,
+   "md5": "0770cfc5954f96271f7281a224080e81",
+   "crc32c": "xgE/Nw==",
+   "generation": 1791496835289990
+  },
+  {
+   "key": "catalog/census/s0019.parquet",
+   "size": 2839,
+   "md5": "77a2f841ff26cb1ae80a6670bb3464e2",
+   "crc32c": "gvgMnA==",
+   "generation": 1791496845328925
+  },
+  {
+   "key": "catalog/census/s0020.parquet",
+   "size": 3725,
+   "md5": "f010b0020f5c9b808378dd46b0ce8282",
+   "crc32c": "ok2DNA==",
+   "generation": 1791496855348796
+  },
+  {
+   "key": "catalog/census/s0021.parquet",
+   "size": 11295,
+   "md5": "e6af84e9d85c244c42a16079311e17a1",
+   "crc32c": "vVIGqw==",
+   "generation": 1791496870343782
+  },
+  {
+   "key": "catalog/census/s0022.parquet",
+   "size": 14293,
+   "md5": "d159439a1e8082a31c9852d7c648c820",
+   "crc32c": "1zuuMg==",
+   "generation": 1791496885756651
+  },
+  {
+   "key": "catalog/census/s0023.parquet",
+   "size": 10489,
+   "md5": "095002072f79d7a3bd0a628f3b81b3d3",
+   "crc32c": "aGKhSQ==",
+   "generation": 1791496795084635
+  },
+  {
+   "key": "catalog/census/s0024.parquet",
+   "size": 13474,
+   "md5": "bf8b4f9c3202240241e9d9c2164c9f40",
+   "crc32c": "TSHlUg==",
+   "generation": 1791496813421805
+  },
+  {
+   "key": "catalog/census/s0025.parquet",
+   "size": 14495,
+   "md5": "95d5768d62c9ad3a176bdfbac9361966",
+   "crc32c": "xUPKww==",
+   "generation": 1791496832499196
+  },
+  {
+   "key": "catalog/census/s0026.parquet",
+   "size": 9144,
+   "md5": "95f0dae740d60f45c54285888c451675",
+   "crc32c": "88jwIw==",
+   "generation": 1791496855171304
+  },
+  {
+   "key": "catalog/census/s0027.parquet",
+   "size": 16083,
+   "md5": "6796b926de53cba83d3b92743ca2678c",
+   "crc32c": "5pRPtA==",
+   "generation": 1791496874033235
+  },
+  {
+   "key": "catalog/census/s0028.parquet",
+   "size": 16464,
+   "md5": "9fbe3391080c324fa6f2e7d24860b9a7",
+   "crc32c": "zWEeGw==",
+   "generation": 1791496892631733
+  },
+  {
+   "key": "catalog/census/s0029.parquet",
+   "size": 12005,
+   "md5": "2c18eaaf41deb7cefe7a09f662cea496",
+   "crc32c": "P1oUDw==",
+   "generation": 1791496911151629
+  },
+  {
+   "key": "catalog/census/s0030.parquet",
+   "size": 2853,
+   "md5": "2b35cf7e6690bf0224a8d19909831b8b",
+   "crc32c": "qslwNw==",
+   "generation": 1791496926342029
+  },
+  {
+   "key": "catalog/census/s0031.parquet",
+   "size": 6857,
+   "md5": "afd47c095b02e851dea02301bcbf6d41",
+   "crc32c": "5cX+Nw==",
+   "generation": 1791496945306150
+  },
+  {
+   "key": "catalog/census/s0032.parquet",
+   "size": 3441,
+   "md5": "c7d59fe1e703eb5e70adec7ac022dea1",
+   "crc32c": "hqSmKg==",
+   "generation": 1791496790258170
+  },
+  {
+   "key": "catalog/census/s0033.parquet",
+   "size": 8702,
+   "md5": "9d7383c23ed3c63f52c66afda1f9c22f",
+   "crc32c": "4bppfA==",
+   "generation": 1791496804929299
+  },
+  {
+   "key": "catalog/census/s0034.parquet",
+   "size": 8985,
+   "md5": "918a579efb5a5c99b518d9a203e995f7",
+   "crc32c": "vws4Dg==",
+   "generation": 1791496827871705
+  },
+  {
+   "key": "catalog/census/s0035.parquet",
+   "size": 10884,
+   "md5": "8822c4c0b57c6d34d60c77cc28b31201",
+   "crc32c": "jbC6gQ==",
+   "generation": 1791496849402892
+  },
+  {
+   "key": "catalog/census/s0036.parquet",
+   "size": 11856,
+   "md5": "07f5fb1b0976bd9e4914f2f75fd1f7fb",
+   "crc32c": "7LD2hA==",
+   "generation": 1791496873455903
+  },
+  {
+   "key": "catalog/census/s0037.parquet",
+   "size": 12386,
+   "md5": "5c5bc36d502a298d01e32c32cf883f0c",
+   "crc32c": "QAq0aQ==",
+   "generation": 1791496891657264
+  },
+  {
+   "key": "catalog/census/s0038.parquet",
+   "size": 12061,
+   "md5": "ffbcd265d5e77bfe103f8a07796e411c",
+   "crc32c": "MceR/A==",
+   "generation": 1791496909762124
+  },
+  {
+   "key": "catalog/census/s0039.parquet",
+   "size": 9125,
+   "md5": "f8ad00fe7dff72b50cd0092396294f01",
+   "crc32c": "TBHQhQ==",
+   "generation": 1791496930026937
+  },
+  {
+   "key": "catalog/census/s0040.parquet",
+   "size": 4565,
+   "md5": "94043a88b46b829b027c137e5721e1f0",
+   "crc32c": "/jdK/Q==",
+   "generation": 1791496949880532
+  },
+  {
+   "key": "catalog/census/s0041.parquet",
+   "size": 9490,
+   "md5": "28ecd329aa083f32c027e8b4c48cc89d",
+   "crc32c": "OgUxiw==",
+   "generation": 1791496791970286
+  },
+  {
+   "key": "catalog/census/s0042.parquet",
+   "size": 11430,
+   "md5": "021a5bebc09e23fccbac81216989d0b6",
+   "crc32c": "h1ldqQ==",
+   "generation": 1791496809494342
+  },
+  {
+   "key": "catalog/census/s0043.parquet",
+   "size": 12868,
+   "md5": "ae6b660f6540a55b8f2bd88aa4fac829",
+   "crc32c": "vMErVg==",
+   "generation": 1791496828113778
+  },
+  {
+   "key": "catalog/census/s0044.parquet",
+   "size": 12328,
+   "md5": "6cab29b86bc5f49d1fd77b5ff2adf2f0",
+   "crc32c": "K5uoew==",
+   "generation": 1791496845378082
+  },
+  {
+   "key": "catalog/census/s0045.parquet",
+   "size": 12896,
+   "md5": "13b99e0e4b0502d7ae9acd8f9a76ebba",
+   "crc32c": "OLMp3g==",
+   "generation": 1791496863443418
+  },
+  {
+   "key": "catalog/census/s0046.parquet",
+   "size": 13637,
+   "md5": "418d2f65eb1d94ef9d69ed44e980f571",
+   "crc32c": "3pzqTg==",
+   "generation": 1791496882032923
+  },
+  {
+   "key": "catalog/census/s0047.parquet",
+   "size": 4488,
+   "md5": "125a6d73dad69bac622d9c623f25d34e",
+   "crc32c": "Iw14GA==",
+   "generation": 1791496908059850
+  },
+  {
+   "key": "catalog/census/s0048.parquet",
+   "size": 10589,
+   "md5": "6975d57da927729e8779270620c4198b",
+   "crc32c": "FZ4aJA==",
+   "generation": 1791496926239209
+  },
+  {
+   "key": "catalog/census/s0049.parquet",
+   "size": 14428,
+   "md5": "056291760cb6f79bdb85d051b8917b2a",
+   "crc32c": "a1UQ5Q==",
+   "generation": 1791496792077190
+  },
+  {
+   "key": "catalog/census/s0050.parquet",
+   "size": 14031,
+   "md5": "0b800c325301c410e878c5b7fbe6e21d",
+   "crc32c": "zff0aQ==",
+   "generation": 1791496815156654
+  },
+  {
+   "key": "catalog/census/s0051.parquet",
+   "size": 14547,
+   "md5": "737dc48dbb81436f7a1c2a0172553294",
+   "crc32c": "b03nnw==",
+   "generation": 1791496833812301
+  },
+  {
+   "key": "catalog/census/s0052.parquet",
+   "size": 13144,
+   "md5": "fd8546201c16f67e9c790e791542127b",
+   "crc32c": "TDE4NA==",
+   "generation": 1791496852592617
+  },
+  {
+   "key": "catalog/census/s0053.parquet",
+   "size": 2469,
+   "md5": "79046c21de153629a2b1d99319d7c3a4",
+   "crc32c": "G5rOcA==",
+   "generation": 1791496871321195
+  },
+  {
+   "key": "catalog/census/s0054.parquet",
+   "size": 6791,
+   "md5": "6fb0fbfa5ae269e4f81ff4a5cda11c8f",
+   "crc32c": "LVeYOQ==",
+   "generation": 1791496888655061
+  },
+  {
+   "key": "catalog/census/s0055.parquet",
+   "size": 12013,
+   "md5": "84f2b7a49e82e713a437aeec6ad1ed62",
+   "crc32c": "jRY8Mg==",
+   "generation": 1791496913340778
+  },
+  {
+   "key": "catalog/census/s0056.parquet",
+   "size": 13693,
+   "md5": "22d9c1c31a6c265a0e5bea79028c6464",
+   "crc32c": "vSvtNw==",
+   "generation": 1791496931135618
+  },
+  {
+   "key": "catalog/census/s0057.parquet",
+   "size": 14015,
+   "md5": "abc8c33a586836d463ff4871b47b35db",
+   "crc32c": "VDYWcA==",
+   "generation": 1791496948703039
+  },
+  {
+   "key": "catalog/census/s0058.parquet",
+   "size": 11671,
+   "md5": "8fbc2fbcb8d762449a5c8b6dbb47078e",
+   "crc32c": "mSFblQ==",
+   "generation": 1791496800409275
+  },
+  {
+   "key": "catalog/census/s0059.parquet",
+   "size": 10158,
+   "md5": "cc47b073306f2db39ef7413a3541859b",
+   "crc32c": "Nw7SPg==",
+   "generation": 1791496823394288
+  },
+  {
+   "key": "catalog/census/s0060.parquet",
+   "size": 4689,
+   "md5": "d2a84711a3101c8948ca2c04891a99ac",
+   "crc32c": "nr4Fvw==",
+   "generation": 1791496837249247
+  },
+  {
+   "key": "catalog/census/s0061.parquet",
+   "size": 9447,
+   "md5": "e666b7850df8f1dec170a56520b79eb1",
+   "crc32c": "8igKLw==",
+   "generation": 1791496855277054
+  },
+  {
+   "key": "catalog/census/s0062.parquet",
+   "size": 14771,
+   "md5": "7f241db257ea7147b62dd4f77774bfa9",
+   "crc32c": "XEVqwg==",
+   "generation": 1791496873689831
+  },
+  {
+   "key": "catalog/census/s0063.parquet",
+   "size": 14929,
+   "md5": "ecd2f156951e81e5c6550273cd8a6586",
+   "crc32c": "pd6bOA==",
+   "generation": 1791496891119561
+  },
+  {
+   "key": "catalog/census/s0064.parquet",
+   "size": 15108,
+   "md5": "b78dce2a85c65f58011ad6af3f7149f1",
+   "crc32c": "9GLJKQ==",
+   "generation": 1791496908839631
+  },
+  {
+   "key": "catalog/census/s0065.parquet",
+   "size": 6795,
+   "md5": "ba788cdf8b8f8fa3d527c61348efa125",
+   "crc32c": "+Gq6FA==",
+   "generation": 1791496931753715
+  },
+  {
+   "key": "catalog/census/s0066.parquet",
+   "size": 9309,
+   "md5": "d8a1228e303be71b06b411338940e480",
+   "crc32c": "J843bQ==",
+   "generation": 1791496946731849
+  },
+  {
+   "key": "catalog/census/s0067.parquet",
+   "size": 12892,
+   "md5": "07c9e730451d55df70767f8c05944ddf",
+   "crc32c": "a2QeIg==",
+   "generation": 1791496792019782
+  },
+  {
+   "key": "catalog/census/s0068.parquet",
+   "size": 14155,
+   "md5": "249716c2772f85a8e4c2e814a076892d",
+   "crc32c": "zduaDQ==",
+   "generation": 1791496811839276
+  },
+  {
+   "key": "catalog/census/s0069.parquet",
+   "size": 14402,
+   "md5": "972a44321c0c2515ae7a82abb10b4cd7",
+   "crc32c": "vJtfmA==",
+   "generation": 1791496829926862
+  },
+  {
+   "key": "catalog/census/s0070.parquet",
+   "size": 10680,
+   "md5": "ebce18b9acc28331ec68797099948670",
+   "crc32c": "f6p8DA==",
+   "generation": 1791496853298153
+  },
+  {
+   "key": "catalog/census/s0071.parquet",
+   "size": 5134,
+   "md5": "fd0ae35429b0d2e9a9f7bdbe37d6b24f",
+   "crc32c": "f08kRw==",
+   "generation": 1791496870969431
+  },
+  {
+   "key": "catalog/census/s0072.parquet",
+   "size": 15083,
+   "md5": "aeb64d1fdc1831888d5dcc6339b6098b",
+   "crc32c": "7wKOew==",
+   "generation": 1791496890111423
+  },
+  {
+   "key": "catalog/census/s0073.parquet",
+   "size": 14457,
+   "md5": "e967c772d8f70fe9e370f3e9dfafb626",
+   "crc32c": "fMg9kg==",
+   "generation": 1791496909111368
+  },
+  {
+   "key": "catalog/census/s0074.parquet",
+   "size": 14981,
+   "md5": "881166b249e0db7faf4429c7e21ca534",
+   "crc32c": "H2eWRQ==",
+   "generation": 1791496927649266
+  },
+  {
+   "key": "catalog/census/s0075.parquet",
+   "size": 9210,
+   "md5": "5ba322678e95be510c0854a06c77f5d8",
+   "crc32c": "RviuWQ==",
+   "generation": 1791496795689897
+  },
+  {
+   "key": "catalog/census/s0076.parquet",
+   "size": 8183,
+   "md5": "026af8d08b90dde7d3661d5b29011660",
+   "crc32c": "K3pyww==",
+   "generation": 1791496813215880
+  },
+  {
+   "key": "catalog/census/s0077.parquet",
+   "size": 8547,
+   "md5": "c80a5748898b45ca90874cc941d25046",
+   "crc32c": "1OwE2g==",
+   "generation": 1791496828656883
+  },
+  {
+   "key": "catalog/census/s0078.parquet",
+   "size": 14314,
+   "md5": "95f79fa8518ecef35b41eabafd186877",
+   "crc32c": "UxBwvA==",
+   "generation": 1791496846078572
+  },
+  {
+   "key": "catalog/census/s0079.parquet",
+   "size": 14015,
+   "md5": "5e23646f925cedc37f12fdd563437677",
+   "crc32c": "6hkD7w==",
+   "generation": 1791496863609356
+  },
+  {
+   "key": "catalog/census/s0080.parquet",
+   "size": 13930,
+   "md5": "9a06f0c02b7e62e012bf96c9c54ccf54",
+   "crc32c": "rUXx3Q==",
+   "generation": 1791496884654950
+  },
+  {
+   "key": "catalog/census/s0081.parquet",
+   "size": 4358,
+   "md5": "20d5cde885de9e13248dd5f115c17a76",
+   "crc32c": "VDdUMw==",
+   "generation": 1791496903365581
+  },
+  {
+   "key": "catalog/census/s0082.parquet",
+   "size": 11893,
+   "md5": "0730c36f4dc36ffe1a6cf7a44b31ba2f",
+   "crc32c": "LZq1EQ==",
+   "generation": 1791496921389444
+  },
+  {
+   "key": "catalog/census/s0083.parquet",
+   "size": 13522,
+   "md5": "dd162b18f0777e592ad422600d336da7",
+   "crc32c": "MPy4RA==",
+   "generation": 1791496938791362
+  },
+  {
+   "key": "catalog/census/s0084.parquet",
+   "size": 14384,
+   "md5": "e17211d60e2ee7cf5ed043f324263654",
+   "crc32c": "i5xgMw==",
+   "generation": 1791496799109000
+  },
+  {
+   "key": "catalog/census/s0085.parquet",
+   "size": 10054,
+   "md5": "4400c85bb1d2bfa732b0bde847ab22e5",
+   "crc32c": "QIrNog==",
+   "generation": 1791496820140952
+  },
+  {
+   "key": "catalog/census/s0086.parquet",
+   "size": 5335,
+   "md5": "3603634749d3be01c351b9f70bb98546",
+   "crc32c": "xFMsYw==",
+   "generation": 1791496843087533
+  },
+  {
+   "key": "catalog/census/s0087.parquet",
+   "size": 22700,
+   "md5": "a93f0b3f8d3ddcd8d9bd60fee0bbd062",
+   "crc32c": "B1+lPg==",
+   "generation": 1791496866432607
+  },
+  {
+   "key": "catalog/census/s0088.parquet",
+   "size": 7279,
+   "md5": "6988724cf2dc2f7a1581e36bfa49c93e",
+   "crc32c": "hxjeRw==",
+   "generation": 1791496889739791
+  },
+  {
+   "key": "catalog/census/s0089.parquet",
+   "size": 13342,
+   "md5": "a2fdd62cc2539b00a99a2929c61c196d",
+   "crc32c": "QjcAkQ==",
+   "generation": 1791496909762863
+  },
+  {
+   "key": "catalog/census/s0090.parquet",
+   "size": 12651,
+   "md5": "d812acf359ae10c99318dd516c383c7b",
+   "crc32c": "6t41cA==",
+   "generation": 1791496931357953
+  },
+  {
+   "key": "catalog/census/s0091.parquet",
+   "size": 19020,
+   "md5": "ad428af90e8b528b4bd581b2ecea62ec",
+   "crc32c": "x94ZxA==",
+   "generation": 1791496972368929
+  },
+  {
+   "key": "catalog/census/s0092.parquet",
+   "size": 3011,
+   "md5": "7764fd4ec4a762ae2032332303b9c40b",
+   "crc32c": "3IOnew==",
+   "generation": 1791496777789539
+  },
+  {
+   "key": "catalog/census/s0093.parquet",
+   "size": 1906,
+   "md5": "a21edfb57cab0c83a74e91933ed723d9",
+   "crc32c": "s2Qt6A==",
+   "generation": 1791496824625371
+  },
+  {
+   "key": "catalog/census/s0094.parquet",
+   "size": 9458,
+   "md5": "f2dde5dd45d0d2273044daf59ec4bfce",
+   "crc32c": "3v8I1w==",
+   "generation": 1791496838866439
+  },
+  {
+   "key": "catalog/census/s0095.parquet",
+   "size": 2686,
+   "md5": "367a82d87655e4e15574dc05b5a69417",
+   "crc32c": "sLPZsg==",
+   "generation": 1791496856373675
+  },
+  {
+   "key": "catalog/census/s0096.parquet",
+   "size": 5054,
+   "md5": "578f812a17481ea660ab5afbd3eefa58",
+   "crc32c": "B5GKCQ==",
+   "generation": 1791496876308426
+  },
+  {
+   "key": "catalog/census/s0097.parquet",
+   "size": 7779,
+   "md5": "80e605d9831ef71161ba4e1f1ec87f79",
+   "crc32c": "xMlvfw==",
+   "generation": 1791496900232975
+  },
+  {
+   "key": "catalog/census/s0098.parquet",
+   "size": 6168,
+   "md5": "5e80564b69b07e5a31f016680da1a5a9",
+   "crc32c": "OZknjA==",
+   "generation": 1791496917474579
+  },
+  {
+   "key": "catalog/census/s0099.parquet",
+   "size": 11312,
+   "md5": "30f3e3574125dc61bd1a625f62a674ae",
+   "crc32c": "uY2dgQ==",
+   "generation": 1791496942228769
+  },
+  {
+   "key": "catalog/census/s0100.parquet",
+   "size": 7997,
+   "md5": "15472a2325e6d7ec497846f991f00c77",
+   "crc32c": "J8ej8A==",
+   "generation": 1791496953719420
+  },
+  {
+   "key": "catalog/census/s0101.parquet",
+   "size": 1748,
+   "md5": "ace86609d3e383ef3eaa8cb10641ecaa",
+   "crc32c": "vst2qQ==",
+   "generation": 1791496835315770
+  },
+  {
+   "key": "catalog/census/s0102.parquet",
+   "size": 8337,
+   "md5": "e3c51feb1ed8497669ca2efdd7d51ba5",
+   "crc32c": "StBg4w==",
+   "generation": 1791496851122788
+  },
+  {
+   "key": "catalog/census/s0103.parquet",
+   "size": 4765,
+   "md5": "e0427063f0991885a1b128f226c2edfe",
+   "crc32c": "Em/aRw==",
+   "generation": 1791496869502625
+  },
+  {
+   "key": "catalog/census/s0104.parquet",
+   "size": 6673,
+   "md5": "0cf677f924e8b48dbc05a0d772d23b18",
+   "crc32c": "rWAXvw==",
+   "generation": 1791496888516847
+  },
+  {
+   "key": "catalog/census/s0105.parquet",
+   "size": 8741,
+   "md5": "f522e0f0ee235b2c89b50df38f45b92c",
+   "crc32c": "dSPc8w==",
+   "generation": 1791496906368246
+  },
+  {
+   "key": "catalog/census/s0106.parquet",
+   "size": 1603,
+   "md5": "79294c61ce4425aecfa8717123ec60b9",
+   "crc32c": "P6/OuQ==",
+   "generation": 1791496945524804
+  },
+  {
+   "key": "catalog/census/s0107.parquet",
+   "size": 7101,
+   "md5": "4f09bf6f395c753c42acff3f7d84ea88",
+   "crc32c": "zPDhjA==",
+   "generation": 1791496784678292
+  },
+  {
+   "key": "catalog/census/s0108.parquet",
+   "size": 1330,
+   "md5": "d00ed4132680a75ab77f2a5c33b1d8ee",
+   "crc32c": "aeoSFQ==",
+   "generation": 1791496838099108
+  },
+  {
+   "key": "catalog/census/s0109.parquet",
+   "size": 3417,
+   "md5": "8c69a83e33be9e751b49e4d68cffeb57",
+   "crc32c": "RxZQ/w==",
+   "generation": 1791496860756766
+  },
+  {
+   "key": "catalog/census/s0110.parquet",
+   "size": 3245,
+   "md5": "2fd3cc545efb727095abc59d93a4f7ae",
+   "crc32c": "H+kfkw==",
+   "generation": 1791496865817862
+  },
+  {
+   "key": "catalog/census/s0111.parquet",
+   "size": 1105,
+   "md5": "291dbaf81fde30d579fc44dc93ac1a6f",
+   "crc32c": "OzvnkQ==",
+   "generation": 1791496880660473
+  },
+  {
+   "key": "catalog/census/s0112.parquet",
+   "size": 1407,
+   "md5": "e6ef28b56c7d9bcc2672bab5bdcf5e25",
+   "crc32c": "Ih4WUg==",
+   "generation": 1791496907837298
+  },
+  {
+   "key": "catalog/census/s0113.parquet",
+   "size": 5119,
+   "md5": "8f152571c622ab5071c0e8827209e6fc",
+   "crc32c": "5vQeag==",
+   "generation": 1791496925482122
+  },
+  {
+   "key": "catalog/census/s0114.parquet",
+   "size": 3725,
+   "md5": "092a88ff0da4f897fdad887a973dfa74",
+   "crc32c": "aycKDA==",
+   "generation": 1791496933243311
+  },
+  {
+   "key": "catalog/census/s0115.parquet",
+   "size": 4376,
+   "md5": "77c816541aa13b0c5d4d1af00609008a",
+   "crc32c": "Xl00Mg==",
+   "generation": 1791496961219633
+  },
+  {
+   "key": "catalog/census/s0116.parquet",
+   "size": 16036,
+   "md5": "94543eb8b3f5c8938f1fc30955bb355e",
+   "crc32c": "nm0s/Q==",
+   "generation": 1791496792542577
+  },
+  {
+   "key": "catalog/census/s0117.parquet",
+   "size": 6990,
+   "md5": "cf7b390380d2cf398225fb5f78afea6c",
+   "crc32c": "vVUllg==",
+   "generation": 1791496811428691
+  },
+  {
+   "key": "catalog/census/s0118.parquet",
+   "size": 4669,
+   "md5": "023d23b1b462cd5523c1a5908ebd7bd4",
+   "crc32c": "uQskSQ==",
+   "generation": 1791496827828925
+  },
+  {
+   "key": "catalog/census/s0119.parquet",
+   "size": 17414,
+   "md5": "1f1b3ce303dfd0a37ae36bba3775ecdb",
+   "crc32c": "GNSOLA==",
+   "generation": 1791496850011227
+  },
+  {
+   "key": "catalog/census/s0120.parquet",
+   "size": 7467,
+   "md5": "6f47306fb0b7e1d8f310724b73abaff9",
+   "crc32c": "/6SidQ==",
+   "generation": 1791496869539778
+  },
+  {
+   "key": "catalog/census/s0121.parquet",
+   "size": 2039,
+   "md5": "bc9071c2ca3ea3a52c98134ecb11f18c",
+   "crc32c": "FGctFg==",
+   "generation": 1791496879254839
+  },
+  {
+   "key": "catalog/census/s0122.parquet",
+   "size": 1294,
+   "md5": "468e9619518b9578be53989c03865209",
+   "crc32c": "fNfEPQ==",
+   "generation": 1791496926327863
+  },
+  {
+   "key": "catalog/census/s0123.parquet",
+   "size": 5665,
+   "md5": "5c780009dac6a0f05a1ea7ea19fa46ae",
+   "crc32c": "pLKoxw==",
+   "generation": 1791496792046949
+  },
+  {
+   "key": "catalog/census/s0124.parquet",
+   "size": 1335,
+   "md5": "9e5d5f7aa393d1d2db7db022cf3bca50",
+   "crc32c": "3Fi4ZA==",
+   "generation": 1791496810045525
+  },
+  {
+   "key": "catalog/census/s0125.parquet",
+   "size": 2779,
+   "md5": "318fd75651a91964ba4a4fd3dd0bcbc7",
+   "crc32c": "Bg/q0g==",
+   "generation": 1791496815349428
+  },
+  {
+   "key": "catalog/census/s0126.parquet",
+   "size": 1751,
+   "md5": "2834677cfe795e1361424201d919025d",
+   "crc32c": "E10lhg==",
+   "generation": 1791496840996458
+  },
+  {
+   "key": "catalog/census/s0127.parquet",
+   "size": 18252,
+   "md5": "2be588be3be9e03e65eedff40a181aa4",
+   "crc32c": "2rRbTA==",
+   "generation": 1791496858524029
+  },
+  {
+   "key": "catalog/census/s0128.parquet",
+   "size": 17521,
+   "md5": "8f6067384b6b5f437e0a616968d46d5f",
+   "crc32c": "ieCV/w==",
+   "generation": 1791496889007392
+  },
+  {
+   "key": "catalog/census/s0129.parquet",
+   "size": 5031,
+   "md5": "012d07b5e5a526d34044e112c9d5dbe5",
+   "crc32c": "xcy41Q==",
+   "generation": 1791496904299160
+  },
+  {
+   "key": "catalog/census/s0130.parquet",
+   "size": 3564,
+   "md5": "fa0915b30790708cc180a5d1167f21b2",
+   "crc32c": "ghKfiw==",
+   "generation": 1791496789928550
+  },
+  {
+   "key": "catalog/census/s0131.parquet",
+   "size": 3895,
+   "md5": "4469c4ccdc9ef9da83b964f31606eca7",
+   "crc32c": "B/MJSA==",
+   "generation": 1791496800124187
+  },
+  {
+   "key": "catalog/census/s0132.parquet",
+   "size": 3898,
+   "md5": "dfdf86c40bccdd4e810b0d1fc465b82a",
+   "crc32c": "ZwkuEQ==",
+   "generation": 1791496822152895
+  },
+  {
+   "key": "catalog/census/s0133.parquet",
+   "size": 4525,
+   "md5": "15e2d29fb732bc8f0f4f1c6437261e04",
+   "crc32c": "0PbDYQ==",
+   "generation": 1791496851917919
+  },
+  {
+   "key": "catalog/census/s0134.parquet",
+   "size": 5303,
+   "md5": "c0caadbbdf2ebd910ef633c95d0a9676",
+   "crc32c": "HuHnBQ==",
+   "generation": 1791496873189693
+  },
+  {
+   "key": "catalog/census/s0135.parquet",
+   "size": 4010,
+   "md5": "f736443ac879431aa6e0fb4e4c5e2a67",
+   "crc32c": "8u/sfQ==",
+   "generation": 1791496893040176
+  },
+  {
+   "key": "catalog/census/s0136.parquet",
+   "size": 4097,
+   "md5": "9895f9aa835ee88164fd7324114efee9",
+   "crc32c": "TLSFuQ==",
+   "generation": 1791496917436435
+  },
+  {
+   "key": "catalog/census/s0137.parquet",
+   "size": 12280,
+   "md5": "7d9fc0442587c3fde41df1896d4a7ae0",
+   "crc32c": "CEVjWw==",
+   "generation": 1791496936446593
+  },
+  {
+   "key": "catalog/census/s0138.parquet",
+   "size": 6009,
+   "md5": "f78f417e30b812bdc3eb7efb3538b27f",
+   "crc32c": "iP6uCQ==",
+   "generation": 1791496955677041
+  },
+  {
+   "key": "catalog/census/s0139.parquet",
+   "size": 3858,
+   "md5": "fcf7c8b864e559202e76ad44f5f29c5f",
+   "crc32c": "Hw9j4Q==",
+   "generation": 1791496792694720
+  },
+  {
+   "key": "catalog/census/s0140.parquet",
+   "size": 7438,
+   "md5": "f2f0bba2729571304356d6191203100b",
+   "crc32c": "7kQp4w==",
+   "generation": 1791496816183880
+  },
+  {
+   "key": "catalog/census/s0141.parquet",
+   "size": 5895,
+   "md5": "b6f717b6ec0fbe207be1debd4b6bb2ef",
+   "crc32c": "mrcugA==",
+   "generation": 1791496828841241
+  },
+  {
+   "key": "catalog/census/s0142.parquet",
+   "size": 4094,
+   "md5": "5ebe7d25726bcde84cf5a2b51f6c6dc4",
+   "crc32c": "nXrf2Q==",
+   "generation": 1791496846912134
+  },
+  {
+   "key": "catalog/census/s0143.parquet",
+   "size": 2166,
+   "md5": "237fc034f150a22fcd08c8a138c0fd15",
+   "crc32c": "dE/nng==",
+   "generation": 1791496849488792
+  },
+  {
+   "key": "catalog/census/s0144.parquet",
+   "size": 1275,
+   "md5": "5a422d31a8443bff1e975a7d0fe38ac7",
+   "crc32c": "rH1K5g==",
+   "generation": 1791496877282648
+  },
+  {
+   "key": "catalog/census/s0145.parquet",
+   "size": 2501,
+   "md5": "8de071d4b517322a6569c2a42e516dc7",
+   "crc32c": "3xE6Gw==",
+   "generation": 1791496880549710
+  },
+  {
+   "key": "catalog/census/s0146.parquet",
+   "size": 2158,
+   "md5": "a295a2b4eec6bb6fb29271d072cf0643",
+   "crc32c": "ynF3hA==",
+   "generation": 1791496904343979
+  },
+  {
+   "key": "catalog/census/s0147.parquet",
+   "size": 3593,
+   "md5": "f9a03b183da7cb5fef370c710c9ff282",
+   "crc32c": "qEPkEQ==",
+   "generation": 1791496777990029
+  },
+  {
+   "key": "catalog/census/s0148.parquet",
+   "size": 3219,
+   "md5": "980e1fe79fe4b5d1d4a9750ab186b7ea",
+   "crc32c": "xiYQaQ==",
+   "generation": 1791496791810086
+  },
+  {
+   "key": "catalog/census/s0149.parquet",
+   "size": 1149,
+   "md5": "8acd6e0e20d31f7fa611f378a1b63db9",
+   "crc32c": "i+v7OQ==",
+   "generation": 1791496794201698
+  },
+  {
+   "key": "catalog/census/s0150.parquet",
+   "size": 1435,
+   "md5": "22fd5bc263eb494734bbb3d4d310f1eb",
+   "crc32c": "ZRerag==",
+   "generation": 1791496836670952
+  },
+  {
+   "key": "catalog/census/s0151.parquet",
+   "size": 6878,
+   "md5": "c422f846ce7b262da65e8711a2c76baa",
+   "crc32c": "SdYf/w==",
+   "generation": 1791496851091207
+  },
+  {
+   "key": "catalog/census/s0152.parquet",
+   "size": 3209,
+   "md5": "ec38673dee48951b51c22c11d96fd48d",
+   "crc32c": "mG1DyA==",
+   "generation": 1791496865839770
+  },
+  {
+   "key": "catalog/census/s0153.parquet",
+   "size": 5844,
+   "md5": "035ea21486eaffe61d4f97bc1450a38d",
+   "crc32c": "oFJelg==",
+   "generation": 1791496883372141
+  },
+  {
+   "key": "catalog/census/s0154.parquet",
+   "size": 2802,
+   "md5": "ec1459bc675e489ea5445f5a8c58ab2f",
+   "crc32c": "7pAf8w==",
+   "generation": 1791496904094831
+  },
+  {
+   "key": "catalog/census/s0155.parquet",
+   "size": 4796,
+   "md5": "5fbdac95d4748b956e2078b1a34c24ab",
+   "crc32c": "aM/NHA==",
+   "generation": 1791496795226186
+  },
+  {
+   "key": "catalog/census/s0156.parquet",
+   "size": 3641,
+   "md5": "b14f1b4fde061afcd71dc72d256b29ed",
+   "crc32c": "ZHGPxQ==",
+   "generation": 1791496813426238
+  },
+  {
+   "key": "catalog/census/s0157.parquet",
+   "size": 3776,
+   "md5": "cd0aa47cc1b77f07e61fb08d8b1ec352",
+   "crc32c": "fVvjzQ==",
+   "generation": 1791496829989095
+  },
+  {
+   "key": "catalog/census/s0158.parquet",
+   "size": 4613,
+   "md5": "eed3903ca0704f6a4185bc9d909ad5e3",
+   "crc32c": "IvpbAw==",
+   "generation": 1791496837373901
+  },
+  {
+   "key": "catalog/census/s0159.parquet",
+   "size": 1101,
+   "md5": "d93b2a029064a533a610f46181993666",
+   "crc32c": "oG1Clg==",
+   "generation": 1791496850510550
+  },
+  {
+   "key": "catalog/census/s0160.parquet",
+   "size": 2317,
+   "md5": "44281cd792adbb999514c8e81ebfca9b",
+   "crc32c": "8QP/OQ==",
+   "generation": 1791496861103194
+  },
+  {
+   "key": "catalog/census/s0161.parquet",
+   "size": 17928,
+   "md5": "a560eff21d96a1711eba436d72b1aab1",
+   "crc32c": "Tg2V8A==",
+   "generation": 1791496880891525
+  },
+  {
+   "key": "catalog/census/s0162.parquet",
+   "size": 3611,
+   "md5": "23217244e133e01dabb0db10524742ac",
+   "crc32c": "HOdsqQ==",
+   "generation": 1791496905278242
+  },
+  {
+   "key": "catalog/census/s0163.parquet",
+   "size": 10805,
+   "md5": "f02298a678506444763b6e3db89d2ecf",
+   "crc32c": "dwJ86A==",
+   "generation": 1791496921466215
+  },
+  {
+   "key": "catalog/census/s0164.parquet",
+   "size": 15650,
+   "md5": "a19113299b91d3a9e1c2cfe0d95fd07a",
+   "crc32c": "eLCiBg==",
+   "generation": 1791496957202594
+  },
+  {
+   "key": "catalog/census/s0165.parquet",
+   "size": 2117,
+   "md5": "cd30c42307689b397bed29f6c33f79b5",
+   "crc32c": "NcAohA==",
+   "generation": 1791496790344334
+  },
+  {
+   "key": "catalog/census/s0166.parquet",
+   "size": 9054,
+   "md5": "af2ddc88999bc476f1dd71975fd77a3e",
+   "crc32c": "ICf92A==",
+   "generation": 1791496810926706
+  },
+  {
+   "key": "catalog/census/s0167.parquet",
+   "size": 4584,
+   "md5": "85f231c22d1681a4f2480b1a029bd1f9",
+   "crc32c": "DKOR7A==",
+   "generation": 1791496831139589
+  },
+  {
+   "key": "catalog/census/s0168.parquet",
+   "size": 1727,
+   "md5": "3116d666772eece6af5f214fecfbdf70",
+   "crc32c": "B54CrQ==",
+   "generation": 1791496844295089
+  },
+  {
+   "key": "catalog/census/s0169.parquet",
+   "size": 4366,
+   "md5": "136dcfae1cfe9c97967a528ba2b62e32",
+   "crc32c": "jZJ4Kg==",
+   "generation": 1791496867618578
+  },
+  {
+   "key": "catalog/census/s0170.parquet",
+   "size": 8535,
+   "md5": "b4525069c2cd291443dc1428f11bc7d8",
+   "crc32c": "CLeGcA==",
+   "generation": 1791496883602970
+  },
+  {
+   "key": "catalog/census/s0171.parquet",
+   "size": 1393,
+   "md5": "8e6941b59f8a5d48c3eec70a86c87bfa",
+   "crc32c": "i725AA==",
+   "generation": 1791496953508712
+  },
+  {
+   "key": "catalog/census/s0172.parquet",
+   "size": 15365,
+   "md5": "c46f5534d99c406908cc06d3d00d5fda",
+   "crc32c": "6RiFNw==",
+   "generation": 1791496803791949
+  },
+  {
+   "key": "catalog/census/s0173.parquet",
+   "size": 4332,
+   "md5": "83585e888b8ee6d01ce49c529de9d8cd",
+   "crc32c": "WiLlcQ==",
+   "generation": 1791496821930700
+  },
+  {
+   "key": "catalog/census/s0174.parquet",
+   "size": 2420,
+   "md5": "bf8bb178bd0220d996ebec3ab72716c0",
+   "crc32c": "XsYI8g==",
+   "generation": 1791496829700007
+  },
+  {
+   "key": "catalog/census/s0175.parquet",
+   "size": 1140,
+   "md5": "3c48370fdc4acc71d2ec69500f9dd9ce",
+   "crc32c": "8qlv7A==",
+   "generation": 1791496854232700
+  },
+  {
+   "key": "catalog/census/s0176.parquet",
+   "size": 7629,
+   "md5": "2702732cf6c8388be3589846a6ecdcaf",
+   "crc32c": "izhAFw==",
+   "generation": 1791496864096972
+  },
+  {
+   "key": "catalog/census/s0177.parquet",
+   "size": 2226,
+   "md5": "15a2f04a29ca10eb5bce6299e6075667",
+   "crc32c": "HSfnHQ==",
+   "generation": 1791496878471017
+  },
+  {
+   "key": "catalog/census/s0178.parquet",
+   "size": 1429,
+   "md5": "4d2b36f7878de575f711b4e070550b87",
+   "crc32c": "n8z77w==",
+   "generation": 1791496909420277
+  },
+  {
+   "key": "catalog/census/s0179.parquet",
+   "size": 5889,
+   "md5": "28cfc36b28c2dc27bdbbd031f4450e07",
+   "crc32c": "wz+ZLQ==",
+   "generation": 1791496798802577
+  },
+  {
+   "key": "catalog/census/s0180.parquet",
+   "size": 8400,
+   "md5": "a3646fb2112395f159abf23154d95a48",
+   "crc32c": "M+djuA==",
+   "generation": 1791496818582836
+  },
+  {
+   "key": "catalog/census/s0181.parquet",
+   "size": 8485,
+   "md5": "a3a1fc8c68437b6456c6123753434889",
+   "crc32c": "brH0tw==",
+   "generation": 1791496840071582
+  },
+  {
+   "key": "catalog/census/s0182.parquet",
+   "size": 9040,
+   "md5": "6dbd3433420ac7725a2d9f9b96c70370",
+   "crc32c": "spt8Fg==",
+   "generation": 1791496858622077
+  },
+  {
+   "key": "catalog/census/s0183.parquet",
+   "size": 1593,
+   "md5": "dbb5fc56d5692b88e06edbdb802861f5",
+   "crc32c": "XulqUg==",
+   "generation": 1791496868324682
+  },
+  {
+   "key": "catalog/census/s0184.parquet",
+   "size": 1473,
+   "md5": "c634f2a5732a82710f5bbd9cb35ef1bd",
+   "crc32c": "8q4Iiw==",
+   "generation": 1791496903731548
+  },
+  {
+   "key": "catalog/census/s0185.parquet",
+   "size": 10841,
+   "md5": "a5562f9331352886809cb2b8112cbf74",
+   "crc32c": "AJLxCQ==",
+   "generation": 1791496924572829
+  },
+  {
+   "key": "catalog/census/s0186.parquet",
+   "size": 3811,
+   "md5": "61dedbbb5ff711cb583094f52c21fe02",
+   "crc32c": "Os1VWg==",
+   "generation": 1791496783138147
+  },
+  {
+   "key": "catalog/census/s0187.parquet",
+   "size": 5847,
+   "md5": "60e6baeed7dddf020a08497969a3405f",
+   "crc32c": "675N0A==",
+   "generation": 1791496804931901
+  },
+  {
+   "key": "catalog/census/s0188.parquet",
+   "size": 13913,
+   "md5": "e93d894dfa52416830c1d3f8edb7a95f",
+   "crc32c": "VErIiQ==",
+   "generation": 1791496827467661
+  },
+  {
+   "key": "catalog/census/s0189.parquet",
+   "size": 1200,
+   "md5": "c91be82f421589aac6ab05e3e64e66d3",
+   "crc32c": "k662lw==",
+   "generation": 1791496839109482
+  },
+  {
+   "key": "catalog/census/s0190.parquet",
+   "size": 1263,
+   "md5": "336109df6e16f527d3b6c539c92f53e3",
+   "crc32c": "BDmd1A==",
+   "generation": 1791496866756796
+  },
+  {
+   "key": "catalog/census/s0191.parquet",
+   "size": 2812,
+   "md5": "4490ceb7f6a8284f8df1173209278dd6",
+   "crc32c": "LEHSZg==",
+   "generation": 1791496880377476
+  },
+  {
+   "key": "catalog/census/s0192.parquet",
+   "size": 6238,
+   "md5": "b9113c1ef0266a5431a8cbe3b961d8b4",
+   "crc32c": "YyfSwg==",
+   "generation": 1791496894661482
+  },
+  {
+   "key": "catalog/census/s0193.parquet",
+   "size": 6625,
+   "md5": "1ded7c14d134826e92d74e7f7ddf910a",
+   "crc32c": "MrGCQQ==",
+   "generation": 1791496921955938
+  },
+  {
+   "key": "catalog/census/s0194.parquet",
+   "size": 5550,
+   "md5": "bfd164fb2216382f770da4b1388b5ef5",
+   "crc32c": "oX6NFA==",
+   "generation": 1791496946443539
+  },
+  {
+   "key": "catalog/census/s0195.parquet",
+   "size": 2090,
+   "md5": "352d9a53f00c0e0ef654a5a0c28464b1",
+   "crc32c": "YUUs2Q==",
+   "generation": 1791496787519443
+  },
+  {
+   "key": "catalog/census/s0196.parquet",
+   "size": 3251,
+   "md5": "32c5ff80f51b6b210b4026515e964e11",
+   "crc32c": "dmvLOw==",
+   "generation": 1791496808583484
+  },
+  {
+   "key": "catalog/census/s0197.parquet",
+   "size": 6154,
+   "md5": "aa030c2c8944607e97b6a5d11b7e750d",
+   "crc32c": "9kahuQ==",
+   "generation": 1791496818141777
+  },
+  {
+   "key": "catalog/census/s0198.parquet",
+   "size": 1317,
+   "md5": "945fefadc755f6306da138c24f1cb453",
+   "crc32c": "y7ThDw==",
+   "generation": 1791496850520316
+  },
+  {
+   "key": "catalog/census/s0199.parquet",
+   "size": 10814,
+   "md5": "fbfdfa280292a7b3accd6abac3065a9c",
+   "crc32c": "OhfWfg==",
+   "generation": 1791496867813880
+  },
+  {
+   "key": "catalog/census/s0200.parquet",
+   "size": 8634,
+   "md5": "0ecf66a45f0684eb0d25267bea9cb75f",
+   "crc32c": "hbxHIQ==",
+   "generation": 1791496887039682
+  },
+  {
+   "key": "catalog/census/s0201.parquet",
+   "size": 2354,
+   "md5": "3da5929e0e749c1f7e44d95ec88237eb",
+   "crc32c": "A35hYQ==",
+   "generation": 1791496890170932
+  },
+  {
+   "key": "catalog/census/s0202.parquet",
+   "size": 4465,
+   "md5": "3691608d93d437e1f129817c25711d47",
+   "crc32c": "LdTNLw==",
+   "generation": 1791496928826709
+  },
+  {
+   "key": "catalog/census/s0203.parquet",
+   "size": 4433,
+   "md5": "cdf6ee0bd4590fc31513a1c1cff68fce",
+   "crc32c": "c7/Z0g==",
+   "generation": 1791496780658989
+  },
+  {
+   "key": "catalog/census/s0204.parquet",
+   "size": 1470,
+   "md5": "1d95e3be3cb0c9683c551099ea9ab432",
+   "crc32c": "5+hGew==",
+   "generation": 1791496815260594
+  },
+  {
+   "key": "catalog/census/s0205.parquet",
+   "size": 7536,
+   "md5": "1bd5e83ba0d249e5f4b258bb3252cfe4",
+   "crc32c": "Phl5Kw==",
+   "generation": 1791496829245527
+  },
+  {
+   "key": "catalog/census/s0206.parquet",
+   "size": 2888,
+   "md5": "35b63dfb33a9b3e5295fea9f69e6717f",
+   "crc32c": "oS58kA==",
+   "generation": 1791496843496478
+  },
+  {
+   "key": "catalog/census/s0207.parquet",
+   "size": 1291,
+   "md5": "a5308cdd1ceec0765a2a79dfea280f80",
+   "crc32c": "yTnFqA==",
+   "generation": 1791496858207188
+  },
+  {
+   "key": "catalog/census/s0208.parquet",
+   "size": 1442,
+   "md5": "0c1940b9c2ee9d66174dd48985417c2b",
+   "crc32c": "Pd1qDw==",
+   "generation": 1791496861202646
+  },
+  {
+   "key": "catalog/census/s0209.parquet",
+   "size": 1237,
+   "md5": "8b26a576df8749984e16386a845df98b",
+   "crc32c": "kcGQJA==",
+   "generation": 1791496873467959
+  },
+  {
+   "key": "catalog/census/s0210.parquet",
+   "size": 1706,
+   "md5": "55c50a20483832df8308fc83484b4c5a",
+   "crc32c": "Uk46fA==",
+   "generation": 1791496875634267
+  },
+  {
+   "key": "catalog/census/s0211.parquet",
+   "size": 1125,
+   "md5": "3ed6a3b40e4e72368c560c0500fbc02a",
+   "crc32c": "i6aJWw==",
+   "generation": 1791496906461789
+  },
+  {
+   "key": "catalog/census/s0212.parquet",
+   "size": 6636,
+   "md5": "aa27816b12cb58d6c8b0ed968db4fdc2",
+   "crc32c": "P2a8ew==",
+   "generation": 1791496784131487
+  },
+  {
+   "key": "catalog/census/s0213.parquet",
+   "size": 1272,
+   "md5": "04dc83078c1bf2fc313c0cd395853b8a",
+   "crc32c": "QgiDRA==",
+   "generation": 1791496834622431
+  },
+  {
+   "key": "catalog/census/s0214.parquet",
+   "size": 1676,
+   "md5": "30acd4ca21e2e97e569dd8a4f9849f4f",
+   "crc32c": "MV0dcA==",
+   "generation": 1791496836500341
+  },
+  {
+   "key": "catalog/census/s0215.parquet",
+   "size": 3393,
+   "md5": "6d587421a3c659ef784b69246966123e",
+   "crc32c": "rLCnhw==",
+   "generation": 1791496858563943
+  },
+  {
+   "key": "catalog/census/s0216.parquet",
+   "size": 11170,
+   "md5": "bafb948531eefefdf39a6d6580031cd5",
+   "crc32c": "xo54Cw==",
+   "generation": 1791496874813892
+  },
+  {
+   "key": "catalog/census/s0217.parquet",
+   "size": 3551,
+   "md5": "463474b3b1386d77d91b27756bb50129",
+   "crc32c": "OEUojg==",
+   "generation": 1791496889088986
+  },
+  {
+   "key": "catalog/census/s0218.parquet",
+   "size": 1090,
+   "md5": "7ec37a6f97d34caf89fddfea8fb5ebc5",
+   "crc32c": "f9wy7Q==",
+   "generation": 1791496902409679
+  },
+  {
+   "key": "catalog/census/s0219.parquet",
+   "size": 646,
+   "md5": "bb4a63b1e7ceeb2f5ea0d6f8bb2b661c",
+   "crc32c": "4f+6Kw==",
+   "generation": 1791496902697100
+  },
+  {
+   "key": "catalog/census/s0220.parquet",
+   "size": 1068,
+   "md5": "c32e7d3b795671f13622d11c6cc873f8",
+   "crc32c": "TqZMWA==",
+   "generation": 1791496922429534
+  },
+  {
+   "key": "catalog/census/s0221.parquet",
+   "size": 5276,
+   "md5": "5e7e54bcb66ff6262dead3fb92f85cf3",
+   "crc32c": "5DHSlA==",
+   "generation": 1791496791222819
+  },
+  {
+   "key": "catalog/census/s0222.parquet",
+   "size": 12429,
+   "md5": "e86dbc2ff979811ff8d0355d0eda57a5",
+   "crc32c": "Hl6PLw==",
+   "generation": 1791496812001976
+  },
+  {
+   "key": "catalog/census/s0223.parquet",
+   "size": 1345,
+   "md5": "42ceedc9ef811c2c7b883c840f70e6ba",
+   "crc32c": "rrOs5Q==",
+   "generation": 1791496824650115
+  },
+  {
+   "key": "catalog/census/s0224.parquet",
+   "size": 1136,
+   "md5": "6e66268eafd9ffe7da380ef27b983433",
+   "crc32c": "Qrk47Q==",
+   "generation": 1791496832211995
+  },
+  {
+   "key": "catalog/census/s0225.parquet",
+   "size": 1103,
+   "md5": "507599e155f02925427fea96608906c3",
+   "crc32c": "gMcHhA==",
+   "generation": 1791496844783059
+  },
+  {
+   "key": "catalog/census/s0226.parquet",
+   "size": 646,
+   "md5": "bb4a63b1e7ceeb2f5ea0d6f8bb2b661c",
+   "crc32c": "4f+6Kw==",
+   "generation": 1791496844988308
+  },
+  {
+   "key": "catalog/census/s0227.parquet",
+   "size": 1091,
+   "md5": "137c6cc03836623ba9fc62ae3787b4f6",
+   "crc32c": "u98LnQ==",
+   "generation": 1791496857159222
+  },
+  {
+   "key": "catalog/census/s0228.parquet",
+   "size": 13039,
+   "md5": "5f293b9fc71dade0c7eddc39d3c976d0",
+   "crc32c": "R8u/fg==",
+   "generation": 1791496874458673
+  },
+  {
+   "key": "catalog/census/s0229.parquet",
+   "size": 6942,
+   "md5": "293ca70c2671696673bd1c7aeb07c744",
+   "crc32c": "eBqXJQ==",
+   "generation": 1791496892459332
+  },
+  {
+   "key": "catalog/census/s0230.parquet",
+   "size": 1952,
+   "md5": "3ad02598a010555721317ec345df1692",
+   "crc32c": "Eq/rUA==",
+   "generation": 1791496786179357
+  },
+  {
+   "key": "catalog/census/s0231.parquet",
+   "size": 3342,
+   "md5": "05cb2fed239ece5f059023c415c410f2",
+   "crc32c": "5LNBew==",
+   "generation": 1791496811346483
+  },
+  {
+   "key": "catalog/census/s0232.parquet",
+   "size": 4126,
+   "md5": "a968ad06bf00478fb6873c6f6ef3da54",
+   "crc32c": "BBkWng==",
+   "generation": 1791496817945818
+  },
+  {
+   "key": "catalog/census/s0233.parquet",
+   "size": 1718,
+   "md5": "cbf2ea592b27452b4e582c7006d82a96",
+   "crc32c": "RhydDA==",
+   "generation": 1791496887640809
+  },
+  {
+   "key": "catalog/census/s0234.parquet",
+   "size": 6812,
+   "md5": "d4f68251e2b8e76495cc278ab0496703",
+   "crc32c": "o5XGZg==",
+   "generation": 1791496904651455
+  },
+  {
+   "key": "catalog/census/s0235.parquet",
+   "size": 4637,
+   "md5": "5a4713662faf614de77c141b4f882933",
+   "crc32c": "viDJGg==",
+   "generation": 1791496914153558
+  },
+  {
+   "key": "catalog/census/s0236.parquet",
+   "size": 1360,
+   "md5": "0056110c258a81ef72cb552956dc78e0",
+   "crc32c": "BNrhSw==",
+   "generation": 1791496937667055
+  },
+  {
+   "key": "catalog/census/s0237.parquet",
+   "size": 6404,
+   "md5": "37d88343ecd954195369198f4edd84f1",
+   "crc32c": "2ot0Wg==",
+   "generation": 1791496790018389
+  },
+  {
+   "key": "catalog/census/s0238.parquet",
+   "size": 3413,
+   "md5": "f32c6d227a2c4fd74980544a7c29e317",
+   "crc32c": "ljz0iA==",
+   "generation": 1791496796017906
+  },
+  {
+   "key": "catalog/census/s0239.parquet",
+   "size": 2739,
+   "md5": "333756f9494f295e78be0db0feb92027",
+   "crc32c": "RQ2QiA==",
+   "generation": 1791496814583474
+  },
+  {
+   "key": "catalog/census/s0240.parquet",
+   "size": 7747,
+   "md5": "74f0364696767f91d15e9b0251b8374a",
+   "crc32c": "KSEu6A==",
+   "generation": 1791496829373511
+  },
+  {
+   "key": "catalog/census/s0241.parquet",
+   "size": 17184,
+   "md5": "c2869b95f9ec97590d8e222f64f3b5d0",
+   "crc32c": "4E/iSw==",
+   "generation": 1791496849277627
+  },
+  {
+   "key": "catalog/census/s0242.parquet",
+   "size": 3941,
+   "md5": "943ba6d411e96b690673e5633c552b4e",
+   "crc32c": "DqeLBQ==",
+   "generation": 1791496858009279
+  },
+  {
+   "key": "catalog/census/s0243.parquet",
+   "size": 7739,
+   "md5": "48e80931d3eee663ad3abb6b7f87cd56",
+   "crc32c": "Rys2pA==",
+   "generation": 1791496877268173
+  },
+  {
+   "key": "catalog/census/s0244.parquet",
+   "size": 9296,
+   "md5": "53e6f3937f80aeb7ca2e95a5b3c38466",
+   "crc32c": "Sw+89g==",
+   "generation": 1791496893419429
+  },
+  {
+   "key": "catalog/census/s0245.parquet",
+   "size": 8909,
+   "md5": "7ecd81671f59c11563532693fdc3fad8",
+   "crc32c": "rZZiYw==",
+   "generation": 1791496788110851
+  },
+  {
+   "key": "catalog/census/s0246.parquet",
+   "size": 1342,
+   "md5": "8c55e441b5621e23f54edd38ae1a2c4c",
+   "crc32c": "MrALSA==",
+   "generation": 1791496808378950
+  },
+  {
+   "key": "catalog/census/s0247.parquet",
+   "size": 2058,
+   "md5": "2ce92504c5079c78e9a37e096da39dab",
+   "crc32c": "fQ7HGg==",
+   "generation": 1791496810848775
+  },
+  {
+   "key": "catalog/census/s0248.parquet",
+   "size": 1041,
+   "md5": "477e23a94c55b3d2eb44fe5142fada99",
+   "crc32c": "UixIUg==",
+   "generation": 1791496821219242
+  },
+  {
+   "key": "catalog/census/s0249.parquet",
+   "size": 14919,
+   "md5": "ac37ed907394e2f11e63e3ff4426347b",
+   "crc32c": "MtUFjA==",
+   "generation": 1791496852696810
+  },
+  {
+   "key": "catalog/census/s0250.parquet",
+   "size": 9355,
+   "md5": "f75bd81a2a056ef2292a58c5031d7f2d",
+   "crc32c": "RbvEaw==",
+   "generation": 1791496867789235
+  },
+  {
+   "key": "catalog/census/s0251.parquet",
+   "size": 4602,
+   "md5": "fb72d4396523feb0a3e620667633d736",
+   "crc32c": "r7OTcg==",
+   "generation": 1791496888179148
+  },
+  {
+   "key": "catalog/census/s0252.parquet",
+   "size": 3668,
+   "md5": "f1241dc3b39f56e9a3d3d5dc29060d76",
+   "crc32c": "cLblPA==",
+   "generation": 1791496893524314
+  },
+  {
+   "key": "catalog/census/s0253.parquet",
+   "size": 1666,
+   "md5": "933f0fb098b39338b916995e29d966e5",
+   "crc32c": "KE+d5Q==",
+   "generation": 1791496950872295
+  },
+  {
+   "key": "catalog/census/s0254.parquet",
+   "size": 5789,
+   "md5": "f0f65cfd4cf6ed4275a3fb59874a8804",
+   "crc32c": "a3Nj7w==",
+   "generation": 1791496785072163
+  },
+  {
+   "key": "catalog/census/s0255.parquet",
+   "size": 1399,
+   "md5": "c309cc9c79062d3d4670d8d4d71700cf",
+   "crc32c": "gDJ3RQ==",
+   "generation": 1791496826274994
+  },
+  {
+   "key": "catalog/census/s0256.parquet",
+   "size": 8606,
+   "md5": "a8b40005fd21c474c3eef3aa76def80c",
+   "crc32c": "mPRvoA==",
+   "generation": 1791496841306717
+  },
+  {
+   "key": "catalog/census/s0257.parquet",
+   "size": 1053,
+   "md5": "873059f2cdac9752696dbda7b432b40f",
+   "crc32c": "+NZ6tw==",
+   "generation": 1791496841711223
+  },
+  {
+   "key": "catalog/census/s0258.parquet",
+   "size": 1073,
+   "md5": "5f3b896e5026c5ab40956e7feddd28b2",
+   "crc32c": "cAWQQQ==",
+   "generation": 1791496853497973
+  },
+  {
+   "key": "catalog/census/s0259.parquet",
+   "size": 1141,
+   "md5": "adb98e87af938882cab4c25387b91aa3",
+   "crc32c": "I955GQ==",
+   "generation": 1791496854208411
+  },
+  {
+   "key": "catalog/census/s0260.parquet",
+   "size": 1147,
+   "md5": "402b0e9f4597b41de467cbee9cbaf212",
+   "crc32c": "5j76rA==",
+   "generation": 1791496876470278
+  },
+  {
+   "key": "catalog/census/s0261.parquet",
+   "size": 2149,
+   "md5": "62f6a0eb73cec3587d05b7b31d62e7f9",
+   "crc32c": "VQ/M1w==",
+   "generation": 1791496879785547
+  }
+ ]
+}
