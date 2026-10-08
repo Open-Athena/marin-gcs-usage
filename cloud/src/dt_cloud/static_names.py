@@ -279,26 +279,34 @@ def scan_sql(con, path: str, ps: list[Piece], version: int | None = None) -> str
     return f"SELECT depth, path, usr, {MERGED} FROM ({' UNION ALL '.join(parts)}) GROUP BY depth, path, usr"
 
 
-def interval_pyramid():
-    """The interval shape as a pyrmts `Pyramid` (key `(depth, path, usr)`, one state column per value):
-    the gaps-and-islands kernel only reads its key and state column names."""
-    from pyrmts.types import Dim, Metric, Pyramid
-
-    from .overtime import _NoStore
-
-    return Pyramid(storage=_NoStore(), keyTemplate="", binCol="depth", dims=[Dim("path", "string"), Dim("usr", "string")],
-                   metrics=[Metric(c, "count") for c in VALUE_COLS], tiers=[])
+def islands_sql(long_sql: str, key_cols: list[str], state_cols: list[str]) -> str:
+    """Gaps-and-islands over `long_sql` rows `(__scan, *key_cols, *state_cols)` → `(*key_cols, *state_cols,
+    __scan_lo, __scan_hi)`: a new run opens when a key's state changes or its scan index skips (the key was
+    absent in between). This is pyrmts' SCD-2 kernel (`pyrmts_engine.multiscan_duckdb._intervals_sql`, the
+    one `overtime.py` consolidates with) without its final sort; the job image ships pyrmts but not
+    pyrmts-engine (or polars), so it is restated here and `test_islands_equal_pyrmts` pins the two together."""
+    key_by = ", ".join(key_cols)
+    changed = " OR ".join(f"{c} IS DISTINCT FROM lag({c}) OVER w" for c in state_cols)
+    firsts = ", ".join(f"any_value({c}) AS {c}" for c in state_cols)
+    return f"""
+    WITH marked AS (
+        SELECT *, CASE WHEN row_number() OVER w = 1 OR __scan <> lag(__scan) OVER w + 1 OR {changed} THEN 1 ELSE 0 END AS __is_new
+        FROM ({long_sql}) WINDOW w AS (PARTITION BY {key_by} ORDER BY __scan)
+    ), grp AS (
+        SELECT *, sum(__is_new) OVER (PARTITION BY {key_by} ORDER BY __scan ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS __grp
+        FROM marked
+    )
+    SELECT {key_by}, {firsts}, min(__scan)::BIGINT AS __scan_lo, max(__scan)::BIGINT AS __scan_hi
+    FROM grp GROUP BY {key_by}, __grp"""
 
 
 def intervals_sql(con, sources: list[tuple[str, int, int | None]], ps: list[Piece]) -> str:
     """The range's intervals over `sources` (`(path, epoch, version)`, oldest first) as a query of
-    `INTERVAL_SCHEMA` rows (unsorted): pyrmts' gaps-and-islands over the per-scan merged rows, its
-    scan indices mapped to epochs (`vt` = the first scan after the run, or `OPEN`)."""
-    from pyrmts_engine.multiscan_duckdb import _intervals_sql, _union_sql
-
-    pyr = interval_pyramid()
-    union = _union_sql([f"({scan_sql(con, p, ps, v)})" for p, _, v in sources])
-    kernel = _intervals_sql(union, KEY_COLS, VALUE_COLS, pyr)
+    `INTERVAL_SCHEMA` rows (unsorted): gaps-and-islands over the per-scan merged rows, scan indices
+    mapped to epochs (`vt` = the first scan after the run, or `OPEN`). Every state column is equal
+    within a run (the stamp is stored rounded), so the run's values are deterministic."""
+    long = " UNION ALL ".join(f"SELECT {j}::BIGINT AS __scan, * FROM ({scan_sql(con, p, ps, v)})" for j, (p, _, v) in enumerate(sources))
+    kernel = islands_sql(long, KEY_COLS, VALUE_COLS)
     ts = [e for _, e, _ in sources] + [OPEN]
     lst = "[" + ", ".join(str(t) for t in ts) + "]::BIGINT[]"
     vals = ", ".join(VALUE_COLS)
@@ -1005,6 +1013,89 @@ def manifest_cmd(bucket, gen, subdirs) -> None:
         doc["rows"] = rows
         doc["per_scan"] = {datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d"): v for ts, v in sorted(totals.items(), key=lambda kv: int(kv[0]))}
     print(json.dumps(doc, indent=1))
+
+
+def ch_lit(s: str) -> str:
+    """A ClickHouse string literal."""
+    return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def ch_digest_sql(ranges: dict, only: list[int] | None, nodes: str = "nodes", closures: str = "closures") -> str:
+    """ClickHouse statements printing, per scan, the versions it opened and closed in the given ranges (all
+    when `only` is None) as `kind ts count digest` TSV rows — the strings `digests` hashes, summed as
+    `reinterpretAsUInt64(MD5(…))` (= DuckDB's `md5_number_upper`), which wraps mod 2⁶⁴ as the sum does here."""
+    def where() -> str:
+        if only is None:
+            return "1"
+        ors = []
+        for i in only:
+            r = ranges["ranges"][i]
+            for pc in pieces(tuple(r["lo"]), tuple(r["hi"]) if r["hi"] else None):
+                parts = [f"depth >= {pc.dlo}", f"depth <= {pc.dhi}"]
+                if pc.plo:
+                    parts.append(f"path >= {ch_lit(pc.plo)}")
+                if pc.phi is not None:
+                    parts.append(f"path < {ch_lit(pc.phi)}")
+                ors.append("(" + " AND ".join(parts) + ")")
+        return " OR ".join(ors)
+
+    opened = ("concat(toString(depth), '|', path, '|', toString(usr), '|', toString(toUnixTimestamp(vf)), '|', toString(size), '|', "
+              "toString(n_files))")
+    closed = "concat(toString(depth), '|', path, '|', toString(usr), '|', toString(toUnixTimestamp(vf)), '|', toString(toUnixTimestamp(vt)))"
+    w = where()
+    return (f"SELECT 'opened', toUnixTimestamp(vf) AS ts, count(), sum(reinterpretAsUInt64(MD5({opened}))) FROM {nodes} WHERE {w} "
+            f"GROUP BY ts ORDER BY ts SETTINGS max_threads = 16 FORMAT TSV;\n"
+            f"SELECT 'closed', toUnixTimestamp(vt) AS ts, count(), sum(reinterpretAsUInt64(MD5({closed}))) FROM {closures} WHERE {w} "
+            f"GROUP BY ts ORDER BY ts SETTINGS max_threads = 16 FORMAT TSV;\n")
+
+
+@cli.command("ch-digest-sql")
+@option("-c", "--closures", default="closures", help="ClickHouse closures table (`m_closures`: the name index's copy)")
+@option("-n", "--nodes", default="nodes", help="ClickHouse nodes table (`m_nodes`: the name index's copy)")
+@option("-r", "--range", "only", help="Comma-separated range indices (default: every key)")
+@argument("ranges_json")
+def ch_digest_sql_cmd(closures, nodes, only, ranges_json) -> None:
+    """Print the ClickHouse per-scan digest statements (pipe to `job/ch-store.sh sql -`)."""
+    sys.stdout.write(ch_digest_sql(read_json(ranges_json), [int(x) for x in only.split(",")] if only else None, nodes, closures))
+
+
+@cli.command("verify-intervals")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-r", "--range", "only", help="Comma-separated range indices (default: every range)")
+@argument("ch_tsv")
+def verify_intervals_cmd(bucket, gen, only, ch_tsv) -> None:
+    """Compare the generation's per-scan opened/closed counts and digests (summed over its ranges' digest
+    files) with ClickHouse's (`ch-digest-sql` output). Prints a JSON report; exit 1 on any difference."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    b = storage.Client().bucket(bucket)
+    ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
+    idx = [int(x) for x in only.split(",")] if only else [r["i"] for r in ranges["ranges"]]
+    mine: dict[tuple[str, int], list[int]] = {}
+    for i in idx:
+        d = json.loads(b.blob(f"{prefix}/digest/r{i:04d}.json").download_as_bytes())
+        for ts, kinds in d["digests"].items():
+            for kind, (n, h) in kinds.items():
+                cur = mine.setdefault((kind, int(ts)), [0, 0])
+                cur[0] += n
+                cur[1] = (cur[1] + h) % U64
+    theirs: dict[tuple[str, int], list[int]] = {}
+    for line in Path(ch_tsv).read_text().splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4 or parts[0] not in ("opened", "closed"):
+            continue
+        theirs[(parts[0], int(parts[1]))] = [int(parts[2]), int(parts[3]) % U64]
+    keys = sorted(set(mine) | set(theirs), key=lambda k: (k[1], k[0]))
+    diff = {f"{k[0]} {datetime.fromtimestamp(k[1], timezone.utc):%Y-%m-%d}": {"static": mine.get(k), "ch": theirs.get(k)}
+            for k in keys if mine.get(k) != theirs.get(k)}
+    report = {"gen": gen, "ranges": len(idx), "scans": len({k[1] for k in keys}), "keys": len(keys),
+              "opened": sum(v[0] for k, v in mine.items() if k[0] == "opened"), "closed": sum(v[0] for k, v in mine.items() if k[0] == "closed"),
+              "equal": not diff, "diff": diff}
+    print(json.dumps(report, indent=1))
+    if diff:
+        raise SystemExit(1)
 
 
 @cli.command("query")

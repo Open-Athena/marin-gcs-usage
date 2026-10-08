@@ -259,3 +259,23 @@ def test_shards_and_reader(fixture, tmp_path):
     for term in ["gof", "5418", "nk080", "48.parquet", "48.parquet.crc", "pio", "a'b", "é54", "zzz", "par"]:
         body = reader.answer(term, DATES)
         assert body["answers"] == {d: _brute_answer(oracle, term, d) for d in DATES}, term
+
+
+def test_islands_equal_pyrmts(fixture, tmp_path):
+    """The restated kernel and pyrmts' own (`_intervals_sql`) give the same runs on the fixture."""
+    msd = pytest.importorskip("pyrmts_engine.multiscan_duckdb")
+    from pyrmts.types import Dim, Metric, Pyramid
+
+    from dt_cloud.overtime import _NoStore
+
+    root, scans, _ = fixture
+    con = sn.connect(2, "1GB", tmp_path / "tmp")
+    ps = sn.pieces((0, ""), None)
+    srcs = [f"({sn.scan_sql(con, str(root / s['src']), ps, s['version'])})" for s in scans["scans"]]
+    long = " UNION ALL ".join(f"SELECT {j}::BIGINT AS __scan, * FROM {src}" for j, src in enumerate(srcs))
+    pyr = Pyramid(storage=_NoStore(), keyTemplate="", binCol="depth", dims=[Dim("path", "string"), Dim("usr", "string")],
+                  metrics=[Metric(c, "count") for c in sn.VALUE_COLS], tiers=[])
+    theirs = con.execute(msd._intervals_sql(msd._union_sql(srcs), sn.KEY_COLS, sn.VALUE_COLS, pyr)).fetchall()
+    cols = ", ".join([*sn.KEY_COLS, *sn.VALUE_COLS, "__scan_lo", "__scan_hi"])
+    mine = con.execute(f"SELECT {cols} FROM ({sn.islands_sql(long, sn.KEY_COLS, sn.VALUE_COLS)})").fetchall()
+    assert sorted(mine) == sorted(theirs)

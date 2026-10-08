@@ -8,6 +8,8 @@
 #   job/static-names.sh run KIND TASKS ARGS…      # one Batch job of TASKS tasks, each `dt-cloud static-names KIND -m /gcs/$B ARGS…`;
 #                                                 # waits for it and exits nonzero unless every task succeeded
 #   job/static-names.sh wait JOB                  # wait for a submitted job
+#   job/static-names.sh ch-answers DATES TERMS    # reference answers from the ch-store VM's ClickHouse (`mega_names.answer`, postings `m`),
+#                                                 # read-only, sequential; DATES comma-separated, TERMS a file of literals; JSON lines on stdout
 #
 # Env: MACHINE (n2-highmem-16), SSD (750; n2 16-vCPU needs ≥2 local SSDs of 375), PARALLELISM (TASKS), SPOT (1: spot VMs,
 # 3 retries), MAX_RUN_SECONDS (14400), IMAGE (the pinned job image digest), SRC (a staged tree; default HEAD's), JOB_ID, DRY=1.
@@ -37,7 +39,7 @@ stage_src() {
   d=tmp/static-names-src/$t
   rm -rf "$d" && mkdir -p "$d/dt_cloud"
   git archive HEAD:cloud/src/dt_cloud | tar -x -C "$d/dt_cloud"
-  gcloud storage rsync -r "$d/dt_cloud" "gs://$B/static-names/src/$t/dt_cloud" >&2
+  gcloud storage rsync -r --verbosity=error "$d/dt_cloud" "gs://$B/static-names/src/$t/dt_cloud" > /dev/null
   echo "$t"
 }
 
@@ -57,8 +59,13 @@ wait_job() {
   done
 }
 
-case ${1:?stage-src|run|wait} in
+case ${1:?stage-src|run|wait|ch-answers} in
 stage-src) stage_src ;;
+ch-answers)
+  job/ch-store.sh sh "sudo mkdir -p /data/sn && sudo tee /data/sn/ch-answers.py > /dev/null" < job/static-names/ch-answers.py
+  job/ch-store.sh sh "sudo tee /data/sn/terms.txt > /dev/null" < "${3:?TERMS}"
+  job/ch-store.sh sh "sudo docker run --rm --network host -v /data:/data -e PYTHONPATH=/data/src --entrypoint python3 \$(cat /data/image) -u /data/sn/ch-answers.py ${2:?DATES} /data/sn/terms.txt"
+  ;;
 wait) wait_job "${2:?JOB}" ;;
 run)
   KIND=${2:?KIND}
