@@ -41,7 +41,8 @@ const geometry = new Map<string, Promise<Geometry>>()
 // The Workers clock only advances across I/O; a cache miss pins "now" after CPU-bound work (decode).
 const tick = async () => { await caches.default.match('https://static-names.invalid/tick'); return Date.now() }
 
-function names(r2: R2Bucket): StaticNames {
+/** The isolate's reader over the bound bucket (group indexes held across requests). */
+export function names(r2: R2Bucket): StaticNames {
   if (reader?.r2 !== r2) reader = { r2, names: new StaticNames(r2Blobs(r2), cacheIndexes(caches.default), tick) }
   return reader.names
 }

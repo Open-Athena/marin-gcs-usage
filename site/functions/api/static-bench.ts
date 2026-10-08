@@ -1,8 +1,13 @@
 /** Dev-only bench (`STATIC_BENCH=1`): time R2 ranged reads, and hyparquet decode, of the static name-search
  *  prototype (`proto/static/*.parquet` in `INDEX_R2`) from Pages Functions. Timings and counts only, never rows.
- *  POST `{ file, ranges: [{ q, off, len }], mode: 'seq' | 'par', decode }`. */
+ *  POST `{ file, ranges: [{ q, off, len }], mode: 'seq' | 'par', decode }`.
+ *
+ *  GET `?q=<literal>&d=<scan>[&d=<scan>…]`: the static reader (`_lib/staticNames.ts`, the built generation)
+ *  run directly, with no row budget and no catalog dispatch — its per-date `{bucket: [bytes, objects]}` (the
+ *  shape `dt-cloud static-names query` prints) and its I/O and phase timings, for verification. */
 import { type FileMetaData, parquetMetadata, parquetReadObjects } from 'hyparquet'
 import { type Ctx, json, requireViewer } from '../_lib/auth.js'
+import { names } from '../_lib/nameSummaryStatic.js'
 import { compressors } from '../_lib/zstd.js'
 
 type Env = { INDEX_R2?: R2Bucket, STATIC_BENCH?: string }
@@ -84,4 +89,19 @@ export async function onRequestPost(ctx: Ctx & { env: Env }): Promise<Response> 
   const t2 = await tick()
   const cf = (ctx.request as { cf?: { colo?: string } }).cf
   return json({ colo: cf?.colo, meta: { cached: m.cached, fetch_ms: m.fetch_ms, parse_ms: m.parse_ms, footer_bytes: m.foot.byteLength, meta_ms: t1 - t0 }, total_ms: t2 - t1, results })
+}
+
+export async function onRequestGet(ctx: Ctx & { env: Env }): Promise<Response> {
+  const identity = await requireViewer({ request: ctx.request, env: { ...ctx.env, PUBLIC_READ: undefined } })
+  if (identity instanceof Response) return identity
+  const r2 = ctx.env.INDEX_R2
+  if (ctx.env.STATIC_BENCH !== '1' || !r2) return json({ error: 'not enabled' }, 404)
+  const url = new URL(ctx.request.url), key = (url.searchParams.get('q') ?? '').toLowerCase(), dates = url.searchParams.getAll('d')
+  if ([...key].length < 3 || !dates.length || dates.some(d => !/^\d{4}-\d{2}-\d{2}$/.test(d))) return json({ error: 'q (≥ 3 characters) and d=YYYY-MM-DD required' }, 400)
+  const t0 = Date.now()
+  const { io, answer } = await names(r2).answer(key, dates)
+  const total_ms = await tick() - t0
+  const answers = Object.fromEntries(Object.entries(answer!.answers).map(([d, t]) => [d, Object.fromEntries(Object.entries(t).map(([b, [x, o]]) => [b, [Number(x), Number(o)]]))]))
+  const cf = (ctx.request as { cf?: { colo?: string } }).cf
+  return json({ q: key, colo: cf?.colo, io, total_ms, rows_matching: answer!.rows_matching, answers })
 }
