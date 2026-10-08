@@ -68,11 +68,16 @@ def build_postings(ch: Ch, stem: str, start: str | None = None, settings: dict |
     nodes, closures = f"{stem}_nodes", f"{stem}_closures"
     for t in (nodes, closures):
         ch.exec(f"DROP TABLE IF EXISTS {t}", settings=settings)
-    keep = f" WHERE (depth, path, usr, vf) NOT IN (SELECT depth, path, usr, vf FROM closures WHERE vt <= {S})" if S else ""
+    # Versions closed by the span's start drop out: a streaming anti-join (both sides sorted by the version key), not a
+    # hash set of every earlier closure.
+    source = (f"""SELECT n.name, n.vf, n.depth, n.path, n.usr, n.size, n.n_files FROM nodes AS n
+        LEFT JOIN (SELECT depth, path, usr, vf, toUInt8(1) AS gone FROM closures WHERE vt <= {S}) AS c USING (depth, path, usr, vf)
+        WHERE c.gone = 0"""
+              if S else "SELECT name, vf, depth, path, usr, size, n_files FROM nodes")
     stage = monotonic()
     ch.exec(f"""CREATE TABLE {nodes} (name String, vf DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
         size Int64, n_files Int64) ENGINE = MergeTree ORDER BY (name, vf, depth, path, usr) SETTINGS index_granularity = 256
-        AS SELECT name, vf, depth, path, usr, size, n_files FROM nodes{keep}""", settings=settings)
+        AS {source}""", settings={**(settings or {}), "join_algorithm": "full_sorting_merge", "join_use_nulls": 0})
     nodes_s = round(monotonic() - stage, 3)
     stage = monotonic()
     ch.exec(f"""CREATE TABLE {closures} (name String, vt DateTime('UTC'), depth UInt8, path String CODEC(ZSTD(3)), usr LowCardinality(String),
