@@ -38,9 +38,13 @@ def built(fixture, tmp_path_factory):  # noqa: F811
     mapped, out = tmp / "map", tmp / "out"
     for r in ranges["ranges"]:
         sn.map_range(str(build / "cintervals" / f"r{r['i']:04d}.parquet"), plan, r["i"], mapped, con)
-    for t in range(len(plan["tasks"])):
-        files = sorted(str(f) for f in (mapped / "sxmap" / f"g{t:03d}").glob("*.parquet"))
-        sn.build_shards(files, plan, t, out, threads=2, mem="1GB", tmp=tmp / "tmp")
+    rg, sn.SX_RG = sn.SX_RG, 5  # several row groups per shard, so answers are fed in several chunks
+    try:
+        for t in range(len(plan["tasks"])):
+            files = sorted(str(f) for f in (mapped / "sxmap" / f"g{t:03d}").glob("*.parquet"))
+            sn.build_shards(files, plan, t, out, threads=2, mem="1GB", tmp=tmp / "tmp")
+    finally:
+        sn.SX_RG = rg
     return root, scans, merged, ranges, plan, build, out, con, tmp
 
 
@@ -60,7 +64,7 @@ def _catalog(built, v: int = V):
         name = f"s{s['i']:04d}"
         con.execute("CREATE OR REPLACE TABLE mem (q VARCHAR, rows BIGINT)")
         con.executemany("INSERT INTO mem VALUES (?, ?)", [(qq, n) for qq, sh, n in members if sh == s["i"]])
-        sc.shard_cells(con, str(out / "sx" / f"{name}.parquet"), "mem", cat / "cells" / f"{name}.parquet")
+        sc.shard_cells(con, str(out / "sx" / f"{name}.parquet"), "mem", cat / "cells" / f"{name}.parquet", chunk_rows=11)
     for r in ranges["ranges"]:
         sc.range_short(con, str(build / "cintervals" / f"r{r['i']:04d}.parquet"), cat / "short", f"r{r['i']:04d}")
     meta = sc.assemble(con, str(cat / "short/events/*.parquet"), str(cat / "short/vocab/*.parquet"), str(cat / "cells/*.parquet"), cat / "final")
@@ -125,3 +129,19 @@ def test_index_groups_are_sorted(built):
     qs = [(g["q_min"], g["q_max"]) for g in cat.groups]
     assert all(a <= b for a, b in qs)
     assert all(qs[k][1] <= qs[k + 1][0] for k in range(len(qs) - 1))
+
+
+def test_brute_sql_equals_oracle(fixture):  # noqa: F811
+    """`brute` straight from each scan file equals the versions' first hits on that date."""
+    root, scans, merged = fixture
+    con = sn.connect(2, "1GB", None)
+    terms = ["gof", "5418", "pio", "a'b", "é5", "b", "1", "zzz"]
+    con.execute("CREATE TABLE terms (term VARCHAR)")
+    con.executemany("INSERT INTO terms VALUES (?)", [(t,) for t in terms])
+    oracle = _oracle(merged)
+    for s in scans["scans"]:
+        got: dict = {t: {} for t in terms}
+        for term, bkt, b_, o_ in con.execute(sc.brute_sql(str(root / s["src"]), s["version"], "terms")).fetchall():
+            if b_ or o_:
+                got[term][bkt] = [b_, o_]
+        assert got == {t: _brute_answer(oracle, t, s["id"]) for t in terms}, s["id"]

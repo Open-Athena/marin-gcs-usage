@@ -110,14 +110,17 @@ def census(con, src: str, floor_rows: int, floor_bytes: int | None = None) -> pa
 # ── Answers: first-hit events per member ───────────────────────────────────
 
 
-def member_events(con, rows_sql: str, members: str) -> str:
+def member_events(con, rows_sql: str, members: str, fresh: bool = True) -> str:
     """Events `(q, bucket, t, db, dn)` of `members`' (a table with `q`, ≥ 3 characters) first hits among
     `rows_sql`'s suffix rows `(s, depth, path, t0, t1, size, n_files, sign)`: `sign·(size, n_files)` at `t0`,
     and its negation at `t1` unless `t1` is NULL or OPEN (a delta's close record is a row with `t0` = the
     scan, `sign` −1 and `t1` NULL). Level by level over lengths, carrying only the rows whose prefix of the
-    level's length is a prefix of some member. Leaves the summed events in table `ev`; returns its name."""
-    con.execute("DROP TABLE IF EXISTS ev; DROP TABLE IF EXISTS mx; DROP TABLE IF EXISTS mpre")
-    con.execute("CREATE TABLE ev (q VARCHAR, bucket VARCHAR, t BIGINT, db HUGEINT, dn HUGEINT)")
+    level's length is a prefix of some member. Adds the summed events to table `ev` (created afresh unless
+    `fresh` is false: events are additive, so a shard can be fed in chunks); returns its name."""
+    con.execute("DROP TABLE IF EXISTS mx; DROP TABLE IF EXISTS mpre")
+    if fresh:
+        con.execute("DROP TABLE IF EXISTS ev")
+    con.execute("CREATE TABLE IF NOT EXISTS ev (q VARCHAR, bucket VARCHAR, t BIGINT, db HUGEINT, dn HUGEINT)")
     top = con.execute(f"SELECT max(length(q)) FROM {members}").fetchone()[0]
     if not top:
         return "ev"
@@ -187,9 +190,27 @@ def sx_rows_sql(src: str) -> str:
     return f"""SELECT s, depth, path, epoch(vf)::BIGINT AS t0, epoch(vt)::BIGINT AS t1, size, n_files, 1::BIGINT AS sign FROM {src}"""
 
 
-def shard_cells(con, sx: str, members: str, dst: Path) -> int:
-    """One shard's members' cells (`members`: `q, rows`, all within the shard) → `dst`, sorted."""
-    member_events(con, sx_rows_sql(f"read_parquet({q(sx)})"), members)
+#: Suffix rows fed to `member_events` at a time (events are additive across chunks).
+CHUNK_ROWS = 1 << 24
+
+
+def shard_cells(con, sx: str, members: str, dst: Path, chunk_rows: int = CHUNK_ROWS) -> int:
+    """One shard's members' cells (`members`: `q, rows`, all within the shard) → `dst`, sorted. The shard is
+    read in chunks of whole row groups, so memory is bounded by the chunk, not the shard."""
+    pf = pq.ParquetFile(sx)
+    con.execute("DROP TABLE IF EXISTS ev")
+    con.execute("CREATE TABLE ev (q VARCHAR, bucket VARCHAR, t BIGINT, db HUGEINT, dn HUGEINT)")
+    groups: list[int] = []
+    n = 0
+    for g in range(pf.metadata.num_row_groups):
+        groups.append(g)
+        n += pf.metadata.row_group(g).num_rows
+        if n >= chunk_rows or g == pf.metadata.num_row_groups - 1:
+            chunk = pf.read_row_groups(groups, columns=["s", "depth", "path", "vf", "vt", "size", "n_files"])
+            con.register("sx_chunk", chunk)
+            member_events(con, sx_rows_sql("sx_chunk"), members, fresh=False)
+            con.unregister("sx_chunk")
+            groups, n = [], 0
     return write_sorted(_batches(con, f"SELECT * FROM ({cells_sql('ev', members)}) ORDER BY q, bucket, vf"), dst, CELL_SCHEMA, 1 << 16,
                         dictionary=["bucket"])
 
@@ -500,6 +521,52 @@ def assemble_cmd(bucket, gen, mount, mem, threads, scratch, tmp) -> None:
     upload_tree(out, bucket, f"{prefix}/catalog")
     shutil.rmtree(out)
     print(json.dumps(meta, indent=1))
+
+
+def brute_sql(src: str, version: int, terms: str) -> str:
+    """Per (term, bucket): Σ size, n_files over one scan's rows (`src`, its `path` sort; v1 `b`/`o`) at depth ≥ 1
+    whose lowercase name contains the term and whose lowercase parent does not — the first-hit rule straight
+    from the scan, no versions, no index. `terms`: a table of `term`."""
+    size, n = ("size", "n_files") if version == 2 else ("b", "o")
+    return f"""SELECT t.term, split_part(x.path, '/', 1) AS bucket, sum(x.sz)::BIGINT AS b, sum(x.nf)::BIGINT AS o
+        FROM (SELECT path, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf FROM read_parquet({q(src)}) WHERE depth >= 1) AS x,
+            {terms} AS t
+        WHERE contains(x.l, t.term) AND NOT contains(x.par, t.term) GROUP BY ALL"""
+
+
+@cli.command("brute")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat (task i answers the i-th)")
+@option("-g", "--gen", required=True, help="Generation (its `scans.json` names each date's source; answers go to its `verify/brute/`)")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-t", "--terms-file", required=True, help="Literals, one per line (a path or gs:// URL)")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def brute_cmd(bucket, dates, gen, index, mount, mem, threads, terms_file, tmp) -> None:
+    """Reference answers by brute force over one date's scan file → `verify/brute/<date>.jsonl` (one line per
+    term: `{date, q, buckets: {bucket: [bytes, objects]}}`, nonzero buckets, as `job/static-names.sh ch-answers`)."""
+    from google.cloud import storage
+
+    from .static_names import read_text
+
+    prefix = f"{PREFIX}/{gen}"
+    date = dates[_task(index)]
+    scan = next(s for s in read_json(f"gs://{bucket}/{prefix}/scans.json")["scans"] if s["id"] == date)
+    terms = sorted({x.lower() for x in read_text(terms_file).splitlines() if x.strip()})
+    con = connect(threads, mem, tmp)
+    con.execute("CREATE TABLE terms (term VARCHAR)")
+    con.executemany("INSERT INTO terms VALUES (?)", [(t,) for t in terms])
+    t0 = monotonic()
+    rows = con.execute(brute_sql(f"{mount}/{scan['src']}", scan["version"], "terms")).fetchall()
+    got: dict[str, dict] = {t: {} for t in terms}
+    for term, bkt, b_, o_ in rows:
+        if b_ or o_:
+            got[term][bkt] = [int(b_), int(o_)]
+    body = "".join(json.dumps({"date": date, "q": t, "buckets": dict(sorted(got[t].items()))}) + "\n" for t in terms)
+    storage.Client().bucket(bucket).blob(f"{prefix}/verify/brute/{date}.jsonl").upload_from_string(body)
+    err(f"brute {date}: {len(terms)} terms in {monotonic() - t0:.1f}s")
 
 
 @cli.command("query")

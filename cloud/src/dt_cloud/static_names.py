@@ -1151,9 +1151,10 @@ def coalesce_report_cmd(bucket, gen, hist_gen, thresholds) -> None:
 @cli.command("plan-shards")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
+@option("-H", "--hist", "hist_dir", default="hist", help="Histogram subdir (`chist`: the coalesced versions')")
 @option("-n", "--target-rows", default=50_000_000, type=int, help="Suffix rows per shard file")
 @option("-t", "--tasks", default=32, type=int, help="Batch tasks (contiguous groups of shards)")
-def plan_shards_cmd(bucket, gen, target_rows, tasks) -> None:
+def plan_shards_cmd(bucket, gen, hist_dir, target_rows, tasks) -> None:
     """Print the shard plan (JSON) from the generation's per-range prefix histograms."""
     import tempfile
 
@@ -1163,17 +1164,18 @@ def plan_shards_cmd(bucket, gen, target_rows, tasks) -> None:
     b = storage.Client().bucket(bucket)
     with tempfile.TemporaryDirectory() as d:
         paths = []
-        for blob in storage.Client().list_blobs(bucket, prefix=f"{prefix}/hist/"):
+        for blob in storage.Client().list_blobs(bucket, prefix=f"{prefix}/{hist_dir}/"):
             p = Path(d) / Path(blob.name).name
             b.blob(blob.name).download_to_filename(str(p))
             paths.append(p)
         if not paths:
-            raise SystemExit(f"no histograms under gs://{bucket}/{prefix}/hist/")
+            raise SystemExit(f"no histograms under gs://{bucket}/{prefix}/{hist_dir}/")
         print(json.dumps(plan_shards(sorted(paths), target_rows, tasks), indent=1))
 
 
 @cli.command("suffix-map")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-C", "--coalesced", is_flag=True, help="Expand GEN's coalesced versions (`cintervals/`) instead of intervals")
 @option("-f", "--force", is_flag=True, help="Redo ranges already mapped")
 @option("-g", "--gen", required=True, help="Generation (its `shards.json` plan; intervals from -I or GEN)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -1186,7 +1188,7 @@ def plan_shards_cmd(bucket, gen, target_rows, tasks) -> None:
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
 @option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the shuffle (`sxmap/`, `sxmap-done/`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
-def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, scratch, tmp) -> None:
+def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, scratch, tmp) -> None:
     """Expand ranges' intervals into suffix rows tagged with their shard, written per reduce task
     (`gs://SCRATCH/static-names/GEN/sxmap/g###/`); a range's `sxmap-done/r####.json` there marks it done."""
     from google.cloud import storage
@@ -1207,7 +1209,7 @@ def suffix_map_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_tas
         if not force and b.blob(mark).exists():
             err(f"map range {i}: already mapped")
             continue
-        src = f"{mount}/{PREFIX}/{ig}/intervals/r{i:04d}.parquet"
+        src = f"{mount}/{prefix}/cintervals/r{i:04d}.parquet" if coalesced else f"{mount}/{PREFIX}/{ig}/intervals/r{i:04d}.parquet"
         outp = Path(out) / f"m{i}"
         doc = map_range(src, plan, i, outp, con)
         upload_tree(outp, scratch, prefix)
@@ -1448,8 +1450,8 @@ def compare_answers_cmd(ch_jsonl, static_jsonl) -> None:
         if not line.startswith("{"):
             continue
         d = json.loads(line)
-        terms[d["q"]] = {**d["io"], "rows_matching": d["rows_matching"], "s": d.get("s")}
-        for date, buckets in d["answers"].items():
+        terms[d["q"]] = {**d.get("io", {}), **{k: d[k] for k in ("rows_matching", "source", "rows", "cells") if k in d}, "s": d.get("s")}
+        for date, buckets in (d["answers"] or {}).items():
             mine = {k: v for k, v in buckets.items() if v[0] or v[1]}
             if (d["q"], date) not in ref:
                 continue
