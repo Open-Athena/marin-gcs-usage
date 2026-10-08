@@ -10,4 +10,4 @@ meta:
     deps:
       intervals.json: 7c9452d7769175794c331c41e23fda73
     git_deps:
-      ../../cloud/src/dt_cloud/static_names.py: b3a41e46f3d76ab6ba4b5c87c5dbe4af8172a01c
+      ../../cloud/src/dt_cloud/static_names.py: 6775a7b31406c14d0e40d0ee6d95ed0042413ac9

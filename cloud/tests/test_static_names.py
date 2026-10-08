@@ -283,3 +283,106 @@ def test_islands_equal_pyrmts(fixture, tmp_path):
     cols = ", ".join([*sn.KEY_COLS, *sn.VALUE_COLS, "__scan_lo", "__scan_hi"])
     mine = con.execute(f"SELECT {cols} FROM ({sn.islands_sql(long, sn.KEY_COLS, sn.VALUE_COLS)})").fetchall()
     assert sorted(mine) == sorted(theirs)
+
+
+def _coalesced_oracle(oracle: list[tuple]) -> list[tuple]:
+    """Adjacent versions of a key (`vt` = the next `vf`) with equal `size` and `n_files` merged."""
+    out: list[list] = []
+    for depth, path, usr, vf, vt, _kind, size, n_files, *_ in sorted(oracle):
+        last = out[-1] if out else None
+        if last and last[:3] == [depth, path, usr] and last[4] == vf and last[5:] == [size, n_files]:
+            last[4] = vt
+        else:
+            out.append([depth, path, usr, vf, vt, size, n_files])
+    return [tuple(r) for r in out]
+
+
+def test_coalesce_equals_oracle(fixture, tmp_path):
+    root, scans, merged = fixture
+    ranges = sn.plan_ranges(scans, 3, str(root))
+    build = tmp_path / "build"
+    rows = _build(root, scans, ranges, build)
+    con = sn.connect(2, "1GB", tmp_path / "tmp")
+    got = []
+    terms = ["gof", "5418", "aaa"]
+    stats = []
+    for r in ranges["ranges"]:
+        name = f"r{r['i']:04d}"
+        stats.append(sn.coalesce_range(str(build / "intervals" / f"{name}.parquet"), r["i"], build, con, terms))
+        got += _read(build / "cintervals" / f"{name}.parquet")
+    expected = _coalesced_oracle(_oracle(merged))
+    assert got == expected
+    assert len(expected) < len(rows)
+    assert sum(s["versions"][0] for s in stats) == len(rows)
+    assert sum(s["versions"][1] for s in stats) == len(expected)
+
+    def term_rows(versions, t):
+        return sum(sum(1 for p in range(len(n) - len(t) + 1) if n[p:p + len(t)] == t)
+                   for n in (v[1].rsplit("/", 1)[-1].lower() for v in versions if v[0] >= 1))
+
+    full = [(r[0], r[1]) for r in rows]
+    co = [(r[0], r[1]) for r in expected]
+    for t in terms:
+        assert [sum(s["terms"][t][k] for s in stats) for k in (0, 1)] == [term_rows(full, t), term_rows(co, t)], t
+    assert [sum(s["suffix_rows"][k] for s in stats) for k in (0, 1)] == [
+        sum(max(len(p.rsplit("/", 1)[-1]) - 2, 0) for d, p in vs if d >= 1) for vs in (full, co)]
+
+
+def test_coalesce_append_equals_rebuild(fixture, tmp_path):
+    root, scans, merged = fixture
+    ranges = sn.plan_ranges(scans, 3, str(root))
+    head = {"bucket": "b", "scans": scans["scans"][:-1]}
+    full, prev, app = tmp_path / "full", tmp_path / "prev", tmp_path / "app"
+    _build(root, scans, ranges, full)
+    _build(root, head, ranges, prev)
+    con = sn.connect(2, "1GB", tmp_path / "tmp")
+    last = scans["scans"][-1]
+    D = last["ts"]
+    for r in ranges["ranges"]:
+        name = f"r{r['i']:04d}"
+        sn.coalesce_range(str(full / "intervals" / f"{name}.parquet"), r["i"], full, con)
+        sn.coalesce_range(str(prev / "intervals" / f"{name}.parquet"), r["i"], prev, con)
+        sn.append_range(prev / "intervals" / f"{name}.parquet", last, ranges, r["i"], app,
+                        bucket="b", mount=str(root), threads=2, mem="1GB", tmp=app / "tmp")
+        doc = sn.coalesce_append(prev / "cintervals" / f"{name}.parquet", app / "delta" / last["id"] / f"{name}.parquet", last, app, r["i"], con)
+        assert (app / "cintervals" / f"{name}.parquet").read_bytes() == (full / "cintervals" / f"{name}.parquet").read_bytes()
+        assert (app / "chist" / f"{name}.parquet").read_bytes() == (full / "chist" / f"{name}.parquet").read_bytes()
+        before, after = set(_read(prev / "cintervals" / f"{name}.parquet")), set(_read(full / "cintervals" / f"{name}.parquet"))
+        delta = pq.read_table(app / "cdelta" / last["id"] / f"{name}.parquet").to_pylist()
+        opened = sorted(tuple(d[k] for k in sn.CINTERVAL_SCHEMA.names) for d in delta if d["op"] == 1)
+        closed = sorted(tuple(d[k] for k in sn.CINTERVAL_SCHEMA.names) for d in delta if d["op"] == -1)
+        assert opened == sorted(v for v in after if v[3] == D)
+        assert closed == sorted(v for v in after if v[4] == D)
+        assert (doc["opened"], doc["closed"]) == (len(opened), len(closed))
+        # what changed between the two coalesced builds is exactly the delta: new versions, and closes of open ones
+        assert sorted(after - before) == sorted(opened + closed)
+        assert sorted(before - after) == sorted((*c[:4], sn.OPEN, *c[5:]) for c in closed)
+
+
+def test_coalesced_shards_answer_exactly(fixture, tmp_path):
+    """Suffix shards over the coalesced versions give the same answers as over every version."""
+    root, scans, merged = fixture
+    ranges = sn.plan_ranges(scans, 2, str(root))
+    build = tmp_path / "build"
+    _build(root, scans, ranges, build)
+    con = sn.connect(2, "1GB", tmp_path / "tmp")
+    for r in ranges["ranges"]:
+        sn.coalesce_range(str(build / "intervals" / f"r{r['i']:04d}.parquet"), r["i"], build, con)
+    plan = sn.plan_shards(sorted((build / "chist").glob("*.parquet")), target_rows=40, tasks=2)
+    mapped, out = tmp_path / "map", tmp_path / "out"
+    for r in ranges["ranges"]:
+        sn.map_range(str(build / "cintervals" / f"r{r['i']:04d}.parquet"), plan, r["i"], mapped, con)
+    for t in range(len(plan["tasks"])):
+        files = sorted(str(f) for f in (mapped / "sxmap" / f"g{t:03d}").glob("*.parquet"))
+        sn.build_shards(files, plan, t, out, threads=2, mem="1GB", tmp=tmp_path / "tmp")
+    side = pa.concat_tables([pq.read_table(f) for f in sorted((out / "sidecar").glob("*.parquet"))])
+
+    def fetch(file: str, lo: int, hi: int) -> bytes:
+        with open(out / file, "rb") as fh:
+            fh.seek(lo)
+            return fh.read(hi - lo)
+
+    reader = sn.Reader(fetch, lambda f: (out / f).stat().st_size, side)
+    oracle = _oracle(merged)
+    for term in ["gof", "5418", "nk080", "48.parquet", "pio", "a'b", "é54", "zzz", "par"]:
+        assert reader.answer(term, DATES)["answers"] == {d: _brute_answer(oracle, term, d) for d in DATES}, term

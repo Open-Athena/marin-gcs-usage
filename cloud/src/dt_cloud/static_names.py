@@ -482,6 +482,118 @@ def append_range(prev: Path, scan: dict, ranges: dict, i: int, out: Path, *, buc
     return _finish_range(con, "ivs", out, i, {"range": r, "appended": scan["id"], "opened": int(n_open), "closed": int(n_close)}, t0)
 
 
+# ── Coalesced versions ─────────────────────────────────────────────────────
+
+#: What a name answer reads of a version: its key, liveness and these values. Versions that differ only in
+#: other values (`last_read`, the mean stamp, storage classes, …) are merged when adjacent (`vt` = the next
+#: `vf`), so a name index over the coalesced versions answers exactly as one over every version.
+ANSWER_COLS = ["size", "n_files"]
+CINTERVAL_SCHEMA = pa.schema([INTERVAL_SCHEMA.field(c) for c in ["depth", "path", "usr", "vf", "vt", *ANSWER_COLS]])
+
+
+def coalesce_sql(src: str) -> str:
+    """`src`'s intervals (`INTERVAL_SCHEMA` rows, a table or `read_parquet(…)`) with adjacent versions of a key
+    merged while `size` and `n_files` hold: a run opens at a key's first version, after an absence (`vf` ≠ the
+    previous `vt`) or when either value changes. `CINTERVAL_SCHEMA` rows, unsorted."""
+    same = " AND ".join(f"lag({c}) OVER w = {c}" for c in ANSWER_COLS)
+    vals = ", ".join(f"any_value({c}) AS {c}" for c in ANSWER_COLS)
+    return f"""WITH m AS (
+            SELECT depth, path, usr, vf, vt, {', '.join(ANSWER_COLS)},
+                CASE WHEN lag(vt) OVER w = vf AND {same} THEN 0 ELSE 1 END AS __is_new
+            FROM {src} WINDOW w AS (PARTITION BY depth, path, usr ORDER BY vf)
+        ), g AS (
+            SELECT *, sum(__is_new) OVER (PARTITION BY depth, path, usr ORDER BY vf ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS __grp FROM m
+        )
+        SELECT depth, path, usr, min(vf) AS vf, max(vt) AS vt, {vals} FROM g GROUP BY depth, path, usr, __grp"""
+
+
+def term_rows_sql(table: str, terms: list[str]) -> str:
+    """Per term: the suffix rows its range holds over `table`'s versions (Σ versions × occurrences in the
+    lowercase name, overlapping ones included: each is a suffix starting with the term), depth ≥ 1."""
+    if not terms:
+        return "SELECT NULL::VARCHAR AS term, 0::BIGINT AS n WHERE false"
+    parts = []
+    for t in terms:
+        n = len(t)
+        parts.append(f"""SELECT {q(t)} AS term, coalesce(sum(list_count(list_filter(range(1, length(l) - {n} + 2),
+                lambda p: substring(l, p, {n}) = {q(t)}))), 0)::BIGINT AS n
+            FROM (SELECT {NAME} AS l FROM {table} WHERE depth >= 1) WHERE contains(l, {q(t)})""")
+    return " UNION ALL ".join(parts)
+
+
+def suffix_count_sql(table: str) -> str:
+    """`(versions, suffix rows)` at depth ≥ 1: a version's suffix rows are its name's positions of ≥ 3 characters."""
+    return f"""SELECT count(*)::BIGINT, coalesce(sum(greatest(length(l) - 2, 0)), 0)::BIGINT FROM (SELECT {NAME} AS l FROM {table} WHERE depth >= 1)"""
+
+
+def coalesce_range(src: str, i: int, out: Path, con, terms: list[str] | None = None) -> dict:
+    """One range's coalesced versions: `cintervals/r####.parquet` (sorted `(depth, path, usr, vf)`),
+    `chist/r####.parquet` (suffix rows per three-character prefix) and `cstats/r####.json` (versions and
+    suffix rows before and after, and each of `terms`' range rows before and after)."""
+    t0 = monotonic()
+    name = f"r{i:04d}"
+    con.execute("DROP TABLE IF EXISTS iv; DROP TABLE IF EXISTS civ")
+    con.execute(f"CREATE TABLE iv AS SELECT depth, path, usr, vf, vt, {', '.join(ANSWER_COLS)} FROM read_parquet({q(src)})")
+    con.execute(f"CREATE TABLE civ AS {coalesce_sql('iv')}")
+    rows = write_sorted(_batches(con, "SELECT * FROM civ ORDER BY depth, path, usr, vf"), out / "cintervals" / f"{name}.parquet",
+                        CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
+    (out / "chist").mkdir(parents=True, exist_ok=True)
+    pq.write_table(con.execute(hist_sql("civ")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+    stats: dict = {"range": i, "versions": [con.execute("SELECT count(*) FROM iv").fetchone()[0], rows]}
+    stats["dir_versions"] = [con.execute(f"SELECT count(*) FROM {t} WHERE depth >= 1").fetchone()[0] for t in ("iv", "civ")]
+    stats["suffix_rows"] = [con.execute(suffix_count_sql(t)).fetchone()[1] for t in ("iv", "civ")]
+    if terms:
+        before = dict(con.execute(term_rows_sql("iv", terms)).fetchall())
+        after = dict(con.execute(term_rows_sql("civ", terms)).fetchall())
+        stats["terms"] = {t: [int(before.get(t, 0)), int(after.get(t, 0))] for t in terms}
+    stats["s"] = round(monotonic() - t0, 1)
+    (out / "cstats").mkdir(parents=True, exist_ok=True)
+    (out / "cstats" / f"{name}.json").write_text(json.dumps(stats, sort_keys=True) + "\n")
+    con.execute("DROP TABLE iv; DROP TABLE civ")
+    err(f"coalesce range {i}: {stats['versions'][0]:,} → {rows:,} versions, suffix rows {stats['suffix_rows'][0]:,} → {stats['suffix_rows'][1]:,} in {stats['s']}s")
+    return stats
+
+
+def coalesce_append(prev: Path, delta: Path, scan: dict, out: Path, i: int, con) -> dict:
+    """Append scan `D` to a range's coalesced versions (`prev`, `CINTERVAL_SCHEMA` sorted) from the intervals'
+    delta for `D` (`delta/<D>/r####.parquet`: `op` 1 = a version opened at `D`, −1 = one closed at `D`). Per
+    key: closed and reopened with the same answer values continues its coalesced version; closed alone (or
+    reopened with others) closes it at `D`; opened alone (or with others) opens one. Writes the range's
+    `cintervals/` (equal to coalescing the appended intervals) and `cdelta/<D>/r####.parquet` (the coalesced
+    versions opened, `op` 1, and closed, `op` −1)."""
+    name = f"r{i:04d}"
+    D = scan["ts"]
+    con.execute("DROP TABLE IF EXISTS cold; DROP TABLE IF EXISTS dl; DROP TABLE IF EXISTS cev; DROP TABLE IF EXISTS cnew")
+    con.execute(f"CREATE TABLE cold AS SELECT * FROM read_parquet({q(str(prev))})")
+    last = con.execute("SELECT max(vf) FROM cold").fetchone()[0]
+    if last is not None and last >= D:
+        raise ValueError(f"range {i}: coalesced versions already reach {last} ≥ the appended scan {D}")
+    vals = ", ".join(ANSWER_COLS)
+    con.execute(f"CREATE TABLE dl AS SELECT depth, path, usr, op, {vals} FROM read_parquet({q(str(delta))})")
+    same = " AND ".join(f"o.{c} = c.{c}" for c in ANSWER_COLS)
+    # per key: its closing interval's values (c) and its opening one's (o)
+    con.execute(f"""CREATE TABLE cev AS SELECT coalesce(o.depth, c.depth) AS depth, coalesce(o.path, c.path) AS path,
+            coalesce(o.usr, c.usr) AS usr, c.depth IS NOT NULL AS closed, o.depth IS NOT NULL AS opened,
+            c.depth IS NOT NULL AND o.depth IS NOT NULL AND {same} AS continues, {', '.join(f'o.{c}' for c in ANSWER_COLS)}
+        FROM (SELECT * FROM dl WHERE op = 1) AS o FULL OUTER JOIN (SELECT * FROM dl WHERE op = -1) AS c USING (depth, path, usr)""")
+    con.execute(f"""CREATE TABLE cnew AS
+        SELECT o.depth, o.path, o.usr, o.vf,
+            CASE WHEN o.vt = {OPEN} AND e.closed AND NOT e.continues THEN {D} ELSE o.vt END::BIGINT AS vt, {', '.join(f'o.{c}' for c in ANSWER_COLS)}
+        FROM cold AS o LEFT JOIN cev AS e ON o.vt = {OPEN} AND o.depth = e.depth AND o.path = e.path AND o.usr = e.usr
+        UNION ALL SELECT depth, path, usr, {D}::BIGINT AS vf, {OPEN}::BIGINT AS vt, {vals} FROM cev WHERE opened AND NOT continues""")
+    rows = write_sorted(_batches(con, "SELECT * FROM cnew ORDER BY depth, path, usr, vf"), out / "cintervals" / f"{name}.parquet",
+                        CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
+    dschema = CINTERVAL_SCHEMA.append(pa.field("op", pa.int8(), nullable=False))
+    write_sorted(_batches(con, f"""SELECT *, 1::TINYINT AS op FROM cnew WHERE vf = {D}
+                    UNION ALL SELECT *, -1::TINYINT AS op FROM cnew WHERE vt = {D} ORDER BY depth, path, usr, vf, op"""),
+                 out / "cdelta" / scan["id"] / f"{name}.parquet", dschema, INTERVAL_RG, dictionary=["usr"])
+    (out / "chist").mkdir(parents=True, exist_ok=True)
+    pq.write_table(con.execute(hist_sql("cnew")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+    n_open, n_close = con.execute(f"SELECT count(*) FILTER (WHERE vf = {D}), count(*) FILTER (WHERE vt = {D}) FROM cnew").fetchone()
+    con.execute("DROP TABLE cold; DROP TABLE dl; DROP TABLE cev; DROP TABLE cnew")
+    return {"range": i, "appended": scan["id"], "rows": rows, "opened": int(n_open), "closed": int(n_close)}
+
+
 # ── Suffix shards ──────────────────────────────────────────────────────────
 
 
@@ -799,6 +911,15 @@ def read_json(uri: str) -> dict:
     return json.loads(Path(uri).read_text())
 
 
+def read_text(uri: str) -> str:
+    if uri.startswith("gs://"):
+        from google.cloud import storage
+
+        bucket, key = uri[5:].split("/", 1)
+        return storage.Client().bucket(bucket).blob(key).download_as_bytes().decode()
+    return Path(uri).read_text()
+
+
 def manifest(bucket: str, prefix: str, sub: str) -> list[dict]:
     """`{key, size, md5, generation}` of every object under `prefix/sub/`, sorted."""
     from google.cloud import storage
@@ -943,6 +1064,88 @@ def append_cmd(bucket, from_gen, gen, index, mount, mem, out, threads, tmp, no_u
         upload_tree(outp, bucket, prefix)
         shutil.rmtree(outp)
     print(json.dumps(doc))
+
+
+@cli.command("coalesce")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket (the scratch bucket for a measurement)")
+@option("-f", "--force", is_flag=True, help="Redo ranges whose stats are already uploaded")
+@option("-g", "--gen", required=True, help="Output generation: gs://BUCKET/static-names/GEN/{cintervals,chist,cstats}/")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-I", "--intervals-gen", required=True, help="Generation whose intervals to coalesce (read through the mount)")
+@option("-m", "--mount", required=True, help="Local mount of the data bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
+@option("-o", "--out", default="/stage/out", help="Local output dir")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
+@option("-t", "--terms", help="A file of literals (one per line; a path or gs:// URL) whose range rows to count before and after")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def coalesce_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, terms, tmp) -> None:
+    """Coalesce ranges' intervals to the versions a name answer distinguishes (`size`, `n_files`): each
+    range's `cintervals/`, `chist/` and `cstats/` (written last: marks the range done)."""
+    from google.cloud import storage
+
+    ranges = read_json(f"gs://{DATA_BUCKET}/{PREFIX}/{intervals_gen}/ranges.json")
+    todo = [int(x) for x in only.split(",")] if only else list(range(_task(index) * per_task, min((_task(index) + 1) * per_task, ranges["k"])))
+    lits = [x for x in read_text(terms).splitlines() if x.strip()] if terms else None
+    prefix = f"{PREFIX}/{gen}"
+    b = storage.Client().bucket(bucket)
+    con = connect(threads, mem, tmp)
+    for i in todo:
+        if not force and b.blob(f"{prefix}/cstats/r{i:04d}.json").exists():
+            err(f"coalesce range {i}: already done")
+            continue
+        outp = Path(out) / f"c{i}"
+        stats = coalesce_range(f"{mount}/{PREFIX}/{intervals_gen}/intervals/r{i:04d}.parquet", i, outp, con, lits)
+        moved = Path(out) / f"c{i}-stats"
+        shutil.move(str(outp / "cstats"), moved)
+        upload_tree(outp, bucket, prefix)
+        upload_tree(moved, bucket, f"{prefix}/cstats")
+        shutil.rmtree(outp)
+        shutil.rmtree(moved)
+        print(json.dumps(stats), flush=True)
+
+
+@cli.command("coalesce-report")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation holding `cstats/` and `chist/`")
+@option("-H", "--hist-gen", required=True, help="Generation holding the uncoalesced `hist/`")
+@option("-v", "--threshold", "thresholds", multiple=True, type=int, default=[100_000, 150_000], help="Range-row thresholds to count prefixes at; repeat")
+def coalesce_report_cmd(bucket, gen, hist_gen, thresholds) -> None:
+    """Sum the coalesce stage's per-range stats (versions, suffix rows, per-term range rows, before → after) and
+    compare three-character prefixes' rows before and after (how many reach each threshold). JSON."""
+    import tempfile
+
+    import duckdb
+    from google.cloud import storage
+
+    client = storage.Client()
+    tot: dict = {"ranges": 0, "versions": [0, 0], "dir_versions": [0, 0], "suffix_rows": [0, 0], "terms": {}}
+    for blob in client.list_blobs(bucket, prefix=f"{PREFIX}/{gen}/cstats/"):
+        d = json.loads(blob.download_as_bytes())
+        tot["ranges"] += 1
+        for k in ("versions", "dir_versions", "suffix_rows"):
+            tot[k] = [tot[k][0] + d[k][0], tot[k][1] + d[k][1]]
+        for t, (x, y) in d.get("terms", {}).items():
+            cur = tot["terms"].setdefault(t, [0, 0])
+            cur[0] += x
+            cur[1] += y
+    with tempfile.TemporaryDirectory() as tmpd:
+        sets = {}
+        for name, g, sub in (("before", hist_gen, "hist"), ("after", gen, "chist")):
+            dd = Path(tmpd) / name
+            dd.mkdir()
+            for blob in client.list_blobs(DATA_BUCKET if name == "before" else bucket, prefix=f"{PREFIX}/{g}/{sub}/"):
+                blob.download_to_filename(str(dd / Path(blob.name).name))
+            sets[name] = str(dd / "*.parquet")
+        con = duckdb.connect()
+        rows = con.execute(f"""SELECT coalesce(a.p3, b.p3), coalesce(a.n, 0), coalesce(b.n, 0) FROM
+            (SELECT p3, sum(n) AS n FROM read_parquet({q(sets['before'])}) GROUP BY p3) AS a FULL OUTER JOIN
+            (SELECT p3, sum(n) AS n FROM read_parquet({q(sets['after'])}) GROUP BY p3) AS b USING (p3)""").fetchall()
+    tot["prefixes"] = {str(v): [sum(1 for _, x, _ in rows if x >= v), sum(1 for _, _, y in rows if y >= v)] for v in thresholds}
+    tot["heaviest"] = [[p, int(x), int(y)] for p, x, y in sorted(rows, key=lambda r: -r[1])[:20]]
+    tot["ratio"] = {k: round(tot[k][1] / max(tot[k][0], 1), 4) for k in ("versions", "dir_versions", "suffix_rows")}
+    print(json.dumps(tot, indent=1))
 
 
 @cli.command("plan-shards")
