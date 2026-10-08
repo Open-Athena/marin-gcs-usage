@@ -4996,6 +4996,8 @@ def publish_r2(
     )
 
 
+from .static_catalog import cli as _static_catalog  # noqa: E402
 from .static_names import cli as _static_names  # noqa: E402
 
+_static_names.add_command(_static_catalog)
 main.add_command(_static_names)

@@ -1,0 +1,536 @@
+"""The static name catalog (specs/architecture/static-name-search.md, "Static catalog"): precomputed
+per-bucket first-hit answers, on every scan of a generation, for exactly the literals the static suffix
+reader should not read itself, so no `/names` query needs the query box.
+
+**Membership.** A literal `q` is a member iff
+
+- it has one or two characters (every such literal present in any name, ever: the suffix shards hold
+  suffixes of three or more characters only), or
+- its range in the suffix shards — the suffix rows starting with `q`, i.e. Σ over versions of `q`'s
+  occurrences in the version's lowercase name — holds more than `V` rows.
+
+Ranges only grow as scans are appended (a version is never removed; a closure only sets its `vt`), so
+membership is monotone: once a member, always one. A member's every prefix and every substring of three
+or more characters is a member too (their ranges contain its range's rows, one for one), so the members
+of a shard are found in one pass of its sorted suffixes, level by level (`census_sql`): the prefixes of
+length `L` with more than `V` rows, then, among their rows only, those of length `L + 1`. Any `V` is
+allowed; `census` keeps every prefix down to a lower floor so `V` can be chosen afterwards.
+
+**Answers.** For a member and each scan date `D`, per bucket: Σ `size`, `n_files` over its first hits live
+on `D` — the version is live (`vf ≤ D < vt`), at depth ≥ 1, its lowercase name contains `q` and its
+lowercase parent path does not (`static_names.Reader.answer`, `mega_names.answer`). A version's rows in
+`q`'s range are its occurrences of `q`; the first occurrence's row (`instr(name, q)` = the row's position)
+carries it, so no dedup state is needed. Each first hit is two events — `+(size, n_files)` at `vf`,
+`−(size, n_files)` at `vt` (none while open) — summed per `(q, bucket, t)` and accumulated in time order:
+the cells are `(q, bucket, vf, b, o)`, one per change, as the ClickHouse catalog's `catalog_cells`. A
+date's answer for a bucket is its newest cell at or before the date (none: zero).
+
+**Layout** (`gs://oa-gcs-usage-dvx/static-names/<gen>/catalog/`, copied to R2): `cells.parquet`, sorted
+`(q, bucket, vf)` in code-point order, `CELL_RG`-row groups, every member led by a header row `(q, '',
+0, rows, n)` (`rows` = its range rows, −1 for a one- or two-character literal; `n` = its cells), so a
+member with no first hits is still found; `index.parquet`, per row group `(rg, q_min, q_max, offset,
+length, rows)` (the row group's exact first and last `q`, its byte span); `meta.json`.
+"""
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from time import monotonic
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+from click import IntRange, argument, group, option
+
+from .static_names import (
+    CINTERVAL_SCHEMA, CODEC, DATA_BUCKET, NAME, OPEN, PREFIX, SCRATCH_BUCKET, SX_SCHEMA, _batches, _download, _task, connect, err, q,
+    read_json, scan_epoch, upload_tree, write_sorted,
+)
+
+CELL_RG = 4096
+NODE_SCHEMA = pa.schema([
+    pa.field("q", pa.string(), nullable=False),
+    pa.field("rows", pa.int64(), nullable=False),
+    pa.field("ubytes", pa.int64(), nullable=False),
+])
+CELL_SCHEMA = pa.schema([
+    pa.field("q", pa.string(), nullable=False),
+    pa.field("bucket", pa.string(), nullable=False),
+    pa.field("vf", pa.int64(), nullable=False),
+    pa.field("b", pa.int64(), nullable=False),
+    pa.field("o", pa.int64(), nullable=False),
+])
+EVENT_SCHEMA = pa.schema([
+    pa.field("q", pa.string(), nullable=False),
+    pa.field("bucket", pa.string(), nullable=False),
+    pa.field("t", pa.int64(), nullable=False),
+    pa.field("db", pa.int64(), nullable=False),
+    pa.field("dn", pa.int64(), nullable=False),
+])
+INDEX_SCHEMA = pa.schema([
+    pa.field("rg", pa.int32(), nullable=False),
+    pa.field("q_min", pa.string(), nullable=False),
+    pa.field("q_max", pa.string(), nullable=False),
+    pa.field("offset", pa.int64(), nullable=False),
+    pa.field("length", pa.int64(), nullable=False),
+    pa.field("rows", pa.int32(), nullable=False),
+])
+#: A suffix row's decoded size, roughly: its strings plus the fixed-width columns (the decode cost the Worker pays).
+UBYTES = "(strlen(s) + strlen(path) + strlen(usr) + 41)"
+PARENT = "lower(regexp_extract(path, '^(.*)/[^/]*$', 1))"
+BUCKET = "split_part(path, '/', 1)"
+
+
+# ── Census: every prefix's range rows ──────────────────────────────────────
+
+
+def census(con, src: str, floor_rows: int, floor_bytes: int | None = None) -> pa.Table:
+    """Every prefix (≥ 3 characters) of `src`'s suffixes (a table or `read_parquet` of sx rows) whose range
+    holds at least `floor_rows` rows (or `floor_bytes` decoded bytes): `NODE_SCHEMA`, sorted by `q`. Level
+    by level: a prefix of length `L + 1` can reach the floor only inside a prefix of length `L` that does."""
+    keep = f"n >= {floor_rows}" + (f" OR ub >= {floor_bytes}" if floor_bytes else "")
+    con.execute("DROP TABLE IF EXISTS cx; DROP TABLE IF EXISTS cnodes")
+    con.execute(f"CREATE TABLE cx AS SELECT s, {UBYTES}::BIGINT AS ub FROM {src}")
+    con.execute("CREATE TABLE cnodes (q VARCHAR, rows BIGINT, ubytes BIGINT)")
+    L = 3
+    while True:
+        con.execute("DROP TABLE IF EXISTS lvl")
+        con.execute(f"""CREATE TABLE lvl AS SELECT left(s, {L}) AS q, count(*)::BIGINT AS n, sum(ub)::BIGINT AS ub
+            FROM cx WHERE length(s) >= {L} GROUP BY q HAVING {keep}""")
+        if con.execute("SELECT count(*) FROM lvl").fetchone()[0] == 0:
+            break
+        con.execute("INSERT INTO cnodes SELECT q, n, ub FROM lvl")
+        con.execute(f"CREATE OR REPLACE TABLE cx AS SELECT s, ub FROM cx SEMI JOIN lvl ON left(cx.s, {L}) = lvl.q WHERE length(s) > {L}")
+        L += 1
+    out = con.execute("SELECT q, rows, ubytes FROM cnodes ORDER BY q").to_arrow_table().cast(NODE_SCHEMA)
+    con.execute("DROP TABLE IF EXISTS cx; DROP TABLE IF EXISTS cnodes; DROP TABLE IF EXISTS lvl")
+    return out
+
+
+# ── Answers: first-hit events per member ───────────────────────────────────
+
+
+def member_events(con, rows_sql: str, members: str) -> str:
+    """Events `(q, bucket, t, db, dn)` of `members`' (a table with `q`, ≥ 3 characters) first hits among
+    `rows_sql`'s suffix rows `(s, depth, path, t0, t1, size, n_files, sign)`: `sign·(size, n_files)` at `t0`,
+    and its negation at `t1` unless `t1` is NULL or OPEN (a delta's close record is a row with `t0` = the
+    scan, `sign` −1 and `t1` NULL). Level by level over lengths, carrying only the rows whose prefix of the
+    level's length is a prefix of some member. Leaves the summed events in table `ev`; returns its name."""
+    con.execute("DROP TABLE IF EXISTS ev; DROP TABLE IF EXISTS mx; DROP TABLE IF EXISTS mpre")
+    con.execute("CREATE TABLE ev (q VARCHAR, bucket VARCHAR, t BIGINT, db HUGEINT, dn HUGEINT)")
+    top = con.execute(f"SELECT max(length(q)) FROM {members}").fetchone()[0]
+    if not top:
+        return "ev"
+    con.execute(f"""CREATE TABLE mpre AS SELECT DISTINCT left(q, L) AS p, L, max(length(q) = L) OVER (PARTITION BY left(q, L)) AS member
+        FROM (SELECT q, unnest(range(3, length(q) + 1)) AS L FROM {members})""")
+    con.execute(f"""CREATE TABLE mx AS SELECT s, depth, path, t0, t1, size, n_files, sign, {NAME} AS l, {PARENT} AS par
+        FROM ({rows_sql}) WHERE depth >= 1""")
+    for L in range(3, top + 1):
+        con.execute("DROP TABLE IF EXISTS ml")
+        con.execute(f"CREATE TABLE ml AS SELECT p, bool_or(member) AS member FROM mpre WHERE L = {L} GROUP BY p")
+        con.execute(f"CREATE OR REPLACE TABLE mx AS SELECT mx.* FROM mx SEMI JOIN ml ON left(mx.s, {L}) = ml.p")
+        if con.execute("SELECT count(*) FROM mx").fetchone()[0] == 0:
+            break
+        hit = f"""SELECT left(s, {L}) AS q, {BUCKET} AS bucket, t0, t1, sign * size AS sz, sign * n_files AS nf FROM mx
+            SEMI JOIN (SELECT p FROM ml WHERE member) AS mm ON left(mx.s, {L}) = mm.p
+            WHERE instr(l, left(s, {L})) = length(l) - length(s) + 1 AND NOT contains(par, left(s, {L}))"""
+        con.execute(f"""INSERT INTO ev SELECT q, bucket, t, sum(db), sum(dn) FROM (
+                SELECT q, bucket, t0 AS t, sz AS db, nf AS dn FROM ({hit})
+                UNION ALL SELECT q, bucket, t1 AS t, -sz, -nf FROM ({hit}) WHERE t1 IS NOT NULL AND t1 <> {OPEN}
+            ) GROUP BY q, bucket, t""")
+        con.execute(f"DELETE FROM mx WHERE length(s) <= {L}")
+    con.execute("DROP TABLE IF EXISTS mx; DROP TABLE IF EXISTS ml; DROP TABLE IF EXISTS mpre")
+    return "ev"
+
+
+def short_events(con, versions_sql: str) -> str:
+    """Events of every one- and two-character literal's first hits among `versions_sql`'s rows `(depth, path,
+    t0, t1, size, n_files, sign)` (as `member_events`), into table `sev`: each distinct character and
+    character pair of the lowercase name that the lowercase parent does not contain."""
+    con.execute("DROP TABLE IF EXISTS sev")
+    hit = f"""SELECT g AS q, bucket, t0, t1, sz, nf FROM (
+            SELECT unnest(list_distinct(list_transform(range(1, length(l) + 1), lambda p: substring(l, p, 1))
+                || list_transform(range(1, length(l)), lambda p: substring(l, p, 2)))) AS g, par, bucket, t0, t1, sz, nf
+            FROM (SELECT {NAME} AS l, {PARENT} AS par, {BUCKET} AS bucket, t0, t1, sign * size AS sz, sign * n_files AS nf
+                  FROM ({versions_sql}) WHERE depth >= 1)
+        ) WHERE NOT contains(par, g)"""
+    con.execute(f"""CREATE TABLE sev AS SELECT q, bucket, t, sum(db)::HUGEINT AS db, sum(dn)::HUGEINT AS dn FROM (
+            SELECT q, bucket, t0 AS t, sz AS db, nf AS dn FROM ({hit})
+            UNION ALL SELECT q, bucket, t1 AS t, -sz, -nf FROM ({hit}) WHERE t1 IS NOT NULL AND t1 <> {OPEN}
+        ) GROUP BY q, bucket, t""")
+    return "sev"
+
+
+def short_vocab_sql(versions_sql: str) -> str:
+    """Every one- and two-character literal of the versions' lowercase names (depth ≥ 1), with how many
+    versions contain it: the short members, including those whose every occurrence is under a match."""
+    return f"""SELECT g AS q, count(*)::BIGINT AS n FROM (
+            SELECT unnest(list_distinct(list_transform(range(1, length(l) + 1), lambda p: substring(l, p, 1))
+                || list_transform(range(1, length(l)), lambda p: substring(l, p, 2)))) AS g
+            FROM (SELECT {NAME} AS l FROM ({versions_sql}) WHERE depth >= 1)) GROUP BY g"""
+
+
+def cells_sql(events: str, members: str) -> str:
+    """Cells from summed events: per `(q, bucket)` the running totals at each event time where they change,
+    each member preceded by its header row `(q, '', 0, rows, n)` (`members`: `q, rows`)."""
+    return f"""WITH e AS (SELECT q, bucket, t, sum(db) AS db, sum(dn) AS dn FROM {events} GROUP BY q, bucket, t HAVING sum(db) <> 0 OR sum(dn) <> 0),
+        c AS (SELECT q, bucket, t AS vf,
+                sum(db) OVER (PARTITION BY q, bucket ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)::BIGINT AS b,
+                sum(dn) OVER (PARTITION BY q, bucket ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)::BIGINT AS o FROM e),
+        n AS (SELECT q, count(*) AS n FROM c GROUP BY q)
+        SELECT m.q, '' AS bucket, 0::BIGINT AS vf, m.rows::BIGINT AS b, coalesce(n.n, 0)::BIGINT AS o FROM {members} AS m LEFT JOIN n USING (q)
+        UNION ALL SELECT c.q, c.bucket, c.vf, c.b, c.o FROM c SEMI JOIN {members} AS m USING (q)"""
+
+
+def sx_rows_sql(src: str) -> str:
+    """Suffix-shard rows as `member_events` input: intervals, epoch seconds."""
+    return f"""SELECT s, depth, path, epoch(vf)::BIGINT AS t0, epoch(vt)::BIGINT AS t1, size, n_files, 1::BIGINT AS sign FROM {src}"""
+
+
+def shard_cells(con, sx: str, members: str, dst: Path) -> int:
+    """One shard's members' cells (`members`: `q, rows`, all within the shard) → `dst`, sorted."""
+    member_events(con, sx_rows_sql(f"read_parquet({q(sx)})"), members)
+    return write_sorted(_batches(con, f"SELECT * FROM ({cells_sql('ev', members)}) ORDER BY q, bucket, vf"), dst, CELL_SCHEMA, 1 << 16,
+                        dictionary=["bucket"])
+
+
+def range_short(con, versions: str, dst: Path, name: str) -> None:
+    """One key range's short-literal events and vocabulary (`versions`: an intervals or cintervals file)
+    → `dst/{events,vocab}/<name>.parquet`."""
+    vs = f"SELECT depth, path, vf AS t0, vt AS t1, size, n_files, 1::BIGINT AS sign FROM read_parquet({q(versions)})"
+    short_events(con, vs)
+    (dst / "events").mkdir(parents=True, exist_ok=True)
+    (dst / "vocab").mkdir(parents=True, exist_ok=True)
+    con.execute(f"COPY (SELECT q, bucket, t, db::BIGINT AS db, dn::BIGINT AS dn FROM sev ORDER BY q, bucket, t) TO {q(str(dst / 'events' / f'{name}.parquet'))} (FORMAT parquet, COMPRESSION zstd)")
+    con.execute(f"COPY ({short_vocab_sql(vs)} ORDER BY q) TO {q(str(dst / 'vocab' / f'{name}.parquet'))} (FORMAT parquet, COMPRESSION zstd)")
+
+
+def assemble(con, short_events_glob: str, short_vocab_glob: str, shard_cells_glob: str, out: Path) -> dict:
+    """The short literals' cells merged with every shard's into `out/cells.parquet` (sorted, `CELL_RG`-row
+    groups) and `out/index.parquet`; returns the counts."""
+    con.execute("DROP TABLE IF EXISTS sev; DROP TABLE IF EXISTS smem")
+    con.execute(f"""CREATE TABLE sev AS SELECT q, bucket, t, sum(db)::HUGEINT AS db, sum(dn)::HUGEINT AS dn
+        FROM read_parquet({q(short_events_glob)}) GROUP BY q, bucket, t""")
+    con.execute(f"CREATE TABLE smem AS SELECT q, -1::BIGINT AS rows FROM read_parquet({q(short_vocab_glob)}) GROUP BY q")
+    out.mkdir(parents=True, exist_ok=True)
+    shard = f"read_parquet({q(shard_cells_glob)})"
+    sql = f"SELECT * FROM (SELECT * FROM ({cells_sql('sev', 'smem')}) UNION ALL SELECT * FROM {shard}) ORDER BY q, bucket, vf"
+    rows, index = write_cells(_batches(con, sql), out / "cells.parquet")
+    pq.write_table(index, out / "index.parquet", compression=CODEC)
+    n_short, n_long, top = con.execute(f"""SELECT count(*) FILTER (WHERE length(q) <= 2), count(*) FILTER (WHERE length(q) > 2), max(length(q))
+        FROM (SELECT q FROM smem UNION ALL SELECT q FROM {shard} WHERE bucket = '')""").fetchone()
+    return {"cells_rows": rows, "row_groups": index.num_rows, "members_short": n_short, "members_long": n_long, "max_len": top,
+            "bytes": (out / "cells.parquet").stat().st_size, "index_bytes": (out / "index.parquet").stat().st_size, "cell_rg": CELL_RG}
+
+
+# ── Reading the catalog (the Worker's logic) ───────────────────────────────
+
+
+class Catalog:
+    """Membership and answers from `cells.parquet` + `index.parquet`: the row groups whose `[q_min, q_max]`
+    holds `q` (contiguous) are one ranged read; `q` is a member iff a header row `(q, '')` is there."""
+
+    def __init__(self, fetch, size: int, index: pa.Table):
+        from .static_names import Spans
+
+        self.fetch, self.size, self.Spans = fetch, size, Spans
+        idx = index.sort_by("rg").to_pylist()
+        self.groups = idx
+        self.mins = [g["q_min"] for g in idx]
+        self.maxs = [g["q_max"] for g in idx]
+        self.foot: bytes | None = None
+
+    def footer(self) -> tuple[int, bytes]:
+        if self.foot is None:
+            tail = self.fetch(self.size - 8, self.size)
+            flen = int.from_bytes(tail[:4], "little")
+            self.foot = self.fetch(max(0, self.size - max(8 + flen, 1 << 16)), self.size)
+        return self.size - len(self.foot), self.foot
+
+    def rows(self, key: str) -> list[dict] | None:
+        """`key`'s cells (header first), or None when it is not a member."""
+        from bisect import bisect_left, bisect_right
+
+        a = bisect_left(self.maxs, key)
+        b = bisect_right(self.mins, key)
+        if a >= b:
+            return None
+        sel = self.groups[a:b]
+        lo, hi = sel[0]["offset"], sel[-1]["offset"] + sel[-1]["length"]
+        data = self.fetch(lo, hi)
+        start, foot = self.footer()
+        pf = pq.ParquetFile(self.Spans(self.size, [(start, foot), (lo, data)]))
+        tab = pf.read_row_groups([g["rg"] for g in sel]).to_pylist()
+        mine = [r for r in tab if r["q"] == key]
+        if not mine or mine[0]["bucket"] != "":
+            return None
+        return mine
+
+    def answer(self, term: str, dates: list[str]) -> dict | None:
+        """Per date `{bucket: [bytes, objects]}` (nonzero buckets), or None for a non-member."""
+        key = term.lower()
+        cells = self.rows(key)
+        if cells is None:
+            return None
+        head, body = cells[0], cells[1:]
+        out = {}
+        for d in dates:
+            D = scan_epoch(d)
+            cur: dict[str, tuple[int, int]] = {}
+            for c in body:
+                if c["vf"] <= D:
+                    cur[c["bucket"]] = (c["b"], c["o"])
+            out[d] = {k: list(v) for k, v in sorted(cur.items()) if v != (0, 0)}
+        return {"q": key, "rows": head["b"], "cells": head["o"], "answers": out}
+
+
+def gcs_catalog(bucket: str, prefix: str) -> Catalog:
+    from google.cloud import storage
+
+    b = storage.Client().bucket(bucket)
+    index = pq.read_table(_download(b, f"{prefix}/catalog/index.parquet"))
+    blob = b.get_blob(f"{prefix}/catalog/cells.parquet")
+
+    def fetch(lo: int, hi: int) -> bytes:
+        return blob.download_as_bytes(start=lo, end=hi - 1)
+
+    return Catalog(fetch, int(blob.size), index)
+
+
+def write_cells(batches, out: Path) -> tuple[int, pa.Table]:
+    """Write sorted cell batches as `CELL_RG`-row groups and cut their index."""
+    from .static_names import sidecar_rows
+
+    stats: list[tuple[str, str, int]] = []
+
+    def on_group(g: pa.Table) -> None:
+        col = g.column("q")
+        stats.append((col[0].as_py(), col[g.num_rows - 1].as_py(), g.num_rows))
+
+    rows = write_sorted(batches, out, CELL_SCHEMA, CELL_RG, on_group=on_group, dictionary=["bucket"])
+    side = sidecar_rows(out, "cells.parquet", stats)
+    index = pa.table({"rg": side.column("rg"), "q_min": side.column("s_min"), "q_max": side.column("s_max"), "offset": side.column("offset"),
+                      "length": side.column("length"), "rows": side.column("rows")}, schema=INDEX_SCHEMA)
+    return rows, index
+
+
+# ── CLI ────────────────────────────────────────────────────────────────────
+
+
+@group("catalog")
+def cli() -> None:
+    """The static name catalog: census, members, answers and assembly (specs/architecture/static-name-search.md)."""
+
+
+def _shards_for_task(plan: dict, t: int) -> list[dict]:
+    return [plan["shards"][i] for i in plan["tasks"][t]["shards"]]
+
+
+@cli.command("census")
+@option("-B", "--floor-bytes", type=int, help="Also keep prefixes with at least this many decoded bytes")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-f", "--floor", "floor_rows", default=50_000, type=int, help="Keep prefixes with at least this many range rows")
+@option("-g", "--gen", required=True, help="Generation (its `shards.json` and `sx/`)")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the plan's task group")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def census_cmd(floor_bytes, bucket, floor_rows, gen, index, mount, mem, threads, tmp) -> None:
+    """Every suffix prefix at or above the floor, per shard of one task group → `catalog/census/s####.parquet`."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
+    t = _task(index)
+    b = storage.Client().bucket(bucket)
+    con = connect(threads, mem, tmp)
+    for s in _shards_for_task(plan, t):
+        name = f"s{s['i']:04d}"
+        key = f"{prefix}/catalog/census/{name}.parquet"
+        if b.blob(key).exists():
+            err(f"census {name}: done")
+            continue
+        t0 = monotonic()
+        nodes = census(con, f"read_parquet({q(f'{mount}/{prefix}/sx/{name}.parquet')})", floor_rows, floor_bytes)
+        sink = pa.BufferOutputStream()
+        pq.write_table(nodes, sink, compression=CODEC)
+        b.blob(key).upload_from_string(sink.getvalue().to_pybytes())
+        doc = {"shard": s["i"], "nodes": nodes.num_rows, "s": round(monotonic() - t0, 1)}
+        err(f"census {name}: {nodes.num_rows:,} prefixes in {doc['s']}s")
+        print(json.dumps(doc), flush=True)
+
+
+@cli.command("members")
+@option("-B", "--max-bytes", type=int, help="Also admit prefixes with more than this many decoded bytes")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-V", "--max-rows", required=True, type=int, help="Admit prefixes with more than this many range rows")
+def members_cmd(max_bytes, bucket, gen, max_rows) -> None:
+    """Cut the members (≥ 3 characters) from the census → `catalog/members.parquet` `(q, shard, rows, ubytes)`,
+    and print the membership summary (JSON)."""
+    import tempfile
+
+    import duckdb
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    client = storage.Client()
+    with tempfile.TemporaryDirectory() as d:
+        n = 0
+        for blob in client.list_blobs(bucket, prefix=f"{prefix}/catalog/census/"):
+            blob.download_to_filename(f"{d}/{Path(blob.name).name}")
+            n += 1
+        con = duckdb.connect()
+        cond = f"rows > {max_rows}" + (f" OR ubytes > {max_bytes}" if max_bytes else "")
+        con.execute(f"""CREATE TABLE m AS SELECT q, regexp_extract(filename, 's(\\d+)\\.parquet', 1)::INTEGER AS shard, rows, ubytes
+            FROM read_parquet({q(d + '/*.parquet')}, filename = true) WHERE {cond} ORDER BY q""")
+        floor = con.execute(f"SELECT min(rows) FROM read_parquet({q(d + '/*.parquet')})").fetchone()[0]
+        summary = {"gen": gen, "max_rows": max_rows, "max_bytes": max_bytes, "census_shards": n, "census_floor_seen": floor,
+                   "members": con.execute("SELECT count(*) FROM m").fetchone()[0],
+                   "by_length": dict(con.execute("SELECT length(q), count(*) FROM m GROUP BY 1 ORDER BY 1").fetchall()),
+                   "rows": con.execute("SELECT sum(rows) FROM m").fetchone()[0]}
+        out = Path(d) / "members.parquet"
+        con.execute(f"COPY m TO {q(str(out))} (FORMAT parquet, COMPRESSION zstd)")
+        client.bucket(bucket).blob(f"{prefix}/catalog/members.parquet").upload_from_filename(str(out))
+    summary["by_length"] = {str(k): v for k, v in summary["by_length"].items()}
+    client.bucket(bucket).blob(f"{prefix}/catalog/members.json").upload_from_string(json.dumps(summary, indent=1) + "\n")
+    print(json.dumps(summary, indent=1))
+
+
+@cli.command("answers")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the plan's task group")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def answers_cmd(bucket, gen, index, mount, mem, threads, tmp) -> None:
+    """Members' cells, per shard of one task group → `catalog/cells/s####.parquet` (sorted)."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
+    t = _task(index)
+    b = storage.Client().bucket(bucket)
+    con = connect(threads, mem, tmp)
+    con.execute(f"CREATE TABLE allm AS SELECT q, shard, rows FROM read_parquet({q(f'{mount}/{prefix}/catalog/members.parquet')})")
+    out = Path(tmp) / "cells"
+    for s in _shards_for_task(plan, t):
+        name = f"s{s['i']:04d}"
+        key = f"{prefix}/catalog/cells/{name}.parquet"
+        if b.blob(key).exists():
+            err(f"answers {name}: done")
+            continue
+        t0 = monotonic()
+        con.execute(f"CREATE OR REPLACE TABLE mem AS SELECT q, rows FROM allm WHERE shard = {s['i']}")
+        n_members = con.execute("SELECT count(*) FROM mem").fetchone()[0]
+        dst = out / f"{name}.parquet"
+        rows = shard_cells(con, f"{mount}/{prefix}/sx/{name}.parquet", "mem", dst)
+        b.blob(key).upload_from_filename(str(dst))
+        dst.unlink()
+        doc = {"shard": s["i"], "members": n_members, "cells": rows, "s": round(monotonic() - t0, 1)}
+        err(f"answers {name}: {n_members:,} members, {rows:,} cells in {doc['s']}s")
+        print(json.dumps(doc), flush=True)
+
+
+@cli.command("short")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation (its versions: `cintervals/`, else `intervals/` of -I)")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-I", "--intervals-gen", help="Read `intervals/` of this generation instead of GEN's `cintervals/`")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the per-range events (an intermediate)")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def short_cmd(bucket, gen, index, intervals_gen, mount, mem, per_task, threads, scratch, tmp) -> None:
+    """One- and two-character literals' first-hit events and vocabulary per key range → the scratch bucket's
+    `static-names/GEN/catalog-short/{events,vocab}/r####.parquet`."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    ranges = read_json(f"gs://{bucket}/{PREFIX}/{intervals_gen or gen}/ranges.json")
+    t = _task(index)
+    todo = list(range(t * per_task, min((t + 1) * per_task, ranges["k"])))
+    sb = storage.Client().bucket(scratch)
+    con = connect(threads, mem, tmp)
+    for i in todo:
+        name = f"r{i:04d}"
+        if sb.blob(f"{prefix}/catalog-short/vocab/{name}.parquet").exists():
+            err(f"short {name}: done")
+            continue
+        t0 = monotonic()
+        src = (f"{mount}/{PREFIX}/{intervals_gen}/intervals/{name}.parquet" if intervals_gen else f"{mount}/{prefix}/cintervals/{name}.parquet")
+        outp = Path(tmp) / f"short-{i}"
+        range_short(con, src, outp, name)
+        sb.blob(f"{prefix}/catalog-short/events/{name}.parquet").upload_from_filename(str(outp / "events" / f"{name}.parquet"))
+        sb.blob(f"{prefix}/catalog-short/vocab/{name}.parquet").upload_from_filename(str(outp / "vocab" / f"{name}.parquet"))
+        shutil.rmtree(outp)
+        err(f"short {name}: {monotonic() - t0:.1f}s")
+
+
+@cli.command("assemble")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the short literals' per-range events")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def assemble_cmd(bucket, gen, mount, mem, threads, scratch, tmp) -> None:
+    """Merge the short literals' events into cells and every shard's cells into `catalog/cells.parquet`
+    (sorted, `CELL_RG`-row groups), cut `catalog/index.parquet`, write `catalog/meta.json`."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    con = connect(threads, mem, tmp)
+    smount = str(Path(mount).parent / scratch)
+    out = Path(tmp) / "catalog"
+    t0 = monotonic()
+    meta = {"gen": gen, **assemble(con, f"{smount}/{prefix}/catalog-short/events/*.parquet", f"{smount}/{prefix}/catalog-short/vocab/*.parquet",
+                                   f"{mount}/{prefix}/catalog/cells/*.parquet", out), "s": 0}
+    meta["s"] = round(monotonic() - t0, 1)
+    members = read_json(f"gs://{bucket}/{prefix}/catalog/members.json") if storage.Client().bucket(bucket).blob(f"{prefix}/catalog/members.json").exists() else None
+    if members:
+        meta["membership"] = {k: members[k] for k in ("max_rows", "max_bytes") if k in members}
+    (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+    upload_tree(out, bucket, f"{prefix}/catalog")
+    shutil.rmtree(out)
+    print(json.dumps(meta, indent=1))
+
+
+@cli.command("query")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-t", "--terms-file", help="A file of literals, one per line (in addition to TERMS)")
+@option("-x", "--static", "also_static", is_flag=True, help="Answer non-members from the suffix shards (the Worker's dispatch)")
+@argument("terms", nargs=-1)
+def query_cmd(bucket, dates, gen, terms_file, also_static, terms) -> None:
+    """Answer literals from the catalog (one JSON line each: `source` catalog | static | none, per-date
+    `{bucket: [bytes, objects]}`); with -x a non-member is answered by the suffix reader."""
+    from .static_names import gcs_reader, read_text
+
+    lits = list(terms) + ([x for x in read_text(terms_file).splitlines() if x.strip()] if terms_file else [])
+    cat = gcs_catalog(bucket, f"{PREFIX}/{gen}")
+    reader = gcs_reader(bucket, f"{PREFIX}/{gen}") if also_static else None
+    for t in lits:
+        t0 = monotonic()
+        out = cat.answer(t, list(dates))
+        if out is not None:
+            out["source"] = "catalog"
+        elif reader is not None and len(t) >= 3:
+            r = reader.answer(t, list(dates))
+            out = {"q": r["q"], "source": "static", "io": r["io"], "answers": r["answers"]}
+        else:
+            out = {"q": t.lower(), "source": "none" if len(t) >= 3 else "absent-short",
+                   "answers": {d: {} for d in dates} if len(t) < 3 else None}
+        out["s"] = round(monotonic() - t0, 3)
+        print(json.dumps(out), flush=True)
+
+
+if __name__ == "__main__":
+    cli()
