@@ -272,13 +272,14 @@ def kernel(
     ch: Ch,
     binary: Path,
     terms: list[str],
-    source: str,
+    source: Callable[[str], str],
     *,
     parallel: int = 16,
     settings: dict | None = None,
 ) -> dict[str, dict[str, tuple[int, int]]]:
-    """Σ sign·(size, n_files) of each literal's first hits over `source` — a FROM/WHERE body over rows with `path`,
-    `depth`, `size`, `n_files` and a `sign` expression (`… AS sign` selectable) — per bucket, nonzero only.
+    """Σ sign·(size, n_files) of each literal's first hits over `source(range)` — a FROM/WHERE body over one key
+    range's rows with `path`, `depth`, `size`, `n_files` and a `sign` expression (`… AS sign` selectable) — per
+    bucket, nonzero only.
     `parallel` concurrent streams over `RANGES_PER_STREAM`× as many disjoint `(depth, path)` key ranges (cut at
     `nodes`' primary marks, so each prunes by the primary key), each through its own `catalog-delta`: the marks span
     the whole history, so a scan's rows fall unevenly into them, and a pool of small ranges keeps every stream busy."""
@@ -295,8 +296,8 @@ def kernel(
         results: list[tuple[list[str], list[str]] | BaseException] = [None] * len(ranges)  # type: ignore[list-item]
 
         def one(i: int) -> None:
-            sql = f"""SELECT lowerUTF8(path), splitByChar('/', path)[1], toInt8(sign), size, n_files FROM {source}
-                AND depth >= 1 AND ({ranges[i]}) ORDER BY depth, path"""
+            sql = f"""SELECT lowerUTF8(path), splitByChar('/', path)[1], toInt8(sign), size, n_files FROM {source(ranges[i])}
+                AND depth >= 1 ORDER BY depth, path"""
             proc = Popen([str(binary), str(terms_file)], stdin=PIPE, stdout=PIPE, stderr=PIPE)
             try:
                 sub = ch.fork()
@@ -329,12 +330,17 @@ def kernel(
     return {t: {b: (v[0], v[1]) for b, v in cells.items() if v != [0, 0]} for t, cells in totals.items()}
 
 
-def live_source(scan: Scan) -> str:
-    return f"(SELECT path, depth, size, n_files, toInt8(1) AS sign FROM nodes WHERE {live(scan.dt, 'depth >= 1', scan.since)}) WHERE 1"
+def live_source(scan: Scan) -> Callable[[str], str]:
+    """The scan's live rows in one key range. The anti-join's closure set is limited to the range too: a scan of the
+    v1 epoch has tens of millions of closures, one set per concurrent range otherwise (Sep 15: 221 GiB)."""
+    def source(keys: str) -> str:
+        restrict = f"depth >= 1 AND ({keys})"
+        return f"(SELECT path, depth, size, n_files, toInt8(1) AS sign FROM nodes WHERE ({keys}) AND {live(scan.dt, restrict, scan.since)}) WHERE 1"
+    return source
 
 
-def changes_source(scan: Scan) -> str:
-    return f"changes WHERE at = {scan.dt}"
+def changes_source(scan: Scan) -> Callable[[str], str]:
+    return lambda keys: f"changes WHERE at = {scan.dt} AND ({keys})"
 
 
 def entrant_answers(ch: Ch, scan: Scan, terms: list[str], postings: str, settings: dict | None = None) -> dict[str, dict[str, tuple[int, int]]]:
