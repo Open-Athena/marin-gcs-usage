@@ -119,7 +119,7 @@ describe('POST /api/sweep/undo', () => {
     }))
     const { db } = await gcsDb()
     expect(await undoRoute({ request: post({ run_id: RUN }), env: await env(db) } as never).then(answer)).toEqual([200, {
-      job_id: 'gcs-undo-19700112-134640z', target: RUN, region: 'us-east1', by: 'dev@example.test',
+      bulk: false, job_id: 'gcs-undo-19700112-134640z', target: RUN, region: 'us-east1', by: 'dev@example.test',
     }])
     expect(calls).toEqual([{
       url: 'https://batch.googleapis.com/v1/projects/my-project/locations/us-east1/jobs?job_id=gcs-undo-19700112-134640z',
