@@ -71,8 +71,6 @@ export interface Row {
   cls2: number
   cls3: number
   cls4: number
-  /** An interval-store row (one per path): its owner slices' bytes by user (`usr` is null there). */
-  us?: Record<string, number> | null
 }
 
 interface GroupSpan {
@@ -121,16 +119,7 @@ interface D1Handle {
   /** A coarse tier's absolute byte floor (every path with subtree bytes >= floor
    * is present); null for the floor-free tier. */
   floor: number | null
-  /** An interval-store sort read as of a scan (`openInterval`): its epoch. Every group and row is
-   *  tested `vf ≤ asOf < vt` (specs/interval-store.md §2.6). */
-  asOf?: number
-  /** Where the handle's own files are read from, when not the deployment's store (the interval
-   *  store on `INDEX_R2`). */
-  src?: ByteStore
 }
-
-/** Ranged reads of whole-key objects (`S3Store`'s `get` shape). */
-export interface ByteStore { get(key: string, range: { offset: number; length: number }): Promise<{ bytes: Uint8Array; totalSize?: number }> }
 
 /** A store generation (`index_schema.version` ≥ 2): rows are every path,
  * objects included, and a `bysize` sort exists beside `path`. */
@@ -162,9 +151,6 @@ interface BlobGroup extends Span {
   uMin: string | null
   uMax: string | null
   rgJson: string
-  /** An interval-store group's earliest `vf` and latest `vt`. */
-  vfMin?: number
-  vtMax?: number
 }
 /** Cold-footer-backed: the tier's footer rows as `<tier>.groups.parquet`
  * (written beside it by `index-sync` / `index-blob`), opened when the D1
@@ -187,7 +173,7 @@ interface FooterGroup {
   byteStart: number
   byteEnd: number
   meta: RowGroup
-  bounds: { dMin: number; dMax: number; pMin: string; pMax: string; bMax: number; uMin: string | null; uMax: string | null; vfMin?: number; vtMax?: number } | null
+  bounds: { dMin: number; dMax: number; pMin: string; pMax: string; bMax: number; uMin: string | null; uMax: string | null } | null
 }
 interface FooterIndex {
   key: string
@@ -314,11 +300,6 @@ export async function pathGens(env: Env, dates: string[]): Promise<string> {
     for (const r of results) gens.set(r.date, r.gen ?? '')
   }
   let h = 0x811c9dc5
-  // The interval store's dates: their answers are the store's generation's, keyed apart.
-  if (intervalsOn(env)) {
-    const held = await ivScans(env)
-    for (const d of uniq) if (held.has(d)) gens.set(d, `iv:${env.INTERVAL_STORE_GEN}${ivRev(env)}`)
-  }
   for (const d of [...uniq].sort()) {
     for (const ch of `${d}=${gens.get(d) ?? ''};`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193)
   }
@@ -364,10 +345,6 @@ const handles = new Map<string, Promise<IndexHandle>>()
 const handleAt = new Map<string, number>()
 
 export async function openIndex(env: Env, date: string, variant = 'path'): Promise<IndexHandle> {
-  if (intervalsOn(env)) {
-    const h = await openInterval(env, date, variant)
-    if (h) return h
-  }
   const ck = `${storeKey(env)}:${date}:${variant}`
   const at = handleAt.get(ck)
   if (at == null || Date.now() - at >= HANDLE_TTL) {
@@ -396,127 +373,10 @@ export async function openIndex(env: Env, date: string, variant = 'path'): Promi
   }, 30_000) // a blob open is a ~15 MB fetch + parse
 }
 
-// --- the interval store (specs/interval-store.md): every scan of a generation in one set of sorts ---
-
-/** `PATH_STORE=intervals` with `INTERVAL_STORE_GEN` and the `INDEX_R2` binding: a date the generation
- *  holds reads its `path` / `bysize` sorts from the interval store, as of that scan; any other date or
- *  variant (a lens's user-first sort, the age index, a date past the generation) reads as before. */
-export const intervalsOn = (env: Env): boolean => env.PATH_STORE === 'intervals' && !!env.INTERVAL_STORE_GEN && !!env.INDEX_R2
-
-/** A request's path store: `PATH_STORE=opt-in` reads the interval store only for requests asking
- *  `ps=iv` (so one deployment serves both, side by side); a secondary store (`store=`) never does. */
-export function withPathStore<C extends { request: Request; env: Env }>(ctx: C): C {
-  const { env } = ctx
-  if (env.PATH_STORE !== 'opt-in' && env.PATH_STORE !== 'intervals') return ctx
-  const u = new URL(ctx.request.url).searchParams
-  const on = !u.get('store') && (env.PATH_STORE === 'intervals' || u.get('ps') === 'iv')
-  const w = (ctx as { waitUntil?: unknown }).waitUntil
-  return { ...ctx, env: { ...env, PATH_STORE: on ? 'intervals' : undefined }, ...(typeof w === 'function' ? { waitUntil: w.bind(ctx) } : {}) }
-}
-/** `env` reading per-scan stores only: what a read needs whose rows must be owner slices (a user lens,
- *  an owner pool, owner totals) — the interval store folds a path's slices into one row. */
-export const perScan = (env: Env): Env => (intervalsOn(env) ? { ...env, PATH_STORE: undefined } : env)
-export const IV_PREFIX = 'interval-store'
-/** `INTERVAL_STORE_REV`: a generation's files were rewritten in place (a re-cut): every cache keyed by
- *  them (colo ranges and footers, isolate handles and groups, response keys) takes the revision. */
-const ivRev = (env: Env): string => (env.INTERVAL_STORE_REV ? `@${env.INTERVAL_STORE_REV}` : '')
-const ivKey = (env: Env, key: string): string => (env.INTERVAL_STORE_REV ? `${key}?rev=${env.INTERVAL_STORE_REV}` : key)
-/** The sorts the store serves (the reads sort is looked up by `ivLastRead`). */
-const IV_SORTS = new Set(['path', 'bysize', 'reads'])
-
-/** `INDEX_R2` as a `ByteStore`. */
-export function r2Bytes(r2: R2Bucket): ByteStore {
-  return {
-    async get(key0, { offset, length }) {
-      // A `?…` suffix versions a key for the caches (`ivKey`); the object is the key before it.
-      const key = key0.split('?')[0]
-      const o = await r2.get(key, { range: { offset, length } })
-      if (!o) throw Object.assign(new Error(`${key}: not found`), { name: 'NotFoundError' })
-      return { bytes: new Uint8Array(await o.arrayBuffer()), totalSize: o.size }
-    },
-  }
-}
-
-/** The generation's scans (`scans.json`: id → epoch), held per isolate for a minute. */
-const ivScansHeld = new Map<string, Promise<Map<string, number>>>()
-async function ivScans(env: Env): Promise<Map<string, number>> {
-  const gen = env.INTERVAL_STORE_GEN!
-  return shared(ivScansHeld, gen, async () => {
-    const o = await env.INDEX_R2!.get(`${IV_PREFIX}/${gen}/scans.json`)
-    if (!o) throw new Error(`interval store ${gen}: no scans.json`)
-    const doc = await o.json<{ scans: { id: string; ts: number }[] }>()
-    return new Map(doc.scans.map(x => [x.id, x.ts]))
-  }, 60_000)
-}
-
-/** A served sort of the interval store as an index handle as of `date`'s scan (`pq` mode over its
- *  `.groups.parquet`, bytes from `INDEX_R2`); null when the store doesn't hold that date or sort. */
-export async function openInterval(env: Env, date: string, variant: string): Promise<IndexHandle | null> {
-  if (!IV_SORTS.has(variant)) return null
-  const asOf = (await ivScans(env)).get(date)
-  if (asOf == null) return null
-  const gen = env.INTERVAL_STORE_GEN!
-  const ck = `iv:${gen}${ivRev(env)}:${date}:${variant}`
-  return shared(handles, ck, async (): Promise<IndexHandle> => {
-    const src = r2Bytes(env.INDEX_R2!)
-    const dir = `${IV_PREFIX}/${gen}/served`
-    const key = ivKey(env, `${dir}/${variant}.parquet`)
-    const footer = await openFooter(env, ivKey(env, `${dir}/${variant}.groups.parquet`), src)
-    const kv = new Map((footer.metadata.key_value_metadata ?? []).map(e => [e.key, e.value]))
-    const schema = JSON.parse(kv.get('schema')!) as SchemaElement[]
-    const version = Number(kv.get('version'))
-    const file: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
-    return { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
-  }, 300_000)
-}
-
-/** Each path's `last_read` at a scan, from the interval store's `reads` sort (absent = never read): per
- *  depth, the groups whose path range holds one of the asked paths, read raw (the sort's rows aren't
- *  `Row`s) and tested live at the scan. A view's few thousand tiles cost the groups that hold them. */
-export async function ivLastRead(env: Env, date: string, paths: string[], maxGroups = 400): Promise<Map<string, number>> {
-  const h = await openInterval(env, date, 'reads')
-  const out = new Map<string, number>()
-  if (!h || !paths.length) return out
-  const D = h.asOf!
-  const byDepth = new Map<number, string[]>()
-  for (const p of paths) {
-    const d = p === '' ? 0 : p.split('/').length
-    const l = byDepth.get(d)
-    if (l) l.push(p)
-    else byDepth.set(d, [p])
-  }
-  const found = new Map<number, Span>()
-  await mapLimit([...byDepth.entries()], SPAN_QUERIES, async ([depth, ps]) => {
-    ps.sort()
-    const cand = await selectSpans(h, [{ dLo: depth, dHi: depth, pLo: ps[0], pHi: ps[ps.length - 1] }], 1 << 20)
-    for (const g of cand) {
-      if (g.dMin !== g.dMax) { found.set(g.rg, g); continue }
-      // the first asked path at or past the group's lowest: inside its range?
-      let lo = 0, hi = ps.length
-      while (lo < hi) { const m = (lo + hi) >> 1; if (ps[m] < g.pMin) lo = m + 1; else hi = m }
-      if (lo < ps.length && ps[lo] <= g.pMax) found.set(g.rg, g)
-    }
-  })
-  const spans = [...found.values()].sort((x, y) => x.rg - y.rg)
-  if (spans.length > maxGroups) throw new Error(`read-day lookup too wide: ${spans.length} row groups (cap ${maxGroups})`)
-  const jsons = await fetchGroupJson(h, spans.map(x => x.rg))
-  const want = new Set(paths)
-  const cols = ['depth', 'path', 'vf', 'vt', 'last_read']
-  await mapLimit(spans, GROUP_READS, async x => {
-    const j = jsons.get(x.rg)
-    if (!j) return
-    for (const r of await readGroupRaw(h, j, cols)) {
-      if (num(r.vf) <= D && D < num(r.vt) && want.has(str(r.path))) out.set(str(r.path), num(r.last_read))
-    }
-  })
-  return out
-}
-
 /** The physical columns a `Row` decodes from, per generation — the wire
  * names on a v1 index, the layer-2's on a store sort (§1.1). `usr` and the
  * class pivots only where the file has them (cw has neither). */
 export const V1_ROW_COLUMNS = ['path', 'depth', 'usr', 'b', 'o', 'wts', 'wb', 'c2', 'c3', 'c4', 'a']
-export const IV_ROW_COLUMNS = ['depth', 'path', 'vf', 'vt', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'wts', 'wb', 'c2', 'c3', 'c4', 'us', 'last_read']
 export const V2_ROW_COLUMNS = ['path', 'depth', 'usr', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'mtime_mean', 'last_read', 'sum_storage_class_id_2', 'sum_storage_class_id_3', 'sum_storage_class_id_4']
 
 /** What a shaped read projects: a v1 index reads every column (its columns
@@ -524,10 +384,6 @@ export const V2_ROW_COLUMNS = ['path', 'depth', 'usr', 'kind', 'size', 'n_files'
  * generation's wire aliases and `created` are never fetched or decoded. */
 export function rowColumns(version: number, schema: SchemaElement[]): string[] | null {
   if (version < 2) return null
-  if (version >= 3) {
-    const have = new Set(schema.slice(1).map(l => l.name))
-    return IV_ROW_COLUMNS.filter(c => have.has(c))
-  }
   const have = new Set(schema.slice(1).map(l => l.name))
   return V2_ROW_COLUMNS.filter(c => have.has(c))
 }
@@ -593,8 +449,6 @@ export const footerKey = (dir: string, variant: string): string => indexKey(dir,
 /** The columns a footer row decodes (the writer's `FOOTER_COLS`, minus `b_min`:
  * no span predicate reads it yet). */
 const FOOTER_COLS = ['rg', 'd_min', 'd_max', 'p_min', 'p_max', 'b_max', 'u_min', 'u_max', 'row_start', 'row_end', 'rg_json']
-/** The footer columns a span predicate reads (all but the metadata). */
-const FOOTER_BOUNDS = FOOTER_COLS.filter(c => c !== 'rg_json')
 
 /** The first tail read of a `.groups.parquet`: its whole footer in one
  * request up to ~170 footer groups (~1.5 KB of thrift each, measured on cw's
@@ -612,11 +466,11 @@ const toBuffer = (b: Uint8Array): ArrayBuffer => b.buffer.slice(b.byteOffset, b.
 
 /** Bytes `[start, end)` of a store object through the colo cache (a
  * generation dir is immutable, so a range is too). */
-export async function cachedRange(env: Env, key: string, start: number, end: number, src: ByteStore = makeStore(env)): Promise<ArrayBuffer> {
+export async function cachedRange(env: Env, key: string, start: number, end: number): Promise<ArrayBuffer> {
   const ck = coloKey(env, key, `r=${start}-${end}`)
   const hit = await colo().match(ck)
   if (hit) return hit.arrayBuffer()
-  const buf = toBuffer((await src.get(key, { offset: start, length: end - start })).bytes)
+  const buf = toBuffer((await makeStore(env).get(key, { offset: start, length: end - start })).bytes)
   await colo().put(ck, new Response(buf, { headers: { 'cache-control': `max-age=${BLOB_CACHE_TTL}` } }))
   return buf
 }
@@ -624,13 +478,13 @@ export async function cachedRange(env: Env, key: string, start: number, end: num
 /** A small parquet's footer bytes (metadata + the 8-byte trailer), colo-
  * cached: one tail read of `FOOTER_TAIL` bytes, one more when the footer is
  * longer. Throws the store's `NotFoundError` when the file is absent. */
-export async function readFooterBytes(env: Env, key: string, src?: ByteStore): Promise<ArrayBuffer> {
+export async function readFooterBytes(env: Env, key: string): Promise<ArrayBuffer> {
   const ck = coloKey(env, key, 'footer')
   let buf: ArrayBuffer
   const hit = await colo().match(ck)
   if (hit) buf = await hit.arrayBuffer()
   else {
-    const store = src ?? makeStore(env)
+    const store = makeStore(env)
     const size = (await store.get(key, { offset: 0, length: 1 })).totalSize
     if (size == null || !(size >= 12)) throw new Error(`${key}: size unknown or too small (${size})`)
     const at = Math.max(0, size - FOOTER_TAIL)
@@ -653,8 +507,8 @@ export async function readFooterBytes(env: Env, key: string, src?: ByteStore): P
 /** A `.groups.parquet`'s footer (`readFooterBytes`) parsed into one
  * `FooterGroup` per row group. Throws the store's `NotFoundError` when the
  * file is absent (the caller falls back to the `.groups.json` blob). */
-async function openFooter(env: Env, key: string, src?: ByteStore): Promise<FooterIndex> {
-  const metadata = parquetMetadata(await readFooterBytes(env, key, src))
+async function openFooter(env: Env, key: string): Promise<FooterIndex> {
+  const metadata = parquetMetadata(await readFooterBytes(env, key))
   const kv = new Map((metadata.key_value_metadata ?? []).map(e => [e.key, e.value]))
   if (kv.get('groups_v') !== '1') throw new Error(`${key}: not a v1 groups parquet (groups_v=${kv.get('groups_v')})`)
   let rg = 0
@@ -677,11 +531,9 @@ async function openFooter(env: Env, key: string, src?: ByteStore): Promise<Foote
     // lens matches it); a group without stats at all is unknown — as is one
     // missing any other bound — and always a candidate.
     const uKnown = stat('u_min') != null && stat('u_max') != null
-    // An interval store's footer adds the groups' time bounds; missing stats leave the group a candidate.
-    const time = cols.has('vf_min') && lo('vf_min') != null && hi('vt_max') != null ? { vfMin: num(lo('vf_min')), vtMax: num(hi('vt_max')) } : {}
     const bounds = req.some(v => v == null) || !uKnown
       ? null
-      : { dMin: num(req[0]), dMax: num(req[1]), pMin: str(req[2]), pMax: str(req[3]), bMax: num(req[4]), uMin: lo('u_min') == null ? null : str(lo('u_min')), uMax: hi('u_max') == null ? null : str(hi('u_max')), ...time }
+      : { dMin: num(req[0]), dMax: num(req[1]), pMin: str(req[2]), pMax: str(req[3]), bMax: num(req[4]), uMin: lo('u_min') == null ? null : str(lo('u_min')), uMax: hi('u_max') == null ? null : str(hi('u_max')) }
     const rows = Number(meta.num_rows)
     const g = { n, rgStart: rg, rgEnd: rg + rows, byteStart, byteEnd, meta, bounds }
     rg += rows
@@ -690,65 +542,25 @@ async function openFooter(env: Env, key: string, src?: ByteStore): Promise<Foote
   return { key, metadata, groups }
 }
 
-/** The byte span of some columns' chunks in a footer group (they're stored in schema order, so a
- *  run of columns is one range). */
-function chunksSpan(fg: FooterGroup, cols: Set<string>): [number, number] {
-  let lo = Infinity, hi = 0
-  for (const c of fg.meta.columns) {
-    const m = c.meta_data!
-    if (!cols.has(m.path_in_schema[0])) continue
-    const data = Number(m.data_page_offset)
-    const dict = m.dictionary_page_offset == null ? data : Number(m.dictionary_page_offset)
-    const start = dict > 0 ? Math.min(dict, data) : data
-    lo = Math.min(lo, start)
-    hi = Math.max(hi, start + Number(m.total_compressed_size))
-  }
-  return [lo, hi]
-}
-
-/** Decode some columns of one footer group (one range read of their chunks, colo-cached). */
-async function readFooterCols(h: PqHandle, fg: FooterGroup, columns: string[]): Promise<Record<string, unknown>[]> {
-  const [start, end] = chunksSpan(fg, new Set(columns))
-  const buf = await cachedRange(h.env, h.footer.key, start, end, h.src)
-  const file: FileSlice = { byteLength: end, slice: async (s, e) => buf.slice(s - start, (e ?? end) - start) }
-  const metadata = { ...h.footer.metadata, row_groups: [fg.meta], num_rows: fg.meta.num_rows }
-  return (await parquetReadObjects({ file, metadata, columns, compressors })) as Record<string, unknown>[]
-}
-
-/** Decode one footer group's bounds into the blob handle's group shape (`rgJson` left empty: the
- * metadata of the few groups a read selects is fetched apart, `readFooterJson`) — cached per isolate
- * beside the tier groups, `(store, date, variant, gen, fg:<n>)`. Without the metadata column a
- * footer group is a fifth of the bytes to fetch, decode and hold. */
+/** Decode one footer group into the blob handle's group shape — cached per
+ * isolate beside the tier groups, `(store, date, variant, gen, fg:<n>)`. */
 async function readFooterGroup(h: PqHandle, fg: FooterGroup): Promise<BlobGroup[]> {
   const k = `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|fg:${fg.n}`
   const hit = cacheGet<BlobGroup>(k)
   if (hit) return hit
   const t0 = now()
-  const timed = h.asOf != null
-  const rows = await readFooterCols(h, fg, timed ? [...FOOTER_BOUNDS, 'vf_min', 'vt_max'] : FOOTER_BOUNDS)
+  const buf = await cachedRange(h.env, h.footer.key, fg.byteStart, fg.byteEnd)
+  const file: FileSlice = { byteLength: fg.byteEnd, slice: async (s, e) => buf.slice(s - fg.byteStart, (e ?? fg.byteEnd) - fg.byteStart) }
+  const metadata = { ...h.footer.metadata, row_groups: [fg.meta], num_rows: fg.meta.num_rows }
+  const rows = (await parquetReadObjects({ file, metadata, columns: FOOTER_COLS, compressors })) as Record<string, unknown>[]
   const out = rows.map((r): BlobGroup => ({
     rg: num(r.rg), dMin: num(r.d_min), dMax: num(r.d_max), pMin: str(r.p_min), pMax: str(r.p_max), bMax: num(r.b_max),
     uMin: r.u_min == null ? null : str(r.u_min), uMax: r.u_max == null ? null : str(r.u_max),
-    rowStart: num(r.row_start), rowEnd: num(r.row_end), rgJson: '',
-    ...(timed ? { vfMin: num(r.vf_min), vtMax: num(r.vt_max) } : {}),
+    rowStart: num(r.row_start), rowEnd: num(r.row_end), rgJson: str(r.rg_json),
   }))
   h.trace?.('footer', now() - t0, h.variant)
-  cachePut(k, out, out.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0))
+  cachePut(k, out, out.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length + g.rgJson.length), 0))
   return out
-}
-
-/** The stored metadata (`rg_json`) of one footer group's tier groups, by `rg` (cached per isolate). */
-async function readFooterJson(h: PqHandle, fg: FooterGroup): Promise<Map<number, string>> {
-  const k = `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|fj:${fg.n}`
-  const hit = cacheGet<[number, string]>(k)
-  if (hit) return new Map(hit)
-  const t0 = now()
-  // Footer rows are in `rg` order from the group's first: `rg_json` alone is one chunk to fetch.
-  const rows = await readFooterCols(h, fg, ['rg_json'])
-  const out = rows.map((r, i): [number, string] => [fg.rgStart + i, str(r.rg_json)])
-  h.trace?.('fjson', now() - t0, h.variant)
-  cachePut(k, out, out.reduce((n, [, j]) => n + 32 + 2 * j.length, 0))
-  return new Map(out)
 }
 
 /** The tier groups of a `pq` handle that `pass` (the span predicate)
@@ -757,11 +569,7 @@ async function readFooterJson(h: PqHandle, fg: FooterGroup): Promise<Map<number,
  * bounds contain every row's — and `groupMatches` / `groupMatchesSize`
  * applied to the bounds is exactly that relaxation (a depth-spanning range
  * skips the path test, a mixed-user one the keyed rect). */
-async function pqGroups(h: PqHandle, pass0: (g: NonNullable<FooterGroup['bounds']>) => boolean): Promise<BlobGroup[]> {
-  // As of a scan (an interval store): a group can answer only if one of its versions is live then.
-  const D = h.asOf
-  const pass = D == null ? pass0 : (g: { vfMin?: number; vtMax?: number } & NonNullable<FooterGroup['bounds']>) =>
-    (g.vfMin == null || g.vfMin <= D) && (g.vtMax == null || D < g.vtMax) && pass0(g)
+async function pqGroups(h: PqHandle, pass: (g: NonNullable<FooterGroup['bounds']>) => boolean): Promise<BlobGroup[]> {
   const sel = h.footer.groups.filter(fg => !fg.bounds || pass(fg.bounds))
   h.trace?.('fgroups', sel.length)
   const all = (await mapLimit(sel, GROUP_READS, fg => readFooterGroup(h, fg))).flat()
@@ -815,41 +623,8 @@ const toRowV2 = (r: Record<string, unknown>): Row => {
   }
 }
 
-/** An interval-store row (`interval_store.PV_SCHEMA`): one per path, owner slices in `us`, the mean
- *  stamp as its weighted sum (`wts`) and weight (`wb`), `-1` where a v1 scan had no structural counts. */
-const toRowV3 = (r: Record<string, unknown>): Row => {
-  const wb = num(r.wb)
-  const size = num(r.size)
-  const opt = (v: unknown) => { const n = num(v); return n < 0 ? null : n }
-  return {
-    path: str(r.path),
-    depth: num(r.depth),
-    usr: null,
-    kind: str(r.kind) === 'file' ? 'file' : 'dir',
-    size,
-    n_files: num(r.n_files),
-    n_children: opt(r.n_children),
-    n_desc: opt(r.n_desc),
-    mtime: opt(r.mtime),
-    mtime_mean: wb > 0 ? num(r.wts) / wb : null,
-    mtime_w: wb,
-    last_read: r.last_read == null ? null : opt(r.last_read),
-    cls2: num(r.c2),
-    cls3: num(r.c3),
-    cls4: num(r.c4),
-    us: usMap(str(r.us), size),
-  }
-}
-
-/** `us` (`interval_store.us_sql_from_raw`): `''` none, a bare name (the whole path), else JSON pairs. */
-export function usMap(us: string, size: number): Record<string, number> | null {
-  if (!us) return null
-  if (us[0] !== '[') return { [us]: size }
-  return Object.fromEntries(JSON.parse(us) as [string, number][])
-}
-
 /** The decoder for a handle's generation. */
-export const toRow = (h: { version: number }): ((r: Record<string, unknown>) => Row) => (h.version >= 3 ? toRowV3 : h.version >= 2 ? toRowV2 : toRowV1)
+export const toRow = (h: { version: number }): ((r: Record<string, unknown>) => Row) => (h.version >= 2 ? toRowV2 : toRowV1)
 
 // --- D1 metadata: revive stored RowGroup JSON into hyparquet's shape ---------
 
@@ -967,9 +742,7 @@ async function readGroupRaw(h: IndexHandle, rgJson: string, columns?: string[], 
 /** Read one row group as shaped `Row`s (the handle's projection unless the
  * caller narrows it further). */
 async function readGroup(h: IndexHandle, rgJson: string, columns?: string[], held?: FileSlice): Promise<Row[]> {
-  const raw = await readGroupRaw(h, rgJson, columns ?? h.columns ?? undefined, held)
-  const D = h.asOf
-  return (D == null ? raw : raw.filter(r => num(r.vf) <= D && D < num(r.vt))).map(toRow(h))
+  return (await readGroupRaw(h, rgJson, columns ?? h.columns ?? undefined, held)).map(toRow(h))
 }
 
 export interface Span extends GroupSpan { rg: number }
@@ -1148,7 +921,7 @@ async function fetchGroupJson(h: IndexHandle, rgs: number[]): Promise<Map<number
     // so these are cache hits).
     const want = new Set(rgs)
     const fgs = h.footer.groups.filter(fg => rgs.some(rg => rg >= fg.rgStart && rg < fg.rgEnd))
-    for (const m of await mapLimit(fgs, GROUP_READS, fg => readFooterJson(h, fg))) for (const [rg, j] of m) if (want.has(rg)) out.set(rg, j)
+    for (const g of (await mapLimit(fgs, GROUP_READS, fg => readFooterGroup(h, fg))).flat()) if (want.has(g.rg)) out.set(g.rg, g.rgJson)
     return out
   }
   for (let i = 0; i < rgs.length; i += 80) {

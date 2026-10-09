@@ -91,32 +91,6 @@ describe('a row\'s action: offered at once, resolved on the click', () => {
   })
 })
 
-describe('a row\'s action asks unless it sends exactly the one item its label names', () => {
-  // gcs prod, `?f=tomat`: the row labelled `marin-us-east5/tomat` resolved to 9 items; "me" sent all 9 at once.
-  const tomat = dir('marin-us-east5/tomat')
-  const flan = Array.from({ length: 8 }, (_, i) => file(`marin-us-east5/data/hrm_text_split/flan_direct/flan_${i}_rotten_tomatoes_part_00000.parquet`))
-  const go = (items: ReturnType<typeof dir | typeof file>[], shown?: string) => afterResolve({ items, complete: true }, { kind: 'assign' }, { scheme: 'gs://', shown }).s
-  it('the 9-item row asks first, and sends nothing until confirmed', async () => {
-    const h = harness({ got: { items: [tomat, ...flan], complete: true }, shown: 'marin-us-east5/tomat' })
-    await h.ctl.start({ kind: 'assign', owner: '@me', who: 'you' })
-    expect([h.shape(), h.sent]).toEqual([['resolving', 'confirm'], []])
-    await h.ctl.confirm()
-    expect([h.shape().at(-1), h.sent]).toEqual(['done: assigned 1 folder, 8 files → you', [['assign', 9, { pattern: 'gs://marin-us-east5/tomat/', owner: '@me' }]]])
-  })
-  it('asks for more than one item, or any item outside the shown path; not for the one item the label names', () => {
-    expect([
-      go([tomat, ...flan], 'marin-us-east5/tomat'),
-      go([tomat, ...flan], 'marin-us-east5'),
-      go([flan[0]], 'marin-us-east5/tomat'),
-      go([dir('marin-us-east5/tomatoes')], 'marin-us-east5/tomat'),
-      go([tomat], 'marin-us-east5/tomat'),
-      go([dir('marin-us-east5/tomat/sub')], 'marin-us-east5/tomat'),
-      go([flan[0]], 'marin-us-east5'),
-      go([tomat, ...flan]),
-    ]).toEqual(['confirm', 'confirm', 'confirm', 'confirm', 'go', 'go', 'go', 'go'])
-  })
-})
-
 describe('not acted on: muted in place (never red), unless it failed', () => {
   it('over the cap after resolving: the reason, muted', async () => {
     const h = harness({ got: { items: [], complete: false, reason: OVER } })

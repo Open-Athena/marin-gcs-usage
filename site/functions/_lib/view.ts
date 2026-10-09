@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -60,9 +60,6 @@ const COARSE_EXPS = [16, 20, 24]
  * is cheaper (gcs's 32K-row groups: a 2K-row dir 20 levels deep decoded
  * ~1.3M rows from `path`). The two span queries cost ~20 ms. */
 export const SMALL_SUBTREE_ROWS = 0
-/** On the interval store, a subtree with more rows than this (or an unknown count) reads `bysize`
- * without planning `path` (`planSubtree`). */
-export const IV_PATH_PLAN_ROWS = 1 << 18
 /** A v1 floor-free tier is sorted `(depth, path)`, so a size threshold can't
  * prune it: the filter's no-match fallback reads every row under the path.
  * For a whole bucket that read exceeds the Worker's limits (a bucket-level
@@ -256,7 +253,6 @@ function merge(a: Agg, r: Row): void {
   if (r.cls3) a.cb['3'] = (a.cb['3'] ?? 0) + r.cls3
   if (r.cls4) a.cb['4'] = (a.cb['4'] ?? 0) + r.cls4
   if (r.usr) a.ub[r.usr] = (a.ub[r.usr] ?? 0) + r.size
-  if (r.us) for (const u in r.us) a.ub[u] = (a.ub[u] ?? 0) + r.us[u]
   a.kind = r.kind
   if (r.n_children != null) a.nc = r.n_children
   if (r.n_desc != null) a.nd = r.n_desc
@@ -398,16 +394,6 @@ async function planSubtree(
   // `n_desc` alone, and with large row groups the wrong pick decodes 4×
   // more (gcs at 32K-row groups: small drills over the 700K-row cap).
   // `smallRows`: below it the `path` read is taken without planning `bysize`.
-  // The interval store plans from footer groups it must fetch and decode (no D1): a big subtree's
-  // `path` plan touches most of them, and `bysize` is the cheaper read there anyway, so it isn't planned.
-  if (!pathOnly && pathIdx.asOf != null && (nDesc == null || nDesc > IV_PATH_PLAN_ROWS)) {
-    const sized = await tryOpen(env, date, 'bysize')
-    if (sized) {
-      const sh = withTrace(sized, tr)
-      const sp = await planSizeRects(sh, rects, thrAt, lens)
-      return of(sized.variant, sp, stop => readSizeRects(sh, rects, thrAt, lens, sp, stop))
-    }
-  }
   if (!pathOnly && isStore(pathIdx) && (nDesc == null || nDesc > smallRows)) {
     // A lens prefers the user-first size sort where the scan has one (gcs
     // writes only `bysize-user`): a user's root reads their own groups.
@@ -460,8 +446,7 @@ export async function readRootRows(env: Env, date: string): Promise<{ path: stri
   return [...by.values()]
 }
 
-export async function readRootAgg(env0: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
-  const env = sliced(env0, o)
+export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
   const { date, path, lens, owner, classes } = o
   const dP = path === '' ? 0 : path.split('/').length
   const readRoot = (idx: IndexHandle, l?: Lens) =>
@@ -804,8 +789,6 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // sort's); a lens without assignments keeps the old read.
     const pathIdx = !tiers.length && !lens ? (sort === 'path' && fine ? fine : withTrace(await openFine(env, date, 'path'), tr)) : null
     const store = !!pathIdx && isStore(pathIdx)
-    // The search sidecars sit beside the scan's own path sort: an interval-store handle searches there.
-    const searchIdx = pathIdx && pathIdx.asOf != null ? withTrace(await openFine(perScan(env), date, 'path'), tr) : pathIdx
     const pq = query.ast
     const traceSearch = (what: string, f: SearchFound) => tr?.('search', performance.now() - t0, `${what} ${f.stats.mode} c${f.stats.candidates} ${f.stats.layout === 2 ? `r${f.stats.rowsRgs}` : `n${f.stats.namesRgs} g${f.stats.pathRgs}`}${f.truncated ? ' cut' : ''}`)
     if (rootHit) {
@@ -855,7 +838,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         staticRoots = true
       }
       const plan = !shits && store && pq ? planPositive(pq) : null
-      const searched = plan ? await searchRoots(perScan(env), searchIdx!, query, plan, path, o.searchLimits, `pos:${JSON.stringify(pq)}`) : null
+      const searched = plan ? await searchRoots(env, pathIdx!, query, plan, path, o.searchLimits, `pos:${JSON.stringify(pq)}`) : null
       if (searched) traceSearch('pos', searched)
       // A search cut before it found anything (its heaviest name alone is
       // over budget) says nothing: the thresholded read below answers instead.
@@ -931,7 +914,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     if (negP && pq) {
       t0 = performance.now()
       const nplan = store ? planNegative(pq) : null
-      const ns = nplan ? await searchRoots(perScan(env), searchIdx!, negP, nplan, path, o.searchLimits, `neg:${JSON.stringify(pq)}`) : null
+      const ns = nplan ? await searchRoots(env, pathIdx!, negP, nplan, path, o.searchLimits, `neg:${JSON.stringify(pq)}`) : null
       if (ns) {
         traceSearch('neg', ns)
         if (ns.truncated) searchCut = true
@@ -1352,18 +1335,6 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     }
   }
   }
-  // The interval store keeps read days in their own sort (specs/interval-store.md §2.2): the tiles' and
-  // the root's, looked up as of the scan.
-  if (plain && idx.asOf != null && !idx.schema.some(l => l.name === 'last_read')) {
-    t0 = performance.now()
-    const rootPaths = path === '' ? [...new Set(rootRows.map(r => r.path))] : [path]
-    const lr = await ivLastRead(env, date, [...aggs.keys(), ...rootPaths])
-    for (const [p, a] of aggs) { const d = lr.get(p); if (d != null) a.a = d }
-    let ra: number | null = null
-    for (const p of rootPaths) { const d = lr.get(p); if (d != null) ra = ra == null ? d : Math.max(ra, d) }
-    rootAgg.a = ra
-    tr?.('reads', performance.now() - t0, `${lr.size}`)
-  }
   let matches: string[] | undefined
   if (query) {
     // Only a claims fold filters a partial read; a view root the query matches is matched whole.
@@ -1630,11 +1601,7 @@ function kidsIndex(kept: Map<string, Agg>, path: string): Map<string, string[]> 
 /** The store root's crumb label: `ROOT_LABEL` (wrangler var) per deployment. */
 const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 'all buckets' : path.split('/').pop()!)
 
-/** A read scoped by owner or class needs owner-slice rows: per-scan stores (`perScan`). */
-const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? perScan(env) : env)
-
-export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
-  const env = sliced(env0, o)
+export async function buildView(env: Env, o: ViewOpts): Promise<View> {
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const cov: Coverage = {}
@@ -1682,7 +1649,7 @@ export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
     return node
   }
   const tree = build(path, v.rootAgg)
-  return { tree, tier: v.tier, index: v.idx.asOf != null ? `iv:${env.INTERVAL_STORE_GEN}` : v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? { ...matchLists(v.matched, kept), ...(v.matchCount ? { matchCount: v.matchCount, matchesCapped: true as const } : {}) } : v.matches ? { matches: v.matches } : {}), ...(v.rollup ? { rollup: v.rollup } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(v.interiors ? { interiors: v.interiors } : {}), ...(query ? coverageFields(cov) : {}) }
+  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? { ...matchLists(v.matched, kept), ...(v.matchCount ? { matchCount: v.matchCount, matchesCapped: true as const } : {}) } : v.matches ? { matches: v.matches } : {}), ...(v.rollup ? { rollup: v.rollup } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(v.interiors ? { interiors: v.interiors } : {}), ...(query ? coverageFields(cov) : {}) }
 }
 
 /** The most match roots a response lists (`matches` / `matched`) beyond those the tree draws. */
@@ -1783,8 +1750,7 @@ function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable
  * it exists there it shows with its real size (it crossed the floor), else
  * it was added / removed. `(other)` is parent − Σ named on each side, so its
  * Δ is the sub-floor churn, truthfully. */
-export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
-  const env = sliced(env0, o)
+export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   const { from, to, path, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const tr = o.trace

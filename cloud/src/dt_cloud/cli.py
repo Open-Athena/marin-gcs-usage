@@ -5361,10 +5361,6 @@ _static_names.add_command(_static_roots)
 _static_names.add_command(_static_anchors)
 main.add_command(_static_names)
 
-from .interval_store import cli as _interval_store  # noqa: E402
-
-main.add_command(_interval_store)
-
 from .scan_runs import cli as _scan_runs  # noqa: E402
 
 main.add_command(_scan_runs)
