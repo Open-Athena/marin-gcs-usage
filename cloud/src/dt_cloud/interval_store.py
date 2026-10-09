@@ -354,7 +354,7 @@ def cli() -> None:
 @option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task: task t builds [t·n, (t+1)·n)")
 @option("-o", "--out", default="/stage/out", help="Local output dir (uploaded, then removed)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
+@option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n; a Batch job's tasks split them)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB database + spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
 @option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
@@ -369,6 +369,9 @@ def build_cmd(bucket, profile, force, gen, index, mount, mem, per_task, out, thr
     ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
     if only:
         todo = [int(x) for x in only.split(",")]
+        # As a Batch job of several tasks, task t takes every count-th of the listed ranges.
+        if os.environ.get("BATCH_TASK_COUNT"):
+            todo = todo[sn._task(index)::int(os.environ["BATCH_TASK_COUNT"])]
     else:
         t = sn._task(index)
         todo = list(range(t * per_task, min((t + 1) * per_task, ranges["k"])))
