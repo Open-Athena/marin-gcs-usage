@@ -1,7 +1,7 @@
 """Scan ids: a scan's identity is its id, never its date (specs/scan-ids-not-dates.md).
 
-A scan id is ``YYYY-MM-DD`` (a daily job's scan) or ``YYYY-MM-DDTHHMM`` (a
-sub-daily scan, UTC — cw's ``SNAP_ID``). A day may hold several scans, so a
+A scan id is date-only ``YYYY-MM-DD`` or timed ``YYYY-MM-DDTHHMM`` (UTC — a job's
+``SNAP_ID``); any deployment may scan at any cadence. A day may hold several scans, so a
 date-ish argument is a *prefix*: it resolves to the latest scan whose id starts
 with it (`latest_scan`), the same rule as the site's `site/src/scanSlug.ts`.
 """
@@ -76,7 +76,7 @@ def latest_scan(prefix: str, scans: list[str]) -> str | None:
 
 def snapshot_scans(data_root: Path) -> list[str]:
     """The scan dirs under a site-data root (``<root>/<scan id>/meta.json``),
-    newest first — `scans.json`'s contents. Sub-daily ids included."""
+    newest first — `scans.json`'s contents. Timed ids included."""
     return sorted(
         (p.name for p in data_root.iterdir() if p.is_dir() and is_scan_id(p.name) and (p / "meta.json").exists()),
         reverse=True,

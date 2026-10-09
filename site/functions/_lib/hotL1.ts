@@ -1,5 +1,6 @@
 /** Isolated bounded reads of the published root-only hot catalog. No scan fallback. */
 import { type Env, json } from './auth.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 export type HotL1Env = Env & {
   QUERY_BOX_HOT_L1?: string
@@ -12,11 +13,6 @@ export const privateHeaders = { 'cache-control': 'private, no-store' }
 
 export class HotQueryError extends Error {}
 
-function scanDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
-  const date = new Date(`${value}T00:00:00Z`)
-  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
-}
 
 /** URLSearchParams tolerates malformed UTF-8; decode strictly before constructing it. */
 export function hotParams(url: URL): URLSearchParams {
@@ -38,11 +34,11 @@ export function hotParams(url: URL): URLSearchParams {
     params.set(key, value)
   }
   const date = params.get('date') ?? '', name = params.get('name') ?? '', from = params.get('from')
-  if (!scanDate(date)) throw new HotQueryError('A valid scan date is required.')
+  if (!isScanId(date)) throw new HotQueryError('A valid scan date is required.')
   if (!name || name.includes('/') || name.includes('\0') || Array.from(name).length > 512) {
     throw new HotQueryError('Use one nonempty NUL/slash-free literal of at most 512 characters.')
   }
-  if (from !== null && (!scanDate(from) || from >= date)) throw new HotQueryError('from must be a valid earlier scan date.')
+  if (from !== null && (!isScanId(from) || from >= date)) throw new HotQueryError('from must be a valid earlier scan date.')
   return params
 }
 

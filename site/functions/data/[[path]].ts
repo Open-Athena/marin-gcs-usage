@@ -16,11 +16,11 @@ import { withStore } from '../_lib/stores.js'
 import { snapshotsPrefix } from '../_lib/shared.js'
 import { type Env, requireViewer } from '../_lib/auth.js'
 import { pathScans, storeCreds, storeReady, storeTarget } from '../_lib/index.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 // Scan ids are `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM` (no
 // colon: it keeps the id safe as an object-key path segment). GCS publishes one
 // scan a day so its ids stay date-only; CoreWeave runs ad hoc, several a day.
-const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
 // `private`: these responses are now auth-gated — browser caching only.
 const CACHE = 'private, max-age=300' // daily cadence — ≤5min staleness is fine
 
@@ -51,7 +51,7 @@ export const onRequest = async (ctx0: { request: Request; env: Env }): Promise<R
   try {
     // `<store>/scans.json` → the date dirs under snapshots/<store>/, newest-first.
     // The default (GCS) store is the bare `snapshots/`; additional stores live in
-    // a named subdir (`snapshots/cw/`), which the DATE_RE filter keeps out of the
+    // a named subdir (`snapshots/cw/`), which the `isScanId` filter keeps out of the
     // GCS listing. Per-store payload paths need no special case: the generic
     // `/data/<rel>` → `snapshots/<rel>` mapping below already resolves them.
     const scansM = /^(?:([a-z0-9-]+)\/)?scans\.json$/.exec(rel)
@@ -64,7 +64,7 @@ export const onRequest = async (ctx0: { request: Request; env: Env }): Promise<R
         const page = await store.list(prefix, { cursor })
         for (const e of page.entries) {
           const d = e.key.slice(prefix.length).replace(/\/$/, '')
-          if (e.isDir && DATE_RE.test(d)) dates.push(d)
+          if (e.isDir && isScanId(d)) dates.push(d)
         }
         cursor = page.cursor
       } while (cursor)

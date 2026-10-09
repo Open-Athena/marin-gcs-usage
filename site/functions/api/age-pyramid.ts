@@ -15,6 +15,7 @@ import { type Env, requireViewer } from '../_lib/auth.js'
 import { withStore } from '../_lib/stores.js'
 import { num, openIndex, readPoint, storeReady } from '../_lib/index.js'
 import { AGE_TIERS, planAge } from '../_lib/agePyramid.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 const COLS = ['path', 'depth', 'binstart', 'b', 'o']
 
@@ -28,7 +29,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env }): Promis
   const url = new URL(ctx.request.url)
   const date = url.searchParams.get('date') ?? ''
   const path = (url.searchParams.get('path') ?? '').replace(/\/+$/, '')
-  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
+  if (!isScanId(date)) return new Response('bad date', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
   const binBudget = Math.max(1, Number(url.searchParams.get('bin_budget')) || 512)
   const fromMs = Date.parse(url.searchParams.get('from') ?? '')
