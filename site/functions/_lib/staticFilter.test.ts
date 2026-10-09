@@ -345,7 +345,9 @@ describe('static filter: a bounded view — the canvas\'s tiles, exact totals', 
   })
 
   it('phase 2 over its read budget: the subdividable roots are drawn whole and the response says so', async () => {
+    const byRows = await view(envStatic(), A, '', 'tomat', { phase2Rows: 0 })
     const v = await view(envStatic(), A, '', 'tomat', { phase2Groups: 0 })
+    expect(byRows).toEqual(v)
     const full = await view(envStatic(), A, '', 'tomat', { maxTiles: Infinity })
     expect([v.interiors, v.tree.b, v.matchCount, v.matched]).toEqual([{ read: 0, skipped: 3, reason: '3 over the read budget' }, full.tree.b, full.matchCount, full.matched])
     expect(flatTree(v.tree)).toEqual(FULL.filter(r => !/^(bk\/data\/tomato|bk\/data\/raw\/tomat-1|tomato-bk)\//.test((r as [string])[0])))

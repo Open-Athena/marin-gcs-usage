@@ -119,8 +119,9 @@ export interface ViewOpts {
   searchLimits?: SearchLimits
   /** With `query`: the most nodes the tree draws (default `tileBudget(w, h)`). */
   maxTiles?: number
-  /** With `query`: phase 2's row-group budget (default `FILTER_PHASE2_GROUPS`). */
+  /** With `query`: phase 2's row-group and row budgets (default `FILTER_PHASE2_GROUPS`, `FILTER_PHASE2_ROWS`). */
   phase2Groups?: number
+  phase2Rows?: number
   /** With `query`: only the filter's floor (`Read.threshold`, from the match roots' total) — no forest. */
   floorOnly?: boolean
 }
@@ -974,13 +975,14 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr))
       }))
       let room = o.phase2Groups ?? FILTER_PHASE2_GROUPS
+      let roomRows = o.phase2Rows ?? FILTER_PHASE2_ROWS
       const admitted: { rs: { path: string }[]; read: Promise<Row[] | typeof late | Error>; variant: string }[] = []
       plans.forEach((pl, i) => {
         const n = groups[i].length
         if (pl === late) skipped.late += n
         else if (pl instanceof Error) skipped.wide += n
-        else if (pl.groups > room) skipped.budget += n
-        else { room -= pl.groups; admitted.push({ rs: groups[i], read: settle(pl.read(stop)), variant: pl.variant }) }
+        else if (pl.groups > room || pl.rows > roomRows) skipped.budget += n
+        else { room -= pl.groups; roomRows -= pl.rows; admitted.push({ rs: groups[i], read: settle(pl.read(stop)), variant: pl.variant }) }
       })
       for (const x of admitted) {
         const got = await x.read
@@ -1336,8 +1338,12 @@ export const FILTER_VIEW_V = 3
 export const FILTER_SUBDIV_AREA = 64 * 64
 /** …to at most this many levels below the root (rows at the last level come back childless: drillable). */
 export const FILTER_SUBDIV_LEVELS = 3
-/** …reading at most this many row groups (admitted heaviest root depth first; a read past it is skipped). */
-export const FILTER_PHASE2_GROUPS = 24
+/** …reading at most this many row groups and rows (admitted heaviest root depth first; a read past either
+ *  is skipped): each group is a ranged GET (six in flight per request) and its decode is the isolate's CPU —
+ *  ~60 ms per 32K-row group on the edge, all of it after the reads' clocks stop (`tmp` under a bucket's
+ *  `checkpoints`: 24 groups, 0.6 s of Server-Timing, 2 s to the client). */
+export const FILTER_PHASE2_GROUPS = 16
+export const FILTER_PHASE2_ROWS = 160_000
 /** …within this many ms (`FILTER_PHASE2_MS` overrides): a read still running then is dropped. With the
  *  root details' wait past it (`FILTER_DETAILS_MS`, dev 300) and the build, a full view lands in ~2 s. */
 export const FILTER_PHASE2_MS = 1500
