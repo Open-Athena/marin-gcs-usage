@@ -301,7 +301,7 @@ def _pct_val(dtb: float, tb: float) -> float:
 
 
 def _md(date: str) -> str:
-    d = dt.date.fromisoformat(date)
+    d = dt.date.fromisoformat(date[:10])  # a scan id's day (`YYYY-MM-DD[THHMM]`)
     return f"{d.month}/{d.day}"
 
 
