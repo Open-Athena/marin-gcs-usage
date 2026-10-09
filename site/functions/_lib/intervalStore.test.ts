@@ -17,7 +17,8 @@ type Case = { date: string; path: string; w: number; h: number; depth: number | 
 /** `INDEX_R2` over the fixture dir, counting what is read. */
 function r2(reads: string[]): R2Bucket {
   const get = async (key: string, o?: { range?: { offset: number; length: number } }) => {
-    const fs = (await import(/* @vite-ignore */ 'node:fs')) as { existsSync(p: string): boolean; readFileSync(p: string): Uint8Array }
+    const mod = 'node:fs' // a variable: the Workers typecheck has no Node types
+    const fs = (await import(/* @vite-ignore */ mod)) as { existsSync(p: string): boolean; readFileSync(p: string): Uint8Array }
     const file = fixture(`iv/${key}`)
     if (!fs.existsSync(file)) return null
     const buf = fs.readFileSync(file)
