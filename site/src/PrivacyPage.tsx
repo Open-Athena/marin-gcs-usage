@@ -1,5 +1,4 @@
 import { Link } from 'react-router-dom'
-import { SessionLogNote } from './SessionLogNote'
 import { DEFAULT_STORE } from './stores'
 
 // `/privacy` — the public privacy notice Google requires on a consent screen
@@ -28,11 +27,6 @@ export function PrivacyPage() {
           <b>An access log</b>: which pages a signed-in identity or share link opened, and when. It exists so the person who
           shared a link can see it was used, and to revoke it.
         </p>
-        <p>
-          <b>A debugging log, only during announced windows</b>: page views, clicks on controls, the path filter's text, requests
-          the page made and errors it hit — no file contents and no other form text. Deleted after 30 days.
-        </p>
-        <SessionLogNote />
         <h2>What is not collected</h2>
         <p>
           No analytics, advertising or tracking scripts. No data is sold or shared with third parties. Google is used only to

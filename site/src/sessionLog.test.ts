@@ -1,10 +1,13 @@
 // The session logger (specs/session-log.md): batching, the flush triggers
 // (interval, size, page hide), the byte split, the per-load cap, expiry and
 // the server's off answer — then `install`'s wiring over a fake page, and the
-// boot shim's off switch.
+// boot shim following the admin switch (against the real endpoint).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { bodySummary, FILTER_DEBOUNCE_MS, FLUSH_MS, install, Logger, type Page, redactUrl, RESIZE_DEBOUNCE_MS } from './sessionLog'
 import { LIMITS, type SlogBatch } from '../functions/_lib/sessionLogShape'
+import { onRequest } from '../functions/api/session-log/[[path]]'
+import { gateFor } from '../functions/_lib/auth'
+import { sqliteD1 } from '../functions/_lib/testD1'
 
 const T0 = Date.UTC(2026, 9, 12, 15)
 const UNTIL = T0 + 86_400_000
@@ -274,13 +277,14 @@ describe('install', () => {
 })
 
 describe('boot shim', () => {
+  /** A fresh page load: `cfg` is the config the server answers, or the page's `fetch`. */
   const boot = async (cfg: unknown) => {
     vi.resetModules()
     const start = vi.fn(() => ({ log: vi.fn(), logger: { onStop: null } }))
     vi.doMock('./sessionLog', () => ({ start }))
     vi.stubGlobal('addEventListener', () => {})
     vi.stubGlobal('removeEventListener', () => {})
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(cfg), { status: 200 })))
+    vi.stubGlobal('fetch', typeof cfg === 'function' ? cfg : vi.fn(async () => new Response(JSON.stringify(cfg), { status: 200 })))
     const m = await import('./sessionLogBoot')
     m.slog('prefetch', { w: 'cover', p: 'a' })
     await m.bootSessionLog()
@@ -288,12 +292,43 @@ describe('boot shim', () => {
   }
   afterEach(() => { vi.unstubAllGlobals(); vi.doUnmock('./sessionLog') })
 
-  it('off (unset), expired, or enabled: false → no logger; on → the logger gets the held events', async () => {
+  it('follows the admin switch at runtime: off → on (through the chosen day) → off → on, then expired', async () => {
+    const { db } = await sqliteD1('cw')
+    const env = { DB: db, SESSION_SECRET: 's'.repeat(32), BASE_SCOPE: 'cw' }
+    const gate = gateFor(env as never)!
+    const tok = async (email: string, scopes: string[]) =>
+      (await gate.mint({ email, scopes, name: email, createdBy: 'test', expiresAt: null, maxRedeems: null })).token
+    const viewer = await tok('ann@example.test', ['cw'])
+    const adminT = await tok('ops@example.test', ['cw', 'admin'])
+    const api = (path: string, token: string, init: RequestInit = {}) => onRequest({
+      request: new Request(`https://site.example.test${path}`, { ...init, headers: { authorization: `Bearer ${token}` } }),
+      env,
+      params: path === '/api/session-log' ? {} : { path: path.replace('/api/session-log/', '').split('/') },
+    } as never)
+    const put = (body: unknown) => api('/api/session-log/switch', adminT, { method: 'PUT', body: JSON.stringify(body) })
+    // The page's own fetch, signed in as the viewer.
+    const page = vi.fn(async (input: RequestInfo | URL) => api(String(input), viewer))
+    const seen = [await boot(page)]
+    await put({ enabled: true, until: '2026-10-14' })
+    seen.push(await boot(page))
+    await put({ enabled: false })
+    seen.push(await boot(page))
+    await put({ enabled: true, until: '2026-10-12' })
+    seen.push(await boot(page))
+    vi.setSystemTime(Date.UTC(2026, 9, 13))
+    seen.push(await boot(page))
+    const on = (until: number) => [[{ until, early: [{ t: T0, k: 'prefetch', w: 'cover', p: 'a' }], build: '' }]]
+    expect(seen).toEqual([[], on(Date.UTC(2026, 9, 15)), [], on(Date.UTC(2026, 9, 13)), []])
+  })
+
+  it('off, expired, or enabled: false (even with an end) → no logger; on → the logger gets the held events', async () => {
     expect([
-      await boot({ enabled: false, until: null, reason: 'unset' }),
+      await boot({ enabled: false, until: null, reason: 'off' }),
+      await boot({ enabled: false, until: UNTIL, reason: 'no viewer identity' }),
       await boot({ enabled: true, until: T0 - 1 }),
       await boot({ enabled: true, until: UNTIL }),
     ]).toEqual([
+      [],
       [],
       [],
       [[{ until: UNTIL, early: [{ t: T0, k: 'prefetch', w: 'cover', p: 'a' }], build: '' }]],
