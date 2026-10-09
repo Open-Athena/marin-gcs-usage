@@ -58,3 +58,20 @@ export function apiErrorMessage(status: number, text: string): string {
   } catch { /* not JSON */ }
   return `${status}: ${text.slice(0, 120)}`
 }
+
+/** The scans the static name index covers (`/api/filter-scans`), when `enabled`: `'loading'` until known,
+ *  null when there's no static filter (or the list can't be had: no preference), else the ids. */
+export function useIndexedScans(enabled: boolean): string[] | null | 'loading' {
+  const q = useQuery({
+    queryKey: ['filter-scans'],
+    queryFn: async (): Promise<string[] | null> => {
+      const r = await fetch('/api/filter-scans', { credentials: 'include' })
+      if (!r.ok) return null
+      return (await r.json() as { scans: string[] | null }).scans
+    },
+    enabled,
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+  })
+  return !enabled ? null : q.isPending ? 'loading' : q.data ?? null
+}

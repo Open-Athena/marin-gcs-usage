@@ -10,6 +10,7 @@ import { onRequestGet as subtree } from './subtree'
 import { onRequestGet as diff } from './diff'
 import { onRequestGet as series } from './series'
 import { onRequestGet as caps } from './filter-caps'
+import { onRequestGet as filterScans } from './filter-scans'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('../_lib/testStore')).S3Store }))
 
@@ -196,5 +197,16 @@ describe('/api/filter-caps', () => {
   it('names the flag', async () => {
     const got = await Promise.all([envOf(true), envOf(false)].map(async env => (await caps({ request: new Request('http://localhost/api/filter-caps'), env } as never)).json()))
     expect(got).toEqual([{ indexedOnly: true }, { indexedOnly: false }])
+  })
+})
+
+describe('/api/filter-scans', () => {
+  it('lists the static index\'s covered scans (ascending), or null without a static filter', async () => {
+    const plain = { ...base } as Env
+    const got = await Promise.all([envOf(true, store([B, A])), plain].map(async env => {
+      const r = await filterScans({ request: new Request('http://localhost/api/filter-scans'), env } as never)
+      return [r.status, await r.json()]
+    }))
+    expect(got).toEqual([[200, { scans: [A, B] }], [200, { scans: null }]])
   })
 })

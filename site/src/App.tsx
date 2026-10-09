@@ -31,7 +31,7 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
 import { QueryHelpTip } from './QueryHelp'
-import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps } from './filterCaps'
+import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
@@ -41,7 +41,7 @@ import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import { canvasWidth } from './canvas'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, fromMiss, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, fromMiss, pendingNote, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
 import { hrefWithScan, NoScanMatch } from './NoScanMatch'
 import { selOf } from './scanSlug'
 import { SizeOverTime } from './SizeOverTime'
@@ -171,7 +171,12 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/done/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
-  const { asof, miss, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store)
+  // A filtered view with no `?d=` on an indexed-only deployment opens on the newest scan the static
+  // index covers (a just-published scan isn't searchable until the index appends it), and says so.
+  const { indexedOnly: indexedOnly0 } = useFilterCaps()
+  const [fFloat] = useUrlState('f', stringParam())
+  const indexedScans = useIndexedScans(indexedOnly0 && !!fFloat)
+  const { asof, miss, pending, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store, indexedOnly0 && fFloat ? indexedScans : undefined)
   const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
@@ -1163,6 +1168,7 @@ function AppContent() {
 
       {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
           end) with a strip listing every candidate to pin one. */}
+      {asof && pending.length > 0 && <p className="tab-note pending-index" role="status">{pendingNote(asof, pending)}</p>}
       {dMatches.length > 1 && (
         <p className="disambig">
           <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
