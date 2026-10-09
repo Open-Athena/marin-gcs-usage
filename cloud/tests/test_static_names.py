@@ -15,11 +15,16 @@ from dt_cloud import static_names as sn
 
 DATES = ["2026-07-30", "2026-07-31", "2026-08-02", "2026-08-03", "2026-08-04"]
 V2_FROM = 3  # scans from here on are store generations (v2); earlier ones v1 indexes
-#: The deployments' scan shapes, each test run over both: gcs (a scan a day, owner slices, `listing/<date>/…`) and cw
+#: The deployments' scan shapes, each test run over each: gcs (a scan a day, owner slices, `listing/<date>/…`), gcs
+#: after it moves to scan ids (`gcs-sub`), and cw
 #: (a scan every 6 h, ids to the minute, no owners: its v2 sorts carry no `usr` column, `cw-l2/<scan>/index/<gen>/…`).
 FLAVORS = {
     "gcs": {"ids": DATES, "layout": "listing/{id}/path-index.parquet", "owners": True, "per_dir": 5},
-    "cw": {"ids": ["2026-10-08T0001", "2026-10-08T0601", "2026-10-08T1202", "2026-10-08T1801", "2026-10-09T0001"],
+    # gcs moving to sub-daily scan ids (specs/scan-ids-not-dates.md): date ids, then two scans on one day
+    "gcs-sub": {"ids": ["2026-07-30", "2026-07-31", "2026-08-02", "2026-08-03T0001", "2026-08-03T1200"],
+                "layout": "listing/{id}/path-index.parquet", "owners": True, "per_dir": 5},
+    # the appends (`test_static_append`: the last two scans) are two scans of one day
+    "cw": {"ids": ["2026-10-07T1801", "2026-10-08T0001", "2026-10-08T0601", "2026-10-08T1202", "2026-10-08T1801"],
            "layout": "cw-l2/{id}/index/20261009T000000Z/path-index.parquet", "owners": False, "per_dir": 8},  # more names: as many rows without owner slices
 }
 
