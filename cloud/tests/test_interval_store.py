@@ -200,7 +200,8 @@ def served(built, tmp_path_factory):
     con = duckdb.connect()
     for sort, (sub, _, _) in ist.SORTS.items():
         schema = ist.SUB_SCHEMA[sub]
-        ist.write_served(con, f"read_parquet('{out}/{sub}/r*.parquet')", sort, dst / f"{sort}.parquet", schema, rg_rows=4)
+        ist.write_served(con, f"read_parquet('{out}/{sub}/r*.parquet')", sort, dst / f"{sort}.parquet", schema, rg_rows=4,
+                         stamps=[x["ts"] for x in scans["scans"]])
     return dst
 
 
@@ -213,17 +214,49 @@ def _scans(built):
     return [(s, Scan(con, str(root / s["src"]), s["version"], s["src"])) for s in scans["scans"]]
 
 
-def test_served_groups_split_open_from_closed(served):
+def test_seg_sql_places_a_version_in_the_smallest_dyadic_block_of_its_scans():
+    con = duckdb.connect()
+    stamps = [10, 20, 30, 40, 50, 60]
+    # Live at scans (by index) 0..0 → block [0] (level 0); 1..2 → [0..3] (level 2: 1 and 2 split at 2);
+    # 2..3 → [2..3] (level 1, block 1); 3..4 and 0..4 → [0..7] (level 3); open → segment 0.
+    rows = [(10, 20), (20, 40), (30, 50), (40, 60), (10, 60), (30, sn.OPEN)]
+    got = [con.execute(f"SELECT {ist.seg_sql(stamps)} FROM (SELECT {vf}::BIGINT AS vf, {vt}::BIGINT AS vt)").fetchone()[0] for vf, vt in rows]
+    L = ist.SEG_LEVEL
+    assert got == [1, 1 + 2 * L, 1 + 1 * L + 1, 1 + 3 * L, 1 + 3 * L, 0]
+    assert con.execute(f"SELECT {ist.seg_sql(None)} FROM (SELECT 10::BIGINT AS vf, 20::BIGINT AS vt)").fetchone()[0] == 1
+
+
+def test_served_groups_split_open_from_closed_by_dyadic_block(built, served):
+    _, scans, _, _ = built
+    idx = {s["ts"]: i for i, s in enumerate(scans["scans"])}
+    t = pq.read_table(served / "path.parquet").to_pylist()
     g = pq.read_table(served / "path.groups.parquet").to_pylist()
     segs = [x["seg"] for x in g]
-    assert segs == sorted(segs) and set(segs) == {0, 1}
+    assert segs == sorted(segs) and segs[0] == 0 and segs[-1] > 1
     assert all(x["vt_min"] == x["vt_max"] == sn.OPEN for x in g if x["seg"] == 0)
-    assert all(x["vt_max"] < sn.OPEN for x in g if x["seg"] == 1)
-    t = pq.read_table(served / "bysize.parquet")
-    buckets = [(s.bit_length() - 1 if s > 0 else -1) for s in t["size"].to_pylist()]
-    n_open = sum(x["row_end"] - x["row_start"] for x in pq.read_table(served / "bysize.groups.parquet").to_pylist() if x["seg"] == 0)
-    for seg in (buckets[:n_open], buckets[n_open:]):
-        assert seg == sorted(seg, key=lambda b: (b < 0, -b))
+    # Every closed row lies inside its group's block: live only at that block's scans.
+    outside = []
+    for x in g:
+        if x["seg"] == 0:
+            continue
+        k, block = divmod(x["seg"] - 1, ist.SEG_LEVEL)
+        lo, hi = block << k, ((block + 1) << k) - 1
+        for r in t[x["row_start"]:x["row_end"]]:
+            i, j = idx[r["vf"]], idx[r["vt"]] - 1
+            if not (lo <= i <= j <= hi):
+                outside.append((r["path"], i, j, k, block))
+    assert outside == []
+    # Each segment in the sort's order.
+    for s in set(segs):
+        rows = [r for x in g if x["seg"] == s for r in t[x["row_start"]:x["row_end"]]]
+        keys = [(r["depth"], r["path"], r["vf"]) for r in rows]
+        assert keys == sorted(keys)
+    b = pq.read_table(served / "bysize.parquet")
+    bg = pq.read_table(served / "bysize.groups.parquet").to_pylist()
+    sizes = b["size"].to_pylist()
+    for s in {x["seg"] for x in bg}:
+        bk = [(sz.bit_length() - 1 if sz > 0 else -1) for x in bg if x["seg"] == s for sz in sizes[x["row_start"]:x["row_end"]]]
+        assert bk == sorted(bk, key=lambda v: (v < 0, -v))
 
 
 @pytest.mark.parametrize("wh", [(4, 4), (8, 6), (30, 30)])

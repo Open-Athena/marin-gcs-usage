@@ -272,8 +272,8 @@ def fold_range(root: str, i: int, out: Path, con) -> dict:
 #: `bysize` key, `find/tiers.py`); NULL for size 0, which sorts last.
 BUCKET = "CASE WHEN size > 0 THEN length(bin(size)) - 1 END"
 #: Each served sort: its source rows, its order, and which column bounds a group's sizes. Every sort is
-#: two segments in one file — the versions open at the generation's last scan, then the closed ones —
-#: so a read at that scan prunes the closed segment by `vt_max` alone.
+#: segments in one file — the versions open at the generation's last scan, then the closed ones — so a
+#: read at that scan prunes every closed group by `vt_max` alone.
 SORTS = {
     "path": ("pvl", "depth, path, vf", "size"),
     "bysize": ("pvl", f"({BUCKET}) DESC NULLS LAST, path, vf", "size"),
@@ -281,10 +281,9 @@ SORTS = {
 }
 #: Each range-file dir's schema.
 SUB_SCHEMA = {"pv": PV_SCHEMA, "pvl": PVL_SCHEMA, "rd": RD_SCHEMA}
-SEGMENTS = (("open", f"vt = {OPEN}"), ("hist", f"vt <> {OPEN}"))
 GROUPS_SCHEMA = pa.schema([
     pa.field("rg", pa.int32(), nullable=False),
-    pa.field("seg", pa.int8(), nullable=False),
+    pa.field("seg", pa.int32(), nullable=False),
     pa.field("d_min", pa.int32(), nullable=False),
     pa.field("d_max", pa.int32(), nullable=False),
     pa.field("p_min", pa.string(), nullable=False),
@@ -304,6 +303,27 @@ GROUPS_SCHEMA = pa.schema([
 GROUPS_STAT_COLS = ["d_min", "d_max", "p_min", "p_max", "b_min", "b_max", "u_min", "u_max", "vf_min", "vf_max", "vt_min", "vt_max"]
 #: The served store's `index_schema.version` analogue: 3 = interval rows (`vf`/`vt`, one row per path).
 STORE_VERSION = 3
+#: A dyadic segment's id: `1 + level · SEG_LEVEL + block` (segment 0 is the open versions).
+SEG_LEVEL = 1 << 16
+
+
+def seg_sql(stamps: list[int] | None) -> str:
+    """Each version's segment, as SQL over `vf`/`vt`: 0 while open. Without `stamps`, every closed
+    version is segment 1. With them (the generation's scan epochs, ascending), a closed version live at
+    scans `i..j` (by index) goes to the smallest dyadic block of scans holding both — level
+    `k = bit_length(i ^ j)`, block `i >> k`, segment `1 + k·SEG_LEVEL + block`. A block's versions are
+    live only inside it, so a read at a scan touches one block per level (⌈log2 n⌉ + 1 of them) and the
+    groups' `vf_min`/`vt_max` prune the rest; within a block a version crosses its midpoint, so it is
+    live at most of the block's scans."""
+    if not stamps:
+        return f"CASE WHEN vt = {OPEN} THEN 0 ELSE 1 END"
+    if stamps != sorted(set(stamps)):
+        raise ValueError("scan stamps must be ascending and distinct")
+    lst = "[" + ", ".join(str(int(t)) for t in stamps) + "]::BIGINT[]"
+    i = f"(list_position({lst}, vf) - 1)"
+    j = f"(list_position({lst}, vt) - 2)"
+    k = f"(CASE WHEN {i} = {j} THEN 0 ELSE length(bin(xor({i}, {j}))) END)"
+    return f"CASE WHEN vt = {OPEN} THEN 0 ELSE 1 + {k} * {SEG_LEVEL} + ({i} >> {k}) END"
 
 
 def _bounds(t: pa.Table, seg: int, size_col: str | None) -> dict:
@@ -319,45 +339,67 @@ def _bounds(t: pa.Table, seg: int, size_col: str | None) -> dict:
             "u_min": None, "u_max": None, "vf_min": vf[0], "vf_max": vf[1], "vt_min": vt[0], "vt_max": vt[1], "rows": t.num_rows}
 
 
-def write_served(con, src: str, sort: str, out: Path, schema: pa.Schema, *, rg_rows: int = SERVED_RG) -> dict:
-    """One served sort of `src` (a relation of `schema` rows) to `out`: its open segment then its closed
-    one, each in `rg_rows`-row groups (a segment's last may be short, so no group mixes them), zstd, in
-    the sort's order. Writes `<out stem>.groups.parquet` beside it (`GROUPS_SCHEMA`: per group the exact
-    bounds of its rows — never truncated statistics — and the compact metadata the Worker revives)."""
+def write_served(con, src: str, sort: str, out: Path, schema: pa.Schema, *, rg_rows: int = SERVED_RG,
+                 stamps: list[int] | None = None) -> dict:
+    """One served sort of `src` (a relation of `schema` rows) to `out`: its segments in order (`seg_sql`:
+    the open versions, then the closed ones — one segment, or with `stamps` one per dyadic block of
+    scans), each in the sort's order and cut in `rg_rows`-row groups (a segment's last may be short, so
+    no group mixes segments), zstd. Writes `<out stem>.groups.parquet` beside it (`GROUPS_SCHEMA`: per
+    group the exact bounds of its rows — never truncated statistics — and the compact metadata the
+    Worker revives)."""
+    import pyarrow.compute as pc
+
     _, order, size_col = SORTS[sort]
     cols = ", ".join(schema.names)
     bounds: list[dict] = []
     out.parent.mkdir(parents=True, exist_ok=True)
     dictionary = [c for c in ("kind", "us") if c in schema.names]
+    seg_rows: dict[int, int] = {}
     with pq.ParquetWriter(out, schema, compression=sn.CODEC, use_dictionary=dictionary, write_statistics=["depth", "vf", "vt"]) as w:
-        for seg, (name, where) in enumerate(SEGMENTS):
-            pending: list[pa.RecordBatch] = []
-            n = 0
+        pending: list[pa.Table] = []
+        n = 0
+        cur: int | None = None
 
-            def flush(final: bool) -> None:
-                nonlocal pending, n
-                if not pending:
-                    return
-                t = pa.Table.from_batches(pending, schema=schema).combine_chunks()
-                off = 0
-                while t.num_rows - off >= rg_rows or (final and off < t.num_rows):
-                    g = t.slice(off, min(rg_rows, t.num_rows - off))
-                    w.write_table(g, row_group_size=rg_rows)
-                    bounds.append(_bounds(g, seg, size_col))
-                    off += g.num_rows
-                rest = t.slice(off)
-                pending, n = ([rest.combine_chunks().to_batches()[0]] if rest.num_rows else []), rest.num_rows
+        def flush(final: bool) -> None:
+            nonlocal pending, n
+            if not pending:
+                return
+            t = pa.concat_tables(pending).combine_chunks()
+            off = 0
+            while t.num_rows - off >= rg_rows or (final and off < t.num_rows):
+                g = t.slice(off, min(rg_rows, t.num_rows - off))
+                w.write_table(g, row_group_size=rg_rows)
+                bounds.append(_bounds(g, cur, size_col))
+                off += g.num_rows
+            rest = t.slice(off)
+            pending, n = ([rest] if rest.num_rows else []), rest.num_rows
 
-            for b in sn._batches(con, f"SELECT {cols} FROM {src} WHERE {where} ORDER BY {order}"):
-                if b.num_rows:
-                    pending.append(b.cast(schema) if b.schema != schema else b)
-                    n += b.num_rows
-                    if n >= rg_rows:
-                        flush(False)
-            flush(True)
-            err(f"  {sort}/{name}: {sum(x['rows'] for x in bounds if x['seg'] == seg):,} rows")
+        sql = f"SELECT {cols}, {seg_sql(stamps)} AS __seg FROM {src} ORDER BY __seg, {order}"
+        for b in sn._batches(con, sql):
+            if not b.num_rows:
+                continue
+            segs = b.column("__seg")
+            if segs.null_count:
+                raise ValueError(f"{out.name}: a closed version's vf/vt isn't one of the scans' stamps")
+            t = pa.Table.from_batches([b]).drop_columns(["__seg"])
+            t = t.cast(schema) if t.schema != schema else t
+            # The batch's runs of one segment (it's sorted by segment first).
+            vals = segs.to_pylist()
+            cuts = [0] + [x for x in range(1, len(vals)) if vals[x] != vals[x - 1]] + [len(vals)]
+            for a, z in zip(cuts, cuts[1:]):
+                s = vals[a]
+                if s != cur:
+                    flush(True)
+                    cur = s
+                pending.append(t.slice(a, z - a))
+                n += z - a
+                seg_rows[s] = seg_rows.get(s, 0) + z - a
+                if n >= rg_rows:
+                    flush(False)
+        flush(True)
+        err(f"  {sort}: {sum(seg_rows.values()):,} rows in {len(seg_rows)} segments (open {seg_rows.get(0, 0):,})")
         w.add_key_value_metadata({"store": "interval", "version": str(STORE_VERSION), "sort": sort, "order": order,
-                                  "segments": ",".join(n for n, _ in SEGMENTS), "open": str(OPEN)})
+                                  "segments": "open,dyadic" if stamps else "open,hist", "open": str(OPEN)})
     md = pq.read_metadata(out)
     rows, start = [], 0
     for g in range(md.num_row_groups):
@@ -375,15 +417,28 @@ def write_served(con, src: str, sort: str, out: Path, schema: pa.Schema, *, rg_r
 
     sj = schema_json(md)
     t = pa.table({c: [r[c] for r in rows] for c in GROUPS_SCHEMA.names}, schema=GROUPS_SCHEMA)
+    segs = _seg_summary(rows, bool(stamps))
     kv = {"groups_v": "1", "version": str(STORE_VERSION), "schema": json.dumps(sj["schema"], separators=(",", ":")), "sort": sort,
-          "rows": str(start), "segments": json.dumps({n: sum(1 for r in rows if r["seg"] == i) for i, (n, _) in enumerate(SEGMENTS)})}
+          "rows": str(start), "segments": json.dumps({k: v["groups"] for k, v in segs.items()})}
     gp = out.with_name(out.name.removesuffix(".parquet") + ".groups.parquet")
     with pq.ParquetWriter(gp, GROUPS_SCHEMA, compression="zstd", write_statistics=GROUPS_STAT_COLS, store_schema=False) as w:
         w.write_table(t, row_group_size=512)
         w.add_key_value_metadata(kv)
-    return {"sort": sort, "rows": start, "groups": len(rows), "bytes": out.stat().st_size, "groups_bytes": gp.stat().st_size,
-            "segments": {n: {"groups": sum(1 for r in rows if r["seg"] == i), "rows": sum(r["row_end"] - r["row_start"] for r in rows if r["seg"] == i)}
-                         for i, (n, _) in enumerate(SEGMENTS)}}
+    return {"sort": sort, "rows": start, "groups": len(rows), "bytes": out.stat().st_size, "groups_bytes": gp.stat().st_size, "segments": segs}
+
+
+def _seg_summary(rows: list[dict], dyadic: bool) -> dict:
+    """Groups and rows per segment kind: `open`, then the closed ones — `hist` (one segment) or by
+    dyadic level (`L<k>`, with its block count)."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        s = r["seg"]
+        name = "open" if s == 0 else f"L{(s - 1) // SEG_LEVEL}" if dyadic else "hist"
+        e = out.setdefault(name, {"groups": 0, "rows": 0, "segs": set()})
+        e["groups"] += 1
+        e["rows"] += r["row_end"] - r["row_start"]
+        e["segs"].add(s)
+    return {k: {"groups": v["groups"], "rows": v["rows"], **({"blocks": len(v["segs"])} if k.startswith("L") else {})} for k, v in out.items()}
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
@@ -498,48 +553,74 @@ def fold_cmd(bucket, gen, index, mount, mem, per_task, out, threads, profile, tm
         print(json.dumps(doc), flush=True)
 
 
+def _refuse_overwrite(bucket: str, keys: list[str]) -> None:
+    """Published served files are immutable: a cut into a generation that already has them is refused
+    (cut into a new one, `--to-gen`)."""
+    from google.cloud import storage
+
+    b = storage.Client().bucket(bucket)
+    there = [k for k in keys if b.blob(k).exists()]
+    if there:
+        raise SystemExit(f"refusing to overwrite published files: {', '.join(there)} (cut into a new generation: -O)")
+
+
 @cli.command("cut")
 @option("-b", "--bucket", help="Data bucket (default: the profile's)")
+@option("-D", "--no-dyadic", is_flag=True, help="One closed segment, not one per dyadic block of scans (`seg_sql`)")
 @option("-g", "--gen", required=True, help="Generation (its pv/, rd/ range files)")
 @option("-i", "--index", type=int, help="Task index → sort (path, bysize, reads, then `stats`: per-scan churn; default: $BATCH_TASK_INDEX)")
 @option("-m", "--mount", help="Local mount of the data bucket")
 @option("-M", "--mem", default="80GB", help="DuckDB memory limit")
 @option("-o", "--out", default="/stage/out", help="Local output dir (uploaded, then removed)")
+@option("-O", "--to-gen", help="Write the served files (and a copy of scans.json) under this generation instead of GEN")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-r", "--rg-rows", default=SERVED_RG, type=int, help="Rows per served row group")
 @option("-s", "--sort", "sorts", multiple=True, type=Choice(list(SORTS)), help="Sort(s) to cut (default: the task's)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
 @option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
-def cut_cmd(bucket, profile, gen, index, mount, mem, out, threads, rg_rows, sorts, tmp, no_upload) -> None:
+def cut_cmd(bucket, no_dyadic, profile, gen, index, mount, mem, out, to_gen, threads, rg_rows, sorts, tmp, no_upload) -> None:
     """Cut the served sorts from the range files: `served/<sort>.parquet` + `.groups.parquet`."""
     bucket = _bucket(bucket, profile)
     prefix = f"{PREFIX}/{gen}"
+    dst_prefix = f"{PREFIX}/{to_gen or gen}"
     todo = list(sorts) or [[*SORTS, "stats"][sn._task(index)]]
     con = connect(threads, mem, tmp)
     root = f"{mount}/{prefix}" if mount else f"gs://{bucket}/{prefix}"
+    scans = read_json(f"gs://{bucket}/{prefix}/scans.json")
+    out_dir = Path(out) / "served"
     if todo == ["stats"]:
-        doc = churn_stats(con, root, read_json(f"gs://{bucket}/{prefix}/scans.json"))
-        out_dir = Path(out) / "served"
+        doc = churn_stats(con, root, scans)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "stats.json").write_text(json.dumps(doc, indent=1) + "\n")
         if not no_upload:
-            upload_tree(out_dir, bucket, f"{prefix}/served")
+            _refuse_overwrite(bucket, [f"{dst_prefix}/served/stats.json"])
+            upload_tree(out_dir, bucket, f"{dst_prefix}/served")
         print(json.dumps({k: v for k, v in doc.items() if k != "scans"}), flush=True)
         return
+    stamps = None if no_dyadic else [s["ts"] for s in scans["scans"]]
     for sort in todo:
         sub, _, _ = SORTS[sort]
         schema = SUB_SCHEMA[sub]
+        if not no_upload:
+            _refuse_overwrite(bucket, [f"{dst_prefix}/served/{sort}{x}" for x in (".parquet", ".groups.parquet", ".json")])
         t0 = monotonic()
-        dst = Path(out) / "served" / f"{sort}.parquet"
-        doc = write_served(con, f"read_parquet({q(root + '/' + sub + '/r*.parquet')})", sort, dst, schema, rg_rows=rg_rows)
+        dst = out_dir / f"{sort}.parquet"
+        doc = write_served(con, f"read_parquet({q(root + '/' + sub + '/r*.parquet')})", sort, dst, schema, rg_rows=rg_rows, stamps=stamps)
         doc["s"] = round(monotonic() - t0, 1)
         err(f"cut {sort}: {doc['rows']:,} rows, {doc['groups']:,} groups, {doc['bytes']:,} B in {doc['s']}s")
-        (Path(out) / "served" / f"{sort}.json").write_text(json.dumps(doc, sort_keys=True) + "\n")
+        (out_dir / f"{sort}.json").write_text(json.dumps(doc, sort_keys=True) + "\n")
         if not no_upload:
-            upload_tree(Path(out) / "served", bucket, f"{prefix}/served")
-            shutil.rmtree(Path(out) / "served")
+            upload_tree(out_dir, bucket, f"{dst_prefix}/served")
+            shutil.rmtree(out_dir)
         print(json.dumps(doc), flush=True)
+    if to_gen and not no_upload:
+        # The new generation's scans (the reader's `scans.json`), once.
+        from google.cloud import storage
+
+        blob = storage.Client().bucket(bucket).blob(f"{dst_prefix}/scans.json")
+        if not blob.exists():
+            blob.upload_from_string(json.dumps(scans, indent=1) + "\n", content_type="application/json")
 
 
 def download_served(bucket: str, prefix: str, dst: Path, *, workers: int = 16) -> None:

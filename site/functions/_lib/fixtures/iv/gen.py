@@ -60,7 +60,8 @@ def main() -> None:
     shutil.rmtree(out, ignore_errors=True)
     for sort, (sub, _, _) in ist.SORTS.items():
         schema = ist.SUB_SCHEMA[sub]
-        ist.write_served(con, f"read_parquet('{work}/out/{sub}/r*.parquet')", sort, out / "served" / f"{sort}.parquet", schema, rg_rows=4)
+        ist.write_served(con, f"read_parquet('{work}/out/{sub}/r*.parquet')", sort, out / "served" / f"{sort}.parquet", schema, rg_rows=4,
+                         stamps=[x["ts"] for x in scans])
     (out / "scans.json").write_text(json.dumps({"scans": [{"id": s["id"], "ts": s["ts"]} for s in scans]}, indent=1) + "\n")
     store = ir.Store(out / "served")
     expected = []
