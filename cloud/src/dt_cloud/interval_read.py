@@ -77,6 +77,34 @@ class Sort:
         names = self.pf.schema_arrow.names
         self.col_index = {c: i for i, c in enumerate(names)}
 
+    def at_depth(self, depth: int, lo: str, hi: str) -> list[dict]:
+        """Groups that can hold rows at `depth` with `lo ≤ path ≤ hi`: single-depth groups by binary
+        search over their path ranges (they're sorted within a segment), plus every multi-depth group."""
+        if not hasattr(self, "_by_depth"):
+            self._by_depth: dict[int, list[dict]] = {}
+            self._multi: list[dict] = []
+            for g in self.groups:
+                if g["d_min"] == g["d_max"]:
+                    self._by_depth.setdefault(g["d_min"], []).append(g)
+                else:
+                    self._multi.append(g)
+            for gs in self._by_depth.values():
+                gs.sort(key=lambda g: g["p_min"])
+            self._pmin = {d: [g["p_min"] for g in gs] for d, gs in self._by_depth.items()}
+            self._pmax_prefix = {d: [] for d in self._by_depth}
+            for d, gs in self._by_depth.items():
+                m = ""
+                for g in gs:
+                    m = max(m, g["p_max"])
+                    self._pmax_prefix[d].append(m)
+        gs = self._by_depth.get(depth, [])
+        out = [g for g in self._multi if g["d_min"] <= depth <= g["d_max"]]
+        # Groups with p_min ≤ hi; of those, the ones whose p_max ≥ lo (p_max prefix-max skips a prefix).
+        j = bisect.bisect_right(self._pmin[depth], hi) if gs else 0
+        i = bisect.bisect_left(self._pmax_prefix.get(depth, []), lo, 0, j) if gs else 0
+        out += [g for g in gs[i:j] if g["p_max"] >= lo]
+        return out
+
     def nbytes(self, g: dict, columns: list[str]) -> int:
         _, _, cols = json.loads(g["rg_json"])
         return sum(cols[self.col_index[c]][1] for c in columns)
@@ -240,7 +268,7 @@ class Store:
     def point(self, D: int, depth: int, lo: str, hi: str, cost: Cost, sort: Sort | None = None, cols=VIEW_COLS) -> pa.Table:
         """Rows at one depth with `lo ≤ path ≤ hi`, live at D."""
         s = sort or self.path
-        gs = [g for g in s.groups if live(g, D) and g["d_min"] <= depth <= g["d_max"] and g["p_max"] >= lo and g["p_min"] <= hi]
+        gs = sorted((g for g in s.at_depth(depth, lo, hi) if live(g, D)), key=lambda g: g["rg"])
         t = live_rows(combine(s.read(gs, cols, cost)), D)
         return t.filter(pc.and_(pc.equal(t["depth"], depth), pc.and_(pc.greater_equal(t["path"], lo), pc.less_equal(t["path"], hi))))
 
