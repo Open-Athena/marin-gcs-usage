@@ -19,7 +19,7 @@ import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
-import { cacheKeyFor, cacheMatch, cacheStore, keepFor, serverTiming } from '../_lib/edgeCache.js'
+import { cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
@@ -136,8 +136,38 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [date]))
       if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     }
+    // The worker's answer: the view's JSON and what to keep of it — `phase2Ms` (a background full run's) over
+    // the viewer-facing default.
+    const render = async (o: { phase2Ms?: number; trace?: typeof st.trace } = {}) => {
+      const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, query, classes, firstPaint: !!query && !full, trace: o.trace, ...(o.phase2Ms ? { phase2Ms: o.phase2Ms } : {}) })
+      const body = JSON.stringify({
+        date,
+        path,
+        w,
+        h,
+        minArea,
+        atten,
+        tier: view.tier,
+        index: view.index,
+        ...(lens ? { lens: lensTag } : {}),
+        threshold: Math.round(view.threshold),
+        nodes: view.nodes,
+        truncated: view.truncated,
+        ...(owner ? { owner } : {}),
+        ...(query ? { q: qRaw, matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
+        ...(view.interiors?.late ? { budgetCut: true } : {}),
+        tree: view.tree,
+      })
+      return { body, keep: keepFor(view.interiors) }
+    }
+    // A partial answer (phase 2 cut by its time budget) schedules the full one in the background, which
+    // replaces it in the colo cache (`upgradePartial`): on the miss that produced it, and on a partial hit.
+    const upgrade = (res: Response): Response => {
+      res.headers.set('x-cache-upgrade', upgradePartial(ctx.env, cacheKey, () => render({ phase2Ms: UPGRADE_PHASE2_MS }), ctx.waitUntil?.bind(ctx)))
+      return res
+    }
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
-    if (hit) return hit
+    if (hit) return isPartial(hit) ? upgrade(hit) : hit
 
     // The serving box first, when the deployment has one (`_lib/queryBox.ts`).
     const env = ctx.env as Env & BoxEnv
@@ -160,28 +190,11 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       engine = `worker;fallback=${a.why}`
     }
 
-    const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, query, classes, firstPaint: !!query && !full, trace: st.trace })
-    const body = JSON.stringify({
-      date,
-      path,
-      w,
-      h,
-      minArea,
-      atten,
-      tier: view.tier,
-      index: view.index,
-      ...(lens ? { lens: lensTag } : {}),
-      threshold: Math.round(view.threshold),
-      nodes: view.nodes,
-      truncated: view.truncated,
-      ...(owner ? { owner } : {}),
-      ...(query ? { q: qRaw, matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
-      ...(view.interiors?.late ? { budgetCut: true } : {}),
-      tree: view.tree,
-    })
+    const { body, keep } = await render({ trace: st.trace })
     // A phase 2 cut short by its time budget: kept briefly (`keepFor`), so a retry or a second viewer isn't
     // another full recompute; its totals and match counts are exact, only the drawn interiors partial.
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), keepFor(view.interiors))
+    const res = await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), keep)
+    return keep === true ? res : upgrade(res)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     if (e instanceof FilterRejected) return new Response(rejectBody(e.reject), { status: 400, headers: { 'content-type': 'application/json' } })

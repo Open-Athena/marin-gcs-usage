@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { coverSet, type CoverItem, type CoverRoot, depthOf, isFull, type Lookup, type PathTotal } from './cover.js'
+import { coverFloor, coverSet, type CoverItem, type CoverRoot, depthOf, isFull, type Lookup, type PathTotal } from './cover.js'
 
 /** A fixture store: object paths → bytes. Folders are every proper prefix of an object path. */
 type Store = Record<string, number>
@@ -219,5 +219,107 @@ describe('coverSet', () => {
     // Depths 4 and 3 fit (`b/deep/x/y`, `b/deep/x`); depth 2's four and the kinds don't.
     expect([got.looked, got.unchecked]).toEqual([2, 4])
     expect(taken(FIX, got.items)).toEqual(Object.keys(FIX).filter(o => roots.some(r => under(o, r.path))).sort())
+  })
+})
+
+// `coverFloor`: a lower bound on the cover's item count, top-down from the floor, stopping past the cap.
+describe('coverFloor', () => {
+  // `b/r` holds two matching run dirs, a folder `u` holding a third, and a non-match (not full); `b/s` one
+  // matching run dir (full).
+  const RUNS: Store = { 'b/r/tomat1/x': 1, 'b/r/tomat2/x': 2, 'b/r/u/tomat3/x': 3, 'b/r/other': 4, 'b/s/tomat4/x': 5 }
+  // Five matching run dirs and nothing else: `b/all` is full, the cover is one item for five roots.
+  const ALL: Store = Object.fromEntries([1, 2, 3, 4, 5].map(i => [`b/all/tomat${i}/x`, i]))
+
+  it('round 0 reads nothing: the roots at the floor plus the floor folders holding the rest', async () => {
+    const roots = matchRoots(FIX, 'tomat', '')
+    const look = lookupOf(FIX)
+    // `c/tomato`, `c/tomat_one` (depth 2) + `b/clips`, `b/deep`, `b/mixed`, `b/zero` = 6 > 5.
+    expect([roots.length, await coverFloor(roots, '', look, { minDepth: 2, cap: 5 }), look.calls]).toEqual([
+      9, { n: 6, over: true, exact: false, looked: 0 }, [],
+    ])
+  })
+
+  it('past the cap after one lookup: a folder holding a non-match opens its children', async () => {
+    // Round 1: `b/s` full (1 item); `b/r` not: `tomat1`, `tomat2` settle (2), `b/r/u` opens (1) → 4 > 3.
+    const look = lookupOf(RUNS)
+    expect([await coverFloor(matchRoots(RUNS, 'tomat', ''), '', look, { minDepth: 2, cap: 3 }), look.calls]).toEqual([
+      { n: 4, over: true, exact: false, looked: 2 }, [['b/r', 'b/s']],
+    ])
+  })
+
+  it('more roots than the cap, but a full folder collapses them: under the cap, exact (the cover decides)', async () => {
+    const roots = matchRoots(ALL, 'tomat', '')
+    const look = lookupOf(ALL)
+    const floor = await coverFloor(roots, '', look, { minDepth: 2, cap: 3 })
+    const cover = await coverSet(roots, '', lookupOf(ALL), { minDepth: 2 })
+    expect([roots.length, floor, look.calls, cover.items.map(i => [i.path, i.roots])]).toEqual([
+      5, { n: 1, over: false, exact: true, looked: 1 }, [['b/all']], [['b/all', 5]],
+    ])
+  })
+
+  it('a lookup over budget stops at the bound so far: not over, not exact', async () => {
+    const look = lookupOf(RUNS, 0)
+    expect([await coverFloor(matchRoots(RUNS, 'tomat', ''), '', look, { minDepth: 2, cap: 3 }), look.calls]).toEqual([
+      { n: 2, over: false, exact: false, looked: 0 }, [['b/r', 'b/s']],
+    ])
+  })
+
+  it('the FIX tree: exact once nothing is open, equal to the cover\'s size', async () => {
+    const roots = matchRoots(FIX, 'tomat', '')
+    const cover = await coverSet(roots, '', lookupOf(FIX), { minDepth: 2 })
+    expect([await coverFloor(roots, '', lookupOf(FIX), { minDepth: 2, cap: 6 }), cover.items.length]).toEqual([
+      { n: 6, over: false, exact: true, looked: 4 }, 6,
+    ])
+  })
+
+  it('a drilled view: the view is the floor folder (never above it)', async () => {
+    const look = lookupOf(FIX)
+    // Under `b/deep` (depth 2 = the floor): one open folder, `b/deep` itself, full → one item.
+    expect([await coverFloor(matchRoots(FIX, 'tomat', 'b/deep'), 'b/deep', look, { minDepth: 2, cap: 0 }), look.calls]).toEqual([
+      { n: 1, over: true, exact: false, looked: 0 }, [],
+    ])
+    expect(await coverFloor(matchRoots(FIX, 'tomat', 'b/deep'), 'b/deep', lookupOf(FIX), { minDepth: 2, cap: 1 })).toEqual({ n: 1, over: false, exact: true, looked: 1 })
+  })
+
+  it('on random trees: never above the cover (any budget, any view), exact = the cover\'s size, over ⇒ the cover is over', async () => {
+    // mulberry32: 32-bit integer math throughout (an LCG in doubles loses its low bits).
+    let seed = 11
+    const rnd = (n: number) => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) % n
+    }
+    const names = ['tomat', 'tomato_x', 'a', 'b', 'c', 'xtomatx', 'd']
+    let exacts = 0, overs = 0, cut = 0
+    for (let trial = 0; trial < 300; trial++) {
+      const s: Store = {}
+      for (let i = 0, n = 1 + rnd(16); i < n; i++) {
+        const segs = ['bk' + rnd(2), ...Array.from({ length: 1 + rnd(4) }, () => names[rnd(names.length)])]
+        const p = segs.join('/')
+        if (Object.keys(s).some(o => o.startsWith(p + '/') || p.startsWith(o + '/'))) continue
+        s[p] = rnd(3) === 0 ? 0 : 1 + rnd(50)
+      }
+      const view = rnd(3) === 0 ? 'bk0' : ''
+      const roots = matchRoots(s, 'tomat', view)
+      const items = (await coverSet(roots, view, lookupOf(s), { minDepth: 2 })).items.length
+      const budget = rnd(2) ? Infinity : rnd(3)
+      const cap = rnd(items + 2)
+      const f = await coverFloor(roots, view, lookupOf(s, budget), { minDepth: 2, cap })
+      expect([trial, f.n <= items, f.over ? items > cap : true, f.exact ? f.n === items : true]).toEqual([trial, true, true, true])
+      if (f.exact) exacts++
+      if (f.over) overs++
+      if (!f.exact && !f.over) cut++
+    }
+    // Every branch is exercised.
+    expect([exacts > 0, overs > 0, cut > 0]).toEqual([true, true, true])
+  })
+
+  it('mutation: a bound that never collapses (every folder "not full") is the root count, and refuses a cover of one', async () => {
+    const roots = matchRoots(ALL, 'tomat', '')
+    const never = await coverFloor(roots, '', lookupOf(ALL), { minDepth: 2, cap: 3, full: () => false })
+    expect([never, (await coverSet(roots, '', lookupOf(ALL), { minDepth: 2 })).items.length]).toEqual([
+      { n: 5, over: true, exact: true, looked: 1 }, 1,
+    ])
   })
 })

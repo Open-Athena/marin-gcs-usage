@@ -67,6 +67,9 @@ export interface Rollup {
   /** Children holding roots, every date. */
   children: number
   cells: RollupCell[]
+  /** The fleet root from the catalog alone, no drilldown behind it (`staticFilter.ts` `catalogRoot`): a
+   *  bucket's view needs the full index (`FILTER_STATIC_HEAVY`), so drilling in is refused. */
+  bucketsOnly?: true
 }
 
 /** A rollup on scan `date`: each kept child's totals (zeros left out, sorted by name) and the remainder's — per
