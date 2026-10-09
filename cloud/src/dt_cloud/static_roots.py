@@ -1015,10 +1015,13 @@ def brute_view_sql(src: str, version: int, cases: str) -> str:
     strictly under P, at depth ≥ 1, whose lowercase name contains the term and whose lowercase parent does
     not — the first-hit rule straight from the scan. `cases`: a table of `(term, P)`."""
     size, n = ("size", "n_files") if version == 2 else ("b", "o")
-    return f"""SELECT c.term, c.P, split_part(substring(x.path, length(c.P) + 2), '/', 1) AS child, sum(x.sz)::BIGINT AS b, sum(x.nf)::BIGINT AS o
-        FROM (SELECT path, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf FROM read_parquet({q(src)}) WHERE depth >= 2) AS x
-        JOIN {cases} AS c ON starts_with(x.path, c.P || '/')
-        WHERE contains(x.l, c.term) AND NOT contains(x.par, c.term) GROUP BY ALL"""
+    return f"""WITH c AS (SELECT term, P, split_part(P, '/', 1) AS bkt FROM {cases}),
+        m AS (SELECT t.term, x.path, x.bkt, x.sz, x.nf
+              FROM (SELECT path, split_part(path, '/', 1) AS bkt, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf
+                    FROM read_parquet({q(src)}) WHERE depth >= 2) AS x, (SELECT DISTINCT term FROM c) AS t
+              WHERE contains(x.l, t.term) AND NOT contains(x.par, t.term))
+        SELECT c.term, c.P, split_part(substring(m.path, length(c.P) + 2), '/', 1) AS child, sum(m.sz)::BIGINT AS b, sum(m.nf)::BIGINT AS o
+        FROM m JOIN c ON m.term = c.term AND m.bkt = c.bkt AND starts_with(m.path, c.P || '/') GROUP BY ALL"""
 
 
 def _cases(path: str) -> list[tuple[str, str]]:
