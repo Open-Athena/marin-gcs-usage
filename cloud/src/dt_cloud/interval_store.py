@@ -26,8 +26,22 @@ from .static_names import OPEN, U64, connect, q, range_preds, read_json, upload_
 
 err = partial(print, file=sys.stderr, flush=True)
 
-DATA_BUCKET = sn.DATA_BUCKET
 PREFIX = "interval-store"
+PROFILES = Path(__file__).parent / "interval_profiles"
+
+
+def load_profile(name: str | None) -> dict:
+    """A deployment profile (`interval_profiles/<name>.json`, or a path): its bucket and the scans the
+    parity check samples. `$INTERVAL_STORE_PROFILE` names one when `-P` doesn't."""
+    name = name or os.environ.get("INTERVAL_STORE_PROFILE")
+    if not name:
+        raise SystemExit("no profile: pass -P NAME|PATH or set $INTERVAL_STORE_PROFILE (e.g. `gcs`)")
+    p = Path(name) if name.endswith(".json") else PROFILES / f"{name}.json"
+    return json.loads(p.read_text())
+
+
+def _bucket(bucket: str | None, profile: str | None) -> str:
+    return bucket or load_profile(profile)["bucket"]
 #: A served sort's row-group size: the per-scan path store's (decode cost per group is the same).
 SERVED_RG = 8192
 #: The range files' row-group size (an intermediate: only `cut` and the verifier read them).
@@ -36,7 +50,7 @@ RANGE_RG = 65536
 KEY_COLS = ["depth", "path"]
 #: The values whose change opens a version. `dr` is the size-weighted mean stamp rounded to the second
 #: (the change test; the exact `wts` is carried from the version's first scan), `us` the owner slices.
-#: `last_read` is not here: it churns daily on read paths and lives in its own intervals (`rd/`).
+#: `last_read` is not here: it moves from scan to scan on read paths and lives in its own intervals (`rd/`).
 CHANGE_COLS = ["kind", "size", "n_files", "n_children", "n_desc", "mtime", "dr", "wb", "c2", "c3", "c4", "us"]
 CARRIED = {"wts": "first"}
 STATE_COLS = [*CHANGE_COLS, "wts"]
@@ -327,7 +341,7 @@ def cli() -> None:
 
 
 @cli.command("build")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
+@option("-b", "--bucket", help="Data bucket (default: the profile's)")
 @option("-f", "--force", is_flag=True, help="Rebuild ranges whose digest is already uploaded")
 @option("-g", "--gen", required=True, help="Generation: gs://BUCKET/interval-store/GEN/ (its scans.json, ranges.json)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -339,9 +353,11 @@ def cli() -> None:
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB database + spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def build_cmd(bucket, force, gen, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
+@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+def build_cmd(bucket, profile, force, gen, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
     """Build key ranges' path and read versions over every scan of GEN's `scans.json`, verifying each
     scan's reconstruction (digest written last: it marks the range done)."""
+    bucket = _bucket(bucket, profile)
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
@@ -382,7 +398,7 @@ def build_cmd(bucket, force, gen, index, mount, mem, per_task, out, threads, onl
 
 def churn_stats(con, root: str, scans: dict) -> dict:
     """Per scan: path versions opened and closed there, read versions likewise, and live rows — the
-    daily delta an append writes — plus totals by kind."""
+    delta a per-scan append writes — plus totals by kind."""
     ids = {s["ts"]: s["id"] for s in scans["scans"]}
     pv, rd = f"read_parquet({q(root + '/pv/r*.parquet')})", f"read_parquet({q(root + '/rd/r*.parquet')})"
     per = {i: {"id": i, "opened": 0, "closed": 0, "reads_opened": 0, "reads_closed": 0} for i in ids.values()}
@@ -398,7 +414,7 @@ def churn_stats(con, root: str, scans: dict) -> dict:
 
 
 @cli.command("cut")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
+@option("-b", "--bucket", help="Data bucket (default: the profile's)")
 @option("-g", "--gen", required=True, help="Generation (its pv/, rd/ range files)")
 @option("-i", "--index", type=int, help="Task index → sort (path, bysize, reads, then `stats`: per-scan churn; default: $BATCH_TASK_INDEX)")
 @option("-m", "--mount", help="Local mount of the data bucket")
@@ -409,8 +425,10 @@ def churn_stats(con, root: str, scans: dict) -> dict:
 @option("-s", "--sort", "sorts", multiple=True, type=Choice(list(SORTS)), help="Sort(s) to cut (default: the task's)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def cut_cmd(bucket, gen, index, mount, mem, out, threads, rg_rows, sorts, tmp, no_upload) -> None:
+@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+def cut_cmd(bucket, profile, gen, index, mount, mem, out, threads, rg_rows, sorts, tmp, no_upload) -> None:
     """Cut the served sorts from the range files: `served/<sort>.parquet` + `.groups.parquet`."""
+    bucket = _bucket(bucket, profile)
     prefix = f"{PREFIX}/{gen}"
     todo = list(sorts) or [[*SORTS, "stats"][sn._task(index)]]
     con = connect(threads, mem, tmp)
@@ -459,16 +477,18 @@ def download_served(bucket: str, prefix: str, dst: Path, *, workers: int = 16) -
 
 
 @cli.command("verify")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
+@option("-b", "--bucket", help="Data bucket (default: the profile's)")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-m", "--mount", help="Local mount of the data bucket (per-scan sorts are copied from it)")
 @option("-n", "--tasks", default=1, type=IntRange(min=1), help="Tasks the sampled dates are split over")
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-T", "--tmp", default="/stage/tmp", help="Local scratch (served store, per-scan copies, spill)")
-def verify_cmd(bucket, gen, index, mount, tasks, out, tmp) -> None:
-    """Parity against the per-scan path store over the sampled dates (`interval_verify.DATES`): every
+@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+def verify_cmd(bucket, profile, gen, index, mount, tasks, out, tmp) -> None:
+    """Parity against the per-scan path store over the profile's `verify_scans`: every
     view's tiles and every diff's rows, with both sides' read cost; `verify/t##.jsonl` + `.json`."""
+    bucket = _bucket(bucket, profile)
     from . import interval_verify as iv
 
     prefix = f"{PREFIX}/{gen}"
@@ -478,7 +498,7 @@ def verify_cmd(bucket, gen, index, mount, tasks, out, tmp) -> None:
     scans = read_json(f"gs://{bucket}/{prefix}/scans.json")
     outp = Path(out) / "verify"
     outp.mkdir(parents=True, exist_ok=True)
-    summaries = iv.verify_task(gen, t, tasks, str(tmp / "served"), scans, outp / f"t{t:02d}.jsonl", tmp, mount)
+    summaries = iv.verify_task(load_profile(profile)["verify_scans"], t, tasks, str(tmp / "served"), scans, outp / f"t{t:02d}.jsonl", tmp, mount)
     (outp / f"t{t:02d}.json").write_text(json.dumps(summaries, indent=1) + "\n")
     upload_tree(outp, bucket, f"{prefix}/verify")
     print(json.dumps(summaries), flush=True)
@@ -489,15 +509,17 @@ R2_SERVED = ("scans.json", "served/path.", "served/bysize.", "served/reads.")
 
 
 @cli.command("r2-copy")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
+@option("-b", "--bucket", help="Data bucket (default: the profile's)")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-m", "--mount", help="Ignored (the Batch driver passes it)")
 @option("-n", "--dry-run", is_flag=True, help="List what would be copied")
 @option("-w", "--workers", default=8, type=int, help="Parallel copies")
-def r2_copy_cmd(bucket, gen, mount, dry_run, workers) -> None:
+@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+def r2_copy_cmd(bucket, profile, gen, mount, dry_run, workers) -> None:
     """Copy the generation's served files GCS → R2 under the same keys (`static-names r2-copy`'s streaming
     copy: objects already there with the same size and md5 are skipped). R2 via `R2_ENDPOINT`,
     `R2_BUCKET` and AWS_* keys."""
+    bucket = _bucket(bucket, profile)
     from concurrent.futures import ThreadPoolExecutor
 
     from . import publish as pub

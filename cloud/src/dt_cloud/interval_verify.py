@@ -1,10 +1,10 @@
 """Parity of the interval store against the per-scan path store (specs/interval-store.md §9): for sampled
-`(P, D)` the interval reader's view (`interval_read.Store.view`) against the same view computed from the
+`(P, D)` (scan ids from the deployment profile's `verify_scans`) the interval reader's view (`interval_read.Store.view`) against the same view computed from the
 scan's own per-scan `path` sort — every tile, its bytes, objects, kind, age, last read, classes, owners
 and `(other)` — and diffs between sampled dates; with each side's read cost (the interval read as made,
 the per-scan read as the Worker would plan it from that scan's footer index).
 
-    dt-cloud interval-store verify -g GEN [-i TASK -n TASKS]   # Batch: TASKS tasks split the sampled dates
+    dt-cloud interval-store verify -P PROFILE -g GEN [-i TASK -n TASKS]   # Batch: TASKS tasks split the sampled scans
 """
 from __future__ import annotations
 
@@ -298,12 +298,10 @@ def cases_for(scan: Scan, date: str) -> list[dict]:
     return cases
 
 
-def run_date(store: ir.Store, scan: Scan, date: str, ts: int, prev: tuple[Scan, str, int] | None, out) -> dict:
-    """Every sampled case of one date (and its diffs against `prev`), one JSON line each."""
-    from google.cloud import storage
-
+def run_date(store: ir.Store, scan: Scan, date: str, ts: int, prev: tuple[Scan, str, int] | None, out, bucket) -> dict:
+    """Every sampled case of one scan (and its diffs against `prev`), one JSON line each; `bucket` holds
+    the per-scan footers."""
     summary = {"date": date, "views": 0, "view_eq": 0, "diffs": 0, "diff_eq": 0}
-    bucket = storage.Client().bucket("oa-gcs-usage-dvx")
     footers = _footers(bucket, scan.key, scan.v)
     cases = cases_for(scan, date)
     for c in cases:
@@ -372,22 +370,16 @@ def _footers(bucket, key: str, version: int) -> dict[str, Footer]:
     return out
 
 
-#: The sampled dates: v1 indexes from the first scan on, every v2 store generation's span, and the newest.
-DATES = ["2026-07-30", "2026-08-05", "2026-08-12", "2026-08-19", "2026-08-26", "2026-09-02", "2026-09-09", "2026-09-15",
-         "2026-09-16", "2026-09-22", "2026-09-25", "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-03",
-         "2026-10-05", "2026-10-06", "2026-10-08", "2026-10-09"]
-
-
-def verify_task(gen: str, task: int, tasks: int, served: str, scans: dict, out_path: Path, tmp: Path, mount: str | None) -> list[dict]:
-    """This task's share of `DATES` (contiguous, so each diff's previous date is local), each date's
-    per-scan `path` sort copied to local disk first."""
+def verify_task(sampled: list[str], task: int, tasks: int, served: str, scans: dict, out_path: Path, tmp: Path, mount: str | None) -> list[dict]:
+    """This task's share of the `sampled` scan ids (contiguous, so each diff's previous scan is local),
+    each scan's per-scan `path` sort copied to local disk first."""
     import duckdb
     from google.cloud import storage
 
     by_id = {s["id"]: s for s in scans["scans"]}
-    per = math.ceil(len(DATES) / tasks)
-    mine = DATES[max(0, task * per - 1):(task + 1) * per]  # the one before this task's share: its diffs' `from`
-    first_own = DATES[task * per] if task * per < len(DATES) else None
+    per = math.ceil(len(sampled) / tasks)
+    mine = sampled[max(0, task * per - 1):(task + 1) * per]  # the one before this task's share: its diffs' `from`
+    first_own = sampled[task * per] if task * per < len(sampled) else None
     store = ir.Store(served)
     con = duckdb.connect()
     con.execute(f"SET threads=16; SET memory_limit='80GB'; SET temp_directory={q(str(tmp / 'spill'))}")
@@ -407,8 +399,8 @@ def verify_task(gen: str, task: int, tasks: int, served: str, scans: dict, out_p
                 bucket.blob(s["src"]).download_to_filename(str(local))
             err(f"{date}: per-scan path sort copied ({local.stat().st_size:,} B, {monotonic() - t0:.0f}s)")
             scan = Scan(con, str(local), s["version"], s["src"])
-            if date == first_own or (first_own and DATES.index(date) > DATES.index(first_own)):
-                summaries.append(run_date(store, scan, date, s["ts"], prev, out))
+            if date == first_own or (first_own and sampled.index(date) > sampled.index(first_own)):
+                summaries.append(run_date(store, scan, date, s["ts"], prev, out, bucket))
             if prev:
                 os.unlink(prev[0].file)
             prev = (scan, date, s["ts"])
