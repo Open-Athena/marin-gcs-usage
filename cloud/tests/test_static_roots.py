@@ -268,3 +268,50 @@ def test_digests_identify_equal_root_sets(built):  # noqa: F811
             got = drill.view(t, P, DATES)
             if got["source"] == "roots":
                 assert got["answers"] == {d: _brute_view(versions, t, P, d) for d in DATES}, (t, P)
+
+
+@pytest.mark.parametrize("small", [True, False])
+def test_drill_verify(built, tmp_path, small, monkeypatch):  # noqa: F811
+    """`drill-verify` over the drill's answers and references written as `drill-brute` writes them (with
+    `BRUTE_CHILDREN` = 1 and only the rollup cases, every reference lists only the kept children): all equal;
+    and one altered reference fails."""
+    import json
+
+    from click.testing import CliRunner
+    from test_static_names import DATES
+
+    root, scans, merged, ranges, plan, build, out, con, tmp = built
+    rows, terms = _member_roots(built, agg=False, chunk_rows=7)
+    monkeypatch.setattr(sr, "ROOT_RG", 4)
+    sr.build_roots(con, "rt", 3, 2, tmp_path / "long", "x")
+    drill = _two_level(tmp_path / "long", 3, 4)
+    versions = _versions(merged)
+    dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p})
+    cap = 1 if small else 10**6
+    monkeypatch.setattr(sr, "BRUTE_CHILDREN", cap)
+    answers, refs = [], []
+    for t in sorted(terms):
+        for P in dirs:
+            a = drill.view(t, P, DATES)
+            if small and a["source"] != "rollup":  # a roots case never has a partial reference (≤ R + 2·rg roots)
+                continue
+            a["s"] = 0
+            answers.append(a)
+            for d in DATES:
+                exp = _brute_view(versions, t, P, d)
+                total = [sum(v[i] for v in exp.values()) for i in (0, 1)]
+                kept = set(a.get("kept") or [])
+                children = exp if len(exp) <= cap else {c: v for c, v in exp.items() if c in kept}
+                refs.append({"date": d, "q": t, "P": P, "total": total, "n": len(exp), "children": children})
+    (tmp_path / "a.jsonl").write_text("".join(json.dumps(a) + "\n" for a in answers))
+    (tmp_path / "r.jsonl").write_text("".join(json.dumps(r) + "\n" for r in refs))
+    res = CliRunner().invoke(sr.drill_verify_cmd, [str(tmp_path / "r.jsonl"), str(tmp_path / "a.jsonl")])
+    report = json.loads(res.output)
+    assert (res.exit_code, report["equal"], report["diff"]) == (0, report["pairs"], {})
+    assert report["by_source"]["rollup"] > 10
+    assert sum(1 for r in refs if r["n"] > cap) > (0 if small else -1)
+    bad = next(r for r in refs if r["total"] != [0, 0] and any(a["q"] == r["q"] and a["P"] == r["P"] and a["source"] == "rollup" for a in answers))
+    bad["total"][0] += 1
+    (tmp_path / "r.jsonl").write_text("".join(json.dumps(r) + "\n" for r in refs))
+    res = CliRunner().invoke(sr.drill_verify_cmd, [str(tmp_path / "r.jsonl"), str(tmp_path / "a.jsonl")])
+    assert (res.exit_code, list(json.loads(res.output)["diff"])) == (1, [f"{bad['q']} {bad['P']} {bad['date']}"])

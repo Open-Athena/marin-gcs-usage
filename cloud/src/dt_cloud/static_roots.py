@@ -550,6 +550,7 @@ class Drill:
         if not rows or rows[0]["kind"] != 0:
             raise RuntimeError(f"({t!r}, {P!r}): {ub:,} root rows bound, but no rollup")
         out["header"] = {"kept": rows[0]["vf"], "rows": rows[0]["b"], "children": rows[0]["o"]}
+        out["kept"] = sorted({r["child"] for r in rows[1:] if r["kind"] == 1})
         for d in dates:
             D = scan_epoch(d)
             cur: dict[tuple[int, str], tuple[int, int]] = {}
@@ -1121,20 +1122,28 @@ def _cases(path: str) -> list[tuple[str, str]]:
     return [(d["q"], d["P"]) for d in map(json.loads, read_text(path).splitlines()) if d]
 
 
+#: Above this many children a reference case lists only the drill's kept children (and the exact total).
+BRUTE_CHILDREN = 200_000
+
+
 @cli.command("drill-brute")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-c", "--cases", "cases_file", required=True, help="JSON lines `{q, P}` (a path or gs:// URL)")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat (task i answers the i-th)")
 @option("-g", "--gen", required=True, help="Generation (its `scans.json`; answers go to `verify/drill-brute/`)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-k", "--kept", "kept_file", help="`drill-query` answers (a path or gs:// URL): the children each rollup case names")
 @option("-m", "--mount", required=True, help="Local mount of the bucket")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
-def drill_brute_cmd(bucket, cases_file, dates, gen, index, mount, mem, threads, tmp) -> None:
+def drill_brute_cmd(bucket, cases_file, dates, gen, index, kept_file, mount, mem, threads, tmp) -> None:
     """Reference drill views by brute force over one date's scan file → `verify/drill-brute/<date>.jsonl`
-    (`{date, q, P, children: {child: [bytes, objects]}}`, nonzero children)."""
+    (`{date, q, P, total: [bytes, objects], n: children, children: {child: [bytes, objects]}}`, nonzero
+    children; a case with more than `BRUTE_CHILDREN` lists only the children `-k` names for it)."""
     from google.cloud import storage
+
+    from .static_names import read_text
 
     prefix = f"{PREFIX}/{gen}"
     date = dates[_task(index)]
@@ -1143,12 +1152,27 @@ def drill_brute_cmd(bucket, cases_file, dates, gen, index, mount, mem, threads, 
     con = connect(threads, mem, tmp)
     con.execute("CREATE TABLE cases (term VARCHAR, P VARCHAR)")
     con.executemany("INSERT INTO cases VALUES (?, ?)", cases)
+    con.execute("CREATE TABLE kept (term VARCHAR, P VARCHAR, child VARCHAR)")
+    if kept_file:
+        rows = []
+        for line in read_text(kept_file).splitlines():
+            if line.startswith("{"):
+                d = json.loads(line)
+                if d["source"] == "rollup":
+                    rows += [(d["q"], d["P"], c) for c in sorted({c for a in d["answers"].values() for c in a} | set(d.get("kept") or []))]
+        if rows:
+            con.executemany("INSERT INTO kept VALUES (?, ?, ?)", rows)
     t0 = monotonic()
+    con.execute(f"CREATE TABLE v AS SELECT * FROM ({brute_view_sql(f'{mount}/{scan['src']}', scan['version'], 'cases')}) WHERE b <> 0 OR o <> 0")
+    tot = {(t, P): (int(b_), int(o_), int(n)) for t, P, b_, o_, n in con.execute(
+        "SELECT term, P, sum(b)::BIGINT, sum(o)::BIGINT, count(*) FROM v GROUP BY term, P").fetchall()}
     got: dict[tuple[str, str], dict] = {c: {} for c in cases}
-    for term, P, child, b_, o_ in con.execute(brute_view_sql(f"{mount}/{scan['src']}", scan["version"], "cases")).fetchall():
-        if b_ or o_:
-            got[(term, P)][child] = [int(b_), int(o_)]
-    body = "".join(json.dumps({"date": date, "q": t, "P": P, "children": dict(sorted(got[(t, P)].items()))}) + "\n" for t, P in cases)
+    for term, P, child, b_, o_ in con.execute(f"""SELECT v.term, v.P, v.child, v.b, v.o FROM v
+            JOIN (SELECT term, P, count(*) AS n FROM v GROUP BY term, P) AS c USING (term, P)
+            WHERE c.n <= {BRUTE_CHILDREN} OR EXISTS (SELECT 1 FROM kept AS k WHERE k.term = v.term AND k.P = v.P AND k.child = v.child)""").fetchall():
+        got[(term, P)][child] = [int(b_), int(o_)]
+    body = "".join(json.dumps({"date": date, "q": t, "P": P, "total": list(tot.get((t, P), (0, 0, 0))[:2]), "n": tot.get((t, P), (0, 0, 0))[2],
+                               "children": dict(sorted(got[(t, P)].items()))}) + "\n" for t, P in cases)
     storage.Client().bucket(bucket).blob(f"{prefix}/verify/drill-brute/{date}.jsonl").upload_from_string(body)
     err(f"drill-brute {date}: {len(cases)} cases in {monotonic() - t0:.1f}s")
 
@@ -1201,13 +1225,16 @@ def drill_query_cmd(bucket, cases_file, dates, gen) -> None:
 @argument("answers_jsonl")
 def drill_verify_cmd(ref_jsonl, answers_jsonl) -> None:
     """Compare `drill-query` answers with `drill-brute` per (term, P, date): a roots answer must equal the
-    reference child for child; a rollup answer's kept children must equal theirs and its remainder the sum of
-    the rest. JSON report; exit 1 on any difference."""
-    ref = {}
+    reference child for child; a rollup answer's kept children must equal theirs and its remainder the
+    reference total less them. JSON report; exit 1 on any difference."""
+    ref, totals, partial = {}, {}, set()
     for line in Path(ref_jsonl).read_text().splitlines():
         if line.startswith("{"):
             d = json.loads(line)
-            ref[(d["q"], d["P"], d["date"])] = d["children"]
+            key = (d["q"], d["P"], d["date"])
+            ref[key], totals[key] = d["children"], d["total"]
+            if d["n"] > BRUTE_CHILDREN:
+                partial.add(key)
     pairs, diffs, src_n, io = 0, {}, {}, []
     for line in Path(answers_jsonl).read_text().splitlines():
         if not line.startswith("{"):
@@ -1222,12 +1249,13 @@ def drill_verify_cmd(ref_jsonl, answers_jsonl) -> None:
             if exp is None:
                 continue
             pairs += 1
+            key = (d["q"], d["P"], date)
             if d["source"] == "roots":
-                ok = got == exp
-                rest = None
-            else:
-                rest = [sum(v[i] for c, v in exp.items() if c not in got) for i in (0, 1)]
-                ok = got == {c: v for c, v in exp.items() if c in got} and d["rest"][date] == rest
+                ok = key not in partial and got == exp
+            else:  # kept children child for child (absent = zero on the date), remainder = the total less them
+                kept = {c: exp.get(c, [0, 0]) for c in d["kept"]}
+                rest = [totals[key][i] - sum(v[i] for v in kept.values()) for i in (0, 1)]
+                ok = got == {c: v for c, v in kept.items() if v != [0, 0]} and d["rest"][date] == rest
             if not ok:
                 diffs[f"{d['q']} {d['P']} {date}"] = {"got": got, "rest": d.get("rest", {}).get(date), "ref": exp}
     report = {"pairs": pairs, "equal": pairs - len(diffs), "by_source": src_n, "max_rows_read": max((x["rows_read"] for x in io), default=0),
