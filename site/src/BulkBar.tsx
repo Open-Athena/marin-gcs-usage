@@ -16,8 +16,10 @@ interface Pending {
   make: (pattern: string) => OwnerPost
 }
 
-export function BulkBar({ matches, scheme, query }: {
+export function BulkBar({ matches, total, incomplete = false, scheme, query }: {
   matches: { path: string; b: number }[]
+  total?: number
+  incomplete?: boolean
   scheme: string
   query: string
 }) {
@@ -30,9 +32,12 @@ export function BulkBar({ matches, scheme, query }: {
 
   if (!matches.length) return null
   const bytes = matches.reduce((s, m) => s + m.b, 0)
-  const over = matches.length > HARD_CAP
+  const count = total ?? matches.length
+  const over = count > HARD_CAP
+  const blocked = over || incomplete
 
   const run = async (p: Pending) => {
+    if (blocked) throw new Error('Cannot assign an incomplete or over-limit match list')
     const note = `bulk filter:'${query}'${memo ? ` — ${memo}` : ''}`
     const actions = matches.map(m => ({ ...p.make(`${scheme}${m.path}/`), memo: note }))
     for (let i = 0; i < actions.length; i += CHUNK) {
@@ -46,8 +51,8 @@ export function BulkBar({ matches, scheme, query }: {
 
   return (
     <span className="bulkbar">
-      <span className="bb-scope">{matches.length.toLocaleString()} prefixes:</span>
-      <button type="button" className="act assign" disabled={over || progress != null}
+      <span className="bb-scope">{count.toLocaleString()} prefixes:</span>
+      <button type="button" className="act assign" disabled={blocked || progress != null}
         onClick={() => {
           const v = assign.trim()
           const owner = v ? (allUsers().find(u => u.name.toLowerCase() === v.toLowerCase())?.id ?? v) : '@me'
@@ -60,8 +65,9 @@ export function BulkBar({ matches, scheme, query }: {
       <datalist id="bb-assign-users">{allUsers().map(u => <option key={u.id} value={u.name} />)}</datalist>
       <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="memo" size={10} aria-label="Bulk memo" />
       {over && <span className="bb-warn">&gt;{HARD_CAP.toLocaleString()} matches — that's a rule, not a gesture (use a `prefix_owners` glob)</span>}
+      {incomplete && !over && <span className="bb-warn">incomplete match list — narrow the filter before assigning</span>}
       {progress && <span className="bb-progress">{progress}</span>}
-      {pending && !progress && (
+      {pending && !progress && !blocked && (
         <span className="bb-confirm">
           {pending.label} <b>{matches.length.toLocaleString()}</b> prefixes ({fmtBytes(bytes)})
           {matches.length > WARN ? ' — that’s a lot' : ''}?

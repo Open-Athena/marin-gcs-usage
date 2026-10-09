@@ -17,9 +17,12 @@ import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, queryParam, QueryError, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
+import { staticTag } from '../_lib/staticFilter.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
+import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
+import { extrasFor } from '../_lib/extras.js'
 
 
 type SubtreeCtx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
@@ -105,11 +108,32 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     const [head, xtra, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date])]))
     const cacheKey = cacheKeyFor('subtree',
       `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensTag}` +
-        `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}`,
+        `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}`,
       storeKey(ctx.env),
     )
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return hit
+
+    // The serving box first, when the deployment has one (`_lib/queryBox.ts`).
+    const env = ctx.env as Env & BoxEnv
+    const box = boxFor(env, url)
+    let engine = env.QUERY_BOX_URL ? 'worker;box=skip' : undefined
+    if (box) {
+      const a = await st.time('box', askBox(env, box, 'subtree', url.searchParams))
+      if (a.kind === 'answer' && a.status !== 200) return boxStatus(a)
+      if (a.kind === 'answer') {
+        let boxBody = a.body
+        // The box draws no index extras: the provenance rides on its tree here.
+        const ex = xtra ? await extrasFor(ctx.env, date, path) : null
+        if (ex) {
+          const o = JSON.parse(boxBody)
+          o.tree = withProvenance(o.tree, path, ex.provenance)
+          boxBody = JSON.stringify(o)
+        }
+        return await cacheStore(ctx.env, cacheKey, boxBody, { 'server-timing': st.header(), 'x-query-engine': a.engine }, ctx.waitUntil?.bind(ctx))
+      }
+      engine = `worker;fallback=${a.why}`
+    }
 
     const view = await buildView(ctx.env, { date, path, w, h, minArea, atten, lens, owner, by, maxDepth: depth, query, classes, firstPaint: !!query && !full, trace: st.trace })
     const body = JSON.stringify({
@@ -126,10 +150,10 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       nodes: view.nodes,
       truncated: view.truncated,
       ...(owner ? { owner } : {}),
-      ...(query ? { q: qRaw, matches: view.matches, matched: view.matched ?? [], ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
+      ...(query ? { q: qRaw, matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
       tree: view.tree,
     })
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx))
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     // 409 (not 500): a lens index missing for this scan is deterministic —
