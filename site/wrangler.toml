@@ -31,6 +31,11 @@ remote = true
 binding = "CACHE_KV"
 id = "757702a080a549418f16a5ae096529c4"
 
+# Worker-served indexes (static name search; `infra/cf` `r2Bucket`).
+[[r2_buckets]]
+binding = "INDEX_R2"
+bucket_name = "oa-gcs-usage-index"
+
 [observability]
 enabled = true
 
@@ -81,6 +86,11 @@ STAGING = "1"
 # SLACK_SIGNING_SECRET (unset = `/slack/actions` 503s).
 EXECUTOR = "sweep"
 SLACK_ADMIN_CHANNEL = "C0C579HNRFB"
+# Static name search (2026-10-09): the map's filter and /names read the static
+# name index on R2 (INDEX_R2, below), built daily by `job/static-daily.sh`.
+# FILTER_STATIC_HEAVY stays dev-only until its daily delta exists.
+FILTER_STATIC = "1"
+NAME_SUMMARY_STATIC = "1"
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-gcs-usage`):
 #   SESSION_SECRET   — HMAC key for session cookies + IP hashing
