@@ -1,6 +1,6 @@
 # Static name search: the daily append
 
-Status: in progress (branch `daily-append`, from `ch-store` @ 98ec30a4; reader on `daily-append-site`, from `hot-preview`).
+Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site (branch `daily-append`, from `ch-store` @ 98ec30a4; reader on `daily-append-site`, from `hot-preview`). Not yet scheduled; not on prod.
 
 ## Why
 
@@ -181,11 +181,19 @@ MODULE=static_append SPOT=1 job/static-names.sh run verify 1 -g 2026-10-08c -d D
 
 ## Cost and footprint
 
-Estimated before the 2026-10-09 run, to be replaced by measurements:
+**Measured on 2026-10-09** (the first run; spot n2-highmem-16, us-east1):
 
-- Batch: the 256-range append reads each range's open versions (≈ the newest scan's rows) and the scan's rows once. 16 spot n2-highmem-16 tasks × ~5–10 min, plus 1–2 single-task stages: ~3–5 VM-hours ≈ **$1/day** spot.
-- R2: a day's run is the delta's suffix rows (opens + closes, ~1–3% of versions × ~16 suffixes each) at ~10 B/row, **~0.2–1 GB/day**, against 135.7 GB for a full copy. Tier merges rewrite each day's rows O(log n) times, so the live footprint stays ≈ the sum of days since the base.
-- GCS: `cdelta` (versions, ~tens of MB/day) kept; `copen` (~GBs) in scratch, expiring.
+| Stage | Tasks | Run time | Output |
+|---|---:|---:|---|
+| `append` (256 ranges) | 16 (+ a 1-task smoke run) | 3.5 min each (≤ 19 s per range) | 1,291,160 versions opened, 387,872 closed, 609,231,660 open; `cdelta` 21.9 MB; `copen` 4.4 GB (scratch) |
+| `shards` | 1 | 1.2 min | 44,125,015 suffix rows, one 1.05 GB shard (25 B/row: sparse paths compress worse than the base's 10 B/row) |
+| `catalog` | 1 | 5.6 min | 94,549 cell rows (874 KB): 17,811 headers (17,670 changed), 141 new members |
+| `publish`, `r2-copy` | laptop, VM | seconds; 17 s copy | 8 objects, 1.12 GB to R2; the manifest last |
+| `verify` (30 terms) | 1 | 30.3 min | 175 / 175 checks equal |
+
+- **Cost.** About 1.4 VM-hours a day without `verify` (~2.2 with it), ≈ **$0.40/day** spot (≈ $0.60 with `verify`), plus ~$0.13/day GCS → R2 egress. End to end, ~15 min after the scan publishes.
+- **Footprint.** **~1.1 GB/day** on R2, about 0.8% of a full 135.7 GB copy; 30 days ≈ 34 GB ≈ $0.50/month. A day's suffix rows are 0.33% of the base's 13.2B.
+- **Tiers.** Tier merges collapse close records against their opens, so merged runs hold at most the sum of their days. Compaction at level 5 (32 days) folds them into a new base.
 
 ## Verification
 
@@ -214,3 +222,12 @@ A new manifest is picked up after the TTL. A mutation that keeps the largest `vt
 - a catalog member: its per-bucket totals;
 - otherwise: its live first hits as a list, both whole and under drill roots (`''`, its top buckets, its top depth-2 dirs);
 - in both cases: the day before, tiered, equals the base alone.
+
+**Real run, 2026-10-09** (`deltas/2026-10-09/verify.json`): **175 / 175 checks equal**.
+
+- 30 literals: the 22 named build terms, `a`, `_`, `.`, `zz`, `east5`, `us-east1`, `marin-us-c` and `-us-`.
+  - 21 were answered statically: **562,054 live first hits** compared list for list, plus **94 drill-root checks** (e.g. `gof` under `marin-us-central1/podcast_audio_top1000_60s_clips`: 9,185 hits).
+  - 9 came from the catalog (per-bucket totals).
+- The day before (10-08), every literal's tiered answer equals the base's.
+- The scan's 609,231,660 keys equal the append's open versions.
+- **Dev site** (`dev.gcs.oa.dev`): the registry lists 71 dates through 10-09. `/api/name-summary` on 10-09 reads 2 tiers, and 8 literals' totals equal the Python tiered reader's. The map's `?f=gof` on 10-09 is served by the static filter (`tier: static+fine`), with match counts equal to `verify`'s at the root (9,287), `marin-us-central1` (9,222), its `podcast_audio_top1000_60s_clips` (9,185) and `marin-us-east5` (47).
