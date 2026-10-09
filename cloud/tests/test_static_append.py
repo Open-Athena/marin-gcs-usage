@@ -262,3 +262,146 @@ def test_verify_terms_against_the_scan(runs, day):
     assert sorted({d["source"] for d in report["terms"].values()}) == ["absent-short", "catalog", "static"]
     assert sum(1 for d in report["terms"].values() for k in d["equal"] if k.startswith("root:")) >= 1
     assert all(("before" in d["equal"]) == (day == 0) for d in report["terms"].values())
+
+
+@pytest.mark.parametrize("through", [0, 1])
+def test_rebuild_open_equals_the_appended_state(runs, tmp_path, through):
+    """A lost `state/<D>/copen` refolded from the base's `cintervals` and every run's `cdelta` through D (open rows,
+    minus closes, plus opens) is the file the append wrote, byte for byte, per range."""
+    con = runs["con"]
+    run_dirs = runs["runs"][:through + 1]
+    names = sorted(f.name for f in (run_dirs[-1] / "copen").glob("*.parquet"))
+    assert names == [f"r{r['i']:04d}.parquet" for r in runs["base"]["ranges"]["ranges"]]
+    for name in names:
+        out = tmp_path / name
+        n = sa.rebuild_open(con, str(runs["base"]["build"] / "cintervals" / name), [str(d / "cdelta" / name) for d in run_dirs], out)
+        assert (n, out.read_bytes()) == (pq.ParquetFile(run_dirs[-1] / "copen" / name).metadata.num_rows, (run_dirs[-1] / "copen" / name).read_bytes())
+
+
+def test_rebuild_open_without_runs_is_the_base_open_rows(runs, tmp_path):
+    """No run yet: the base's open versions (the first append's `prev`)."""
+    name = "r0000.parquet"
+    base = runs["base"]["build"] / "cintervals" / name
+    sa.rebuild_open(runs["con"], str(base), [], tmp_path / name)
+    assert _read(tmp_path / name) == sorted(r for r in _read(base) if r[4] == sn.OPEN)
+
+
+# ── prune: the newest complete state only ──────────────────────────────────
+
+GEN = "g1"
+SP = f"{sn.PREFIX}/{GEN}/state"
+
+
+class _Blob:
+    def __init__(self, store: dict, bucket: str, name: str):
+        self.store, self.bucket, self.name = store, bucket, name
+
+    @property
+    def size(self) -> int:
+        return self.store[(self.bucket, self.name)]
+
+    def exists(self) -> bool:
+        return (self.bucket, self.name) in self.store
+
+
+class _Bucket:
+    def __init__(self, store: dict, name: str):
+        self.store, self.name = store, name
+
+    def blob(self, name: str) -> _Blob:
+        return _Blob(self.store, self.name, name)
+
+    def delete_blobs(self, blobs: list[_Blob], on_error=None) -> None:
+        for b in blobs:
+            assert b.bucket == self.name
+            if (b.bucket, b.name) in self.store:
+                del self.store[(b.bucket, b.name)]
+            else:
+                on_error(b)
+
+
+class _GCS:
+    """The slice of `google.cloud.storage.Client` that `prune_state` uses, over `{(bucket, name): size}`."""
+
+    def __init__(self, store: dict):
+        self.store = store
+
+    def list_blobs(self, bucket: str, prefix: str) -> list[_Blob]:
+        return [_Blob(self.store, b, n) for b, n in sorted(self.store) if b == bucket and n.startswith(prefix)]
+
+    def bucket(self, name: str) -> _Bucket:
+        return _Bucket(self.store, name)
+
+
+def _day(day: str, copen: int = 2, done: int = 2, size: int = 100) -> dict:
+    """A day's state objects in the scratch bucket: the first `copen` / `done` of 2 ranges."""
+    return {
+        **{(sn.SCRATCH_BUCKET, f"{SP}/{day}/copen/r{i:04d}.parquet"): size for i in range(copen)},
+        **{(sn.SCRATCH_BUCKET, f"{SP}/{day}/done/r{i:04d}.json"): 1 for i in range(done)},
+    }
+
+
+def _published(*days: str) -> dict:
+    return {(sn.DATA_BUCKET, f"{sn.PREFIX}/{GEN}/manifests/{d}.json"): 1 for d in days}
+
+
+# Never touched: another generation's state, the scratch bucket's other prefixes, the data bucket's runs.
+OTHERS = {
+    (sn.SCRATCH_BUCKET, f"{sn.PREFIX}/g0/state/2026-10-01/copen/r0000.parquet"): 5,
+    (sn.SCRATCH_BUCKET, f"{sn.PREFIX}/{GEN}/sxmap/r0000.parquet"): 5,
+    (sn.DATA_BUCKET, f"{sn.PREFIX}/{GEN}/deltas/2026-10-09/cdelta/r0000.parquet"): 5,
+}
+
+
+def test_prune_keeps_only_the_newest_complete_state():
+    store = {**_day("2026-10-09"), **_day("2026-10-10", size=7), **_day("2026-10-11"), **_day("2026-10-12", copen=1, done=0),
+             **_published("2026-10-10", "2026-10-11"), **OTHERS}
+    keep = {**_day("2026-10-11"), **_day("2026-10-12", copen=1, done=0), **_published("2026-10-10", "2026-10-11"), **OTHERS}
+    gcs = _GCS(store)
+    assert sa.prune_state(gcs, GEN, "2026-10-11", 2) == {
+        "date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"],
+        "delete": [{"day": "2026-10-09", "objects": 4, "bytes": 202}, {"day": "2026-10-10", "objects": 4, "bytes": 16}],
+        "deleted": 8,
+    }
+    assert store == keep
+    # Idempotent: the rerun finds nothing before the day.
+    assert sa.prune_state(gcs, GEN, "2026-10-11", 2) == {"date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"], "delete": [], "deleted": 0}
+    assert store == keep
+
+
+def test_prune_dry_run_deletes_nothing():
+    store = {**_day("2026-10-09"), **_day("2026-10-10"), **_published("2026-10-10"), **OTHERS}
+    before = dict(store)
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-10", 2, dry_run=True) == {
+        "date": "2026-10-10", "keep": ["2026-10-10"], "delete": [{"day": "2026-10-09", "objects": 4, "bytes": 202}], "deleted": 0,
+    }
+    assert store == before
+
+
+def test_prune_with_one_state_is_a_noop():
+    store = {**_day("2026-10-09"), **_published("2026-10-09"), **OTHERS}
+    before = dict(store)
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-09", 2) == {"date": "2026-10-09", "keep": ["2026-10-09"], "delete": [], "deleted": 0}
+    assert store == before
+
+
+@pytest.mark.parametrize("day, published, msg", [
+    (_day("2026-10-10", copen=1, done=1), True, "state/2026-10-10 incomplete: 1 of 2 ranges without copen, 1 of 2 ranges without done"),
+    (_day("2026-10-10", done=1), True, "state/2026-10-10 incomplete: 1 of 2 ranges without done"),
+    (_day("2026-10-10"), False, "state/2026-10-10 incomplete: no manifest"),
+    ({}, True, "state/2026-10-10 incomplete: 2 of 2 ranges without copen, 2 of 2 ranges without done"),
+])
+def test_prune_refuses_while_the_day_is_incomplete(day, published, msg):
+    """Nothing is deleted before the day's state is whole and its run published: the earlier state may be the only
+    complete one, the one a rerun of the day's append reads."""
+    store = {**_day("2026-10-09"), **day, **_published("2026-10-09", *(["2026-10-10"] if published else [])), **OTHERS}
+    before = dict(store)
+    with pytest.raises(sa.StateIncomplete) as e:
+        sa.prune_state(_GCS(store), GEN, "2026-10-10", 2)
+    assert (str(e.value), store) == (msg, before)
+
+
+def test_prune_plan_rejects_a_non_day_dir():
+    with pytest.raises(ValueError) as e:
+        sa.prune_plan([(f"{SP}/latest/copen/r0000.parquet", 1)], f"{sn.PREFIX}/{GEN}", 1, True, "2026-10-10")
+    assert str(e.value) == f"{SP}/latest/copen/r0000.parquet: 'latest' is not a day"

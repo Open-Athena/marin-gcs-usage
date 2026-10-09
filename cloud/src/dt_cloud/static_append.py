@@ -13,10 +13,14 @@ Per scan `D`, under `static-names/<gen>/deltas/<D>/`:
 3. `catalog` (one task): `static_catalog.append` from the base + live runs' merged catalog; the run's
    catalog is what that adds (new cells, changed or new headers).
 4. `publish`: the binary counter's merges, then `manifests/<D>.json` (written last).
+5. `prune`: once `D`'s state is complete (every range's `copen` and `done/` marker, and `manifests/<D>.json`),
+   every earlier day's `state/<prev>/` goes: only the newest complete state is kept. A lost state is rebuilt
+   from the base's `cintervals` and every run's `cdelta` (`rebuild-state`).
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -359,6 +363,85 @@ def manifest(gen: str, base_scans: list[str], runs: list[dict]) -> dict:
             "runs": [{k: r[k] for k in ("key", "first", "last", "level", "scans", "rows", "bytes") if k in r} for r in runs]}
 
 
+# ── 5. The open-version state: the newest complete day only ────────────────
+
+
+class StateIncomplete(Exception):
+    """`prune` refused: the day's state is not complete (or its run not published), so nothing is deleted."""
+
+
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: bool, date: str) -> dict:
+    """What `prune` deletes, from the scratch bucket's `(name, size)` listing under `<prefix>/state/`: every day
+    before `date`, once `date`'s state is complete — all `k` ranges' `copen/r####.parquet` and `done/r####.json`,
+    and its run `published` (`manifests/<date>.json`). Raises `StateIncomplete` otherwise. Returns
+    `{"date", "keep": [days ≥ date], "delete": [{"day", "objects", "bytes"}], "names": [objects to delete]}`."""
+    root = f"{prefix}/state/"
+    days: dict[str, dict] = {}
+    for name, size in objects:
+        if not name.startswith(root):
+            raise ValueError(f"{name}: not under {root}")
+        day, _, rest = name[len(root):].partition("/")
+        if not _DAY.fullmatch(day):
+            raise ValueError(f"{name}: {day!r} is not a day")
+        d = days.setdefault(day, {"names": [], "bytes": 0, "copen": set(), "done": set()})
+        d["names"].append(name)
+        d["bytes"] += size
+        kind, _, file = rest.partition("/")
+        if kind == "copen" and file.endswith(".parquet"):
+            d["copen"].add(file.removesuffix(".parquet"))
+        elif kind == "done" and file.endswith(".json"):
+            d["done"].add(file.removesuffix(".json"))
+    want = {f"r{i:04d}" for i in range(k)}
+    cur = days.get(date, {"copen": set(), "done": set()})
+    missing = {"copen": len(want - cur["copen"]), "done": len(want - cur["done"])}
+    if missing["copen"] or missing["done"] or not published:
+        why = [f"{n} of {k} ranges without {kind}" for kind, n in missing.items() if n] + ([] if published else ["no manifest"])
+        raise StateIncomplete(f"state/{date} incomplete: {', '.join(why)}")
+    drop = sorted(d for d in days if d < date)
+    return {"date": date, "keep": sorted(d for d in days if d >= date),
+            "delete": [{"day": d, "objects": len(days[d]["names"]), "bytes": days[d]["bytes"]} for d in drop],
+            "names": [n for d in drop for n in sorted(days[d]["names"])]}
+
+
+def prune_state(gcs, gen: str, date: str, k: int, *, bucket: str = DATA_BUCKET, dry_run: bool = False) -> dict:
+    """Delete every `state/<prev>/` (prev < `date`) of generation `gen` in the scratch bucket (`SCRATCH_BUCKET`,
+    nowhere else), once `date`'s state is complete and its run published (`prune_plan`). Idempotent: a rerun
+    finds nothing before `date`. `gcs`: a `google.cloud.storage.Client`. Returns the plan, `deleted` = objects."""
+    prefix = f"{PREFIX}/{gen}"
+    objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(SCRATCH_BUCKET, prefix=f"{prefix}/state/")]
+    published = gcs.bucket(bucket).blob(f"{prefix}/manifests/{date}.json").exists()
+    plan = prune_plan(objects, prefix, k, published, date)
+    names = plan.pop("names")
+    if not dry_run and names:
+        sb = gcs.bucket(SCRATCH_BUCKET)
+        sb.delete_blobs([sb.blob(n) for n in names], on_error=lambda blob: None)
+    return {**plan, "deleted": 0 if dry_run else len(names)}
+
+
+def rebuild_open(con, base_cintervals: str, cdeltas_oldest_first: list[str], out: Path) -> int:
+    """A key range's open versions after the last of `cdeltas_oldest_first`, refolded from the base's
+    `cintervals/r####.parquet` and every run's `cdelta/r####.parquet` since: the base's open rows, minus every
+    version a delta closed (`op` −1), plus every version one opened (`op` 1). A version's `(depth, path, usr, vf)`
+    is its identity, and one a run opened has that run's `vf`, past every base version's. Writes `copen`'s
+    `out` (sorted `(depth, path, usr, vf)`, the append's layout); returns rows."""
+    cols = ", ".join(CINTERVAL_SCHEMA.names)
+    key = ["depth", "path", "usr", "vf"]
+    if cdeltas_oldest_first:
+        d = f"read_parquet([{', '.join(q(f) for f in cdeltas_oldest_first)}])"
+        on = " AND ".join(f"o.{c} = c.{c}" for c in key)
+        sql = f"""SELECT {', '.join(f'o.{c}' for c in CINTERVAL_SCHEMA.names)} FROM (
+                SELECT {cols} FROM read_parquet({q(base_cintervals)}) WHERE vt = {OPEN}
+                UNION ALL SELECT {cols} FROM {d} WHERE op = 1
+            ) o ANTI JOIN (SELECT {', '.join(key)} FROM {d} WHERE op = -1) c ON {on}"""
+    else:
+        sql = f"SELECT {cols} FROM read_parquet({q(base_cintervals)}) WHERE vt = {OPEN}"
+    return write_sorted(_batches(con, f"SELECT * FROM ({sql}) ORDER BY {', '.join(key)}"), out, CINTERVAL_SCHEMA,
+                        INTERVAL_RG, dictionary=["usr"])
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
@@ -564,6 +647,64 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
         raise SystemExit(f"{key} exists: manifests are never rewritten")
     b.blob(key).upload_from_string(json.dumps(doc, indent=1) + "\n", if_generation_match=0)
     print(json.dumps(doc, indent=1))
+
+
+@cli.command("prune")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket (its `manifests/<D>.json` says D is published)")
+@option("-d", "--date", required=True, help="The newest complete state to keep (the scan just published)")
+@option("-g", "--gen", required=True, help="Base generation")
+@option("-n", "--dry-run", is_flag=True, help="Print what would be deleted; delete nothing")
+def prune_cmd(bucket, date, gen, dry_run) -> None:
+    """Keep only the newest complete open-version state: once `state/<D>/` holds every range's `copen` and `done/`
+    marker and `manifests/<D>.json` exists, delete `gs://SCRATCH/static-names/<gen>/state/<prev>/` for every
+    prev < D. Refuses (exit 1, deletes nothing) while D is incomplete. Idempotent."""
+    k = read_json(f"gs://{bucket}/{PREFIX}/{gen}/ranges.json")["k"]
+    try:
+        doc = prune_state(_gcs(), gen, date, k, bucket=bucket, dry_run=dry_run)
+    except StateIncomplete as e:
+        raise SystemExit(str(e)) from e
+    print(json.dumps({**doc, "dry_run": dry_run}, indent=1))
+
+
+@cli.command("rebuild-state")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-d", "--date", required=True, help="A published day (`manifests/<D>.json`): rebuild `state/<D>/`")
+@option("-f", "--force", is_flag=True, help="Redo ranges already done")
+@option("-g", "--gen", required=True, help="Base generation")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-m", "--mount", required=True, help="Local mount of the data bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
+@option("-o", "--out", default="/stage/out", help="Local output dir")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out, threads, tmp) -> None:
+    """Rebuild a lost `state/<D>/` (the scratch bucket's open versions after D, e.g. expired) from the base's
+    `cintervals/` and every run's `cdelta/` through D (`rebuild_open`): `copen/r####.parquet` and `done/` markers,
+    as `append` writes them. Run per task like `append`."""
+    prefix = f"{PREFIX}/{gen}"
+    m = read_json(f"gs://{bucket}/{prefix}/manifests/{date}.json")
+    days = [s for r in m["runs"] for s in r["scans"]]
+    if not days or days[-1] != date:
+        raise SystemExit(f"manifests/{date}.json ends at {days[-1] if days else 'the base'}, not {date}")
+    ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
+    t = _task(index)
+    sb = _gcs().bucket(SCRATCH_BUCKET)
+    con = connect(threads, mem, tmp)
+    for i in range(t * per_task, min((t + 1) * per_task, ranges["k"])):
+        name = f"r{i:04d}"
+        if not force and sb.blob(f"{prefix}/state/{date}/done/{name}.json").exists():
+            err(f"rebuild-state {name}: done")
+            continue
+        t0 = monotonic()
+        outp = Path(out) / name
+        rows = rebuild_open(con, f"{mount}/{prefix}/cintervals/{name}.parquet",
+                            [f"{mount}/{prefix}/{run_key(d, d)}/cdelta/{name}.parquet" for d in days], outp / "copen" / f"{name}.parquet")
+        upload_tree(outp / "copen", SCRATCH_BUCKET, f"{prefix}/state/{date}/copen")
+        shutil.rmtree(outp)
+        doc = {"range": name, "scan": date, "open": rows, "rebuilt_from": len(days), "s": round(monotonic() - t0, 1)}
+        sb.blob(f"{prefix}/state/{date}/done/{name}.json").upload_from_string(json.dumps(doc) + "\n")
+        print(json.dumps(doc), flush=True)
 
 
 def verify_terms(con, src: str, version: int, date: str, before: str, terms: list[str], reader: TieredReader, catalog: TieredCatalog,
