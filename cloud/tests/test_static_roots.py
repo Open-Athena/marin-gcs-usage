@@ -39,18 +39,18 @@ def _members(built, v: int = V) -> dict[int, list[tuple[str, int]]]:
     return by_shard
 
 
-def _member_roots(built, agg: bool, chunk_rows: int) -> tuple[list[tuple], set[str]]:
+def _member_roots(built, agg, chunk_rows: int, into: str = "rt") -> tuple[list[tuple], set[str]]:
     *_, plan, build, out, con, tmp = built
     members = _members(built)
-    con.execute("DROP TABLE IF EXISTS rt")
+    con.execute(f"DROP TABLE IF EXISTS {into}")
     for s in plan["shards"]:
         sx = str(out / "sx" / f"s{s['i']:04d}.parquet")
         con.execute("CREATE OR REPLACE TABLE mem (q VARCHAR, rows BIGINT)")
         if members[s["i"]]:
             con.executemany("INSERT INTO mem VALUES (?, ?)", members[s["i"]])
         for where in sr.chunk_wheres(sx, chunk_rows):
-            sr.member_roots(con, sr.sx_rows_sql(f"(SELECT * FROM read_parquet({sn.q(sx)}) WHERE {where})"), "mem", "rt", agg=agg)
-    rows = con.execute("SELECT * FROM rt ORDER BY ALL").fetchall()
+            sr.member_roots(con, sr.sx_rows_sql(f"(SELECT * FROM read_parquet({sn.q(sx)}) WHERE {where})"), "mem", into, agg=agg)
+    rows = con.execute(f"SELECT * FROM {into} ORDER BY ALL").fetchall()
     return rows, {m for ms in members.values() for m, _ in ms}
 
 
@@ -222,3 +222,36 @@ def test_brute_view_sql_equals_oracle(fixture):  # noqa: F811
         assert got == {(t, P): _brute_view(versions, t, P, s["id"]) for t, P in cases}, s["id"]
         nonzero += sum(1 for v in got.values() if v)
     assert nonzero > 20
+
+
+def test_digests_identify_equal_root_sets(built):  # noqa: F811
+    """Chunked digests: equal exactly when two members' root sets are equal; and a build over canonical members
+    only, read through the aliases, answers every member as brute force."""
+    from test_static_names import DATES
+
+    root, scans, merged, ranges, plan, build, out, con, tmp = built
+    _member_roots(built, agg="digest", chunk_rows=7, into="dg")
+    dig = {r[0]: r[1:] for r in con.execute("SELECT q, sum(n), sum(h1) % 18446744073709551616, sum(h2) % 18446744073709551616 FROM dg GROUP BY q").fetchall()}
+    rows, terms = _member_roots(built, agg=False, chunk_rows=10**9)
+    sets: dict[str, frozenset] = {}
+    for r in rows:
+        sets.setdefault(r[0], set()).add(r[1:])
+    sets = {k: frozenset(v) for k, v in sets.items()}
+    assert set(dig) == set(sets)
+    pairs = [(a, b) for a in sets for b in sets if a < b]
+    assert [(a, b) for a, b in pairs if dig[a] == dig[b]] == [(a, b) for a, b in pairs if sets[a] == sets[b]]
+    canon = {t: min(u for u in sets if dig[u] == dig[t]) for t in sets}
+    assert len(set(canon.values())) < len(canon)
+    con.execute("CREATE OR REPLACE TABLE rtc AS SELECT * FROM rt WHERE q IN (SELECT unnest(?))", [sorted(set(canon.values()))])
+    sr.build_roots(con, "rtc", 3, 2, tmp / "alias", "x")
+    fetch, size_of = _local(tmp / "alias")
+    idx = lambda sub: __import__("pyarrow.parquet").parquet.read_table(tmp / "alias" / sub / "x.parquet")  # noqa: E731
+    drill = sr.Drill(sr.GroupFile(idx("roots-index"), fetch, size_of), sr.GroupFile(idx("rollups-index"), fetch, size_of), 3, sr.ROOT_RG,
+                     {k: v for k, v in canon.items() if k != v})
+    versions = _versions(merged)
+    dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p})
+    for t in sorted(terms):
+        for P in dirs:
+            got = drill.view(t, P, DATES)
+            if got["source"] == "roots":
+                assert got["answers"] == {d: _brute_view(versions, t, P, d) for d in DATES}, (t, P)

@@ -47,23 +47,31 @@ def sx_rows_sql(src: str) -> str:
     return f"SELECT s, depth, path, usr, epoch(vf)::BIGINT AS vf, epoch(vt)::BIGINT AS vt, size, n_files FROM {src}"
 
 
-def _sink(con, into: str, hit: str, agg: bool) -> None:
-    if agg:
+#: Per member: its roots' count and two order-free sums of row hashes (equal sets → equal digests).
+DIGEST_COLS = "q VARCHAR, n BIGINT, h1 HUGEINT, h2 HUGEINT"
+ROW_HASH = "hash(path, usr, vf, vt, size, n_files)"
+
+
+def _sink(con, into: str, hit: str, agg: bool | str) -> None:
+    if agg == "digest":
+        con.execute(f"""INSERT INTO {into} SELECT q, count(*), sum({ROW_HASH})::HUGEINT, sum(hash({ROW_HASH}, 'x'))::HUGEINT
+            FROM ({hit}) GROUP BY q""")
+    elif agg:
         con.execute(f"""INSERT INTO {into} SELECT q, depth, path, count(*), count(*) FILTER (WHERE vt = {OPEN})
             FROM ({hit}) GROUP BY q, depth, path""")
     else:
         con.execute(f"INSERT INTO {into} SELECT q, depth, path, usr, vf, vt, size, n_files FROM ({hit})")
 
 
-def member_roots(con, rows_sql: str, members: str, into: str, agg: bool = False) -> None:
+def member_roots(con, rows_sql: str, members: str, into: str, agg: bool | str = False) -> None:
     """Add `members`' (a table with `q`, ≥ 3 characters) first-hit rows among `rows_sql`'s suffix rows
     `(s, depth, path, usr, vf, vt, size, n_files)` to table `into` (created if absent): `ROOT_COLS`, or with
-    `agg` per `(q, depth, path)` `RP_COLS`. The rule and level loop are `static_catalog.member_events`': at
+    `agg` per `(q, depth, path)` `RP_COLS` (or per chunk and member `DIGEST_COLS` partials, `agg="digest"`). The rule and level loop are `static_catalog.member_events`': at
     length L the rows whose prefix of length L is a prefix of a member are carried; a row is a hit of
     `q = left(s, L)` when `q` is a member, `s` starts at `q`'s first occurrence in the name, and the parent
     does not contain `q`. A `(q, path)`'s rows all share one suffix (its first occurrence), so feeding a
     shard in `(s, path)`-cut chunks never splits one: the aggregate is exact per chunk."""
-    con.execute(f"CREATE TABLE IF NOT EXISTS {into} ({RP_COLS if agg else ROOT_COLS})")
+    con.execute(f"CREATE TABLE IF NOT EXISTS {into} ({DIGEST_COLS if agg == 'digest' else RP_COLS if agg else ROOT_COLS})")
     top = con.execute(f"SELECT max(length(q)) FROM {members}").fetchone()[0]
     if not top:
         return
@@ -433,8 +441,8 @@ class Drill:
     ≤ `R + 2·rg` rows (`rg` = the files' row-group size), read them; else `(q, P)` is heavy (its true rows >
     R), so its rollup holds the kept children (`answers[date]`) and the remainder (`rest[date]`)."""
 
-    def __init__(self, roots: GroupFile, rollups: GroupFile, R: int, rg: int = ROOT_RG):
-        self.roots, self.rollups, self.R, self.rg = roots, rollups, R, rg
+    def __init__(self, roots: GroupFile, rollups: GroupFile, R: int, rg: int = ROOT_RG, aliases: dict[str, str] | None = None):
+        self.roots, self.rollups, self.R, self.rg, self.aliases = roots, rollups, R, rg, aliases or {}
 
     def view(self, term: str, P: str, dates: list[str]) -> dict:
         from .static_names import scan_epoch
@@ -442,7 +450,8 @@ class Drill:
         t = term.lower()
         if t in P.lower():
             return {"q": t, "P": P, "source": "plain", "answers": None}
-        lo, hi = (t, P + "/"), (t, P + "0")
+        c = self.aliases.get(t, t)  # members with identical root sets share their canonical's rows
+        lo, hi = (c, P + "/"), (c, P + "0")
         ub = self.roots.upper(lo, hi)
         out: dict = {"q": t, "P": P, "upper": ub}
         if ub <= self.R + 2 * self.rg:
@@ -459,7 +468,7 @@ class Drill:
                         e[1] += r["n_files"]
                 out["answers"][d] = {k: v for k, v in sorted(acc.items()) if v != [0, 0]}
             return out
-        rows, io = self.rollups.read((t, P), (t, P + "\x00"))
+        rows, io = self.rollups.read((c, P), (c, P + "\x00"))
         out.update(source="rollup", io=io, rows=len(rows), answers={}, rest={})
         if not rows or rows[0]["kind"] != 0:
             raise RuntimeError(f"({t!r}, {P!r}): {ub:,} root rows bound, but no rollup")
@@ -684,10 +693,90 @@ def _upload_dir(b, local: Path, prefix: str) -> None:
         blob.upload_from_filename(str(f))
 
 
+@cli.command("digest")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-l", "--lease", default=5400, type=int, help="Seconds after which another task may take over a claimed, unfinished shard")
+@option("-m", "--mount", required=True, help="Local mount of the bucket (for `catalog/members.parquet`)")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the queue's claims")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where each shard is downloaded")
+def digest_cmd(bucket, gen, index, lease, mount, mem, threads, scratch, tmp) -> None:
+    """Long members' root-set digests per shard (a shared queue) → `drill/digest/s####.parquet` `(q, n, h1, h2)`."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
+    t = _task(index)
+    client = storage.Client()
+    b = client.bucket(bucket)
+    queue = Queue(client.bucket(scratch), prefix, "drill-digest", t, lease)
+    con = connect(threads, mem, tmp)
+    con.execute(f"CREATE TABLE allm AS SELECT q, shard, rows FROM read_parquet({q(f'{mount}/{prefix}/catalog/members.parquet')})")
+    for s in _queue_order(plan):
+        name = f"s{s['i']:04d}"
+        if b.blob(f"{prefix}/{DRILL}/digest/{name}.parquet").exists() or not queue.claim(name):
+            continue
+        t0 = monotonic()
+        con.execute(f"CREATE OR REPLACE TABLE mem AS SELECT q, rows FROM allm WHERE shard = {s['i']}")
+        con.execute(f"DROP TABLE IF EXISTS dg; CREATE TABLE dg ({DIGEST_COLS})")
+        if con.execute("SELECT count(*) FROM mem").fetchone()[0]:
+            src = Path(tmp) / f"sx-{name}.parquet"
+            b.blob(f"{prefix}/sx/{name}.parquet").download_to_filename(str(src))
+            wheres = chunk_wheres(str(src))
+            for k, where in enumerate(wheres):
+                member_roots(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(str(src))}) WHERE {where})"), "mem", "dg", agg="digest")
+                err(f"digest {name}: chunk {k + 1}/{len(wheres)} in {monotonic() - t0:.1f}s")
+            src.unlink()
+        tab = con.execute("""SELECT q, sum(n)::BIGINT AS n, (sum(h1) % 18446744073709551616)::UBIGINT AS h1, (sum(h2) % 18446744073709551616)::UBIGINT AS h2
+            FROM dg GROUP BY q ORDER BY q""").to_arrow_table()
+        _put(b, f"{prefix}/{DRILL}/digest/{name}.parquet", tab)
+        err(f"digest {name}: {tab.num_rows:,} members in {monotonic() - t0:.1f}s")
+
+
+@cli.command("alias-plan")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation")
+def alias_plan_cmd(bucket, gen) -> None:
+    """Members with identical root sets (equal `(n, h1, h2)` digests, across shards) share one copy: the
+    group's least `q` (code-point order) is canonical, built by its own shard → `drill/aliases.parquet`
+    `(q, canonical, shard, n)` for every long member; prints the summary."""
+    import tempfile
+
+    import duckdb
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    client = storage.Client()
+    with tempfile.TemporaryDirectory() as d:
+        k = 0
+        for blob in client.list_blobs(bucket, prefix=f"{prefix}/{DRILL}/digest/"):
+            blob.download_to_filename(f"{d}/{Path(blob.name).name}")
+            k += 1
+        members = Path(d) / "members.parquet"
+        client.bucket(bucket).blob(f"{prefix}/catalog/members.parquet").download_to_filename(str(members))
+        con = duckdb.connect()
+        con.execute(f"""CREATE TABLE a AS SELECT g.q, min(g.q) OVER (PARTITION BY n, h1, h2) AS canonical, m.shard, g.n
+            FROM read_parquet({q(d + '/s*.parquet')}) AS g JOIN read_parquet({q(str(members))}) AS m USING (q)""")
+        missing = con.execute(f"SELECT count(*) FROM read_parquet({q(str(members))}) ANTI JOIN a USING (q)").fetchone()[0]
+        if missing:
+            raise SystemExit(f"{missing} members without a digest ({k} digest files)")
+        out = Path(d) / "aliases.parquet"
+        con.execute(f"COPY (SELECT * FROM a ORDER BY q) TO {q(str(out))} (FORMAT parquet, COMPRESSION zstd)")
+        client.bucket(bucket).blob(f"{prefix}/{DRILL}/aliases.parquet").upload_from_filename(str(out))
+        summary = dict(zip(("members", "canonical", "rows", "canonical_rows"), con.execute(
+            "SELECT count(*), count(*) FILTER (WHERE q = canonical), sum(n), sum(n) FILTER (WHERE q = canonical) FROM a").fetchone()))
+    summary = {"gen": gen, **{k: int(v) for k, v in summary.items()}}
+    print(json.dumps(summary, indent=1))
+
+
 @cli.command("build")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-F", "--force", is_flag=True, help="Rebuild (overwrite) shards whose outputs exist (with -o)")
 @option("-K", "--keep", "K", default=1000, type=int, help="Children kept by name per heavy directory (the rest: the remainder)")
 @option("-l", "--lease", default=5400, type=int, help="Seconds after which another task may take over a claimed, unfinished shard")
 @option("-m", "--mount", required=True, help="Local mount of the bucket (for `catalog/members.parquet`)")
@@ -697,9 +786,10 @@ def _upload_dir(b, local: Path, prefix: str) -> None:
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="Directories with more root rows under them get rollups")
 @option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the queue's claims")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where each shard is downloaded")
-def build_cmd(bucket, gen, index, K, lease, mount, mem, only, threads, R, scratch, tmp) -> None:
+def build_cmd(bucket, gen, index, force, K, lease, mount, mem, only, threads, R, scratch, tmp) -> None:
     """Long members' roots and rollups per shard (a shared queue, biggest first) → `drill/long/{roots,rollups,roots-index,rollups-index}/s####.parquet`;
-    a shard whose `rollups-index/` file exists is skipped."""
+    a shard whose `rollups-index/` file exists is skipped. With `drill/aliases.parquet`, only canonical members
+    are built (an alias reads its canonical's rows)."""
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
@@ -710,16 +800,20 @@ def build_cmd(bucket, gen, index, K, lease, mount, mem, only, threads, R, scratc
     queue = Queue(client.bucket(scratch), prefix, "drill-build", t, lease)
     con = connect(threads, mem, tmp)
     con.execute(f"CREATE TABLE allm AS SELECT q, shard, rows FROM read_parquet({q(f'{mount}/{prefix}/catalog/members.parquet')})")
+    if b.blob(f"{prefix}/{DRILL}/aliases.parquet").exists():
+        con.execute(f"CREATE TABLE canon AS SELECT DISTINCT canonical FROM read_parquet({q(f'{mount}/{prefix}/{DRILL}/aliases.parquet')})")
+    else:
+        con.execute("CREATE TABLE canon AS SELECT q AS canonical FROM allm")
     keep = {int(x) for x in only.split(",")} if only else None
     t_start, n_done = monotonic(), 0
     for s in _queue_order(plan):
         name = f"s{s['i']:04d}"
         if keep is not None and s["i"] not in keep:
             continue
-        if b.blob(f"{prefix}/{DRILL}/long/rollups-index/{name}.parquet").exists() or not queue.claim(name):
+        if (not force and b.blob(f"{prefix}/{DRILL}/long/rollups-index/{name}.parquet").exists()) or (not force and not queue.claim(name)):
             continue
         t0 = monotonic()
-        con.execute(f"CREATE OR REPLACE TABLE mem AS SELECT q, rows FROM allm WHERE shard = {s['i']}")
+        con.execute(f"CREATE OR REPLACE TABLE mem AS SELECT q, rows FROM allm WHERE shard = {s['i']} AND q IN (SELECT canonical FROM canon)")
         n_members = con.execute("SELECT count(*) FROM mem").fetchone()[0]
         con.execute(f"DROP TABLE IF EXISTS rt; CREATE TABLE rt ({ROOT_COLS})")
         if n_members:
@@ -985,7 +1079,11 @@ def gcs_drill(bucket: str, gen: str, kind: str) -> Drill:
         return int(blob(file).size)
 
     idx = {sub: pq.read_table(pa.BufferReader(b.blob(f"{prefix}/{kind}-{sub}-index.parquet").download_as_bytes())) for sub in ("roots", "rollups")}
-    return Drill(GroupFile(idx["roots"], fetch, size_of), GroupFile(idx["rollups"], fetch, size_of), meta["R"], meta["rg"])
+    aliases = {}
+    if kind == "long" and b.blob(f"{prefix}/aliases.parquet").exists():
+        a = pq.read_table(pa.BufferReader(b.blob(f"{prefix}/aliases.parquet").download_as_bytes()), columns=["q", "canonical"])
+        aliases = {k: v for k, v in zip(a.column("q").to_pylist(), a.column("canonical").to_pylist()) if k != v}
+    return Drill(GroupFile(idx["roots"], fetch, size_of), GroupFile(idx["rollups"], fetch, size_of), meta["R"], meta["rg"], aliases)
 
 
 @cli.command("drill-query")
