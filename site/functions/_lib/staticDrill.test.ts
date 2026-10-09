@@ -386,8 +386,9 @@ describe('the fleet root\'s root count (`matchCount.n` of a catalog view)', () =
       if (a.source !== 'catalog') continue
       const io = { top: 'isolate' as const, index_reads: 0, index_bytes: 0, groups: 0, bytes: 0, rows_read: 0 }
       const lo: [string, string] = [a.c, ''], hi: [string, string] = [a.c + '\0', '']
-      const sel = await drill.files[a.kind].roots.select(lo, hi, io)
-      const all = await drill.files[a.kind].roots.read(lo, hi, sel.groups!, io, () => 1)
+      const roots = (await drill.state()).tiers[0].files[a.kind].roots
+      const sel = await roots.select(lo, hi, io)
+      const all = await roots.read(lo, hi, sel.groups!, io, () => 1)
       got.push([t, a.rollup.rows])
       want.push([t, all.length])
     }

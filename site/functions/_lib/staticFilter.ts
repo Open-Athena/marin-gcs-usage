@@ -19,12 +19,12 @@
  *  decline, so the caller keeps today's read.
  *
  *  Dates: an answer carries the scans it covers (`Found.scans`; absent = every scan of the store). The light
- *  index spans the base generation and its runs (one per scan); the drilldown only the base generation's scans, so a
- *  heavy literal on a newer scan declines (`covers`) and that view reads as before. */
+ *  index spans the base generation and its runs (one per scan); the drilldown the base and the runs whose
+ *  `drill/` is live, so a heavy literal on a newer scan declines (`covers`) and that view reads as before. */
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
-import { Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
+import { type CatalogLookup, Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
 import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanAt, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 import { type FilterReject, reject } from './indexedOnly.js'
@@ -52,7 +52,7 @@ export type Found =
   | { rollup: Rollup; hits?: undefined; io: Record<string, unknown>; scans?: string[] }
 
 /** Whether `found` answers every one of `dates`: the explicit rule that keeps a heavy literal off the scans
- *  its drilldown does not cover (the runs past the base generation), which then read as before. */
+ *  its drilldown does not cover (past the last run whose `drill/` is live), which then read as before. */
 export const covers = (found: Found, dates: string[]): boolean => !found.scans || dates.every(d => found.scans!.includes(d))
 
 /** A literal's match roots under a path, any date: what the filter needs from an index. `null` = this
@@ -159,19 +159,18 @@ export function cacheHits(cache: Cache, prefix: string, version = 'hits-v1'): Hi
 
 export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; FILTER_INDEXED_ONLY?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string }
 
-/** The drilldown over a bucket's generation (`drill/`, the base catalog for the fleet root, the base scans); `cached`:
- *  its indexes in `cache` under `prefix` (the generation's `staticPrefix`). */
-export function drillSource(blobs: Blobs, cached?: { cache: Cache; prefix: string }): DrillSource {
+/** The drilldown over a bucket's generation: the base `drill/` and its `runs`' (`staticDrill.ts`), with the fleet
+ *  root from `opts.catalog` (default: the base catalog); `cached`: its indexes in `cache` under `prefix` (the
+ *  generation's `staticPrefix`). */
+export function drillSource(blobs: Blobs, cached?: { cache: Cache; prefix: string }, opts: { runs?: () => Promise<string[]>; catalog?: CatalogLookup } = {}): DrillSource {
   const { cache, prefix } = cached ?? {}
-  const drillBlobs: Blobs = {
-    range: (k, o, l) => blobs.range(`${DRILL_DIR}/${k}`, o, l),
-    suffix: (k, n) => blobs.suffix(`${DRILL_DIR}/${k}`, n),
-    json: k => blobs.json(`${DRILL_DIR}/${k}`),
-  }
-  const pre = `${prefix}/${DRILL_DIR}`
-  const catalog = new StaticCatalog(blobs, cache ? cacheIndexes(cache, prefix!, 'catalog-v1') : undefined)
-  const drill = new Drill(drillBlobs, catalog, cache ? { top: cacheIndexes(cache, pre, 'top-v1'), aliases: cacheIndexes(cache, pre, 'aliases-v2') } : undefined)
-  return new DrillSource(drill, scanList(blobs), cache ? cacheHits(cache, pre, 'roots-v1') : undefined)
+  const pre = (dir: string | null) => `${prefix}/${dir ? `${dir}/` : ''}${DRILL_DIR}`
+  const catalog = opts.catalog ?? new StaticCatalog(blobs, cache ? cacheIndexes(cache, prefix!, 'catalog-v1') : undefined)
+  const drill = new Drill(blobs, catalog, {
+    runs: opts.runs,
+    cache: cache ? dir => ({ top: cacheIndexes(cache, pre(dir), 'top-v1'), aliases: cacheIndexes(cache, pre(dir), 'aliases-v2') }) : undefined,
+  })
+  return new DrillSource(drill, cache ? cacheHits(cache, pre(null), 'roots-v1') : undefined)
 }
 
 /** A test's store for an env object (in place of the R2 binding's). */
@@ -186,23 +185,15 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
   if (env.FILTER_STATIC !== '1' || !env.INDEX_R2) return null
   const gen = staticGen(env), pre = staticPrefix(gen)
   if (held?.r2 !== env.INDEX_R2 || held.gen !== gen) {
-    // The base generation plus its runs (`staticRuns.ts`): each tier's group indexes cached under its own prefix.
-    const t = tiers(r2Blobs(env.INDEX_R2, pre), { indexCache: dir => cacheIndexes(caches.default, dir ? `${pre}/${dir}` : pre) })
-    // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base generation.
-    const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2, pre), { cache: caches.default, prefix: pre }) : null
+    // The base generation plus its runs (`staticRuns.ts`): each tier's indexes cached under its own prefix.
+    const tierPre = (dir: string | null) => dir ? `${pre}/${dir}` : pre
+    const t = tiers(r2Blobs(env.INDEX_R2, pre), { indexCache: dir => cacheIndexes(caches.default, tierPre(dir)), catalogCache: dir => cacheIndexes(caches.default, tierPre(dir), 'catalog-v1') })
+    // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base and the runs (the fleet root from the tiers' catalog).
+    const runs = async () => (await t.tiers.state()).tiers.flatMap(x => x.dir ? [x.dir] : [])
+    const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2, pre), { cache: caches.default, prefix: pre }, { runs, catalog: t.catalog }) : null
     held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
   }
   return held.store
-}
-
-/** `scans.json`'s ids, sorted (held once loaded). */
-export function scanList(blobs: Blobs): () => Promise<string[]> {
-  let ids: Promise<string[]> | undefined
-  return () => {
-    ids ??= blobs.json<{ scans: { id: string }[] }>('scans.json').then(d => d.scans.map(s => s.id).sort())
-    ids.catch(() => { ids = undefined })
-    return ids
-  }
 }
 
 /** Whether `date` can be answered statically for `ast`: the literal, else null. */
@@ -228,8 +219,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
 
 /** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
  *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget; 5: a 1–2
- *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0). */
-const RESPONSE_V = 5
+ *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
+ *  the drill runs' scans). */
+const RESPONSE_V = 6
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
