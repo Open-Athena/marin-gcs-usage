@@ -197,7 +197,7 @@ const newIo = (): DrillIo => ({ top: 'isolate', index_reads: 0, index_bytes: 0, 
 export class GroupFile {
   private top?: Promise<Top>
   private optional?: Promise<boolean>
-  constructor(readonly blobs: Blobs, readonly kind: Kind, readonly set: Set_, readonly meta: () => Promise<DrillMeta>, readonly cache?: IndexCache<Top>) {}
+  constructor(readonly blobs: Blobs, readonly kind: Kind | 'end' | 'exact', readonly set: Set_, readonly meta: () => Promise<DrillMeta>, readonly cache?: IndexCache<Top>) {}
 
   get indexFile(): string { return `${this.kind}-${this.set}-index.parquet` }
   get topFile(): string { return `${this.kind}-${this.set}-index.top.parquet` }

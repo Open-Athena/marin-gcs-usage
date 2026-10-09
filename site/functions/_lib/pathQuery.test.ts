@@ -45,6 +45,18 @@ describe('parseQuery: the predicate on the full path', () => {
     ['"-draft"', ['bk/notes/-draft']],
     ['"a|b"', ['bk/notes/a|b']],
     ['notes -"a b"', ['bk/notes/-draft', 'bk/notes/a|b']],
+    // anchored: a segment starts with, ends with, or is the term (never a match inside a segment)
+    ['^ckpt', ['bk/tmp/ttl=14d/run-a/ckpt', 'bk/x/ckpt/run/final', 'bk/x/ckpt-final', 'bk/x/ckpt-run-b-final', 'bk/x/ckpt/final.pt']],
+    ['^final', ['bk/x/ckpt/run/final', 'bk/x/ckpt/final.pt']],
+    ['final$', ['bk/x/ckpt/run/final', 'bk/x/ckpt-final', 'bk/x/ckpt-run-b-final']],
+    ['^ckpt$', ['bk/tmp/ttl=14d/run-a/ckpt', 'bk/x/ckpt/run/final', 'bk/x/ckpt/final.pt']],
+    ['.safetensors$', ['bk/models/Llama/model-1.safetensors', 'bk/models/tiny.safetensors']],
+    ['^llama$', ['bk/models/Llama/model-1.safetensors']],
+    ['^bk', PATHS],
+    ['^model*.safetensors$', ['bk/models/Llama/model-1.safetensors']],
+    ['^tmp/ttl', ['bk/tmp/ttl=14d/run-a/ckpt', 'bk/tmp/ttl=7d']],
+    ['ckpt -^run', ['bk/x/ckpt-final', 'bk/x/ckpt-run-b-final', 'bk/x/ckpt/final.pt']],
+    ['"^ckpt"', []],
     // the regex fallback: full-path semantics, spanning segments
     ['/ckpt.*final/', ['bk/x/ckpt/run/final', 'bk/x/ckpt-final', 'bk/x/ckpt-run-b-final', 'bk/x/ckpt/final.pt']],
   ])('%s', (q, want) => {

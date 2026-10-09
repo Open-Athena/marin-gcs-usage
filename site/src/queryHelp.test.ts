@@ -20,7 +20,10 @@ describe('the filter box’s help card: generated from `describe()`', () => {
       ['a|b', 'either (OR; looser than AND)', 'ttl=7d|tmp'],
       ['-x', 'exclude, like GitHub search: drops what contains x and subtracts its bytes', 'ckpt -tmp'],
       ['*', 'any characters within one name', '*.safetensors'],
-      ['"…"', 'literal: spaces, a leading -, |, *', '"a b"'],
+      ['^x', 'a file or folder name starting with x', '^ckpt'],
+      ['x$', 'a file or folder name ending with x', '.safetensors$'],
+      ['^x$', 'a file or folder named exactly x', '^config.json$'],
+      ['"…"', 'literal: spaces, a leading -, |, *, ^, $', '"a b"'],
       ['a/b', 'a term with / spans segments', 'run-a/ckpt'],
     ])
   })
@@ -33,7 +36,7 @@ describe('the filter box’s help card: generated from `describe()`', () => {
       '<p>one JavaScript regex over the full path (bucket/dir/…), case-insensitive</p>' +
       '<table><tbody>' +
       '<tr><td><code>re</code></td><td>matches anywhere in the path</td><td><code>ckpt.*final</code></td></tr>' +
-      '<tr><td><code>^…</code></td><td>anchored at the bucket</td><td><code>^my-bucket/tmp/</code></td></tr>' +
+      '<tr><td><code>^…</code></td><td>anchored at the bucket (the full path’s start, not a name’s)</td><td><code>^my-bucket/tmp/</code></td></tr>' +
       '<tr><td><code>…$</code></td><td>anchored at the name’s end</td><td><code>\\.safetensors$</code></td></tr>' +
       '<tr><td><code>[^/]*</code></td><td>stay within one name</td><td><code>ckpt[^/]*final</code></td></tr>' +
       '</tbody></table>' +
