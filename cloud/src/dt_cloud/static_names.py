@@ -1433,13 +1433,41 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
              "manifests/")
 
 
+@cli.command("r2-verify")
+@option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-m", "--manifest", "scan", required=True, help="The manifest's scan id (`manifests/<id>.json`)")
+@option("-w", "--workers", default=16, type=int, help="Parallel checks")
+def r2_verify_cmd(bucket, gen, scan, workers) -> None:
+    """Check that every served file (`R2_SERVED`) of every run a manifest lists is on R2 as on GCS (size, and md5 where both
+    know it), before the manifest itself is copied: a manifest goes to R2 only once each run it lists is whole there.
+    Exit 1, listing what's missing or different."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import publish as pub
+
+    prefix = f"{PREFIX}/{gen}"
+    runs = read_json(f"gs://{bucket}/{prefix}/manifests/{scan}.json")["runs"]
+    objs = [o for r in runs for o in pub.list_source(bucket, [f"{prefix}/{r['key']}/"])
+            if o.key.removeprefix(f"{prefix}/{r['key']}/").startswith(R2_SERVED)]
+    s3, r2 = pub.r2_client(), pub.r2_bucket()
+    with ThreadPoolExecutor(workers) as ex:
+        bad = [o.key for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
+    doc = {"gen": gen, "manifest": scan, "runs": [r["key"] for r in runs], "objects": len(objs), "missing": bad}
+    print(json.dumps(doc, indent=1))
+    if bad:
+        err(f"r2-verify {gen} {scan}: {len(bad)} of {len(objs)} served files not on R2 (e.g. {bad[0]})")
+        raise SystemExit(1)
+
+
 @cli.command("r2-copy")
 @option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-n", "--dry-run", is_flag=True, help="List what would be copied")
 @option("-o", "--only", help="Copy only the served keys under this generation-relative prefix (e.g. `manifests/`)")
 @option("-w", "--workers", default=8, type=int, help="Parallel copies")
-def r2_copy_cmd(bucket, gen, dry_run, only, workers) -> None:
+@option("-x", "--exclude", multiple=True, help="Skip the served keys under this generation-relative prefix (repeatable; e.g. a run's `drill/meta.json`, copied last)")
+def r2_copy_cmd(bucket, gen, dry_run, only, workers, exclude) -> None:
     """Copy the generation's served files (shards, sidecar, plan, scans) GCS → R2 under the same keys,
     skipping objects already there with the same size and md5 (`publish.copy_one`'s streaming copy,
     the GCS md5 stamped as metadata). R2 via `R2_ENDPOINT`, `R2_BUCKET` and AWS_* (or R2_*) keys."""
@@ -1449,7 +1477,8 @@ def r2_copy_cmd(bucket, gen, dry_run, only, workers) -> None:
 
     prefix = f"{PREFIX}/{gen}"
     objs = [o for o in pub.list_source(bucket, [prefix + "/"]) if o.key.removeprefix(prefix + "/").startswith(R2_SERVED)
-            and (only is None or o.key.removeprefix(prefix + "/").startswith(only))]
+            and (only is None or o.key.removeprefix(prefix + "/").startswith(only))
+            and not any(o.key.removeprefix(prefix + "/").startswith(x) for x in exclude)]
     s3, r2 = pub.r2_client(), pub.r2_bucket()
     with ThreadPoolExecutor(workers) as ex:
         todo = [o for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]

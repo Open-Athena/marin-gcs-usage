@@ -46,6 +46,8 @@ class Profile:
     ssd_gb: int = 750
     spot: bool = True
     append_tasks: int = 16
+    #: Whether each run also gets the heavy-term drilldown (`drill/`, `static_drill`): needs the base generation's `drill/`.
+    drill: bool = False
     #: Mounted dirs copied onto the tasks' PYTHONPATH in place of the image's own code (a staged tree).
     src: tuple[str, ...] = ()
 
@@ -72,7 +74,7 @@ ENV = {
     "gen": "STATIC_NAMES_GEN", "r2_bucket": "R2_BUCKET", "r2_secrets": "STATIC_NAMES_R2_SECRETS", "r2_endpoint": "R2_ENDPOINT",
     "project": "GCP_PROJECT", "region": "STATIC_NAMES_REGION", "image": "STATIC_NAMES_IMAGE", "sa": "STATIC_NAMES_SA",
     "r2_sa": "STATIC_NAMES_R2_SA", "machine": "STATIC_NAMES_MACHINE", "ssd_gb": "STATIC_NAMES_SSD", "spot": "STATIC_NAMES_SPOT",
-    "append_tasks": "STATIC_NAMES_APPEND_TASKS", "src": "STATIC_NAMES_SRC",
+    "append_tasks": "STATIC_NAMES_APPEND_TASKS", "drill": "STATIC_NAMES_DRILL", "src": "STATIC_NAMES_SRC",
 }
 
 
@@ -89,7 +91,7 @@ def _parse(name: str, raw: str):
         return out
     if name in ("ssd_gb", "append_tasks"):
         return int(raw)
-    if name == "spot":
+    if name in ("spot", "drill"):
         return raw.strip() not in ("0", "false", "")
     return raw.strip()
 
