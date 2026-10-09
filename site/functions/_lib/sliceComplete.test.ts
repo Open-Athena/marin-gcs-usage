@@ -103,7 +103,7 @@ describe('bysize over owner slices', () => {
       if (JSON.stringify(got) !== JSON.stringify(want)) bad.push([P, t, atten, levels, perPath(got), perPath(want)])
     }
     expect([cases.length, bad]).toEqual([270, []])
-  })
+  }, 60_000)  // 270 cases over the fixture: ~2 s alone, past the 5 s default under the parallel suite
 
   // `fixtures/v2-slices/plans.json`: the engine planner (`disk-tree tiers plan`, `gen.py`
   // SLICE_PLANS) over the `bysize` sidecar — `b_max` is `MAX(tot)` — and the rows that pass
