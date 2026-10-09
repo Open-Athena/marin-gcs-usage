@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { fmtScan, type ScanMiss } from './scan'
-import { encodeSel, type ScanSel } from './scanSlug'
+import { encodeSel, exactPrefix, type ScanSel } from './scanSlug'
 
 /** The URL a "no scan matches" link goes to: the same page and params, its
  * `?d=` re-pointed at `scan` — the end (`end: true`) or the pinned start —
@@ -9,7 +9,8 @@ export function hrefWithScan(pathname: string, search: string, sel: ScanSel | un
   const sp = new URLSearchParams(search)
   sp.delete('date'); sp.delete('from')
   const base: ScanSel = sel && !sel.invalid ? sel : {}
-  const d = encodeSel(end ? { ...base, d: scan } : { ...base, from: scan, span: undefined })
+  const exact = exactPrefix(scan)
+  const d = encodeSel(end ? { ...base, d: exact } : { ...base, from: exact, span: undefined })
   if (d) sp.set('d', d); else sp.delete('d')
   return `${pathname}?${sp}`
 }

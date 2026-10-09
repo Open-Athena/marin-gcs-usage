@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DAY, RUN_ID_RE, canonicalSel, scanNeighbors, decodeScan, decodeSel, encodeScan, encodeSel, isScanId, latestScan, mergeSel, resolveAfter, resolveBefore, resolveScan, scanMatches, selOf } from './scanSlug'
+import { DAY, RUN_ID_RE, canonicalSel, exactPrefix, exactSlug, scanNeighbors, decodeScan, decodeSel, encodeScan, encodeSel, isScanId, latestScan, mergeSel, resolveAfter, resolveBefore, resolveScan, scanMatches, selOf } from './scanSlug'
 
 // Two scans on 10/9 (plus a third in its noon hour), a date-only scan on 10/8.
 const SCANS = ['2026-10-08', '2026-10-09T0601', '2026-10-09T1200', '2026-10-09T1215', '2026-10-09T1802']
@@ -145,6 +145,33 @@ describe('a miss is a miss: no fallback to the latest or nearest scan', () => {
       { before: null, after: '2026-10-08' },
       { before: '2026-10-09T1215', after: '2026-10-09T1802' },
       { before: null, after: null },
+    ])
+  })
+})
+
+describe('a date-only scan and a timed scan on one day: each exactly selectable', () => {
+  // gcs on 10/9: the date-only 04:30 run, and 12:36Z
+  const DAY2 = ['2026-10-08', '2026-10-09', '2026-10-09T1236']
+  it('exactSlug: a date-only scan is its midnight, a timed one its minute', () => {
+    expect(DAY2.map(exactSlug)).toEqual(['2610080000', '2610090000', '2610091236'])
+  })
+  it('every scan round-trips: its exact slug → ?d= → decode → the resolver → itself', () => {
+    expect(DAY2.map(id => resolveAfter(decodeSel(encodeSel({ d: exactPrefix(id) })), DAY2))).toEqual(DAY2)
+    expect(DAY2.map(id => resolveScan(exactSlug(id), DAY2))).toEqual(DAY2)
+  })
+  it('as a pinned start too', () => {
+    expect(['2026-10-08', '2026-10-09'].map(id => resolveBefore(decodeSel(encodeSel({ d: '2026-10-09T1236', from: exactPrefix(id) })), '2026-10-09T1236', DAY2)))
+      .toEqual(['2026-10-08', '2026-10-09'])
+  })
+  it('the day slug keeps meaning the day\'s latest scan; the midnight hour takes the date-only one', () => {
+    expect(['261009', '2026-10-09', '26100900', '2610090000', '26100912', '2610091236', '26100904'].map(s => resolveScan(s, DAY2)))
+      .toEqual(['2026-10-09T1236', '2026-10-09T1236', '2026-10-09', '2026-10-09', '2026-10-09T1236', '2026-10-09T1236', null])
+  })
+  it('scanMatches / scanNeighbors order a date-only scan as its midnight', () => {
+    expect([scanMatches('2026-10-09', DAY2), scanNeighbors('2026-10-09T04', DAY2), scanNeighbors('2026-10-09T00', ['2026-10-08', '2026-10-09T1236'])]).toEqual([
+      ['2026-10-09T1236', '2026-10-09'],
+      { before: '2026-10-09', after: '2026-10-09T1236' },
+      { before: '2026-10-08', after: '2026-10-09T1236' },
     ])
   })
 })

@@ -105,20 +105,45 @@ export const decodeScan = (e: string | undefined, now = new Date()): string | un
   return out(y, pad(mo), pad(d), hh && pad(hh), mm && pad(mm))
 }
 
+// ---- exact slugs: a date-only scan is its midnight ----
+//
+// A date-only id (`2026-10-09`) names one scan; the day slug `261009` names the
+// day's *latest* scan, which may be a timed one (`2026-10-09T1236`). So a
+// date-only scan's exact slug is its midnight minute, `2610090000`: matching
+// treats `YYYY-MM-DD` as `YYYY-MM-DDT0000` (`scanKey`), the instant `scanTime`
+// already gives it. That can't collide with a real `T0000` scan, since a date
+// and its `T0000` are one instant and `check_order` refuses the pair. The hour
+// slug `26100900` takes it too (the midnight hour). No new syntax: every
+// picker writes `exactSlug(id)`, which resolves to exactly that scan.
+
+/** A scan id's matching key: a date-only id reads as its `T0000`. */
+export const scanKey = (id: string): string => (id.length === 10 ? `${id}T0000` : id)
+
+/** Whether `scan` falls under the decoded `prefix` (a date-only scan as its midnight). */
+export const scanUnder = (scan: string, prefix: string): boolean => scan.startsWith(prefix) || scanKey(scan).startsWith(prefix)
+
+/** The decoded prefix that selects exactly the scan `id` (`2026-10-09` →
+ * `2026-10-09T0000`; a timed id is itself) — what a picker writes as `d`. */
+export const exactPrefix = (id: string): string => (isScanId(id) ? scanKey(id) : id)
+
+/** A scan id's exact slug, resolving to exactly that scan: `2026-10-09T1236` →
+ * `2610091236`, date-only `2026-10-09` → `2610090000` (never `261009`, which
+ * is the day's latest scan). */
+export const exactSlug = (id: string): string => encodeScan(exactPrefix(id))!
+
 /** Every scan matching a decoded prefix, newest first (`scans` in any order). */
 export function scanMatches(prefix: string | undefined, scans: readonly string[]): string[] {
   if (!prefix) return []
-  return scans.filter(s => s.startsWith(prefix)).sort((a, b) => a < b ? 1 : a > b ? -1 : 0)
+  return scans.filter(s => scanUnder(s, prefix)).sort((a, b) => a < b ? 1 : a > b ? -1 : 0)
 }
 
-/** **The resolver**: the latest scan among `scans` (any order) whose id starts
- * with the decoded prefix — null when none does. Ids sort chronologically as
- * strings (a bare `YYYY-MM-DD` sorts before that day's `T` scans, i.e. reads
- * as its midnight). */
+/** **The resolver**: the latest scan among `scans` (any order) under the
+ * decoded prefix — null when none is. Ids sort chronologically as strings (a
+ * bare `YYYY-MM-DD` before that day's `T` scans: its midnight). */
 export function latestScan(prefix: string | undefined, scans: readonly string[]): string | null {
   if (!prefix) return null
   let best: string | null = null
-  for (const s of scans) if (s.startsWith(prefix) && (best === null || s > best)) best = s
+  for (const s of scans) if (scanUnder(s, prefix) && (best === null || s > best)) best = s
   return best
 }
 
@@ -129,14 +154,14 @@ export const resolveScan = (slug: string | undefined, scans: readonly string[], 
 
 /** A missed prefix's closest scans: the latest scan before everything it
  * names, and the earliest after — the links a "no scan matches" state offers.
- * (Ids sort chronologically as strings; `prefix + '~'` sorts after every id
- * the prefix names.) */
+ * (Compared by `scanKey`; `prefix + '~'` sorts after every key it names.) */
 export function scanNeighbors(prefix: string, scans: readonly string[]): { before: string | null; after: string | null } {
   let before: string | null = null, after: string | null = null
   const end = `${prefix}~`
   for (const s of scans) {
-    if (s < prefix && (before === null || s > before)) before = s
-    if (s > end && (after === null || s < after)) after = s
+    const k = scanKey(s)
+    if (k < prefix && (before === null || k > scanKey(before))) before = s
+    if (k > end && (after === null || k < scanKey(after))) after = s
   }
   return { before, after }
 }

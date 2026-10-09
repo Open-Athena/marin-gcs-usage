@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useUrlAlias, useUrlState } from 'use-prms'
-import { decodeSel, encodeScan, encodeSel, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanNeighbors, scanParts, selSlug, type ScanSel } from './scanSlug'
+import { decodeSel, encodeScan, encodeSel, exactPrefix, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanNeighbors, scanParts, selSlug, type ScanSel } from './scanSlug'
 import { storeUrl, type Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
@@ -150,12 +150,16 @@ export function useScan(store: Store): Scan {
     setSel(d || span0 || from0
       ? { ...(d ? { d } : {}), ...(span0 ? { span: span0 } : {}), ...(from0 ? { from: from0 } : {}) }
       : undefined)
+  // Setters take scan ids (a picker's choice) and write each as its exact
+  // prefix (`exactPrefix`): a date-only scan as its midnight, never the day
+  // slug (which means the day's latest scan).
+  const exact = (v: string | undefined) => (v ? exactPrefix(v) : undefined)
   const setRange = (v: string | undefined, ms: number | undefined) =>
-    write(v && v !== scans[0] ? v : undefined, ms, undefined)
-  const setDP = (v: string | undefined) => write(v && v !== scans[0] ? v : undefined, span, from)
+    write(v && v !== scans[0] ? exact(v) : undefined, ms, undefined)
+  const setDP = (v: string | undefined) => write(v && v !== scans[0] ? exact(v) : undefined, span, from)
   const setSpan = (ms: number | undefined) => write(dP, ms, undefined)
-  const setFrom = (v: string | undefined) => write(dP, undefined, v)
-  const setEndPin = (pin: boolean) => write(pin ? asof ?? undefined : undefined, span, from)
+  const setFrom = (v: string | undefined) => write(dP, undefined, exact(v))
+  const setEndPin = (pin: boolean) => write(pin ? exact(asof ?? undefined) : undefined, span, from)
   return { asof, miss, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
 }
 
