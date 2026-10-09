@@ -91,11 +91,6 @@ SLACK_ADMIN_CHANNEL = "C0C579HNRFB"
 # FILTER_STATIC_HEAVY stays dev-only until its daily delta exists.
 FILTER_STATIC = "1"
 NAME_SUMMARY_STATIC = "1"
-# The name-summary routes' gates (`api/name-summary*.ts`, `_lib/nameSummary.ts`):
-# with NAME_SUMMARY_STATIC every dated request is answered from R2; no query box
-# is configured here, so an undated one answers "unavailable".
-QUERY_BOX_NAME_SUMMARY = "1"
-QUERY_BOX_DATED_NAMES = "1"
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-gcs-usage`):
 #   SESSION_SECRET   — HMAC key for session cookies + IP hashing
