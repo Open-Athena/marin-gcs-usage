@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from time import monotonic
+from time import monotonic, time
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -78,7 +78,11 @@ INDEX_SCHEMA = pa.schema([
 ])
 #: A suffix row's decoded size, roughly: its strings plus the fixed-width columns (the decode cost the Worker pays).
 UBYTES = "(strlen(s) + strlen(path) + strlen(usr) + 41)"
-PARENT = "lower(regexp_extract(path, '^(.*)/[^/]*$', 1))"
+#: The lowercase parent (everything before the last `/`; `''` without one). A string cut, ~8× faster than the
+#: regex `^(.*)/[^/]*$` it equals, which stays only for paths with a newline: RE2's `.` doesn't match one, so the
+#: regex yields `''` there, and those rows keep that answer.
+PARENT = ("lower(CASE WHEN contains(path, chr(10)) THEN regexp_extract(path, '^(.*)/[^/]*$', 1) WHEN NOT contains(path, '/') THEN '' "
+          "ELSE left(path, length(path) - length(string_split(path, '/')[-1]) - 1) END)")
 BUCKET = "split_part(path, '/', 1)"
 
 
@@ -195,25 +199,39 @@ def sx_rows_sql(src: str) -> str:
 CHUNK_ROWS = 1 << 24
 
 
-def shard_cells(con, sx: str, members: str, dst: Path, chunk_rows: int = CHUNK_ROWS) -> int:
-    """One shard's members' cells (`members`: `q, rows`, all within the shard) → `dst`, sorted. The shard is
-    read in chunks of whole row groups, so memory is bounded by the chunk, not the shard."""
+def shard_cells(con, sx: str, members: str, dst: Path, chunk_rows: int = CHUNK_ROWS, log: str = "") -> tuple[int, dict]:
+    """One shard's members' cells (`members`: `q, rows`, all within the shard) → `dst`, sorted; returns the
+    cell count and per-phase seconds. `sx` is a local file (sorted `s, path, …`), read in chunks of about
+    `chunk_rows` rows cut at row-group boundaries as `(s, path)` ranges (not `s` alone: one suffix can fill a
+    shard, e.g. `ccess` from `_SUCCESS` markers), with `s` bounds DuckDB prunes the other row groups by, so
+    memory is bounded by the chunk; events are additive, so any partition of the rows gives the same cells.
+    `log` prefixes a progress line per chunk."""
     pf = pq.ParquetFile(sx)
+    cuts, n = [], 0
+    for g in range(pf.metadata.num_row_groups):
+        if n >= chunk_rows:
+            first = pf.read_row_group(g, columns=["s", "path"]).slice(0, 1).to_pylist()[0]
+            cuts.append((first["s"], first["path"]))
+            n = 0
+        n += pf.metadata.row_group(g).num_rows
+    bounds = [None, *cuts, None]
     con.execute("DROP TABLE IF EXISTS ev")
     con.execute("CREATE TABLE ev (q VARCHAR, bucket VARCHAR, t BIGINT, db HUGEINT, dn HUGEINT)")
-    groups: list[int] = []
-    n = 0
-    for g in range(pf.metadata.num_row_groups):
-        groups.append(g)
-        n += pf.metadata.row_group(g).num_rows
-        if n >= chunk_rows or g == pf.metadata.num_row_groups - 1:
-            chunk = pf.read_row_groups(groups, columns=["s", "depth", "path", "vf", "vt", "size", "n_files"])
-            con.register("sx_chunk", chunk)
-            member_events(con, sx_rows_sql("sx_chunk"), members, fresh=False)
-            con.unregister("sx_chunk")
-            groups, n = [], 0
-    return write_sorted(_batches(con, f"SELECT * FROM ({cells_sql('ev', members)}) ORDER BY q, bucket, vf"), dst, CELL_SCHEMA, 1 << 16,
+    t0 = monotonic()
+    for k, (lo, hi) in enumerate(zip(bounds, bounds[1:])):
+        conds = []
+        if lo is not None:
+            conds.append(f"s >= {q(lo[0])} AND (s > {q(lo[0])} OR path >= {q(lo[1])})")
+        if hi is not None:
+            conds.append(f"s <= {q(hi[0])} AND (s < {q(hi[0])} OR path < {q(hi[1])})")
+        where = " AND ".join(conds) or "true"
+        member_events(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(sx)}) WHERE {where})"), members, fresh=False)
+        if log:
+            err(f"{log}: chunk {k + 1}/{len(bounds) - 1} in {monotonic() - t0:.1f}s")
+    t1 = monotonic()
+    rows = write_sorted(_batches(con, f"SELECT * FROM ({cells_sql('ev', members)}) ORDER BY q, bucket, vf"), dst, CELL_SCHEMA, 1 << 16,
                         dictionary=["bucket"])
+    return rows, {"events": round(t1 - t0, 1), "cells": round(monotonic() - t1, 1)}
 
 
 def range_short(con, versions: str, dst: Path, name: str) -> None:
@@ -599,37 +617,85 @@ def members_cmd(max_bytes, bucket, gen, max_rows) -> None:
 @cli.command("answers")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
-@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the plan's task group")
-@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX); without -Q, the plan's task group")
+@option("-l", "--lease", default=1800, type=int, help="With -Q: seconds after which another task may take over a claimed, unfinished shard")
+@option("-m", "--mount", required=True, help="Local mount of the bucket (for `catalog/members.parquet`; shards are downloaded to -T)")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
-def answers_cmd(bucket, gen, index, mount, mem, threads, tmp) -> None:
-    """Members' cells, per shard of one task group → `catalog/cells/s####.parquet` (sorted)."""
+@option("-Q", "--queue", is_flag=True, help="Take shards from a shared queue (claims in the scratch bucket) instead of the plan's task group")
+@option("-S", "--scratch", default=SCRATCH_BUCKET, help="With -Q: bucket holding the claims")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where each shard is downloaded")
+def answers_cmd(bucket, gen, index, lease, mount, mem, threads, queue, scratch, tmp) -> None:
+    """Members' cells, per shard → `catalog/cells/s####.parquet` (sorted). A shard whose output exists is
+    skipped, so a rerun (or a second job) resumes. With -Q, every task walks all shards, latest-in-plan first
+    (so a queue job racing a plan-ordered one meets it in the middle), claiming each by creating
+    `claims/answers/s####` in the scratch bucket; a claim older than -l is taken over (a preempted task's)."""
+    from google.api_core.exceptions import NotFound, PreconditionFailed
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
     plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
     t = _task(index)
-    b = storage.Client().bucket(bucket)
+    client = storage.Client()
+    b = client.bucket(bucket)
+    sb = client.bucket(scratch)
     con = connect(threads, mem, tmp)
     con.execute(f"CREATE TABLE allm AS SELECT q, shard, rows FROM read_parquet({q(f'{mount}/{prefix}/catalog/members.parquet')})")
     out = Path(tmp) / "cells"
-    for s in _shards_for_task(plan, t):
+    out.mkdir(parents=True, exist_ok=True)
+    if queue:
+        pos = {i: k for g in plan["tasks"] for k, i in enumerate(g["shards"])}
+        todo = sorted(plan["shards"], key=lambda s: (-pos[s["i"]], -s["rows"]))
+    else:
+        todo = _shards_for_task(plan, t)
+
+    def claim(name: str) -> bool:
+        blob = sb.blob(f"{prefix}/claims/answers/{name}")
+        try:
+            blob.upload_from_string(str(t), if_generation_match=0)
+            return True
+        except PreconditionFailed:
+            pass
+        try:
+            blob.reload()
+        except NotFound:
+            return claim(name)
+        if time() - blob.updated.timestamp() < lease:
+            return False
+        try:
+            blob.upload_from_string(str(t), if_generation_match=blob.generation)
+            err(f"answers {name}: taking over a claim {time() - blob.updated.timestamp():.0f}s old")
+            return True
+        except PreconditionFailed:
+            return False
+
+    t_start = monotonic()
+    n_done = 0
+    for s in todo:
         name = f"s{s['i']:04d}"
         key = f"{prefix}/catalog/cells/{name}.parquet"
         if b.blob(key).exists():
-            err(f"answers {name}: done")
+            continue
+        if queue and not claim(name):
             continue
         t0 = monotonic()
+        src = Path(tmp) / f"sx-{name}.parquet"
+        b.blob(f"{prefix}/sx/{name}.parquet").download_to_filename(str(src))
+        t_dl = monotonic() - t0
         con.execute(f"CREATE OR REPLACE TABLE mem AS SELECT q, rows FROM allm WHERE shard = {s['i']}")
         n_members = con.execute("SELECT count(*) FROM mem").fetchone()[0]
+        err(f"answers {name}: {s['rows']:,} rows, {n_members:,} members, downloaded in {t_dl:.1f}s")
         dst = out / f"{name}.parquet"
-        rows = shard_cells(con, f"{mount}/{prefix}/sx/{name}.parquet", "mem", dst)
+        rows, phases = shard_cells(con, str(src), "mem", dst, log=f"answers {name}")
+        src.unlink()
+        t1 = monotonic()
         b.blob(key).upload_from_filename(str(dst))
         dst.unlink()
-        doc = {"shard": s["i"], "members": n_members, "cells": rows, "s": round(monotonic() - t0, 1)}
-        err(f"answers {name}: {n_members:,} members, {rows:,} cells in {doc['s']}s")
+        n_done += 1
+        doc = {"shard": s["i"], "rows": s["rows"], "members": n_members, "cells": rows, "s": round(monotonic() - t0, 1),
+               "phases": {"download": round(t_dl, 1), **phases, "upload": round(monotonic() - t1, 1)}}
+        err(f"answers {name}: {n_members:,} members, {rows:,} cells in {doc['s']}s {doc['phases']} "
+            f"(task {t}: {n_done} shards in {monotonic() - t_start:.0f}s)")
         print(json.dumps(doc), flush=True)
 
 

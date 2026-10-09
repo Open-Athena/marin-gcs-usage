@@ -220,3 +220,14 @@ def test_append_equals_rebuild(fixture, tmp_path, v, k):  # noqa: F811
     assert doc["members"] == sum(1 for r in want if r["bucket"] == "")
     if v == 5:
         assert crossed > 0  # literals crossed V on an append: their whole history came from the base shards and deltas
+
+
+def test_parent_equals_regex():
+    """`PARENT`'s string cut equals the regex it replaced on every path shape, newlines included."""
+    con = sn.connect(1, "1GB", "tmp")
+    paths = ["b/a", "b/x/y.txt", "b/x/", "b//z", "b/X/Ünï/ÇÖ", "nodir", "", "b/a\nb/c", "b\n/c", "b/c\n", "b/é/\U0001F600x"]
+    regex = "lower(regexp_extract(path, '^(.*)/[^/]*$', 1))"
+    got = con.execute(f"SELECT {sc.PARENT}, {regex} FROM unnest(?::VARCHAR[]) AS t(path)", [paths]).fetchall()
+    assert [a for a, _ in got] == [b for _, b in got] == [
+        "b", "b/x", "b/x", "b/", "b/x/ünï", "", "", "", "", "b", "b/é",
+    ]
