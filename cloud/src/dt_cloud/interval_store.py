@@ -380,10 +380,27 @@ def build_cmd(bucket, force, gen, index, mount, mem, per_task, out, threads, onl
         print(json.dumps({k: v for k, v in doc.items() if k != "scans"}), flush=True)
 
 
+def churn_stats(con, root: str, scans: dict) -> dict:
+    """Per scan: path versions opened and closed there, read versions likewise, and live rows — the
+    daily delta an append writes — plus totals by kind."""
+    ids = {s["ts"]: s["id"] for s in scans["scans"]}
+    pv, rd = f"read_parquet({q(root + '/pv/r*.parquet')})", f"read_parquet({q(root + '/rd/r*.parquet')})"
+    per = {i: {"id": i, "opened": 0, "closed": 0, "reads_opened": 0, "reads_closed": 0} for i in ids.values()}
+    for col, key, src in (("vf", "opened", pv), ("vt", "closed", pv), ("vf", "reads_opened", rd), ("vt", "reads_closed", rd)):
+        for t, n in con.execute(f"SELECT {col}, count(*) FROM {src} WHERE {col} <> {OPEN} GROUP BY {col}").fetchall():
+            per[ids[t]][key] = n
+    kinds = {k: {"versions": n, "open": o, "paths": p} for k, n, o, p in con.execute(
+        f"SELECT kind, count(*), count(*) FILTER (WHERE vt = {OPEN}), count(DISTINCT path) FROM {pv} GROUP BY kind ORDER BY kind").fetchall()}
+    tot = con.execute(f"SELECT count(*), count(*) FILTER (WHERE vt = {OPEN}), count(DISTINCT (depth, path)) FROM {pv}").fetchone()
+    rtot = con.execute(f"SELECT count(*), count(*) FILTER (WHERE vt = {OPEN}) FROM {rd}").fetchone()
+    return {"versions": tot[0], "open": tot[1], "paths": tot[2], "reads": rtot[0], "reads_open": rtot[1], "kinds": kinds,
+            "scans": [per[s["id"]] for s in scans["scans"]]}
+
+
 @cli.command("cut")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
 @option("-g", "--gen", required=True, help="Generation (its pv/, rd/ range files)")
-@option("-i", "--index", type=int, help="Task index → sort (path, bysize, reads; default: $BATCH_TASK_INDEX)")
+@option("-i", "--index", type=int, help="Task index → sort (path, bysize, reads, then `stats`: per-scan churn; default: $BATCH_TASK_INDEX)")
 @option("-m", "--mount", help="Local mount of the data bucket")
 @option("-M", "--mem", default="80GB", help="DuckDB memory limit")
 @option("-o", "--out", default="/stage/out", help="Local output dir (uploaded, then removed)")
@@ -395,9 +412,18 @@ def build_cmd(bucket, force, gen, index, mount, mem, per_task, out, threads, onl
 def cut_cmd(bucket, gen, index, mount, mem, out, threads, rg_rows, sorts, tmp, no_upload) -> None:
     """Cut the served sorts from the range files: `served/<sort>.parquet` + `.groups.parquet`."""
     prefix = f"{PREFIX}/{gen}"
-    todo = list(sorts) or [list(SORTS)[sn._task(index)]]
+    todo = list(sorts) or [[*SORTS, "stats"][sn._task(index)]]
     con = connect(threads, mem, tmp)
     root = f"{mount}/{prefix}" if mount else f"gs://{bucket}/{prefix}"
+    if todo == ["stats"]:
+        doc = churn_stats(con, root, read_json(f"gs://{bucket}/{prefix}/scans.json"))
+        out_dir = Path(out) / "served"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "stats.json").write_text(json.dumps(doc, indent=1) + "\n")
+        if not no_upload:
+            upload_tree(out_dir, bucket, f"{prefix}/served")
+        print(json.dumps({k: v for k, v in doc.items() if k != "scans"}), flush=True)
+        return
     for sort in todo:
         sub, _, _ = SORTS[sort]
         schema = PV_SCHEMA if sub == "pv" else RD_SCHEMA
