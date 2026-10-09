@@ -27,11 +27,13 @@ refetches."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date as Date, timedelta
+from datetime import timedelta
 from json import load
 from pathlib import Path
 
 from click import Choice, Path as CP, command, option
+
+from .scan_id import scan_time
 
 BG = "#0d1117"
 INK = "#c9d1d9"
@@ -101,14 +103,15 @@ def render_tiers(rows: list[dict], out: Path, title: str, host: str, redact: boo
     sign-in."""
     plt, mdates = _mpl()
 
-    xs = [Date.fromisoformat(r["date"]) for r in rows]
+    # x = each scan's UTC instant: a day can hold several scans (`YYYY-MM-DDTHHMM`).
+    xs = [scan_time(r["date"]).replace(tzinfo=None) for r in rows]
     tot = [sum(r[k] for k, _, _ in TIERS) for r in rows]
     # month-wide x frame: stable early in the month (a 1-scan month otherwise
     # degenerates — zero-width stackplot, tick-label explosion) and days fill
     # in left→right as the month progresses.
     from calendar import monthrange
 
-    m0 = xs[-1].replace(day=1)
+    m0 = xs[-1].replace(day=1, hour=0, minute=0)
     m1 = m0.replace(day=monthrange(m0.year, m0.month)[1])
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 4.6), dpi=200, height_ratios=[1, 1.7], sharex=True)
@@ -482,7 +485,7 @@ def main(rows_path: Path, out: Path, redact: bool, title: str | None, template: 
     rows = load(open(rows_path))
     host = urlparse(cfg.site_url).netloc
     if template == "gcs":
-        title = title or f"{cfg.title} — {Date.fromisoformat(rows[-1]['date']):%B %Y}"
+        title = title or f"{cfg.title} — {scan_time(rows[-1]['date']):%B %Y}"
         render_tiers(rows, out, title, host, redact=redact)
     else:
         q = cfg.primary_quota

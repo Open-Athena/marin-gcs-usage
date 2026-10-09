@@ -19,14 +19,15 @@
  *  decline, so the caller keeps today's read.
  *
  *  Dates: an answer carries the scans it covers (`Found.scans`; absent = every scan of the store). The light
- *  index spans the base generation and its daily runs; the drilldown only the base generation's scans, so a
- *  heavy literal on a newer scan declines (`covers`) and that view reads as before. */
+ *  index spans the base generation and its runs (one per scan); the drilldown the base and the runs whose
+ *  `drill/` is live, so a heavy literal on a newer scan declines (`covers`) and that view reads as before. */
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
-import { Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
-import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanMs, STATIC_GEN, STATIC_PREFIX } from './staticNames.js'
+import { type CatalogLookup, Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
+import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanAt, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
+import { type FilterReject, reject } from './indexedOnly.js'
 
 export type { Hit } from './staticNames.js'
 export { type Rollup, rollupAt, rollupTotal } from './staticDrill.js'
@@ -51,7 +52,7 @@ export type Found =
   | { rollup: Rollup; hits?: undefined; io: Record<string, unknown>; scans?: string[] }
 
 /** Whether `found` answers every one of `dates`: the explicit rule that keeps a heavy literal off the scans
- *  its drilldown does not cover (the daily runs past the base generation), which then read as before. */
+ *  its drilldown does not cover (past the last run whose `drill/` is live), which then read as before. */
 export const covers = (found: Found, dates: string[]): boolean => !found.scans || dates.every(d => found.scans!.includes(d))
 
 /** A literal's match roots under a path, any date: what the filter needs from an index. `null` = this
@@ -59,6 +60,9 @@ export const covers = (found: Found, dates: string[]): boolean => !found.scans |
  *  strict descendants are wanted. */
 export interface HitSource {
   hits(key: string, under: string): Promise<Found | null>
+  /** Whether a heavy literal (short, or past the suffix bound) has a source (`FILTER_STATIC_HEAVY`'s
+   *  drilldown): without one, `hits` declines it on every scan — the term, not the scan, is the reason. */
+  readonly heavy?: boolean
 }
 
 /** The generation's scans (ids). */
@@ -74,7 +78,7 @@ const HELD_HITS = 400_000
 const under = (p: string, root: string): boolean => root === '' || p.startsWith(root + '/')
 
 /** What `SuffixHits` reads: a literal's first hits, refused (null) above `maxRows`. `version` names the index's
- *  current state (the daily runs' manifest date, `staticRuns.ts`): the hit lists span every date, so they are
+ *  current state (the runs' manifest, by its newest scan, `staticRuns.ts`): the hit lists span every scan, so they are
  *  held and cached per version. A single generation is `StaticNames` (no `version`: 'base'). */
 export interface HitReader {
   read(key: string, maxRows?: number): Promise<{ io: Io; fold: FirstHits | null }>
@@ -85,6 +89,7 @@ export interface HitReader {
  *  isolate, and per colo through `cache`), then cut to `under`. Literals over `maxRows` go to `heavy`. */
 export class SuffixHits implements HitSource {
   private held = new Map<string, Promise<{ hits: Hit[]; io: Record<string, unknown> } | null>>()
+  private cut = new WeakMap<Hit[], Map<string, Hit[]>>()
   constructor(
     readonly names: HitReader,
     readonly opts: { maxRows?: number; heavy?: HitSource | null; cache?: HitCache | null; waitMs?: number } = {},
@@ -118,11 +123,22 @@ export class SuffixHits implements HitSource {
     }
   }
 
+  get heavy(): boolean { return !!this.opts.heavy }
+
   async hits(key: string, root: string): Promise<Found | null> {
     if (shortLiteral(key)) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
     const got = await this.all(key)
     if (!got) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
-    return { hits: root === '' ? got.hits : got.hits.filter(h => under(h.path, root)), io: got.io }
+    if (root === '') return { hits: got.hits, io: got.io }
+    // One array per (literal, root) while the literal is held: the view's per-isolate phase 1 is keyed by it.
+    let byRoot = this.cut.get(got.hits)
+    if (!byRoot) this.cut.set(got.hits, (byRoot = new Map()))
+    let hits = byRoot.get(root)
+    if (!hits) {
+      byRoot.set(root, (hits = got.hits.filter(h => under(h.path, root))))
+      if (byRoot.size > 32) byRoot.delete(byRoot.keys().next().value!)
+    }
+    return { hits, io: got.io }
   }
 }
 
@@ -130,7 +146,7 @@ export class SuffixHits implements HitSource {
 export interface HitCache { get(key: string): Promise<Hit[] | null>; put(key: string, hits: Hit[]): Promise<void> }
 
 /** Hits as columns of JSON (sizes as decimal strings: a bucket's bytes pass 2^53). */
-export function cacheHits(cache: Cache, prefix = STATIC_PREFIX, version = 'hits-v1'): HitCache {
+export function cacheHits(cache: Cache, prefix: string, version = 'hits-v1'): HitCache {
   const url = (key: string) => `https://static-filter.invalid/${prefix}/${version}/${encodeURIComponent(key)}.json`
   return {
     async get(key) {
@@ -146,49 +162,43 @@ export function cacheHits(cache: Cache, prefix = STATIC_PREFIX, version = 'hits-
   }
 }
 
-export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; INDEX_R2?: R2Bucket }
+export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; FILTER_INDEXED_ONLY?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string }
 
-/** The drilldown over a bucket's generation (`drill/`, the base catalog for the fleet root, the base scans). */
-export function drillSource(blobs: Blobs, cache?: Cache): DrillSource {
-  const drillBlobs: Blobs = {
-    range: (k, o, l) => blobs.range(`${DRILL_DIR}/${k}`, o, l),
-    suffix: (k, n) => blobs.suffix(`${DRILL_DIR}/${k}`, n),
-    json: k => blobs.json(`${DRILL_DIR}/${k}`),
-  }
-  const pre = `${STATIC_PREFIX}/${DRILL_DIR}`
-  const catalog = new StaticCatalog(blobs, cache ? cacheIndexes(cache, STATIC_PREFIX, 'catalog-v1') : undefined)
-  const drill = new Drill(drillBlobs, catalog, cache ? { top: cacheIndexes(cache, pre, 'top-v1'), aliases: cacheIndexes(cache, pre, 'aliases-v2') } : undefined)
-  return new DrillSource(drill, scanList(blobs), cache ? cacheHits(cache, pre, 'roots-v1') : undefined)
+/** The drilldown over a bucket's generation: the base `drill/` and its `runs`' (`staticDrill.ts`), with the fleet
+ *  root from `opts.catalog` (default: the base catalog); `cached`: its indexes in `cache` under `prefix` (the
+ *  generation's `staticPrefix`). */
+export function drillSource(blobs: Blobs, cached?: { cache: Cache; prefix: string }, opts: { runs?: () => Promise<string[]>; catalog?: CatalogLookup } = {}): DrillSource {
+  const { cache, prefix } = cached ?? {}
+  const pre = (dir: string | null) => `${prefix}/${dir ? `${dir}/` : ''}${DRILL_DIR}`
+  const catalog = opts.catalog ?? new StaticCatalog(blobs, cache ? cacheIndexes(cache, prefix!, 'catalog-v1') : undefined)
+  const drill = new Drill(blobs, catalog, {
+    runs: opts.runs,
+    cache: cache ? dir => ({ top: cacheIndexes(cache, pre(dir), 'top-v1'), aliases: cacheIndexes(cache, pre(dir), 'aliases-v2') }) : undefined,
+  })
+  return new DrillSource(drill, cache ? cacheHits(cache, pre(null), 'roots-v1') : undefined)
 }
 
 /** A test's store for an env object (in place of the R2 binding's). */
 export const injectedStores = new WeakMap<object, StaticFilterStore>()
 
-let held: { r2: R2Bucket; store: StaticFilterStore } | undefined
+let held: { r2: R2Bucket; gen: string; store: StaticFilterStore } | undefined
 /** The isolate's static filter store over the bound bucket; null when the static filter is off. A test
  *  injects its own (`injectedStores`). */
 export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | null {
   const injected = injectedStores.get(env)
   if (injected) return injected
   if (env.FILTER_STATIC !== '1' || !env.INDEX_R2) return null
-  if (held?.r2 !== env.INDEX_R2) {
-    // The base generation plus its daily runs (`staticRuns.ts`): each tier's group indexes cached under its own prefix.
-    const t = tiers(r2Blobs(env.INDEX_R2), { indexCache: dir => cacheIndexes(caches.default, dir ? `${STATIC_PREFIX}/${dir}` : STATIC_PREFIX) })
-    // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base generation.
-    const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2), caches.default) : null
-    held = { r2: env.INDEX_R2, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default), heavy }), scans: t.scans, gen: `${STATIC_GEN}${heavy ? '+drill' : ''}` } }
+  const gen = staticGen(env), pre = staticPrefix(gen)
+  if (held?.r2 !== env.INDEX_R2 || held.gen !== gen) {
+    // The base generation plus its runs (`staticRuns.ts`): each tier's indexes cached under its own prefix.
+    const tierPre = (dir: string | null) => dir ? `${pre}/${dir}` : pre
+    const t = tiers(r2Blobs(env.INDEX_R2, pre), { indexCache: dir => cacheIndexes(caches.default, tierPre(dir)), catalogCache: dir => cacheIndexes(caches.default, tierPre(dir), 'catalog-v1') })
+    // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base and the runs (the fleet root from the tiers' catalog).
+    const runs = async () => (await t.tiers.state()).tiers.flatMap(x => x.dir ? [x.dir] : [])
+    const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2, pre), { cache: caches.default, prefix: pre }, { runs, catalog: t.catalog }) : null
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
   }
   return held.store
-}
-
-/** `scans.json`'s ids, sorted (held once loaded). */
-export function scanList(blobs: Blobs): () => Promise<string[]> {
-  let ids: Promise<string[]> | undefined
-  return () => {
-    ids ??= blobs.json<{ scans: { id: string }[] }>('scans.json').then(d => d.scans.map(s => s.id).sort())
-    ids.catch(() => { ids = undefined })
-    return ids
-  }
 }
 
 /** Whether `date` can be answered statically for `ast`: the literal, else null. */
@@ -202,7 +212,7 @@ export async function staticKey(s: StaticFilterStore | null, ast: QueryAst | und
 /** The filter's bytes and objects under the hits' root on `date` (Σ live first hits), with `keep` an
  *  owner test on the slice's `usr` (null = unowned). */
 export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) => boolean = () => true): { b: number; o: number; roots: number } {
-  const D = scanMs(date)
+  const D = scanAt(date)
   let b = 0n, o = 0n
   const roots = new Set<string>()
   for (const h of hits) {
@@ -213,11 +223,35 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
 }
 
 /** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
- *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget). */
-const RESPONSE_V = 4
+ *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget; 5: a 1–2
+ *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
+ *  the drill runs' scans). */
+const RESPONSE_V = 6
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
 export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | undefined): string {
   return staticLiteral(query?.ast) && staticFilterStore(env) ? `${staticFilterStore(env)!.gen}.${RESPONSE_V}` : ''
+}
+
+/** Why a static read declined: a scan outside the generation (`skey` null), or a heavy literal past the
+ *  drill base, is `scan-not-indexed`; a heavy literal with no heavy source (`FILTER_STATIC_HEAVY` off) is
+ *  `term-too-common` — on every scan alike, indexed or not. */
+export function declined(s: StaticFilterStore | null, skey: string | null, raw: Found | null): FilterReject {
+  return s && skey && !raw && s.source.heavy === false ? reject('term-too-common') : reject('scan-not-indexed')
+}
+
+/** An indexed-only deployment's coverage test (`indexedOnly.ts`): `ast` (one literal, `rejectAst` passed) is
+ *  answered statically under `path` on every one of `dates`, else the refusal `declined` names. A view root
+ *  the literal matches is the plain view (nothing to search). The answer is held per isolate, so the view's
+ *  own read reuses it. */
+export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
+  const key = staticLiteral(ast)
+  if (!key) return reject('unsupported-terms')
+  if (path.toLowerCase().includes(key)) return null
+  const s = staticFilterStore(env)
+  const skey = s ? await staticKey(s, ast, dates) : null
+  if (!skey) return declined(s, null, null)
+  const found = await s!.source.hits(key, path)
+  return found && covers(found, dates) ? null : declined(s, skey, found)
 }

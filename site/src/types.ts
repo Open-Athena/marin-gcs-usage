@@ -168,6 +168,17 @@ export const fmtBytesPrecise = (b: number, units: Units, suffixB = false): strin
   const decimals = Math.max(0, 2 - Math.floor(Math.log10(rounded)))
   return `${rounded.toFixed(decimals)} ${name}${suffixB ? 'B' : ''}`
 }
+/** `b` with just enough decimals that values `step` apart read differently —
+ *  a fitted y-axis spanning 7.40–7.45 T labels its ticks 7.40 · 7.42 · 7.44 T,
+ *  not four "7.4 T"s. Never fewer decimals than `fmtBytesLike` would use. */
+export const fmtBytesStep = (b: number, step: number, units: Units, suffixB = false): string => {
+  if (b === 0) return '0'
+  const [div, name] = (units === 'iec' ? iecScale : siScale)(Math.abs(b))
+  const v = b / div
+  const base = Math.abs(v) >= 10 ? 0 : 1
+  const need = step > 0 ? Math.ceil(-Math.log10(step / div) - 1e-9) : base
+  return v.toFixed(Math.min(4, Math.max(base, need))) + ' ' + name + (suffixB ? 'B' : '')
+}
 export const fmtBytesLike = (b: number, ref: number, units: Units, suffixB = false): string => {
   if (b === 0) return '0'
   const [div, name] = (units === 'iec' ? iecScale : siScale)(ref)

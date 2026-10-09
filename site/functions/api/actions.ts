@@ -25,6 +25,7 @@ import { ownerIdFor } from '../_lib/me.js'
 import { actionLog } from '../_lib/actionLog.js'
 import { hasLedger } from '../_lib/ledger.js'
 import { NO_SHAPE, type PrefixShape, prefixShape } from '../_lib/plans.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 const reEscape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /** `<scheme><bucket>/<path>/` over the scanned buckets (`STORE_SCHEME` /
@@ -59,7 +60,7 @@ function validate(b: ActionBody, shape: PrefixShape): { error: string } | {
   const owner = b.owner ?? null
   if (owner !== null && (typeof owner !== 'string' || owner.length > 128)) return bad('owner must be a user id')
   const memo = b.memo?.slice(0, 1024) ?? null
-  const scan = typeof b.scan === 'string' && /^[\d-]{8,16}(T\d{4})?$/.test(b.scan) ? b.scan : 'unknown'
+  const scan = isScanId(b.scan) ? b.scan : 'unknown'
   return { pattern, owner, memo, scan }
 }
 

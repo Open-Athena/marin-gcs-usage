@@ -1,27 +1,26 @@
 import { useMemo } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
-import { useUrlState } from 'use-prms'
+import { useUrlAlias, useUrlState } from 'use-prms'
+import { decodeSel, encodeScan, encodeSel, exactPrefix, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanNeighbors, scanParts, selSlug, type ScanSel } from './scanSlug'
 import { storeUrl, type Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
 export const SCANS_POLL_MS = 5 * 60_000
 
-const HOUR = 3600_000
-export const DAY = 24 * HOUR
 
 // Scan labels: drop the redundant year for the current one, so a list of
 // same-year scans reads as `8/17` rather than `2026-08-17`. Scan ids are
-// `YYYY-MM-DD`, optionally sub-daily as `YYYY-MM-DDTHHMM`.
+// `YYYY-MM-DD`, or timed as `YYYY-MM-DDTHHMM`.
 export function fmtScan(s: string, now = new Date()): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):?(\d{2}))?/.exec(s)
-  if (!m) return s
-  const [, y, mo, d, hh, mm] = m
+  const p = scanParts(s)
+  if (!p) return s
+  const { y, mo, d, hh, mm } = p
   if (!hh) {
-    // Date-only ids (the daily GCS job) are calendar dates, not instants —
+    // Date-only ids are calendar dates, not instants —
     // rendering them through a timezone would shift some readers a day off.
     return Number(y) === now.getFullYear() ? `${Number(mo)}/${Number(d)}` : `${y}-${mo}-${d}`
   }
-  // Sub-daily ids are UTC instants; display in the viewer's local time,
+  // Timed ids are UTC instants; display in the viewer's local time,
   // 12-hour with a bare a/p ("8/19 6:08a"). The `?d=` token stays UTC (see
   // decodeScan) — display converts, the URL doesn't.
   const dt = new Date(Date.UTC(+y, +mo - 1, +d, +hh, +(mm ?? '0')))
@@ -33,125 +32,51 @@ export function fmtScan(s: string, now = new Date()): string {
     : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${time}`
 }
 
-/** A scan id's instant (UTC). Date-only ids read as midnight UTC. */
-export const scanTime = (d: string): number => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?/.exec(d)
-  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? '0'), +(m[5] ?? '0')) : NaN
+export { DAY, decodeScan, decodeSel, decodeSpan, encodeScan, encodeSel, encodeSpan, latestScan, nearestScan, resolveScan, scanMatches, scanNeighbors, scanTime, type ScanSel } from './scanSlug'
+
+const selParam = { encode: encodeSel, decode: (e: string | undefined) => decodeSel(e) }
+
+/** The page's scan selection (`?d=`), read through use-prms's alias hook so a
+ * legacy `?date=<id>` / `?from=<id>` (or an ISO `?d=2026-10-06`) folds into
+ * the one canonical `?d=` on mount (specs/scan-ids-not-dates.md §3). Writes go
+ * through `useUrlState` so a scan pick is a history entry (back button). */
+export function useScanSel(): [ScanSel | undefined, (v: ScanSel | undefined) => void] {
+  const [sel] = useUrlAlias<ScanSel>({
+    keys: ['d', 'date', 'from'],
+    params: { d: selParam, date: legacyDateParam(), from: legacyFromParam() },
+    merge: mergeSel,
+  })
+  const [, setSel] = useUrlState('d', selParam, true)
+  return [sel, setSel]
 }
 
-// `?d` is a *prefix* of a scan id (always UTC), accepted in several spellings —
-// examples that all pin the 2026-08-19T1008 scan:
-//   260819-1008 · 260819T10 (compact date; `-` or `T` before the time)
-//   8-19-10 · 8-19-10-08    (M-D-H[-MM]; current year assumed)
-//   26-8-19-10 · 2026-8-19-10 (year-first when the lead component can't be a month)
-// The canonical/emitted form stays compact (`260819-1008`). A token matching
-// several scans renders the newest plus a disambiguation strip listing the rest.
-export const encodeScan = (v: string | undefined): string | undefined => {
-  const m = v && /^\d{2}(\d{2})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?$/.exec(v)
-  if (!m) return v || undefined
-  const [, y, mo, d, hh, mm] = m
-  return `${y}${mo}${d}` + (hh ? `-${hh}${mm ?? ''}` : '')
+/** A `?d=` slug that matches no scan: the slug as written (canonical when it
+ * decoded), and the closest scans on either side to offer instead. */
+export interface ScanMiss { slug: string; before: string | null; after: string | null }
+
+/** The selection's miss, once the scan list has answered: an unparseable
+ * value, or an end slug no scan matches. (A pinned start that misses is the
+ * diff's own state — see `fromMiss`.) */
+export function scanMiss(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean): ScanMiss | null {
+  if (!loaded || !sel) return null
+  if (sel.invalid) return { slug: sel.invalid, before: null, after: null }
+  if (!sel.d || latestScan(sel.d, scans)) return null
+  return { slug: selSlug(sel), ...scanNeighbors(sel.d, scans) }
 }
 
-export const decodeScan = (e: string | undefined, now = new Date()): string | undefined => {
-  if (!e) return undefined
-  const pad = (n: string) => n.padStart(2, '0')
-  const compact = /^(\d{2})(\d{2})(\d{2})(?:[T-](\d{2})(\d{2})?)?$/.exec(e)
-  if (compact) {
-    const [, y, mo, d, hh, mm] = compact
-    return `20${y}-${mo}-${d}` + (hh ? `T${hh}${mm ?? ''}` : '')
-  }
-  const parts = e.split(/[T-]/)
-  if (parts.length < 2 || parts.length > 5 || parts.some(p => !/^(\d{1,2}|\d{4})$/.test(p))) return undefined
-  // A lead component that can't be a month is a year (2- or 4-digit); 4-digit
-  // components anywhere else are malformed.
-  const yearFirst = parts[0].length === 4 || Number(parts[0]) > 12
-  if (parts.slice(yearFirst ? 1 : 0).some(p => p.length > 2)) return undefined
-  const y = yearFirst ? (parts[0].length === 4 ? parts[0] : `20${parts[0]}`) : String(now.getUTCFullYear())
-  const [mo, d, hh, mm] = parts.slice(yearFirst ? 1 : 0)
-  if (!mo || !d || Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > 31) return undefined
-  if ((hh && Number(hh) > 23) || (mm && Number(mm) > 59)) return undefined
-  return `${y}-${pad(mo)}-${pad(d)}` + (hh ? `T${pad(hh)}${mm ? pad(mm) : ''}` : '')
-}
-
-// ---- span (the Changes section's look-back) ----
-//
-// `?d=[end][-before]` — same shape as awair's `?t=`: `end` is the "after"
-// endpoint (absent = latest, a sticky state that follows new scans); `before`
-// is the "before" endpoint, expressed *either* as a look-back span *or* as a
-// second pinned scan — the two forms are orthogonal to the end pin:
-//   ?d=-7d                     latest end, 7 days back (a floating window)
-//   ?d=260904-0002             end pinned to the 9/4 00:02Z scan, default look-back
-//   ?d=260904-0002-7d          end pinned, 7 days back
-//   ?d=-260901-0002            latest end, START pinned to 9/1 (end floats, start fixed)
-//   ?d=260904-0002-260901-0002 both endpoints pinned (a frozen window)
-// Spans are `Nd`, `Nh`, or both (`6d12h`); a span resolves to the *nearest*
-// scan (times drift minutes past exact multiples), so a duration pick
-// round-trips as its own span. A pinned start (`from`) is a scan-id suffix —
-// `YYMMDD[-HHMM]`, distinguishable from a span (ends in d/h) and from the end
-// scan's own `-HHMM` time (4 digits, never a 6-digit date). Span and `from`
-// are mutually exclusive: setting one clears the other.
-
-export const encodeSpan = (ms: number): string => {
-  const days = Math.floor(ms / DAY)
-  const hours = Math.round((ms - days * DAY) / HOUR)
-  return (days ? `${days}d` : '') + (hours ? `${hours}h` : '') || '0h'
-}
-
-export const decodeSpan = (s: string): number | undefined => {
-  const m = /^(?:(\d+)d)?(?:(\d+)h)?$/.exec(s)
-  if (!m || !s) return undefined
-  const ms = (+(m[1] ?? 0)) * DAY + (+(m[2] ?? 0)) * HOUR
-  return ms > 0 ? ms : undefined
-}
-
-export interface ScanSel {
-  /** "After" scan-id prefix (decoded form, e.g. `2026-09-04T0002`); absent = latest. */
-  d?: string
-  /** "Before" as a look-back in ms; absent = the baked previous scan. Excludes `from`. */
-  span?: number
-  /** "Before" as a pinned scan-id prefix (decoded form). Excludes `span`. */
-  from?: string
-}
-
-const SPAN_SUFFIX = /-(\d+d(?:\d+h)?|\d+h)$/
-// A trailing pinned-start scan: `-YYMMDD` optionally `-HHMM`. The 6-digit date
-// can't collide with a span (ends in d/h) or with the end scan's own 4-digit
-// `-HHMM` time, so the suffix is unambiguous.
-const FROM_SUFFIX = /-(\d{6}(?:-\d{4})?)$/
-
-export const encodeSel = (v: ScanSel | undefined): string | undefined => {
-  if (!v) return undefined
-  const d = encodeScan(v.d) ?? ''
-  const before = v.from ? `-${encodeScan(v.from)}` : v.span ? `-${encodeSpan(v.span)}` : ''
-  return d + before || undefined
-}
-
-export const decodeSel = (e: string | undefined, now = new Date()): ScanSel | undefined => {
-  if (!e) return undefined
-  const sm = SPAN_SUFFIX.exec(e)
-  const span = sm ? decodeSpan(sm[1]) : undefined
-  let head = sm ? e.slice(0, sm.index) : e
-  let from: string | undefined
-  if (!span) {
-    const fm = FROM_SUFFIX.exec(head)
-    if (fm) { from = decodeScan(fm[1], now); head = head.slice(0, fm.index) }
-  }
-  const d = head ? decodeScan(head, now) : undefined
-  return d || span || from
-    ? { ...(d ? { d } : {}), ...(span ? { span } : {}), ...(from ? { from } : {}) }
-    : undefined
-}
-
-/** The scan nearest to `t` among `scans` (any order); null when empty. */
-export const nearestScan = (scans: string[], t: number): string | null => {
-  let best: string | null = null
-  for (const s of scans) if (!best || Math.abs(scanTime(s) - t) < Math.abs(scanTime(best) - t)) best = s
-  return best
+/** A pinned start (`from`) that matches no scan before `after`. */
+export function fromMiss(from: string | undefined, after: string | null, scans: readonly string[]): ScanMiss | null {
+  if (!from || !after) return null
+  const earlier = scans.filter(s => s < after)
+  return latestScan(from, earlier) ? null : { slug: encodeScan(from) ?? from, ...scanNeighbors(from, earlier) }
 }
 
 export interface Scan {
   asof: string | null
+  /** `?d=` names no scan (then `asof` is null): what to say and offer. */
+  miss: ScanMiss | null
+  /** With no `?d=` and `indexed` preferred: the newer scans skipped (not yet indexed), newest first. */
+  pending: string[]
   scans: string[]
   dMatches: string[]
   dP: string | undefined
@@ -209,15 +134,51 @@ export function useScans(store: Store): UseQueryResult<string[]> {
 export const noScansYet = (q: { isSuccess: boolean; data?: string[] }): boolean =>
   q.isSuccess && q.data?.length === 0
 
-export function useScan(store: Store): Scan {
-  const [sel, setSel] = useUrlState('d', { encode: encodeSel, decode: decodeSel }, true)
+/** The scan a page with no explicit `?d=` opens on: the newest scan, or — for a filtered view on an
+ * indexed-only deployment (`indexed` given: the static index's covered scans) — the newest scan the
+ * index covers, with `pending` the newer scans it doesn't cover yet (published, not yet appended). None
+ * covered: the newest scan (whose view then says it isn't indexed). `scans` is newest first. */
+export function floatingScan(scans: readonly string[], indexed?: readonly string[] | null | 'loading'): { scan: string | null; pending: string[] } {
+  // the covered list is on its way: pick nothing yet (no fetch of a scan it may rule out)
+  if (indexed === 'loading') return { scan: null, pending: [] }
+  if (!indexed) return { scan: scans[0] ?? null, pending: [] }
+  const have = new Set(indexed)
+  const i = scans.findIndex(s => have.has(s))
+  return i < 0 ? { scan: scans[0] ?? null, pending: [] } : { scan: scans[i], pending: scans.slice(0, i) }
+}
+
+/** The note a floating filtered view shows when it skipped newer scans: "Searching 10/9 4:30a, the newest
+ * indexed scan; 10/9 8:36a is still being indexed." (`pending` newest first.) */
+export function pendingNote(scan: string, pending: readonly string[], now = new Date()): string {
+  const names = [...pending].reverse().map(s => fmtScan(s, now))
+  const list = names.length <= 2 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `Searching ${fmtScan(scan, now)}, the newest indexed scan; ${list} ${names.length === 1 ? 'is' : 'are'} still being indexed.`
+}
+
+/** The scan a page shows: an explicit `?d=` resolves to the latest scan it names (a miss — none, or an
+ * unparseable value — is `miss`, never another scan); absent, `floatingScan` (the newest scan, or for a
+ * filtered indexed-only view the newest covered one, `pending` the newer ones skipped). */
+export function selectScan(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean, indexed?: readonly string[] | null | 'loading'): { asof: string | null; miss: ScanMiss | null; pending: string[] } {
+  const miss = scanMiss(sel, scans, loaded)
+  if (miss || sel?.invalid) return { asof: null, miss, pending: [] }
+  if (sel?.d) return { asof: latestScan(sel.d, scans), miss: null, pending: [] }
+  const f = floatingScan(scans, indexed)
+  return { asof: f.scan, miss: null, pending: f.pending }
+}
+
+/** The page's scan selection. `indexed`: the covered scans to prefer when `?d=` is absent (a filtered
+ * view on an indexed-only deployment; see `floatingScan`). An explicit `?d=` resolves as always. */
+export function useScan(store: Store, indexed?: readonly string[] | null | 'loading'): Scan {
+  const [sel, setSel] = useScanSel()
   const scansQ = useScans(store)
   const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
+  const floating = useMemo(() => floatingScan(scans, indexed), [scans, indexed])
+  const picked = useMemo(() => selectScan(sel, scans, scansQ.isSuccess, indexed), [sel, scans, scansQ.isSuccess, indexed])
   const dP = sel?.d
   const span = sel?.span
   const from = sel?.from
-  const dMatches = useMemo(() => (dP ? scans.filter(s => s.startsWith(dP)) : []), [dP, scans])
-  const asof = dMatches[0] ?? scans[0] ?? null
+  const dMatches = useMemo(() => scanMatches(dP, scans), [dP, scans])
+  const { asof, miss, pending } = picked
   // Write the {end, before} pair verbatim — `before` is a span OR a pinned
   // `from`, never both. Callers that pass a `d` equal to the latest scan mean
   // "float" and drop it; `setEndPin` is the one path that pins at latest.
@@ -225,17 +186,21 @@ export function useScan(store: Store): Scan {
     setSel(d || span0 || from0
       ? { ...(d ? { d } : {}), ...(span0 ? { span: span0 } : {}), ...(from0 ? { from: from0 } : {}) }
       : undefined)
+  // Setters take scan ids (a picker's choice) and write each as its exact
+  // prefix (`exactPrefix`): a date-only scan as its midnight, never the day
+  // slug (which means the day's latest scan).
+  const exact = (v: string | undefined) => (v ? exactPrefix(v) : undefined)
   const setRange = (v: string | undefined, ms: number | undefined) =>
-    write(v && v !== scans[0] ? v : undefined, ms, undefined)
-  const setDP = (v: string | undefined) => write(v && v !== scans[0] ? v : undefined, span, from)
+    write(v && v !== floating.scan ? exact(v) : undefined, ms, undefined)
+  const setDP = (v: string | undefined) => write(v && v !== floating.scan ? exact(v) : undefined, span, from)
   const setSpan = (ms: number | undefined) => write(dP, ms, undefined)
-  const setFrom = (v: string | undefined) => write(dP, undefined, v)
-  const setEndPin = (pin: boolean) => write(pin ? asof ?? undefined : undefined, span, from)
-  return { asof, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
+  const setFrom = (v: string | undefined) => write(dP, undefined, exact(v))
+  const setEndPin = (pin: boolean) => write(pin ? exact(asof ?? undefined) : undefined, span, from)
+  return { asof, miss, pending, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
 }
 
 /** `<optgroup>` rows for a scan picker: scans grouped by their displayed
- * day (`fmtScan`'s date part, viewer-local for sub-daily ids), newest day
+ * day (`fmtScan`'s date part, viewer-local for timed ids), newest day
  * first, each option labelled by its time alone (`8:01a`) — a date-only scan
  * is its day's single, unlabelled-time entry. A list of sixty `9/16 8:01p`
  * rows read as noise; grouped, the day is said once. */

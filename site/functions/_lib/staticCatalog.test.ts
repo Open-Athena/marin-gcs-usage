@@ -4,7 +4,7 @@ import { HOT_SCOPE } from '../../src/hotModel.js'
 import { nameResultForRegistry, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, STATIC_SOURCE } from '../../src/nameModel.js'
 import { answerKey, scanIds, staticRegistryBody, staticSummary, type Store } from './nameSummaryStatic.js'
 import { catalogAnswer, catalogGroups, catalogIndex, type CatalogMeta, StaticCatalog } from './staticCatalog.js'
-import { type Blobs, STATIC_GEN, StaticNames } from './staticNames.js'
+import { type Blobs, StaticNames } from './staticNames.js'
 import { compressors } from './zstd.js'
 import { fixture } from './testStore.js'
 
@@ -12,7 +12,8 @@ import { fixture } from './testStore.js'
 const KEYS = ['shards.json', 'scans.json', 'expected.json', 'members.json', 'sx/s0000.parquet', 'sx/s0001.parquet', 'catalog/cells.parquet', 'catalog/index.parquet', 'catalog/meta.json']
 const DATES = ['2026-08-01', '2026-09-01', '2026-10-01']
 const BUCKETS = ['bkt-a', 'bkt-b', 'bkt-c', 'bkt-d', 'bkt-e', 'bkt-f']
-const ENV = { STORE_BUCKETS: [...BUCKETS].reverse().join(','), STORE: 'gcs' }
+const STATIC_GEN = '2026-10-08c'
+const ENV = { STORE_BUCKETS: [...BUCKETS].reverse().join(','), STORE: 'gcs', STATIC_GEN }
 const held = new Map<string, ArrayBuffer>()
 let expected: Record<string, Record<string, Record<string, [number, number]>>>
 let members: Record<string, number | null>
@@ -161,7 +162,13 @@ describe('static dispatch', () => {
 
   it('refuses a scan outside the generation (400) and fails closed (503) when the index is unreadable', async () => {
     const outside = await staticSummary(ENV, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
-    expect([outside.status, await outside.json()]).toEqual([400, { error: 'This scan is not in the static name index. This is not a zero-match result.' }])
+    expect([outside.status, await outside.json()]).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])
+    // With an index to ask: a scan the store has but the static index doesn't is that 400; a slug naming no scan is a 404.
+    const db = (d: string | null) => ({ prepare: () => ({ bind: () => ({ first: async () => ({ d }) }) }) }) as unknown as D1Database
+    const unindexed = await staticSummary({ ...ENV, DB: db('2026-09-02') }, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
+    expect([unindexed.status, await unindexed.json()]).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])
+    const miss = await staticSummary({ ...ENV, DB: db(null) }, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
+    expect([miss.status, await miss.json()]).toEqual([404, { error: 'no scan matches date=2026-09-02' }])
     const broken: Store = { ...fixtureStore(), catalog: new StaticCatalog({ ...files(), json: async () => { throw new Error('gone') } }) }
     const failed = await staticSummary(ENV, params({ date: '2026-09-01', name: 'foo' }), broken)
     expect([failed.status, failed.headers.get('retry-after'), await failed.json()]).toEqual([503, '1', { error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }])

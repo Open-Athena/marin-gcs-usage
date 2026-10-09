@@ -19,6 +19,7 @@ import { type Lens, makeStore, pathGens, pathScans, storeReady } from '../_lib/i
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
 import { liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
+import { indexedOnly, reject, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { readRootAgg, readRootRows } from '../_lib/view.js'
 import { type OverTime, overTimePoint, readOverTime } from '../_lib/overTime.js'
 import { parsePaths } from '../_lib/filter.js'
@@ -28,10 +29,10 @@ import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeC
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 // The default store's snapshot dirs (`snapshots/<date>/`; other stores live in
-// a named subdir that DATE_RE keeps out), and the scan-id shape they're named by.
-const DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{4})?$/
+// a named subdir that `isScanId` keeps out), and the scan-id shape they're named by.
 
 /** Scans present as snapshot dirs but absent from the index (oldest first). */
 async function unindexedScans(env: Ctx['env'], indexed: Set<string>): Promise<string[]> {
@@ -42,7 +43,7 @@ async function unindexedScans(env: Ctx['env'], indexed: Set<string>): Promise<st
     const page = await store.list(snapshotsPrefix(env), { cursor })
     for (const e of page.entries) {
       const d = e.key.slice(snapshotsPrefix(env).length).replace(/\/$/, '')
-      if (e.isDir && DATE_RE.test(d) && !indexed.has(d)) out.push(d)
+      if (e.isDir && isScanId(d) && !indexed.has(d)) out.push(d)
     }
     cursor = page.cursor
   } while (cursor)
@@ -107,9 +108,16 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   try {
     qp = queryParam(url.searchParams, env.QUERY_SYNTAX)
   } catch (e) {
+    // Indexed-only: a form it refuses is refused as such (`a b` is "one term", not "too short").
+    const r = e instanceof QueryError && indexedOnly(env) ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), env.QUERY_SYNTAX) : null
+    if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     if (e instanceof QueryError) return json({ error: `bad query: ${e.message}` }, 400)
     throw e
   }
+  // An indexed-only deployment: one literal, unscoped (`_lib/indexedOnly.ts`).
+  const strict = !!qp.query && indexedOnly(env)
+  const refused = strict ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
+  if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
   const query = qp.query && !qp.query(path) ? qp.query : undefined
   if (qp.query && !query) paths.length = 0
   const sfs = query && !lens && !classes ? staticFilterStore(env) : null
@@ -171,7 +179,11 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   const shits = found?.rollup && owner ? null : found
   // The scans it is exact on: the drilldown's are its base generation's.
   const sscans = shits ? new Set(shits.scans ?? await sfs!.scans()) : null
+  // Indexed-only: no answer is `scan-not-indexed` (never the client's roots read per scan).
+  if (query && strict && !shits) return new Response(rejectBody(reject('scan-not-indexed')), { status: 400, headers: { 'content-type': 'application/json' } })
   if (query && !shits && !paths.length) return json({ error: 'a filtered series needs its match roots (paths=)' }, 400)
+  /** Indexed-only: the scans the answer doesn't cover (gaps in the series, named). */
+  const unindexed: string[] = []
   const indexable = !split && !lens && !owner && !classes && !shits
   const lines = indexable ? await st.time('overtime', Promise.all((paths.length ? paths : [path]).map(p => readOverTime(env, p)))) : []
   const ot: OverTime[] | null = lines.length && lines.every(Boolean) ? lines as OverTime[] : null
@@ -191,7 +203,7 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
       }
       // A scan the answer doesn't cover: the client's match roots (`paths=`), unless they come from a rollup,
       // which lists only some of them (a gap, not a wrong point).
-      if (shits && (!paths.length || shits.rollup)) return null
+      if (shits && (!paths.length || shits.rollup || strict)) { if (strict) unindexed.push(date); return null }
       const covered = ot ? overTimePoint(ot, date) : undefined
       if (covered !== undefined) return covered && { date, ...covered }
       if (split) {
@@ -238,6 +250,6 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
     for (const g of got) if (g) points.push(g)
   }
   points.sort((a, b) => a.date.localeCompare(b.date))
-  const body = JSON.stringify({ path, ...(paths.length ? { paths } : {}), ...(lens ? { lens: lensTag } : {}), ...(owner ? { owner } : {}), points, ...(split ? { roots: rootPoints(rootsByDate) } : {}) })
+  const body = JSON.stringify({ path, ...(unindexed.length ? { unindexed: unindexed.sort() } : {}), ...(paths.length ? { paths } : {}), ...(lens ? { lens: lensTag } : {}), ...(owner ? { owner } : {}), points, ...(split ? { roots: rootPoints(rootsByDate) } : {}) })
   return cacheStore(env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
 }

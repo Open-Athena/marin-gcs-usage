@@ -1169,7 +1169,6 @@ def record_run(
     mode = "real" if summary["for_real"] else "dry"
     run_id = run_id_for(plan, started_ts)
     tot = Counter()
-    band_rows = []
     for bucket, b in summary["buckets"].items():
         d = b.get("decisions", {})
         tot["deleted_objects"] += d.get("delete", 0)
@@ -1177,11 +1176,6 @@ def record_run(
         tot["skipped_gone"] += d.get("skipped_gone", 0)
         tot["skipped_overwritten"] += d.get("skipped_overwritten", 0)
         tot["drift_dirs"] += len(b.get("drift_dirs", []))
-        for prefix, c in (b.get("bands") or {}).items():
-            band_rows.append(
-                f"({_q(run_id)}, {_q(prefix)}, {c.get('bytes', 0)}, {c.get('objects', 0)}, "
-                f"{c.get('gone', 0)}, {c.get('overwritten', 0)}, {c.get('drift_new_objects', 0)}, 0)"
-            )
     undo = f"{finished_ts + soft_delete_days * 86400}" if mode == "real" else "NULL"
     tok, acct = _creds()
     _d1_query(
@@ -1198,13 +1192,39 @@ def record_run(
         "ledger_drift_dirs = excluded.ledger_drift_dirs, undo_deadline = excluded.undo_deadline",
         acct, tok,
     )
-    if band_rows:
+    record_bands(run_id, summary)
+    return run_id
+
+
+# D1 refuses a statement over 100 KB (SQLITE_TOOBIG): a run's bands go in
+# statements of this many rows (a row is ~200 B with a long checkpoint path).
+# The 2026-10-09 run (6,627 prefixes) sent them as one and recorded none.
+BAND_ROWS_PER_STATEMENT = 200
+
+
+def record_bands(run_id: str, summary: dict) -> int:
+    """Write the summary's per-prefix bands for `run_id` to D1, in statements
+    of `BAND_ROWS_PER_STATEMENT` rows. Idempotent: a band already recorded is
+    left as it is (keeping its `undone_objects`). Returns the bands sent."""
+    from .index_footer import _creds, _d1_query, _q
+
+    rows = [
+        f"({_q(run_id)}, {_q(prefix)}, {c.get('bytes', 0)}, {c.get('objects', 0)}, "
+        f"{c.get('gone', 0)}, {c.get('overwritten', 0)}, {c.get('drift_new_objects', 0)}, 0)"
+        for b in summary["buckets"].values()
+        for prefix, c in (b.get("bands") or {}).items()
+    ]
+    if not rows:
+        return 0
+    tok, acct = _creds()
+    for i in range(0, len(rows), BAND_ROWS_PER_STATEMENT):
         _d1_query(
             "INSERT INTO deletion_bands (run_id, prefix, bytes, objects, gone, overwritten, drift_new_objects, undone_objects) VALUES "
-            + ", ".join(band_rows),
+            + ", ".join(rows[i:i + BAND_ROWS_PER_STATEMENT])
+            + " ON CONFLICT (run_id, prefix) DO NOTHING",
             acct, tok,
         )
-    return run_id
+    return len(rows)
 
 
 # What a real run exercises beyond the listing's read access: the bucket GET

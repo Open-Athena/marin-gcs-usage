@@ -17,12 +17,15 @@ import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, queryParam, QueryError, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { staticTag } from '../_lib/staticFilter.js'
+import { indexedGate, staticTag } from '../_lib/staticFilter.js'
+import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
 import { extrasFor } from '../_lib/extras.js'
+import { isScanId } from '../../src/scanSlug.js'
+import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
 
 
 type SubtreeCtx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
@@ -44,13 +47,13 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     return new Response('subtree API not configured (missing index store creds)', { status: 503 })
   }
   const url = new URL(ctx.request.url)
-  const date = url.searchParams.get('date') ?? ''
+  let date = url.searchParams.get('date') ?? ''
   const path = (url.searchParams.get('path') ?? '').replace(/\/+$/, '')
   const w = Math.ceil((Number(url.searchParams.get('w')) || 1280) / QUANT) * QUANT
   const h = Math.ceil((Number(url.searchParams.get('h')) || 800) / QUANT) * QUANT
   const minArea = Number(url.searchParams.get('minArea')) || MIN_AREA_DEFAULT
   const atten = Number(url.searchParams.get('atten')) || ATTEN_DEFAULT
-  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
+  if (!isScanId(date) && !url.searchParams.has('d')) return new Response('bad date', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
 
   // Optional lens: `lens=user:<id>` — a treemap of that user's bytes, read
@@ -79,10 +82,16 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
   try {
     qp = queryParam(url.searchParams, ctx.env.QUERY_SYNTAX)
   } catch (e) {
+    // Indexed-only: a form it refuses is refused as such (`a b` is "one term", not "too short").
+    const r = e instanceof QueryError && indexedOnly(ctx.env) ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) : null
+    if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     if (e instanceof QueryError) return new Response(`bad query: ${e.message}`, { status: 400 })
     throw e
   }
   const query = qp.query
+  // An indexed-only deployment: one literal, unscoped (`_lib/indexedOnly.ts`), before auth or any read.
+  const refused = query && indexedOnly(ctx.env) ? rejectQuery(qRaw, url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
+  if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
 
   // Data is gated (store-specific scope), like /data/*.
   let id: Identity | null = null
@@ -105,7 +114,16 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     if (resolved === null) return new Response(ME_UNRESOLVED, { status: 400 })
     lens = resolved
     const lensTag = lensParam(lens)
-    const [head, xtra, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date])]))
+    // A `d=<slug>` resolves first (the latest indexed scan it names); an exact
+    // `date` is checked alongside the other pre-steps. A miss is a 404, never
+    // another scan.
+    if (!url.searchParams.has('date')) {
+      const scan = await scanArg(ctx.env, url.searchParams)
+      if (scan instanceof Response) return scan
+      date = scan
+    }
+    const [head, xtra, g, indexed] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date]), indexedScan(ctx.env, date, true)]))
+    if (!indexed) return noScan('date', date)
     const cacheKey = cacheKeyFor('subtree',
       `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensTag}` +
         `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}` +
@@ -113,6 +131,11 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
         (path === '' ? `&rl=${encodeURIComponent(ctx.env.ROOT_LABEL ?? '')}` : ''),
       storeKey(ctx.env),
     )
+    // …and a scan the static index covers for this literal (else `scan-not-indexed`, not a path-store scan).
+    if (query && indexedOnly(ctx.env)) {
+      const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [date]))
+      if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
+    }
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return hit
 
@@ -159,6 +182,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !view.interiors?.late)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
+    if (e instanceof FilterRejected) return new Response(rejectBody(e.reject), { status: 400, headers: { 'content-type': 'application/json' } })
     // 409 (not 500): a lens index missing for this scan is deterministic —
     // the client falls back instead of retrying forever.
     if (e instanceof LensUnavailable) return new Response('lens index not available for this scan', { status: 409 })

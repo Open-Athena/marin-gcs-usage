@@ -9,13 +9,15 @@ import { boolParam, useUrlState } from 'use-prms'
 import { shortName } from './UserChip'
 import { useStore, useStoreFetch } from './store'
 import { useUnits } from './units'
+import { fmtBytesStep } from './types'
 import { Skeleton } from './Busy'
 import { bandCallouts, pickAnnotations, relativeSeries, stackSeries, unitTicks, youngestGenesis } from './series'
-import { DAY, fmtScan } from './scan'
+import { DAY, fmtScan, scanTime } from './scan'
 import type { Band } from './series'
 import { stringParam } from 'use-prms'
 import { perf, usePerfCommit } from './perf'
 import { SERIES_MAX_PATHS } from '../functions/_lib/seriesLimits'
+import { ApiError, apiError, refusalOf } from './filterCaps'
 
 // Stored bytes over the historical scans, scoped exactly like the map: the
 // drilled prefix, a user, or an owner pool (`/api/series` — one row read per
@@ -130,8 +132,8 @@ const fmtXTip = (x: number) => fmtScan(dateOfX(x))
 // UTC time. Two scans a day must not share an x (the bands key by x, and a
 // shared x drew the total as a vertical step against the band).
 export const xOfScan = (d: string) => {
-  const m = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2})(\d{2}))?$/.exec(d)
-  return m ? new Date(`${m[1]}T${m[2] ?? '00'}:${m[3] ?? '00'}:00Z`).getTime() : new Date(d.slice(0, 10)).getTime()
+  const t = scanTime(d)
+  return Number.isNaN(t) ? new Date(d.slice(0, 10)).getTime() : t
 }
 // Signed formats for the relative modes: `+1.2 Ti` / `−340 Gi` / `0`, `+3.1%`.
 const signed = (y: number, mag: string) => (y < 0 ? `−${mag}` : y > 0 ? `+${mag}` : mag)
@@ -172,7 +174,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   /** The page's current diff window (scan ids), shaded on the chart. */
   window?: [string, string]
 }) {
-  const { fmtBytes, units } = useUnits()
+  const { fmtBytes, units, suffixB } = useUnits()
   const [fitP, setFitP] = useUrlState('fit', boolParam)
   const yFrom: YFrom = fitP ? 'data' : 'zero'
   const setYFrom = (y: YFrom) => setFitP(y === 'data')
@@ -221,7 +223,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
     queryFn: async () => {
       const pf = perf.start('series', `${prefix || '/'}${scope}|n${scans.length}`)
       const r = await pf.track(sfetch(`/api/series?path=${encodeURIComponent(prefix)}${scope}`, { credentials: 'include' }))
-      if (!r.ok) { pf.fail(); throw new Error(`series: ${r.status}`) }
+      if (!r.ok) { pf.fail(); throw new ApiError(`series: ${r.status}`, apiError(r.status, await r.text()).refusal) }
       const j = await r.json() as Series
       pf.decoded()
       return j
@@ -286,7 +288,21 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   // annotate the total (stacked: each band's own height too, inside the band;
   // lines in bytes: nothing — the total isn't drawn and six lines' worth of
   // labels would be noise). Picking is a pure helper (`pickAnnotations`, tested).
-  const fmtY = values === 'pct' ? fmtPct : relative ? (y: number) => signed(y, fmtBytes(Math.abs(y))) : fmtBytes
+  const yTickValues = useMemo(() => {
+    if (values === 'pct') return undefined // the chart's own nice ticks, formatted as %
+    const ys = series.filter(s => s.plot !== false).flatMap(s => s.points.map(p => p.y))
+    if (!ys.length) return undefined
+    const max = Math.max(0, ...ys)
+    const min = relative ? Math.min(0, ...ys) : yFrom === 'data' ? Math.min(...ys) : 0
+    // Fit mode pads 5% each side (TimeSeries), so tick that slightly wider range.
+    const pad = yFrom === 'data' ? (max - min) * 0.05 : 0
+    return unitTicks(relative ? min - pad : Math.max(0, min - pad), max + pad, units === 'iec' ? 1024 : 1000)
+  }, [series, units, yFrom, values, relative])
+  // A fitted axis can span a sliver of a large total: its labels (ticks,
+  // tooltip, callouts) carry enough decimals to tell the ticks apart.
+  const tickStep = yTickValues && yTickValues.length > 1 ? yTickValues[1] - yTickValues[0] : 0
+  const fmtFit = (y: number) => fmtBytesStep(y, tickStep, units, suffixB)
+  const fmtY = values === 'pct' ? fmtPct : relative ? (y: number) => signed(y, fmtBytes(Math.abs(y))) : yFrom === 'data' ? fmtFit : fmtBytes
   const annotations = useMemo((): Annotation[] => {
     const winX = win ? [xOfScan(win[0]), xOfScan(win[1])] as [number, number] : undefined
     const radius = extrema ? radiusDays * DAY : undefined
@@ -311,16 +327,6 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
     return out
   }, [series, relTotal, roots, stacked, relative, win, extrema, radiusDays, floorPct, fmtY, fmtBytes])
 
-  const yTickValues = useMemo(() => {
-    if (values === 'pct') return undefined // the chart's own nice ticks, formatted as %
-    const ys = series.filter(s => s.plot !== false).flatMap(s => s.points.map(p => p.y))
-    if (!ys.length) return undefined
-    const max = Math.max(0, ...ys)
-    const min = relative ? Math.min(0, ...ys) : yFrom === 'data' ? Math.min(...ys) : 0
-    // Fit mode pads 5% each side (TimeSeries), so tick that slightly wider range.
-    const pad = yFrom === 'data' ? (max - min) * 0.05 : 0
-    return unitTicks(relative ? min - pad : Math.max(0, min - pad), max + pad, units === 'iec' ? 1024 : 1000)
-  }, [series, units, yFrom, values, relative])
 
   const firstX = total[0]?.x
   if (scans.length < 2) return null
@@ -386,7 +392,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
           </label>
         </div>
       )}
-      {seriesQ.isError && !tooMany && <p className="sub"><i>series unavailable</i></p>}
+      {seriesQ.isError && !tooMany && <p className="sub"><i>{refusalOf(seriesQ.error)?.reason ?? 'series unavailable'}</i></p>}
       {tooMany ? (
         <p className="loading">size over time charts up to {SERIES_MAX_PATHS} matches; this filter has {nPaths.toLocaleString()}. Narrow it to chart.</p>
       ) : allZero ? (

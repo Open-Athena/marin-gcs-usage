@@ -15,6 +15,8 @@ import { type Env, requireViewer } from '../_lib/auth.js'
 import { withStore } from '../_lib/stores.js'
 import { num, openIndex, readPoint, storeReady } from '../_lib/index.js'
 import { AGE_TIERS, planAge } from '../_lib/agePyramid.js'
+import { isScanId } from '../../src/scanSlug.js'
+import { scanArg } from '../_lib/scanArg.js'
 
 const COLS = ['path', 'depth', 'binstart', 'b', 'o']
 
@@ -26,9 +28,8 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env }): Promis
     return new Response('age-pyramid API not configured (missing index store creds)', { status: 503 })
   }
   const url = new URL(ctx.request.url)
-  const date = url.searchParams.get('date') ?? ''
   const path = (url.searchParams.get('path') ?? '').replace(/\/+$/, '')
-  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
+  if (!isScanId(url.searchParams.get('date')) && !url.searchParams.has('d')) return new Response('bad date', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
   const binBudget = Math.max(1, Number(url.searchParams.get('bin_budget')) || 512)
   const fromMs = Date.parse(url.searchParams.get('from') ?? '')
@@ -36,6 +37,10 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env }): Promis
 
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
+  // An unindexed id, or a `d=` slug matching no scan: a 404, never another scan.
+  const scan = await scanArg(ctx.env, url.searchParams)
+  if (scan instanceof Response) return scan
+  const date = scan
 
   const depth = path === '' ? 0 : path.split('/').length
   const fine = AGE_TIERS[0].bin // finest produced tier ('1d')

@@ -337,6 +337,22 @@ Cases (`job/static-names/drill-cases.jsonl`, from `drill-cases -n 1` over `drill
 | Read cost (laptop, GCS) | roots ≤ 114,688 rows / 2.8 MB (median 90,112 / 0.37 MB), 0.6 s median; rollups ≤ 16,384 rows / 180 KB, 0.34 s median; plus one index row group (~110 KB) per lookup |
 | Local (`cloud/tests/test_static_roots.py`) | roots = every member's first-hit versions (chunked feeding included) and every short literal's; per-directory counts and the subtree partitions' sums = brute force; at R = 3, 10, 10⁶ with 4- and 8-row groups every (member, directory, date) view through the two-level index equals brute force (rollup kept children and remainder); digests equal ⇔ root sets equal, aliased reads = brute force; `drill-verify` passes and catches an altered reference |
 
+## Indexed-only filter (`FILTER_INDEXED_ONLY=1`)
+
+A deployment flag (gcs): the map's filter (`/api/subtree`, `/api/diff`, `/api/series`) accepts only what this index answers exactly — one literal substring of a file or folder name (no `/`, `*`, regex, exclusion, second term or `a|b`; quoted spaces are fine), unscoped (no owner pool, user lens or storage classes), on a scan the index covers — and never walks the path store for a filter. Everything else is a 400 `{ "error": <message>, "code": <code> }` before any read (`site/functions/_lib/indexedOnly.ts`):
+
+| Code | When |
+|---|---|
+| `unsupported-regex` | `qs=regex`, or a `/…/` query |
+| `unsupported-glob` | a `*` term |
+| `unsupported-exclusion` | any `-term`, exclusions alone included |
+| `unsupported-terms` | several terms, or alternatives (`a b`, `a|b`, two short terms) |
+| `unsupported-slash` | a term holding `/` (also `/api/name-summary`'s `name`) |
+| `unsupported-scope` | a filter with `o=`, `lens=` or `cl=` |
+| `scan-not-indexed` | the literal's answer doesn't cover the scan: a scan outside the generation, or a heavy literal past the drill base (until the drill's per-scan append) (`/api/name-summary` keeps its own scan refusal) |
+
+A view root whose path holds the literal is the plain view, on any scan. The series names uncovered scans (`unindexed: [dates]`, gaps) instead of reading the client's roots per scan. `GET /api/filter-caps` → `{ indexedOnly }` tells the filter box, which refuses the same forms inline (never sending them), shows the server's codes as its message, and lists only the supported form in its help. Unset (cw, the r2 demo, local), nothing changes.
+
 ## Alternatives compared
 
 | Design | Size | Round trips per rare query | Bytes per rare query | Verdict |

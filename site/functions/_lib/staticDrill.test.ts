@@ -3,7 +3,7 @@ import type { Env } from './auth'
 import { parseQuery } from './scope'
 import { Drill, type DrillAnswer, rollupAt, rollupTotal } from './staticDrill'
 import { covers, drillSource, type Found, type HitSource, injectedStores, liveTotal, SuffixHits, type StaticFilterStore } from './staticFilter'
-import { type Blobs, type Hit, scanMs, StaticNames } from './staticNames'
+import { type Blobs, type Hit, scanAt, StaticNames } from './staticNames'
 import { sqliteD1 } from './testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from './testStore'
 import { buildDiff, buildView, type DiffRow, type View, type ViewNode } from './view'
@@ -94,7 +94,7 @@ beforeAll(async () => {
 const n = (x: bigint) => Number(x)
 /** Live roots summed per child of `P` on `date` (zeros dropped, by name). */
 function childSums(hits: Hit[], P: string, date: string): Sums {
-  const D = scanMs(date), acc = new Map<string, [number, number]>()
+  const D = scanAt(date), acc = new Map<string, [number, number]>()
   for (const h of hits) {
     if (!(h.vf <= D && D < h.vt)) continue
     const c = (P === '' ? h.path : h.path.slice(P.length + 1)).split('/')[0]
@@ -153,7 +153,7 @@ describe('Drill.view: the reader = brute force from the objects', () => {
       ['0', 'bk', 'rollup', [1, 1, 3000]],
       ['0', 'bk/fill', 'rollup', [3, 3000, 3000]],
       ['f00', 'bk/fill', 'rollup', [3, 1000, 1000]],
-      ['0', '', 'catalog', [1, 1, null]],
+      ['0', '', 'catalog', [1, 1, 3000]],
       ['tomat', 'bk', 'roots', 10],
       ['tomat', '', 'catalog', [3, 3, 13]],
       ['bin', 'bk/data', 'roots', 6],
@@ -228,15 +228,15 @@ describe('DrillSource: roots answers across isolates (the colo cache)', () => {
       async put(url: string, r: Response) { held.set(url, await r.text()) },
     } as unknown as Cache
     const first: string[] = []
-    const a = (await drillSource(drillBlobs(first), colo).hits('tomat', 'bk'))!
+    const a = (await drillSource(drillBlobs(first), { cache: colo, prefix: 'g' }).hits('tomat', 'bk'))!
     const later: string[] = []
-    const b = (await drillSource(drillBlobs(later), colo).hits('tomat', 'bk'))!
+    const b = (await drillSource(drillBlobs(later), { cache: colo, prefix: 'g' }).hits('tomat', 'bk'))!
     const key = (h: Hit) => `${h.path} ${h.depth} ${h.usr} ${h.vf} ${h.vt} ${h.size} ${h.n}`
     // The colo also holds the drill's index tops and aliases (their own keys).
     const answers = () => [...held.keys()].filter(u => u.includes('/roots-v1/')).map(u => decodeURIComponent(u.split('/').pop()!))
     expect([answers(), first.some(k => k.includes('roots')), b.hits!.map(key), later.filter(k => k.includes('roots')), b.scans])
       .toEqual([['tomat\0bk.json'], true, a.hits!.map(key), [], DATES])
-    await drillSource(drillBlobs(), colo).hits('0', 'bk/fill')
+    await drillSource(drillBlobs(), { cache: colo, prefix: 'g' }).hits('0', 'bk/fill')
     expect(answers()).toEqual(['tomat\0bk.json'])
   })
 })
@@ -373,5 +373,42 @@ describe('the diff from the drilldown (`/api/diff`)', () => {
     }
     expect(got).toEqual(want)
     expect(got.length).toBe(66)
+  })
+})
+
+describe('the fleet root\'s root count (`matchCount.n` of a catalog view)', () => {
+  it('a short literal\'s = its roots read whole (the count reads only the index\'s edges); a long one\'s = its alias entry', async () => {
+    const drill = newDrill()
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const t of TERMS) {
+      const a = await drill.view(t, '')
+      if (a.source !== 'catalog') continue
+      const io = { top: 'isolate' as const, index_reads: 0, index_bytes: 0, groups: 0, bytes: 0, rows_read: 0 }
+      const lo: [string, string] = [a.c, ''], hi: [string, string] = [a.c + '\0', '']
+      const roots = (await drill.state()).tiers[0].files[a.kind].roots
+      const sel = await roots.select(lo, hi, io)
+      const all = await roots.read(lo, hi, sel.groups!, io, () => 1)
+      got.push([t, a.rollup.rows])
+      want.push([t, all.length])
+    }
+    expect(got).toEqual(want)
+    expect(got.map(x => (x as [string, number])[0])).toEqual(['tomat', 'f00', '0', '.', 'a', 'om', 't'])
+  })
+
+  it('the count reads only the data groups straddling the range\'s edges, each on its own (not the span between)', async () => {
+    const roots = (await newDrill().state()).tiers[0].files.short.roots
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const t of ['0', '.']) {
+      const lo: [string, string] = [t, ''], hi: [string, string] = [t + '\0', '']
+      const io = { top: 'isolate' as const, index_reads: 0, index_bytes: 0, groups: 0, bytes: 0, rows_read: 0 }
+      await roots.count(lo, hi, io)
+      const all = (await roots.select(lo, hi, { ...io })).groups!
+      const edges = [all[0], all[all.length - 1]].filter(e => e.qMin < t || e.qMax > t || e.qMax === t + '\0')
+      got.push([t, io.groups, io.bytes])
+      want.push([t, edges.length, edges.reduce((s, e) => s + e.length, 0)])
+    }
+    expect(got).toEqual(want)
   })
 })

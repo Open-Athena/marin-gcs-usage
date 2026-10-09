@@ -18,6 +18,13 @@ export function FilterFlags({ partialReason, approximateReason }: Coverage) {
   )
 }
 
+/** "N matched": the drilled folder's matched bytes (the view root's, not the fleet's), saying which —
+ *  `in this folder` when drilled, `fleet-wide` at the root. */
+export function matchedNote(b: number, drilled: boolean, fmt: (b: number) => string): string {
+  if (b <= 0) return drilled ? 'no matches in this folder' : 'no matches'
+  return `${fmt(b)} matched ${drilled ? 'in this folder' : 'fleet-wide'}`
+}
+
 /** The note beside the filter box: the query's error, else what matched and
  * how completely; `children` is the clear button. */
 export function FilterNote({ error, matched, coverage, children }: {

@@ -31,7 +31,9 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
 import { QueryHelpTip } from './QueryHelp'
-import { FilterFlags, FilterNote } from './FilterNote'
+import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
+import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
+import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMyUser, useOwnerIndex, useOwners } from './owners'
 import { applyLedger } from './ledgerOverlay'
@@ -39,7 +41,9 @@ import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import { canvasWidth } from './canvas'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, fromMiss, pendingNote, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { hrefWithScan, NoScanMatch } from './NoScanMatch'
+import { selOf } from './scanSlug'
 import { SizeOverTime } from './SizeOverTime'
 import { useStore, useStoreFetch } from './store'
 import { perf } from './perf'
@@ -167,7 +171,12 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/done/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store)
+  // A filtered view with no `?d=` on an indexed-only deployment opens on the newest scan the static
+  // index covers (a just-published scan isn't searchable until the index appends it), and says so.
+  const { indexedOnly: indexedOnly0 } = useFilterCaps()
+  const [fFloat] = useUrlState('f', stringParam())
+  const indexedScans = useIndexedScans(indexedOnly0 && !!fFloat)
+  const { asof, miss, pending, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store, indexedOnly0 && fFloat ? indexedScans : undefined)
   const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
@@ -190,13 +199,18 @@ function AppContent() {
   const [qsP, setQsP] = useUrlState('qs', stringParam(), true)
   const storeSyntax = syntaxById(store.querySyntax ?? '') ?? DEFAULT_SYNTAX
   const syntax = (qsP && syntaxById(qsP)) || storeSyntax
+  // An indexed-only deployment (`FILTER_INDEXED_ONLY`): one literal substring of a name, unscoped; any
+  // other form is refused inline, never sent.
+  const { indexedOnly } = useFilterCaps()
+  const boxSyntax = indexedOnly ? INDEXED_SYNTAX : syntax
   const fParse = useMemo((): { ok: boolean; error?: string } => {
     if (qsP && !syntaxById(qsP)) return { ok: false, error: `unknown query syntax '${qsP}' (want ${SYNTAXES.map(x => x.id).join('|')})` }
     if (!fqRaw) return { ok: false }
+    const refused = indexedOnly ? rejectQuery(fqRaw, qsP, store.querySyntax) : null
+    if (refused) return { ok: false, error: refused.message }
     const r = syntax.parse(fqRaw)
     return r.error !== undefined ? { ok: false, error: r.error } : { ok: !!r.ast }
-  }, [fqRaw, qsP, syntax])
-  const fq = fParse.ok ? fqRaw : undefined
+  }, [fqRaw, qsP, syntax, indexedOnly, store.querySyntax])
   // The box edits a local draft; the URL (and every query keyed on it) follows
   // after a 250 ms pause — one request pair per phrase, not per keystroke.
   const [fqDraft, setFqDraft] = useState<string | null>(null)
@@ -256,6 +270,9 @@ function AppContent() {
   // receives exactly the current view and only draws it.
   const lensUser = viewUser
   const activeLens = lensUser ? `user:${lensUser}` : null
+  // …and unscoped: a filter under a user, owner pool or class scope is refused there too.
+  const fScopeRefused = indexedOnly && !!fqRaw && fParse.ok && (!!activeLens || ownerMode !== 'all' || !!classSet) ? REJECT_MESSAGES['unsupported-scope'] : undefined
+  const fq = fParse.ok && !fScopeRefused ? fqRaw : undefined
   const assigner = ownersMode && byP ? canonId(byP) : null
   const scopeQs =
     (activeLens ? `&lens=${activeLens}` : '') +
@@ -313,9 +330,12 @@ function AppContent() {
   const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
   const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
   // A pinned start (`from`) wins over a look-back span; both fall back to the
-  // immediately-previous scan.
-  const fromScan = from && asof ? nearestScan(earlier, scanTime(from)) : null
-  const diffPrev = fromScan ?? spanScan ?? prevScan
+  // immediately-previous scan. `from` is a slug: the latest earlier scan it
+  // matches (the resolver). One matching none is a miss — the diff says so
+  // and draws nothing, never the nearest scan instead.
+  const fromScan = from && asof ? latestScan(from, earlier) : null
+  const startMiss = useMemo(() => fromMiss(from, asof, scans), [from, asof, scans])
+  const diffPrev = startMiss ? null : fromScan ?? spanScan ?? prevScan
   // Hour-rounded span back from `to` — the previous scan clears it, anything
   // else round-trips as its own span (nearest-scan resolution recovers it,
   // and the link keeps following `latest`).
@@ -324,11 +344,11 @@ function AppContent() {
       ? undefined
       : Math.max(3600_000, Math.round((scanTime(to) - scanTime(from)) / 3600_000) * 3600_000)
   const pickBefore = (scan: string) => { if (asof) setSpan(spanTo(asof, scan)) }
-  // A brush on the size chart hands back calendar dates; each resolves to the
-  // scan on that date, and the pair becomes the page's `?d=` (after + span).
+  // A brush on the size chart hands back scan-id prefixes; each resolves to
+  // the latest scan matching it, and the pair becomes the page's `?d=` (after + span).
   const brushRange = (from: string, to: string) => {
-    const toScan = scans.find(s => s.startsWith(to))
-    const fromScan = scans.find(s => s.startsWith(from))
+    const toScan = latestScan(to, scans)
+    const fromScan = latestScan(from, scans)
     if (!toScan || !fromScan || toScan <= fromScan) return
     setRange(toScan, spanTo(toScan, fromScan))
   }
@@ -387,7 +407,7 @@ function AppContent() {
           `/api/subtree?cv=${API_CV}&date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}${fq ? '&full=1' : ''}`,
           { credentials: 'include', signal },
         ))
-        if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
+        if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
         const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
@@ -460,7 +480,7 @@ function AppContent() {
   const objects = listsObjects([...subtreeQs, ...coarseQs].find(q => q.data?.tier)?.data?.tier)
   const rootErr = subtreeQs[0]?.error as Error | undefined
   // The box's error: the client's own parse, else the server's 400.
-  const fErr = fParse.error ?? /^400: bad query: (.*)/s.exec(rootErr?.message ?? '')?.[1]
+  const fErr = fParse.error ?? fScopeRefused ?? /^400: bad query: (.*)/s.exec(rootErr?.message ?? '')?.[1]
   // useQueries returns a fresh array each render; stamp the data so the graft
   // memo re-runs exactly when a response lands.
   // Both tiers stamp the graft: a depth-1 tree landing must re-run it just
@@ -557,6 +577,9 @@ function AppContent() {
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
+  // The drilled view's own response root: its matched total under the drill path (the grafted `tree`'s root
+  // is the fleet's).
+  const fHere = fq ? dataFor(subtreePaths.length - 1) : null
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
@@ -699,7 +722,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
+      if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -727,7 +750,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
+      if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -746,7 +769,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
         { credentials: 'include', signal },
       )
-      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      if (!r.ok) throw apiError(r.status, await r.text())
       return r.json() as Promise<DiffData>
     },
   })
@@ -1120,18 +1143,20 @@ function AppContent() {
         )}
         {bar.pathFilter && (
           <span className="filterbox">
-            <Explain text={`Filter paths (${syntax.describe().label}): ${syntax.describe().summary} — the ? lists the forms.`}>
+            <Explain text={`Filter paths (${boxSyntax.describe().label}): ${boxSyntax.describe().summary} — the ? lists the forms.`}>
               <input
                 value={fqDraft ?? fqRaw ?? ''}
                 onChange={e => setFqDraft(e.target.value)}
-                placeholder={syntax.describe().placeholder}
+                placeholder={boxSyntax.describe().placeholder}
                 aria-label="Filter tree by path"
                 aria-invalid={!!fErr}
                 size={30}
               />
             </Explain>
-            <QueryHelpTip syntaxes={SYNTAXES} active={syntax} onPick={id => setQsP(id === storeSyntax.id ? undefined : id)} />
-            <FilterNote error={fErr} matched={fq && tree ? (tree.b > 0 ? `${fmtBytes(tree.b)} matched` : 'no matches') : null} coverage={fCoverage}>
+            {indexedOnly
+              ? <QueryHelpTip syntaxes={[INDEXED_SYNTAX]} active={INDEXED_SYNTAX} />
+              : <QueryHelpTip syntaxes={SYNTAXES} active={syntax} onPick={id => setQsP(id === storeSyntax.id ? undefined : id)} />}
+            <FilterNote error={fErr} matched={fq && fHere ? matchedNote(fHere.b, !!graftPath, fmtBytes) : null} coverage={fCoverage}>
               <Explain text="Clear the path filter"><button type="button" onClick={() => { setFqDraft(null); setFq(undefined) }}>✕</button></Explain>
             </FilterNote>
           </span>
@@ -1143,6 +1168,7 @@ function AppContent() {
 
       {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
           end) with a strip listing every candidate to pin one. */}
+      {asof && pending.length > 0 && <p className="tab-note pending-index" role="status">{pendingNote(asof, pending)}</p>}
       {dMatches.length > 1 && (
         <p className="disambig">
           <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
@@ -1257,6 +1283,11 @@ function AppContent() {
             /></div>
           )}
         </>
+      ) : miss ? (
+        <NoScanMatch miss={miss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan)} />
+      ) : refusalOf(rootErr) ? (
+        // The filter's refusal (indexed-only): its reason, inline — not a failed view.
+        <p className="loading filter-refused" role="status">{refusalOf(rootErr)!.reason}</p>
       ) : rootErr ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
@@ -1298,6 +1329,11 @@ function AppContent() {
         window={diffWindow}
       />
 
+      {startMiss && (
+        <section id="diff">
+          <NoScanMatch what="diff start" miss={startMiss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false)} />
+        </section>
+      )}
       {asof && diffPrev && (
         <section id="diff">
           <h2>Diff{diff && (
@@ -1361,6 +1397,9 @@ function AppContent() {
               <>
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
               </>
+            ) : refusalOf(diffErr) && !diffStale ? (
+              // The filter's refusal: its reason, inline — no status, nothing to retry.
+              <span className="tab-note filter-refused"> · {refusalOf(diffErr)!.reason}</span>
             ) : diffErr && !diffStale ? (
               <span className="tab-note">
                 {' '}· {diffErr.message.startsWith('404')
