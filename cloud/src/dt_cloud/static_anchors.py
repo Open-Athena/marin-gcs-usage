@@ -53,11 +53,20 @@ err = partial(print, file=sys.stderr, flush=True)
 NAMES = "names"
 ANCHORS = "anchors"
 KINDS = ("end", "exact")
+#: The starts-with catalog (`^q`'s fleet root): its own directory and liveness marker under `anchors/`.
+START = "start"
+START_DIR = f"{ANCHORS}/{START}"
 #: The read bound (the drill's R) and kept children per heavy directory.
 R_DEFAULT = 100_000
 K_DEFAULT = 256
 #: The whole-range read bound of the light path: V plus two row groups (`staticFilter.ts` `MAX_ROWS`).
 MAX_ROWS = 100_000 + 2 * 8192
+#: `^q`'s read bound (`staticAnchors.ts` `START_MAX_ROWS`), whole range or scoped under a view path: 400K rows plus two
+#: row groups — 1,855 of the 2,788 prefixes over V in gcs `2026-10-08c`'s census fit it whole.
+START_MAX_ROWS = 400_000 + 2 * 8192
+#: The first hits a `^q` read may hold (`staticAnchors.ts` `START_MAX_HITS`: a Worker isolate's memory); past it the read
+#: is abandoned — the whole range counts as heavy, a scoped one is declined.
+START_MAX_HITS = 150_000
 #: Target rows per name-index shard (a three-character prefix is never split).
 NAME_SHARD_ROWS = 50_000_000
 #: Rows per rollup row group (the decode unit).
@@ -89,6 +98,8 @@ def first_hit_sql(mode: str, key: str = "s", par: str = "par") -> str:
         return f"NOT contains({par} || '/', {key} || '/')"
     if mode == "exact":
         return f"NOT contains('/' || {par} || '/', {key} || '/')"
+    if mode == "start":
+        return f"NOT contains('/' || {par}, {key})"
     raise ValueError(mode)
 
 
@@ -247,7 +258,156 @@ def build_tier_local(con, sx_files: list[str], names_files: list[str], out: Path
         parts.append(idx)
         sets[kind] = write_index(parts, out, kind)
     (out / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans), indent=1) + "\n")
+    if names_files:
+        con.execute("DROP TABLE IF EXISTS cells")
+        docs[START] = start_base(con, names_files, start_heads_sql(prefix_counts_sql(names_files), R), R, K, "cells")
+        sets[START] = write_start(con, "cells", out / START, R, K, scans)
     return {"sets": sets, "docs": docs}
+
+
+def prefix_counts_sql(files: list[str]) -> str:
+    """Every name-index prefix `q` (≥ 3 characters of `s`, i.e. `^q` from 2) with its rows: the census's numbers by
+    brute force (a test's or small tier's)."""
+    return f"""SELECT left(s, L) AS q, count(*)::BIGINT AS rows FROM (SELECT s, unnest(range(3, length(s) + 1)) AS L
+        FROM ({files_sql(files, 's')})) GROUP BY 1"""
+
+
+# ── The starts-with catalog (`anchors/start/`) ─────────────────────────────
+
+
+def start_heads_sql(census: str, R: int, lo: str | None = None, hi: str | None = None) -> str:
+    """The heavy `^q` candidates of a name-index shard `[lo, hi)` (its plan's three-character bounds): census prefixes
+    (`q` = `/` + the prefix, `rows` its rows) with more than R rows. A prefix's rows lie in one shard (≥ 3 characters
+    of `s`), so each is built by exactly one shard."""
+    where = [f"rows > {R}"]
+    if lo is not None:
+        where.append(f"left(q, 3) >= {q(lo)}")
+    if hi is not None:
+        where.append(f"left(q, 3) < {q(hi)}")
+    return f"SELECT q AS k FROM ({census}) WHERE {' AND '.join(where)}"
+
+
+def start_base(con, files: list[str], heads_sql: str, R: int, K: int, into: str) -> dict:
+    """A base name shard's starts-with catalog into table `into`: for each candidate prefix `k` (`heads_sql`, `/` + the
+    prefix) holding more than R rows, its fleet root's rollup (`dir` `''`, children = buckets; `rollup_cells`): per
+    bucket the running Σ size, n_files of the first hits (a name starting with the prefix, no ancestor segment does).
+    Rows are summed per `(k, bucket, vf, vt)` one prefix length at a time (a row meets each of its name's heavy prefixes
+    once), so no `(row, prefix)` pair is materialized."""
+    con.execute(f"CREATE OR REPLACE TABLE shk AS SELECT DISTINCT k FROM ({heads_sql})")
+    lens = [L for (L,) in con.execute("SELECT DISTINCT length(k) FROM shk ORDER BY 1").fetchall()]
+    con.execute("CREATE OR REPLACE TABLE sag (k VARCHAR, bkt VARCHAR, vf BIGINT, vt BIGINT, size HUGEINT, n HUGEINT, rows BIGINT)")
+    if lens:
+        con.execute(f"""CREATE OR REPLACE TABLE srow AS SELECT s, split_part(path, '/', 1) AS bkt, {PARENT} AS par,
+                epoch(vf)::BIGINT AS vf, epoch(vt)::BIGINT AS vt, size, n_files
+            FROM ({files_sql(files)}) WHERE depth >= 1 AND left(s, 3) IN (SELECT DISTINCT left(k, 3) FROM shk)""")
+        first = first_hit_sql("start", "h.k", "r.par")
+        for L in lens:
+            con.execute(f"""INSERT INTO sag SELECT h.k, r.bkt, r.vf, r.vt, sum(r.size) FILTER (WHERE {first}),
+                    sum(r.n_files) FILTER (WHERE {first}), count(*)
+                FROM srow AS r JOIN (SELECT k FROM shk WHERE length(k) = {L}) AS h ON left(r.s, {L}) = h.k GROUP BY ALL""")
+        con.execute("DROP TABLE srow")
+    con.execute(f"CREATE OR REPLACE TABLE shv AS SELECT k, 0 AS lvl, '' AS dir, sum(rows)::BIGINT AS rows FROM sag GROUP BY k HAVING sum(rows) > {R}")
+    con.execute("""CREATE OR REPLACE TABLE sroots AS SELECT k, 1::UTINYINT AS depth, bkt AS path, '' AS usr, vf, vt, size::BIGINT AS size,
+            n::BIGINT AS n_files, '' AS par FROM sag SEMI JOIN shv USING (k) WHERE n IS NOT NULL""")
+    rollup_cells(con, "sroots", "shv", K, into)
+    keys = con.execute("SELECT count(*) FROM shv").fetchone()[0]
+    for t in ("shk", "sag", "shv", "sroots"):
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    return {"keys": keys}
+
+
+def start_meta(R: int, K: int, idx: dict, scans: list[str] | None = None, **extra) -> dict:
+    """`anchors/start/meta.json`: the catalog's liveness marker (written last), apart from the tier's `anchors/meta.json`
+    (published before it, never rewritten)."""
+    from .static_roots import IDX_RG
+
+    return {"R": R, "K": K, "rg": SX_RG, "idx_rg": IDX_RG, "start_rollups": idx, **({"scans": scans} if scans is not None else {}), **extra}
+
+
+def write_start(con, table: str, out: Path, R: int, K: int, scans: list[str] | None = None, name: str = "s0000", **extra) -> dict:
+    """Table `table`'s start rollups → `out` (`anchors/start/`): `rollups/start-<name>.parquet`, its index and top, then
+    `meta.json`."""
+    out.mkdir(parents=True, exist_ok=True)
+    con.execute(f"CREATE TABLE IF NOT EXISTS {table} (q VARCHAR, dir VARCHAR, kind TINYINT, child VARCHAR, vf BIGINT, b BIGINT, o BIGINT)")
+    _, idx = write_rollups(con, table, out, f"rollups/{START}-{name}.parquet")
+    doc = write_index([idx], out, START)
+    (out / "meta.json").write_text(json.dumps(start_meta(R, K, doc, scans, **extra), indent=1) + "\n")
+    return doc
+
+
+def start_run(con, prior: list[Tier], run: Tier, D: int, R: int, K: int, into: str) -> dict:
+    """One level-0 run's starts-with catalog at scan `D` into table `into` (the fleet root's rollups, as `run_rollups`
+    for a key's `''` directory): candidates are every prefix (≥ 2 characters) of the run's names whose rows over every
+    tier can pass R (the run's count plus each prior tier's name-index bound over the prefix's range); a prefix heavy
+    before gets a delta header and cells at D (`delta_cells`), one the run makes heavy a full restatement from every
+    tier's first hits (its prior rows ≤ R, read exactly)."""
+    con.execute(f"CREATE TABLE IF NOT EXISTS {into} (q VARCHAR, dir VARCHAR, kind TINYINT, child VARCHAR, vf BIGINT, b BIGINT, o BIGINT)")
+    doc = {"keys": 0, "delta": 0, "new_heavy": 0, "probes": 0, "probe_rows": 0}
+    files = run.files("exact")
+    if not files:
+        return doc
+    con.execute(f"CREATE OR REPLACE TABLE rr0 AS {shard_rows_sql(files)}")
+    con.execute("""CREATE OR REPLACE TABLE rk AS SELECT left(s, L) AS k, sum(n)::BIGINT AS n
+        FROM (SELECT s, n, unnest(range(3, length(s) + 1)) AS L FROM (SELECT k AS s, count(*)::BIGINT AS n FROM rr0 GROUP BY k)) GROUP BY ALL""")
+    # Each prior tier's bound over `[k, k + U+10FFFF)`: its groups from the first with `s_max ≥ k` through the last with
+    # `s_min` under the range's end (cumulative rows).
+    con.execute("CREATE OR REPLACE TABLE pb (k VARCHAR, n BIGINT)")
+    for t in prior:
+        side = t.shard_dir("exact") / "sidecar.parquet"
+        if not side.exists():
+            continue
+        con.execute(f"""CREATE OR REPLACE TABLE sc AS SELECT s_min, s_max,
+                sum(rows) OVER (ORDER BY s_min, s_max, file, rg ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cum
+            FROM read_parquet({q(str(side))})""")
+        con.execute("CREATE OR REPLACE TABLE sca AS SELECT s_min AS x, max(cum) AS cum FROM sc GROUP BY s_min")
+        con.execute("CREATE OR REPLACE TABLE scb AS SELECT s_max AS x, max(cum) AS cum FROM sc GROUP BY s_max")
+        con.execute("""INSERT INTO pb SELECT rk.k, coalesce(a.cum, 0) - coalesce(b.cum, 0)
+            FROM rk ASOF LEFT JOIN sca AS a ON rk.k || chr(1114111) > a.x ASOF LEFT JOIN scb AS b ON rk.k > b.x""")
+    con.execute(f"""CREATE OR REPLACE TABLE ck AS SELECT k, sum(n) AS bound FROM (SELECT k, n FROM rk UNION ALL SELECT k, n FROM pb) GROUP BY k
+        HAVING sum(n) > {R}""")
+    if not con.execute("SELECT count(*) FROM ck").fetchone()[0]:
+        return doc
+    con.execute("""CREATE OR REPLACE TABLE rr AS SELECT ck.k, x.depth, x.path, x.usr, x.vf, x.vt, x.size, x.n_files, x.par
+        FROM (SELECT *, left(k, L) AS kp FROM (SELECT *, unnest(range(3, length(k) + 1)) AS L FROM rr0)) AS x JOIN ck ON x.kp = ck.k""")
+    con.execute("CREATE OR REPLACE TABLE rd AS SELECT k, 0 AS lvl, '' AS dir, count(*)::BIGINT AS n FROM rr GROUP BY k")
+    con.execute("CREATE OR REPLACE TABLE pr (t INTEGER, q VARCHAR, dir VARCHAR, kind TINYINT, child VARCHAR, vf BIGINT, b BIGINT, o BIGINT)")
+    for i, t in enumerate(prior):
+        fs = t.start_files()
+        if fs:
+            con.execute(f"""INSERT INTO pr SELECT {i}, x.q, x.dir, x.kind, x.child, x.vf, x.b, x.o FROM ({files_sql(fs)}) AS x
+                SEMI JOIN rd ON x.q = rd.k AND x.dir = rd.dir""")
+    stack_rows(con, "pr", "ps")
+    # Newly heavy: not heavy before; their prior rows (≤ R, by stickiness) read exactly, per prior tier's shard file.
+    con.execute("CREATE OR REPLACE TABLE near AS SELECT rd.* FROM rd ANTI JOIN (SELECT DISTINCT q FROM ps) AS h ON rd.k = h.q")
+    con.execute("CREATE OR REPLACE TABLE prows AS SELECT * FROM rr WHERE false")
+    nk = [k for (k,) in con.execute("SELECT k FROM near ORDER BY k").fetchall()]
+    for t in prior:
+        by_file: dict[str, list[str]] = {}
+        for k in nk:
+            if f := t.shard_file("exact", k):
+                by_file.setdefault(f, []).append(k)
+        for f, ks in by_file.items():
+            rng = " OR ".join(f"(s >= {q(k)} AND s < {q(k + chr(0x10FFFF))})" for k in ks)
+            con.execute(f"""INSERT INTO prows SELECT n.k, x.depth, x.path, x.usr, x.vf, x.vt, x.size, x.n_files, x.par
+                FROM ({shard_rows_sql([f], rng)}) AS x JOIN near AS n ON starts_with(x.k, n.k)""")
+            doc["probes"] += 1
+    doc["probe_rows"] = con.execute("SELECT count(*) FROM prows").fetchone()[0]
+    con.execute("""CREATE OR REPLACE TABLE pv AS SELECT k, any_value(depth) AS depth, path, usr, vf, min(vt) AS vt, any_value(size) AS size,
+            any_value(n_files) AS n_files, any_value(par) AS par FROM prows GROUP BY k, path, usr, vf""")
+    con.execute(f"""CREATE OR REPLACE TABLE nh AS SELECT near.k, 0 AS lvl, '' AS dir, near.n + coalesce(c.n, 0) AS rows FROM near
+        LEFT JOIN (SELECT k, count(*)::BIGINT AS n FROM prows GROUP BY k) AS c USING (k) WHERE near.n + coalesce(c.n, 0) > {R}""")
+    doc["new_heavy"] = con.execute("SELECT count(*) FROM nh").fetchone()[0]
+    if doc["new_heavy"]:
+        con.execute(f"""CREATE OR REPLACE TABLE nroots AS SELECT * FROM (
+                SELECT k, any_value(depth) AS depth, path, usr, vf, min(vt) AS vt, any_value(size) AS size, any_value(n_files) AS n_files, any_value(par) AS par
+                FROM (SELECT * FROM pv UNION ALL SELECT * FROM rr) GROUP BY k, path, usr, vf)
+            WHERE {first_hit_sql("start", "k")}""")
+        rollup_cells(con, "nroots", "nh", K, into)
+    doc["delta"] = delta_cells(con, "start", D, K, into)
+    doc["keys"] = con.execute(f"SELECT count(DISTINCT q) FROM {into}").fetchone()[0]
+    for t in ("rr0", "rk", "pb", "sc", "sca", "scb", "ck", "rr", "rd", "pr", "ps", "near", "prows", "pv", "nh", "nroots"):
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    return doc
 
 
 # ── Runs ───────────────────────────────────────────────────────────────────
@@ -268,6 +428,13 @@ class Tier:
 
     def rollup_files(self, kind: str) -> list[str]:
         return [str(f) for f in sorted((self.root / ANCHORS / "rollups").glob(f"{kind}-*.parquet"))]
+
+    def start_files(self) -> list[str]:
+        return [str(f) for f in sorted((self.root / START_DIR / "rollups").glob(f"{START}-*.parquet"))]
+
+    @property
+    def has_start(self) -> bool:
+        return (self.root / START_DIR / "meta.json").exists()
 
     def shard_file(self, kind: str, k: str) -> str | None:
         """The shard file holding key `k` (its first three characters in a shard's `[lo, hi)`), else None."""
@@ -483,7 +650,19 @@ def build_run_local(con, prior: list[Tier], run: Tier, D: int, R: int, K: int, s
         _, idx = write_rollups(con, "cells", out, f"rollups/{kind}-s0000.parquet")
         sets[kind] = write_index([idx], out, kind)
     (out / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans), indent=1) + "\n")
+    if all(t.has_start for t in prior):
+        docs[START], sets[START] = build_run_start(con, prior, run, D, R, K, scans)
     return {"sets": sets, "docs": docs}
+
+
+def build_run_start(con, prior: list[Tier], run: Tier, D: int, R: int, K: int, scans: list[str]) -> tuple[dict, dict]:
+    """A level-0 run's `anchors/start/` (`start_run`; `meta.json` last), over prior tiers that each carry one."""
+    missing = [str(t.root) for t in prior if not t.has_start]
+    if missing:
+        raise RuntimeError(f"no {START_DIR}/meta.json in {missing[0]} (build the tiers in order)")
+    con.execute("DROP TABLE IF EXISTS cells")
+    doc = start_run(con, prior, run, D, R, K, "cells")
+    return doc, write_start(con, "cells", run.root / START_DIR, R, K, scans)
 
 
 def merge_run_local(con, runs: list[Tier], out: Tier, R: int, K: int, scans: list[str], names_rows: int = NAME_SHARD_ROWS) -> dict:
@@ -500,6 +679,11 @@ def merge_run_local(con, runs: list[Tier], out: Tier, R: int, K: int, scans: lis
         _, idx = write_rollups(con, "cells", dst, f"rollups/{kind}-s0000.parquet")
         sets[kind] = write_index([idx], dst, kind)
     (dst / "meta.json").write_text(json.dumps(anchors_meta(R, K, sets, scans), indent=1) + "\n")
+    # The starts-with catalog: merged when every input carries one (else the merged run has none, and it is cut there).
+    if all(r.has_start for r in runs):
+        con.execute("DROP TABLE IF EXISTS cells")
+        merge_rollups(con, [r.start_files() for r in runs], "cells")
+        sets[START] = write_start(con, "cells", dst / START, R, K, scans)
     return {"sets": sets}
 
 
@@ -659,11 +843,13 @@ def stack(parts: list[list[dict]]) -> tuple[dict, list[dict]] | None:
 
 @dataclass
 class ReaderTier:
-    """One tier for `AnchoredReader`: its suffix shards, its name index and rollups (None: no `anchors/` there)."""
+    """One tier for `AnchoredReader`: its suffix shards, its name index and rollups (None: no `anchors/` there), and its
+    starts-with catalog (None: no `anchors/start/meta.json`)."""
     sx: ShardSet
     names: ShardSet | None
     rollups: dict[str, RollupSet] | None
     meta: dict | None
+    start: RollupSet | None = None
 
 
 def reader_tier(fs, root: str) -> ReaderTier:
@@ -672,8 +858,24 @@ def reader_tier(fs, root: str) -> ReaderTier:
     if fs.exists(f"{root}/{ANCHORS}/meta.json"):
         with fs.open(f"{root}/{ANCHORS}/meta.json") as f:
             meta = json.load(f)
+    start = RollupSet(fs, f"{root}/{START_DIR}", START) if meta and fs.exists(f"{root}/{START_DIR}/meta.json") else None
     return ReaderTier(ShardSet(fs, root), ShardSet(fs, f"{root}/{NAMES}") if meta else None,
-                      {k: RollupSet(fs, f"{root}/{ANCHORS}", k) for k in KINDS} if meta else None, meta)
+                      {k: RollupSet(fs, f"{root}/{ANCHORS}", k) for k in KINDS} if meta else None, meta, start)
+
+
+def rollup_answers(head: dict, cells: list[dict], dates: dict[str, int]) -> dict:
+    """A stacked rollup's per-date kept children and remainder (`rollupAt`)."""
+    out = {"header": {"kept": head["vf"], "rows": head["b"], "children": head["o"]}, "answers": {}, "rest": {}}
+    for d, D in dates.items():
+        cur: dict[tuple[int, str], tuple[int, int, int]] = {}
+        for c in cells:
+            if c["vf"] * 1000 <= D:
+                key_ = (c["kind"], c["child"])
+                if key_ not in cur or c["vf"] > cur[key_][0]:
+                    cur[key_] = (c["vf"], c["b"], c["o"])
+        out["answers"][d] = {c: [b, o] for (kd, c), (_, b, o) in sorted(cur.items()) if kd == 1 and (b, o) != (0, 0)}
+        out["rest"][d] = list(cur.get((2, ""), (0, 0, 0))[1:])
+    return out
 
 
 class AnchoredReader:
@@ -681,11 +883,15 @@ class AnchoredReader:
     date (`answers`; a rollup's `rest`), the source (`plain`, `light`, `roots`, `rollup`, `declined`) and the scans'
     tiers it read. The anchored tiers are the prefix with `anchors/meta.json`."""
 
-    def __init__(self, tiers: list[ReaderTier], max_rows: int = MAX_ROWS):
+    def __init__(self, tiers: list[ReaderTier], max_rows: int = MAX_ROWS, start_max_rows: int | None = None, start_max_hits: int = START_MAX_HITS):
         self.light = tiers
         n = next((i for i, t in enumerate(tiers) if t.meta is None), len(tiers))
         self.anch = tiers[:n]
+        m = next((i for i, t in enumerate(self.anch) if t.start is None), len(self.anch))
+        self.start = self.anch[:m]
         self.max_rows = max_rows
+        self.start_max_rows = START_MAX_ROWS if start_max_rows is None else start_max_rows
+        self.start_max_hits = start_max_hits
 
     def view(self, key: str, P: str, dates: list[str]) -> dict:
         from .scan_id import scan_epoch
@@ -699,12 +905,17 @@ class AnchoredReader:
         exact = mode != "start"
         sets = [t.sx for t in self.light] if mode == "end" else [t.names for t in self.anch]
         sels = [s.select(k, exact) for s in sets]
-        if sum(x[2] for x in sels) <= self.max_rows:
+        bound = self.start_max_rows if mode == "start" else self.max_rows
+        hits = None
+        if sum(x[2] for x in sels) <= bound:
             hits = combine([fold(s.read(i, g), key) for s, (i, g, _) in zip(sets, sels) if i is not None])
+            if mode == "start" and len(hits) > self.start_max_hits:
+                hits = None
+        if hits is not None:
             hits = [h for h in hits if P == "" or h["path"].startswith(P + "/")]
             return {**out, "source": "light", "tiers": len(sets), "answers": {d: child_sums(hits, P, D) for d, D in Ds.items()}}
         if mode == "start":
-            return {**out, "source": "declined"}
+            return {**out, **self.start_view(key, k, P, Ds)}
         if not self.anch:
             return {**out, "source": "declined"}
         sets = [t.sx for t in self.anch] if mode == "end" else [t.names for t in self.anch]
@@ -718,18 +929,25 @@ class AnchoredReader:
         got = stack([t.rollups[mode].rows(k, P) for t in self.anch])
         if got is None:
             raise RuntimeError(f"({key!r}, {P!r}): {upper:,} rows bound, but no rollup")
-        head, cells = got
-        out.update(source="rollup", header={"kept": head["vf"], "rows": head["b"], "children": head["o"]}, answers={}, rest={})
-        for d, D in Ds.items():
-            cur: dict[tuple[int, str], tuple[int, int, int]] = {}
-            for c in cells:
-                if c["vf"] * 1000 <= D:
-                    key_ = (c["kind"], c["child"])
-                    if key_ not in cur or c["vf"] > cur[key_][0]:
-                        cur[key_] = (c["vf"], c["b"], c["o"])
-            out["answers"][d] = {c: [b, o] for (kd, c), (_, b, o) in sorted(cur.items()) if kd == 1 and (b, o) != (0, 0)}
-            out["rest"][d] = list(cur.get((2, ""), (0, 0, 0))[1:])
-        return out
+        return {**out, "source": "rollup", **rollup_answers(*got, Ds)}
+
+    def start_view(self, key: str, k: str, P: str, Ds: dict[str, int]) -> dict:
+        """`^q` past its whole-range bound: the fleet root from the starts-with catalog (per bucket, `buckets_only`: the
+        catalog's tiers' scans), a view path from the groups of the prefix's range whose path bounds meet it when they hold
+        at most the bound (`scoped`), else declined."""
+        if P == "":
+            got = stack([t.start.rows(k, "") for t in self.start]) if self.start else None
+            if got is None:
+                return {"source": "declined", "why": "no-catalog"}
+            return {"source": "catalog", "tiers": len(self.start), **rollup_answers(*got, Ds)}
+        sels = [t.names.select(k, False, P) for t in self.anch]
+        upper = sum(x[2] for x in sels)
+        if upper > self.start_max_rows:
+            return {"source": "declined", "upper": upper}
+        hits = combine([fold(t.names.read(i, g), key, P) for t, (i, g, _) in zip(self.anch, sels) if i is not None])
+        if len(hits) > self.start_max_hits:
+            return {"source": "declined", "upper": upper, "hits": len(hits)}
+        return {"source": "scoped", "upper": upper, "tiers": len(self.anch), "answers": {d: child_sums(hits, P, D) for d, D in Ds.items()}}
 
 
 def brute_view(versions: list[tuple], key: str, P: str, D_ms: int) -> dict[str, list[int]]:
@@ -967,6 +1185,72 @@ def index_cmd(bucket, gen, K, mount, R, tmp) -> None:
     print(json.dumps(meta, indent=1))
 
 
+@cli.command("start")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
+@option("-d", "--run", help="A published level-0 run's scan id (the tiers before it must carry the catalog); default: the base")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-K", "--keep", "K", default=K_DEFAULT, type=int, help="Kept buckets per prefix (all, at the fleet's size)")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-R", "--read-rows", "R", default=R_DEFAULT, type=int, help="Rows a prefix holds before it is a member (R)")
+@option("-T", "--tmp", default="/stage/tmp", help="Local scratch")
+def start_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
+    """The starts-with catalog (`^q`'s fleet root, per bucket) of the base or of one run → `anchors/start/` (`meta.json`
+    last; new keys only). The base's from its name index shard by shard (candidates: `anchors/census-start.parquet`'s
+    prefixes past R); a run's over the tiers before it (`start_run`). Skipped when its `meta.json` is there."""
+    import shutil
+
+    from .scan_id import scan_epoch
+
+    b = _gcs(bucket)
+    prefix = f"{PREFIX}/{gen}" + ("" if run is None else f"/deltas/{run}")
+    if b.blob(f"{prefix}/{START_DIR}/meta.json").exists():
+        err(f"start {prefix}: done")
+        return
+    if any(True for _ in b.list_blobs(prefix=f"{prefix}/{START_DIR}/", max_results=1)):
+        raise SystemExit(f"{prefix}/{START_DIR}/ holds objects but no meta.json: inspect it first (published keys are never overwritten)")
+    t0 = monotonic()
+    con = connect(threads, mem, tmp)
+    con.execute("DROP TABLE IF EXISTS cells")
+    root = _tier_root(mount, gen, run)
+    local = Path(tmp) / f"start-{run or 'base'}"
+    shutil.rmtree(local, ignore_errors=True)
+    local.mkdir(parents=True)
+    if run is None:
+        census = root / ANCHORS / "census-start.parquet"
+        if not census.exists():
+            raise SystemExit(f"{census}: run the census first")
+        plan = json.loads((root / NAMES / "shards.json").read_text())["shards"]
+        keys = 0
+        for sh in sorted(plan, key=lambda x: -x["rows"]):
+            t1 = monotonic()
+            shard = Path(tmp) / f"names-s{sh['i']:04d}.parquet"
+            shutil.copy(root / NAMES / "sx" / f"s{sh['i']:04d}.parquet", shard)
+            got = start_base(con, [str(shard)], start_heads_sql(f"SELECT * FROM read_parquet({q(str(census))})", R, sh["lo"], sh["hi"]), R, K, "cells")
+            shard.unlink()
+            keys += got["keys"]
+            err(f"start s{sh['i']:04d}: {sh['rows']:,} rows, {got['keys']:,} prefixes in {monotonic() - t1:.0f}s")
+        doc = {"keys": keys}
+        idx = write_start(con, "cells", local / START_DIR, R, K, gen=gen)
+    else:
+        # As `run`: the tiers before it in the newest manifest (listed), or all of them (being appended, not yet listed).
+        listed = _manifest_runs(mount, gen)
+        if f"deltas/{run}" in {r["key"] for r in listed}:
+            runs = _manifest_runs(mount, gen, run)
+            if runs[-1].get("level", 0) != 0:
+                raise SystemExit(f"{runs[-1]['key']} is a merged run: build its scans' runs' catalogs and merge them")
+            before, scans = runs[:-1], runs[-1]["scans"]
+        else:
+            before, scans = listed, [run]
+        prior = [Tier(_tier_root(mount, gen, None))] + [Tier(Path(mount) / PREFIX / gen / r["key"]) for r in before]
+        (local / NAMES).symlink_to(root / NAMES)
+        doc, idx = build_run_start(con, prior, Tier(local), scan_epoch(run), R, K, scans)
+    n = _upload_dir(b, local / START_DIR, f"{prefix}/{START_DIR}", last=("meta.json",))
+    err(f"start {prefix}: {json.dumps(doc)}, {idx['rows']:,} rows, {n} files in {monotonic() - t0:.0f}s")
+    print(json.dumps({**doc, **idx}))
+
+
 @cli.command("run")
 @option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--run", required=True, help="The run's scan id (a level-0 run in the newest manifest)")
@@ -978,14 +1262,21 @@ def index_cmd(bucket, gen, K, mount, R, tmp) -> None:
 @option("-R", "--read-rows", "R", default=R_DEFAULT, type=int, help="R")
 @option("-T", "--tmp", default="/stage/tmp", help="Local scratch")
 def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
-    """A level-0 run's `names/` and `anchors/` (both kinds; `meta.json` last), over the tiers before it in the newest
-    manifest (the base and its earlier runs, each with `anchors/meta.json`). Skipped when its `anchors/meta.json` is there."""
+    """A level-0 run's `names/` and `anchors/` (both kinds and, when every tier before it carries one, the starts-with
+    catalog `anchors/start/`; `meta.json` last), over the tiers before it in the newest manifest (the base and its earlier
+    runs, each with `anchors/meta.json`). When its `anchors/meta.json` is there, only a missing `anchors/start/`."""
+    import shutil
+
     from .scan_id import scan_epoch
 
     b = _gcs(bucket)
     prefix = f"{PREFIX}/{gen}/deltas/{run}"
     if b.blob(f"{prefix}/{ANCHORS}/meta.json").exists():
-        err(f"anchors {prefix}: done")
+        # Built before the starts-with catalog existed: only its `anchors/start/` (when the base carries one).
+        if b.blob(f"{PREFIX}/{gen}/{START_DIR}/meta.json").exists():
+            start_cmd.callback(bucket, run, gen, K, mount, mem, threads, R, tmp)
+        else:
+            err(f"anchors {prefix}: done")
         return
     t0 = monotonic()
     # The tiers before the run: the newest manifest's runs before it (the run listed, published by hand), or all of them
@@ -1017,9 +1308,14 @@ def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
         versions = None
     else:
         versions = files_sql(cdelta, "depth, path, usr, vf, vt, size, n_files")
+    shutil.rmtree(local / ANCHORS, ignore_errors=True)
     doc = build_run_local(con, prior, Tier(local), scan_epoch(run), R, K, scans, versions)
     if versions is not None:
         _upload_dir(b, local / NAMES, f"{prefix}/{NAMES}", last=("sidecar.parquet",))
+    # The starts-with catalog first (its own `meta.json` last), then the rest of `anchors/` (`meta.json` last).
+    if (local / START_DIR).exists():
+        _upload_dir(b, local / START_DIR, f"{prefix}/{START_DIR}", last=("meta.json",))
+        shutil.rmtree(local / START_DIR)
     _upload_dir(b, local / ANCHORS, f"{prefix}/{ANCHORS}", last=("meta.json",))
     err(f"anchors {prefix}: {json.dumps(doc['docs'])} in {monotonic() - t0:.0f}s")
     print(json.dumps(doc))
@@ -1113,7 +1409,7 @@ def verify_cmd(brute_jsonl, answers) -> None:
                 continue
             want = ref[k]
             n += 1
-            if a["source"] == "rollup":
+            if a["source"] in ("rollup", "catalog"):
                 rest = [sum(v[0] for c, v in want.items() if c not in kids), sum(v[1] for c, v in want.items() if c not in kids)]
                 ok = all(want.get(c) == v for c, v in kids.items()) and rest == a["rest"][d]
             else:

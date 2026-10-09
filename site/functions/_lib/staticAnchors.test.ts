@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { scanTime } from '../../src/scanSlug'
-import { AnchoredHits, AnchoredSource, parseKey, segmentMatches, termInPath, termKey } from './staticAnchors'
-import { rollupAt } from './staticDrill'
+import { AnchoredHits, AnchoredSource, parseKey, segmentMatches, START_MAX_ROWS, termInPath, termKey } from './staticAnchors'
+import { DRILL_RULES, rollupAt } from './staticDrill'
 import { type Found, SuffixHits, staticLiteral } from './staticFilter'
 import { type Blobs, type Hit } from './staticNames'
 import { tiers } from './staticRuns'
@@ -15,7 +15,7 @@ import { fixture, readJson } from './testStore'
 // versions (`expected.json`).
 
 type Sums = Record<string, [number, number]>
-type Expected = { dates: string[]; base: string[]; paths: string[]; keys: string[]; R: number; K: number; views: Record<string, Record<string, Record<string, Sums>>> }
+type Expected = { dates: string[]; base: string[]; paths: string[]; keys: string[]; R: number; K: number; views: Record<string, Record<string, Record<string, Sums>>>; start_keys: string[]; start_root: Record<string, Record<string, Sums>> }
 let E: Expected
 const files = new Map<string, ArrayBuffer>()
 const LAST = 'manifests/2026-10-01.json', FIRST = 'manifests/2026-09-15.json'
@@ -51,9 +51,9 @@ const STACKS = {
   run2: { hide: [], scans: () => E.dates },
 } as const
 
-function source(stack: keyof typeof STACKS, maxRows?: number): AnchoredSource {
-  const blobs = blobsOf({ hide: [...STACKS[stack].hide] })
-  return new AnchoredSource(tiers(blobs).tiers, blobs, { maxRows })
+function source(stack: keyof typeof STACKS, maxRows?: number, opts: { hide?: string[]; startMaxRows?: number } = {}): AnchoredSource {
+  const blobs = blobsOf({ hide: [...STACKS[stack].hide, ...opts.hide ?? []] })
+  return new AnchoredSource(tiers(blobs).tiers, blobs, { maxRows, startMaxRows: opts.startMaxRows ?? maxRows })
 }
 
 const n = (x: bigint) => Number(x)
@@ -75,7 +75,7 @@ async function sweep(s: AnchoredSource, dates: string[], stackScans: string[]) {
   const seen: Record<string, number> = {}
   for (const key of E.keys) for (const P of E.paths) {
     const f: Found | null = termInPath(key, P) ? null : await s.hits(key, P)
-    const kind = termInPath(key, P) ? 'plain' : !f ? 'declined' : f.rollup ? 'rollup' : String(f.io.from === 'anchors' ? 'roots' : 'light')
+    const kind = termInPath(key, P) ? 'plain' : !f ? 'declined' : f.rollup ? (f.rollup.bucketsOnly ? 'catalog' : 'rollup') : String(f.io.from === 'anchors' ? f.io.source : 'light')
     seen[kind] = (seen[kind] ?? 0) + 1
     if (kind === 'plain') continue
     if (!f) { expect(parseKey(key).mode).toBe('start'); expect(s.why(key)).toBe('term-too-common'); continue }
@@ -105,10 +105,109 @@ describe('anchored views equal brute force', () => {
         const { got, want, seen } = await sweep(source(stack, maxRows), scans, scans)
         expect(got).toEqual(want)
         if (maxRows === undefined) expect(Object.keys(seen).sort()).toEqual(['light', 'plain'])
-        else expect(Math.min(seen.roots ?? 0, seen.rollup ?? 0, seen.declined ?? 0)).toBeGreaterThan(0)
+        else expect(Math.min(seen.roots ?? 0, seen.rollup ?? 0, seen.catalog ?? 0, seen.declined ?? 0)).toBeGreaterThan(0)
+        if (maxRows === 8) expect(seen.scoped).toBeGreaterThan(0)
       })
     }
   }
+})
+
+/** Every `^q` prefix's fleet root from the starts-with catalog (bounds 0) against brute force: `[got, want]`, and the
+ *  keys it answered (the catalog's members). */
+async function startRoots(s: AnchoredSource, dates: string[]) {
+  const got: unknown[] = [], want: unknown[] = [], members: string[] = []
+  for (const key of E.start_keys) {
+    const f = await s.hits(key, '')
+    if (!f) { expect(s.why(key)).toBe('term-too-common'); continue }
+    // A key with no rows is light at any bound (nothing to read).
+    if (!f.rollup) { expect([f.io.from, f.hits, E.start_root[key]]).toEqual(['names', [], undefined]); continue }
+    members.push(key)
+    expect([f.rollup?.bucketsOnly, f.rollup?.scopedBelow, f.io.source]).toEqual([true, true, 'catalog'])
+    for (const d of dates) {
+      const b = E.start_root[key]?.[d] ?? {}
+      const { kids, rest } = rollupAt(f.rollup!, d)
+      const kept = Object.fromEntries(kids.map(([c, kb, ko]) => [c, [n(kb), n(ko)]]))
+      const other = Object.entries(b).filter(([c]) => !(c in kept)).reduce((a, [, v]) => [a[0] + v[0], a[1] + v[1]], [0, 0])
+      got.push([key, d, kept, [n(rest[0]), n(rest[1])]])
+      want.push([key, d, Object.fromEntries(Object.keys(kept).map(c => [c, b[c] ?? [0, 0]])), other])
+    }
+  }
+  return { got, want, members }
+}
+
+/** Rows each `^q` key's range holds over a stack's name indexes (row exact; the catalog's membership count). */
+async function startRows(stack: keyof typeof STACKS): Promise<Map<string, number>> {
+  const { parquetReadObjects } = await import('hyparquet')
+  const { compressors } = await import('./zstd')
+  const dirs = ['', ...(stack === 'base' ? [] : ['deltas/2026-09-15/']), ...(stack === 'run2' ? ['deltas/2026-10-01/'] : [])]
+  const out = new Map<string, number>()
+  for (const d of dirs) for (const [k, b] of files) {
+    if (!k.startsWith(`${d}names/sx/`)) continue
+    for (const r of await parquetReadObjects({ file: b, columns: ['s'], compressors }) as { s: string }[]) {
+      const cs = [...r.s]
+      for (let L = 3; L <= cs.length; L++) { const p = cs.slice(0, L).join(''); out.set(p, (out.get(p) ?? 0) + 1) }
+    }
+  }
+  return out
+}
+
+describe('`^q`: the starts-with catalog and scoped reads', () => {
+  for (const stack of ['base', 'run1', 'run2'] as const) {
+    it(`${stack}: every prefix's fleet root from the catalog equals brute force; its members are the prefixes past R`, async () => {
+      const scans = STACKS[stack].scans()
+      const { got, want, members } = await startRoots(source(stack, 0), scans)
+      expect(got).toEqual(want)
+      const rows = await startRows(stack)
+      expect(members).toEqual(E.start_keys.filter(k => (rows.get(k) ?? 0) > E.R))
+      expect(members.length).toBeGreaterThan(10)
+    })
+  }
+  it('below the root: exact at a bound equal to the groups meeting the path, `term-too-common` one row under', async () => {
+    const probe = source('run2')
+    const st = await probe.state()
+    let seen = 0
+    for (const key of E.keys.filter(k => parseKey(k).mode === 'start')) {
+      const k = key
+      const count = async (under?: string) => (await Promise.all(st.tiers.map(t => t.names.select(k, { shard: null, groups: 0, bytes: 0, rows_read: 0, rows_matching: 0, index: 'none', ms: {} }, { under })))).reduce((x, s) => x + (s?.rows ?? 0), 0)
+      const whole = await count()
+      for (const P of E.paths) {
+        if (P === '' || termInPath(key, P)) continue
+        const upper = await count(P)
+        if (!(upper > 0 && upper < whole)) continue
+        const at = await source('run2', 0, { startMaxRows: upper }).hits(key, P)
+        expect([at?.io.source, at?.io.upper, at?.scans]).toEqual(['scoped', upper, E.dates])
+        expect(E.dates.map(d => childSums(at!.hits!, P, d))).toEqual(E.dates.map(d => E.views[key]?.[P]?.[d] ?? {}))
+        const under = source('run2', 0, { startMaxRows: upper - 1 })
+        expect([await under.hits(key, P), under.why(key)]).toEqual([null, 'term-too-common'])
+        seen++
+      }
+    }
+    expect(seen).toBeGreaterThan(5)
+  })
+  it('reads up to 400K rows (+ two groups) whole by default', async () => {
+    expect(START_MAX_ROWS).toBe(400_000 + 2 * 8192)
+    const blobs = blobsOf()
+    const s = new AnchoredSource(tiers(blobs).tiers, blobs, { maxRows: 0 })
+    // `q$` / `^q$` are past their bound (0), `^q` is light under its own.
+    expect([(await s.hits('/tr', ''))?.io.from, (await s.hits('/config.json/', ''))?.io.source]).toEqual(['names', 'rollup'])
+  })
+  it('a run without `anchors/start/meta.json` cuts the catalog\'s stack there (its scans out); scoped reads keep every tier', async () => {
+    const s = source('run2', 0, { hide: ['deltas/2026-10-01/anchors/start/meta.json'] })
+    const st = await s.state()
+    expect([st.tiers.length, st.start.tiers.length, st.start.scans]).toEqual([3, 2, E.dates.slice(0, -1)])
+    const { got, want } = await startRoots(s, E.dates.slice(0, -1))
+    expect(got).toEqual(want)
+    const none = source('run2', 0, { hide: ['anchors/start/meta.json'] })
+    expect([await none.hits('/tr', ''), none.why('/tr'), (await none.state()).start]).toEqual([null, 'term-too-common', { tiers: [], scans: [] }])
+  })
+  it('a catalog stack that ignores the runs\' cells is caught', async () => {
+    const real = DRILL_RULES.stack
+    const spy = vi.spyOn(DRILL_RULES, 'stack').mockImplementation(parts => real([parts[0], ...parts.slice(1).map(() => [])]))
+    try {
+      const { got, want } = await startRoots(source('run2', 0), E.dates)
+      expect(got).not.toEqual(want)
+    } finally { spy.mockRestore() }
+  })
 })
 
 describe('the anchored stack', () => {
