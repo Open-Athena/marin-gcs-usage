@@ -1,9 +1,11 @@
 -- Session log (specs/session-log.md): optional, time-boxed user-action
 -- logging. `POST /api/session-log` writes one `session_log_batches` row per
 -- client flush (its events as a JSON array) and upserts the session's summary
--- row; `/admin/sessions` reads both. Off unless `SESSION_LOG_UNTIL` is set.
+-- row; `/admin/sessions` reads both. Off unless an admin turns it on at
+-- `/admin` (`session_log_switch`, one row; each change also lands in
+-- `admin_edits`).
 --
--- Additive only: two new tables, nothing existing is altered. No foreign keys,
+-- Additive only: three new tables, nothing existing is altered. No foreign keys,
 -- so the retention purge (`received_ts` older than `SESSION_LOG_RETAIN_DAYS`)
 -- deletes from either table in any order. The gcs lineage carries the same
 -- statements as `migrations/gcs/0042_session_log.sql`.
@@ -36,3 +38,13 @@ CREATE TABLE session_log_batches (
   PRIMARY KEY (sid, pid, seq)
 );
 CREATE INDEX idx_session_log_batches_received ON session_log_batches (received_ts);
+
+-- The on/off switch: at most one row (`id = 1`). `until_ms` NULL = off; set =
+-- on until that instant (epoch ms, exclusive), after which it's off on its own.
+-- No row = off (the default).
+CREATE TABLE session_log_switch (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  until_ms    INTEGER,            -- NULL = off
+  who         TEXT NOT NULL,      -- admin who last set it
+  ts          INTEGER NOT NULL    -- epoch s of that change
+);

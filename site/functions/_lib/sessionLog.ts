@@ -2,7 +2,8 @@
  * The session log's D1 side (specs/session-log.md): ingest a validated batch,
  * purge past retention, and the admin reads. Tables: `session_log` (one row
  * per session) and `session_log_batches` (one row per client flush, events as
- * a JSON array) — `migrations/cw/0018_session_log.sql`.
+ * a JSON array), plus the on/off switch `session_log_switch` (one row) —
+ * `migrations/cw/0018_session_log.sql`.
  */
 import type { D1Database } from '@cloudflare/workers-types'
 import { isErrorEvent, LIMITS, type SessionRow, type SlogBatch, type SlogEvent, type StoredEvent } from './sessionLogShape.js'
@@ -50,7 +51,7 @@ export async function purge(db: D1Database, cutoffS: number): Promise<{ batches:
     const s = await db.prepare('DELETE FROM session_log WHERE received_ts < ?').bind(cutoffS).run()
     return { batches: b.meta.changes ?? 0, sessions: s.meta.changes ?? 0 }
   } catch (e) {
-    if (/no such table/.test(String((e as Error).message))) return null
+    if (missingTable(e)) return null
     throw e
   }
 }
@@ -68,6 +69,57 @@ export async function maybePurge(db: D1Database, retainRaw: string | undefined, 
   state.last = now
   await purge(db, Math.floor(now / 1000) - retainDays(retainRaw) * 86_400)
   return true
+}
+
+/** The switch's row: `until_ms` null = off. */
+export interface SwitchRow {
+  until_ms: number | null
+  who: string
+  ts: number
+}
+
+const missingTable = (e: unknown): boolean => /no such table/.test(String((e as Error)?.message))
+
+/** The switch's row; null = never set (off); `'missing'` = the migration isn't applied (off). */
+export async function readSwitch(db: D1Database): Promise<SwitchRow | null | 'missing'> {
+  try {
+    return await db.prepare('SELECT until_ms, who, ts FROM session_log_switch WHERE id = 1').first<SwitchRow>()
+  } catch (e) {
+    if (missingTable(e)) return 'missing'
+    throw e
+  }
+}
+
+/** Set the switch (`untilMs` null = off) and append the change to `admin_edits` (`tbl = 'session_log_switch'`,
+ *  pk `1`), in one transaction. */
+export async function writeSwitch(db: D1Database, untilMs: number | null, who: string, nowS: number): Promise<SwitchRow> {
+  const prior = await db.prepare('SELECT until_ms, who, ts FROM session_log_switch WHERE id = 1').first<SwitchRow>()
+  const row: SwitchRow = { until_ms: untilMs, who, ts: nowS }
+  await db.batch([
+    db.prepare('INSERT INTO session_log_switch (id, until_ms, who, ts) VALUES (1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET until_ms = excluded.until_ms, who = excluded.who, ts = excluded.ts')
+      .bind(untilMs, who, nowS),
+    db.prepare("INSERT INTO admin_edits (tbl, pk, action, who, ts, old_json, new_json) VALUES ('session_log_switch', '1', ?, ?, ?, ?, ?)")
+      .bind(prior ? 'update' : 'insert', who, nowS, prior ? JSON.stringify(prior) : null, JSON.stringify(row)),
+  ])
+  return row
+}
+
+/** How long one isolate trusts its read of the switch: a change elsewhere reaches every tab within this. */
+export const SWITCH_TTL_MS = 60_000
+
+/** One isolate's last read of the switch (`at` null = none yet). */
+export interface SwitchCache {
+  at: number | null
+  row: SwitchRow | null | 'missing'
+}
+
+/** `readSwitch`, cached in `cache` (one per isolate in production) for `SWITCH_TTL_MS`. Expiry is still exact: the
+ *  cache holds the end instant, and callers compare it with their own clock. */
+export async function cachedSwitch(db: D1Database, now: number, cache: SwitchCache): Promise<SwitchRow | null | 'missing'> {
+  if (cache.at !== null && now - cache.at < SWITCH_TTL_MS) return cache.row
+  cache.row = await readSwitch(db)
+  cache.at = now
+  return cache.row
 }
 
 export interface SessionFilter {

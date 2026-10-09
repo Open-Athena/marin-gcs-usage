@@ -6,28 +6,19 @@
  * request per page load and nothing else. `slog` is the app's hook for events
  * the page can't see on its own (hover-intent prefetches, custom pickers).
  */
-import { useSyncExternalStore } from 'react'
 import type { Kind, SlogEvent } from '../functions/_lib/sessionLogShape'
 
 type Fields = Record<string, unknown>
 
 let sink: ((k: Kind, f?: Fields) => void) | null = null
 let state: 'pending' | 'on' | 'off' = 'pending'
-let until: number | null = null
 const early: SlogEvent[] = []
 const EARLY_MAX = 20
-const subs = new Set<() => void>()
-const notify = () => { for (const s of subs) s() }
 
 /** Record an app-level event (no-op while off; held briefly while the boot decides). */
 export function slog(k: Kind, f: Fields = {}): void {
   if (sink) { sink(k, f); return }
   if (state === 'pending' && early.length < EARLY_MAX) early.push({ t: Date.now(), k, ...f } as SlogEvent)
-}
-
-/** The instant logging ends while it's on for this page, else null: what the privacy notice shows. */
-export function useSessionLogUntil(): number | null {
-  return useSyncExternalStore(cb => { subs.add(cb); return () => { subs.delete(cb) } }, () => until, () => null)
 }
 
 export const BUILD = import.meta.env.VITE_BUILD_SHA ?? ''
@@ -58,10 +49,8 @@ export async function bootSessionLog(): Promise<void> {
     const { log, logger } = m.start({ until: cfg.until, early: early.splice(0), build: BUILD })
     sink = log
     state = 'on'
-    until = cfg.until
     const prevStop = logger.onStop
-    logger.onStop = () => { prevStop?.(); sink = null; state = 'off'; until = null; notify() }
-    notify()
+    logger.onStop = () => { prevStop?.(); sink = null; state = 'off' }
   } catch {
     state = 'off'
     early.length = 0

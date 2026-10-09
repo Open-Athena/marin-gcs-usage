@@ -74,8 +74,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_BOX_COARSE = "1"                    # dev-only `/api/coarse` (the `/coarse` viewer); unset = 404
 # QUERY_BOX_COARSE_URL = "https://box.example"  # where `/api/coarse` asks; unset = QUERY_BOX_URL
 
-# --- Session log (specs/session-log.md; tables: migrations/<lineage>/…_session_log.sql) ---
-# SESSION_LOG_UNTIL = "2026-10-17"            # user-action logging for debugging, on through this UTC day (or an ISO instant); ≤ 31 days ahead, unset = off. Leave it set after it passes: the retention purge keeps running
+# --- Session log (specs/session-log.md; tables: migrations/<lineage>/…_session_log.sql; on/off: the switch at /admin) ---
 # SESSION_LOG_RETAIN_DAYS = "30"             # days a session's log is kept (default 30)
 
 # --- Plans and deletion (_lib/plans.ts, _lib/dispatch.ts) ---
