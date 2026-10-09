@@ -31,7 +31,9 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
 import { QueryHelpTip } from './QueryHelp'
-import { FilterFlags, FilterNote } from './FilterNote'
+import { apiErrorMessage, INDEXED_SYNTAX, useFilterCaps } from './filterCaps'
+import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
+import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
 import { setCurrentScan, useMyUser, useOwnerIndex, useOwners } from './owners'
 import { applyLedger } from './ledgerOverlay'
@@ -190,13 +192,18 @@ function AppContent() {
   const [qsP, setQsP] = useUrlState('qs', stringParam(), true)
   const storeSyntax = syntaxById(store.querySyntax ?? '') ?? DEFAULT_SYNTAX
   const syntax = (qsP && syntaxById(qsP)) || storeSyntax
+  // An indexed-only deployment (`FILTER_INDEXED_ONLY`): one literal substring of a name, unscoped; any
+  // other form is refused inline, never sent.
+  const { indexedOnly } = useFilterCaps()
+  const boxSyntax = indexedOnly ? INDEXED_SYNTAX : syntax
   const fParse = useMemo((): { ok: boolean; error?: string } => {
     if (qsP && !syntaxById(qsP)) return { ok: false, error: `unknown query syntax '${qsP}' (want ${SYNTAXES.map(x => x.id).join('|')})` }
     if (!fqRaw) return { ok: false }
+    const refused = indexedOnly ? rejectQuery(fqRaw, qsP, store.querySyntax) : null
+    if (refused) return { ok: false, error: refused.message }
     const r = syntax.parse(fqRaw)
     return r.error !== undefined ? { ok: false, error: r.error } : { ok: !!r.ast }
-  }, [fqRaw, qsP, syntax])
-  const fq = fParse.ok ? fqRaw : undefined
+  }, [fqRaw, qsP, syntax, indexedOnly, store.querySyntax])
   // The box edits a local draft; the URL (and every query keyed on it) follows
   // after a 250 ms pause — one request pair per phrase, not per keystroke.
   const [fqDraft, setFqDraft] = useState<string | null>(null)
@@ -256,6 +263,9 @@ function AppContent() {
   // receives exactly the current view and only draws it.
   const lensUser = viewUser
   const activeLens = lensUser ? `user:${lensUser}` : null
+  // …and unscoped: a filter under a user, owner pool or class scope is refused there too.
+  const fScopeRefused = indexedOnly && !!fqRaw && fParse.ok && (!!activeLens || ownerMode !== 'all' || !!classSet) ? REJECT_MESSAGES['unsupported-scope'] : undefined
+  const fq = fParse.ok && !fScopeRefused ? fqRaw : undefined
   const assigner = ownersMode && byP ? canonId(byP) : null
   const scopeQs =
     (activeLens ? `&lens=${activeLens}` : '') +
@@ -388,7 +398,7 @@ function AppContent() {
           `/api/subtree?cv=${API_CV}&date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}${fq ? '&full=1' : ''}`,
           { credentials: 'include', signal },
         ))
-        if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
+        if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
         const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
@@ -461,7 +471,7 @@ function AppContent() {
   const objects = listsObjects([...subtreeQs, ...coarseQs].find(q => q.data?.tier)?.data?.tier)
   const rootErr = subtreeQs[0]?.error as Error | undefined
   // The box's error: the client's own parse, else the server's 400.
-  const fErr = fParse.error ?? /^400: bad query: (.*)/s.exec(rootErr?.message ?? '')?.[1]
+  const fErr = fParse.error ?? fScopeRefused ?? /^400: bad query: (.*)/s.exec(rootErr?.message ?? '')?.[1]
   // useQueries returns a fresh array each render; stamp the data so the graft
   // memo re-runs exactly when a response lands.
   // Both tiers stamp the graft: a depth-1 tree landing must re-run it just
@@ -558,6 +568,9 @@ function AppContent() {
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
+  // The drilled view's own response root: its matched total under the drill path (the grafted `tree`'s root
+  // is the fleet's).
+  const fHere = fq ? dataFor(subtreePaths.length - 1) : null
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
@@ -700,7 +713,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
+      if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -728,7 +741,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
+      if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -747,7 +760,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
         { credentials: 'include', signal },
       )
-      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`)
+      if (!r.ok) throw new Error(apiErrorMessage(r.status, await r.text()))
       return r.json() as Promise<DiffData>
     },
   })
@@ -1121,18 +1134,20 @@ function AppContent() {
         )}
         {bar.pathFilter && (
           <span className="filterbox">
-            <Explain text={`Filter paths (${syntax.describe().label}): ${syntax.describe().summary} — the ? lists the forms.`}>
+            <Explain text={`Filter paths (${boxSyntax.describe().label}): ${boxSyntax.describe().summary} — the ? lists the forms.`}>
               <input
                 value={fqDraft ?? fqRaw ?? ''}
                 onChange={e => setFqDraft(e.target.value)}
-                placeholder={syntax.describe().placeholder}
+                placeholder={boxSyntax.describe().placeholder}
                 aria-label="Filter tree by path"
                 aria-invalid={!!fErr}
                 size={30}
               />
             </Explain>
-            <QueryHelpTip syntaxes={SYNTAXES} active={syntax} onPick={id => setQsP(id === storeSyntax.id ? undefined : id)} />
-            <FilterNote error={fErr} matched={fq && tree ? (tree.b > 0 ? `${fmtBytes(tree.b)} matched` : 'no matches') : null} coverage={fCoverage}>
+            {indexedOnly
+              ? <QueryHelpTip syntaxes={[INDEXED_SYNTAX]} active={INDEXED_SYNTAX} />
+              : <QueryHelpTip syntaxes={SYNTAXES} active={syntax} onPick={id => setQsP(id === storeSyntax.id ? undefined : id)} />}
+            <FilterNote error={fErr} matched={fq && fHere ? matchedNote(fHere.b, !!graftPath, fmtBytes) : null} coverage={fCoverage}>
               <Explain text="Clear the path filter"><button type="button" onClick={() => { setFqDraft(null); setFq(undefined) }}>✕</button></Explain>
             </FilterNote>
           </span>

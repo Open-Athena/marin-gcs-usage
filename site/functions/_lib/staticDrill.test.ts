@@ -153,7 +153,7 @@ describe('Drill.view: the reader = brute force from the objects', () => {
       ['0', 'bk', 'rollup', [1, 1, 3000]],
       ['0', 'bk/fill', 'rollup', [3, 3000, 3000]],
       ['f00', 'bk/fill', 'rollup', [3, 1000, 1000]],
-      ['0', '', 'catalog', [1, 1, null]],
+      ['0', '', 'catalog', [1, 1, 3000]],
       ['tomat', 'bk', 'roots', 10],
       ['tomat', '', 'catalog', [3, 3, 13]],
       ['bin', 'bk/data', 'roots', 6],
@@ -373,5 +373,25 @@ describe('the diff from the drilldown (`/api/diff`)', () => {
     }
     expect(got).toEqual(want)
     expect(got.length).toBe(66)
+  })
+})
+
+describe('the fleet root\'s root count (`matchCount.n` of a catalog view)', () => {
+  it('a short literal\'s = its roots read whole (the count reads only the index\'s edges); a long one\'s = its alias entry', async () => {
+    const drill = newDrill()
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const t of TERMS) {
+      const a = await drill.view(t, '')
+      if (a.source !== 'catalog') continue
+      const io = { top: 'isolate' as const, index_reads: 0, index_bytes: 0, groups: 0, bytes: 0, rows_read: 0 }
+      const lo: [string, string] = [a.c, ''], hi: [string, string] = [a.c + '\0', '']
+      const sel = await drill.files[a.kind].roots.select(lo, hi, io)
+      const all = await drill.files[a.kind].roots.read(lo, hi, sel.groups!, io, () => 1)
+      got.push([t, a.rollup.rows])
+      want.push([t, all.length])
+    }
+    expect(got).toEqual(want)
+    expect(got.map(x => (x as [string, number])[0])).toEqual(['tomat', 'f00', '0', '.', 'a', 'om', 't'])
   })
 })

@@ -3,6 +3,7 @@
  * scan's attribution with the live ledger applied, as the map does), and the
  * header/footer text. The tier decides only what is *shown* (`card.ts`): the
  * data read is the same. */
+import { FilterRejected } from '../indexedOnly.js'
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import type { Env } from '../auth.js'
 import { pathScans, storeCreds, storeTarget, type Lens } from '../index.js'
@@ -119,6 +120,7 @@ export async function mapCard(env: Env, site: Site, title: string, params: Recor
     tree = view.tree
   } catch (e) {
     if (e instanceof NotFound) return { ...base, subtitle, total: '', empty: 'path not found' }
+    if (e instanceof FilterRejected) return { ...base, subtitle, total: '', empty: 'search unavailable' }
     return { ...base, subtitle, total: '', empty: 'view unavailable' }
   }
   // The live assignments over the scan's attribution, as the map draws them.

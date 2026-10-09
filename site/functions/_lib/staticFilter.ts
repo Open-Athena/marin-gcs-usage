@@ -27,6 +27,7 @@ import { StaticCatalog } from './staticCatalog.js'
 import { Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
 import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanAt, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
+import { type FilterReject, reject } from './indexedOnly.js'
 
 export type { Hit } from './staticNames.js'
 export { type Rollup, rollupAt, rollupTotal } from './staticDrill.js'
@@ -85,6 +86,7 @@ export interface HitReader {
  *  isolate, and per colo through `cache`), then cut to `under`. Literals over `maxRows` go to `heavy`. */
 export class SuffixHits implements HitSource {
   private held = new Map<string, Promise<{ hits: Hit[]; io: Record<string, unknown> } | null>>()
+  private cut = new WeakMap<Hit[], Map<string, Hit[]>>()
   constructor(
     readonly names: HitReader,
     readonly opts: { maxRows?: number; heavy?: HitSource | null; cache?: HitCache | null; waitMs?: number } = {},
@@ -122,7 +124,16 @@ export class SuffixHits implements HitSource {
     if (shortLiteral(key)) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
     const got = await this.all(key)
     if (!got) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
-    return { hits: root === '' ? got.hits : got.hits.filter(h => under(h.path, root)), io: got.io }
+    if (root === '') return { hits: got.hits, io: got.io }
+    // One array per (literal, root) while the literal is held: the view's per-isolate phase 1 is keyed by it.
+    let byRoot = this.cut.get(got.hits)
+    if (!byRoot) this.cut.set(got.hits, (byRoot = new Map()))
+    let hits = byRoot.get(root)
+    if (!hits) {
+      byRoot.set(root, (hits = got.hits.filter(h => under(h.path, root))))
+      if (byRoot.size > 32) byRoot.delete(byRoot.keys().next().value!)
+    }
+    return { hits, io: got.io }
   }
 }
 
@@ -146,7 +157,7 @@ export function cacheHits(cache: Cache, prefix: string, version = 'hits-v1'): Hi
   }
 }
 
-export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string }
+export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; FILTER_INDEXED_ONLY?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string }
 
 /** The drilldown over a bucket's generation (`drill/`, the base catalog for the fleet root, the base scans); `cached`:
  *  its indexes in `cache` under `prefix` (the generation's `staticPrefix`). */
@@ -216,11 +227,26 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
 }
 
 /** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
- *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget). */
-const RESPONSE_V = 4
+ *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget; 5: a 1–2
+ *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0). */
+const RESPONSE_V = 5
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
 export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | undefined): string {
   return staticLiteral(query?.ast) && staticFilterStore(env) ? `${staticFilterStore(env)!.gen}.${RESPONSE_V}` : ''
+}
+
+/** An indexed-only deployment's coverage test (`indexedOnly.ts`): `ast` (one literal, `rejectAst` passed) is
+ *  answered statically under `path` on every one of `dates`, else `scan-not-indexed` — a scan outside the
+ *  generation, or a heavy literal past the drill base. A view root the literal matches is the plain view
+ *  (nothing to search). The answer is held per isolate, so the view's own read reuses it. */
+export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
+  const key = staticLiteral(ast)
+  if (!key) return reject('unsupported-terms')
+  if (path.toLowerCase().includes(key)) return null
+  const s = staticFilterStore(env)
+  if (!s || !await staticKey(s, ast, dates)) return reject('scan-not-indexed')
+  const found = await s.source.hits(key, path)
+  return found && covers(found, dates) ? null : reject('scan-not-indexed')
 }

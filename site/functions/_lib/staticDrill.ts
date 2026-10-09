@@ -48,8 +48,8 @@ export interface Rollup {
   dir: string
   /** Children kept by name. */
   kept: number
-  /** Root rows under `dir`, every date (an upper bound on any date's match roots); null when unknown (the
-   *  fleet root of a one- or two-character literal: the catalog has no root count for it). */
+  /** Root rows under `dir`, every date (an upper bound on any date's match roots); at the fleet root a long
+   *  member's alias entry, a short one's counted from the roots index (`GroupFile.count`). Null: unknown. */
   rows: number | null
   /** Children holding roots, every date. */
   children: number
@@ -209,6 +209,31 @@ export class GroupFile {
     return { groups, rows: groups.reduce((s, e) => s + e.rows, 0) }
   }
 
+  /** The exact number of rows with `lo ≤ (q, key) < hi`, however many: the index row groups strictly inside
+   *  the range by their top `rows`, the two at its edges read (their entries fully inside by `rows`), and the
+   *  at most two data groups straddling an edge decoded. A short literal's root count at the fleet root
+   *  (`.`: 361M rows) for ~2 small index reads. */
+  async count(lo: Key, hi: Key, io: DrillIo): Promise<number> {
+    const top = await this.loadTop(io)
+    const n = top.qMin.length
+    const [a, b] = meet(n, i => [top.qMin[i], top.kMin[i]], i => [top.qMax[i], top.kMax[i]], lo, hi)
+    if (a === b) return 0
+    let rows = 0
+    for (let i = a + 1; i < b - 1; i++) rows += top.rows[i]
+    const inside = (e: Entry) => cmpKey([e.qMin, e.kMin], lo) >= 0 && cmpKey([e.qMax, e.kMax], hi) < 0
+    const partial: Entry[] = []
+    for (const g of b - 1 > a ? [a, b - 1] : [a]) {
+      const start = top.offset[g], buf = await this.blobs.range(this.indexFile, start, top.length[g])
+      io.index_reads++
+      io.index_bytes += buf.byteLength
+      const entries = await decodeIndexGroup(await this.entriesIn(g, n), top.chunks[g], buf, start)
+      const [x, y] = meet(entries.length, i => [entries[i].qMin, entries[i].kMin], i => [entries[i].qMax, entries[i].kMax], lo, hi)
+      for (const e of entries.slice(x, y)) { if (inside(e)) rows += e.rows; else partial.push(e) }
+    }
+    if (partial.length) rows += (await this.read(lo, hi, partial, io, () => 1)).length
+    return rows
+  }
+
   /** The rows of `groups` with `lo ≤ (q, key) < hi`: one ranged GET per data file. `row` makes each one from
    *  the decoded columns (default: an object of every column). */
   async read<T = Record<string, unknown>>(lo: Key, hi: Key, groups: Entry[], io: DrillIo, row?: (cols: Record<string, unknown[]>, i: number) => T): Promise<T[]> {
@@ -319,7 +344,9 @@ export class Drill {
       if (!got?.member) throw new Error(`static drill: ${JSON.stringify(t)} has ${sel.rows} root rows but no catalog cells`)
       const cells: RollupCell[] = got.member.cells.map(x => ({ kind: 1, child: x.bucket, vf: Number(x.vf) * 1000, b: x.b, o: x.o }))
       const buckets = new Set(cells.map(x => x.child)).size
-      return { source: 'catalog', kind, c, upper: sel.rows, rollup: { dir: '', kept: buckets, rows: all, children: buckets, cells }, io }
+      // A long member's root rows are its alias entry's; a short one's are counted from the roots index.
+      const rows = all ?? await this.files[kind].roots.count(lo, hi, io)
+      return { source: 'catalog', kind, c, upper: sel.rows, rollup: { dir: '', kept: buckets, rows, children: buckets, cells }, io }
     }
     const rlo: Key = [c, P], rhi: Key = [c, P + '\0']
     const rs = await this.files[kind].rollups.select(rlo, rhi, io)

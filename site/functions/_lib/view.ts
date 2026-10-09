@@ -31,7 +31,7 @@
 import type { Env } from './auth.js'
 import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
-import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
+import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
 import { type SearchFound, type SearchLimits, searchRoots } from './search.js'
 import { planNegative, planPositive } from './searchQuery.js'
@@ -43,6 +43,7 @@ import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
 import { covers, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
 import { scanAt } from './staticNames.js'
+import { FilterRejected, indexedOnly, reject } from './indexedOnly.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -159,7 +160,8 @@ export interface View {
    * the rest in `(other)`), not its match roots. The tree's top-level cells are those children (leaves: a
    * drill re-dispatches); `matched` lists only the kept children that are match roots themselves, so
    * `matchesCapped` is set, and `matchCount.n` is `rows`, the root rows under P over every scan (an upper
-   * bound on this scan's; null — and `n` the listed count — at the fleet root of a 1–2 character literal). */
+   * bound on this scan's; at the fleet root a long literal's alias entry, a 1–2 character one's counted from
+   * the roots index). */
   rollup?: { children: number; kept: number; rows: number | null }
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
@@ -572,6 +574,8 @@ interface Read {
   exact?: Map<string, Agg>
   /** With a NOT query: the outermost excluded paths under the match roots. */
   excluded?: string[]
+  /** `matches` as a set, when the read holds one (a static literal's, per isolate). */
+  matchSet?: Set<string>
   /** …and their scoped aggregates (what a diff's point lookups subtract). */
   excl?: Map<string, Agg>
   firstPaint?: boolean
@@ -769,6 +773,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     let searchCut = false
     /** Phase 1 came from the static index: its aggregates know bytes, objects and owners only. */
     let staticRoots = false
+    /** …held per isolate (`staticPhase1`). */
+    let memo: Phase1Memo | null = null
     // The search reads the `path` sort (its names' row groups are that
     // sort's); a lens without assignments keeps the old read.
     const pathIdx = !tiers.length && !lens ? (sort === 'path' && fine ? fine : withTrace(await openFine(env, date, 'path'), tr)) : null
@@ -790,14 +796,29 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // owners: past either, the view reads as before.
       const off = shits && !covers(shits, [date]) ? 'after the drill base' : shits?.rollup && owner ? 'rollup: no owners' : null
       if (off) shits = null
+      // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`).
+      if (!shits && indexedOnly(env)) throw new FilterRejected(reject('scan-not-indexed'))
       tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
       if (shits?.rollup) {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
         return rollupRead(env, o, shits.rollup, { dP, rootAll, idx, details: h, trace: tr })
       }
       if (shits) {
-        p1 = aggregateHits(shits.hits)
-        roots = [...p1.depth.keys()].sort()
+        // Per isolate: the same held hits, scan and owner scope aggregate the same (a view's first paint,
+        // its full read, a diff's sides and floors, other canvases).
+        const memoKey = `${path}\0${date}\0${owner ? ownerKey(owner) : ''}`
+        let byHits = staticPhase1.get(shits.hits!)
+        if (!byHits) staticPhase1.set(shits.hits!, (byHits = new Map()))
+        let m = byHits.get(memoKey)
+        if (!m) {
+          const agg = aggregateHits(shits.hits!)
+          m = { p1: agg, roots: [...agg.depth.keys()].sort() }
+          byHits.set(memoKey, m)
+          if (byHits.size > 8) byHits.delete(byHits.keys().next().value!)
+        }
+        p1 = m.p1
+        roots = m.roots
+        memo = m
         p1Tier = shits.io.from === 'drill' ? 'drill' : 'static'
         staticRoots = true
       }
@@ -839,8 +860,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     }
     tr?.('match', performance.now() - t0)
     if (!roots.length) return null
-    const rootSet = new Set(roots)
-    const depthF = new Map<string, number>(roots.map(r => [r, p1!.depth.get(r)!]))
+    // Unscoped, nothing to exclude: the forest's budget-free part is the isolate's (`Phase1Memo`).
+    const lean = memo && !owner && !negP && !pl ? (memo.forest ??= buildForest(memo, path, dP), memo) : null
+    const rootSet = lean ? (lean.rootSet ??= new Set(roots)) : new Set(roots)
+    const depthF: Map<string, number> = lean ? new Overlay(lean.forest!.depth) : new Map<string, number>(roots.map(r => [r, p1!.depth.get(r)!]))
     // The match root a path is strictly under (null: none; `''` is the store
     // root, a real root — test against null, never truthiness).
     const rootFor = (p: string): string | null => {
@@ -848,7 +871,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       for (let q = parentOf(p); q.length >= path.length; q = parentOf(q)) { if (rootSet.has(q)) return q; if (q === '') return null }
       return null
     }
-    const rootAggOf = new Map<string, Agg>(roots.map(r => [r, scoped(r, p1!.all.get(r)!, p1!.mine.get(r)!)]))
+    const rootAggOf: Map<string, Agg> = lean ? new Overlay(lean.p1.mine) : new Map<string, Agg>(roots.map(r => [r, scoped(r, p1!.all.get(r)!, p1!.mine.get(r)!)]))
     // Excluded paths (NOT): the outermost paths under a match root the
     // negative part holds — from the index, else from the rows phase 1 read.
     const excl = new Map<string, Agg>()
@@ -891,12 +914,13 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     }
     // A root's net aggregate, memoized in `netOf` (sorts and filters ask it per comparison).
     const netRoot = (r: string): Agg => {
+      if (lean) return rootAggOf.get(r)!
       let a = netOf.get(r)
       if (!a) netOf.set(r, (a = minus(rootAggOf.get(r)!, cut.get(r), lostKids.get(r))))
       return a
     }
-    const matchedPre = newAgg()
-    for (const r of roots) sumAgg(matchedPre, netRoot(r))
+    const matchedPre = lean ? { ...lean.forest!.total } : newAgg()
+    if (!lean) for (const r of roots) sumAgg(matchedPre, netRoot(r))
     if (matchedPre.b <= 0) return null
     // Phase 2.
     const T = o.threshold ?? filterThreshold(matchedPre.b, w, h, minArea)
@@ -918,7 +942,11 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // `maxDepth` caps the forest at dP + N (a `depth=1` diff walks one level): a root at or below the cap
     // has nothing inside it drawn, nor is its own row looked up past it.
     const shown = (r: string) => maxDepth == null || depthF.get(r)! <= dP + maxDepth
-    const readRoots = [...roots].filter(r => drawn(r) && netRoot(r).o > 1 && netRoot(r).b >= subdivMin && (maxDepth == null || depthF.get(r)! < dP + maxDepth)).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
+    // The `k` heaviest of `rs` by net bytes, ties by path (decorated once: a comparator asking `netRoot` cost
+    // ~2.6M map reads to order a static literal's ~80K roots).
+    const heaviest = (rs: string[], k: number): string[] => rs.map(r => [netRoot(r).b, r] as const)
+      .sort((x, y) => y[0] - x[0] || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0)).slice(0, k).map(x => x[1])
+    const readRoots = heaviest(roots.filter(r => drawn(r) && netRoot(r).o > 1 && netRoot(r).b >= subdivMin && (maxDepth == null || depthF.get(r)! < dP + maxDepth)), REGION_READS)
       .map(r => ({ path: r, depth: depthF.get(r)! }))
     const loose = looseThreshold(T, atten, readRoots.map(r => r.depth))
     t0 = performance.now()
@@ -929,7 +957,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     const firstPaintStatic = staticRoots && !!o.firstPaint
     let detailsOff = false
     const details = staticRoots && !firstPaintStatic && !(maxDepth != null && maxDepth <= 0) ? (async () => {
-      const want = [...roots].filter(r => drawn(r) && shown(r)).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
+      const want = heaviest(roots.filter(r => drawn(r) && shown(r)), ROOT_DETAILS)
       if (!want.length) return []
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
       try {
@@ -1041,7 +1069,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       for (const [r, m] of d.mine) {
         const a = rootAggOf.get(r)
         if (!a) continue
-        a.kind = m.kind; a.wts = m.wts; a.wb = m.wb; a.a = m.a; a.cb = m.cb; a.nc = m.nc; a.nd = m.nd
+        // A copy: phase 1's aggregates may be the isolate's (`staticPhase1`), shared across views.
+        rootAggOf.set(r, { ...a, kind: m.kind, wts: m.wts, wb: m.wb, a: m.a, cb: m.cb, nc: m.nc, nd: m.nd })
       }
       tr?.('details', performance.now() - t0, String(d.mine.size))
       netOf.clear()
@@ -1052,46 +1081,99 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const fresh = matchRoots([...p2.depth.keys()].filter(p => rootFor(p) !== null && !underExcl(p)), negP, path)
       for (const e of fresh) exclude(e, scoped(e, p2.all.get(e)!, p2.mine.get(e)!))
     }
-    const aggsF = new Map<string, Agg>()
-    const matchedAgg = newAgg()
-    const rootNet = new Map<string, Agg>()
-    // The forest: the roots and every ancestor between P and them, each ancestor's aggregate the sum of
-    // its children's, built bottom-up (one sum per node; summing each root into all its ancestors cost
-    // ~depth sums per root, most of a static literal's ~80K-root build).
-    const levels: string[][] = []
-    const atLevel = (p: string, d: number) => (levels[d] ??= []).push(p)
-    for (const r of roots) {
-      const a = netRoot(r)
-      rootNet.set(r, a)
-      sumAgg(matchedAgg, a)
-      if (r === path) continue
-      aggsF.set(r, a)
-      atLevel(r, depthF.get(r)!)
-    }
-    if (matchedAgg.b <= 0) return null
-    for (const r of roots) {
-      if (r === path) continue
-      for (let q = parentOf(r), d = depthF.get(r)! - 1; q.length > path.length; q = parentOf(q), d--) {
-        if (aggsF.has(q)) break
-        aggsF.set(q, newAgg()); depthF.set(q, d); atLevel(q, d)
-        if (q === '') break
-      }
-    }
-    for (let d = levels.length - 1; d > dP + 1; d--) {
-      for (const p of levels[d] ?? []) sumAgg(aggsF.get(parentOf(p))!, aggsF.get(p)!)
-    }
-    // The pixel budget over the forest's own nodes, as the plain view applies it to P's: a match root,
-    // or an ancestor holding only roots, under its level's threshold (attenuated from P) folds into its
-    // parent's `(other)`. Descendant-inclusive bytes keep the kept set ancestor-closed. Without it a
-    // literal with 20K small roots (`tomat`: podcast files) shipped every one as a tile (10 MB).
-    const foldedF = new Map<string, number>()
     const thrTop = (d: number) => T * atten ** Math.max(0, d - dP - 1)
-    const folded: string[] = []
-    for (const [p, a] of aggsF) if (a.b < thrTop(depthF.get(p)!)) folded.push(p)
-    for (const p of folded) aggsF.delete(p)
-    for (const p of folded) {
-      const par = parentOf(p)
-      if (par === path || aggsF.has(par)) foldedF.set(par, (foldedF.get(par) ?? 0) + 1)
+    const forest = lean ? leanForest() : fullForest()
+    if (!forest) return null
+    const { matchedAgg, rootNet, aggsF, foldedF } = forest
+    // A view's forest from the isolate's (`Phase1Memo`): the drawn nodes' aggregates as held — the ancestors'
+    // copied before a looked-up root's ages and classes are added to them — and the folds counted.
+    function leanForest(): { matchedAgg: Agg; rootNet: Map<string, Agg>; aggsF: Map<string, Agg>; foldedF: Map<string, number> } {
+      const F = lean!.forest!
+      const matchedAgg = { ...F.total, cb: { ...F.total.cb }, ub: { ...F.total.ub } }
+      const aggsF = new Map<string, Agg>()
+      for (const [p, b] of F.nb) if (b >= thrTop(F.depth.get(p)!)) aggsF.set(p, rootSet.has(p) ? rootAggOf.get(p)! : F.sums.get(p)!)
+      const foldedF = new Map<string, number>()
+      for (const p of F.nb.keys()) {
+        if (aggsF.has(p)) continue
+        const par = parentOf(p)
+        if (par === path || aggsF.has(par)) foldedF.set(par, (foldedF.get(par) ?? 0) + 1)
+      }
+      // The looked-up roots' own rows (ages, classes): into the total and their drawn ancestors, as summing
+      // the roots would have.
+      const copied = new Set<string>()
+      const addDetail = (into: Agg, d: Agg) => {
+        into.wts += d.wts; into.wb += d.wb
+        if (d.a != null) into.a = into.a == null ? d.a : Math.max(into.a, d.a)
+        for (const k in d.cb) into.cb[k] = (into.cb[k] ?? 0) + d.cb[k]
+      }
+      for (const [r, d] of rootAggOf as Overlay<string, Agg>) {
+        addDetail(matchedAgg, d)
+        for (let q = parentOf(r); q.length > path.length; q = parentOf(q)) {
+          const a = aggsF.get(q)
+          if (a) {
+            if (!copied.has(q)) { copied.add(q); aggsF.set(q, { ...a, cb: { ...a.cb }, ub: { ...a.ub } }) }
+            addDetail(aggsF.get(q)!, d)
+          }
+          if (q === '') break
+        }
+      }
+      return { matchedAgg, rootNet: rootAggOf, aggsF, foldedF }
+    }
+    function fullForest(): { matchedAgg: Agg; rootNet: Map<string, Agg>; aggsF: Map<string, Agg>; foldedF: Map<string, number> } | null {
+      const matchedAgg = newAgg()
+      const rootNet = new Map<string, Agg>()
+      // The forest: the roots and every ancestor between P and them. Their bytes first, as plain numbers,
+      // bottom-up (one add per node); then aggregates for the drawn nodes only — each root summed once into
+      // the nearest drawn node at or above it, and drawn nodes into their drawn parents. A static literal's
+      // ~80K roots are almost all folded: an aggregate per root and per ancestor, summed level by level and
+      // then deleted, was most of the view's CPU on the edge.
+      const nb = new Map<string, number>()
+      const levels: string[][] = []
+      const atLevel = (p: string, d: number) => (levels[d] ??= []).push(p)
+      for (const r of roots) {
+        const a = netRoot(r)
+        rootNet.set(r, a)
+        sumAgg(matchedAgg, a)
+        if (r === path) continue
+        nb.set(r, a.b)
+        atLevel(r, depthF.get(r)!)
+      }
+      if (matchedAgg.b <= 0) return null
+      for (const r of roots) {
+        if (r === path) continue
+        for (let q = parentOf(r), d = depthF.get(r)! - 1; q.length > path.length; q = parentOf(q), d--) {
+          if (nb.has(q)) break
+          nb.set(q, 0); depthF.set(q, d); atLevel(q, d)
+          if (q === '') break
+        }
+      }
+      for (let d = levels.length - 1; d > dP + 1; d--) {
+        for (const p of levels[d] ?? []) { const par = parentOf(p); nb.set(par, nb.get(par)! + nb.get(p)!) }
+      }
+      // The pixel budget over the forest's own nodes, as the plain view applies it to P's: a match root,
+      // or an ancestor holding only roots, under its level's threshold (attenuated from P) folds into its
+      // parent's `(other)`. Descendant-inclusive bytes keep the kept set ancestor-closed. Without it a
+      // literal with 20K small roots (`tomat`: podcast files) shipped every one as a tile (10 MB).
+      const aggsF = new Map<string, Agg>()
+      for (const [p, b] of nb) if (b >= thrTop(depthF.get(p)!)) aggsF.set(p, rootNet.get(p) ?? newAgg())
+      const foldedF = new Map<string, number>()
+      for (const p of nb.keys()) {
+        if (aggsF.has(p)) continue
+        const par = parentOf(p)
+        if (par === path || aggsF.has(par)) foldedF.set(par, (foldedF.get(par) ?? 0) + 1)
+      }
+      for (const r of roots) {
+        if (r === path || aggsF.has(r)) continue
+        for (let q = parentOf(r); q.length > path.length; q = parentOf(q)) {
+          const k = aggsF.get(q)
+          if (k) { sumAgg(k, rootNet.get(r)!); break }
+          if (q === '') break
+        }
+      }
+      for (let d = levels.length - 1; d > dP + 1; d--) {
+        for (const p of levels[d] ?? []) { const a = aggsF.get(p); if (a) sumAgg(aggsF.get(parentOf(p))!, a) }
+      }
+      return { matchedAgg, rootNet, aggsF, foldedF }
     }
     const below: string[] = []
     for (const [p, d] of p2.depth) {
@@ -1118,9 +1200,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     return {
       rootAll, rootAgg: matchedAgg, kept: aggsF, aggDepth: depthF, foldedOf: foldedF, threshold: T, thrAt: loose,
       tier: `${p1Tier}+${tierName}`, idx: regionIdx, truncated: searchCut || roots.length > HARD_CAP,
-      matches: [...roots].sort(),
+      matches: sortedOnce(roots),
       // Heaviest first (ties by path): the list a bulk action and the series read.
-      matched: roots.map(r => ({ path: r, b: Math.round(rootNet.get(r)!.b), o: Math.round(rootNet.get(r)!.o) })).sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)),
+      matched: lean ? lean.forest!.matched.slice() : roots.map(r => ({ path: r, b: Math.round(rootNet.get(r)!.b), o: Math.round(rootNet.get(r)!.o) })).sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)),
+      matchSet: rootSet,
       ...(excl.size ? { excluded: [...excl.keys()].sort(), excl } : {}),
       ...(o.firstPaint ? { firstPaint: true } : {}), ...(interiors ? { interiors } : {}), ownerLens: ol, scoped,
     }
@@ -1400,12 +1483,81 @@ export function capTiles(kept: Map<string, { b: number }>, depth: Map<string, nu
 /** Assigned regions read (largest first) per lens view; the rest are
  * manifest-valued leaves. Two span queries' worth of rects. */
 const REGION_READS = 24
+/** Phase 1 of a static literal's view per isolate: the held hits array (`staticFilter.ts` keeps it while the
+ *  literal is held) → per scan and owner scope, its aggregates and sorted roots. Read-only once built. */
+const staticPhase1 = new WeakMap<Hit[], Map<string, Phase1Memo>>()
+
+/** A static literal's phase 1, held per isolate, and (unscoped, nothing excluded) everything about its
+ *  forest that the pixel budget doesn't decide, built on first use: its roots as a set, every forest node's
+ *  depth and bytes (roots and their ancestors under P), each ancestor's aggregate and the roots' total, and
+ *  the match list heaviest first. A view then touches only the nodes it draws (`par` under a bucket's
+ *  `checkpoints`: ~80K roots, ~1 s of edge CPU per view without it). Read-only once built. */
+interface Phase1Memo {
+  p1: { all: Map<string, Agg>; mine: Map<string, Agg>; depth: Map<string, number> }
+  roots: string[]
+  rootSet?: Set<string>
+  forest?: { depth: Map<string, number>; nb: Map<string, number>; sums: Map<string, Agg>; total: Agg; matched: { path: string; b: number; o: number }[] }
+}
+
+/** A map read through to `base` where it holds no entry of its own (writes stay here). */
+class Overlay<K, V> extends Map<K, V> {
+  constructor(readonly base: Map<K, V>) { super() }
+  override get(k: K): V | undefined { return super.has(k) ? super.get(k) : this.base.get(k) }
+  override has(k: K): boolean { return super.has(k) || this.base.has(k) }
+}
+
+/** `from` summed into `into` (`readView`'s `sumAgg`). */
+function addAgg(into: Agg, from: Agg): void {
+  into.b += from.b; into.o += from.o; into.wts += from.wts; into.wb += from.wb
+  if (from.a != null) into.a = into.a == null ? from.a : Math.max(into.a, from.a)
+  for (const k in from.cb) into.cb[k] = (into.cb[k] ?? 0) + from.cb[k]
+  for (const k in from.ub) into.ub[k] = (into.ub[k] ?? 0) + from.ub[k]
+}
+
+/** The memo's forest (`Phase1Memo.forest`) under `path` (depth `dP`). */
+function buildForest(m: Phase1Memo, path: string, dP: number): NonNullable<Phase1Memo['forest']> {
+  const { mine, depth: rd } = m.p1
+  const depth = new Map<string, number>()
+  const nb = new Map<string, number>()
+  const levels: string[][] = []
+  const total = newAgg()
+  for (const r of m.roots) {
+    const a = mine.get(r)!, d = rd.get(r)!
+    depth.set(r, d); nb.set(r, a.b); (levels[d] ??= []).push(r)
+    addAgg(total, a)
+  }
+  const sums = new Map<string, Agg>()
+  for (const r of m.roots) {
+    for (let q = parentOf(r), d = rd.get(r)! - 1; q.length > path.length; q = parentOf(q), d--) {
+      if (nb.has(q)) break
+      nb.set(q, 0); depth.set(q, d); sums.set(q, newAgg()); (levels[d] ??= []).push(q)
+      if (q === '') break
+    }
+  }
+  for (let d = levels.length - 1; d > dP + 1; d--) {
+    for (const p of levels[d] ?? []) {
+      const par = parentOf(p)
+      nb.set(par, nb.get(par)! + nb.get(p)!)
+      addAgg(sums.get(par)!, sums.get(p) ?? mine.get(p)!)
+    }
+  }
+  const matched = m.roots.map(r => ({ path: r, b: Math.round(mine.get(r)!.b), o: Math.round(mine.get(r)!.o) }))
+    .sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0))
+  return { depth, nb, sums, total, matched }
+}
+
 /** Static match roots whose own rows (kind, ages, classes) are looked up per view, heaviest first. */
 const ROOT_DETAILS = 48
 /** …from at most this many row groups (wider declines after the span plan, fetching nothing): the lookups
  *  share the request's six connections with phase 2, and roots spread over many depths (`00241`) took
  *  ~20 groups to answer after phase 2 had already given up on them. */
 const DETAIL_GROUPS = 16
+
+/** `xs` in code-unit order: itself when it already is (a static literal's ~80K roots are), else a sorted copy. */
+function sortedOnce(xs: string[]): string[] {
+  for (let i = 1; i < xs.length; i++) if (xs[i - 1] > xs[i]) return [...xs].sort()
+  return xs
+}
 
 const parentOf = (p: string): string => {
   const cut = p.lastIndexOf('/')
@@ -1444,7 +1596,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     ...display(a),
   })
   const kidsOf = kidsIndex(kept, path)
-  const matched = new Set(v.matches ?? [])
+  const matched = v.matchSet ?? new Set(v.matches ?? [])
   const build = (p: string, a: Agg): ViewNode => {
     const node = nodeOf(p === path ? rootName(path, env) : p.split('/').pop()!, a)
     if (matched.has(p)) node.m = 1
@@ -1678,8 +1830,16 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   }
   let lookups = 0
   let capped = false
+  // Each side's match roots and excluded paths as sets (a static literal's ~80K roots: an ancestor walk per
+  // lookup, not a scan of every root).
+  const sets = new Map<Read, { m: Set<string>; e: Set<string> }>()
+  const setsOf = (v: Read) => { let x = sets.get(v); if (!x) sets.set(v, (x = { m: new Set(v.matches ?? []), e: new Set(v.excluded ?? []) })); return x }
+  const atOrUnder = (p: string, set: Set<string>): boolean => {
+    if (!set.size) return false
+    for (let q = p; ; q = parentOf(q)) { if (set.has(q)) return true; if (q === '' || q.length <= path.length) return false }
+  }
   const inQuery = (p: string, v: Read): boolean =>
-    !query || ((v.matches ?? []).some(m => p === m || p.startsWith(m + '/')) && !(v.excluded ?? []).some(e => p === e || p.startsWith(e + '/')))
+    !query || (atOrUnder(p, setsOf(v).m) && !atOrUnder(p, setsOf(v).e))
   // A path's lookup total less the side's excluded paths under it (NOT).
   const net = (v: Read, p: string, a: Agg): Agg => {
     if (!v.excl) return a
