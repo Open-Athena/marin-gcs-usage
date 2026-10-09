@@ -20,9 +20,7 @@ Per scan `D`, under `static-names/<gen>/deltas/<D>/`:
 from __future__ import annotations
 
 import json
-import re
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -34,18 +32,15 @@ from . import static_catalog as sc
 from .static_names import (
     ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, DATA_BUCKET, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SCRATCH_BUCKET, SX_RG,
     SX_SCHEMA, Reader, _batches, _src, _sx_cast, _task, answer_rows, connect, err, hist_sql, q, range_preds,
-    read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
+    GCS_LAYOUTS, SCAN_ID, read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
 )
 
 CDELTA_SCHEMA = CINTERVAL_SCHEMA.append(pa.field("op", pa.int8(), nullable=False))
 #: A run's shards: about this many suffix rows each (the base's target).
 RUN_SHARD_ROWS = 50_000_000
-#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 days).
+#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 scans: 32 days of
+#: a daily deployment, 8 of a 6-hourly one).
 COMPACT_LEVEL = 5
-
-
-def scan_id(ts: int) -> str:
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
 
 
 def run_key(first: str, last: str) -> str:
@@ -370,9 +365,6 @@ class StateIncomplete(Exception):
     """`prune` refused: the day's state is not complete (or its run not published), so nothing is deleted."""
 
 
-_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
-
-
 def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: bool, date: str) -> dict:
     """What `prune` deletes, from the scratch bucket's `(name, size)` listing under `<prefix>/state/`: every day
     before `date`, once `date`'s state is complete — all `k` ranges' `copen/r####.parquet` and `done/r####.json`,
@@ -384,8 +376,8 @@ def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: b
         if not name.startswith(root):
             raise ValueError(f"{name}: not under {root}")
         day, _, rest = name[len(root):].partition("/")
-        if not _DAY.fullmatch(day):
-            raise ValueError(f"{name}: {day!r} is not a day")
+        if not SCAN_ID.fullmatch(day):
+            raise ValueError(f"{name}: {day!r} is not a scan id")
         d = days.setdefault(day, {"names": [], "bytes": 0, "copen": set(), "done": set()})
         d["names"].append(name)
         d["bytes"] += size
@@ -486,7 +478,8 @@ def prepare_cmd(bucket, date, gen) -> None:
 
     base, runs = _state(bucket, gen, date)
     have = _day_scans(base, runs)
-    found = list_scans(bucket, start=have[-1])["scans"]
+    # The base's layouts (its `scans.json`; gcs's when it names none), so a run's scan is found where the base's were.
+    found = list_scans(bucket, layouts=base.get("layouts", GCS_LAYOUTS), start=have[-1])["scans"]
     nxt = [s for s in found if s["id"] > have[-1]]
     if not nxt or nxt[0]["id"] != date:
         raise SystemExit(f"the next scan after {have[-1]} is {nxt[0]['id'] if nxt else 'none'}, not {date}")
