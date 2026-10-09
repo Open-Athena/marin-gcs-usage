@@ -52,7 +52,7 @@ export async function coverSet(
   roots: CoverRoot[],
   view: string,
   lookup: Lookup,
-  { minDepth = 1, full = isFull }: { minDepth?: number; full?: (m: { b: number; o: number }, t: { b: number; o: number }) => boolean } = {},
+  { minDepth = 1, full = isFull, kindChunk = 2048 }: { minDepth?: number; full?: (m: { b: number; o: number }, t: { b: number; o: number }) => boolean; kindChunk?: number } = {},
 ): Promise<Cover> {
   const floor = Math.max(minDepth, depthOf(view))
   // Each candidate folder's matched sums: every proper ancestor of a root, at or below the view, at ≥ floor.
@@ -81,13 +81,20 @@ export async function coverSet(
       else poison(a)
     }
   }
-  // One-object roots: object or folder.
-  const ambiguous = roots.filter(r => r.o <= 1).map(r => r.path)
-  const kinds = ambiguous.length ? await lookup(ambiguous) : new Map<string, PathTotal>()
   const outermostFull = (p: string): string | null => {
     let best: string | null = null
     for (let a = parentOf(p); sums.has(a); a = parentOf(a)) if (fullSet.has(a)) best = a
     return best
+  }
+  // One-object roots not inside a full folder: object or folder? Asked in path order, `kindChunk` at a time,
+  // so a budget cut leaves the ones already placed placed.
+  const ambiguous = roots.filter(r => r.o <= 1 && !outermostFull(r.path)).map(r => r.path)
+    .sort((x, y) => depthOf(x) - depthOf(y) || (x < y ? -1 : x > y ? 1 : 0))
+  const kinds = new Map<string, PathTotal>()
+  for (let i = 0; i < ambiguous.length; i += kindChunk) {
+    const got = await lookup(ambiguous.slice(i, i + kindChunk))
+    if (!got) break
+    for (const [p, t] of got) kinds.set(p, t)
   }
   const items = new Map<string, CoverItem>()
   for (const r of roots) {
@@ -97,7 +104,7 @@ export async function coverSet(
       if (it) { it.b += r.b; it.o += r.o; it.roots++ } else items.set(f, { path: f, kind: 'dir', b: r.b, o: r.o, roots: 1 })
       continue
     }
-    const kind: Kind | null = r.o > 1 ? 'dir' : kinds?.get(r.path)?.kind ?? null
+    const kind: Kind | null = r.o > 1 ? 'dir' : kinds.get(r.path)?.kind ?? null
     items.set(r.path, { path: r.path, kind, b: r.b, o: r.o, roots: 1 })
   }
   return { items: [...items.values()].sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)), looked, unchecked }

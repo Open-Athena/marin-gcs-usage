@@ -148,7 +148,18 @@ describe('coverSet', () => {
     const look = lookupOf(s)
     await coverSet(matchRoots(s, 'tomat', ''), '', look, { minDepth: 2 })
     // Depth 3 (`b/p/q`, `b/p/r`), then the one-object roots' kinds; `b/p` is poisoned by `b/p/q`.
-    expect(look.calls).toEqual([['b/p/q', 'b/p/r'], ['b/p/q/tomat', 'b/p/r/tomat']])
+    // …and `b/p/r` is full, so its root needs no kind of its own.
+    expect(look.calls).toEqual([['b/p/q', 'b/p/r'], ['b/p/q/tomat']])
+  })
+
+  it('kinds are asked in chunks: a budget cut keeps the ones already placed', async () => {
+    const s: Store = { 'b/m/tomat1': 1, 'b/m/tomat2': 2, 'b/m/tomat3': 3, 'b/m/other': 4 }
+    const look = lookupOf(s, 3)
+    const got = await coverSet(matchRoots(s, 'tomat', ''), '', look, { minDepth: 2, kindChunk: 2 })
+    expect([look.calls, got.items.map(i => [i.path, i.kind])]).toEqual([
+      [['b/m'], ['b/m/tomat1', 'b/m/tomat2'], ['b/m/tomat3']],
+      [['b/m/tomat1', 'file'], ['b/m/tomat2', 'file'], ['b/m/tomat3', null]],
+    ])
   })
 
   it('over the lookup budget: stays exact, stops collapsing, and leaves unknown kinds unplaced', async () => {
