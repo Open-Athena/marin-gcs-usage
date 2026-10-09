@@ -884,7 +884,7 @@ def _group_table(con, plan: dict) -> None:
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-n", "--parts", default=32, type=IntRange(min=1), help="Subtree partitions (= tasks)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-P", "--pieces", default=8, type=IntRange(min=1), help="Passes per partition by hash(path) (memory)")
+@option("-P", "--pieces", default=16, type=IntRange(min=1), help="Passes per partition by hash(path), each written on its own (memory, disk)")
 @option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the shuffle (an intermediate)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where the versions are downloaded")
 def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratch, tmp) -> None:
@@ -905,19 +905,24 @@ def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratc
     keys = sorted(x.name for x in client.list_blobs(bucket, prefix=f"{prefix}/cintervals/") if x.name.endswith(".parquet"))
     download(b, keys, Path(tmp) / "cintervals")
     con = connect(threads, mem, tmp)
-    short_roots(con, f"SELECT * FROM read_parquet({q(str(Path(tmp) / 'cintervals' / '*.parquet'))}) WHERE {_partition(parts)} = {t}", "rt",
-                pieces=pieces, log=f"short-map {name}")
     _group_table(con, plan)
-    part = Path(tmp) / "smap"
-    shutil.rmtree(part, ignore_errors=True)
-    con.execute(f"COPY (SELECT rt.*, qg.grp FROM rt ASOF JOIN qg ON rt.q >= qg.lo) TO {q(str(part))} (FORMAT parquet, PARTITION_BY (grp), COMPRESSION zstd)")
-    n = con.execute("SELECT count(*) FROM rt").fetchone()[0]
-    for d in sorted(part.glob("grp=*")):
-        g = int(d.name.split("=")[1])
-        for k, f in enumerate(sorted(d.glob("*.parquet"))):
-            sb.blob(f"{prefix}/drill-short-map/g{g:03d}/{name}-{k}.parquet").upload_from_filename(str(f))
+    versions = f"SELECT * FROM read_parquet({q(str(Path(tmp) / 'cintervals' / '*.parquet'))}) WHERE {_partition(parts)} = {t}"
+    n = 0
+    for k in range(pieces):  # each piece written and uploaded on its own: a partition can hold billions of roots
+        con.execute("DROP TABLE IF EXISTS rt")
+        short_roots(con, f"SELECT * FROM ({versions}) WHERE hash(path) % {pieces} = {k}", "rt")
+        part = Path(tmp) / "smap"
+        shutil.rmtree(part, ignore_errors=True)
+        con.execute(f"COPY (SELECT rt.*, qg.grp FROM rt ASOF JOIN qg ON rt.q >= qg.lo) TO {q(str(part))} (FORMAT parquet, PARTITION_BY (grp), COMPRESSION zstd)")
+        n += con.execute("SELECT count(*) FROM rt").fetchone()[0]
+        for d in sorted(part.glob("grp=*")):
+            g = int(d.name.split("=")[1])
+            for m, f in enumerate(sorted(d.glob("*.parquet"))):
+                sb.blob(f"{prefix}/drill-short-map/g{g:03d}/{name}-{k}-{m}.parquet").upload_from_filename(str(f))
+        shutil.rmtree(part)
+        err(f"short-map {name}: piece {k + 1}/{pieces}, {n:,} roots in {monotonic() - t0:.1f}s")
+    con.execute("DROP TABLE IF EXISTS rt")
     sb.blob(f"{prefix}/drill-short-map/done/{name}").upload_from_string(json.dumps({"rows": n}))
-    shutil.rmtree(part)
     shutil.rmtree(Path(tmp) / "cintervals")
     err(f"short-map {name}: {n:,} roots in {monotonic() - t0:.1f}s")
 
