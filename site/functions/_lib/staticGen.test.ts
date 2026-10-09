@@ -79,7 +79,7 @@ describe('STATIC_GEN', () => {
     expect(await ask({ from: '2026-10-03T0600', date: '2026-10-03T1800' }))
       .toEqual([200, '2026-10-03T0600', '2026-10-03T1800', [['bkt-a', 0, 0], ['bkt-b', 9, 1]], { b: 2, o: 0 }])
     const missing = await staticSummary(env, new URLSearchParams({ name: 'sub-', date: '2026-10-04T0000' }))
-    expect([missing.status, await missing.json()]).toEqual([400, { error: 'This scan is not in the static name index. This is not a zero-match result.' }])
+    expect([missing.status, await missing.json()]).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])
   })
 
   it('keys the map filter\'s store, its scans and its cache tag by the configured generation', async () => {
