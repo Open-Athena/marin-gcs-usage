@@ -68,6 +68,10 @@ export interface Store {
   buckets: string[]
   /** The sibling deployment the site menu links to (each store is its own host). */
   peer?: { label: string; href: string }
+  /** The data bucket's `/meta` tree when another deployment serves it (gcs: cw-s3's):
+   *  the site menu links there and this host's `/meta` redirects to it. Unset when the
+   *  build mounts `/meta` itself (a secondary store) or has none. */
+  metaTree?: string
   /** The login wall's copy — who may sign in here and how. Each deployment's
    *  own (who's allow-listed, which sign-in methods it offers). */
   wall: { restrict: string; signIn: string; how?: string }
