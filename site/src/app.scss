@@ -1706,6 +1706,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); }
     }
     td.owners { white-space: nowrap; }
+    // The row of the treemap cell under the pointer (brushing, `data-brushed`).
+    tr[data-brushed] td { background: color-mix(in srgb, var(--ink) 8%, transparent); }
     // The row's actions: the trash gesture (a staging store) and the assign
     // select (an attribution store, admins).
     // A table cell (an `inline-flex` cell stops being one: its borders and

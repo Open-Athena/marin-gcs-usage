@@ -218,6 +218,9 @@ function AppContent() {
   // The box edits a local draft; the URL (and every query keyed on it) follows
   // after a 250 ms pause — one request pair per phrase, not per keystroke.
   const [fqDraft, setFqDraft] = useState<string | null>(null)
+  // Brushing: the view's child (by name) hovered in either the treemap or its
+  // children table, lit in both (a ring on the cell, the row's hover tint).
+  const [brush, setBrush] = useState<string | null>(null)
   useEffect(() => {
     if (fqDraft == null) return
     const t = setTimeout(() => { setFq(fqDraft || undefined); setFqDraft(null) }, 250)
@@ -1250,6 +1253,8 @@ function AppContent() {
             onPathChange={onMapPath}
             objects={objects}
             onOpen={p => openObject(p.slice(1).map(n => n.n))}
+            brush={brush}
+            onBrush={setBrush}
           />{mapStale ? <Busy label={mapRetrying ?? 'loading view…'} /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
           {/* A drilled directory with nothing drawable under it: the scope came
               up empty, or (a v1 scan) it holds only objects or directories
@@ -1298,6 +1303,8 @@ function AppContent() {
               onOpen={openPath}
               onOpenObject={openObject}
               filter={tblFilter}
+              brush={brush}
+              onBrush={setBrush}
             /></div>
           )}
         </>
