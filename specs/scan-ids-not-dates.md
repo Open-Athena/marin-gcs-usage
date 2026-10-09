@@ -40,3 +40,55 @@ The map's `?d=` already canonicalizes to the compact form (`261002`, `261002-120
 - Two gcs scans on one day are both indexed, browsable on the map, and searchable on `/names`, each by its own id. The static daily append builds a delta per scan.
 - `?d=261009` resolves to the day's latest scan on every page; old `date=` links redirect to `d=`.
 - Tests cover the resolver table (§2) and the codec round-trip (§3).
+
+## Remaining (handoff, 2026-10-09)
+
+### Done
+- **§2–3 (merged to `cloud`):** `site/src/scanSlug.ts` is the one resolver:
+  - `resolveScan`, `latestScan`, `scanMatches`, `scanNeighbors` and `isScanId`;
+  - the `?d=` codec: `encodeSel`/`decodeSel`, `selOf`, `canonicalSel`, `useScanSel`.
+  - Slugs are dashless `YYMMDD[HH[MM]]`. Legacy `-HH`/`-HHMM`, `T` and ISO spellings still decode; the grammar is in `scanSlug.ts`.
+  - A slug that matches nothing is a miss: the pages show "No scan matches X" with links to the nearest scans, and the APIs return 404 `{error}` (`functions/_lib/scanArg.ts`).
+  - Python: `dt_cloud/scan_id.py` (`SCAN_ID`, `slug_prefix`, `resolve_slug`, `scan_slug`, `latest_scan`). `healthcheck -d` fails when its slug matches nothing.
+- **Branch `scan-slug-3` (local, not merged):**
+  - `85883570` / `fdfe3df2`: a date-only scan's exact slug is its **midnight**, `YYMMDD0000`.
+    - Matching reads `YYYY-MM-DD` as `T0000` (`scanKey` / `scanUnder`; Python `scan_key`).
+    - Every picker writes `exactPrefix(id)`, and `scanArg`'s D1 query matches the same way.
+    - `check_order` refuses a date together with its `T0000`, so the key can't collide with a real scan.
+    - This already fixes the `?f=tomat&d=26100900` repro: `26100900` matches the date-only scan, and the "← 10/9" link writes `2610090000`.
+    - The gcs digest links to a date-only scan as `…0000`; the goldens differ only by that.
+  - `fa977ed2`: a new refusal code, `term-too-common`. A heavy literal without `FILTER_STATIC_HEAVY` is `term-too-common`, not `scan-not-indexed` (`declined()` in `staticFilter.ts`).
+  - `c1a59162`: filter refusals render inline, with no "view failed", no retry and no status, on the map, the Diff and the size chart (`apiError` / `refusalOf` in `filterCaps.ts`).
+  - `be53b663`: a filtered view with no `d` on an indexed-only deployment opens on the newest scan the static index covers.
+    - The covered list comes from `/api/filter-scans`; the pieces are `floatingScan`, `selectScan` and `pendingNote`.
+    - Checked on dev only with every scan indexed: T1236 was already appended, so no note showed. The "newest scan unindexed" case is covered by tests only.
+
+### Left
+1. **Real start times for date-only scans (coordinator's preferred design over midnight).**
+   - The design:
+     - A date-only scan's effective time is its real start, about 04:30Z for 2026-10-09.
+     - Its canonical slug is that minute (`2610090430`), and the hour/minute slugs match it.
+     - `261009` stays the day's latest scan by real time.
+     - Pickers, nearest-scan links and labels use it, and the id stays `2026-10-09`.
+     - When the time is unknown, fall back to the midnight form above.
+   - Where the time is recorded: each bucket listing's `listing/<id>/<bucket>/_SUCCESS.json` carries `started` (`disk_tree/find/bulk*.py`); the scan's start is the earliest across its buckets.
+     - `meta.json` has only `published` (the end of the job).
+     - The `index_schema.gen` stamp is the time the job started, but a reprocess re-stamps it, so it isn't the scan's time.
+   - Suggested plan:
+     - `path-index` writes `meta.started` (the earliest listing `started`).
+     - A backfill command stamps existing metas; the gcs session runs it, since it writes GCS.
+     - The scan-list API exposes `started` for date-only scans on days with more than one scan. Only those need it; a single-scan day's `261009` is already unique.
+     - `scanKey` takes that time where it's known, and so do the TS and Python resolvers and `scanArg`. `scanArg` needs it outside D1, from meta.
+2. **Dropdown (`ScanCombobox`, `ScanPicker`, the `?d=` disambiguation strip):**
+   - On a day with more than one scan, every row is a time. The date-only row shows its real start (2026-10-09 → local "12:30a"), or "(time unknown)" when there's none.
+   - Order the rows by real time.
+   - A single-scan day keeps "10/8".
+   - Pinning the date-only row must pin exactly it. `fdfe3df2` makes `setDP` write `2610090000`; confirm on dev in Chrome, which hasn't been done yet.
+3. **The `26100900` no-match links:** fixed under the midnight design (tests in `scanSlug.test.ts` and `noScanMatch.test.ts`). Re-key them to the real time with item 1.
+4. **Timezone leak** ("no scan matches date=2026-10-09T0836"):
+   - No client path builds an id from local time (`fmtScan` is display-only; `dateOfX` and the pickers pass UTC ids).
+   - Not reproduced yet. Check on dev with the network panel open: the 8:36a entry, the diff pin, the dropdown and the brush.
+5. **The disambiguation strip** ("?d=261009 matches 2 scans"): its buttons call `setDP(id)`, which is exact since `fdfe3df2`; verify on dev.
+
+### Throwaway worktrees and branches to delete
+`wt/scan-slug-gcs` (`scan-slug-gcs`), `wt/scan-slug-2-gcs` (`scan-slug-2-gcs`) and `wt/scan-slug-3-gcs` (`scan-slug-3-gcs`; the current dev deploy, `gcs-dev` → 906c1102c), plus the merged `wt/scan-slug` and `wt/scan-slug-2`.
