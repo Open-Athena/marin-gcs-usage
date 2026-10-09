@@ -521,6 +521,13 @@ function AppContent() {
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
+  // A heavy literal's view from its rollup (the server's `rollup`): its cells are children, not match
+  // roots, and the series is the query's own sum per scan (`queryOnly`).
+  const fRollup = useMemo(() => {
+    if (!fq) return false
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
+    return !!(d as { rollup?: unknown } | undefined)?.rollup
+  }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const matchedRoots = useMemo((): string[] | undefined => {
     if (!fq) return undefined
     // The first paint carries the same roots (the full read adds only what is inside them).
@@ -1251,6 +1258,7 @@ function AppContent() {
       <SizeOverTime
         scopeLabel={store.rootLabel}
         paths={matchedRoots}
+        queryOnly={fRollup}
         filterLabel={fq ?? undefined}
         filterQs={fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : undefined}
         scans={scans} prefix={drillPath}
