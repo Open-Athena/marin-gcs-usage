@@ -18,8 +18,7 @@ import { type DispatchReq, type ExecEnv, type Executor, type Prepared, refuse } 
 import { gcpToken } from './gcp.js'
 import { NO_SHAPE, PlanSpansBuckets, prefixShape, snapshotPlan } from './plans.js'
 import { listBatchJobs, reflectRuns } from './runReflect.js'
-
-export const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
+import { SCAN_ID_RE } from '../../src/scanSlug.js'
 
 async function prepare(env: ExecEnv, db: D1Database, req: DispatchReq): Promise<Prepared | ReturnType<typeof refuse>> {
   if (!env.GCP_SA_KEY) return refuse(503, 'dispatch not configured (GCP_SA_KEY secret missing)')
@@ -88,7 +87,7 @@ async function prepare(env: ExecEnv, db: D1Database, req: DispatchReq): Promise<
 }
 
 export const planSweep: Executor = {
-  dateRe: DATE_RE,
+  dateRe: SCAN_ID_RE,
   dateHint: 'YYYY-MM-DD[THHMM]',
   prepare,
   async refresh(env, db) {

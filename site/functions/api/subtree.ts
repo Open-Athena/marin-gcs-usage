@@ -24,6 +24,7 @@ import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
 import { extrasFor } from '../_lib/extras.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 
 type SubtreeCtx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
@@ -51,7 +52,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
   const h = Math.ceil((Number(url.searchParams.get('h')) || 800) / QUANT) * QUANT
   const minArea = Number(url.searchParams.get('minArea')) || MIN_AREA_DEFAULT
   const atten = Number(url.searchParams.get('atten')) || ATTEN_DEFAULT
-  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
+  if (!isScanId(date)) return new Response('bad date', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
 
   // Optional lens: `lens=user:<id>` — a treemap of that user's bytes, read
@@ -115,7 +116,9 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     const [head, xtra, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date])]))
     const cacheKey = cacheKeyFor('subtree',
       `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensTag}` +
-        `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}`,
+        `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}` +
+        // The root's answer carries the deployment's `ROOT_LABEL`, and a dev stack shares its prod's KV.
+        (path === '' ? `&rl=${encodeURIComponent(ctx.env.ROOT_LABEL ?? '')}` : ''),
       storeKey(ctx.env),
     )
     // …and a scan the static index covers for this literal (else `scan-not-indexed`, not a path-store scan).

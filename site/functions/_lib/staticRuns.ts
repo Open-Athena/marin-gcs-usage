@@ -1,7 +1,7 @@
-/** The static name index's daily runs (specs/static-daily-append.md, on the `daily-append` branch): a base
- *  generation plus one small run per newer scan, each run its own little generation under
- *  `deltas/<first>[_<last>]/` (`shards.json`, `sx/`, `catalog/`), listed by the newest immutable
- *  `manifests/<D>.json`. Readers query every tier and merge:
+/** The static name index's runs (specs/static-append.md): a base generation plus one small run per newer scan
+ *  (two scans of one day are two runs), each its own little generation under `deltas/<first>[_<last>]/`
+ *  (`shards.json`, `sx/`, `catalog/`; scan ids), listed by the newest immutable `manifests/<scan id>.json` (scan
+ *  ids sort in time order). Readers query every tier and merge:
  *
  *  - Suffix rows: a run holds the versions opened in it and **close records** (a version from an older tier,
  *    its rows with their final `vt`). Rows equal on `(s, path, usr, vf)` are one version's; the smallest `vt`
@@ -12,7 +12,7 @@
  *
  *  Without a manifest (or a `list`-less `Blobs`) the tiers are the base alone: today's reader. Answers for a
  *  scan already indexed never change when a run lands (a later close sets `vt` after it), so only the hit
- *  lists, which span every date, are versioned by the manifest's date. */
+ *  lists, which span every scan, are versioned by the manifest's newest scan. */
 import { type CatalogIo, type CatalogMeta, type Member, StaticCatalog } from './staticCatalog.js'
 import { type Blobs, cmp, FirstHits, type Io, type IndexCache, type GroupIndex, StaticNames } from './staticNames.js'
 

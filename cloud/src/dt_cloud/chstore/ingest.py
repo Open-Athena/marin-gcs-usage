@@ -451,18 +451,18 @@ def audit_roots(
 
 
 def default_src(bucket: str, scan_id: str) -> str:
-    """The newest generation's `path` sort for a scan: `gs://<bucket>/listing/<date>/index/<gen>/path-index.parquet`,
-    else (a scan from before index generations) `listing/<date>/path-index.parquet`."""
+    """The newest generation's `path` sort for a scan: `gs://<bucket>/listing/<scan id>/index/<gen>/path-index.parquet`,
+    else (a scan from before index generations) `listing/<scan id>/path-index.parquet`. Keyed by the
+    whole scan id — two scans of one day are two listing dirs (specs/scan-ids-not-dates.md)."""
     from google.cloud import storage
 
-    date = scan_id.split("T")[0]
     client = storage.Client()
-    blobs = [b.name for b in client.list_blobs(bucket, prefix=f"listing/{date}/index/") if b.name.endswith("/path-index.parquet")]
+    blobs = [b.name for b in client.list_blobs(bucket, prefix=f"listing/{scan_id}/index/") if b.name.endswith("/path-index.parquet")]
     if blobs:
         return f"gs://{bucket}/{max(blobs)}"
-    if client.bucket(bucket).blob(f"listing/{date}/path-index.parquet").exists():
-        return f"gs://{bucket}/listing/{date}/path-index.parquet"
-    raise IngestError(f"no path-index.parquet under gs://{bucket}/listing/{date}/")
+    if client.bucket(bucket).blob(f"listing/{scan_id}/path-index.parquet").exists():
+        return f"gs://{bucket}/listing/{scan_id}/path-index.parquet"
+    raise IngestError(f"no path-index.parquet under gs://{bucket}/listing/{scan_id}/")
 
 
 def sizes(ch: Ch) -> dict:

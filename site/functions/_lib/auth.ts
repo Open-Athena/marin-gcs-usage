@@ -84,6 +84,8 @@ export interface Env {
   FILTER_PHASE2_MS?: string
   /** Worker-served indexes (the static name index's suffix shards and catalog). */
   INDEX_R2?: R2Bucket
+  /** The static name index's generation in `INDEX_R2` (`static-names/<gen>/`); required with `FILTER_STATIC` / `NAME_SUMMARY_STATIC`. */
+  STATIC_GEN?: string
   STORE_ACCESS_KEY_ID?: string
   STORE_SECRET_ACCESS_KEY?: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */

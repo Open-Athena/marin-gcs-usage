@@ -10,7 +10,7 @@ import pytest
 from dt_cloud import static_catalog as sc
 from dt_cloud import static_names as sn
 
-from test_static_names import DATES, _brute_answer, _build, _oracle, fixture  # noqa: F401
+from test_static_names import _brute_answer, _build, _oracle, fixture, scan_ids  # noqa: F401
 
 
 def _range_rows(versions: list[tuple], t: str) -> int:
@@ -96,6 +96,7 @@ def test_census_equals_brute_force(built):
 @pytest.mark.parametrize("v", [1, V, 8])
 def test_catalog_answers_equal_brute_force(built, v):
     root, scans, merged, *_ = built
+    dates = scan_ids(scans)
     cat, nodes, members, meta = _catalog(built, v)
     from test_static_names import _coalesced_oracle
 
@@ -108,7 +109,7 @@ def test_catalog_answers_equal_brute_force(built, v):
     assert meta["members_long"] == len(long_members)
     answered = 0
     for t in sorted(_substrings(names, 40) | {"zz", "q", "zzz", "b1"}):
-        got = cat.answer(t, DATES)
+        got = cat.answer(t, dates)
         rows = _range_rows(versions, t)
         if len(t) <= 2:
             assert (got is not None) == (t in short), t
@@ -118,7 +119,7 @@ def test_catalog_answers_equal_brute_force(built, v):
             if len(t) >= 3:
                 assert rows <= v
             continue
-        assert got["answers"] == {d: _brute_answer(oracle, t, d) for d in DATES}, t
+        assert got["answers"] == {d: _brute_answer(oracle, t, d) for d in dates}, t
         assert got["rows"] == (rows if len(t) >= 3 else -1)
         answered += 1
     assert answered > 100
@@ -218,7 +219,7 @@ def test_append_equals_rebuild(fixture, tmp_path, v, k):  # noqa: F811
     assert (prev_cat / "cells.parquet").read_bytes() == (full["final"] / "cells.parquet").read_bytes()
     assert (prev_cat / "index.parquet").read_bytes() == (full["final"] / "index.parquet").read_bytes()
     assert doc["members"] == sum(1 for r in want if r["bucket"] == "")
-    if v == 5:
+    if v == 5 and k == 2:
         assert crossed > 0  # literals crossed V on an append: their whole history came from the base shards and deltas
 
 

@@ -6,6 +6,8 @@ import { SiteKbd } from './SiteKbd'
 import type { HotRequest } from './hotModel'
 import { loadName, loadNameRegistry, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
 import { useDocTitle } from './title'
+import { useScanSel } from './scan'
+import { encodeSel, isScanId, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
 import './hot.scss'
 
 export function NamePlanStatus({ result }: { result: NameResult }) {
@@ -31,13 +33,46 @@ export function staticDomain({ generation, max_rows }: { generation: string; max
 export function scanList(dates: readonly string[]): string {
   return dates.length <= 6 ? dates.join(', ') : `${dates.length} scans, ${dates[0]} to ${dates[dates.length - 1]}`
 }
+/** The request params (`name`, ISO `date`/`from`) a /names URL selects: its
+ * `?d=` resolved against the registry's scans (`resolveAfter`/`resolveBefore`
+ * — a day is its latest scan, a span the nearest earlier scan). An unmatched
+ * slug passes through as its prefix, so `nameRequest` reports it unavailable. */
+export function nameScanParams(url: URLSearchParams, sel: ScanSel | undefined, dates: readonly string[] | undefined): URLSearchParams {
+  const out = new URLSearchParams()
+  for (const name of url.getAll('name')) out.append('name', name)
+  for (const [key, value] of url) if (!['name', 'd', 'date', 'from'].includes(key)) out.append(key, value)
+  if (!dates) return out
+  const after = resolveAfter(sel, dates) ?? sel?.d
+  if (after) out.set('date', after)
+  const before = after && isScanId(after) ? resolveBefore(sel, after, dates) : undefined
+  const from = before ?? sel?.from
+  if (from) out.set('from', from)
+  return out
+}
+
+/** The URL a /names search writes: the form's ISO `date`/`from` as the
+ * canonical `?d=` (a latest-scan `date` floats, as on the map), then `name`. */
+export function nameUrlParams(form: URLSearchParams, dates: readonly string[] | undefined): URLSearchParams {
+  const date = form.get('date') ?? undefined, from = form.get('from') || undefined
+  const latest = dates && resolveAfter(undefined, dates)
+  const d = encodeSel({ ...(date && date !== latest ? { d: date } : {}), ...(from ? { from } : {}) })
+  return new URLSearchParams({ ...(d ? { d } : {}), name: form.get('name') ?? '' })
+}
+
 export function NamePage() {
   useDocTitle('Name summaries preview')
-  const [rawParams, setParams] = useSearchParams(), params = namePageParams(rawParams)
+  const [rawParams, setParams] = useSearchParams()
+  // The scan selection is the map's `?d=` (one key and codec on every page):
+  // `useScanSel` rewrites a legacy `?date=`/`?from=` (or ISO) link to it on
+  // mount; the page reads the router's params through the same merge.
+  useScanSel()
+  const sel = selOf(rawParams)
   const registry = useQuery({ queryKey: ['name-summary-registry'], queryFn: ({ signal }) => loadNameRegistry(signal), staleTime: Infinity, retry: false })
   const dates = registry.data?.dates.map(row => row.date)
+  const scanParams = nameScanParams(rawParams, sel, dates)
+  const params = namePageParams(scanParams)
   let request: HotRequest | undefined, issue: string | undefined
-  if (dates && !registry.error) try { request = nameRequest(rawParams, dates) } catch (error) { issue = (error as Error).message }
+  if (dates && !registry.error) try { request = nameRequest(scanParams, dates) } catch (error) { issue = (error as Error).message }
   const query = useQuery({ queryKey: ['name-summary', request?.date, request?.name, request?.from], queryFn: async ({ signal }) => {
     return nameResultForRegistry(await loadName(request!, signal, dates), registry.data!)
   }, enabled: !!request, staleTime: Infinity, retry: false })
@@ -50,7 +85,7 @@ export function NamePage() {
   return <main className="hot-page">
     <header><Link to="/">marin GCS</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
     <p className="hot-scope">Case-insensitive literal substring within any path component name; no slash-crossing. Matching directories cover their descendants, counted once. Exact bytes and object counts, including zero-byte objects.</p>
-    {dates && !registry.error && <HotSearchForm key={rawParams.toString()} params={params} dates={registry.data?.dated ? dates : undefined} onSearch={setParams} />}
+    {dates && !registry.error && <HotSearchForm key={rawParams.toString()} params={params} dates={registry.data?.dated ? dates : undefined} onSearch={next => setParams(nameUrlParams(next, dates))} />}
     {registry.data && !registry.error && <p id="hot-availability" className="hot-note">{registry.data.static ? staticDomain(registry.data.static)
       : catalogOnly.length
       ? `${catalogOnly.map(row => `${row.date}: catalog literals only, using membership qualified on ${row.qualification_dates!.join(', ')}`).join('. ')}—not a current-scan frequency claim. Other literals are unavailable for those scans, not zero matches; no on-demand fallback.`

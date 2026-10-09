@@ -51,11 +51,11 @@ describe('private dated scan registry', () => {
     const response = await scans({ ...env, QUERY_BOX_DATED_NAMES: '0' })
     expect(response.status).toBe(200); expect(await response.text()).toBe(raw)
   })
-  it.each(['bad identity', 'partial buckets', 'unbounded dates', 'invalid utf8', 'JSON'])('refuses %s metadata', async issue => {
+  it.each(['bad identity', 'duplicate buckets', 'unbounded dates', 'invalid utf8', 'JSON'])('refuses %s metadata', async issue => {
     const body = datedNameRegistry()
     const daily = body.dates[2]
     if (issue === 'bad identity' && 'source' in daily) daily.source = { ...daily.source, artifact_sha256: 'invalid' }
-    if (issue === 'partial buckets') body.bucket_paths.pop()
+    if (issue === 'duplicate buckets') body.bucket_paths.push(body.bucket_paths[0])
     if (issue === 'unbounded dates') body.dates = Array.from({ length: 67 }, () => body.dates[2])
     fetcher.mockResolvedValue(new Response(issue === 'invalid utf8' ? new Uint8Array([255]) : issue === 'JSON' ? '{' : JSON.stringify(body)))
     await refused(await scans(), 503, unavailable)

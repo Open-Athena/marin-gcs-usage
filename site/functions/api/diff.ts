@@ -23,7 +23,7 @@ import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeC
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
-const SCAN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
+import { isScanId } from '../../src/scanSlug.js'
 
 export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
@@ -44,7 +44,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
   const top = Math.min(5000, Number(url.searchParams.get('top')) || 500)
   const summary = url.searchParams.get('summary') === '1'
   const depth = Number(url.searchParams.get('depth')) || undefined
-  if (!SCAN_RE.test(from) || !SCAN_RE.test(to)) return new Response('bad from/to', { status: 400 })
+  if (!isScanId(from) || !isScanId(to)) return new Response('bad from/to', { status: 400 })
   if (from >= to) return new Response('from must precede to', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
 

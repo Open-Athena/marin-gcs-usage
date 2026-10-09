@@ -10,7 +10,7 @@ from dt_cloud import static_names as sn
 from dt_cloud import static_roots as sr
 
 from test_static_catalog import built  # noqa: F401
-from test_static_names import _coalesced_oracle, _oracle, fixture  # noqa: F401
+from test_static_names import _coalesced_oracle, _oracle, fixture, scan_ids  # noqa: F401
 
 V = 4
 
@@ -174,9 +174,8 @@ def _two_level(out, R: int, rg: int, aliases: dict | None = None, idx_rg: int = 
 
 @pytest.mark.parametrize("R,K,rg", [(3, 2, 4), (10, 1, 8), (10**6, 5, 8192)])
 def test_drill_equals_brute_force(built, tmp_path, R, K, rg):  # noqa: F811
-    from test_static_names import DATES
-
     root, scans, merged, ranges, plan, build, out, con, tmp = built
+    dates = scan_ids(scans)
     rows, terms = _member_roots(built, agg=False, chunk_rows=7)
     con.execute("DROP TABLE IF EXISTS st")
     for r in ranges["ranges"]:
@@ -197,12 +196,12 @@ def test_drill_equals_brute_force(built, tmp_path, R, K, rg):  # noqa: F811
     for t in sorted(terms | shorts):
         drill = drills["short" if len(t) <= 2 else "long"]
         for P in dirs:
-            got = drill.view(t, P, DATES)
+            got = drill.view(t, P, dates)
             sources[got["source"]] = sources.get(got["source"], 0) + 1
             if got["source"] == "plain":
                 assert t in P.lower()
                 continue
-            for d in DATES:
+            for d in dates:
                 exp = _brute_view(versions, t, P, d)
                 if got["source"] == "roots":
                     assert got["answers"][d] == exp, (t, P, d)
@@ -243,9 +242,8 @@ def test_brute_view_sql_equals_oracle(fixture):  # noqa: F811
 def test_digests_identify_equal_root_sets(built):  # noqa: F811
     """Chunked digests: equal exactly when two members' root sets are equal; and a build over canonical members
     only, read through the aliases, answers every member as brute force."""
-    from test_static_names import DATES
-
     root, scans, merged, ranges, plan, build, out, con, tmp = built
+    dates = scan_ids(scans)
     _member_roots(built, agg="digest", chunk_rows=7, into="dg")
     dig = {r[0]: r[1:] for r in con.execute("SELECT q, sum(n), sum(h1) % 18446744073709551616, sum(h2) % 18446744073709551616 FROM dg GROUP BY q").fetchall()}
     rows, terms = _member_roots(built, agg=False, chunk_rows=10**9)
@@ -265,9 +263,9 @@ def test_digests_identify_equal_root_sets(built):  # noqa: F811
     dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p})
     for t in sorted(terms):
         for P in dirs:
-            got = drill.view(t, P, DATES)
+            got = drill.view(t, P, dates)
             if got["source"] == "roots":
-                assert got["answers"] == {d: _brute_view(versions, t, P, d) for d in DATES}, (t, P)
+                assert got["answers"] == {d: _brute_view(versions, t, P, d) for d in dates}, (t, P)
 
 
 @pytest.mark.parametrize("small", [True, False])
@@ -278,9 +276,8 @@ def test_drill_verify(built, tmp_path, small, monkeypatch):  # noqa: F811
     import json
 
     from click.testing import CliRunner
-    from test_static_names import DATES
-
     root, scans, merged, ranges, plan, build, out, con, tmp = built
+    dates = scan_ids(scans)
     rows, terms = _member_roots(built, agg=False, chunk_rows=7)
     monkeypatch.setattr(sr, "ROOT_RG", 4)
     sr.build_roots(con, "rt", 3, 2, tmp_path / "long", "x")
@@ -292,12 +289,12 @@ def test_drill_verify(built, tmp_path, small, monkeypatch):  # noqa: F811
     answers, refs = [], []
     for t in sorted(terms):
         for P in dirs:
-            a = drill.view(t, P, DATES)
+            a = drill.view(t, P, dates)
             if small and a["source"] != "rollup":  # a roots case never has a partial reference (≤ R + 2·rg roots)
                 continue
             a["s"] = 0
             answers.append(a)
-            for d in DATES:
+            for d in dates:
                 exp = _brute_view(versions, t, P, d)
                 total = [sum(v[i] for v in exp.values()) for i in (0, 1)]
                 kept = set(a.get("kept") or [])

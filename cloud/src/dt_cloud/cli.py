@@ -28,6 +28,7 @@ from .secrets import env_secret, secret
 from .index_footer import INDEX_VARIANTS
 from .prefixes import load_prefix_map
 from .records import mine_record_rows
+from .scan_id import scan_id_option, snapshot_scans
 from .signals import RECORD_BASENAME, manual_rows, record_file_paths, user_prefix_rows
 
 err = partial(print, file=sys.stderr)
@@ -404,7 +405,7 @@ def wandb_mine(
 @main.command("path-index")
 @option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s); adds per-node user overlays")
 @option("-c", "--dir-cache", "dir_cache", type=Path, default=None, help="Layer-2 cache dir (dir-stats/age-days parquet): attribution-independent rollups reused by re-attribution runs — see gcs:specs/dir-agg-cache.md")
-@option("-d", "--asof", required=True, help="Scan date the listing came from (YYYY-MM-DD)")
+@option("-d", "--asof", required=True, callback=scan_id_option, help="Scan id the listing came from (YYYY-MM-DD or YYYY-MM-DDTHHMM)")
 @option("-i", "--identities", "identities_path", envvar=IDENTITIES_ENV, default=None, help=f"identities.yaml path or URL, needed with -a (${IDENTITIES_ENV}): the deployment's roster, kept outside the repo")
 @option("-l", "--listing", "listings", required=True, multiple=True, help="Listing parquet glob(s): scan_gcs or SII inventory schema; repeatable — earlier sources win per bucket")
 @option("-o", "--out", "out_dir", type=Path, default=None, help="Output dir for JSON files [default: site/public/data/<asof>]")
@@ -431,10 +432,9 @@ def build_path_index(
     """Generate a dated site-data snapshot (tree/age/meta JSONs) from a listing.
 
     Snapshots live at site/public/data/<asof>/; the sibling scans.json index
-    (dates, newest first — the site's scan dropdown) is refreshed afterwards.
+    (scan ids, newest first — the site's scan dropdown) is refreshed afterwards.
     """
     import json
-    import re
 
     from .viz import write_path_index
 
@@ -447,14 +447,7 @@ def build_path_index(
     )
     err(f"wrote {out_dir}/: age.json meta.json ({meta['total_bytes']/1e12:.0f} TB, {meta['total_objects']:,} objects)")
     data_root = out_dir.parent
-    dates = sorted(
-        (
-            p.name
-            for p in data_root.iterdir()
-            if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name) and (p / "meta.json").exists()
-        ),
-        reverse=True,
-    )
+    dates = snapshot_scans(data_root)
     if dates:
         (data_root / "scans.json").write_text(json.dumps(dates) + "\n")
         err(f"scans.json: {dates}")
@@ -506,7 +499,7 @@ def rules(identities_path: str, out: Path | None) -> None:
 
 
 @main.command()
-@option("-d", "--date", default=None, help="Scan date YYYY-MM-DD (default: latest from scans.json)")
+@option("-d", "--date", default=None, help="Scan id or prefix: YYYY-MM-DD[THH[MM]] — the latest scan it matches (default: latest from scans.json)")
 @option("-f", "--max-age-days", default=2, type=int, help="Freshness: latest scan must be within this many days")
 @option("-j", "--json", "as_json", is_flag=True, help="Emit machine-readable JSON to stdout")
 @option("-s", "--subdir", default=None, help="Snapshot subdir under /data/ (default: $SNAPSHOTS_SUBDIR; `cw` for the CoreWeave deployment, empty for the default store)")
@@ -3207,7 +3200,7 @@ def ch_narrow_response_compare(before: Path, after: Path) -> None:
 @main.command("ch-ingest")
 @option("-a", "--allow-drop", is_flag=True, help="Ingest a scan lacking roots (buckets) the store has, closing them (else refused as partial)")
 @option("-B", "--db", default=None, help="The store's database (default: $CLICKHOUSE_DB, else `default`)")
-@option("-d", "--date", "scan_id", required=True, help="The scan id (`YYYY-MM-DD[THHMM]`)")
+@option("-d", "--date", "scan_id", required=True, callback=scan_id_option, help="The scan id (`YYYY-MM-DD[THHMM]`)")
 @option("-f", "--force", is_flag=True, help="Ingest a scan of fewer than half the open rows (else refused as partial)")
 @option("-F", "--server-file", is_flag=True, help="SRC is a path under the ClickHouse server's `user_files_path`, read server-side (fastest on the box itself)")
 @option("-g", "--data-bucket", default=None, help="Where the default SRC lives (default: $DATA_BUCKET)")
@@ -3489,7 +3482,7 @@ def over_time_churn_cmd(groups: tuple[str, ...]) -> None:
 @option("-L", "--local", is_flag=True, help="Write to the local wrangler D1 instead of --remote")
 @option("-s", "--store", default="primary", help="The store these index rows belong to (specs/multi-store.md): `primary` (default) or a secondary store's `STORES_JSON` key")
 @option("-v", "--variant", "variants", multiple=True, type=Choice(list(INDEX_VARIANTS)), help="Only sync these variants (default: all)")
-@argument("date")
+@argument("date", callback=scan_id_option)
 def index_sync(
     age_only: bool,
     bucket: str,
@@ -3611,7 +3604,7 @@ def index_gc(
 @main.command("index-dir")
 @option("-s", "--store", default="primary", help="The store these index rows belong to (specs/multi-store.md): `primary` (default) or a secondary store's `STORES_JSON` key")
 @option("-v", "--variant", default="path", type=Choice(list(INDEX_VARIANTS)), help="Which variant's dir")
-@argument("date")
+@argument("date", callback=scan_id_option)
 def index_dir_cmd(store: str, variant: str, date: str) -> None:
     """Print the bucket-relative dir holding a scan's index variant (the D1
     pointer). Exits 1, printing nothing, when that (date, variant) was never
@@ -4712,7 +4705,7 @@ def job_watch(interval: int, name: str | None) -> None:
 
 @job.command("submit-listing")
 @option("-b", "--bucket", "buckets", multiple=True, help="Bucket(s) to list [default: $FLEET_BUCKETS, space-separated]")
-@option("-d", "--date", "date", required=True, help="Listing date — output goes to listing/<date>/<bucket>/")
+@option("-d", "--date", "date", required=True, callback=scan_id_option, help="Scan id (YYYY-MM-DD or YYYY-MM-DDTHHMM) — output goes to listing/<id>/<bucket>/")
 @option("-L", "--legacy-weights", "legacy", multiple=True, help="`<bucket>=<subdir>`: also take that bucket's chunk weights from an older listing layout under the data bucket (`<subdir>/*`), after its DIY listings; repeatable")
 @option("-m", "--machine", default="n2-standard-32", help="Machine type per task")
 @option("-P", "--procs", default=24, help="bulk-list worker processes per task")
@@ -5346,10 +5339,12 @@ def publish_r2(
 
 from .static_append import cli as _static_append  # noqa: E402
 from .static_catalog import cli as _static_catalog  # noqa: E402
+from .static_runner import add_cmd as _static_runs_add  # noqa: E402
 from .static_names import cli as _static_names  # noqa: E402
 from .static_roots import cli as _static_roots  # noqa: E402
 
 _static_names.add_command(_static_catalog)
+_static_append.add_command(_static_runs_add)
 _static_names.add_command(_static_append)
 _static_names.add_command(_static_roots)
 main.add_command(_static_names)

@@ -349,7 +349,7 @@ A deployment flag (gcs): the map's filter (`/api/subtree`, `/api/diff`, `/api/se
 | `unsupported-terms` | several terms, or alternatives (`a b`, `a|b`, two short terms) |
 | `unsupported-slash` | a term holding `/` (also `/api/name-summary`'s `name`) |
 | `unsupported-scope` | a filter with `o=`, `lens=` or `cl=` |
-| `scan-not-indexed` | the literal's answer doesn't cover the scan: a scan outside the generation, or a heavy literal past the drill base (until the drill's daily append); also `/api/name-summary` on a scan outside the index |
+| `scan-not-indexed` | the literal's answer doesn't cover the scan: a scan outside the generation, or a heavy literal past the drill base (until the drill's per-scan append) (`/api/name-summary` keeps its own scan refusal) |
 
 A view root whose path holds the literal is the plain view, on any scan. The series names uncovered scans (`unindexed: [dates]`, gaps) instead of reading the client's roots per scan. `GET /api/filter-caps` → `{ indexedOnly }` tells the filter box, which refuses the same forms inline (never sending them), shows the server's codes as its message, and lists only the supported form in its help. Unset (cw, the r2 demo, local), nothing changes.
 

@@ -1,16 +1,16 @@
-# Static name search: the daily append
+# Static name search: per-scan append
 
-Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the daily entry point `job/static-daily.sh` on `gcs-static`. Not yet scheduled; not on prod.
+Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the entry point `dt-cloud static-names runs add` (`static_runner.py`; it replaces `job/static-daily.sh` on `gcs-static`). Not yet scheduled; not on prod.
 
 ## Why
 
-The static name index (`specs/architecture/static-name-search.md`) answers `/names` and the map's `?f=<literal>` filter from R2 alone, but only for the scans of its generation. `2026-10-08c` ends at 2026-10-08. Every newer scan gets a 400 from `/api/name-summary` and the filter falls back to the per-scan path-store walk. Rebuilding a whole generation per day (~$10 Batch, 136 GB re-copied to R2, ~$16 egress) and keeping a full copy per scan is the cost this design avoids.
+The static name index (`specs/architecture/static-name-search.md`) answers `/names` and the map's `?f=<literal>` filter from R2 alone, but only for the scans of its generation. `2026-10-08c` ends at 2026-10-08. Every newer scan gets a 400 from `/api/name-summary` and the filter falls back to the per-scan path-store walk. Rebuilding a whole generation per scan (~$10 Batch, 136 GB re-copied to R2, ~$16 egress) and keeping a full copy per scan is the cost this design avoids.
 
-The goal: fast, exact `?f=` text search on the main map (treemap, table, diff) at any drill path and any date, so each daily scan has to join the index the day it lands.
+The goal: fast, exact `?f=` text search on the main map (treemap, table, diff) at any drill path and any date, so each scan has to join the index when it lands.
 
 ## Shape
 
-The base generation stays immutable. Each scan `D` adds one small **run** under new keys. A small immutable **manifest** per day lists the base plus the live runs. Readers query the base and every listed run in parallel and merge the results. Under a binary-counter policy, runs merge into bigger runs, so a lookup reads at most ⌊log₂ n⌋ + 1 runs after n days. Periodically, the base and its runs compact into a new generation.
+The base generation stays immutable. Each scan `D` adds one small **run** under new keys. A small immutable **manifest** per scan lists the base plus the live runs. Readers query the base and every listed run in parallel and merge the results. Under a binary-counter policy, runs merge into bigger runs, so a lookup reads at most ⌊log₂ n⌋ + 1 runs after n scans. Periodically, the base and its runs compact into a new generation.
 
 Nothing is overwritten or deleted in place. A day's outputs are new keys, and the manifest that publishes them is a new key too.
 
@@ -28,10 +28,10 @@ The base generation's coalesced versions (`cintervals/r####.parquet`, `CINTERVAL
   - `dhist/r####.parquet`: the delta's suffix rows per three-character prefix, for the shard plan.
 - The first append reads `prev` from the base's `cintervals/` (`WHERE vt = OPEN`).
 - **Where the state lives:**
-  - `copen/` goes to the scratch bucket (`gs://oa-gcs-usage-scratch/static-names/<gen>/state/<D>/copen/`, beside `state/<D>/done/r####.json`, each range's marker, written after its `copen`). The bucket has a 7-day age-based delete rule and no soft delete.
-  - `cdelta/` goes to the data bucket under the run (`gs://oa-gcs-usage-dvx/static-names/<gen>/deltas/<D>/cdelta/`), kept permanently: it is small (21.9 MB on 2026-10-09), and tier merges write new run dirs without touching the per-day ones.
-- **Only the newest complete state is kept** (`daily prune -g GEN -d D`, the chain's last stage). A day's state is a full copy of the open versions (4.4 GB on 2026-10-09), and the next append reads only the newest. Once `state/D/` is complete (every range's `copen/r####.parquet` and `done/r####.json`, for all `ranges.json` `k`) and D's run is published (`manifests/D.json`), `prune` deletes `state/<prev>/` for every prev < D. It never deletes before D is complete, so the only complete state is never deleted, and a rerun of D's append still finds its `prev`. It deletes nothing outside the scratch bucket's `static-names/<gen>/state/` (an object under there whose day dir isn't a date is an error), and it is idempotent: a rerun finds nothing before D. Without it, the 7-day rule alone would keep about a week of states (~31 GB).
-- **A lost state is rebuilt, not stored** (`daily rebuild-state -g GEN -d D -m MOUNT`, per task like `append`). The open versions after D are the base's `cintervals` open rows, minus every version a run's `cdelta` closed (`op` −1), plus every version one opened (`op` 1), over D's manifest's runs oldest first. A version's identity is `(depth, path, usr, vf)`, and one opened by a run has that run's `vf`, past every base version's. The rebuilt `copen` matches the appended one byte for byte (`test_rebuild_open_equals_the_appended_state`). This is the recovery when the newest state expires: the 7-day rule removes it if the daily chain stalls for a week. It reads the base's `cintervals` (4.72 GiB over 256 ranges for `2026-10-08c`) plus the runs' `cdelta`s (~22 MB a day), about what one day's `append` reads, and writes the same 4.4 GB `copen` the append would. That is cheap enough as a recovery path, so no state needs to be kept beyond the newest.
+  - `copen/` goes to the scratch bucket (`gs://oa-gcs-usage-scratch/static-names/<gen>/state/<id>/copen/`, beside `state/<id>/done/r####.json`, each range's marker, written after its `copen`). The bucket has a 7-day age-based delete rule and no soft delete.
+  - `cdelta/` goes to the data bucket under the run (`gs://oa-gcs-usage-dvx/static-names/<gen>/deltas/<id>/cdelta/`), kept permanently: it is small (21.9 MB on 2026-10-09), and tier merges write new run dirs without touching the per-scan ones.
+- **Only the newest complete state is kept** (`runs prune -g GEN -d ID`, the chain's last stage). A scan's state is a full copy of the open versions (4.4 GB on 2026-10-09), and the next append reads only the newest. Once `state/D/` is complete (every range's `copen/r####.parquet` and `done/r####.json`, for all `ranges.json` `k`) and D's run is published (`manifests/D.json`), `prune` deletes `state/<prev>/` for every prev < D. It never deletes before D is complete, so the only complete state is never deleted, and a rerun of D's append still finds its `prev`. It deletes nothing outside the scratch bucket's `static-names/<gen>/state/` (an object under there whose dir isn't a scan id is an error), and it is idempotent: a rerun finds nothing before D. Without it, the 7-day rule alone would keep about a week of states (~31 GB).
+- **A lost state is rebuilt, not stored** (`runs rebuild-state -g GEN -d ID -m MOUNT`, per task like `append`). The open versions after D are the base's `cintervals` open rows, minus every version a run's `cdelta` closed (`op` −1), plus every version one opened (`op` 1), over D's manifest's runs oldest first. A version's identity is `(depth, path, usr, vf)`, and one opened by a run has that run's `vf`, past every base version's. The rebuilt `copen` matches the appended one byte for byte (`test_rebuild_open_equals_the_appended_state`). This is the recovery when the newest state expires: the 7-day rule removes it if the chain stalls for a week. It reads the base's `cintervals` (4.72 GiB over 256 ranges for `2026-10-08c`) plus the runs' `cdelta`s (~22 MB a scan), about what one scan's `append` reads, and writes the same 4.4 GB `copen` the append would. That is cheap enough as a recovery path, so no state needs to be kept beyond the newest.
 
 ### 2. Delta suffix rows → the run's shards (1 Batch task)
 
@@ -54,7 +54,7 @@ The base generation's coalesced versions (`cintervals/r####.parquet`, `CINTERVAL
 - **Binary counter.** Runs carry a level; a day's run is level 0. After adding it, while the two newest runs have the same level `k`, they merge into one run of level `k + 1` spanning both. So after n days the live runs are the binary digits of n: at most ⌊log₂ n⌋ + 1 runs, and each day's rows are rewritten O(log n) times in all.
 - **Merge.** `pyrmts.runs.merge_sorted` (pyrmts Phase 2, a streaming k-way merge) runs over the runs' `sx` (each run's shard files in prefix order), with `reduce={'vt': 'min'}` on `(s, path, usr, vf)`. The merged stream is re-cut into shards at three-character-prefix boundaries (`write_run_shards`).
   - The catalogs merge with `merge_parquets(tiers, ['q', 'bucket', 'vf'], reduce='newest')`.
-  - The `cdelta`s merge with `identity=(depth, path, usr, vf)`, `reduce={'vt': 'min', 'op': 'max'}` (`merge_cdeltas`). The per-day `cdelta`s are kept anyway: the catalog append consumes one per scan, as point events.
+  - The `cdelta`s merge with `identity=(depth, path, usr, vf)`, `reduce={'vt': 'min', 'op': 'max'}` (`merge_cdeltas`). The per-scan `cdelta`s are kept anyway: the catalog append consumes one per scan, as point events.
 - **Compaction into a new base generation.** When the counter would reach level 5 (32 days), or on demand, the base plus its runs fold into a new generation.
   - The same merge (base first) is cut to the new generation's shard plan (`merge_shards(..., plan=…)`: shard `i` holds prefixes `[lo, hi)`, empty ones written as the build writes them). It is then the full build byte for byte (`test_compaction_equals_full_build`).
   - The catalog merge of base ⊕ runs is likewise the rebuilt catalog byte for byte.
@@ -129,7 +129,7 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 
 ### Manifest
 
-`static-names/<gen>/manifests/<D>.json`, one per day, never rewritten:
+`static-names/<gen>/manifests/<id>.json`, one per scan (by scan id), never rewritten:
 
 ```json
 {"gen": "2026-10-08c", "date": "2026-10-09", "scans": ["2026-07-30", "…", "2026-10-09"],
@@ -164,41 +164,48 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 
 ## Implementation
 
-- `cloud/src/dt_cloud/static_append.py`: `dt-cloud static-names daily {prepare,append,shards,catalog,publish,prune,rebuild-state,verify}`, run as `MODULE=static_append job/static-names.sh run …`; the whole chain is `job/static-daily.sh DATE` (below).
-- `job/static-names.sh` stages `pyrmts` (not in the job image) beside `dt_cloud`.
+- `cloud/src/dt_cloud/static_append.py`: the stages, `dt-cloud static-names runs {prepare,append,shards,catalog,publish,prune,rebuild-state,verify}` (Batch tasks run `python -m dt_cloud.static_append <stage> …`).
+- `cloud/src/dt_cloud/static_runner.py`: the chain, `dt-cloud static-names runs add SCAN_ID [-c] [-n] [-t TERMS]` (below).
+- `cloud/src/dt_cloud/static_profile.py`: the deployment profile (`Profile`); `static_profile_examples.py`: `gcs` and `cw`, worked examples. `cloud/src/dt_cloud/scan_ids.py`: scan ids (`SCAN_ID`, `scan_epoch`, `check_order`).
 - Tier merges use `pyrmts.runs` (pinned 541bc8e).
-- Reader: `site/functions/_lib/staticRuns.ts` (`Tiers`, `TieredNames`, `TieredCatalog`), wired into `nameSummaryStatic.ts` and `staticFilter.ts`, on branch `daily-append-site`.
+- Reader: `site/functions/_lib/staticRuns.ts` (`Tiers`, `TieredNames`, `TieredCatalog`), wired into `nameSummaryStatic.ts` and `staticFilter.ts`; the generation is the deployment's `STATIC_GEN` var (required).
 
-Per scan D:
+### The unit is a scan
+
+A deployment may scan once a day, every 6 h, or once more on demand; nothing here assumes a cadence. Each scan is one run, keyed by its scan id (`YYYY-MM-DDTHHMM`, or a bare `YYYY-MM-DD` from before a deployment went sub-daily; specs/scan-ids-not-dates.md): `deltas/<id>/`, `manifests/<id>.json`, `state/<id>/`. Ids sort in time order (a bare date as its midnight), so "the newest manifest" is the greatest key, and `prune` keeps the newest complete state by id. Two scans of one day are two runs and two manifests.
+
+### Deployment profile
+
+`static_profile.Profile`: layouts (key templates of the scans' `path` sorts, `{id}` and `{gen}`), data and scratch buckets, base generation, R2 bucket and the R2 copy's Secret Manager secret names, GCP project, region, job image, accounts, machine, local SSD, spot, append tasks, an optional staged source tree. `STATIC_NAMES_PROFILE` selects an example (`gcs`, `cw`) or a JSON file; every field's env var (`static_profile.ENV`: `STATIC_NAMES_{LAYOUTS,BUCKET,SCRATCH,GEN,R2_SECRETS,REGION,IMAGE,SA,R2_SA,MACHINE,SSD,SPOT,APPEND_TASKS,SRC}`, `R2_BUCKET`, `R2_ENDPOINT`, `GCP_PROJECT`) goes on top. Nothing defaults to a deployment: a missing field is an error naming its variable. A base's `scans.json` records its layouts; a base from before that (gcs's `2026-10-08c`) uses the profile's.
+
+### Entry point: `dt-cloud static-names runs add SCAN_ID`
+
+```
+prepare → append (key ranges, `append_tasks` tasks) → shards ∥ catalog → publish (Batch: tier merges + manifests/<id>.json) → R2 (each run in the manifest, then manifests/) [→ verify, -t] → prune
+```
+
+- **Strictly in scan-id order.** The published scans (under the base's layouts) after the generation's newest (base + the newest manifest's runs), through SCAN_ID, are pending. SCAN_ID must be the oldest of them, else exit 3 naming the others; `-c` appends every pending scan in order. A scan already appended reruns only the R2 copy and prune.
+- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/<id>/scans.json` (prepare), all `ranges.json` `k` of `deltas/<id>/dhist/` (append; `append` also skips done ranges within a job), `deltas/<id>/sidecar.parquet` (shards), `deltas/<id>/catalog/meta.json` (catalog), `manifests/<id>.json` (publish), `deltas/<id>/verify.json` (verify). `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
+- **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/<id>.json` (`if_generation_match=0`), and the scratch bucket's `state/<id>/`. The one delete is `prune`'s: earlier scans' `state/<prev>/` in the scratch bucket, once `state/<id>/` is complete.
+- **Exit status:** 0 done; 3 the scan is not published yet, or an earlier published scan is pending (without `-c`), or `prepare` refuses; 1 a stage failed.
+- **GCS and Batch over their APIs** (ADC; no `gcloud`), so it runs inside a scan job's image. Batch jobs are named `sn-<stage>-<id>-<hhmmss>` and labelled `purpose=static-names`, `stage`, `gen`.
+- **R2:** one Batch job per scan (every run the manifest lists, then `manifests/`), as the profile's R2 account, with the R2 key from Secret Manager (`secretVariables`) and the endpoint from its secret or `R2_ENDPOINT`.
+- **`-n`:** dry run. It reports each stage as done or that it would run; it submits and writes nothing.
+- **Scheduling:** after a scan's `path` sort is written, run `dt-cloud static-names runs add -c <id>` (gcs: from `job/run.sh` after `index-sync`; cw: from `job/cw-run.sh`). On exit 3, try again later; it is safe to run on a timer.
+
+Per scan, by hand (what `runs add` submits):
 
 ```bash
-dt-cloud static-names daily prepare -g 2026-10-08c -d D                                                    # laptop: pin D's path sort → deltas/D/scans.json
-MODULE=static_append SPOT=1 job/static-names.sh run append 16 -g 2026-10-08c -d D -n 16                     # 256 ranges
-MODULE=static_append SPOT=1 PARALLELISM=1 job/static-names.sh run shards 1 -g 2026-10-08c -d D
-MODULE=static_append SPOT=1 job/static-names.sh run catalog 1 -g 2026-10-08c -d D
-dt-cloud static-names daily publish -g 2026-10-08c -d D [-m MOUNT]                                         # merges (if the counter carries), then manifests/D.json
-job/static-names.sh r2 2026-10-08c/deltas/D && job/static-names.sh r2 2026-10-08c                            # the run, then the manifest (last)
-MODULE=static_append SPOT=1 job/static-names.sh run verify 1 -g 2026-10-08c -d D -t gs://…/terms.txt
-dt-cloud static-names daily prune -g 2026-10-08c -d D [-n]                                                  # keep only state/D/ (refuses until it is complete)
+dt-cloud static-names runs prepare -g GEN -d ID
+python -m dt_cloud.static_append append -g GEN -d ID -n N -m /gcs/BUCKET      # Batch, ⌈k/N⌉ tasks
+python -m dt_cloud.static_append shards -g GEN -d ID -m /gcs/BUCKET           # Batch ∥ catalog
+python -m dt_cloud.static_append catalog -g GEN -d ID -m /gcs/BUCKET
+python -m dt_cloud.static_append publish -g GEN -d ID -m /gcs/BUCKET          # merges (if the counter carries), then manifests/ID.json
+python -m dt_cloud.static_names r2-copy -g GEN/deltas/ID && python -m dt_cloud.static_names r2-copy -g GEN -o manifests/
+dt-cloud static-names runs prune -g GEN -d ID [-n]
 ```
 
-### Daily entry point (gcs: `job/static-daily.sh DATE`)
-
-One script runs the chain above for a scan, from a checkout (the stages' code is staged from HEAD) or, with `SRC=image`, from a job image built from the lock (its own `dt_cloud` + `pyrmts`):
-
-```
-prepare → append (16 tasks × 16 ranges) → shards ∥ catalog → publish (Batch: tier merges + manifests/D.json) → R2 (each run in the manifest, then manifests/) [→ verify, with VERIFY_TERMS] → prune
-```
-
-- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/D/scans.json` (prepare), all `ranges.json` `k` of `deltas/D/dhist/` (append; `append` also skips done ranges within a job), `deltas/D/sidecar.parquet` (shards), `deltas/D/catalog/meta.json` (catalog), `manifests/D.json` (publish), `deltas/D/verify.json` (verify). A rerun after a failure resumes at the first missing output. `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
-- **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/D.json` (`if_generation_match=0`), and the scratch bucket's `state/D/`. Nothing is overwritten. The one delete is `prune`'s: earlier days' `state/<prev>/` in the scratch bucket, once `state/D/` is complete. It always runs (it is a no-op when nothing precedes D).
-- **Exit status:** 0 done; 3 the scan is not published yet (no `listing/D/{index/*/,}path-index.parquet`) or is not the next scan after the live runs (`prepare` refuses); else a stage failed.
-- **Progress:** one line per stage start and end (UTC, elapsed) to stderr and `tmp/static-daily/D.log`, each stage's output in `D.log.<stage>.out`; Batch jobs are named `sn-<stage>-D-<hhmmss>` and labelled `purpose=static-names`.
-- **`-n`:** dry run. It reports each stage as done or names the command it would run; it submits and writes nothing.
-- **R2 (`R2_VIA`):** `batch` (default) runs `r2-copy` as a 1-task Batch job (`job/static-names.sh r2-batch`) with the key from Secret Manager (`gcs-static-index-r2-key-id`, `gcs-static-index-r2-secret`: an R2 token for bucket `oa-gcs-usage-index` only, accessor = the job account; `infra/gcp` on gcs) via `secretVariables`, and the endpoint from `R2_ENDPOINT` or `CLOUDFLARE_ACCOUNT_ID`. `vm` uses the ch-store VM's key (`job/static-names.sh r2`, which replaces `/data/sn/src` there). The VM's key is account-wide (every R2 bucket), so it is a stopgap until the scoped token's versions are in Secret Manager.
-- **Scheduling:** after the daily snapshot (`job/run.sh`) has written the scan's `path` sort, run `job/static-daily.sh "$DATE"`. On exit 3, try again later; it is safe to run on a timer.
-
-Dry runs on 2026-10-09 (UTC morning): `-n 2026-10-10` exits 3 (not published yet), and `-n 2026-10-09` reports every stage done, with only the R2 copy left to (re)run as a no-op.
+Dry runs on 2026-10-09 (UTC, gcs, `runs add -n`): `2026-10-10` and `2026-10-09T1236` exit 3 (not published yet), and `2026-10-09` (appended) reruns only the R2 copy and prune.
 
 ## Cost and footprint
 
@@ -238,7 +245,7 @@ Dry runs on 2026-10-09 (UTC morning): `-n 2026-10-10` exits 3 (not published yet
 
 A new manifest is picked up after the TTL. A mutation that keeps the largest `vt` fails 4 of the 9 tests.
 
-**Real run** (`daily verify`, Batch): brute force from D's scan file versus the base + runs read through the reader logic. Per literal:
+**Real run** (`runs verify`, Batch): brute force from D's scan file versus the base + runs read through the reader logic. Per literal:
 
 - a catalog member: its per-bucket totals;
 - otherwise: its live first hits as a list, both whole and under drill roots (`''`, its top buckets, its top depth-2 dirs);

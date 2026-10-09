@@ -29,10 +29,10 @@ import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeC
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 // The default store's snapshot dirs (`snapshots/<date>/`; other stores live in
-// a named subdir that DATE_RE keeps out), and the scan-id shape they're named by.
-const DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{4})?$/
+// a named subdir that `isScanId` keeps out), and the scan-id shape they're named by.
 
 /** Scans present as snapshot dirs but absent from the index (oldest first). */
 async function unindexedScans(env: Ctx['env'], indexed: Set<string>): Promise<string[]> {
@@ -43,7 +43,7 @@ async function unindexedScans(env: Ctx['env'], indexed: Set<string>): Promise<st
     const page = await store.list(snapshotsPrefix(env), { cursor })
     for (const e of page.entries) {
       const d = e.key.slice(snapshotsPrefix(env).length).replace(/\/$/, '')
-      if (e.isDir && DATE_RE.test(d) && !indexed.has(d)) out.push(d)
+      if (e.isDir && isScanId(d) && !indexed.has(d)) out.push(d)
     }
     cursor = page.cursor
   } while (cursor)
