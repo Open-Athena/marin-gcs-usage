@@ -275,24 +275,27 @@ describe('the store has a scan the name index doesn\'t hold yet: ?d= means the m
   })
 })
 
+// "now" for the slugs /names writes: 10/9's hours 06 and 12 have ended, the day hasn't
+const SLUG_NOW = new Date(Date.UTC(2026, 9, 9, 20))
+
 it('a /names search writes the canonical ?d= (latest floats, as on the map)', () => {
-  const write = (qs: string) => nameUrlParams(new URLSearchParams(qs), SUB_DAILY_SCANS).toString()
+  const write = (qs: string) => nameUrlParams(new URLSearchParams(qs), SUB_DAILY_SCANS, SLUG_NOW).toString()
   expect([
     write('name=gof&date=2026-10-09T1802'),
     write('name=gof&date=2026-10-09T0601'),
     write('name=gof&date=2026-10-09T1802&from=2026-10-09T0601'),
     write('name=gof&date=2026-10-08&from='),
-  ]).toEqual(['name=gof', 'd=2610090601&name=gof', 'd=-2610090601&name=gof', 'd=2610080000&name=gof'])
+  ]).toEqual(['name=gof', 'd=26100906&name=gof', 'd=-26100906&name=gof', 'd=261008&name=gof'])
 })
 
 it('every registry scan, date-only or timed on the same day, round-trips through a /names search URL to itself', () => {
   const DAY2 = ['2026-10-08', '2026-10-09', '2026-10-09T1236']
   const pick = (date: string, from = '') => {
-    const url = nameUrlParams(new URLSearchParams({ name: 'gof', date, from }), DAY2)
+    const url = nameUrlParams(new URLSearchParams({ name: 'gof', date, from }), DAY2, SLUG_NOW)
     return [url.toString(), nameRequest(nameScanParams(url, selOf(url), DAY2), DAY2)]
   }
   expect([pick('2026-10-08'), pick('2026-10-09'), pick('2026-10-09T1236'), pick('2026-10-09T1236', '2026-10-09')]).toEqual([
-    ['d=2610080000&name=gof', { date: '2026-10-08', name: 'gof' }],
+    ['d=261008&name=gof', { date: '2026-10-08', name: 'gof' }],
     ['d=2610090000&name=gof', { date: '2026-10-09', name: 'gof' }],
     ['name=gof', { date: '2026-10-09T1236', name: 'gof' }],
     ['d=-2610090000&name=gof', { date: '2026-10-09T1236', name: 'gof', from: '2026-10-09' }],
