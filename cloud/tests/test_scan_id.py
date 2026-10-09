@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from dt_cloud.cli import main
 import datetime as dt
 
-from dt_cloud.scan_id import META_PATH, check_scan_id, is_scan_id, latest_scan, scan_slug, scan_time, snapshot_scans
+from dt_cloud.scan_id import META_PATH, check_order, check_scan_id, is_scan_id, latest_scan, scan_epoch, scan_label, scan_slug, scan_time, snapshot_scans
 
 SCANS = ["2026-10-08", "2026-10-09T0601", "2026-10-09T1802", "2026-10-09T1215"]
 
@@ -92,3 +92,24 @@ def test_submit_listing_keys_by_scan_id(monkeypatch):
     r = CliRunner().invoke(main, ["job", "submit-listing", "-d", "2026-10-09T0601", "-b", "b1"])
     assert (r.exit_code, r.stdout) == (0, "job-1\n")
     assert calls == [({"date": "2026-10-09T0601", "buckets": ["b1"]}, "us-central1")]
+
+
+@pytest.mark.parametrize("v, ok", [
+    ("2026-10-09", True), ("2026-10-09T1236", True), ("2026-10-09T0000", True),
+    ("2026-02-30", False), ("2026-10-09T2460", False), ("2026-10-09T12", False), ("261009", False), (None, False),
+])
+def test_is_scan_id_static_cases(v, ok):
+    assert is_scan_id(v) == ok
+
+
+def test_order_mixes_forms_by_time():
+    """gcs's move to scan ids: a bare date sorts as its midnight, before that day's minute ids."""
+    ids = ["2026-10-10", "2026-10-09T1236", "2026-10-09", "2026-10-10T0601"]
+    assert check_order(ids) == ["2026-10-09", "2026-10-09T1236", "2026-10-10", "2026-10-10T0601"]
+    assert [scan_label(scan_epoch(i)) for i in check_order(ids)] == check_order(ids)
+
+
+def test_order_refuses_two_ids_at_one_instant():
+    with pytest.raises(ValueError) as e:
+        check_order(["2026-10-09T0000", "2026-10-09"])
+    assert str(e.value) == "scans 2026-10-09 and 2026-10-09T0000: ids out of time order (stamps 1791504000, 1791504000)"

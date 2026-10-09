@@ -25,7 +25,7 @@ carries it, so no dedup state is needed. Each first hit is two events — `+(siz
 the cells are `(q, bucket, vf, b, o)`, one per change, as the ClickHouse catalog's `catalog_cells`. A
 date's answer for a bucket is its newest cell at or before the date (none: zero).
 
-**Layout** (`gs://oa-gcs-usage-dvx/static-names/<gen>/catalog/`, copied to R2): `cells.parquet`, sorted
+**Layout** (`gs://<data bucket>/static-names/<gen>/catalog/`, copied to R2): `cells.parquet`, sorted
 `(q, bucket, vf)` in code-point order, `CELL_RG`-row groups, every member led by a header row `(q, '',
 0, rows, n)` (`rows` = its range rows, −1 for a one- or two-character literal; `n` = its cells), so a
 member with no first hits is still found; `index.parquet`, per row group `(rg, q_min, q_max, offset,
@@ -42,8 +42,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
+from .static_profile import data_bucket, scratch_bucket
 from .static_names import (
-    CINTERVAL_SCHEMA, CODEC, DATA_BUCKET, NAME, OPEN, PREFIX, SCRATCH_BUCKET, SX_SCHEMA, _batches, _download, _task, connect, err, q,
+    CINTERVAL_SCHEMA, CODEC, NAME, OPEN, PREFIX, SX_SCHEMA, _batches, _download, _task, connect, err, q,
     read_json, scan_epoch, upload_tree, write_sorted,
 )
 
@@ -544,7 +545,7 @@ def _shards_for_task(plan: dict, t: int) -> list[dict]:
 
 @cli.command("census")
 @option("-B", "--floor-bytes", type=int, help="Also keep prefixes with at least this many decoded bytes")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-f", "--floor", "floor_rows", default=50_000, type=int, help="Keep prefixes with at least this many range rows")
 @option("-g", "--gen", required=True, help="Generation (its `shards.json` and `sx/`)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the plan's task group")
@@ -579,7 +580,7 @@ def census_cmd(floor_bytes, bucket, floor_rows, gen, index, mount, mem, threads,
 
 @cli.command("members")
 @option("-B", "--max-bytes", type=int, help="Also admit prefixes with more than this many decoded bytes")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-V", "--max-rows", required=True, type=int, help="Admit prefixes with more than this many range rows")
 def members_cmd(max_bytes, bucket, gen, max_rows) -> None:
@@ -615,7 +616,7 @@ def members_cmd(max_bytes, bucket, gen, max_rows) -> None:
 
 
 @cli.command("answers")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX); without -Q, the plan's task group")
 @option("-l", "--lease", default=1800, type=int, help="With -Q: seconds after which another task may take over a claimed, unfinished shard")
@@ -623,7 +624,7 @@ def members_cmd(max_bytes, bucket, gen, max_rows) -> None:
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-Q", "--queue", is_flag=True, help="Take shards from a shared queue (claims in the scratch bucket) instead of the plan's task group")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="With -Q: bucket holding the claims")
+@option("-S", "--scratch", default=scratch_bucket, help="With -Q: bucket holding the claims")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where each shard is downloaded")
 def answers_cmd(bucket, gen, index, lease, mount, mem, threads, queue, scratch, tmp) -> None:
     """Members' cells, per shard → `catalog/cells/s####.parquet` (sorted). A shard whose output exists is
@@ -700,7 +701,7 @@ def answers_cmd(bucket, gen, index, lease, mount, mem, threads, queue, scratch, 
 
 
 @cli.command("short")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation (its versions: `cintervals/`, else `intervals/` of -I)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-I", "--intervals-gen", help="Read `intervals/` of this generation instead of GEN's `cintervals/`")
@@ -708,7 +709,7 @@ def answers_cmd(bucket, gen, index, lease, mount, mem, threads, queue, scratch, 
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the per-range events (an intermediate)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket for the per-range events (an intermediate)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 def short_cmd(bucket, gen, index, intervals_gen, mount, mem, per_task, threads, scratch, tmp) -> None:
     """One- and two-character literals' first-hit events and vocabulary per key range → the scratch bucket's
@@ -737,12 +738,12 @@ def short_cmd(bucket, gen, index, intervals_gen, mount, mem, per_task, threads, 
 
 
 @cli.command("assemble")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-m", "--mount", required=True, help="Local mount of the bucket")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the short literals' per-range events")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket holding the short literals' per-range events")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 def assemble_cmd(bucket, gen, mount, mem, threads, scratch, tmp) -> None:
     """Merge the short literals' events into cells and every shard's cells into `catalog/cells.parquet`
@@ -778,7 +779,7 @@ def brute_sql(src: str, version: int, terms: str) -> str:
 
 
 @cli.command("brute")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat (task i answers the i-th)")
 @option("-g", "--gen", required=True, help="Generation (its `scans.json` names each date's source; answers go to its `verify/brute/`)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -813,7 +814,7 @@ def brute_cmd(bucket, dates, gen, index, mount, mem, threads, terms_file, tmp) -
 
 
 @cli.command("query")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-t", "--terms-file", help="A file of literals, one per line (in addition to TERMS)")
@@ -892,7 +893,7 @@ def verify_cmd(max_rows, ref_jsonl, answers_jsonl) -> None:
 
 
 @cli.command("census-check")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-f", "--floor", "floor_rows", default=50_000, type=int, help="The census floor")
 @option("-g", "--gen", required=True, help="Generation (its `catalog/census/` and `chist/`)")
 def census_check_cmd(bucket, floor_rows, gen) -> None:

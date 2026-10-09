@@ -10,27 +10,28 @@
  *    its cells; a miss has an exact range ≤ V, so the read is bounded (≤ V + 2 row groups).
  *  - Bucket geometry: the answer is root and bucket totals only (no drill), so each bucket's `pre`/`post`
  *    is its ordinal position in `bucket_paths` (the box's `ordinal` geometry). */
+import { resolveScan } from '../../src/scanSlug.js'
 import { datedNameRequest, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, STATIC_SOURCE } from '../../src/nameModel.js'
 import { HOT_SCOPE } from '../../src/hotModel.js'
 import { json } from './auth.js'
 import { privateHeaders } from './hotL1.js'
 import { catalogAnswer, type CatalogIo, type CatalogMeta, type Member } from './staticCatalog.js'
-import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, STATIC_GEN, STATIC_PREFIX, type Totals } from './staticNames.js'
+import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, staticGen, staticPrefix, type Totals } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 
-export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string }
+export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string }
 export const staticEnabled = (env: StaticNameEnv): boolean => env.NAME_SUMMARY_STATIC === '1' && !!env.INDEX_R2
 
 /** A non-member's static read above this many rows is refused (it should never exceed V + 2 row groups). */
 const MAX_ROWS = 400_000
 const CAPABILITIES = { bucket_drill: false, child_drill: false, fallback: false }
-const VALIDATION = {
-  description: `exact first-hit totals from the static name index (generation ${STATIC_GEN}: suffix postings and catalog, rebuilt from the scans and checked against brute force offline); no per-request source oracle`,
+const validation = (gen: string) => ({
+  description: `exact first-hit totals from the static name index (generation ${gen}: suffix postings and catalog, rebuilt from the scans and checked against brute force offline); no per-request source oracle`,
   source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false,
-}
+})
 
 /** The generation's readers: suffix shards, catalog, `scans.json`'s scan ids (sorted), and a clock for the timings. */
-/** The suffix reader (`StaticNames`, or `TieredNames` over the base and its daily runs). */
+/** The suffix reader (`StaticNames`, or `TieredNames` over the base and its runs). */
 export interface NameReader {
   extent(key: string, io: Io): Promise<{ rows: number } | null>
   answer(key: string, dates: string[], maxRows?: number): Promise<{ io: Io; answer: Answer | null }>
@@ -38,24 +39,24 @@ export interface NameReader {
 /** The catalog (`StaticCatalog`, or `TieredCatalog`). */
 export interface CatalogReader { info(): Promise<CatalogMeta>; lookup(q: string): Promise<{ io: CatalogIo; member: Member | null }> }
 export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; clock: () => Promise<number> }
-let held: { r2: R2Bucket; store: Store } | undefined
+let held: { r2: R2Bucket; gen: string; store: Store } | undefined
 
 // The Workers clock only advances across I/O; a cache miss pins "now" after CPU-bound work (decode).
 const tick = async () => { await caches.default.match('https://static-names.invalid/tick'); return Date.now() }
 
-/** The isolate's readers over the bound bucket (indexes held across requests). */
-export function store(r2: R2Bucket): Store {
-  if (held?.r2 !== r2) {
-    const blobs = r2Blobs(r2)
-    // The base generation plus its daily runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
-    const pre = (dir: string | null) => dir ? `${STATIC_PREFIX}/${dir}` : STATIC_PREFIX
+/** The isolate's readers over the bound bucket's generation `gen` (`staticGen(env)`; indexes held across requests). */
+export function store(r2: R2Bucket, gen: string): Store {
+  if (held?.r2 !== r2 || held.gen !== gen) {
+    const root = staticPrefix(gen), blobs = r2Blobs(r2, root)
+    // The base generation plus its runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
+    const pre = (dir: string | null) => dir ? `${root}/${dir}` : root
     const t = tiers(blobs, { indexCache: dir => cacheIndexes(caches.default, pre(dir)), catalogCache: dir => cacheIndexes(caches.default, pre(dir), 'catalog-v1'), clock: tick })
-    held = { r2, store: { names: t.names, catalog: t.catalog, scans: t.scans, clock: tick } }
+    held = { r2, gen, store: { names: t.names, catalog: t.catalog, scans: t.scans, clock: tick } }
   }
   return held.store
 }
 /** The suffix reader alone (`/api/static-bench`). */
-export const names = (r2: R2Bucket): NameReader => store(r2).names
+export const names = (r2: R2Bucket, gen: string): NameReader => store(r2, gen).names
 
 /** `scans.json`'s scan ids, sorted (held once loaded). */
 export function scanIds(blobs: Blobs): () => Promise<string[]> {
@@ -77,7 +78,7 @@ const logicalStore = (env: StaticNameEnv) => `${env.STORE ?? 'gcs'}_fleet`
 export async function staticRegistryBody(env: StaticNameEnv, s: Store): Promise<unknown> {
   const [dates, meta] = await Promise.all([s.scans(), s.catalog.info()])
   const body = {
-    schema: 'static-name-registry-v1', logical_store: logicalStore(env), generation: STATIC_GEN, max_rows: meta.membership.max_rows,
+    schema: 'static-name-registry-v1', logical_store: logicalStore(env), generation: staticGen(env), max_rows: meta.membership.max_rows,
     bucket_paths: bucketPaths(env), dates, levels: 1, scope: HOT_SCOPE, capabilities: { ...CAPABILITIES },
   }
   parseNameRegistry(body) // the page's own contract check
@@ -122,13 +123,20 @@ const safe = (v: bigint): number => { const n = Number(v); if (!Number.isSafeInt
 const unavailable = () => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': '1' })
 
 /** `/api/name-summary` from R2: a 400 for a scan outside the generation, a 503 on any failure (never a box answer). */
-export async function staticSummary(env: StaticNameEnv, params: URLSearchParams, s: Store = store(env.INDEX_R2!)): Promise<Response> {
+export async function staticSummary(env: StaticNameEnv, params: URLSearchParams, s?: Store): Promise<Response> {
   const t0 = Date.now()
   try {
-    const request = datedNameRequest(params), key = request.name
-    const days = request.from ? [request.from, request.date] : [request.date]
+    const gen = staticGen(env)
+    s ??= store(env.INDEX_R2!, gen)
+    const asked = datedNameRequest(params), key = asked.name
     const [have, meta] = await Promise.all([s.scans(), s.catalog.info()])
-    if (days.some(d => !have.includes(d))) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.' }, 400, privateHeaders)
+    // A scan id the index holds is that scan; anything else is a slug for the latest scan it prefixes (`scanSlug.ts`
+    // `resolveScan`: `2026-10-09` = that day's latest scan), so a date link from before sub-daily scans still answers.
+    const resolve = (d: string) => have.includes(d) ? d : resolveScan(d, have)
+    const date = resolve(asked.date), from = asked.from === undefined ? undefined : resolve(asked.from)
+    if (!date || from === null || (from !== undefined && from >= date)) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.' }, 400, privateHeaders)
+    const request = { ...asked, date, ...(from === undefined ? {} : { from }) }
+    const days = from ? [from, date] : [date]
     const { plan, answers, io } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
     const paths = bucketPaths(env), store_ = logicalStore(env)
     const sides = days.map(date => {
@@ -138,8 +146,8 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
       return {
         schema: 'dated-name-summary-v1', logical_store: store_, target: 'static_names', date, pattern: key, path: '', exact: true, incremental: false, levels: 1,
         scope: HOT_SCOPE, plan, source: plan === 'catalog' ? STATIC_CATALOG_SOURCE : STATIC_SOURCE,
-        source_identity: { kind: 'static-names-v1', generation: STATIC_GEN, max_rows: meta.membership.max_rows },
-        validation: { ...VALIDATION }, capabilities: { ...CAPABILITIES },
+        source_identity: { kind: 'static-names-v1', generation: gen, max_rows: meta.membership.max_rows },
+        validation: validation(gen), capabilities: { ...CAPABILITIES },
         root: { b: buckets.reduce((a, x) => a + x.b, 0), o: buckets.reduce((a, x) => a + x.o, 0) }, buckets,
       }
     })
@@ -156,7 +164,7 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
     parseName(body, request) // the page's own contract check, before it leaves the Worker
     const total = Date.now() - t0
     return json(body, 200, {
-      ...privateHeaders, 'x-query-engine': 'name-summary-static', 'x-static-io': JSON.stringify({ gen: STATIC_GEN, plan, ...io }),
+      ...privateHeaders, 'x-query-engine': 'name-summary-static', 'x-static-io': JSON.stringify({ gen, plan, ...io }),
       'server-timing': [...Object.entries(io.ms).map(([k, v]) => `${k};dur=${v}`), `static;dur=${total}`].join(', '),
     })
   } catch (error) {
@@ -166,9 +174,9 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
 }
 
 /** `/api/name-summary-registry` from R2. */
-export async function staticRegistry(env: StaticNameEnv, s: Store = store(env.INDEX_R2!)): Promise<Response> {
+export async function staticRegistry(env: StaticNameEnv, s?: Store): Promise<Response> {
   try {
-    return json(await staticRegistryBody(env, s), 200, { ...privateHeaders, 'x-query-engine': 'name-summary-registry-static' })
+    return json(await staticRegistryBody(env, s ?? store(env.INDEX_R2!, staticGen(env))), 200, { ...privateHeaders, 'x-query-engine': 'name-summary-registry-static' })
   } catch (error) {
     console.error('static name registry failed', error)
     return unavailable()

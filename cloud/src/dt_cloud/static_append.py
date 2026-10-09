@@ -1,11 +1,11 @@
-"""The static name index's daily append (specs/static-daily-append.md): each new scan becomes a small
-**run** beside an immutable base generation, published by an immutable per-day manifest, merged into bigger
+"""The static name index's per-scan append (specs/static-append.md): each new scan becomes a small
+**run** beside an immutable base generation, published by an immutable per-scan manifest, merged into bigger
 runs on a binary counter, read by merging base and runs (the smallest `vt` of a version's rows wins).
 
 Per scan `D`, under `static-names/<gen>/deltas/<D>/`:
 
 1. `append` (per key range, Batch): the range's open coalesced versions (`copen`; the base's `cintervals`
-   with `vt` = OPEN on the first day) and `D`'s rows → `pyrmts.intervals.append_intervals` on the answer
+   with `vt` = OPEN on the first run) and `D`'s rows → `pyrmts.intervals.append_intervals` on the answer
    columns alone (`size`, `n_files`) → `cdelta/r####.parquet` (opened `op` 1, closed `op` −1), `dhist/`
    (its suffix rows per three-character prefix) and the next `copen` (scratch bucket).
 2. `shards` (one task): the delta's suffix rows, opens and closes alike (a close record is the version's
@@ -14,15 +14,13 @@ Per scan `D`, under `static-names/<gen>/deltas/<D>/`:
    catalog is what that adds (new cells, changed or new headers).
 4. `publish`: the binary counter's merges, then `manifests/<D>.json` (written last).
 5. `prune`: once `D`'s state is complete (every range's `copen` and `done/` marker, and `manifests/<D>.json`),
-   every earlier day's `state/<prev>/` goes: only the newest complete state is kept. A lost state is rebuilt
+   every earlier scan's `state/<prev>/` goes: only the newest complete state is kept. A lost state is rebuilt
    from the base's `cintervals` and every run's `cdelta` (`rebuild-state`).
 """
 from __future__ import annotations
 
 import json
-import re
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -31,21 +29,18 @@ import pyarrow.parquet as pq
 from click import IntRange, group, option
 
 from . import static_catalog as sc
+from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
 from .static_names import (
-    ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, DATA_BUCKET, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SCRATCH_BUCKET, SX_RG,
+    ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SX_RG,
     SX_SCHEMA, Reader, _batches, _src, _sx_cast, _task, answer_rows, connect, err, hist_sql, q, range_preds,
-    read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
+    SCAN_ID, read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
 )
 
 CDELTA_SCHEMA = CINTERVAL_SCHEMA.append(pa.field("op", pa.int8(), nullable=False))
 #: A run's shards: about this many suffix rows each (the base's target).
 RUN_SHARD_ROWS = 50_000_000
-#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 days).
+#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 scans).
 COMPACT_LEVEL = 5
-
-
-def scan_id(ts: int) -> str:
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
 
 
 def run_key(first: str, last: str) -> str:
@@ -367,10 +362,7 @@ def manifest(gen: str, base_scans: list[str], runs: list[dict]) -> dict:
 
 
 class StateIncomplete(Exception):
-    """`prune` refused: the day's state is not complete (or its run not published), so nothing is deleted."""
-
-
-_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+    """`prune` refused: the scan's state is not complete (or its run not published), so nothing is deleted."""
 
 
 def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: bool, date: str) -> dict:
@@ -384,8 +376,8 @@ def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: b
         if not name.startswith(root):
             raise ValueError(f"{name}: not under {root}")
         day, _, rest = name[len(root):].partition("/")
-        if not _DAY.fullmatch(day):
-            raise ValueError(f"{name}: {day!r} is not a day")
+        if not SCAN_ID.fullmatch(day):
+            raise ValueError(f"{name}: {day!r} is not a scan id")
         d = days.setdefault(day, {"names": [], "bytes": 0, "copen": set(), "done": set()})
         d["names"].append(name)
         d["bytes"] += size
@@ -406,17 +398,18 @@ def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: b
             "names": [n for d in drop for n in sorted(days[d]["names"])]}
 
 
-def prune_state(gcs, gen: str, date: str, k: int, *, bucket: str = DATA_BUCKET, dry_run: bool = False) -> dict:
-    """Delete every `state/<prev>/` (prev < `date`) of generation `gen` in the scratch bucket (`SCRATCH_BUCKET`,
+def prune_state(gcs, gen: str, date: str, k: int, *, bucket: str | None = None, scratch: str | None = None, dry_run: bool = False) -> dict:
+    """Delete every `state/<prev>/` (prev < `date`) of generation `gen` in the scratch bucket (the profile's,
     nowhere else), once `date`'s state is complete and its run published (`prune_plan`). Idempotent: a rerun
     finds nothing before `date`. `gcs`: a `google.cloud.storage.Client`. Returns the plan, `deleted` = objects."""
     prefix = f"{PREFIX}/{gen}"
-    objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(SCRATCH_BUCKET, prefix=f"{prefix}/state/")]
+    bucket, scratch = bucket or data_bucket(), scratch or scratch_bucket()
+    objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(scratch, prefix=f"{prefix}/state/")]
     published = gcs.bucket(bucket).blob(f"{prefix}/manifests/{date}.json").exists()
     plan = prune_plan(objects, prefix, k, published, date)
     names = plan.pop("names")
     if not dry_run and names:
-        sb = gcs.bucket(SCRATCH_BUCKET)
+        sb = gcs.bucket(scratch)
         sb.delete_blobs([sb.blob(n) for n in names], on_error=lambda blob: None)
     return {**plan, "deleted": 0 if dry_run else len(names)}
 
@@ -445,9 +438,9 @@ def rebuild_open(con, base_cintervals: str, cdeltas_oldest_first: list[str], out
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
-@group("daily")
+@group("runs")
 def cli() -> None:
-    """The static name index's daily append: per-scan runs beside a base generation (specs/static-daily-append.md)."""
+    """The static name index's per-scan runs beside a base generation (specs/static-append.md)."""
 
 
 def _gcs():
@@ -476,7 +469,7 @@ def _day_scans(base: dict, runs: list[dict]) -> list[str]:
 
 
 @cli.command("prepare")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan to append")
 @option("-g", "--gen", required=True, help="Base generation")
 def prepare_cmd(bucket, date, gen) -> None:
@@ -486,7 +479,8 @@ def prepare_cmd(bucket, date, gen) -> None:
 
     base, runs = _state(bucket, gen, date)
     have = _day_scans(base, runs)
-    found = list_scans(bucket, start=have[-1])["scans"]
+    # The base's layouts (its `scans.json`; gcs's when it names none), so a run's scan is found where the base's were.
+    found = list_scans(bucket, layouts=base.get("layouts") or profile_layouts(), start=have[-1])["scans"]
     nxt = [s for s in found if s["id"] > have[-1]]
     if not nxt or nxt[0]["id"] != date:
         raise SystemExit(f"the next scan after {have[-1]} is {nxt[0]['id'] if nxt else 'none'}, not {date}")
@@ -498,7 +492,7 @@ def prepare_cmd(bucket, date, gen) -> None:
 
 
 @cli.command("append")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan to append (its run's `scans.json`, from `prepare`)")
 @option("-f", "--force", is_flag=True, help="Redo ranges already done")
 @option("-g", "--gen", required=True, help="Base generation")
@@ -508,7 +502,7 @@ def prepare_cmd(bucket, date, gen) -> None:
 @option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the open versions (`state/<D>/copen/`)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket for the open versions (`state/<D>/copen/`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 def append_cmd(bucket, date, force, gen, index, mount, mem, per_task, out, threads, scratch, tmp) -> None:
     """Append the scan to key ranges' open coalesced versions: `deltas/<D>/{cdelta,dhist}/r####.parquet` (data
@@ -546,7 +540,7 @@ def append_cmd(bucket, date, force, gen, index, mount, mem, per_task, out, threa
 
 
 @cli.command("shards")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
@@ -573,7 +567,7 @@ def shards_cmd(bucket, date, gen, mount, mem, target_rows, out, threads, tmp) ->
 
 
 @cli.command("catalog")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
@@ -601,7 +595,7 @@ def catalog_cmd(bucket, date, gen, mount, mem, threads, tmp) -> None:
 
 
 @cli.command("publish")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", help="Local mount of the data bucket (needed when the counter carries: the merges read the runs)")
@@ -650,7 +644,7 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
 
 
 @cli.command("prune")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket (its `manifests/<D>.json` says D is published)")
+@option("-b", "--bucket", default=data_bucket, help="Data bucket (its `manifests/<D>.json` says D is published)")
 @option("-d", "--date", required=True, help="The newest complete state to keep (the scan just published)")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-n", "--dry-run", is_flag=True, help="Print what would be deleted; delete nothing")
@@ -667,7 +661,7 @@ def prune_cmd(bucket, date, gen, dry_run) -> None:
 
 
 @cli.command("rebuild-state")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="A published day (`manifests/<D>.json`): rebuild `state/<D>/`")
 @option("-f", "--force", is_flag=True, help="Redo ranges already done")
 @option("-g", "--gen", required=True, help="Base generation")
@@ -689,7 +683,7 @@ def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out
         raise SystemExit(f"manifests/{date}.json ends at {days[-1] if days else 'the base'}, not {date}")
     ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
     t = _task(index)
-    sb = _gcs().bucket(SCRATCH_BUCKET)
+    sb = _gcs().bucket(scratch_bucket())
     con = connect(threads, mem, tmp)
     for i in range(t * per_task, min((t + 1) * per_task, ranges["k"])):
         name = f"r{i:04d}"
@@ -700,7 +694,7 @@ def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out
         outp = Path(out) / name
         rows = rebuild_open(con, f"{mount}/{prefix}/cintervals/{name}.parquet",
                             [f"{mount}/{prefix}/{run_key(d, d)}/cdelta/{name}.parquet" for d in days], outp / "copen" / f"{name}.parquet")
-        upload_tree(outp / "copen", SCRATCH_BUCKET, f"{prefix}/state/{date}/copen")
+        upload_tree(outp / "copen", scratch_bucket(), f"{prefix}/state/{date}/copen")
         shutil.rmtree(outp)
         doc = {"range": name, "scan": date, "open": rows, "rebuilt_from": len(days), "s": round(monotonic() - t0, 1)}
         sb.blob(f"{prefix}/state/{date}/done/{name}.json").upload_from_string(json.dumps(doc) + "\n")
@@ -710,7 +704,7 @@ def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out
 def verify_terms(con, src: str, version: int, date: str, before: str, terms: list[str], reader: TieredReader, catalog: TieredCatalog,
                  base_reader: Reader, base_catalog: sc.Catalog, base_last: str) -> dict:
     """`verify`'s checks over given readers (the base plus runs, tiered; the base alone) and the date's scan file `src`.
-    The day-before check (tiered = the base alone) runs only when `before` is in the base (≤ `base_last`)."""
+    The previous-scan check (tiered = the base alone) runs only when `before` is in the base (≤ `base_last`)."""
     from .static_catalog import PARENT
     from .static_names import NAME
 
@@ -736,7 +730,7 @@ def verify_terms(con, src: str, version: int, date: str, before: str, terms: lis
             return {"before": nz(answer) == base_before()} if before <= base_last else {}
 
         def base_before() -> dict:
-            """The base generation alone, the day before (verified when it was built)."""
+            """The base generation alone, the previous scan (verified when it was built)."""
             c = base_catalog.answer(t, [before])
             if c is not None:
                 return nz(c["answers"][before])
@@ -784,7 +778,7 @@ def _under(hits: list[tuple], root: str) -> list[tuple]:
 
 
 @cli.command("verify")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The run's scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
@@ -795,7 +789,7 @@ def _under(hits: list[tuple], root: str) -> list[tuple]:
 def verify_cmd(bucket, date, gen, mount, mem, threads, terms_file, tmp) -> None:
     """The base plus the newest manifest's runs, read as the Worker reads them, against brute force straight from the
     date's scan file (its rows merged per key, the first-hit rule): per literal, a catalog member's per-bucket totals,
-    else its live first hits `(path, usr, size, n_files)` as a list — whole, and under a few drill roots. Also the day
+    else its live first hits `(path, usr, size, n_files)` as a list — whole, and under a few drill roots. Also the scan
     before: the tiered answers equal the base's. JSON report → `deltas/<D>/verify.json`; exit 1 on any difference."""
     from .static_catalog import gcs_catalog
     from .static_names import gcs_reader, read_text
