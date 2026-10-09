@@ -157,9 +157,10 @@ export interface View {
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
   /** With `query`: phase 2 left `skipped` of the roots big enough to subdivide undivided — drawn as one
-   *  exact tile each — past its read or time budget (`reason`); `read` were subdivided. Absent: every
+   *  exact tile each — past its read or time budget (`reason`; `late` of them past the time budget, which a
+   *  retry may not hit: such an answer is served but not cached); `read` were subdivided. Absent: every
    *  such root was. Totals are exact regardless. */
-  interiors?: { read: number; skipped: number; reason: string }
+  interiors?: { read: number; skipped: number; reason: string; late?: number }
   /** With `query`: a read budget stopped the search — some matches may be
    * missing (`partialReason` says why). Never silent. */
   partial?: true
@@ -567,7 +568,7 @@ interface Read {
   excl?: Map<string, Agg>
   firstPaint?: boolean
   /** A filter view's phase 2 left some roots' insides unread (`View.interiors`). */
-  interiors?: { read: number; skipped: number; reason: string }
+  interiors?: { read: number; skipped: number; reason: string; late?: number }
   /** The assignments fold behind a user lens (null: no lens, or no assignments). */
   ownerLens: FoldedLens | null
   /** A path's scoped share of its total (owner pool / lens applied). `all` =
@@ -987,7 +988,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const left = skipped.budget + skipped.wide + skipped.late
       if (left) {
         const why = [skipped.budget && `${skipped.budget} over the read budget`, skipped.wide && `${skipped.wide} too wide`, skipped.late && `${skipped.late} past the time budget`].filter(Boolean).join(', ')
-        interiors = { read: readRoots.length - left, skipped: left, reason: why }
+        interiors = { read: readRoots.length - left, skipped: left, reason: why, ...(skipped.late ? { late: skipped.late } : {}) }
         tr?.('interiors', 0, `skipped ${left}`)
       }
       if (isStore(regionIdx) && variant) tierName = variant
@@ -1505,7 +1506,7 @@ export interface Diff {
   matchCount?: { n: number; b: number; o: number }
   matchesCapped?: true
   /** With `q=`: either side's phase 2 left roots undivided (`View.interiors`), summed over the sides that did. */
-  interiors?: { read: number; skipped: number; reason: string }
+  interiors?: { read: number; skipped: number; reason: string; late?: number }
   /** With `q=`: either side's `partial` / `approximate` (`View`), reasons
    * merged. */
   partial?: true
@@ -1519,7 +1520,8 @@ const LOOKUP_CAP = 240
 /** Two sides' `interiors`, summed (reasons joined when they differ). */
 function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable<View['interiors']> {
   const xs = [a, b].filter((x): x is NonNullable<View['interiors']> => !!x)
-  return { read: xs.reduce((n, x) => n + x.read, 0), skipped: xs.reduce((n, x) => n + x.skipped, 0), reason: [...new Set(xs.map(x => x.reason))].join(' · ') }
+  const late = xs.reduce((n, x) => n + (x.late ?? 0), 0)
+  return { read: xs.reduce((n, x) => n + x.read, 0), skipped: xs.reduce((n, x) => n + x.skipped, 0), reason: [...new Set(xs.map(x => x.reason))].join(' · '), ...(late ? { late } : {}) }
 }
 
 /** What changed under P between two scans (specs/view-serving.md §2):

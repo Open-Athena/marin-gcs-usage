@@ -153,7 +153,8 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       ...(query ? { q: qRaw, matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
       tree: view.tree,
     })
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
+    // A phase 2 cut short by its time budget may complete on a retry (the isolate holds the groups it read): not kept.
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !view.interiors?.late)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     // 409 (not 500): a lens index missing for this scan is deterministic —

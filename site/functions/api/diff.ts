@@ -112,7 +112,8 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
       ...diff,
       threshold: Math.round(diff.threshold),
     })
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
+    // A phase 2 cut short by its time budget may complete on a retry (the isolate holds the groups it read): not kept.
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !diff.interiors?.late)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })
