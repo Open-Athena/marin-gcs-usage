@@ -1,6 +1,6 @@
 # Static name search: the daily append
 
-Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site (branch `daily-append`, from `ch-store` @ 98ec30a4; reader on `daily-append-site`, from `hot-preview`). Not yet scheduled; not on prod.
+Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the daily entry point `job/static-daily.sh` on `gcs-static`. Not yet scheduled; not on prod.
 
 ## Why
 
@@ -162,7 +162,7 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 
 ## Implementation
 
-- `cloud/src/dt_cloud/static_append.py`: `dt-cloud static-names daily {prepare,append,shards,catalog,publish,verify}`, run as `MODULE=static_append job/static-names.sh run …`.
+- `cloud/src/dt_cloud/static_append.py`: `dt-cloud static-names daily {prepare,append,shards,catalog,publish,verify}`, run as `MODULE=static_append job/static-names.sh run …`; the whole chain is `job/static-daily.sh DATE` (below).
 - `job/static-names.sh` stages `pyrmts` (not in the job image) beside `dt_cloud`.
 - Tier merges use `pyrmts.runs` (pinned 541bc8e).
 - Reader: `site/functions/_lib/staticRuns.ts` (`Tiers`, `TieredNames`, `TieredCatalog`), wired into `nameSummaryStatic.ts` and `staticFilter.ts`, on branch `daily-append-site`.
@@ -178,6 +178,24 @@ dt-cloud static-names daily publish -g 2026-10-08c -d D [-m MOUNT]              
 job/static-names.sh r2 2026-10-08c/deltas/D && job/static-names.sh r2 2026-10-08c                            # the run, then the manifest (last)
 MODULE=static_append SPOT=1 job/static-names.sh run verify 1 -g 2026-10-08c -d D -t gs://…/terms.txt
 ```
+
+### Daily entry point (gcs: `job/static-daily.sh DATE`)
+
+One script runs the chain above for a scan, from a checkout (the stages' code is staged from HEAD) or, with `SRC=image`, from a job image built from the lock (its own `dt_cloud` + `pyrmts`):
+
+```
+prepare → append (16 tasks × 16 ranges) → shards ∥ catalog → publish (Batch: tier merges + manifests/D.json) → R2 (each run in the manifest, then manifests/) [→ verify, with VERIFY_TERMS]
+```
+
+- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/D/scans.json` (prepare), all `ranges.json` `k` of `deltas/D/dhist/` (append; `append` also skips done ranges within a job), `deltas/D/sidecar.parquet` (shards), `deltas/D/catalog/meta.json` (catalog), `manifests/D.json` (publish), `deltas/D/verify.json` (verify). A rerun after a failure resumes at the first missing output. `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
+- **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/D.json` (`if_generation_match=0`), and the scratch bucket's `state/D/`. Nothing is overwritten or deleted.
+- **Exit status:** 0 done; 3 the scan is not published yet (no `listing/D/{index/*/,}path-index.parquet`) or is not the next scan after the live runs (`prepare` refuses); else a stage failed.
+- **Progress:** one line per stage start and end (UTC, elapsed) to stderr and `tmp/static-daily/D.log`, each stage's output in `D.log.<stage>.out`; Batch jobs are named `sn-<stage>-D-<hhmmss>` and labelled `purpose=static-names`.
+- **`-n`:** dry run. It reports each stage as done or names the command it would run; it submits and writes nothing.
+- **R2 (`R2_VIA`):** `batch` (default) runs `r2-copy` as a 1-task Batch job (`job/static-names.sh r2-batch`) with the key from Secret Manager (`gcs-static-index-r2-key-id`, `gcs-static-index-r2-secret`: an R2 token for bucket `oa-gcs-usage-index` only, accessor = the job account; `infra/gcp` on gcs) via `secretVariables`, and the endpoint from `R2_ENDPOINT` or `CLOUDFLARE_ACCOUNT_ID`. `vm` uses the ch-store VM's key (`job/static-names.sh r2`, which replaces `/data/sn/src` there). The VM's key is account-wide (every R2 bucket), so it is a stopgap until the scoped token's versions are in Secret Manager.
+- **Scheduling:** after the daily snapshot (`job/run.sh`) has written the scan's `path` sort, run `job/static-daily.sh "$DATE"`. On exit 3, try again later; it is safe to run on a timer.
+
+Dry runs on 2026-10-09 (UTC morning): `-n 2026-10-10` exits 3 (not published yet), and `-n 2026-10-09` reports every stage done, with only the R2 copy left to (re)run as a no-op.
 
 ## Cost and footprint
 
