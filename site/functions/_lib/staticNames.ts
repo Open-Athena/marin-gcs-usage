@@ -23,8 +23,17 @@
 import { type FileMetaData, parquetRead, type RowGroup } from 'hyparquet'
 import { compressors } from './zstd.js'
 
+/** The generation a deployment serves when its `STATIC_GEN` var is unset (gcs's base, from before the var). */
 export const STATIC_GEN = '2026-10-08c'
-export const STATIC_PREFIX = `static-names/${STATIC_GEN}`
+/** A generation's key prefix in the deployment's `INDEX_R2` bucket. */
+export const staticPrefix = (gen: string): string => `static-names/${gen}`
+export const STATIC_PREFIX = staticPrefix(STATIC_GEN)
+/** The deployment's generation (`STATIC_GEN`, e.g. cw's `2026-10-09cw`), else `STATIC_GEN`'s default; one path segment. */
+export function staticGen(env: { STATIC_GEN?: string }): string {
+  const gen = env.STATIC_GEN?.trim() || STATIC_GEN
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(gen)) throw new Error(`static names: bad STATIC_GEN ${JSON.stringify(gen)}`)
+  return gen
+}
 
 // --- order --------------------------------------------------------------------------------------
 

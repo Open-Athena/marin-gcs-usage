@@ -8,9 +8,10 @@
 import { type FileMetaData, parquetMetadata, parquetReadObjects } from 'hyparquet'
 import { type Ctx, json, requireViewer } from '../_lib/auth.js'
 import { names } from '../_lib/nameSummaryStatic.js'
+import { staticGen } from '../_lib/staticNames.js'
 import { compressors } from '../_lib/zstd.js'
 
-type Env = { INDEX_R2?: R2Bucket, STATIC_BENCH?: string }
+type Env = { INDEX_R2?: R2Bucket, STATIC_BENCH?: string, STATIC_GEN?: string }
 type Range = { q: string, off: number, len: number }
 type Meta = { size: number, footOff: number, foot: ArrayBuffer, md: FileMetaData, fetch_ms: number, parse_ms: number }
 
@@ -99,7 +100,7 @@ export async function onRequestGet(ctx: Ctx & { env: Env }): Promise<Response> {
   const url = new URL(ctx.request.url), key = (url.searchParams.get('q') ?? '').toLowerCase(), dates = url.searchParams.getAll('d')
   if ([...key].length < 3 || !dates.length || dates.some(d => !/^\d{4}-\d{2}-\d{2}$/.test(d))) return json({ error: 'q (≥ 3 characters) and d=YYYY-MM-DD required' }, 400)
   const t0 = Date.now()
-  const { io, answer } = await names(r2).answer(key, dates)
+  const { io, answer } = await names(r2, staticGen(ctx.env)).answer(key, dates)
   const total_ms = await tick() - t0
   const answers = Object.fromEntries(Object.entries(answer!.answers).map(([d, t]) => [d, Object.fromEntries(Object.entries(t).map(([b, [x, o]]) => [b, [Number(x), Number(o)]]))]))
   const cf = (ctx.request as { cf?: { colo?: string } }).cf

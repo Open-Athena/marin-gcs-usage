@@ -4,7 +4,8 @@
 # dependencies = ["pyarrow"]
 # ///
 """The daily-append fixture (`staticRuns.test.ts`; specs/static-daily-append.md): a base generation through
-2026-09-01 and two runs (2026-10-01, 2026-10-02), in the layouts `dt-cloud static-names daily` writes, over
+2026-09-01 and four runs, one per scan — 2026-10-01 and 2026-10-02 (date ids), then two scans on one day keyed by
+scan id, 2026-10-03T0600 and 2026-10-03T1800 (specs/scan-ids-not-dates.md) — in the layouts `dt-cloud static-names daily` writes, over
 `static-names/gen.py`'s versions plus some that open or close on the runs' dates, and a brute-force oracle.
 
 A tier's contents are defined by cuts: `cut(T)` is the versions opened by `T`, a `vt` after `T` read as open.
@@ -12,7 +13,7 @@ A tier's contents are defined by cuts: `cut(T)` is the versions opened by `T`, a
 - a run at `D` after `P`: the suffix rows of `cut(D)` not in `cut(P)` — the versions opened at `D`, and the
   close records (a version closed at `D`, its rows with their final `vt`); its catalog is the rows of
   `catalog(cut(D))` not in `catalog(cut(P))` (new cells, new or changed headers);
-- `manifests/2026-10-02.json` lists both runs; `expected.json` is the oracle over every version on every date,
+- `manifests/<scan>.json` per run lists the runs through it; `expected.json` is the oracle over every version on every scan,
   and `catalog-expected.json` the full catalog's cells per term (members only).
 
 Regenerate: `site/functions/_lib/fixtures/static-runs/gen.py` (uv runs it).
@@ -32,7 +33,9 @@ spec.loader.exec_module(g)
 
 OPEN, A, S, O = g.OPEN, g.A, g.S, g.O
 P = datetime(2026, 10, 2, tzinfo=timezone.utc)
-DATES = {"2026-08-01": A, "2026-09-01": S, "2026-10-01": O, "2026-10-02": P}
+AM, PM = datetime(2026, 10, 3, 6, tzinfo=timezone.utc), datetime(2026, 10, 3, 18, tzinfo=timezone.utc)
+DATES = {"2026-08-01": A, "2026-09-01": S, "2026-10-01": O, "2026-10-02": P, "2026-10-03T0600": AM, "2026-10-03T1800": PM}
+RUNS = list(DATES)[2:]
 #: The base fixture's versions, `foo.txt` closing on P, plus versions opening on O and P: five `qqq-*` files cross V
 #: on P (a new member whose whole history is in the last run).
 VERSIONS = [
@@ -41,8 +44,11 @@ VERSIONS = [
     ("bkt-b/zz/late-foo.csv", "", O, OPEN, 21, 1),
     ("bkt-b/zz/late-foo.csv", "dave", O, P, 22, 1),
     *((f"bkt-{'ab'[k % 2]}/q/qqq-{k}", "", P, OPEN, 30 + k, 1) for k in range(5)),
+    # two scans on one day: one opens at 06:00 and closes at 18:00, the other opens at 18:00
+    ("bkt-a/sub/sub-am.txt", "", AM, PM, 7, 1),
+    ("bkt-b/sub/sub-pm.txt", "", PM, OPEN, 9, 1),
 ]
-TERMS = [*g.TERMS, "qqq", "qqq-", "late", "e-foo", "q"]
+TERMS = [*g.TERMS, "qqq", "qqq-", "late", "e-foo", "q", "sub-"]
 
 
 def cut(t: datetime) -> list[tuple]:
@@ -104,22 +110,20 @@ def main() -> None:
     tier(HERE / "base", *cuts["2026-09-01"])
     (HERE / "base" / "scans.json").write_text(json.dumps({"bucket": "fixture", "scans": [{"id": d} for d in ("2026-08-01", "2026-09-01")]}, indent=1) + "\n")
     runs = []
-    for prev, d in (("2026-09-01", "2026-10-01"), ("2026-10-01", "2026-10-02")):
+    (HERE / "manifests").mkdir(exist_ok=True)
+    for prev, d in zip(list(DATES)[1:], RUNS):
         (rp, cp), (rd, cd) = cuts[prev], cuts[d]
         have_r, have_c = {key(r) for r in rp}, {key(c) for c in cp}
         rows = sorted((r for r in rd if key(r) not in have_r), key=lambda r: (r["s"], r["path"], r["usr"], r["vf"]))
         cells = [c for c in cd if key(c) not in have_c]
         tier(HERE / "deltas" / d, rows, cells)
         runs.append({"key": f"deltas/{d}", "first": d, "last": d, "level": 0, "scans": [d], "rows": len(rows)})
-    (HERE / "manifests").mkdir(exist_ok=True)
-    (HERE / "manifests" / "2026-10-01.json").write_text(json.dumps({"gen": "fixture", "date": "2026-10-01", "base_scans": 2,
-        "scans": list(DATES)[:3], "runs": runs[:1]}, indent=1) + "\n")
-    (HERE / "manifests" / "2026-10-02.json").write_text(json.dumps({"gen": "fixture", "date": "2026-10-02", "base_scans": 2,
-        "scans": list(DATES), "runs": runs}, indent=1) + "\n")
+        (HERE / "manifests" / f"{d}.json").write_text(json.dumps({"gen": "fixture", "date": d, "base_scans": 2,
+            "scans": list(DATES)[:2 + len(runs)], "runs": runs}, indent=1) + "\n")
     g.VERSIONS = VERSIONS
     expected = {t: {d: g.oracle(t, day) for d, day in DATES.items()} for t in TERMS}
     (HERE / "expected.json").write_text(json.dumps(expected, indent=1, ensure_ascii=False) + "\n")
-    full = cuts["2026-10-02"][1]
+    full = cuts[RUNS[-1]][1]
     cat = {t: [[c["bucket"], c["vf"], c["b"], c["o"]] for c in full if c["q"] == t] for t in TERMS}
     (HERE / "catalog-expected.json").write_text(json.dumps({t: v or None for t, v in cat.items()}, indent=1, ensure_ascii=False) + "\n")
     print(f"base {len(cuts['2026-09-01'][0])} rows; runs {[r['rows'] for r in runs]}")

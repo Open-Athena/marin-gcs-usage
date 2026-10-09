@@ -25,7 +25,7 @@ import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
 import { Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
-import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanMs, STATIC_GEN, STATIC_PREFIX } from './staticNames.js'
+import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanMs, STATIC_PREFIX, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 
 export type { Hit } from './staticNames.js'
@@ -146,17 +146,18 @@ export function cacheHits(cache: Cache, prefix = STATIC_PREFIX, version = 'hits-
   }
 }
 
-export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; INDEX_R2?: R2Bucket }
+export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string }
 
-/** The drilldown over a bucket's generation (`drill/`, the base catalog for the fleet root, the base scans). */
-export function drillSource(blobs: Blobs, cache?: Cache): DrillSource {
+/** The drilldown over a bucket's generation (`drill/`, the base catalog for the fleet root, the base scans); `prefix`
+ *  keys its cached indexes (the generation's). */
+export function drillSource(blobs: Blobs, cache?: Cache, prefix = STATIC_PREFIX): DrillSource {
   const drillBlobs: Blobs = {
     range: (k, o, l) => blobs.range(`${DRILL_DIR}/${k}`, o, l),
     suffix: (k, n) => blobs.suffix(`${DRILL_DIR}/${k}`, n),
     json: k => blobs.json(`${DRILL_DIR}/${k}`),
   }
-  const pre = `${STATIC_PREFIX}/${DRILL_DIR}`
-  const catalog = new StaticCatalog(blobs, cache ? cacheIndexes(cache, STATIC_PREFIX, 'catalog-v1') : undefined)
+  const pre = `${prefix}/${DRILL_DIR}`
+  const catalog = new StaticCatalog(blobs, cache ? cacheIndexes(cache, prefix, 'catalog-v1') : undefined)
   const drill = new Drill(drillBlobs, catalog, cache ? { top: cacheIndexes(cache, pre, 'top-v1'), aliases: cacheIndexes(cache, pre, 'aliases-v2') } : undefined)
   return new DrillSource(drill, scanList(blobs), cache ? cacheHits(cache, pre, 'roots-v1') : undefined)
 }
@@ -164,19 +165,20 @@ export function drillSource(blobs: Blobs, cache?: Cache): DrillSource {
 /** A test's store for an env object (in place of the R2 binding's). */
 export const injectedStores = new WeakMap<object, StaticFilterStore>()
 
-let held: { r2: R2Bucket; store: StaticFilterStore } | undefined
+let held: { r2: R2Bucket; gen: string; store: StaticFilterStore } | undefined
 /** The isolate's static filter store over the bound bucket; null when the static filter is off. A test
  *  injects its own (`injectedStores`). */
 export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | null {
   const injected = injectedStores.get(env)
   if (injected) return injected
   if (env.FILTER_STATIC !== '1' || !env.INDEX_R2) return null
-  if (held?.r2 !== env.INDEX_R2) {
+  const gen = staticGen(env), pre = staticPrefix(gen)
+  if (held?.r2 !== env.INDEX_R2 || held.gen !== gen) {
     // The base generation plus its daily runs (`staticRuns.ts`): each tier's group indexes cached under its own prefix.
-    const t = tiers(r2Blobs(env.INDEX_R2), { indexCache: dir => cacheIndexes(caches.default, dir ? `${STATIC_PREFIX}/${dir}` : STATIC_PREFIX) })
+    const t = tiers(r2Blobs(env.INDEX_R2, pre), { indexCache: dir => cacheIndexes(caches.default, dir ? `${pre}/${dir}` : pre) })
     // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base generation.
-    const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2), caches.default) : null
-    held = { r2: env.INDEX_R2, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default), heavy }), scans: t.scans, gen: `${STATIC_GEN}${heavy ? '+drill' : ''}` } }
+    const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2, pre), caches.default, pre) : null
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
   }
   return held.store
 }

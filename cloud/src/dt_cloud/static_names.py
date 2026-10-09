@@ -106,8 +106,10 @@ def q(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-#: A scan id: a UTC date (gcs: one scan a day) or a date and minute (cw: every 6 h), `2026-10-01T0003`. Ids of one
-#: deployment share a form, so their string order is their time order (`list_scans` checks it).
+#: A scan id, the scan's key (never its date: a deployment may scan several times a day): `YYYY-MM-DDTHHMM` (UTC, the
+#: scan job's `SNAP_ID`), or a bare `YYYY-MM-DD` (gcs's daily scans before sub-daily ids). Either form sorts in time
+#: order, a bare date as that day's midnight, before its `T…` scans; only `D` and `DT0000` share a stamp, which
+#: `pick_scans` refuses.
 SCAN_ID = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{4})?")
 
 

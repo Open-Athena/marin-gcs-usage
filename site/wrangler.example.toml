@@ -101,6 +101,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_BOX_DATED_NAMES = "1"               # opt in only after dated catalogs/proofs are accepted; new scans may be catalog-only
 # QUERY_BOX_HOT_L1_URL = "https://catalog.example"  # existing operator-managed VM/tunnel
 # NAME_SUMMARY_STATIC = "1"                 # dated name summaries: below-catalog literals on consolidated scans from the static suffix shards in INDEX_R2 (`_lib/staticNames.ts`)
+# STATIC_GEN = "2026-10-08c"                # the static name index's generation in INDEX_R2 (`static-names/<gen>/`; unset = gcs's `2026-10-08c`)
 # STATIC_MAX_ROWS = "400000"                # the static reader's ceiling on suffix rows per query (default 400K; the catalog threshold bounds it lower)
 # FILTER_STATIC = "1"                       # the map's filter (`q=`): a single literal's match roots on any scan of the static name index's generation, from INDEX_R2 (`_lib/staticFilter.ts`)
 # FILTER_STATIC_HEAVY = "1"                 # with FILTER_STATIC: heavy literals (catalog members, and every 1–2 character one) from the drilldown under `drill/` (`_lib/staticDrill.ts`): match roots, or a heavy directory's per-child rollup; base-generation scans only
