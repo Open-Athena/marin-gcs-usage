@@ -5348,3 +5348,7 @@ _static_append.add_command(_static_runs_add)
 _static_names.add_command(_static_append)
 _static_names.add_command(_static_roots)
 main.add_command(_static_names)
+
+from .scan_runs import cli as _scan_runs  # noqa: E402
+
+main.add_command(_scan_runs)
