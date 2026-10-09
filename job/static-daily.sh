@@ -2,7 +2,7 @@
 # The static name index's daily append for one scan (specs/static-daily-append.md, "Daily entry point"):
 #
 #   prepare → append (256 ranges, 16 tasks) → shards ∥ catalog → publish (tier merges + manifest) → R2 (runs, then the
-#   manifest last) [→ verify]
+#   manifest last) [→ verify] → prune (keep only the newest complete open-version state)
 #
 #   job/static-daily.sh [-n] DATE
 #
@@ -10,7 +10,8 @@
 # `deltas/D/scans.json`; append: all `dhist/` ranges, and `append` itself skips done ranges; shards: `sidecar.parquet`;
 # catalog: `catalog/meta.json`; publish: `manifests/D.json`), so a rerun after a failure resumes at the first missing
 # one. The R2 copy skips objects already there (same size and md5), so it always runs. Everything is written under new
-# keys (the scan's run dir, a merged run dir, `manifests/D.json`); nothing is overwritten or deleted.
+# keys (the scan's run dir, a merged run dir, `manifests/D.json`); nothing is overwritten. The one delete is the last
+# stage's: the scratch bucket's earlier `state/<prev>/` (open versions), once `state/D/` is complete.
 #
 # Exit status: 0 done (or nothing to do), 3 the scan is not published yet (or is not the next one), else a failure.
 # Progress lines (UTC, per stage, with durations) go to stderr and to `tmp/static-daily/D.log`.
@@ -131,6 +132,19 @@ if [ -n "${VERIFY_TERMS:-}" ]; then
     log "verify: done"
   else
     MODULE=static_append PARALLELISM=1 JOB_ID=sn-verify-$D-$(date -u +%H%M%S) stage verify job/static-names.sh run verify 1 -g "$GEN" -d "$D" -t "$VERIFY_TERMS"
+  fi
+fi
+
+# 7. prune: keep only the newest complete open-version state (scratch `state/D/`): every earlier `state/<prev>/` goes.
+# `daily prune` refuses (deleting nothing) unless every range's `copen` + `done/` marker and `manifests/D.json` exist;
+# a no-op when nothing precedes D. Always runs (dry run: `-n`, which lists what it would delete).
+if [ -n "$DRY" ]; then
+  log "prune: would run: $DT static-names daily prune -g $GEN -d $D"
+  "$DT" static-names daily prune -g "$GEN" -d "$D" -n >&2 || log "prune: not yet (state/$D incomplete)"
+else
+  if ! stage prune "$DT" static-names daily prune -g "$GEN" -d "$D"; then
+    log "prune refused: state/$D incomplete ($LOG.prune.out); if it was lost, rebuild it (daily rebuild-state)"
+    exit 1
   fi
 fi
 log "complete"
