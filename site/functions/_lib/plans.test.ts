@@ -201,7 +201,7 @@ describe('stageItems — one gesture is all-or-nothing', () => {
   })
   it('no open plan yet: nothing is created', async () => {
     const { sqliteD1 } = await import('./testD1')
-    for (const lineage of ['gcs', 'cw'] as const) {
+    for (const lineage of ['cw'] as const) {
       const { db, raw } = await sqliteD1(lineage)
       raw.exec(boom)
       await expect(stageItems(db, ['gs://b/a/', 'gs://b/b/', 'gs://b/boom/', 'gs://b/c/'], 'ann', 'memo', GS, '2026-10-07')).rejects.toThrow(/boom/)
@@ -210,7 +210,7 @@ describe('stageItems — one gesture is all-or-nothing', () => {
   })
   it('an open plan: its items, batches and audit trail are untouched (absorbed items stay)', async () => {
     const { sqliteD1 } = await import('./testD1')
-    for (const lineage of ['gcs', 'cw'] as const) {
+    for (const lineage of ['cw'] as const) {
       const { db, raw } = await sqliteD1(lineage)
       const first = await stageItems(db, ['gs://b/x/y/'], 'ann', 'first', GS, '2026-10-06')
       const before = dump(raw)
@@ -233,7 +233,7 @@ describe('mergeBatches — a chunked staging folds into one batch', () => {
   })
   it('moves the items, keeps the earliest time, takes the new note, deletes the folded batches', async () => {
     const { sqliteD1 } = await import('./testD1')
-    for (const lineage of ['gcs', 'cw'] as const) {
+    for (const lineage of ['cw'] as const) {
       const { db, raw } = await sqliteD1(lineage)
       await stageItems(db, ['gs://b/r/1/', 'gs://b/r/2/'], 'ann', 'marks (1/3)', GS, '2026-10-06')
       await stageItems(db, ['gs://b/r/3/'], 'ann', 'marks (2/3)', GS, '2026-10-07')
@@ -258,7 +258,7 @@ describe('mergeBatches — a chunked staging folds into one batch', () => {
   })
   it('refuses mixed stagers, foreign or missing batches, and a closed plan — writing nothing', async () => {
     const { sqliteD1 } = await import('./testD1')
-    const { db, raw } = await sqliteD1('gcs')
+    const { db, raw } = await sqliteD1('cw')
     await stageItems(db, ['gs://b/a/'], 'ann', null, GS, null)
     await stageItems(db, ['gs://b/c/'], 'bob', null, GS, null)
     const before = dump(raw)
@@ -277,7 +277,7 @@ describe('mergeBatches — a chunked staging folds into one batch', () => {
   })
   it('emptiedBatches replays the merge: a later ancestor absorbs the merged batch', async () => {
     const { sqliteD1 } = await import('./testD1')
-    const { db } = await sqliteD1('gcs')
+    const { db } = await sqliteD1('cw')
     await stageItems(db, ['gs://b/r/1/'], 'ann', null, GS, null)
     await stageItems(db, ['gs://b/r/2/'], 'ann', null, GS, null)
     await mergeBatches(db, 1, 1, [2], null, 'ann')

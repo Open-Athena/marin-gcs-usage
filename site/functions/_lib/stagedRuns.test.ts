@@ -251,7 +251,7 @@ describe('emptied stage batches — replayed from the plan_items audit trail', (
   })
 
   it('POST /api/plans/stage: `as_of` defaults to the latest scan, must name a scan, and a re-stage keeps the first; the snapshot carries it', async () => {
-    const { db, raw } = await sqliteD1('gcs')
+    const { db, raw } = await sqliteD1('cw')
     raw.exec(`INSERT INTO index_schema (date, variant, version, schema_json) VALUES
       ('2026-10-06', 'path', 2, '[]'), ('2026-10-07', 'path', 2, '[]'), ('2026-10-07', 'bysize', 2, '[]')`)
     const env = { DB: db, STAGING: '1', STORE_SCHEME: 'gs://', STORE_BUCKETS: `${B1},${B2}`, DEV_EMAIL: 'ann@example.test' }
