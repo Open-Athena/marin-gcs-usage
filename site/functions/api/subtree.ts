@@ -25,6 +25,7 @@ import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
 import { extrasFor } from '../_lib/extras.js'
 import { isScanId } from '../../src/scanSlug.js'
+import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
 
 
 type SubtreeCtx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
@@ -46,13 +47,13 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     return new Response('subtree API not configured (missing index store creds)', { status: 503 })
   }
   const url = new URL(ctx.request.url)
-  const date = url.searchParams.get('date') ?? ''
+  let date = url.searchParams.get('date') ?? ''
   const path = (url.searchParams.get('path') ?? '').replace(/\/+$/, '')
   const w = Math.ceil((Number(url.searchParams.get('w')) || 1280) / QUANT) * QUANT
   const h = Math.ceil((Number(url.searchParams.get('h')) || 800) / QUANT) * QUANT
   const minArea = Number(url.searchParams.get('minArea')) || MIN_AREA_DEFAULT
   const atten = Number(url.searchParams.get('atten')) || ATTEN_DEFAULT
-  if (!isScanId(date)) return new Response('bad date', { status: 400 })
+  if (!isScanId(date) && !url.searchParams.has('d')) return new Response('bad date', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
 
   // Optional lens: `lens=user:<id>` — a treemap of that user's bytes, read
@@ -113,7 +114,16 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     if (resolved === null) return new Response(ME_UNRESOLVED, { status: 400 })
     lens = resolved
     const lensTag = lensParam(lens)
-    const [head, xtra, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date])]))
+    // A `d=<slug>` resolves first (the latest indexed scan it names); an exact
+    // `date` is checked alongside the other pre-steps. A miss is a 404, never
+    // another scan.
+    if (!url.searchParams.has('date')) {
+      const scan = await scanArg(ctx.env, url.searchParams)
+      if (scan instanceof Response) return scan
+      date = scan
+    }
+    const [head, xtra, g, indexed] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date]), indexedScan(ctx.env, date, true)]))
+    if (!indexed) return noScan('date', date)
     const cacheKey = cacheKeyFor('subtree',
       `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensTag}` +
         `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}` +

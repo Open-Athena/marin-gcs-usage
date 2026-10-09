@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from dt_cloud.cli import main
 import datetime as dt
 
-from dt_cloud.scan_id import META_PATH, check_order, check_scan_id, is_scan_id, latest_scan, scan_epoch, scan_label, scan_slug, scan_time, snapshot_scans
+from dt_cloud.scan_id import META_PATH, check_order, check_scan_id, is_scan_id, latest_scan, resolve_slug, scan_epoch, scan_label, scan_slug, scan_time, slug_prefix, snapshot_scans
 
 SCANS = ["2026-10-08", "2026-10-09T0601", "2026-10-09T1802", "2026-10-09T1215"]
 
@@ -33,7 +33,7 @@ def test_check_scan_id_names_both_forms():
 def test_scan_time_and_slug():
     utc = dt.timezone.utc
     assert [scan_time(s) for s in ["2026-10-09", "2026-10-09T0601"]] == [dt.datetime(2026, 10, 9, tzinfo=utc), dt.datetime(2026, 10, 9, 6, 1, tzinfo=utc)]
-    assert [scan_slug(s) for s in ["2026-10-09", "2026-10-09T0601"]] == ["261009", "261009-0601"]
+    assert [scan_slug(s) for s in ["2026-10-09", "2026-10-09T0601"]] == ["261009", "2610090601"]
     for f in (scan_time, scan_slug):
         with pytest.raises(ValueError):
             f("261009")
@@ -48,6 +48,19 @@ def test_meta_path_extracts_the_scan_id():
 def test_latest_scan_picks_the_latest_match():
     assert [latest_scan(p, SCANS) for p in ["2026-10-09", "2026-10-09T12", "2026-10-09T06", "2026-10-09T0601", "2026-10-08", "2026-10-07", "2026-10"]] == [
         "2026-10-09T1802", "2026-10-09T1215", "2026-10-09T0601", "2026-10-09T0601", "2026-10-08", None, "2026-10-09T1802",
+    ]
+
+
+def test_slug_prefix_and_resolve_slug():
+    slugs = ["261009", "26100912", "2610091215", "261009-12", "261009-1215", "261009T12", "2026-10-09", "2026-10-09T12", "2026-10-09T1215",
+             "26100903", "261010", "26100924", "20261009", "junk"]
+    assert [slug_prefix(s) for s in slugs] == [
+        "2026-10-09", "2026-10-09T12", "2026-10-09T1215", "2026-10-09T12", "2026-10-09T1215", "2026-10-09T12", "2026-10-09", "2026-10-09T12", "2026-10-09T1215",
+        "2026-10-09T03", "2026-10-10", None, None, None,
+    ]
+    assert [resolve_slug(s, SCANS) for s in slugs] == [
+        "2026-10-09T1802", "2026-10-09T1215", "2026-10-09T1215", "2026-10-09T1215", "2026-10-09T1215", "2026-10-09T1215", "2026-10-09T1802", "2026-10-09T1215", "2026-10-09T1215",
+        None, None, None, None, None,
     ]
 
 

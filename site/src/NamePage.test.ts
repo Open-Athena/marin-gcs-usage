@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NamePage, catalogDomain, nameUrlParams, scanList, staticDomain } from './NamePage'
 import { nameDiff, nameFixture } from './nameTestFixtures'
 import { parseName, parseNameRegistry } from './nameModel'
+import { fmtScan } from './scan'
 import { SUB_DAILY_SCANS, dailyNameFixture, datedNameRegistry, fiveBucketFixture, fiveBucketRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
 
 vi.mock('./SiteKbd', () => ({ SiteKbd: () => null }))
@@ -15,6 +16,9 @@ function render(client: QueryClient, path = '/names?date=2026-10-05&name=datakit
   if (seedRegistry && !client.getQueryState(['name-summary-registry'])) client.setQueryData(['name-summary-registry'], parseNameRegistry(legacyNameRegistry()))
   return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(MemoryRouter, { initialEntries: [path] }, createElement(NamePage))))
 }
+/** The "no scan matches" state: its text, and its links. */
+const misses = (html: string) => [...html.matchAll(/<p class="no-scan loading" role="alert">(.*?)<\/p>/g)]
+  .map(([, inner]) => [inner.replace(/<[^>]+>/g, ''), [...inner.matchAll(/<a href="([^"]+)">(.*?)<\/a>/g)].map(([, href, label]) => [href.replace(/&amp;/g, '&'), label])])
 const links = (html: string) => [...html.matchAll(/<a href="([^"]+)">(.*?)<\/a>/g)].map(([, href, label]) => [href, label])
 const planParagraphs = (html: string) => /<div aria-label="Name-summary execution plan">(.*?)<\/div>/.exec(html)?.[1]
 const tableRows = (html: string) => [...(html.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? '').matchAll(/<tr[^>]*>(.*?)<\/tr>/g)]
@@ -100,7 +104,8 @@ it('unknown dates remain explicit unavailable selections rather than silently ch
   try {
     const html = render(client, '/names?date=2026-10-07&name=datakit')
     expect(html.match(/<select name="date">(.*?)<\/select>/)?.[1]).toBe('<option value="2026-10-07" selected="">2026-10-07 (unavailable)</option><option>2026-10-04</option><option>2026-10-05</option><option>2026-10-06</option>')
-    expect([...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)).toEqual(['This scan is unavailable in the name-summary registry; it is not a zero-match result.'])
+    expect(misses(html)).toEqual([['No scan matches 261007. Nearest: ← 10/6', [['/names?name=datakit&d=261006', '← 10/6']]]])
+    expect([...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)).toEqual([])
     expect(roots).toEqual([])
   } finally { client.clear() }
 })
@@ -193,10 +198,24 @@ describe('two scans on one day: ?d= addresses each, a day picks the later', () =
       expect(view(render(client, path))).toEqual([opts(scan), ['All buckets', String(b), '6'], []])
     } finally { client.clear() }
   })
-  it('a slug matching no scan is an explicit unavailable selection', () => {
+  it.each([
+    // an hour with no scan, between the 10/9 scans (UTC; display is viewer-local)
+    ['/names?d=26100903&name=datakit', 'No scan matches 26100903. Nearest: ← $A · $B →', [['/names?d=261008&name=datakit', '← $A'], ['/names?d=2610090601&name=datakit', '$B →']]],
+    // a day after every scan: only an earlier neighbour
+    ['/names?d=261010&name=datakit', 'No scan matches 261010. Nearest: ← $C', [['/names?d=2610091802&name=datakit', '← $C']]],
+    // unparseable: nothing to offer
+    ['/names?d=junk&name=datakit', 'No scan matches junk. No scan to offer instead.', []],
+    // a baseline naming no earlier scan
+    ['/names?d=2610091802-261007&name=datakit', 'No baseline scan matches 261007. Nearest: $A →', [['/names?d=2610091802-261008&name=datakit', '$A →']]],
+  ])('%s is a miss with links to the nearest scans, and nothing answered', (path, text, hrefs) => {
     const client = seeded()
+    const lbl = { $A: fmtScan('2026-10-08'), $B: fmtScan('2026-10-09T0601'), $C: fmtScan('2026-10-09T1802') }
+    const fill = (t: string) => t.replace(/\$[ABC]/g, k => lbl[k as keyof typeof lbl])
     try {
-      expect(view(render(client, '/names?d=261010&name=datakit'))).toEqual([`<option value="2026-10-10" selected="">2026-10-10 (unavailable)</option>${opts('')}`, undefined, ['This scan is unavailable in the name-summary registry; it is not a zero-match result.']])
+      const html = render(client, path)
+      expect(misses(html)).toEqual([[fill(text), hrefs.map(([h, l]) => [h, fill(l)])]])
+      expect(tableRows(html)).toEqual([])
+      expect(roots).toEqual([])
     } finally { client.clear() }
   })
 })
@@ -208,5 +227,5 @@ it('a /names search writes the canonical ?d= (latest floats, as on the map)', ()
     write('name=gof&date=2026-10-09T0601'),
     write('name=gof&date=2026-10-09T1802&from=2026-10-09T0601'),
     write('name=gof&date=2026-10-08&from='),
-  ]).toEqual(['name=gof', 'd=261009-0601&name=gof', 'd=-261009-0601&name=gof', 'd=261008&name=gof'])
+  ]).toEqual(['name=gof', 'd=2610090601&name=gof', 'd=-2610090601&name=gof', 'd=261008&name=gof'])
 })

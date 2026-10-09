@@ -24,6 +24,7 @@ import { withStore } from '../_lib/stores.js'
 import { type Env, requireViewer } from '../_lib/auth.js'
 import { indexDir, storeCreds, storePrefixes, storeReady, storeTarget } from '../_lib/index.js'
 import { isScanId } from '../../src/scanSlug.js'
+import { scanArg } from '../_lib/scanArg.js'
 
 const MAX_RANGE = 64 * 1024 * 1024 // 64MB per request — plenty for parquet pages
 
@@ -39,12 +40,15 @@ export const onRequest = async (ctx0: { request: Request; env: Env }): Promise<R
     return new Response('path-index proxy not configured (missing index store creds)', { status: 503 })
   }
   const url = new URL(request.url)
-  const date = url.searchParams.get('date') ?? ''
-  if (!isScanId(date)) return new Response('bad date', { status: 400 })
+  if (!isScanId(url.searchParams.get('date')) && !url.searchParams.has('d')) return new Response('bad date', { status: 400 })
   // The GCS index carries no CW data today, but keep the gate shape ready for
   // a `store=cw` variant; base access = the same `gcs` scope as the app.
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
+  // An unindexed id, or a `d=` slug matching no scan: a 404, never another scan.
+  const scan = await scanArg(env, url.searchParams)
+  if (scan instanceof Response) return scan
+  const date = scan
 
   const store = S3Store({ ...storeTarget(env), prefixes: storePrefixes(env, ['listing/']), ...storeCreds(env) })
   // The file lives under the generation dir D1 points at (a run never

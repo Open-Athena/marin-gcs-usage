@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { HotMaps } from './HotMaps'
 import { HotSearchForm, HotTotals } from './HotPage'
 import { SiteKbd } from './SiteKbd'
 import type { HotRequest } from './hotModel'
 import { loadName, loadNameRegistry, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
 import { useDocTitle } from './title'
-import { useScanSel } from './scan'
+import { fromMiss, scanMiss, useScanSel, type ScanMiss } from './scan'
+import { hrefWithScan, NoScanMatch } from './NoScanMatch'
 import { encodeSel, isScanId, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
 import './hot.scss'
 
@@ -37,6 +38,14 @@ export function scanList(dates: readonly string[]): string {
  * `?d=` resolved against the registry's scans (`resolveAfter`/`resolveBefore`
  * — a day is its latest scan, a span the nearest earlier scan). An unmatched
  * slug passes through as its prefix, so `nameRequest` reports it unavailable. */
+/** The /names selection's misses against the registry: the end slug (or an
+ * unparseable value), else a pinned baseline naming no earlier scan. */
+export function nameMisses(sel: ScanSel | undefined, dates: readonly string[] | undefined): { endMiss: ScanMiss | null; startMiss: ScanMiss | null } {
+  if (!dates) return { endMiss: null, startMiss: null }
+  const endMiss = scanMiss(sel, dates, true)
+  return { endMiss, startMiss: endMiss ? null : fromMiss(sel?.from, resolveAfter(sel, dates), dates) }
+}
+
 export function nameScanParams(url: URLSearchParams, sel: ScanSel | undefined, dates: readonly string[] | undefined): URLSearchParams {
   const out = new URLSearchParams()
   for (const name of url.getAll('name')) out.append('name', name)
@@ -62,6 +71,7 @@ export function nameUrlParams(form: URLSearchParams, dates: readonly string[] | 
 export function NamePage() {
   useDocTitle('Name summaries preview')
   const [rawParams, setParams] = useSearchParams()
+  const location = useLocation()
   // The scan selection is the map's `?d=` (one key and codec on every page):
   // `useScanSel` rewrites a legacy `?date=`/`?from=` (or ISO) link to it on
   // mount; the page reads the router's params through the same merge.
@@ -72,7 +82,11 @@ export function NamePage() {
   const scanParams = nameScanParams(rawParams, sel, dates)
   const params = namePageParams(scanParams)
   let request: HotRequest | undefined, issue: string | undefined
-  if (dates && !registry.error) try { request = nameRequest(scanParams, dates) } catch (error) { issue = (error as Error).message }
+  // A slug naming no registry scan is a miss: say so and offer the closest
+  // scans; never answer for another scan.
+  const { endMiss, startMiss } = nameMisses(sel, dates)
+  const miss = endMiss ?? startMiss
+  if (dates && !registry.error && !miss) try { request = nameRequest(scanParams, dates) } catch (error) { issue = (error as Error).message }
   const query = useQuery({ queryKey: ['name-summary', request?.date, request?.name, request?.from], queryFn: async ({ signal }) => {
     return nameResultForRegistry(await loadName(request!, signal, dates), registry.data!)
   }, enabled: !!request, staleTime: Infinity, retry: false })
@@ -93,6 +107,7 @@ export function NamePage() {
       : cataloged.length ? `${cataloged.map(row => row.date).join(' and ')}: literals registered on the scan itself (${catalogDomain(cataloged[0].registry!)}) use the consolidated catalog; others are below that threshold and answer on demand from the consolidated name index, and requests exceeding the work budget fail explicitly, not as zero matches.`
       : 'Catalog literals use prepared summaries. Other literals use bounded name postings on demand; requests exceeding the work budget fail explicitly, not as zero matches. No unbounded fleet scan.'}</p>}
     <p className="hot-note">With a baseline, coverage is computed for each snapshot; change is the selected scan minus the baseline, not only paths that changed.</p>
+    {miss && <NoScanMatch what={endMiss ? 'scan' : 'baseline scan'} miss={miss} hrefFor={scan => hrefWithScan(location.pathname, location.search, sel, scan, !!endMiss)} />}
     {issue && <p role="alert">{issue}</p>}
     {registry.isPending && <p role="status">Loading available name-summary scans…</p>}
     {registry.error && <p role="alert">{registry.error.message}</p>}

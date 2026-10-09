@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useUrlAlias, useUrlState } from 'use-prms'
-import { decodeSel, encodeSel, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanParts, type ScanSel } from './scanSlug'
+import { decodeSel, encodeScan, encodeSel, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanNeighbors, scanParts, selSlug, type ScanSel } from './scanSlug'
 import { storeUrl, type Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
@@ -32,7 +32,7 @@ export function fmtScan(s: string, now = new Date()): string {
     : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${time}`
 }
 
-export { DAY, decodeScan, decodeSel, decodeSpan, encodeScan, encodeSel, encodeSpan, latestScan, nearestScan, resolveScan, scanMatches, scanTime, type ScanSel } from './scanSlug'
+export { DAY, decodeScan, decodeSel, decodeSpan, encodeScan, encodeSel, encodeSpan, latestScan, nearestScan, resolveScan, scanMatches, scanNeighbors, scanTime, type ScanSel } from './scanSlug'
 
 const selParam = { encode: encodeSel, decode: (e: string | undefined) => decodeSel(e) }
 
@@ -50,8 +50,31 @@ export function useScanSel(): [ScanSel | undefined, (v: ScanSel | undefined) => 
   return [sel, setSel]
 }
 
+/** A `?d=` slug that matches no scan: the slug as written (canonical when it
+ * decoded), and the closest scans on either side to offer instead. */
+export interface ScanMiss { slug: string; before: string | null; after: string | null }
+
+/** The selection's miss, once the scan list has answered: an unparseable
+ * value, or an end slug no scan matches. (A pinned start that misses is the
+ * diff's own state — see `fromMiss`.) */
+export function scanMiss(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean): ScanMiss | null {
+  if (!loaded || !sel) return null
+  if (sel.invalid) return { slug: sel.invalid, before: null, after: null }
+  if (!sel.d || latestScan(sel.d, scans)) return null
+  return { slug: selSlug(sel), ...scanNeighbors(sel.d, scans) }
+}
+
+/** A pinned start (`from`) that matches no scan before `after`. */
+export function fromMiss(from: string | undefined, after: string | null, scans: readonly string[]): ScanMiss | null {
+  if (!from || !after) return null
+  const earlier = scans.filter(s => s < after)
+  return latestScan(from, earlier) ? null : { slug: encodeScan(from) ?? from, ...scanNeighbors(from, earlier) }
+}
+
 export interface Scan {
   asof: string | null
+  /** `?d=` names no scan (then `asof` is null): what to say and offer. */
+  miss: ScanMiss | null
   scans: string[]
   dMatches: string[]
   dP: string | undefined
@@ -117,7 +140,9 @@ export function useScan(store: Store): Scan {
   const span = sel?.span
   const from = sel?.from
   const dMatches = useMemo(() => scanMatches(dP, scans), [dP, scans])
-  const asof = dMatches[0] ?? scans[0] ?? null
+  // A `?d=` naming no scan is a miss, never the latest (or nearest) instead.
+  const miss = useMemo(() => scanMiss(sel, scans, scansQ.isSuccess), [sel, scans, scansQ.isSuccess])
+  const asof = miss ? null : sel?.invalid ? null : dP ? dMatches[0] ?? null : scans[0] ?? null
   // Write the {end, before} pair verbatim — `before` is a span OR a pinned
   // `from`, never both. Callers that pass a `d` equal to the latest scan mean
   // "float" and drop it; `setEndPin` is the one path that pins at latest.
@@ -131,7 +156,7 @@ export function useScan(store: Store): Scan {
   const setSpan = (ms: number | undefined) => write(dP, ms, undefined)
   const setFrom = (v: string | undefined) => write(dP, undefined, v)
   const setEndPin = (pin: boolean) => write(pin ? asof ?? undefined : undefined, span, from)
-  return { asof, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
+  return { asof, miss, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
 }
 
 /** `<optgroup>` rows for a scan picker: scans grouped by their displayed
