@@ -312,10 +312,12 @@ export interface Blobs {
   /** The last `n` bytes and the object's size. */
   suffix(key: string, n: number): Promise<{ buf: ArrayBuffer; size: number }>
   json<T>(key: string): Promise<T>
+  /** Keys under `prefix` (relative to the same root), when the store can list (the daily runs' manifests). */
+  list?(prefix: string): Promise<string[]>
 }
 
 /** Where a query's time and bytes went (the `x-static-io` header). */
-export interface Io { shard: number | null; groups: number; bytes: number; rows_read: number; rows_matching: number; index: 'isolate' | 'cache' | 'footer' | 'none'; footer_bytes?: number; ms: Record<string, number> }
+export interface Io { shard: number | null; groups: number; bytes: number; rows_read: number; rows_matching: number; index: 'isolate' | 'cache' | 'footer' | 'none'; footer_bytes?: number; ms: Record<string, number>; tiers?: number }
 
 export interface IndexCache<T = GroupIndex> { get(file: string): Promise<T | null>; put(file: string, idx: T): Promise<void> }
 
@@ -424,6 +426,16 @@ export function r2Blobs(r2: R2Bucket, prefix = STATIC_PREFIX): Blobs {
     range: async (key, offset, length) => (await get(key, length == null ? { offset } : { offset, length })).arrayBuffer(),
     suffix: async (key, n) => { const o = await get(key, { suffix: n }); return { buf: await o.arrayBuffer(), size: o.size } },
     json: async key => (await get(key)).json(),
+    list: async p => {
+      const keys: string[] = []
+      let cursor: string | undefined
+      do {
+        const page = await r2.list({ prefix: `${prefix}/${p}`, cursor })
+        for (const o of page.objects) keys.push(o.key.slice(prefix.length + 1))
+        cursor = page.truncated ? page.cursor : undefined
+      } while (cursor)
+      return keys
+    },
   }
 }
 

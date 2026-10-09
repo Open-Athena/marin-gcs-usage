@@ -19,7 +19,8 @@
 import type { Row } from './index.js'
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
-import { type Blobs, cacheIndexes, type Hit, r2Blobs, scanMs, STATIC_GEN, STATIC_PREFIX, StaticNames } from './staticNames.js'
+import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanMs, STATIC_GEN, STATIC_PREFIX } from './staticNames.js'
+import { tiers } from './staticRuns.js'
 
 export type { Hit } from './staticNames.js'
 
@@ -50,24 +51,35 @@ const HELD_HITS = 400_000
 
 const under = (p: string, root: string): boolean => root === '' || p.startsWith(root + '/')
 
+/** What `SuffixHits` reads: a literal's first hits, refused (null) above `maxRows`. `version` names the index's
+ *  current state (the daily runs' manifest date, `staticRuns.ts`): the hit lists span every date, so they are
+ *  held and cached per version. A single generation is `StaticNames` (no `version`: 'base'). */
+export interface HitReader {
+  read(key: string, maxRows?: number): Promise<{ io: Io; fold: FirstHits | null }>
+  version?(): Promise<string>
+}
+
 /** The light source: the literal's suffix range from the shards, folded to its first hits once (per
  *  isolate, and per colo through `cache`), then cut to `under`. Literals over `maxRows` go to `heavy`. */
 export class SuffixHits implements HitSource {
   private held = new Map<string, Promise<{ hits: Hit[]; io: Record<string, unknown> } | null>>()
   constructor(
-    readonly names: StaticNames,
+    readonly names: HitReader,
     readonly opts: { maxRows?: number; heavy?: HitSource | null; cache?: HitCache | null; waitMs?: number } = {},
   ) {}
 
   /** Every first hit of `key` (null: over `maxRows`, the heavy source's business). */
-  all(key: string): Promise<{ hits: Hit[]; io: Record<string, unknown> } | null> {
-    const p = shared(this.held, key, async () => {
-      const cached = await this.opts.cache?.get(key)
-      if (cached) return { hits: cached, io: { from: 'cache' } }
+  async all(key: string): Promise<{ hits: Hit[]; io: Record<string, unknown> } | null> {
+    const version = (await this.names.version?.()) ?? 'base'
+    // The base generation's entries keep their keys; a day's runs version theirs.
+    const vkey = version === 'base' ? key : `${key}@${version}`
+    const p = shared(this.held, vkey, async () => {
+      const cached = await this.opts.cache?.get(vkey)
+      if (cached) return { hits: cached, io: { from: 'cache', version } }
       const { io, fold } = await this.names.read(key, this.opts.maxRows ?? MAX_ROWS)
       if (!fold) return null
-      await this.opts.cache?.put(key, fold.hits)
-      return { hits: fold.hits, io: { from: 'shards', shard: io.shard, groups: io.groups, bytes: io.bytes, rows_read: io.rows_read, ms: io.ms } }
+      await this.opts.cache?.put(vkey, fold.hits)
+      return { hits: fold.hits, io: { from: 'shards', version, shard: io.shard, groups: io.groups, bytes: io.bytes, rows_read: io.rows_read, tiers: io.tiers ?? 1, ms: io.ms } }
     }, this.opts.waitMs ?? 20_000)
     // Bound what the isolate holds: drop the oldest literals past `HELD_HITS` hits.
     void p.then(() => this.trim(), () => {})
@@ -129,9 +141,9 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
   if (injected) return injected
   if (env.FILTER_STATIC !== '1' || !env.INDEX_R2) return null
   if (held?.r2 !== env.INDEX_R2) {
-    const blobs = r2Blobs(env.INDEX_R2)
-    const names = new StaticNames(blobs, cacheIndexes(caches.default))
-    held = { r2: env.INDEX_R2, store: { source: new SuffixHits(names, { cache: cacheHits(caches.default), get heavy() { return heavySource } }), scans: scanList(blobs), gen: STATIC_GEN } }
+    // The base generation plus its daily runs (`staticRuns.ts`): each tier's group indexes cached under its own prefix.
+    const t = tiers(r2Blobs(env.INDEX_R2), { indexCache: dir => cacheIndexes(caches.default, dir ? `${STATIC_PREFIX}/${dir}` : STATIC_PREFIX) })
+    held = { r2: env.INDEX_R2, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default), get heavy() { return heavySource } }), scans: t.scans, gen: STATIC_GEN } }
   }
   return held.store
 }

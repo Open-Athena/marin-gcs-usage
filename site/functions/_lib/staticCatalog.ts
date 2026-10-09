@@ -30,7 +30,7 @@ export interface CatalogMeta { gen: string; bytes: number; cells_rows: number; r
 export interface CatalogIndex { size: number; qMin: string[]; qMax: string[]; offset: number[]; length: number[]; rows: number[]; chunks: number[] }
 export interface Cell { bucket: string; vf: bigint; b: bigint; o: bigint }
 /** A member: its suffix-range rows (−1 for a one- or two-character literal) and its cells, header excluded. */
-export interface Member { q: string; rows: number; cells: Cell[] }
+export interface Member { q: string; rows: number; cells: Cell[]; n?: number }
 export interface CatalogIo { groups: number; bytes: number; rows_read: number; index: 'isolate' | 'cache' | 'file' }
 
 const num = (v: unknown): number => { const n = Number(v); if (!Number.isSafeInteger(n)) throw new Error(`static catalog: bad integer ${v}`); return n }
@@ -99,8 +99,10 @@ export class StaticCatalog {
     return p
   }
 
-  /** `q`'s cells, or null when it is not a member. */
-  async lookup(q: string): Promise<{ io: CatalogIo; member: Member | null }> {
+  /** `q`'s cells, or null when it is not a member. `partial`: this file is one tier of several (the daily runs,
+   *  `staticRuns.ts`): its cells are a part, and the header's count (`n`) covers every tier, so it is returned,
+   *  not checked here. */
+  async lookup(q: string, opts: { partial?: boolean } = {}): Promise<{ io: CatalogIo; member: Member | null }> {
     const io: CatalogIo = { groups: 0, bytes: 0, rows_read: 0, index: 'isolate' }
     const idx = await this.index(io)
     const [a, b] = catalogGroups(idx, q)
@@ -122,6 +124,7 @@ export class StaticCatalog {
       }
     }
     if (!head || head.bucket !== '') return { io, member: null }
+    if (opts.partial) return { io, member: { q, rows: num(head.b), cells: mine, n: num(head.o) } }
     if (BigInt(mine.length) !== head.o) throw new Error(`static catalog: ${JSON.stringify(q)} header counts ${head.o} cells, found ${mine.length}`)
     return { io, member: { q, rows: num(head.b), cells: mine } }
   }

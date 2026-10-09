@@ -14,8 +14,9 @@ import { datedNameRequest, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, 
 import { HOT_SCOPE } from '../../src/hotModel.js'
 import { json } from './auth.js'
 import { privateHeaders } from './hotL1.js'
-import { catalogAnswer, type CatalogIo, StaticCatalog } from './staticCatalog.js'
-import { type Blobs, cacheIndexes, type Io, r2Blobs, STATIC_GEN, StaticNames, type Totals } from './staticNames.js'
+import { catalogAnswer, type CatalogIo, type CatalogMeta, type Member } from './staticCatalog.js'
+import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, STATIC_GEN, STATIC_PREFIX, type Totals } from './staticNames.js'
+import { tiers } from './staticRuns.js'
 
 export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string }
 export const staticEnabled = (env: StaticNameEnv): boolean => env.NAME_SUMMARY_STATIC === '1' && !!env.INDEX_R2
@@ -29,7 +30,14 @@ const VALIDATION = {
 }
 
 /** The generation's readers: suffix shards, catalog, `scans.json`'s scan ids (sorted), and a clock for the timings. */
-export interface Store { names: StaticNames; catalog: StaticCatalog; scans: () => Promise<string[]>; clock: () => Promise<number> }
+/** The suffix reader (`StaticNames`, or `TieredNames` over the base and its daily runs). */
+export interface NameReader {
+  extent(key: string, io: Io): Promise<{ rows: number } | null>
+  answer(key: string, dates: string[], maxRows?: number): Promise<{ io: Io; answer: Answer | null }>
+}
+/** The catalog (`StaticCatalog`, or `TieredCatalog`). */
+export interface CatalogReader { info(): Promise<CatalogMeta>; lookup(q: string): Promise<{ io: CatalogIo; member: Member | null }> }
+export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; clock: () => Promise<number> }
 let held: { r2: R2Bucket; store: Store } | undefined
 
 // The Workers clock only advances across I/O; a cache miss pins "now" after CPU-bound work (decode).
@@ -39,12 +47,15 @@ const tick = async () => { await caches.default.match('https://static-names.inva
 export function store(r2: R2Bucket): Store {
   if (held?.r2 !== r2) {
     const blobs = r2Blobs(r2)
-    held = { r2, store: { names: new StaticNames(blobs, cacheIndexes(caches.default), tick), catalog: new StaticCatalog(blobs, cacheIndexes(caches.default, undefined, 'catalog-v1')), scans: scanIds(blobs), clock: tick } }
+    // The base generation plus its daily runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
+    const pre = (dir: string | null) => dir ? `${STATIC_PREFIX}/${dir}` : STATIC_PREFIX
+    const t = tiers(blobs, { indexCache: dir => cacheIndexes(caches.default, pre(dir)), catalogCache: dir => cacheIndexes(caches.default, pre(dir), 'catalog-v1'), clock: tick })
+    held = { r2, store: { names: t.names, catalog: t.catalog, scans: t.scans, clock: tick } }
   }
   return held.store
 }
 /** The suffix reader alone (`/api/static-bench`). */
-export const names = (r2: R2Bucket): StaticNames => store(r2).names
+export const names = (r2: R2Bucket): NameReader => store(r2).names
 
 /** `scans.json`'s scan ids, sorted (held once loaded). */
 export function scanIds(blobs: Blobs): () => Promise<string[]> {
