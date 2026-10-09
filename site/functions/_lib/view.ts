@@ -1247,7 +1247,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   }
   // The interval store keeps read days in their own sort (specs/interval-store.md §2.2): the tiles' and
   // the root's, looked up as of the scan.
-  if (plain && idx.asOf != null) {
+  if (plain && idx.asOf != null && !idx.schema.some(l => l.name === 'last_read')) {
     t0 = performance.now()
     const rootPaths = path === '' ? [...new Set(rootRows.map(r => r.path))] : [path]
     const lr = await ivLastRead(env, date, [...aggs.keys(), ...rootPaths])

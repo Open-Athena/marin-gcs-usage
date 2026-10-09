@@ -54,10 +54,12 @@ def main() -> None:
     con = duckdb.connect()
     for i in range(3):
         ist.build_range(doc, ranges, i, work / "out", con, mount=str(work))
+    for i in range(3):
+        ist.fold_range(str(work / "out"), i, work / "out", con)
     out = HERE / "interval-store" / GEN
     shutil.rmtree(out, ignore_errors=True)
     for sort, (sub, _, _) in ist.SORTS.items():
-        schema = ist.PV_SCHEMA if sub == "pv" else ist.RD_SCHEMA
+        schema = ist.SUB_SCHEMA[sub]
         ist.write_served(con, f"read_parquet('{work}/out/{sub}/r*.parquet')", sort, out / "served" / f"{sort}.parquet", schema, rg_rows=4)
     (out / "scans.json").write_text(json.dumps({"scans": [{"id": s["id"], "ts": s["ts"]} for s in scans]}, indent=1) + "\n")
     store = ir.Store(out / "served")

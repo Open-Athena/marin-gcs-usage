@@ -108,15 +108,13 @@ describe('interval store', () => {
     }
   })
 
-  it('reads only the interval store', async () => {
+  it('reads only the interval store, read days from the path versions themselves', async () => {
     expect([...new Set(reads)].sort()).toEqual([
       'interval-store/g1/scans.json',
       'interval-store/g1/served/bysize.groups.parquet',
       'interval-store/g1/served/bysize.parquet',
       'interval-store/g1/served/path.groups.parquet',
       'interval-store/g1/served/path.parquet',
-      'interval-store/g1/served/reads.groups.parquet',
-      'interval-store/g1/served/reads.parquet',
     ])
   })
 

@@ -27,7 +27,7 @@ MIN_AREA = 12
 ATTEN = 2.0
 HARD_CAP = 50_000
 #: The columns a view decodes from the path versions (all but nothing: every column is a `Row` field).
-VIEW_COLS = ["depth", "path", "vf", "vt", "kind", "size", "n_files", "n_children", "n_desc", "mtime", "wts", "wb", "c2", "c3", "c4", "us"]
+VIEW_COLS = ["depth", "path", "vf", "vt", "kind", "size", "n_files", "n_children", "n_desc", "mtime", "wts", "wb", "c2", "c3", "c4", "us", "last_read"]
 
 
 @dataclass
@@ -166,7 +166,8 @@ def us_map(us: str, size: int) -> dict[str, int]:
 
 
 def agg_of(r: dict) -> Agg:
-    a = Agg(b=r["size"], o=r["n_files"], kind=r["kind"], nc=None if r["n_children"] < 0 else r["n_children"])
+    a = Agg(b=r["size"], o=r["n_files"], kind=r["kind"], nc=None if r["n_children"] < 0 else r["n_children"],
+            a=r["last_read"] if r.get("last_read", -1) >= 0 else None)
     if r["wb"] > 0:
         a.wts, a.wb = r["wts"], r["wb"]
     for k in ("c2", "c3", "c4"):
@@ -262,7 +263,9 @@ class Store:
         root = Path(root)
         self.path = Sort(root / "path.parquet", "path")
         self.bysize = Sort(root / "bysize.parquet", "bysize")
-        self.reads = Sort(root / "reads.parquet", "reads")
+        # The read days are a column of the path versions (`interval_store.fold`); `reads` stays an
+        # optional standalone sort.
+        self.reads = Sort(root / "reads.parquet", "reads") if (root / "reads.parquet").exists() else None
 
     # The reads, planned as `index.ts` plans them, with liveness at D added to every group test.
     def point(self, D: int, depth: int, lo: str, hi: str, cost: Cost, sort: Sort | None = None, cols=VIEW_COLS) -> pa.Table:
@@ -332,6 +335,8 @@ class Store:
         if path == "":
             roots = self.point_depth(D, 1, cost)
             root = Agg(kind="dir", nc=len(roots))
+            reads = [r["last_read"] for r in roots if r["last_read"] >= 0]
+            root.a = max(reads) if reads else None
             for r in roots:
                 a = agg_of(r)
                 root.b += a.b; root.o += a.o; root.wts += a.wts; root.wb += a.wb
@@ -352,14 +357,6 @@ class Store:
         kept = {r["path"]: agg_of(r) for r in rows}
         if len(kept) > HARD_CAP:
             raise ValueError(f"{len(kept)} tiles over HARD_CAP")
-        lr = self.last_read(D, ([path] if path else []) + list(kept), cost)
-        for p, a in kept.items():
-            a.a = lr.get(p)
-        if path:
-            root.a = lr.get(path)
-        else:
-            top = list(self.last_read(D, [r["path"] for r in roots], cost).values())
-            root.a = max(top) if top else None
         return {"tree": tree(path, root, kept, thr_at), "threshold": thr, "served": served, "kept": {p: (a.b, a.o, a.kind) for p, a in kept.items()},
                 "root": (root.b, root.o), "cost": cost.total()}
 

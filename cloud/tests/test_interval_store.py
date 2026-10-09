@@ -129,6 +129,8 @@ def built(tmp_path_factory):
     out = root / "out"
     con = duckdb.connect(str(root / "b.duckdb"))
     docs = [ist.build_range(scans_doc, ranges, i, out, con, mount=str(root)) for i in range(3)]
+    for i in range(3):
+        ist.fold_range(str(out), i, out, con)
     return out, scans_doc, oracle, docs
 
 
@@ -153,6 +155,23 @@ def test_read_versions_reconstruct_every_scan(built):
     for s, want in zip(scans["scans"], oracle):
         got = {(r["depth"], r["path"]): r["last_read"] for r in _live(out, "rd", s["ts"])}
         assert got == {k: a["last_read"] for k, a in want.items() if a["last_read"] >= 0}, s["id"]
+
+
+def test_fold_equals_versioning_with_read_days(built):
+    """The folded versions reconstruct every scan's per-path rows *with* their read day, and no two
+    adjacent ones are equal: the versions a build with `last_read` as one more change column makes."""
+    out, scans, oracle, _ = built
+    for s, want in zip(scans["scans"], oracle):
+        got = {}
+        for r in _live(out, "pvl", s["ts"]):
+            got[(r["depth"], r["path"])] = {"kind": r["kind"], "size": r["size"], "n_files": r["n_files"], "n_children": r["n_children"],
+                                            "n_desc": r["n_desc"], "mtime": r["mtime"], "dr": round(r["wts"] / r["wb"]) if r["wb"] > 0 else 0,
+                                            "wb": r["wb"], "c2": r["c2"], "c3": r["c3"], "c4": r["c4"], "us": r["us"], "last_read": r["last_read"]}
+        assert got == want, s["id"]
+    t = pa.concat_tables([pq.read_table(p) for p in sorted((out / "pvl").glob("r*.parquet"))]).to_pylist()
+    key = lambda r: tuple(r[c] for c in ("kind", "size", "n_files", "n_children", "n_desc", "mtime", "wb", "c2", "c3", "c4", "us", "last_read")) + (round(r["wts"] / r["wb"]) if r["wb"] > 0 else 0,)
+    assert [(a["path"], a["vt"]) for a, b in zip(t, t[1:]) if (a["depth"], a["path"]) == (b["depth"], b["path"]) and a["vt"] == b["vf"] and key(a) == key(b)] == []
+    assert (len(t), sum(1 for p in sorted((out / "pv").glob("r*.parquet")) for _ in pq.read_table(p).to_pylist())) == (116, 113)
 
 
 def test_versions_are_runs_of_change(built):
@@ -180,7 +199,7 @@ def served(built, tmp_path_factory):
     dst = tmp_path_factory.mktemp("served")
     con = duckdb.connect()
     for sort, (sub, _, _) in ist.SORTS.items():
-        schema = ist.PV_SCHEMA if sub == "pv" else ist.RD_SCHEMA
+        schema = ist.SUB_SCHEMA[sub]
         ist.write_served(con, f"read_parquet('{out}/{sub}/r*.parquet')", sort, dst / f"{sort}.parquet", schema, rg_rows=4)
     return dst
 

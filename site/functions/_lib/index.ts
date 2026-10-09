@@ -510,7 +510,7 @@ export async function ivLastRead(env: Env, date: string, paths: string[], maxGro
  * names on a v1 index, the layer-2's on a store sort (§1.1). `usr` and the
  * class pivots only where the file has them (cw has neither). */
 export const V1_ROW_COLUMNS = ['path', 'depth', 'usr', 'b', 'o', 'wts', 'wb', 'c2', 'c3', 'c4', 'a']
-export const IV_ROW_COLUMNS = ['depth', 'path', 'vf', 'vt', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'wts', 'wb', 'c2', 'c3', 'c4', 'us']
+export const IV_ROW_COLUMNS = ['depth', 'path', 'vf', 'vt', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'wts', 'wb', 'c2', 'c3', 'c4', 'us', 'last_read']
 export const V2_ROW_COLUMNS = ['path', 'depth', 'usr', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'mtime_mean', 'last_read', 'sum_storage_class_id_2', 'sum_storage_class_id_3', 'sum_storage_class_id_4']
 
 /** What a shaped read projects: a v1 index reads every column (its columns
@@ -518,7 +518,10 @@ export const V2_ROW_COLUMNS = ['path', 'depth', 'usr', 'kind', 'size', 'n_files'
  * generation's wire aliases and `created` are never fetched or decoded. */
 export function rowColumns(version: number, schema: SchemaElement[]): string[] | null {
   if (version < 2) return null
-  if (version >= 3) return IV_ROW_COLUMNS
+  if (version >= 3) {
+    const have = new Set(schema.slice(1).map(l => l.name))
+    return IV_ROW_COLUMNS.filter(c => have.has(c))
+  }
   const have = new Set(schema.slice(1).map(l => l.name))
   return V2_ROW_COLUMNS.filter(c => have.has(c))
 }
@@ -824,7 +827,7 @@ const toRowV3 = (r: Record<string, unknown>): Row => {
     mtime: opt(r.mtime),
     mtime_mean: wb > 0 ? num(r.wts) / wb : null,
     mtime_w: wb,
-    last_read: null,
+    last_read: r.last_read == null ? null : opt(r.last_read),
     cls2: num(r.c2),
     cls3: num(r.c3),
     cls4: num(r.c4),

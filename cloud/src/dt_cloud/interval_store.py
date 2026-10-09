@@ -81,6 +81,9 @@ RD_SCHEMA = pa.schema([
     pa.field("last_read", pa.int32(), nullable=False),
 ])
 PV_COLS = PV_SCHEMA.names
+#: Path versions with the read day folded in (`fold`): a version per run of equal change columns *and*
+#: `last_read` (-1: never read). What the served path sorts hold.
+PVL_SCHEMA = PV_SCHEMA.append(pa.field("last_read", pa.int32(), nullable=False))
 
 # ── Per-scan rows → one row per path ───────────────────────────────────────
 
@@ -218,6 +221,51 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, con, *, mount: str
     return doc
 
 
+# ── Read days folded into the path versions ──────────────────────────────
+
+
+def fold_sql(pv: str, rd: str) -> str:
+    """`pv`'s versions split where `rd` (the read-day versions of the same paths) changes, each piece
+    carrying its `last_read` (-1 where none is live), adjacent pieces with the same path version and
+    read day merged: `PVL_SCHEMA` rows, unsorted. Equal to versioning the scans with `last_read` as one
+    more change column (`test_fold_equals_versioning_with_read_days`). Paths without read versions pass
+    through untouched."""
+    cols = ", ".join(f"p.{c}" for c in PV_COLS if c not in ("vf", "vt"))
+    keep = ", ".join(c for c in PV_COLS if c not in ("depth", "path", "vf", "vt"))
+    return f"""WITH rp AS (SELECT DISTINCT depth, path FROM {rd}),
+        pr AS (SELECT p.* FROM {pv} p SEMI JOIN rp USING (depth, path)),
+        b AS (SELECT depth, path, vf AS t FROM pr UNION SELECT depth, path, vt FROM pr
+              UNION SELECT depth, path, vf FROM {rd} UNION SELECT depth, path, vt FROM {rd}),
+        seg AS (SELECT depth, path, t AS lo, lead(t) OVER (PARTITION BY depth, path ORDER BY t) AS hi FROM b),
+        j AS (SELECT s.depth, s.path, s.lo, s.hi, p.vf AS pvf, {cols}, coalesce(r.last_read, -1) AS last_read
+              FROM seg s JOIN pr p ON p.depth = s.depth AND p.path = s.path AND p.vf <= s.lo AND s.hi <= p.vt
+              LEFT JOIN {rd} r ON r.depth = s.depth AND r.path = s.path AND r.vf <= s.lo AND s.hi <= r.vt
+              WHERE s.hi IS NOT NULL),
+        m AS (SELECT *, CASE WHEN lag(hi) OVER w = lo AND lag(pvf) OVER w = pvf AND lag(last_read) OVER w = last_read THEN 0 ELSE 1 END AS new
+              FROM j WINDOW w AS (PARTITION BY depth, path ORDER BY lo)),
+        g AS (SELECT *, sum(new) OVER (PARTITION BY depth, path ORDER BY lo ROWS UNBOUNDED PRECEDING) AS run FROM m)
+        SELECT depth, path, min(lo) AS vf, max(hi) AS vt, {", ".join(f"any_value({c}) AS {c}" for c in PV_COLS if c not in ("depth", "path", "vf", "vt"))}, any_value(last_read) AS last_read
+        FROM g GROUP BY depth, path, pvf, run
+        UNION ALL
+        SELECT p.*, -1 AS last_read FROM {pv} p ANTI JOIN rp USING (depth, path)"""
+
+
+def fold_range(root: str, i: int, out: Path, con) -> dict:
+    """Range `i`'s `pvl/r####.parquet` from its `pv/` and `rd/` (sorted `(depth, path, vf)`)."""
+    t0 = monotonic()
+    name = f"r{i:04d}"
+    pv, rd = f"read_parquet({q(f'{root}/pv/{name}.parquet')})", f"read_parquet({q(f'{root}/rd/{name}.parquet')})"
+    con.execute("DROP TABLE IF EXISTS pvl")
+    con.execute(f"CREATE TABLE pvl AS {fold_sql(pv, rd)}")
+    n = write_sorted(sn._batches(con, f"SELECT {', '.join(PVL_SCHEMA.names)} FROM pvl ORDER BY depth, path, vf"), out / "pvl" / f"{name}.parquet",
+                     PVL_SCHEMA, RANGE_RG, dictionary=["kind", "us"])
+    n_pv = con.execute(f"SELECT count(*) FROM {pv}").fetchone()[0]
+    con.execute("DROP TABLE pvl")
+    doc = {"i": i, "pv": n_pv, "pvl": n, "s": round(monotonic() - t0, 1)}
+    err(f"fold {i}: {n_pv:,} → {n:,} versions in {doc['s']}s")
+    return doc
+
+
 # ── Served sorts ───────────────────────────────────────────────────────────
 
 #: A version's size bucket, `⌊log2 size⌋` as a bit length (exact for any int64; the path store's
@@ -227,10 +275,12 @@ BUCKET = "CASE WHEN size > 0 THEN length(bin(size)) - 1 END"
 #: two segments in one file — the versions open at the generation's last scan, then the closed ones —
 #: so a read at that scan prunes the closed segment by `vt_max` alone.
 SORTS = {
-    "path": ("pv", "depth, path, vf", "size"),
-    "bysize": ("pv", f"({BUCKET}) DESC NULLS LAST, path, vf", "size"),
+    "path": ("pvl", "depth, path, vf", "size"),
+    "bysize": ("pvl", f"({BUCKET}) DESC NULLS LAST, path, vf", "size"),
     "reads": ("rd", "depth, path, vf", None),
 }
+#: Each range-file dir's schema.
+SUB_SCHEMA = {"pv": PV_SCHEMA, "pvl": PVL_SCHEMA, "rd": RD_SCHEMA}
 SEGMENTS = (("open", f"vt = {OPEN}"), ("hist", f"vt <> {OPEN}"))
 GROUPS_SCHEMA = pa.schema([
     pa.field("rg", pa.int32(), nullable=False),
@@ -420,6 +470,34 @@ def churn_stats(con, root: str, scans: dict) -> dict:
             "scans": [per[s["id"]] for s in scans["scans"]]}
 
 
+@cli.command("fold")
+@option("-b", "--bucket", help="Data bucket (default: the profile's)")
+@option("-g", "--gen", required=True, help="Generation (its pv/, rd/ range files)")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-m", "--mount", help="Local mount of the data bucket")
+@option("-M", "--mem", default="64GB", help="DuckDB memory limit")
+@option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task: task t folds [t·n, (t+1)·n)")
+@option("-o", "--out", default="/stage/out", help="Local output dir (uploaded, then removed)")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+@option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
+def fold_cmd(bucket, gen, index, mount, mem, per_task, out, threads, profile, tmp, no_upload) -> None:
+    """Fold each range's read days into its path versions: `pvl/r####.parquet` (what `cut` serves)."""
+    bucket = _bucket(bucket, profile)
+    prefix = f"{PREFIX}/{gen}"
+    ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
+    t = sn._task(index)
+    con = connect(threads, mem, tmp)
+    root = f"{mount}/{prefix}" if mount else f"gs://{bucket}/{prefix}"
+    for i in range(t * per_task, min((t + 1) * per_task, ranges["k"])):
+        doc = fold_range(root, i, Path(out), con)
+        if not no_upload:
+            upload_tree(Path(out) / "pvl", bucket, f"{prefix}/pvl")
+            shutil.rmtree(Path(out) / "pvl")
+        print(json.dumps(doc), flush=True)
+
+
 @cli.command("cut")
 @option("-b", "--bucket", help="Data bucket (default: the profile's)")
 @option("-g", "--gen", required=True, help="Generation (its pv/, rd/ range files)")
@@ -451,7 +529,7 @@ def cut_cmd(bucket, profile, gen, index, mount, mem, out, threads, rg_rows, sort
         return
     for sort in todo:
         sub, _, _ = SORTS[sort]
-        schema = PV_SCHEMA if sub == "pv" else RD_SCHEMA
+        schema = SUB_SCHEMA[sub]
         t0 = monotonic()
         dst = Path(out) / "served" / f"{sort}.parquet"
         doc = write_served(con, f"read_parquet({q(root + '/' + sub + '/r*.parquet')})", sort, dst, schema, rg_rows=rg_rows)
