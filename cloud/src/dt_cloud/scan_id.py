@@ -81,3 +81,23 @@ def snapshot_scans(data_root: Path) -> list[str]:
         (p.name for p in data_root.iterdir() if p.is_dir() and is_scan_id(p.name) and (p / "meta.json").exists()),
         reverse=True,
     )
+
+
+def scan_epoch(scan: str) -> int:
+    """A scan id's UTC instant as epoch seconds (`scan_time`): a version's stamp in the static name index."""
+    return int(scan_time(check_scan_id(scan)).timestamp())
+
+
+def scan_label(ts: int) -> str:
+    """Epoch seconds as a scan-id-shaped label: the date at midnight, else the date and minute (reports only)."""
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%d" if ts % 86400 == 0 else "%Y-%m-%dT%H%M")
+
+
+def check_order(scans: list[str] | tuple[str, ...] | set[str] | dict) -> list[str]:
+    """`scans` sorted, checked to be strictly increasing in time too: string order is time order except for a date and
+    its `T0000` scan, one instant, which is refused (a stamp could not say which scan it was)."""
+    out = sorted(scans)
+    for a, b in zip(out, out[1:]):
+        if scan_epoch(a) >= scan_epoch(b):
+            raise ValueError(f"scans {a} and {b}: ids out of time order (stamps {scan_epoch(a)}, {scan_epoch(b)})")
+    return out

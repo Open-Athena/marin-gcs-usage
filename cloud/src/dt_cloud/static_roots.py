@@ -28,8 +28,9 @@ import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
 from .static_catalog import CHUNK_ROWS, PARENT
+from .static_profile import data_bucket, scratch_bucket
 from .static_names import (
-    _batches, CODEC, DATA_BUCKET, NAME, OPEN, PREFIX, SCRATCH_BUCKET, _task, connect, err, q, read_json,
+    _batches, CODEC, NAME, OPEN, PREFIX, _task, connect, err, q, read_json,
 )
 
 #: The parent of a path `x` (raw case), by string cut: every directory level, newline or not.
@@ -574,7 +575,7 @@ MEASURE = "roots-measure"
 
 
 @cli.command("measure")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-f", "--floor", "floor_rows", default=10_000, type=int, help="Keep directories with at least this many root rows under them")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -583,7 +584,7 @@ MEASURE = "roots-measure"
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-o", "--only", help="Only these shards (comma-separated indices)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the queue's claims")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket holding the queue's claims")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where each shard is downloaded")
 def measure_cmd(bucket, floor_rows, gen, index, lease, mount, mem, only, threads, scratch, tmp) -> None:
     """Long members' roots counted per shard (a shared queue, biggest shard first) → `roots-measure/{q,qdepth,dirs,hist}/s####.parquet`
@@ -655,7 +656,7 @@ def download(bucket, keys: list[str], dst: Path, workers: int = 16) -> list[Path
 
 
 @cli.command("measure-short")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-f", "--floor", "floor_rows", default=10_000, type=int, help="Keep directories with at least this many root rows under them")
 @option("-g", "--gen", required=True, help="Generation (its `cintervals/`)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the subtree partition")
@@ -698,7 +699,7 @@ def measure_short_cmd(bucket, floor_rows, gen, index, mount, mem, parts, threads
 
 
 @cli.command("measure-report")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-R", "--read-rows", "read_rows", default=100_000, type=int, help="A drill's read bound (root rows under the directory)")
 @option("-t", "--top", default=50, type=int, help="Members listed by root rows")
@@ -772,14 +773,14 @@ def _upload_dir(b, local: Path, prefix: str) -> None:
 
 
 @cli.command("digest")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-l", "--lease", default=5400, type=int, help="Seconds after which another task may take over a claimed, unfinished shard")
 @option("-m", "--mount", required=True, help="Local mount of the bucket (for `catalog/members.parquet`)")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the queue's claims")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket holding the queue's claims")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where each shard is downloaded")
 def digest_cmd(bucket, gen, index, lease, mount, mem, threads, scratch, tmp) -> None:
     """Long members' root-set digests per shard (a shared queue) → `drill/digest/s####.parquet` `(q, n, h1, h2)`."""
@@ -815,7 +816,7 @@ def digest_cmd(bucket, gen, index, lease, mount, mem, threads, scratch, tmp) -> 
 
 
 @cli.command("alias-plan")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 def alias_plan_cmd(bucket, gen) -> None:
     """Members with identical root sets (equal `(n, h1, h2)` digests, across shards) share one copy: the
@@ -851,7 +852,7 @@ def alias_plan_cmd(bucket, gen) -> None:
 
 
 @cli.command("build")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-F", "--force", is_flag=True, help="Rebuild (overwrite) shards whose outputs exist (with -o)")
@@ -862,7 +863,7 @@ def alias_plan_cmd(bucket, gen) -> None:
 @option("-o", "--only", help="Only these shards (comma-separated indices)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="Directories with more root rows under them get rollups")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the queue's claims")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket holding the queue's claims")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where each shard is downloaded")
 def build_cmd(bucket, gen, index, force, K, lease, mount, mem, only, threads, R, scratch, tmp) -> None:
     """Long members' roots and rollups per shard (a shared queue, biggest first) → `drill/long/{roots,rollups,roots-index,rollups-index}/s####.parquet`;
@@ -920,7 +921,7 @@ def build_cmd(bucket, gen, index, force, K, lease, mount, mem, only, threads, R,
 
 
 @cli.command("short-plan")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation (its `roots-measure/short/q/`)")
 @option("-r", "--target-rows", default=150_000_000, type=int, help="Root rows per q-group")
 def short_plan_cmd(bucket, gen, target_rows) -> None:
@@ -955,7 +956,7 @@ def _group_table(con, plan: dict) -> None:
 
 
 @cli.command("short-map")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation (its `cintervals/`, `drill/short-plan.json`)")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the subtree partition")
 @option("-m", "--mount", required=True, help="Local mount of the bucket (unused: versions are downloaded)")
@@ -963,7 +964,7 @@ def _group_table(con, plan: dict) -> None:
 @option("-n", "--parts", default=32, type=IntRange(min=1), help="Subtree partitions (= tasks)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-P", "--pieces", default=16, type=IntRange(min=1), help="Passes per partition by hash(path), each written on its own (memory, disk)")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the shuffle (an intermediate)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket for the shuffle (an intermediate)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where the versions are downloaded")
 def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratch, tmp) -> None:
     """One subtree partition's short-literal roots, split by q-group → the scratch bucket's
@@ -1006,7 +1007,7 @@ def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratc
 
 
 @cli.command("short-reduce")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the first q-group")
 @option("-K", "--keep", "K", default=256, type=int, help="Children kept by name per heavy directory")
@@ -1015,7 +1016,7 @@ def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratc
 @option("-n", "--stride", type=IntRange(min=1), help="Task i builds q-groups i, i + n, i + 2n, … (default: $BATCH_TASK_COUNT, else 1)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="Directories with more root rows under them get rollups")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the shuffle")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket holding the shuffle")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 def short_reduce_cmd(bucket, gen, index, K, mount, mem, stride, threads, R, scratch, tmp) -> None:
     """Each of the task's q-groups: every partition's roots of its literals → `drill/short/{roots,rollups,roots-index,rollups-index}/g###.parquet`."""
@@ -1055,7 +1056,7 @@ def short_reduce_cmd(bucket, gen, index, K, mount, mem, stride, threads, R, scra
 
 
 @cli.command("index")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-K", "--keep", "K", default=256, type=int, help="The build's -K (recorded)")
 @option("-m", "--mount", help="Local mount of the bucket (unused; the Batch driver passes it)")
@@ -1130,7 +1131,7 @@ BRUTE_CHILDREN = 200_000
 
 
 @cli.command("drill-brute")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-c", "--cases", "cases_file", required=True, help="JSON lines `{q, P}` (a path or gs:// URL)")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat (task i answers the i-th)")
 @option("-g", "--gen", required=True, help="Generation (its `scans.json`; answers go to `verify/drill-brute/`)")
@@ -1209,7 +1210,7 @@ def gcs_drill(bucket: str, gen: str, kind: str) -> Drill:
 
 
 @cli.command("drill-query")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-c", "--cases", "cases_file", required=True, help="JSON lines `{q, P}`")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
 @option("-g", "--gen", required=True, help="Generation")
@@ -1272,7 +1273,7 @@ def drill_verify_cmd(ref_jsonl, answers_jsonl) -> None:
 
 
 @cli.command("drill-cases")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation (its `roots-measure/`)")
 @option("-n", "--per-depth", default=2, type=int, help="Directories per (term, depth, heavy|light)")
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="Heavy: more root rows under the directory than this")

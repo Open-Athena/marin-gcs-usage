@@ -7,12 +7,14 @@ import { latestManifest, tiers } from './staticRuns.js'
 import { fixture } from './testStore.js'
 
 // The daily runs' reader (`staticRuns.ts`) over `fixtures/static-runs/` (`gen.py`): a base through 2026-09-01 and
-// runs for 2026-10-01 and 2026-10-02, against a brute-force oracle over every version on every date.
+// a run per scan — 2026-10-01, 2026-10-02 (date ids), then two scans on one day, 2026-10-03T0600 and 2026-10-03T1800
+// (scan ids, specs/scan-ids-not-dates.md) — against a brute-force oracle over every version on every scan.
 
-const TIERS = ['base', 'deltas/2026-10-01', 'deltas/2026-10-02']
+const RUNS = ['2026-10-01', '2026-10-02', '2026-10-03T0600', '2026-10-03T1800']
+const TIERS = ['base', ...RUNS.map(r => `deltas/${r}`)]
 const FILES = ['shards.json', 'sx/s0000.parquet', 'sx/s0001.parquet', 'catalog/cells.parquet', 'catalog/index.parquet', 'catalog/meta.json']
-const DATES = ['2026-08-01', '2026-09-01', '2026-10-01', '2026-10-02']
-const MANIFESTS = ['manifests/2026-10-01.json', 'manifests/2026-10-02.json']
+const DATES = ['2026-08-01', '2026-09-01', ...RUNS]
+const MANIFESTS = RUNS.map(r => `manifests/${r}.json`)
 const held = new Map<string, ArrayBuffer>()
 let expected: Record<string, Record<string, Record<string, [number, number]>>>
 let catalog: Record<string, [string, number, number, number][] | null>
@@ -46,7 +48,7 @@ const until = (date: string) => Object.fromEntries(DATES.filter(d => d <= date).
 
 describe('static runs', () => {
   it('takes the newest manifest; without one (or without `list`) the base alone', async () => {
-    expect((await latestManifest(files()))?.runs.map(r => r.key)).toEqual(['deltas/2026-10-01', 'deltas/2026-10-02'])
+    expect((await latestManifest(files()))?.runs.map(r => r.key)).toEqual(TIERS.slice(1))
     expect((await latestManifest(files([MANIFESTS[0]])))?.runs.map(r => r.key)).toEqual(['deltas/2026-10-01'])
     expect(await latestManifest(files([]))).toBeNull()
     const { list: _, ...listless } = files()
@@ -63,7 +65,8 @@ describe('static runs', () => {
     expect(expected['late']['2026-10-02']).toEqual({ 'bkt-b': [21, 1] })
   })
 
-  it.each([['2026-10-02', MANIFESTS], ['2026-10-01', [MANIFESTS[0]]], ['2026-09-01', []]] as const)(
+  it.each([['2026-10-03T1800', MANIFESTS], ['2026-10-03T0600', MANIFESTS.slice(0, 3)], ['2026-10-02', MANIFESTS.slice(0, 2)],
+    ['2026-10-01', [MANIFESTS[0]]], ['2026-09-01', []]] as const)(
     'answers every literal of 3+ characters like the oracle on every date through %s', async (last, visible) => {
       const t = tiers(files([...visible]))
       const dates = Object.keys(until(last))
@@ -109,6 +112,18 @@ describe('static runs', () => {
     }
   })
 
+  it('keys runs by scan id: two scans on one day are two runs, two manifests, two answers', async () => {
+    expect((await latestManifest(files()))?.date).toEqual('2026-10-03T1800')
+    expect((await latestManifest(files(MANIFESTS.slice(0, 3))))?.date).toEqual('2026-10-03T0600')
+    expect(await tiers(files(MANIFESTS.slice(0, 3))).scans()).toEqual(DATES.slice(0, 5))
+    const am = '2026-10-03T0600', pm = '2026-10-03T1800'
+    const { answer } = await tiers(files()).names.answer('sub-', ['2026-10-02', am, pm])
+    expect(num(answer!.answers)).toEqual({ '2026-10-02': {}, [am]: { 'bkt-a': [7, 1] }, [pm]: { 'bkt-b': [9, 1] } })
+    const hits = (await new SuffixHits(tiers(files()).names).all('sub-'))!.hits
+    expect([am, pm].map(d => liveTotal(hits, d))).toEqual([{ b: 7, o: 1, roots: 1 }, { b: 9, o: 1, roots: 1 }])
+    expect(expected['sub-']).toEqual({ ...Object.fromEntries(DATES.slice(0, 4).map(d => [d, {}])), [am]: { 'bkt-a': [7, 1] }, [pm]: { 'bkt-b': [9, 1] } })
+  })
+
   it('picks up a new manifest after the TTL: the hit lists are held per version', async () => {
     const visible = [MANIFESTS[0]]
     let now = 0
@@ -121,7 +136,7 @@ describe('static runs', () => {
     visible.push(MANIFESTS[1])
     expect(await total()).toEqual({ b: 0, o: 0, roots: 0 }) // within the TTL: the held state
     now = 1000
-    expect(await t.scans()).toEqual(DATES)
+    expect(await t.scans()).toEqual(DATES.slice(0, 4))
     expect(await total()).toEqual({ b: 30 + 31 + 32 + 33 + 34, o: 5, roots: 5 })
   })
 })

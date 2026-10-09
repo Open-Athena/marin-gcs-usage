@@ -2,7 +2,7 @@
 
 Status: **prepared, nothing stopped or deleted** (2026-10-09). Ryan agreed to retire the VM once the static name search has run on gcs prod for a few days. This spec is the inventory, the preconditions, and the ordered runbook. Every destructive step is marked **needs Ryan's go**.
 
-The VM was the experiment platform for an append-only historical query service ([`ch-store.md`], [`filter-query-service.md`], [`serving-options.md`]). It ended up serving one production-adjacent thing, the name search, which now comes from the static name index on R2 (`specs/static-daily-append.md` on `gcs`, `specs/architecture/static-name-search.md`). Nothing in gcs prod reads from the VM any more; its last jobs are the hourly `ch-daily` catch-up and, until the code change below, the R2 copy in `job/static-daily.sh`.
+The VM was the experiment platform for an append-only historical query service ([`ch-store.md`], [`filter-query-service.md`], [`serving-options.md`]). It ended up serving one production-adjacent thing, the name search, which now comes from the static name index on R2 (`specs/static-append.md` on `gcs`, `specs/architecture/static-name-search.md`). Nothing in gcs prod reads from the VM any more; its last jobs are the hourly `ch-daily` catch-up and, until the code change below, the R2 copy in `job/static-daily.sh`.
 
 ## Inventory
 
@@ -76,7 +76,7 @@ Local only: worktrees `wt/ch-store`, `wt/ch-store/tmp/wt-append`, `wt/ch-daily`,
 
 ## Dependency cuts made now (local commits, no deploys)
 
-1. **`ch-retire-gcs`** (off `gcs-static`, `wt/ch-retire-gcs`): `job/static-daily.sh` always copies to R2 with the Batch job (`static-names.sh r2-batch`, the bucket-scoped Secret Manager key); `R2_VIA` and the VM path are gone. A run without `R2_ENDPOINT` / `CLOUDFLARE_ACCOUNT_ID` exits 2 before any stage. `static-daily-append.md`'s R2 bullet updated. `static-names.sh r2` stays as a manual fallback until `r2-batch` has a live run, then goes with the VM.
+1. **`ch-retire-gcs`** (off `gcs-static`, `wt/ch-retire-gcs`): `job/static-daily.sh` always copies to R2 with the Batch job (`static-names.sh r2-batch`, the bucket-scoped Secret Manager key); `R2_VIA` and the VM path are gone. A run without `R2_ENDPOINT` / `CLOUDFLARE_ACCOUNT_ID` exits 2 before any stage. `static-append.md`'s R2 bullet updated. `static-names.sh r2` stays as a manual fallback until `r2-batch` has a live run, then goes with the VM.
 2. **`ch-retire`** (off `cloud`, this branch): `/api/name-summary(-registry)` are on with `NAME_SUMMARY_STATIC=1` + `INDEX_R2` alone, and the static index makes requests dated (`namesEnabled`, `datedNames` in `_lib/nameSummary.ts`), so gcs prod can drop `QUERY_BOX_NAME_SUMMARY` / `QUERY_BOX_DATED_NAMES`. With gcs prod's current vars the behaviour is unchanged. `site/functions/api/no-box.test.ts` pins it: with prod's vars, and with the preview's box URL + token still set, a failing R2 answers 503 and `fetch` is never called; without the static index or the box flag the routes 404; `hot-l1` / `hot-l2` / `coarse` with their flags off 404 without a fetch. Test-fail-fix-pass: the prod-vars case failed (404) before the change. `/api/{subtree,diff,series}` with `QUERY_BOX_URL` unset were already covered (`queryBox.test.ts`, "never asks a box").
 
 ## Preconditions (all true before step 1 of the runbook)
@@ -136,7 +136,7 @@ List prices from the Cloud Billing catalog (2026-10-09; this project has no BigQ
 | GCS staging (1.53 GiB) | | ~$0.03 |
 | **Total** | | **≈ $728 list (≈ $650 with sustained use), ≈ $24/day** |
 
-Not saved: the GCS → R2 copies. The VM sent 617.7 GB in the 24 h to 12:00 UTC on 2026-10-09 (the 2026-10-08c base and drilldown, ≈ $74 of egress); the same bytes leave us-east1 from the Batch copy now. Steady state that is ~1.1 GB/day (`static-daily-append.md`). The replacement pipeline (`static-daily`) costs ≈ $0.53/day (≈ $16/month), so the net saving is **≈ $710/month at list (≈ $635 with sustained use)**.
+Not saved: the GCS → R2 copies. The VM sent 617.7 GB in the 24 h to 12:00 UTC on 2026-10-09 (the 2026-10-08c base and drilldown, ≈ $74 of egress); the same bytes leave us-east1 from the Batch copy now. Steady state that is ~1.1 GB/day (`static-append.md`). The replacement pipeline (`static-daily`) costs ≈ $0.53/day (≈ $16/month), so the net saving is **≈ $710/month at list (≈ $635 with sustained use)**.
 
 [`ch-store.md`]: ch-store.md
 [`filter-query-service.md`]: filter-query-service.md

@@ -20,7 +20,7 @@
 import { parquetReadObjects, type FileMetaData, type RowGroup } from 'hyparquet'
 import type { CatalogMeta, Member } from './staticCatalog.js'
 import type { Found, HitCache, HitSource } from './staticFilter.js'
-import { type Blobs, cmp, decodeFlat, type FlatSchema, type Hit, type IndexCache, scanMs } from './staticNames.js'
+import { type Blobs, cmp, decodeFlat, type FlatSchema, type Hit, type IndexCache, scanAt } from './staticNames.js'
 import { compressors } from './zstd.js'
 
 export const DRILL_DIR = 'drill'
@@ -58,7 +58,7 @@ export interface Rollup {
 
 /** A rollup on scan `date`: each kept child's totals (zeros left out, sorted by name) and the remainder's. */
 export function rollupAt(r: Rollup, date: string): { kids: [string, bigint, bigint][]; rest: [bigint, bigint] } {
-  const D = scanMs(date)
+  const D = scanAt(date)
   const kids = new Map<string, [bigint, bigint]>()
   let rest: [bigint, bigint] = [0n, 0n]
   for (const c of r.cells) {

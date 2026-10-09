@@ -4,7 +4,7 @@ import { HOT_SCOPE } from '../../src/hotModel.js'
 import { nameResultForRegistry, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, STATIC_SOURCE } from '../../src/nameModel.js'
 import { answerKey, scanIds, staticRegistryBody, staticSummary, type Store } from './nameSummaryStatic.js'
 import { catalogAnswer, catalogGroups, catalogIndex, type CatalogMeta, StaticCatalog } from './staticCatalog.js'
-import { type Blobs, STATIC_GEN, StaticNames } from './staticNames.js'
+import { type Blobs, StaticNames } from './staticNames.js'
 import { compressors } from './zstd.js'
 import { fixture } from './testStore.js'
 
@@ -12,7 +12,8 @@ import { fixture } from './testStore.js'
 const KEYS = ['shards.json', 'scans.json', 'expected.json', 'members.json', 'sx/s0000.parquet', 'sx/s0001.parquet', 'catalog/cells.parquet', 'catalog/index.parquet', 'catalog/meta.json']
 const DATES = ['2026-08-01', '2026-09-01', '2026-10-01']
 const BUCKETS = ['bkt-a', 'bkt-b', 'bkt-c', 'bkt-d', 'bkt-e', 'bkt-f']
-const ENV = { STORE_BUCKETS: [...BUCKETS].reverse().join(','), STORE: 'gcs' }
+const STATIC_GEN = '2026-10-08c'
+const ENV = { STORE_BUCKETS: [...BUCKETS].reverse().join(','), STORE: 'gcs', STATIC_GEN }
 const held = new Map<string, ArrayBuffer>()
 let expected: Record<string, Record<string, Record<string, [number, number]>>>
 let members: Record<string, number | null>
