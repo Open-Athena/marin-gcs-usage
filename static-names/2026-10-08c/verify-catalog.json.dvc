@@ -1,8 +1,12 @@
 outs:
-- path: verify-catalog.json
+- md5: 2a2b8f5ef47fb8a773c37cc278ca3b10
+  size: 13559
+  hash: md5
+  path: verify-catalog.json
 meta:
   computation:
-    cmd: dt-cloud static-names catalog verify -V 100000 brute-answers.jsonl catalog-answers.jsonl > verify-catalog.json
+    cmd: dt-cloud static-names catalog verify -V 100000 brute-answers.jsonl catalog-answers.jsonl
+      > verify-catalog.json
     deps:
-      brute-answers.jsonl: ''
-      catalog-answers.jsonl: ''
+      brute-answers.jsonl: 9e0ce334329b5c0bf58a7130e665ad42
+      catalog-answers.jsonl: 9aeeed87c369b18aaf72f1ffc17de152

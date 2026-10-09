@@ -1,0 +1,9 @@
+meta:
+  computation:
+    cmd: ../../job/static-names.sh r2 2026-10-08c > ../../tmp/static-names-r2-2026-10-08c.json
+    side_effect: true
+    deps:
+      suffixes.json: ''
+      catalog.json: ''
+      verify-catalog.json: ''
+      verify-catalog-ch.json: ''

@@ -22,4 +22,4 @@ meta:
       scans.json: 6c08bc2c84a7f155ed1a86b5f183aea7
     git_deps:
       ../../job/static-names/catalog-terms.txt: 4698ed450d8cf5b0bd516dd8890c578bb9f032f9
-      ../../cloud/src/dt_cloud/static_catalog.py: 50eded69739f0ee0d1905b7793950791c0b8886d
+      ../../cloud/src/dt_cloud/static_catalog.py: a9d00354861e108618ff208b90060424effa2558

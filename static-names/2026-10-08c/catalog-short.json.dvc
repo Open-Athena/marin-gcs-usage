@@ -12,4 +12,4 @@ meta:
     deps:
       cintervals.json: 507b62fa89d4e26f31847040c9c86711
     git_deps:
-      ../../cloud/src/dt_cloud/static_catalog.py: 50eded69739f0ee0d1905b7793950791c0b8886d
+      ../../cloud/src/dt_cloud/static_catalog.py: a9d00354861e108618ff208b90060424effa2558

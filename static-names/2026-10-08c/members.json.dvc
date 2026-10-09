@@ -9,4 +9,4 @@ meta:
     deps:
       census.json: 782f5cc26ed98ddc183c2380ec99a2f1
     git_deps:
-      ../../cloud/src/dt_cloud/static_catalog.py: 50eded69739f0ee0d1905b7793950791c0b8886d
+      ../../cloud/src/dt_cloud/static_catalog.py: a9d00354861e108618ff208b90060424effa2558
