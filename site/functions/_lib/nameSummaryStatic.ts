@@ -10,16 +10,17 @@
  *    its cells; a miss has an exact range ≤ V, so the read is bounded (≤ V + 2 row groups).
  *  - Bucket geometry: the answer is root and bucket totals only (no drill), so each bucket's `pre`/`post`
  *    is its ordinal position in `bucket_paths` (the box's `ordinal` geometry). */
-import { resolveScan } from '../../src/scanSlug.js'
+import { decodeScan, isScanId, resolveScan } from '../../src/scanSlug.js'
+import { indexedScan, noScan } from './scanArg.js'
 import { datedNameRequest, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, STATIC_SOURCE } from '../../src/nameModel.js'
 import { HOT_SCOPE } from '../../src/hotModel.js'
-import { json } from './auth.js'
+import { type Env, json } from './auth.js'
 import { privateHeaders } from './hotL1.js'
 import { catalogAnswer, type CatalogIo, type CatalogMeta, type Member } from './staticCatalog.js'
 import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, staticGen, staticPrefix, type Totals } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 
-export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string }
+export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string; DB?: D1Database }
 export const staticEnabled = (env: StaticNameEnv): boolean => env.NAME_SUMMARY_STATIC === '1' && !!env.INDEX_R2
 
 /** A non-member's static read above this many rows is refused (it should never exceed V + 2 row groups). */
@@ -134,9 +135,17 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
     // `resolveScan`: `2026-10-09` = that day's latest scan), so a date link from before sub-daily scans still answers.
     const resolve = (d: string) => have.includes(d) ? d : resolveScan(d, have)
     const date = resolve(asked.date), from = asked.from === undefined ? undefined : resolve(asked.from)
-    if (!date || from === null || (from !== undefined && from >= date)) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.' }, 400, privateHeaders)
-    const request = { ...asked, date, ...(from === undefined ? {} : { from }) }
-    const days = from ? [from, date] : [date]
+    if (from !== undefined && from !== null && date && from >= date) return json({ error: '`from` must be an earlier scan than `date`.' }, 400, privateHeaders)
+    // A side the index lacks: a scan the store has but the index doesn't cover yet is a 400 `scan-not-indexed`; a slug
+    // or id naming no scan at all is the uniform 404 (`scanArg.ts`), never another scan.
+    for (const [k, raw, got] of [['date', asked.date, date], ['from', asked.from, from]] as const) {
+      if (raw === undefined || got) continue
+      const prefix = decodeScan(raw)
+      if (prefix && await indexedScan(env as unknown as Env, prefix, isScanId(raw))) return json({ error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }, 400, privateHeaders)
+      return noScan(k, raw)
+    }
+    const request = { ...asked, date: date!, ...(from === undefined || from === null ? {} : { from }) }
+    const days = from ? [from, date!] : [date!]
     const { plan, answers, io } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
     const paths = bucketPaths(env), store_ = logicalStore(env)
     const sides = days.map(date => {

@@ -173,3 +173,16 @@ def test_run_checks_sub_daily_ids():
     assert run_checks("https://gcs.oa.dev", "tok", "2026-08-31", today=TODAY, get=get) == ("2026-08-31T1802", green)
     assert run_checks("https://gcs.oa.dev", "tok", "2026-08-30", today=TODAY, get=get) == ("2026-08-30T0600", green)
     assert run_checks("https://gcs.oa.dev", "tok", "2026-08-31T06", today=TODAY, get=get) == ("2026-08-31T0601", green)
+    # dashless compact slugs, as the site writes them
+    assert run_checks("https://gcs.oa.dev", "tok", "260831", today=TODAY, get=get) == ("2026-08-31T1802", green)
+    assert run_checks("https://gcs.oa.dev", "tok", "26083106", today=TODAY, get=get) == ("2026-08-31T0601", green)
+    assert run_checks("https://gcs.oa.dev", "tok", "2608311802", today=TODAY, get=get) == ("2026-08-31T1802", green)
+
+
+def test_run_checks_slug_miss_fails():
+    # a slug naming no scan is a failed check, never the nearest or latest scan
+    get = _subdaily_site()
+    fresh = Check("freshness", True, "latest scan 2026-08-31T1802 (0d old, limit 2d)")
+    assert [run_checks("https://gcs.oa.dev", "tok", d, today=TODAY, get=get) for d in ["26083103", "260901", "junk"]] == [
+        (None, [fresh, Check("resolve-scan", False, f"no scan matches {d}")]) for d in ["26083103", "260901", "junk"]
+    ]

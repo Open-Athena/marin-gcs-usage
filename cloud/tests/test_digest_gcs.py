@@ -119,12 +119,12 @@ def test_sub_daily_replies_are_distinct_units():
     assert TPL.units(SUB, "sender") == [
         E.Unit("2026-08-03T0601", "2026-08-03T0601", E.Reply(
             "8/3 06:01Z — 3,030 TB (+30.0, 1.0%)",
-            "$19,784/mo (+$615) [\u2197\ufe0e](https://site.example.org/?d=260803-0601#diff)",
+            "$19,784/mo (+$615) [\u2197\ufe0e](https://site.example.org/?d=2608030601#diff)",
             icon_url="https://icons.example.org/arrows/av_deg40.png?v=4",
         )),
         E.Unit("2026-08-03T1801", "2026-08-03T1801", E.Reply(
             "8/3 18:01Z — 3,010 TB (−20.0, 0.7%)",
-            "$19,374/mo (−$410) [\u2197\ufe0e](https://site.example.org/?d=260803-1801#diff)",
+            "$19,374/mo (−$410) [\u2197\ufe0e](https://site.example.org/?d=2608031801#diff)",
             icon_url="https://icons.example.org/arrows/av_deg-50.png?v=4",
         )),
     ]
@@ -133,7 +133,7 @@ def test_sub_daily_replies_are_distinct_units():
 def test_sub_daily_op_body_spans_from_the_lead_scan():
     # one day of the week seen (partial), the span from the 8/2 lead-in to 8/3 18:01Z
     assert D.op_body(SUB, date(2026, 8, 1), None, CFG).split("\n")[3] == (
-        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=260803-1801-1d18h#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)"
+        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=2608031801-1d18h#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)"
     )
 
 

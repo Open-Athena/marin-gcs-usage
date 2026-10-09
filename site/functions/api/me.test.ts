@@ -48,6 +48,8 @@ afterEach(() => { keys.length = 0 })
 async function db(): Promise<D1Database> {
   const { db } = await sqliteD1('gcs')
   await db.prepare('INSERT INTO user_emails (email, user, who, ts) VALUES (?, ?, ?, ?)').bind('alan@example.test', 'alan-turing', 'admin', 0).run()
+  // the scans the requests name are indexed (an unindexed one is a 404: `scanArg`)
+  for (const date of ['2026-09-01', '2026-10-01']) await db.prepare("INSERT INTO index_schema (date, variant, version, schema_json) VALUES (?, 'path', 2, '[]')").bind(date).run()
   return db
 }
 const STORE = { GCS_HMAC_KEY_ID: 'k', GCS_HMAC_SECRET: 's', STORE_BUCKET: 'my-data' }
