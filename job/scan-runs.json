@@ -1,0 +1,20 @@
+{
+  "name": "cw",
+  "comment": "The cw-s3 deployment's scan-run profile (specs/scan-runs-ui.md): `dt-cloud scan-run -c job/scan-runs.json`. Prices: n2 list $/h, us-central1, compute only.",
+  "project": "oa-internal-450019",
+  "regions": ["us-central1"],
+  "jobs": [
+    {"kind": "scan", "where": {"commands": "^job/cw-run\\.sh"},
+     "scan": [{"env": "SNAP_ID"}, {"log": "^CW-SCAN-JOB-DONE (\\S+)"}, {"started": "%Y-%m-%dT%H%M"}]}
+  ],
+  "error_marker": "^\\+ fail_alert (?P<rc>\\d+) (?P<line>\\d+) (?P<cmd>.*)",
+  "outputs": [
+    {"key": "layer-2", "uri": "gs://oa-gcs-usage-dvx/cw-l2/{scan}/", "exclude": ["index/"], "split": "stem", "after": "layer-2"},
+    {"key": "path-index", "uri": "gs://oa-gcs-usage-dvx/cw-l2/{scan}/index/{gen}/", "split": "stem", "rows": "groups", "after": "index-write"},
+    {"key": "snapshot", "uri": "gs://oa-gcs-usage-dvx/snapshots/cw/{scan}/", "after": "publish"},
+    {"key": "static", "uri": "gs://oa-gcs-usage-dvx/static-names/2026-10-09cw/manifests/{scan}.json", "manifest": true}
+  ],
+  "prices": {"n2-standard-8": 0.3885, "n2-standard-16": 0.777, "n2-highmem-16": 1.0481},
+  "spot_factor": 0.3,
+  "log_days": 30
+}

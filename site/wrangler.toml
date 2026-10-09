@@ -61,6 +61,7 @@ ADMIN_EMAILS = "1"
 # GCP project, image and CoreWeave S3 endpoint.
 DATA_BUCKET = "oa-gcs-usage-dvx"
 GCP_PROJECT = "oa-internal-450019"
+META_TREE_URL = "https://cw-s3.oa.dev/meta"  # /scans outputs link into the meta tree
 SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:cw"
 SWEEP_S3_ENDPOINT = "https://cwobject.com"
 REPO_URL = "https://github.com/Open-Athena/marin-gcs-usage"  # the site's "Source on GitHub" link (build-time)
@@ -165,6 +166,7 @@ ADMIN_EMAILS = "1"
 # GCP project, image and CoreWeave S3 endpoint.
 DATA_BUCKET = "oa-gcs-usage-dvx"
 GCP_PROJECT = "oa-internal-450019"
+META_TREE_URL = "https://cw-s3.oa.dev/meta"  # /scans outputs link into the meta tree
 SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:cw"
 SWEEP_S3_ENDPOINT = "https://cwobject.com"
 VIEWER_DOMAINS = "coreweave.com"
