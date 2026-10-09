@@ -15,27 +15,39 @@ from dt_cloud import static_names as sn
 
 DATES = ["2026-07-30", "2026-07-31", "2026-08-02", "2026-08-03", "2026-08-04"]
 V2_FROM = 3  # scans from here on are store generations (v2); earlier ones v1 indexes
+#: The deployments' scan shapes, each test run over both: gcs (a scan a day, owner slices, `listing/<date>/…`) and cw
+#: (a scan every 6 h, ids to the minute, no owners: its v2 sorts carry no `usr` column, `cw-l2/<scan>/index/<gen>/…`).
+FLAVORS = {
+    "gcs": {"ids": DATES, "layout": "listing/{id}/path-index.parquet", "owners": True, "per_dir": 5},
+    "cw": {"ids": ["2026-10-08T0001", "2026-10-08T0601", "2026-10-08T1202", "2026-10-08T1801", "2026-10-09T0001"],
+           "layout": "cw-l2/{id}/index/20261009T000000Z/path-index.parquet", "owners": False, "per_dir": 8},  # more names: as many rows without owner slices
+}
 
 
-def _universe(rng: random.Random) -> list[str]:
+def scan_ids(scans: dict) -> list[str]:
+    return [s["id"] for s in scans["scans"]]
+
+
+def _universe(rng: random.Random, per_dir: int = 5) -> list[str]:
     names = ["Gof.txt", "x5418y", "nk080", "48.parquet", "48.parquet.crc", "aGOFb", "pio", "a'b", "é5418", "sh", "ab"]
     dirs = ["b1", "b2", "b1/gof", "b1/d", "b2/e5418", "b2/f"]
     paths = list(dirs)
     for d in dirs[2:]:
-        for n in rng.sample(names, 5):
+        for n in rng.sample(names, per_dir):
             paths.append(f"{d}/{n}")
     return paths
 
 
-def _scan_rows(rng: random.Random, paths: list[str], j: int) -> list[dict]:
-    """One scan's rows: a few paths missing (absence gaps), values drifting, owner slices, and
+def _scan_rows(rng: random.Random, paths: list[str], j: int, owners: bool = True) -> list[dict]:
+    """One scan's rows: a few paths missing (absence gaps), values drifting, owner slices (`owners`), and
     (v1) a duplicated unattributed row."""
     rows = []
     for p in paths:
         if rng.random() < 0.15:
             continue
         depth = p.count("/") + 1
-        for usr in ([None, "alice"] if rng.random() < 0.3 else [None]):
+        usrs = [None, "alice"] if rng.random() < 0.3 else [None]
+        for usr in (usrs if owners else [None]):
             size = rng.choice([10, 10, 10, 20, 0])
             n = rng.choice([1, 1, 2])
             mean = rng.choice([1_700_000_000.4, 1_700_000_000.5, 1_700_000_001.5, 1_700_000_000.2])
@@ -46,7 +58,8 @@ def _scan_rows(rng: random.Random, paths: list[str], j: int) -> list[dict]:
     return rows
 
 
-def _write(rows: list[dict], path: Path, v: int) -> None:
+def _write(rows: list[dict], path: Path, v: int, owners: bool = True) -> None:
+    """A scan's `path` sort: v2 (a store generation; without owners, no `usr` column, as cw's) or v1."""
     rows = sorted(rows, key=lambda r: (r["depth"], r["path"], r["usr"] or ""))
     if v == 2:
         t = pa.table({
@@ -57,6 +70,8 @@ def _write(rows: list[dict], path: Path, v: int) -> None:
             "last_read": pa.array([r["last_read"] for r in rows], pa.int32()),
             "sum_storage_class_id_2": [0 for _ in rows], "sum_storage_class_id_3": [None for _ in rows], "sum_storage_class_id_4": [0 for _ in rows],
         })
+        if not owners:
+            t = t.drop_columns(["usr"])
     else:
         t = pa.table({
             "path": [r["path"] for r in rows], "depth": [r["depth"] for r in rows], "usr": [r["usr"] for r in rows],
@@ -103,18 +118,19 @@ def _oracle(scans: list[tuple[int, dict]]) -> list[tuple]:
     return sorted(done)
 
 
-@pytest.fixture(scope="module")
-def fixture(tmp_path_factory):
-    root = tmp_path_factory.mktemp("sn")
+@pytest.fixture(scope="module", params=sorted(FLAVORS))
+def fixture(request, tmp_path_factory):
+    flavor = FLAVORS[request.param]
+    root = tmp_path_factory.mktemp(f"sn-{request.param}")
     rng = random.Random(7)
-    paths = _universe(rng)
+    paths = _universe(rng, flavor["per_dir"])
     scans, merged = [], []
-    for j, d in enumerate(DATES):
+    for j, d in enumerate(flavor["ids"]):
         v = 2 if j >= V2_FROM else 1
-        rows = _scan_rows(rng, paths, j)
-        key = f"listing/{d}/path-index.parquet"
+        rows = _scan_rows(rng, paths, j, flavor["owners"])
+        key = flavor["layout"].format(id=d)
         (root / key).parent.mkdir(parents=True, exist_ok=True)
-        _write(rows, root / key, v)
+        _write(rows, root / key, v, flavor["owners"])
         scans.append({"id": d, "src": key, "ts": sn.scan_epoch(d), "version": v})
         merged.append((sn.scan_epoch(d), _merged(rows, v)))
     return root, {"bucket": "b", "scans": scans}, merged
@@ -174,8 +190,8 @@ def test_append_equals_rebuild(fixture, tmp_path):
         assert (app / "hist" / f"{name}.parquet").read_bytes() == (full / "hist" / f"{name}.parquet").read_bytes()
         full_doc = json.loads((full / "digest" / f"{name}.json").read_text())
         assert doc["digests"] == full_doc["digests"]
-        delta = pq.read_table(app / "delta" / DATES[-1] / f"{name}.parquet").to_pylist()
-        D = sn.scan_epoch(DATES[-1])
+        delta = pq.read_table(app / "delta" / scan_ids(scans)[-1] / f"{name}.parquet").to_pylist()
+        D = sn.scan_epoch(scan_ids(scans)[-1])
         assert sorted((d["op"], d["vf"] == D, d["vt"] == D) for d in delta) == sorted(
             [(1, True, False)] * doc["opened"] + [(-1, False, True)] * doc["closed"])
 
@@ -261,8 +277,8 @@ def test_shards_and_reader(fixture, tmp_path):
     reader = sn.Reader(fetch, lambda f: (out / f).stat().st_size, side)
     oracle = _oracle(merged)
     for term in ["gof", "5418", "nk080", "48.parquet", "48.parquet.crc", "pio", "a'b", "é54", "zzz", "par"]:
-        body = reader.answer(term, DATES)
-        assert body["answers"] == {d: _brute_answer(oracle, term, d) for d in DATES}, term
+        body = reader.answer(term, scan_ids(scans))
+        assert body["answers"] == {d: _brute_answer(oracle, term, d) for d in scan_ids(scans)}, term
 
 
 def _coalesced_oracle(oracle: list[tuple]) -> list[tuple]:
@@ -394,4 +410,77 @@ def test_coalesced_shards_answer_exactly(fixture, tmp_path):
     reader = sn.Reader(fetch, lambda f: (out / f).stat().st_size, side)
     oracle = _oracle(merged)
     for term in ["gof", "5418", "nk080", "48.parquet", "pio", "a'b", "é54", "zzz", "par"]:
-        assert reader.answer(term, DATES)["answers"] == {d: _brute_answer(oracle, term, d) for d in DATES}, term
+        assert reader.answer(term, scan_ids(scans))["answers"] == {d: _brute_answer(oracle, term, d) for d in scan_ids(scans)}, term
+
+
+CW_LAYOUTS = ["cw-l2/{id}/index/{gen}/path-index.parquet"]
+
+
+def _pins(n: int) -> dict:
+    return {"generation": n, "size": n}
+
+
+def test_pick_scans_gcs_layouts():
+    """gcs: a date's newest generation's sort wins over the pre-generation file."""
+    objects = [
+        ("listing/2026-07-30/path-index.parquet", _pins(1)),
+        ("listing/2026-07-31/path-index.parquet", _pins(2)),
+        ("listing/2026-07-31/index/20260801T000000Z/path-index.parquet", _pins(3)),
+        ("listing/2026-07-31/index/20260731T000000Z/path-index.parquet", _pins(4)),
+    ]
+    assert sn.pick_scans(objects) == [
+        {"id": "2026-07-30", "src": "listing/2026-07-30/path-index.parquet", "generation": 1, "size": 1, "ts": sn.scan_epoch("2026-07-30")},
+        {"id": "2026-07-31", "src": "listing/2026-07-31/index/20260801T000000Z/path-index.parquet", "generation": 3, "size": 3,
+         "ts": sn.scan_epoch("2026-07-31")},
+    ]
+
+
+def test_pick_scans_cw_layout():
+    """cw: several scans a day, ids to the minute, in time order; the newest index generation per scan; a dir that is not a
+    scan (`over-time-dev`) and keys outside the layout are skipped; `start`/`through` bound the ids."""
+    objects = [
+        ("cw-l2/2026-10-08T1801/index/20261008T184207Z/path-index.parquet", _pins(1)),
+        ("cw-l2/2026-10-09T0001/index/20261009T005124Z/path-index.parquet", _pins(2)),
+        ("cw-l2/2026-10-08T0601/index/20260921T145538Z/path-index.parquet", _pins(3)),
+        ("cw-l2/2026-10-08T0601/index/20260920T212315Z/path-index.parquet", _pins(4)),
+        ("cw-l2/2026-10-08T0601/index/20260921T145538Z/age-index.parquet", _pins(5)),
+        ("cw-l2/over-time-dev/index/20261001T000000Z/path-index.parquet", _pins(6)),
+        ("listing/2026-10-08/path-index.parquet", _pins(7)),
+    ]
+    got = sn.pick_scans(objects, CW_LAYOUTS)
+    assert [(s["id"], s["src"], s["ts"]) for s in got] == [
+        ("2026-10-08T0601", "cw-l2/2026-10-08T0601/index/20260921T145538Z/path-index.parquet", 1791439260),
+        ("2026-10-08T1801", "cw-l2/2026-10-08T1801/index/20261008T184207Z/path-index.parquet", 1791482460),
+        ("2026-10-09T0001", "cw-l2/2026-10-09T0001/index/20261009T005124Z/path-index.parquet", 1791504060),
+    ]
+    assert [s["id"] for s in sn.pick_scans(objects, CW_LAYOUTS, start="2026-10-08T1801", through="2026-10-08T2359")] == ["2026-10-08T1801"]
+
+
+def test_pick_scans_refuses_two_ids_at_one_instant():
+    """A date and a minute id at midnight are the same stamp: a version's `vf` could not say which scan opened it."""
+    objects = [("x/2026-10-08/p", _pins(1)), ("x/2026-10-08T0000/p", _pins(2))]
+    with pytest.raises(ValueError) as e:
+        sn.pick_scans(objects, ["x/{id}/p"])
+    assert str(e.value) == "scans 2026-10-08 and 2026-10-08T0000: ids out of time order (stamps 1791417600, 1791417600)"
+
+
+@pytest.mark.parametrize("layout, msg", [
+    ("cw-l2/index/path-index.parquet", "layout 'cw-l2/index/path-index.parquet': needs one {id} and at most one {gen}"),
+    ("a/{id}/{gen}/{gen}/p", "layout 'a/{id}/{gen}/{gen}/p': needs one {id} and at most one {gen}"),
+])
+def test_layout_glob_rejects_bad_templates(layout, msg):
+    with pytest.raises(ValueError) as e:
+        sn.layout_glob(layout)
+    assert str(e.value) == msg
+
+
+def test_layout_glob():
+    assert sn.layout_glob(CW_LAYOUTS[0])[0] == "cw-l2/*/index/*/path-index.parquet"
+
+
+def test_scan_labels_round_trip():
+    for sid in ["2026-10-08", "2026-10-08T0601", "2026-10-09T0001"]:
+        assert sn.scan_label(sn.scan_epoch(sid)) == sid
+    with pytest.raises(ValueError) as e:
+        sn.scan_epoch("2026-10-08T06")
+    assert str(e.value) == "'2026-10-08T06' is not a scan id (YYYY-MM-DD or YYYY-MM-DDTHHMM)"

@@ -3,7 +3,8 @@ suffix-ordered, denormalized postings, rebuilt from primary sources.
 
 Two stages, each embarrassingly parallel on GCP Batch (`job/static-names.sh`):
 
-1. **Intervals.** Every published scan's `path` sort (`listing/<date>/…/path-index.parquet`)
+1. **Intervals.** Every published scan's `path` sort (`LAYOUTS`: gcs's `listing/<date>/…/path-index.parquet`,
+   or a deployment's own key templates, e.g. `cw-l2/<scan>/index/<gen>/path-index.parquet`)
    becomes SCD-2 version intervals: one row per `(depth, path, usr)` version with `[vf, vt)`
    (`vt` = 2106 while open) and its values, exactly the versions the ClickHouse store's
    `nodes`/`closures` hold (`chstore/ingest.py`): a key's rows merged per scan as the
@@ -29,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -44,9 +46,11 @@ from click import IntRange, argument, group, option
 
 err = partial(print, file=sys.stderr, flush=True)
 
-DATA_BUCKET = "oa-gcs-usage-dvx"
-#: Intermediates (the suffix shuffle, its markers): us-east1, no soft delete, objects deleted at 7 days.
-SCRATCH_BUCKET = "oa-gcs-usage-scratch"
+#: The deployment's buckets (env-configurable; the defaults are gcs's): the data bucket holds the scans and the
+#: generations (`static-names/<gen>/`); the scratch bucket the intermediates (the suffix shuffle, its markers, the
+#: daily open-version state) — us-east1, no soft delete, objects deleted at 7 days.
+DATA_BUCKET = os.environ.get("STATIC_NAMES_BUCKET", "oa-gcs-usage-dvx")
+SCRATCH_BUCKET = os.environ.get("STATIC_NAMES_SCRATCH", "oa-gcs-usage-scratch")
 PREFIX = "static-names"
 OPEN = 4291747200  # 2106-01-01 00:00:00 UTC: a version's `vt` while open (`chstore.schema.OPEN`)
 U64 = 1 << 64
@@ -102,38 +106,99 @@ def q(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
+#: A scan id: a UTC date (gcs: one scan a day) or a date and minute (cw: every 6 h), `2026-10-01T0003`. Ids of one
+#: deployment share a form, so their string order is their time order (`list_scans` checks it).
+SCAN_ID = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{4})?")
+
+
 def scan_epoch(scan_id: str) -> int:
     """A scan id (`2026-10-01` or `2026-10-01T0003`, UTC) as epoch seconds (`chstore.schema.scan_dt`)."""
+    if not SCAN_ID.fullmatch(scan_id):
+        raise ValueError(f"{scan_id!r} is not a scan id (YYYY-MM-DD or YYYY-MM-DDTHHMM)")
     fmt = "%Y-%m-%dT%H%M" if "T" in scan_id else "%Y-%m-%d"
     return int(datetime.strptime(scan_id, fmt).replace(tzinfo=timezone.utc).timestamp())
+
+
+def scan_label(ts: int) -> str:
+    """Epoch seconds as a scan-id-shaped label: the date at midnight, else the date and minute (reports only)."""
+    t = datetime.fromtimestamp(ts, timezone.utc)
+    return t.strftime("%Y-%m-%d" if ts % 86400 == 0 else "%Y-%m-%dT%H%M")
 
 
 # ── Scans ──────────────────────────────────────────────────────────────────
 
 
-def list_scans(bucket: str = DATA_BUCKET, *, start: str | None = None, through: str | None = None) -> dict:
-    """Every scan's `path` sort, as the store ingests it (`chstore.ingest.default_src`): the newest
-    generation's `listing/<date>/index/<gen>/path-index.parquet`, else (before generations)
-    `listing/<date>/path-index.parquet`; pinned by GCS generation, size, md5 and crc32c."""
-    from google.cloud import storage
+#: Where scans' `path` sorts live in the data bucket, as key templates: `{id}` is the scan id (one path segment),
+#: `{gen}` the store generation (a scan's newest wins, a template without one counts as the oldest). gcs's (the
+#: default): before generations `listing/<date>/path-index.parquet`, then `listing/<date>/index/<gen>/…`. Another
+#: deployment passes its own (`scans -L`, or `STATIC_NAMES_LAYOUTS`, comma-separated); the base's `scans.json`
+#: records them, so the daily `prepare` finds the next scan the same way.
+GCS_LAYOUTS = ("listing/{id}/path-index.parquet", "listing/{id}/index/{gen}/path-index.parquet")
+LAYOUTS = tuple(os.environ["STATIC_NAMES_LAYOUTS"].split(",")) if os.environ.get("STATIC_NAMES_LAYOUTS") else GCS_LAYOUTS
 
-    client = storage.Client()
+
+def layout_glob(layout: str) -> tuple[str, re.Pattern]:
+    """A layout template as a GCS `match_glob` and a regex capturing `id` (and `gen`)."""
+    if layout.count("{id}") != 1 or layout.count("{gen}") > 1:
+        raise ValueError(f"layout {layout!r}: needs one {{id}} and at most one {{gen}}")
+    parts = re.split(r"(\{id\}|\{gen\})", layout)
+    glob = "".join("*" if p in ("{id}", "{gen}") else p for p in parts)
+    rx = "".join("(?P<id>[^/]+)" if p == "{id}" else "(?P<gen>[^/]+)" if p == "{gen}" else re.escape(p) for p in parts)
+    return glob, re.compile(rx)
+
+
+def pick_scans(objects: Iterable[tuple[str, dict]], layouts: Iterable[str] = GCS_LAYOUTS, *, start: str | None = None,
+               through: str | None = None) -> list[dict]:
+    """Each scan's newest `path` sort among `(key, pins)` listings: keys matched against `layouts` (ids that are not
+    scan ids, e.g. `cw-l2/over-time-dev/`, are skipped), the greatest `{gen}` per id, ids in `[start, through]`.
+    Sorted by id, which must also sort them strictly by time (two ids at one instant, e.g. `2026-10-01` and
+    `2026-10-01T0000`, are an error: a version's `vf` would not say which scan opened it)."""
+    rxs = [layout_glob(t)[1] for t in layouts]
     found: dict[str, dict] = {}
-    for glob in ("listing/*/path-index.parquet", "listing/*/index/*/path-index.parquet"):
-        for b in client.list_blobs(bucket, match_glob=glob):
-            date = b.name.split("/")[1]
-            if (start and date < start) or (through and date > through):
-                continue
-            gen = b.name.split("/")[3] if "/index/" in b.name else ""
-            cur = found.get(date)
-            if cur is None or gen > cur["gen"]:
-                found[date] = {"id": date, "gen": gen, "src": b.name, "generation": int(b.generation), "size": int(b.size),
-                               "md5": base64.b64decode(b.md5_hash).hex() if b.md5_hash else None, "crc32c": b.crc32c}
+    for key, pins in objects:
+        m = next((m for rx in rxs if (m := rx.fullmatch(key))), None)
+        if m is None:
+            continue
+        sid = m["id"]
+        if not SCAN_ID.fullmatch(sid):
+            err(f"scans: skipping {key} ({sid!r} is not a scan id)")
+            continue
+        if (start and sid < start) or (through and sid > through):
+            continue
+        gen = m.groupdict().get("gen") or ""
+        cur = found.get(sid)
+        if cur is None or gen > cur["gen"]:
+            found[sid] = {"id": sid, "gen": gen, "src": key, **pins}
     scans = [found[d] for d in sorted(found)]
     for s in scans:
         del s["gen"]
         s["ts"] = scan_epoch(s["id"])
-    return {"bucket": bucket, "scans": scans}
+    for a, b in zip(scans, scans[1:]):
+        if a["ts"] >= b["ts"]:
+            raise ValueError(f"scans {a['id']} and {b['id']}: ids out of time order (stamps {a['ts']}, {b['ts']})")
+    return scans
+
+
+def list_scans(bucket: str = DATA_BUCKET, *, layouts: Iterable[str] = LAYOUTS, start: str | None = None,
+               through: str | None = None) -> dict:
+    """Every scan's `path` sort, as the store ingests it (`chstore.ingest.default_src`): per scan id the newest
+    generation under `layouts` (`pick_scans`); pinned by GCS generation, size, md5 and crc32c."""
+    from google.cloud import storage
+
+    client = storage.Client()
+    layouts = list(layouts)
+
+    def objects():
+        for t in layouts:
+            for b in client.list_blobs(bucket, match_glob=layout_glob(t)[0]):
+                yield b.name, {"generation": int(b.generation), "size": int(b.size),
+                               "md5": base64.b64decode(b.md5_hash).hex() if b.md5_hash else None, "crc32c": b.crc32c}
+
+    scans = pick_scans(objects(), layouts, start=start, through=through)
+    doc = {"bucket": bucket, "scans": scans}
+    if tuple(layouts) != GCS_LAYOUTS:
+        doc["layouts"] = layouts
+    return doc
 
 
 # ── Key ranges ─────────────────────────────────────────────────────────────
@@ -237,12 +302,13 @@ def _src(bucket: str, key: str, mount: str | None) -> str:
 
 # ── Interval kernel ────────────────────────────────────────────────────────
 
-V2_SELECT = """depth::UTINYINT AS depth, path, coalesce(usr, '') AS usr,
+V2_SELECT = """depth::UTINYINT AS depth, path, coalesce({usr}, '') AS usr,
     CASE WHEN kind = 'file' THEN 'file' ELSE 'dir' END AS kind, size::BIGINT AS size, n_files::BIGINT AS n_files,
     coalesce({n_children}, -1)::BIGINT AS n_children, coalesce({n_desc}, -1)::BIGINT AS n_desc, coalesce({mtime}, -1)::BIGINT AS mtime,
     coalesce({mtime_mean}, 0)::DOUBLE AS mtime_mean, CASE WHEN {mtime_mean} IS NULL THEN 0 ELSE size END::BIGINT AS mtime_w,
     coalesce({last_read}, -1)::INTEGER AS last_read, coalesce({c2}, 0)::BIGINT AS c2, coalesce({c3}, 0)::BIGINT AS c3, coalesce({c4}, 0)::BIGINT AS c4"""
-V2_OPTIONAL = {"n_children": "n_children", "n_desc": "n_desc", "mtime": "mtime", "mtime_mean": "mtime_mean", "last_read": "last_read",
+#: Columns a v2 sort may lack (read as NULL): cw's carry no owner (`usr`) and a single storage-class pivot.
+V2_OPTIONAL = {"usr": "usr", "n_children": "n_children", "n_desc": "n_desc", "mtime": "mtime", "mtime_mean": "mtime_mean", "last_read": "last_read",
                "c2": "sum_storage_class_id_2", "c3": "sum_storage_class_id_3", "c4": "sum_storage_class_id_4"}
 V1_SELECT = """depth::UTINYINT AS depth, path, coalesce(usr, '') AS usr, 'dir' AS kind, b::BIGINT AS size, o::BIGINT AS n_files,
     -1::BIGINT AS n_children, -1::BIGINT AS n_desc, -1::BIGINT AS mtime,
@@ -928,13 +994,14 @@ def _task(index: int | None) -> int:
 
 @cli.command("scans")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
-@option("-s", "--start", help="First scan date (inclusive)")
-@option("-t", "--through", help="Last scan date (inclusive)")
-def scans_cmd(bucket: str, start: str | None, through: str | None) -> None:
-    """Print the scans manifest (JSON): each date's newest `path` sort, pinned by generation and md5."""
+@option("-L", "--layout", "layouts", multiple=True, help="Key template of the scans' `path` sorts, `{id}` the scan id and `{gen}` the store generation; repeat (default: $STATIC_NAMES_LAYOUTS, else gcs's `listing/{id}/[index/{gen}/]path-index.parquet`)")
+@option("-s", "--start", help="First scan id (inclusive)")
+@option("-t", "--through", help="Last scan id (inclusive)")
+def scans_cmd(bucket: str, layouts: tuple[str, ...], start: str | None, through: str | None) -> None:
+    """Print the scans manifest (JSON): each scan's newest `path` sort, pinned by generation and md5."""
     from google.cloud import storage
 
-    doc = list_scans(bucket, start=start, through=through)
+    doc = list_scans(bucket, layouts=layouts or LAYOUTS, start=start, through=through)
     b = storage.Client().bucket(bucket)
     for s in doc["scans"]:
         s["version"] = _version_from_footer(b, s["src"])
@@ -1283,7 +1350,7 @@ def manifest_cmd(bucket, gen, subdirs) -> None:
                     cur[0] += n
                     cur[1] = (cur[1] + h) % U64
         doc["rows"] = rows
-        doc["per_scan"] = {datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d"): v for ts, v in sorted(totals.items(), key=lambda kv: int(kv[0]))}
+        doc["per_scan"] = {scan_label(int(ts)): v for ts, v in sorted(totals.items(), key=lambda kv: int(kv[0]))}
     print(json.dumps(doc, indent=1))
 
 

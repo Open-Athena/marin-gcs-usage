@@ -14,7 +14,7 @@ from dt_cloud import static_catalog as sc
 from dt_cloud import static_names as sn
 
 from test_static_catalog import _gen
-from test_static_names import DATES, _brute_answer, _oracle, _read, fixture  # noqa: F401
+from test_static_names import _brute_answer, _oracle, _read, fixture, scan_ids  # noqa: F401
 
 V = 3
 K = 2  # scans appended after the base
@@ -138,7 +138,7 @@ def test_reader_equals_rebuild(runs, merged):
         hits = tiered.hits(term)
         assert hits == rebuilt.hits(term), term
         nonempty += bool(hits)
-        assert tiered.answer(term, DATES)["answers"] == {d: _brute_answer(oracle, term, d) for d in DATES}, term
+        assert tiered.answer(term, scan_ids(runs["scans"]))["answers"] == {d: _brute_answer(oracle, term, d) for d in scan_ids(runs["scans"])}, term
     assert nonempty >= 8
 
 
@@ -157,7 +157,7 @@ def test_catalog_equals_rebuild(runs):
     members = sorted({r["q"] for r in pq.read_table(full / "cells.parquet").to_pylist() if r["bucket"] == ""})
     assert len(members) > 20
     for t in [*members, *TERMS]:
-        assert tiered.answer(t, DATES) == rebuilt.answer(t, DATES), t
+        assert tiered.answer(t, scan_ids(runs["scans"])) == rebuilt.answer(t, scan_ids(runs["scans"])), t
 
 
 def test_runs_hold_only_new_cells(runs):
@@ -250,7 +250,7 @@ def test_verify_terms_against_the_scan(runs, day):
     scan, before, base_last = scans[n], scans[n - 1]["id"], scans[len(scans) - K - 1]["id"]
     run_dirs = runs["runs"][:day + 1]
     con = sn.connect(2, "1GB", runs["tmp"] / "vtmp")
-    terms = [*TERMS, "b2", "e5418"]
+    terms = [*TERMS, "b2", "e5418", "qz"]  # `qz`: a short literal no name holds
     report = sa.verify_terms(con, str(root / scan["src"]), scan["version"], scan["id"], before, terms,
                              sa.TieredReader([_reader(base["out"], base["side"]), *(_reader(d, pq.read_table(d / "sidecar.parquet")) for d in run_dirs)]),
                              sa.TieredCatalog([_catalog(base["final"]), *(_catalog(d / "catalog") for d in run_dirs)]),
@@ -404,4 +404,18 @@ def test_prune_refuses_while_the_day_is_incomplete(day, published, msg):
 def test_prune_plan_rejects_a_non_day_dir():
     with pytest.raises(ValueError) as e:
         sa.prune_plan([(f"{SP}/latest/copen/r0000.parquet", 1)], f"{sn.PREFIX}/{GEN}", 1, True, "2026-10-10")
-    assert str(e.value) == f"{SP}/latest/copen/r0000.parquet: 'latest' is not a day"
+    assert str(e.value) == f"{SP}/latest/copen/r0000.parquet: 'latest' is not a scan id"
+
+
+def test_prune_keeps_only_the_newest_complete_state_of_sub_daily_scans():
+    """A deployment scanning every 6 h (cw): states are keyed by scan id to the minute, and an earlier scan of the same
+    day is an earlier state like any other."""
+    store = {**_day("2026-10-09T1801"), **_day("2026-10-10T0001", size=7), **_day("2026-10-10T0601"),
+             **_day("2026-10-10T1202", copen=1, done=0), **_published("2026-10-10T0001", "2026-10-10T0601"), **OTHERS}
+    keep = {**_day("2026-10-10T0601"), **_day("2026-10-10T1202", copen=1, done=0), **_published("2026-10-10T0001", "2026-10-10T0601"), **OTHERS}
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-10T0601", 2) == {
+        "date": "2026-10-10T0601", "keep": ["2026-10-10T0601", "2026-10-10T1202"],
+        "delete": [{"day": "2026-10-09T1801", "objects": 4, "bytes": 202}, {"day": "2026-10-10T0001", "objects": 4, "bytes": 16}],
+        "deleted": 8,
+    }
+    assert store == keep
