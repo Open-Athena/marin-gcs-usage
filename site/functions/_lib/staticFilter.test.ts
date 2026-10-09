@@ -109,10 +109,10 @@ const FOLDED: unknown[] = [
 ]
 
 describe('staticLiteral: the queries the static index answers exactly', () => {
-  it('one positive substring of ≥ 3 characters without `/`; nothing else', () => {
+  it('one positive substring without `/` (one and two characters too: the drilldown\'s); nothing else', () => {
     const lit = (s: string) => staticLiteral(parseAst(s)!)
-    expect(['tomat', 'TOMAT', 'x.bin', 'abc def', 'tom*at', '/tomat', 'tomat -xyz', 'abc|bcd', '"ttl=7d"', '/ttl/'].map(lit))
-      .toEqual(['tomat', 'tomat', 'x.bin', null, null, null, null, null, 'ttl=7d', null])
+    expect(['tomat', 'TOMAT', 'x.bin', 'ab', 'A', '.', 'abc def', 'tom*at', '/tomat', 'tomat -xyz', 'abc|bcd', '"ttl=7d"', '/ttl/'].map(lit))
+      .toEqual(['tomat', 'tomat', 'x.bin', 'ab', 'a', '.', null, null, null, null, null, 'ttl=7d', null])
   })
 })
 
@@ -207,7 +207,7 @@ describe('static filter: size over time (`/api/series`)', () => {
     const want: unknown[] = []
     for (const t of TERMS) for (const root of ROOTS) {
       if (expected.roots[t][root][A] === null) continue
-      const { hits } = (await src.hits(t, root))!
+      const hits = (await src.hits(t, root))!.hits!
       got.push([t, root, Object.fromEntries(DATES.map(d => { const x = liveTotal(hits, d); return [d, [x.b, x.o]] }))])
       want.push([t, root, expected.series[t][root]])
     }
@@ -253,7 +253,7 @@ describe('static filter: dispatch', () => {
   })
 
   it('a first hit dedups a name holding the term twice (one row per occurrence in the shards)', async () => {
-    const { hits } = (await staticStore().source.hits('tomat', 'bk/runs/x'))!
+    const hits = (await staticStore().source.hits('tomat', 'bk/runs/x'))!.hits!
     const key = (h: Hit) => `${h.path} ${h.usr} ${h.vf}`
     expect(hits.map(key).sort()).toEqual([
       `bk/runs/x/ckpt-tomat.pt alice ${Date.UTC(2026, 9, 4)}`, `bk/runs/x/ckpt-tomat.pt alice ${Date.UTC(2026, 9, 5)}`, `bk/runs/x/tomat-tomat.bin  ${Date.UTC(2026, 9, 4)}`,

@@ -18,7 +18,7 @@ import { snapshotsPrefix } from '../_lib/shared.js'
 import { type Lens, makeStore, pathGens, pathScans, storeReady } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
-import { liveTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
+import { liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
 import { readRootAgg, readRootRows } from '../_lib/view.js'
 import { type OverTime, overTimePoint, readOverTime } from '../_lib/overTime.js'
 import { parsePaths } from '../_lib/filter.js'
@@ -140,9 +140,13 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // absent, the groups are floor-free); only the unsealed tip falls through to
   // the per-scan read. Lens / owner / class scopes and `split` aren't in the
   // index. Any line unreadable → all per-scan.
-  // The static filter's first hits under `path` (null: not a static literal, or declined).
-  const shits = skey ? await st.time('static', sfs!.source.hits(skey, path)) : null
-  const sscans = shits ? new Set(await sfs!.scans()) : null
+  // The static filter's match roots under `path`, or its rollup there (a heavy literal under a heavy
+  // directory: the per-child running totals give every scan's total). Null: not a static literal, declined,
+  // or a rollup under an owner pool (rollups carry no owners).
+  const found = skey ? await st.time('static', sfs!.source.hits(skey, path)) : null
+  const shits = found?.rollup && owner ? null : found
+  // The scans it is exact on: the drilldown's are its base generation's.
+  const sscans = shits ? new Set(shits.scans ?? await sfs!.scans()) : null
   if (query && !shits && !paths.length) return json({ error: 'a filtered series needs its match roots (paths=)' }, 400)
   const indexable = !split && !lens && !owner && !classes && !shits
   const lines = indexable ? await st.time('overtime', Promise.all((paths.length ? paths : [path]).map(p => readOverTime(env, p)))) : []
@@ -158,10 +162,12 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   const point = async (date: string, tries = 2): Promise<{ date: string; b: number; o: number } | null> => {
     try {
       if (shits && sscans!.has(date)) {
-        const t = liveTotal(shits.hits, date, u => ownerOk(u, owner))
+        const t = shits.rollup ? rollupTotal(shits.rollup, date) : liveTotal(shits.hits, date, u => ownerOk(u, owner))
         return { date, b: t.b, o: t.o }
       }
-      if (shits && !paths.length) return null
+      // A scan the answer doesn't cover: the client's match roots (`paths=`), unless they come from a rollup,
+      // which lists only some of them (a gap, not a wrong point).
+      if (shits && (!paths.length || shits.rollup)) return null
       const covered = ot ? overTimePoint(ot, date) : undefined
       if (covered !== undefined) return covered && { date, ...covered }
       if (split) {

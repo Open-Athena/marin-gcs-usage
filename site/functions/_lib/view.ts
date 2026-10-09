@@ -40,7 +40,7 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
-import { liveRows, staticFilterStore, staticKey } from './staticFilter.js'
+import { covers, liveRows, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -141,6 +141,13 @@ export interface View {
    * when they leave some out. */
   matchCount?: { n: number; b: number; o: number }
   matchesCapped?: true
+  /** With `query`, a heavy literal under a heavy directory (`staticDrill.ts`): the view is P's rollup —
+   * its children's matched totals (the `children` holding match roots on any scan, `kept` of them by name,
+   * the rest in `(other)`), not its match roots. The tree's top-level cells are those children (leaves: a
+   * drill re-dispatches); `matched` lists only the kept children that are match roots themselves, so
+   * `matchesCapped` is set, and `matchCount.n` is `rows`, the root rows under P over every scan (an upper
+   * bound on this scan's; null — and `n` the listed count — at the fleet root of a 1–2 character literal). */
+  rollup?: { children: number; kept: number; rows: number | null }
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
   /** With `query`: a read budget stopped the search — some matches may be
@@ -480,6 +487,12 @@ interface Read {
   truncated: boolean
   matches?: string[]
   matched?: { path: string; b: number; o: number }[]
+  /** A rollup read: the match count (a bound) and the rollup's shape (`View.rollup`). */
+  matchCount?: { n: number; b: number; o: number }
+  rollup?: { children: number; kept: number; rows: number | null }
+  /** A rollup read: every child's exact matched total on this scan (absent = zero), drawn or not — a diff
+   * takes a name one side didn't draw from here instead of a point lookup. */
+  exact?: Map<string, Agg>
   /** With a NOT query: the outermost excluded paths under the match roots. */
   excluded?: string[]
   /** …and their scoped aggregates (what a diff's point lookups subtract). */
@@ -669,13 +682,21 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
       const sfs = !lens && !classes ? staticFilterStore(env) : null
       const skey = sfs ? await staticKey(sfs, pq, [date]) : null
-      const shits = skey ? await sfs!.source.hits(skey, path) : null
-      tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.hits.length}` : skey ? 'declined' : undefined)
+      let shits = skey ? await sfs!.source.hits(skey, path) : null
+      // A heavy literal's drilldown answers its base generation's scans only, and its rollups know no
+      // owners: past either, the view reads as before.
+      const off = shits && !covers(shits, [date]) ? 'after the drill base' : shits?.rollup && owner ? 'rollup: no owners' : null
+      if (off) shits = null
+      tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
+      if (shits?.rollup) {
+        const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
+        return rollupRead(env, o, shits.rollup, { dP, rootAll, idx, details: h, trace: tr })
+      }
       if (shits) {
         const rows = liveRows(shits.hits, date)
         p1 = aggregate(rows)
         roots = [...p1.depth.keys()].sort()
-        p1Tier = 'static'
+        p1Tier = shits.io.from === 'drill' ? 'drill' : 'static'
         staticRoots = true
       }
       const plan = !shits && store && pq ? planPositive(pq) : null
@@ -1042,6 +1063,77 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   return { rootAll, rootAgg, kept, aggDepth, foldedOf, threshold, thrAt, tier: tierName, idx, truncated, ...(matches ? { matches } : {}), ownerLens: ol, scoped }
 }
 
+/** A heavy literal's view at P from P's rollup (`staticDrill.ts`) on `o.date`: each child of P holding match
+ * roots is a cell of its matched bytes and objects — the kept children by name, the rest (and children under
+ * the pixel budget) in `(other)` — as leaves: nothing inside a child is read, and drilling into one
+ * re-dispatches there. Exact (the rollup's totals are), without owners. Children that are match roots
+ * themselves (their name holds the literal: P's doesn't) are the view's `matched`, with their own rows'
+ * kind, ages and classes looked up beside, as static roots' are; containers are directories. */
+async function rollupRead(env: Env, o: ViewOpts, rollup: Rollup, x: { dP: number; rootAll: Agg; idx: IndexHandle; details: IndexHandle; trace?: Trace }): Promise<Read | null> {
+  const { date, path, w, h, minArea, atten, query, maxDepth } = o
+  const { dP, trace: tr } = x
+  const t0 = performance.now()
+  const { kids, rest } = rollupAt(rollup, date)
+  const childPath = (c: string) => (path === '' ? c : `${path}/${c}`)
+  const total = newAgg()
+  total.b = Number(rest[0]); total.o = Number(rest[1])
+  const exact = new Map<string, Agg>()
+  for (const [c, b, ob] of kids) {
+    const a = newAgg()
+    a.b = Number(b); a.o = Number(ob)
+    const cp = childPath(c)
+    if (!query?.(cp)) a.kind = 'dir'
+    exact.set(cp, a)
+    total.b += a.b; total.o += a.o
+  }
+  if (total.b <= 0) return null
+  const T = o.threshold ?? filterThreshold(total.b, w, h, minArea)
+  const thrAt = (d: number) => T * atten ** Math.max(0, d - dP - 1)
+  const kept = new Map([...exact].filter(([, a]) => a.b >= T))
+  const aggDepth = new Map([...kept.keys()].map(p => [p, dP + 1]))
+  const matched = [...exact].filter(([p]) => query?.(p)).map(([p, a]) => ({ path: p, b: a.b, o: a.o })).sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0))
+  // The drawn children that are match roots: their own rows (kind, ages, classes, owners — the whole
+  // child is matched) by point lookups, heaviest first, within `FILTER_DETAILS_MS`; never on the first paint.
+  const want = matched.filter(m => kept.has(m.path)).slice(0, ROOT_DETAILS)
+  if (want.length && !o.firstPaint && !(maxDepth != null && maxDepth <= 0)) {
+    const asks = new Set(want.map(m => `${dP + 1}\0${m.path}`))
+    const look = readAsks(x.details, want.map(m => ({ depth: dP + 1, path: m.path })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: 60 }).then(r => r.rows).catch(e => {
+      if (!/too wide/.test(String((e as Error).message ?? e))) throw e
+      tr?.('details', 0, 'too wide')
+      return [] as Row[]
+    })
+    const budget = Number(env.FILTER_DETAILS_MS) || Infinity
+    const late = Symbol('late')
+    const rows = budget === Infinity ? await look : await Promise.race([look, new Promise<typeof late>(r => setTimeout(() => r(late), budget))]).then(v => {
+      if (v !== late) return v
+      tr?.('details', performance.now() - t0, 'late')
+      look.catch(() => {})
+      return [] as Row[]
+    })
+    const own = new Map<string, Agg>()
+    for (const r of rows) {
+      let a = own.get(r.path)
+      if (!a) own.set(r.path, (a = newAgg()))
+      merge(a, r)
+    }
+    for (const [p, d] of own) {
+      const a = exact.get(p)!
+      a.kind = d.kind; a.wts = d.wts; a.wb = d.wb; a.a = d.a; a.cb = d.cb; a.ub = d.ub; a.nc = d.nc; a.nd = d.nd
+    }
+    tr?.('details', performance.now() - t0, String(own.size))
+  }
+  tr?.('rollup', performance.now() - t0, `${kids.length} kids, ${kept.size} kept`)
+  return {
+    rootAll: x.rootAll, rootAgg: total, kept, aggDepth,
+    foldedOf: new Map([[path, Math.max(0, rollup.children - kept.size)]]),
+    threshold: T, thrAt, tier: 'rollup', idx: x.idx, truncated: false,
+    matches: matched.map(m => m.path).sort(), matched: matched.map(m => ({ path: m.path, b: Math.round(m.b), o: Math.round(m.o) })),
+    matchCount: { n: rollup.rows ?? matched.length, b: Math.round(total.b), o: Math.round(total.o) },
+    rollup: { children: rollup.children, kept: rollup.kept, rows: rollup.rows },
+    exact, ...(o.firstPaint ? { firstPaint: true } : {}), ownerLens: null, scoped: (_p, _all, mine) => mine!,
+  }
+}
+
 /** P's own row(s) from the by-path tiers — coarsest that has it, else fine. */
 async function readRootAllRows(env: Env, date: string, path: string, dP: number): Promise<Row[]> {
   const read = (idx: IndexHandle) => (path === '' ? readRows(idx, 1, 1, '', '￿') : readRows(idx, dP, dP, path, path))
@@ -1128,7 +1220,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     return node
   }
   const tree = build(path, v.rootAgg)
-  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? matchLists(v.matched, kept) : v.matches ? { matches: v.matches } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(query ? coverageFields(cov) : {}) }
+  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? { ...matchLists(v.matched, kept), ...(v.matchCount ? { matchCount: v.matchCount, matchesCapped: true as const } : {}) } : v.matches ? { matches: v.matches } : {}), ...(v.rollup ? { rollup: v.rollup } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(query ? coverageFields(cov) : {}) }
 }
 
 /** The most match roots a response lists (`matches` / `matched`) beyond those the tree draws. */
@@ -1269,7 +1361,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     ...(matchedUnion ? (() => {
       const keptBoth = new Map([...(va?.kept ?? []), ...(vb?.kept ?? [])])
       const { matched, matchCount, matchesCapped } = matchLists([...matchedUnion].sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : 1)), keptBoth)
-      return { matched: matched!.sort((x, y) => x.path < y.path ? -1 : 1), matchCount, ...(matchesCapped ? { matchesCapped } : {}) }
+      // A rollup side lists only its kept children that are roots: its count is the rollup's bound.
+      const roll = vb?.matchCount ?? va?.matchCount
+      return { matched: matched!.sort((x, y) => x.path < y.path ? -1 : 1), matchCount: roll ?? matchCount, ...(matchesCapped || roll ? { matchesCapped: true as const } : {}) }
     })() : {}),
     ...(query ? coverageFields(cov) : {}),
   }
@@ -1412,8 +1506,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     const asks: { cp: string; d: number; side: 1 | 2; v: Read; date: string }[] = []
     for (const { it, names } of plans) {
       for (const cp of names) {
-        if (va && !va.kept.has(cp)) asks.push({ cp, d: it.d + 1, side: 1, v: va, date: from })
-        if (vb && !vb.kept.has(cp)) asks.push({ cp, d: it.d + 1, side: 2, v: vb, date: to })
+        if (va && !va.kept.has(cp) && !va.exact) asks.push({ cp, d: it.d + 1, side: 1, v: va, date: from })
+        if (vb && !vb.kept.has(cp) && !vb.exact) asks.push({ cp, d: it.d + 1, side: 2, v: vb, date: to })
       }
     }
     const found = new Map<string, Agg | null>() // `${side}:${cp}`
@@ -1431,9 +1525,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
       expansions++
       const sum = { a: newAgg(), b: newAgg() }
       for (const cp of names) {
-        const ca = va?.kept.get(cp) ?? found.get(`1:${cp}`) ?? null
-        const cb = vb?.kept.get(cp) ?? found.get(`2:${cp}`) ?? null
-        const lk: 1 | 2 | undefined = ca && !va!.kept.has(cp) ? 1 : cb && !vb!.kept.has(cp) ? 2 : undefined
+        const ca = va?.kept.get(cp) ?? va?.exact?.get(cp) ?? found.get(`1:${cp}`) ?? null
+        const cb = vb?.kept.get(cp) ?? vb?.exact?.get(cp) ?? found.get(`2:${cp}`) ?? null
+        const lk: 1 | 2 | undefined = ca && !va!.kept.has(cp) && !va!.exact ? 1 : cb && !vb!.kept.has(cp) && !vb!.exact ? 2 : undefined
         if (ca) { sum.a.b += ca.b; sum.a.o += ca.o }
         if (cb) { sum.b.b += cb.b; sum.b.o += cb.o }
         next.push({ p: cp, d: d + 1, a: ca, b: cb, ...(lk ? { l: lk } : {}) })

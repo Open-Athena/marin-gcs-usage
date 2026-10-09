@@ -10,33 +10,56 @@
  *  included. Each first hit is one version of one owner slice `(path, usr)` with its `size`/`n_files`, so a
  *  root's bytes, objects and per-owner split on scan `D` are the sum of its slices live on `D`.
  *
- *  Which queries: `staticLiteral` — one positive substring matcher of ≥ 3 characters, no `/`, no other
- *  term, glob, regex or exclusion. Which literals: those whose suffix range the shard group index bounds
- *  by `maxRows` (V = 100K plus two row groups of slack, so every non-member and the lightest members) are
- *  read whole once per isolate (and once per colo through the Cache API); heavier ones ask the
- *  `heavy` source (`HitSource`, the forthcoming per-member "roots by path" files) and otherwise decline,
- *  so the caller keeps today's read. */
+ *  Which queries: `staticLiteral` — one positive substring matcher without `/`, no other term, glob, regex
+ *  or exclusion. Which literals: those of ≥ 3 characters whose suffix range the shard group index bounds by
+ *  `maxRows` (V = 100K plus two row groups of slack, so every non-member and the lightest members) are read
+ *  whole once per isolate (and once per colo through the Cache API); heavier ones, and every one- or
+ *  two-character literal, ask the `heavy` source — the drilldown (`staticDrill.ts`, `FILTER_STATIC_HEAVY=1`):
+ *  the match roots under the view path when they are few, else the path's per-child rollup — and otherwise
+ *  decline, so the caller keeps today's read.
+ *
+ *  Dates: an answer carries the scans it covers (`Found.scans`; absent = every scan of the store). The light
+ *  index spans the base generation and its daily runs; the drilldown only the base generation's scans, so a
+ *  heavy literal on a newer scan declines (`covers`) and that view reads as before. */
 import type { Row } from './index.js'
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
+import { StaticCatalog } from './staticCatalog.js'
+import { Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
 import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanMs, STATIC_GEN, STATIC_PREFIX } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 
 export type { Hit } from './staticNames.js'
+export { type Rollup, rollupAt, rollupTotal } from './staticDrill.js'
 
 /** The literal a query is, when the static index can answer it exactly (lowercase), else null. */
 export function staticLiteral(ast: QueryAst | undefined): string | null {
   if (!ast || ast.neg.length || ast.alts.length !== 1 || ast.alts[0].length !== 1) return null
   const m = ast.alts[0][0]
-  if (m.kind !== 'sub' || m.text.includes('/') || [...m.text].length < 3) return null
+  if (m.kind !== 'sub' || m.text.includes('/') || !m.text) return null
   return m.text
 }
 
-/** First hits of a literal under a path, any date: what the filter needs from an index. `null` = this
+/** One or two characters: never a suffix-range read (the shards hold suffixes of ≥ 3); the heavy source's. */
+export const shortLiteral = (key: string): boolean => [...key].length <= 2
+
+/** What a source found for a literal under a path, any date: its match roots (`hits`: first hits, each a
+ *  version of an owner slice), or — a heavy literal under a heavy directory — the path's per-child totals
+ *  (`rollup`: kept children by name plus an exact remainder, no owners). `scans`: the scans the answer is
+ *  exact on (absent: every scan of the store). */
+export type Found =
+  | { hits: Hit[]; rollup?: undefined; io: Record<string, unknown>; scans?: string[] }
+  | { rollup: Rollup; hits?: undefined; io: Record<string, unknown>; scans?: string[] }
+
+/** Whether `found` answers every one of `dates`: the explicit rule that keeps a heavy literal off the scans
+ *  its drilldown does not cover (the daily runs past the base generation), which then read as before. */
+export const covers = (found: Found, dates: string[]): boolean => !found.scans || dates.every(d => found.scans!.includes(d))
+
+/** A literal's match roots under a path, any date: what the filter needs from an index. `null` = this
  *  source can't answer the literal (the caller falls back). `under` = `''` (everything) or a path, whose
  *  strict descendants are wanted. */
 export interface HitSource {
-  hits(key: string, under: string): Promise<{ hits: Hit[]; io: Record<string, unknown> } | null>
+  hits(key: string, under: string): Promise<Found | null>
 }
 
 /** The generation's scans (ids). */
@@ -96,7 +119,8 @@ export class SuffixHits implements HitSource {
     }
   }
 
-  async hits(key: string, root: string): Promise<{ hits: Hit[]; io: Record<string, unknown> } | null> {
+  async hits(key: string, root: string): Promise<Found | null> {
+    if (shortLiteral(key)) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
     const got = await this.all(key)
     if (!got) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
     return { hits: root === '' ? got.hits : got.hits.filter(h => under(h.path, root)), io: got.io }
@@ -123,12 +147,20 @@ export function cacheHits(cache: Cache, prefix = STATIC_PREFIX, version = 'hits-
   }
 }
 
-/** The per-member "roots by path" source for literals over `MAX_ROWS` (not built yet: none). */
-let heavySource: HitSource | null = null
-/** Register the heavy literals' source (the per-member roots-by-path files). */
-export function setHeavySource(s: HitSource | null): void { heavySource = s }
+export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; INDEX_R2?: R2Bucket }
 
-export type StaticFilterEnv = { FILTER_STATIC?: string; INDEX_R2?: R2Bucket }
+/** The drilldown over a bucket's generation (`drill/`, the base catalog for the fleet root, the base scans). */
+export function drillSource(blobs: Blobs, cache?: Cache): DrillSource {
+  const drillBlobs: Blobs = {
+    range: (k, o, l) => blobs.range(`${DRILL_DIR}/${k}`, o, l),
+    suffix: (k, n) => blobs.suffix(`${DRILL_DIR}/${k}`, n),
+    json: k => blobs.json(`${DRILL_DIR}/${k}`),
+  }
+  const pre = `${STATIC_PREFIX}/${DRILL_DIR}`
+  const catalog = new StaticCatalog(blobs, cache ? cacheIndexes(cache, STATIC_PREFIX, 'catalog-v1') : undefined)
+  const drill = new Drill(drillBlobs, catalog, cache ? { top: cacheIndexes(cache, pre, 'top-v1'), aliases: cacheIndexes(cache, pre, 'aliases-v2') } : undefined)
+  return new DrillSource(drill, scanList(blobs))
+}
 
 /** A test's store for an env object (in place of the R2 binding's). */
 export const injectedStores = new WeakMap<object, StaticFilterStore>()
@@ -143,7 +175,9 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
   if (held?.r2 !== env.INDEX_R2) {
     // The base generation plus its daily runs (`staticRuns.ts`): each tier's group indexes cached under its own prefix.
     const t = tiers(r2Blobs(env.INDEX_R2), { indexCache: dir => cacheIndexes(caches.default, dir ? `${STATIC_PREFIX}/${dir}` : STATIC_PREFIX) })
-    held = { r2: env.INDEX_R2, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default), get heavy() { return heavySource } }), scans: t.scans, gen: STATIC_GEN } }
+    // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base generation.
+    const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2), caches.default) : null
+    held = { r2: env.INDEX_R2, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default), heavy }), scans: t.scans, gen: `${STATIC_GEN}${heavy ? '+drill' : ''}` } }
   }
   return held.store
 }
@@ -195,8 +229,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
   return { b: Number(b), o: Number(o), roots: roots.size }
 }
 
-/** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists). */
-const RESPONSE_V = 2
+/** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
+ *  3: heavy literals from the drilldown, rollup views). */
+const RESPONSE_V = 3
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
