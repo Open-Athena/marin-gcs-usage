@@ -6,6 +6,7 @@ import { ledgerHead } from '../ledger.js'
 import { stampMeta } from '../unfurl.js'
 import { cardSvg, type CardData } from './card.js'
 import { mapCard, type Site } from './data.js'
+import { stagedImageVersion } from '../stagedSlack.js'
 import { assignmentsCard, stagedCard, userCard, usersCard } from './pages.js'
 import { ensureWasm, FONT_FILES, svgToPng } from './render.js'
 import { pageView, type OgKind } from './routes.js'
@@ -46,15 +47,15 @@ export function deploymentKey(env: OgEnv): Promise<CryptoKey> | null {
 
 const now = () => Math.floor(Date.now() / 1000)
 
-/** The open plan's digest (first 8 hex), so `/staged`'s image URL changes
- * with every staging gesture and Slack / the colo cache never serve a stale
- * card. Null when there's no plan. */
+/** The open plan's card version (`stagedImageVersion`: its digest and the
+ * latest scan), so `/staged`'s image URL changes with every staging gesture
+ * and every scan. Null when there's no plan. */
 async function stagedVersion(env: OgEnv): Promise<string | null> {
   if (!env.DB) return null
   const plan = await openPlanId(env.DB).catch(() => null)
   if (plan == null) return null
   const items = (await env.DB.prepare('SELECT prefix FROM plan_items WHERE plan_id = ?').bind(plan).all<{ prefix: string }>()).results
-  return (await planDigest(items.map(i => i.prefix))).slice(0, 8)
+  return stagedImageVersion(env, await planDigest(items.map(i => i.prefix)))
 }
 
 /** Stamp a page's HTML with its card when it has one. */
