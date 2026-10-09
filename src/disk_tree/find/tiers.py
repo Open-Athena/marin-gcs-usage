@@ -29,7 +29,7 @@ parquet key-value metadata says ``bucket = log2`` beside ``tier`` and ``sort``.
 
 **Owner slices** (a labeled layer-2: one row per ``(path, …labels)``): a
 threshold applies to a *path*, not a slice, so the ``bysize`` sort carries
-:data:`TOT_COL` — the path's total, ``SUM(size) OVER (depth, path)``, equal on
+:data:`TOT_COL` — the path's total over ``(depth, path)``, equal on
 every slice of a path — and is keyed on ``⌊log2 tot⌋`` instead (spec
 ``bysize-path-total.md``): a path's slices sit together in one bucket run, the
 groups' ``b_max`` is ``MAX(tot)`` (:mod:`disk_tree.find.groups` prefers the
