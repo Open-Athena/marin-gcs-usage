@@ -4,6 +4,7 @@ every literal's first hits (so every drill path) and answers on every date, and 
 merged runs (the binary counter) likewise."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -84,7 +85,7 @@ def runs(fixture, tmp_path_factory):  # noqa: F811
             run_dirs.append(run)
         merged_dir = tmp / "runs" / "merged"
         sa.merge_shards(run_dirs, merged_dir, target_rows=9)
-        sa.merge_catalogs([d / "catalog" for d in run_dirs], merged_dir / "catalog")
+        sa.merge_catalogs([d / "catalog" for d in run_dirs], merged_dir / "catalog", {"max_rows": V})
     finally:
         sa.SX_RG = rg
     return {"root": root, "scans": scans, "merged": merged, "full": full, "base": base, "runs": run_dirs, "merged_run": merged_dir,
@@ -188,6 +189,42 @@ def test_push_run_is_a_binary_counter():
     assert [r["scans"] for r in runs] == [days[:4], days[4:6], days[6:]]
     m = sa.manifest("g", ["2026-10-08"], runs)
     assert m["scans"] == ["2026-10-08", *days] and m["date"] == "2026-10-15" and m["base_scans"] == 1
+
+
+def test_push_run_never_merges_a_run_carrying_a_tier_it_cannot_merge():
+    """gcs 2026-10-09T1236: `deltas/2026-10-09` carries the drilldown's `drill/`, which a merge would drop (its reader stops
+    at the first tier without one), so the counter leaves it pinned and carries past it."""
+    entries = {"deltas/2026-10-09": {"meta.json", "scans.json", "shards.json", "sx", "sidecar", "sidecar.parquet", "catalog", "cdelta",
+                                     "dhist", "verify.json", "terms.txt", "drill", "drill-verify"},
+               "deltas/2026-10-09T1236": {"meta.json", "scans.json", "shards.json", "sx", "sidecar", "sidecar.parquet", "catalog", "cdelta", "dhist"}}
+    ids = ["2026-10-09", "2026-10-09T1236", "2026-10-10", "2026-10-10T1200"]
+    runs: list[dict] = []
+    levels, merges = [], []
+    for d in ids:
+        pinned = sa.pinned_runs(runs, lambda k: entries.get(k, set()))
+        runs, m = sa.push_run(runs, {"key": sa.run_key(d, d), "first": d, "last": d, "scans": [d]}, pinned)
+        levels.append([(r["key"], r["level"]) for r in runs])
+        merges.append([out["key"] for _, out in m])
+    assert levels == [
+        [("deltas/2026-10-09", 0)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236", 0)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-10", 1)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-10", 1), ("deltas/2026-10-10T1200", 0)],
+    ]
+    assert merges == [[], [], ["deltas/2026-10-09T1236_2026-10-10"], []]
+
+
+def test_a_merged_run_is_whole(runs, tmp_path):
+    """A merged run holds every file the readers need of a tier (its catalog's `meta.json` included: gcs's first merge,
+    2026-10-09T1236, lacked it), and a manifest listing a run that lacks one is refused before it is written."""
+    merged = runs["merged_run"]
+    (merged / "meta.json").write_text("{}")
+    have = {str(p.relative_to(merged.parent)) for p in merged.rglob("*") if p.is_file()}
+    run = {"key": merged.name}
+    assert sa.missing_files([run], lambda k: k in have) == []
+    assert json.loads((merged / "catalog" / "meta.json").read_text())["membership"] == {"max_rows": V}
+    assert sa.missing_files([run, {"key": "deltas/x"}], lambda k: k in have - {f"{merged.name}/catalog/meta.json"}) == [
+        f"{merged.name}/catalog/meta.json", *(f"deltas/x/{f}" for f in sa.RUN_FILES)]
 
 
 def test_a_literal_crosses_v_on_an_append(runs):
