@@ -41,7 +41,7 @@ Per (key, P):
 2. **Scoped** (`q$`, `^q$`). Over the anchored tiers, the groups meeting `[(k, P/), (k, P0))`: their rows ≤ `R + 4·Σ rg` → read them, keeping the rows under P. Each tier's bound is at most its true rows plus four groups: two straddling P's range, and the two groups at the ends of `k`'s run that hold other keys.
 3. **Rollup.** Otherwise the true rows exceed R, so the builder made `(k, P)`'s rollup in some tier. The tiers' rollup rows stack newest first down to a full header (`DRILL_RULES.stack`).
 
-`^q` past step 1 declines with `term-too-common`.
+`^q` has its own bound and no step 2–3: see "Heavy `^q`" below (the fleet root from the starts-with catalog, scoped reads below it).
 
 **Tiers.** The base and the manifest's runs, up to the first run without `anchors/meta.json`. Answers carry the scans of the tiers they read (`Found.scans`), so a scan past the anchored stack is `scan-not-indexed` (a light `q$` excepted). A generation without `anchors/meta.json` declines every anchored key past light `q$`.
 
@@ -119,5 +119,5 @@ All runs were spot n2-highmem-16 in us-east1 through the deployment's `job/stati
 
 - Compaction (`static_compact`) must rebuild `names/` and `anchors/` for the new generation (the base stages over it).
 - The anchors stage could run in parallel with the drill, which reads none of its outputs.
-- The `^q` bound decision (above).
+- ~~The `^q` bound decision (above).~~ Raised to 400K rows with a 150K first-hit cap: "Heavy `^q`" below.
 - The "N others" count after K kept children in a delta is a lower bound.

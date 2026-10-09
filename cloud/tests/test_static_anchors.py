@@ -264,10 +264,23 @@ def test_start_scoped_reads_and_the_decline_boundary(world):
     assert seen > 20
 
 
+def test_start_hit_cap(world):
+    """Past `start_max_hits` first hits a whole `^q` read is heavy (the root: the catalog) and a scoped one declined."""
+    tiers = [world["base"], *world["runs"]]
+    D = sn.scan_epoch(IDS[-1]) * 1000
+    capped = _reader(tiers, start_max_hits=1)
+    root = capped.view("/tr", "", IDS)
+    assert (root["source"], root["answers"][IDS[-1]]) == ("catalog", an.brute_view(world["versions"], "/tr", "", D))
+    assert capped.view("/tr", "b2", IDS)["source"] == "declined"
+    roomy = _reader(tiers, start_max_hits=1000)
+    assert [(v["source"], v["answers"][IDS[-1]]) for v in (roomy.view("/tr", "", IDS), roomy.view("/tr", "b2", IDS))] == [
+        ("light", an.brute_view(world["versions"], "/tr", "", D)), ("light", an.brute_view(world["versions"], "/tr", "b2", D))]
+
+
 def test_start_bound_is_raised():
     """`^q` reads up to 400K rows (+ two groups) whole or scoped; `q$` / `^q$` keep V + two groups."""
-    assert (an.START_MAX_ROWS, an.MAX_ROWS) == (400_000 + 2 * 8192, 100_000 + 2 * 8192)
-    assert an.AnchoredReader([]).start_max_rows == an.START_MAX_ROWS
+    assert (an.START_MAX_ROWS, an.START_MAX_HITS, an.MAX_ROWS) == (400_000 + 2 * 8192, 150_000, 100_000 + 2 * 8192)
+    assert (an.AnchoredReader([]).start_max_rows, an.AnchoredReader([]).start_max_hits) == (an.START_MAX_ROWS, an.START_MAX_HITS)
 
 
 def test_start_catalog_mutations_fail(world, monkeypatch, tmp_path):

@@ -1335,10 +1335,11 @@ def _cases(path: str) -> list[tuple[str, str]]:
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-m", "--mount", required=True, help="Local mount of the bucket")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-o", "--out", default=f"{ANCHORS}/verify/brute", help="Output prefix under the generation (a new one per verification: keys are never overwritten)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
-def brute_cmd(bucket, cases_file, dates, gen, index, mount, mem, threads, tmp) -> None:
-    """Reference anchored views by brute force over one scan's file → `anchors/verify/brute/<date>.jsonl` (`{date, key,
+def brute_cmd(bucket, cases_file, dates, gen, index, mount, mem, out, threads, tmp) -> None:
+    """Reference anchored views by brute force over one scan's file → `<out>/<date>.jsonl` (`{date, key,
     P, children: {child: [bytes, objects]}}`, nonzero children; views P itself matches left out)."""
     date = dates[_task(index)]
     root = Path(mount) / PREFIX / gen
@@ -1356,7 +1357,10 @@ def brute_cmd(bucket, cases_file, dates, gen, index, mount, mem, threads, tmp) -
         if b_ or o_:
             got[(key, P)][child] = [int(b_), int(o_)]
     body = "".join(json.dumps({"date": date, "key": k, "P": P, "children": got[(k, P)]}) + "\n" for k, _, _, P in cases)
-    _gcs(bucket).blob(f"{PREFIX}/{gen}/{ANCHORS}/verify/brute/{date}.jsonl").upload_from_string(body)
+    blob = _gcs(bucket).blob(f"{PREFIX}/{gen}/{out}/{date}.jsonl")
+    if blob.exists():
+        raise SystemExit(f"{blob.name} exists: pass a new -o")
+    blob.upload_from_string(body)
     err(f"anchors brute {date}: {len(cases)} cases in {monotonic() - t0:.1f}s")
 
 

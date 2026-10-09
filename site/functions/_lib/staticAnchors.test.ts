@@ -51,9 +51,9 @@ const STACKS = {
   run2: { hide: [], scans: () => E.dates },
 } as const
 
-function source(stack: keyof typeof STACKS, maxRows?: number, opts: { hide?: string[]; startMaxRows?: number } = {}): AnchoredSource {
+function source(stack: keyof typeof STACKS, maxRows?: number, opts: { hide?: string[]; startMaxRows?: number; startMaxHits?: number } = {}): AnchoredSource {
   const blobs = blobsOf({ hide: [...STACKS[stack].hide, ...opts.hide ?? []] })
-  return new AnchoredSource(tiers(blobs).tiers, blobs, { maxRows, startMaxRows: opts.startMaxRows ?? maxRows })
+  return new AnchoredSource(tiers(blobs).tiers, blobs, { maxRows, startMaxRows: opts.startMaxRows ?? maxRows, startMaxHits: opts.startMaxHits })
 }
 
 const n = (x: bigint) => Number(x)
@@ -199,6 +199,30 @@ describe('`^q`: the starts-with catalog and scoped reads', () => {
     expect(got).toEqual(want)
     const none = source('run2', 0, { hide: ['anchors/start/meta.json'] })
     expect([await none.hits('/tr', ''), none.why('/tr'), (await none.state()).start]).toEqual([null, 'term-too-common', { tiers: [], scans: [] }])
+  })
+  it('past `startMaxHits` first hits a whole read is heavy (the root: the catalog) and a scoped one declines', async () => {
+    const last = E.dates[E.dates.length - 1]
+    const hitsOf = (f: Found | null) => f && (f.rollup ? ['catalog', rollupAt(f.rollup, last).kids.map(([c, b, o]) => [c, n(b), n(o)])] : [f.io.source ?? f.io.from, childSums(f.hits!, '', last)])
+    const want = E.start_root['/tr'][last]
+    const capped = source('run2', undefined, { startMaxHits: 1 })
+    expect(hitsOf(await capped.hits('/tr', ''))).toEqual(['catalog', Object.entries(want).map(([c, [b, o]]) => [c, b, o])])
+    expect([await capped.hits('/tr', 'b2'), capped.why('/tr')]).toEqual([null, 'term-too-common'])
+    const roomy = source('run2', undefined, { startMaxHits: 1000 })
+    expect(hitsOf(await roomy.hits('/tr', ''))).toEqual(['names', want])
+    expect(childSums((await roomy.hits('/tr', 'b2'))!.hits!, 'b2', last)).toEqual(E.views['/tr'].b2[last])
+  })
+  it('a first paint of the fleet root is the catalog until the range is read, then the hits', async () => {
+    const s = source('run2')
+    const first = await s.hits('/tr', '', { firstPaint: true })
+    expect([first?.io.source, first?.io.firstPaint, first?.rollup?.bucketsOnly]).toEqual(['catalog', true, true])
+    const full = await s.hits('/tr', '')
+    expect([full?.io.from, full?.rollup]).toEqual(['names', undefined])
+    const again = await s.hits('/tr', '', { firstPaint: true })
+    expect([again?.io.from, again?.hits?.length]).toEqual(['names', full!.hits!.length])
+    // A key with rows but no catalog entry (at most R of them): a first paint reads the range as the full one does.
+    const rows = await startRows('run2')
+    const light = E.start_keys.find(k => E.start_root[k] && (rows.get(k) ?? 0) <= E.R)!
+    expect((await source('run2').hits(light, '', { firstPaint: true }))?.io.from).toBe('names')
   })
   it('a catalog stack that ignores the runs\' cells is caught', async () => {
     const real = DRILL_RULES.stack

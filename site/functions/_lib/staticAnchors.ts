@@ -38,7 +38,7 @@
  *
  *  Tiers: the base and each run in the light index's manifest, up to the first run without `anchors/meta.json` (the
  *  run's name rows and rollups, written last) — their scans are the ones an anchored answer covers (`Found.scans`). */
-import { type Found, type HitCache, type HitSource, MAX_ROWS } from './staticFilter.js'
+import { type Found, type HitCache, type HitOpts, type HitSource, MAX_ROWS } from './staticFilter.js'
 import { DRILL_RULES, type DrillMeta, GroupFile, type Rollup, type RollupCell, type Top } from './staticDrill.js'
 import { type Blobs, cmp, FirstHits, type Hit, type IndexCache, type GroupIndex, type PathKeys, type SxColumns, StaticNames, underRange } from './staticNames.js'
 import { combineFolds, subBlobs, type Tiers, type TierState } from './staticRuns.js'
@@ -244,10 +244,17 @@ export class AnchoredSource implements HitSource {
 
   why(key: string): FilterRejectCode | undefined { return this.whyNot.get(key) }
 
-  async hits(key: string, under: string): Promise<Found | null> {
+  async hits(key: string, under: string, opts: HitOpts = {}): Promise<Found | null> {
     const { text, mode } = parseKey(key)
     if (!mode || !text) return null
     const t0 = Date.now()
+    // A first paint of `^q`'s fleet root while its range is unread: the catalog now (a member's per-bucket totals),
+    // the full read after (the view's other request starts it).
+    if (opts.firstPaint && mode === 'start' && under === '' && !(await this.wholeSettled(key))) {
+      const st = await this.state()
+      const f = await this.startScoped(key, '', st)
+      if (f) return { ...f, io: { ...f.io, firstPaint: true, ms: Date.now() - t0 } }
+    }
     const whole = await this.whole(key, mode)
     if (whole === null) return null
     if (whole !== 'heavy') {
@@ -308,6 +315,13 @@ export class AnchoredSource implements HitSource {
   }
 
   private wholeHeld = new Map<string, Promise<Whole | 'heavy'>>()
+  private settled = new WeakSet<Promise<Whole | 'heavy'>>()
+
+  /** Whether `key`'s whole-range read is held and done (per isolate, at the current stack version). */
+  private async wholeSettled(key: string): Promise<boolean> {
+    const p = this.wholeHeld.get(`${key}@${(await this.state()).version}`)
+    return !!p && this.settled.has(p)
+  }
 
   /** Step 1: the key's whole range when it is light — `q$` over every light tier, the name index's keys over the
    *  anchored tiers — held per stack version (and per colo through `cache`); `'heavy'` past `maxRows`, null when no
@@ -340,7 +354,8 @@ export class AnchoredSource implements HitSource {
         return { hits, io: { from: mode === 'end' ? 'shards' : 'names', version, rows_read: got.reduce((n, g) => n + g.io.rows_read, 0), bytes: got.reduce((n, g) => n + g.io.bytes, 0), tiers: readers.length }, scans }
       })()
       this.wholeHeld.set(vkey, p)
-      p.catch(() => this.wholeHeld.delete(vkey))
+      const held = p
+      p.then(() => this.settled.add(held), () => this.wholeHeld.delete(vkey))
       while (this.wholeHeld.size > 64) this.wholeHeld.delete(this.wholeHeld.keys().next().value!)
     }
     return p

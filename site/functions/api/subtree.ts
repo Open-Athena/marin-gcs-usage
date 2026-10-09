@@ -133,7 +133,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     )
     // …and a scan the static index covers for this literal (else `scan-not-indexed`, not a path-store scan).
     if (query && indexedOnly(ctx.env)) {
-      const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [date]))
+      const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [date], { firstPaint: !full }))
       if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     }
     // The worker's answer: the view's JSON and what to keep of it — `phase2Ms` (a background full run's) over

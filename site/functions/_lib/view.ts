@@ -802,7 +802,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
       const sfs = !lens && !classes ? staticFilterStore(env) : null
       const skey = sfs ? await staticKey(sfs, pq, [date]) : null
-      const raw = skey ? await sfs!.source.hits(skey, path) : null
+      const raw = skey ? await sfs!.source.hits(skey, path, { firstPaint: o.firstPaint }) : null
       let shits = raw
       // A heavy literal's drilldown answers its base generation's scans only, and its rollups know no
       // owners: past either, the view reads as before.

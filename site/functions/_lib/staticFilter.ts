@@ -63,8 +63,12 @@ export const covers = (found: Found, dates: string[]): boolean => !found.scans |
 /** A literal's match roots under a path, any date: what the filter needs from an index. `null` = this
  *  source can't answer the literal (the caller falls back). `under` = `''` (everything) or a path, whose
  *  strict descendants are wanted. */
+/** `firstPaint`: a view's fast first paint asks — a source may answer coarser now (`^q`'s fleet root from its
+ *  catalog while its range is not yet read), the full read following. */
+export interface HitOpts { firstPaint?: boolean }
+
 export interface HitSource {
-  hits(key: string, under: string): Promise<Found | null>
+  hits(key: string, under: string, opts?: HitOpts): Promise<Found | null>
   /** Why `hits` last declined `key`, when the source knows better than "not indexed" (an anchored prefix too
    *  common to read: `term-too-common`). */
   why?(key: string): FilterRejectCode | undefined
@@ -147,9 +151,9 @@ export class SuffixHits implements HitSource {
     return root === '' && this.opts.catalog ? catalogRoot(this.opts.catalog, key) : Promise.resolve(null)
   }
 
-  async hits(key: string, root: string): Promise<Found | null> {
+  async hits(key: string, root: string, opts?: HitOpts): Promise<Found | null> {
     // Anchored keys (`^q`, `q$`, `^q$`): the anchored source's (`staticAnchors.ts`), else nobody's.
-    if (parseKey(key).mode) return this.opts.anchored ? this.opts.anchored.hits(key, root) : null
+    if (parseKey(key).mode) return this.opts.anchored ? this.opts.anchored.hits(key, root, opts) : null
     if (shortLiteral(key)) return this.heavyHits(key, root)
     const got = await this.all(key)
     if (!got) return this.heavyHits(key, root)
@@ -275,8 +279,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget; 5: a 1–2
  *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
  *  the drill runs' scans; 7: with no drilldown, a heavy literal's fleet root from the catalog's buckets and a
- *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before). */
-const RESPONSE_V = 8
+ *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before;
+ *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound). */
+const RESPONSE_V = 9
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
@@ -298,13 +303,13 @@ export function declined(s: StaticFilterStore | null, skey: string | null, raw: 
  *  answered statically under `path` on every one of `dates`, else the refusal `declined` names. A view root
  *  the literal matches is the plain view (nothing to search). The answer is held per isolate, so the view's
  *  own read reuses it. */
-export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
+export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[], opts?: HitOpts): Promise<FilterReject | null> {
   const key = staticLiteral(ast)
   if (!key) return reject('unsupported-terms')
   if (termInPath(key, path)) return null
   const s = staticFilterStore(env)
   const skey = s ? await staticKey(s, ast, dates) : null
   if (!skey) return declined(s, null, null)
-  const found = await s!.source.hits(key, path)
+  const found = await s!.source.hits(key, path, opts)
   return found && covers(found, dates) ? null : declined(s, skey, found)
 }
