@@ -1,3 +1,4 @@
+import { isScanId, resolveScan } from './scanSlug'
 import { HOT_DATES, HOT_SCOPE, hotRequest, parseRootSummary, type HotBucket, type HotRequest, type HotResult, type HotView, type HotWeights } from './hotModel'
 
 export type NamePlan = 'catalog' | 'bounded-name-postings'
@@ -23,10 +24,31 @@ export function namePageParams(params: URLSearchParams): URLSearchParams {
   if (!next.has('name')) next.set('name', 'datakit')
   return next
 }
+/** A /names request against the registry's scans. `date`/`from` are each an
+ * exact registry scan id (that scan — a date-only id is not its day's latest)
+ * or else a slug, any spelling `scanSlug.ts` reads (`261009`, `26100912`, …),
+ * resolved to the latest registry scan it matches (`resolveScan`); absent
+ * `date` = the latest scan. */
 export function nameRequest(params: URLSearchParams, availableDates?: readonly string[]): HotRequest {
   if (!availableDates) return hotRequest(namePageParams(params))
-  const request = datedNameRequest(params)
-  if (!availableDates.includes(request.date) || (request.from !== undefined && !availableDates.includes(request.from))) throw new Error('This scan is unavailable in the name-summary registry; it is not a zero-match result.')
+  const unavailable = () => new Error('This scan is unavailable in the name-summary registry; it is not a zero-match result.')
+  const resolved = new URLSearchParams(params)
+  // `date` among every scan; `from` among the scans before it (a `from` of
+  // the selected scan's own day means that day's latest *earlier* scan).
+  const date = params.getAll('date'), from = params.getAll('from')
+  // An exact registry id is that scan (a date-only id is not its day's latest);
+  // any other value is a slug, resolved.
+  const pick = (v: string, scans: readonly string[]) => (scans.includes(v) ? v : resolveScan(v, scans))
+  const after = date.length === 1 ? pick(date[0], availableDates) : date.length ? null : [...availableDates].sort().pop() ?? null
+  if (date.length === 1 && !after) throw unavailable()
+  if (after && date.length < 2) resolved.set('date', after)
+  if (from.length === 1 && after) {
+    const before = pick(from[0], availableDates.filter(scan => scan < after))
+    if (!before) throw unavailable()
+    resolved.set('from', before)
+  }
+  const request = datedNameRequest(resolved)
+  if (!availableDates.includes(request.date) || (request.from !== undefined && !availableDates.includes(request.from))) throw unavailable()
   return request
 }
 export function datedNameRequest(params: URLSearchParams): HotRequest {
@@ -56,7 +78,10 @@ function execution(value: unknown): NameExecution {
   return { plan: body.plan, source: body.source, validation: { ...validation, description: validation.description },
     source_identity: { generation: identity.generation, snapshot_db: identity.snapshot_db, history_manifest_sha256: identity.history_manifest_sha256 } }
 }
-const iso = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && value.slice(0, 4) !== '0000' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value
+/** A scan id (`YYYY-MM-DD` or sub-daily `YYYY-MM-DDTHHMM`), never just a date (specs/scan-ids-not-dates.md). */
+const iso = isScanId
+/** A store's bucket set: at least one, unique, slash- and NUL-free names — any fleet's size (gcs 6, cw 5). */
+const bucketPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && new Set(value).size === value.length && value.every(path => typeof path === 'string' && !!path && !path.includes('/') && !path.includes('\0'))
 const id = (value: unknown): value is string => typeof value === 'string' && /^[a-z][a-z0-9_]*$/.test(value)
 const hash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const generation = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value)
@@ -75,7 +100,7 @@ function capabilities(value: unknown) {
   if (!keys(body, ['bucket_drill', 'child_drill', 'fallback']) || Object.values(body).some(value => value !== false)) fail()
   return { bucket_drill: false, child_drill: false, fallback: false } as const
 }
-/** A daily scan's plans: its registered catalog, or bounded discovery over its own name index or the consolidated store's. */
+/** A per-scan source's plans: its registered catalog, or bounded discovery over its own name index or the consolidated store's. */
 const CONSOLIDATED_SOURCE = 'bounded name postings over the consolidated store; directory rollups are atomic'
 const CONSOLIDATED_CATALOG_SOURCE = "the consolidated catalog: every scan's registered literals precomputed in the store"
 /** `static-names-v1`: the static name index on R2, read by the Worker with no query box (`functions/_lib/nameSummaryStatic.ts`,
@@ -83,13 +108,16 @@ const CONSOLIDATED_CATALOG_SOURCE = "the consolidated catalog: every scan's regi
  *  (`plan: 'catalog'`); every other literal from the suffix postings, at most V rows (`bounded-name-postings`). */
 export const STATIC_SOURCE = 'static suffix postings on R2, one ranged read by the Worker; directory rollups are atomic'
 export const STATIC_CATALOG_SOURCE = 'the static catalog on R2: per-bucket running totals precomputed for every scan of the generation, one ranged read by the Worker'
-const STATIC_GENERATION = /^\d{4}-\d{2}-\d{2}[a-z0-9]*$/
+/** A static index generation's name (`2026-10-05`, `2026-10-09cw`): a generation, not a scan. */
+const STATIC_GENERATION = /^[0-9a-z][0-9a-z-]*$/
 function staticIdentity(value: unknown) {
   const body = record(value)
   if (!keys(body, ['kind', 'generation', 'max_rows']) || body.kind !== 'static-names-v1' || typeof body.generation !== 'string' || !STATIC_GENERATION.test(body.generation) || integer(body.max_rows) < 1) fail()
   return { kind: 'static-names-v1' as const, generation: body.generation as string, max_rows: integer(body.max_rows) }
 }
-const DAILY_SOURCES: Record<NamePlan, string[]> = {
+/** A per-scan (scalar-source) answer's source strings, by plan. The wire `kind` stays `'daily-scalar-source-v1'` (the ch-store's,
+ *  which named it for its job's cadence): any scan id may carry it. */
+const SCALAR_SOURCES: Record<NamePlan, string[]> = {
   catalog: ['published dated precomputed batch artifact'],
   'bounded-name-postings': ["bounded dated name postings over the scan's own name index; directory rollups are atomic", CONSOLIDATED_SOURCE],
 }
@@ -107,7 +135,7 @@ function catalogRegistry(value: unknown, date: unknown, catalog: string): NameQu
   return registry
 }
 const validationKeys = ['description', 'source_prefix_proofs_checked', 'independent_full_catalog_source_oracle']
-function dailyIdentity(value: unknown) {
+function scalarSourceIdentity(value: unknown) {
   const body = record(value)
   if (!keys(body, ['target', 'snapshot_db', 'generation', 'artifact_sha256', 'artifact_bytes', 'source_manifest_sha256', 'source_prefix_proofs_checked', 'kind']) ||
       body.kind !== 'daily-scalar-source-v1' || !id(body.target) || !id(body.snapshot_db) || body.target !== body.snapshot_db || !generation(body.generation) ||
@@ -141,9 +169,9 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
     return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked,
       ...(catalog ? { registry: catalogRegistry(body.registry, body.date, catalog) } : {}) }
   }
-  const checked = dailyIdentity(identity)
+  const checked = scalarSourceIdentity(identity)
   const plan = body.plan === 'catalog' || body.plan === 'bounded-name-postings' ? body.plan : fail()
-  if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'registry', 'validation', 'capabilities', 'root', 'buckets']) || !DAILY_SOURCES[plan].includes(body.source as string) ||
+  if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'registry', 'validation', 'capabilities', 'root', 'buckets']) || !SCALAR_SOURCES[plan].includes(body.source as string) ||
       !keys(validation, validationKeys) ||
       typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false ||
       body.target !== checked.target) fail()
@@ -155,14 +183,14 @@ function datedView(value: unknown): { view: HotView; execution: NameExecution; s
   if (body.schema !== 'dated-name-summary-v1' || body.path !== '' || body.exact !== true || body.incremental !== false || body.levels !== 1 || body.scope !== HOT_SCOPE || !id(body.target) || !id(body.logical_store) || !iso(body.date) || typeof body.pattern !== 'string' ||
       datedNameRequest(new URLSearchParams({ name: body.pattern, date: body.date })).name !== body.pattern) fail()
   capabilities(body.capabilities)
-  if (!Array.isArray(body.buckets) || body.buckets.length !== 6) fail()
+  if (!Array.isArray(body.buckets) || !body.buckets.length) fail()
   const buckets: HotBucket[] = (body.buckets as unknown[]).map(value => {
     const row = record(value)
     if (!keys(row, ['path', 'pre', 'post', 'b', 'o']) || typeof row.path !== 'string' || !row.path || row.path.includes('/') || row.path.includes('\0')) fail()
     return { path: row.path as string, pre: integer(row.pre), post: integer(row.post), ...weights({ b: row.b, o: row.o }) }
   })
   const order = [...buckets].sort((a, b) => a.pre - b.pre)
-  if (new Set(buckets.map(row => row.path)).size !== 6 || order[0].pre !== 1 || order.some((row, i) => row.post < row.pre || (i > 0 && order[i - 1].post + 1 !== row.pre))) fail()
+  if (new Set(buckets.map(row => row.path)).size !== buckets.length || order[0].pre !== 1 || order.some((row, i) => row.post < row.pre || (i > 0 && order[i - 1].post + 1 !== row.pre))) fail()
   const root = weights(body.root), sum = buckets.reduce((sum, row) => ({ b: integer(sum.b + row.b), o: integer(sum.o + row.o) }), { b: 0, o: 0 })
   if (!same(root, sum)) fail()
   return { view: { target: body.target as string, date: body.date as string, pattern: body.pattern as string, root, buckets: buckets.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }, execution: datedExecution(body), store: body.logical_store as string }
@@ -172,11 +200,11 @@ function parseDated(value: unknown, request: HotRequest): NameResult {
   const after = datedView(request.from ? body.after : body), before = request.from ? datedView(body.before) : undefined
   if (after.view.date !== request.date || after.view.pattern !== request.name || (before && (before.view.date !== request.from || before.view.pattern !== request.name || before.store !== after.store))) fail()
   if (!request.from) return { after: after.view, execution: { after: after.execution }, logical_store: after.store, capabilities: cap }
-  if (!keys(body, ['schema', 'logical_store', 'from', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'before', 'after', 'delta', 'capabilities', 'buckets']) || body.schema !== 'dated-name-summary-diff-v1' || body.from !== request.from || body.date !== request.date || body.logical_store !== after.store || body.pattern !== request.name || body.path !== '' || body.exact !== true || body.incremental !== false || body.levels !== 1 || body.scope !== HOT_SCOPE || !Array.isArray(body.buckets) || body.buckets.length !== 6) fail()
+  if (!keys(body, ['schema', 'logical_store', 'from', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'before', 'after', 'delta', 'capabilities', 'buckets']) || body.schema !== 'dated-name-summary-diff-v1' || body.from !== request.from || body.date !== request.date || body.logical_store !== after.store || body.pattern !== request.name || body.path !== '' || body.exact !== true || body.incremental !== false || body.levels !== 1 || body.scope !== HOT_SCOPE || !Array.isArray(body.buckets) || body.buckets.length !== after.view.buckets.length || before!.view.buckets.length !== after.view.buckets.length) fail()
   const change = delta(before!.view.root, after.view.root)
   if (!same(weights(body.delta, true), change)) fail()
   const rows = new Map((body.buckets as unknown[]).map(value => { const row = record(value); return [row.path, row] }))
-  if (rows.size !== 6) fail()
+  if (rows.size !== after.view.buckets.length) fail()
   before!.view.buckets.forEach((a, i) => {
     const b = after.view.buckets[i], row = rows.get(a.path)
     if (!row || a.path !== b.path || !keys(row, ['path', 'before', 'after', 'delta'])) fail()
@@ -216,16 +244,16 @@ export async function loadName(
   return parseName(await response.json(), checked)
 }
 
-function registryBinding(value: unknown, daily: boolean): NameQualification {
+function registryBinding(value: unknown, scalar: boolean): NameQualification {
   const body = record(value)
-  // A daily registry may declare a short-literal domain: every literal of at most `short_chars` characters is registered whatever its frequency.
-  const short = daily && 'short_chars' in body
+  // A scalar-source registry may declare a short-literal domain: every literal of at most `short_chars` characters is registered whatever its frequency.
+  const short = scalar && 'short_chars' in body
   // Its threshold counts direct matching paths, or (`threshold_rows`, with `name_rows` charged per name) the consolidated name index's rows a literal costs to answer on demand.
-  const rows = daily && 'threshold_rows' in body
+  const rows = scalar && 'threshold_rows' in body
   const threshold = rows ? ['threshold_rows', 'name_rows'] : ['threshold_paths']
-  if (!keys(body, ['qualification_dates', 'target', 'patterns', 'selection_contract', ...(daily ? [...threshold, 'max_chars'] : []), ...(short ? ['short_chars'] : [])]) || !id(body.target) || integer(body.patterns) < 1 || !Array.isArray(body.qualification_dates) || !body.qualification_dates.length || body.qualification_dates.some(day => !iso(day)) || new Set(body.qualification_dates).size !== body.qualification_dates.length || body.selection_contract !== 'membership on declared qualification dates; no current-scan frequency claim' || (daily && (integer(rows ? body.threshold_rows : body.threshold_paths) < 1 || (rows && integer(body.name_rows) < 0) || (body.max_chars !== null && (integer(body.max_chars) < 1 || integer(body.max_chars) > 512))))) fail()
+  if (!keys(body, ['qualification_dates', 'target', 'patterns', 'selection_contract', ...(scalar ? [...threshold, 'max_chars'] : []), ...(short ? ['short_chars'] : [])]) || !id(body.target) || integer(body.patterns) < 1 || !Array.isArray(body.qualification_dates) || !body.qualification_dates.length || body.qualification_dates.some(day => !iso(day)) || new Set(body.qualification_dates).size !== body.qualification_dates.length || body.selection_contract !== 'membership on declared qualification dates; no current-scan frequency claim' || (scalar && (integer(rows ? body.threshold_rows : body.threshold_paths) < 1 || (rows && integer(body.name_rows) < 0) || (body.max_chars !== null && (integer(body.max_chars) < 1 || integer(body.max_chars) > 512))))) fail()
   return { qualification_dates: body.qualification_dates.map(day => iso(day) ? day : fail()), target: body.target, patterns: integer(body.patterns), selection_contract: body.selection_contract,
-    ...(daily ? { ...(rows ? { threshold_rows: integer(body.threshold_rows), name_rows: integer(body.name_rows) } : { threshold_paths: integer(body.threshold_paths) }), max_chars: body.max_chars === null ? null : integer(body.max_chars) } : {}),
+    ...(scalar ? { ...(rows ? { threshold_rows: integer(body.threshold_rows), name_rows: integer(body.name_rows) } : { threshold_paths: integer(body.threshold_paths) }), max_chars: body.max_chars === null ? null : integer(body.max_chars) } : {}),
     ...(short ? { short_chars: integer(body.short_chars) < 1 ? fail() : integer(body.short_chars) } : {}) }
 }
 export function parseNameRegistry(value: unknown): NameRegistry {
@@ -240,14 +268,14 @@ export function parseNameRegistry(value: unknown): NameRegistry {
   }
   if (body.schema === 'static-name-registry-v1') {
     if (!keys(body, ['schema', 'logical_store', 'generation', 'max_rows', 'bucket_paths', 'dates', 'levels', 'scope', 'capabilities']) || !id(body.logical_store) || body.levels !== 1 || body.scope !== HOT_SCOPE ||
-        !Array.isArray(body.bucket_paths) || body.bucket_paths.length !== 6 || new Set(body.bucket_paths).size !== 6 || body.bucket_paths.some(path => typeof path !== 'string' || !path || path.includes('/') || path.includes('\0')) ||
+        !bucketPaths(body.bucket_paths) ||
         !Array.isArray(body.dates) || !body.dates.length || body.dates.length > 400 || body.dates.some((day, i) => !iso(day) || (i > 0 && (body.dates as string[])[i - 1] >= day))) fail()
     capabilities(body.capabilities)
     const source_identity = staticIdentity({ kind: 'static-names-v1', generation: body.generation, max_rows: body.max_rows })
     return { dated: true, dates: (body.dates as string[]).map(date => ({ date, plans: ['catalog', 'bounded-name-postings'], kind: 'static-names-v1', source_identity })),
       logical_store: body.logical_store as string, bucket_paths: [...body.bucket_paths as string[]], static: { generation: source_identity.generation, max_rows: source_identity.max_rows } }
   }
-  if (body.schema !== 'dated-name-summary-registry-v1' || !keys(body, ['schema', 'logical_store', 'bucket_paths', 'dates', 'levels', 'scope', 'daily_catalog_slots', 'legacy', 'capabilities']) || !id(body.logical_store) || body.levels !== 1 || body.scope !== HOT_SCOPE || body.daily_catalog_slots !== 2 || !Array.isArray(body.bucket_paths) || body.bucket_paths.length !== 6 || new Set(body.bucket_paths).size !== 6 || body.bucket_paths.some(path => typeof path !== 'string' || !path || path.includes('/') || path.includes('\0')) || !Array.isArray(body.dates) || !body.dates.length || body.dates.length > 400) fail()
+  if (body.schema !== 'dated-name-summary-registry-v1' || !keys(body, ['schema', 'logical_store', 'bucket_paths', 'dates', 'levels', 'scope', 'daily_catalog_slots', 'legacy', 'capabilities']) || !id(body.logical_store) || body.levels !== 1 || body.scope !== HOT_SCOPE || body.daily_catalog_slots !== 2 || !bucketPaths(body.bucket_paths) || !Array.isArray(body.dates) || !body.dates.length || body.dates.length > 400) fail()
   capabilities(body.capabilities)
   if (record(body.legacy).schema !== 'name-summary-registry-v1') fail()
   const legacy = parseNameRegistry(body.legacy), dates: NameScan[] = (body.dates as unknown[]).map(value => {
@@ -269,7 +297,7 @@ export function parseNameRegistry(value: unknown): NameRegistry {
       if (!keys(row, ['date', 'plans', 'kind', 'registry']) || JSON.stringify(row.plans) !== JSON.stringify(['catalog', 'bounded-name-postings']) || !legacy.dates.some(day => day.date === row.date) || registry.target !== original.target || registry.patterns !== record(original.catalog_patterns)[row.date as string]) fail()
     } else {
       if (row.kind !== 'daily-scalar-source-v1' || !keys(row, ['date', 'plans', 'kind', 'registry', 'source', 'generation']) || !['["catalog"]', '["catalog","bounded-name-postings"]'].includes(JSON.stringify(row.plans)) || legacy.dates.some(day => day.date === row.date)) fail()
-      source_identity = dailyIdentity({ ...record(row.source), kind: row.kind, generation: row.generation })
+      source_identity = scalarSourceIdentity({ ...record(row.source), kind: row.kind, generation: row.generation })
     }
     return { date: row.date as string, plans: row.plans as NamePlan[], kind: row.kind as NameScan['kind'], qualification_dates: [...registry.qualification_dates], ...(source_identity ? { source_identity, registry } : {}) }
   })
@@ -285,7 +313,7 @@ export function nameResultForRegistry(result: NameResult, registry: NameRegistry
   for (const { view, execution } of sides) {
     const scan = registry.dates.find(scan => scan.date === view.date)
     if (!scan || !scan.plans.includes(execution.plan) || scan.kind !== (execution.source_identity.kind ?? 'frozen-history')) throw new Error('Name summary returned a different scan or execution plan from the available-scan registry.')
-    if (scan.source_identity && Object.entries(scan.source_identity).some(([key, value]) => record(execution.source_identity)[key] !== value)) throw new Error('Name summary returned a different pinned daily source from the available-scan registry.')
+    if (scan.source_identity && Object.entries(scan.source_identity).some(([key, value]) => record(execution.source_identity)[key] !== value)) throw new Error('Name summary returned a different pinned per-scan source from the available-scan registry.')
     if (scan.registry && JSON.stringify(scan.registry) !== JSON.stringify(execution.registry)) throw new Error('Name summary returned different registry qualification from the available-scan registry.')
   }
   return result

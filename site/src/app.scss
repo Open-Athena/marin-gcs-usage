@@ -18,6 +18,29 @@
   // bars); the core default is a dark constant, so follow the theme instead.
   --dt-treemap-container-bg: var(--panel);
   --dt-treemap-edge: var(--line);
+  // The stacking scale: every z-index on the page is one of these, so a layer's
+  // place is a decision made once, here — not a number picked to beat whatever
+  // collided last. Bottom to top:
+  //  - raised: a bit lifted within its own widget (sticky table heads, a cell's
+  //    focus ring, a map's busy pill or floated bar)
+  //  - sticky: in-content bars that stick while their section scrolls (the bulk
+  //    bar, the staged selection bar) — under the page header, which they ride
+  //  - drawer: the treemap's docked detail panel
+  //  - popover: menus/panels a content control opens (⚙ map settings, the bulk
+  //    review list) — over the drawer, still under the header
+  //  - header: the sticky top bar; page content (drawer included) scrolls UNDER it
+  //  - corner: fixed lower-left cards (help, perf) — over everything in flow
+  //  - modal: dialog backdrops
+  //  - float: pointer-driven floats (tooltips, the bar's menus, a path card) —
+  //    over a modal too, since a modal's own controls open them
+  --z-raised: 1;
+  --z-sticky: 4;
+  --z-drawer: 10;
+  --z-popover: 30;
+  --z-header: 100;
+  --z-corner: 900;
+  --z-modal: 1000;
+  --z-float: 10000;
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme='light'])) {
@@ -88,7 +111,7 @@ header .hrow {
 .topbar {
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: var(--z-header);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -240,7 +263,7 @@ header .hrow {
   &:hover { text-decoration-color: var(--ink); }
 }
 .path-pop {
-  z-index: 10001;
+  z-index: calc(var(--z-float) + 1);
   display: flex; align-items: center; gap: 8px;
   max-width: min(92vw, 560px);
   background: var(--panel); color: var(--ink);
@@ -270,7 +293,7 @@ header .hrow {
     .sp-caret { color: var(--ink-3); font-size: 10px; }
   }
   .sp-pop {
-    position: absolute; z-index: 30; top: calc(100% + 3px); left: 0;
+    position: absolute; z-index: var(--z-popover); top: calc(100% + 3px); left: 0;
     min-width: max(100%, 15ch); width: max-content; max-width: min(60vw, 320px);
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
@@ -315,7 +338,7 @@ button.mini.neg {
 #diff .sub .arrow { color: var(--ink-3); }
 // Bar menus (floating): the ☰ page list and the avatar's session menu.
 .menu-pop {
-  z-index: 10000;
+  z-index: var(--z-float);
   min-width: 190px;
   background: var(--panel);
   color: var(--ink);
@@ -366,7 +389,7 @@ button.mini.neg {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-modal);
 }
 .about-modal {
   width: min(680px, calc(100vw - 32px));
@@ -714,7 +737,7 @@ h2 { font-size: 17px; font-weight: 650; margin: 0 0 4px; }
     &:not(:has(.dt-treemap-cell:hover)) {
       outline: 2px solid var(--ink);
       outline-offset: -2px;
-      z-index: 1;
+      z-index: var(--z-raised);
     }
   }
   &:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
@@ -1056,7 +1079,7 @@ body:has(.og) :is(.help-chip, .help-card) { display: none; }
 .busy-host.stale > :not(.busy-overlay) { opacity: 0.45; transition: opacity 0.15s; }
 .busy-overlay {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  pointer-events: none; z-index: 2;
+  pointer-events: none; z-index: var(--z-raised);
   &.corner { align-items: flex-start; justify-content: flex-end; padding: 8px; }
   .pill {
     display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; border-radius: 999px;
@@ -1074,6 +1097,7 @@ body:has(.og) :is(.help-chip, .help-card) { display: none; }
 .object-panel .cell-tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 // The full value behind a clipped table cell (the leaf viewer's tables, via
 // file-tree's `elide.tooltip`): a long GCS path, wrapped so it fits the panel.
+.tooltip-content .bb-tip { color: var(--ink-2); }
 .tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
 .tooltip-content.pinned { border-color: var(--ink-3); }
 .tt-ref.pinnable { cursor: pointer; }
@@ -1084,7 +1108,7 @@ body:has(.og) :is(.help-chip, .help-card) { display: none; }
 }
 
 .tooltip-content {
-  z-index: 10000;
+  z-index: var(--z-float);
   background: var(--panel);
   color: var(--ink);
   border: 1px solid color-mix(in oklab, var(--ink-3) 55%, var(--line));
@@ -1119,7 +1143,7 @@ body:has(.og) :is(.help-chip, .help-card) { display: none; }
 
 .tip, .dt-treemap-tip {
   position: fixed;
-  z-index: 10;
+  z-index: var(--z-float);
   pointer-events: none;
 
   &.pinned {
@@ -1480,7 +1504,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     // Long ledger: the table scrolls inside its own box (sideways on a phone,
     // and vertically past ~70vh) and the header row stays pinned to the box top.
     thead th {
-      position: sticky; top: 0; z-index: 1;
+      position: sticky; top: 0; z-index: var(--z-raised);
       background: var(--surface);
     }
   }
@@ -1611,6 +1635,10 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 // actions are always live here — the panel is interactive by construction, so
 // there's no "hover onto the floating tip" gesture to gate them behind.
 .dt-treemap-tip.dock {
+  // In flow, so it scrolls with the map — and UNDER the sticky header, like the
+  // rest of the content (the floating tip's `--z-float` would paint it over the
+  // ☰, the crumbs and the controls once the page is scrolled).
+  z-index: var(--z-drawer);
   max-width: 100% !important;
   width: 100%;
   margin-top: 4px;
@@ -1692,9 +1720,13 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     // Created = three columns (swatch · month · year) under one header, so
     // every part aligns down the page; the year column is omitted when no
     // listed row needs one.
+    // The header and the swatch start the group at the column's left edge, so
+    // "created" sits over the swatch · month it labels (a right-aligned header
+    // over left-aligned months read as misaligned).
+    th.created { text-align: left; }
     td.created {
       white-space: nowrap;
-      &.sw { padding-right: 5px; text-align: right; }
+      &.sw { width: 1px; padding-right: 5px; text-align: left; }
       &.mon { padding-left: 0; padding-right: 0; text-align: left; }
       &.yr { padding-left: 4px; text-align: left; color: var(--ink-3); font-size: 11px; }
       // A contrast ring so the pale (new) and dark (old) ends of the viridis
@@ -1702,6 +1734,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
       i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); }
     }
     td.owners { white-space: nowrap; }
+    // The row of the treemap cell under the pointer (brushing, `data-brushed`).
+    tr[data-brushed] td { background: color-mix(in srgb, var(--ink) 8%, transparent); }
     // The row's actions: the trash gesture (a staging store) and the assign
     // select (an attribution store, admins).
     // A table cell (an `inline-flex` cell stops being one: its borders and
@@ -1817,11 +1851,11 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 // reach on a long list, and centered — it appears below the rows, never
 // shifting the row just clicked.
 .children-tbl .sel-bar-dock {
-  // Below the sticky topbar (z 5), and click-through except for the bar itself:
+  // Below the sticky topbar (`--z-header`), and click-through except for the bar itself:
   // once the table scrolls up under the topbar, this sticky slot rides its
   // bottom edge there, and an empty 30 px strip above the topbar swallowed
   // clicks on the filter box.
-  position: sticky; bottom: 8px; z-index: 4; pointer-events: none;
+  position: sticky; bottom: 8px; z-index: var(--z-sticky); pointer-events: none;
   display: flex; justify-content: center; margin-top: 8px;
   // Reserve the bar's height even when empty, so selecting / deselecting fills
   // (or clears) this slot instead of pushing the rest of the page up and down.
@@ -2071,8 +2105,46 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     padding: 1px 6px;
   }
   .bb-confirm { color: var(--ink); }
+  .bb-note { color: var(--ink-2); }
   .bb-warn { color: var(--s3); }
+  // Disabled actions with their reason in a tooltip: the hover lands on the wrapper, not the disabled buttons.
+  .bb-muted { display: inline-flex; gap: 5px; button:disabled { pointer-events: none; } }
   .bb-progress { color: var(--s1); }
+  // The review list floats below the bar (a native <details>), so opening it shifts nothing.
+  .bb-review {
+    position: relative;
+    > summary { cursor: pointer; color: var(--s1); list-style: none; text-decoration: underline dotted; }
+    > summary::-webkit-details-marker { display: none; }
+  }
+  .bb-panel {
+    position: absolute;
+    z-index: var(--z-popover);
+    top: calc(100% + 4px);
+    left: 0;
+    width: min(560px, calc(100vw - 32px));
+    max-height: min(60vh, 520px);
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    padding: 6px 8px;
+    color: var(--ink);
+    .bb-help { margin: 0 0 4px; color: var(--ink-2); }
+    .bb-bulk { display: flex; gap: 4px; margin-bottom: 4px; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    .bb-group > ul { padding-left: 18px; }
+    .bb-row { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; cursor: pointer; }
+    .bb-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
+    .bb-parent code { font-weight: 600; }
+    .bb-n { color: var(--ink-2); white-space: nowrap; }
+    .bb-more { color: var(--ink-2); padding: 1px 0 3px; }
+  }
+}
+@media (max-width: 600px) {
+  // On a phone the bar wraps under the filter box; the panel spans the screen's width.
+  .bulkbar .bb-review { position: static; }
+  .bulkbar .bb-panel { left: 16px; right: 16px; width: auto; }
 }
 
 // `gaps` treemap-tiling chip — sits in the crumbs bar beside ⛶, so it stays
@@ -2089,7 +2161,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   }
   &[open] summary { color: var(--ink); }
   .menu {
-    position: absolute; right: 0; top: 22px; z-index: 30;
+    position: absolute; right: 0; top: 22px; z-index: var(--z-popover);
     touch-action: manipulation;  // no double-tap zoom delay on the toggles
     display: flex; flex-direction: column; gap: 8px;
     min-width: 190px; padding: 8px 10px;
@@ -2132,9 +2204,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   --dt-ts-window-edge: rgb(255 255 255 / 0.4);
 }
 
-// Anchored sections scroll in under the sticky bar otherwise (its height is
-// published as --topbar-h; it wraps to more rows on narrow viewports).
-#tree-map, #tbl, #over-time, #diff, #mtime, #dispatch, #runs { scroll-margin-top: var(--topbar-h, 48px); }
+// An anchored section parks a little below the sticky bar — not under it, not
+// flush against it (the bar's height is published as --topbar-h; it wraps to
+// more rows on narrow viewports). `useHashSpy` reads the computed margin back
+// to decide when a deep link has landed.
+:root { --anchor-gap: 16px; }
+#tree-map, #tbl, #over-time, #diff, #mtime, #dispatch, #runs { scroll-margin-top: calc(var(--topbar-h, 48px) + var(--anchor-gap)); }
 .leaf-note { margin: -8px 0 4px; color: var(--ink-2); code { color: var(--ink); } }
 // Nothing drawable under the drilled node: the canvas folds away (the owner
 // panel / rollup above it stay).
@@ -2143,7 +2218,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 
 // The leaf viewer (`?open=`): an opened object under the map — its name, size,
 // date and a download link over file-tree's renderer for its type.
-#object { scroll-margin-top: var(--topbar-h, 48px); }
+#object { scroll-margin-top: calc(var(--topbar-h, 48px) + var(--anchor-gap)); }
 .object-panel {
   margin: 8px 0 14px;
   border: 1px solid var(--line);
@@ -2177,7 +2252,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     border-collapse: collapse; font-size: 12.5px;
     th, td { border: 1px solid var(--line); padding: 3px 6px; text-align: center; white-space: nowrap; }
     th.corner { text-align: left; font-weight: 500; .dim { font-size: 11px; } }
-    th.row-head { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; }
+    th.row-head { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: var(--z-raised); }
     th.col-head { vertical-align: bottom; }
     td.cell { font-variant-numeric: tabular-nums; min-width: 4.5em; }
     .cell-link { color: var(--ink); text-decoration: none; display: block; }
@@ -2197,9 +2272,6 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   // the mobile layout viewport wider than the screen (which desynced the visual
   // viewport and left the bar scrolled off). SiteNav auto-hides it on scroll
   // down / shows on scroll up (`ctrl-hidden`), like a native toolbar.
-  // Lift the whole topbar context above the docked treemap tip (`position:
-  // fixed; z-index: 10`) so the controls overlay isn't painted behind it.
-  .topbar { z-index: 20; }
   .topbar .tb-row2 {
     position: absolute; top: 100%; left: 0; right: 0;
     margin: 0; padding: 3px var(--pad-x, 24px) 7px;
@@ -2258,7 +2330,7 @@ select.assign-sel {
 // Idle it is a small "?" chip. It fades in; a prefers-reduced-motion reader
 // gets no transition.
 .help-card {
-  position: fixed; left: 16px; bottom: 16px; z-index: 900;
+  position: fixed; left: 16px; bottom: 16px; z-index: var(--z-corner);
   width: min(340px, calc(100vw - 32px));
   background: var(--panel); color: var(--ink);
   border: 1px solid color-mix(in oklab, var(--ink-3) 45%, var(--line));
@@ -2287,7 +2359,7 @@ select.assign-sel {
 .has-help.help-active { border-radius: 4px; box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #58a6ff) 55%, transparent); }
 .has-help .help-tgt { display: contents; }
 .help-chip {
-  position: fixed; left: 16px; bottom: 16px; z-index: 900;
+  position: fixed; left: 16px; bottom: 16px; z-index: var(--z-corner);
   display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px;
   background: var(--panel); color: var(--ink-3); border: 1px solid var(--line);
   border-radius: 999px; font: inherit; font-size: 11.5px; cursor: pointer;
@@ -2315,7 +2387,7 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
 // the fullscreen button, floated over the map's top-right corner.
 .diff-tm { position: relative; }
 .diff-tm .dt-treemap-bar {
-  position: absolute; top: 6px; right: 6px; z-index: 2;
+  position: absolute; top: 6px; right: 6px; z-index: var(--z-raised);
   min-height: 0; margin: 0; padding: 0; background: none; border: none;
 }
 .diff-tm .dt-treemap-fs {
@@ -2413,7 +2485,7 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
   // the batches scroll by, and lets go after the last one.
   .staged-actions {
     display: flex; align-items: center; gap: 12px; margin: 6px 0 10px; padding: 6px 0; font-size: 13px;
-    position: sticky; top: var(--topbar-h, 48px); z-index: 3; background: var(--surface); border-bottom: 1px solid var(--line);
+    position: sticky; top: var(--topbar-h, 48px); z-index: var(--z-sticky); background: var(--surface); border-bottom: 1px solid var(--line);
     .sel-all { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   }
   .staged-settled { margin: 18px 0 6px; > summary { cursor: pointer; font-size: 13px; } }
@@ -2539,7 +2611,7 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
     button { background: var(--panel); color: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; cursor: pointer; &:disabled { opacity: .5; cursor: default; } }
     .task-log-scroll { margin-top: 12px; max-height: 450px; overflow: auto; border: 1px solid var(--line); }
     table { width: 100%; border-collapse: collapse; font-size: .82rem; }
-    th { position: sticky; top: 0; background: var(--panel); z-index: 1; text-align: left; color: var(--ink-3); }
+    th { position: sticky; top: 0; background: var(--panel); z-index: var(--z-raised); text-align: left; color: var(--ink-3); }
     td, th { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
     .log-time, .log-severity { white-space: nowrap; }
     .log-severity { color: var(--ink-3); }
@@ -2581,7 +2653,7 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
 // `?perf=1` time-to-render panel (dev/PerfOverlay.tsx). Sits where the help
 // card does (lower-left; the speed dial owns the lower-right), same surface.
 .perf-ov {
-  position: fixed; left: 16px; bottom: 16px; z-index: 900;
+  position: fixed; left: 16px; bottom: 16px; z-index: var(--z-corner);
   width: min(460px, calc(100vw - 32px));
   max-height: min(60vh, 520px); overflow-y: auto;
   background: var(--panel); color: var(--ink);

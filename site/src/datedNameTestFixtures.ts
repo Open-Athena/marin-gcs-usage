@@ -84,3 +84,14 @@ export function staticNameFixture(plan: 'catalog' | 'bounded-name-postings', dat
     validation: { description: 'exact first-hit totals from the static name index', source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false },
     capabilities: datedCapabilities, root: body.root, buckets: body.buckets }
 }
+/** A sub-daily store (cw-shaped): two scans on 10/9 plus a date-only 10/8, five buckets, its own generation. */
+export const SUB_DAILY_SCANS = ['2026-10-08', '2026-10-09T0601', '2026-10-09T1802']
+export function fiveBucketRegistry() {
+  return { ...staticNameRegistry(SUB_DAILY_SCANS), logical_store: 'cw', generation: '2026-10-09cw', bucket_paths: Array.from('abcde', letter => `bucket-${letter}`) }
+}
+/** `staticNameFixture` on the five-bucket store: bucket-f (preorder 1–3, empty) dropped, the rest renumbered from 1. */
+export function fiveBucketFixture(plan: 'catalog' | 'bounded-name-postings', date: string, b = 10) {
+  const body = staticNameFixture(plan, date)
+  const buckets = body.buckets.filter(row => row.path !== 'bucket-f').map(row => ({ ...row, pre: row.pre - 3, post: row.post - 3, b: row.path === 'bucket-a' ? b : row.b }))
+  return { ...body, logical_store: 'cw', source_identity: { ...body.source_identity, generation: '2026-10-09cw' }, root: { b, o: body.root.o }, buckets }
+}

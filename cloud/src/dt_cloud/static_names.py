@@ -3,7 +3,8 @@ suffix-ordered, denormalized postings, rebuilt from primary sources.
 
 Two stages, each embarrassingly parallel on GCP Batch (`job/static-names.sh`):
 
-1. **Intervals.** Every published scan's `path` sort (`listing/<date>/…/path-index.parquet`)
+1. **Intervals.** Every published scan's `path` sort (the deployment profile's key templates, e.g.
+   `listing/<scan>/index/<gen>/path-index.parquet` or `cw-l2/<scan>/index/<gen>/path-index.parquet`)
    becomes SCD-2 version intervals: one row per `(depth, path, usr)` version with `[vf, vt)`
    (`vt` = 2106 while open) and its values, exactly the versions the ClickHouse store's
    `nodes`/`closures` hold (`chstore/ingest.py`): a key's rows merged per scan as the
@@ -12,7 +13,7 @@ Two stages, each embarrassingly parallel on GCP Batch (`job/static-names.sh`):
    was absent from a scan in between. The kernel is `pyrmts.intervals` (gaps-and-islands,
    key-range planning and predicates, one-scan append), run per `(depth, path)` key range
    (`ranges.json`), so a range task reads only its row groups of each scan. `append` adds
-   one scan to a range's intervals (open versions × the scan: a full join), the daily
+   one scan to a range's intervals (open versions × the scan: a full join), the per-scan
    delta, and must equal a rebuild.
 2. **Suffixes.** From the intervals: one row per (lowercase name suffix of three or more
    characters, version): `(s, depth, path, usr, vf, vt, size, n_files)`, sorted by `s`,
@@ -29,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -42,11 +44,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
+from .scan_id import SCAN_ID, check_order, scan_epoch, scan_label  # noqa: F401 (re-exported: the stages' scan-id helpers)
+from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
+
 err = partial(print, file=sys.stderr, flush=True)
 
-DATA_BUCKET = "oa-gcs-usage-dvx"
-#: Intermediates (the suffix shuffle, its markers): us-east1, no soft delete, objects deleted at 7 days.
-SCRATCH_BUCKET = "oa-gcs-usage-scratch"
 PREFIX = "static-names"
 OPEN = 4291747200  # 2106-01-01 00:00:00 UTC: a version's `vt` while open (`chstore.schema.OPEN`)
 U64 = 1 << 64
@@ -102,38 +104,73 @@ def q(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def scan_epoch(scan_id: str) -> int:
-    """A scan id (`2026-10-01` or `2026-10-01T0003`, UTC) as epoch seconds (`chstore.schema.scan_dt`)."""
-    fmt = "%Y-%m-%dT%H%M" if "T" in scan_id else "%Y-%m-%d"
-    return int(datetime.strptime(scan_id, fmt).replace(tzinfo=timezone.utc).timestamp())
 
 
 # ── Scans ──────────────────────────────────────────────────────────────────
 
 
-def list_scans(bucket: str = DATA_BUCKET, *, start: str | None = None, through: str | None = None) -> dict:
-    """Every scan's `path` sort, as the store ingests it (`chstore.ingest.default_src`): the newest
-    generation's `listing/<date>/index/<gen>/path-index.parquet`, else (before generations)
-    `listing/<date>/path-index.parquet`; pinned by GCS generation, size, md5 and crc32c."""
-    from google.cloud import storage
+#: Where scans' `path` sorts live in the data bucket: key templates (`static_profile.Profile.layouts`), `{id}` the
+#: scan id (one path segment), `{gen}` the store generation (a scan's newest wins; a template without one counts as the
+#: oldest). The base's `scans.json` records them, so a run's `prepare` finds the next scan the same way.
 
-    client = storage.Client()
+
+def layout_glob(layout: str) -> tuple[str, re.Pattern]:
+    """A layout template as a GCS `match_glob` and a regex capturing `id` (and `gen`)."""
+    if layout.count("{id}") != 1 or layout.count("{gen}") > 1:
+        raise ValueError(f"layout {layout!r}: needs one {{id}} and at most one {{gen}}")
+    parts = re.split(r"(\{id\}|\{gen\})", layout)
+    glob = "".join("*" if p in ("{id}", "{gen}") else p for p in parts)
+    rx = "".join("(?P<id>[^/]+)" if p == "{id}" else "(?P<gen>[^/]+)" if p == "{gen}" else re.escape(p) for p in parts)
+    return glob, re.compile(rx)
+
+
+def pick_scans(objects: Iterable[tuple[str, dict]], layouts: Iterable[str], *, start: str | None = None,
+               through: str | None = None) -> list[dict]:
+    """Each scan's newest `path` sort among `(key, pins)` listings: keys matched against `layouts` (ids that are not
+    scan ids, e.g. `cw-l2/over-time-dev/`, are skipped), the greatest `{gen}` per id, ids in `[start, through]`.
+    Sorted by id, which must also sort them strictly by time (two ids at one instant, e.g. `2026-10-01` and
+    `2026-10-01T0000`, are an error: a version's `vf` would not say which scan opened it)."""
+    rxs = [layout_glob(t)[1] for t in layouts]
     found: dict[str, dict] = {}
-    for glob in ("listing/*/path-index.parquet", "listing/*/index/*/path-index.parquet"):
-        for b in client.list_blobs(bucket, match_glob=glob):
-            date = b.name.split("/")[1]
-            if (start and date < start) or (through and date > through):
-                continue
-            gen = b.name.split("/")[3] if "/index/" in b.name else ""
-            cur = found.get(date)
-            if cur is None or gen > cur["gen"]:
-                found[date] = {"id": date, "gen": gen, "src": b.name, "generation": int(b.generation), "size": int(b.size),
-                               "md5": base64.b64decode(b.md5_hash).hex() if b.md5_hash else None, "crc32c": b.crc32c}
+    for key, pins in objects:
+        m = next((m for rx in rxs if (m := rx.fullmatch(key))), None)
+        if m is None:
+            continue
+        sid = m["id"]
+        if not SCAN_ID.fullmatch(sid):
+            err(f"scans: skipping {key} ({sid!r} is not a scan id)")
+            continue
+        if (start and sid < start) or (through and sid > through):
+            continue
+        gen = m.groupdict().get("gen") or ""
+        cur = found.get(sid)
+        if cur is None or gen > cur["gen"]:
+            found[sid] = {"id": sid, "gen": gen, "src": key, **pins}
     scans = [found[d] for d in sorted(found)]
+    check_order(found)
     for s in scans:
         del s["gen"]
         s["ts"] = scan_epoch(s["id"])
-    return {"bucket": bucket, "scans": scans}
+    return scans
+
+
+def list_scans(bucket: str, *, layouts: Iterable[str], start: str | None = None,
+               through: str | None = None) -> dict:
+    """Every scan's `path` sort, as the store ingests it (`chstore.ingest.default_src`): per scan id the newest
+    generation under `layouts` (`pick_scans`); pinned by GCS generation, size, md5 and crc32c."""
+    from google.cloud import storage
+
+    client = storage.Client()
+    layouts = list(layouts)
+
+    def objects():
+        for t in layouts:
+            for b in client.list_blobs(bucket, match_glob=layout_glob(t)[0]):
+                yield b.name, {"generation": int(b.generation), "size": int(b.size),
+                               "md5": base64.b64decode(b.md5_hash).hex() if b.md5_hash else None, "crc32c": b.crc32c}
+
+    scans = pick_scans(objects(), layouts, start=start, through=through)
+    return {"bucket": bucket, "layouts": layouts, "scans": scans}
 
 
 # ── Key ranges ─────────────────────────────────────────────────────────────
@@ -237,12 +274,13 @@ def _src(bucket: str, key: str, mount: str | None) -> str:
 
 # ── Interval kernel ────────────────────────────────────────────────────────
 
-V2_SELECT = """depth::UTINYINT AS depth, path, coalesce(usr, '') AS usr,
+V2_SELECT = """depth::UTINYINT AS depth, path, coalesce({usr}, '') AS usr,
     CASE WHEN kind = 'file' THEN 'file' ELSE 'dir' END AS kind, size::BIGINT AS size, n_files::BIGINT AS n_files,
     coalesce({n_children}, -1)::BIGINT AS n_children, coalesce({n_desc}, -1)::BIGINT AS n_desc, coalesce({mtime}, -1)::BIGINT AS mtime,
     coalesce({mtime_mean}, 0)::DOUBLE AS mtime_mean, CASE WHEN {mtime_mean} IS NULL THEN 0 ELSE size END::BIGINT AS mtime_w,
     coalesce({last_read}, -1)::INTEGER AS last_read, coalesce({c2}, 0)::BIGINT AS c2, coalesce({c3}, 0)::BIGINT AS c3, coalesce({c4}, 0)::BIGINT AS c4"""
-V2_OPTIONAL = {"n_children": "n_children", "n_desc": "n_desc", "mtime": "mtime", "mtime_mean": "mtime_mean", "last_read": "last_read",
+#: Columns a v2 sort may lack (read as NULL): cw's carry no owner (`usr`) and a single storage-class pivot.
+V2_OPTIONAL = {"usr": "usr", "n_children": "n_children", "n_desc": "n_desc", "mtime": "mtime", "mtime_mean": "mtime_mean", "last_read": "last_read",
                "c2": "sum_storage_class_id_2", "c3": "sum_storage_class_id_3", "c4": "sum_storage_class_id_4"}
 V1_SELECT = """depth::UTINYINT AS depth, path, coalesce(usr, '') AS usr, 'dir' AS kind, b::BIGINT AS size, o::BIGINT AS n_files,
     -1::BIGINT AS n_children, -1::BIGINT AS n_desc, -1::BIGINT AS mtime,
@@ -404,9 +442,10 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, *, mount: str | No
                             CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
         (out / "chist").mkdir(parents=True, exist_ok=True)
         pq.write_table(con.execute(hist_sql("civ")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+        suffix_rows = con.execute(suffix_count_sql("civ")).fetchone()[1]
         con.execute("DROP TABLE civ")
-        doc = {"range": r, "rows": rows, "s": round(monotonic() - t0, 1)}
-        err(f"range {i}: {rows:,} coalesced versions in {doc['s']}s")
+        doc = {"range": r, "rows": rows, "suffix_rows": suffix_rows, "s": round(monotonic() - t0, 1)}
+        err(f"range {i}: {rows:,} coalesced versions, {suffix_rows:,} suffix rows in {doc['s']}s")
         return doc
     con.execute("DROP TABLE IF EXISTS iv")
     con.execute(f"CREATE TABLE iv AS {intervals_sql(con, sources, preds)}")
@@ -927,14 +966,15 @@ def _task(index: int | None) -> int:
 
 
 @cli.command("scans")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
-@option("-s", "--start", help="First scan date (inclusive)")
-@option("-t", "--through", help="Last scan date (inclusive)")
-def scans_cmd(bucket: str, start: str | None, through: str | None) -> None:
-    """Print the scans manifest (JSON): each date's newest `path` sort, pinned by generation and md5."""
+@option("-b", "--bucket", default=data_bucket, help="Data bucket")
+@option("-L", "--layout", "layouts", multiple=True, help="Key template of the scans' `path` sorts, `{id}` the scan id and `{gen}` the store generation; repeat (default: the profile's, $STATIC_NAMES_LAYOUTS)")
+@option("-s", "--start", help="First scan id (inclusive)")
+@option("-t", "--through", help="Last scan id (inclusive)")
+def scans_cmd(bucket: str, layouts: tuple[str, ...], start: str | None, through: str | None) -> None:
+    """Print the scans manifest (JSON): each scan's newest `path` sort, pinned by generation and md5."""
     from google.cloud import storage
 
-    doc = list_scans(bucket, start=start, through=through)
+    doc = list_scans(bucket, layouts=layouts or profile_layouts(), start=start, through=through)
     b = storage.Client().bucket(bucket)
     for s in doc["scans"]:
         s["version"] = _version_from_footer(b, s["src"])
@@ -966,7 +1006,8 @@ def ranges_cmd(k: int, mount: str | None, scans_json: str) -> None:
 
 
 @cli.command("intervals")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
+@option("-C", "--coalesced", is_flag=True, help="The coalesced versions straight from the scans (`cintervals/`, `chist/`; `cdone/r####.json` marks a range done), not the full intervals")
 @option("-g", "--gen", required=True, help="Output generation: gs://BUCKET/static-names/GEN/")
 @option("-f", "--force", is_flag=True, help="Rebuild ranges whose digest is already uploaded")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -978,9 +1019,11 @@ def ranges_cmd(k: int, mount: str | None, scans_json: str) -> None:
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n; a partial build)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def intervals_cmd(bucket, gen, force, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
+def intervals_cmd(bucket, coalesced, gen, force, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
     """Build key ranges' intervals over every scan of the generation's `scans.json`, one connection
-    per task (each range uploaded as it finishes; its digest, written last, marks it done)."""
+    per task (each range uploaded as it finishes; its digest, written last, marks it done). `-C`: the
+    coalesced versions in one pass instead (a deployment with no ClickHouse store to verify full intervals
+    against), byte-identical to `intervals` then `coalesce`."""
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
@@ -996,12 +1039,20 @@ def intervals_cmd(bucket, gen, force, index, mount, mem, per_task, out, threads,
     import duckdb
 
     err(f"intervals: duckdb {duckdb.__version__}, pyarrow {pa.__version__}, ranges {todo}")
+    marker = "cdone" if coalesced else "digest"
     for i in todo:
-        if not force and b.blob(f"{prefix}/digest/r{i:04d}.json").exists():
+        if not force and b.blob(f"{prefix}/{marker}/r{i:04d}.json").exists():
             err(f"range {i}: already built")
             continue
         outp = Path(out) / f"r{i}"
-        doc = build_range(scans, ranges, i, outp, mount=mount, threads=threads, mem=mem, tmp=Path(tmp), con=con)
+        doc = build_range(scans, ranges, i, outp, mount=mount, threads=threads, mem=mem, tmp=Path(tmp), con=con, coalesced=coalesced)
+        if coalesced:
+            if not no_upload:
+                upload_tree(outp, bucket, prefix)
+                b.blob(f"{prefix}/cdone/r{i:04d}.json").upload_from_string(json.dumps(doc, sort_keys=True) + "\n")
+                shutil.rmtree(outp)
+            print(json.dumps(doc), flush=True)
+            continue
         if not no_upload:
             digest = outp / "digest"
             moved = Path(out) / f"r{i}-digest"
@@ -1014,7 +1065,7 @@ def intervals_cmd(bucket, gen, force, index, mount, mem, per_task, out, threads,
 
 
 @cli.command("append")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
 @option("-f", "--from-gen", "from_gen", required=True, help="Generation whose intervals the scan is appended to")
 @option("-g", "--gen", required=True, help="Output generation (its scans.json = FROM's plus the scan)")
 @option("-i", "--index", type=int, help="Range index (default: $BATCH_TASK_INDEX)")
@@ -1045,7 +1096,7 @@ def append_cmd(bucket, from_gen, gen, index, mount, mem, out, threads, tmp, no_u
 
 
 @cli.command("coalesce")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket (the scratch bucket for a measurement)")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket (the scratch bucket for a measurement)")
 @option("-f", "--force", is_flag=True, help="Redo ranges whose stats are already uploaded")
 @option("-g", "--gen", required=True, help="Output generation: gs://BUCKET/static-names/GEN/{cintervals,chist,cstats}/")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -1063,7 +1114,7 @@ def coalesce_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task,
     range's `cintervals/`, `chist/` and `cstats/` (written last: marks the range done)."""
     from google.cloud import storage
 
-    ranges = read_json(f"gs://{DATA_BUCKET}/{PREFIX}/{intervals_gen}/ranges.json")
+    ranges = read_json(f"gs://{data_bucket()}/{PREFIX}/{intervals_gen}/ranges.json")
     todo = [int(x) for x in only.split(",")] if only else list(range(_task(index) * per_task, min((_task(index) + 1) * per_task, ranges["k"])))
     lits = [x for x in read_text(terms).splitlines() if x.strip()] if terms else None
     prefix = f"{PREFIX}/{gen}"
@@ -1085,7 +1136,7 @@ def coalesce_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task,
 
 
 @cli.command("coalesce-report")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation holding `cstats/` and `chist/`")
 @option("-H", "--hist-gen", required=True, help="Generation holding the uncoalesced `hist/`")
 @option("-v", "--threshold", "thresholds", multiple=True, type=int, default=[100_000, 150_000], help="Range-row thresholds to count prefixes at; repeat")
@@ -1113,7 +1164,7 @@ def coalesce_report_cmd(bucket, gen, hist_gen, thresholds) -> None:
         for name, g, sub in (("before", hist_gen, "hist"), ("after", gen, "chist")):
             dd = Path(tmpd) / name
             dd.mkdir()
-            for blob in client.list_blobs(DATA_BUCKET if name == "before" else bucket, prefix=f"{PREFIX}/{g}/{sub}/"):
+            for blob in client.list_blobs(data_bucket() if name == "before" else bucket, prefix=f"{PREFIX}/{g}/{sub}/"):
                 blob.download_to_filename(str(dd / Path(blob.name).name))
             sets[name] = str(dd / "*.parquet")
         con = duckdb.connect()
@@ -1127,7 +1178,7 @@ def coalesce_report_cmd(bucket, gen, hist_gen, thresholds) -> None:
 
 
 @cli.command("plan-shards")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-H", "--hist", "hist_dir", default="hist", help="Histogram subdir (`chist`: the coalesced versions')")
 @option("-n", "--target-rows", default=50_000_000, type=int, help="Suffix rows per shard file")
@@ -1152,7 +1203,7 @@ def plan_shards_cmd(bucket, gen, hist_dir, target_rows, tasks) -> None:
 
 
 @cli.command("suffix-map")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
 @option("-C", "--coalesced", is_flag=True, help="Expand GEN's coalesced versions (`cintervals/`) instead of intervals")
 @option("-f", "--force", is_flag=True, help="Redo ranges already mapped")
 @option("-g", "--gen", required=True, help="Generation (its `shards.json` plan; intervals from -I or GEN)")
@@ -1164,7 +1215,7 @@ def plan_shards_cmd(bucket, gen, hist_dir, target_rows, tasks) -> None:
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the shuffle (`sxmap/`, `sxmap-done/`)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket for the shuffle (`sxmap/`, `sxmap-done/`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, scratch, tmp) -> None:
     """Expand ranges' intervals into suffix rows tagged with their shard, written per reduce task
@@ -1197,7 +1248,7 @@ def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, m
 
 
 @cli.command("shards")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-m", "--mount", required=True, help="Local mount of the bucket")
@@ -1205,7 +1256,7 @@ def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, m
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-P", "--partial", is_flag=True, help="Accept fewer mapped ranges than ranges (a dev build over some ranges)")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the shuffle (mounted beside -m: `<-m>/../SCRATCH`)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket holding the shuffle (mounted beside -m: `<-m>/../SCRATCH`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill + partition dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
 def shards_cmd(bucket, gen, index, mount, mem, out, threads, partial, scratch, tmp, no_upload) -> None:
@@ -1229,7 +1280,7 @@ def shards_cmd(bucket, gen, index, mount, mem, out, threads, partial, scratch, t
 
 
 @cli.command("sidecar")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 def sidecar_cmd(bucket, gen) -> None:
     """Concatenate the per-shard sidecars into `sidecar.parquet` (sorted `(file, rg)`, which is `s`
@@ -1258,7 +1309,7 @@ def sidecar_cmd(bucket, gen) -> None:
 
 
 @cli.command("manifest")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @argument("subdirs", nargs=-1, required=True)
 def manifest_cmd(bucket, gen, subdirs) -> None:
@@ -1283,7 +1334,7 @@ def manifest_cmd(bucket, gen, subdirs) -> None:
                     cur[0] += n
                     cur[1] = (cur[1] + h) % U64
         doc["rows"] = rows
-        doc["per_scan"] = {datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d"): v for ts, v in sorted(totals.items(), key=lambda kv: int(kv[0]))}
+        doc["per_scan"] = {scan_label(int(ts)): v for ts, v in sorted(totals.items(), key=lambda kv: int(kv[0]))}
     print(json.dumps(doc, indent=1))
 
 
@@ -1332,7 +1383,7 @@ def ch_digest_sql_cmd(closures, nodes, only, ranges_json) -> None:
 
 
 @cli.command("verify-intervals")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-r", "--range", "only", help="Comma-separated range indices (default: every range)")
 @argument("ch_tsv")
@@ -1378,17 +1429,47 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
              "drill/meta.json", "drill/aliases.parquet", "drill/long/roots/", "drill/long/rollups/", "drill/short/roots/",
              "drill/short/rollups/", "drill/long-roots-index", "drill/long-rollups-index", "drill/short-roots-index",
              "drill/short-rollups-index",
-             # the daily runs' manifests (`static_append`; a run's own files are copied with `-g GEN/deltas/<run>`)
+             # anchored search (static_anchors): the name index, the `q$` / `^q$` rollups, their indexes, meta (not `anchors/keys*`, GCS only)
+             "names/", "anchors/meta.json", "anchors/rollups/", "anchors/end-rollups-index", "anchors/exact-rollups-index",
+             # the runs' manifests (`static_append`; a run's own files are copied with `-g GEN/deltas/<run>`)
              "manifests/")
 
 
+@cli.command("r2-verify")
+@option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-m", "--manifest", "scan", required=True, help="The manifest's scan id (`manifests/<id>.json`)")
+@option("-w", "--workers", default=16, type=int, help="Parallel checks")
+def r2_verify_cmd(bucket, gen, scan, workers) -> None:
+    """Check that every served file (`R2_SERVED`) of every run a manifest lists is on R2 as on GCS (size, and md5 where both
+    know it), before the manifest itself is copied: a manifest goes to R2 only once each run it lists is whole there.
+    Exit 1, listing what's missing or different."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import publish as pub
+
+    prefix = f"{PREFIX}/{gen}"
+    runs = read_json(f"gs://{bucket}/{prefix}/manifests/{scan}.json")["runs"]
+    objs = [o for r in runs for o in pub.list_source(bucket, [f"{prefix}/{r['key']}/"])
+            if o.key.removeprefix(f"{prefix}/{r['key']}/").startswith(R2_SERVED)]
+    s3, r2 = pub.r2_client(), pub.r2_bucket()
+    with ThreadPoolExecutor(workers) as ex:
+        bad = [o.key for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
+    doc = {"gen": gen, "manifest": scan, "runs": [r["key"] for r in runs], "objects": len(objs), "missing": bad}
+    print(json.dumps(doc, indent=1))
+    if bad:
+        err(f"r2-verify {gen} {scan}: {len(bad)} of {len(objs)} served files not on R2 (e.g. {bad[0]})")
+        raise SystemExit(1)
+
+
 @cli.command("r2-copy")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Source GCS bucket")
+@option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-n", "--dry-run", is_flag=True, help="List what would be copied")
 @option("-o", "--only", help="Copy only the served keys under this generation-relative prefix (e.g. `manifests/`)")
 @option("-w", "--workers", default=8, type=int, help="Parallel copies")
-def r2_copy_cmd(bucket, gen, dry_run, only, workers) -> None:
+@option("-x", "--exclude", multiple=True, help="Skip the served keys under this generation-relative prefix (repeatable; e.g. a run's `drill/meta.json`, copied last)")
+def r2_copy_cmd(bucket, gen, dry_run, only, workers, exclude) -> None:
     """Copy the generation's served files (shards, sidecar, plan, scans) GCS → R2 under the same keys,
     skipping objects already there with the same size and md5 (`publish.copy_one`'s streaming copy,
     the GCS md5 stamped as metadata). R2 via `R2_ENDPOINT`, `R2_BUCKET` and AWS_* (or R2_*) keys."""
@@ -1398,7 +1479,8 @@ def r2_copy_cmd(bucket, gen, dry_run, only, workers) -> None:
 
     prefix = f"{PREFIX}/{gen}"
     objs = [o for o in pub.list_source(bucket, [prefix + "/"]) if o.key.removeprefix(prefix + "/").startswith(R2_SERVED)
-            and (only is None or o.key.removeprefix(prefix + "/").startswith(only))]
+            and (only is None or o.key.removeprefix(prefix + "/").startswith(only))
+            and not any(o.key.removeprefix(prefix + "/").startswith(x) for x in exclude)]
     s3, r2 = pub.r2_client(), pub.r2_bucket()
     with ThreadPoolExecutor(workers) as ex:
         todo = [o for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
@@ -1455,7 +1537,7 @@ def compare_answers_cmd(ch_jsonl, static_jsonl) -> None:
 
 
 @cli.command("query")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
 @option("-g", "--gen", required=True, help="Generation")
 @argument("terms", nargs=-1, required=True)

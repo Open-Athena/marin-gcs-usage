@@ -8,7 +8,7 @@
 //   DELETE /api/plans/:id/items    { prefixes: [...] }                     admin
 //   POST   /api/plans/:id/batches/merge { into, ids: [...], note? } -> { into, merged, items }
 //                                                                          admin, or the batches' stager
-//   POST   /api/plans/stage        { prefixes: [...], note?, as_of? } -> { plan_id, batch_id, staged, covered, absorbed, as_of }
+//   POST   /api/plans/stage        { prefixes: [...], objects?: [...], note?, as_of? } -> { plan_id, batch_id, staged, staged_objects, covered, absorbed, as_of }
 //                                                                          stager (`STAGING` deployments)
 //   GET    /api/plans/staged       the shared open plan (+ items, batches, emptied batches, runs), or { plan: null }   viewer
 //   GET    /api/plans/run?id=<run> one run's record + its per-band rows      viewer
@@ -151,9 +151,11 @@ export const onRequest = async (ctx: Ctx & { env: Env; waitUntil?: Bg }): Promis
     if (gated instanceof Response) return gated
     if (!shape) return json({ error: `staging ${NO_SHAPE}` }, 503)
     const body = await readBody(ctx.request)
-    const prefixes = Array.isArray(body.prefixes)
-      ? (body.prefixes as unknown[]).filter((x): x is string => typeof x === "string")
-      : []
+    const strs = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []
+    // `prefixes`: folders; `objects`: exact keys (specs/file-assign.md) —
+    // the kind is which list an item came in, never its shape.
+    const prefixes = strs(body.prefixes)
+    const objects = strs(body.objects)
     const note = typeof body.note === "string" ? body.note : null
     // The scan the gesture stages against: a named scan date that exists,
     // else the latest scan (none synced yet = null: the dispatch scan stands in).
@@ -166,7 +168,7 @@ export const onRequest = async (ctx: Ctx & { env: Env; waitUntil?: Bg }): Promis
       asOf = body.as_of
     }
     const by = gated.email ?? gated.name ?? "guest"
-    const res = await stageItems(db, prefixes, by, note, shape, asOf)
+    const res = await stageItems(db, { prefixes, objects }, by, note, shape, asOf)
     if ("error" in res) return json(res, 400)
     // Announce the batch in the plan's Slack thread (specs/done/staged-slack.md),
     // after the response — a Slack hiccup never fails the gesture.

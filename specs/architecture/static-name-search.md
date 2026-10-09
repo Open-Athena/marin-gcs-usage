@@ -337,6 +337,35 @@ Cases (`job/static-names/drill-cases.jsonl`, from `drill-cases -n 1` over `drill
 | Read cost (laptop, GCS) | roots ≤ 114,688 rows / 2.8 MB (median 90,112 / 0.37 MB), 0.6 s median; rollups ≤ 16,384 rows / 180 KB, 0.34 s median; plus one index row group (~110 KB) per lookup |
 | Local (`cloud/tests/test_static_roots.py`) | roots = every member's first-hit versions (chunked feeding included) and every short literal's; per-directory counts and the subtree partitions' sums = brute force; at R = 3, 10, 10⁶ with 4- and 8-row groups every (member, directory, date) view through the two-level index equals brute force (rollup kept children and remainder); digests equal ⇔ root sets equal, aliased reads = brute force; `drill-verify` passes and catches an altered reference |
 
+## Indexed-only filter (`FILTER_INDEXED_ONLY=1`)
+
+A deployment flag (gcs): the map's filter (`/api/subtree`, `/api/diff`, `/api/series`) accepts only what this index answers exactly — one literal substring of a file or folder name (no `/`, `*`, regex, exclusion, second term or `a|b`; quoted spaces are fine), unscoped (no owner pool, user lens or storage classes), on a scan the index covers — and never walks the path store for a filter. Everything else is a 400 `{ "error": <message>, "code": <code> }` before any read (`site/functions/_lib/indexedOnly.ts`):
+
+| Code | When |
+|---|---|
+| `unsupported-regex` | `qs=regex`, or a `/…/` query |
+| `unsupported-glob` | a `*` term |
+| `unsupported-exclusion` | any `-term`, exclusions alone included |
+| `unsupported-terms` | several terms, or alternatives (`a b`, `a|b`, two short terms) |
+| `unsupported-slash` | a term holding `/` (also `/api/name-summary`'s `name`) |
+| `unsupported-scope` | a filter with `o=`, `lens=` or `cl=` |
+| `scan-not-indexed` | the literal's answer doesn't cover the scan: a scan outside the generation, or a heavy literal past the drill base (until the drill's per-scan append) (`/api/name-summary` keeps its own scan refusal) |
+
+A view root whose path holds the literal is the plain view, on any scan. The series names uncovered scans (`unindexed: [dates]`, gaps) instead of reading the client's roots per scan. `GET /api/filter-caps` → `{ indexedOnly }` tells the filter box, which refuses the same forms inline (never sending them), shows the server's codes as its message, and lists only the supported form in its help. Unset (cw, the r2 demo, local), nothing changes.
+
+## Acting on matches (`/api/filter-cover`)
+
+Assigning or staging a search's matches is a main use of the filter. The bulk bar and the table's rows act on the matches under the view as the **fewest exact prefixes** (`site/functions/_lib/cover.ts`, `GET /api/filter-cover?date|d=&path=&q=[&qs=]`), never a row's whole prefix and never the drawn subset:
+
+- **Roots**: every match root under P on D (`view.ts` `allMatchRoots`: phase 1 only, the static index's roots held per isolate). A rollup (a heavy literal under a heavy folder) or a partial / approximate search is `complete: false` with a plain-words `reason`, and nothing acts.
+- **Collapse**: a folder A (depth ≥ 2, at or below P) is *full* iff the matched objects and bytes under it equal A's totals (`path` sort point lookups, every owner slice summed). Full folders are closed downward, so the cover — the outermost full folders plus the roots under none — is the unique minimum; it never covers a non-match (zero-byte objects included: objects are compared, bytes cross-check). Rounds run deepest depth first; a folder holding a non-match poisons its ancestors (never looked up). Budget: ≤ 60 row groups a round, ≤ 240 a cover; past it the remaining folders count as not full (still exact, not minimal; `unchecked`). One-object roots are looked up for their kind (object key vs folder prefix); an unplaced one is `kind: null` and never sent.
+- **Actions**: both act on folder prefixes only — the ledger accepts `…/` patterns (`/api/actions`), and a plan item is canonicalized to `…/` (`plans.ts` `relPrefix`), so an object key would stage as `key/` and delete nothing. A lone matching file (in a folder that also holds non-matches) is therefore listed but not acted on, and the bar says so; staging never takes a whole bucket. Both go in batches (500 per POST); staging then folds its batches into one (`/api/plans/:id/batches/merge`). No cap below the response's 50K items. Under a filter a table row's checkbox, trash and assign act on that row's folder items only; a row with none has no checkbox.
+- **Review**: the bar lists the items grouped by parent folder, heaviest first, each folder and each item untickable — the remedy for correct-but-unwanted substring matches (`tomat` in `…Rotten_Tomatoes…mp3`).
+
+Example (gcs, 2026-10-09, `podcast_audio_top1000_60s_clips/Adam_Carolla_Show?f=tomat`): 10,787 match roots, every one an `.mp3` directly in `Adam_Carolla_Show/`, which holds other files too — so no collapse: one group of 10,787 files (10.3 GB) to review, none of which can be assigned or staged by itself (they're the false positives here anyway; unticking the group drops them).
+
+`/names` resolves `?d=` against the **store's** scans, as the map does (`scanSlug.ts`; server-side `scanArg.ts` `indexedScan`): a day is its latest store scan. A store scan the static index doesn't hold yet is the "not in the name index yet" state (the API's 400 `scan-not-indexed`), never the index's nearest scan.
+
 ## Alternatives compared
 
 | Design | Size | Round trips per rare query | Bytes per rare query | Verdict |

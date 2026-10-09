@@ -81,6 +81,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # EXECUTOR = "plan-sweep"                     # `plan-sweep` (default) | `sweep`
 # JOB_SA = "<job>@<project>.iam.gserviceaccount.com"  # the service account dispatched Batch jobs run as (with GCP_SA_KEY)
 # GCP_PROJECT = "my-project"                  # the GCP project the Batch jobs, secrets and logs live in; unset = GCP_SA_KEY's project_id
+# META_TREE_URL = "https://other.example/meta"  # /scans links each scan output to its dir in the `/meta` store tree (the deployments' own data bucket); unset = no tree links
 # GCP_LOG_VIEW = "projects/my-project/locations/global/buckets/_Default/views/sweep-task-logs"  # IaC-managed task-log-only view; grant the site view-scoped logging.viewAccessor
 # BATCH_REGION = "us-central1"                 # the default Batch region (the default)
 # BUCKET_REGIONS = '{"my-bucket": "us-east1"}'  # a one-region bucket cut runs its job there, beside the data; unset = BATCH_REGION
@@ -101,9 +102,12 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_BOX_DATED_NAMES = "1"               # opt in only after dated catalogs/proofs are accepted; new scans may be catalog-only
 # QUERY_BOX_HOT_L1_URL = "https://catalog.example"  # existing operator-managed VM/tunnel
 # NAME_SUMMARY_STATIC = "1"                 # dated name summaries: below-catalog literals on consolidated scans from the static suffix shards in INDEX_R2 (`_lib/staticNames.ts`)
+# STATIC_GEN = "<gen>"                      # required with FILTER_STATIC / NAME_SUMMARY_STATIC: the static name index generation in INDEX_R2 (`static-names/<gen>/`)
 # STATIC_MAX_ROWS = "400000"                # the static reader's ceiling on suffix rows per query (default 400K; the catalog threshold bounds it lower)
 # FILTER_STATIC = "1"                       # the map's filter (`q=`): a single literal's match roots on any scan of the static name index's generation, from INDEX_R2 (`_lib/staticFilter.ts`)
 # FILTER_STATIC_HEAVY = "1"                 # with FILTER_STATIC: heavy literals (catalog members, and every 1–2 character one) from the drilldown under `drill/` (`_lib/staticDrill.ts`): match roots, or a heavy directory's per-child rollup; base-generation scans only
+# FILTER_STATIC_ANCHORS = "0"               # with FILTER_STATIC: turns off anchored terms (`^q`, `q$`, `^q$`) from the name index and the `q$` / `^q$` rollups under `names/`, `anchors/` (`_lib/staticAnchors.ts`; on by default, a generation without `anchors/meta.json` declines them)
+# FILTER_INDEXED_ONLY = "1"                # with FILTER_STATIC: the map's filter takes only one literal substring of a name, unscoped, on a scan the static index covers; every other form is a 400 `{ error, code }` (`_lib/indexedOnly.ts`), never a path-store scan
 # FILTER_DETAILS_MS = "300"                # with FILTER_STATIC: ms a filtered view waits past phase 2 for its roots' kind/ages/classes (unset: until they land)
 # FILTER_PHASE2_MS = "1500"                # ms a filtered view's phase 2 (its match roots' insides) may take; reads still running then are dropped and those roots drawn whole (`interiors` in the response; default 1500)
 # PATH_STORE = "intervals"                 # read the dates INTERVAL_STORE_GEN holds from the change-interval path store on INDEX_R2 (`_lib/index.ts` `openInterval`, specs/interval-store.md); lenses and owner pools still read per-scan stores. `opt-in`: only requests with `ps=iv`

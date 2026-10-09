@@ -21,7 +21,7 @@ import { MdMenu } from 'react-icons/md'
 import { Link, useLocation } from 'react-router-dom'
 import { AboutModal } from './About'
 import { Avatar } from './Avatar'
-import { AUTH_MODE, signInUrl, useCanAssign, useCanStage, useIdent, useSignOut } from './auth'
+import { AUTH_MODE, signInUrl, useCanAssign, useCanStage, useIdent, useIsAdmin, useSignOut } from './auth'
 import { ShareDialog } from './ShareDialog'
 import { closeDialog, openDialog, useDialog } from './dialogs'
 import { useRegistry } from './identities'
@@ -175,6 +175,7 @@ function SiteDialogs() {
 function NavMenu({ extra }: { extra?: MenuEntry[] }) {
   const { pathname } = useLocation()
   const canAssign = useCanAssign()
+  const isAdmin = useIsAdmin()
   // Full viewers share with a detailed preview (guest links can't: a token
   // outlives the session that minted it).
   const canShare = useCanStage()
@@ -203,6 +204,9 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
               {canAssign && store.owners && link('/users', 'Users')}
               {canAssign && store.owners && link('/assignments', 'Assignments')}
               {store.staging && link('/staged', 'Staged')}
+              {link('/scans', 'Scan runs')}
+              {DEFAULT_STORE.metaTree && <a role="menuitem" className="mi" href={DEFAULT_STORE.metaTree} target="_blank" rel="noreferrer" onClick={() => m.setOpen(false)}>Meta <span className="dim">(the data bucket)</span> ↗</a>}
+              {isAdmin && link('/admin', 'Admin')}
               {/* The store switcher — only a multi-store deploy has one
                   (specs/multi-store.md phase 2): each configured store at its
                   own path, the current one marked. */}

@@ -32,6 +32,12 @@
   resized and new, a new bucket (`yy`) — with its own search sidecars (layout
   v2 only): the far side of the parity diffs with changes
   (`boxParity.test.ts`).
+- `v2-slices/`: a store generation over owner slices (`usr` labels, one row per
+  `(path, usr)` as gcs writes them) whose multi-owner dirs have slices under a
+  view's threshold while their totals clear it (`m/big` drawn short of a slice,
+  `m/split` and `m/deep{,/x}` not drawn at all, `m/twin` an object and a dir),
+  single-owner `s/`, 2500 unowned objects directly under `m/` — `path` +
+  `bysize` in 2048-row groups, so `m`'s children band spans two (`pathStore.test.ts`, specs/interval-store.md §7).
 - `v2/plans.json`: `disk-tree tiers plan -j -C` over each v2 sidecar for a
   set of reads — the engine planner's group selection, which the reader's
   span queries must reproduce exactly (`pathStore.test.ts`).
@@ -194,6 +200,50 @@ def write_v2_lens(here: str) -> None:
     write_text(join(out_dir, 'd1.json'), json.dumps(d1, separators=(',', ':')))
 
 
+KiB = 1 << 10
+#: `v2-slices`' objects (key, size) and owner prefixes (deepest wins; the rest unowned).
+SLICE_ROWS = [
+    ('m/big/a/f0', 2 * MiB), ('m/big/b/f0', 100 * KiB),
+    ('m/split/a/f0', 300 * KiB), ('m/split/b/f0', 300 * KiB), ('m/split/u0', 300 * KiB),
+    ('m/deep/x/a/f0', 300 * KiB), ('m/deep/x/b/f0', 300 * KiB),
+    ('m/twin', 50 * KiB), ('m/twin/f0', 600 * KiB),
+    *[(f's/f{i}', 200 * KiB) for i in range(4)],
+    *[(f'm/f{i:04d}', KiB) for i in range(2500)],
+]
+SLICE_OWNERS = {'m/big/a': 'alice', 'm/big/b': 'bob', 'm/split/a': 'alice', 'm/split/b': 'bob',
+                'm/deep/x/a': 'alice', 'm/deep/x/b': 'bob', 'm/twin': 'alice', 's': 'carol'}
+
+
+def write_v2_slices(here: str) -> None:
+    out_dir = join(here, 'v2-slices')
+    shutil.rmtree(out_dir, ignore_errors=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        listing = join(tmp, 'listing.parquet')
+        pd.DataFrame({
+            'bucket': ['bk'] * len(SLICE_ROWS),
+            'name': [n for n, _ in SLICE_ROWS],
+            'size_bytes': [s for _, s in SLICE_ROWS],
+            'created': [TS] * len(SLICE_ROWS),
+            'storage_class_id': [1] * len(SLICE_ROWS),
+        }).to_parquet(listing)
+        labels = join(tmp, 'labels.parquet')
+        pd.DataFrame({'prefix': list(SLICE_OWNERS), 'usr': list(SLICE_OWNERS.values())}).to_parquet(labels)
+        con = duckdb.connect()
+        l2 = join(tmp, 'l2.parquet')
+        aggregate_listing_to_parquet(prepare_listing(con, (listing,)), bucket='bk', scheme='s3', out_parquet=l2, con=con, mean_mtime=True, label=labels, label_cols=('usr',))
+        ix.write_index([('bk', l2)], join(tmp, 'out'), mem='1GB', threads=1, row_group_rows=2048)
+        shutil.os.makedirs(out_dir)
+        files = {}
+        for variant, stem in SORTS.items():
+            dst = join(out_dir, f'{stem}.parquet')
+            shutil.copy(join(tmp, 'out', f'{stem}.parquet'), dst)
+            files[variant] = dst
+    d1 = d1_json(files)
+    for variant, stem in SORTS.items():
+        write_text(join(out_dir, f'{stem}.groups.json'), groups_blob(d1[variant]['schema'], d1[variant]['rows']))
+    write_text(join(out_dir, 'd1.json'), json.dumps(d1, separators=(',', ':')))
+
+
 def search_rows() -> dict[str, list[tuple[str, int]]]:
     """`v2-search`'s objects per bucket (key, size)."""
     bk = [(f'fill/f{i:05d}', 1 << (i % 12)) for i in range(6000)]
@@ -270,6 +320,7 @@ WRITERS = {
     'v1': write_v1,
     'v2': write_v2,
     'v2-lens': write_v2_lens,
+    'v2-slices': write_v2_slices,
     'v2-search': write_v2_search,
     'v2-search-b': lambda here: write_v2_search(here, 'v2-search-b', search_rows_b),
 }

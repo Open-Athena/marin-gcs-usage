@@ -73,6 +73,10 @@ export interface Env {
   /** `1`: a single-literal `q=` is answered from the static name index on `INDEX_R2`
    *  (`_lib/staticFilter.ts`) on every scan of its generation. */
   FILTER_STATIC?: string
+  /** `1`: the map's filter accepts only what the static name index answers exactly — one literal substring
+   *  of a name, unscoped, on a scan the index covers (`_lib/indexedOnly.ts`); anything else is a 400 with a
+   *  reason code, never a path-store scan. */
+  FILTER_INDEXED_ONLY?: string
   /** With `FILTER_STATIC`: how long (ms) a filtered view waits past its phase-2 read for the static
    *  roots' own rows (kind, ages, classes) before answering without them; unset = until they land. */
   FILTER_DETAILS_MS?: string
@@ -88,6 +92,8 @@ export interface Env {
   INTERVAL_STORE_GEN?: string
   /** A revision of the generation's files (rewritten in place): keys every cache over them apart. */
   INTERVAL_STORE_REV?: string
+  /** The static name index's generation in `INDEX_R2` (`static-names/<gen>/`); required with `FILTER_STATIC` / `NAME_SUMMARY_STATIC`. */
+  STATIC_GEN?: string
   STORE_ACCESS_KEY_ID?: string
   STORE_SECRET_ACCESS_KEY?: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */

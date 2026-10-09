@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { answerKey, type Store } from './nameSummaryStatic.js'
+import { answerKey, staticSummary, type Store } from './nameSummaryStatic.js'
 import { catalogAnswer } from './staticCatalog.js'
 import { liveTotal, SuffixHits } from './staticFilter.js'
 import type { Blobs } from './staticNames.js'
@@ -7,12 +7,14 @@ import { latestManifest, tiers } from './staticRuns.js'
 import { fixture } from './testStore.js'
 
 // The daily runs' reader (`staticRuns.ts`) over `fixtures/static-runs/` (`gen.py`): a base through 2026-09-01 and
-// runs for 2026-10-01 and 2026-10-02, against a brute-force oracle over every version on every date.
+// a run per scan — 2026-10-01, 2026-10-02 (date ids), then two scans on one day, 2026-10-03T0600 and 2026-10-03T1800
+// (scan ids, specs/scan-ids-not-dates.md) — against a brute-force oracle over every version on every scan.
 
-const TIERS = ['base', 'deltas/2026-10-01', 'deltas/2026-10-02']
+const RUNS = ['2026-10-01', '2026-10-02', '2026-10-03T0600', '2026-10-03T1800']
+const TIERS = ['base', ...RUNS.map(r => `deltas/${r}`)]
 const FILES = ['shards.json', 'sx/s0000.parquet', 'sx/s0001.parquet', 'catalog/cells.parquet', 'catalog/index.parquet', 'catalog/meta.json']
-const DATES = ['2026-08-01', '2026-09-01', '2026-10-01', '2026-10-02']
-const MANIFESTS = ['manifests/2026-10-01.json', 'manifests/2026-10-02.json']
+const DATES = ['2026-08-01', '2026-09-01', ...RUNS]
+const MANIFESTS = RUNS.map(r => `manifests/${r}.json`)
 const held = new Map<string, ArrayBuffer>()
 let expected: Record<string, Record<string, Record<string, [number, number]>>>
 let catalog: Record<string, [string, number, number, number][] | null>
@@ -25,11 +27,19 @@ beforeAll(async () => {
   catalog = text('catalog-expected.json')
 })
 
+/** A broken publish: keys `missing` (as R2 says it), keys `corrupt` (garbage bytes). */
+interface Damage { missing?: Set<string>; corrupt?: Set<string> }
+const GARBAGE = new Uint8Array(64).fill(0xab).buffer
+
 /** The fixture as one generation's `Blobs` (the base at the root, runs under `deltas/`), listing only the
  *  manifests in `visible`, recording each read. */
-function files(visible: string[] = MANIFESTS, log: string[] = []): Blobs {
+function files(visible: string[] = MANIFESTS, log: string[] = [], damage: Damage = {}): Blobs {
   const path = (key: string) => key.startsWith('deltas/') || key.startsWith('manifests/') ? key : `base/${key}`
-  const bytes = (key: string) => { const b = held.get(path(key)); if (!b) throw new Error(`no fixture ${key}`); return b }
+  const bytes = (key: string) => {
+    if (damage.missing?.has(key)) throw new Error(`static names: static-names/fixture/${key} is missing`)
+    if (damage.corrupt?.has(key)) return GARBAGE
+    const b = held.get(path(key)); if (!b) throw new Error(`no fixture ${key}`); return b
+  }
   return {
     async range(key, offset, length) { const b = bytes(key); const end = length == null ? b.byteLength : offset + length; log.push(`${key}@${offset}+${end - offset}`); return b.slice(offset, end) },
     async suffix(key, n) { const b = bytes(key), size = b.byteLength; log.push(`${key}@-${n}`); return { buf: b.slice(Math.max(0, size - n)), size } },
@@ -46,7 +56,7 @@ const until = (date: string) => Object.fromEntries(DATES.filter(d => d <= date).
 
 describe('static runs', () => {
   it('takes the newest manifest; without one (or without `list`) the base alone', async () => {
-    expect((await latestManifest(files()))?.runs.map(r => r.key)).toEqual(['deltas/2026-10-01', 'deltas/2026-10-02'])
+    expect((await latestManifest(files()))?.runs.map(r => r.key)).toEqual(TIERS.slice(1))
     expect((await latestManifest(files([MANIFESTS[0]])))?.runs.map(r => r.key)).toEqual(['deltas/2026-10-01'])
     expect(await latestManifest(files([]))).toBeNull()
     const { list: _, ...listless } = files()
@@ -63,7 +73,8 @@ describe('static runs', () => {
     expect(expected['late']['2026-10-02']).toEqual({ 'bkt-b': [21, 1] })
   })
 
-  it.each([['2026-10-02', MANIFESTS], ['2026-10-01', [MANIFESTS[0]]], ['2026-09-01', []]] as const)(
+  it.each([['2026-10-03T1800', MANIFESTS], ['2026-10-03T0600', MANIFESTS.slice(0, 3)], ['2026-10-02', MANIFESTS.slice(0, 2)],
+    ['2026-10-01', [MANIFESTS[0]]], ['2026-09-01', []]] as const)(
     'answers every literal of 3+ characters like the oracle on every date through %s', async (last, visible) => {
       const t = tiers(files([...visible]))
       const dates = Object.keys(until(last))
@@ -109,6 +120,18 @@ describe('static runs', () => {
     }
   })
 
+  it('keys runs by scan id: two scans on one day are two runs, two manifests, two answers', async () => {
+    expect((await latestManifest(files()))?.date).toEqual('2026-10-03T1800')
+    expect((await latestManifest(files(MANIFESTS.slice(0, 3))))?.date).toEqual('2026-10-03T0600')
+    expect(await tiers(files(MANIFESTS.slice(0, 3))).scans()).toEqual(DATES.slice(0, 5))
+    const am = '2026-10-03T0600', pm = '2026-10-03T1800'
+    const { answer } = await tiers(files()).names.answer('sub-', ['2026-10-02', am, pm])
+    expect(num(answer!.answers)).toEqual({ '2026-10-02': {}, [am]: { 'bkt-a': [7, 1] }, [pm]: { 'bkt-b': [9, 1] } })
+    const hits = (await new SuffixHits(tiers(files()).names).all('sub-'))!.hits
+    expect([am, pm].map(d => liveTotal(hits, d))).toEqual([{ b: 7, o: 1, roots: 1 }, { b: 9, o: 1, roots: 1 }])
+    expect(expected['sub-']).toEqual({ ...Object.fromEntries(DATES.slice(0, 4).map(d => [d, {}])), [am]: { 'bkt-a': [7, 1] }, [pm]: { 'bkt-b': [9, 1] } })
+  })
+
   it('picks up a new manifest after the TTL: the hit lists are held per version', async () => {
     const visible = [MANIFESTS[0]]
     let now = 0
@@ -121,7 +144,133 @@ describe('static runs', () => {
     visible.push(MANIFESTS[1])
     expect(await total()).toEqual({ b: 0, o: 0, roots: 0 }) // within the TTL: the held state
     now = 1000
-    expect(await t.scans()).toEqual(DATES)
+    expect(await t.scans()).toEqual(DATES.slice(0, 4))
     expect(await total()).toEqual({ b: 30 + 31 + 32 + 33 + 34, o: 5, roots: 5 })
+  })
+})
+
+describe('a broken tier: the stack is cut at it, the scans before it answer exactly, never a failure', () => {
+  const RUN3 = 'deltas/2026-10-03T0600'
+  /** The base and runs 1–2: the scans a cut at run 3 still answers. */
+  const BEFORE = DATES.slice(0, 4)
+  const oracle = (term: string, dates: string[]) => Object.fromEntries(dates.map(d => [d, expected[term][d]]))
+  const missing = (key: string) => `static names: static-names/fixture/${key} is missing`
+  const brokeMsg = (dir: string, error: string) => `static tiers: ${dir} is broken; its scans and every later tier's are not indexed until it loads: ${error}`
+  const storeOf = (t: ReturnType<typeof tiers>): Store => ({ names: t.names, catalog: t.catalog, scans: t.scans, clock: async () => Date.now() })
+  /** Every literal through the summary dispatch on `dates`: its answers and the scans they are exact on. */
+  const dispatch = async (s: Store, dates: string[]) => {
+    const out: [string, unknown, string[] | undefined][] = []
+    for (const term of terms()) {
+      const a = await answerKey(s, term, dates)
+      // Only the scans the answer is exact on (past a cut, a caller's `scan-not-indexed`).
+      out.push([term, Object.fromEntries(Object.entries(num(a.answers)).filter(([d]) => !a.scans || a.scans.includes(d))), a.scans])
+    }
+    return out
+  }
+  const want = (dates: string[], scans: string[]) => terms().map(term => [term, oracle(term, dates), scans])
+  /** Every long literal's map hits, per bucket root on each of `dates`, and the scans they are exact on. */
+  const mapHits = async (src: SuffixHits, dates: string[]) => {
+    const out: unknown[] = []
+    for (const term of long()) {
+      const got = (await src.all(term))!
+      out.push([term, got.scans, Object.fromEntries(dates.map(d => [d, Object.fromEntries(['bkt-a', 'bkt-b'].map(b => {
+        const { b: x, o } = liveTotal(got.hits.filter(h => h.path === b || h.path.startsWith(`${b}/`)), d)
+        return [b, [x, o]] as const
+      }).filter(([, [x, o]]) => x !== 0 || o !== 0))]))])
+    }
+    return out
+  }
+  const wantHits = (dates: string[], scans: string[]) => long().map(term => [term, scans, oracle(term, dates)])
+
+  it('a run listed before its `catalog/meta.json` is written (the gcs incident): cut at it, logged once with the key', async () => {
+    const logged: string[] = []
+    const t = tiers(files(MANIFESTS, [], { missing: new Set([`${RUN3}/catalog/meta.json`]) }), { log: m => logged.push(m) })
+    const st = await t.tiers.state()
+    // The stack the manifest that ended at run 2 listed, versioned as that manifest was.
+    expect([st.version, st.scans, st.tiers.map(x => x.dir), st.broken?.dir]).toEqual(['2026-10-02', BEFORE, [null, 'deltas/2026-10-01', 'deltas/2026-10-02'], RUN3])
+    expect(await dispatch(storeOf(t), BEFORE)).toEqual(want(BEFORE, BEFORE))
+    expect(await mapHits(new SuffixHits(t.names), BEFORE)).toEqual(wantHits(BEFORE, BEFORE))
+    expect(logged).toEqual([brokeMsg(RUN3, missing(`${RUN3}/catalog/meta.json`))])
+  })
+
+  it('heals once the file lands: a cut state lives `brokenTtlMs`, not `ttlMs`, and a cut hit list is never held', async () => {
+    let now = 0
+    const gone = new Set([`${RUN3}/catalog/meta.json`])
+    const t = tiers(files(MANIFESTS, [], { missing: gone }), { now: () => now, ttlMs: 300_000, brokenTtlMs: 30_000, log: () => {} })
+    const src = new SuffixHits(t.names)
+    expect([await t.scans(), (await src.all('qqq'))!.scans]).toEqual([BEFORE, BEFORE])
+    gone.clear()
+    now = 29_999
+    expect(await t.scans()).toEqual(BEFORE)
+    now = 30_000
+    expect(await t.scans()).toEqual(DATES)
+    expect(await dispatch(storeOf(t), DATES)).toEqual(want(DATES, DATES))
+    expect(await mapHits(src, DATES)).toEqual(wantHits(DATES, DATES))
+  })
+
+  it.each([
+    ['corrupt suffix shards', [`${RUN3}/sx/s0000.parquet`, `${RUN3}/sx/s0001.parquet`], 'Start offset -2880154483 is outside the bounds of the buffer'],
+    ['a corrupt catalog index', [`${RUN3}/catalog/index.parquet`], 'parquet file invalid (footer != PAR1)'],
+    ['a corrupt `shards.json`', [`${RUN3}/shards.json`], `Unexpected token '\ufffd', "${'\ufffd'.repeat(10)}"... is not valid JSON`],
+  ])('%s, found by a read: the read is re-run over the cut stack, exact on the scans before it', async (_, keys, error) => {
+    const logged: string[] = []
+    const t = tiers(files(MANIFESTS, [], { corrupt: new Set(keys) }), { log: m => logged.push(m) })
+    // The probe (`catalog/meta.json`) passes: the stack is whole until a read fails.
+    expect(await t.scans()).toEqual(DATES)
+    const got = await dispatch(storeOf(t), DATES)
+    // The literals read before the failure answer every scan; from it on, the scans before run 3.
+    const cutAt = got.findIndex(([, , scans]) => scans!.length < DATES.length)
+    expect(cutAt).toBeGreaterThanOrEqual(0)
+    expect(got).toEqual(terms().map((term, i) => i < cutAt ? [term, oracle(term, DATES), DATES] : [term, oracle(term, BEFORE), BEFORE]))
+    expect([await t.scans(), logged]).toEqual([BEFORE, [brokeMsg(RUN3, error)]])
+  })
+
+  it('`/api/name-summary`: a tier found broken mid-read is `scan-not-indexed` for its scans, the scans before it answer', async () => {
+    const env = { NAME_SUMMARY_STATIC: '1', STATIC_GEN: 'fixture', STORE_BUCKETS: 'bkt-a,bkt-b' }
+    const t = tiers(files(MANIFESTS, [], { corrupt: new Set([`${RUN3}/catalog/index.parquet`, `${RUN3}/sx/s0000.parquet`, `${RUN3}/sx/s0001.parquet`]) }), { log: () => {} })
+    const ask = async (date: string) => {
+      const r = await staticSummary(env, new URLSearchParams({ date, name: 'foo' }), storeOf(t))
+      const j = await r.json() as { code?: string; buckets?: { path: string; b: number; o: number }[] }
+      return [r.status, j.code ?? Object.fromEntries(j.buckets!.filter(x => x.b || x.o).map(x => [x.path, [x.b, x.o]]))]
+    }
+    // The registry still lists 10/3 6pm when the request starts; the catalog read finds run 3 broken.
+    expect(await t.scans()).toEqual(DATES)
+    expect([await ask('2026-10-03T1800'), await ask('2026-10-02'), await t.scans()]).toEqual([[400, 'scan-not-indexed'], [200, expected.foo['2026-10-02']], BEFORE])
+  })
+
+  it('a broken base: no scan is indexed (none answered from runs without it)', async () => {
+    const logged: string[] = []
+    const t = tiers(files(MANIFESTS, [], { missing: new Set(['catalog/meta.json']) }), { log: m => logged.push(m) })
+    const st = await t.tiers.state()
+    expect([st.version, st.scans, st.tiers, st.broken?.dir]).toEqual(['none', [], [], ''])
+    const { io, answer, scans } = await t.names.answer('foo', [])
+    expect([io.tiers, io.rows_read, answer!.answers, scans]).toEqual([0, 0, {}, []])
+    expect(logged).toEqual([brokeMsg('the base', missing('catalog/meta.json'))])
+  })
+
+  it('a cut read is never cached under the whole stack\'s version', async () => {
+    const puts: string[] = []
+    const cache = { get: async () => null, put: async (k: string) => { puts.push(k) } }
+    const t = tiers(files(MANIFESTS, [], { corrupt: new Set([`${RUN3}/sx/s0000.parquet`, `${RUN3}/sx/s0001.parquet`]) }), { log: () => {} })
+    const src = new SuffixHits(t.names, { cache })
+    const first = await src.all('foo'), second = await src.all('foo')
+    expect([first!.scans, first!.io.version, second!.scans, second!.io.version, puts]).toEqual([BEFORE, '2026-10-02', BEFORE, '2026-10-02', ['foo@2026-10-02']])
+  })
+
+  it('mutation: answering past a broken run from the runs around it (skipping it) is wrong — hence the cut', async () => {
+    // Run 2 broken, and a reader that skips it: the base, run 1 and runs 3–4, a partial stack.
+    const RUN2 = 'deltas/2026-10-02'
+    const whole = files()
+    const skip: Blobs = { ...whole, json: async key => {
+      const j = await whole.json<{ runs: { key: string }[]; scans: string[] }>(key)
+      return (key === MANIFESTS[3] ? { ...j, runs: j.runs.filter(r => r.key !== RUN2), scans: j.scans.filter(d => d !== '2026-10-02') } : j) as never
+    } }
+    const pm = '2026-10-03T1800'
+    const wrong: string[] = []
+    for (const term of long()) {
+      const { answer } = await tiers(skip).names.answer(term, [pm])
+      if (JSON.stringify(num(answer!.answers)[pm]) !== JSON.stringify(expected[term][pm])) wrong.push(term)
+    }
+    expect(wrong).toEqual(['foo', 'foo.', 'qqq', 'qqq-', 'late', 'e-foo'])
   })
 })

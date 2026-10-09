@@ -1,7 +1,7 @@
 /** The edge half of the cards (specs/done/dogi.md): the deployment's OG config,
  * page meta stamping, and `/og/<kind>.png` rendering with the colo cache. */
 import RESVG from './vendor/resvg.wasm'
-import type { Env } from '../auth.js'
+import { type Env, json } from '../auth.js'
 import { ledgerHead } from '../ledger.js'
 import { stampMeta } from '../unfurl.js'
 import { cardSvg, type CardData } from './card.js'
@@ -16,8 +16,8 @@ import { imageParams, splitImageParams } from './cred.js'
 import { warmUrls } from './warm.js'
 
 import { canonId, loadRegistry } from '../identity.js'
-import { openPlanId, planDigest } from '../plans.js'
-import { resolveScan } from './data.js'
+import { openPlanId, planDigest, planItemLines } from '../plans.js'
+import { NoScanMatch, resolveScan } from './data.js'
 import { warmSubtree } from '../../api/subtree.js'
 
 export type OgEnv = Env & {
@@ -54,8 +54,7 @@ async function stagedVersion(env: OgEnv): Promise<string | null> {
   if (!env.DB) return null
   const plan = await openPlanId(env.DB).catch(() => null)
   if (plan == null) return null
-  const items = (await env.DB.prepare('SELECT prefix FROM plan_items WHERE plan_id = ?').bind(plan).all<{ prefix: string }>()).results
-  return stagedImageVersion(env, await planDigest(items.map(i => i.prefix)))
+  return stagedImageVersion(env, await planDigest(await planItemLines(env.DB, plan)))
 }
 
 /** Stamp a page's HTML with its card when it has one. */
@@ -147,7 +146,14 @@ export async function serveCard(ctx: { request: Request; env: OgEnv; waitUntil?:
   const hit = await cache.match(cacheKey)
   if (hit) return withTier(hit, r.tier, r.why)
   const t0 = Date.now()
-  const data = await cardData(env, r.kind, view, r.tier, url)
+  let data: CardData | null
+  try {
+    data = await cardData(env, r.kind, view, r.tier, url)
+  } catch (e) {
+    // `?d=` names no scan: a 404, never a card of another scan.
+    if (e instanceof NoScanMatch) return json({ error: e.message }, 404)
+    throw e
+  }
   if (!data) return new Response('no such card', { status: 404 })
   const t1 = Date.now()
   await ensureWasm(RESVG)

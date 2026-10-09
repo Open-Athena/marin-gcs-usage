@@ -1,11 +1,11 @@
-"""The static name index's daily append (specs/static-daily-append.md): each new scan becomes a small
-**run** beside an immutable base generation, published by an immutable per-day manifest, merged into bigger
+"""The static name index's per-scan append (specs/static-append.md): each new scan becomes a small
+**run** beside an immutable base generation, published by an immutable per-scan manifest, merged into bigger
 runs on a binary counter, read by merging base and runs (the smallest `vt` of a version's rows wins).
 
 Per scan `D`, under `static-names/<gen>/deltas/<D>/`:
 
 1. `append` (per key range, Batch): the range's open coalesced versions (`copen`; the base's `cintervals`
-   with `vt` = OPEN on the first day) and `D`'s rows → `pyrmts.intervals.append_intervals` on the answer
+   with `vt` = OPEN on the first run) and `D`'s rows → `pyrmts.intervals.append_intervals` on the answer
    columns alone (`size`, `n_files`) → `cdelta/r####.parquet` (opened `op` 1, closed `op` −1), `dhist/`
    (its suffix rows per three-character prefix) and the next `copen` (scratch bucket).
 2. `shards` (one task): the delta's suffix rows, opens and closes alike (a close record is the version's
@@ -14,15 +14,14 @@ Per scan `D`, under `static-names/<gen>/deltas/<D>/`:
    catalog is what that adds (new cells, changed or new headers).
 4. `publish`: the binary counter's merges, then `manifests/<D>.json` (written last).
 5. `prune`: once `D`'s state is complete (every range's `copen` and `done/` marker, and `manifests/<D>.json`),
-   every earlier day's `state/<prev>/` goes: only the newest complete state is kept. A lost state is rebuilt
+   every earlier scan's `state/<prev>/` goes: only the newest complete state is kept. A lost state is rebuilt
    from the base's `cintervals` and every run's `cdelta` (`rebuild-state`).
 """
 from __future__ import annotations
 
 import json
-import re
 import shutil
-from datetime import datetime, timezone
+from collections.abc import Callable, Collection
 from pathlib import Path
 from time import monotonic
 
@@ -31,21 +30,18 @@ import pyarrow.parquet as pq
 from click import IntRange, group, option
 
 from . import static_catalog as sc
+from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
 from .static_names import (
-    ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, DATA_BUCKET, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SCRATCH_BUCKET, SX_RG,
+    ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SX_RG,
     SX_SCHEMA, Reader, _batches, _src, _sx_cast, _task, answer_rows, connect, err, hist_sql, q, range_preds,
-    read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
+    SCAN_ID, read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
 )
 
 CDELTA_SCHEMA = CINTERVAL_SCHEMA.append(pa.field("op", pa.int8(), nullable=False))
 #: A run's shards: about this many suffix rows each (the base's target).
 RUN_SHARD_ROWS = 50_000_000
-#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 days).
+#: The binary counter folds runs into a new base generation (a compaction) at this level (2^5 = 32 scans).
 COMPACT_LEVEL = 5
-
-
-def scan_id(ts: int) -> str:
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
 
 
 def run_key(first: str, last: str) -> str:
@@ -213,17 +209,50 @@ def merge_cdeltas(files_oldest_first: list[str], out: Path) -> int:
 # ── 3. Catalogs ────────────────────────────────────────────────────────────
 
 
-def merge_catalogs(tiers: list[Path], out: Path) -> dict:
+def merge_drills(dirs: list[Path], out: Path, run: dict, tmp: str | Path | None = None) -> dict:
+    """The merged run's `drill/` (`static_drill.merge_tiers` of the inputs', oldest first): every input must have one (the
+    counter merges runs carrying `drill/` only with each other, `push_run`)."""
+    from .static_drill import Tier, merge_tiers
+
+    if lack := [d.name for d in dirs if not (d / "drill" / "meta.json").exists()]:
+        raise ValueError(f"{run['key']}: inputs without drill/: {lack}")
+    con = connect(16, "100GB", tmp)
+    return merge_tiers(con, [Tier(d / "drill", d.name) for d in dirs], out,
+                       tier={k: run[k] for k in ("key", "first", "last", "level", "scans")})
+
+
+def merge_catalogs(tiers: list[Path], out: Path, membership: dict | None = None) -> dict:
     """Tiers' catalogs (oldest first) merged into `out/{cells,index}.parquet` by `pyrmts.runs` on `(q, bucket, vf)`,
     the newest tier's row winning (headers; cells are never duplicated across tiers): the base plus every run is
-    the whole catalog, equal to a rebuild; runs alone, a merged run's catalog."""
+    the whole catalog, equal to a rebuild; runs alone, a merged run's catalog. `membership` (a merged run's: the
+    newest input's): also `out/meta.json`, which the readers require of every tier."""
     from pyrmts.runs import merge_parquets
 
     out.mkdir(parents=True, exist_ok=True)
     stream = merge_parquets([t / "cells.parquet" for t in tiers], ["q", "bucket", "vf"], reduce="newest")
     rows, index = sc.write_cells(stream, out / "cells.parquet")
     pq.write_table(index, out / "index.parquet", compression=CODEC)
-    return {"cells_rows": rows, "row_groups": index.num_rows, "bytes": (out / "cells.parquet").stat().st_size}
+    doc = {"cells_rows": rows, "row_groups": index.num_rows, "bytes": (out / "cells.parquet").stat().st_size}
+    if membership is not None:
+        meta = {**doc, "index_bytes": (out / "index.parquet").stat().st_size, "cell_rg": sc.CELL_RG, "membership": membership}
+        (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+    return doc
+
+
+#: What every run a manifest lists must hold (the readers' files), checked before the manifest is written.
+RUN_FILES = ("meta.json", "shards.json", "sidecar.parquet", "catalog/meta.json", "catalog/cells.parquet", "catalog/index.parquet")
+
+
+def missing_files(runs: list[dict], exists: Callable[[str], bool], drill_meta: Callable[[str], dict | None] = lambda key: None) -> list[str]:
+    """`<run key>/<file>` for every `RUN_FILES` entry a listed run lacks (`exists(key/file)`), and for a run with a drill
+    (`drill_meta(key)`: its `drill/meta.json`, or None) every file of it (`static_drill.tier_files`)."""
+    from .static_drill import tier_files
+
+    out = []
+    for r in runs:
+        meta = drill_meta(r["key"])
+        out += [f"{r['key']}/{f}" for f in [*RUN_FILES, *(f"drill/{f}" for f in (tier_files(meta) if meta else []))] if not exists(f"{r['key']}/{f}")]
+    return out
 
 
 def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list[str]], V: int, out: Path, tmp: Path) -> dict:
@@ -343,18 +372,34 @@ class TieredCatalog:
 # ── 4. The binary counter and manifests ────────────────────────────────────
 
 
-def push_run(runs: list[dict], new: dict) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
+def push_run(runs: list[dict], new: dict, drilled: Collection[str] = frozenset()) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
     """Add a level-0 run (oldest first) and carry: while the two newest runs share a level, they merge into one a
-    level up. Returns the runs after, and the merges to perform in order (`(inputs, output)`)."""
+    level up. `drilled`: the keys of the runs carrying the drilldown's `drill/`. Two runs merge only when both carry one
+    (`merge_drills` makes the merged run's) or neither does: a merge of one with and one without would drop the one's
+    drill (the reader stops at the first run without one), so it stops the carry there. Returns the runs after, and the
+    merges to perform in order (`(inputs, output)`)."""
+    drilled = set(drilled)
     runs = [*runs, {**new, "level": 0}]
     merges = []
-    while len(runs) >= 2 and runs[-1]["level"] == runs[-2]["level"]:
+    while len(runs) >= 2 and runs[-1]["level"] == runs[-2]["level"] and (runs[-1]["key"] in drilled) == (runs[-2]["key"] in drilled):
         a, b = runs[-2], runs[-1]
         m = {"key": run_key(a["first"], b["last"]), "first": a["first"], "last": b["last"], "level": a["level"] + 1,
              "scans": [*a["scans"], *b["scans"]]}
+        if a["key"] in drilled:
+            drilled.add(m["key"])
         merges.append(([a, b], m))
         runs = [*runs[:-2], m]
     return runs, merges
+
+
+def drill_scans(runs: list[dict], drilled: Collection[str]) -> list[str]:
+    """The scans past the base the drilldown's reader covers: the runs' up to the first without a `drill/`."""
+    out = []
+    for r in runs:
+        if r["key"] not in drilled:
+            break
+        out += r["scans"]
+    return out
 
 
 def manifest(gen: str, base_scans: list[str], runs: list[dict]) -> dict:
@@ -367,10 +412,7 @@ def manifest(gen: str, base_scans: list[str], runs: list[dict]) -> dict:
 
 
 class StateIncomplete(Exception):
-    """`prune` refused: the day's state is not complete (or its run not published), so nothing is deleted."""
-
-
-_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+    """`prune` refused: the scan's state is not complete (or its run not published), so nothing is deleted."""
 
 
 def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: bool, date: str) -> dict:
@@ -384,8 +426,8 @@ def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: b
         if not name.startswith(root):
             raise ValueError(f"{name}: not under {root}")
         day, _, rest = name[len(root):].partition("/")
-        if not _DAY.fullmatch(day):
-            raise ValueError(f"{name}: {day!r} is not a day")
+        if not SCAN_ID.fullmatch(day):
+            raise ValueError(f"{name}: {day!r} is not a scan id")
         d = days.setdefault(day, {"names": [], "bytes": 0, "copen": set(), "done": set()})
         d["names"].append(name)
         d["bytes"] += size
@@ -406,17 +448,18 @@ def prune_plan(objects: list[tuple[str, int]], prefix: str, k: int, published: b
             "names": [n for d in drop for n in sorted(days[d]["names"])]}
 
 
-def prune_state(gcs, gen: str, date: str, k: int, *, bucket: str = DATA_BUCKET, dry_run: bool = False) -> dict:
-    """Delete every `state/<prev>/` (prev < `date`) of generation `gen` in the scratch bucket (`SCRATCH_BUCKET`,
+def prune_state(gcs, gen: str, date: str, k: int, *, bucket: str | None = None, scratch: str | None = None, dry_run: bool = False) -> dict:
+    """Delete every `state/<prev>/` (prev < `date`) of generation `gen` in the scratch bucket (the profile's,
     nowhere else), once `date`'s state is complete and its run published (`prune_plan`). Idempotent: a rerun
     finds nothing before `date`. `gcs`: a `google.cloud.storage.Client`. Returns the plan, `deleted` = objects."""
     prefix = f"{PREFIX}/{gen}"
-    objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(SCRATCH_BUCKET, prefix=f"{prefix}/state/")]
+    bucket, scratch = bucket or data_bucket(), scratch or scratch_bucket()
+    objects = [(b.name, int(b.size or 0)) for b in gcs.list_blobs(scratch, prefix=f"{prefix}/state/")]
     published = gcs.bucket(bucket).blob(f"{prefix}/manifests/{date}.json").exists()
     plan = prune_plan(objects, prefix, k, published, date)
     names = plan.pop("names")
     if not dry_run and names:
-        sb = gcs.bucket(SCRATCH_BUCKET)
+        sb = gcs.bucket(scratch)
         sb.delete_blobs([sb.blob(n) for n in names], on_error=lambda blob: None)
     return {**plan, "deleted": 0 if dry_run else len(names)}
 
@@ -445,9 +488,9 @@ def rebuild_open(con, base_cintervals: str, cdeltas_oldest_first: list[str], out
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
-@group("daily")
+@group("runs")
 def cli() -> None:
-    """The static name index's daily append: per-scan runs beside a base generation (specs/static-daily-append.md)."""
+    """The static name index's per-scan runs beside a base generation (specs/static-append.md)."""
 
 
 def _gcs():
@@ -476,7 +519,7 @@ def _day_scans(base: dict, runs: list[dict]) -> list[str]:
 
 
 @cli.command("prepare")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan to append")
 @option("-g", "--gen", required=True, help="Base generation")
 def prepare_cmd(bucket, date, gen) -> None:
@@ -486,7 +529,8 @@ def prepare_cmd(bucket, date, gen) -> None:
 
     base, runs = _state(bucket, gen, date)
     have = _day_scans(base, runs)
-    found = list_scans(bucket, start=have[-1])["scans"]
+    # The base's layouts (its `scans.json`; gcs's when it names none), so a run's scan is found where the base's were.
+    found = list_scans(bucket, layouts=base.get("layouts") or profile_layouts(), start=have[-1])["scans"]
     nxt = [s for s in found if s["id"] > have[-1]]
     if not nxt or nxt[0]["id"] != date:
         raise SystemExit(f"the next scan after {have[-1]} is {nxt[0]['id'] if nxt else 'none'}, not {date}")
@@ -498,7 +542,7 @@ def prepare_cmd(bucket, date, gen) -> None:
 
 
 @cli.command("append")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan to append (its run's `scans.json`, from `prepare`)")
 @option("-f", "--force", is_flag=True, help="Redo ranges already done")
 @option("-g", "--gen", required=True, help="Base generation")
@@ -508,7 +552,7 @@ def prepare_cmd(bucket, date, gen) -> None:
 @option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the open versions (`state/<D>/copen/`)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket for the open versions (`state/<D>/copen/`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 def append_cmd(bucket, date, force, gen, index, mount, mem, per_task, out, threads, scratch, tmp) -> None:
     """Append the scan to key ranges' open coalesced versions: `deltas/<D>/{cdelta,dhist}/r####.parquet` (data
@@ -546,7 +590,7 @@ def append_cmd(bucket, date, force, gen, index, mount, mem, per_task, out, threa
 
 
 @cli.command("shards")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
@@ -573,7 +617,7 @@ def shards_cmd(bucket, date, gen, mount, mem, target_rows, out, threads, tmp) ->
 
 
 @cli.command("catalog")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
@@ -601,7 +645,7 @@ def catalog_cmd(bucket, date, gen, mount, mem, threads, tmp) -> None:
 
 
 @cli.command("publish")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", help="Local mount of the data bucket (needed when the counter carries: the merges read the runs)")
@@ -614,6 +658,9 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     base, runs = _state(bucket, gen, date)
     run = f"{prefix}/{run_key(date, date)}"
     b = _gcs().bucket(bucket)
+    key = f"{prefix}/manifests/{date}.json"
+    if b.blob(key).exists():
+        raise SystemExit(f"{key} exists: manifests are never rewritten")
     meta = {"rows": 0, "bytes": 0}
     for blob in _gcs().list_blobs(bucket, prefix=f"{run}/sx/"):
         meta["bytes"] += int(blob.size)
@@ -621,7 +668,16 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     meta["rows"] = plan["total_rows"]
     if not b.blob(f"{run}/catalog/meta.json").exists():
         raise SystemExit(f"{run}: no catalog yet")
-    after, merges = push_run(runs, {"key": run_key(date, date), "first": date, "last": date, "scans": [date], **meta})
+
+    def drill_meta(k: str) -> dict | None:
+        blob = b.blob(f"{prefix}/{k}/drill/meta.json")
+        return json.loads(blob.download_as_bytes()) if blob.exists() else None
+
+    new = {"key": run_key(date, date), "first": date, "last": date, "scans": [date], **meta}
+    drilled = {r["key"] for r in [*runs, new] if drill_meta(r["key"]) is not None}
+    after, merges = push_run(runs, new, drilled)
+    if len(after) >= 2 and after[-1]["level"] == after[-2]["level"]:
+        err(f"not merging {after[-2]['key']} and {after[-1]['key']}: only one carries drill/")
     if dry_run:
         print(json.dumps({"merges": [[[r["key"] for r in ins], m["key"]] for ins, m in merges],
                           "manifest": manifest(gen, [s["id"] for s in base["scans"]], after)}, indent=1))
@@ -631,26 +687,46 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
             raise SystemExit("the counter carries: pass -m (the merges read the runs)")
         for ins, m in merges:
             outp = Path(tmp) / "merge" / m["key"]
+            shutil.rmtree(outp, ignore_errors=True)
             dirs = [Path(mount) / prefix / r["key"] for r in ins]
             doc = merge_shards(dirs, outp)
-            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog")
+            membership = json.loads((dirs[-1] / "catalog" / "meta.json").read_text())["membership"]
+            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership)
+            if all(r["key"] in drilled for r in ins):
+                merge_drills(dirs, outp / "drill", m, tmp)
+            # anchored search's tiers (`static_anchors`): merged when every input carries them (else the merged run has
+            # none, and the anchored stack is cut there)
+            if all((d / "anchors" / "meta.json").exists() for d in dirs):
+                from .static_anchors import Tier as ATier, merge_run_local
+
+                meta_a = json.loads((dirs[-1] / "anchors" / "meta.json").read_text())
+                merge_run_local(connect(16, "100GB", tmp), [ATier(d) for d in dirs], ATier(outp), meta_a["R"], meta_a["K"], m["scans"])
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
+            # a merged run is written once: an earlier attempt may have left only the same keys (overwritten here)
+            ours = {f"{prefix}/{m['key']}/{f.relative_to(outp).as_posix()}" for f in outp.rglob("*") if f.is_file()}
+            if stale := sorted(x.name for x in _gcs().list_blobs(bucket, prefix=f"{prefix}/{m['key']}/") if x.name not in ours):
+                raise SystemExit(f"{prefix}/{m['key']}/ holds {len(stale)} objects this merge doesn't write (e.g. {stale[0]}): not merging into it")
             upload_tree(outp, bucket, f"{prefix}/{m['key']}")
             shutil.rmtree(outp)
             m.update(rows=doc["rows"], bytes=doc["bytes"])
     doc = manifest(gen, [s["id"] for s in base["scans"]], after)
     if max(r["level"] for r in after) >= COMPACT_LEVEL:
         err(f"level {COMPACT_LEVEL} reached: compact into a new base generation")
-    b.blob(f"{run}/meta.json").upload_from_string(json.dumps({"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], **meta}, indent=1) + "\n")
-    key = f"{prefix}/manifests/{date}.json"
-    if b.blob(key).exists():
-        raise SystemExit(f"{key} exists: manifests are never rewritten")
+    if not b.blob(f"{run}/meta.json").exists():
+        b.blob(f"{run}/meta.json").upload_from_string(json.dumps({"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], **meta}, indent=1) + "\n")
+    # A manifest only after every file of every run it lists exists (the readers need each tier whole), and never one
+    # whose drill covers fewer scans than the last's.
+    if missing := missing_files(after, lambda k: b.blob(f"{prefix}/{k}").exists(), drill_meta):
+        raise SystemExit(f"not publishing {key}: listed runs lack {missing}")
+    drilled_after = {r["key"] for r in after if drill_meta(r["key"]) is not None}
+    if lost := sorted(set(drill_scans(runs, drilled)) - set(drill_scans(after, drilled_after))):
+        raise SystemExit(f"not publishing {key}: its runs' drill would no longer cover {lost}")
     b.blob(key).upload_from_string(json.dumps(doc, indent=1) + "\n", if_generation_match=0)
     print(json.dumps(doc, indent=1))
 
 
 @cli.command("prune")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket (its `manifests/<D>.json` says D is published)")
+@option("-b", "--bucket", default=data_bucket, help="Data bucket (its `manifests/<D>.json` says D is published)")
 @option("-d", "--date", required=True, help="The newest complete state to keep (the scan just published)")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-n", "--dry-run", is_flag=True, help="Print what would be deleted; delete nothing")
@@ -667,7 +743,7 @@ def prune_cmd(bucket, date, gen, dry_run) -> None:
 
 
 @cli.command("rebuild-state")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="A published day (`manifests/<D>.json`): rebuild `state/<D>/`")
 @option("-f", "--force", is_flag=True, help="Redo ranges already done")
 @option("-g", "--gen", required=True, help="Base generation")
@@ -689,7 +765,7 @@ def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out
         raise SystemExit(f"manifests/{date}.json ends at {days[-1] if days else 'the base'}, not {date}")
     ranges = read_json(f"gs://{bucket}/{prefix}/ranges.json")
     t = _task(index)
-    sb = _gcs().bucket(SCRATCH_BUCKET)
+    sb = _gcs().bucket(scratch_bucket())
     con = connect(threads, mem, tmp)
     for i in range(t * per_task, min((t + 1) * per_task, ranges["k"])):
         name = f"r{i:04d}"
@@ -700,7 +776,7 @@ def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out
         outp = Path(out) / name
         rows = rebuild_open(con, f"{mount}/{prefix}/cintervals/{name}.parquet",
                             [f"{mount}/{prefix}/{run_key(d, d)}/cdelta/{name}.parquet" for d in days], outp / "copen" / f"{name}.parquet")
-        upload_tree(outp / "copen", SCRATCH_BUCKET, f"{prefix}/state/{date}/copen")
+        upload_tree(outp / "copen", scratch_bucket(), f"{prefix}/state/{date}/copen")
         shutil.rmtree(outp)
         doc = {"range": name, "scan": date, "open": rows, "rebuilt_from": len(days), "s": round(monotonic() - t0, 1)}
         sb.blob(f"{prefix}/state/{date}/done/{name}.json").upload_from_string(json.dumps(doc) + "\n")
@@ -710,7 +786,7 @@ def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out
 def verify_terms(con, src: str, version: int, date: str, before: str, terms: list[str], reader: TieredReader, catalog: TieredCatalog,
                  base_reader: Reader, base_catalog: sc.Catalog, base_last: str) -> dict:
     """`verify`'s checks over given readers (the base plus runs, tiered; the base alone) and the date's scan file `src`.
-    The day-before check (tiered = the base alone) runs only when `before` is in the base (≤ `base_last`)."""
+    The previous-scan check (tiered = the base alone) runs only when `before` is in the base (≤ `base_last`)."""
     from .static_catalog import PARENT
     from .static_names import NAME
 
@@ -736,7 +812,7 @@ def verify_terms(con, src: str, version: int, date: str, before: str, terms: lis
             return {"before": nz(answer) == base_before()} if before <= base_last else {}
 
         def base_before() -> dict:
-            """The base generation alone, the day before (verified when it was built)."""
+            """The base generation alone, the previous scan (verified when it was built)."""
             c = base_catalog.answer(t, [before])
             if c is not None:
                 return nz(c["answers"][before])
@@ -784,7 +860,7 @@ def _under(hits: list[tuple], root: str) -> list[tuple]:
 
 
 @cli.command("verify")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The run's scan")
 @option("-g", "--gen", required=True, help="Base generation")
 @option("-m", "--mount", required=True, help="Local mount of the data bucket")
@@ -795,7 +871,7 @@ def _under(hits: list[tuple], root: str) -> list[tuple]:
 def verify_cmd(bucket, date, gen, mount, mem, threads, terms_file, tmp) -> None:
     """The base plus the newest manifest's runs, read as the Worker reads them, against brute force straight from the
     date's scan file (its rows merged per key, the first-hit rule): per literal, a catalog member's per-bucket totals,
-    else its live first hits `(path, usr, size, n_files)` as a list — whole, and under a few drill roots. Also the day
+    else its live first hits `(path, usr, size, n_files)` as a list — whole, and under a few drill roots. Also the scan
     before: the tiered answers equal the base's. JSON report → `deltas/<D>/verify.json`; exit 1 on any difference."""
     from .static_catalog import gcs_catalog
     from .static_names import gcs_reader, read_text

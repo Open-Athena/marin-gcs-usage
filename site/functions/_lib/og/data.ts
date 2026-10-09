@@ -3,13 +3,16 @@
  * scan's attribution with the live ledger applied, as the map does), and the
  * header/footer text. The tier decides only what is *shown* (`card.ts`): the
  * data read is the same. */
+import { FilterRejected } from '../indexedOnly.js'
 import { S3Store } from '@rdub/file-tree/stores/s3'
 import type { Env } from '../auth.js'
 import { pathScans, storeCreds, storeTarget, type Lens } from '../index.js'
 import { loadRegistry, canonId } from '../identity.js'
 import { loadLedger } from '../ledger.js'
+import { scanTimes } from '../scanTimes.js'
 import { parseOwner, queryParam, QueryError } from '../scope.js'
 import { snapshotsPrefix } from '../shared.js'
+import { decodeSel, resolveAfter } from '../../../src/scanSlug.js'
 import { ATTEN_DEFAULT, buildView, MIN_AREA_DEFAULT, NotFound } from '../view.js'
 import { HI_CONTRAST } from '../../../src/colors.js'
 import { applyLedger } from '../../../src/ledgerOverlay.js'
@@ -26,22 +29,34 @@ const FOLD_COLOR = '#2b2e35'
 const BOX_W = 1120
 const BOX_H = 410
 
-/** A `?d=` selection's "after" scan: the leading compact (`261002`,
- * `261002-1200`) or ISO (`2026-10-02`, `2026-10-02T1200`) id. A look-back or
- * `from` suffix is ignored (the card draws the after scan). */
+/** A `?d=` selection's "after" scan prefix (ISO), in any spelling the page
+ * accepts (`scanSlug.ts` `decodeSel`): dashless compact (`261002`,
+ * `2610021200`), legacy (`261002-1200`) or ISO (`2026-10-02T1200`). A
+ * look-back or `from` suffix is ignored (the card draws the after scan). */
 export function scanOfSel(d: string | undefined): string | undefined {
-  if (!d) return undefined
-  const iso = /^(\d{4}-\d{2}-\d{2}(?:T\d{4})?)/.exec(d)
-  if (iso) return iso[1]
-  const c = /^(\d{2})(\d{2})(\d{2})(?:-(\d{4}))?(?:-|$)/.exec(d)
-  return c ? `20${c[1]}-${c[2]}-${c[3]}${c[4] && !/^\d{6}/.test(d.slice(7)) ? `T${c[4]}` : ''}` : undefined
+  return decodeSel(d)?.d
 }
 
-/** The scan a card draws: the selected one if indexed, else the latest. */
+/** A card's `?d=` names no indexed scan: `serveCard` answers 404, never a card
+ * of another scan. */
+export class NoScanMatch extends Error {
+  constructor(readonly d: string) { super(`no scan matches d=${d}`) }
+}
+
+/** The scan a card draws: the latest scan matching the selection (the
+ * resolver — a day's slug is that day's latest scan); the latest scan when
+ * `d` pins no end (absent, or a look-back only). Throws `NoScanMatch` when it
+ * names no scan. Null only when there are no scans at all. */
 export async function resolveScan(env: Env, d: string | undefined): Promise<string | null> {
   const scans = (await pathScans(env, true)).results.map(r => r.date)
-  const want = scanOfSel(d)
-  return want && scans.includes(want) ? want : scans[scans.length - 1] ?? null
+  const sel = decodeSel(d)
+  const times = await scanTimes(env, scans)
+  if (sel?.invalid || sel?.d) {
+    const scan = resolveAfter(sel, scans, times)
+    if (!scan) throw new NoScanMatch(d!)
+    return scan
+  }
+  return resolveAfter(undefined, scans, times)
 }
 
 /** The scan's `meta.json` user list (rank = colour slot), or none. */
@@ -121,6 +136,7 @@ export async function mapCard(env: Env, site: Site, title: string, params: Recor
     tree = view.tree
   } catch (e) {
     if (e instanceof NotFound) return { ...base, subtitle, total: '', empty: 'path not found' }
+    if (e instanceof FilterRejected) return { ...base, subtitle, total: '', empty: 'search unavailable' }
     return { ...base, subtitle, total: '', empty: 'view unavailable' }
   }
   // The live assignments over the scan's attribution, as the map draws them.

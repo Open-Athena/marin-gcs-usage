@@ -4,6 +4,7 @@ every literal's first hits (so every drill path) and answers on every date, and 
 merged runs (the binary counter) likewise."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -14,7 +15,7 @@ from dt_cloud import static_catalog as sc
 from dt_cloud import static_names as sn
 
 from test_static_catalog import _gen
-from test_static_names import DATES, _brute_answer, _oracle, _read, fixture  # noqa: F401
+from test_static_names import _brute_answer, _oracle, _read, fixture, scan_ids  # noqa: F401
 
 V = 3
 K = 2  # scans appended after the base
@@ -84,7 +85,7 @@ def runs(fixture, tmp_path_factory):  # noqa: F811
             run_dirs.append(run)
         merged_dir = tmp / "runs" / "merged"
         sa.merge_shards(run_dirs, merged_dir, target_rows=9)
-        sa.merge_catalogs([d / "catalog" for d in run_dirs], merged_dir / "catalog")
+        sa.merge_catalogs([d / "catalog" for d in run_dirs], merged_dir / "catalog", {"max_rows": V})
     finally:
         sa.SX_RG = rg
     return {"root": root, "scans": scans, "merged": merged, "full": full, "base": base, "runs": run_dirs, "merged_run": merged_dir,
@@ -138,7 +139,7 @@ def test_reader_equals_rebuild(runs, merged):
         hits = tiered.hits(term)
         assert hits == rebuilt.hits(term), term
         nonempty += bool(hits)
-        assert tiered.answer(term, DATES)["answers"] == {d: _brute_answer(oracle, term, d) for d in DATES}, term
+        assert tiered.answer(term, scan_ids(runs["scans"]))["answers"] == {d: _brute_answer(oracle, term, d) for d in scan_ids(runs["scans"])}, term
     assert nonempty >= 8
 
 
@@ -157,7 +158,7 @@ def test_catalog_equals_rebuild(runs):
     members = sorted({r["q"] for r in pq.read_table(full / "cells.parquet").to_pylist() if r["bucket"] == ""})
     assert len(members) > 20
     for t in [*members, *TERMS]:
-        assert tiered.answer(t, DATES) == rebuilt.answer(t, DATES), t
+        assert tiered.answer(t, scan_ids(runs["scans"])) == rebuilt.answer(t, scan_ids(runs["scans"])), t
 
 
 def test_runs_hold_only_new_cells(runs):
@@ -188,6 +189,94 @@ def test_push_run_is_a_binary_counter():
     assert [r["scans"] for r in runs] == [days[:4], days[4:6], days[6:]]
     m = sa.manifest("g", ["2026-10-08"], runs)
     assert m["scans"] == ["2026-10-08", *days] and m["date"] == "2026-10-15" and m["base_scans"] == 1
+
+
+def _push_all(runs: list[dict], ids: list[str], drilled: set[str]) -> tuple[list[list[tuple[str, int]]], list[list[str]], set[str]]:
+    """Push each scan id's run (drilled iff its key is in `drilled`), as `publish` does; the levels and merges after each,
+    and the drilled keys (merged runs whose inputs were drilled, added)."""
+    drilled = set(drilled)
+    levels, merges = [], []
+    for d in ids:
+        runs, m = sa.push_run(runs, {"key": sa.run_key(d, d), "first": d, "last": d, "scans": [d]}, drilled)
+        for ins, out in m:  # in order: a merge's input may be the one before's output
+            if all(r["key"] in drilled for r in ins):
+                drilled.add(out["key"])
+        levels.append([(r["key"], r["level"]) for r in runs])
+        merges.append([out["key"] for _, out in m])
+    return levels, merges, drilled
+
+
+#: gcs's runs after 2026-10-09T1236 (its manifest lists the two level-0 runs apart).
+LIVE = [{"key": "deltas/2026-10-09", "first": "2026-10-09", "last": "2026-10-09", "level": 0, "scans": ["2026-10-09"]},
+        {"key": "deltas/2026-10-09T1236", "first": "2026-10-09T1236", "last": "2026-10-09T1236", "level": 0, "scans": ["2026-10-09T1236"]}]
+
+
+def test_push_run_merges_drilled_runs_with_each_other():
+    """Every run carries `drill/` (the drill stage runs before publish): the counter carries as ever, and each merged run is
+    drilled (`merge_drills` builds its drill), so the drill covers every scan."""
+    levels, merges, drilled = _push_all(LIVE, ["2026-10-10", "2026-10-10T1200", "2026-10-11"],
+                                        {"deltas/2026-10-09", "deltas/2026-10-09T1236", "deltas/2026-10-10", "deltas/2026-10-10T1200", "deltas/2026-10-11"})
+    assert levels == [
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-10", 1)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-10", 1), ("deltas/2026-10-10T1200", 0)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-11", 2)],
+    ]
+    assert merges == [["deltas/2026-10-09T1236_2026-10-10"], [], ["deltas/2026-10-10T1200_2026-10-11", "deltas/2026-10-09T1236_2026-10-11"]]
+    runs = [{"key": k, "scans": [k.removeprefix("deltas/")]} for k, _ in levels[-1]]
+    runs[-1]["scans"] = ["2026-10-09T1236", "2026-10-10", "2026-10-10T1200", "2026-10-11"]
+    assert sa.drill_scans(runs, drilled) == ["2026-10-09", "2026-10-09T1236", "2026-10-10", "2026-10-10T1200", "2026-10-11"]
+
+
+def test_push_run_never_merges_a_drilled_run_with_one_without():
+    """gcs 2026-10-09T1236: `deltas/2026-10-09` carried `drill/` and T1236 didn't; the counter merged them into a run without
+    one, and the reader (which stops at the first run without one) lost 10-09's drill. Two runs that differ on it are never
+    merged: the carry stops there, and the drill still covers every scan up to the first run without one."""
+    levels, merges, drilled = _push_all(LIVE[:1], ["2026-10-09T1236", "2026-10-10"], {"deltas/2026-10-09", "deltas/2026-10-10"})
+    assert levels == [
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236", 0)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236", 0), ("deltas/2026-10-10", 0)],
+    ]
+    assert merges == [[], []]
+    assert sa.drill_scans(LIVE, drilled) == ["2026-10-09"]
+
+
+def test_push_run_merges_runs_without_drill_as_ever():
+    """A deployment without the drill stage: no run carries `drill/`, the counter carries as ever, the drill covers nothing past the base."""
+    levels, merges, drilled = _push_all([], ["2026-10-09", "2026-10-09T1236", "2026-10-10"], set())
+    assert levels == [[("deltas/2026-10-09", 0)], [("deltas/2026-10-09_2026-10-09T1236", 1)],
+                      [("deltas/2026-10-09_2026-10-09T1236", 1), ("deltas/2026-10-10", 0)]]
+    assert merges == [[], ["deltas/2026-10-09_2026-10-09T1236"], []]
+    assert drilled == set()
+
+
+def test_a_merged_run_is_whole(runs, tmp_path):
+    """A merged run holds every file the readers need of a tier (its catalog's `meta.json` included: gcs's first merge,
+    2026-10-09T1236, lacked it), and a manifest listing a run that lacks one is refused before it is written."""
+    merged = runs["merged_run"]
+    (merged / "meta.json").write_text("{}")
+    have = {str(p.relative_to(merged.parent)) for p in merged.rglob("*") if p.is_file()}
+    run = {"key": merged.name}
+    assert sa.missing_files([run], lambda k: k in have) == []
+    assert json.loads((merged / "catalog" / "meta.json").read_text())["membership"] == {"max_rows": V}
+    assert sa.missing_files([run, {"key": "deltas/x"}], lambda k: k in have - {f"{merged.name}/catalog/meta.json"}) == [
+        f"{merged.name}/catalog/meta.json", *(f"deltas/x/{f}" for f in sa.RUN_FILES)]
+
+
+def test_a_listed_runs_drill_is_whole():
+    """A listed run carrying `drill/` must hold every file its `meta.json` implies, else the manifest is refused."""
+    meta = {"long_roots": {"files": 2}, "long_rollups": {"files": 1}, "short_roots": {"files": 1}, "short_rollups": {"files": 0}}
+    run = {"key": "deltas/2026-10-09T1236"}
+    files = [f"deltas/2026-10-09T1236/{f}" for f in sa.RUN_FILES]
+    drill = [f"deltas/2026-10-09T1236/drill/{f}" for f in (
+        "meta.json", "aliases.parquet",
+        "long/roots/r0000.parquet", "long/roots/r0001.parquet", "long-roots-index.parquet", "long-roots-index.top.parquet",
+        "long/rollups/r0000.parquet", "long-rollups-index.parquet", "long-rollups-index.top.parquet", "state/dcount-long.parquet",
+        "short/roots/r0000.parquet", "short-roots-index.parquet", "short-roots-index.top.parquet",
+        "short-rollups-index.parquet", "short-rollups-index.top.parquet", "state/dcount-short.parquet")]
+    have = {*files, *drill}
+    assert sa.missing_files([run], have.__contains__, lambda k: meta) == []
+    assert sa.missing_files([run], (have - {drill[3], drill[-1]}).__contains__, lambda k: meta) == [drill[3], drill[-1]]
+    assert sa.missing_files([run], set(files).__contains__) == []
 
 
 def test_a_literal_crosses_v_on_an_append(runs):
@@ -250,7 +339,7 @@ def test_verify_terms_against_the_scan(runs, day):
     scan, before, base_last = scans[n], scans[n - 1]["id"], scans[len(scans) - K - 1]["id"]
     run_dirs = runs["runs"][:day + 1]
     con = sn.connect(2, "1GB", runs["tmp"] / "vtmp")
-    terms = [*TERMS, "b2", "e5418"]
+    terms = [*TERMS, "b2", "e5418", "qz"]  # `qz`: a short literal no name holds
     report = sa.verify_terms(con, str(root / scan["src"]), scan["version"], scan["id"], before, terms,
                              sa.TieredReader([_reader(base["out"], base["side"]), *(_reader(d, pq.read_table(d / "sidecar.parquet")) for d in run_dirs)]),
                              sa.TieredCatalog([_catalog(base["final"]), *(_catalog(d / "catalog") for d in run_dirs)]),
@@ -289,6 +378,7 @@ def test_rebuild_open_without_runs_is_the_base_open_rows(runs, tmp_path):
 # ── prune: the newest complete state only ──────────────────────────────────
 
 GEN = "g1"
+DATA, SCR = "data-bucket", "scratch-bucket"
 SP = f"{sn.PREFIX}/{GEN}/state"
 
 
@@ -336,20 +426,20 @@ class _GCS:
 def _day(day: str, copen: int = 2, done: int = 2, size: int = 100) -> dict:
     """A day's state objects in the scratch bucket: the first `copen` / `done` of 2 ranges."""
     return {
-        **{(sn.SCRATCH_BUCKET, f"{SP}/{day}/copen/r{i:04d}.parquet"): size for i in range(copen)},
-        **{(sn.SCRATCH_BUCKET, f"{SP}/{day}/done/r{i:04d}.json"): 1 for i in range(done)},
+        **{(SCR, f"{SP}/{day}/copen/r{i:04d}.parquet"): size for i in range(copen)},
+        **{(SCR, f"{SP}/{day}/done/r{i:04d}.json"): 1 for i in range(done)},
     }
 
 
 def _published(*days: str) -> dict:
-    return {(sn.DATA_BUCKET, f"{sn.PREFIX}/{GEN}/manifests/{d}.json"): 1 for d in days}
+    return {(DATA, f"{sn.PREFIX}/{GEN}/manifests/{d}.json"): 1 for d in days}
 
 
 # Never touched: another generation's state, the scratch bucket's other prefixes, the data bucket's runs.
 OTHERS = {
-    (sn.SCRATCH_BUCKET, f"{sn.PREFIX}/g0/state/2026-10-01/copen/r0000.parquet"): 5,
-    (sn.SCRATCH_BUCKET, f"{sn.PREFIX}/{GEN}/sxmap/r0000.parquet"): 5,
-    (sn.DATA_BUCKET, f"{sn.PREFIX}/{GEN}/deltas/2026-10-09/cdelta/r0000.parquet"): 5,
+    (SCR, f"{sn.PREFIX}/g0/state/2026-10-01/copen/r0000.parquet"): 5,
+    (SCR, f"{sn.PREFIX}/{GEN}/sxmap/r0000.parquet"): 5,
+    (DATA, f"{sn.PREFIX}/{GEN}/deltas/2026-10-09/cdelta/r0000.parquet"): 5,
 }
 
 
@@ -358,21 +448,21 @@ def test_prune_keeps_only_the_newest_complete_state():
              **_published("2026-10-10", "2026-10-11"), **OTHERS}
     keep = {**_day("2026-10-11"), **_day("2026-10-12", copen=1, done=0), **_published("2026-10-10", "2026-10-11"), **OTHERS}
     gcs = _GCS(store)
-    assert sa.prune_state(gcs, GEN, "2026-10-11", 2) == {
+    assert sa.prune_state(gcs, GEN, "2026-10-11", 2, bucket=DATA, scratch=SCR) == {
         "date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"],
         "delete": [{"day": "2026-10-09", "objects": 4, "bytes": 202}, {"day": "2026-10-10", "objects": 4, "bytes": 16}],
         "deleted": 8,
     }
     assert store == keep
     # Idempotent: the rerun finds nothing before the day.
-    assert sa.prune_state(gcs, GEN, "2026-10-11", 2) == {"date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"], "delete": [], "deleted": 0}
+    assert sa.prune_state(gcs, GEN, "2026-10-11", 2, bucket=DATA, scratch=SCR) == {"date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"], "delete": [], "deleted": 0}
     assert store == keep
 
 
 def test_prune_dry_run_deletes_nothing():
     store = {**_day("2026-10-09"), **_day("2026-10-10"), **_published("2026-10-10"), **OTHERS}
     before = dict(store)
-    assert sa.prune_state(_GCS(store), GEN, "2026-10-10", 2, dry_run=True) == {
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-10", 2, bucket=DATA, scratch=SCR, dry_run=True) == {
         "date": "2026-10-10", "keep": ["2026-10-10"], "delete": [{"day": "2026-10-09", "objects": 4, "bytes": 202}], "deleted": 0,
     }
     assert store == before
@@ -381,7 +471,7 @@ def test_prune_dry_run_deletes_nothing():
 def test_prune_with_one_state_is_a_noop():
     store = {**_day("2026-10-09"), **_published("2026-10-09"), **OTHERS}
     before = dict(store)
-    assert sa.prune_state(_GCS(store), GEN, "2026-10-09", 2) == {"date": "2026-10-09", "keep": ["2026-10-09"], "delete": [], "deleted": 0}
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-09", 2, bucket=DATA, scratch=SCR) == {"date": "2026-10-09", "keep": ["2026-10-09"], "delete": [], "deleted": 0}
     assert store == before
 
 
@@ -397,11 +487,25 @@ def test_prune_refuses_while_the_day_is_incomplete(day, published, msg):
     store = {**_day("2026-10-09"), **day, **_published("2026-10-09", *(["2026-10-10"] if published else [])), **OTHERS}
     before = dict(store)
     with pytest.raises(sa.StateIncomplete) as e:
-        sa.prune_state(_GCS(store), GEN, "2026-10-10", 2)
+        sa.prune_state(_GCS(store), GEN, "2026-10-10", 2, bucket=DATA, scratch=SCR)
     assert (str(e.value), store) == (msg, before)
 
 
 def test_prune_plan_rejects_a_non_day_dir():
     with pytest.raises(ValueError) as e:
         sa.prune_plan([(f"{SP}/latest/copen/r0000.parquet", 1)], f"{sn.PREFIX}/{GEN}", 1, True, "2026-10-10")
-    assert str(e.value) == f"{SP}/latest/copen/r0000.parquet: 'latest' is not a day"
+    assert str(e.value) == f"{SP}/latest/copen/r0000.parquet: 'latest' is not a scan id"
+
+
+def test_prune_keeps_only_the_newest_complete_state_of_sub_daily_scans():
+    """A deployment scanning every 6 h (cw): states are keyed by scan id to the minute, and an earlier scan of the same
+    day is an earlier state like any other."""
+    store = {**_day("2026-10-09T1801"), **_day("2026-10-10T0001", size=7), **_day("2026-10-10T0601"),
+             **_day("2026-10-10T1202", copen=1, done=0), **_published("2026-10-10T0001", "2026-10-10T0601"), **OTHERS}
+    keep = {**_day("2026-10-10T0601"), **_day("2026-10-10T1202", copen=1, done=0), **_published("2026-10-10T0001", "2026-10-10T0601"), **OTHERS}
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-10T0601", 2, bucket=DATA, scratch=SCR) == {
+        "date": "2026-10-10T0601", "keep": ["2026-10-10T0601", "2026-10-10T1202"],
+        "delete": [{"day": "2026-10-09T1801", "objects": 4, "bytes": 202}, {"day": "2026-10-10T0001", "objects": 4, "bytes": 16}],
+        "deleted": 8,
+    }
+    assert store == keep

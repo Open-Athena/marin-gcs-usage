@@ -17,12 +17,14 @@ import { pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { staticTag } from '../_lib/staticFilter.js'
-import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
+import { indexedGate, staticTag } from '../_lib/staticFilter.js'
+import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
+import { cacheKeyFor, cacheMatch, cacheStore, isPartial, keepFor, serverTiming, UPGRADE_PHASE2_MS, upgradePartial } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
-const SCAN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
+import { isScanId } from '../../src/scanSlug.js'
+import { scanArg } from '../_lib/scanArg.js'
 
 export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
@@ -44,7 +46,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
   const top = Math.min(5000, Number(url.searchParams.get('top')) || 500)
   const summary = url.searchParams.get('summary') === '1'
   const depth = Number(url.searchParams.get('depth')) || undefined
-  if (!SCAN_RE.test(from) || !SCAN_RE.test(to)) return new Response('bad from/to', { status: 400 })
+  if (!isScanId(from) || !isScanId(to)) return new Response('bad from/to', { status: 400 })
   if (from >= to) return new Response('from must precede to', { status: 400 })
   if (path.includes('..') || path.startsWith('/')) return new Response('bad path', { status: 400 })
 
@@ -66,13 +68,22 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
   try {
     qp = queryParam(url.searchParams, ctx.env.QUERY_SYNTAX)
   } catch (e) {
+    // Indexed-only: a form it refuses is refused as such (`a b` is "one term", not "too short").
+    const r = e instanceof QueryError && indexedOnly(ctx.env) ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) : null
+    if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     if (e instanceof QueryError) return new Response(`bad query: ${e.message}`, { status: 400 })
     throw e
   }
   const query = qp.query
+  // An indexed-only deployment: one literal, unscoped (`_lib/indexedOnly.ts`), before auth or any read.
+  const refused = query && indexedOnly(ctx.env) ? rejectQuery(qRaw, url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
+  if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
 
   const gated = await st.time('auth', requireViewer(ctx as never))
   if (gated instanceof Response) return gated
+  // Both ends must be indexed scans: a miss is a 404, never another scan.
+  const miss = (await Promise.all(['from', 'to'].map(key => scanArg(ctx.env, url.searchParams, key)))).find(r => r instanceof Response)
+  if (miss) return miss
 
   // One guard over the D1 pre-step, the cache match and the build (see
   // subtree.ts): a D1 stall becomes a retryable 503, not a raw 500 page.
@@ -88,8 +99,35 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
         `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}`,
       storeKey(ctx.env),
     )
+    // …and both scans covered by the static index for this literal (else `scan-not-indexed`).
+    if (query && indexedOnly(ctx.env)) {
+      const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [from, to]))
+      if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
+    }
+    // The worker's answer: the diff's JSON and what to keep of it — `phase2Ms` (a background full run's) over
+    // the viewer-facing default.
+    const render = async (o: { phase2Ms?: number; trace?: typeof st.trace } = {}) => {
+      const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, query, classes, summary, depth, trace: o.trace, ...(o.phase2Ms ? { phase2Ms: o.phase2Ms } : {}) })
+      const body = JSON.stringify({
+        prev: from,
+        curr: to,
+        path,
+        ...(lens ? { lens: lensTag } : {}),
+        ...(owner ? { owner } : {}),
+        ...(query ? { q: qRaw } : {}),
+        ...diff,
+        threshold: Math.round(diff.threshold),
+        ...(diff.interiors?.late ? { budgetCut: true } : {}),
+      })
+      return { body, keep: keepFor(diff.interiors) }
+    }
+    // A partial answer schedules the full one in the background (`upgradePartial`, as subtree.ts).
+    const upgrade = (res: Response): Response => {
+      res.headers.set('x-cache-upgrade', upgradePartial(ctx.env, cacheKey, () => render({ phase2Ms: UPGRADE_PHASE2_MS }), ctx.waitUntil?.bind(ctx)))
+      return res
+    }
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
-    if (hit) return hit
+    if (hit) return isPartial(hit) ? upgrade(hit) : hit
 
     // The serving box first, when the deployment has one (`_lib/queryBox.ts`).
     const env = ctx.env as Env & BoxEnv
@@ -102,21 +140,13 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
       engine = `worker;fallback=${a.why}`
     }
 
-    const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, query, classes, summary, depth, trace: st.trace })
-    const body = JSON.stringify({
-      prev: from,
-      curr: to,
-      path,
-      ...(lens ? { lens: lensTag } : {}),
-      ...(owner ? { owner } : {}),
-      ...(query ? { q: qRaw } : {}),
-      ...diff,
-      threshold: Math.round(diff.threshold),
-    })
-    // A phase 2 cut short by its time budget may complete on a retry (the isolate holds the groups it read): not kept.
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !diff.interiors?.late)
+    const { body, keep } = await render({ trace: st.trace })
+    // A phase 2 cut short by its time budget: kept briefly (`keepFor`, as subtree.ts).
+    const res = await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), keep)
+    return keep === true ? res : upgrade(res)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
+    if (e instanceof FilterRejected) return new Response(rejectBody(e.reject), { status: 400, headers: { 'content-type': 'application/json' } })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })
     const msg = String((e as Error).message ?? e)
     if (msg.startsWith('query too wide')) return new Response(msg, { status: 413 })

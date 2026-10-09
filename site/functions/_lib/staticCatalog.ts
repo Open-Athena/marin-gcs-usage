@@ -18,7 +18,7 @@
  *  the rows whose `q` equals the literal; the first must be the header. A bucket's value on date `D` is its
  *  newest cell with `vf ≤ D` (none: zero). */
 import { parquetReadObjects } from 'hyparquet'
-import { type Blobs, cmp, decodeFlat, type FlatSchema, type IndexCache, scanMs, type Totals } from './staticNames.js'
+import { type Blobs, cmp, decodeFlat, type FlatSchema, type IndexCache, scanAt, type Totals } from './staticNames.js'
 import { compressors } from './zstd.js'
 
 export const CELLS = 'catalog/cells.parquet'
@@ -60,7 +60,7 @@ export function catalogGroups(idx: CatalogIndex, q: string): [number, number] {
 export function catalogAnswer(member: Member, dates: string[]): Record<string, Totals> {
   const out: Record<string, Totals> = {}
   for (const d of dates) {
-    const D = BigInt(scanMs(d) / 1000), cur = new Map<string, [bigint, bigint]>()
+    const D = BigInt(scanAt(d) / 1000), cur = new Map<string, [bigint, bigint]>()
     for (const c of member.cells) if (c.vf <= D) cur.set(c.bucket, [c.b, c.o])
     out[d] = Object.fromEntries([...cur].filter(([, [b, o]]) => b !== 0n || o !== 0n).sort(([x], [y]) => x < y ? -1 : x > y ? 1 : 0))
   }
@@ -99,7 +99,7 @@ export class StaticCatalog {
     return p
   }
 
-  /** `q`'s cells, or null when it is not a member. `partial`: this file is one tier of several (the daily runs,
+  /** `q`'s cells, or null when it is not a member. `partial`: this file is one tier of several (the base and its runs,
    *  `staticRuns.ts`): its cells are a part, and the header's count (`n`) covers every tier, so it is returned,
    *  not checked here. */
   async lookup(q: string, opts: { partial?: boolean } = {}): Promise<{ io: CatalogIo; member: Member | null }> {

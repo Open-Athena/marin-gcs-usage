@@ -115,3 +115,13 @@ describe('whole exact body and bounded failure', () => {
     expect(fetcher.mock.calls.length).toBe(1); expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true); expect(cancel.mock.calls).toEqual(phase === 'body' ? [[undefined]] : [])
   })
 })
+
+const UNSET_SLASH = { error: 'Use one nonempty NUL/slash-free literal of at most 512 characters.' }
+describe('an indexed-only deployment (`FILTER_INDEXED_ONLY=1`)', () => {
+  it('refuses a name with `/` with its reason code; unset, the validator\'s own message (no code)', async () => {
+    const flagged = await request('date=2026-10-05&name=a%2Fb', { ...env, FILTER_INDEXED_ONLY: '1' } as NameSummaryEnv)
+    expect([flagged.status, await flagged.json(), fetcher.mock.calls]).toEqual([400, { error: 'Only plain text search (a substring of a file or folder name) is supported here; a term can’t contain “/” (it matches within one name).', code: 'unsupported-slash' }, []])
+    const unset = await request('date=2026-10-05&name=a%2Fb')
+    expect([unset.status, await unset.json()]).toEqual([400, UNSET_SLASH])
+  })
+})

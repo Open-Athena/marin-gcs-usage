@@ -38,6 +38,8 @@ from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from .scan_id import META_PATH, min_slug, scan_slug, scan_time, start_key, times_needed
+
 TIB = 1024**4
 GIB = 1024**3
 # Weekly-halving arrow buckets: |dpct| >= THRESH[i] -> deg (i+1)*10 (capped 80).
@@ -47,7 +49,6 @@ HOURS_PER_WEEK = 168.0
 # bump when the av_deg glyphs change: Slack caches avatars per-URL at post
 # time, so a stable URL serves MIXED generations after a redesign.
 AVATAR_REV = 4
-SCAN_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2}))?$")
 
 
 # ---- config -------------------------------------------------------------------
@@ -300,24 +301,28 @@ def _pct_val(dtb: float, tb: float) -> float:
 
 
 def _md(date: str) -> str:
-    d = dt.date.fromisoformat(date)
+    d = dt.date.fromisoformat(date[:10])  # a scan id's day (`YYYY-MM-DD[THHMM]`)
     return f"{d.month}/{d.day}"
 
 
-def scan_ts(scan: str) -> dt.datetime:
-    """A scan id's UTC instant; date-only ids read as midnight (site/src/scan.ts)."""
-    m = SCAN_RE.match(scan)
-    if not m:
-        raise ValueError(f"not a scan id: {scan!r}")
-    y, mo, d, hh, mm = m.groups()
-    return dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mm or 0), tzinfo=dt.timezone.utc)
+# A scan id's UTC instant: `dt_cloud.scan_id`'s, the one definition.
+scan_ts = scan_time
 
 
-def _dlink(scan: str) -> str:
-    """The site's compact `?d=` token for a scan (`260915-0001`; date-only ids
-    stay `260915`)."""
-    y, mo, d, hh, mm = SCAN_RE.match(scan).groups()
-    return f"{y[2:]}{mo}{d}" + (f"-{hh}{mm}" if hh else "")
+def _dlink(scan: str, slug: str | None = None) -> str:
+    """A scan's `?d=` slug in a link: its canonical one (`slug`, from `scan_slugs`), else its minute (`scan_slug`)."""
+    return slug or scan_slug(scan)
+
+
+def scan_slugs(dated_meta: list[tuple[str, dict]], now: dt.datetime | None = None) -> dict[str, str]:
+    """Each scan's canonical `?d=` slug among ``dated_meta``'s scans (`min_slug`: ``261008``, ``26100904``,
+    ``2610091236``), as the site writes it: a date-only scan sharing its day keyed by its ``meta.started``
+    (`start_key`; only those, `times_needed`, as the site reads them). ``dated_meta`` must hold every scan of each
+    day it touches (`load_window`'s lead is a whole day). ``now``: default the current time."""
+    scans = [s for s, _ in dated_meta]
+    meta = dict(dated_meta)
+    times = {s: k for s in times_needed(scans) if (k := start_key(s, meta[s].get("started")))}
+    return {s: min_slug(s, scans, times, now) for s in scans}
 
 
 def _span(a: dt.datetime, b: dt.datetime) -> str:
@@ -430,7 +435,7 @@ def list_scans(root: str) -> list[str]:
     return sorted(
         m.group(1)
         for p in fs.glob(f"{root.split('://', 1)[-1]}/*/meta.json")
-        if (m := re.search(r"/(\d{4}-\d{2}-\d{2}(?:T\d{4})?)/meta\.json$", p))
+        if (m := META_PATH.search(p))
     )
 
 

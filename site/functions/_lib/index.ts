@@ -1447,7 +1447,10 @@ export async function planSizeRects(
  * the path — `(rows under P with size ≥ thr) / group + #buckets` groups, so a
  * flat directory's children or a fleet root's view cost what they draw. The
  * per-row test is exact: depth in a rect, path in its range, `size ≥
- * thrAt(depth)` (a store whose rows are owner slices thresholds per slice). */
+ * thrAt(depth)`. A store whose rows are owner slices thresholds per slice,
+ * so `complete` (the generation's `path` sort) is required there for exact
+ * answers: `completeSlices` replaces each multi-owner directory's slices with
+ * all of them. Not under a lens: its rows are one owner's, one per path. */
 export async function readSizeRects(
   h: IndexHandle,
   rects: Rect[],
@@ -1455,13 +1458,145 @@ export async function readSizeRects(
   lens?: Lens,
   plan?: Span[],
   stop?: () => boolean,
+  complete?: IndexHandle,
 ): Promise<Row[]> {
   if (!rects.length) return []
   const kept = plan ?? await planSizeRects(h, rects, thrAt, lens)
   const lensOk = (r: Row) => !lens || r.usr === lens.key
   const inRect = (r: Row) => rects.some(q => r.depth >= q.dLo && r.depth <= q.dHi && r.path >= q.pLo && r.path < q.pHi)
-  return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r), stop)
+  const read = decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r), stop)
+  // A store without owner labels (cw) has one row per path: nothing to complete.
+  if (!complete || lens || !complete.columns?.includes('usr')) return read
+  // The rect roots' own rows, in parallel with the size read: which roots are multi-owner.
+  const roots = rootsMultiOwner(complete, rects, thrAt, stop)
+  read.catch(() => {})
+  roots.catch(() => {})
+  return completeSlices(complete, await read, rects, await roots, thrAt, stop)
 }
+
+/** The parent `P` of a subtree rect (`[P/, P0)`, or `''` for the store root's `['', '￿')`). */
+export function rectRoot(q: Rect): string {
+  if (q.pLo === '' && q.pHi === '￿') return ''
+  if (!q.pLo.endsWith('/') || q.pHi !== `${q.pLo.slice(0, -1)}0`) throw new Error(`not a subtree rect: [${q.pLo}, ${q.pHi})`)
+  return q.pLo.slice(0, -1)
+}
+
+const bandOf = (depth: number, parent: string): Rect =>
+  parent === '' ? { dLo: depth, dHi: depth, pLo: '', pHi: '￿' } : { dLo: depth, dHi: depth, pLo: `${parent}/`, pHi: `${parent}0` }
+
+/** A parent whose children band `completeSlices` reads: its depth, path and the rect it serves. */
+interface Expand { depth: number; path: string; rect: Rect }
+
+/** The rect roots to expand first: the store root always (its band is the
+ * depth-1 rows, one per bucket and owner), else `P` when it has more than one
+ * row (more than one owner) and a child could clear the threshold. */
+async function rootsMultiOwner(pathIdx: IndexHandle, rects: Rect[], thrAt: (depth: number) => number, stop?: () => boolean): Promise<Expand[]> {
+  const out: Expand[] = []
+  const asks: { depth: number; path: string; rect: Rect }[] = []
+  for (const q of rects) {
+    const P = rectRoot(q)
+    if (P === '') out.push({ depth: q.dLo - 1, path: '', rect: q })
+    else asks.push({ depth: q.dLo - 1, path: P, rect: q })
+  }
+  if (!asks.length) return out
+  const want = new Set(asks.map(a => `${a.depth}\0${a.path}`))
+  const { rows } = await readAsks(pathIdx, asks.map(({ depth, path }) => ({ depth, path })), r => want.has(`${r.depth}\0${r.path}`), { stop })
+  for (const a of asks) {
+    const mine = rows.filter(r => r.depth === a.depth && r.path === a.path)
+    if (mine.length > 1 && mine.reduce((n, r) => n + r.size, 0) >= thrAt(a.depth + 1)) out.push(a)
+  }
+  return out
+}
+
+/** Exact per-path rows for a `bysize` answer over owner slices (specs/interval-store.md §7):
+ * the size sort keeps a slice when *it* clears the threshold, so a drawn directory lost
+ * its smaller owners' slices and a directory whose every slice is small (total over) was
+ * not drawn. Only a multi-owner path can be either, and only a multi-owner path has
+ * multi-owner children (a child's owners are a subset of its parent's), so: from the
+ * multi-owner roots down, read each multi-owner parent's whole children band from the
+ * `path` sort (one depth, one path range — contiguous there), replace those children's
+ * rows with every slice of the ones whose total clears the threshold, and descend into
+ * the multi-owner ones among them that can still hold a child over it. The paths the
+ * size read already shows two slices of are multi-owner without a read: their bands are
+ * read in the first round with the roots', so the rounds (each a span query and a fetch,
+ * in turn) are fewer than the levels. A band read too wide (`decodeSpans`' caps) stops
+ * the descent there: that level and below keep the per-slice answer, as before this
+ * pass. */
+export async function completeSlices(
+  pathIdx: IndexHandle,
+  rows: Row[],
+  rects: Rect[],
+  roots: Expand[],
+  thrAt: (depth: number) => number,
+  stop?: () => boolean,
+): Promise<Row[]> {
+  const key = (r: { depth: number; path: string }) => `${r.depth}\0${r.path}`
+  const out = new Map<string, Row[]>()
+  for (const r of rows) {
+    const k = key(r)
+    const l = out.get(k)
+    if (l) l.push(r)
+    else out.set(k, [r])
+  }
+  const t0 = now()
+  const seeds: Expand[] = []
+  for (const rs of out.values()) {
+    if (rs.length < 2) continue
+    const { depth, path } = rs[0]
+    const rect = rects.find(q => depth >= q.dLo && depth <= q.dHi && path >= q.pLo && path < q.pHi)
+    if (rect && rs.reduce((n, r) => n + r.size, 0) >= thrAt(depth + 1)) seeds.push({ depth, path, rect })
+  }
+  const done = new Set<string>()
+  const fresh = (es: Expand[]) => es.filter(e => {
+    const k = key(e)
+    if (e.depth + 1 > e.rect.dHi || done.has(k)) return false
+    done.add(k)
+    return true
+  })
+  let level = fresh([...roots, ...seeds])
+  let bands = 0
+  let rounds = 0
+  while (level.length && !stop?.()) {
+    rounds++
+    let got: Row[]
+    try {
+      got = await readRects(pathIdx, level.map(e => bandOf(e.depth + 1, e.path)), undefined, undefined, undefined, stop)
+    } catch (e) {
+      if (!/too wide/.test(String((e as Error).message ?? e))) throw e
+      pathIdx.trace?.('complete-wide', level.length)
+      break
+    }
+    bands += level.length
+    const byPath = new Map<string, Row[]>()
+    for (const r of got) {
+      const k = key(r)
+      const l = byPath.get(k)
+      if (l) l.push(r)
+      else byPath.set(k, [r])
+    }
+    const next: Expand[] = []
+    const parents = new Map(level.map(e => [key(e), e]))
+    for (const [k, rs] of byPath) {
+      const { depth: d, path } = rs[0]
+      const i = path.lastIndexOf('/')
+      const e = parents.get(key({ depth: d - 1, path: i < 0 ? '' : path.slice(0, i) }))
+      if (!e) throw new Error(`completeSlices: ${path} (depth ${d}) is in no band read`)
+      const total = rs.reduce((n, r) => n + r.size, 0)
+      if (total >= thrAt(d)) out.set(k, rs)
+      else out.delete(k)
+      if (rs.length > 1 && d + 1 <= e.rect.dHi && total >= thrAt(d + 1)) next.push({ depth: d, path, rect: e.rect })
+    }
+    level = fresh(next)
+  }
+  pathIdx.trace?.('complete', now() - t0)
+  pathIdx.trace?.('bands', bands)
+  pathIdx.trace?.('rounds', rounds)
+  return [...out.values()].flat()
+}
+
+/** Lookups this isolate found too wide (`readAsks`' `rememberWide`), oldest dropped past `TOO_WIDE_HELD`. */
+const tooWide = new Map<string, string>()
+const TOO_WIDE_HELD = 256
 
 /** A point lookup `(depth, path)` or a one-level range under a prefix. */
 export type Ask = { depth: number; path: string } | { depth: number; under: string }
@@ -1484,8 +1619,13 @@ export async function readAsks(
   h: IndexHandle,
   asks: Ask[],
   keep: (r: Row) => boolean,
-  { columns, maxGroups = 60, spanCap = 4000, stop }: { columns?: string[]; maxGroups?: number; spanCap?: number; stop?: () => boolean } = {},
+  { columns, maxGroups = 60, spanCap = 4000, stop, rememberWide }: { columns?: string[]; maxGroups?: number; spanCap?: number; stop?: () => boolean; rememberWide?: boolean } = {},
 ): Promise<{ rows: Row[]; groups: number }> {
+  // `rememberWide`: a lookup this isolate already found too wide (same generation, asks and budget) throws
+  // before any span query — the answer can't change while the generation stands.
+  const wideKey = rememberWide ? `${h.mode}\0${h.date}\0${h.variant}\0${'gen' in h ? h.gen : ''}\0${maxGroups}\0${asks.map(a => `${a.depth}:${'path' in a ? a.path : `${a.under}/`}`).join('\n')}` : null
+  const known = wideKey != null ? tooWide.get(wideKey) : undefined
+  if (known) throw new Error(`lookup too wide: ${known} (cap ${maxGroups}, remembered)`)
   // One rectangle per depth over its asks' [min, max] path, halved while it
   // selects more groups than its asks could need: sparse asks across a deep
   // store (gcs's ~1,260 assignment prefixes over 8k-row groups) would otherwise
@@ -1502,10 +1642,16 @@ export async function readAsks(
   }
   let parts = [...byDepth.entries()].map(([depth, l]) => ({ depth, asks: l.sort((x, y) => (lo(x) < lo(y) ? -1 : lo(x) > lo(y) ? 1 : 0)) }))
   const found = new Map<number, Span>()
+  // The group budget is checked as the plan grows, not after it: once the groups found pass `maxGroups` the
+  // lookup can only fail, so no further span query (nor halving) is started — wide asks (a filter's 48 root
+  // details over many depths) paid every span query and then threw anyway.
+  const over = () => found.size > maxGroups
+  let cut = false
   let t0 = now()
-  while (parts.length) {
+  while (parts.length && !over()) {
     const next: typeof parts = []
     await mapLimit(parts, SPAN_QUERIES, async ({ depth, asks: part }) => {
+      if (over()) { cut = true; return }
       const rect = { dLo: depth, dHi: depth, pLo: lo(part[0]), pHi: part.reduce((m, a) => (hi(a) > m ? hi(a) : m), hi(part[0])) }
       const cap = part.length > 1 ? Math.min(spanCap, 4 * part.length + 16) : spanCap
       let cand: Span[]
@@ -1521,9 +1667,17 @@ export async function readAsks(
     })
     parts = next
   }
+  if (parts.length) cut = true
   h.trace?.('spans', now() - t0)
   const spans = [...found.values()].sort((a, b) => a.rg - b.rg)
-  if (spans.length > maxGroups) throw new Error(`lookup too wide: ${spans.length} row groups (cap ${maxGroups})`)
+  if (over()) {
+    const n = `${cut ? '≥' : ''}${spans.length} row groups`
+    if (wideKey != null) {
+      tooWide.set(wideKey, n)
+      if (tooWide.size > TOO_WIDE_HELD) tooWide.delete(tooWide.keys().next().value!)
+    }
+    throw new Error(`lookup too wide: ${n} (cap ${maxGroups})`)
+  }
   t0 = now()
   const jsons = await fetchGroupJson(h, spans.map(s => s.rg))
   h.trace?.('rgjson', now() - t0)

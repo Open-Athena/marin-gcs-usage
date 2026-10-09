@@ -64,7 +64,9 @@ export async function cacheMatch(env: CacheEnv, key: Request): Promise<Response 
   const hit = await colo().match(key)
   if (hit) {
     const res = new Response(hit.body, hit)
-    res.headers.set('cache-control', PRIVATE)
+    // A partial answer's browser copy lives no longer than its edge copy.
+    const partial = /ttl=(\d+)/.exec(hit.headers.get('x-cache-partial') ?? '')
+    res.headers.set('cache-control', partial ? `private, max-age=${partial[1]}` : PRIVATE)
     res.headers.set('x-cache', 'hit')
     return res
   }
@@ -75,32 +77,108 @@ export async function cacheMatch(env: CacheEnv, key: Request): Promise<Response 
   return clientRes(body, 'kv')
 }
 
-/** Store `body` (already-serialized JSON) in both tiers; return the client response. */
-/** Store `body` (already-serialized JSON) in both tiers and return the client
- * response. With ``waitUntil`` (the Pages `EventContext`'s) the writes run
- * after the response is sent — a KV put is hundreds of ms the viewer needn't
- * wait for; without it they complete first. */
-export async function cacheStore(env: CacheEnv, key: Request, body: string, headers: Record<string, string> = {}, waitUntil?: (p: Promise<unknown>) => void, store = true): Promise<Response> {
-  // `store` false: an answer that may differ on a retry (a time budget cut it short) is served, not kept.
-  if (!store) {
+/** How long a budget-cut answer (phase 2 stopped by its time budget: `interiors.late`) is kept in the colo
+ * cache, seconds. Its totals and match counts are exact; only the drawn interiors are partial, and a
+ * recompute pays the same budget again (gcs 10-09 `nemotron`: every retry of the root diff re-ran both
+ * sides' 900 ms phase 2 and drew nothing more). Short, and colo-only (never KV): a later miss may complete. */
+export const PARTIAL_TTL = 120
+
+/** What `cacheStore` keeps: `true` both tiers for a day / a month; `false` nothing (served only);
+ * `{ partialTtl }` the colo tier only, for that many seconds (a budget-cut answer, `PARTIAL_TTL`). */
+export type Keep = boolean | { partialTtl: number }
+
+/** What a filter view or diff keeps: a phase 2 cut by its time budget (`interiors.late`) briefly, else all. */
+export const keepFor = (interiors?: { late?: number }): Keep => interiors?.late ? { partialTtl: PARTIAL_TTL } : true
+
+/** Store `body` (already-serialized JSON) per `keep` and return the client response. With ``waitUntil``
+ * (the Pages `EventContext`'s) the writes run after the response is sent — a KV put is hundreds of ms the
+ * viewer needn't wait for; without it they complete first. A partial answer's client copy says so
+ * (`x-cache-partial: ttl=<s>`), on a hit too (the stored copy carries the header). */
+export async function cacheStore(env: CacheEnv, key: Request, body: string, headers: Record<string, string> = {}, waitUntil?: (p: Promise<unknown>) => void, keep: Keep = true): Promise<Response> {
+  // `false`: an answer that must not be kept at all is served only.
+  if (keep === false) {
     const res = clientRes(body, 'miss')
     for (const [k, v] of Object.entries(headers)) res.headers.set(k, v)
     res.headers.set('x-cache-store', 'skipped')
     return res
   }
+  const partial = typeof keep === 'object' ? keep.partialTtl : null
   const puts = async () => {
+    if (partial != null) {
+      await colo().put(key, new Response(body, { headers: { ...JSON_HDR, 'cache-control': `public, s-maxage=${partial}`, 'x-cache-partial': `ttl=${partial}` } }))
+      return
+    }
     const ps: Promise<unknown>[] = [colo().put(key, publicRes(body))]
     if (env.CACHE_KV) ps.push(env.CACHE_KV.put(await kvKey(key), body, { expirationTtl: KV_TTL }))
     await Promise.all(ps)
   }
-  let stored = 'deferred'
+  let stored = partial != null ? `partial;ttl=${partial}` : 'deferred'
   if (waitUntil) waitUntil(puts().catch(() => undefined))
-  else { const t0 = performance.now(); await puts(); stored = `awaited;dur=${Math.round(performance.now() - t0)}` }
+  else { const t0 = performance.now(); await puts(); stored = `${partial != null ? `partial;ttl=${partial};` : ''}awaited;dur=${Math.round(performance.now() - t0)}` }
   const res = clientRes(body, 'miss')
   for (const [k, v] of Object.entries(headers)) res.headers.set(k, v)
   res.headers.set('x-cache-store', stored)
+  if (partial != null) {
+    res.headers.set('x-cache-partial', `ttl=${partial}`)
+    res.headers.set('cache-control', `private, max-age=${partial}`)
+  }
   return res
 }
+
+/** A background full run's phase-2 time budget, ms (`upgradePartial`): what the viewer-facing 1.5 s (0.9 s a
+ *  diff side) cut short gets ~7× more, after the response is sent. A Pages Function's `waitUntil` may run
+ *  30 s past the response, and phase 2 stops decoding at its budget, so a diff (both sides at once, then its
+ *  walk) stays well inside. */
+export const UPGRADE_PHASE2_MS = 10_000
+
+/** Per isolate: keys with a background full run in flight (one each: concurrent partial hits don't
+ *  stampede), and keys whose run was cut short too — not retried until the partial they'd replace expires
+ *  (`PARTIAL_TTL`), so a heavy key doesn't re-run every hit. */
+const upgrading = new Set<string>()
+const gaveUp = new Map<string, number>()
+
+/** What `upgradePartial` did: `scheduled`, or why not. */
+export type Upgrade = 'scheduled' | 'no-waituntil' | 'in-flight' | 'gave-up'
+
+/** After serving a partial answer (budget-cut: the miss that produced it, or a partial hit), compute the full
+ *  one in the background (`waitUntil`) with `compute` (the endpoint's build at `UPGRADE_PHASE2_MS`). A whole
+ *  answer replaces the colo entry, at the normal TTL (and goes to KV, as any whole answer does); one cut
+ *  short again leaves the partial as it is. `done` (tests) settles with the run. */
+export function upgradePartial(
+  env: CacheEnv,
+  key: Request,
+  compute: () => Promise<{ body: string; keep: Keep }>,
+  waitUntil: ((p: Promise<unknown>) => void) | undefined,
+  now = Date.now(),
+): Upgrade {
+  if (!waitUntil) return 'no-waituntil'
+  const k = key.url
+  if (upgrading.has(k)) return 'in-flight'
+  const until = gaveUp.get(k)
+  if (until != null) {
+    if (now < until) return 'gave-up'
+    gaveUp.delete(k)
+  }
+  upgrading.add(k)
+  waitUntil((async () => {
+    try {
+      const { body, keep } = await compute()
+      if (keep === true) await cacheStore(env, key, body)
+      else gaveUp.set(k, now + PARTIAL_TTL * 1000)
+    } catch {
+      gaveUp.set(k, now + PARTIAL_TTL * 1000)
+    } finally {
+      upgrading.delete(k)
+    }
+  })())
+  return 'scheduled'
+}
+
+/** Tests: forget the isolate's upgrade state. */
+export const resetUpgrades = (): void => { upgrading.clear(); gaveUp.clear() }
+
+/** Whether a cached response is a partial answer (`x-cache-partial`). */
+export const isPartial = (r: Response): boolean => r.headers.has('x-cache-partial')
 
 /** A `Trace` sink plus its `Server-Timing` rendering (`fetch;dur=812,…`;
  * counts ride as `dur` too — DevTools shows them the same way). */
