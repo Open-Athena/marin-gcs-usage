@@ -166,6 +166,49 @@ export async function stageItems(
   return { plan_id: ids.plan_id, batch_id: ids.batch_id, staged, covered, absorbed, as_of: asOf }
 }
 
+/** Fold stage batches `ids` into batch `into`: one logical staging that went
+ * in as several requests (chunked) reads, and reviews, as the one batch it is.
+ * All of them must be in plan `planId` (open) and staged by the same person;
+ * `into` takes their items, the earliest `created_ts`, and `note` if given
+ * (else keeps its own); the folded batches are deleted. Items keep their own
+ * `added_ts` / `as_of`. One D1 transaction, with an `admin_edits` row
+ * (`update`, `merged_into`) that `emptiedBatches` replays so later fates land on
+ * `into`. */
+export async function mergeBatches(
+  db: D1Database,
+  planId: number,
+  into: number,
+  ids: number[],
+  note: string | null,
+  who: string,
+): Promise<{ into: number; merged: number[]; items: number } | { error: string; status: number }> {
+  const from = [...new Set(ids)].filter(i => i !== into)
+  if (!from.length) return { error: 'ids: at least one batch other than `into`', status: 400 }
+  const plan = await db.prepare('SELECT state FROM plans WHERE id = ?').bind(planId).first<{ state: string }>()
+  if (!plan) return { error: 'no such plan', status: 404 }
+  if (plan.state !== 'open') return { error: 'plan is closed', status: 409 }
+  const all = [into, ...from]
+  const rows = (await db.prepare('SELECT id, plan_id, created_by FROM stage_batches WHERE id IN (SELECT value FROM json_each(?))')
+    .bind(JSON.stringify(all)).all<{ id: number; plan_id: number; created_by: string }>()).results
+  const missing = all.filter(i => !rows.some(r => r.id === i && r.plan_id === planId))
+  if (missing.length) return { error: `not batches of plan ${planId}: ${missing.join(', ')}`, status: 404 }
+  const by = new Set(rows.map(r => r.created_by.toLowerCase()))
+  if (by.size > 1) return { error: `batches were staged by different people (${[...by].join(', ')})`, status: 409 }
+  const ts = Math.floor(Date.now() / 1000)
+  const fromJson = JSON.stringify(from)
+  const n = await db.prepare('SELECT COUNT(*) AS n FROM plan_items WHERE plan_id = ? AND batch_id IN (SELECT value FROM json_each(?))')
+    .bind(planId, fromJson).first<{ n: number }>()
+  await db.batch([
+    db.prepare('UPDATE plan_items SET batch_id = ? WHERE plan_id = ? AND batch_id IN (SELECT value FROM json_each(?))').bind(into, planId, fromJson),
+    db.prepare(`UPDATE stage_batches SET created_ts = (SELECT MIN(created_ts) FROM stage_batches WHERE id IN (SELECT value FROM json_each(?))),
+      note = COALESCE(?, note) WHERE id = ?`).bind(JSON.stringify(all), note, into),
+    db.prepare('DELETE FROM stage_batches WHERE id IN (SELECT value FROM json_each(?))').bind(fromJson),
+    db.prepare("INSERT INTO admin_edits (tbl, pk, action, who, ts, old_json, new_json) VALUES ('plan_items', ?, 'update', ?, ?, ?, ?)")
+      .bind(String(planId), who, ts, JSON.stringify({ batches: from }), JSON.stringify({ merged_into: into, note })),
+  ])
+  return { into, merged: from, items: n?.n ?? 0 }
+}
+
 /** The no-nesting rule for one gesture against a plan's current items (pure):
  * `staged` = the new prefixes no existing item covers, `covered` = the new
  * prefixes an existing item already names, `absorbed` = existing items a new
@@ -232,6 +275,27 @@ export function emptiedBatches(batches: readonly StageBatchRow[], items: readonl
         if (batch != null) of(batch).staged++
       }
       if (batch != null) of(batch).covered += strs(n.covered).length
+    } else if (e.action === 'update' && typeof n.merged_into === 'number') {
+      // `mergeBatches`: the folded batches' prefixes (and fates) now belong to `into`.
+      const into = n.merged_into
+      const folded = new Set(Array.isArray(o.batches) ? o.batches.filter((x): x is number => typeof x === 'number') : [])
+      for (const [p, b] of owner) if (b != null && folded.has(b)) owner.set(p, into)
+      for (const b of folded) {
+        const f = fate.get(b)
+        if (!f) continue
+        const t = of(into)
+        t.staged += f.staged; t.covered += f.covered; t.unstaged += f.unstaged; t.deleted += f.deleted
+        for (const [k, v] of f.absorbed) t.absorbed.set(k, (t.absorbed.get(k) ?? 0) + v)
+        fate.delete(b)
+      }
+      // An earlier batch absorbed into a folded one was absorbed into `into`.
+      for (const f of fate.values()) {
+        for (const [k, v] of [...f.absorbed]) {
+          if (!folded.has(k)) continue
+          f.absorbed.delete(k)
+          f.absorbed.set(into, (f.absorbed.get(into) ?? 0) + v)
+        }
+      }
     } else if (e.action === 'delete') {
       const byRun = typeof o.deleted_by === 'string'
       for (const p of strs(o.prefixes)) {

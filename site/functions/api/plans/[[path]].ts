@@ -6,6 +6,8 @@
 //   PATCH  /api/plans/:id          { state: 'closed' }                     admin
 //   POST   /api/plans/:id/items    { prefixes: [...], note? }              admin
 //   DELETE /api/plans/:id/items    { prefixes: [...] }                     admin
+//   POST   /api/plans/:id/batches/merge { into, ids: [...], note? } -> { into, merged, items }
+//                                                                          admin, or the batches' stager
 //   POST   /api/plans/stage        { prefixes: [...], note?, as_of? } -> { plan_id, batch_id, staged, covered, absorbed, as_of }
 //                                                                          stager (`STAGING` deployments)
 //   GET    /api/plans/staged       the shared open plan (+ items, batches, emptied batches, runs), or { plan: null }   viewer
@@ -18,7 +20,7 @@
 // deployment's shape (`STORE_SCHEME` / `STORE_BUCKETS`).
 import type { D1Database } from "@cloudflare/workers-types"
 import { type Ctx, type Env as AuthEnv, json, requireAdmin, requireStager, requireViewer } from "../../_lib/auth.js"
-import { audit, canonicalPrefix, NO_SHAPE, openPlanId, planDetail, type PlanRow, type PrefixShape, prefixShape, runDetail, stageItems } from "../../_lib/plans.js"
+import { audit, canonicalPrefix, mergeBatches, NO_SHAPE, openPlanId, planDetail, type PlanRow, type PrefixShape, prefixShape, runDetail, stageItems } from "../../_lib/plans.js"
 import { pathScans } from "../../_lib/index.js"
 import { notifyPlan, refreshThread, type NotifyEnv } from "../../_lib/stagedSlack.js"
 
@@ -232,6 +234,26 @@ export const onRequest = async (ctx: Ctx & { env: Env; waitUntil?: Bg }): Promis
         { text: `:leftwards_arrow_with_hook: ${who.replace(/@.*$/, "")} ${verb} ${n} ${n === 1 ? "prefix" : "prefixes"}` }))
     }
     return res
+  }
+
+  // /api/plans/:id/batches/merge — fold a chunked staging's batches into one
+  // (a stager may merge their own; `mergeBatches` refuses mixed stagers).
+  if (segs.length === 3 && segs[1] === "batches" && segs[2] === "merge" && method === "POST") {
+    if (!staging) return json({ error: "this deployment does not stage" }, 404)
+    const gated = await requireStager(ctx)
+    if (gated instanceof Response) return gated
+    const who = gated.email ?? gated.name ?? "guest"
+    const body = await readBody(ctx.request)
+    const into = Number(body.into)
+    const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map(Number) : []
+    if (!Number.isInteger(into) || !ids.length || !ids.every(Number.isInteger)) return json({ error: "into (batch id) and ids (batch ids) required" }, 400)
+    if (!gated.admin) {
+      const rows = (await db.prepare("SELECT created_by FROM stage_batches WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify([into, ...ids])).all<{ created_by: string }>()).results
+      if (rows.some(r => r.created_by.toLowerCase() !== who.toLowerCase())) return json({ error: "not yours to merge" }, 403)
+    }
+    const note = typeof body.note === "string" ? body.note : null
+    const res = await mergeBatches(db, id, into, ids, note, who)
+    return "error" in res ? json({ error: res.error }, res.status) : json(res)
   }
 
   return json({ error: "not found" }, 404)
