@@ -1,0 +1,19 @@
+outs:
+- md5: 786113083c1b9349b24ceca8e0024d95
+  size: 42953
+  hash: md5
+  path: drill-short.json
+meta:
+  computation:
+    cmd: dt-cloud static-names roots short-plan -g 2026-10-08c -r 250000000 > /dev/null
+      && SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-drill-short-map-$(date -u
+      +%H%M%S) ../../job/static-names.sh run short-map 32 -g 2026-10-08c -n 32 > /dev/null
+      && PARALLELISM=32 SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-drill-short-reduce-$(date
+      -u +%H%M%S) ../../job/static-names.sh run short-reduce 59 -g 2026-10-08c -n
+      59 -R 100000 -K 256 > /dev/null && dt-cloud static-names manifest -g 2026-10-08c
+      drill/short > drill-short.json
+    deps:
+      roots-measure.json: 61119f91e097d9a9615bec6462d95c38
+      cintervals.json: 507b62fa89d4e26f31847040c9c86711
+    git_deps:
+      ../../cloud/src/dt_cloud/static_roots.py: b60999a7063df6a0af900ec8466ebb38cdf17db2

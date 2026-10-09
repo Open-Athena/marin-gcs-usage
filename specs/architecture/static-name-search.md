@@ -1,6 +1,6 @@
 # Static name search: rare terms without a server
 
-Can the below-catalog ("rare term") name search run from static files on R2/GCS, read by a Worker, with interactive latency and a bounded worst case? Measured 2026-10-08 on the consolidated store (70 scans, 2026-07-30 → 2026-10-08). **Yes, with a suffix-ordered, denormalized postings layout**: every rare query is one contiguous byte range of at most a few MB, exact on every date, and the only server work left is the daily build. With the **static catalog** (gen `2026-10-08c`, below) every `/names` literal on every scan of the generation is answered without the query box: one- and two-character literals and literals whose suffix range exceeds V = 100K rows from a 25 MB catalog, everything else from the suffix shards (≤ V rows read).
+Can the below-catalog ("rare term") name search run from static files on R2/GCS, read by a Worker, with interactive latency and a bounded worst case? Measured 2026-10-08 on the consolidated store (70 scans, 2026-07-30 → 2026-10-08). **Yes, with a suffix-ordered, denormalized postings layout**: every rare query is one contiguous byte range of at most a few MB, exact on every date, and the only server work left is the daily build. With the **static catalog** (gen `2026-10-08c`, below) every `/names` literal on every scan of the generation is answered without the query box: one- and two-character literals and literals whose suffix range exceeds V = 100K rows from a 25 MB catalog, everything else from the suffix shards (≤ V rows read). The members' **map-filter drilldown** (the filtered view at any path, any date) reads their match roots or, for the few heavy directories, per-child rollups: ≤ ~116K rows per drill, verified 2,270/2,270 against brute force ("Drilldown for heavy terms").
 
 ## The query
 
@@ -249,6 +249,94 @@ Terms (`job/static-names/catalog-terms.txt`, 118, from `catalog-terms.py`): the 
 
 Lookup cost from the laptop (Python, GCS, cold process): a catalog answer 0.10 s median, 0.42 s max, one ranged read of ≤ 2 row groups.
 
+## Drilldown for heavy terms (gen `2026-10-08c`)
+
+The catalog answers a member per bucket. The map filter needs it at **any** path P and date D (or D1 → D2): the term's match roots under P, summed by child of P. A **match root** is a first-hit row (a version of one owner slice of a path, depth ≥ 1, its lowercase name contains `q`, its lowercase parent path does not, live on D). If P's own lowercase path contains `q`, a root at or above P covers the whole subtree and the filtered view is the plain one. Light terms (≤ V range rows) are read from the suffix range directly; this section is the members: the 82,616 long ones and the 16,897 one- and two-character literals. Code: `cloud/src/dt_cloud/static_roots.py` (`dt-cloud static-names roots …`), tests `cloud/tests/test_static_roots.py`.
+
+### Measured: how many roots
+
+`roots measure` (long members, per shard: the catalog's level loop keeping the first-hit rows, aggregated per `(q, path)`, then per directory bottom-up) and `roots measure-short` (short literals, per subtree partition of the coalesced versions); `roots-measure.json` is the report. 32 spot tasks each, ~35 min wall for the long members (~2–3 min a shard); the short pass ~5 min except two partitions holding a giant depth-2 subtree each (2.3B and 4.8B roots, 50 and 40 min). About 12 VM-hours ≈ $3.
+
+| | long members | one- and two-character literals |
+|---|---:|---:|
+| members | 82,616 | 16,897 |
+| root rows (versions × owner slices, all time) | **78,830,388,514** | **12,971,156,040** |
+| distinct root paths | 78,827,915,889 | 12,968,888,282 |
+| open on 2026-10-08 | 38.5B | 7.84B |
+| per member, q50 / q90 / q99 / q99.9 / max | 177,554 / 841,618 / 17.4M / 108M / 228.2M (`son`) | 79 / 17,407 / 18.9M / 117.9M / 361.5M (`.`) |
+| members with more than 100K roots | 78,361 | 986 |
+| (q, dir) with more than 100K roots under dir, by dir depth 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9+ | 79,054 / 77,598 / 49,841 / 48,044 / 51,063 / 44,867 / 7,269 / 3,292 / 228 (361,256 in all) | 3,280 / 6,887 / 7,863 / 8,296 / 9,981 / 9,500 / 1,211 / 528 / 56 (47,602) |
+| children of those dirs, median (depth ≤ 5) / max | 2–7 / 10,459,665 | 3–57 / 20,850,474 |
+
+Nearly every root is a single-version file, so rows ≈ paths. Top long members by roots: `son` 228.2M, `.jso`/`.json`/`.js`/`jso`/`json` ~227M, `.gz` 117.8M, `.jsonl`/`onl`/`sonl`/`jsonl` ~114M, `cess`/`ess` ~112M, then the `.jsonl.gz` chain (~110M), `_wa`/`war`/`_ex`/`example`… (~108–110M, the `*_warc_examples*` files). Top short: `.` 361.5M, `.j`/`j`/`js` ~227M, `so` 223M, `on` 205M, `z` 194M.
+
+Roots per drill level, for the heaviest (`son`, 228M): all 6 buckets hold more than 100K (median 10.9M); 1,506 depth-2 directories hold some, 54 of them more than 100K; depth 3: 30,035 / 80; depth 4: 134,796 / 123; depth 5: 2.2M / 146; depth 6: 5.2M / 388. `example` (108M) sits in a handful of directories (33 at depth 2, 4 over 100K), `.parquet` (75M) in 140 depth-2 dirs (27 over 100K), `tmp` (13.7M) in 110 (4). So a drill below the first two or three levels is almost always a small read; the heavy directories are a thin top-of-tree layer per member.
+
+**Duplication.** Nested members share roots: `.json`, `.jso`, `json`, `jso` and `.js` have almost the same 227M roots, the `.jsonl.gz` chain eleven identical sets of 109,739,217. Per-member digests of the root set (`roots digest`: count and two order-free sums of row hashes, per shard, 32 spot tasks, 13 min) group the 82,616 long members into **35,915 distinct root sets holding 34,226,403,531 rows** (−57%); the rest are aliases (`drill/aliases.parquet`: `q → canonical`, the set's least member in code-point order; aliases cross shards, e.g. `ch_0121.` → `atch_0121.`). Near-duplicates (`son` vs `.json`: 0.3% apart) are not shared; a base + delta encoding would be the next lever (a crude bound: members bucketed by root count within 1% hold 3.7B rows), at the cost of a second read per drill.
+
+### Design
+
+- **Roots files**, one set per kind: every canonical member's roots `(q, path, usr, vf, vt, size, n_files)` sorted `(q, path, usr, vf)`, zstd, `q`/`usr` dictionary-encoded, 8,192-row groups. A drill at P is the key range `[(q, P/), (q, P0))` (`0` = the code point after `/`): one ranged read per file (a member's roots are in one file).
+- **Read bound R = 100,000 rows** (the catalog's V, so a drill decodes no more than a non-member's suffix range). A directory with more than R roots under it is **heavy**; heavy directories are closed upwards (an ancestor holds at least as many roots).
+- **Rollups** for heavy `(q, dir)` only: per child of `dir` (its next path segment), the running Σ size, n_files of the roots at or under the child, one cell per change (`+` at `vf`, `−` at `vt`), the child's value on D being its newest cell with `vf ≤ D` — the catalog's cells keyed by directory instead of bucket. The **K = 256** children with the largest peak bytes (ties by name) are kept by name; every other child is summed into the **remainder** cells, exactly, so a date's kept children plus remainder equal the drill. A header row per `(q, dir)` carries the kept count, the root rows under `dir` and its children.
+- **Dispatch from the indexes alone**: the roots index bounds the rows of `[(q, P/), (q, P0))` by whole row groups (≤ true rows + 2 × 8,192). If the bound is at most R + 2 × 8,192 = 116,384, read the roots (≤ that many rows); else the true count exceeds R, so `(q, P)` is heavy and has a rollup: read `[(q, P), (q, P\0))` of the rollups.
+- **Short literals** use the same files (`drill/short-…`), built from the coalesced versions; their roots are not aliased: equal count signatures (rows, paths, open rows and paths, depth range) occur only among tiny sets, 1.6M of the 12.97B rows.
+
+### Layout (GCS `gs://oa-gcs-usage-dvx/static-names/2026-10-08c/drill/`; R2 `oa-gcs-usage-index`, the same keys under `static-names/2026-10-08c/drill/`)
+
+| Key | What |
+|---|---|
+| `meta.json` | `gen`, `R`, `K`, `rg` (8,192), `idx_rg` (1,024), `dispatch_rows` (R + 2·rg), and per set (`long_roots`, `long_rollups`, `short_roots`, `short_rollups`): files, row groups, rows, bytes, index bytes |
+| `aliases.parquet` | `(q, canonical, shard, n)` for every long member (`n` = its roots); a member reads its canonical's rows (35,915 canonical of 82,616) |
+| `long/roots/s####.parquet`, `short/roots/g###.parquet` | roots: `q` string (dict), `path` string, `usr` string (dict), `vf`, `vt` int64 epoch seconds (`vt` = 4291747200 while open), `size`, `n_files` int64; sorted `(q, path, usr, vf)`; 8,192-row groups |
+| `long/rollups/s####.parquet`, `short/rollups/g###.parquet` | rollups: `q`, `dir`, `child` strings (dict), `kind` int8 (0 header: `child` '', `vf` = children kept, `b` = root rows under `dir`, `o` = children with roots; 1 a kept child's cells; 2 the remainder's cells, `child` ''), `vf`, `b`, `o` int64; sorted `(q, dir, kind, child, vf)`; 8,192-row groups |
+| `{long,short}-{roots,rollups}-index.parquet` | per data row group: `file` (relative to `drill/`), `rg`, `q_min`, `k_min`, `q_max`, `k_max` (its exact first and last `(q, path)` or `(q, dir)`), `offset`, `length` (contiguous byte span), `rows`, `chunks` (per column `data_page_offset, total_compressed_size, dictionary_page_offset or 0`, as the catalog index); sorted `(q_min, k_min)`, the row groups disjoint and ordered; 1,024 entries per index row group |
+| `{long,short}-{roots,rollups}-index.top.parquet` | per index row group: `rg`, `q_min`, `k_min` (its first entry's), `q_max`, `k_max` (its last entry's), `offset`, `length`, `rows` (Σ the data rows of its entries), `chunks` (as above, for the index file's columns) |
+
+### How the Worker reads it
+
+1. Per isolate (Cache API between isolates): `drill/meta.json`, `drill/aliases.parquet` (long members only), and the four `…-index.top.parquet` files.
+2. `t` = the lowercased literal; if `t` occurs in P's lowercased path, answer the plain (unfiltered) view. Kind = short when `[...t].length ≤ 2`, else long; for long, `c = aliases[t] ?? t`.
+3. Roots key range `lo = (c, P + '/')`, `hi = (c, P + '0')`, compared as `(q, key)` pairs in code-point order. In the roots top: `a` = first entry with `(q_max, k_max) ≥ lo`, `b` = first with `(q_min, k_min) ≥ hi`. If the top entries strictly between `a` and `b − 1` hold more than `dispatch_rows` rows, the directory is heavy (go to 5). Else one ranged GET of the index file over top entries `[a, b)`, decode, and select the index entries meeting `[lo, hi)` the same way; their `rows` sum is the bound.
+4. Bound ≤ `dispatch_rows`: one ranged GET per data file (in practice one) over those groups' spans, decode with `chunks`, keep rows with `lo ≤ (q, path) < hi`; for each date D, rows with `vf ≤ D < vt` (D = scan epoch seconds) summed by `path`'s segment after `P/`.
+5. Heavy: the same two-level lookup on the rollups for `[(c, P), (c, P + '\0'))`; the rows are the header, then per kept child its cells, then the remainder's. Per date, each child's (and the remainder's) newest cell with `vf ≤ D`, zero if none. The treemap shows the kept children plus one "N others" cell (header `o` − kept); the table lists the kept ones. Diffs read both dates from the same rows.
+6. Absent from the catalog (a light term): the suffix range, as today.
+
+The Python reference is `static_roots.Drill` over `GroupFile` (two-level; `gcs_drill` reads GCS the same way); `roots drill-query` prints its answers with the bytes and rows read.
+
+### Build and cost (2026-10-08c)
+
+| Stage (DVX out) | What | Wall | Batch |
+|---|---|---:|---|
+| `roots-measure.json` | the measurement above | 35 min (+ 2 straggler partitions) | 32 + 32 spot |
+| `drill-aliases.json` | per-member digests → `drill/aliases.parquet` | 13 min | 32 spot |
+| `drill-long.json` | per shard: canonical members' roots (level loop), sort, write roots + rollups + their per-file indexes; queue, biggest first | ~1.9 h (s0012: 893M roots, 1.4 h) | 32 spot; 28.5 task-hours |
+| `drill-short.json` | `short-plan` (59 q-groups of ≤ 250M roots; `.` alone is 361M), `short-map` (per subtree partition, 16 `hash(path)` pieces each written on its own, rows split by q-group → the scratch bucket's `drill-short-map/`), `short-reduce` (per q-group: roots + rollups) | map 71 min (the 4.8B-root partition), reduce 23 min | 32 + 59 spot; 8.8 task-hours for the reduce |
+| `drill.json` | `index`: concatenated two-level indexes, `meta.json` | ~10 min | 1 spot |
+| `drill-answers.jsonl` | `drill-query` over the cases (Python reader, GCS ranged reads) | 4.4 min (455 cases × 5 dates) | laptop |
+| `drill-brute.jsonl` | `drill-brute` per date straight from the scan file (`-k`: past 200K children only the drill's kept children, plus the exact total) | ~3–8 min per date | 5 spot |
+| `verify-drill.json` | `drill-verify` | 3 s | laptop |
+| `r2.dvc` | `r2-copy` (`R2_SERVED` now includes `drill/`): 652 objects, 299.4 GB, to `oa-gcs-usage-index` `static-names/2026-10-08c/drill/` | 55.7 min (~90 MB/s) | the ch-store VM, `nice`d |
+
+| Set | Rows | Bytes | Row groups | Index / top | Heavy `(q, dir)` | Rollup cells |
+|---|---:|---:|---:|---:|---:|---:|
+| long roots (35,915 canonical members) | 34,226,403,531 | 215.1 GB (6.3 B/row) | 4,178,159 | 459 MB / 842 KB | 160,813 | 17,036,099 (102 MB) |
+| short roots (16,897 literals) | 12,971,156,040 | 83.5 GB (6.4 B/row) | 1,583,420 | 176 MB / 321 KB | 47,602 | 6,866,923 (53 MB) |
+
+Root counts equal the measurement and the alias plan exactly. Bytes per row: the `path` string is ~90% of a row; zstd level 9 instead of the default saves ~10% (measured on a slice), not pursued.
+
+**Cost.** About 85 spot VM-hours for measurement, digests, both builds, the brute force and the indexes (≈ $19; the long build alone 28.5 task-hours, the short map ~15, the reduce 8.8), including two wasted runs (an out-of-memory short partition retried before it was split into pieces; a brute force that tried to list 20M children per case). R2: 299.4 GB copied once (GCS egress ≈ $36), stored ≈ $4.5/month; the GCS copy ≈ $6/month.
+
+### Verification
+
+Cases (`job/static-names/drill-cases.jsonl`, from `drill-cases -n 1` over `drill-terms.txt`): 38 terms — the named heavy members (`son`, `.json`, `.gz`, `cess`, `example`, `.parquet`, `par`, `tmp`, `47.tmp`, `46_`, `train`, `json`, `jsonl`), four aliases whose canonical sits in another shard (`_chunk033_1980s-2040s.`, `079.json`, `ch_0121.`, `553_war`), nine hash-sampled members of 3–8 characters, and 12 short literals; per term and directory depth (1–11) the largest heavy and the largest light directory (≥ 10K roots); 455 cases, 251 answered from roots, 203 from rollups, 1 plain. Dates 2026-10-08, 10-01 (v2 scans: files and directories), 09-15, 08-15, 07-30 (v1: directories only).
+
+| Check | Result |
+|---|---|
+| `verify-drill.json`: `drill-query` (two-level index → roots or rollup, the Worker's dispatch) vs **brute force** straight from each date's scan file | **2,270 / 2,270 (term, P, date) equal**; 1,090 of them non-empty (roots 344 long + 261 short, rollups 268 long + 217 short); 2.85M children compared on roots reads, 85,819 kept children on rollup reads; 53 cases with more than 200K children (up to 20.9M; checked as kept children + remainder = total), 65 rollups with a non-zero remainder |
+| Read cost (laptop, GCS) | roots ≤ 114,688 rows / 2.8 MB (median 90,112 / 0.37 MB), 0.6 s median; rollups ≤ 16,384 rows / 180 KB, 0.34 s median; plus one index row group (~110 KB) per lookup |
+| Local (`cloud/tests/test_static_roots.py`) | roots = every member's first-hit versions (chunked feeding included) and every short literal's; per-directory counts and the subtree partitions' sums = brute force; at R = 3, 10, 10⁶ with 4- and 8-row groups every (member, directory, date) view through the two-level index equals brute force (rollup kept children and remainder); digests equal ⇔ root sets equal, aliased reads = brute force; `drill-verify` passes and catches an altered reference |
+
 ## Alternatives compared
 
 | Design | Size | Round trips per rare query | Bytes per rare query | Verdict |
@@ -267,8 +355,8 @@ Nothing on the query path: catalog lookups are static (`mega-index.md`), rare te
 
 1. ~~Weight and bound~~: done as the static catalog's membership (suffix-range rows > V = 100K, plus every one- and two-character literal), gen `2026-10-08c`.
 2. ~~Full base build~~: done, `2026-10-08` (every version) and `2026-10-08c` (coalesced versions + catalog), verified, on R2.
-3. **Worker reader** (hot-preview worktree): consume the catalog as in "How the Worker should consume it"; point `STATIC_GEN` at `2026-10-08c`; drop the `short`, `bucket-name` and `registry-weight` skips; measure cold/warm latency.
-4. **Daily append** as a Batch stage after the daily scan: intervals `append` → `coalesce_append` → the shards' delta files (+ close records, read by the Worker beside the base) and `static_catalog.append`; weekly compaction into a new base generation.
+3. **Worker reader** (hot-preview worktree): consume the catalog as in "How the Worker should consume it"; point `STATIC_GEN` at `2026-10-08c`; drop the `short`, `bucket-name` and `registry-weight` skips; measure cold/warm latency. Map-filter drilldown for members: "Drilldown for heavy terms", "How the Worker reads it".
+4. **Daily append** as a Batch stage after the daily scan: intervals `append` → `coalesce_append` → the shards' delta files (+ close records, read by the Worker beside the base) and `static_catalog.append`; weekly compaction into a new base generation. The drilldown needs its own: a day's opened/closed versions give each member's new roots and closures (a delta roots file in the same layout, read beside the base), new heavy directories and members, and alias splits when two equal sets diverge — not built.
 5. Retire the always-on VM (keep ClickHouse only for ad-hoc experiments, if at all).
 
 ## Files
@@ -278,5 +366,6 @@ Nothing on the query path: catalog lookups are static (`mega-index.md`), rare te
 - `job/ch-store/static-name-term-stats.sh`, `static-name-terms.txt`: the per-term table.
 - `cloud/src/dt_cloud/static_names.py` (`dt-cloud static-names …`), `cloud/tests/test_static_names.py`, `job/static-names.sh`, `job/static-names/{ch-answers.py,terms.txt}`, `static-names/<gen>/*.dvc` (the DVX stages).
 - `cloud/src/dt_cloud/static_catalog.py` (`dt-cloud static-names catalog …`), `cloud/tests/test_static_catalog.py`, `job/static-names/{catalog-terms.py,catalog-terms.txt,catalog-ch-terms.txt}`.
+- `cloud/src/dt_cloud/static_roots.py` (`dt-cloud static-names roots …`; Batch `MODULE=static_roots`), `cloud/tests/test_static_roots.py`, `job/static-names/{drill-terms.txt,drill-cases.jsonl}`; stages `static-names/2026-10-08c/{roots-measure,drill-aliases,drill-long,drill-short,drill}.json`, `drill-{answers,brute}.jsonl`, `verify-drill.json`.
 - Built data: `gs://oa-gcs-usage-dvx/static-names/{2026-10-08,2026-10-08c}/` and R2 `oa-gcs-usage-index` `static-names/{2026-10-08,2026-10-08c}/`; intermediates in `gs://oa-gcs-usage-scratch/static-names/` (7-day expiry).
 - Prototype data: `default.sx_names`, `default.sx_rows`, `default.sx_proto` on the VM; `gs://oa-gcs-usage-dvx/scratch/bench/ch-store/static/sx-{4096,16384}.parquet` (1.5 GiB).

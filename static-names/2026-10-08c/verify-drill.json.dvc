@@ -1,0 +1,12 @@
+outs:
+- md5: 2c2f0c35df99e1357748fce4584ad4f4
+  size: 83734
+  hash: md5
+  path: verify-drill.json
+meta:
+  computation:
+    cmd: dt-cloud static-names roots drill-verify drill-brute.jsonl drill-answers.jsonl
+      > verify-drill.json
+    deps:
+      drill-brute.jsonl: 23aec8dffa1d4a043000d798b0cc0083
+      drill-answers.jsonl: ac369a75c02b21f7dc5ac9c18dc57795
