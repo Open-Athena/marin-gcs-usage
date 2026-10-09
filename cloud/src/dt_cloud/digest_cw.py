@@ -58,14 +58,15 @@ def _quota(tb: float, q: Quota | None) -> str:
     return f" · {tb / (q.bytes / TIB) * 100:.1f}% of {q.name}" if q else ""
 
 
-def _extras(extra: dict[str, float], dextra: dict[str, float | None]) -> str:
-    """` · <bucket> <TiB> TiB (Δ)` per non-primary bucket (Δ omitted when the
-    prior scan lacked the bucket); `''` with none. The OP + weekly bullets'
-    form; the daily reply uses `_tail` (per-bucket quota clauses)."""
+def _extras(extra: dict[str, float], dextra: dict[str, float | None], scan: str, since: dt.datetime | None, cfg: DigestConfig) -> str:
+    """` · [<label>](<over-time url>) <TiB> TiB (Δ)` per non-primary bucket (Δ
+    omitted when the prior scan lacked the bucket), linked over the same span
+    as the line it's on; `''` with none. The OP's form; the daily reply uses
+    `_tail` (per-bucket quota clauses)."""
     out = ""
     for b, tb in extra.items():
         d = dextra.get(b)
-        out += f" · {b} {tb:,.0f} TiB" + (f" ({_tb(d)})" if d is not None else "")
+        out += f" · {_bucket_link(b, scan, since, cfg)} {tb:,.0f} TiB" + (f" ({_tb(d)})" if d is not None else "")
     return out
 
 
@@ -282,9 +283,10 @@ def op_body(month: Month, m: dt.date, plot_url: str | None, cfg: DigestConfig) -
     mweekly = (mdtb / base.tb * 100 * 7 / days) if base.tb else 0
     # "month-to-date" opens the Diff section over the whole month so far
     # (lead-in scan -> latest), the same way each weekly bullet links its span
-    mtd_url = _diff_url(last.scan, scan_ts(base.scan) if base is not last else None, site_url)
+    mtd_since = scan_ts(base.scan) if base is not last else None
+    mtd_url = _diff_url(last.scan, mtd_since, site_url)
     lines = [
-        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {last.tb:,.0f} TiB{_quota(last.tb, q)}{_extras(last.extra, _dextra(last, base if base is not last else None))} · [dashboard]({site_url}/)",
+        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {last.tb:,.0f} TiB{_quota(last.tb, q)}{_extras(last.extra, _dextra(last, base if base is not last else None), last.scan, mtd_since, cfg)} · [dashboard]({site_url}/)",
         # the OP is re-edited every scan, so it is the thread's live view; say which scan it reflects
         f"_as of {_md(last.date)} {scan_ts(last.scan):%H:%M}Z_",
         "",
