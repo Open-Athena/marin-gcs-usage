@@ -10,6 +10,7 @@ import { onRequestGet as subtree } from './subtree'
 import { onRequestGet as diff } from './diff'
 import { onRequestGet as series } from './series'
 import { onRequestGet as caps } from './filter-caps'
+import { onRequestGet as filterScans } from './filter-scans'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('../_lib/testStore')).S3Store }))
 
@@ -135,6 +136,30 @@ describe('the map routes, flag set: each rejected form is a 400 with its code; u
   }
 })
 
+describe('the map routes, flag set: a heavy literal with no heavy source (`FILTER_STATIC_HEAVY` off)', () => {
+  // the suffix index alone: a literal past its 40-row bound (or of one or two characters) has no source
+  const light = (scans = [A, B]): StaticFilterStore => ({ source: new SuffixHits(new StaticNames(blobsOf(filterFiles)), { maxRows: 40 }), scans: async () => scans, gen: 'fixture' })
+  it('says so in words', () => {
+    expect(refusal('term-too-common')).toEqual([400, { error: 'This term matches too many files to search here; try a longer one.', code: 'term-too-common' }])
+  })
+  it('is `term-too-common` on an indexed scan — the term is the reason, not the scan', async () => {
+    const env = envOf(true, light())
+    expect(await Promise.all([
+      call(subtree, `date=${A}&path=bk/fill&q=0`, env),
+      call(subtree, `date=${B}&path=bk/fill&q=0`, env),
+      call(diff, `from=${A}&to=${B}&path=bk/fill&q=0`, env),
+      call(subtree, `date=${A}&path=bk&q=tomat`, env),
+    ])).toEqual([refusal('term-too-common'), refusal('term-too-common'), refusal('term-too-common'), [200, 'ok']])
+  })
+  it('a scan outside the generation is still `scan-not-indexed`, whatever the term', async () => {
+    const env = envOf(true, light([A]))
+    expect(await Promise.all([
+      call(subtree, `date=${B}&path=bk/fill&q=0`, env),
+      call(subtree, `date=${B}&path=bk&q=tomat`, env),
+    ])).toEqual([refusal('scan-not-indexed'), refusal('scan-not-indexed')])
+  })
+})
+
 describe('the map routes, flag set: a scan the static index doesn\'t cover', () => {
   it('a heavy literal past the drill base: subtree and diff refuse, the covered scan answers', async () => {
     const env = envOf(true, store([A, B], [A]))
@@ -172,5 +197,16 @@ describe('/api/filter-caps', () => {
   it('names the flag', async () => {
     const got = await Promise.all([envOf(true), envOf(false)].map(async env => (await caps({ request: new Request('http://localhost/api/filter-caps'), env } as never)).json()))
     expect(got).toEqual([{ indexedOnly: true }, { indexedOnly: false }])
+  })
+})
+
+describe('/api/filter-scans', () => {
+  it('lists the static index\'s covered scans (ascending), or null without a static filter', async () => {
+    const plain = { ...base } as Env
+    const got = await Promise.all([envOf(true, store([B, A])), plain].map(async env => {
+      const r = await filterScans({ request: new Request('http://localhost/api/filter-scans'), env } as never)
+      return [r.status, await r.json()]
+    }))
+    expect(got).toEqual([[200, { scans: [A, B] }], [200, { scans: null }]])
   })
 })

@@ -17,6 +17,7 @@ import type { Band } from './series'
 import { stringParam } from 'use-prms'
 import { perf, usePerfCommit } from './perf'
 import { SERIES_MAX_PATHS } from '../functions/_lib/seriesLimits'
+import { ApiError, apiError, refusalOf } from './filterCaps'
 
 // Stored bytes over the historical scans, scoped exactly like the map: the
 // drilled prefix, a user, or an owner pool (`/api/series` — one row read per
@@ -222,7 +223,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
     queryFn: async () => {
       const pf = perf.start('series', `${prefix || '/'}${scope}|n${scans.length}`)
       const r = await pf.track(sfetch(`/api/series?path=${encodeURIComponent(prefix)}${scope}`, { credentials: 'include' }))
-      if (!r.ok) { pf.fail(); throw new Error(`series: ${r.status}`) }
+      if (!r.ok) { pf.fail(); throw new ApiError(`series: ${r.status}`, apiError(r.status, await r.text()).refusal) }
       const j = await r.json() as Series
       pf.decoded()
       return j
@@ -391,7 +392,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
           </label>
         </div>
       )}
-      {seriesQ.isError && !tooMany && <p className="sub"><i>series unavailable</i></p>}
+      {seriesQ.isError && !tooMany && <p className="sub"><i>{refusalOf(seriesQ.error)?.reason ?? 'series unavailable'}</i></p>}
       {tooMany ? (
         <p className="loading">size over time charts up to {SERIES_MAX_PATHS} matches; this filter has {nPaths.toLocaleString()}. Narrow it to chart.</p>
       ) : allZero ? (

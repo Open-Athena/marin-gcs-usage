@@ -60,6 +60,9 @@ export const covers = (found: Found, dates: string[]): boolean => !found.scans |
  *  strict descendants are wanted. */
 export interface HitSource {
   hits(key: string, under: string): Promise<Found | null>
+  /** Whether a heavy literal (short, or past the suffix bound) has a source (`FILTER_STATIC_HEAVY`'s
+   *  drilldown): without one, `hits` declines it on every scan — the term, not the scan, is the reason. */
+  readonly heavy?: boolean
 }
 
 /** The generation's scans (ids). */
@@ -119,6 +122,8 @@ export class SuffixHits implements HitSource {
       if (n > HELD_HITS && k !== keys[0]) this.held.delete(k)
     }
   }
+
+  get heavy(): boolean { return !!this.opts.heavy }
 
   async hits(key: string, root: string): Promise<Found | null> {
     if (shortLiteral(key)) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
@@ -229,16 +234,24 @@ export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | unde
   return staticLiteral(query?.ast) && staticFilterStore(env) ? `${staticFilterStore(env)!.gen}.${RESPONSE_V}` : ''
 }
 
+/** Why a static read declined: a scan outside the generation (`skey` null), or a heavy literal past the
+ *  drill base, is `scan-not-indexed`; a heavy literal with no heavy source (`FILTER_STATIC_HEAVY` off) is
+ *  `term-too-common` — on every scan alike, indexed or not. */
+export function declined(s: StaticFilterStore | null, skey: string | null, raw: Found | null): FilterReject {
+  return s && skey && !raw && s.source.heavy === false ? reject('term-too-common') : reject('scan-not-indexed')
+}
+
 /** An indexed-only deployment's coverage test (`indexedOnly.ts`): `ast` (one literal, `rejectAst` passed) is
- *  answered statically under `path` on every one of `dates`, else `scan-not-indexed` — a scan outside the
- *  generation, or a heavy literal past the drill base. A view root the literal matches is the plain view
- *  (nothing to search). The answer is held per isolate, so the view's own read reuses it. */
+ *  answered statically under `path` on every one of `dates`, else the refusal `declined` names. A view root
+ *  the literal matches is the plain view (nothing to search). The answer is held per isolate, so the view's
+ *  own read reuses it. */
 export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
   const key = staticLiteral(ast)
   if (!key) return reject('unsupported-terms')
   if (path.toLowerCase().includes(key)) return null
   const s = staticFilterStore(env)
-  if (!s || !await staticKey(s, ast, dates)) return reject('scan-not-indexed')
-  const found = await s.source.hits(key, path)
-  return found && covers(found, dates) ? null : reject('scan-not-indexed')
+  const skey = s ? await staticKey(s, ast, dates) : null
+  if (!skey) return declined(s, null, null)
+  const found = await s!.source.hits(key, path)
+  return found && covers(found, dates) ? null : declined(s, skey, found)
 }

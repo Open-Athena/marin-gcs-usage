@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useUrlAlias, useUrlState } from 'use-prms'
-import { decodeSel, encodeScan, encodeSel, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanNeighbors, scanParts, selSlug, type ScanSel } from './scanSlug'
+import { decodeSel, encodeScan, encodeSel, exactPrefix, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanNeighbors, scanParts, selSlug, type ScanSel } from './scanSlug'
 import { storeUrl, type Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
@@ -75,6 +75,8 @@ export interface Scan {
   asof: string | null
   /** `?d=` names no scan (then `asof` is null): what to say and offer. */
   miss: ScanMiss | null
+  /** With no `?d=` and `indexed` preferred: the newer scans skipped (not yet indexed), newest first. */
+  pending: string[]
   scans: string[]
   dMatches: string[]
   dP: string | undefined
@@ -132,17 +134,51 @@ export function useScans(store: Store): UseQueryResult<string[]> {
 export const noScansYet = (q: { isSuccess: boolean; data?: string[] }): boolean =>
   q.isSuccess && q.data?.length === 0
 
-export function useScan(store: Store): Scan {
+/** The scan a page with no explicit `?d=` opens on: the newest scan, or — for a filtered view on an
+ * indexed-only deployment (`indexed` given: the static index's covered scans) — the newest scan the
+ * index covers, with `pending` the newer scans it doesn't cover yet (published, not yet appended). None
+ * covered: the newest scan (whose view then says it isn't indexed). `scans` is newest first. */
+export function floatingScan(scans: readonly string[], indexed?: readonly string[] | null | 'loading'): { scan: string | null; pending: string[] } {
+  // the covered list is on its way: pick nothing yet (no fetch of a scan it may rule out)
+  if (indexed === 'loading') return { scan: null, pending: [] }
+  if (!indexed) return { scan: scans[0] ?? null, pending: [] }
+  const have = new Set(indexed)
+  const i = scans.findIndex(s => have.has(s))
+  return i < 0 ? { scan: scans[0] ?? null, pending: [] } : { scan: scans[i], pending: scans.slice(0, i) }
+}
+
+/** The note a floating filtered view shows when it skipped newer scans: "Searching 10/9 4:30a, the newest
+ * indexed scan; 10/9 8:36a is still being indexed." (`pending` newest first.) */
+export function pendingNote(scan: string, pending: readonly string[], now = new Date()): string {
+  const names = [...pending].reverse().map(s => fmtScan(s, now))
+  const list = names.length <= 2 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `Searching ${fmtScan(scan, now)}, the newest indexed scan; ${list} ${names.length === 1 ? 'is' : 'are'} still being indexed.`
+}
+
+/** The scan a page shows: an explicit `?d=` resolves to the latest scan it names (a miss — none, or an
+ * unparseable value — is `miss`, never another scan); absent, `floatingScan` (the newest scan, or for a
+ * filtered indexed-only view the newest covered one, `pending` the newer ones skipped). */
+export function selectScan(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean, indexed?: readonly string[] | null | 'loading'): { asof: string | null; miss: ScanMiss | null; pending: string[] } {
+  const miss = scanMiss(sel, scans, loaded)
+  if (miss || sel?.invalid) return { asof: null, miss, pending: [] }
+  if (sel?.d) return { asof: latestScan(sel.d, scans), miss: null, pending: [] }
+  const f = floatingScan(scans, indexed)
+  return { asof: f.scan, miss: null, pending: f.pending }
+}
+
+/** The page's scan selection. `indexed`: the covered scans to prefer when `?d=` is absent (a filtered
+ * view on an indexed-only deployment; see `floatingScan`). An explicit `?d=` resolves as always. */
+export function useScan(store: Store, indexed?: readonly string[] | null | 'loading'): Scan {
   const [sel, setSel] = useScanSel()
   const scansQ = useScans(store)
   const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
+  const floating = useMemo(() => floatingScan(scans, indexed), [scans, indexed])
+  const picked = useMemo(() => selectScan(sel, scans, scansQ.isSuccess, indexed), [sel, scans, scansQ.isSuccess, indexed])
   const dP = sel?.d
   const span = sel?.span
   const from = sel?.from
   const dMatches = useMemo(() => scanMatches(dP, scans), [dP, scans])
-  // A `?d=` naming no scan is a miss, never the latest (or nearest) instead.
-  const miss = useMemo(() => scanMiss(sel, scans, scansQ.isSuccess), [sel, scans, scansQ.isSuccess])
-  const asof = miss ? null : sel?.invalid ? null : dP ? dMatches[0] ?? null : scans[0] ?? null
+  const { asof, miss, pending } = picked
   // Write the {end, before} pair verbatim — `before` is a span OR a pinned
   // `from`, never both. Callers that pass a `d` equal to the latest scan mean
   // "float" and drop it; `setEndPin` is the one path that pins at latest.
@@ -150,13 +186,17 @@ export function useScan(store: Store): Scan {
     setSel(d || span0 || from0
       ? { ...(d ? { d } : {}), ...(span0 ? { span: span0 } : {}), ...(from0 ? { from: from0 } : {}) }
       : undefined)
+  // Setters take scan ids (a picker's choice) and write each as its exact
+  // prefix (`exactPrefix`): a date-only scan as its midnight, never the day
+  // slug (which means the day's latest scan).
+  const exact = (v: string | undefined) => (v ? exactPrefix(v) : undefined)
   const setRange = (v: string | undefined, ms: number | undefined) =>
-    write(v && v !== scans[0] ? v : undefined, ms, undefined)
-  const setDP = (v: string | undefined) => write(v && v !== scans[0] ? v : undefined, span, from)
+    write(v && v !== floating.scan ? exact(v) : undefined, ms, undefined)
+  const setDP = (v: string | undefined) => write(v && v !== floating.scan ? exact(v) : undefined, span, from)
   const setSpan = (ms: number | undefined) => write(dP, ms, undefined)
-  const setFrom = (v: string | undefined) => write(dP, undefined, v)
-  const setEndPin = (pin: boolean) => write(pin ? asof ?? undefined : undefined, span, from)
-  return { asof, miss, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
+  const setFrom = (v: string | undefined) => write(dP, undefined, exact(v))
+  const setEndPin = (pin: boolean) => write(pin ? exact(asof ?? undefined) : undefined, span, from)
+  return { asof, miss, pending, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
 }
 
 /** `<optgroup>` rows for a scan picker: scans grouped by their displayed

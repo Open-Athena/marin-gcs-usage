@@ -24,10 +24,11 @@ export function namePageParams(params: URLSearchParams): URLSearchParams {
   if (!next.has('name')) next.set('name', 'datakit')
   return next
 }
-/** A /names request against the registry's scans. `date`/`from` are slugs —
- * any spelling `scanSlug.ts` reads (`261009`, `2026-10-09`, `261009-1200`, …)
- * — each resolved to the latest registry scan it matches (`resolveScan`), so a
- * day names that day's latest scan; absent `date` = the latest scan. */
+/** A /names request against the registry's scans. `date`/`from` are each an
+ * exact registry scan id (that scan — a date-only id is not its day's latest)
+ * or else a slug, any spelling `scanSlug.ts` reads (`261009`, `26100912`, …),
+ * resolved to the latest registry scan it matches (`resolveScan`); absent
+ * `date` = the latest scan. */
 export function nameRequest(params: URLSearchParams, availableDates?: readonly string[]): HotRequest {
   if (!availableDates) return hotRequest(namePageParams(params))
   const unavailable = () => new Error('This scan is unavailable in the name-summary registry; it is not a zero-match result.')
@@ -35,11 +36,14 @@ export function nameRequest(params: URLSearchParams, availableDates?: readonly s
   // `date` among every scan; `from` among the scans before it (a `from` of
   // the selected scan's own day means that day's latest *earlier* scan).
   const date = params.getAll('date'), from = params.getAll('from')
-  const after = date.length === 1 ? resolveScan(date[0], availableDates) : date.length ? null : [...availableDates].sort().pop() ?? null
+  // An exact registry id is that scan (a date-only id is not its day's latest);
+  // any other value is a slug, resolved.
+  const pick = (v: string, scans: readonly string[]) => (scans.includes(v) ? v : resolveScan(v, scans))
+  const after = date.length === 1 ? pick(date[0], availableDates) : date.length ? null : [...availableDates].sort().pop() ?? null
   if (date.length === 1 && !after) throw unavailable()
   if (after && date.length < 2) resolved.set('date', after)
   if (from.length === 1 && after) {
-    const before = resolveScan(from[0], availableDates.filter(scan => scan < after))
+    const before = pick(from[0], availableDates.filter(scan => scan < after))
     if (!before) throw unavailable()
     resolved.set('from', before)
   }

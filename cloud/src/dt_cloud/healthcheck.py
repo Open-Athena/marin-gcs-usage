@@ -128,9 +128,11 @@ def run_checks(
     checks.append(check_freshness(scans, max_age_days, today))
     if date is None:
         date = scans[0] if scans else None
-    else:
-        # A slug (a day, an hour, a minute; any spelling): the latest scan it
-        # names. A miss fails the check — never the nearest or latest instead.
+    elif date not in scans:
+        # Not an exact scan id (one is that scan — a date-only id is not its
+        # day's latest): a slug (a day, an hour, a minute; any spelling), the
+        # latest scan it names. A miss fails the check — never the nearest or
+        # latest instead.
         resolved = resolve_slug(date, scans)
         if resolved is None:
             checks.append(Check("resolve-scan", False, f"no scan matches {date}"))
