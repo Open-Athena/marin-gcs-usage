@@ -899,7 +899,7 @@ def rollups_cmd(bucket, gen, index, kind, K, lease, mount, mem, threads, R, shar
 
     if kind not in KINDS:
         raise SystemExit(f"kind {kind!r}: want one of {KINDS}")
-    sb = _gcs(scratch_bucket)
+    sb = _gcs(scratch_bucket())
     b = sb if trial else _gcs(bucket)
     prefix = f"{PREFIX}/{gen}"
     out_anchors = f"{prefix}/{ANCHORS}-trial" if trial else f"{prefix}/{ANCHORS}"
