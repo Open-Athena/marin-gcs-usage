@@ -968,10 +968,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
           throw e
         }
       }
-      const levels = (q: Rect, r: { path: string }) => r.path === path ? q : { ...q, dHi: Math.min(q.dHi, q.dLo + FILTER_SUBDIV_LEVELS - 1) }
+      const capLevels = (q: Rect, r: { path: string }) => r.path === path ? q : { ...q, dHi: Math.min(q.dHi, q.dLo + FILTER_SUBDIV_LEVELS - 1) }
       const plans = await Promise.all(groups.map(rs => {
         const nd = rootHit ? nDesc : rs.reduce<number | null>((n, r) => { const d = p1!.all.get(r.path)?.nd; return n == null || d == null ? null : n + d }, 0)
-        const rects = rootRects(rs).map((q, i) => levels(q, rs[i])).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q)
+        const rects = rootRects(rs).map((q, i) => capLevels(q, rs[i])).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q)
         return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr))
       }))
       let room = o.phase2Groups ?? FILTER_PHASE2_GROUPS
