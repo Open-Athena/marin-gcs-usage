@@ -19,6 +19,8 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Callable
 
+from .scan_id import latest_scan
+
 UA = "gcs-usage-healthcheck/1.0"  # a real UA — CF edge-blocks bot UAs (1010)
 # One retry after a transport-level failure (status 0) — a single timed-out
 # probe shouldn't page (2026-09-01: a transient subtree stall alerted while
@@ -126,6 +128,9 @@ def run_checks(
     checks.append(check_freshness(scans, max_age_days, today))
     if date is None:
         date = scans[0] if scans else None
+    elif date not in scans and (latest := latest_scan(date, scans)):
+        # A prefix (a day, `YYYY-MM-DDTHH`): the latest scan it matches.
+        date = latest
     if date is None:
         checks.append(Check("resolve-scan", False, "no --date and scans.json gave none"))
         return None, checks

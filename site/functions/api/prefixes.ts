@@ -11,6 +11,7 @@
 import { type Ctx, json, requireViewer } from '../_lib/auth.js'
 import { storeReady } from '../_lib/index.js'
 import { MAX_PREFIXES, prefixesAt } from '../_lib/prefixes.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 export const onRequestPost = async (ctx: Ctx): Promise<Response> => {
   const { env, request } = ctx
@@ -19,7 +20,7 @@ export const onRequestPost = async (ctx: Ctx): Promise<Response> => {
   if (gated instanceof Response) return gated
   const body = (await request.json().catch(() => null)) as { date?: unknown; prefixes?: unknown } | null
   const date = typeof body?.date === 'string' ? body.date : ''
-  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return json({ error: 'date=YYYY-MM-DD[THHMM] required' }, 400)
+  if (!isScanId(date)) return json({ error: 'date=YYYY-MM-DD[THHMM] required' }, 400)
   const prefixes = Array.isArray(body?.prefixes) ? body.prefixes.filter((p): p is string => typeof p === 'string' && /^[a-z0-9]+:\/\/[^/]+\//.test(p)) : []
   if (!prefixes.length || prefixes.length > MAX_PREFIXES) return json({ error: `expected 1–${MAX_PREFIXES} prefixes` }, 400)
   try {
