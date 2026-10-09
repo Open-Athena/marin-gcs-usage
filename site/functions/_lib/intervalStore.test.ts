@@ -95,7 +95,7 @@ describe('interval store', () => {
   })
 
   it('serves every view of every scan as the per-scan reference draws it', async () => {
-    expect(cases.length).toBe(104)
+    expect(cases.length).toBe(84)
     for (const c of cases) {
       const v = await buildView(env, { date: c.date, path: c.path, w: c.w, h: c.h, minArea: 12, atten: 2, ...(c.depth != null ? { maxDepth: c.depth } : {}) })
       const got = flatten(v.tree)
@@ -120,9 +120,9 @@ describe('interval store', () => {
   })
 
   it('diffs two scans from the store', async () => {
-    const d = await buildDiff(env, { from: '2026-08-04', to: '2026-08-05', path: 'b2', w: 8, h: 6, minArea: 12, atten: 2, top: 100 })
-    const a = cases.find(c => c.date === '2026-08-04' && c.path === 'b2' && c.w === 8 && c.depth == null)!
-    const b = cases.find(c => c.date === '2026-08-05' && c.path === 'b2' && c.w === 8 && c.depth == null)!
+    const d = await buildDiff(env, { from: '2026-08-04', to: '2026-08-05', path: 'b2/e', w: 8, h: 6, minArea: 12, atten: 2, top: 100 })
+    const a = cases.find(c => c.date === '2026-08-04' && c.path === 'b2/e' && c.w === 8 && c.depth == null)!
+    const b = cases.find(c => c.date === '2026-08-05' && c.path === 'b2/e' && c.w === 8 && c.depth == null)!
     expect([d.total_a, d.total_b]).toEqual([a.tiles[''].b, b.tiles[''].b])
   })
 })

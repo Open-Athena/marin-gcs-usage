@@ -57,6 +57,20 @@ class Scan:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    def _same_path_objects(self, paths: list[tuple[int, str]], thr_min: float) -> dict[str, tuple]:
+        """Object rows under `thr_min` at paths that are also directories (a key and a prefix of the
+        same name): what the pre-aggregation filter dropped from those paths' totals."""
+        if not paths:
+            return {}
+        self.con.execute("CREATE OR REPLACE TEMP TABLE want (depth INTEGER, path VARCHAR)")
+        self.con.executemany("INSERT INTO want VALUES (?, ?)", paths)
+        return {p: (b, o, wts, wb, c2, c3, c4) for p, b, o, wts, wb, c2, c3, c4 in self.con.execute(
+            f"""SELECT s.path, sum(size)::BIGINT, sum(n_files)::BIGINT, sum(CASE WHEN mtime_mean IS NOT NULL THEN mtime_mean * size ELSE 0 END),
+                sum(CASE WHEN mtime_mean IS NOT NULL THEN size ELSE 0 END)::BIGINT, sum(coalesce(sum_storage_class_id_2, 0))::BIGINT,
+                sum(coalesce(sum_storage_class_id_3, 0))::BIGINT, sum(coalesce(sum_storage_class_id_4, 0))::BIGINT
+                FROM {self.src} s JOIN want w ON s.depth = w.depth AND s.path = w.path WHERE s.kind = 'file' AND s.size < {thr_min!r}
+                GROUP BY s.path""").fetchall()}
+
     def _users(self, paths: list[tuple[int, str]]) -> dict[str, dict[str, int]]:
         if not paths:
             return {}
@@ -108,9 +122,20 @@ class Scan:
         thr_at = lambda d: thr * atten ** max(0, d - dP - 1)
         lo, hi = ir.p_range(path)
         d_hi = f" AND depth <= {dP + max_depth}" if max_depth is not None else ""
-        # The per-depth threshold as SQL: `thr · atten^(depth − dP − 1)` (atten > 0).
-        rows = self._aggs(f"depth > {dP}{d_hi} AND path >= {q(lo)} AND path < {q(hi)}",
+        # The per-depth threshold as SQL: `thr · atten^(depth − dP − 1)` (atten > 0). An object is one row
+        # (one owner slice), so objects under the lowest threshold can't be tiles and are skipped before
+        # the aggregation; a path that is both an object and a directory gets its small object rows back
+        # below (`_same_path_objects`).
+        thr_min = min(thr_at(dP + 1), thr_at(dP + max_depth) if max_depth is not None else thr_at(dP + 1))
+        skip = f" AND (kind <> 'file' OR size >= {thr_min!r})" if self.v == 2 else ""
+        rows = self._aggs(f"depth > {dP}{d_hi} AND path >= {q(lo)} AND path < {q(hi)}{skip}",
                           f"HAVING sum({size_col(self.v)}) >= {thr!r} * pow({atten!r}, greatest(0, depth - {dP} - 1))")
+        if skip:
+            extra = self._same_path_objects([(r["depth"], r["path"]) for r in rows if r["is_dir"]], thr_min)
+            for r in rows:
+                if r["path"] in extra:
+                    b, o, wts, wb, c2, c3, c4 = extra[r["path"]]
+                    r["b"] += b; r["o"] += o; r["wts"] += wts; r["wb"] += wb; r["c2"] += c2; r["c3"] += c3; r["c4"] += c4
         # SQL's float threshold vs the reader's: re-test in Python so the boundary is the same arithmetic.
         rows = [r for r in rows if r["b"] >= thr_at(r["depth"])]
         users = self._users([(r["depth"], r["path"]) for r in rows])

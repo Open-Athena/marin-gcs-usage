@@ -29,19 +29,22 @@ def _universe(rng: random.Random) -> list[str]:
 
 
 def _scan_rows(rng: random.Random, paths: list[str], j: int) -> list[dict]:
-    """One scan's rows: paths missing at random, values drifting (mostly not), owner slices (some of
-    zero bytes), last-read days that move, and (v1) a duplicated unattributed row."""
+    """One scan's rows: paths missing at random, values drifting (mostly not), owner slices on
+    directories (some of zero bytes), last-read days that move, and (v1) a duplicated unattributed row."""
     rows = []
     for p in paths:
         if rng.random() < 0.12:
             continue
         depth = p.count("/") + 1
-        users = rng.choice([[None], [None], [None], ["alice"], [None, "alice"], ["alice", "bob"]])
+        is_file = "." in p.rsplit("/", 1)[-1]
+        # An object is one row (attributed to its directory's owner, `viz.write_path_index`); a directory
+        # is one row per owner slice.
+        users = rng.choice([[None], ["alice"]] if is_file else [[None], [None], [None], ["alice"], [None, "alice"], ["alice", "bob"]])
         for usr in users:
             size = rng.choice([10, 10, 10, 10, 20, 0])
             rows.append({"path": p, "depth": depth, "usr": usr, "size": size, "n_files": rng.choice([1, 1, 1, 2]),
                          "mtime_mean": rng.choice([1_700_000_000.25, 1_700_000_000.25, 1_700_000_100.75]),
-                         "last_read": rng.choice([None, 5, 5, 6]), "kind": "file" if "." in p.rsplit("/", 1)[-1] else "dir"})
+                         "last_read": rng.choice([None, 5, 5, 6]), "kind": "file" if is_file else "dir"})
             if j < V2_FROM and usr is None and rng.random() < 0.1:
                 rows.append({**rows[-1]})
     return rows
@@ -219,7 +222,7 @@ def test_views_equal_the_per_scan_reference(built, served, wh):
                 got = store.view(s["ts"], path, w, h, max_depth=md)
                 assert compare(got["tree"], want["tree"], with_f=True) == [], (s["id"], path, md)
                 checked += want["tree"] is not None
-    assert checked >= 60
+    assert checked == 50  # of 6 scans × 6 paths × 2 depths: the rest are paths absent from a scan
 
 
 def test_diffs_equal_the_per_scan_reference(built, served):
