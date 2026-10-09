@@ -41,8 +41,8 @@ from urllib.parse import parse_qs, urlparse
 from ..bench import mem
 from ..bench.query import QueryError, parse
 from . import view as bv
+from ..scan_id import is_scan_id
 
-SCAN_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:T\d{4})?$")
 
 
 def err(*a: object) -> None:
@@ -64,7 +64,7 @@ def list_scans(root: str) -> list[str]:
         names = [p.rstrip("/").rsplit("/", 1)[-1] for p in it.prefixes]
     else:
         names = [p.name for p in Path(root).iterdir() if (p / mem.META).exists()]
-    return sorted(n for n in names if SCAN_RE.match(n))
+    return sorted(n for n in names if is_scan_id(n))
 
 
 def load_scan(src: str, *, stage: Path | None, mmap: bool, remote_detail: bool, threads: int) -> tuple[mem.MemIndex, dict]:
@@ -220,7 +220,7 @@ def _scope(qs: dict) -> tuple[bv.Scope, str | None]:
 
 def subtree(box: Box, qs: dict):
     date = qs.get("date", [""])[0]
-    if not SCAN_RE.match(date):
+    if not is_scan_id(date):
         raise HttpError(400, "bad date")
     path = _path(qs)
     w, h = _quant(qs, "w", 1280), _quant(qs, "h", 800)
@@ -235,7 +235,7 @@ def subtree(box: Box, qs: dict):
 
 def diff(box: Box, qs: dict):
     prev, curr = qs.get("from", [""])[0], qs.get("to", [""])[0]
-    if not SCAN_RE.match(prev) or not SCAN_RE.match(curr):
+    if not is_scan_id(prev) or not is_scan_id(curr):
         raise HttpError(400, "bad from/to")
     if prev >= curr:
         raise HttpError(400, "from must precede to")
@@ -473,7 +473,7 @@ def ch_subtree(box: ChBox, qs: dict):
     from ..chstore import serve as cs
 
     date = qs.get("date", [""])[0]
-    if not SCAN_RE.match(date):
+    if not is_scan_id(date):
         raise HttpError(400, "bad date")
     path = _path(qs)
     w, h = _quant(qs, "w", 1280), _quant(qs, "h", 800)
@@ -508,7 +508,7 @@ def ch_diff(box: ChBox, qs: dict):
     from ..chstore import serve as cs
 
     prev, curr = qs.get("from", [""])[0], qs.get("to", [""])[0]
-    if not SCAN_RE.match(prev) or not SCAN_RE.match(curr):
+    if not is_scan_id(prev) or not is_scan_id(curr):
         raise HttpError(400, "bad from/to")
     if prev >= curr:
         raise HttpError(400, "from must precede to")
@@ -592,9 +592,9 @@ def ch_coarse(box: ChBox, qs: dict):
     date, name, path = qs.get("date", [""])[0], qs.get("name", [""])[0].lower(), _path(qs)
     date0 = qs.get("date0", [""])[0]
     mode = qs.get("mode", ["exact"])[0]
-    if not SCAN_RE.match(date) or not name or len(name) > 512 or "/" in name:
+    if not is_scan_id(date) or not name or len(name) > 512 or "/" in name:
         raise HttpError(400, "a valid scan and exact basename are required")
-    if date0 and not SCAN_RE.match(date0):
+    if date0 and not is_scan_id(date0):
         raise HttpError(400, "a valid before scan is required")
     if mode not in ("exact", "contains", "suffix", "coverage"):
         raise HttpError(400, "mode must be exact, contains, suffix or coverage")

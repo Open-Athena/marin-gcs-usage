@@ -23,6 +23,7 @@ import { S3Store } from '@rdub/file-tree/stores/s3'
 import { withStore } from '../_lib/stores.js'
 import { type Env, requireViewer } from '../_lib/auth.js'
 import { indexDir, storeCreds, storePrefixes, storeReady, storeTarget } from '../_lib/index.js'
+import { isScanId } from '../../src/scanSlug.js'
 
 const MAX_RANGE = 64 * 1024 * 1024 // 64MB per request — plenty for parquet pages
 
@@ -39,7 +40,7 @@ export const onRequest = async (ctx0: { request: Request; env: Env }): Promise<R
   }
   const url = new URL(request.url)
   const date = url.searchParams.get('date') ?? ''
-  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/.test(date)) return new Response('bad date', { status: 400 })
+  if (!isScanId(date)) return new Response('bad date', { status: 400 })
   // The GCS index carries no CW data today, but keep the gate shape ready for
   // a `store=cw` variant; base access = the same `gcs` scope as the app.
   const gated = await requireViewer(ctx)
