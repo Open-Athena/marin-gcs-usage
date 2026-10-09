@@ -220,7 +220,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
             {th('o', 'objects')}
             <th
               colSpan={hasYr ? 3 : 2}
-              className={'num sortable' + (sort.k === 'd' ? ' on' : '')}
+              className={'created sortable' + (sort.k === 'd' ? ' on' : '')}
               onClick={() => setSort(s => ({ k: 'd', asc: s.k === 'd' ? !s.asc : false }))}
               title="sort"
             >
