@@ -96,7 +96,7 @@ r2-batch)
   ENV_JSON=$(python3 -c 'import json, sys
 s = "projects/%s/secrets/cw-s3-r2-%s/versions/latest"
 p = sys.argv[2]
-print(json.dumps({"variables": {"R2_BUCKET": sys.argv[1]},
+print(json.dumps({"variables": {"R2_BUCKET": sys.argv[1], "STATIC_NAMES_PROFILE": "cw"},
                   "secretVariables": {"R2_ENDPOINT": s % (p, "endpoint"), "R2_ACCESS_KEY_ID": s % (p, "access-key-id"),
                                       "R2_SECRET_ACCESS_KEY": s % (p, "secret-access-key")}}))' "$R2_BUCKET" "$PROJECT")
   ENV_JSON=$ENV_JSON SA=cw-s3-job@$PROJECT.iam.gserviceaccount.com NO_SCRATCH=1 MODULE=static_names NO_MOUNT=1 MACHINE=${R2_MACHINE:-n2-highmem-4} \
@@ -121,7 +121,8 @@ python3 -u -m dt_cloud.${MODULE:-static_names} $KIND $MOUNT_ARG $(printf '%q ' "
     cmd="set -euo pipefail; mkdir -p /stage/src /stage/tmp /stage/out && cp -r /gcs/$B/static-names/src/$SRC/dt_cloud /gcs/$B/static-names/src/pyrmts-$PYRMTS/pyrmts /stage/src/ && cd /stage && \
 PYTHONPATH=/stage/src python3 -u -m dt_cloud.${MODULE:-static_names} $KIND $MOUNT_ARG $(printf '%q ' "$@")"
   fi
-  ENVJ=${ENV_JSON:-'{}'}
+  # Every task reads cw's deployment profile (`dt_cloud.static_profile_examples.CW`: buckets, layouts, gen, R2).
+  ENVJ=${ENV_JSON:-'{"variables": {"STATIC_NAMES_PROFILE": "cw"}}'}
   # NO_SCRATCH=1: no scratch mount (an account without the scratch bucket, e.g. `cw-s3-job` for the R2 copy).
   SCRATCH_RO="" SCRATCH_VOL=""
   if [ -z "${NO_SCRATCH:-}" ]; then
