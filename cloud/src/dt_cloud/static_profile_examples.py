@@ -18,6 +18,9 @@ GCS = Profile(
     bucket="oa-gcs-usage-dvx", scratch="oa-gcs-usage-scratch", gen="2026-10-08c",
     r2_bucket="oa-gcs-usage-index", r2_secrets={"key_id": "gcs-static-index-r2-key-id", "secret": "gcs-static-index-r2-secret"},
     project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com", drill=True,
+    # New generations (the next compaction) are built with the rule; `2026-10-08c` (built before it) and its runs keep
+    # the full index, as their `scans.json` records no `hex_runs`.
+    hex_runs="16,8",
 )
 
 #: CoreWeave S3 buckets: scans every 6 h (`cw-l2/<id>/index/<gen>/`), the same data and scratch buckets as gcs, its own
@@ -29,7 +32,7 @@ CW = Profile(
     r2_bucket="oa-cw-s3-usage-index",
     r2_secrets={"endpoint": "cw-s3-r2-endpoint", "key_id": "cw-s3-r2-access-key-id", "secret": "cw-s3-r2-secret-access-key"},
     project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com",
-    r2_sa=f"cw-s3-job@{PROJECT}.iam.gserviceaccount.com",
+    r2_sa=f"cw-s3-job@{PROJECT}.iam.gserviceaccount.com", hex_runs="16,8",
 )
 
 EXAMPLES = {p.name: p for p in (GCS, CW)}

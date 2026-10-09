@@ -14,7 +14,7 @@ GEN = "2026-10-09cw"
 ROOT = f"static-names/{GEN}"
 CFG = Profile(name="test", layouts=("x/{id}/p",), gen=GEN, project="proj", region="us-east1", image="img@sha256:0", sa="build@proj",
               r2_bucket="idx", bucket="data", scratch="scr", r2_sa="copy@proj",
-              r2_secrets={"endpoint": "s-end", "key_id": "s-id", "secret": "s-key"}, append_tasks=4)
+              r2_secrets={"endpoint": "s-end", "key_id": "s-id", "secret": "s-key"}, append_tasks=4, hex_runs="off")
 NOW = datetime(2026, 10, 9, 12, 34, 56, tzinfo=timezone.utc)
 
 
@@ -74,7 +74,7 @@ class Fake:
             read_json=lambda key: self.keys[key], published=lambda layouts, start: [s for s in self.pub if s > start],
             run_job=self.run_job, prepare=lambda d: self.calls.append(("prepare", d)) or self.keys.__setitem__(f"{ROOT}/deltas/{d}/scans.json", None),
             prune=lambda d: self.calls.append(("prune", d)), list_keys=lambda p: [x for x in self.keys if x.startswith(p)],
-            log=lambda m: None, now=lambda: NOW, **kw)
+            now=lambda: NOW, **{"log": lambda m: None, **kw})
 
 
 def _py(module: str, *args: str, mount: bool = True) -> str:
@@ -241,6 +241,14 @@ def test_profile_by_env_alone_and_missing_fields(tmp_path):
     f.write_text('{"layouts": ["s/{id}/p.parquet"], "bucket": "b", "scratch": "s", "gen": "g", "region": "r", "image": "i", "sa": "a",'
                  ' "r2_bucket": "rb", "r2_secrets": {"key_id": "k", "secret": "x"}}')
     with pytest.raises(SystemExit) as e:
+        sd.ready(load_profile({"STATIC_NAMES_PROFILE": str(f), "GCP_PROJECT": "p", "R2_ENDPOINT": "https://e"}))
+    assert str(e.value) == "static names: no hex_runs in the deployment profile: set STATIC_NAMES_HEX_RUNS (or STATIC_NAMES_PROFILE)"
+    with pytest.raises(SystemExit) as e:
+        sd.ready(load_profile({"STATIC_NAMES_PROFILE": str(f), "GCP_PROJECT": "p", "R2_ENDPOINT": "https://e", "STATIC_NAMES_HEX_RUNS": "16"}))
+    assert str(e.value) == "static names: STATIC_NAMES_HEX_RUNS: hex runs: '16' is neither MIN,TAIL (e.g. 16,8) nor off"
+    f.write_text('{"layouts": ["s/{id}/p.parquet"], "bucket": "b", "scratch": "s", "gen": "g", "region": "r", "image": "i", "sa": "a",'
+                 ' "r2_bucket": "rb", "r2_secrets": {"key_id": "k", "secret": "x"}, "hex_runs": "16,8"}')
+    with pytest.raises(SystemExit) as e:
         sd.ready(load_profile({"STATIC_NAMES_PROFILE": str(f), "GCP_PROJECT": "p"}))
     assert str(e.value) == "static names: the R2 endpoint: set R2_ENDPOINT, or name its secret in STATIC_NAMES_R2_SECRETS (endpoint=…)"
     p = sd.ready(load_profile({"STATIC_NAMES_PROFILE": str(f), "GCP_PROJECT": "p", "R2_ENDPOINT": "https://e"}))
@@ -248,3 +256,20 @@ def test_profile_by_env_alone_and_missing_fields(tmp_path):
     with pytest.raises(SystemExit) as e:
         load_profile({"STATIC_NAMES_R2_SECRETS": "key_id=k,oops"})
     assert str(e.value) == "STATIC_NAMES_R2_SECRETS: 'oops' is not endpoint=|key_id=|secret=<secret name>"
+
+
+def test_runs_follow_the_base_rule_and_log_a_differing_profile():
+    """A base built without the hex-run rule keeps it for its runs (the stages read the base's `scans.json`); a profile
+    that asks for the rule is logged once per `run`, and the chain is unchanged. A base that records the profile's rule
+    logs nothing."""
+    logs: list[str] = []
+    f = Fake({}, ["2026-10-09T0001"])
+    f.daily(Profile(**{**CFG.__dict__, "hex_runs": "16,8"}), log=logs.append).run("2026-10-09T0001")
+    assert [m for m in logs if "hex_runs" in m] == [
+        f"{GEN}: built with hex_runs off, the profile says {{'min': 16, 'tail': 8}}: its runs keep the generation's rule"
+        " (the profile's applies to the next generation)"]
+    assert f.calls == _chain("2026-10-09T0001", ["2026-10-09T0001"])
+    logs.clear()
+    g = Fake({f"{ROOT}/scans.json": {"scans": [{"id": "2026-10-08T1801"}], "hex_runs": {"min": 16, "tail": 8}}}, ["2026-10-09T0001"])
+    g.daily(Profile(**{**CFG.__dict__, "hex_runs": "16,8"}), log=logs.append).run("2026-10-09T0001")
+    assert [m for m in logs if "hex_runs" in m] == []

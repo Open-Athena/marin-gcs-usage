@@ -44,8 +44,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
+from .hex_runs import HexRule, first_occurrence, kept_sql, occurs, rule_from_json
 from .scan_id import SCAN_ID, check_order, scan_epoch, scan_label  # noqa: F401 (re-exported: the stages' scan-id helpers)
-from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
+from .static_profile import data_bucket, layouts as profile_layouts, profile, scratch_bucket
 
 err = partial(print, file=sys.stderr, flush=True)
 
@@ -404,11 +405,27 @@ def _sx_cast(b: pa.RecordBatch) -> pa.RecordBatch:
 NAME = "lower(string_split(path, '/')[-1])"
 
 
-def hist_sql(table: str) -> str:
-    """Suffix rows per three-character prefix (versions × suffix positions of ≥ 3 characters, depth ≥ 1)."""
+def gen_rule(scans: dict) -> HexRule | None:
+    """A generation's hex-run rule, as its `scans.json` records it (`hex_runs`; absent = the full index)."""
+    return rule_from_json(scans.get("hex_runs"))
+
+
+_GEN_RULES: dict[tuple[str, str], HexRule | None] = {}
+
+
+def gen_rule_at(bucket: str, gen: str) -> HexRule | None:
+    """`gen_rule` of `gs://bucket/static-names/<gen>/scans.json` (read once per process)."""
+    if (bucket, gen) not in _GEN_RULES:
+        _GEN_RULES[(bucket, gen)] = gen_rule(read_json(f"gs://{bucket}/{PREFIX}/{gen}/scans.json"))
+    return _GEN_RULES[(bucket, gen)]
+
+
+def hist_sql(table: str, rule: HexRule | None = None) -> str:
+    """Suffix rows per three-character prefix (versions × suffix positions of ≥ 3 characters, depth ≥ 1; under `rule`,
+    the positions it keeps)."""
     return f"""SELECT substring(l, p, 3) AS p3, count(*)::BIGINT AS n FROM (
             SELECT l, unnest(generate_series(1, length(l) - 2)) AS p FROM (SELECT {NAME} AS l FROM {table} WHERE depth >= 1) WHERE length(l) >= 3
-        ) GROUP BY p3 ORDER BY p3"""
+        ) WHERE {kept_sql('l', 'p', rule)} GROUP BY p3 ORDER BY p3"""
 
 
 def digests(con, table: str) -> dict:
@@ -420,7 +437,7 @@ def digests(con, table: str) -> dict:
 
 
 def build_range(scans: dict, ranges: dict, i: int, out: Path, *, mount: str | None, threads: int, mem: str, tmp: Path | None,
-                con=None, coalesced: bool = False) -> dict:
+                con=None, coalesced: bool = False, rule: HexRule | None = None) -> dict:
     """One key range's intervals over every scan in `scans`: `intervals/r####.parquet` (sorted
     `(depth, path, usr, vf)`), `hist/r####.parquet` and `digest/r####.json` under `out`. Pass `con` to
     build several ranges on one connection: each scan's footer is then parsed once (DuckDB's
@@ -441,7 +458,7 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, *, mount: str | No
         rows = write_sorted(_batches(con, "SELECT * FROM civ ORDER BY depth, path, usr, vf"), out / "cintervals" / f"{name}.parquet",
                             CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
         (out / "chist").mkdir(parents=True, exist_ok=True)
-        pq.write_table(con.execute(hist_sql("civ")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+        pq.write_table(con.execute(hist_sql("civ", rule)).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
         suffix_rows = con.execute(suffix_count_sql("civ")).fetchone()[1]
         con.execute("DROP TABLE civ")
         doc = {"range": r, "rows": rows, "suffix_rows": suffix_rows, "s": round(monotonic() - t0, 1)}
@@ -537,7 +554,7 @@ def suffix_count_sql(table: str) -> str:
     return f"""SELECT count(*)::BIGINT, coalesce(sum(greatest(length(l) - 2, 0)), 0)::BIGINT FROM (SELECT {NAME} AS l FROM {table} WHERE depth >= 1)"""
 
 
-def coalesce_range(src: str, i: int, out: Path, con, terms: list[str] | None = None) -> dict:
+def coalesce_range(src: str, i: int, out: Path, con, terms: list[str] | None = None, rule: HexRule | None = None) -> dict:
     """One range's coalesced versions: `cintervals/r####.parquet` (sorted `(depth, path, usr, vf)`),
     `chist/r####.parquet` (suffix rows per three-character prefix) and `cstats/r####.json` (versions and
     suffix rows before and after, and each of `terms`' range rows before and after)."""
@@ -549,7 +566,7 @@ def coalesce_range(src: str, i: int, out: Path, con, terms: list[str] | None = N
     rows = write_sorted(_batches(con, "SELECT * FROM civ ORDER BY depth, path, usr, vf"), out / "cintervals" / f"{name}.parquet",
                         CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
     (out / "chist").mkdir(parents=True, exist_ok=True)
-    pq.write_table(con.execute(hist_sql("civ")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+    pq.write_table(con.execute(hist_sql("civ", rule)).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
     stats: dict = {"range": i, "versions": [con.execute("SELECT count(*) FROM iv").fetchone()[0], rows]}
     stats["dir_versions"] = [con.execute(f"SELECT count(*) FROM {t} WHERE depth >= 1").fetchone()[0] for t in ("iv", "civ")]
     stats["suffix_rows"] = [con.execute(suffix_count_sql(t)).fetchone()[1] for t in ("iv", "civ")]
@@ -565,7 +582,7 @@ def coalesce_range(src: str, i: int, out: Path, con, terms: list[str] | None = N
     return stats
 
 
-def coalesce_append(prev: Path, delta: Path, scan: dict, out: Path, i: int, con) -> dict:
+def coalesce_append(prev: Path, delta: Path, scan: dict, out: Path, i: int, con, rule: HexRule | None = None) -> dict:
     """Append scan `D` to a range's coalesced versions (`prev`, `CINTERVAL_SCHEMA` sorted) from the intervals'
     delta for `D` (`delta/<D>/r####.parquet`: `op` 1 = a version opened at `D`, −1 = one closed at `D`). Per
     key: closed and reopened with the same answer values continues its coalesced version; closed alone (or
@@ -599,7 +616,7 @@ def coalesce_append(prev: Path, delta: Path, scan: dict, out: Path, i: int, con)
                     UNION ALL SELECT *, -1::TINYINT AS op FROM cnew WHERE vt = {D} ORDER BY depth, path, usr, vf, op"""),
                  out / "cdelta" / scan["id"] / f"{name}.parquet", dschema, INTERVAL_RG, dictionary=["usr"])
     (out / "chist").mkdir(parents=True, exist_ok=True)
-    pq.write_table(con.execute(hist_sql("cnew")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+    pq.write_table(con.execute(hist_sql("cnew", rule)).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
     n_open, n_close = con.execute(f"SELECT count(*) FILTER (WHERE vf = {D}), count(*) FILTER (WHERE vt = {D}) FROM cnew").fetchone()
     con.execute("DROP TABLE cold; DROP TABLE dl; DROP TABLE cev; DROP TABLE cnew")
     return {"range": i, "appended": scan["id"], "rows": rows, "opened": int(n_open), "closed": int(n_close)}
@@ -642,17 +659,17 @@ def plan_shards(hists: list[Path], target_rows: int, tasks: int) -> dict:
             "tasks": [{"t": t, "shards": g, "rows": sum(shards[i]["rows"] for i in g)} for t, g in enumerate(groups)]}
 
 
-def suffix_sql(files: list[str], rng: str | None = None) -> str:
-    """Every suffix position of three or more characters of the intervals' lowercase names (depth ≥ 1),
-    as `(s, depth, path, usr, vf, vt, size, n_files, p3)` rows (`p3` = the suffix's first three
-    characters), optionally restricted to a `p3` range."""
+def suffix_sql(files: list[str], rng: str | None = None, rule: HexRule | None = None) -> str:
+    """Every suffix position of three or more characters of the intervals' lowercase names (depth ≥ 1; under `rule`,
+    the positions it keeps), as `(s, depth, path, usr, vf, vt, size, n_files, p3)` rows (`p3` = the suffix's first
+    three characters), optionally restricted to a `p3` range."""
     lst = "[" + ", ".join(q(f) for f in files) + "]"
     return f"""SELECT substring(l, p) AS s, depth, path, usr, vf, vt, size, n_files, p3 FROM (
             SELECT *, substring(l, p, 3) AS p3 FROM (
                 SELECT depth, path, usr, vf, vt, size, n_files, l, unnest(generate_series(1, length(l) - 2)) AS p
                 FROM (SELECT depth, path, usr, vf, vt, size, n_files, {NAME} AS l FROM read_parquet({lst}) WHERE depth >= 1)
                 WHERE length(l) >= 3)
-            {f'WHERE {rng}' if rng else ''})"""
+            WHERE {kept_sql('l', 'p', rule)} {f'AND {rng}' if rng else ''})"""
 
 
 def _shard_table(con, plan: dict) -> None:
@@ -663,7 +680,7 @@ def _shard_table(con, plan: dict) -> None:
     con.executemany("INSERT INTO sh VALUES (?, ?, ?)", [(s["lo"], s["i"], grp[s["i"]]) for s in plan["shards"]])
 
 
-def map_range(interval_file: str, plan: dict, i: int, out: Path, con) -> dict:
+def map_range(interval_file: str, plan: dict, i: int, out: Path, con, rule: HexRule | None = None) -> dict:
     """The map side of the suffix shuffle: one range's intervals → its suffix rows tagged with their shard,
     written per task group as `sxmap/g###/r####-*.parquet` under `out` (each group's reduce task reads
     only its own directory), so the intervals are expanded once in all, not once per task."""
@@ -674,7 +691,7 @@ def map_range(interval_file: str, plan: dict, i: int, out: Path, con) -> dict:
         shutil.rmtree(part)
     out.mkdir(parents=True, exist_ok=True)
     con.execute(f"""COPY (SELECT x.s, x.depth, x.path, x.usr, x.vf, x.vt, x.size, x.n_files, sh.shard, sh.grp
-        FROM ({suffix_sql([interval_file])}) AS x ASOF JOIN sh ON x.p3 >= sh.lo
+        FROM ({suffix_sql([interval_file], rule=rule)}) AS x ASOF JOIN sh ON x.p3 >= sh.lo
     ) TO {q(str(part))} (FORMAT parquet, PARTITION_BY (grp), COMPRESSION zstd)""")
     rows = 0
     for d in sorted(part.glob("grp=*")):
@@ -794,8 +811,8 @@ class Reader:
     hold suffixes starting with it (contiguous, in one or two files), one ranged read per file, then
     the first-hit filter and per-bucket sums for each date."""
 
-    def __init__(self, fetch, size_of, sidecar: pa.Table):
-        self.fetch, self.size_of = fetch, size_of
+    def __init__(self, fetch, size_of, sidecar: pa.Table, rule: HexRule | None = None):
+        self.fetch, self.size_of, self.rule = fetch, size_of, rule
         side = sidecar.sort_by([("file", "ascending"), ("rg", "ascending")]).to_pylist()
         self.groups = side
         self.mins = [g["s_min"] for g in side]
@@ -839,13 +856,14 @@ class Reader:
         """Per date: `{bucket: [bytes, objects]}` of the first hits live on that scan."""
         key = term.lower()
         hit, io = self.rows(key)
-        return answer_rows(key, hit, io, dates)
+        return answer_rows(key, hit, io, dates, self.rule)
 
 
-def answer_rows(key: str, rows: list[dict], io: dict, dates: list[str]) -> dict:
-    """`Reader.answer` over a literal's range rows (`key` lowercased): the rows whose name contains it, and per
-    date the first hits live on it summed per bucket."""
-    hit = [r for r in rows if key in r["path"].rsplit("/", 1)[-1].lower()]
+def answer_rows(key: str, rows: list[dict], io: dict, dates: list[str], rule: HexRule | None = None) -> dict:
+    """`Reader.answer` over a literal's range rows (`key` lowercased): the rows whose name it occurs in (`hex_runs.occurs`
+    under the generation's `rule`; plain containment without one), and per date the first hits live on it summed per
+    bucket (the parent test is `occurs` too)."""
+    hit = [r for r in rows if first_occurrence(key, r["path"].rsplit("/", 1)[-1].lower(), rule) >= 0]
     answers = {}
     for d in dates:
         D = scan_epoch(d) * 1000
@@ -859,7 +877,7 @@ def answer_rows(key: str, rows: list[dict], io: dict, dates: list[str]) -> dict:
                 continue
             seen.add(k)
             parent = r["path"].rsplit("/", 1)[0] if "/" in r["path"] else ""
-            if key in parent.lower():
+            if occurs(key, parent.lower(), rule):
                 continue
             bkt = r["path"].split("/", 1)[0]
             b_, o_ = totals.get(bkt, (0, 0))
@@ -872,7 +890,7 @@ def _ms(v) -> int:
     return int(v.timestamp() * 1000) if hasattr(v, "timestamp") else int(v)
 
 
-def gcs_reader(bucket: str, prefix: str) -> Reader:
+def gcs_reader(bucket: str, prefix: str, rule: HexRule | None = None) -> Reader:
     from google.cloud import storage
 
     b = storage.Client().bucket(bucket)
@@ -888,7 +906,7 @@ def gcs_reader(bucket: str, prefix: str) -> Reader:
     def fetch(file: str, lo: int, hi: int) -> bytes:
         return b.blob(f"{prefix}/{file}").download_as_bytes(start=lo, end=hi - 1)
 
-    return Reader(fetch, size_of, side)
+    return Reader(fetch, size_of, side, rule)
 
 
 def _download(bucket, key: str) -> pa.BufferReader:
@@ -971,10 +989,13 @@ def _task(index: int | None) -> int:
 @option("-s", "--start", help="First scan id (inclusive)")
 @option("-t", "--through", help="Last scan id (inclusive)")
 def scans_cmd(bucket: str, layouts: tuple[str, ...], start: str | None, through: str | None) -> None:
-    """Print the scans manifest (JSON): each scan's newest `path` sort, pinned by generation and md5."""
+    """Print the scans manifest (JSON): each scan's newest `path` sort, pinned by generation and md5, and the hex-run
+    rule the generation is built with (the profile's, `hex_runs`; none recorded = the full index)."""
     from google.cloud import storage
 
-    doc = list_scans(bucket, layouts=layouts or profile_layouts(), start=start, through=through)
+    from .hex_runs import rule_json
+
+    doc = {**list_scans(bucket, layouts=layouts or profile_layouts(), start=start, through=through), **rule_json(profile().hex_rule())}
     b = storage.Client().bucket(bucket)
     for s in doc["scans"]:
         s["version"] = _version_from_footer(b, s["src"])
@@ -1045,7 +1066,8 @@ def intervals_cmd(bucket, coalesced, gen, force, index, mount, mem, per_task, ou
             err(f"range {i}: already built")
             continue
         outp = Path(out) / f"r{i}"
-        doc = build_range(scans, ranges, i, outp, mount=mount, threads=threads, mem=mem, tmp=Path(tmp), con=con, coalesced=coalesced)
+        doc = build_range(scans, ranges, i, outp, mount=mount, threads=threads, mem=mem, tmp=Path(tmp), con=con, coalesced=coalesced,
+                          rule=gen_rule(scans))
         if coalesced:
             if not no_upload:
                 upload_tree(outp, bucket, prefix)
@@ -1125,7 +1147,7 @@ def coalesce_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task,
             err(f"coalesce range {i}: already done")
             continue
         outp = Path(out) / f"c{i}"
-        stats = coalesce_range(f"{mount}/{PREFIX}/{intervals_gen}/intervals/r{i:04d}.parquet", i, outp, con, lits)
+        stats = coalesce_range(f"{mount}/{PREFIX}/{intervals_gen}/intervals/r{i:04d}.parquet", i, outp, con, lits, gen_rule_at(bucket, gen))
         moved = Path(out) / f"c{i}-stats"
         shutil.move(str(outp / "cstats"), moved)
         upload_tree(outp, bucket, prefix)
@@ -1177,6 +1199,77 @@ def coalesce_report_cmd(bucket, gen, hist_gen, thresholds) -> None:
     print(json.dumps(tot, indent=1))
 
 
+@cli.command("derive")
+@option("-b", "--bucket", default=data_bucket, help="Data bucket")
+@option("-f", "--from-gen", "from_gen", required=True, help="Generation whose scans, key ranges and coalesced versions to reuse")
+@option("-g", "--gen", required=True, help="New generation (refused if its `scans.json` exists)")
+@option("-n", "--dry-run", is_flag=True, help="Print the new `scans.json`; write nothing")
+def derive_cmd(bucket, from_gen, gen, dry_run) -> None:
+    """Start generation GEN over FROM's scans with the profile's hex-run rule: FROM's coalesced versions (`cintervals/`,
+    which the rule doesn't change; copied in the bucket, so GEN's stages and runs read their own) and `ranges.json`, then
+    GEN's `scans.json` (FROM's, with the rule recorded), last. The build goes on at `hist`."""
+    from google.cloud import storage
+
+    from .hex_runs import rule_json
+
+    b = storage.Client().bucket(bucket)
+    if b.blob(f"{PREFIX}/{gen}/scans.json").exists():
+        raise SystemExit(f"gs://{bucket}/{PREFIX}/{gen}/scans.json exists: a generation is never rewritten")
+    scans = read_json(f"gs://{bucket}/{PREFIX}/{from_gen}/scans.json")
+    doc = {**{k: v for k, v in scans.items() if k != "hex_runs"}, **rule_json(profile().hex_rule()), "derived_from": from_gen}
+    ranges = read_text(f"gs://{bucket}/{PREFIX}/{from_gen}/ranges.json")
+    src = sorted((x for x in b.client.list_blobs(bucket, prefix=f"{PREFIX}/{from_gen}/cintervals/")), key=lambda x: x.name)
+    if len(src) != json.loads(ranges)["k"]:
+        raise SystemExit(f"{from_gen} has {len(src)} cintervals files for {json.loads(ranges)['k']} ranges")
+    if not dry_run:
+        for x in src:
+            dst = f"{PREFIX}/{gen}/cintervals/{Path(x.name).name}"
+            if not b.blob(dst).exists():
+                b.copy_blob(x, b, dst)
+        b.blob(f"{PREFIX}/{gen}/ranges.json").upload_from_string(ranges)
+        b.blob(f"{PREFIX}/{gen}/scans.json").upload_from_string(json.dumps(doc, indent=1) + "\n")
+    print(json.dumps({k: v for k, v in doc.items() if k != "scans"} | {"scans": len(doc["scans"]), "cintervals": len(src),
+                                                                        "cintervals_bytes": sum(int(x.size) for x in src)}, indent=1))
+
+
+@cli.command("hist")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
+@option("-f", "--force", is_flag=True, help="Redo ranges already counted")
+@option("-g", "--gen", required=True, help="Generation (its `scans.json` rule): writes `chist/r####.parquet`")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-I", "--intervals-gen", help="Generation whose `cintervals/` to count (default: GEN's own)")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-n", "--per-task", default=1, type=IntRange(min=1), help="Ranges per task")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def hist_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task, threads, tmp) -> None:
+    """Per range, the suffix rows per three-character prefix of `-I`'s coalesced versions under GEN's hex-run rule
+    (`chist/`, for `plan-shards -H chist`): a derived generation's histograms."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    rule = gen_rule(read_json(f"gs://{bucket}/{prefix}/scans.json"))
+    intervals_gen = intervals_gen or gen
+    ranges = read_json(f"gs://{bucket}/{PREFIX}/{intervals_gen}/ranges.json")
+    t = _task(index)
+    b = storage.Client().bucket(bucket)
+    con = connect(threads, mem, tmp)
+    for i in range(t * per_task, min((t + 1) * per_task, ranges["k"])):
+        key = f"{prefix}/chist/r{i:04d}.parquet"
+        if not force and b.blob(key).exists():
+            err(f"hist range {i}: already counted")
+            continue
+        t0 = monotonic()
+        src = f"read_parquet({q(f'{mount}/{PREFIX}/{intervals_gen}/cintervals/r{i:04d}.parquet')})"
+        tab = con.execute(hist_sql(src, rule)).to_arrow_table()
+        sink = pa.BufferOutputStream()
+        pq.write_table(tab, sink, compression=CODEC)
+        b.blob(key).upload_from_string(sink.getvalue().to_pybytes())
+        n = sum(tab.column("n").to_pylist())
+        print(json.dumps({"range": i, "suffix_rows": n, "s": round(monotonic() - t0, 1)}), flush=True)
+
+
 @cli.command("plan-shards")
 @option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
@@ -1224,6 +1317,7 @@ def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, m
 
     prefix = f"{PREFIX}/{gen}"
     plan = read_json(f"gs://{bucket}/{prefix}/shards.json")
+    rule = gen_rule(read_json(f"gs://{bucket}/{prefix}/scans.json"))
     ig = intervals_gen or gen
     ranges = read_json(f"gs://{bucket}/{PREFIX}/{ig}/ranges.json")
     if only:
@@ -1238,9 +1332,9 @@ def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, m
         if not force and b.blob(mark).exists():
             err(f"map range {i}: already mapped")
             continue
-        src = f"{mount}/{prefix}/cintervals/r{i:04d}.parquet" if coalesced else f"{mount}/{PREFIX}/{ig}/intervals/r{i:04d}.parquet"
+        src = f"{mount}/{PREFIX}/{ig}/{'cintervals' if coalesced else 'intervals'}/r{i:04d}.parquet"
         outp = Path(out) / f"m{i}"
-        doc = map_range(src, plan, i, outp, con)
+        doc = map_range(src, plan, i, outp, con, rule)
         upload_tree(outp, scratch, prefix)
         shutil.rmtree(outp)
         b.blob(mark).upload_from_string(json.dumps(doc) + "\n")
@@ -1542,7 +1636,7 @@ def compare_answers_cmd(ch_jsonl, static_jsonl) -> None:
 def query_cmd(bucket, dates, gen, terms) -> None:
     """Answer literals from the suffix shards on GCS (sidecar → one range per file): one JSON line per
     term with its I/O and per-date `{bucket: [bytes, objects]}`."""
-    r = gcs_reader(bucket, f"{PREFIX}/{gen}")
+    r = gcs_reader(bucket, f"{PREFIX}/{gen}", gen_rule(read_json(f"gs://{bucket}/{PREFIX}/{gen}/scans.json")))
     for t in terms:
         t0 = monotonic()
         out = r.answer(t, list(dates))

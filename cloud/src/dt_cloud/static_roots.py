@@ -28,10 +28,11 @@ import pyarrow.compute  # noqa: F401  (pa.compute)
 import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
-from .static_catalog import CHUNK_ROWS, PARENT
+from .hex_runs import HexRule, grams_sql, occurs_sql
+from .static_catalog import CHUNK_ROWS, PARENT, first_hit_sql
 from .static_profile import data_bucket, scratch_bucket
 from .static_names import (
-    _batches, CODEC, NAME, OPEN, PREFIX, _task, connect, err, q, read_json,
+    _batches, CODEC, NAME, OPEN, PREFIX, _task, connect, err, gen_rule_at, q, read_json,
 )
 
 #: The parent of a path `x` (raw case), by string cut: every directory level, newline or not.
@@ -65,7 +66,7 @@ def _sink(con, into: str, hit: str, agg: bool | str) -> None:
         con.execute(f"INSERT INTO {into} SELECT q, depth, path, usr, vf, vt, size, n_files FROM ({hit})")
 
 
-def member_roots(con, rows_sql: str, members: str, into: str, agg: bool | str = False) -> None:
+def member_roots(con, rows_sql: str, members: str, into: str, agg: bool | str = False, rule: HexRule | None = None) -> None:
     """Add `members`' (a table with `q`, ≥ 3 characters) first-hit rows among `rows_sql`'s suffix rows
     `(s, depth, path, usr, vf, vt, size, n_files)` to table `into` (created if absent): `ROOT_COLS`, or with
     `agg` per `(q, depth, path)` `RP_COLS` (or per chunk and member `DIGEST_COLS` partials, `agg="digest"`). The rule and level loop are `static_catalog.member_events`': at
@@ -90,13 +91,13 @@ def member_roots(con, rows_sql: str, members: str, into: str, agg: bool | str = 
             break
         hit = f"""SELECT left(s, {L}) AS q, depth, path, usr, vf, vt, size, n_files FROM rx
             SEMI JOIN (SELECT p FROM rl WHERE member) AS mm ON left(rx.s, {L}) = mm.p
-            WHERE instr(l, left(s, {L})) = length(l) - length(s) + 1 AND NOT contains(par, left(s, {L}))"""
+            WHERE {first_hit_sql(L, rule)}"""
         _sink(con, into, hit, agg)
         con.execute(f"DELETE FROM rx WHERE length(s) <= {L}")
     con.execute("DROP TABLE IF EXISTS rx; DROP TABLE IF EXISTS rl; DROP TABLE IF EXISTS rpre")
 
 
-def short_roots(con, versions_sql: str, into: str, agg: bool = False, pieces: int = 1, log: str = "") -> None:
+def short_roots(con, versions_sql: str, into: str, agg: bool = False, pieces: int = 1, log: str = "", rule: HexRule | None = None) -> None:
     """Add every one- and two-character literal's first-hit rows among `versions_sql`'s rows `(depth, path,
     usr, vf, vt, size, n_files)` to `into` (as `member_roots`): each distinct character and character pair of
     the lowercase name that the lowercase parent does not contain (`static_catalog.short_events`' rule). In
@@ -104,16 +105,15 @@ def short_roots(con, versions_sql: str, into: str, agg: bool = False, pieces: in
     if pieces > 1:
         t0 = monotonic()
         for k in range(pieces):
-            short_roots(con, f"SELECT * FROM ({versions_sql}) WHERE hash(path) % {pieces} = {k}", into, agg)
+            short_roots(con, f"SELECT * FROM ({versions_sql}) WHERE hash(path) % {pieces} = {k}", into, agg, rule=rule)
             if log:
                 err(f"{log}: piece {k + 1}/{pieces} in {monotonic() - t0:.1f}s")
         return
     con.execute(f"CREATE TABLE IF NOT EXISTS {into} ({RP_COLS if agg else ROOT_COLS})")
     hit = f"""SELECT g AS q, depth, path, usr, vf, vt, size, n_files FROM (
-            SELECT unnest(list_distinct(list_transform(range(1, length(l) + 1), lambda p: substring(l, p, 1))
-                || list_transform(range(1, length(l)), lambda p: substring(l, p, 2)))) AS g, par, depth, path, usr, vf, vt, size, n_files
+            SELECT unnest({grams_sql('l', rule)}) AS g, par, depth, path, usr, vf, vt, size, n_files
             FROM (SELECT {NAME} AS l, {PARENT} AS par, depth, path, usr, vf, vt, size, n_files FROM ({versions_sql}) WHERE depth >= 1)
-        ) WHERE NOT contains(par, g)"""
+        ) WHERE NOT {occurs_sql('par', 'g', rule)}"""
     _sink(con, into, hit, agg)
 
 
@@ -573,12 +573,15 @@ class Drill:
     ≤ `R + 2·rg` rows (`rg` = the files' row-group size), read them; else `(q, P)` is heavy (its true rows >
     R), so its rollup holds the kept children (`answers[date]`) and the remainder (`rest[date]`)."""
 
-    def __init__(self, roots: GroupFile, rollups: GroupFile, R: int, rg: int = ROOT_RG, aliases: dict[str, str] | None = None):
-        self.roots, self.rollups, self.R, self.rg, self.aliases = roots, rollups, R, rg, aliases or {}
+    def __init__(self, roots: GroupFile, rollups: GroupFile, R: int, rg: int = ROOT_RG, aliases: dict[str, str] | None = None,
+                 rule: HexRule | None = None):
+        self.roots, self.rollups, self.R, self.rg, self.aliases, self.rule = roots, rollups, R, rg, aliases or {}, rule
 
     def view(self, term: str, P: str, dates: list[str]) -> dict:
+        from .hex_runs import occurs
+
         t = term.lower()
-        if t in P.lower():
+        if occurs(t, P.lower(), self.rule):
             return {"q": t, "P": P, "source": "plain", "answers": None}
         c = self.aliases.get(t, t)  # members with identical root sets share their canonical's rows
         lo, hi = (c, P + "/"), (c, P + "0")
@@ -688,7 +691,7 @@ def measure_cmd(bucket, floor_rows, gen, index, lease, mount, mem, only, threads
             err(f"measure {name}: {s['rows']:,} rows, {n_members:,} members, downloaded in {monotonic() - t0:.1f}s")
             wheres = chunk_wheres(str(src))
             for k, where in enumerate(wheres):
-                member_roots(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(str(src))}) WHERE {where})"), "mem", "rp", agg=True)
+                member_roots(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(str(src))}) WHERE {where})"), "mem", "rp", agg=True, rule=gen_rule_at(bucket, gen))
                 err(f"measure {name}: chunk {k + 1}/{len(wheres)} in {monotonic() - t0:.1f}s")
             src.unlink()
         con.execute(f"CREATE TABLE IF NOT EXISTS rp ({RP_COLS})")
@@ -758,7 +761,7 @@ def measure_short_cmd(bucket, floor_rows, gen, index, mount, mem, parts, threads
     err(f"measure-short {name}: {len(local)} version files downloaded in {monotonic() - t0:.1f}s")
     con = connect(threads, mem, tmp)
     versions = f"SELECT * FROM read_parquet({q(str(Path(tmp) / 'cintervals' / '*.parquet'))}) WHERE {_partition(parts)} = {t}"
-    short_roots(con, versions, "rp", agg=True, pieces=pieces, log=f"measure-short {name}")
+    short_roots(con, versions, "rp", agg=True, pieces=pieces, log=f"measure-short {name}", rule=gen_rule_at(bucket, gen))
     n_rp, n_rows = con.execute("SELECT count(*), coalesce(sum(n), 0) FROM rp").fetchone()
     err(f"measure-short {name}: {n_rows:,} root rows, {n_rp:,} root paths in {monotonic() - t0:.1f}s")
     qs, qd = q_stats(con, "rp")
@@ -881,7 +884,7 @@ def digest_cmd(bucket, gen, index, lease, mount, mem, threads, scratch, tmp, wai
             b.blob(f"{prefix}/sx/{name}.parquet").download_to_filename(str(src))
             wheres = chunk_wheres(str(src))
             for k, where in enumerate(wheres):
-                member_roots(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(str(src))}) WHERE {where})"), "mem", "dg", agg="digest")
+                member_roots(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(str(src))}) WHERE {where})"), "mem", "dg", agg="digest", rule=gen_rule_at(bucket, gen))
                 err(f"digest {name}: chunk {k + 1}/{len(wheres)} in {monotonic() - t0:.1f}s")
             src.unlink()
         tab = con.execute("""SELECT q, sum(n)::BIGINT AS n, (sum(h1) % 18446744073709551616)::UBIGINT AS h1, (sum(h2) % 18446744073709551616)::UBIGINT AS h2
@@ -979,7 +982,7 @@ def build_cmd(bucket, gen, index, force, K, lease, mount, mem, only, threads, R,
             err(f"build {name}: {s['rows']:,} rows, {n_members:,} members, downloaded in {monotonic() - t0:.1f}s")
             wheres = chunk_wheres(str(src))
             for k, where in enumerate(wheres):
-                member_roots(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(str(src))}) WHERE {where})"), "mem", "rt")
+                member_roots(con, sx_rows_sql(f"(SELECT * FROM read_parquet({q(str(src))}) WHERE {where})"), "mem", "rt", rule=gen_rule_at(bucket, gen))
                 err(f"build {name}: chunk {k + 1}/{len(wheres)} in {monotonic() - t0:.1f}s")
             src.unlink()
         out = Path(tmp) / "drill"
@@ -1073,7 +1076,7 @@ def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratc
     n = 0
     for k in range(pieces):  # each piece written and uploaded on its own: a partition can hold billions of roots
         con.execute("DROP TABLE IF EXISTS rt")
-        short_roots(con, f"SELECT * FROM ({versions}) WHERE hash(path) % {pieces} = {k}", "rt")
+        short_roots(con, f"SELECT * FROM ({versions}) WHERE hash(path) % {pieces} = {k}", "rt", rule=gen_rule_at(bucket, gen))
         part = Path(tmp) / "smap"
         shutil.rmtree(part, ignore_errors=True)
         con.execute(f"COPY (SELECT rt.*, qg.grp FROM rt ASOF JOIN qg ON rt.q >= qg.lo) TO {q(str(part))} (FORMAT parquet, PARTITION_BY (grp), COMPRESSION zstd)")
@@ -1227,16 +1230,16 @@ def index_cmd(bucket, gen, K, mount, R, tmp) -> None:
 # ── Verification ───────────────────────────────────────────────────────────
 
 
-def brute_view_sql(src: str, version: int, cases: str) -> str:
+def brute_view_sql(src: str, version: int, cases: str, rule: HexRule | None = None) -> str:
     """Per (case, child of its P): Σ size, n_files over one scan's rows (`src`, its `path` sort; v1 `b`/`o`)
-    strictly under P, at depth ≥ 1, whose lowercase name contains the term and whose lowercase parent does
-    not — the first-hit rule straight from the scan. `cases`: a table of `(term, P)`."""
+    strictly under P, at depth ≥ 1, whose lowercase name the term occurs in (`hex_runs`, under `rule`) and whose
+    lowercase parent it does not — the first-hit rule straight from the scan. `cases`: a table of `(term, P)`."""
     size, n = ("size", "n_files") if version == 2 else ("b", "o")
     return f"""WITH c AS (SELECT term, P, split_part(P, '/', 1) AS bkt FROM {cases}),
         m AS (SELECT t.term, x.path, x.bkt, x.sz, x.nf
               FROM (SELECT path, split_part(path, '/', 1) AS bkt, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf
                     FROM read_parquet({q(src)}) WHERE depth >= 2) AS x, (SELECT DISTINCT term FROM c) AS t
-              WHERE contains(x.l, t.term) AND NOT contains(x.par, t.term))
+              WHERE {occurs_sql('x.l', 't.term', rule)} AND NOT {occurs_sql('x.par', 't.term', rule)})
         SELECT c.term, c.P, split_part(substring(m.path, length(c.P) + 2), '/', 1) AS child, sum(m.sz)::BIGINT AS b, sum(m.nf)::BIGINT AS o
         FROM m JOIN c ON m.term = c.term AND m.bkt = c.bkt AND starts_with(m.path, c.P || '/') GROUP BY ALL"""
 
@@ -1290,7 +1293,7 @@ def drill_brute_cmd(bucket, cases_file, dates, gen, index, kept_file, mount, mem
         if rows:
             con.executemany("INSERT INTO kept VALUES (?, ?, ?)", rows)
     t0 = monotonic()
-    con.execute(f"CREATE TABLE v AS SELECT * FROM ({brute_view_sql(f'{mount}/{scan['src']}', scan['version'], 'cases')}) WHERE b <> 0 OR o <> 0")
+    con.execute(f"CREATE TABLE v AS SELECT * FROM ({brute_view_sql(f'{mount}/{scan['src']}', scan['version'], 'cases', gen_rule_at(bucket, gen))}) WHERE b <> 0 OR o <> 0")
     tot = {(t, P): (int(b_), int(o_), int(n)) for t, P, b_, o_, n in con.execute(
         "SELECT term, P, sum(b)::BIGINT, sum(o)::BIGINT, count(*) FROM v GROUP BY term, P").fetchall()}
     got: dict[tuple[str, str], dict] = {c: {} for c in cases}
@@ -1329,7 +1332,7 @@ def gcs_drill(bucket: str, gen: str, kind: str) -> Drill:
         a = pq.read_table(pa.BufferReader(b.blob(f"{prefix}/aliases.parquet").download_as_bytes()), columns=["q", "canonical"])
         aliases = {k: v for k, v in zip(a.column("q").to_pylist(), a.column("canonical").to_pylist()) if k != v}
     files = {sub: GroupFile(None, fetch, size_of, top=top[sub], index_file=f"{kind}-{sub}-index.parquet") for sub in ("roots", "rollups")}
-    return Drill(files["roots"], files["rollups"], meta["R"], meta["rg"], aliases)
+    return Drill(files["roots"], files["rollups"], meta["R"], meta["rg"], aliases, gen_rule_at(bucket, gen))
 
 
 @cli.command("drill-query")
