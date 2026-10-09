@@ -30,7 +30,7 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
-import { useFilterCover } from './filterCover'
+import { coverWant, useFilterCover } from './filterCover'
 import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
 import { apiError, INDEXED_SYNTAX, useFilterCaps, useIndexedScans } from './filterCaps'
@@ -576,16 +576,23 @@ function AppContent() {
   const canStageHere = store.staging && canStage
   const canAssignHere = ownersMode && canAssign
   const coverScoped = !!activeLens || ownerMode !== 'all' || !!classSet
-  const coverQ = useFilterCover(sfetch, store.key, { date: asof ?? null, path: graftPath, q: fq, qs: syntax.id, enabled: !!fq && !coverScoped && (canAssignHere || canStageHere) })
+  // Fetched only once the viewer opens the bulk bar (or a row asks for its matches) for this scan, path
+  // and filter: a cold cover costs seconds, and most filtered page loads never act on the matches.
+  const coverArgs = { date: asof ?? null, path: graftPath, q: fq, qs: syntax.id }
+  const [coverWanted, setCoverWanted] = useState<string | null>(null)
+  const coverOn = coverWanted === coverWant(coverArgs)
+  const wantCover = coverOn ? undefined : () => setCoverWanted(coverWant(coverArgs))
+  const coverQ = useFilterCover(sfetch, store.key, { ...coverArgs, enabled: coverOn && !!fq && !coverScoped && (canAssignHere || canStageHere) })
   const tblFilter = useMemo(() => {
     if (!fq) return undefined
     const c = coverQ.data
     const why = coverScoped ? 'Clear the owner or storage-class scope to act on the matches.'
+      : !coverOn ? 'List the matches (“act on the matches” above) to act on this row’s.'
       : coverQ.error ? `Can’t list this row’s matches: ${coverQ.error.message}`
       : c && !c.complete ? c.reason
       : undefined
-    return { items: c?.complete ? c.items : null, why }
-  }, [fq, coverQ.data, coverQ.error, coverScoped])
+    return { items: c?.complete ? c.items : null, why, want: wantCover }
+  }, [fq, coverQ.data, coverQ.error, coverScoped, coverOn]) // eslint-disable-line react-hooks/exhaustive-deps
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
@@ -1190,7 +1197,7 @@ function AppContent() {
           </span>
         )}
         {fq && !coverScoped && (
-          <BulkBar cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error?.message} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
+          <BulkBar onWant={wantCover} cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error?.message} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
         )}
       </SiteNav>
 

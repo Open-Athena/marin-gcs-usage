@@ -55,7 +55,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
    *  what a row's checkbox, trash and assign act on (the row's own items, never its whole prefix). `items`
    *  null: not available (loading, incomplete, or a scoped view; `why` says so) — no row acts. Absent: no
    *  filter, every row acts on its own prefix. */
-  filter?: { items: CoverItem[] | null; why?: string }
+  filter?: { items: CoverItem[] | null; why?: string; want?: () => void }
   /** Brushing with the treemap: the child (by name) lit as hovered, and the
    *  row under the pointer, `null` on leave. */
   brush?: string | null
@@ -325,7 +325,9 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
                   <td className="actions">
                     {!synthetic && !acts(k) && (
                       <Tooltip content={its.length ? 'This row’s matches couldn’t be checked (file or folder?), so nothing acts on them; open the folder to act on them.' : filter?.why ?? 'Listing this row’s matches…'}>
-                        <span className="none">—</span>
+                        {filter?.want && !its.length
+                          ? <button type="button" className="act" onClick={filter.want}>list</button>
+                          : <span className="none">—</span>}
                       </Tooltip>
                     )}
                     {!synthetic && acts(k) && (

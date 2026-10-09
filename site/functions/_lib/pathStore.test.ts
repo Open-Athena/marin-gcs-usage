@@ -249,6 +249,49 @@ describe('reads', () => {
   })
 })
 
+describe('readAsks: the group budget, before the span queries', () => {
+  // The span queries (`index_row_groups` selects) one lookup sends, through a counting D1.
+  const counted = () => {
+    const sqls: string[] = []
+    const db = new Proxy(env.DB!, { get(t, k) { const v = Reflect.get(t, k) as unknown; return k === 'prepare' ? (sql: string) => { sqls.push(sql); return t.prepare(sql) } : typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v } })
+    const e = { ...env, DB: db } as Env
+    // The isolate's handle (`openIndex` holds one per scan), its queries sent through `e`.
+    return { h: async () => ({ ...await openIndex(env, V2), env: e }) as IndexHandle, spans: () => sqls.filter(q => q.startsWith('SELECT rg, d_min')).length }
+  }
+  // Eight asks over all 4 `path` groups at depth 3: a span cap of 3 halves the one rect, round by round.
+  const paths = ['bk/flat/f00100', 'bk/flat/f01000', 'bk/flat/f02000', 'bk/flat/f03000', 'bk/flat/f04000', 'bk/flat/f05000', 'bk/flat/f07900', 'bk/small/s1']
+  const asks = paths.map(path => ({ depth: 3, path }))
+  const keep = (r: Row) => paths.includes(r.path)
+  const outcome = async (p: Promise<unknown>) => p.then(() => 'ok', e => String((e as Error).message))
+
+  it('in budget: every round\'s span queries, the rows; over it: no round after the one that passed the budget', async () => {
+    const ok = counted()
+    const got = await readAsks(await ok.h(), asks, keep, { spanCap: 3 })
+    const over = counted()
+    const cut = await outcome(readAsks(await over.h(), asks, keep, { spanCap: 3, maxGroups: 1 }))
+    expect([byPath(got.rows).map(r => r.path), got.groups, ok.spans(), cut, over.spans()]).toEqual([
+      paths, 4, 7,
+      'lookup too wide: ≥3 row groups (cap 1)', 3,
+    ])
+  })
+
+  it('`rememberWide`: a repeat of a too-wide lookup sends no span query; without it, it plans again', async () => {
+    const c = counted()
+    const h = await c.h()
+    const run = (rememberWide: boolean) => outcome(readAsks(h, asks, keep, { spanCap: 3, maxGroups: 1, rememberWide }))
+    const n = [c.spans()]
+    const plain = [await run(false), await run(false)]
+    n.push(c.spans())
+    const remembered = [await run(true), await run(true)]
+    n.push(c.spans())
+    expect([plain, remembered, n]).toEqual([
+      ['lookup too wide: ≥3 row groups (cap 1)', 'lookup too wide: ≥3 row groups (cap 1)'],
+      ['lookup too wide: ≥3 row groups (cap 1)', 'lookup too wide: ≥3 row groups (cap 1, remembered)'],
+      [0, 6, 9],
+    ])
+  })
+})
+
 describe('the cold footer tier (`.groups.parquet`)', () => {
   it('reads its footer once, then decodes only the footer groups a span predicate can match', async () => {
     // A generation of its own, so no earlier test warmed its footer groups in the isolate cache.
