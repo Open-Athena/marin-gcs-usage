@@ -8,7 +8,7 @@ import { stringParam, useUrlState } from 'use-prms'
 import { bareEmpty, legacyOwner, ownerParam } from './ownerParam'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { canonId, shortName, shortUserKey } from './UserChip'
-import { signInUrl, useCanAssign, useIdent as useIdentity } from './auth'
+import { signInUrl, useCanAssign, useCanStage, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap, DiffHeader, useDiffModel } from './DiffTreemap'
 import { DiffTable } from './DiffTable'
@@ -29,9 +29,12 @@ import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
-import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
+import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
+import { useFilterCover } from './filterCover'
+import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
-import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
+import { apiError, INDEXED_SYNTAX, useFilterCaps, useIndexedScans } from './filterCaps'
+import { LoadFailure, mapSlot } from './LoadFailure'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
@@ -149,6 +152,7 @@ function AppContent() {
     navigate({ pathname: legacy ? `${base}/${legacy.replace(/^\/+|\/+$/g, '')}` : store.path, search: rest ? `?${rest}` : '', hash }, { replace: true })
   }, [search, hash, navigate, store])
   const canAssign = useCanAssign()
+  const canStage = useCanStage()
   const ident = useIdentity()
   // The owner axis (`Store.owners`): the ownership ledger overlays the map
   // and the table for any signed-in viewer; admins assign from it.
@@ -408,7 +412,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; matches?: string[]; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -439,7 +443,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -551,11 +555,29 @@ function AppContent() {
   // depth-1 one, or a refresh; a corner marker, nothing dimmed).
   const mapStale = !tree && !!lastTree.current
   const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
+  // The asked-for view failed (any non-2xx, its retries spent): the slot states it — a held tree from another
+  // scan or scope would sit dimmed under "loading" forever (gcs 2026-10-09: 80 s of a gray map on a 500).
+  const mapFailed = mapSlot(tree, lastTree.current, rootErr) === 'failed'
+  const retryMap = () => { for (const q of [...subtreeQs, ...coarseQs]) if (q.isError) void q.refetch() }
+  // A failed attempt being retried: say so on the held map's marker.
+  const mapRetrying = subtreeQs[0]?.failureReason && !rootErr ? `retrying (${subtreeQs[0].failureReason.message.slice(0, 80)})…` : null
 
-  // Bulk actions target the outermost matched prefixes — the nodes the server
-  // flagged `m` (a match root's whole subtree comes along, so its descendants
-  // aren't flagged).
-  const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
+  // Bulk actions (the bar, the table's rows) under a filter take its matches under the view as the fewest
+  // exact prefixes (`/api/filter-cover`): every match, listed, never a drawn subset or a row's whole prefix.
+  // Unscoped only — under an owner or class scope a match's scoped bytes aren't a prefix.
+  const canStageHere = store.staging && canStage
+  const canAssignHere = ownersMode && canAssign
+  const coverScoped = !!activeLens || ownerMode !== 'all' || !!classSet
+  const coverQ = useFilterCover(sfetch, store.key, { date: asof ?? null, path: graftPath, q: fq, qs: syntax.id, enabled: !!fq && !coverScoped && (canAssignHere || canStageHere) })
+  const tblFilter = useMemo(() => {
+    if (!fq) return undefined
+    const c = coverQ.data
+    const why = coverScoped ? 'Clear the owner or storage-class scope to act on the matches.'
+      : coverQ.error ? `Can’t list this row’s matches: ${coverQ.error.message}`
+      : c && !c.complete ? c.reason
+      : undefined
+    return { items: c?.complete ? c.items : null, why }
+  }, [fq, coverQ.data, coverQ.error, coverScoped])
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
@@ -566,14 +588,11 @@ function AppContent() {
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     return !!(d as { rollup?: unknown } | undefined)?.rollup
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
-  const matchedRoots = useMemo((): string[] | undefined => {
+  const fSeries = useMemo(() => {
     if (!fq) return undefined
     // The first paint carries the same roots (the full read adds only what is inside them).
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    // A bounded transport list is not a safe predicate for table actions or
-    // a historical series. The map/totals are still exact; those secondary
-    // consumers stay disabled rather than silently using a subset.
-    return d?.matchesTruncated ? undefined : d?.matched?.map(x => x.path)
+    return seriesMatches(d)
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
@@ -583,7 +602,7 @@ function AppContent() {
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, matchesTotal: d.matchesTotal, matchesTruncated: d.matchesTruncated }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
@@ -834,7 +853,6 @@ function AppContent() {
   }, [mapTree, drillPath])
   // The table's path segments, stable while `mapPath` is (a fresh array per
   // render defeated every memo keyed on it).
-  const tblActionable = useMemo(() => inMatchRoots(matchedRoots, !!fq), [matchedRoots, fq])
   const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
   const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
   // Worklist rows / children table → drill the map to a prefix and show it.
@@ -1161,8 +1179,8 @@ function AppContent() {
             </FilterNote>
           </span>
         )}
-        {fq && fMatches.length > 0 && (
-          <BulkBar matches={fMatches} total={fCoverage?.matchesTotal} incomplete={fCoverage?.matchesTruncated} scheme={store.scheme} query={fq} />
+        {fq && !coverScoped && (
+          <BulkBar cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error?.message} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
         )}
       </SiteNav>
 
@@ -1193,7 +1211,7 @@ function AppContent() {
 
       <DiskSpace space={meta?.disk_space} />
 
-      {mapTree ? (
+      {mapTree && !mapFailed ? (
         <>
           {/* Remount per store: the treemap's caches are tied to the tree it
               mounted with, and a switch can swap `tree` without ever passing
@@ -1232,7 +1250,7 @@ function AppContent() {
             onPathChange={onMapPath}
             objects={objects}
             onOpen={p => openObject(p.slice(1).map(n => n.n))}
-          />{mapStale ? <Busy label="loading view…" /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
+          />{mapStale ? <Busy label={mapRetrying ?? 'loading view…'} /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
           {/* A drilled directory with nothing drawable under it: the scope came
               up empty, or (a v1 scan) it holds only objects or directories
               under this view's floor. Say so rather than show a blank canvas. */}
@@ -1279,21 +1297,20 @@ function AppContent() {
               onPickUser={u => pickUser(u, false)}
               onOpen={openPath}
               onOpenObject={openObject}
-              actionable={tblActionable}
+              filter={tblFilter}
             /></div>
           )}
         </>
       ) : miss ? (
         <NoScanMatch miss={miss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan)} />
-      ) : refusalOf(rootErr) ? (
-        // The filter's refusal (indexed-only): its reason, inline — not a failed view.
-        <p className="loading filter-refused" role="status">{refusalOf(rootErr)!.reason}</p>
-      ) : rootErr ? (
+      ) : rootErr && /^(409|413)/.test(rootErr.message) ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
-            : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in, or narrow the scope'
-            : `view failed: ${rootErr.message}`}
+            : 'this view is too wide for the index — drill in, or narrow the scope'}
         </p>
+      ) : rootErr ? (
+        // The filter's refusal (indexed-only) as its reason, inline; any other failure as its message, a 5xx with a retry.
+        <LoadFailure err={rootErr} what="view" onRetry={retryMap} />
       ) : noScansYet(scansQ) ? (
         // The list answered and is empty: no snapshot has index rows in D1,
         // so no view will ever load — a skeleton here would spin forever.
@@ -1315,8 +1332,8 @@ function AppContent() {
           chart still hides under any scope. */}
       <SizeOverTime
         scopeLabel={store.rootLabel}
-        paths={matchedRoots}
-        pathsTotal={fCoverage?.matchesTotal}
+        paths={fSeries?.paths}
+        pathsTotal={fSeries?.pathsTotal}
         queryOnly={fRollup}
         filterLabel={fq ?? undefined}
         filterQs={fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : undefined}
@@ -1397,18 +1414,15 @@ function AppContent() {
               <>
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
               </>
-            ) : refusalOf(diffErr) && !diffStale ? (
-              // The filter's refusal: its reason, inline — no status, nothing to retry.
-              <span className="tab-note filter-refused"> · {refusalOf(diffErr)!.reason}</span>
-            ) : diffErr && !diffStale ? (
+            ) : diffErr && !diffStale && /^(404|409)/.test(diffErr.message) ? (
               <span className="tab-note">
                 {' '}· {diffErr.message.startsWith('404')
                   ? <><code>{graftPath || '/'}</code> is in neither scan’s index — pick other scans or drill up.</>
-                  : diffErr.message.startsWith('409')
-                    ? <>no per-user index for one of these scans — pick newer scans, or clear the user.</>
-                    : <>couldn’t diff {fmtScan(diffPrev)} → {fmtScan(asof)} ({diffErr.message}).</>}
-                {' '}<button type="button" className="linkish" onClick={() => diffQ.refetch()}>retry</button>
+                  : <>no per-user index for one of these scans — pick newer scans, or clear the user.</>}
               </span>
+            ) : diffErr && !diffStale ? (
+              // The filter's refusal as its reason; any other failure as its message, a 5xx with a retry.
+              <>{' · '}<LoadFailure as="span" className="tab-note" err={diffErr} what={`diff ${fmtScan(diffPrev)} → ${fmtScan(asof)}`} onRetry={() => void diffQ.refetch()} /></>
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
             )}

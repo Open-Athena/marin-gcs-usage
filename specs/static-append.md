@@ -2,6 +2,20 @@
 
 Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the entry point `dt-cloud static-names runs add` (`static_runner.py`; it replaces `job/static-daily.sh` on `gcs-static`). Not yet scheduled; not on prod. The drilldown's run for 2026-10-09 (`deltas/2026-10-09/drill/`, "Drilldown runs" below) is verified (653/653 against brute force) and on R2; the site does not read runs' drills yet.
 
+
+## State (2026-10-09 15:00 UTC)
+
+- **First sub-daily run, gcs `2026-10-09T1236`** (`runs add -t …`, staged `cloud` tree `9d852323…` + pyrmts 541bc8e as `STATIC_NAMES_SRC`, `STATIC_NAMES_PROFILE=gcs`): prepare 12 s, append 6.4 min (16 spot tasks × 16 ranges), shards ∥ catalog 10.4 min, publish 8.4 min, R2 2.4 min. The run: 85,705,437 suffix rows, 2.37 GB. Verify (the 30 terms of `deltas/2026-10-09/terms.txt`) ran after: see `deltas/2026-10-09T1236/verify.json`.
+- **Incident:** the counter merged `deltas/2026-10-09` (which carries the drilldown's `drill/`) with T1236 into `deltas/2026-10-09_2026-10-09T1236`, which had no `drill/` and no `catalog/meta.json`. Published at 14:32:33, it made prod's heavy filter 500 for a few minutes and dropped 10-09's drill coverage. Fix, by hand at 14:35–14:39: `deltas/2026-10-09T1236` copied to R2, then `manifests/2026-10-09T1236.json` **rewritten** to list the two level-0 runs (the merged version is kept at `gs://oa-gcs-usage-dvx/static-names/2026-10-08c/manifests-superseded/2026-10-09T1236.merged.json`). That rewrite broke rule 2 below, once, on the coordinator's call. The merged dir `deltas/2026-10-09_2026-10-09T1236/` on GCS is orphaned: nothing lists it, and it was never copied to R2. It is kept, not deleted.
+- **Fixed in code** (`9a4e5c29`):
+  - the counter never merges a run holding a tier it can't carry (`pinned_runs`, `MERGED_ENTRIES`);
+  - a merged run's catalog gets its `meta.json`;
+  - `publish` refuses a manifest whose runs lack a reader file (`RUN_FILES`).
+- **Rules:**
+  1. Write a manifest only after every file of every run it lists exists on that store, R2 included. The runner copies the runs first and the manifest last, in one job chained with `&&`.
+  2. Manifests are immutable. Never rewrite a published key; fix forward with a new manifest instead (the next scan's).
+- Next gcs scan: `2026-10-10` (cron 07:00 UTC) → `runs add -c 2026-10-10`. With 10-09 pinned, the counter merges T1236 + 10-10 into level 1.
+
 ## Why
 
 The static name index (`specs/architecture/static-name-search.md`) answers `/names` and the map's `?f=<literal>` filter from R2 alone, but only for the scans of its generation. `2026-10-08c` ends at 2026-10-08. Every newer scan gets a 400 from `/api/name-summary` and the filter falls back to the per-scan path-store walk. Rebuilding a whole generation per scan (~$10 Batch, 136 GB re-copied to R2, ~$16 egress) and keeping a full copy per scan is the cost this design avoids.

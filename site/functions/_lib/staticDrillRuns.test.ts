@@ -1,6 +1,6 @@
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { scanTime } from '../../src/scanSlug'
-import { Drill, type DrillAnswer, type DrillRules, DRILL_RULES, DrillSource, rollupAt } from './staticDrill'
+import { Drill, type DrillAnswer, type DrillRules, DRILL_RULES, DrillSource, rollupAt, rollupTotal } from './staticDrill'
 import { covers, drillSource } from './staticFilter'
 import { type Blobs, type Hit } from './staticNames'
 import { tiers } from './staticRuns'
@@ -33,10 +33,15 @@ const NONMEMBERS = ['nomatch', 'qq']
 const RUN1 = 'deltas/2026-08-04T0600'
 const RUN2 = 'deltas/2026-08-04T1800'
 
-/** `Blobs` over the fixture's keys, with `list`; `hide` keys are absent, `reads` collects every key read. */
-function blobsOf(opts: { hide?: string[]; reads?: string[] } = {}): Blobs {
+/** `Blobs` over the fixture's keys, with `list`; `hide` keys are absent, `corrupt` keys garbage, `reads` collects
+ *  every key read. */
+function blobsOf(opts: { hide?: string[]; corrupt?: string[]; reads?: string[] } = {}): Blobs {
   const has = (k: string) => files.has(k) && !opts.hide?.includes(k)
-  const bytes = (k: string) => { opts.reads?.push(k); if (!has(k)) throw new Error(`no fixture ${k}`); return files.get(k)! }
+  const bytes = (k: string) => {
+    opts.reads?.push(k)
+    if (!has(k)) throw new Error(`no fixture ${k}`)
+    return opts.corrupt?.includes(k) ? new Uint8Array(64).fill(0xab).buffer : files.get(k)!
+  }
   return {
     async range(key, offset, length) { const b = bytes(key); return b.slice(offset, length == null ? b.byteLength : offset + length) },
     async suffix(key, n) { const b = bytes(key); return { buf: b.slice(Math.max(0, b.byteLength - n)), size: b.byteLength } },
@@ -46,7 +51,7 @@ function blobsOf(opts: { hide?: string[]; reads?: string[] } = {}): Blobs {
 }
 
 /** The drill as the site wires it: the runs and the fleet root's catalog from the light index's tiers. */
-function wired(opts: { hide?: string[]; reads?: string[]; rules?: DrillRules } = {}): Drill {
+function wired(opts: { hide?: string[]; corrupt?: string[]; reads?: string[]; rules?: DrillRules } = {}): Drill {
   const blobs = blobsOf(opts)
   const t = tiers(blobs)
   const runs = async () => (await t.tiers.state()).tiers.flatMap(x => x.dir ? [x.dir] : [])
@@ -190,6 +195,66 @@ describe('DrillSource over the runs', () => {
     await drillSource(blobs, { cache: colo, prefix: 'g' }).hits('ckpt', 'b2/mix')
     expect([...held.keys()].filter(u => u.includes('/roots-v1/')).map(u => decodeURIComponent(u.split('/roots-v1/')[1])))
       .toEqual([`zebra\0b2@${RUN2}.json`, 'ckpt\0b2/mix.json'])
+  })
+})
+
+describe('a broken drill tier: cut there, the scans before it answer exactly, never a failure', () => {
+  let logged: string[] = []
+  beforeAll(() => { vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) }) })
+  afterEach(() => { logged = [] })
+  afterAll(() => { vi.restoreAllMocks() })
+  const THROUGH_RUN1 = () => E.dates.slice(0, 4)
+  const drillMsg = (dir: string, error: string) => `static drill: ${dir} is broken; its scans and every later tier's are not indexed until it loads: ${error}`
+  const tops = (dir: string) => ['long', 'short'].flatMap(k => ['roots', 'rollups'].map(x => `${dir}/drill/${k}-${x}-index.top.parquet`))
+
+  it.each([
+    ['its index files missing (its `meta.json` there)', { hide: tops(RUN2) }, `no fixture ${RUN2}/drill/long-roots-index.top.parquet`],
+    ['its index files corrupt', { corrupt: tops(RUN2) }, 'parquet file invalid (footer != PAR1)'],
+  ])('run 2\'s drill with %s: the first view that reads it cuts the tiers at it', async (_, damage, error) => {
+    const drill = wired(damage)
+    const src = new DrillSource(drill)
+    expect((await drill.state()).tiers.map(x => x.dir)).toEqual([null, RUN1, RUN2])
+    const found = await src.hits('ckpt', 'b1/runs')
+    const st = await drill.state()
+    expect([found!.scans, st.version, st.tiers.map(x => x.dir), st.scans, logged]).toEqual([THROUGH_RUN1(), RUN1, [null, RUN1], THROUGH_RUN1(), [drillMsg(RUN2, error)]])
+    // Every view on the scans through run 1 = brute force (as if run 2's drill weren't there yet).
+    const { got, want } = await check(drill, THROUGH_RUN1(), E.members1)
+    expect(got).toEqual(want)
+  }, 60_000)
+
+  it('run 1\'s drill `meta.json` corrupt: the base alone, logged', async () => {
+    const drill = wired({ corrupt: [`${RUN1}/drill/meta.json`] })
+    const st = await drill.state()
+    const found = await new DrillSource(drill).hits('ckpt', 'b1/runs')
+    expect([st.version, st.tiers.map(x => x.dir), st.scans, found!.scans, logged.map(m => m.slice(0, drillMsg(RUN1, '').length))])
+      .toEqual(['base', [null], E.dates.slice(0, 3), E.dates.slice(0, 3), [drillMsg(RUN1, '')]])
+  })
+
+  it('the base\'s drill `meta.json` missing: no tier, every heavy view declines (null)', async () => {
+    const drill = wired({ hide: ['drill/meta.json'] })
+    const st = await drill.state()
+    expect([st.version, st.tiers, st.scans, await new DrillSource(drill).hits('ckpt', 'b1/runs'), logged]).toEqual(['none', [], [], null, [drillMsg('the base', 'no fixture drill/meta.json')]])
+  })
+
+  it('run 2\'s light catalog broken: the drill follows the light tiers\' cut at once (its runs changed)', async () => {
+    const drill = wired({ hide: [`${RUN2}/catalog/meta.json`] })
+    const st = await drill.state()
+    expect([st.version, st.tiers.map(x => x.dir), st.scans]).toEqual([RUN1, [null, RUN1], THROUGH_RUN1()])
+    const { got, want } = await check(drill, THROUGH_RUN1(), E.members1)
+    expect(got).toEqual(want)
+  }, 60_000)
+
+  it('run 2\'s catalog index corrupt, found at the fleet root: that answer covers the scans through run 1 only, and is not held', async () => {
+    const drill = wired({ corrupt: [`${RUN2}/catalog/index.parquet`] })
+    const src = new DrillSource(drill)
+    // The drill's own tiers are whole: the catalog's cut narrows the fleet root's answer.
+    expect((await drill.state()).tiers.map(x => x.dir)).toEqual([null, RUN1, RUN2])
+    const healthy = wired()
+    const t = (await Promise.all(E.long.map(async t => [t, (await healthy.view(t, '')).source] as const))).find(([, s]) => s === 'catalog')![0]
+    const found = await src.hits(t, '')
+    const rows = THROUGH_RUN1().map(d => { const r = rollupTotal(found!.rollup!, d); return [d, [r.b, r.o]] })
+    expect([found!.io.source, found!.scans, rows]).toEqual(['catalog', THROUGH_RUN1(), THROUGH_RUN1().map(d => [d, total(brute(t, '', d))])])
+    expect(logged.map(m => m.split(' is broken')[0])).toEqual([`static tiers: ${RUN2}`])
   })
 })
 

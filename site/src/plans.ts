@@ -2,6 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { getCurrentScan } from './owners'
 import { DEFAULT_STORE } from './stores'
 import { type DeletionRun, EXEC_CAPS, type ExecCaps, type ExecJob } from './runs'
+import { stageMany as stageManyVia } from './batches'
 
 export type { DeletionRun, ExecJob } from './runs'
 export { LIVE_STATES } from './runs'
@@ -81,7 +82,12 @@ async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> 
   return data as T
 }
 
-/** Stage prefixes for deletion (POST /api/plans/stage). Pass canonical
+/** Stage `prefixes` in `STAGE_CHUNK`-sized POSTs, then fold the batches into the first
+ *  (`batches.ts` `stageMany`): one gesture, one batch to review, however many prefixes. */
+export const stageMany = (prefixes: string[], note?: string, post: typeof call = call): Promise<StageResult> =>
+  stageManyVia(prefixes, note, getCurrentScan(), post)
+
+/** Stage prefixes for deletion (POST /api/plans/stage, batched past `STAGE_CHUNK`). Pass canonical
  *  `<scheme>bucket/…/` prefixes (trailing slash) and, optionally, one memo for
  *  the whole gesture. The gesture is "as of" the scan on screen: the executor
  *  deletes only objects that scan already had, unchanged. Invalidates the
@@ -89,7 +95,7 @@ async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> 
 export function useStage() {
   const qc = useQueryClient()
   return useMutation<StageResult, Error, StageArgs>({
-    mutationFn: ({ prefixes, note }: StageArgs) => call('/api/plans/stage', 'POST', { prefixes, note: note?.trim() || undefined, as_of: getCurrentScan() }),
+    mutationFn: ({ prefixes, note }: StageArgs) => stageMany(prefixes, note),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['plans'] }) },
   })
 }

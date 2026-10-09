@@ -17,7 +17,8 @@ import type { Band } from './series'
 import { stringParam } from 'use-prms'
 import { perf, usePerfCommit } from './perf'
 import { SERIES_MAX_PATHS } from '../functions/_lib/seriesLimits'
-import { ApiError, apiError, refusalOf } from './filterCaps'
+import { ApiError, apiError } from './filterCaps'
+import { LoadFailure } from './LoadFailure'
 
 // Stored bytes over the historical scans, scoped exactly like the map: the
 // drilled prefix, a user, or an owner pool (`/api/series` — one row read per
@@ -147,7 +148,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   scopeLabel?: string
   /** The page filter's match roots: the series is their sum per scan. */
   paths?: string[]
-  /** Exact count when the server bounded the auxiliary match list. */
+  /** The match roots' exact count (`matchCount.n`): more than `SERIES_MAX_PATHS` asks with the query alone. */
   pathsTotal?: number
   /** The filter's view was a rollup (a heavy literal): `paths` lists only some match roots, so the series
    * is asked for the query alone (the server sums the rollup per scan). */
@@ -223,7 +224,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
     queryFn: async () => {
       const pf = perf.start('series', `${prefix || '/'}${scope}|n${scans.length}`)
       const r = await pf.track(sfetch(`/api/series?path=${encodeURIComponent(prefix)}${scope}`, { credentials: 'include' }))
-      if (!r.ok) { pf.fail(); throw new ApiError(`series: ${r.status}`, apiError(r.status, await r.text()).refusal) }
+      if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
       const j = await r.json() as Series
       pf.decoded()
       return j
@@ -231,7 +232,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   })
   usePerfCommit('series')
   // Too many match roots for `paths=`, and the server couldn't sum the query itself.
-  const tooMany = overMax && (!filterQs || /: 400$/.test(seriesQ.error?.message ?? ''))
+  const tooMany = overMax && (!filterQs || (seriesQ.error instanceof ApiError && seriesQ.error.status === 400))
 
   const label = user ? shortName(user) : pool ?? (prefix || 'total')
   // The x-range cut: points on or after (latest − N days). Applied to every
@@ -392,7 +393,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
           </label>
         </div>
       )}
-      {seriesQ.isError && !tooMany && <p className="sub"><i>{refusalOf(seriesQ.error)?.reason ?? 'series unavailable'}</i></p>}
+      {seriesQ.isError && !tooMany && <LoadFailure err={seriesQ.error} what="series" className="sub" onRetry={() => void seriesQ.refetch()} />}
       {tooMany ? (
         <p className="loading">size over time charts up to {SERIES_MAX_PATHS} matches; this filter has {nPaths.toLocaleString()}. Narrow it to chart.</p>
       ) : allZero ? (

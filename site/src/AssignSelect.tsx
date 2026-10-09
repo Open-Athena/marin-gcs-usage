@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useOwnerMutations } from './owners'
+import { assignInBatches } from './filterCover'
 import { Tooltip } from './Tooltip'
 import { UserChip, allUsers } from './UserChip'
 
@@ -29,7 +30,8 @@ export function AssignSelect({ prefix, assigned, compact, label }: {
   // ancestor wins, so it also overrides every assignment beneath it. Ask once.
   const buckets = prefixes.filter(isBucketPrefix)
   const [pending, setPending] = useState<string | null | undefined>(undefined)
-  const save = (owner: string | null) => { post.mutate(prefixes.map(p => ({ pattern: p, owner }))); setPending(undefined) }
+  // `ASSIGN_CHUNK` per POST (the API takes ≤ 500 actions at once): a filtered row's or selection's matches may be more.
+  const save = (owner: string | null) => { void assignInBatches(prefixes, pattern => ({ pattern, owner }), a => post.mutateAsync(a)).catch(() => {}); setPending(undefined) }
   if (pending !== undefined) {
     const name = pending === null ? 'nobody' : pending === '@me' ? 'you' : (users.find(u => u.id === pending)?.name ?? pending)
     return (
