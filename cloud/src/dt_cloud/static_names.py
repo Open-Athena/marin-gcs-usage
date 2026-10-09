@@ -9,11 +9,11 @@ Two stages, each embarrassingly parallel on GCP Batch (`job/static-names.sh`):
    `nodes`/`closures` hold (`chstore/ingest.py`): a key's rows merged per scan as the
    ingest merges them, and a new version whenever any value changes (the weighted mean
    stamp compared to the second, banker's rounding as ClickHouse's `round`) or the key
-   was absent from a scan in between. The kernel is pyrmts' gaps-and-islands
-   (`pyrmts_engine.multiscan_duckdb`, the one `overtime.py` uses), run per `(depth, path)`
-   key range (`ranges.json`), so a range task reads only its row groups of each scan.
-   `append` adds one scan to a range's intervals (open versions × the scan: a full
-   join), the daily delta, and must equal a rebuild.
+   was absent from a scan in between. The kernel is `pyrmts.intervals` (gaps-and-islands,
+   key-range planning and predicates, one-scan append), run per `(depth, path)` key range
+   (`ranges.json`), so a range task reads only its row groups of each scan. `append` adds
+   one scan to a range's intervals (open versions × the scan: a full join), the daily
+   delta, and must equal a rebuild.
 2. **Suffixes.** From the intervals: one row per (lowercase name suffix of three or more
    characters, version): `(s, depth, path, usr, vf, vt, size, n_files)`, sorted by `s`,
    in shard files split by the suffix's first three characters (`shards.json`, cut from
@@ -139,9 +139,22 @@ def list_scans(bucket: str = DATA_BUCKET, *, start: str | None = None, through: 
 # ── Key ranges ─────────────────────────────────────────────────────────────
 
 
+RANGE_COLS = ["depth", "path"]
+
+
+def range_preds(r: dict) -> list[str]:
+    """Range `r` (`ranges.json`: `[lo, hi)` over `(depth, path)`, `hi` None = unbounded) as DuckDB
+    conjunctive predicates (`pyrmts.intervals.key_range_pieces`): read each, `UNION ALL` them, so each
+    filter prunes a `(depth, path)`-sorted file by its row-group statistics."""
+    from pyrmts.intervals import key_range_pieces
+
+    return key_range_pieces(RANGE_COLS, r["lo"], r["hi"])
+
+
 @dataclass(frozen=True)
 class Piece:
-    """A conjunctive `(depth, path)` filter: depths `[dlo, dhi]`, paths `[plo, phi)` (only within one depth)."""
+    """A conjunctive `(depth, path)` filter: depths `[dlo, dhi]`, paths `[plo, phi)` (only within one depth).
+    Only `ch_digest_sql` renders these (as ClickHouse literals); DuckDB reads use `range_preds`."""
     dlo: int
     dhi: int
     plo: str | None = None
@@ -188,36 +201,20 @@ def pieces(lo: tuple[int, str], hi: tuple[int, str] | None) -> list[Piece]:
 def plan_ranges(scans: dict, k: int, mount: str | None = None) -> dict:
     """`k` key ranges of about equal input rows over every scan: cut at row-group starts of the newest
     scan of each source format (v1: dirs only; v2: every object), weighted by how many scans have
-    that format. Boundaries are `(depth, path)` keys; range `i` is `[b_i, b_{i+1})`."""
+    that format (`pyrmts.intervals.plan_ranges`). Boundaries are `(depth, path)` keys; range `i` is
+    `[b_i, b_{i+1})`, the first from `(0, "")`."""
+    from pyrmts.intervals import plan_ranges as plan
+
     by_version: dict[int, list[dict]] = {}
     for s in scans["scans"]:
         by_version.setdefault(s["version"], []).append(s)
-    points: list[tuple[int, str, int]] = []
+    footers = []
     for v, ss in by_version.items():
         newest = ss[-1]
         md = _metadata(scans["bucket"], newest["src"], mount)
-        names = md.schema.names
-        di, pi = names.index("depth"), names.index("path")
-        for g in range(md.num_row_groups):
-            rg = md.row_group(g)
-            ds, ps_ = rg.column(di).statistics, rg.column(pi).statistics
-            if ds.min == ds.max:
-                points.append((int(ds.min), ps_.min, rg.num_rows * len(ss)))
+        footers.append((md, len(ss)))
         err(f"plan-ranges: v{v} {newest['id']}: {md.num_row_groups:,} row groups × {len(ss)} scans")
-    points.sort()
-    total = sum(w for *_, w in points)
-    cuts: list[tuple[int, str]] = []
-    acc, step = 0, total / k
-    for d, p, w in points:
-        if acc >= step * (len(cuts) + 1) and (not cuts or (d, p) > cuts[-1]):
-            cuts.append((d, p))
-        acc += w
-    bounds = [(0, "")] + [c for c in cuts if c > (0, "")]
-    ranges = []
-    for i, lo in enumerate(bounds):
-        hi = bounds[i + 1] if i + 1 < len(bounds) else None
-        ranges.append({"i": i, "lo": list(lo), "hi": list(hi) if hi else None})
-    return {"k": len(ranges), "ranges": ranges}
+    return plan(footers, RANGE_COLS, k, floor=(0, ""))
 
 
 def _metadata(bucket: str, key: str, mount: str | None) -> "pq.FileMetaData":
@@ -269,51 +266,32 @@ def source_version(con, path: str) -> int:
     raise ValueError(f"{path}: neither a v2 store sort nor a v1 index ({sorted(cols)})")
 
 
-def scan_sql(con, path: str, ps: list[Piece], version: int | None = None) -> str:
-    """One scan's rows in the range, merged per key."""
+def scan_sql(con, path: str, preds: list[str], version: int | None = None) -> str:
+    """One scan's rows in the range (`range_preds`), merged per key."""
     version = version or source_version(con, path)
     if version == 2:
         cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({q(path)})").fetchall()}
         select = V2_SELECT.format(**{k: (c if c in cols else "NULL") for k, c in V2_OPTIONAL.items()})
     else:
         select = V1_SELECT
-    parts = [f"SELECT {select} FROM read_parquet({q(path)}) WHERE {p.sql()}" for p in ps]
+    parts = [f"SELECT {select} FROM read_parquet({q(path)}) WHERE {p}" for p in preds]
     return f"SELECT depth, path, usr, {MERGED} FROM ({' UNION ALL '.join(parts)}) GROUP BY depth, path, usr"
 
 
-def islands_sql(long_sql: str, key_cols: list[str], state_cols: list[str]) -> str:
-    """Gaps-and-islands over `long_sql` rows `(__scan, *key_cols, *state_cols)` → `(*key_cols, *state_cols,
-    __scan_lo, __scan_hi)`: a new run opens when a key's state changes or its scan index skips (the key was
-    absent in between). This is pyrmts' SCD-2 kernel (`pyrmts_engine.multiscan_duckdb._intervals_sql`, the
-    one `overtime.py` consolidates with) without its final sort; the job image ships pyrmts but not
-    pyrmts-engine (or polars), so it is restated here and `test_islands_equal_pyrmts` pins the two together."""
-    key_by = ", ".join(key_cols)
-    changed = " OR ".join(f"{c} IS DISTINCT FROM lag({c}) OVER w" for c in state_cols)
-    firsts = ", ".join(f"any_value({c}) AS {c}" for c in state_cols)
-    return f"""
-    WITH marked AS (
-        SELECT *, CASE WHEN row_number() OVER w = 1 OR __scan <> lag(__scan) OVER w + 1 OR {changed} THEN 1 ELSE 0 END AS __is_new
-        FROM ({long_sql}) WINDOW w AS (PARTITION BY {key_by} ORDER BY __scan)
-    ), grp AS (
-        SELECT *, sum(__is_new) OVER (PARTITION BY {key_by} ORDER BY __scan ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS __grp
-        FROM marked
-    )
-    SELECT {key_by}, {firsts}, min(__scan)::BIGINT AS __scan_lo, max(__scan)::BIGINT AS __scan_hi
-    FROM grp GROUP BY {key_by}, __grp"""
-
-
-def intervals_sql(con, sources: list[tuple[str, int, int | None]], ps: list[Piece]) -> str:
+def intervals_sql(con, sources: list[tuple[str, int, int | None]], preds: list[str], state_cols: list[str] = VALUE_COLS) -> str:
     """The range's intervals over `sources` (`(path, epoch, version)`, oldest first) as a query of
-    `INTERVAL_SCHEMA` rows (unsorted): gaps-and-islands over the per-scan merged rows, scan indices
-    mapped to epochs (`vt` = the first scan after the run, or `OPEN`). Every state column is equal
-    within a run (the stamp is stored rounded), so the run's values are deterministic."""
-    long = " UNION ALL ".join(f"SELECT {j}::BIGINT AS __scan, * FROM ({scan_sql(con, p, ps, v)})" for j, (p, _, v) in enumerate(sources))
-    kernel = islands_sql(long, KEY_COLS, VALUE_COLS)
-    ts = [e for _, e, _ in sources] + [OPEN]
-    lst = "[" + ", ".join(str(t) for t in ts) + "]::BIGINT[]"
-    vals = ", ".join(VALUE_COLS)
-    return f"""SELECT depth, path, usr, ({lst})[__scan_lo + 1] AS vf, ({lst})[__scan_hi + 2] AS vt, {vals}
-        FROM ({kernel})"""
+    `(depth, path, usr, vf, vt, *state_cols)` rows (unsorted): `pyrmts.intervals`' gaps-and-islands over
+    the per-scan merged rows, scan indices mapped to epochs (`vt` = the first scan after the run, or
+    `OPEN`). Every state column is equal within a run (the stamp is stored rounded), so the run's values
+    are deterministic. `state_cols=ANSWER_COLS` gives the coalesced versions (`CINTERVAL_SCHEMA`) directly."""
+    from pyrmts.intervals import islands_sql, long_sql, stamped_sql
+
+    srcs = [scan_sql(con, p, preds, v) for p, _, v in sources]
+    if list(state_cols) != VALUE_COLS:
+        # `islands_sql` windows `SELECT *`: drop the values no run reads before they ride through the sort.
+        srcs = [f"SELECT {', '.join([*KEY_COLS, *state_cols])} FROM ({src})" for src in srcs]
+    runs = islands_sql(long_sql(srcs), KEY_COLS, state_cols)
+    return stamped_sql(runs, KEY_COLS, state_cols, [e for _, e, _ in sources], OPEN)
 
 
 def connect(threads: int, mem: str, tmp: str | Path | None):
@@ -395,34 +373,43 @@ def hist_sql(table: str) -> str:
         ) GROUP BY p3 ORDER BY p3"""
 
 
-DIGEST_OPEN = "md5_number_upper(concat_ws('|', depth::VARCHAR, path, usr, vf::VARCHAR, size::VARCHAR, n_files::VARCHAR))"
-DIGEST_CLOSE = "md5_number_upper(concat_ws('|', depth::VARCHAR, path, usr, vf::VARCHAR, vt::VARCHAR))"
-
-
 def digests(con, table: str) -> dict:
     """Per scan epoch: versions opened (count, Σ md5 mod 2⁶⁴ of `depth|path|usr|vf|size|n_files`) and closed
     (of `depth|path|usr|vf|vt`) — the same strings `verify-intervals` hashes in ClickHouse."""
-    out: dict[str, dict] = {}
-    for ts, n, h in con.execute(f"SELECT vf, count(*), (sum({DIGEST_OPEN}) % {U64})::UBIGINT FROM {table} GROUP BY vf").fetchall():
-        out.setdefault(str(ts), {})["opened"] = [int(n), int(h)]
-    for ts, n, h in con.execute(f"SELECT vt, count(*), (sum({DIGEST_CLOSE}) % {U64})::UBIGINT FROM {table} WHERE vt <> {OPEN} GROUP BY vt").fetchall():
-        out.setdefault(str(ts), {})["closed"] = [int(n), int(h)]
-    return dict(sorted(out.items()))
+    from pyrmts.intervals import interval_digests
+
+    return interval_digests(con, table, [*KEY_COLS, "vf", "size", "n_files"], [*KEY_COLS, "vf", "vt"], OPEN)
 
 
 def build_range(scans: dict, ranges: dict, i: int, out: Path, *, mount: str | None, threads: int, mem: str, tmp: Path | None,
-                con=None) -> dict:
+                con=None, coalesced: bool = False) -> dict:
     """One key range's intervals over every scan in `scans`: `intervals/r####.parquet` (sorted
     `(depth, path, usr, vf)`), `hist/r####.parquet` and `digest/r####.json` under `out`. Pass `con` to
     build several ranges on one connection: each scan's footer is then parsed once (DuckDB's
-    `parquet_metadata_cache`), not once per range."""
+    `parquet_metadata_cache`), not once per range.
+
+    `coalesced`: the coalesced versions straight from the scans instead (one pass; runs keyed on
+    `ANSWER_COLS` only): `cintervals/r####.parquet` and `chist/r####.parquet`, byte-identical to
+    `coalesce_range` over the full intervals. No `digest/` (ClickHouse verifies the full intervals)."""
     t0 = monotonic()
     r = ranges["ranges"][i]
-    ps = pieces(tuple(r["lo"]), tuple(r["hi"]) if r["hi"] else None)
+    preds = range_preds(r)
     con = con or connect(threads, mem, tmp)
     sources = [(_src(scans["bucket"], s["src"], mount), s["ts"], s.get("version")) for s in scans["scans"]]
+    if coalesced:
+        name = f"r{i:04d}"
+        con.execute("DROP TABLE IF EXISTS civ")
+        con.execute(f"CREATE TABLE civ AS {intervals_sql(con, sources, preds, ANSWER_COLS)}")
+        rows = write_sorted(_batches(con, "SELECT * FROM civ ORDER BY depth, path, usr, vf"), out / "cintervals" / f"{name}.parquet",
+                            CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
+        (out / "chist").mkdir(parents=True, exist_ok=True)
+        pq.write_table(con.execute(hist_sql("civ")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+        con.execute("DROP TABLE civ")
+        doc = {"range": r, "rows": rows, "s": round(monotonic() - t0, 1)}
+        err(f"range {i}: {rows:,} coalesced versions in {doc['s']}s")
+        return doc
     con.execute("DROP TABLE IF EXISTS iv")
-    con.execute(f"CREATE TABLE iv AS {intervals_sql(con, sources, ps)}")
+    con.execute(f"CREATE TABLE iv AS {intervals_sql(con, sources, preds)}")
     t_kernel = monotonic() - t0
     doc = _finish_range(con, "iv", out, i, {"range": r, "kernel_s": round(t_kernel, 1)}, t0)
     con.execute("DROP TABLE iv")
@@ -449,37 +436,22 @@ def append_range(prev: Path, scan: dict, ranges: dict, i: int, out: Path, *, buc
     changed closes at the scan, and a new or changed key opens a version. Writes the range's new
     intervals (equal to a rebuild through the scan), hist and digest, plus `delta/<scan>/r####.parquet`:
     the opened versions (`op` = 1) and the closed ones (`op` = −1, with their new `vt`)."""
+    from pyrmts.intervals import append_intervals, delta_sql
+
     t0 = monotonic()
     r = ranges["ranges"][i]
-    ps = pieces(tuple(r["lo"]), tuple(r["hi"]) if r["hi"] else None)
     con = connect(threads, mem, tmp)
     D = scan["ts"]
     src = _src(bucket, scan["src"], mount)
     con.execute(f"CREATE TABLE old AS SELECT * FROM read_parquet({q(str(prev))})")
-    last = con.execute("SELECT max(vf) FROM old").fetchone()[0]
-    if last is not None and last >= D:
-        raise ValueError(f"range {i}: intervals already reach {last} ≥ the appended scan {D}")
-    con.execute(f"CREATE TABLE new AS {scan_sql(con, src, ps, scan.get('version'))}")
-    differ = " OR ".join(f"o.{c} IS DISTINCT FROM n.{c}" for c in VALUE_COLS)
-    con.execute(f"""CREATE TABLE j AS SELECT o.depth AS od, o.path AS op, o.usr AS ou, o.vf AS ovf,
-            n.depth AS nd, n.path AS np, n.usr AS nu, (o.depth IS NULL) OR (n.depth IS NULL) OR ({differ}) AS changed
-        FROM (SELECT * FROM old WHERE vt = {OPEN}) AS o FULL OUTER JOIN new AS n USING (depth, path, usr)""")
-    con.execute(f"""CREATE TABLE closes AS SELECT od AS depth, op AS path, ou AS usr, ovf AS vf FROM j WHERE od IS NOT NULL AND changed""")
-    vals = ", ".join(f"n.{c}" for c in VALUE_COLS)
-    con.execute(f"""CREATE TABLE opens AS SELECT n.depth, n.path, n.usr, {D}::BIGINT AS vf, {OPEN}::BIGINT AS vt, {vals}
-        FROM new AS n SEMI JOIN (SELECT nd, np, nu FROM j WHERE nd IS NOT NULL AND changed) AS c ON n.depth = c.nd AND n.path = c.np AND n.usr = c.nu""")
-    olds = ", ".join(f"CASE WHEN c.depth IS NULL THEN o.vt ELSE {D} END::BIGINT AS vt" if c == "vt" else f"o.{c}" for c in INTERVAL_SCHEMA.names)
-    con.execute(f"""CREATE TABLE ivs AS
-        SELECT {olds} FROM old AS o LEFT JOIN closes AS c ON o.depth = c.depth AND o.path = c.path AND o.usr = c.usr AND o.vf = c.vf
-        UNION ALL SELECT {', '.join(INTERVAL_SCHEMA.names)} FROM opens""")
+    n_open, n_close = append_intervals(con, "SELECT * FROM old", scan_sql(con, src, range_preds(r), scan.get("version")),
+                                       KEY_COLS, VALUE_COLS, D, OPEN, out="ivs")
     name = f"r{i:04d}"
     delta = out / "delta" / scan["id"] / f"{name}.parquet"
     delta_schema = INTERVAL_SCHEMA.append(pa.field("op", pa.int8(), nullable=False))
-    write_sorted(_batches(con, f"""SELECT *, 1::TINYINT AS op FROM ivs WHERE vf = {D}
-                    UNION ALL SELECT *, -1::TINYINT AS op FROM ivs WHERE vt = {D} ORDER BY depth, path, usr, vf"""),
+    write_sorted(_batches(con, f"SELECT * FROM ({delta_sql('ivs', D)}) ORDER BY depth, path, usr, vf"),
                  delta, delta_schema, INTERVAL_RG, dictionary=["usr", "kind"])
-    n_open, n_close = (con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("opens", "closes"))
-    return _finish_range(con, "ivs", out, i, {"range": r, "appended": scan["id"], "opened": int(n_open), "closed": int(n_close)}, t0)
+    return _finish_range(con, "ivs", out, i, {"range": r, "appended": scan["id"], "opened": n_open, "closed": n_close}, t0)
 
 
 # ── Coalesced versions ─────────────────────────────────────────────────────

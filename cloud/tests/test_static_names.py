@@ -265,26 +265,6 @@ def test_shards_and_reader(fixture, tmp_path):
         assert body["answers"] == {d: _brute_answer(oracle, term, d) for d in DATES}, term
 
 
-def test_islands_equal_pyrmts(fixture, tmp_path):
-    """The restated kernel and pyrmts' own (`_intervals_sql`) give the same runs on the fixture."""
-    msd = pytest.importorskip("pyrmts_engine.multiscan_duckdb")
-    from pyrmts.types import Dim, Metric, Pyramid
-
-    from dt_cloud.overtime import _NoStore
-
-    root, scans, _ = fixture
-    con = sn.connect(2, "1GB", tmp_path / "tmp")
-    ps = sn.pieces((0, ""), None)
-    srcs = [f"({sn.scan_sql(con, str(root / s['src']), ps, s['version'])})" for s in scans["scans"]]
-    long = " UNION ALL ".join(f"SELECT {j}::BIGINT AS __scan, * FROM {src}" for j, src in enumerate(srcs))
-    pyr = Pyramid(storage=_NoStore(), keyTemplate="", binCol="depth", dims=[Dim("path", "string"), Dim("usr", "string")],
-                  metrics=[Metric(c, "count") for c in sn.VALUE_COLS], tiers=[])
-    theirs = con.execute(msd._intervals_sql(msd._union_sql(srcs), sn.KEY_COLS, sn.VALUE_COLS, pyr)).fetchall()
-    cols = ", ".join([*sn.KEY_COLS, *sn.VALUE_COLS, "__scan_lo", "__scan_hi"])
-    mine = con.execute(f"SELECT {cols} FROM ({sn.islands_sql(long, sn.KEY_COLS, sn.VALUE_COLS)})").fetchall()
-    assert sorted(mine) == sorted(theirs)
-
-
 def _coalesced_oracle(oracle: list[tuple]) -> list[tuple]:
     """Adjacent versions of a key (`vt` = the next `vf`) with equal `size` and `n_files` merged."""
     out: list[list] = []
@@ -326,6 +306,35 @@ def test_coalesce_equals_oracle(fixture, tmp_path):
         assert [sum(s["terms"][t][k] for s in stats) for k in (0, 1)] == [term_rows(full, t), term_rows(co, t)], t
     assert [sum(s["suffix_rows"][k] for s in stats) for k in (0, 1)] == [
         sum(max(len(p.rsplit("/", 1)[-1]) - 2, 0) for d, p in vs if d >= 1) for vs in (full, co)]
+
+
+def test_coalesced_from_scans_equals_two_step(fixture, tmp_path):
+    """Runs keyed on `size`/`n_files` alone, straight from the scans, are the coalesced versions: the
+    `coalesced` build's files are byte-identical to `coalesce_range` over the full intervals, and equal to
+    keying on every value with the others carried (`first`) then projected."""
+    from pyrmts.intervals import islands_sql, long_sql, stamped_sql
+
+    root, scans, merged = fixture
+    ranges = sn.plan_ranges(scans, 3, str(root))
+    two, one = tmp_path / "two", tmp_path / "one"
+    _build(root, scans, ranges, two)
+    con = sn.connect(2, "1GB", tmp_path / "tmp")
+    rest = [c for c in sn.VALUE_COLS if c not in sn.ANSWER_COLS]
+    cols = ", ".join(sn.CINTERVAL_SCHEMA.names)
+    for r in ranges["ranges"]:
+        name = f"r{r['i']:04d}"
+        sn.coalesce_range(str(two / "intervals" / f"{name}.parquet"), r["i"], two, con)
+        doc = sn.build_range(scans, ranges, r["i"], one, mount=str(root), threads=2, mem="1GB", tmp=one / "tmp", coalesced=True)
+        assert (one / "cintervals" / f"{name}.parquet").read_bytes() == (two / "cintervals" / f"{name}.parquet").read_bytes()
+        assert (one / "chist" / f"{name}.parquet").read_bytes() == (two / "chist" / f"{name}.parquet").read_bytes()
+        assert sorted(p.name for p in one.iterdir()) == ["chist", "cintervals", "tmp"]
+        srcs = [sn.scan_sql(con, str(root / s["src"]), sn.range_preds(r), s["version"]) for s in scans["scans"]]
+        state = [*sn.ANSWER_COLS, *rest]
+        runs = islands_sql(long_sql(srcs), sn.KEY_COLS, state, carried={c: "first" for c in rest})
+        carried = con.execute(f"SELECT {cols} FROM ({stamped_sql(runs, sn.KEY_COLS, state, [s['ts'] for s in scans['scans']], sn.OPEN)}) "
+                              f"ORDER BY depth, path, usr, vf").fetchall()
+        assert [tuple(x) for x in carried] == _read(one / "cintervals" / f"{name}.parquet")
+        assert doc["rows"] == len(carried)
 
 
 def test_coalesce_append_equals_rebuild(fixture, tmp_path):

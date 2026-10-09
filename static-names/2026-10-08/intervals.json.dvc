@@ -12,4 +12,4 @@ meta:
       scans.json: 6c08bc2c84a7f155ed1a86b5f183aea7
       ranges.json: 0e64092bfd59936b30b9f7b42738edd6
     git_deps:
-      ../../cloud/src/dt_cloud/static_names.py: e086788e1075af541102619371cf27e7194156e2
+      ../../cloud/src/dt_cloud/static_names.py: 87f3b9aea5d89aa51c83bec5d07400b0b2867401
