@@ -55,7 +55,7 @@ GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
 GCP_LOG_VIEW = "projects/oa-internal-450019/locations/global/buckets/_Default/views/gcs-sweep-task-logs"
 # Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
 BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
-SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:68d362621f48976bc30fc0a78a900b89d03ddc0f3890b1239a028b42354ab340"
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:05881b7a5f0109caf13e2137de0bf0ff6bd3d35c029147447e3ad49d7c8a6d87"
 SWEEP_PACING = "guided"   # Feedback control within the cold-ramp envelope; adaptive after benchmark validation.
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
@@ -88,7 +88,7 @@ EXECUTOR = "sweep"
 SLACK_ADMIN_CHANNEL = "C0C579HNRFB"
 # Static name search (2026-10-09): the map's filter and /names read the static
 # name index on R2 (INDEX_R2, below), built daily by `job/static-daily.sh`.
-# FILTER_STATIC_HEAVY stays dev-only until its daily delta exists.
+# FILTER_STATIC_HEAVY stays dev-only for now (heavy literals on per-scan runs need each run's `drill/`).
 FILTER_STATIC = "1"
 NAME_SUMMARY_STATIC = "1"
 STATIC_GEN = "2026-10-08c"   # the static name index generation on INDEX_R2 (required: no default)
@@ -136,7 +136,7 @@ QUERY_BOX_DATED_NAMES = "1"
 QUERY_BOX_HOT_L1_URL = "https://gcs-query.oa.dev"
 STATIC_BENCH = "1"   # /api/static-bench: R2 read timings for the static name-search prototype
 FILTER_STATIC = "1"   # the map's filter (`q=`): a single literal's match roots from the static name index on R2 (INDEX_R2; `_lib/staticFilter.ts`), exact on every scan of its generation
-FILTER_STATIC_HEAVY = "1"   # with FILTER_STATIC: heavy literals (catalog members, every 1–2 character one) from the drilldown (`drill/` on INDEX_R2; `_lib/staticDrill.ts`) — match roots, or a heavy directory's per-child rollup; the base generation's scans only
+FILTER_STATIC_HEAVY = "1"   # with FILTER_STATIC: heavy literals (catalog members, every 1–2 character one) from the drilldown (`drill/` on INDEX_R2; `_lib/staticDrill.ts`) — match roots, or a heavy directory's per-child rollup; the base generation's scans, and per-scan runs past the drill base once each run's `drill/` lands
 FILTER_DETAILS_MS = "300"   # a static filter view waits this long past phase 2 for its roots' own rows (kind, ages, classes), then answers without them
 NAME_SUMMARY_STATIC = "1"   # /api/name-summary(-registry): every dated request from the static name index on R2 (INDEX_R2: suffix shards + catalog); unset = the query box (fallback)
 STATIC_GEN = "2026-10-08c"   # the static name index generation on INDEX_R2 (required: no default)
@@ -156,7 +156,7 @@ DATA_BUCKET = "oa-gcs-usage-dvx"      # sweep runs / plans data (`sweepDispatch`
 GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
 # Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
 BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
-SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:68d362621f48976bc30fc0a78a900b89d03ddc0f3890b1239a028b42354ab340"
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:05881b7a5f0109caf13e2137de0bf0ff6bd3d35c029147447e3ad49d7c8a6d87"
 SWEEP_PACING = "guided"
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
