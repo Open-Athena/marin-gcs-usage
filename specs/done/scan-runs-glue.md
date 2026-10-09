@@ -2,6 +2,14 @@
 
 From the root session's `scan-runs` work (`specs/scan-runs-ui.md` on branch `scan-runs`): record each cw-s3 scan job's run in D1 so `/scans` shows it. Apply on `cw-s3` after `scan-runs` reaches `cloud` and `cloud` is merged in.
 
+## Status (2026-10-09): done
+
+All six steps are applied on `cw-s3`:
+- `cloud` merged (`a2016a84`); the glue landed as written: profile, the patch applied cleanly, and `META_TREE_URL` in both envs.
+- `0016_scan_runs.sql` was checked on a fresh SQLite with `foreign_keys=ON` (FK check clean), then applied to the prod D1.
+- Backfill: a dry run into local SQLite, with its Batch/log inputs saved (`-w`), then written to D1 by replaying them (`-j`/`-l`). 145 runs over 145 scans (130 succeeded, 15 failed) and 1,055 output rows. There are no phases, since no past cw run logged phase markers.
+- Deployed to dev, CIC'd (`/scans`, `/scans/<run>`), then to prod (`cw-s3-prod` `1474262e`). The `:cw` image is rebuilt, so the next scan records its own run, phases included.
+
 ## Steps
 
 1. **Migration** — the cw lineage's `site/migrations/cw/0016_scan_runs.sql` arrives with the `cloud` merge. Apply to the D1 only on Ryan's go: `wrangler d1 migrations apply oa-cw-s3-usage-db --remote`.
