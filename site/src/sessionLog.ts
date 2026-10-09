@@ -1,8 +1,8 @@
 /**
  * The session logger (specs/session-log.md): a lazily loaded chunk, imported
- * by `sessionLogBoot.ts` only while the deployment's `SESSION_LOG_UNTIL`
- * window is open. `Logger` buffers and flushes (pure: clock, transport and
- * timers are the caller's); `install` wires it to the page — URL changes,
+ * by `sessionLogBoot.ts` only while the admin switch (`/admin`) is on.
+ * `Logger` buffers and flushes (pure: clock, transport and timers are the
+ * caller's); `install` wires it to the page — URL changes,
  * clicks on controls, the path filter, pickers, fetches, errors, console
  * errors, viewport and visibility — and returns its undo.
  */

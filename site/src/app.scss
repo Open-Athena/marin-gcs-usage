@@ -1388,6 +1388,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
 
   h1 { margin-bottom: 8px; }
 
+  .session-log-switch {
+    margin-top: 24px;
+    .status { font-weight: 600; }
+    form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  }
+
   .mint {
     display: grid;
     grid-template-columns: max-content minmax(200px, 340px) 1fr;
@@ -2823,4 +2829,3 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
   }
 }
 // The privacy notice while the session log is on (About, /privacy).
-.session-log-note { font-size: 12.5px; color: var(--ink-2); border-left: 3px solid var(--s4); padding: 4px 10px; }

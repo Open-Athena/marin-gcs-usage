@@ -1,19 +1,19 @@
 # Session log: optional, time-boxed user-action logging
 
-When someone reports a bug, an admin opens their session's event log and sees what they did, what the site fetched, and what failed. Logging is off by default and turns itself off on a date, so it can be switched on around an announcement (the Discord post) and can't be left on by accident.
+When someone reports a bug, an admin opens their session's event log and sees what they did, what the site fetched, and what failed. It's for a few days of internal use: logging is off by default, an admin switches it on at `/admin`, and it turns itself off on a date, so it can't be left on by accident. Viewers see no notice.
 
 This is an event log, not a screen recorder: no DOM snapshots, no form contents other than the path filter.
 
-## Switch: `SESSION_LOG_UNTIL`
+## Switch: `/admin`, stored in D1
 
-A plain `[vars]` value; unset = off. No deployment carries a default.
+A runtime switch, not a deploy var: the "Session log" section at the bottom of `/admin` has an on/off switch (`role="switch"` checkbox) and a "through" date (UTC).
 
-- `SESSION_LOG_UNTIL = "2026-10-17"`: on through the end of that UTC day (off from `2026-10-18T00:00Z`). A full ISO instant (`2026-10-17T18:00Z`) ends at that instant.
-- A value more than 31 days ahead is refused (logging stays off and the config endpoint says why), so a typo like `2027-10-17` can't turn it on for a year.
-- Expiry is checked on both sides: the server stops accepting batches, and an open tab stops logging at the instant (it reads `until` at boot).
-- `SESSION_LOG_RETAIN_DAYS` (default 30): retention, see below.
-
-Leave the var set after the window closes: it is inert past its date but keeps the retention purge running (see Retention).
+- Turning it on with the date untouched runs it through the UTC day 7 days from now (`LIMITS.defaultDays`); the date can be moved, at most through the UTC day 31 days from now (`LIMITS.maxDays`; past that, or in the past, the API answers 400 and nothing changes). While on, changing the date shows a "Set date" button.
+- It turns itself off at the end of its date: nothing is written, the stored end has just passed (`/admin` then says "Off: ended after …"). Expiry is checked on both sides: the server stops accepting batches, and an open tab stops logging at the instant (it reads `until` at boot).
+- API (admin only, `requireAdmin`): `GET /api/session-log/switch` → `{enabled, until, reason, who, ts, defaultUntil, maxUntil}`; `PUT` the same path with `{enabled: true, until?}` (a `YYYY-MM-DD` runs through that UTC day, an ISO instant ends at it, empty = 7 days) or `{enabled: false}`.
+- Storage: `session_log_switch`, one row (`id = 1`, `until_ms` NULL = off, `who`, `ts`), in the session-log migration itself (`0018` on cw, `0042` on gcs): no new migration, and it is strongly consistent, unlike `CACHE_KV` (a cache keyspace with a 30-day TTL, not bound on every deployment). No row = off. Each change also appends an `admin_edits` row (`tbl = 'session_log_switch'`, `pk = '1'`, `insert` / `update`, old and new row JSON), the same audit trail `/api/db` writes.
+- Cost: `GET /api/session-log` (every page load) and each `POST` read the switch at most once per 60 s per isolate (`SWITCH_TTL_MS`, cached per D1 binding). The cache holds the end instant, not the answer, so expiry stays exact. An admin's `GET` / `PUT` bypasses and refreshes the cache, so a change applies at once in that isolate and within 60 s everywhere (an open tab whose next flush gets 503 stops).
+- Without the migration the switch reads "not set up": the config says `{enabled: false, reason: 'not set up'}`, `/admin` shows that line and no form, and a `PUT` is 503.
 
 ## What is recorded
 
@@ -49,7 +49,7 @@ Strings are truncated at log time (labels 60, filter 200, URLs 300, messages 300
 - Client-side buffer; flush every 10 s, when 200 events accumulate, on `visibilitychange → hidden`, and on `pagehide`. Interval flushes use `fetch(…, {keepalive: true})` (through the original, unwrapped `fetch`: the logger never logs itself); hide/pagehide use `navigator.sendBeacon`. Nothing awaits a flush and failures are dropped, never retried: the log can lose a batch, it can't slow the app.
 - Caps: a batch's body ≤ 60 000 bytes (split across several posts otherwise; `sendBeacon` / `keepalive` share a 64 KiB in-flight budget); the buffer never exceeds 200 (it flushes there); ≤ 20 000 events per page load, past which events are counted, not kept (a `dropped` event per flush).
 - Server: `POST /api/session-log` (`requireViewer`; anonymous `public` viewers are logged with no email on a `PUBLIC_READ` deploy). Body ≤ 64 KiB (413), ≤ 300 events (413), schema-validated (400), per session ≤ 20 000 events (429). Replies 204. A response of 503 (off / expired) stops the client.
-- Boot: `GET /api/session-log` (`no-store`) answers `{enabled, until}`; `enabled` only while the window is open *and* the request has a viewer identity, so the sign-in page never logs. While off it costs that one request per page load; the logger itself is a lazily imported chunk, loaded only when on. Errors raised before the chunk arrives are held (≤ 20) and replayed into the log.
+- Boot: `GET /api/session-log` (`no-store`) answers `{enabled, until, reason}`; `enabled` only while the switch is on *and* the request has a viewer identity, so the sign-in page never logs. While off it costs that one request per page load; the logger itself is a lazily imported chunk, loaded only when on. Errors raised before the chunk arrives are held (≤ 20) and replayed into the log.
 
 ## Storage: D1
 
@@ -67,14 +67,15 @@ Compared:
 
 ### Schema (`migrations/cw/0018_session_log.sql`; gcs: the same file as `migrations/gcs/0042_session_log.sql`)
 
-Additive only: two new tables, no foreign keys (so the purge can delete in any order).
+Additive only: three new tables, no foreign keys (so the purge can delete in any order).
 
 - `session_log` — one row per `sid`: `email`, `via`, `build`, `ua`, `started_ms`, `last_ms` (client clock), `n_events`, `n_errors` (`error` + `reject` + `console` + `api` with `s` 0 or ≥ 500), `n_batches`, `first_url`, `received_ts` (epoch s, server clock: what retention keys on). Indexes on `received_ts`, `(email, last_ms)`.
 - `session_log_batches` — PK `(sid, pid, seq)`; `received_ts`, `first_ms`, `last_ms`, `n`, `events` (JSON array as validated). A duplicate `(sid, pid, seq)` (a retried beacon) is ignored and counts nothing (`INSERT OR IGNORE`, the session row bumped only when a row was inserted).
+- `session_log_switch` — the switch (above): `id` (= 1), `until_ms`, `who`, `ts`.
 
 ### Retention
 
-`SESSION_LOG_RETAIN_DAYS` (default 30). The purge (`DELETE` from both tables where `received_ts` is older than the cutoff) runs from the endpoint, throttled to once per hour per isolate: on any `GET /api/session-log` (every page load hits it) and on each new page-load's first batch. It runs whenever `SESSION_LOG_UNTIL` is set, expired or not, so the data ages out after the window closes as long as the site gets traffic. A missing table (migration not applied) makes the purge a nop. To end it early: `DELETE FROM session_log_batches; DELETE FROM session_log;`.
+`SESSION_LOG_RETAIN_DAYS` (default 30). The purge (`DELETE` from both tables where `received_ts` is older than the cutoff) runs from the endpoint, throttled to once per hour per isolate: on any `GET /api/session-log` (every page load hits it) and on each new page-load's first batch. It runs whether logging is on, off or expired, so the data ages out after the window closes as long as the site gets traffic. `SESSION_LOG_RETAIN_DAYS` is an optional `[vars]` value; unset = 30. A missing table (migration not applied) makes the purge a nop. To end it early: `DELETE FROM session_log_batches; DELETE FROM session_log;`.
 
 ## Viewer: `/admin/sessions`
 
@@ -85,26 +86,20 @@ Admin-only (`requireAdmin` on the APIs; the page links from `/admin`).
 
 The list: user, start, duration, events, errors (highlighted), build; filters for user (substring), since (date) and errors-only, kept in the URL. The session view: a DIY SVG strip of the session's events on a time axis (ticks by kind, errors red, hover = floating-ui tooltip, click = jump to the row), then a timeline table (offset, kind, summary), errors highlighted, each row with "open this view" — the URL in effect at that moment (the last `start` / `nav` at or before it), opened in a new tab.
 
-## Privacy notice
+## No user-facing notice
 
-While `enabled`, the About dialog (and `/privacy`) show:
-
-> While enabled (through Oct 17), this site records your clicks and page views to help debug issues.
-
-Discord draft (for the announcement):
-
-> Heads-up: through Oct 17, the site keeps a short log of clicks, page views and errors (no file contents, no form text other than the path filter) so we can debug anything you report. It's deleted after 30 days.
+Viewers see nothing: no About line, nothing on `/privacy` (the first version showed a line in both while on, and a permanent `/privacy` paragraph; both were removed, since this runs for a few days on internal users). The only UI is admin-only: the switch on `/admin` and the viewer at `/admin/sessions`.
 
 ## Overhead
 
 Measured on the build (`pnpm -C site build`, vs. the spec commit):
 
-- Main chunk: +2.7 KB raw / +1.2 KB gzip (the boot shim, the notice, the lazy route); CSS +2.4 KB / +0.4 KB gzip. The logger (`sessionLog-*.js`, 7.7 KB / 3.5 KB gzip) loads only while on; the viewer (`SessionsPage-*.js`, 9.9 KB / 3.9 KB gzip) only on `/admin/sessions`.
+- Main chunk: +2.7 KB raw / +1.2 KB gzip in the first version (the boot shim, the notice, the lazy route); the runtime switch dropped the notice and added the `/admin` switch (not re-measured). CSS +2.4 KB / +0.4 KB gzip. The logger (`sessionLog-*.js`, 7.7 KB / 3.5 KB gzip) loads only while on; the viewer (`SessionsPage-*.js`, 9.9 KB / 3.9 KB gzip) only on `/admin/sessions`.
 - Off: one `GET /api/session-log` per page load, nothing else.
 - On: `log()` ≈ 0.2 µs per event including its share of the per-flush serialization (node, M-series laptop); a wrapped `fetch` adds ≈ 1.7 µs per request. `sessionLog.test.ts` keeps a loose budget check (< 20 µs/event).
 
 ## Enable (gcs)
 
-1. On the gcs branch: copy `site/migrations/cw/0018_session_log.sql` to `site/migrations/gcs/0042_session_log.sql`; apply: `wrangler d1 migrations apply oa-gcs-usage-auth --remote` (Ryan's go).
-2. `[vars]` in gcs's `wrangler.toml`: `SESSION_LOG_UNTIL = "2026-10-17"` (optionally `SESSION_LOG_RETAIN_DAYS = "30"`); deploy.
-3. Check: `/api/session-log` → `{"enabled": true, …}` signed in; browse; `/admin/sessions` lists the session.
+1. On the gcs branch: copy `site/migrations/cw/0018_session_log.sql` to `site/migrations/gcs/0042_session_log.sql` (it now carries `session_log_switch` too); apply: `wrangler d1 migrations apply oa-gcs-usage-auth --remote` (Ryan's go). Deploy the merged code. No `[vars]` needed (`SESSION_LOG_RETAIN_DAYS` only to change the 30-day default).
+2. Signed in as an admin: `/admin` → "Session log" at the bottom → check "Logging" (the date defaults to 7 days out; move it first if wanted, ≤ 31 days). Uncheck to stop early; it also stops by itself after the date.
+3. Check: `/api/session-log` → `{"enabled": true, …}` signed in (within 60 s on other isolates); browse; `/admin/sessions` lists the session. `SELECT * FROM admin_edits WHERE tbl = 'session_log_switch'` shows who toggled it.

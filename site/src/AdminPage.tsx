@@ -6,6 +6,7 @@ import { SiteNav } from './SiteNav'
 import { DEFAULT_STORE } from './stores'
 import { useDocTitle } from './title'
 import { PreviewLinks } from './PreviewLinks'
+import { SessionLogSwitch } from './SessionLogSwitch'
 
 // Share-link console (staff-only; the backend enforces the `admin` scope on
 // every /api/auth/grants route — this page just renders the 403 politely).
@@ -471,7 +472,7 @@ export function AdminPage() {
         Revocable view links for people outside the SSO/whitelist set. The raw link is shown{' '}
         <strong>once</strong>, when it's created; revoking a link signs out everyone using it, on their next request.{' '}
         A link with an email is a person's: it also creates their account, listed under <Link to="/admin/db/allowed_emails">users</Link> (all tables:{' '}
-        <Link to="/admin/db">/admin/db</Link>). What viewers did while the session log was on: <Link to="/admin/sessions">/admin/sessions</Link>.
+        <Link to="/admin/db">/admin/db</Link>).
       </p>
       <form
         className="mint"
@@ -607,6 +608,7 @@ export function AdminPage() {
       </table>
       </div>
       <PreviewLinks />
+      <SessionLogSwitch />
     </main>
   )
 }
