@@ -886,8 +886,10 @@ def census_cmd(bucket, floor_rows, gen, mount, mem, threads, tmp, max_rows) -> N
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-R", "--read-rows", "R", default=R_DEFAULT, type=int, help="Rows a directory holds before it is heavy (R)")
+@option("-s", "--shard", "shards", multiple=True, type=int, help="Only these shards (repeat)")
+@option("-t", "--trial", is_flag=True, help="Write under the scratch bucket's `<gen>/anchors-trial/` instead (a smoke run)")
 @option("-T", "--tmp", default="/stage/tmp", help="Local scratch")
-def rollups_cmd(bucket, gen, index, kind, K, lease, mount, mem, threads, R, tmp) -> None:
+def rollups_cmd(bucket, gen, index, kind, K, lease, mount, mem, threads, R, shards, trial, tmp) -> None:
     """The base's rollups of one kind, shard by shard from a shared queue (biggest first): per shard
     `anchors/rollups/<kind>-s####.parquet`, its group index `anchors/rollups-index/…` and its key bounds
     `anchors/keys/<kind>-s####.parquet` (for the runs' builder)."""
@@ -897,15 +899,19 @@ def rollups_cmd(bucket, gen, index, kind, K, lease, mount, mem, threads, R, tmp)
 
     if kind not in KINDS:
         raise SystemExit(f"kind {kind!r}: want one of {KINDS}")
-    b, sb = _gcs(bucket), _gcs(scratch_bucket)
+    sb = _gcs(scratch_bucket)
+    b = sb if trial else _gcs(bucket)
     prefix = f"{PREFIX}/{gen}"
+    out_anchors = f"{prefix}/{ANCHORS}-trial" if trial else f"{prefix}/{ANCHORS}"
     sub = "" if kind == "end" else f"{NAMES}/"
     plan = json.loads((Path(mount) / prefix / sub / "shards.json").read_text())
-    queue = Queue(sb, f"{prefix}/anchors", kind, _task(index), lease)
+    queue = Queue(sb, f"{out_anchors}", kind, _task(index), lease)
     con = connect(threads, mem, tmp)
     for sh in sorted(plan["shards"], key=lambda s: -s["rows"]):
+        if shards and sh["i"] not in shards:
+            continue
         name = f"s{sh['i']:04d}"
-        key = f"{prefix}/{ANCHORS}/rollups-index/{kind}-{name}.parquet"
+        key = f"{out_anchors}/rollups-index/{kind}-{name}.parquet"
         if b.blob(key).exists() or not queue.claim(f"{kind}-{name}"):
             continue
         t0 = monotonic()
@@ -916,8 +922,8 @@ def rollups_cmd(bucket, gen, index, kind, K, lease, mount, mem, threads, R, tmp)
         out = Path(tmp) / "anchors-out"
         rel = f"rollups/{kind}-{name}.parquet"
         cells, idx = write_rollups(con, "cells", out, rel)
-        b.blob(f"{prefix}/{ANCHORS}/{rel}").upload_from_filename(str(out / rel))
-        _put(b, f"{prefix}/{ANCHORS}/keys/{kind}-{name}.parquet", keys_table([str(local)], [f"{sub}sx/{name}.parquet"]))
+        b.blob(f"{out_anchors}/{rel}").upload_from_filename(str(out / rel))
+        _put(b, f"{out_anchors}/keys/{kind}-{name}.parquet", keys_table([str(local)], [f"{sub}sx/{name}.parquet"]))
         _put(b, key, idx)
         local.unlink()
         (out / rel).unlink()
