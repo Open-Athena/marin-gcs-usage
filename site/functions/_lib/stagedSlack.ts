@@ -312,13 +312,23 @@ interface Event { text: string; blocks?: unknown[]; sender?: Sender }
  * a new image. Like any full card it's backed by an `og_tokens` row, minted
  * by `slack:staged` and reused while it has a week left, so revoking that row
  * on /admin reverts the thread's card on its next fetch. */
-export async function stagedCardUrl(env: NotifyEnv & { OG_CARDS?: string; SESSION_SECRET?: string }, db: D1Database, siteUrl: string, digest: string, now = Math.floor(Date.now() / 1000)): Promise<string | null> {
+export async function stagedCardUrl(env: NotifyEnv & Env & { OG_CARDS?: string; SESSION_SECRET?: string }, db: D1Database, siteUrl: string, digest: string, now = Math.floor(Date.now() / 1000)): Promise<string | null> {
   // Slack fetches the image itself, so a non-https origin (a local stack) gets none: its URL would fail the post (`invalid_blocks`).
   if (!env.OG_CARDS || !env.SESSION_SECRET || !siteUrl.startsWith('https://')) return null
   const key = await ogKey(env.SESSION_SECRET)
   const tok = await serverToken(db, 'staged', {}, '/staged', 'slack:staged', now, IMAGE_TTL_DAYS).catch(() => null)
   if (!tok) return null
-  return siteUrl + await imagePath(key, 'staged', imageParams({}, digest.slice(0, 8), { t: tok.token }), 'full', Math.min(expDay(now, IMAGE_TTL_DAYS), tok.day))
+  return siteUrl + await imagePath(key, 'staged', imageParams({}, await stagedImageVersion(env, digest), { t: tok.token }), 'full', Math.min(expDay(now, IMAGE_TTL_DAYS), tok.day))
+}
+
+/** The staged card's version: the plan's digest (first 8 hex) and the
+ *  latest scan, which the card sizes against — so a new batch or a new scan
+ *  is a new image URL, and neither Slack nor the colo cache serves a card
+ *  drawn from the plan or scan before. */
+export async function stagedImageVersion(env: Env, digest: string): Promise<string> {
+  const scans = storeReady(env) ? (await pathScans(env, true).catch(() => null))?.results ?? [] : []
+  const scan = scans[scans.length - 1]?.date
+  return scan ? `${digest.slice(0, 8)}.${scan}` : digest.slice(0, 8)
 }
 
 /** A stage batch, announced (with its stager's other recent batches) in one reply. */
