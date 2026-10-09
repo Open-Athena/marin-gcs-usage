@@ -375,6 +375,11 @@ export function StagedPage() {
             const np = Math.max(1, Math.ceil(g.rows.length / pageSize))
             const setPg = (p: number) => setPages(ps => ({ ...ps, [k]: p }))
             const shown = g.rows.slice(pg * pageSize, (pg + 1) * pageSize)
+            // This batch's selectable rows on its current page (indices into `visible`).
+            const mineIdx = shown.map(r => visible.indexOf(r)).filter(i => i >= 0)
+            const batchAll = mineIdx.length > 0 && mineIdx.every(i => sel.isSelected(visible[i]))
+            const batchSome = !batchAll && mineIdx.some(i => sel.isSelected(visible[i]))
+            const toggleBatch = () => { mineIdx.forEach(i => { if (sel.isSelected(visible[i]) === batchAll) sel.toggle(i) }); sel.commit() }
             if (g.emptied) return (
               <section key={k} id={batchAnchor(g.id)} className="stage-batch folded emptied">
                 <div className="batch-head">
@@ -417,7 +422,10 @@ export function StagedPage() {
                       }]}
                       namePrefix={r => <PrefixStatus {...outcomes.get(r.prefix)!} />}
                       lead={{
-                        header: null,
+                        header: mineIdx.length > 0
+                          ? <input type="checkbox" checked={batchAll} ref={el => { if (el) el.indeterminate = batchSome }} onChange={toggleBatch}
+                            title={np > 1 ? 'select / deselect this page of the batch' : 'select / deselect the batch'} aria-label={`select all in batch ${g.id ?? ''}`} />
+                          : null,
                         cell: r => activePrefixes.has(r.prefix) ? <input type="checkbox" checked={sel.selected.has(r.prefix)} onChange={() => { const i = visible.indexOf(r); if (i >= 0) { sel.toggle(i); sel.commit() } }} aria-label={`select ${r.prefix}`} /> : null,
                       }}
                       rowProps={r => { const i = visible.indexOf(r); const state = outcomes.get(r.prefix)!.state; if (i < 0) return { className: `staged-${state}` }; const props = sel.rowProps(i); return { ref: sel.rowRef(i), ...props, className: `${props.className ?? ''} staged-${state}` } }}
