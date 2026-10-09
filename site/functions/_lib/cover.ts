@@ -44,7 +44,11 @@ export interface Cover {
 
 /** `/api/filter-cover`'s version: in its cache key, and the client's `cv=` (a browser's private copy
  *  must not outlive a change either). Bumped when an answer would change. */
-export const COVER_V = 5
+export const COVER_V = 6
+
+/** Why a cover over the item cap (`/api/filter-cover` `COVER_ITEMS_MAX`) isn't offered (shown muted, on the disabled actions). */
+export const overCapReason = (n: number): string =>
+  `Too many matches to act on at once (${n.toLocaleString('en-US')}); narrow the search or open a folder below. Agents can bulk-assign via the API.`
 
 /** Kind lookups: the fewest paths a too-wide chunk is halved to, and the most calls. */
 export const MIN_KIND_CHUNK = 64

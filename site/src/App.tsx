@@ -1197,7 +1197,7 @@ function AppContent() {
           </span>
         )}
         {fq && !coverScoped && (
-          <BulkBar onWant={wantCover} cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error?.message} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
+          <BulkBar onWant={wantCover} cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
         )}
       </SiteNav>
 

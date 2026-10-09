@@ -14,7 +14,7 @@ import { type Env, requireViewer } from '../_lib/auth.js'
 import { storeReady } from '../_lib/index.js'
 import { queryParam, QueryError } from '../_lib/scope.js'
 import { allMatchRoots, FILTER_VIEW_V, NotFound, pathTotals } from '../_lib/view.js'
-import { COVER_V, coverSet } from '../_lib/cover.js'
+import { COVER_V, coverSet, overCapReason } from '../_lib/cover.js'
 import { indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
@@ -24,6 +24,7 @@ import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
 
 /** The most items a response lists; past it, none (`complete: false`). */
 export const COVER_ITEMS_MAX = 50_000
+
 /** Row groups the one-object roots' kind lookups may read, all together (separate from the folders'). */
 export const COVER_KIND_GROUPS = 64
 /** Folders collapse at this depth or deeper (2: never a whole bucket). */
@@ -91,7 +92,7 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
       const tooMany = cover.items.length > COVER_ITEMS_MAX
       body = {
         date, path, q: qRaw, items: tooMany ? [] : cover.items, roots: sum, complete: !tooMany,
-        ...(tooMany ? { reason: `The matches here come to ${cover.items.length.toLocaleString('en-US')} separate folders and files — more than ${COVER_ITEMS_MAX.toLocaleString('en-US')} at once. Open a folder below to act on part of them.` } : {}),
+        ...(tooMany ? { reason: overCapReason(cover.items.length) } : {}),
         looked: cover.looked, unchecked: cover.unchecked,
       }
     }
