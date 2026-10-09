@@ -186,3 +186,17 @@ def test_run_checks_slug_miss_fails():
     assert [run_checks("https://gcs.oa.dev", "tok", d, today=TODAY, get=get) for d in ["26083103", "260901", "junk"]] == [
         (None, [fresh, Check("resolve-scan", False, f"no scan matches {d}")]) for d in ["26083103", "260901", "junk"]
     ]
+
+
+def test_run_checks_date_only_scan_by_its_start():
+    # 8/31: a date-only scan that started 04:30Z (`meta.started`) and 18:02Z — its start minute and hour pick it, the
+    # midnight alias too, the day the latest.
+    scans = ["2026-08-31T1802", "2026-08-31"]
+    routes = {"/data/scans.json": (200, json.dumps(scans).encode())}
+    for s in scans:
+        routes[f"/api/subtree?date={s}&w=128&h=128"] = (200, b"{}")
+        routes[f"/data/{s}/meta.json"] = (200, json.dumps({"started": "2026-08-31T04:30:12.345Z"} if len(s) == 10 else {}).encode())
+    get = lambda url, rng: routes.get(url.replace("https://gcs.oa.dev", ""), (404, b""))  # noqa: E731
+    assert [run_checks("https://gcs.oa.dev", "tok", d, today=TODAY, get=get)[0] for d in ["2608310430", "26083104", "2608310000", "260831", "26083105"]] == [
+        "2026-08-31", "2026-08-31", "2026-08-31", "2026-08-31T1802", None,
+    ]

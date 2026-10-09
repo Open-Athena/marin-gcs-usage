@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 # The one scan-id pattern (use `.fullmatch`); `static_names` and the rest import it from here.
@@ -58,23 +60,61 @@ def scan_time(scan: str) -> dt.datetime:
     return dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mm or 0), tzinfo=dt.timezone.utc)
 
 
-def scan_key(scan: str) -> str:
-    """A scan id's matching key: a date-only id reads as its midnight ``T0000``
-    (`scanSlug.ts` `scanKey`) — the instant `scan_time` gives it. A date and its
-    ``T0000`` are one instant, so `check_order` refuses the pair: the key never
-    collides with a real scan."""
-    return f"{scan}T0000" if len(scan) == 10 else scan
+# Date-only scan ids → their start minute (``YYYY-MM-DDTHHMM``, UTC; `start_key`): only the ids whose start is
+# known, and only date-only ids on a day with another scan need one (`times_needed`). `scanSlug.ts` `ScanTimes`.
+ScanTimes = Mapping[str, str]
 
 
-def scan_slug(scan: str) -> str:
+def start_key(scan: str, started: object) -> str | None:
+    """A date-only scan's start key from its ISO `started` instant (``meta.started``): the UTC minute, when it falls
+    on the id's own day — else None (a start on another day can't key that day's scan; the midnight form stands)."""
+    if len(scan) != 10 or not is_scan_id(scan) or not isinstance(started, str):
+        return None
+    try:
+        t = dt.datetime.fromisoformat(started.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        return None
+    t = t.astimezone(dt.timezone.utc)
+    return f"{scan}T{t:%H%M}" if t.strftime("%Y-%m-%d") == scan else None
+
+
+def times_needed(scans: Iterable[str]) -> list[str]:
+    """The date-only scans whose start matters: those sharing their day with another scan (`scanSlug.ts`
+    `timesNeeded`). A single-scan day's ``261009`` is already unique."""
+    scans = list(scans)
+    per_day = Counter(s[:10] for s in scans)
+    return [s for s in scans if len(s) == 10 and per_day[s] > 1]
+
+
+def scan_key(scan: str, times: ScanTimes | None = None) -> str:
+    """A scan id's matching key (`scanSlug.ts` `scanKey`): a timed id is itself; a date-only id its start
+    (`times`), else its midnight ``T0000`` — the instant `scan_time` gives it. A date and its ``T0000`` are one
+    instant, so `check_order` refuses the pair: the key never collides with a real scan."""
+    return ((times or {}).get(scan) or f"{scan}T0000") if len(scan) == 10 else scan
+
+
+def scan_under(scan: str, prefix: str, times: ScanTimes | None = None) -> bool:
+    """Whether `scan` falls under the decoded `prefix`: by id, by key, or (a date-only scan) by its midnight alias,
+    which stays valid when its start is known so a midnight link keeps resolving (`scanSlug.ts` `scanUnder`)."""
+    return (
+        scan.startswith(prefix)
+        or scan_key(scan, times).startswith(prefix)
+        or (len(scan) == 10 and f"{scan}T0000".startswith(prefix))
+    )
+
+
+def scan_slug(scan: str, times: ScanTimes | None = None) -> str:
     """A scan id's exact `?d=` slug (`scanSlug.ts` `exactSlug`), resolving to
     exactly that scan: dashless `YYMMDDHHMM`, the year's leading `20` dropped —
-    `2026-09-15T0001` → `2609150001`, and a date-only `2026-09-15` its midnight,
-    `2609150000` (never `260915`, the day slug: that day's *latest* scan)."""
-    if not (m := SCAN_ID.fullmatch(scan)):
+    `2026-09-15T0001` → `2609150001`, and a date-only `2026-09-15` its start
+    (`times`), else its midnight, `2609150000` (never `260915`, the day slug:
+    that day's *latest* scan)."""
+    if not SCAN_ID.fullmatch(scan):
         raise ValueError(f"not a scan id: {scan!r}")
-    y, mo, d, hh, mm = m.groups()
-    return f"{y[2:]}{mo}{d}{hh or '00'}{mm or '00'}"
+    k = scan_key(scan, times)
+    return f"{k[2:4]}{k[5:7]}{k[8:10]}{k[11:15]}"
 
 
 # A slug: dashless compact `YYMMDD[HH[MM]]` (canonical; 8 digits are always
@@ -103,19 +143,19 @@ def slug_prefix(slug: str) -> str | None:
     return f"{y}-{mo}-{d}" + (f"T{hh}{mm or ''}" if hh else "")
 
 
-def latest_scan(prefix: str, scans: list[str]) -> str | None:
-    """The latest scan (any order in) under `prefix` — a date-only scan as its
-    midnight (`scan_key`), so ``…T00`` / ``…T0000`` find it; None if none."""
-    matches = [s for s in scans if s.startswith(prefix) or scan_key(s).startswith(prefix)]
-    return max(matches) if matches else None
+def latest_scan(prefix: str, scans: Iterable[str], times: ScanTimes | None = None) -> str | None:
+    """The latest scan (any order in) under `prefix`, by key (`scan_key`; a tie breaks by id) — so a date-only scan
+    sits at its start when known, else its midnight; None if none."""
+    matches = [s for s in scans if scan_under(s, prefix, times)]
+    return max(matches, key=lambda s: (scan_key(s, times), s)) if matches else None
 
 
-def resolve_slug(slug: str, scans: list[str]) -> str | None:
+def resolve_slug(slug: str, scans: Iterable[str], times: ScanTimes | None = None) -> str | None:
     """The resolver: the latest scan a slug names (`261009` a day, `26100912` an
     hour, `2610091236` a minute; legacy and ISO spellings too), or None — a miss,
     never the nearest or latest scan instead."""
     prefix = slug_prefix(slug)
-    return latest_scan(prefix, scans) if prefix else None
+    return latest_scan(prefix, scans, times) if prefix else None
 
 
 def snapshot_scans(data_root: Path) -> list[str]:

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
-import { useQuery, type UseQueryResult } from '@tanstack/react-query'
+import { useQueries, useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useUrlAlias, useUrlState } from 'use-prms'
-import { decodeSel, encodeScan, encodeSel, exactPrefix, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanMatches, scanNeighbors, scanParts, selSlug, type ScanSel } from './scanSlug'
+import { decodeSel, encodeScan, encodeSel, exactPrefix, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanCmp, scanMatches, scanNeighbors, scanParts, selSlug, sortScans, startKey, timesNeeded, type ScanSel, type ScanTimes } from './scanSlug'
 import { storeUrl, type Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
@@ -32,7 +32,18 @@ export function fmtScan(s: string, now = new Date()): string {
     : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${time}`
 }
 
-export { DAY, decodeScan, decodeSel, decodeSpan, encodeScan, encodeSel, encodeSpan, latestScan, nearestScan, resolveScan, scanMatches, scanNeighbors, scanTime, type ScanSel } from './scanSlug'
+/** A scan's label, knowing its peers: a timed id, or a date-only id whose day
+ * holds other scans and whose start is known (`times`), reads as its local
+ * instant ("10/9 12:30a"); a date-only id sharing its day with no known start
+ * says so ("10/9 (time unknown)"); a date-only id alone on its day is its date
+ * ("10/8"). `scans`: the whole list (any order), not a filtered view of it. */
+export type ScanLabel = (id: string) => string
+export function scanLabeler(scans: readonly string[], times: ScanTimes = {}, now = new Date()): ScanLabel {
+  const shared = new Set(timesNeeded(scans))
+  return id => !shared.has(id) ? fmtScan(id, now) : times[id] ? fmtScan(times[id], now) : `${fmtScan(id, now)} (time unknown)`
+}
+
+export { DAY, decodeScan, decodeSel, decodeSpan, encodeScan, encodeSel, encodeSpan, latestScan, nearestScan, resolveScan, scanInstant, scanMatches, scanNeighbors, scanTime, type ScanSel, type ScanTimes } from './scanSlug'
 
 const selParam = { encode: encodeSel, decode: (e: string | undefined) => decodeSel(e) }
 
@@ -57,18 +68,18 @@ export interface ScanMiss { slug: string; before: string | null; after: string |
 /** The selection's miss, once the scan list has answered: an unparseable
  * value, or an end slug no scan matches. (A pinned start that misses is the
  * diff's own state — see `fromMiss`.) */
-export function scanMiss(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean): ScanMiss | null {
+export function scanMiss(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean, times?: ScanTimes): ScanMiss | null {
   if (!loaded || !sel) return null
   if (sel.invalid) return { slug: sel.invalid, before: null, after: null }
-  if (!sel.d || latestScan(sel.d, scans)) return null
-  return { slug: selSlug(sel), ...scanNeighbors(sel.d, scans) }
+  if (!sel.d || latestScan(sel.d, scans, times)) return null
+  return { slug: selSlug(sel), ...scanNeighbors(sel.d, scans, times) }
 }
 
 /** A pinned start (`from`) that matches no scan before `after`. */
-export function fromMiss(from: string | undefined, after: string | null, scans: readonly string[]): ScanMiss | null {
+export function fromMiss(from: string | undefined, after: string | null, scans: readonly string[], times?: ScanTimes): ScanMiss | null {
   if (!from || !after) return null
-  const earlier = scans.filter(s => s < after)
-  return latestScan(from, earlier) ? null : { slug: encodeScan(from) ?? from, ...scanNeighbors(from, earlier) }
+  const earlier = scans.filter(s => scanCmp(s, after, times) < 0)
+  return latestScan(from, earlier, times) ? null : { slug: encodeScan(from) ?? from, ...scanNeighbors(from, earlier, times) }
 }
 
 export interface Scan {
@@ -77,7 +88,12 @@ export interface Scan {
   miss: ScanMiss | null
   /** With no `?d=` and `indexed` preferred: the newer scans skipped (not yet indexed), newest first. */
   pending: string[]
+  /** Newest first, by time (a date-only scan at its start, when known). */
   scans: string[]
+  /** The known starts of the date-only scans that share a day (`useScanTimes`). */
+  times: ScanTimes
+  /** Labels a scan among its peers (`scanLabeler`). */
+  label: ScanLabel
   dMatches: string[]
   dP: string | undefined
   /** Pin the "after" scan; the latest scan (or undefined) clears the pin. */
@@ -158,12 +174,40 @@ export function pendingNote(scan: string, pending: readonly string[], now = new 
 /** The scan a page shows: an explicit `?d=` resolves to the latest scan it names (a miss — none, or an
  * unparseable value — is `miss`, never another scan); absent, `floatingScan` (the newest scan, or for a
  * filtered indexed-only view the newest covered one, `pending` the newer ones skipped). */
-export function selectScan(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean, indexed?: readonly string[] | null | 'loading'): { asof: string | null; miss: ScanMiss | null; pending: string[] } {
-  const miss = scanMiss(sel, scans, loaded)
+export function selectScan(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean, indexed?: readonly string[] | null | 'loading', times?: ScanTimes): { asof: string | null; miss: ScanMiss | null; pending: string[] } {
+  const miss = scanMiss(sel, scans, loaded, times)
   if (miss || sel?.invalid) return { asof: null, miss, pending: [] }
-  if (sel?.d) return { asof: latestScan(sel.d, scans), miss: null, pending: [] }
+  if (sel?.d) return { asof: latestScan(sel.d, scans, times), miss: null, pending: [] }
   const f = floatingScan(scans, indexed)
   return { asof: f.scan, miss: null, pending: f.pending }
+}
+
+/** The known start minutes of the store's date-only scans that share a day
+ * with another scan (`timesNeeded`; usually none, or one): each read from its
+ * `meta.json`'s `started` (`startKey`) — the same query (and cache) as the
+ * page's own meta fetch. A meta without `started` (not yet back-stamped) leaves
+ * the scan out: its midnight form stands. */
+export function useScanTimes(store: Store, scans: readonly string[]): ScanTimes {
+  const need = useMemo(() => timesNeeded(scans), [scans])
+  const qs = useQueries({
+    queries: need.map(id => ({
+      queryKey: ['meta', store.key, id],
+      queryFn: async () => {
+        const r = await fetch(storeUrl(`${store.base}/${id}/meta.json`, store))
+        if (!r.ok) throw Object.assign(new Error(`meta ${id}: ${r.status}`), { status: r.status })
+        return r.json() as Promise<{ started?: unknown }>
+      },
+      staleTime: Infinity,
+    })),
+  })
+  const starts = qs.map(q => (q.data as { started?: unknown } | undefined)?.started)
+  const key = need.map((id, i) => `${id}=${String(starts[i] ?? '')}`).join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => {
+    const out: Record<string, string> = {}
+    need.forEach((id, i) => { const k = startKey(id, starts[i]); if (k) out[id] = k })
+    return out
+  }, [key])
 }
 
 /** The page's scan selection. `indexed`: the covered scans to prefer when `?d=` is absent (a filtered
@@ -171,13 +215,16 @@ export function selectScan(sel: ScanSel | undefined, scans: readonly string[], l
 export function useScan(store: Store, indexed?: readonly string[] | null | 'loading'): Scan {
   const [sel, setSel] = useScanSel()
   const scansQ = useScans(store)
-  const scans = useMemo(() => scansQ.data ?? [], [scansQ.data])
+  const listed = useMemo(() => scansQ.data ?? [], [scansQ.data])
+  const times = useScanTimes(store, listed)
+  const scans = useMemo(() => sortScans(listed, times), [listed, times])
+  const label = useMemo(() => scanLabeler(scans, times), [scans, times])
   const floating = useMemo(() => floatingScan(scans, indexed), [scans, indexed])
-  const picked = useMemo(() => selectScan(sel, scans, scansQ.isSuccess, indexed), [sel, scans, scansQ.isSuccess, indexed])
+  const picked = useMemo(() => selectScan(sel, scans, scansQ.isSuccess, indexed, times), [sel, scans, scansQ.isSuccess, indexed, times])
   const dP = sel?.d
   const span = sel?.span
   const from = sel?.from
-  const dMatches = useMemo(() => scanMatches(dP, scans), [dP, scans])
+  const dMatches = useMemo(() => scanMatches(dP, scans, times), [dP, scans, times])
   const { asof, miss, pending } = picked
   // Write the {end, before} pair verbatim — `before` is a span OR a pinned
   // `from`, never both. Callers that pass a `d` equal to the latest scan mean
@@ -187,33 +234,34 @@ export function useScan(store: Store, indexed?: readonly string[] | null | 'load
       ? { ...(d ? { d } : {}), ...(span0 ? { span: span0 } : {}), ...(from0 ? { from: from0 } : {}) }
       : undefined)
   // Setters take scan ids (a picker's choice) and write each as its exact
-  // prefix (`exactPrefix`): a date-only scan as its midnight, never the day
-  // slug (which means the day's latest scan).
-  const exact = (v: string | undefined) => (v ? exactPrefix(v) : undefined)
+  // prefix (`exactPrefix`): a date-only scan as its start (or midnight), never
+  // the day slug (which means the day's latest scan).
+  const exact = (v: string | undefined) => (v ? exactPrefix(v, times) : undefined)
   const setRange = (v: string | undefined, ms: number | undefined) =>
     write(v && v !== floating.scan ? exact(v) : undefined, ms, undefined)
   const setDP = (v: string | undefined) => write(v && v !== floating.scan ? exact(v) : undefined, span, from)
   const setSpan = (ms: number | undefined) => write(dP, ms, undefined)
   const setFrom = (v: string | undefined) => write(dP, undefined, exact(v))
   const setEndPin = (pin: boolean) => write(pin ? exact(asof ?? undefined) : undefined, span, from)
-  return { asof, miss, pending, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
+  return { asof, miss, pending, scans, times, label, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ }
 }
 
 /** `<optgroup>` rows for a scan picker: scans grouped by their displayed
- * day (`fmtScan`'s date part, viewer-local for timed ids), newest day
- * first, each option labelled by its time alone (`8:01a`) — a date-only scan
- * is its day's single, unlabelled-time entry. A list of sixty `9/16 8:01p`
- * rows read as noise; grouped, the day is said once. */
-export function scanGroups(scans: string[], now = new Date()): { day: string; scans: { id: string; label: string }[] }[] {
+ * day (the label's date part, viewer-local for timed ids), in the given order
+ * (newest first), each option labelled by its time alone (`8:01a`) — a
+ * date-only scan alone on its day is that day's single, unlabelled-time entry.
+ * A list of sixty `9/16 8:01p` rows read as noise; grouped, the day is said
+ * once. `label`: the page's labeler (`scanLabeler`), default `fmtScan`. */
+export function scanGroups(scans: string[], now = new Date(), label: ScanLabel = id => fmtScan(id, now)): { day: string; scans: { id: string; label: string }[] }[] {
   const out: { day: string; scans: { id: string; label: string }[] }[] = []
   for (const id of scans) {
-    const f = fmtScan(id, now)
+    const f = label(id)
     const sp = f.indexOf(' ')
     const day = sp < 0 ? f : f.slice(0, sp)
-    const label = sp < 0 ? f : f.slice(sp + 1)
+    const lbl = sp < 0 ? f : f.slice(sp + 1)
     const last = out[out.length - 1]
-    if (last && last.day === day) last.scans.push({ id, label })
-    else out.push({ day, scans: [{ id, label }] })
+    if (last && last.day === day) last.scans.push({ id, label: lbl })
+    else out.push({ day, scans: [{ id, label: lbl }] })
   }
   return out
 }
