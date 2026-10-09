@@ -73,6 +73,9 @@ export interface Row {
   cls4: number
   /** An interval-store row (one per path): its owner slices' bytes by user (`usr` is null there). */
   us?: Record<string, number> | null
+  /** An interval-store row's validity `[vf, vt)` (epoch seconds of scans). */
+  vf?: number
+  vt?: number
 }
 
 interface GroupSpan {
@@ -720,35 +723,51 @@ async function readFooterCols(h: PqHandle, fg: FooterGroup, columns: string[]): 
  * beside the tier groups, `(store, date, variant, gen, fg:<n>)`. Without the metadata column a
  * footer group is a fifth of the bytes to fetch, decode and hold. */
 async function readFooterGroup(h: PqHandle, fg: FooterGroup): Promise<BlobGroup[]> {
-  const k = `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|fg:${fg.n}`
-  const hit = cacheGet<BlobGroup>(k)
+  return footerOnce(h, `fg:${fg.n}`, async () => {
+    const t0 = now()
+    const timed = h.asOf != null
+    const rows = await readFooterCols(h, fg, timed ? [...FOOTER_BOUNDS, 'vf_min', 'vt_max'] : FOOTER_BOUNDS)
+    const out = rows.map((r): BlobGroup => ({
+      rg: num(r.rg), dMin: num(r.d_min), dMax: num(r.d_max), pMin: str(r.p_min), pMax: str(r.p_max), bMax: num(r.b_max),
+      uMin: r.u_min == null ? null : str(r.u_min), uMax: r.u_max == null ? null : str(r.u_max),
+      rowStart: num(r.row_start), rowEnd: num(r.row_end), rgJson: '',
+      ...(timed ? { vfMin: num(r.vf_min), vtMax: num(r.vt_max) } : {}),
+    }))
+    h.trace?.('footer', now() - t0, h.variant)
+    return [out, out.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0)]
+  })
+}
+
+/** Footer decodes in flight (`footerOnce`): concurrent reads of one footer group share its decode. */
+const footersInFlight = new Map<string, Promise<unknown[]>>()
+
+/** A footer group's decode (`part`), cached per isolate and shared while in flight. Keyed per scan for a
+ *  per-scan store; an interval store's footer serves every scan, so its entries are keyed without one. */
+async function footerOnce<T>(h: PqHandle, part: string, make: () => Promise<[T[], number]>): Promise<T[]> {
+  const k = `${storeKey(h.env)}|${h.asOf != null ? 'iv' : h.date}|${h.variant}|${h.gen}|${part}`
+  const hit = cacheGet<T>(k)
   if (hit) return hit
-  const t0 = now()
-  const timed = h.asOf != null
-  const rows = await readFooterCols(h, fg, timed ? [...FOOTER_BOUNDS, 'vf_min', 'vt_max'] : FOOTER_BOUNDS)
-  const out = rows.map((r): BlobGroup => ({
-    rg: num(r.rg), dMin: num(r.d_min), dMax: num(r.d_max), pMin: str(r.p_min), pMax: str(r.p_max), bMax: num(r.b_max),
-    uMin: r.u_min == null ? null : str(r.u_min), uMax: r.u_max == null ? null : str(r.u_max),
-    rowStart: num(r.row_start), rowEnd: num(r.row_end), rgJson: '',
-    ...(timed ? { vfMin: num(r.vf_min), vtMax: num(r.vt_max) } : {}),
-  }))
-  h.trace?.('footer', now() - t0, h.variant)
-  cachePut(k, out, out.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0))
-  return out
+  const pending = footersInFlight.get(k)
+  if (pending) return pending as Promise<T[]>
+  const p = make().then(([v, bytes]) => { cachePut(k, v, bytes); return v })
+  footersInFlight.set(k, p)
+  try {
+    return await p
+  } finally {
+    footersInFlight.delete(k)
+  }
 }
 
 /** The stored metadata (`rg_json`) of one footer group's tier groups, by `rg` (cached per isolate). */
 async function readFooterJson(h: PqHandle, fg: FooterGroup): Promise<Map<number, string>> {
-  const k = `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|fj:${fg.n}`
-  const hit = cacheGet<[number, string]>(k)
-  if (hit) return new Map(hit)
-  const t0 = now()
-  // Footer rows are in `rg` order from the group's first: `rg_json` alone is one chunk to fetch.
-  const rows = await readFooterCols(h, fg, ['rg_json'])
-  const out = rows.map((r, i): [number, string] => [fg.rgStart + i, str(r.rg_json)])
-  h.trace?.('fjson', now() - t0, h.variant)
-  cachePut(k, out, out.reduce((n, [, j]) => n + 32 + 2 * j.length, 0))
-  return new Map(out)
+  return new Map(await footerOnce<[number, string]>(h, `fj:${fg.n}`, async () => {
+    const t0 = now()
+    // Footer rows are in `rg` order from the group's first: `rg_json` alone is one chunk to fetch.
+    const rows = await readFooterCols(h, fg, ['rg_json'])
+    const out = rows.map((r, i): [number, string] => [fg.rgStart + i, str(r.rg_json)])
+    h.trace?.('fjson', now() - t0, h.variant)
+    return [out, out.reduce((n, [, j]) => n + 32 + 2 * j.length, 0)]
+  }))
 }
 
 /** The tier groups of a `pq` handle that `pass` (the span predicate)
@@ -838,6 +857,8 @@ const toRowV3 = (r: Record<string, unknown>): Row => {
     cls3: num(r.c3),
     cls4: num(r.c4),
     us: usMap(str(r.us), size),
+    vf: num(r.vf),
+    vt: num(r.vt),
   }
 }
 
@@ -972,6 +993,18 @@ async function readGroup(h: IndexHandle, rgJson: string, columns?: string[], hel
   return (D == null ? raw : raw.filter(r => num(r.vf) <= D && D < num(r.vt))).map(toRow(h))
 }
 
+/** A row group's every version (an interval-store handle), unfiltered by time: what the group cache
+ *  holds for it, shared by every scan the store serves. */
+async function readGroupAll(h: IndexHandle, rgJson: string, held?: FileSlice): Promise<Row[]> {
+  return (await readGroupRaw(h, rgJson, h.columns ?? undefined, held)).map(toRow(h))
+}
+
+/** The versions of `rows` live at the handle's scan (all of them for a per-scan handle). */
+const liveAt = (h: IndexHandle, rows: Row[]): Row[] => {
+  const D = h.asOf
+  return D == null ? rows : rows.filter(r => r.vf! <= D && D < r.vt!)
+}
+
 export interface Span extends GroupSpan { rg: number }
 
 /** Decoded row groups, per isolate (LRU by an estimated byte size).
@@ -1015,6 +1048,11 @@ export function cachePut(k: string, v: unknown[], bytes: number): void {
 }
 
 const groupKey = (h: IndexHandle, rg: number) => `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|${rg}`
+/** Interval-store groups being fetched and decoded, keyed without a scan (a group holds every scan's
+ *  versions): a concurrent read of the same group — the other side of a diff, a view and its lookups —
+ *  waits for its rows instead of fetching and decoding it again, and caches its own scan's. */
+const flightKey = (h: IndexHandle, rg: number) => `${storeKey(h.env)}|iv|${h.variant}|${h.gen}|${rg}`
+const groupsInFlight = new Map<string, Promise<Row[] | null>>()
 
 /** Many row groups' shaped rows, each through the decoded-group cache; the
  * misses' projected chunks are fetched as merged range reads (`planRuns`:
@@ -1026,6 +1064,16 @@ const groupKey = (h: IndexHandle, rg: number) => `${storeKey(h.env)}|${h.date}|$
 async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: string }[], f: (rows: Row[]) => T, stop?: () => boolean): Promise<T[]> {
   const out: T[] = new Array(groups.length)
   const miss: { i: number; rg: number; json: string; start: number; end: number }[] = []
+  const waits: Promise<void>[] = []
+  const iv = h.asOf != null
+  // The groups this read fetches for any waiting read (`flightKey` → resolve with every version).
+  const mine = new Map<string, (rows: Row[] | null) => void>()
+  // A group's rows at this handle's scan: cached per scan, as a per-scan store's are.
+  const take = (i: number, rg: number, all: Row[]) => {
+    const rows = liveAt(h, all)
+    cachePut(groupKey(h, rg), rows, rows.length * ROW_BYTES)
+    out[i] = f(rows)
+  }
   groups.forEach((g, i) => {
     const hit = cacheGet<Row>(groupKey(h, g.rg))
     if (hit) {
@@ -1033,19 +1081,50 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
       out[i] = f(hit)
       return
     }
+    if (iv) {
+      const fk = flightKey(h, g.rg)
+      const pending = groupsInFlight.get(fk)
+      if (pending) {
+        h.trace?.('gshared', 1)
+        waits.push(pending.then(all => { if (all) take(i, g.rg, all) }))
+        return
+      }
+      let resolve!: (rows: Row[] | null) => void
+      groupsInFlight.set(fk, new Promise(r => { resolve = r }))
+      mine.set(fk, resolve)
+    }
     const [start, end] = chunkSpan(reviveRowGroup(g.json, h.schema) as unknown as Parameters<typeof chunkSpan>[0], h.columns ?? undefined)
     miss.push({ i, ...g, start, end })
   })
-  await mapLimit(planRuns(miss), RUN_READS, async run => {
-    if (stop?.()) return
-    const file = bufferSlice(await fetchRange(h, run.start, run.end), run.start)
-    for (const g of run.items) {
+  const settle = (fk: string, rows: Row[] | null) => {
+    const r = mine.get(fk)
+    if (!r) return
+    mine.delete(fk)
+    groupsInFlight.delete(fk)
+    r(rows)
+  }
+  try {
+    await mapLimit(planRuns(miss), RUN_READS, async run => {
       if (stop?.()) return
-      const rows = await readGroup(h, g.json, undefined, file)
-      cachePut(groupKey(h, g.rg), rows, rows.length * ROW_BYTES)
-      out[g.i] = f(rows)
-    }
-  })
+      const file = bufferSlice(await fetchRange(h, run.start, run.end), run.start)
+      for (const g of run.items) {
+        if (stop?.()) return
+        if (!iv) {
+          const rows = await readGroup(h, g.json, undefined, file)
+          cachePut(groupKey(h, g.rg), rows, rows.length * ROW_BYTES)
+          out[g.i] = f(rows)
+          continue
+        }
+        const all = await readGroupAll(h, g.json, file)
+        settle(flightKey(h, g.rg), all)
+        take(g.i, g.rg, all)
+      }
+    })
+  } finally {
+    // A group this read abandoned (`stop`) or failed on: its waiters read nothing from it.
+    for (const fk of [...mine.keys()]) settle(fk, null)
+  }
+  await Promise.all(waits)
   return out
 }
 
@@ -1336,9 +1415,12 @@ export async function readGroupsAt(h: IndexHandle, rgs: number[], keep: (path: s
       for (let i = 0; i < paths.length; i++) if (keep(str(paths[i]))) hits.push(i)
       if (hits.length) {
         const cols = await decodeColumns(h.schema, g.group, file, rest)
+        const D = h.asOf
         for (const i of hits) {
           const rec: Record<string, unknown> = { path: paths[i] }
           for (const [c, arr] of cols) rec[c] = arr[i]
+          // An interval store's group holds every scan's versions: only those live at the handle's scan.
+          if (D != null && !(num(rec.vf) <= D && D < num(rec.vt))) continue
           out.push(shape(rec))
         }
       }
@@ -1524,6 +1606,7 @@ export async function readAsks(
       const rect = { dLo: depth, dHi: depth, pLo: lo(part[0]), pHi: part.reduce((m, a) => (hi(a) > m ? hi(a) : m), hi(part[0])) }
       const cap = part.length > 1 ? Math.min(spanCap, 4 * part.length + 16) : spanCap
       let cand: Span[]
+      h.trace?.('askspan', 1)
       try {
         cand = await selectSpans(h, [rect], cap)
       } catch (e) {

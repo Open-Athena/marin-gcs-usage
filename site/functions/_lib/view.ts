@@ -1956,6 +1956,7 @@ export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
       got = (await readAsks(await fine(date), take.map(q => ({ depth: q.d, path: q.cp })), r => want.has(`${r.depth}\0${r.path}`), { maxGroups: 120, stop: () => lookupsOff })).rows
     } catch (e) {
       if (!/too wide/.test(String((e as Error).message ?? e))) throw e
+      tr?.('perask', take.length)
       await perAsk(take)
       return out
     }
