@@ -209,8 +209,9 @@ export class GroupFile {
     return { groups, rows: groups.reduce((s, e) => s + e.rows, 0) }
   }
 
-  /** The rows of `groups` with `lo ≤ (q, key) < hi`: one ranged GET per data file. */
-  async read(lo: Key, hi: Key, groups: Entry[], io: DrillIo): Promise<Record<string, unknown>[]> {
+  /** The rows of `groups` with `lo ≤ (q, key) < hi`: one ranged GET per data file. `row` makes each one from
+   *  the decoded columns (default: an object of every column). */
+  async read<T = Record<string, unknown>>(lo: Key, hi: Key, groups: Entry[], io: DrillIo, row?: (cols: Record<string, unknown[]>, i: number) => T): Promise<T[]> {
     const spec = SCHEMA[this.set], key = KEY[this.set]
     const byFile = new Map<string, Entry[]>()
     for (const e of groups) byFile.set(e.file, [...(byFile.get(e.file) ?? []), e])
@@ -219,14 +220,15 @@ export class GroupFile {
       const start = gs[0].offset, end = gs[gs.length - 1].offset + gs[gs.length - 1].length
       const buf = await this.blobs.range(file, start, end - start)
       io.bytes += buf.byteLength
-      const out: Record<string, unknown>[] = []
+      const out: T[] = []
+      const make = row ?? ((cols: Record<string, unknown[]>, i: number) => Object.fromEntries(spec.columns.map(c => [c, cols[c][i]])) as T)
       for (const g of gs) {
         const cols = await decodeFlat(spec, start + buf.byteLength, g.rows, g.chunks, buf, start)
         io.rows_read += g.rows
         for (let i = 0; i < g.rows; i++) {
-          const k: Key = [cols.q[i] as string, cols[key][i] as string]
-          if (cmpKey(k, lo) < 0 || cmpKey(k, hi) >= 0) continue
-          out.push(Object.fromEntries(spec.columns.map(c => [c, cols[c][i]])))
+          const q = cols.q[i] as string, k = cols[key][i] as string
+          if ((cmp(q, lo[0]) || cmp(k, lo[1])) < 0 || (cmp(q, hi[0]) || cmp(k, hi[1])) >= 0) continue
+          out.push(make(cols, i))
         }
       }
       return out
@@ -302,11 +304,13 @@ export class Drill {
     const hi: Key = P === '' ? [c + '\0', ''] : [c, P + '0']
     const sel = await roots.select(lo, hi, io, meta.dispatch_rows)
     if (sel.groups && sel.rows <= meta.dispatch_rows) {
-      const rows = await roots.read(lo, hi, sel.groups, io)
-      const hits: Hit[] = rows.map(r => ({
-        path: r.path as string, depth: (r.path as string).split('/').length, usr: r.usr as string,
-        vf: Number(r.vf) * 1000, vt: Number(r.vt) * 1000, size: r.size as bigint, n: r.n_files as bigint,
-      }))
+      // Hits straight from the columns (no row object per root: a member's ~80K roots, decoded per isolate).
+      const hits = await roots.read<Hit>(lo, hi, sel.groups, io, (c, i) => {
+        const path = c.path[i] as string
+        let depth = 1
+        for (let j = path.indexOf('/'); j !== -1; j = path.indexOf('/', j + 1)) depth++
+        return { path, depth, usr: c.usr[i] as string, vf: Number(c.vf[i]) * 1000, vt: Number(c.vt[i]) * 1000, size: c.size[i] as bigint, n: c.n_files[i] as bigint }
+      })
       return { source: 'roots', kind, c, upper: sel.rows, hits, io }
     }
     if (P === '') {

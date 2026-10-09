@@ -41,7 +41,8 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
-import { covers, liveRows, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
+import { covers, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
+import { scanMs } from './staticNames.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -732,6 +733,23 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       }
       return { all, mine, depth }
     }
+    // `aggregate` over the static hits live on `date` (`vf ≤ D < vt`; `usr` '' = unowned), without a row
+    // object per hit: a heavy literal's ~80K roots are held per isolate already, and copies cost memory.
+    const aggregateHits = (hits: Hit[]): ReturnType<typeof aggregate> => {
+      const D = scanMs(date)
+      const mine = new Map<string, Agg>(); const depth = new Map<string, number>()
+      const all = owner ? new Map<string, Agg>() : mine
+      const add = (a: Agg, size: number, n: number, usr: string | null) => { a.b += size; a.o += n; if (usr) a.ub[usr] = (a.ub[usr] ?? 0) + size }
+      for (const h of hits) {
+        if (!(h.vf <= D && D < h.vt)) continue
+        const usr = h.usr === '' ? null : h.usr, size = Number(h.size), n = Number(h.n)
+        let m = mine.get(h.path)
+        if (!m) { mine.set(h.path, (m = newAgg())); if (owner) all.set(h.path, newAgg()); depth.set(h.path, h.depth) }
+        if (ownerOk(usr, owner)) add(m, size, n, usr)
+        if (owner) add(all.get(h.path)!, size, n, usr)
+      }
+      return { all, mine, depth }
+    }
     // Phase 1. A store generation with the search sidecars answers from
     // them (specs/path-store-search.md): the match roots anywhere under P,
     // exact unless a budget cut the search; anything else reads as before.
@@ -769,8 +787,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         return rollupRead(env, o, shits.rollup, { dP, rootAll, idx, details: h, trace: tr })
       }
       if (shits) {
-        const rows = liveRows(shits.hits, date)
-        p1 = aggregate(rows)
+        p1 = aggregateHits(shits.hits)
         roots = [...p1.depth.keys()].sort()
         p1Tier = shits.io.from === 'drill' ? 'drill' : 'static'
         staticRoots = true

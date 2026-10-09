@@ -21,7 +21,6 @@
  *  Dates: an answer carries the scans it covers (`Found.scans`; absent = every scan of the store). The light
  *  index spans the base generation and its daily runs; the drilldown only the base generation's scans, so a
  *  heavy literal on a newer scan declines (`covers`) and that view reads as before. */
-import type { Row } from './index.js'
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
@@ -198,22 +197,6 @@ export async function staticKey(s: StaticFilterStore | null, ast: QueryAst | und
   if (!s || !key) return null
   const have = await s.scans()
   return dates.every(d => have.includes(d)) ? key : null
-}
-
-/** The hits live on `date` (scan id), as index rows of their owner slices (`usr` '' → null). Only
- *  `path, depth, usr, size, n_files` are known; the rest is left empty (a fold, not a row's word). */
-export function liveRows(hits: Hit[], date: string): Row[] {
-  const D = scanMs(date)
-  const out: Row[] = []
-  for (const h of hits) {
-    if (!(h.vf <= D && D < h.vt)) continue
-    out.push({
-      path: h.path, depth: h.depth, usr: h.usr === '' ? null : h.usr, kind: null as unknown as Row['kind'],
-      size: Number(h.size), n_files: Number(h.n), n_children: null, n_desc: null, mtime: null,
-      mtime_mean: null, mtime_w: 0, last_read: null, cls2: 0, cls3: 0, cls4: 0,
-    })
-  }
-  return out
 }
 
 /** The filter's bytes and objects under the hits' root on `date` (Σ live first hits), with `keep` an
