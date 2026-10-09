@@ -76,6 +76,15 @@ const file = (path: string, size: number): Row =>
   ({ path, depth: path.split('/').length, usr: null, kind: 'file', size, n_files: 1, n_children: 0, n_desc: 1, mtime: 1788220800, mtime_mean: 1788220800, mtime_w: size, last_read: null, cls2: 0, cls3: 0, cls4: 0 })
 const byPath = (rows: Row[]): Row[] => [...rows].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 /** `flat/`'s objects at bucket `2^e`: `f<i>` for `i ≡ e (mod 16)`. */
+/** A footer group's `[offset, length]` reads: its bounds columns (every chunk before `rg_json`), and `rg_json`'s chunk. */
+type FG = { byteStart: number; byteEnd: number; meta: { columns: { meta_data?: { path_in_schema: string[]; data_page_offset: bigint | number; dictionary_page_offset?: bigint | number } }[] } }
+const jsonStart = (g: FG): number => {
+  const m = g.meta.columns.find(c => c.meta_data!.path_in_schema[0] === 'rg_json')!.meta_data!
+  const data = Number(m.data_page_offset), dict = m.dictionary_page_offset == null ? data : Number(m.dictionary_page_offset)
+  return dict > 0 ? Math.min(dict, data) : data
+}
+const bounds = (g: FG): [number, number] => [g.byteStart, jsonStart(g) - g.byteStart]
+const json = (g: FG): [number, number] => [jsonStart(g), g.byteEnd - jsonStart(g)]
 const flatAt = (e: number): string[] => Array.from({ length: 500 }, (_, i) => `bk/flat/f${String(16 * i + e).padStart(5, '0')}`)
 
 describe('variant keys', () => {
@@ -317,11 +326,13 @@ describe('the cold footer tier (`.groups.parquet`)', () => {
     const st = withTrace(size, (n, v) => { traced.push([n, v]) })
     expect((await planSizeRects(st, [flat], () => 32 * KiB)).map(s => s.rg)).toEqual([0])
     const g0 = size.footer.groups[0]
-    expect(reads(sk)).toEqual([[g0.byteStart, g0.byteEnd - g0.byteStart]])
+    // A footer group's bounds are read without its `rg_json` (the last column), which only the selected
+    // groups' read fetches.
+    expect(reads(sk)).toEqual([bounds(g0)])
     expect(traced.filter(([n]) => n === 'fgroups')).toEqual([['fgroups', 1]])
-    // The rows: the same 500 objects D1 and the blob serve; the rg_json comes from the cached footer group (no read).
+    // The rows: the same 500 objects D1 and the blob serve; then the selected footer group's `rg_json`.
     expect(await readSizeRects(size, [flat], () => 32 * KiB)).toEqual(flatAt(15).map(p => file(p, 32 * KiB)))
-    expect(reads(sk)).toEqual([])
+    expect(reads(sk)).toEqual([json(g0)])
 
     // `bk/small` at 1 B on `path`: tier groups 0 (depths 1–3) and 3 (3–5) may
     // hold it; 1 and 2 are depth-3 `flat/` ranges, pruned by `p_min/p_max`: 2 of 4 decoded.
@@ -332,16 +343,16 @@ describe('the cold footer tier (`.groups.parquet`)', () => {
     const small: Rect = { dLo: 3, dHi: 1e9, pLo: 'bk/small/', pHi: 'bk/small0' }
     expect((await planRects(path, [small], () => 1)).map(s => s.rg)).toEqual([0, 3])
     const [p0, , , p3] = path.footer.groups
-    expect(reads(pk)).toEqual([[p0.byteStart, p0.byteEnd - p0.byteStart], [p3.byteStart, p3.byteEnd - p3.byteStart]])
+    expect(reads(pk)).toEqual([bounds(p0), bounds(p3)])
     expect(await readRects(path, [small], () => 1)).toEqual([file('bk/small/s0', 1000), file('bk/small/s1', 2000), file('bk/small/s2', 3000)])
-    expect(reads(pk)).toEqual([])
+    expect(reads(pk)).toEqual([json(p0), json(p3)])
     // A point lookup in a pruned footer group decodes just that one more.
     const ask = [{ depth: 3, path: 'bk/flat/f03000' }]
     const keep = (r: Row) => r.path === 'bk/flat/f03000'
     expect(await readAsks(path, ask, keep)).toEqual(await readAsks(await openIndex(env, V2), ask, keep))
     expect((await readAsks(path, ask, keep)).rows).toEqual([file('bk/flat/f03000', 256)])
     const p1 = path.footer.groups[1]
-    expect(reads(pk)).toEqual([[p1.byteStart, p1.byteEnd - p1.byteStart]])
+    expect(reads(pk)).toEqual([bounds(p1), json(p1)])
   })
 })
 

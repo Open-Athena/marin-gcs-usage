@@ -13,7 +13,7 @@
  * user lens, and edge-cached accordingly.
  */
 import { type Env, requireViewer } from '../_lib/auth.js'
-import { pathGens, storeReady, type Lens } from '../_lib/index.js'
+import { pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
@@ -28,8 +28,9 @@ import { scanArg } from '../_lib/scanArg.js'
 
 export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
-  const ctx = withStore(ctx0)
-  if (ctx instanceof Response) return ctx
+  const ctx1 = withStore(ctx0)
+  if (ctx1 instanceof Response) return ctx1
+  const ctx = withPathStore(ctx1)
   const st = serverTiming()
   if (!storeReady(ctx.env)) {
     return new Response('diff API not configured (missing index store creds)', { status: 503 })

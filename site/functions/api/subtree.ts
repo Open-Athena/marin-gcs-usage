@@ -12,7 +12,7 @@
  * re-hit the cache.
  */
 import { type Env, type Identity, requireViewer } from '../_lib/auth.js'
-import { pathGens, storeReady, type Lens } from '../_lib/index.js'
+import { pathGens, withPathStore, storeReady, type Lens } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, queryParam, QueryError, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
@@ -40,8 +40,9 @@ export const warmSubtree = (env: Env, url: string, waitUntil?: (p: Promise<unkno
 
 async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
   // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
-  const ctx = withStore(ctx0)
-  if (ctx instanceof Response) return ctx
+  const ctx1 = withStore(ctx0)
+  if (ctx1 instanceof Response) return ctx1
+  const ctx = withPathStore(ctx1)
   const st = serverTiming()
   if (!storeReady(ctx.env)) {
     return new Response('subtree API not configured (missing index store creds)', { status: 503 })

@@ -12,6 +12,7 @@ import { AssignSelect } from './AssignSelect'
 import { type Resolved, type Targets, targetsText } from './filterCover'
 import { type ActController, actController, type ActDeps, type ActReq, type ActState, bucketsIn, caveats, targetsOf } from './matchAct'
 import { chunks, ASSIGN_CHUNK, STAGE_CHUNK } from './batches'
+import { elideMid } from './CopyName'
 
 /** A row's hover dwell before its matches are fetched (focus and the controls' own hover start at once). */
 export const ROW_DWELL_MS = 150
@@ -64,14 +65,33 @@ export function useKeepFocus(state: ActState['s']) {
   return { ref, handlers }
 }
 
+/** How many of a confirm's items it names before "+N more". */
+export const CONFIRM_LIST = 3
+
+/** A confirm's items, named: the first `CONFIRM_LIST` (a folder with its trailing `/`), then "+N more" with the
+ *  rest's folders and files counted separately. */
+export function ConfirmItems({ t, scheme }: { t: Targets; scheme: string }) {
+  const head = t.items.slice(0, CONFIRM_LIST)
+  const rest = t.items.slice(CONFIRM_LIST)
+  const folders = rest.filter(i => i.kind === 'prefix').length
+  return (
+    <span className="act-items">
+      {head.map(i => { const p = i.key.slice(scheme.length); return <code key={i.key} title={p}>{elideMid(p, 60, 28)}</code> })}
+      {rest.length > 0 && <span className="act-more">+{rest.length.toLocaleString('en-US')} more ({targetsText({ folders, files: rest.length - folders })})</span>}
+    </span>
+  )
+}
+
 const verbOf = (r: ActReq) => (r.kind === 'stage' ? 'stage' : r.owner === null ? 'unassign' : `assign → ${r.who ?? 'you'}`)
 
 /** A state's look, inside one live region (`role="status"`): empty while idle. */
-export function ActStatus({ state, confirmT, act, fmtBytes }: {
+export function ActStatus({ state, confirmT, act, fmtBytes, list }: {
   state: ActState
   confirmT: Targets | null
   act: Pick<ActController, 'confirm' | 'cancel' | 'undo' | 'dismiss' | 'retry'>
   fmtBytes: (b: number) => string
+  /** Name the confirm's items (`ConfirmItems`, keys below this scheme): a row's, which has no review list. */
+  list?: { scheme: string }
 }) {
   const x = <button type="button" className="act x" aria-label="dismiss" onClick={act.dismiss}>×</button>
   const body = (() => {
@@ -86,6 +106,7 @@ export function ActStatus({ state, confirmT, act, fmtBytes }: {
           <span className="act-confirm">
             {verbOf(state.req)} <b>{targetsText(t)}</b> ({fmtBytes(t.b)}, {plural(t.o, 'object')}){n > 1 ? `, sent in ${n} batches` : ''}?
             {bk.length > 0 && <span className="act-note"> {bk.length === 1 ? <>Includes the whole bucket <code>{bk[0]}</code></> : <>Includes {bk.length} whole buckets</>}: this overrides every assignment under it.</span>}
+            {list && <ConfirmItems t={t} scheme={list.scheme} />}
             {caveats(t, state.req.kind).map(c => <span key={c} className="act-note"> {c}</span>)}
             <button type="button" className="act go" disabled={!t.items.length} onClick={() => void act.confirm()}>confirm</button>
             <button type="button" className="act" onClick={act.cancel}>cancel</button>
@@ -137,7 +158,7 @@ export type Warm = 'cold' | 'warming' | 'ready'
 
 /** A filtered row's controls, drawn: trash and assign while idle (`aria-busy` while its matches prefetch), the
  *  state in their place after a click. */
-export function RowActsView({ state, confirmT, act, warm, canTrash, assigning, fmtBytes, onIntent, focus }: {
+export function RowActsView({ state, confirmT, act, warm, canTrash, assigning, fmtBytes, scheme, onIntent, focus }: {
   state: ActState
   confirmT: Targets | null
   act: Pick<ActController, 'start' | 'confirm' | 'cancel' | 'undo' | 'dismiss' | 'retry'>
@@ -145,6 +166,7 @@ export function RowActsView({ state, confirmT, act, warm, canTrash, assigning, f
   canTrash: boolean
   assigning: boolean
   fmtBytes: (b: number) => string
+  scheme: string
   onIntent?: () => void
   focus?: ReturnType<typeof useKeepFocus>
 }) {
@@ -159,15 +181,17 @@ export function RowActsView({ state, confirmT, act, warm, canTrash, assigning, f
         )}
         {assigning && <AssignSelect compact onPick={(owner, who) => void act.start({ kind: 'assign', owner, who })} />}
       </>}
-      <ActStatus state={state} confirmT={confirmT} act={act} fmtBytes={fmtBytes} />
+      <ActStatus state={state} confirmT={confirmT} act={act} fmtBytes={fmtBytes} list={{ scheme }} />
     </span>
   )
 }
 
 /** A filtered row's trash + assign over its matches (`src.resolve(path)`), fetched ahead on intent: the row's
- *  hover (`intent`, after `ROW_DWELL_MS`), or hover / focus of the controls themselves. */
-export function RowActs({ path, src, intent, scheme, canTrash, assigning, fmtBytes }: {
+ *  hover (`intent`, after `ROW_DWELL_MS`), or hover / focus of the controls themselves. Anything but the one
+ *  item at or under `shown` (the path the row's label names) asks first, listing what it would send. */
+export function RowActs({ path, shown, src, intent, scheme, canTrash, assigning, fmtBytes }: {
   path: string
+  shown: string
   src: RowSource
   intent: boolean
   scheme: string
@@ -176,7 +200,7 @@ export function RowActs({ path, src, intent, scheme, canTrash, assigning, fmtByt
   fmtBytes: (b: number) => string
 }) {
   const send = useActDeps()
-  const act = useMatchAct({ ...send, scheme, resolve: () => src.resolve(path) }, src.key)
+  const act = useMatchAct({ ...send, scheme, shown, resolve: () => src.resolve(path) }, src.key)
   const [warm, setWarm] = useState<Warm>('cold')
   const warmRef = useRef<Warm>('cold')
   useEffect(() => { warmRef.current = 'cold'; setWarm('cold') }, [src.key])
@@ -193,5 +217,5 @@ export function RowActs({ path, src, intent, scheme, canTrash, assigning, fmtByt
     return () => clearTimeout(t)
   }, [intent, pre])
   const focus = useKeepFocus(act.state.s)
-  return <RowActsView state={act.state} confirmT={act.confirmT} act={act} warm={warm} canTrash={canTrash} assigning={assigning} fmtBytes={fmtBytes} onIntent={pre} focus={focus} />
+  return <RowActsView state={act.state} confirmT={act.confirmT} act={act} warm={warm} canTrash={canTrash} assigning={assigning} fmtBytes={fmtBytes} scheme={scheme} onIntent={pre} focus={focus} />
 }
