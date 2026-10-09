@@ -21,7 +21,7 @@ from dt_cloud import static_roots as sr
 from test_static_catalog import _gen
 from test_static_names import _coalesced_oracle, _merged, _oracle, _write
 
-DAYS = ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05"]
+DAYS = ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"]
 BASE = 3  # scans in the base generation; the rest are runs
 V = 2
 CONFIGS = [{"R": 3, "K": 2, "floor": 2, "rg": 4, "run_rg": 2}, {"R": 5, "K": 1, "floor": 3, "rg": 3, "run_rg": 3}]
@@ -29,7 +29,7 @@ NOISE = ["gof.txt", "x5418y", "nk080", "48.parquet", "a'b", "é5418", "sh", "ab"
 
 
 def _files(j: int) -> dict[str, list[tuple[str | None, int]]]:
-    """Scan `j`'s files `{path: [(owner, bytes)]}`; each a case for the runs (scans BASE, BASE + 1)."""
+    """Scan `j`'s files `{path: [(owner, bytes)]}`; each a case for the runs (scans BASE … BASE + 3)."""
     rng = random.Random(100 + j)
     f: dict[str, list[tuple[str | None, int]]] = {}
 
@@ -44,7 +44,11 @@ def _files(j: int) -> dict[str, list[tuple[str | None, int]]]:
             add(f"b1/runs/run4/ckpt-{i}.bin", 100)
     if j >= 4:  # a new directory child with more than any kept child: one leaves
         for i in range(2):
-            add(f"b1/runs/run6/ckpt-{i}.bin", 500)
+            if not (i == 1 and j == 5):  # closed at 5, back at 6
+                add(f"b1/runs/run6/ckpt-{i}.bin", 500)
+    if j >= 5:  # another newcomer past the kept set, after the counter's first merge
+        for i in range(3):
+            add(f"b1/runs/run7/ckpt-{i}.bin", 700 + j)
     add("b1/runs/runx/notes.txt", 7)
     if j >= 3:  # a directory child with no earlier `ckpt` root: probed, new
         add("b1/runs/runx/ckpt-0.bin", 1)
@@ -63,6 +67,10 @@ def _files(j: int) -> dict[str, list[tuple[str | None, int]]]:
             add(f"b2/zoo/zebra{i}.txt", 1)
     if j >= 4:
         add("b2/zoo/zebra9.txt", 1)
+    if j >= 6:  # b4/deep becomes heavy in a run built over a merged run
+        for c in "abcdefg":
+            add(f"b4/deep/ckpt-{c}.bin", 3)
+        add("b2/zoo/zebra10.txt", 2)
     add("b2/mix/ckpt-m.bin", 30)
     add("b2/mix/ckpt-m.bin", 20 if j < 3 else 25, "alice")  # one owner's slice changes
     for d in ("b3/p", "b3/q", "b3/p/r"):
@@ -162,6 +170,22 @@ def world(request, tmp_path_factory):
         prev = {r["i"]: f"SELECT * FROM read_parquet({sn.q(str(base['build'] / 'cintervals' / f'r{r['i']:04d}.parquet'))})" for r in base["ranges"]["ranges"]}
         runs, deltas, prior, metas = [], [], [sd.Tier(root / f"drill{BASE - 1}" / "drill", "base")], []
         cintervals = [str(p) for p in sorted((base["build"] / "cintervals").glob("*.parquet"))]
+        # the binary counter's tiers (as `publish` merges them: `push_run`, `merge_tiers`), `(run, tier)` oldest first,
+        # each scan's drill built over them; and the level-0 tiers it built (for the heaviness bound)
+        counter: list[tuple[dict, sd.Tier]] = []
+        counter_built: list[sd.Tier] = []
+        counter_stacks: dict[int, list[sd.Tier]] = {}
+
+        def build(scan: dict, run: Path, cdelta: list[str], over: list[sd.Tier], out: Path) -> dict:
+            con.execute(f"CREATE OR REPLACE TABLE pnew AS {sd.pnew_sql(cdelta, cintervals + [f for d in deltas for f in d])}")
+            heads = {r["q"] for r in pq.read_table(run / "catalog" / "cells.parquet").to_pylist() if r["bucket"] == "" and len(r["q"]) >= 3}
+            new = sorted(heads - set(over[-1].alias_table().column("q").to_pylist()))
+            history = sd.history_rows([_reader(base["out"]), *(_reader(d) for d in runs), _reader(run)], new)
+            return sd.build_day(con, over, out, D=scan["ts"], R=R, K=K, floor=floor, sx_files=_sx_files(run), cdelta_files=cdelta,
+                                new_members=new, history=history, meas={k: sd.meas_sql(k, [v]) for k, v in meas.items()},
+                                tier={"first": scan["id"], "last": scan["id"], "level": 0, "scans": [scan["id"]]}, rg=cfg["run_rg"],
+                                log=lambda *_: None)
+
         for j in range(BASE, len(DAYS)):
             scan = scans[j]
             run = root / "runs" / scan["id"]
@@ -172,29 +196,42 @@ def world(request, tmp_path_factory):
             cdelta = [str(p) for p in sorted((run / "cdelta").glob("*.parquet"))]
             sa.delta_shards(con, cdelta, run, target_rows=7)
             sa.catalog_delta(con, [base["final"], *(d / "catalog" for d in runs)], shards, [*deltas, cdelta], V, run / "catalog", root / "work" / scan["id"])
-            con.execute(f"CREATE OR REPLACE TABLE pnew AS {sd.pnew_sql(cdelta, cintervals + [f for d in deltas for f in d])}")
-            heads = {r["q"] for r in pq.read_table(run / "catalog" / "cells.parquet").to_pylist() if r["bucket"] == "" and len(r["q"]) >= 3}
-            new = sorted(heads - set(prior[-1].alias_table().column("q").to_pylist()))
-            history = sd.history_rows([_reader(base["out"]), *(_reader(d) for d in runs), _reader(run)], new)
-            metas.append(sd.build_day(con, prior, run / "drill", D=scan["ts"], R=R, K=K, floor=floor, sx_files=_sx_files(run), cdelta_files=cdelta,
-                                      new_members=new, history=history, meas={k: sd.meas_sql(k, [v]) for k, v in meas.items()},
-                                      tier={"first": scan["id"], "last": scan["id"], "level": 0, "scans": [scan["id"]]}, rg=cfg["run_rg"],
-                                      log=lambda *_: None))
+            metas.append(build(scan, run, cdelta, prior, run / "drill"))
+            over = [prior[0], *(t for _, t in counter)]
+            if [t.root for t in over] == [t.root for t in prior]:  # the counter's tiers are the separate runs: the same build
+                tier = sd.Tier(run / "drill", scan["id"])
+            else:
+                build(scan, run, cdelta, over, root / "counter" / scan["id"] / "drill")
+                tier = sd.Tier(root / "counter" / scan["id"] / "drill", f"counter-{scan['id']}")
+            counter_built.append(tier)
+            key = sa.run_key(scan["id"], scan["id"])
+            after, merges = sa.push_run([r for r, _ in counter], {"key": key, "first": scan["id"], "last": scan["id"], "scans": [scan["id"]]},
+                                        {r["key"] for r, _ in counter} | {key})
+            tiers = {**{r["key"]: t for r, t in counter}, key: tier}
+            for ins, m in merges:
+                out = root / "counter" / m["key"] / "drill"
+                sd.merge_tiers(con, [tiers[r["key"]] for r in ins], out, tier={k: m[k] for k in ("key", "first", "last", "level", "scans")})
+                tiers[m["key"]] = sd.Tier(out, m["key"])
+            counter = [(r, tiers[r["key"]]) for r in after]
+            counter_stacks[j] = [prior[0], *(t for _, t in counter)]
             runs.append(run)
             deltas.append(cdelta)
             prior.append(sd.Tier(run / "drill", scan["id"]))
-        sd.merge_tiers(con, prior[1:], root / "merged" / "drill", tier={"first": DAYS[BASE], "last": DAYS[-1], "level": 1, "scans": DAYS[BASE:]})
-        merged_tier = sd.Tier(root / "merged" / "drill", "merged")
     finally:
         sr.ROOT_RG, sr.IDX_RG = old_rg, old_idx
-    return {"cfg": cfg, "base_out": base["out"], "run_dirs": runs, "scans": scans, "merged": merged, "drills": drills, "base": prior[0], "runs": prior[1:], "merged_tier": merged_tier,
-            "metas": metas, "con": con}
+    return {"cfg": cfg, "base_out": base["out"], "run_dirs": runs, "scans": scans, "merged": merged, "drills": drills, "base": prior[0], "runs": prior[1:],
+            "counter": counter_stacks, "counter_built": counter_built, "metas": metas, "con": con}
 
 
-# (name, last scan index, tiers)
-STACKS = [("run1", BASE, lambda w: [w["base"], w["runs"][0]]),
-          ("run1+run2", BASE + 1, lambda w: [w["base"], *w["runs"]]),
-          ("merged", BASE + 1, lambda w: [w["base"], w["merged_tier"]])]
+# (name, last scan index, tiers, the level-0 tiers they were built from): every run apart, and the binary counter's
+# tiers after each scan (`2+1`: a level-1 run of two scans, then a level-0 one built over it)
+STACKS = [("run1", BASE, lambda w: [w["base"], w["runs"][0]], lambda w: w["runs"][:1]),
+          ("runs1-2", BASE + 1, lambda w: [w["base"], *w["runs"][:2]], lambda w: w["runs"][:2]),
+          ("runs1-3", BASE + 2, lambda w: [w["base"], *w["runs"][:3]], lambda w: w["runs"][:3]),
+          ("runs1-4", BASE + 3, lambda w: [w["base"], *w["runs"]], lambda w: w["runs"]),
+          ("counter-2", BASE + 1, lambda w: w["counter"][BASE + 1], lambda w: w["counter_built"][:2]),
+          ("counter-2+1", BASE + 2, lambda w: w["counter"][BASE + 2], lambda w: w["counter_built"][:3]),
+          ("counter-4", BASE + 3, lambda w: w["counter"][BASE + 3], lambda w: w["counter_built"])]
 
 
 def _members(tier: sd.Tier, kind: str) -> list[str]:
@@ -237,7 +274,7 @@ def _heavy(tiers: list[sd.Tier], kind: str, members: list[str]) -> set[tuple[str
 @pytest.mark.parametrize("kind", sd.KINDS)
 def test_roots_equal_rebuild(world, stack, kind):
     """Every member's roots over base ⊕ runs (each tier's own canonical, combined: smallest `vt`) are the rebuild's."""
-    _, j, tiers_of = stack
+    _, j, tiers_of, _ = stack
     tiers, rebuilt = tiers_of(world), world["drills"][j]
     members = _members(rebuilt, kind)
     if kind == "long":
@@ -256,7 +293,7 @@ def test_roots_equal_rebuild(world, stack, kind):
 def test_rollups_equal_rebuild(world, stack, kind):
     """Every rollup the rebuild holds, the tiers hold too, equal (header, kept children's cells, remainder's). A rollup only the
     tiers hold is a directory whose stored rows over the tiers (close records counted per tier) exceed R while its roots don't."""
-    _, j, tiers_of = stack
+    _, j, tiers_of, built_of = stack
     tiers, rebuilt = tiers_of(world), world["drills"][j]
     R = world["cfg"]["R"]
     members = _members(rebuilt, kind)
@@ -264,7 +301,7 @@ def test_rollups_equal_rebuild(world, stack, kind):
     assert want_heavy <= got_heavy
     for t, d in sorted(want_heavy):
         assert _rollup(tiers, kind, t, d) == _rollup([rebuilt], kind, t, d), (t, d)
-    built = [world["base"], *world["runs"][:j - BASE + 1]]  # the tiers as each run was built (a merge only collapses rows)
+    built = [world["base"], *built_of(world)]  # every level-0 tier: ≥ the rows each build counted (a merge only collapses rows)
     for t, d in sorted(got_heavy - want_heavy):
         stored = sum(len(sd.TierReads([tier], kind).rows(t, d + "/", d + "0")) for tier in built)
         assert len(sd.TierReads([rebuilt], kind).rows(t, d + "/", d + "0")) <= R < stored, (t, d)
@@ -289,7 +326,7 @@ def test_views_equal_brute_force(world, stack):
     """Every member's filtered view at every directory on every date, read over base ⊕ runs as the Worker reads it: a roots
     answer is brute force child for child; a rollup's kept children are brute force and its remainder the rest. Where the
     rebuild dispatches the same way, its answer is the same."""
-    _, j, tiers_of = stack
+    _, j, tiers_of, _ = stack
     tiers, rebuilt = tiers_of(world), world["drills"][j]
     versions = _coalesced_oracle(_oracle(world["merged"][:j + 1]))
     dates = DAYS[:j + 1]
@@ -320,6 +357,47 @@ def test_views_equal_brute_force(world, stack):
                 if a["source"] == "roots":
                     assert a["rows"] <= got.thr
     assert sources["roots"] > 300 and sources["rollup"] > 20 and sources["same"] > 300, sources
+
+
+def _as_children(v: dict, d: str) -> tuple[dict[str, list[int]], list[int]]:
+    """A view's answer on `d` as `(named children, the rest)`: a roots answer names every child (rest zero)."""
+    if v["source"] == "roots":
+        return v["answers"][d], [0, 0]
+    return v["answers"][d], v["rest"][d]
+
+
+@pytest.mark.parametrize("j", range(BASE + 1, len(DAYS)), ids=lambda j: f"scan{j - BASE + 1}")
+def test_counter_reads_as_separate_runs(world, j):
+    """`publish`'s merges change no answer: base ⊕ the binary counter's runs (merged by `merge_tiers`, later scans built
+    over the merged ones) answers every member's view at every directory on every date as base ⊕ every run apart. Where
+    both dispatch alike the views are equal (header and kept set too); where the dispatch bound differs (it grows with
+    the tier count) a rollup's kept children are the roots answer's and its remainder the rest of it."""
+    sep, ctr = [world["base"], *world["runs"][:j - BASE + 1]], world["counter"][j]
+    assert len(ctr) < len(sep)
+    versions = _coalesced_oracle(_oracle(world["merged"][:j + 1]))
+    dates = DAYS[:j + 1]
+    dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p} | {"nope"})
+    seen = {"same": 0, "crossed": 0, "plain": 0}
+    for kind in sd.KINDS:
+        a_of, b_of = sd.TieredDrill(ctr, kind), sd.TieredDrill(sep, kind)
+        for t in _members(world["drills"][j], kind):
+            for P in dirs:
+                a, b = a_of.view(t, P, dates), b_of.view(t, P, dates)
+                if a["source"] == "plain" or b["source"] == "plain":
+                    assert a["source"] == b["source"] == "plain", (t, P)
+                    seen["plain"] += 1
+                elif a["source"] == b["source"]:
+                    seen["same"] += 1
+                    keys = ("source", "answers", "rest", "header", "kept")
+                    assert {k: a[k] for k in keys if k in a} == {k: b[k] for k in keys if k in b}, (t, P)
+                else:
+                    seen["crossed"] += 1
+                    for d in dates:
+                        (ak, ar), (bk, br) = _as_children(a, d), _as_children(b, d)
+                        small, big, rest = (ak, bk, ar) if a["source"] == "rollup" else (bk, ak, br)
+                        assert small == {c: v for c, v in big.items() if c in small}, (t, P, d)
+                        assert rest == [sum(v[i] for c, v in big.items() if c not in small) for i in (0, 1)], (t, P, d)
+    assert seen["same"] > 300, seen
 
 
 def test_the_runs_hit_every_case(world):

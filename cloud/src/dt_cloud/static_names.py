@@ -1433,6 +1433,33 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
              "manifests/")
 
 
+@cli.command("r2-verify")
+@option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-m", "--manifest", "scan", required=True, help="The manifest's scan id (`manifests/<id>.json`)")
+@option("-w", "--workers", default=16, type=int, help="Parallel checks")
+def r2_verify_cmd(bucket, gen, scan, workers) -> None:
+    """Check that every served file (`R2_SERVED`) of every run a manifest lists is on R2 as on GCS (size, and md5 where both
+    know it), before the manifest itself is copied: a manifest goes to R2 only once each run it lists is whole there.
+    Exit 1, listing what's missing or different."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import publish as pub
+
+    prefix = f"{PREFIX}/{gen}"
+    runs = read_json(f"gs://{bucket}/{prefix}/manifests/{scan}.json")["runs"]
+    objs = [o for r in runs for o in pub.list_source(bucket, [f"{prefix}/{r['key']}/"])
+            if o.key.removeprefix(f"{prefix}/{r['key']}/").startswith(R2_SERVED)]
+    s3, r2 = pub.r2_client(), pub.r2_bucket()
+    with ThreadPoolExecutor(workers) as ex:
+        bad = [o.key for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]
+    doc = {"gen": gen, "manifest": scan, "runs": [r["key"] for r in runs], "objects": len(objs), "missing": bad}
+    print(json.dumps(doc, indent=1))
+    if bad:
+        err(f"r2-verify {gen} {scan}: {len(bad)} of {len(objs)} served files not on R2 (e.g. {bad[0]})")
+        raise SystemExit(1)
+
+
 @cli.command("r2-copy")
 @option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
 @option("-g", "--gen", required=True, help="Generation")

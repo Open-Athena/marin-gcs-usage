@@ -10,13 +10,14 @@ PROJECT = "oa-internal-450019"
 #: The job image both build with (duckdb 1.5.6, pyarrow 22.0.0), pinned by digest so a rerun computes with the same engines.
 IMAGE = f"us-central1-docker.pkg.dev/{PROJECT}/cloud-run-source-deploy/gcs-usage-snapshot@sha256:6974a8b71e56469bb8180495c13c170decdc10aefe695cd0f8c5200fb3ac520a"
 
-#: GCS buckets: scans listed per scan id (`listing/<id>/`, before generations a single `path-index.parquet`).
+#: GCS buckets: scans listed per scan id (`listing/<id>/`, before generations a single `path-index.parquet`); each run gets
+#: the heavy-term drilldown.
 GCS = Profile(
     name="gcs",
     layouts=("listing/{id}/path-index.parquet", "listing/{id}/index/{gen}/path-index.parquet"),
     bucket="oa-gcs-usage-dvx", scratch="oa-gcs-usage-scratch", gen="2026-10-08c",
     r2_bucket="oa-gcs-usage-index", r2_secrets={"key_id": "gcs-static-index-r2-key-id", "secret": "gcs-static-index-r2-secret"},
-    project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com",
+    project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com", drill=True,
 )
 
 #: CoreWeave S3 buckets: scans every 6 h (`cw-l2/<id>/index/<gen>/`), the same data and scratch buckets as gcs, its own

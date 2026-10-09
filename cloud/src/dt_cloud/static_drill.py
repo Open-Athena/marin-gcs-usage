@@ -919,6 +919,18 @@ def write_aliases(con, out: Path, table: str = "cls") -> None:
                    compression=CODEC)
 
 
+def tier_files(meta: dict) -> list[str]:
+    """Every file of a run's `drill/` (relative to it), per its `meta.json`: what `write_kind`, `write_state` and
+    `write_aliases` wrote for both kinds, and the meta itself."""
+    out = ["meta.json", "aliases.parquet"]
+    for kind in KINDS:
+        for sub in ("roots", "rollups"):
+            out += [f"{kind}/{sub}/r{i:04d}.parquet" for i in range(meta[f"{kind}_{sub}"]["files"])]
+            out += [f"{kind}-{sub}-index.parquet", f"{kind}-{sub}-index.top.parquet"]
+        out.append(f"state/dcount-{kind}.parquet")
+    return out
+
+
 def base_meta(R: int, K: int, rg: int | None = None) -> dict:
     rg = rg or sr.ROOT_RG
     return {"R": R, "K": K, "rg": rg, "idx_rg": sr.IDX_RG, "dispatch_rows": R + 2 * rg}
@@ -1149,6 +1161,11 @@ def build_cmd(bucket, chunk_rows, date, floor_rows, gen, kind, K, mount, mem, dr
     dst_bucket, dst = (to_url[5:].split("/", 1) if to_url else (bucket, f"{prefix}/{run}/drill"))
     dst = dst.rstrip("/")
     db = _gcs().bucket(dst_bucket)
+    if not dry_run and kind == "task" and (db.blob(f"{dst}/meta.json").exists() or db.blob(f"{dst}/meta.{kinds[0]}.json").exists()):
+        # a rerun task (its part done, the other's maybe not): nothing to build; join if both parts are there
+        joined = db.blob(f"{dst}/meta.json").exists() or _join_parts(db, dst)
+        err(f"gs://{dst_bucket}/{dst}/: {kinds[0]} already built{'' if joined else ' (the other kind not yet)'}")
+        return
     if not dry_run and (db.blob(f"{dst}/meta.json").exists() or any(db.blob(f"{dst}/meta.{k}.json").exists() for k in kinds)
                         or (kinds == KINDS and any(True for _ in _gcs().list_blobs(dst_bucket, prefix=dst + "/", max_results=1)))):
         raise SystemExit(f"gs://{dst_bucket}/{dst}/: {'/'.join(kinds)} already built (a run's drill is written once)")

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from time import monotonic
 
@@ -209,15 +209,13 @@ def merge_cdeltas(files_oldest_first: list[str], out: Path) -> int:
 # ── 3. Catalogs ────────────────────────────────────────────────────────────
 
 
-def merge_drills(dirs: list[Path], out: Path, run: dict, tmp: str | Path | None = None) -> dict | None:
-    """The merged run's `drill/` (`static_drill.merge_tiers` of the inputs', oldest first), when every input has one; else
-    none (a heavy literal then declines past the base, and the gap is logged)."""
+def merge_drills(dirs: list[Path], out: Path, run: dict, tmp: str | Path | None = None) -> dict:
+    """The merged run's `drill/` (`static_drill.merge_tiers` of the inputs', oldest first): every input must have one (the
+    counter merges runs carrying `drill/` only with each other, `push_run`)."""
     from .static_drill import Tier, merge_tiers
 
-    have = [(d / "drill" / "meta.json").exists() for d in dirs]
-    if not all(have):
-        err(f"{run['key']}: no drill/ ({sum(have)} of {len(dirs)} inputs have one)")
-        return None
+    if lack := [d.name for d in dirs if not (d / "drill" / "meta.json").exists()]:
+        raise ValueError(f"{run['key']}: inputs without drill/: {lack}")
     con = connect(16, "100GB", tmp)
     return merge_tiers(con, [Tier(d / "drill", d.name) for d in dirs], out,
                        tier={k: run[k] for k in ("key", "first", "last", "level", "scans")})
@@ -245,9 +243,16 @@ def merge_catalogs(tiers: list[Path], out: Path, membership: dict | None = None)
 RUN_FILES = ("meta.json", "shards.json", "sidecar.parquet", "catalog/meta.json", "catalog/cells.parquet", "catalog/index.parquet")
 
 
-def missing_files(runs: list[dict], exists: Callable[[str], bool]) -> list[str]:
-    """`<run key>/<file>` for every `RUN_FILES` entry a listed run lacks (`exists(key/file)`)."""
-    return [f"{r['key']}/{f}" for r in runs for f in RUN_FILES if not exists(f"{r['key']}/{f}")]
+def missing_files(runs: list[dict], exists: Callable[[str], bool], drill_meta: Callable[[str], dict | None] = lambda key: None) -> list[str]:
+    """`<run key>/<file>` for every `RUN_FILES` entry a listed run lacks (`exists(key/file)`), and for a run with a drill
+    (`drill_meta(key)`: its `drill/meta.json`, or None) every file of it (`static_drill.tier_files`)."""
+    from .static_drill import tier_files
+
+    out = []
+    for r in runs:
+        meta = drill_meta(r["key"])
+        out += [f"{r['key']}/{f}" for f in [*RUN_FILES, *(f"drill/{f}" for f in (tier_files(meta) if meta else []))] if not exists(f"{r['key']}/{f}")]
+    return out
 
 
 def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list[str]], V: int, out: Path, tmp: Path) -> dict:
@@ -367,30 +372,34 @@ class TieredCatalog:
 # ── 4. The binary counter and manifests ────────────────────────────────────
 
 
-#: What a merge carries into the merged run: a run holding anything else (another stage's tier, e.g. the drilldown's
-#: `drill/`) is pinned, never merged, so the merge can't drop what it doesn't know how to merge.
-MERGED_ENTRIES = frozenset({"meta.json", "scans.json", "shards.json", "sx", "sidecar", "sidecar.parquet", "catalog", "cdelta",
-                            "dhist", "verify.json", "terms.txt"})
-
-
-def pinned_runs(runs: list[dict], entries: Callable[[str], set[str]]) -> set[str]:
-    """The keys of `runs` holding an entry a merge would drop (`entries(key)`: the run dir's top-level names)."""
-    return {r["key"] for r in runs if entries(r["key"]) - MERGED_ENTRIES}
-
-
-def push_run(runs: list[dict], new: dict, pinned: set[str] | frozenset[str] = frozenset()) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
+def push_run(runs: list[dict], new: dict, drilled: Collection[str] = frozenset()) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
     """Add a level-0 run (oldest first) and carry: while the two newest runs share a level, they merge into one a
-    level up — unless either is `pinned` (it holds a tier the merge can't carry), which stops the carry there.
-    Returns the runs after, and the merges to perform in order (`(inputs, output)`)."""
+    level up. `drilled`: the keys of the runs carrying the drilldown's `drill/`. Two runs merge only when both carry one
+    (`merge_drills` makes the merged run's) or neither does: a merge of one with and one without would drop the one's
+    drill (the reader stops at the first run without one), so it stops the carry there. Returns the runs after, and the
+    merges to perform in order (`(inputs, output)`)."""
+    drilled = set(drilled)
     runs = [*runs, {**new, "level": 0}]
     merges = []
-    while len(runs) >= 2 and runs[-1]["level"] == runs[-2]["level"] and not {runs[-1]["key"], runs[-2]["key"]} & set(pinned):
+    while len(runs) >= 2 and runs[-1]["level"] == runs[-2]["level"] and (runs[-1]["key"] in drilled) == (runs[-2]["key"] in drilled):
         a, b = runs[-2], runs[-1]
         m = {"key": run_key(a["first"], b["last"]), "first": a["first"], "last": b["last"], "level": a["level"] + 1,
              "scans": [*a["scans"], *b["scans"]]}
+        if a["key"] in drilled:
+            drilled.add(m["key"])
         merges.append(([a, b], m))
         runs = [*runs[:-2], m]
     return runs, merges
+
+
+def drill_scans(runs: list[dict], drilled: Collection[str]) -> list[str]:
+    """The scans past the base the drilldown's reader covers: the runs' up to the first without a `drill/`."""
+    out = []
+    for r in runs:
+        if r["key"] not in drilled:
+            break
+        out += r["scans"]
+    return out
 
 
 def manifest(gen: str, base_scans: list[str], runs: list[dict]) -> dict:
@@ -649,6 +658,9 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     base, runs = _state(bucket, gen, date)
     run = f"{prefix}/{run_key(date, date)}"
     b = _gcs().bucket(bucket)
+    key = f"{prefix}/manifests/{date}.json"
+    if b.blob(key).exists():
+        raise SystemExit(f"{key} exists: manifests are never rewritten")
     meta = {"rows": 0, "bytes": 0}
     for blob in _gcs().list_blobs(bucket, prefix=f"{run}/sx/"):
         meta["bytes"] += int(blob.size)
@@ -656,15 +668,16 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     meta["rows"] = plan["total_rows"]
     if not b.blob(f"{run}/catalog/meta.json").exists():
         raise SystemExit(f"{run}: no catalog yet")
-    def entries(key: str) -> set[str]:
-        it = _gcs().list_blobs(bucket, prefix=f"{prefix}/{key}/", delimiter="/")
-        names = {Path(x.name).name for x in it}
-        return names | {Path(p.rstrip("/")).name for p in it.prefixes}
 
-    pinned = pinned_runs(runs, entries)
-    if pinned:
-        err(f"pinned (not merged: tiers a merge would drop): {sorted(pinned)}")
-    after, merges = push_run(runs, {"key": run_key(date, date), "first": date, "last": date, "scans": [date], **meta}, pinned)
+    def drill_meta(k: str) -> dict | None:
+        blob = b.blob(f"{prefix}/{k}/drill/meta.json")
+        return json.loads(blob.download_as_bytes()) if blob.exists() else None
+
+    new = {"key": run_key(date, date), "first": date, "last": date, "scans": [date], **meta}
+    drilled = {r["key"] for r in [*runs, new] if drill_meta(r["key"]) is not None}
+    after, merges = push_run(runs, new, drilled)
+    if len(after) >= 2 and after[-1]["level"] == after[-2]["level"]:
+        err(f"not merging {after[-2]['key']} and {after[-1]['key']}: only one carries drill/")
     if dry_run:
         print(json.dumps({"merges": [[[r["key"] for r in ins], m["key"]] for ins, m in merges],
                           "manifest": manifest(gen, [s["id"] for s in base["scans"]], after)}, indent=1))
@@ -674,25 +687,33 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
             raise SystemExit("the counter carries: pass -m (the merges read the runs)")
         for ins, m in merges:
             outp = Path(tmp) / "merge" / m["key"]
+            shutil.rmtree(outp, ignore_errors=True)
             dirs = [Path(mount) / prefix / r["key"] for r in ins]
             doc = merge_shards(dirs, outp)
             membership = json.loads((dirs[-1] / "catalog" / "meta.json").read_text())["membership"]
             merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership)
-            merge_drills(dirs, outp / "drill", m, tmp)
+            if all(r["key"] in drilled for r in ins):
+                merge_drills(dirs, outp / "drill", m, tmp)
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
+            # a merged run is written once: an earlier attempt may have left only the same keys (overwritten here)
+            ours = {f"{prefix}/{m['key']}/{f.relative_to(outp).as_posix()}" for f in outp.rglob("*") if f.is_file()}
+            if stale := sorted(x.name for x in _gcs().list_blobs(bucket, prefix=f"{prefix}/{m['key']}/") if x.name not in ours):
+                raise SystemExit(f"{prefix}/{m['key']}/ holds {len(stale)} objects this merge doesn't write (e.g. {stale[0]}): not merging into it")
             upload_tree(outp, bucket, f"{prefix}/{m['key']}")
             shutil.rmtree(outp)
             m.update(rows=doc["rows"], bytes=doc["bytes"])
     doc = manifest(gen, [s["id"] for s in base["scans"]], after)
     if max(r["level"] for r in after) >= COMPACT_LEVEL:
         err(f"level {COMPACT_LEVEL} reached: compact into a new base generation")
-    b.blob(f"{run}/meta.json").upload_from_string(json.dumps({"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], **meta}, indent=1) + "\n")
-    key = f"{prefix}/manifests/{date}.json"
-    if b.blob(key).exists():
-        raise SystemExit(f"{key} exists: manifests are never rewritten")
-    # A manifest only after every file of every run it lists exists (the readers need each tier whole).
-    if missing := missing_files(after, lambda k: b.blob(f"{prefix}/{k}").exists()):
+    if not b.blob(f"{run}/meta.json").exists():
+        b.blob(f"{run}/meta.json").upload_from_string(json.dumps({"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], **meta}, indent=1) + "\n")
+    # A manifest only after every file of every run it lists exists (the readers need each tier whole), and never one
+    # whose drill covers fewer scans than the last's.
+    if missing := missing_files(after, lambda k: b.blob(f"{prefix}/{k}").exists(), drill_meta):
         raise SystemExit(f"not publishing {key}: listed runs lack {missing}")
+    drilled_after = {r["key"] for r in after if drill_meta(r["key"]) is not None}
+    if lost := sorted(set(drill_scans(runs, drilled)) - set(drill_scans(after, drilled_after))):
+        raise SystemExit(f"not publishing {key}: its runs' drill would no longer cover {lost}")
     b.blob(key).upload_from_string(json.dumps(doc, indent=1) + "\n", if_generation_match=0)
     print(json.dumps(doc, indent=1))
 
