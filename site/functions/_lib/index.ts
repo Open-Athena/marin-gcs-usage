@@ -584,6 +584,8 @@ export const footerKey = (dir: string, variant: string): string => indexKey(dir,
 /** The columns a footer row decodes (the writer's `FOOTER_COLS`, minus `b_min`:
  * no span predicate reads it yet). */
 const FOOTER_COLS = ['rg', 'd_min', 'd_max', 'p_min', 'p_max', 'b_max', 'u_min', 'u_max', 'row_start', 'row_end', 'rg_json']
+/** The footer columns a span predicate reads (all but the metadata). */
+const FOOTER_BOUNDS = FOOTER_COLS.filter(c => c !== 'rg_json')
 
 /** The first tail read of a `.groups.parquet`: its whole footer in one
  * request up to ~170 footer groups (~1.5 KB of thrift each, measured on cw's
@@ -679,27 +681,65 @@ async function openFooter(env: Env, key: string, src?: ByteStore): Promise<Foote
   return { key, metadata, groups }
 }
 
-/** Decode one footer group into the blob handle's group shape — cached per
- * isolate beside the tier groups, `(store, date, variant, gen, fg:<n>)`. */
+/** The byte span of some columns' chunks in a footer group (they're stored in schema order, so a
+ *  run of columns is one range). */
+function chunksSpan(fg: FooterGroup, cols: Set<string>): [number, number] {
+  let lo = Infinity, hi = 0
+  for (const c of fg.meta.columns) {
+    const m = c.meta_data!
+    if (!cols.has(m.path_in_schema[0])) continue
+    const data = Number(m.data_page_offset)
+    const dict = m.dictionary_page_offset == null ? data : Number(m.dictionary_page_offset)
+    const start = dict > 0 ? Math.min(dict, data) : data
+    lo = Math.min(lo, start)
+    hi = Math.max(hi, start + Number(m.total_compressed_size))
+  }
+  return [lo, hi]
+}
+
+/** Decode some columns of one footer group (one range read of their chunks, colo-cached). */
+async function readFooterCols(h: PqHandle, fg: FooterGroup, columns: string[]): Promise<Record<string, unknown>[]> {
+  const [start, end] = chunksSpan(fg, new Set(columns))
+  const buf = await cachedRange(h.env, h.footer.key, start, end, h.src)
+  const file: FileSlice = { byteLength: end, slice: async (s, e) => buf.slice(s - start, (e ?? end) - start) }
+  const metadata = { ...h.footer.metadata, row_groups: [fg.meta], num_rows: fg.meta.num_rows }
+  return (await parquetReadObjects({ file, metadata, columns, compressors })) as Record<string, unknown>[]
+}
+
+/** Decode one footer group's bounds into the blob handle's group shape (`rgJson` left empty: the
+ * metadata of the few groups a read selects is fetched apart, `readFooterJson`) — cached per isolate
+ * beside the tier groups, `(store, date, variant, gen, fg:<n>)`. Without the metadata column a
+ * footer group is a fifth of the bytes to fetch, decode and hold. */
 async function readFooterGroup(h: PqHandle, fg: FooterGroup): Promise<BlobGroup[]> {
   const k = `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|fg:${fg.n}`
   const hit = cacheGet<BlobGroup>(k)
   if (hit) return hit
   const t0 = now()
-  const buf = await cachedRange(h.env, h.footer.key, fg.byteStart, fg.byteEnd, h.src)
-  const file: FileSlice = { byteLength: fg.byteEnd, slice: async (s, e) => buf.slice(s - fg.byteStart, (e ?? fg.byteEnd) - fg.byteStart) }
-  const metadata = { ...h.footer.metadata, row_groups: [fg.meta], num_rows: fg.meta.num_rows }
   const timed = h.asOf != null
-  const rows = (await parquetReadObjects({ file, metadata, columns: timed ? [...FOOTER_COLS, 'vf_min', 'vt_max'] : FOOTER_COLS, compressors })) as Record<string, unknown>[]
+  const rows = await readFooterCols(h, fg, timed ? [...FOOTER_BOUNDS, 'vf_min', 'vt_max'] : FOOTER_BOUNDS)
   const out = rows.map((r): BlobGroup => ({
     rg: num(r.rg), dMin: num(r.d_min), dMax: num(r.d_max), pMin: str(r.p_min), pMax: str(r.p_max), bMax: num(r.b_max),
     uMin: r.u_min == null ? null : str(r.u_min), uMax: r.u_max == null ? null : str(r.u_max),
-    rowStart: num(r.row_start), rowEnd: num(r.row_end), rgJson: str(r.rg_json),
+    rowStart: num(r.row_start), rowEnd: num(r.row_end), rgJson: '',
     ...(timed ? { vfMin: num(r.vf_min), vtMax: num(r.vt_max) } : {}),
   }))
   h.trace?.('footer', now() - t0, h.variant)
-  cachePut(k, out, out.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length + g.rgJson.length), 0))
+  cachePut(k, out, out.reduce((n, g) => n + 96 + 2 * (g.pMin.length + g.pMax.length), 0))
   return out
+}
+
+/** The stored metadata (`rg_json`) of one footer group's tier groups, by `rg` (cached per isolate). */
+async function readFooterJson(h: PqHandle, fg: FooterGroup): Promise<Map<number, string>> {
+  const k = `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|fj:${fg.n}`
+  const hit = cacheGet<[number, string]>(k)
+  if (hit) return new Map(hit)
+  const t0 = now()
+  // Footer rows are in `rg` order from the group's first: `rg_json` alone is one chunk to fetch.
+  const rows = await readFooterCols(h, fg, ['rg_json'])
+  const out = rows.map((r, i): [number, string] => [fg.rgStart + i, str(r.rg_json)])
+  h.trace?.('fjson', now() - t0, h.variant)
+  cachePut(k, out, out.reduce((n, [, j]) => n + 32 + 2 * j.length, 0))
+  return new Map(out)
 }
 
 /** The tier groups of a `pq` handle that `pass` (the span predicate)
@@ -1099,7 +1139,7 @@ async function fetchGroupJson(h: IndexHandle, rgs: number[]): Promise<Map<number
     // so these are cache hits).
     const want = new Set(rgs)
     const fgs = h.footer.groups.filter(fg => rgs.some(rg => rg >= fg.rgStart && rg < fg.rgEnd))
-    for (const g of (await mapLimit(fgs, GROUP_READS, fg => readFooterGroup(h, fg))).flat()) if (want.has(g.rg)) out.set(g.rg, g.rgJson)
+    for (const m of await mapLimit(fgs, GROUP_READS, fg => readFooterJson(h, fg))) for (const [rg, j] of m) if (want.has(rg)) out.set(rg, j)
     return out
   }
   for (let i = 0; i < rgs.length; i += 80) {
