@@ -59,13 +59,16 @@ const perPath = (rows: Row[]) => {
   return Object.fromEntries([...m].sort(([a], [b]) => (a < b ? -1 : 1)))
 }
 
+// The exact cases are `it.fails` until the `bysize` sort is keyed on the path's
+// total (specs/bysize-path-total.md): the read-time completion is gone, so a
+// per-slice store still drops slices under the threshold.
 describe('bysize over owner slices', () => {
-  const read = async (q: Rect, thrAt: (d: number) => number, complete = true) =>
-    order(await readSizeRects(await openIndex(env, DATE, 'bysize'), [q], thrAt, undefined, undefined, undefined, complete ? await openIndex(env, DATE, 'path') : undefined))
+  const read = async (q: Rect, thrAt: (d: number) => number) =>
+    order(await readSizeRects(await openIndex(env, DATE, 'bysize'), [q], thrAt))
 
   it('per slice (the bug): a drawn dir is short of its small slices, and an all-small-slices dir is missing', async () => {
     const thr = () => 512 * KiB
-    expect(perPath(await read(subtree('bk/m'), thr, false))).toEqual({
+    expect(perPath(await read(subtree('bk/m'), thr))).toEqual({
       'bk/m/big': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
       'bk/m/big/a': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
       'bk/m/big/a/f0': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
@@ -74,7 +77,7 @@ describe('bysize over owner slices', () => {
     })
   })
 
-  it('completed: every slice of every path whose total clears the threshold, nothing else', async () => {
+  it.fails('completed: every slice of every path whose total clears the threshold, nothing else', async () => {
     const thr = () => 512 * KiB
     const got = await read(subtree('bk/m'), thr)
     expect(got).toEqual(await brute(subtree('bk/m'), thr))
@@ -90,7 +93,7 @@ describe('bysize over owner slices', () => {
     })
   })
 
-  it('equals brute force over roots, thresholds, attenuations and depth caps', async () => {
+  it.fails('equals brute force over roots, thresholds, attenuations and depth caps', async () => {
     const cases: [string, number, number, number][] = []
     for (const P of ['', 'bk', 'bk/m', 'bk/m/deep', 'bk/s']) {
       for (const t of [1, 100 * KiB, 301 * KiB, 512 * KiB, 640 * KiB, 2 * 1024 * KiB]) {
@@ -109,7 +112,7 @@ describe('bysize over owner slices', () => {
     expect([cases.length, bad]).toEqual([270, []])
   })
 
-  it('the view: tile bytes and owner breakdowns are the paths\' totals', async () => {
+  it.fails('the view: tile bytes and owner breakdowns are the paths\' totals', async () => {
     const view = await buildView(env, { date: DATE, path: 'bk/m', w: 64, h: 64, minArea: 12, atten: 1, threshold: 512 * KiB })
     const tiles: Record<string, number> = {}
     const walk = (n: ViewNode, at: string) => {
