@@ -9,6 +9,7 @@ import type { Env } from '../auth.js'
 import { pathScans, storeCreds, storeTarget, type Lens } from '../index.js'
 import { loadRegistry, canonId } from '../identity.js'
 import { loadLedger } from '../ledger.js'
+import { scanTimes } from '../scanTimes.js'
 import { parseOwner, queryParam, QueryError } from '../scope.js'
 import { snapshotsPrefix } from '../shared.js'
 import { decodeSel, resolveAfter } from '../../../src/scanSlug.js'
@@ -49,12 +50,13 @@ export class NoScanMatch extends Error {
 export async function resolveScan(env: Env, d: string | undefined): Promise<string | null> {
   const scans = (await pathScans(env, true)).results.map(r => r.date)
   const sel = decodeSel(d)
+  const times = await scanTimes(env, scans)
   if (sel?.invalid || sel?.d) {
-    const scan = resolveAfter(sel, scans)
+    const scan = resolveAfter(sel, scans, times)
     if (!scan) throw new NoScanMatch(d!)
     return scan
   }
-  return resolveAfter(undefined, scans)
+  return resolveAfter(undefined, scans, times)
 }
 
 /** The scan's `meta.json` user list (rank = colour slot), or none. */

@@ -17,7 +17,8 @@
  * closest scans on either side to offer).
  *
  * The canonical (URL) form is the dashless compact one, `YYMMDD[HH[MM]]`
- * (`encodeScan`), which leaves `-` to `?d=`'s separators alone.
+ * (`encodeScan`), which leaves `-` to `?d=`'s separators alone; a pinned scan
+ * is written as its shortest permanent slug (`minSlug`).
  */
 
 const HOUR = 3600_000
@@ -105,73 +106,197 @@ export const decodeScan = (e: string | undefined, now = new Date()): string | un
   return out(y, pad(mo), pad(d), hh && pad(hh), mm && pad(mm))
 }
 
-// ---- exact slugs: a date-only scan is its midnight ----
+// ---- a date-only scan's time: its real start, else its midnight ----
 //
 // A date-only id (`2026-10-09`) names one scan; the day slug `261009` names the
 // day's *latest* scan, which may be a timed one (`2026-10-09T1236`). So a
-// date-only scan's exact slug is its midnight minute, `2610090000`: matching
-// treats `YYYY-MM-DD` as `YYYY-MM-DDT0000` (`scanKey`), the instant `scanTime`
-// already gives it. That can't collide with a real `T0000` scan, since a date
-// and its `T0000` are one instant and `check_order` refuses the pair. The hour
-// slug `26100900` takes it too (the midnight hour). No new syntax: every
-// picker writes `exactSlug(id)`, which resolves to exactly that scan.
+// date-only scan matches, sorts and is linked by an effective minute, its
+// **key** (`scanKey`):
+//  - its real start, when known (`ScanTimes`: the earliest bucket listing's
+//    `started`, which `path-index` writes to `meta.started`) — 2026-10-09's
+//    04:30Z run is `2026-10-09T0430`, slug `2610090430`, and the hour slug
+//    `26100904` takes it too;
+//  - else its midnight, `2026-10-09T0000` (slug `2610090000`), the instant
+//    `scanTime` gives an untimed id.
+// The midnight stays an alias even when the start is known, so a midnight link
+// already shared keeps resolving to it. Neither can collide with a real timed
+// scan: a date and its `T0000` are one instant (`check_order` refuses the
+// pair), and a start is that scan's own minute. No new syntax: every picker
+// writes `exactSlug(id, times)`, which resolves to exactly that scan.
 
-/** A scan id's matching key: a date-only id reads as its `T0000`. */
-export const scanKey = (id: string): string => (id.length === 10 ? `${id}T0000` : id)
+/** Date-only scan ids → their start minute (`YYYY-MM-DDTHHMM`, UTC; `startKey`).
+ * Only the ids whose start is known are present; only date-only ids on a day
+ * with more than one scan need one (`timesNeeded`). */
+export type ScanTimes = Readonly<Record<string, string>>
 
-/** Whether `scan` falls under the decoded `prefix` (a date-only scan as its midnight). */
-export const scanUnder = (scan: string, prefix: string): boolean => scan.startsWith(prefix) || scanKey(scan).startsWith(prefix)
+/** A date-only scan's start key from its ISO `started` instant: the UTC minute,
+ * when it falls on the id's own day (else null — a start on another day can't
+ * key that day's scan; the midnight form stands). */
+export function startKey(id: string, started: unknown): string | null {
+  if (id.length !== 10 || !isScanId(id) || typeof started !== 'string') return null
+  const t = new Date(started)
+  if (isNaN(t.getTime())) return null
+  const iso = t.toISOString()
+  return iso.slice(0, 10) === id ? `${id}T${iso.slice(11, 13)}${iso.slice(14, 16)}` : null
+}
+
+/** The date-only scans whose start matters: those sharing their day with
+ * another scan. A single-scan day's `261009` is already unique. */
+export function timesNeeded(scans: readonly string[]): string[] {
+  const perDay = new Map<string, number>()
+  for (const s of scans) perDay.set(s.slice(0, 10), (perDay.get(s.slice(0, 10)) ?? 0) + 1)
+  return scans.filter(s => s.length === 10 && (perDay.get(s) ?? 0) > 1)
+}
+
+/** A scan id's key: a timed id is itself; a date-only id its start
+ * (`times`), else its midnight `T0000`. */
+export const scanKey = (id: string, times?: ScanTimes): string => (id.length === 10 ? times?.[id] ?? `${id}T0000` : id)
+
+/** Keys compare chronologically as strings; a tie (a start on a timed scan's
+ * minute) breaks by id. Negative = `a` is earlier. */
+export const scanCmp = (a: string, b: string, times?: ScanTimes): number => {
+  const ka = scanKey(a, times), kb = scanKey(b, times)
+  return ka < kb ? -1 : ka > kb ? 1 : a < b ? -1 : a > b ? 1 : 0
+}
+
+/** `scans` newest first, by key. */
+export const sortScans = (scans: readonly string[], times?: ScanTimes): string[] => [...scans].sort((a, b) => scanCmp(b, a, times))
+
+/** Whether `scan` falls under the decoded `prefix`: by id, by key, or (a
+ * date-only scan) by its midnight alias. */
+export const scanUnder = (scan: string, prefix: string, times?: ScanTimes): boolean =>
+  scan.startsWith(prefix) || scanKey(scan, times).startsWith(prefix) || (scan.length === 10 && `${scan}T0000`.startsWith(prefix))
 
 /** The decoded prefix that selects exactly the scan `id` (`2026-10-09` →
- * `2026-10-09T0000`; a timed id is itself) — what a picker writes as `d`. */
-export const exactPrefix = (id: string): string => (isScanId(id) ? scanKey(id) : id)
+ * its start `2026-10-09T0430`, else `2026-10-09T0000`; a timed id is itself)
+ * — what a picker writes as `d`. */
+export const exactPrefix = (id: string, times?: ScanTimes): string => (isScanId(id) ? scanKey(id, times) : id)
 
 /** A scan id's exact slug, resolving to exactly that scan: `2026-10-09T1236` →
- * `2610091236`, date-only `2026-10-09` → `2610090000` (never `261009`, which
- * is the day's latest scan). */
-export const exactSlug = (id: string): string => encodeScan(exactPrefix(id))!
+ * `2610091236`, date-only `2026-10-09` → its start `2610090430` (or midnight
+ * `2610090000` when unknown) — never `261009`, the day's latest scan. */
+export const exactSlug = (id: string, times?: ScanTimes): string => encodeScan(exactPrefix(id, times))!
+
+// ---- the canonical slug: the shortest that names its scan for good ----
+//
+// A scan's canonical slug is the shortest of its day, its hour and its minute
+// (all of its key, `scanKey`) that names only that scan **and never can name
+// another** (`namesForGood`):
+//  - the day (`261008`) once that UTC day has ended, if no other scan shares it;
+//  - else the hour (`26100904`) once that hour has ended, if no other scan
+//    falls under it;
+//  - else the minute (`2610091236`): always permanent (`check_order` refuses two
+//    scans in one minute).
+// So today's scan links by its minute (or hour) and its slug shortens once the
+// period ends; the longer forms keep resolving to it, so a link already shared
+// never breaks. Resolution is unchanged (a day slug is that day's latest scan).
+// A date-only scan whose start isn't known (`ScanTimes`) could later be keyed
+// into any hour of its day, so no slug on that day stops at the hour.
+//
+// "Ended" is the period's UTC end: a scan is listed once indexed, and its id is
+// its start, so one started before the end but indexed after it could still
+// join a period whose slug already shortened (an in-flight scan). The cadences
+// in use (gcs daily, cw 6-hourly) never put two scans in one hour, and rarely in
+// one day across midnight.
+
+const MINUTE = 60_000
+
+/** The UTC end of the period a decoded prefix names: its day, hour or minute. */
+const periodEnd = (prefix: string): number =>
+  scanTime(prefix) + (prefix.length === 10 ? DAY : prefix.length === 13 ? HOUR : MINUTE)
+
+/** Whether the decoded `prefix` names the scan `id` alone among `scans`, and
+ * always will: a minute always; a day or an hour once it has ended (`now`), and
+ * an hour only on a day whose date-only scan (if any) has a known start. */
+export function namesForGood(prefix: string, id: string, scans: readonly string[], times?: ScanTimes, now = new Date()): boolean {
+  const under = scans.filter(s => scanUnder(s, prefix, times))
+  if (under.length !== 1 || under[0] !== id) return false
+  if (prefix.length >= 15) return true
+  if (now.getTime() < periodEnd(prefix)) return false
+  const day = prefix.slice(0, 10)
+  return prefix.length === 10 || !scans.some(s => s === day && !times?.[s])
+}
+
+/** The scan `id`'s canonical prefix (decoded form): the shortest of its key's
+ * day, hour and minute that `namesForGood`; the minute (`exactPrefix`) when
+ * `id` isn't among `scans`. What a picker writes as `d`. */
+export function minPrefix(id: string, scans: readonly string[], times?: ScanTimes, now = new Date()): string {
+  const k = exactPrefix(id, times)
+  for (const p of [k.slice(0, 10), k.slice(0, 13)]) if (namesForGood(p, id, scans, times, now)) return p
+  return k
+}
+
+/** The scan `id`'s canonical slug (`minPrefix`, encoded): `261008` (alone on a
+ * past day), `26100904` (alone in a past hour), else `2610091236`. */
+export const minSlug = (id: string, scans: readonly string[], times?: ScanTimes, now = new Date()): string =>
+  encodeScan(minPrefix(id, scans, times, now))!
+
+/** A decoded prefix in canonical form: when it names one scan for good
+ * (`namesForGood`), that scan's `minPrefix` (never a longer one); else as is —
+ * a day still in progress, or one holding several scans, stays the day's
+ * latest scan. */
+export function canonicalPrefix(prefix: string, scans: readonly string[], times?: ScanTimes, now = new Date()): string {
+  const id = latestScan(prefix, scans, times)
+  if (!id || !namesForGood(prefix, id, scans, times, now)) return prefix
+  const m = minPrefix(id, scans, times, now)
+  return m.length <= prefix.length ? m : prefix
+}
+
+/** A selection with each pinned endpoint in canonical form (`canonicalPrefix`). */
+export function canonicalizeSel(s: ScanSel | undefined, scans: readonly string[], times?: ScanTimes, now = new Date()): ScanSel | undefined {
+  if (!s || s.invalid) return s
+  const c = (p: string | undefined) => (p ? canonicalPrefix(p, scans, times, now) : undefined)
+  return sel(c(s.d), s.span, c(s.from))
+}
 
 /** Every scan matching a decoded prefix, newest first (`scans` in any order). */
-export function scanMatches(prefix: string | undefined, scans: readonly string[]): string[] {
+export function scanMatches(prefix: string | undefined, scans: readonly string[], times?: ScanTimes): string[] {
   if (!prefix) return []
-  return scans.filter(s => scanUnder(s, prefix)).sort((a, b) => a < b ? 1 : a > b ? -1 : 0)
+  return sortScans(scans.filter(s => scanUnder(s, prefix, times)), times)
+}
+
+/** The latest of `scans` (any order) by key; null when empty. */
+export function newestScan(scans: readonly string[], times?: ScanTimes): string | null {
+  let best: string | null = null
+  for (const s of scans) if (best === null || scanCmp(s, best, times) > 0) best = s
+  return best
 }
 
 /** **The resolver**: the latest scan among `scans` (any order) under the
- * decoded prefix — null when none is. Ids sort chronologically as strings (a
- * bare `YYYY-MM-DD` before that day's `T` scans: its midnight). */
-export function latestScan(prefix: string | undefined, scans: readonly string[]): string | null {
+ * decoded prefix, by key — null when none is. */
+export function latestScan(prefix: string | undefined, scans: readonly string[], times?: ScanTimes): string | null {
   if (!prefix) return null
-  let best: string | null = null
-  for (const s of scans) if (scanUnder(s, prefix) && (best === null || s > best)) best = s
-  return best
+  return newestScan(scans.filter(s => scanUnder(s, prefix, times)), times)
 }
 
 /** A slug (any spelling `decodeScan` reads) → the latest matching scan, or
  * null if the slug is malformed or matches nothing. */
-export const resolveScan = (slug: string | undefined, scans: readonly string[], now = new Date()): string | null =>
-  latestScan(decodeScan(slug, now), scans)
+export const resolveScan = (slug: string | undefined, scans: readonly string[], now = new Date(), times?: ScanTimes): string | null =>
+  latestScan(decodeScan(slug, now), scans, times)
 
 /** A missed prefix's closest scans: the latest scan before everything it
  * names, and the earliest after — the links a "no scan matches" state offers.
  * (Compared by `scanKey`; `prefix + '~'` sorts after every key it names.) */
-export function scanNeighbors(prefix: string, scans: readonly string[]): { before: string | null; after: string | null } {
+export function scanNeighbors(prefix: string, scans: readonly string[], times?: ScanTimes): { before: string | null; after: string | null } {
   let before: string | null = null, after: string | null = null
   const end = `${prefix}~`
   for (const s of scans) {
-    const k = scanKey(s)
-    if (k < prefix && (before === null || k > scanKey(before))) before = s
-    if (k > end && (after === null || k < scanKey(after))) after = s
+    const k = scanKey(s, times)
+    if (k < prefix && (before === null || scanCmp(s, before, times) > 0)) before = s
+    if (k > end && (after === null || scanCmp(s, after, times) < 0)) after = s
   }
   return { before, after }
 }
 
+/** A scan's instant (UTC), by key: a date-only id at its start, else midnight. */
+export const scanInstant = (id: string, times?: ScanTimes): number => scanTime(scanKey(id, times))
+
 /** The scan nearest to `t` among `scans` (any order); null when empty. For a
  * look-back *span* (a duration, not a slug) and explicit UI picks (a chart
  * brush) only — a slug never snaps to its nearest scan. */
-export const nearestScan = (scans: readonly string[], t: number): string | null => {
+export const nearestScan = (scans: readonly string[], t: number, times?: ScanTimes): string | null => {
   let best: string | null = null
-  for (const s of scans) if (!best || Math.abs(scanTime(s) - t) < Math.abs(scanTime(best) - t)) best = s
+  for (const s of scans) if (!best || Math.abs(scanInstant(s, times) - t) < Math.abs(scanInstant(best, times) - t)) best = s
   return best
 }
 
@@ -310,12 +435,10 @@ export const legacyFromParam = (now = new Date()) => ({
 /** A selection's "after" scan, resolved: the latest scan matching `d`, or the
  * latest scan when `d` is absent; null when `d` matches nothing, the value is
  * `invalid`, or `scans` is empty — never a fallback to another scan. */
-export function resolveAfter(s: ScanSel | undefined, scans: readonly string[]): string | null {
+export function resolveAfter(s: ScanSel | undefined, scans: readonly string[], times?: ScanTimes): string | null {
   if (s?.invalid) return null
-  if (s?.d) return latestScan(s.d, scans)
-  let best: string | null = null
-  for (const x of scans) if (best === null || x > best) best = x
-  return best
+  if (s?.d) return latestScan(s.d, scans, times)
+  return newestScan(scans, times)
 }
 
 /** A selection's "before" scan, given its resolved "after": a pinned `from`
@@ -323,10 +446,10 @@ export function resolveAfter(s: ScanSel | undefined, scans: readonly string[]): 
  * a miss, never the nearest; a span (a duration) resolves to the scan nearest
  * `after − span`; neither = undefined (the caller's default, usually the
  * previous scan, or none). */
-export function resolveBefore(s: ScanSel | undefined, after: string, scans: readonly string[]): string | null | undefined {
-  const earlier = scans.filter(x => x < after)
-  if (s?.from) return latestScan(s.from, earlier)
-  if (s?.span) return nearestScan(earlier, scanTime(after) - s.span)
+export function resolveBefore(s: ScanSel | undefined, after: string, scans: readonly string[], times?: ScanTimes): string | null | undefined {
+  const earlier = scans.filter(x => scanCmp(x, after, times) < 0)
+  if (s?.from) return latestScan(s.from, earlier, times)
+  if (s?.span) return nearestScan(earlier, scanInstant(after, times) - s.span, times)
   return undefined
 }
 
@@ -344,9 +467,12 @@ export function selOf(sp: URLSearchParams, now = new Date()): ScanSel | undefine
 
 /** A URL's scan selection in canonical form (`selOf`, re-encoded compactly),
  * or undefined when it selects nothing (absent); an unparseable value stays
- * verbatim (a miss). What a
- * page's own URL canonicalizes to, so OG/share views key by the same string. */
-export const canonicalSel = (sp: URLSearchParams, now = new Date()): string | undefined => encodeSel(selOf(sp, now))
+ * verbatim (a miss). Given the scan list (and `times`), each pinned endpoint
+ * that names one scan for good is that scan's shortest slug
+ * (`canonicalizeSel`): what a page's own URL canonicalizes to. Without one
+ * (the OG card's view key, a pure route) the spelling alone is canonicalized. */
+export const canonicalSel = (sp: URLSearchParams, now = new Date(), scans?: readonly string[], times?: ScanTimes): string | undefined =>
+  encodeSel(scans ? canonicalizeSel(selOf(sp, now), scans, times, now) : selOf(sp, now))
 
 /** The slug a missed selection names, for a "no scan matches" message: the
  * `invalid` value, or the canonical end slug. */

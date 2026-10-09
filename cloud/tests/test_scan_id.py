@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from dt_cloud.cli import main
 import datetime as dt
 
-from dt_cloud.scan_id import META_PATH, check_order, check_scan_id, is_scan_id, latest_scan, resolve_slug, scan_epoch, scan_key, scan_label, scan_slug, scan_time, slug_prefix, snapshot_scans
+from dt_cloud.scan_id import META_PATH, check_order, check_scan_id, is_scan_id, latest_scan, min_slug, names_for_good, resolve_slug, scan_epoch, scan_key, scan_label, scan_slug, scan_time, slug_prefix, snapshot_scans, start_key, times_needed
 
 SCANS = ["2026-10-08", "2026-10-09T0601", "2026-10-09T1802", "2026-10-09T1215"]
 
@@ -142,3 +142,90 @@ def test_date_only_and_timed_scan_on_one_day():
     # the key never collides with a real scan: a date and its T0000 are refused together
     with pytest.raises(ValueError):
         check_order(["2026-10-09", "2026-10-09T0000"])
+
+
+def test_a_date_only_scan_keyed_by_its_start():
+    # gcs 10/9: the date-only run started 04:30:12Z (its listings' earliest `started`), then 12:36Z. With the start
+    # known, the date-only scan's exact slug is that minute, the hour and minute slugs take it, the midnight stays an
+    # alias, and the day slug is still the day's latest by time.
+    scans = ["2026-10-08", "2026-10-09", "2026-10-09T1236"]
+    assert times_needed(scans) == ["2026-10-09"]
+    times = {"2026-10-09": start_key("2026-10-09", "2026-10-09T04:30:12.345678+00:00")}
+    assert times == {"2026-10-09": "2026-10-09T0430"}
+    assert [scan_key(s, times) for s in scans] == ["2026-10-08T0000", "2026-10-09T0430", "2026-10-09T1236"]
+    assert [scan_slug(s, times) for s in scans] == ["2610080000", "2610090430", "2610091236"]
+    assert [resolve_slug(scan_slug(s, times), scans, times) for s in scans] == scans
+    slugs = ["261009", "26100904", "2610090430", "2610090000", "26100900", "26100912", "2610090431", "26100905"]
+    assert [resolve_slug(s, scans, times) for s in slugs] == [
+        "2026-10-09T1236", "2026-10-09", "2026-10-09", "2026-10-09", "2026-10-09", "2026-10-09T1236", None, None,
+    ]
+
+
+def test_a_start_orders_the_day():
+    # A date-only scan that started after a timed one on its day is the day's latest.
+    scans = ["2026-10-09T0300", "2026-10-09"]
+    times = {"2026-10-09": "2026-10-09T0430"}
+    assert [latest_scan("2026-10-09", scans, times), latest_scan("2026-10-09", scans)] == ["2026-10-09", "2026-10-09T0300"]
+
+
+@pytest.mark.parametrize("scan, started, key", [
+    ("2026-10-09", "2026-10-09T04:30:59Z", "2026-10-09T0430"),
+    ("2026-10-09", "2026-10-09T00:30:00-04:00", "2026-10-09T0430"),
+    # unknown, unparseable, naive, on another day, or a timed id: no start key (the midnight form stands)
+    ("2026-10-09", None, None),
+    ("2026-10-09", "junk", None),
+    ("2026-10-09", "2026-10-09T04:30:00", None),
+    ("2026-10-09", "2026-10-10T00:10:00Z", None),
+    ("2026-10-09T1236", "2026-10-09T12:36:00Z", None),
+])
+def test_start_key(scan: str, started: object, key: str | None):
+    assert start_key(scan, started) == key
+
+
+def test_unknown_start_falls_back_to_midnight():
+    scans = ["2026-10-09", "2026-10-09T1236"]
+    assert [scan_slug(s, {}) for s in scans] == ["2610090000", "2610091236"]
+    assert [resolve_slug(s, scans, {}) for s in ["2610090000", "26100904", "261009"]] == ["2026-10-09", None, "2026-10-09T1236"]
+
+
+# The canonical slug (`min_slug`, `scanSlug.ts` `minSlug`): the shortest of a scan's day, hour and minute that names it
+# alone and always will. gcs through 10/9 (10/7 and 10/8 date-only and alone; 10/9's date-only run started 04:30Z, and
+# 12:36Z), cw-style 10/6 (two scans in hour 00, one at 06:01).
+MIN_SCANS = ["2026-10-06T0002", "2026-10-06T0041", "2026-10-06T0601", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-09T1236"]
+MIN_TIMES = {"2026-10-09": "2026-10-09T0430"}
+
+
+def _at(d: int, h: int = 0, m: int = 0) -> dt.datetime:
+    return dt.datetime(2026, 10, d, h, m, tzinfo=dt.timezone.utc)
+
+
+def test_min_slug_table():
+    now = _at(9, 16)
+    assert [min_slug(s, MIN_SCANS, MIN_TIMES, now) for s in MIN_SCANS] == [
+        "2610060002", "2610060041", "26100606", "261007", "261008", "26100904", "26100912",
+    ]
+    # each re-resolves to its scan, and names it for good
+    assert [resolve_slug(min_slug(s, MIN_SCANS, MIN_TIMES, now), MIN_SCANS, MIN_TIMES) for s in MIN_SCANS] == MIN_SCANS
+    # old minute (and midnight) links still resolve to the same scans
+    assert [resolve_slug(s, MIN_SCANS, MIN_TIMES) for s in ["2610060601", "2610070000", "2610080000", "2610090000", "2610090430", "2610091236"]] == [
+        "2026-10-06T0601", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-09", "2026-10-09T1236",
+    ]
+
+
+def test_min_slug_waits_for_the_period_to_end():
+    scans = ["2026-10-08", "2026-10-09T1236"]
+    assert [min_slug("2026-10-09T1236", scans, {}, now) for now in [_at(9, 12, 40), _at(9, 13), _at(9, 23, 59), _at(10)]] == [
+        "2610091236", "26100912", "26100912", "261009",
+    ]
+    assert [names_for_good("2026-10-09", "2026-10-09T1236", scans, {}, now) for now in [_at(9, 23, 59), _at(10)]] == [False, True]
+
+
+def test_min_slug_of_a_date_only_scan():
+    now = _at(9, 16)
+    # known start: its hour; unknown: no hour slug on its day (it could later be keyed into any of them)
+    assert [min_slug("2026-10-09", MIN_SCANS, MIN_TIMES, now), min_slug("2026-10-09", MIN_SCANS, {}, now), min_slug("2026-10-09T1236", MIN_SCANS, {}, now)] == [
+        "26100904", "2610090000", "2610091236",
+    ]
+    # the midnight alias keeps a timed hour-00 scan off its hour slug; a scan missing from the list is its minute
+    assert [min_slug(s, ["2026-10-09", "2026-10-09T0012"], MIN_TIMES, now) for s in ["2026-10-09", "2026-10-09T0012"]] == ["26100904", "2610090012"]
+    assert min_slug("2026-10-05", MIN_SCANS, MIN_TIMES, now) == "2610050000"

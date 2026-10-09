@@ -163,7 +163,7 @@ const scaleMix = (mix: Record<string, number>, b: number): Record<string, number
   return tot ? Object.fromEntries(Object.entries(mix).map(([c, x]) => [c, (x * b) / tot])) : mix
 }
 
-export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnowned, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, ownerIdx, initialPath, path, onPathChange, objects = false, onOpen }: {
+export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRange, hl, onPickUser, onPickUnowned, onClearHl, pricing, lens, ownerLensed, scheme = 'gs://', redact, ownerIdx, initialPath, path, onPathChange, objects = false, onOpen, brush, onBrush }: {
   root: TreeNode
   mode: ColorMode
   /** Secondary color axis — see `ShadeMode`. Default `none`. */
@@ -204,6 +204,10 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
   objects?: boolean
   /** An object cell was clicked: its path from the root (the leaf viewer opens it). */
   onOpen?: (p: TreeNode[]) => void
+  /** Brushing with the children table: the view's child (by name) to ring, and
+   *  the child under the pointer (any depth inside it), `null` on leave. */
+  brush?: string | null
+  onBrush?: (name: string | null) => void
 }) {
   usePerfCommit('treemap')
   const { fmtBytes, fmtBytesLike } = useUnits()
@@ -613,6 +617,8 @@ export function Treemap({ root, mode, shade = 'none', userIdx, dateRange, readRa
       initialPath={initialPath}
       path={path}
       onPathChange={onPathChange}
+      onCellHover={onBrush ? (n, p) => onBrush(n && p.length > (path?.length ?? 1) ? p[path?.length ?? 1].n : null) : undefined}
+      lens={brush ? (kid, _p, depth, _ctx, style) => (depth === 0 && kid.n === brush ? { ...style, ring: { color: 'var(--ink)', width: 2 } } : undefined) : undefined}
       // `k` decides (`cellAction`): an object opens in the leaf viewer; a
       // directory drills even when it arrived without `c` (its children fell
       // below this view's pixel budget — the drill's own fetch brings them),

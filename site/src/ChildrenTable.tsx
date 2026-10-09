@@ -36,7 +36,7 @@ const PAGE_SIZES = [20, 50, 100, 200]
  *  tooltip); ~60 chars fills the column's 480px at 12px mono. */
 const NAME_MAX = 60
 
-export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUser, onOpen, onOpenObject, filter }: {
+export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUser, onOpen, onOpenObject, filter, brush, onBrush }: {
   /** The treemap's currently-viewed node. */
   node: TreeNode
   /** Path segments from the tree root to `node` (no scheme, no root). */
@@ -56,6 +56,10 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
    *  null: not available (loading, incomplete, or a scoped view; `why` says so) — no row acts. Absent: no
    *  filter, every row acts on its own prefix. */
   filter?: { items: CoverItem[] | null; why?: string }
+  /** Brushing with the treemap: the child (by name) lit as hovered, and the
+   *  row under the pointer, `null` on leave. */
+  brush?: string | null
+  onBrush?: (name: string | null) => void
 }) {
   usePerfCommit('table')
   const { fmtBytes } = useUnits()
@@ -267,20 +271,26 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
             const rowAssign = filter ? actionTargets(its, scheme, 'assign').prefixes : [actionPrefix(uri, k.k)]
             const rowStage = filter ? actionTargets(its, scheme, 'stage').prefixes : [actionPrefix(uri, k.k)]
             return (
-              <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} {...(si >= 0 && showSel ? sel.rowProps(si) : {})}>
+              <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} {...(si >= 0 && showSel ? sel.rowProps(si) : {})}
+                {...(onBrush && !synthetic ? { onMouseEnter: () => onBrush(k.n), onMouseLeave: () => onBrush(null) } : {})}
+                data-brushed={brush === k.n || undefined}>
                 {showSel && <td className="col-sel">{si >= 0 && <input type="checkbox" checked={sel.isSelected(k)} onChange={() => sel.toggle(si)} />}</td>}
                 <td className="prefix">
-                  <Tooltip content={<code className="elide-full">{pathText(scheme, fullSegs)}</code>}>
-                    {to ? (
+                  {(() => {
+                    const name = to ? (
                       <a role="link" tabIndex={0}
                         onClick={() => (to.kind === 'open' ? onOpenObject : onOpen)(to.segs)}
                         onKeyDown={e => { if (e.key === 'Enter') (to.kind === 'open' ? onOpenObject : onOpen)(to.segs) }}>
                         {elideMid(label, NAME_MAX)}
                       </a>
-                    ) : (
-                      <span>{elideMid(label, NAME_MAX)}</span>
-                    )}
-                  </Tooltip>
+                    ) : <span>{elideMid(label, NAME_MAX)}</span>
+                    // The full path, only when it says more than the cell: the
+                    // name is elided, or the view is drilled (at the root a row
+                    // is just its bucket). To the right, clear of the row above.
+                    return label.length > NAME_MAX || segs.length > 0
+                      ? <Tooltip content={<code className="elide-full">{pathText(scheme, fullSegs)}</code>} placement="right">{name}</Tooltip>
+                      : name
+                  })()}
                 </td>
                 <td className="num">{fmtBytes(k.b)}</td>
                 <td className="num">{node.b ? ((100 * k.b) / node.b).toFixed(1) : 0}%</td>

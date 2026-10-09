@@ -153,7 +153,7 @@ describe('a date-only scan and a timed scan on one day: each exactly selectable'
   // gcs on 10/9: the date-only 04:30 run, and 12:36Z
   const DAY2 = ['2026-10-08', '2026-10-09', '2026-10-09T1236']
   it('exactSlug: a date-only scan is its midnight, a timed one its minute', () => {
-    expect(DAY2.map(exactSlug)).toEqual(['2610080000', '2610090000', '2610091236'])
+    expect(DAY2.map(id => exactSlug(id))).toEqual(['2610080000', '2610090000', '2610091236'])
   })
   it('every scan round-trips: its exact slug → ?d= → decode → the resolver → itself', () => {
     expect(DAY2.map(id => resolveAfter(decodeSel(encodeSel({ d: exactPrefix(id) })), DAY2))).toEqual(DAY2)

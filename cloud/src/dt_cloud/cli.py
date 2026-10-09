@@ -5354,3 +5354,7 @@ main.add_command(_static_names)
 from .scan_runs import cli as _scan_runs  # noqa: E402
 
 main.add_command(_scan_runs)
+
+from .scan_started import stamp_started as _stamp_started  # noqa: E402
+
+main.add_command(_stamp_started)

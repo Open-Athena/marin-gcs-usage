@@ -13,6 +13,12 @@ vi.mock('../_lib/edgeCache.js', async orig => ({
 }))
 // the ledger routes run on a lineage with the ledger (the cw D1 here has none)
 vi.mock('../_lib/ledger.js', async orig => ({ ...await orig<typeof import('../_lib/ledger.js')>(), hasLedger: vi.fn(async () => true), ledgerHead: vi.fn(async () => 0) }))
+// A date-only scan's start (`meta.started`), as the store would answer it: the 10/9 daily run's.
+const STARTS: Record<string, string> = { '2026-10-09': '2026-10-09T04:30:12.345Z' }
+vi.mock('../_lib/scanTimes.js', async orig => {
+  const m = await orig<typeof import('../_lib/scanTimes.js')>()
+  return { ...m, scanTimes: (e: Env, scans: readonly string[]) => m.scanTimes(e, scans, async (_e, id) => STARTS[id] ?? null) }
+})
 vi.mock('../_lib/extras.js', async orig => ({ ...await orig<typeof import('../_lib/extras.js')>(), hasExtras: vi.fn(async () => false) }))
 vi.mock('../_lib/ownerTotals.js', () => ({ ownerTotals: vi.fn(async (_env: unknown, date: string) => ({ head: 0, users: {}, assignments: [], date })) }))
 const { onRequestGet: subtree } = await import('./subtree')
@@ -71,6 +77,17 @@ describe('a date-only and a timed scan on one day', () => {
     const e = { ...STORE, DB: db } as Env
     expect(await Promise.all(['d=261009', 'd=2610090000', 'd=2610091236', 'date=2026-10-09', 'date=2026-10-09T1236'].map(qs => scanArg(e, new URLSearchParams(qs)))))
       .toEqual(['2026-10-09T1236', '2026-10-09', '2026-10-09T1236', '2026-10-09', '2026-10-09T1236'])
+  })
+})
+
+describe('a date-only scan sharing its day is keyed by its start (meta.started)', () => {
+  it('its start minute and hour select it; the midnight stays an alias; the day is the latest', async () => {
+    const { db } = await sqliteD1('cw')
+    for (const date of ['2026-10-08', '2026-10-09', '2026-10-09T1236']) await db.prepare("INSERT INTO index_schema (date, variant, version, schema_json) VALUES (?, 'path', 2, '[]')").bind(date).run()
+    const e = { ...STORE, DB: db } as Env
+    const qs = ['d=2610090430', 'd=26100904', 'd=2610090000', 'd=261009', 'd=26100905', 'd=2610080000']
+    const got = await Promise.all(qs.map(async q => { const r = await scanArg(e, new URLSearchParams(q)); return r instanceof Response ? await answer(r) : r }))
+    expect(got).toEqual(['2026-10-09', '2026-10-09', '2026-10-09', '2026-10-09T1236', [404, { error: 'no scan matches d=26100905' }], '2026-10-08'])
   })
 })
 
