@@ -81,7 +81,8 @@ export interface Env {
   /** Worker-served indexes (the static name index's suffix shards and catalog). */
   INDEX_R2?: R2Bucket
   /** `intervals`: the dates `INTERVAL_STORE_GEN` holds read their path store from the change-interval
-   *  store on `INDEX_R2` (`index.ts` `openInterval`, specs/interval-store.md); unset = per-scan stores. */
+   *  store on `INDEX_R2` (`index.ts` `openInterval`, specs/interval-store.md); `opt-in`: only requests
+   *  with `ps=iv` (`withPathStore`); unset = per-scan stores. */
   PATH_STORE?: string
   /** The interval store generation (`interval-store/<gen>/` on `INDEX_R2`). */
   INTERVAL_STORE_GEN?: string

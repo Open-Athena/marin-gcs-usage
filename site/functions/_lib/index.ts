@@ -314,6 +314,11 @@ export async function pathGens(env: Env, dates: string[]): Promise<string> {
     for (const r of results) gens.set(r.date, r.gen ?? '')
   }
   let h = 0x811c9dc5
+  // The interval store's dates: their answers are the store's generation's, keyed apart.
+  if (intervalsOn(env)) {
+    const held = await ivScans(env)
+    for (const d of uniq) if (held.has(d)) gens.set(d, `iv:${env.INTERVAL_STORE_GEN}`)
+  }
   for (const d of [...uniq].sort()) {
     for (const ch of `${d}=${gens.get(d) ?? ''};`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193)
   }
@@ -397,6 +402,17 @@ export async function openIndex(env: Env, date: string, variant = 'path'): Promi
  *  holds reads its `path` / `bysize` sorts from the interval store, as of that scan; any other date or
  *  variant (a lens's user-first sort, the age index, a date past the generation) reads as before. */
 export const intervalsOn = (env: Env): boolean => env.PATH_STORE === 'intervals' && !!env.INTERVAL_STORE_GEN && !!env.INDEX_R2
+
+/** A request's path store: `PATH_STORE=opt-in` reads the interval store only for requests asking
+ *  `ps=iv` (so one deployment serves both, side by side); a secondary store (`store=`) never does. */
+export function withPathStore<C extends { request: Request; env: Env }>(ctx: C): C {
+  const { env } = ctx
+  if (env.PATH_STORE !== 'opt-in' && env.PATH_STORE !== 'intervals') return ctx
+  const u = new URL(ctx.request.url).searchParams
+  const on = !u.get('store') && (env.PATH_STORE === 'intervals' || u.get('ps') === 'iv')
+  const w = (ctx as { waitUntil?: unknown }).waitUntil
+  return { ...ctx, env: { ...env, PATH_STORE: on ? 'intervals' : undefined }, ...(typeof w === 'function' ? { waitUntil: w.bind(ctx) } : {}) }
+}
 /** `env` reading per-scan stores only: what a read needs whose rows must be owner slices (a user lens,
  *  an owner pool, owner totals) — the interval store folds a path's slices into one row. */
 export const perScan = (env: Env): Env => (intervalsOn(env) ? { ...env, PATH_STORE: undefined } : env)

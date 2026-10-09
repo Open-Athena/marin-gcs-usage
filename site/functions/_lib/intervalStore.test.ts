@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { Env } from './auth'
-import { openIndex, usMap } from './index'
+import { openIndex, pathGens, usMap, withPathStore } from './index'
 import { sqliteD1 } from './testD1'
 import { fixture, readJson } from './testStore'
 import { buildDiff, buildView, type ViewNode } from './view'
@@ -78,6 +78,18 @@ describe('interval store', () => {
     await expect(openIndex(env, '2026-08-03', 'bysize-user')).rejects.toThrow("index variant 'bysize-user' not synced for 2026-08-03")
   })
 
+  it('opts a request in with `ps=iv` under `PATH_STORE=opt-in`, never for a secondary store', () => {
+    const at = (q: string, mode = 'opt-in') => withPathStore({ request: new Request(`https://x/api/subtree?${q}`), env: { ...env, PATH_STORE: mode } }).env.PATH_STORE
+    expect([at('date=d'), at('date=d&ps=iv'), at('date=d&ps=iv&store=meta'), at('date=d', 'intervals'), at('date=d&store=meta', 'intervals')])
+      .toEqual([undefined, 'intervals', undefined, 'intervals', undefined])
+  })
+
+  it('keys a held date\'s answers to the interval generation', async () => {
+    const off = { ...env, PATH_STORE: undefined }
+    const [held, heldOff, other, otherOff] = await Promise.all([pathGens(env, ['2026-08-03']), pathGens(off, ['2026-08-03']), pathGens(env, ['2026-08-01']), pathGens(off, ['2026-08-01'])])
+    expect([held === heldOff, other === otherOff]).toEqual([false, true])
+  })
+
   it('decodes owner slices', () => {
     expect([usMap('', 5), usMap('alice', 5), usMap('[["alice",0],["bob",10]]', 10)]).toEqual([null, { alice: 5 }, { alice: 0, bob: 10 }])
   })
@@ -91,7 +103,7 @@ describe('interval store', () => {
       const want = Object.fromEntries(Object.entries(c.tiles).map(([k, n]) => [k, n.f === null ? Object.fromEntries(Object.entries(n).filter(([f]) => f !== 'f')) : n]))
       if (c.v === 1) for (const n of Object.values(got)) delete n.f
       expect({ case: [c.date, c.path, c.w, c.h, c.depth], tiles: got }).toEqual({ case: [c.date, c.path, c.w, c.h, c.depth], tiles: want })
-      expect(v.tier).toMatch(/^(bysize|path)$/)
+      expect([v.index, ['bysize', 'path'].includes(v.tier)]).toEqual(['iv:g1', true])
     }
   })
 
