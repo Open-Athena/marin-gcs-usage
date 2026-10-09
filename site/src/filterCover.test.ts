@@ -1,7 +1,7 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
 import { COVER_V } from '../functions/_lib/cover'
-import { assignInBatches, chainOf, CoverError, coverQuery, coverRetry, coverWant, rowItems, stageInBatches } from './filterCover'
+import { assignInBatches, chainOf, CoverError, coverQuery, coverRetry, fetchCover, type FilterCover, prefetchCover, rowCover, rowItems, rowsCover, stageInBatches } from './filterCover'
 import { stageMany } from './plans'
 
 describe('large sets go in batches, never refused', () => {
@@ -101,11 +101,73 @@ describe('the cover is fetched on demand, and retried once on a 5xx', () => {
     ])
   })
 
-  it('coverRetry / coverWant', () => {
+  it('coverRetry', () => {
     const e = (s: number) => new CoverError('x', s)
     expect([coverRetry(0, e(503)), coverRetry(1, e(503)), coverRetry(0, e(404)), coverRetry(0, new Error('net'))]).toEqual([true, false, false, false])
-    expect([coverWant(args), coverWant({ ...args, path: 'p/q' }) === coverWant(args), coverWant({ date: null, path: '', q: undefined })]).toEqual([
-      '["D","p","nemotron","simple"]', false, '[null,"","",""]',
-    ])
+  })
+})
+
+// Intent (hover, focus) starts the cover; the click awaits the same fetch. However many hovers, one request
+// per (scan, path, filter), and the click after them sends nothing more.
+describe('prefetch on intent: deduped, then the click reuses it', () => {
+  const view = { date: 'D', path: '', q: 'tomat', qs: 'simple' }
+  const cover = (path: string, items: FilterCover['items'], complete = true): FilterCover =>
+    ({ date: 'D', path, q: 'tomat', items, roots: { n: items.length, b: 0, o: 0 }, complete, looked: 0, unchecked: 0, ...(complete ? {} : { reason: 'Too many matches to act on at once (70,390); narrow the search or open a folder below. Agents can bulk-assign via the API.' }) })
+  const item = (path: string) => ({ path, kind: 'dir' as const, b: 1, o: 1, roots: 1 })
+  /** A slow fetcher (the hover's request is still in flight when the next intent lands), answering per path. */
+  const fetcher = (byPath: Record<string, FilterCover>) => {
+    const urls: string[] = []
+    const f = async (url: string) => {
+      urls.push(url)
+      await new Promise(r => setTimeout(r, 5))
+      const path = new URL(url, 'http://x').searchParams.get('path')!
+      return new Response(JSON.stringify(byPath[path]), { status: 200 })
+    }
+    return { f, urls }
+  }
+  const url = (path: string) => `/api/filter-cover?cv=${COVER_V}&date=D&path=${encodeURIComponent(path)}&q=tomat&qs=simple`
+
+  it('three hovers (two while the first is in flight, one after) and a click: one request', async () => {
+    const qc = new QueryClient()
+    const { f, urls } = fetcher({ '': cover('', [item('b/x')]) })
+    const a = prefetchCover(qc, f, 'primary', view), b = prefetchCover(qc, f, 'primary', view)
+    await Promise.all([a, b])
+    await prefetchCover(qc, f, 'primary', view)
+    const got = await fetchCover(qc, f, 'primary', view)
+    expect([urls, got.items]).toEqual([[url('')], [item('b/x')]])
+  })
+  it('a click while the hover\'s fetch is in flight awaits it (no second request)', async () => {
+    const qc = new QueryClient()
+    const { f, urls } = fetcher({ '': cover('', [item('b/x')]) })
+    void prefetchCover(qc, f, 'primary', view)
+    const got = await fetchCover(qc, f, 'primary', view)
+    expect([urls, got.items.length]).toEqual([[url('')], 1])
+  })
+  it('a row: the view\'s cover sliced when cached and complete (no request), else the row\'s own (`path=row`), once', async () => {
+    const qc = new QueryClient()
+    const { f, urls } = fetcher({
+      '': cover('', [item('b/x/tomat'), item('b/xy/tomat'), item('c/tomat')]),
+      'b/x': cover('b/x', [item('b/x/tomat')]),
+    })
+    await fetchCover(qc, f, 'primary', view)
+    expect(await rowCover(qc, f, 'primary', view, 'b/x')).toEqual({ items: [item('b/x/tomat')], complete: true })
+    expect(urls).toEqual([url('')])
+    const qc2 = new QueryClient()
+    const g = fetcher({ 'b/x': cover('b/x', [item('b/x/tomat')]) })
+    const [r1, r2] = await Promise.all([rowCover(qc2, g.f, 'primary', view, 'b/x'), rowCover(qc2, g.f, 'primary', view, 'b/x')])
+    expect([r1.items, r2.items, g.urls]).toEqual([[item('b/x/tomat')], [item('b/x/tomat')], [url('b/x')]])
+  })
+  it('a row under an over-cap view asks for its own cover (which may be under the cap)', async () => {
+    const qc = new QueryClient()
+    const { f, urls } = fetcher({ '': cover('', [], false), 'c': cover('c', [item('c/tomat')]) })
+    await fetchCover(qc, f, 'primary', view)
+    expect([(await rowCover(qc, f, 'primary', view, 'c')).items, urls]).toEqual([[item('c/tomat')], [url(''), url('c')]])
+  })
+  it('several rows (the selection): complete only when every row is', async () => {
+    const r = (complete: boolean, paths: string[], reason?: string) => async () => ({ items: paths.map(item), complete, ...(reason ? { reason } : {}) })
+    const by: Record<string, () => Promise<{ items: ReturnType<typeof item>[]; complete: boolean; reason?: string }>> = { a: r(true, ['a/1']), b: r(true, ['b/1', 'b/2']), c: r(false, [], 'too many') }
+    expect(await rowsCover(p => by[p](), ['a', 'b'])).toEqual({ items: [item('a/1'), item('b/1'), item('b/2')], complete: true })
+    expect(await rowsCover(p => by[p](), ['a', 'c'])).toEqual({ items: [], complete: false, reason: 'too many' })
+    expect(await rowsCover(p => by[p](), ['c', 'a'])).toEqual({ items: [], complete: false, reason: 'too many' })
   })
 })

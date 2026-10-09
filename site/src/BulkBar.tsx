@@ -1,23 +1,22 @@
 // Bulk actions over the filter's matches (`gcs:specs/done/selection-actions.md`): assign an owner to, or
 // stage for deletion, every match under the view — as the fewest exact items (`/api/filter-cover`: a
 // folder every object of which matches stands for its matches; a lone matching file is sent as that one
-// object, specs/file-assign.md), listed by parent folder so false
-// positives can be dropped (a whole folder's worth, or one by one) before anything is sent. Large sets go
-// in batches (`assignInBatches` / `stageInBatches`), never a refusal.
+// object, specs/file-assign.md), listed by parent folder so false positives can be dropped (a whole folder's
+// worth, or one by one) before anything is sent. Offered at once: hovering or focusing the bar starts the
+// listing, a click awaits it (`useMatchAct`), then asks (with the review list), sends in batches with a
+// progress bar, and says what landed — or, over the cap, says so muted in the button's place.
 import { useEffect, useMemo, useState } from 'react'
-import { ownerPost, useOwnerMutations } from './owners'
-import { useStage } from './plans'
 import { allUsers } from './UserChip'
-import { Tooltip } from './Tooltip'
 import { useUnits } from './units'
-import { actionTargets, ASSIGN_CHUNK, assignInBatches, chunks, CoverError, type CoverItem, type FilterCover, groupItems, STAGE_CHUNK, targetsText } from './filterCover'
+import { type CoverItem, type FilterCover, groupItems } from './filterCover'
+import { ActStatus, useActDeps, useKeepFocus, useMatchAct } from './MatchActions'
+
+export { caveats } from './matchAct'
 
 /** Items listed per folder in the review panel (the folder's checkbox still takes or drops all of them). */
 export const LIST_PER_GROUP = 100
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`
-
-interface Pending { kind: 'assign' | 'stage'; label: string; owner?: string }
 
 /** The item paths left out by the viewer: per item, or per folder (every item in it). */
 export function useDropped(cover: FilterCover | undefined) {
@@ -42,102 +41,46 @@ export function itemsText(items: readonly CoverItem[]): string {
   return parts.length ? parts.join(', ') : 'nothing'
 }
 
-/** What the bar says about the kept items for each action, in plain words (one sentence per caveat). */
-export function caveats(t: { buckets: number; unknown: number }, action: 'assign' | 'stage'): string[] {
-  const out: string[] = []
-  if (action === 'stage' && t.buckets) out.push(`${plural(t.buckets, 'whole bucket')} can’t be staged; ${t.buckets === 1 ? 'it is' : 'they are'} left out.`)
-  if (t.unknown) out.push(`${plural(t.unknown, 'match', 'matches')} couldn’t be checked (file or folder?) and ${t.unknown === 1 ? 'is' : 'are'} left out; open ${t.unknown === 1 ? 'its' : 'their'} folder to act on ${t.unknown === 1 ? 'it' : 'them'}.`)
-  return out
-}
-
-/** A refusal, not a failure: a 4xx from `/api/filter-cover` (the query or scope can't be turned into
- *  items). A 5xx or a network error (no status) is a failure, and the only thing the bar shows in red. */
-export const refused = (e: Error): boolean => e instanceof CoverError && e.status < 500
-
-/** The bar when the matches can't be acted on here (over the cap, not all listable, refused): the summary as
- *  usual, the actions disabled, the reason in a muted tooltip on them — never a red line. */
-function MutedBar({ head, tip, canAssign, canStage }: { head?: string; tip: string; canAssign: boolean; canStage: boolean }) {
-  return (
-    <span className="bulkbar">
-      {head && <span className="bb-scope">{head}</span>}
-      <Tooltip content={<span className="bb-tip">{tip}</span>}>
-        <span className="bb-muted">
-          {canAssign && <button type="button" className="act assign" disabled>assign to me</button>}
-          {canStage && <button type="button" className="act stage" disabled>stage for deletion</button>}
-        </span>
-      </Tooltip>
-    </span>
-  )
-}
-
-export function BulkBar({ onWant, cover, loading, error, scheme, query, canAssign, canStage }: {
-  /** Set while the matches aren't listed yet (`/api/filter-cover` is fetched on demand): the bar is one
-   *  button that asks for them. */
-  onWant?: () => void
+export function BulkBar({ cover, loading, onIntent, resolve, resetKey, scheme, query, canAssign, canStage }: {
+  /** The view's cover once listed (prefetched on intent, or by a click): the summary and review list. */
   cover?: FilterCover
+  /** The listing is in flight (a hover started it). */
   loading?: boolean
-  /** The cover query's failure: a `CoverError` 4xx is a refusal (muted), anything else a failure (red). */
-  error?: Error | null
+  /** Hover / focus on the bar: start listing the matches (deduplicated, cached). */
+  onIntent?: () => void
+  /** The view's cover, awaited by a click (the same fetch the hover started). */
+  resolve: () => Promise<FilterCover>
+  /** The scan, path and filter: a change starts the bar over. */
+  resetKey?: string
   scheme: string
   query: string
   canAssign: boolean
   canStage: boolean
 }) {
-  const { post } = useOwnerMutations()
-  const stage = useStage()
+  const send = useActDeps()
   const { fmtBytes } = useUnits()
   const { dropped, toggle } = useDropped(cover)
-  const [pending, setPending] = useState<Pending | null>(null)
   const [assign, setAssign] = useState('')
   const [memo, setMemo] = useState('')
-  const [progress, setProgress] = useState<string | null>(null)
-  const [done, setDone] = useState<string | null>(null)
-  const items = useMemo(() => cover?.items ?? [], [cover])
+  const act = useMatchAct({ ...send, scheme, resolve, alwaysConfirm: true, pick: got => got.items.filter(i => !dropped.has(i.path)) }, resetKey)
+  const focus = useKeepFocus(act.state.s)
+  const items = useMemo(() => cover?.complete ? cover.items : [], [cover])
   const kept = useMemo(() => items.filter(i => !dropped.has(i.path)), [items, dropped])
   const groups = useMemo(() => groupItems(items), [items])
-  const assignT = useMemo(() => actionTargets(kept, scheme, 'assign'), [kept, scheme])
-  const stageT = useMemo(() => actionTargets(kept, scheme, 'stage'), [kept, scheme])
 
   if (!canAssign && !canStage) return null
-  if (onWant) return <span className="bulkbar"><button type="button" className="act" onClick={onWant}>act on the matches…</button></span>
-  if (loading) return <span className="bulkbar"><span className="bb-scope">listing the matches…</span></span>
-  if (error) {
-    if (refused(error)) return <MutedBar tip={error.message} canAssign={canAssign} canStage={canStage} />
-    return <span className="bulkbar"><span className="bb-warn">Can’t act on the matches: {error.message}</span></span>
-  }
-  if (!cover || !cover.roots.n) return null
+  const idle = act.state.s === 'idle'
   const keptB = kept.reduce((n, i) => n + i.b, 0)
-  if (!cover.complete) {
-    return <MutedBar head={`${plural(cover.roots.n, 'match', 'matches')} · ${fmtBytes(cover.roots.b)}`}
-      tip={cover.reason ?? 'These matches can’t be acted on here.'} canAssign={canAssign} canStage={canStage} />
+  const startAssign = () => {
+    const v = assign.trim()
+    const owner = v ? (allUsers().find(u => u.name.toLowerCase() === v.toLowerCase())?.id ?? v) : '@me'
+    void act.start({ kind: 'assign', owner, who: v || 'you', memo: `bulk filter:'${query}'${memo ? ` — ${memo}` : ''}` })
   }
-  const busy = progress != null
-  const note = `bulk filter:'${query}'${memo ? ` — ${memo}` : ''}`
-
-  const run = async (p: Pending) => {
-    setDone(null)
-    try {
-      if (p.kind === 'assign') {
-        await assignInBatches(assignT.items, i => ownerPost(i, p.owner ?? '@me', note), a => post.mutateAsync(a),
-          (d, t) => setProgress(`${p.label}: ${d.toLocaleString('en-US')}/${t.toLocaleString('en-US')}…`))
-        setDone(`assigned ${targetsText(assignT)}`)
-      } else {
-        setProgress(`${p.label}: ${stageT.items.length.toLocaleString('en-US')}…`)
-        const r = await stage.mutateAsync({ prefixes: stageT.items, note: memo })
-        const files = r.staged_objects?.length ?? 0
-        setDone(`staged ${targetsText({ folders: r.staged.length - files, files })} for deletion (plan ${r.plan_id})`)
-      }
-      setPending(null)
-      setMemo('')
-    } finally {
-      setProgress(null)
-    }
-  }
-  const t = pending?.kind === 'stage' ? stageT : assignT
-  const batches = pending ? chunks(t.items, pending.kind === 'stage' ? STAGE_CHUNK : ASSIGN_CHUNK).length : 0
-
-  return (
-    <span className="bulkbar">
+  const startStage = () => void act.start({ kind: 'stage', memo })
+  const summary = !cover ? (loading ? <span className="bb-scope">listing the matches…</span> : null)
+    : !cover.roots.n ? <span className="bb-scope">no matches to act on</span>
+    : !cover.complete ? <span className="bb-scope">{plural(cover.roots.n, 'match', 'matches')} · {fmtBytes(cover.roots.b)}</span>
+    : <>
       <span className="bb-scope">
         {plural(cover.roots.n, 'match', 'matches')} → {itemsText(kept)}{kept.length < items.length ? ` (${(items.length - kept.length).toLocaleString('en-US')} unticked)` : ''} · {fmtBytes(keptB)}
       </span>
@@ -154,32 +97,23 @@ export function BulkBar({ onWant, cover, loading, error, scheme, query, canAssig
           </ul>
         </div>
       </details>
-      {canAssign && <>
-        <button type="button" className="act assign" disabled={busy || !assignT.items.length}
-          onClick={() => {
-            const v = assign.trim()
-            const owner = v ? (allUsers().find(u => u.name.toLowerCase() === v.toLowerCase())?.id ?? v) : '@me'
-            setPending({ kind: 'assign', label: v ? `assign→${v}` : 'assign→me', owner })
-          }}>
-          {assign.trim() ? 'assign' : 'assign to me'}
-        </button>
-        <input list="bb-assign-users" value={assign} onChange={e => setAssign(e.target.value)} placeholder="you" size={7} aria-label="Assign matches to user" />
-        <datalist id="bb-assign-users">{allUsers().map(u => <option key={u.id} value={u.name} />)}</datalist>
-      </>}
-      {canStage && <button type="button" className="act stage" disabled={busy || !stageT.items.length} onClick={() => setPending({ kind: 'stage', label: 'stage' })}>stage for deletion</button>}
-      <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="memo" size={10} aria-label="Bulk memo" />
-      {progress && <span className="bb-progress">{progress}</span>}
-      {done && !progress && <span className="bb-progress">{done}</span>}
-      {pending && !progress && (
-        <span className="bb-confirm">
-          {pending.label} <b>{targetsText(t)}</b> ({fmtBytes(t.b)}, {plural(t.o, 'object')})
-          {batches > 1 ? `, sent in ${batches} batches` : ''}?
-          {caveats(t, pending.kind).map(c => <span key={c} className="bb-note"> {c}</span>)}
-          <button type="button" className="act go" disabled={!t.items.length} onClick={() => void run(pending)}>confirm</button>
-          <button type="button" className="act" onClick={() => setPending(null)}>cancel</button>
-        </span>
-      )}
-      {(post.error || stage.error) && <span className="bb-warn">{String((post.error ?? stage.error)?.message)}</span>}
+    </>
+
+  return (
+    <span className="bulkbar" onMouseEnter={onIntent} onFocus={onIntent} aria-busy={loading || undefined}>
+      <span className="mact bb-acts" tabIndex={-1} ref={focus.ref} {...focus.handlers}>
+        {idle && <>
+          {canAssign && <>
+            <button type="button" className="act assign" onClick={startAssign}>{assign.trim() ? 'assign' : 'assign to me'}</button>
+            <input list="bb-assign-users" value={assign} onChange={e => setAssign(e.target.value)} placeholder="you" size={7} aria-label="Assign matches to user" />
+            <datalist id="bb-assign-users">{allUsers().map(u => <option key={u.id} value={u.name} />)}</datalist>
+          </>}
+          {canStage && <button type="button" className="act stage" onClick={startStage}>stage for deletion</button>}
+        </>}
+        <ActStatus state={act.state} confirmT={act.confirmT} act={act} fmtBytes={fmtBytes} />
+      </span>
+      <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="memo" size={10} aria-label="Bulk memo" disabled={!idle} />
+      {summary}
     </span>
   )
 }

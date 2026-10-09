@@ -1,11 +1,13 @@
 // The filter's matches as the fewest exact prefixes (`/api/filter-cover`, `functions/_lib/cover.ts`), and
 // what the bulk bar and the table's rows do with them: under a filter, a selection is always match roots
 // (or folders every object of which matches) — never a row's whole prefix.
-import { useQuery } from '@tanstack/react-query'
+import { type QueryClient, useQuery } from '@tanstack/react-query'
 import { COVER_V, type CoverItem } from '../functions/_lib/cover'
-import type { PlanItem } from './batches'
+import { HttpError, type PlanItem } from './batches'
 
 export { ASSIGN_CHUNK, assignInBatches, chunks, STAGE_CHUNK, stageInBatches } from './batches'
+export { actionTargets, type Resolved, rowItems, type Targets, targetsText } from './coverTargets'
+import { type Resolved, rowItems } from './coverTargets'
 
 export type { CoverItem } from '../functions/_lib/cover'
 
@@ -24,18 +26,16 @@ export interface FilterCover {
 }
 
 /** A failed `/api/filter-cover` (its HTTP status: a 5xx is worth one retry, a 4xx never). */
-export class CoverError extends Error {
-  constructor(message: string, readonly status: number) { super(message) }
-}
+export class CoverError extends HttpError {}
 
 /** One retry, on a 5xx (the cold cover's D1 stall or isolate limit: gcs 10-09 `nemotron`, a 503 at 46 s). */
 export const coverRetry = (failures: number, e: Error): boolean => failures < 1 && e instanceof CoverError && e.status >= 500
 
-/** Which (scan, path, query) the viewer asked to act on: the cover is fetched only for that one — it costs
- *  seconds to tens of seconds cold (gcs 10-09 `nemotron`: 22–44 s), and most filtered page loads never act. */
-export const coverWant = (o: { date: string | null; path: string; q: string | undefined; qs?: string }): string => JSON.stringify([o.date, o.path, o.q ?? '', o.qs ?? ''])
+/** What a cover is asked for: a scan, a path (the view's, or one row's), a filter and its syntax. */
+export interface CoverArgs { date: string | null; path: string; q: string | undefined; qs?: string }
 
-/** The cover query's options (`useFilterCover`): disabled until wanted (`enabled`), one retry on a 5xx. */
+/** The cover query's options (`useFilterCover`, `fetchCover`): one retry on a 5xx; `enabled` only gates the
+ *  page's observer (an imperative fetch ignores it). */
 export function coverQuery(
   fetcher: (url: string, init?: RequestInit) => Promise<Response>,
   storeKey: string,
@@ -60,7 +60,8 @@ export function coverQuery(
   }
 }
 
-/** The cover of `q`'s matches under `path` on `date` (null while not wanted). */
+/** The cover of `q`'s matches under `path` on `date`, from the cache (fetched by `prefetchCover` /
+ *  `fetchCover` on the viewer's intent; with `enabled` false the observer never fetches by itself). */
 export function useFilterCover(
   fetcher: (url: string, init?: RequestInit) => Promise<Response>,
   storeKey: string,
@@ -69,12 +70,35 @@ export function useFilterCover(
   return useQuery<FilterCover>(coverQuery(fetcher, storeKey, o))
 }
 
-const under = (p: string, a: string) => p === a || p.startsWith(a + '/')
-const parentOf = (p: string) => { const i = p.lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i) }
-const depthOf = (p: string) => (p === '' ? 0 : p.split('/').length)
+type Fetcher = (url: string, init?: RequestInit) => Promise<Response>
 
-/** The items a table row (path below the root) holds: those at or under it. */
-export const rowItems = (items: readonly CoverItem[], row: string): CoverItem[] => items.filter(i => under(i.path, row))
+/** The cover for `a`, cached (`staleTime: Infinity`) and deduplicated with any fetch in flight for the same
+ *  key — the click awaits what the hover started. Rejects with the `CoverError` (after the one 5xx retry). */
+export const fetchCover = (qc: QueryClient, fetcher: Fetcher, storeKey: string, a: CoverArgs): Promise<FilterCover> =>
+  qc.fetchQuery(coverQuery(fetcher, storeKey, { ...a, enabled: true }))
+
+/** Start the cover for `a` on the viewer's intent (hover, focus): a nop when cached or in flight. Never throws
+ *  (a failure is the click's to report). */
+export const prefetchCover = (qc: QueryClient, fetcher: Fetcher, storeKey: string, a: CoverArgs): Promise<void> =>
+  qc.prefetchQuery(coverQuery(fetcher, storeKey, { ...a, enabled: true }))
+
+/** A table row's matches (`row`: its path below the store root): the view's cover sliced to the row when it
+ *  is cached and complete (no request), else the row's own cover (`path=row`) — under the cap even when the
+ *  view's isn't, since a row's matches may collapse further. */
+export async function rowCover(qc: QueryClient, fetcher: Fetcher, storeKey: string, view: CoverArgs, row: string): Promise<Resolved> {
+  const v = qc.getQueryData<FilterCover>(coverQuery(fetcher, storeKey, { ...view, enabled: true }).queryKey)
+  if (v?.complete) return { items: rowItems(v.items, row), complete: true }
+  return fetchCover(qc, fetcher, storeKey, { ...view, path: row })
+}
+
+/** Several rows' matches as one set (the table's selection): complete only when each is. */
+export async function rowsCover(resolve: (row: string) => Promise<Resolved>, rows: readonly string[]): Promise<Resolved> {
+  const all = await Promise.all(rows.map(resolve))
+  const short = all.find(r => !r.complete)
+  return short ? { items: [], complete: false, reason: short.reason } : { items: all.flatMap(r => r.items), complete: true }
+}
+
+const parentOf = (p: string) => { const i = p.lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i) }
 
 /** Items grouped by parent folder, heaviest group first (ties by folder), items by path within each. */
 export interface CoverGroup { parent: string; items: CoverItem[]; b: number; o: number }
@@ -84,37 +108,6 @@ export function groupItems(items: readonly CoverItem[]): CoverGroup[] {
   return [...by.entries()]
     .map(([parent, is]) => ({ parent, items: is, b: is.reduce((n, i) => n + i.b, 0), o: is.reduce((n, i) => n + i.o, 0) }))
     .sort((x, y) => y.b - x.b || (x.parent < y.parent ? -1 : x.parent > y.parent ? 1 : 0))
-}
-
-/** What an action sends for the kept items, and what it leaves out and why. A folder every object of which
- *  matches goes as a prefix (`…/`); a lone matching file goes as an exact object item (specs/file-assign.md:
- *  it owns / deletes that one key, never `key.bak`). Staging never takes a whole bucket (a plan item can't
- *  name one). An item whose kind the server couldn't look up is never sent: file or folder decides what it
- *  names. `folders` / `files`: how many of each `items` holds. */
-export interface Targets { items: PlanItem[]; b: number; o: number; folders: number; files: number; buckets: number; unknown: number }
-export function actionTargets(items: readonly CoverItem[], scheme: string, action: 'assign' | 'stage'): Targets {
-  const t: Targets = { items: [], b: 0, o: 0, folders: 0, files: 0, buckets: 0, unknown: 0 }
-  for (const i of items) {
-    if (i.kind === null) { t.unknown++; continue }
-    if (i.kind === 'dir' && action === 'stage' && depthOf(i.path) < 2) { t.buckets++; continue }
-    if (i.kind === 'file') {
-      t.items.push({ key: `${scheme}${i.path}`, kind: 'object' })
-      t.files++
-    } else {
-      t.items.push({ key: `${scheme}${i.path}/`, kind: 'prefix' })
-      t.folders++
-    }
-    t.b += i.b
-    t.o += i.o
-  }
-  return t
-}
-
-/** What an action sends, in words: `2 folders, 3 files`. */
-export function targetsText(t: { folders: number; files: number }): string {
-  const n = (k: number, one: string) => `${k.toLocaleString('en-US')} ${k === 1 ? one : `${one}s`}`
-  const parts = [t.folders && n(t.folders, 'folder'), t.files && n(t.files, 'file')].filter(Boolean)
-  return parts.length ? parts.join(', ') : 'nothing'
 }
 
 /** A row's label under a filter: the drawn chain of single children below it, as the treemap tile labels a
