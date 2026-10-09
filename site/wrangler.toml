@@ -55,7 +55,7 @@ GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
 GCP_LOG_VIEW = "projects/oa-internal-450019/locations/global/buckets/_Default/views/gcs-sweep-task-logs"
 # Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
 BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
-SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:defc673e3a044511b737d2f970c934f63dc12f93a6b962eee5a94154f63e53be"
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:68d362621f48976bc30fc0a78a900b89d03ddc0f3890b1239a028b42354ab340"
 SWEEP_PACING = "guided"   # Feedback control within the cold-ramp envelope; adaptive after benchmark validation.
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
@@ -153,7 +153,7 @@ DATA_BUCKET = "oa-gcs-usage-dvx"      # sweep runs / plans data (`sweepDispatch`
 GCP_PROJECT = "oa-internal-450019"    # Batch dispatch (`_lib/gcp.ts`)
 # Each fleet bucket's Batch region (us-central2 has no Batch location → us-central1).
 BUCKET_REGIONS = '{"marin-us-east5":"us-east5","marin-us-central1":"us-central1","marin-us-central2":"us-central1","marin-eu-west4":"europe-west4","marin-us-west4":"us-west4","marin-us-east1":"us-east1"}'
-SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:defc673e3a044511b737d2f970c934f63dc12f93a6b962eee5a94154f63e53be"
+SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot@sha256:68d362621f48976bc30fc0a78a900b89d03ddc0f3890b1239a028b42354ab340"
 SWEEP_PACING = "guided"
 CF_ACCOUNT_ID = "74981a43be0de7712369306c7b19133d"
 D1_DB_ID = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"   # the `DB` binding's D1: executor jobs record their runs there
