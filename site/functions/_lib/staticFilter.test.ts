@@ -351,3 +351,18 @@ describe('static filter: a bounded view — the canvas\'s tiles, exact totals', 
     expect(flatTree(v.tree)).toEqual(FULL.filter(r => !/^(bk\/data\/tomato|bk\/data\/raw\/tomat-1|tomato-bk)\//.test((r as [string])[0])))
   })
 })
+
+describe('a view whose root the query matches (NOT): its own forest', () => {
+  // Phase 2 kept a row only under a drawn match root other than the view root, so these drew empty.
+  it('`tomat -nomatch` at `bk/data/tomato`: the root and what is inside it', async () => {
+    const v = await view(base, A, 'bk/data/tomato', 'tomat -nomatch')
+    expect([v.matches, v.excluded, flatTree(v.tree)]).toEqual([
+      ['bk/data/tomato'], undefined,
+      [['/', 8000, 2, 'm'], ['a.bin', 5000, 1], ['b.bin', 3000, 1]],
+    ])
+  })
+  it('`tomat -a.bin` at `bk/data/tomato`: the root less its excluded file (one object left: a leaf)', async () => {
+    const v = await view(base, A, 'bk/data/tomato', 'tomat -a.bin')
+    expect([v.matches, v.excluded, flatTree(v.tree)]).toEqual([['bk/data/tomato'], ['bk/data/tomato/a.bin'], [['/', 3000, 1, 'm']]])
+  })
+})
