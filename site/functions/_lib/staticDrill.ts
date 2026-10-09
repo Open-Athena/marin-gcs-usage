@@ -419,20 +419,39 @@ export const DRILL_RULES: DrillRules = {
 
 // --- the drill: base ⊕ runs ---------------------------------------------------------------------
 
+/** A read of one tier's files failed (missing or corrupt meta, index or data): `DrillSource` cuts the stack there
+ *  and asks again over the tiers before it. */
+export class TierError extends Error {
+  constructor(readonly dir: string | null, readonly cause: unknown) {
+    super(`static drill: tier ${dir ?? 'base'}: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = 'TierError'
+  }
+}
+
+/** `f` over the tiers, a failure raised as the lowest failing tier's `TierError`. */
+async function perTier<T>(tiers: DrillTier[], f: (x: DrillTier, i: number) => Promise<T>): Promise<T[]> {
+  const got = await Promise.allSettled(tiers.map((x, i) => f(x, i)))
+  const bad = got.findIndex(g => g.status === 'rejected')
+  if (bad >= 0) { const e = (got[bad] as PromiseRejectedResult).reason; throw e instanceof TierError ? e : new TierError(tiers[bad].dir, e) }
+  return got.map(g => (g as PromiseFulfilledResult<T>).value)
+}
+
 /** A view's answer, any scan the tiers cover: the match roots under P (≤ the dispatch bound), or P's rollup. */
 export type DrillAnswer =
   | { source: 'plain' }
   /** A long literal that is no member (the light reader's, or nobody's). */
   | { source: 'none' }
   | { source: 'roots'; kind: Kind; c: string; upper: number; hits: Hit[]; io: DrillIo }
-  | { source: 'rollup' | 'catalog'; kind: Kind; c: string; upper: number; rollup: Rollup; io: DrillIo }
+  /** `scans`: narrower than the state's when the catalog's stack was cut (`CatalogLookup`). */
+  | { source: 'rollup' | 'catalog'; kind: Kind; c: string; upper: number; rollup: Rollup; io: DrillIo; scans?: string[] }
 
-/** The catalog's per-member lookup (the fleet root's rollup): the base's, or the base's and its runs'. */
-export interface CatalogLookup { lookup(q: string): Promise<{ member: Member | null }>; info?(): Promise<CatalogMeta> }
+/** The catalog's per-member lookup (the fleet root's rollup): the base's, or the base's and its runs' (`scans`: the
+ *  ones its cells are exact on, when its own stack was cut at a broken tier). */
+export interface CatalogLookup { lookup(q: string): Promise<{ member: Member | null; scans?: string[] }>; info?(): Promise<CatalogMeta> }
 
-/** The live tiers: the base and the runs whose drill is there, oldest first; the scans they cover; and a
- *  version naming the newest tier (`base`, or its run's directory), which versions the answers spanning every
- *  scan (hit lists). */
+/** The live tiers: the base and the runs whose drill is there, oldest first, up to the first broken one; the scans
+ *  they cover; and a version naming the newest tier (`base`, or its run's directory; `none` with no usable tier),
+ *  which versions the answers spanning every scan (hit lists). */
 export interface DrillState { version: string; scans: string[]; tiers: DrillTier[] }
 
 export interface DrillOpts {
@@ -443,16 +462,23 @@ export interface DrillOpts {
   /** A tier's colo caches (`dir` null: the base). */
   cache?: (dir: string | null) => TierCache | undefined
   rules?: DrillRules
-  /** The live tiers are re-listed at most this often (a tier's readers, and its isolate caches, are kept). */
+  /** The live tiers are re-listed at most this often (a tier's readers, and its isolate caches, are kept), and
+   *  whenever `runs` changes. */
   ttlMs?: number
+  /** A tier whose read failed stays out this long; a state cut at one is re-built after it. */
+  brokenTtlMs?: number
   now?: () => number
+  log?: (msg: string) => void
 }
 
 /** The drilldown over a generation (`blobs` keyed under it): the base `drill/` plus each run's `<run>/drill/`. */
 export class Drill {
   private held = new Map<string, DrillTier>()
   private live = new Set<string>()
+  private broken = new Map<string, number>()
   private at = -Infinity
+  private cut = false
+  private runsAt = ''
   private cur?: Promise<DrillState>
   readonly rules: DrillRules
   constructor(readonly blobs: Blobs, readonly catalog: CatalogLookup | null, readonly opts: DrillOpts = {}) {
@@ -466,6 +492,8 @@ export class Drill {
     return t
   }
 
+  private now(): number { return this.opts.now?.() ?? Date.now() }
+
   /** Whether run `dir`'s drill is live (its `meta.json` listed; once live, always). */
   private async isLive(dir: string): Promise<boolean> {
     if (this.live.has(dir)) return true
@@ -476,22 +504,66 @@ export class Drill {
     return yes
   }
 
-  state(): Promise<DrillState> {
-    const t = this.opts.now?.() ?? Date.now()
-    if (this.cur && t - this.at < (this.opts.ttlMs ?? 300_000)) return this.cur
+  /** Record tier `dir` as broken, logged with the error (which names the key) once per `brokenTtlMs`. */
+  private mark(dir: string | null, error: unknown): void {
+    const t = this.now(), was = this.broken.get(dir ?? '')
+    if (was != null && t - was < (this.opts.brokenTtlMs ?? 30_000)) return
+    this.broken.set(dir ?? '', t)
+    const msg = error instanceof TierError ? error.cause : error
+    ;(this.opts.log ?? console.error)(`static drill: ${dir ?? 'the base'} is broken; its scans and every later tier's are not indexed until it loads: ${msg instanceof Error ? msg.message : String(msg)}`)
+  }
+
+  /** A read of tier `dir` failed: the next `state()` is cut at it. */
+  broke(dir: string | null, error: unknown): void {
+    this.mark(dir, error)
+    this.cur = undefined
+    this.at = -Infinity
+  }
+
+  /** Whether `x` is usable at `t`: not broken within `brokenTtlMs`, and its `meta.json` loads (a run's listing its
+   *  scans, returned). */
+  private async usable(x: DrillTier, t: number): Promise<string[] | null> {
+    const b = this.broken.get(x.dir ?? '')
+    if (b != null && t - b < (this.opts.brokenTtlMs ?? 30_000)) return null
+    try {
+      const m = await x.info()
+      if (x.dir != null && (!Array.isArray(m.scans) || !m.scans.length)) throw new Error(`static drill: ${x.dir}/${DRILL_DIR}/meta.json lists no scans`)
+      this.broken.delete(x.dir ?? '')
+      return x.dir == null ? [] : m.scans as string[]
+    } catch (e) {
+      this.mark(x.dir, e)
+      return null
+    }
+  }
+
+  async state(): Promise<DrillState> {
+    const dirs = await (this.opts.runs?.() ?? [])
+    const runsAt = dirs.join('\n')
+    const t = this.now()
+    const ttl = this.opts.ttlMs ?? 300_000
+    if (this.cur && runsAt === this.runsAt && t - this.at < (this.cut ? Math.min(ttl, this.opts.brokenTtlMs ?? 30_000) : ttl)) return this.cur
     const prev = this.cur
     this.at = t
+    this.runsAt = runsAt
     const p = (async (): Promise<DrillState> => {
-      const [base, dirs] = await Promise.all([this.blobs.json<{ scans: { id: string }[] }>('scans.json'), this.opts.runs?.() ?? []])
+      const none: DrillState = { version: 'none', scans: [], tiers: [] }
+      this.cut = true
+      if (!await this.usable(this.tier(null), t)) return none
+      let scans: string[]
+      try {
+        scans = (await this.blobs.json<{ scans: { id: string }[] }>('scans.json')).scans.map(s => s.id)
+      } catch (e) {
+        this.mark(null, e)
+        return none
+      }
       const live = await Promise.all(dirs.map(d => this.isLive(d)))
       const n = live.indexOf(false)
-      const runs = (n < 0 ? dirs : dirs.slice(0, n)).map(d => this.tier(d))
-      const scans = base.scans.map(s => s.id)
-      for (const r of runs) {
-        const m = await r.info()
-        if (!Array.isArray(m.scans) || !m.scans.length) throw new Error(`static drill: ${r.dir}/${DRILL_DIR}/meta.json lists no scans`)
-        scans.push(...m.scans as string[])
-      }
+      const cands = (n < 0 ? dirs : dirs.slice(0, n)).map(d => this.tier(d))
+      const got = await Promise.all(cands.map(r => this.usable(r, t)))
+      const k = got.indexOf(null)
+      const runs = k < 0 ? cands : cands.slice(0, k)
+      this.cut = k >= 0
+      for (let i = 0; i < runs.length; i++) scans.push(...got[i]!)
       const bad = scans.find(s => !isScanId(s))
       if (bad != null) throw new Error(`static drill: bad scan id ${JSON.stringify(bad)}`)
       return { version: runs.length ? runs[runs.length - 1].dir! : 'base', scans: scans.sort(), tiers: [this.tier(null), ...runs] }
@@ -510,13 +582,14 @@ export class Drill {
   /** `t`'s (lowercase) view at `P`, on any scan of `state` (default: the current one). */
   async view(t: string, P: string, state?: DrillState): Promise<DrillAnswer> {
     if (P.toLowerCase().includes(t)) return { source: 'plain' }
-    const { tiers } = state ?? await this.state()
+    const st = state ?? await this.state()
+    const { tiers } = st
     const kind: Kind = [...t].length <= 2 ? 'short' : 'long'
     const R = this.rules
     let cs = tiers.map(() => t)
     let all: number | null = null
     if (kind === 'long') {
-      const maps = await Promise.all(tiers.map(x => x.aliases()))
+      const maps = await perTier(tiers, x => x.aliases())
       // A member iff the newest tier's map holds it (each run's map lists every member as of its scan).
       if (!maps[maps.length - 1].has(t)) return { source: 'none' }
       cs = tiers.map((_, i) => R.canon(maps, i, t))
@@ -524,17 +597,17 @@ export class Drill {
       const b = maps[0].get(t)
       all = b ? b.n : 0
     }
-    const metas = await Promise.all(tiers.map(x => x.info()))
+    const metas = await perTier(tiers, x => x.info())
     const thr = R.bound(metas)
     const io = newIo()
     // The fleet root: the whole member, `[(c, ''), (c + U+0000, ''))`.
     const lo = (c: string): Key => P === '' ? [c, ''] : [c, P + '/']
     const hi = (c: string): Key => P === '' ? [c + '\0', ''] : [c, P + '0']
-    const sels = await Promise.all(tiers.map((x, i) => x.files[kind].roots.select(lo(cs[i]), hi(cs[i]), io, thr)))
+    const sels = await perTier(tiers, (x, i) => x.files[kind].roots.select(lo(cs[i]), hi(cs[i]), io, thr))
     const upper = sels.reduce((s, x) => s + x.rows, 0)
     if (sels.every(s => s.groups) && upper <= thr) {
       // Hits straight from the columns (no row object per root: a member's ~80K roots, decoded per isolate).
-      const parts = await Promise.all(tiers.map((x, i) => sels[i].groups!.length ? x.files[kind].roots.read<Hit>(lo(cs[i]), hi(cs[i]), sels[i].groups!, io, hitOf) : []))
+      const parts = await perTier(tiers, async (x, i) => sels[i].groups!.length ? x.files[kind].roots.read<Hit>(lo(cs[i]), hi(cs[i]), sels[i].groups!, io, hitOf) : [])
       const c = cs[cs.length - 1]
       return { source: 'roots', kind, c, upper, hits: R.combine(parts), io }
     }
@@ -546,15 +619,17 @@ export class Drill {
       const buckets = new Set(cells.map(x => x.child)).size
       // Root rows, every date: a long member's base alias entry (else, and a short one's, counted from the base's
       // roots index), plus each run's stored rows (opens and close records: an upper bound).
-      const counts = await Promise.all(tiers.map((x, i) => i === 0 && all != null ? all : x.files[kind].roots.count(lo(cs[i]), hi(cs[i]), io)))
+      const counts = await perTier(tiers, async (x, i) => i === 0 && all != null ? all : x.files[kind].roots.count(lo(cs[i]), hi(cs[i]), io))
       const rows = counts.reduce((s, x) => s + x, 0)
-      return { source: 'catalog', kind, c: cs[cs.length - 1], upper, rollup: { dir: '', kept: buckets, rows, children: buckets, cells }, io }
+      // The catalog's own stack cut at a broken tier: its cells answer only the scans it still covers.
+      const narrow = got.scans && st.scans.some(d => !got.scans!.includes(d)) ? { scans: st.scans.filter(d => got.scans!.includes(d)) } : {}
+      return { source: 'catalog', kind, c: cs[cs.length - 1], upper, rollup: { dir: '', kept: buckets, rows, children: buckets, cells }, io, ...narrow }
     }
-    const parts = await Promise.all(tiers.map(async (x, i) => {
+    const parts = await perTier(tiers, async (x, i) => {
       const rlo: Key = [cs[i], P], rhi: Key = [cs[i], P + '\0']
       const rs = await x.files[kind].rollups.select(rlo, rhi, io)
       return rs.groups?.length ? x.files[kind].rollups.read(rlo, rhi, rs.groups, io) : []
-    }))
+    })
     const got = R.stack(parts)
     if (!got) throw new Error(`static drill: (${JSON.stringify(t)}, ${JSON.stringify(P)}) bounds ${upper} root rows but has no rollup`)
     const { head } = got
@@ -607,9 +682,23 @@ export class DrillSource implements HitSource {
     return p
   }
 
+  /** `key`'s view under `under`, exact on the live tiers' scans. A tier that fails to load is cut (`Drill.broke`)
+   *  and the view asked again over the tiers before it; no usable tier at all declines (null). */
   async hits(key: string, under: string): Promise<Found | null> {
     const t0 = Date.now()
-    const st = await this.drill.state()
+    for (let tries = 0; ; tries++) {
+      const st = await this.drill.state()
+      if (!st.tiers.length) return null
+      try {
+        return await this.hitsOn(key, under, st, t0)
+      } catch (e) {
+        if (!(e instanceof TierError) || tries > st.tiers.length) throw e
+        this.drill.broke(e.dir, e)
+      }
+    }
+  }
+
+  private async hitsOn(key: string, under: string, st: DrillState, t0: number): Promise<Found | null> {
     const k = DrillSource.key(key, under, st)
     if (this.cache && !this.held.has(k)) {
       const hits = await this.cache.get(k)
@@ -624,7 +713,9 @@ export class DrillSource implements HitSource {
     const a = await this.answer(key, under, st)
     if (fresh && a.source === 'roots' && this.cache) await this.cache.put(k, a.hits).catch(() => {})
     if (a.source === 'plain' || a.source === 'none') return null
+    // An answer narrowed by the catalog's broken tier is not held: once that tier loads, the view widens again.
+    if ('scans' in a && a.scans) this.held.delete(k)
     const io = { from: 'drill', source: a.source, kind: a.kind, c: a.c, upper: a.upper, tiers: st.tiers.length, ...a.io, ms: Date.now() - t0 }
-    return a.source === 'roots' ? { hits: a.hits, io, scans: st.scans } : { rollup: a.rollup, io, scans: st.scans }
+    return a.source === 'roots' ? { hits: a.hits, io, scans: st.scans } : { rollup: a.rollup, io, scans: a.scans ?? st.scans }
   }
 }
