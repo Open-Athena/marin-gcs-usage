@@ -377,31 +377,112 @@ def build_roots(con, rt: str, R: int, K: int, out: Path, name: str) -> dict:
 # ── Reading (the Worker's logic) ───────────────────────────────────────────
 
 
+#: Entries per row group of a concatenated group index (`drill/<kind>-<sub>-index.parquet`); its top file
+#: (`…-index.top.parquet`) has one entry per index row group.
+IDX_RG = 1024
+
+
+def write_index_levels(t: pa.Table, out: Path) -> pa.Table:
+    """Write a sorted group index `t` (`GROUP_INDEX_SCHEMA`) as `out` in `IDX_RG`-entry row groups and return
+    its top: per index row group `(rg, q_min, k_min, q_max, k_max, offset, length, rows, chunks)` — its first
+    entry's first key, its last entry's last key, its byte span, the data rows its entries hold, and per column
+    `(data_page_offset, total_compressed_size, dictionary_page_offset or 0)` (`TOP_SCHEMA`)."""
+    pq.write_table(t, out, compression=CODEC, row_group_size=IDX_RG)
+    if t.num_rows == 0:
+        return TOP_SCHEMA.empty_table()
+    md = pq.ParquetFile(out).metadata
+    cols = {k: [] for k in TOP_SCHEMA.names}
+    off = 0
+    for g in range(md.num_row_groups):
+        rg = md.row_group(g)
+        part = t.slice(off, rg.num_rows)
+        off += rg.num_rows
+        chunks, starts, ends = [], [], []
+        for c in range(rg.num_columns):
+            cc = rg.column(c)
+            dict_off = cc.dictionary_page_offset or 0
+            start = min(dict_off, cc.data_page_offset) if dict_off else cc.data_page_offset
+            chunks += [cc.data_page_offset, cc.total_compressed_size, dict_off]
+            starts.append(start)
+            ends.append(start + cc.total_compressed_size)
+        vals = (g, part.column("q_min")[0].as_py(), part.column("k_min")[0].as_py(), part.column("q_max")[-1].as_py(),
+                part.column("k_max")[-1].as_py(), min(starts), max(ends) - min(starts), int(pa.compute.sum(part.column("rows")).as_py()), chunks)
+        for k, v in zip(TOP_SCHEMA.names, vals):
+            cols[k].append(v)
+    if off != t.num_rows:
+        raise RuntimeError(f"{out}: {off} of {t.num_rows} entries in row groups")
+    return pa.table(cols, schema=TOP_SCHEMA)
+
+
+TOP_SCHEMA = pa.schema([
+    pa.field("rg", pa.int32(), nullable=False),
+    pa.field("q_min", pa.string(), nullable=False),
+    pa.field("k_min", pa.string(), nullable=False),
+    pa.field("q_max", pa.string(), nullable=False),
+    pa.field("k_max", pa.string(), nullable=False),
+    pa.field("offset", pa.int64(), nullable=False),
+    pa.field("length", pa.int64(), nullable=False),
+    pa.field("rows", pa.int64(), nullable=False),
+    pa.field("chunks", pa.list_(pa.int64()), nullable=False),
+])
+
+
+def _spans_read(Spans, size: int, footer: tuple[int, bytes], start: int, data: bytes, rgs: list[int]) -> list[dict]:
+    return pq.ParquetFile(Spans(size, [footer, (start, data)])).read_row_groups(rgs).to_pylist()
+
+
 class GroupFile:
     """Row groups of one roots or rollups set, through its group index: the groups that can hold keys in
     `[lo, hi)` (contiguous: the index is sorted by `(q_min, k_min)` and the keys are totally ordered) and
-    their rows from one ranged read per file."""
+    their rows from one ranged read per file. The index is either in memory (`index`) or two-level (`top`,
+    the index file's top; its entries fetched by ranged reads of `index_file`), as the Worker reads it."""
 
-    def __init__(self, index: pa.Table, fetch, size_of):
+    def __init__(self, index: pa.Table | None, fetch, size_of, top: pa.Table | None = None, index_file: str | None = None):
         from .static_names import Spans
 
-        self.groups = index.sort_by([("q_min", "ascending"), ("k_min", "ascending")]).to_pylist()
-        self.lo = [(g["q_min"], g["k_min"]) for g in self.groups]
-        self.hi = [(g["q_max"], g["k_max"]) for g in self.groups]
         self.fetch, self.size_of, self.Spans = fetch, size_of, Spans
         self.foot: dict[str, tuple[int, bytes]] = {}
+        self.index_file = index_file
+        if top is not None:
+            self.top = top.sort_by("rg").to_pylist()
+            self.groups = None
+        else:
+            self.top = None
+            self.groups = index.sort_by([("q_min", "ascending"), ("k_min", "ascending")]).to_pylist()
+        self.io = {"index_reads": 0, "index_bytes": 0}
 
-    def span(self, lo: tuple[str, str], hi: tuple[str, str]) -> tuple[int, int]:
-        """Groups `[a, b)` whose key range meets `[lo, hi)`."""
+    @staticmethod
+    def _meet(entries: list[dict], lo, hi) -> tuple[int, int]:
+        """Entries `[a, b)` (sorted, disjoint) whose key range meets `[lo, hi)`."""
         from bisect import bisect_left
 
-        a = bisect_left(self.hi, lo)
-        b = bisect_left(self.lo, hi)
+        a = bisect_left([(e["q_max"], e["k_max"]) for e in entries], lo)
+        b = bisect_left([(e["q_min"], e["k_min"]) for e in entries], hi)
         return a, max(a, b)
 
-    def upper(self, lo, hi) -> int:
-        a, b = self.span(lo, hi)
-        return sum(g["rows"] for g in self.groups[a:b])
+    def select(self, lo, hi, cap: int | None = None) -> tuple[list[dict] | None, int]:
+        """The groups meeting `[lo, hi)` and their rows' sum. With a two-level index and `cap`, when the index
+        row groups strictly inside the range already hold more than `cap` rows, returns `(None, that sum)`
+        without reading the index (the range is at least that big)."""
+        if self.top is None:
+            a, b = self._meet(self.groups, lo, hi)
+            sel = self.groups[a:b]
+            return sel, sum(g["rows"] for g in sel)
+        a, b = self._meet(self.top, lo, hi)
+        if a == b:
+            return [], 0
+        inner = sum(t["rows"] for t in self.top[a + 1:b - 1])
+        if cap is not None and inner > cap:
+            return None, inner
+        sel_top = self.top[a:b]
+        start, end = sel_top[0]["offset"], sel_top[-1]["offset"] + sel_top[-1]["length"]
+        data = self.fetch(self.index_file, start, end)
+        self.io["index_reads"] += 1
+        self.io["index_bytes"] += len(data)
+        entries = _spans_read(self.Spans, self.size_of(self.index_file), self.footer(self.index_file), start, data, [t["rg"] for t in sel_top])
+        a, b = self._meet(entries, lo, hi)
+        sel = entries[a:b]
+        return sel, sum(g["rows"] for g in sel)
 
     def footer(self, file: str) -> tuple[int, bytes]:
         if file not in self.foot:
@@ -412,24 +493,20 @@ class GroupFile:
             self.foot[file] = (size - len(data), data)
         return self.foot[file]
 
-    def read(self, lo, hi) -> tuple[list[dict], dict]:
-        a, b = self.span(lo, hi)
-        rows, io = [], {"groups": b - a, "bytes": 0, "rows_read": 0}
+    def read(self, lo, hi, groups: list[dict] | None = None) -> tuple[list[dict], dict]:
+        if groups is None:
+            groups, _ = self.select(lo, hi)
+        rows, io = [], {"groups": len(groups), "bytes": 0, "rows_read": 0}
         by_file: dict[str, list[dict]] = {}
-        for g in self.groups[a:b]:
+        for g in groups:
             by_file.setdefault(g["file"], []).append(g)
         for file, gs in by_file.items():
             start, end = gs[0]["offset"], gs[-1]["offset"] + gs[-1]["length"]
             data = self.fetch(file, start, end)
             io["bytes"] += len(data)
-            fstart, foot = self.footer(file)
-            pf = pq.ParquetFile(self.Spans(self.size_of(file), [(fstart, foot), (start, data)]))
-            for r in pf.read_row_groups([g["rg"] for g in gs]).to_pylist():
+            for r in _spans_read(self.Spans, self.size_of(file), self.footer(file), start, data, [g["rg"] for g in gs]):
                 io["rows_read"] += 1
-                if "path" in r:
-                    key = (r["q"], r["path"])
-                else:
-                    key = (r["q"], r["dir"])
+                key = (r["q"], r["path"] if "path" in r else r["dir"])
                 if lo <= key < hi:
                     rows.append(r)
         return rows, io
@@ -452,10 +529,10 @@ class Drill:
             return {"q": t, "P": P, "source": "plain", "answers": None}
         c = self.aliases.get(t, t)  # members with identical root sets share their canonical's rows
         lo, hi = (c, P + "/"), (c, P + "0")
-        ub = self.roots.upper(lo, hi)
+        groups, ub = self.roots.select(lo, hi, cap=self.R + 2 * self.rg)
         out: dict = {"q": t, "P": P, "upper": ub}
         if ub <= self.R + 2 * self.rg:
-            rows, io = self.roots.read(lo, hi)
+            rows, io = self.roots.read(lo, hi, groups)
             out.update(source="roots", io=io, rows=len(rows), answers={})
             for d in dates:
                 D = scan_epoch(d)
@@ -977,16 +1054,19 @@ def short_reduce_cmd(bucket, gen, index, K, mount, mem, stride, threads, R, scra
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-K", "--keep", "K", default=256, type=int, help="The build's -K (recorded)")
+@option("-m", "--mount", help="Local mount of the bucket (unused; the Batch driver passes it)")
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="The build's -R (recorded)")
-def index_cmd(bucket, gen, K, R) -> None:
+@option("-T", "--tmp", default="/stage/tmp", help="Where the index files are written before upload")
+def index_cmd(bucket, gen, K, mount, R, tmp) -> None:
     """Concatenate the per-file group indexes into `drill/{long,short}-{roots,rollups}-index.parquet` (`file`
-    relative to `drill/`, sorted `(q_min, k_min)`) and write `drill/meta.json`; prints it."""
+    relative to `drill/`, sorted `(q_min, k_min)`, `IDX_RG`-entry row groups) with its top
+    `drill/…-index.top.parquet` (`write_index_levels`), and write `drill/meta.json`; prints it."""
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}/{DRILL}"
     client = storage.Client()
     b = client.bucket(bucket)
-    meta: dict = {"gen": gen, "R": R, "K": K, "rg": ROOT_RG, "dispatch_rows": R + 2 * ROOT_RG}
+    meta: dict = {"gen": gen, "R": R, "K": K, "rg": ROOT_RG, "idx_rg": IDX_RG, "dispatch_rows": R + 2 * ROOT_RG}
     for kind in ("long", "short"):
         for sub in ("roots", "rollups"):
             tabs = []
@@ -1000,14 +1080,20 @@ def index_cmd(bucket, gen, K, R) -> None:
             los = list(zip(t.column("q_min").to_pylist(), t.column("k_min").to_pylist()))
             if any(his[i] > los[i + 1] for i in range(len(los) - 1)):
                 raise RuntimeError(f"{kind} {sub}: row groups overlap")
-            sink = pa.BufferOutputStream()
-            pq.write_table(t, sink, compression=CODEC)
-            body = sink.getvalue().to_pybytes()
-            b.blob(f"{prefix}/{kind}-{sub}-index.parquet").upload_from_string(body)
+            local = Path(tmp) / f"{kind}-{sub}-index.parquet"
+            local.parent.mkdir(parents=True, exist_ok=True)
+            top = write_index_levels(t, local)
+            top_local = Path(tmp) / f"{kind}-{sub}-index.top.parquet"
+            pq.write_table(top, top_local, compression=CODEC)
+            for f in (local, top_local):
+                blob = b.blob(f"{prefix}/{f.name}")
+                blob.chunk_size = 64 << 20
+                blob.upload_from_filename(str(f))
             files = {f for f in t.column("file").to_pylist()}
             nbytes = sum(int(x.size) for x in client.list_blobs(bucket, prefix=f"{prefix}/{kind}/{sub}/"))
             meta[f"{kind}_{sub}"] = {"files": len(files), "row_groups": t.num_rows, "rows": int(pa.compute.sum(t.column("rows")).as_py()),
-                                     "bytes": nbytes, "index_bytes": len(body)}
+                                     "bytes": nbytes, "index_bytes": local.stat().st_size, "index_row_groups": top.num_rows,
+                                     "top_bytes": top_local.stat().st_size}
     b.blob(f"{prefix}/meta.json").upload_from_string(json.dumps(meta, indent=1) + "\n")
     print(json.dumps(meta, indent=1))
 
@@ -1086,12 +1172,13 @@ def gcs_drill(bucket: str, gen: str, kind: str) -> Drill:
     def size_of(file: str) -> int:
         return int(blob(file).size)
 
-    idx = {sub: pq.read_table(pa.BufferReader(b.blob(f"{prefix}/{kind}-{sub}-index.parquet").download_as_bytes())) for sub in ("roots", "rollups")}
+    top = {sub: pq.read_table(pa.BufferReader(b.blob(f"{prefix}/{kind}-{sub}-index.top.parquet").download_as_bytes())) for sub in ("roots", "rollups")}
     aliases = {}
     if kind == "long" and b.blob(f"{prefix}/aliases.parquet").exists():
         a = pq.read_table(pa.BufferReader(b.blob(f"{prefix}/aliases.parquet").download_as_bytes()), columns=["q", "canonical"])
         aliases = {k: v for k, v in zip(a.column("q").to_pylist(), a.column("canonical").to_pylist()) if k != v}
-    return Drill(GroupFile(idx["roots"], fetch, size_of), GroupFile(idx["rollups"], fetch, size_of), meta["R"], meta["rg"], aliases)
+    files = {sub: GroupFile(None, fetch, size_of, top=top[sub], index_file=f"{kind}-{sub}-index.parquet") for sub in ("roots", "rollups")}
+    return Drill(files["roots"], files["rollups"], meta["R"], meta["rg"], aliases)
 
 
 @cli.command("drill-query")

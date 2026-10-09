@@ -154,6 +154,24 @@ def _local(out):
     return fetch, lambda file: (out / file).stat().st_size
 
 
+def _two_level(out, R: int, rg: int, aliases: dict | None = None, idx_rg: int = 3):
+    """A `Drill` over `build_roots`' output in `out`, through two-level indexes (`write_index_levels`), as the Worker reads it."""
+    import pyarrow.parquet as pq
+
+    fetch, size_of = _local(out)
+    files = {}
+    old, sr.IDX_RG = sr.IDX_RG, idx_rg
+    try:
+        for sub in ("roots", "rollups"):
+            t = pq.read_table(out / f"{sub}-index" / "x.parquet")
+            top = sr.write_index_levels(t, out / f"{sub}-index.parquet")
+            assert top.num_rows == -(-t.num_rows // idx_rg)  # an empty index: an empty top
+            files[sub] = sr.GroupFile(None, fetch, size_of, top=top, index_file=f"{sub}-index.parquet")
+    finally:
+        sr.IDX_RG = old
+    return sr.Drill(files["roots"], files["rollups"], R, rg, aliases)
+
+
 @pytest.mark.parametrize("R,K,rg", [(3, 2, 4), (10, 1, 8), (10**6, 5, 8192)])
 def test_drill_equals_brute_force(built, tmp_path, R, K, rg):  # noqa: F811
     from test_static_names import DATES
@@ -173,9 +191,7 @@ def test_drill_equals_brute_force(built, tmp_path, R, K, rg):  # noqa: F811
     shorts = {r[0] for r in con.execute("SELECT DISTINCT q FROM st").fetchall()}
     drills = {}
     for kind in ("long", "short"):
-        fetch, size_of = _local(tmp_path / kind)
-        idx = lambda sub: __import__("pyarrow.parquet").parquet.read_table(tmp_path / kind / sub / "x.parquet")  # noqa: E731
-        drills[kind] = sr.Drill(sr.GroupFile(idx("roots-index"), fetch, size_of), sr.GroupFile(idx("rollups-index"), fetch, size_of), R, rg)
+        drills[kind] = _two_level(tmp_path / kind, R, rg)
     dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p} | {"nope", "a"})
     sources: dict[str, int] = {}
     for t in sorted(terms | shorts):
@@ -244,10 +260,7 @@ def test_digests_identify_equal_root_sets(built):  # noqa: F811
     assert len(set(canon.values())) < len(canon)
     con.execute("CREATE OR REPLACE TABLE rtc AS SELECT * FROM rt WHERE q IN (SELECT unnest(?))", [sorted(set(canon.values()))])
     sr.build_roots(con, "rtc", 3, 2, tmp / "alias", "x")
-    fetch, size_of = _local(tmp / "alias")
-    idx = lambda sub: __import__("pyarrow.parquet").parquet.read_table(tmp / "alias" / sub / "x.parquet")  # noqa: E731
-    drill = sr.Drill(sr.GroupFile(idx("roots-index"), fetch, size_of), sr.GroupFile(idx("rollups-index"), fetch, size_of), 3, sr.ROOT_RG,
-                     {k: v for k, v in canon.items() if k != v})
+    drill = _two_level(tmp / "alias", 3, sr.ROOT_RG, {k: v for k, v in canon.items() if k != v})
     versions = _versions(merged)
     dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p})
     for t in sorted(terms):
