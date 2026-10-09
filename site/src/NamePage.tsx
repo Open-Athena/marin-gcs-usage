@@ -22,6 +22,11 @@ export function catalogDomain(registry: NameQualification): string {
     : `≥${registry.threshold_paths!.toLocaleString('en-US')} matching paths`
   return `${threshold}${registry.short_chars ? `, or at most ${registry.short_chars} characters` : ''}`
 }
+/** The static name index's dispatch in words (`static-name-registry-v1`). */
+export function staticDomain({ generation, max_rows }: { generation: string; max_rows: number }): string {
+  const v = max_rows.toLocaleString('en-US')
+  return `Every scan answers from the static name index (generation ${generation}) with no query server: literals of one or two characters, and literals with more than ${v} index rows, from its precomputed catalog; every other literal from its suffix postings, reading at most ${v} rows.`
+}
 /** Every date when few; otherwise the count and range (the select lists each one). */
 export function scanList(dates: readonly string[]): string {
   return dates.length <= 6 ? dates.join(', ') : `${dates.length} scans, ${dates[0]} to ${dates[dates.length - 1]}`
@@ -46,7 +51,8 @@ export function NamePage() {
     <header><Link to="/">marin GCS</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
     <p className="hot-scope">Case-insensitive literal substring within any path component name; no slash-crossing. Matching directories cover their descendants, counted once. Exact bytes and object counts, including zero-byte objects.</p>
     {dates && !registry.error && <HotSearchForm key={rawParams.toString()} params={params} dates={registry.data?.dated ? dates : undefined} onSearch={setParams} />}
-    {registry.data && !registry.error && <p id="hot-availability" className="hot-note">{catalogOnly.length
+    {registry.data && !registry.error && <p id="hot-availability" className="hot-note">{registry.data.static ? staticDomain(registry.data.static)
+      : catalogOnly.length
       ? `${catalogOnly.map(row => `${row.date}: catalog literals only, using membership qualified on ${row.qualification_dates!.join(', ')}`).join('. ')}—not a current-scan frequency claim. Other literals are unavailable for those scans, not zero matches; no on-demand fallback.`
       : uncataloged.length ? `${uncataloged.map(row => row.date).join(' and ')}: no prepared catalog; every literal is answered on demand from the consolidated name index, and requests exceeding the work budget fail explicitly, not as zero matches.`
       : cataloged.length ? `${cataloged.map(row => row.date).join(' and ')}: literals registered on the scan itself (${catalogDomain(cataloged[0].registry!)}) use the consolidated catalog; others are below that threshold and answer on demand from the consolidated name index, and requests exceeding the work budget fail explicitly, not as zero matches.`

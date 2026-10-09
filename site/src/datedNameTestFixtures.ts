@@ -70,3 +70,17 @@ export function mixedDatedNameDiff() {
       return { path: row.path, before: side(row), after: side(next), delta: { b: next.b - row.b, o: next.o - row.o } }
     }) }
 }
+/** The static name index's registry (`functions/_lib/nameSummaryStatic.ts`): every scan of a generation, one bound V. */
+export function staticNameRegistry(dates = ['2026-10-04', '2026-10-05', '2026-10-06']) {
+  return { schema: 'static-name-registry-v1', logical_store: 'gcs', generation: '2026-10-08c', max_rows: 100000, bucket_paths: Array.from('abcdef', letter => `bucket-${letter}`),
+    dates, levels: 1, scope: 'case-insensitive substring within names; directory hits cover descendants; bytes/objects only', capabilities: datedCapabilities }
+}
+export const staticSource = 'static suffix postings on R2, one ranged read by the Worker; directory rollups are atomic'
+export const staticCatalogSource = 'the static catalog on R2: per-bucket running totals precomputed for every scan of the generation, one ranged read by the Worker'
+export function staticNameFixture(plan: 'catalog' | 'bounded-name-postings', date = '2026-10-05') {
+  const body = dailyNameFixture(date)
+  return { schema: body.schema, logical_store: 'gcs', target: 'static_names', date, pattern: body.pattern, path: '', exact: true, incremental: false, levels: 1, scope: body.scope,
+    plan, source: plan === 'catalog' ? staticCatalogSource : staticSource, source_identity: { kind: 'static-names-v1', generation: '2026-10-08c', max_rows: 100000 },
+    validation: { description: 'exact first-hit totals from the static name index', source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false },
+    capabilities: datedCapabilities, root: body.root, buckets: body.buckets }
+}

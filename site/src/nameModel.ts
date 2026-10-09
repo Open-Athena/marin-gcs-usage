@@ -6,7 +6,7 @@ export interface NameExecution {
   plan: NamePlan
   source: string
   validation: Record<string, unknown> & { description: string }
-  source_identity: { generation?: string; snapshot_db?: string; history_manifest_sha256?: string; kind?: NameScanKind; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true; postings?: string; through?: string; geometry?: 'preorder' | 'ordinal'; catalog?: string }
+  source_identity: { generation?: string; snapshot_db?: string; history_manifest_sha256?: string; kind?: NameScanKind; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true; postings?: string; through?: string; geometry?: 'preorder' | 'ordinal'; catalog?: string; max_rows?: number }
   registry?: NameQualification
 }
 export interface NameResult extends HotResult { execution: { after: NameExecution; before?: NameExecution }; logical_store?: string; capabilities?: { bucket_drill: false; child_drill: false; fallback: false } }
@@ -14,9 +14,10 @@ export interface NameResult extends HotResult { execution: { after: NameExecutio
  * literals registered on the scan itself answer from it and the rest on demand from the store's one consolidated name
  * index; without one, every literal answers on demand. Its bucket bounds are path preorder, or (a scan recording no
  * descendant counts) one `ordinal` position per bucket. */
-export type NameScanKind = 'frozen-history' | 'daily-scalar-source-v1' | 'consolidated-store-v1'
+export type NameScanKind = 'frozen-history' | 'daily-scalar-source-v1' | 'consolidated-store-v1' | 'static-names-v1'
 export interface NameScan { date: string; plans: NamePlan[]; kind: NameScanKind; qualification_dates?: string[]; source_identity?: NameExecution['source_identity']; registry?: NameQualification }
-export interface NameRegistry { dated: boolean; dates: NameScan[]; logical_store?: string; bucket_paths?: string[] }
+/** `static`: the static name index's generation and catalog bound V (`static-name-registry-v1`; every scan is `static-names-v1`). */
+export interface NameRegistry { dated: boolean; dates: NameScan[]; logical_store?: string; bucket_paths?: string[]; static?: { generation: string; max_rows: number } }
 export function namePageParams(params: URLSearchParams): URLSearchParams {
   const next = new URLSearchParams(params)
   if (!next.has('name')) next.set('name', 'datakit')
@@ -77,9 +78,17 @@ function capabilities(value: unknown) {
 /** A daily scan's plans: its registered catalog, or bounded discovery over its own name index or the consolidated store's. */
 const CONSOLIDATED_SOURCE = 'bounded name postings over the consolidated store; directory rollups are atomic'
 const CONSOLIDATED_CATALOG_SOURCE = "the consolidated catalog: every scan's registered literals precomputed in the store"
-/** A consolidated scan's below-catalog literal answered by the Worker from the static suffix shards on R2
- *  (`functions/_lib/staticNames.ts`, dev `NAME_SUMMARY_STATIC=1`), not the query box. */
+/** `static-names-v1`: the static name index on R2, read by the Worker with no query box (`functions/_lib/nameSummaryStatic.ts`,
+ *  `NAME_SUMMARY_STATIC=1`). A literal with more than V suffix rows, or of one or two characters, answers from the catalog
+ *  (`plan: 'catalog'`); every other literal from the suffix postings, at most V rows (`bounded-name-postings`). */
 export const STATIC_SOURCE = 'static suffix postings on R2, one ranged read by the Worker; directory rollups are atomic'
+export const STATIC_CATALOG_SOURCE = 'the static catalog on R2: per-bucket running totals precomputed for every scan of the generation, one ranged read by the Worker'
+const STATIC_GENERATION = /^\d{4}-\d{2}-\d{2}[a-z0-9]*$/
+function staticIdentity(value: unknown) {
+  const body = record(value)
+  if (!keys(body, ['kind', 'generation', 'max_rows']) || body.kind !== 'static-names-v1' || typeof body.generation !== 'string' || !STATIC_GENERATION.test(body.generation) || integer(body.max_rows) < 1) fail()
+  return { kind: 'static-names-v1' as const, generation: body.generation as string, max_rows: integer(body.max_rows) }
+}
 const DAILY_SOURCES: Record<NamePlan, string[]> = {
   catalog: ['published dated precomputed batch artifact'],
   'bounded-name-postings': ["bounded dated name postings over the scan's own name index; directory rollups are atomic", CONSOLIDATED_SOURCE],
@@ -115,11 +124,19 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
     return { ...checked, source_identity: { ...checked.source_identity, kind: 'frozen-history' } }
   }
   const validation = record(body.validation)
+  if (identity.kind === 'static-names-v1') {
+    const checked = staticIdentity(identity)
+    const plan = body.plan === 'catalog' || body.plan === 'bounded-name-postings' ? body.plan : fail()
+    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets']) ||
+        body.source !== (plan === 'catalog' ? STATIC_CATALOG_SOURCE : STATIC_SOURCE) || body.target !== 'static_names' || !keys(validation, validationKeys) ||
+        typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false) fail()
+    return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked }
+  }
   if (identity.kind === 'consolidated-store-v1') {
     const checked = consolidatedIdentity(identity), catalog = checked.catalog
     const plan = body.plan === 'catalog' && catalog ? 'catalog' : body.plan === 'bounded-name-postings' ? 'bounded-name-postings' : fail()
     if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets', ...(catalog ? ['registry'] : [])]) ||
-        (plan === 'catalog' ? body.source !== CONSOLIDATED_CATALOG_SOURCE : body.source !== CONSOLIDATED_SOURCE && body.source !== STATIC_SOURCE) || body.target !== checked.target || !keys(validation, validationKeys) ||
+        (plan === 'catalog' ? body.source !== CONSOLIDATED_CATALOG_SOURCE : body.source !== CONSOLIDATED_SOURCE) || body.target !== checked.target || !keys(validation, validationKeys) ||
         typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false) fail()
     return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked,
       ...(catalog ? { registry: catalogRegistry(body.registry, body.date, catalog) } : {}) }
@@ -220,6 +237,15 @@ export function parseNameRegistry(value: unknown): NameRegistry {
     const counts = record(body.catalog_patterns)
     if (Object.keys(counts).sort().join() !== [...body.dates as string[]].sort().join() || Object.values(counts).some(count => integer(count) < 1)) fail()
     return { dated: false, dates: (body.dates as string[]).map(date => ({ date, plans: ['catalog', 'bounded-name-postings'], kind: 'frozen-history' })) }
+  }
+  if (body.schema === 'static-name-registry-v1') {
+    if (!keys(body, ['schema', 'logical_store', 'generation', 'max_rows', 'bucket_paths', 'dates', 'levels', 'scope', 'capabilities']) || !id(body.logical_store) || body.levels !== 1 || body.scope !== HOT_SCOPE ||
+        !Array.isArray(body.bucket_paths) || body.bucket_paths.length !== 6 || new Set(body.bucket_paths).size !== 6 || body.bucket_paths.some(path => typeof path !== 'string' || !path || path.includes('/') || path.includes('\0')) ||
+        !Array.isArray(body.dates) || !body.dates.length || body.dates.length > 400 || body.dates.some((day, i) => !iso(day) || (i > 0 && (body.dates as string[])[i - 1] >= day))) fail()
+    capabilities(body.capabilities)
+    const source_identity = staticIdentity({ kind: 'static-names-v1', generation: body.generation, max_rows: body.max_rows })
+    return { dated: true, dates: (body.dates as string[]).map(date => ({ date, plans: ['catalog', 'bounded-name-postings'], kind: 'static-names-v1', source_identity })),
+      logical_store: body.logical_store as string, bucket_paths: [...body.bucket_paths as string[]], static: { generation: source_identity.generation, max_rows: source_identity.max_rows } }
   }
   if (body.schema !== 'dated-name-summary-registry-v1' || !keys(body, ['schema', 'logical_store', 'bucket_paths', 'dates', 'levels', 'scope', 'daily_catalog_slots', 'legacy', 'capabilities']) || !id(body.logical_store) || body.levels !== 1 || body.scope !== HOT_SCOPE || body.daily_catalog_slots !== 2 || !Array.isArray(body.bucket_paths) || body.bucket_paths.length !== 6 || new Set(body.bucket_paths).size !== 6 || body.bucket_paths.some(path => typeof path !== 'string' || !path || path.includes('/') || path.includes('\0')) || !Array.isArray(body.dates) || !body.dates.length || body.dates.length > 400) fail()
   capabilities(body.capabilities)

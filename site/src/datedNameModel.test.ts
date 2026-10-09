@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { consolidatedCatalogFixture, consolidatedCatalogNameRegistry, consolidatedCatalogRegistry, consolidatedCatalogSource, consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
+import { consolidatedCatalogFixture, consolidatedCatalogNameRegistry, consolidatedCatalogRegistry, consolidatedCatalogSource, consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff, staticNameFixture, staticNameRegistry } from './datedNameTestFixtures'
 import type { NameQualification } from './nameModel'
 import { datedNameRequest, loadName, loadNameRegistry, nameHasDetail, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
 
@@ -242,5 +242,40 @@ describe('scan-specific availability', () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('private details', { status })); vi.stubGlobal('fetch', fetcher)
     await expect(loadNameRegistry()).rejects.toEqual(new Error(message))
     expect(fetcher.mock.calls).toEqual([['/api/name-summary-registry', { signal: undefined }]])
+  })
+})
+
+describe('the static name index', () => {
+  const identity = { kind: 'static-names-v1', generation: '2026-10-08c', max_rows: 100000 }
+  it('binds every scan of the generation to one identity, and both plans to it', () => {
+    const registry = parseNameRegistry(staticNameRegistry())
+    expect(registry).toEqual({ dated: true, logical_store: 'gcs', bucket_paths: Array.from('abcdef', letter => `bucket-${letter}`), static: { generation: '2026-10-08c', max_rows: 100000 },
+      dates: ['2026-10-04', '2026-10-05', '2026-10-06'].map(date => ({ date, plans: ['catalog', 'bounded-name-postings'], kind: 'static-names-v1', source_identity: identity })) })
+    for (const plan of ['catalog', 'bounded-name-postings'] as const) {
+      const body = staticNameFixture(plan), result = nameResultForRegistry(parseName(body, { date: '2026-10-05', name: 'datakit' }), registry)
+      expect([result.after, result.execution.after]).toEqual([{ target: body.target, date: body.date, pattern: body.pattern, root: body.root, buckets: [...body.buckets].sort((a, b) => a.path < b.path ? -1 : 1) }, { plan, source: body.source, validation: body.validation, source_identity: identity }])
+      expect(nameHasDetail(result)).toBe(false)
+    }
+  })
+  it.each([
+    ['unsorted dates', { dates: ['2026-10-05', '2026-10-04'] }],
+    ['a bad generation', { generation: 'latest' }],
+    ['a zero bound', { max_rows: 0 }],
+    ['five buckets', { bucket_paths: Array.from('abcde', letter => `bucket-${letter}`) }],
+    ['an extra key', { legacy: legacyNameRegistry() }],
+  ])('refuses a registry with %s', (_, override) => {
+    expect(() => parseNameRegistry({ ...staticNameRegistry(), ...override })).toThrow('Name summary returned an invalid dated contract.')
+  })
+  it.each([
+    ['a catalog answer with the postings source', { plan: 'catalog', source: staticNameFixture('bounded-name-postings').source }],
+    ['another target', { target: 'default' }],
+    ['a registry binding', { registry: dailyNameFixture().registry }],
+  ])('refuses %s', (_, override) => {
+    expect(() => parseName({ ...staticNameFixture('catalog'), ...override }, { date: '2026-10-05', name: 'datakit' })).toThrow('Name summary returned an invalid dated contract.')
+  })
+  it('refuses a static answer under the box\'s registry, and a box answer under the static one', () => {
+    const request = { date: '2026-10-06', name: 'datakit' }
+    expect(() => nameResultForRegistry(parseName(staticNameFixture('catalog', '2026-10-06'), request), parseNameRegistry(datedNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
+    expect(() => nameResultForRegistry(parseName(dailyNameFixture(), request), parseNameRegistry(staticNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
   })
 })

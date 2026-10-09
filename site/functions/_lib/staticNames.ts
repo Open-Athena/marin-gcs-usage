@@ -23,7 +23,7 @@
 import { type FileMetaData, parquetRead, type RowGroup } from 'hyparquet'
 import { compressors } from './zstd.js'
 
-export const STATIC_GEN = '2026-10-08'
+export const STATIC_GEN = '2026-10-08c'
 export const STATIC_PREFIX = `static-names/${STATIC_GEN}`
 
 // --- order --------------------------------------------------------------------------------------
@@ -65,10 +65,13 @@ export const shardFile = (i: number): string => `sx/s${String(i).padStart(4, '0'
  *  physical INT64 (epoch ms as bigint): no timestamp conversion. */
 export const SX_COLUMNS = ['s', 'depth', 'path', 'usr', 'vf', 'vt', 'size', 'n_files'] as const
 const SX_TYPES = ['BYTE_ARRAY', 'INT32', 'BYTE_ARRAY', 'BYTE_ARRAY', 'INT64', 'INT64', 'INT64', 'INT64']
-const SX_SCHEMA = [
-  { name: 'schema', repetition_type: 'REQUIRED', num_children: SX_COLUMNS.length },
-  ...SX_COLUMNS.map((name, i) => ({ name, type: SX_TYPES[i], repetition_type: 'REQUIRED', ...(SX_TYPES[i] === 'BYTE_ARRAY' ? { converted_type: 'UTF8' } : {}) })),
+/** A flat file of REQUIRED columns (zstd), as hyparquet needs it to decode one row group without a footer. */
+export interface FlatSchema { columns: readonly string[]; types: readonly string[] }
+const schemaOf = ({ columns, types }: FlatSchema) => [
+  { name: 'schema', repetition_type: 'REQUIRED', num_children: columns.length },
+  ...columns.map((name, i) => ({ name, type: types[i], repetition_type: 'REQUIRED', ...(types[i] === 'BYTE_ARRAY' ? { converted_type: 'UTF8' } : {}) })),
 ]
+export const SX: FlatSchema = { columns: SX_COLUMNS, types: SX_TYPES }
 const NC = SX_COLUMNS.length
 const ZSTD = 6
 
@@ -203,34 +206,40 @@ export function groupSpan(idx: GroupIndex, a: number, b: number): [number, numbe
 
 export interface SxColumns { s: string[]; depth: number[]; path: string[]; usr: string[]; vf: bigint[]; vt: bigint[]; size: bigint[]; n_files: bigint[] }
 
-/** Decode one row group `g` from the fetched bytes (`buf` holds the file's `[start, start + buf.byteLength)`). */
-export async function decodeGroup(idx: GroupIndex, g: number, buf: ArrayBuffer, start: number): Promise<SxColumns> {
-  const n = idx.rows[g]
+/** Decode one row group from fetched bytes (`buf` holds the file's `[start, start + buf.byteLength)`), given
+ *  its rows and per column `data_page_offset, total_compressed_size, dictionary_page_offset | 0` (`chunks`,
+ *  file order): a FileMetaData is built from those alone, so no footer is read. */
+export async function decodeFlat(spec: FlatSchema, size: number, rows: number, chunks: ArrayLike<number>, buf: ArrayBuffer, start: number): Promise<Record<string, unknown[]>> {
   const group = {
-    num_rows: BigInt(n),
-    columns: SX_COLUMNS.map((name, c) => {
-      const k = (g * NC + c) * 3, dict = idx.chunks[k + 2]
-      return { meta_data: { type: SX_TYPES[c], path_in_schema: [name], codec: 'ZSTD', data_page_offset: BigInt(idx.chunks[k]), total_compressed_size: BigInt(idx.chunks[k + 1]), ...(dict ? { dictionary_page_offset: BigInt(dict) } : {}) } }
+    num_rows: BigInt(rows),
+    columns: spec.columns.map((name, c) => {
+      const dict = chunks[c * 3 + 2]
+      return { meta_data: { type: spec.types[c], path_in_schema: [name], codec: 'ZSTD', data_page_offset: BigInt(chunks[c * 3]), total_compressed_size: BigInt(chunks[c * 3 + 1]), ...(dict ? { dictionary_page_offset: BigInt(dict) } : {}) } }
     }),
   } as unknown as RowGroup
-  const metadata = { version: 1, schema: SX_SCHEMA, num_rows: BigInt(n), row_groups: [group], metadata_length: 0 } as unknown as FileMetaData
+  const metadata = { version: 1, schema: schemaOf(spec), num_rows: BigInt(rows), row_groups: [group], metadata_length: 0 } as unknown as FileMetaData
   const file = {
-    byteLength: idx.size,
+    byteLength: size,
     slice(s: number, e?: number) {
-      const end = e ?? idx.size
-      if (s < start || end > start + buf.byteLength) throw new Error(`sx read outside the fetched span: ${s}-${end}`)
+      const end = e ?? size
+      if (s < start || end > start + buf.byteLength) throw new Error(`static names: read outside the fetched span: ${s}-${end}`)
       return buf.slice(s - start, end - start)
     },
   }
-  const out = Object.fromEntries(SX_COLUMNS.map(c => [c, new Array(n)])) as unknown as Record<string, unknown[]>
+  const out = Object.fromEntries(spec.columns.map(c => [c, new Array(rows)])) as Record<string, unknown[]>
   await parquetRead({
-    file, metadata, columns: [...SX_COLUMNS], compressors,
+    file, metadata, columns: [...spec.columns], compressors,
     onChunk: ({ columnName, columnData, rowStart }) => {
       const arr = out[columnName]
       for (let i = 0; i < columnData.length; i++) arr[rowStart + i] = columnData[i]
     },
   })
-  return out as unknown as SxColumns
+  return out
+}
+
+/** Decode one shard row group `g` from the fetched bytes. */
+export async function decodeGroup(idx: GroupIndex, g: number, buf: ArrayBuffer, start: number): Promise<SxColumns> {
+  return await decodeFlat(SX, idx.size, idx.rows[g], idx.chunks.slice(g * NC * 3, (g + 1) * NC * 3), buf, start) as unknown as SxColumns
 }
 
 /** A scan id (`2026-10-01`, or `2026-10-01T0003`, UTC) as epoch ms (`static_names.scan_epoch`). */
@@ -306,7 +315,7 @@ export interface Blobs {
 /** Where a query's time and bytes went (the `x-static-io` header). */
 export interface Io { shard: number | null; groups: number; bytes: number; rows_read: number; rows_matching: number; index: 'isolate' | 'cache' | 'footer' | 'none'; footer_bytes?: number; ms: Record<string, number> }
 
-export interface IndexCache { get(file: string): Promise<GroupIndex | null>; put(file: string, idx: GroupIndex): Promise<void> }
+export interface IndexCache<T = GroupIndex> { get(file: string): Promise<T | null>; put(file: string, idx: T): Promise<void> }
 
 export class StaticNames {
   private shards?: Promise<Shard[]>
@@ -407,13 +416,13 @@ export function r2Blobs(r2: R2Bucket, prefix = STATIC_PREFIX): Blobs {
   }
 }
 
-/** The colo's Cache API as the group-index tier between isolates (JSON; ~1 MB per shard). */
-export function cacheIndexes(cache: Cache, prefix = STATIC_PREFIX): IndexCache {
-  const url = (file: string) => `https://static-names.invalid/${prefix}/${file}.index-v2.json`
+/** The colo's Cache API as the index tier between isolates (JSON; ~1 MB per shard group index). */
+export function cacheIndexes<T = GroupIndex>(cache: Cache, prefix = STATIC_PREFIX, version = 'index-v2'): IndexCache<T> {
+  const url = (file: string) => `https://static-names.invalid/${prefix}/${file}.${version}.json`
   return {
     async get(file) {
       const r = await cache.match(url(file))
-      return r ? r.json() as Promise<GroupIndex> : null
+      return r ? r.json() as Promise<T> : null
     },
     async put(file, idx) {
       await cache.put(url(file), new Response(JSON.stringify(idx), { headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=604800' } }))

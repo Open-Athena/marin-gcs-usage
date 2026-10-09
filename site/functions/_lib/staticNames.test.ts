@@ -4,7 +4,10 @@ import { type Blobs, cmp, type GroupIndex, groupIndex, type IndexCache, selectGr
 import { fixture } from './testStore.js'
 
 /** `gen.py`'s `TERMS`. */
-const TERMS = ['foo', 'foo.', 'foo-2', 'oof', 'fooz', 'qux', 'mmm', 'andú', 'abcdefghijklmnopqrstuvwxyz-0001', 'bkt', 'zzz']
+const TERMS = ['foo', 'foo.', 'foo-2', 'oof', 'fooz', 'qux', 'mmm', 'andú', 'abcdefghijklmnopqrstuvwxyz-0001', 'bkt', 'zzz',
+  'f', 'fo', 'o', '-', 'zq', 'bkt-a', 'abcdefghijklmnopqrstuvwxyz-000', 'abcdefghijklmnopqrstuvwxyz-0002.parquet', 'parquet', '.parquet', 'quet']
+/** The suffix shards hold suffixes of three or more characters only. */
+const LONG = TERMS.filter(t => [...t].length >= 3)
 const KEYS = ['shards.json', 'expected.json', 'sx/s0000.parquet', 'sx/s0001.parquet']
 const held = new Map<string, ArrayBuffer>()
 beforeAll(async () => {
@@ -54,13 +57,13 @@ describe('static names reader', () => {
     }
     const b = bytes('sx/s0000.parquet'), flen = new DataView(b, b.byteLength - 8).getUint32(0, true)
     const idx = groupIndex(new Uint8Array(b, b.byteLength - 8 - flen, flen), b.byteLength)
-    expect(idx.rows).toEqual([...Array(18).fill(4), 2])
-    expect([selectGroups(idx, 'foo'), selectGroups(idx, 'fooz'), selectGroups(idx, 'abcdefghijklmnopqrstuvwxyz-0001')]).toEqual([[12, 15], [14, 15], [6, 7]])
+    expect(idx.rows).toEqual([...Array(24).fill(4), 3])
+    expect([selectGroups(idx, 'foo'), selectGroups(idx, 'fooz'), selectGroups(idx, 'abcdefghijklmnopqrstuvwxyz-0001')]).toEqual([[17, 21], [20, 21], [10, 11]])
   })
 
   it('covers every term the fixture was generated for', () => expect(Object.keys(expected)).toEqual(TERMS))
 
-  it.each(TERMS)('answers %s exactly like the first-hit oracle on every date', async term => {
+  it.each(LONG)('answers %s exactly like the first-hit oracle on every date', async term => {
     const r = new StaticNames(files())
     const { answer } = await r.answer(term, Object.keys(expected[term]))
     expect(num(answer!.answers)).toEqual(expected[term])
@@ -80,14 +83,14 @@ describe('static names reader', () => {
       `sx/s0001.parquet@${log[5].split('@')[1]}`,
     ])
     expect([a.io.index, b.io.index, c.io.index]).toEqual(['footer', 'isolate', 'footer'])
-    expect([a.io.groups, a.io.rows_read, a.io.rows_matching]).toEqual([3, 12, 11])
-    expect([b.io.groups, b.io.rows_read, b.io.rows_matching]).toEqual([2, 8, 3])
+    expect([a.io.groups, a.io.rows_read, a.io.rows_matching]).toEqual([4, 16, 11])
+    expect([b.io.groups, b.io.rows_read, b.io.rows_matching]).toEqual([1, 4, 3])
   })
 
   it('refuses a range above the row budget without fetching data', async () => {
     const log: string[] = []
-    const { io, answer } = await new StaticNames(files(log)).answer('foo', ['2026-09-01'], 11)
-    expect([answer, io.groups, io.rows_read, io.bytes]).toEqual([null, 3, 12, 0])
+    const { io, answer } = await new StaticNames(files(log)).answer('foo', ['2026-09-01'], 15)
+    expect([answer, io.groups, io.rows_read, io.bytes]).toEqual([null, 4, 16, 0])
     expect(log).toEqual(['shards.json', 'sx/s0000.parquet@-67136'])
   })
 
