@@ -1156,8 +1156,9 @@ def drill_verify_cmd(ref_jsonl, answers_jsonl) -> None:
 @option("-n", "--per-depth", default=2, type=int, help="Directories per (term, depth, heavy|light)")
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="Heavy: more root rows under the directory than this")
 @option("-s", "--shards", help="Long terms: only members of these shards (comma-separated); default all")
+@option("-t", "--terms-file", help="A file of literals, one per line (in addition to TERMS)")
 @argument("terms", nargs=-1)
-def drill_cases_cmd(bucket, gen, n, R, shards, terms) -> None:
+def drill_cases_cmd(bucket, gen, per_depth, R, shards, terms_file, terms) -> None:
     """Verification cases `{q, P}` (JSON lines) for TERMS from the measurement's directory tables: per term and
     depth, the `-n` largest heavy directories (rollup reads) and the `-n` largest light ones with at least 10K
     roots (roots reads), deterministic. Short terms read `roots-measure/short/`."""
@@ -1166,9 +1167,12 @@ def drill_cases_cmd(bucket, gen, n, R, shards, terms) -> None:
     import duckdb
     from google.cloud import storage
 
+    from .static_names import read_text
+
     prefix = f"{PREFIX}/{gen}/{MEASURE}"
     client = storage.Client()
     want = {int(x) for x in shards.split(",")} if shards else None
+    terms = list(terms) + ([x for x in read_text(terms_file).splitlines() if x.strip()] if terms_file else [])
     with tempfile.TemporaryDirectory() as d:
         for blob in client.list_blobs(bucket, prefix=f"{prefix}/dirs/"):
             if want is None or int(Path(blob.name).stem[1:]) in want:
@@ -1185,7 +1189,7 @@ def drill_cases_cmd(bucket, gen, n, R, shards, terms) -> None:
         con.executemany("INSERT INTO t VALUES (?)", [(x.lower(),) for x in terms])
         rows = con.execute(f"""SELECT q, dir FROM (
                 SELECT q, dir, row_number() OVER (PARTITION BY q, k, "rows" > {R} ORDER BY "rows" DESC, dir) AS r
-                FROM dl SEMI JOIN t USING (q) WHERE "rows" >= 10000) WHERE r <= {n} ORDER BY q, dir""").fetchall()
+                FROM dl SEMI JOIN t USING (q) WHERE "rows" >= 10000) WHERE r <= {per_depth} ORDER BY q, dir""").fetchall()
     for t_, P in rows:
         print(json.dumps({"q": t_, "P": P}))
 
