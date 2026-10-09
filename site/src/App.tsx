@@ -39,7 +39,7 @@ import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import { canvasWidth } from './canvas'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
 import { SizeOverTime } from './SizeOverTime'
 import { useStore, useStoreFetch } from './store'
 import { perf } from './perf'
@@ -313,8 +313,9 @@ function AppContent() {
   const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
   const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
   // A pinned start (`from`) wins over a look-back span; both fall back to the
-  // immediately-previous scan.
-  const fromScan = from && asof ? nearestScan(earlier, scanTime(from)) : null
+  // immediately-previous scan. `from` is a slug: the latest earlier scan it
+  // matches (the resolver), else the earlier scan nearest its instant.
+  const fromScan = from && asof ? latestScan(from, earlier) ?? nearestScan(earlier, scanTime(from)) : null
   const diffPrev = fromScan ?? spanScan ?? prevScan
   // Hour-rounded span back from `to` — the previous scan clears it, anything
   // else round-trips as its own span (nearest-scan resolution recovers it,
@@ -324,11 +325,11 @@ function AppContent() {
       ? undefined
       : Math.max(3600_000, Math.round((scanTime(to) - scanTime(from)) / 3600_000) * 3600_000)
   const pickBefore = (scan: string) => { if (asof) setSpan(spanTo(asof, scan)) }
-  // A brush on the size chart hands back calendar dates; each resolves to the
-  // scan on that date, and the pair becomes the page's `?d=` (after + span).
+  // A brush on the size chart hands back scan-id prefixes; each resolves to
+  // the latest scan matching it, and the pair becomes the page's `?d=` (after + span).
   const brushRange = (from: string, to: string) => {
-    const toScan = scans.find(s => s.startsWith(to))
-    const fromScan = scans.find(s => s.startsWith(from))
+    const toScan = latestScan(to, scans)
+    const fromScan = latestScan(from, scans)
     if (!toScan || !fromScan || toScan <= fromScan) return
     setRange(toScan, spanTo(toScan, fromScan))
   }

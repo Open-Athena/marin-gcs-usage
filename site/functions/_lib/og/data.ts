@@ -10,6 +10,7 @@ import { loadRegistry, canonId } from '../identity.js'
 import { loadLedger } from '../ledger.js'
 import { parseOwner, queryParam, QueryError } from '../scope.js'
 import { snapshotsPrefix } from '../shared.js'
+import { decodeSel, latestScan, resolveAfter } from '../../../src/scanSlug.js'
 import { ATTEN_DEFAULT, buildView, MIN_AREA_DEFAULT, NotFound } from '../view.js'
 import { HI_CONTRAST } from '../../../src/colors.js'
 import { applyLedger } from '../../../src/ledgerOverlay.js'
@@ -26,22 +27,19 @@ const FOLD_COLOR = '#2b2e35'
 const BOX_W = 1120
 const BOX_H = 410
 
-/** A `?d=` selection's "after" scan: the leading compact (`261002`,
- * `261002-1200`) or ISO (`2026-10-02`, `2026-10-02T1200`) id. A look-back or
- * `from` suffix is ignored (the card draws the after scan). */
+/** A `?d=` selection's "after" scan prefix (ISO), in any spelling the page
+ * accepts (`scanSlug.ts` `decodeSel`): compact (`261002`, `261002-1200`) or
+ * ISO (`2026-10-02`, `2026-10-02T1200`). A look-back or `from` suffix is
+ * ignored (the card draws the after scan). */
 export function scanOfSel(d: string | undefined): string | undefined {
-  if (!d) return undefined
-  const iso = /^(\d{4}-\d{2}-\d{2}(?:T\d{4})?)/.exec(d)
-  if (iso) return iso[1]
-  const c = /^(\d{2})(\d{2})(\d{2})(?:-(\d{4}))?(?:-|$)/.exec(d)
-  return c ? `20${c[1]}-${c[2]}-${c[3]}${c[4] && !/^\d{6}/.test(d.slice(7)) ? `T${c[4]}` : ''}` : undefined
+  return decodeSel(d)?.d
 }
 
-/** The scan a card draws: the selected one if indexed, else the latest. */
+/** The scan a card draws: the latest scan matching the selection (the
+ * resolver — a day's slug is that day's latest scan), else the latest. */
 export async function resolveScan(env: Env, d: string | undefined): Promise<string | null> {
   const scans = (await pathScans(env, true)).results.map(r => r.date)
-  const want = scanOfSel(d)
-  return want && scans.includes(want) ? want : scans[scans.length - 1] ?? null
+  return latestScan(scanOfSel(d), scans) ?? resolveAfter(undefined, scans)
 }
 
 /** The scan's `meta.json` user list (rank = colour slot), or none. */
