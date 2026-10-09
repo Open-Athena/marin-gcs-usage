@@ -8,13 +8,20 @@ import { nameDiff, nameFixture } from './nameTestFixtures'
 import { nameRequest, parseName, parseNameRegistry } from './nameModel'
 import { selOf } from './scanSlug'
 import { fmtScan } from './scan'
+import { DEFAULT_STORE } from './stores'
+import { scanMatches, selOf } from './scanSlug'
 import { SUB_DAILY_SCANS, dailyNameFixture, datedNameRegistry, fiveBucketFixture, fiveBucketRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
 
 vi.mock('./SiteKbd', () => ({ SiteKbd: () => null }))
 const { roots } = vi.hoisted(() => ({ roots: [] as { b: number }[] }))
 vi.mock('@rdub/treemap', async original => ({ ...await original<typeof import('@rdub/treemap')>(), Treemap: ({ root }: { root: { b: number } }) => { roots.push(root); return createElement('div') } }))
+/** The store's scan list (`useScans`, newest first): by default the registry's own scans — a name index
+ *  that has caught up with the store. */
+const SCANS_KEY = ['scans', DEFAULT_STORE.key]
 function render(client: QueryClient, path = '/names?date=2026-10-05&name=datakit', seedRegistry = true) {
   if (seedRegistry && !client.getQueryState(['name-summary-registry'])) client.setQueryData(['name-summary-registry'], parseNameRegistry(legacyNameRegistry()))
+  const reg = client.getQueryData<{ dates: { date: string }[] }>(['name-summary-registry'])
+  if (reg && !client.getQueryState(SCANS_KEY)) client.setQueryData(SCANS_KEY, reg.dates.map(r => r.date).sort().reverse())
   return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(MemoryRouter, { initialEntries: [path] }, createElement(NamePage))))
 }
 /** The "no scan matches" state: its text, and its links. */
@@ -217,6 +224,54 @@ describe('two scans on one day: ?d= addresses each, a day picks the later', () =
       expect(misses(html)).toEqual([[fill(text), hrefs.map(([h, l]) => [h, fill(l)])]])
       expect(tableRows(html)).toEqual([])
       expect(roots).toEqual([])
+    } finally { client.clear() }
+  })
+})
+
+describe('the store has a scan the name index doesn\'t hold yet: ?d= means the map\'s scan, shown as not indexed', () => {
+  // The store's newest scan (`2026-10-10T1236`) is past the registry's (`SUB_DAILY_SCANS`).
+  const STORE_SCANS = ['2026-10-10T1236', ...[...SUB_DAILY_SCANS].reverse()]
+  const seeded = () => {
+    const client = new QueryClient()
+    client.setQueryData(['name-summary-registry'], parseNameRegistry(fiveBucketRegistry()))
+    client.setQueryData(['scans', DEFAULT_STORE.key], STORE_SCANS)
+    client.setQueryData(['name-summary', '2026-10-09T1802', 'datakit', undefined], parseName(fiveBucketFixture('catalog', '2026-10-09T1802', 18), { date: '2026-10-09T1802', name: 'datakit' }))
+    return client
+  }
+  const notIndexed = (html: string) => [...html.matchAll(/<p class="no-scan loading" role="alert" aria-label="Scan not indexed">(.*?)<\/p>/g)]
+    .map(([, inner]) => [inner.replace(/<[^>]+>/g, ''), [...inner.matchAll(/<a href="([^"]+)">(.*?)<\/a>/g)].map(([, href, label]) => [href.replace(/&amp;/g, '&'), label])])
+  it.each([
+    ['/names?d=261010&name=datakit', '2026-10-10T1236', '/names?d=2610091802&name=datakit'],
+    ['/names?name=datakit', '2026-10-10T1236', '/names?name=datakit&d=2610091802'],
+  ])('%s resolves as the map does (%s) and says it isn\'t indexed: no answer for another scan', (path, scan, href) => {
+    const client = seeded()
+    try {
+      const html = render(client, path)
+      // The map's resolution of the same `?d=` (`useScan`: the newest store scan the slug names).
+      const d = selOf(new URLSearchParams(path.split('?')[1]))?.d
+      expect(d ? scanMatches(d, STORE_SCANS)[0] : STORE_SCANS[0]).toBe(scan)
+      const latest = fmtScan('2026-10-09T1802')
+      expect(notIndexed(html)).toEqual([[
+        `Scan ${fmtScan(scan)} is not in the name index yet (it is indexed after each scan lands). This is not a zero-match result. Latest indexed: ${latest}`,
+        [[href, latest]],
+      ]])
+      expect(misses(html)).toEqual([])
+      expect(tableRows(html)).toEqual([])
+      expect(roots).toEqual([])
+    } finally { client.clear() }
+  })
+  it('a day the index holds answers for that day\'s latest store scan, the one the map shows', () => {
+    const client = seeded()
+    try {
+      const html = render(client, '/names?d=261009&name=datakit')
+      expect([notIndexed(html), tableRows(html)[0]]).toEqual([[], ['All buckets', '18', '6']])
+    } finally { client.clear() }
+  })
+  it('a slug naming no store scan is the miss (404 state), not "not indexed"', () => {
+    const client = seeded()
+    try {
+      const html = render(client, '/names?d=261012&name=datakit')
+      expect([notIndexed(html), misses(html)]).toEqual([[], [[`No scan matches 261012. Nearest: ← ${fmtScan('2026-10-10T1236')}`, [['/names?d=2610101236&name=datakit', `← ${fmtScan('2026-10-10T1236')}`]]]]])
     } finally { client.clear() }
   })
 })
