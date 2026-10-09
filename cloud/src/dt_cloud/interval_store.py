@@ -163,7 +163,7 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, con, *, mount: str
     `(depth, path, vf)`), `rd/r####.parquet` (`last_read` versions, `RD_SCHEMA`) and
     `digest/r####.json`: counts, and per scan the rows and Σ hash of the scan's per-path rows next to
     those of the versions live at it — equal iff the versions reconstruct every scan exactly."""
-    from pyrmts.intervals import islands_sql, long_sql, stamped_sql
+    from pyrmts.intervals import islands_sql, stamped_sql
 
     t0 = monotonic()
     r = ranges["ranges"][i]
@@ -172,7 +172,11 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, con, *, mount: str
     stamps = [ts for _, ts, _ in srcs]
     for t in ("lng", "pv", "rd"):
         con.execute(f"DROP TABLE IF EXISTS {t}")
-    con.execute(f"CREATE TABLE lng AS {long_sql([path_rows_sql(con, p, preds, v) for p, _, v in srcs])}")
+    # One scan at a time: a single 71-way `UNION ALL` runs every scan's per-path aggregation at once and
+    # ran out of memory on the widest ranges (`failed to pin block`, 59.6 GiB of 60).
+    for j, (p, _, v) in enumerate(srcs):
+        sql = f"SELECT {j}::BIGINT AS __scan, * FROM ({path_rows_sql(con, p, preds, v)})"
+        con.execute(f"CREATE TABLE lng AS {sql}" if j == 0 else f"INSERT INTO lng {sql}")
     t_long = monotonic() - t0
     src_dig = {j: [n, int(s) % U64] for j, n, s in con.execute(f"SELECT __scan, count(*), sum({ROW_HASH}::HUGEINT) FROM lng GROUP BY __scan").fetchall()}
     rd_src = {j: [n, int(s) % U64] for j, n, s in con.execute(f"SELECT __scan, count(*), sum({RD_HASH}::HUGEINT) FROM lng WHERE last_read >= 0 GROUP BY __scan").fetchall()}
