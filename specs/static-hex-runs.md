@@ -72,3 +72,53 @@ Recommendation: **rebuild cw now** (after the implementation lands and its tests
 **Worker / site.** `FirstHits(key, rule)`, `TierState.hexRuns`, `Drill` plain view, `indexedGate`; the path-store fallback compiles `sub` matchers with `occurs` under the deployment's static rule (`compileQuery(ast, { hexRuns })`, `hexQuery`) in subtree / diff / series / filter-cover / og, so a literal answers the same on both paths. `/api/name-summary`, `/api/subtree`, `/api/diff`, `/api/series` carry `hexRuns: {min, tail}` iff the generation has the rule and a substring of the query is hex-affected; the filter note and `/names` show an ⓘ with "Matches inside long hex IDs (16+ hex digits) aren't indexed." `RESPONSE_V` 7. Known gap: with `QUERY_BOX_URL` set, the serving box answers subtree/diff/series itself without the rule (the box isn't used by cw).
 
 **Tests.** `cloud/tests/test_hex_runs.py` (kept positions for the spec's table, first occurrences, hex-affected, SQL = Python on random strings for four rules, the shared table); `cloud/tests/test_static_hex.py` (a fixture of hex names: suffix rows and `chist` = the kept positions; the reader, catalog census + cells + short members, member and short roots, and base ⊕ two runs (suffix rows, tiered answers and hits, catalog bytes) = brute force under `occurs` on every date, under `16,8` and without a rule; the literals whose answer the rule changes are exactly `cafe 1234 0123 bcdef 2b3c 7c1d e8f9 6789 89abcdef0y c3d4`); `test_static_runner.py` (the profile field, the mismatch log); site `hexRuns.test.ts`, `staticHex.test.ts`, `staticRuns.test.ts`, `filterNote.test.ts`. Mutation checks: the tail treated as opaque in SQL (4 fail), `first_sql` ignoring the rule (2 fail), the reader's parent test as plain `in` (1 fails); TS: `dropped` ignoring the tail (6 fail), `FirstHits`' parent test as `includes` (1 fails).
+
+## Perf follow-up: the rule's slow paths (measured on cw's `2026-10-10cw` build)
+
+The rule's results are exact, but three passes got much slower than on the full index. All three run the per-position test (`dropped_sql`: two `rtrim`/`ltrim` cuts per position) over strings that hold a run:
+
+| Stage | `2026-10-09cw` (no rule) | `2026-10-10cw` (16,8) |
+|---|---:|---:|
+| catalog `short` (1–2-character events, `grams_sql`) | 1.1 min | 34.7 min wall, 4.1 task-h |
+| drill `measure-short` / `short-map` (`short_roots`) | 7.7 / 14.4 min | 26.3 / 59.4 min wall (short-map also waited on the region's local-SSD quota), 1.4 / 1.7 task-h |
+| catalog `brute` (5 scans × 111 terms) | — | 87 min wall, 3.9 task-h |
+
+Why: `grams_sql` filters every position of every hash-bearing name twice (1- and 2-grams), and `first_sql`'s fallback scans every position whenever a literal's first `instr` hit is dropped. Single characters like `0`, `a` or `e` hit inside nearly every hash, so the fallback is the common case. Levers:
+
+- Compute each string's runs once, e.g. a `list` of `(a, b)` from `regexp_extract_all` plus positions, and test a position against that list instead of re-cutting the string per position.
+- For short literals, derive the kept 1–2-grams from the run boundaries: everything outside the runs, plus each run's first character and the tail characters that touch its end.
+- In `first_sql`, try only the next `instr` hit after a dropped one instead of filtering every position.
+
+Batch for the whole cw rebuild came to ≈ 25 task-hours, ≈ $7. The estimate was ≈ $3, and these stages are most of the difference.
+
+## cw rebuild: gen `2026-10-10cw` (2026-10-09)
+
+Built on GCS (`gs://oa-gcs-usage-dvx/static-names/2026-10-10cw/`) from `2026-10-09cw`'s coalesced versions under `16,8`, then copied to R2 `oa-cw-s3-usage-index` under the same keys.
+
+| | `2026-10-09cw` | `2026-10-10cw` | |
+|---|---:|---:|---:|
+| suffix rows | 3,139,635,637 | 1,465,739,345 | **46.7%** kept |
+| `sx/` | 65 files, 118.7 GB, 37.8 B/row | 31 files, 33.46 GB, 22.8 B/row | −72% |
+| catalog long members (3-char) | 11,926 (5,127) | 8,682 (1,966) | |
+| `catalog/cells.parquet` | 10.8 MB, 1,302,085 rows | 6.0 MB, 769,872 rows | |
+| drill canonical roots, long / short | 4.69B / 2.64B | 2.74B / 0.97B | |
+| `drill/` | 142.3 GB | 40.2 GB | −72% |
+
+**Why 46.7% kept, not the estimated 35–40%.** How much a range keeps depends on how many hashes its names hold:
+- `r0005` has no hashes and keeps 100%.
+- Hash-heavy `r0030` keeps 1.6% without the tail and 11.3% with it (the tail adds ~8 of a 64-hex hash's 62 positions).
+- Mixed `r0050` keeps 64.8% / 69.9%.
+
+The 27.2% no-tail measurement came from three hash-heavy ranges, so it doesn't extrapolate. The cost table's ~2.5–3× shrink is right for the bytes, though: `sx/` and `drill/` both shrank 3.5×, because the dropped rows were the expensive ones.
+
+**Stages** (spot n2-highmem-16, us-east1, `job/static-names.sh` from `cw-static-site` with this branch's committed `dt_cloud`): `derive -f 2026-10-09cw` (in-bucket copy) → `hist` (16 tasks) → `plan-shards -H chist -n 50000000 -t 16` → `suffix-map -C` + `shards` → `sidecar` → `census -f 50000`, `members -V 100000`, `short`, `answers`, `assemble` → drill `digest`, `alias-plan` (8,682 members → 4,526 canonical), `build -R 100000 -K 256`, `measure-short`, `short-plan -r 250000000` (4 q-groups), `short-map`, `short-reduce`, `index`.
+
+**Verification.**
+- Catalog and static reader (`verify/verify-catalog.json`): 555 / 555 (term, scan) pairs equal `catalog brute`. The 111 terms are cw's generator plus hex terms (`cafe`, `1234`, `2024`, `bed`, `5c8`, `61e`, `deadbeef`, `0000`, `data`), over the same 5 scans as before. 60 are answered from the catalog, 50 statically and 1 is absent; the largest static range is 94,325 rows.
+- Drill (`verify/verify-drill.json`): 1,340 / 1,340 (case, scan) pairs equal `roots drill-brute`. There are 268 cases, 158 read from roots and 110 from rollups. They include the hex-throughout members `363`, `168` and `610`. The max read is 114,688 rows / 3.0 MB.
+- The old gen's heavy hex terms `5c8`, `bed`, `cafe`, `1234`, `2024` and `61e` are no longer catalog members: under the rule each range is ≤ V, so the light index answers them.
+
+**Cost.**
+- Batch: ≈ 25 task-hours ≈ $7, including both brute forces (see "Perf follow-up").
+- GCS → R2 egress: ≈ 73.6 GB ≈ $8.8.
+- Total ≈ $16–17.
