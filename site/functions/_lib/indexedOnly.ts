@@ -42,6 +42,14 @@ export const REJECT_MESSAGES: Record<FilterRejectCode, string> = {
 
 export const reject = (code: FilterRejectCode): FilterReject => ({ code, message: REJECT_MESSAGES[code] })
 
+/** `anchor-too-short`, worded for the anchor actually used (`^q`, `q$`, `^q$`). */
+export const ANCHOR_SHORT = {
+  start: 'A “^” term needs at least 2 characters after the “^” (e.g. “^ck”).',
+  end: 'A “$” term needs at least 3 characters before the “$” (add the dot: “.gz$”).',
+  exact: 'A “^…$” term needs at least 1 character between “^” and “$”.',
+} as const
+export const anchorTooShort = (kind: keyof typeof ANCHOR_SHORT): FilterReject => ({ code: 'anchor-too-short', message: ANCHOR_SHORT[kind] })
+
 /** The deployment's flag. */
 export const indexedOnly = (env: { FILTER_INDEXED_ONLY?: string } | undefined): boolean => env?.FILTER_INDEXED_ONLY === '1'
 
@@ -72,7 +80,7 @@ export function rejectAst(ast: QueryAst): FilterReject | null {
   if (m.kind === 'sub' && m.text.includes('/')) return reject('unsupported-slash')
   if (m.kind === 'sub' && (m.start || m.end)) {
     const need = m.start && m.end ? ANCHOR_MIN.exact : m.start ? ANCHOR_MIN.start : ANCHOR_MIN.end
-    if ([...m.text].length < need) return reject('anchor-too-short')
+    if ([...m.text].length < need) return anchorTooShort(m.start && m.end ? 'exact' : m.start ? 'start' : 'end')
   }
   return null
 }
