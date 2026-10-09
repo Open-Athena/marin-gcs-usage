@@ -985,12 +985,19 @@ def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
         err(f"anchors {prefix}: done")
         return
     t0 = monotonic()
-    runs = _manifest_runs(mount, gen, run)
-    if runs[-1].get("level", 0) != 0:
-        raise SystemExit(f"{runs[-1]['key']} is a merged run: build its scans' runs and merge them")
+    # The tiers before the run: the newest manifest's runs before it (the run listed, published by hand), or all of them
+    # (a run being appended: `runs add` builds it before `publish` lists it).
+    listed = _manifest_runs(mount, gen)
+    if f"deltas/{run}" in {r["key"] for r in listed}:
+        runs = _manifest_runs(mount, gen, run)
+        before, scans = runs[:-1], runs[-1]["scans"]
+        if runs[-1].get("level", 0) != 0:
+            raise SystemExit(f"{runs[-1]['key']} is a merged run: build its scans' runs and merge them")
+    else:
+        before, scans = listed, [run]
     base = _tier_root(mount, gen, None)
     keys = {k: str(base / ANCHORS / f"keys-{k}.parquet") for k in KINDS}
-    prior = [Tier(base, keys)] + [Tier(Path(mount) / PREFIX / gen / r["key"]) for r in runs[:-1]]
+    prior = [Tier(base, keys)] + [Tier(Path(mount) / PREFIX / gen / r["key"]) for r in before]
     for t in prior:
         if not (t.root / ANCHORS / "meta.json").exists():
             raise SystemExit(f"{t.root}: no {ANCHORS}/meta.json (build the tiers in order)")
@@ -1007,7 +1014,7 @@ def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
         versions = None
     else:
         versions = files_sql(cdelta, "depth, path, usr, vf, vt, size, n_files")
-    doc = build_run_local(con, prior, Tier(local), scan_epoch(run), R, K, runs[-1]["scans"], versions)
+    doc = build_run_local(con, prior, Tier(local), scan_epoch(run), R, K, scans, versions)
     if versions is not None:
         _upload_dir(b, local / NAMES, f"{prefix}/{NAMES}", last=("sidecar.parquet",))
     _upload_dir(b, local / ANCHORS, f"{prefix}/{ANCHORS}", last=("meta.json",))
