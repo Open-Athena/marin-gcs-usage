@@ -274,6 +274,17 @@ if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ];
 fi
 phase index-gc
 
+# 4f. The static name index (specs/static-append.md): append this scan (and any earlier one still pending, in
+# scan-id order) to cw's generation as a run — Batch stages, then R2, then `manifests/<scan>.json` — so the map's
+# `?f=` filter and /names answer it statically. OFF unless STATIC_NAMES=1: the stages run as the account with the
+# scratch bucket (`gcs-usage-job`, cw's profile), which this job's account must be allowed to act as (and to submit
+# Batch jobs); see specs/cw-static-names.md. Never fatal: the filter falls back to the path store for a scan the
+# index doesn't hold. Exit 3 = not the next scan yet (a later run catches up).
+if [ "${STATIC_NAMES:-0}" = "1" ] && [ "${REPROC:-0}" != "1" ]; then
+  STATIC_NAMES_PROFILE=cw dt-cloud static-names runs add -c "$SNAP_ID" \
+    || echo "WARN: static-names runs add failed for $SNAP_ID (exit $?; the filter keeps its path-store fallback)" >&2
+fi
+
 # 4b. Warm the site's subtree + diff caches for this scan (the colo cache, plus
 # the global KV tier once `CACHE_KV` is bound in site/wrangler.toml) so the
 # first viewer gets hits instead of a multi-second compute: the home page's

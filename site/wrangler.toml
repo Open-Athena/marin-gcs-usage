@@ -198,6 +198,20 @@ STORE_REGION = "auto"
 STORES_EXTRA = "meta"
 STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"our storage","SNAPSHOTS_SUBDIR":"meta","STORE_SCHEME":"gs://","STORE_BUCKETS":"oa-gcs-usage-dvx,oa-cw-s3-usage-index","STORE_PREFIXES":"meta-l2/,snapshots/meta/","STORE_BUCKET":"oa-cw-s3-usage-index","STORE_REGION":"auto"},"secrets":{"STORE_ENDPOINT":"STORE_ENDPOINT","STORE_ACCESS_KEY_ID":"STORE_ACCESS_KEY_ID","STORE_SECRET_ACCESS_KEY":"STORE_SECRET_ACCESS_KEY"}}}'
 
+# Static name search (specs/architecture/static-name-search.md, specs/static-append.md): the map's `?f=` filter
+# and /names read cw's static name index from its R2 bucket (INDEX_R2, below; generation `STATIC_GEN` under
+# `static-names/<gen>/`, built by `job/static-names.sh` with `STATIC_NAMES_PROFILE=cw`, appended per scan by
+# `dt-cloud static-names runs add`). Dev only until the per-scan runs are scheduled.
+FILTER_STATIC = "1"
+NAME_SUMMARY_STATIC = "1"
+STATIC_GEN = "2026-10-09cw"
+
+# Worker-served indexes (the static name index), read through a native binding (the store seam's S3 creds are
+# for the path store; this is the same bucket).
+[[env.preview.r2_buckets]]
+binding = "INDEX_R2"
+bucket_name = "oa-cw-s3-usage-index"
+
 # The KV tier for the dev stack: same namespace as production (a shared global
 # cache is correct — same keys, same data; `CACHE_V` versions the entries).
 [[env.preview.kv_namespaces]]
