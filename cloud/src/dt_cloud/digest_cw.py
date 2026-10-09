@@ -285,8 +285,10 @@ def op_body(month: Month, m: dt.date, plot_url: str | None, cfg: DigestConfig) -
     # (lead-in scan -> latest), the same way each weekly bullet links its span
     mtd_since = scan_ts(base.scan) if base is not last else None
     mtd_url = _diff_url(last.scan, mtd_since, site_url)
+    # with extra buckets alongside, the headline total is visibly the primary's
+    primary = f"{_bucket_link(cfg.primary, last.scan, mtd_since, cfg)} " if cfg.primary and last.extra else ""
     lines = [
-        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {last.tb:,.0f} TiB{_quota(last.tb, q)}{_extras(last.extra, _dextra(last, base if base is not last else None), last.scan, mtd_since, cfg)} · [dashboard]({site_url}/)",
+        f":arrow_deg{deg(mweekly)}: **{_tb(mdtb)} TiB** [month-to-date]({mtd_url}) · {primary}{last.tb:,.0f} TiB{_quota(last.tb, q)}{_extras(last.extra, _dextra(last, base if base is not last else None), last.scan, mtd_since, cfg)} · [dashboard]({site_url}/)",
         # the OP is re-edited every scan, so it is the thread's live view; say which scan it reflects
         f"_as of {_md(last.date)} {scan_ts(last.scan):%H:%M}Z_",
         "",
@@ -413,4 +415,6 @@ class Cw:
             [{"ts": scan_ts(r.scan), "tb": r.tb} for r in month.rows], Path(out), f"{cfg.title} — {m:%B %Y}", cfg.host,
             quota_tib=q.bytes / TIB if q else None, quota_name=q.name if q else "",
             diff=diff, diff_label=f"{_md(base.date)} → {_md(last.date)}",
+            # both panels are the primary's; say so once there are other buckets
+            scope=cfg.primary if cfg.primary and last.extra else "",
         )
