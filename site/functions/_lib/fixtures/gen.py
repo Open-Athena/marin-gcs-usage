@@ -28,11 +28,15 @@
   postings groups and `SEARCH_DIR_ROWS` rows per directory group — beside
   layout v1's `path-index.{names,search}.parquet`, kept as committed (the
   writer no longer emits them; their postings are v2's).
+- `v2-search-b/`: `v2-search` a scan later — a dir and objects gone, objects
+  resized and new, a new bucket (`yy`) — with its own search sidecars (layout
+  v2 only): the far side of the parity diffs with changes
+  (`boxParity.test.ts`).
 - `v2/plans.json`: `disk-tree tiers plan -j -C` over each v2 sidecar for a
   set of reads — the engine planner's group selection, which the reader's
   span queries must reproduce exactly (`pathStore.test.ts`).
 
-Regenerate: `.venv/bin/python site/functions/_lib/fixtures/gen.py` from the repo root.
+Regenerate: `.venv/bin/python site/functions/_lib/fixtures/gen.py [NAME…]` from the repo root (no names: all).
 """
 import json
 import shutil
@@ -203,17 +207,27 @@ def search_rows() -> dict[str, list[tuple[str, int]]]:
     return {'bk': bk, 'zz': zz}
 
 
-def write_v2_search(here: str) -> None:
-    out_dir = join(here, 'v2-search')
+def search_rows_b() -> dict[str, list[tuple[str, int]]]:
+    """`v2-search-b`'s objects: `search_rows()` a scan later."""
+    rows = search_rows()
+    gone = {'tmp/ttl=7d/z.bin', 'iris/notes.txt', *(f'fill/f{i:05d}' for i in range(5990, 6000))}
+    resized = {'tmp/scratch/q.bin': 5 * MiB, 'models/tiny.safetensors': 12, 'fill/f00011': 1 << 20}
+    bk = [(n, resized.get(n, s)) for n, s in rows['bk'] if n not in gone]
+    bk += [('tmp/ttl=30d/new/ckpt/n.bin', MiB), ('models/llama/model-00003-of-00003.safetensors', 2 * MiB), ('runs/grug/swarm/ckpt-final-2.pt', 9500)]
+    return {'bk': bk, 'yy': [('a/b.bin', 3000), ('a/ttl/c.bin', 400)], 'zz': rows['zz']}
+
+
+def write_v2_search(here: str, name: str = 'v2-search', objects=search_rows) -> None:
+    out_dir = join(here, name)
     v1 = {}
-    for side in SEARCH_V1_FILES:
+    for side in SEARCH_V1_FILES if name == 'v2-search' else ():
         with open(join(out_dir, f'path-index.{side}.parquet'), 'rb') as f:
             v1[side] = f.read()
     shutil.rmtree(out_dir, ignore_errors=True)
     with tempfile.TemporaryDirectory() as tmp:
         con = duckdb.connect()
         sources = []
-        for bucket, rows in search_rows().items():
+        for bucket, rows in objects().items():
             listing = join(tmp, f'{bucket}.listing.parquet')
             pd.DataFrame({
                 'bucket': [bucket] * len(rows),
@@ -252,12 +266,20 @@ def write_v1(here: str) -> None:
     write_text(join(here, 'path-index-zstd.d1.json'), json.dumps(d1_json({'path': parquet}), separators=(',', ':')))
 
 
+WRITERS = {
+    'v1': write_v1,
+    'v2': write_v2,
+    'v2-lens': write_v2_lens,
+    'v2-search': write_v2_search,
+    'v2-search-b': lambda here: write_v2_search(here, 'v2-search-b', search_rows_b),
+}
+
+
 def main() -> None:
+    """Every fixture, or the ones named (`gen.py v2-search-b`)."""
     here = dirname(__file__)
-    write_v1(here)
-    write_v2(here)
-    write_v2_lens(here)
-    write_v2_search(here)
+    for name in sys.argv[1:] or WRITERS:
+        WRITERS[name](here)
 
 
 if __name__ == '__main__':

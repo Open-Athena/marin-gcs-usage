@@ -18,7 +18,7 @@
  */
 import { type Auth, createGate, type Gate, hasScope, type Subject } from '@open-athena/auth'
 import { d1AuditSink, d1GrantStore, d1ProfileStore, d1RequestStore } from '@open-athena/auth/d1'
-import type { D1Database } from '@cloudflare/workers-types'
+import type { D1Database, KVNamespace, R2Bucket } from '@cloudflare/workers-types'
 
 export interface Env {
   DB?: D1Database
@@ -70,6 +70,14 @@ export interface Env {
   /** The path filter's default syntax (`q=` without `qs=`; `querySyntax.ts`
    *  ids). Mirrors the client's `Store.querySyntax`. Unset = `simple`. */
   QUERY_SYNTAX?: string
+  /** `1`: a single-literal `q=` is answered from the static name index on `INDEX_R2`
+   *  (`_lib/staticFilter.ts`) on every scan of its generation. */
+  FILTER_STATIC?: string
+  /** With `FILTER_STATIC`: how long (ms) a filtered view waits past its phase-2 read for the static
+   *  roots' own rows (kind, ages, classes) before answering without them; unset = until they land. */
+  FILTER_DETAILS_MS?: string
+  /** Worker-served indexes (the static name index's suffix shards and catalog). */
+  INDEX_R2?: R2Bucket
   STORE_ACCESS_KEY_ID?: string
   STORE_SECRET_ACCESS_KEY?: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */
