@@ -2048,3 +2048,47 @@ async function openFine(env: Env, date: string, sort: string, lens?: Lens): Prom
     throw e
   }
 }
+
+// --- the filter's cover: every match root, and the totals that collapse them (`cover.ts`) ----------------
+
+/** Every match root under `o.path` on `o.date` (unscoped, net of nothing) with its bytes and objects — the
+ *  whole list, where a view's `matched` is capped at `MATCH_LIST_CAP` — and why it may be incomplete:
+ *  `coverage` (a budget-cut or thresholded search), `rollup` (a heavy literal under a heavy folder: the read
+ *  knows per-child totals, not its roots). Null: no matches. Phase 1 only (`maxDepth: 0`): the static
+ *  index's roots are held per isolate. */
+export async function allMatchRoots(env: Env, o: { date: string; path: string; query: NamePred }): Promise<{ roots: { path: string; b: number; o: number }[]; coverage: Coverage; rollup: boolean } | null> {
+  const cov: Coverage = {}
+  const v = await readView(env, { date: o.date, path: o.path, query: o.query, w: 1280, h: 800, minArea: MIN_AREA_DEFAULT, atten: ATTEN_DEFAULT, maxDepth: 0, firstPaint: true }, cov)
+  if (!v) return v === null && (cov.partial || cov.approximate) ? { roots: [], coverage: cov, rollup: false } : null
+  return { roots: (v.matched ?? []).slice().sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)), coverage: cov, rollup: !!v.rollup }
+}
+
+/** Row groups one cover lookup may read, and all of a cover's lookups together. */
+export const COVER_LOOKUP_GROUPS = 60
+export const COVER_TOTAL_GROUPS = 240
+
+/** Totals and kinds of paths on `date` from the `path` sort (every owner slice summed), by point lookups:
+ *  null for a call past `COVER_LOOKUP_GROUPS`, or once the calls together pass `COVER_TOTAL_GROUPS`. */
+export function pathTotals(env: Env, date: string, budget = { call: COVER_LOOKUP_GROUPS, total: COVER_TOTAL_GROUPS }): (paths: string[]) => Promise<Map<string, { b: number; o: number; kind: 'file' | 'dir' }> | null> {
+  let h: Promise<IndexHandle> | undefined
+  let used = 0
+  return async paths => {
+    if (used >= budget.total) return null
+    h ??= openFine(env, date, 'path')
+    const want = new Set(paths)
+    let got: { rows: Row[]; groups: number }
+    try {
+      got = await readAsks(await h, paths.map(p => ({ depth: p.split('/').length, path: p })), r => want.has(r.path), { maxGroups: Math.min(budget.call, budget.total - used) })
+    } catch (e) {
+      if (/too wide/.test(String((e as Error).message ?? e))) { used = budget.total; return null }
+      throw e
+    }
+    used += got.groups
+    const out = new Map<string, { b: number; o: number; kind: 'file' | 'dir' }>()
+    for (const r of got.rows) {
+      const t = out.get(r.path)
+      if (t) { t.b += r.size; t.o += r.n_files } else out.set(r.path, { b: r.size, o: r.n_files, kind: r.kind })
+    }
+    return out
+  }
+}

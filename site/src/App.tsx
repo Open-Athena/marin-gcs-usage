@@ -8,7 +8,7 @@ import { stringParam, useUrlState } from 'use-prms'
 import { bareEmpty, legacyOwner, ownerParam } from './ownerParam'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { canonId, shortName, shortUserKey } from './UserChip'
-import { signInUrl, useCanAssign, useIdent as useIdentity } from './auth'
+import { signInUrl, useCanAssign, useCanStage, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap, DiffHeader, useDiffModel } from './DiffTreemap'
 import { DiffTable } from './DiffTable'
@@ -29,7 +29,8 @@ import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
-import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
+import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
+import { useFilterCover } from './filterCover'
 import { QueryHelpTip } from './QueryHelp'
 import { apiErrorMessage, INDEXED_SYNTAX, useFilterCaps } from './filterCaps'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
@@ -149,6 +150,7 @@ function AppContent() {
     navigate({ pathname: legacy ? `${base}/${legacy.replace(/^\/+|\/+$/g, '')}` : store.path, search: rest ? `?${rest}` : '', hash }, { replace: true })
   }, [search, hash, navigate, store])
   const canAssign = useCanAssign()
+  const canStage = useCanStage()
   const ident = useIdentity()
   // The owner axis (`Store.owners`): the ownership ledger overlays the map
   // and the table for any signed-in viewer; admins assign from it.
@@ -547,10 +549,22 @@ function AppContent() {
   const mapStale = !tree && !!lastTree.current
   const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
 
-  // Bulk actions target the outermost matched prefixes — the nodes the server
-  // flagged `m` (a match root's whole subtree comes along, so its descendants
-  // aren't flagged).
-  const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
+  // Bulk actions (the bar, the table's rows) under a filter take its matches under the view as the fewest
+  // exact prefixes (`/api/filter-cover`): every match, listed, never a drawn subset or a row's whole prefix.
+  // Unscoped only — under an owner or class scope a match's scoped bytes aren't a prefix.
+  const canStageHere = store.staging && canStage
+  const canAssignHere = ownersMode && canAssign
+  const coverScoped = !!activeLens || ownerMode !== 'all' || !!classSet
+  const coverQ = useFilterCover(sfetch, store.key, { date: asof ?? null, path: graftPath, q: fq, qs: syntax.id, enabled: !!fq && !coverScoped && (canAssignHere || canStageHere) })
+  const tblFilter = useMemo(() => {
+    if (!fq) return undefined
+    const c = coverQ.data
+    const why = coverScoped ? 'Clear the owner or storage-class scope to act on the matches.'
+      : coverQ.error ? `Can’t list this row’s matches: ${coverQ.error.message}`
+      : c && !c.complete ? c.reason
+      : undefined
+    return { items: c?.complete ? c.items : null, why }
+  }, [fq, coverQ.data, coverQ.error, coverScoped])
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
@@ -829,7 +843,6 @@ function AppContent() {
   }, [mapTree, drillPath])
   // The table's path segments, stable while `mapPath` is (a fresh array per
   // render defeated every memo keyed on it).
-  const tblActionable = useMemo(() => inMatchRoots(matchedRoots, !!fq), [matchedRoots, fq])
   const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
   const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
   // Worklist rows / children table → drill the map to a prefix and show it.
@@ -1156,8 +1169,8 @@ function AppContent() {
             </FilterNote>
           </span>
         )}
-        {fq && fMatches.length > 0 && (
-          <BulkBar matches={fMatches} total={fCoverage?.matchesTotal} incomplete={fCoverage?.matchesTruncated} scheme={store.scheme} query={fq} />
+        {fq && !coverScoped && (
+          <BulkBar cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error?.message} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
         )}
       </SiteNav>
 
@@ -1273,7 +1286,7 @@ function AppContent() {
               onPickUser={u => pickUser(u, false)}
               onOpen={openPath}
               onOpenObject={openObject}
-              actionable={tblActionable}
+              filter={tblFilter}
             /></div>
           )}
         </>
