@@ -1012,7 +1012,7 @@ def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratc
 @option("-K", "--keep", "K", default=256, type=int, help="Children kept by name per heavy directory")
 @option("-m", "--mount", required=True, help="Local mount of the bucket (the scratch bucket mounted beside it)")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
-@option("-n", "--stride", default=1, type=IntRange(min=1), help="Task i builds q-groups i, i + n, i + 2n, …")
+@option("-n", "--stride", type=IntRange(min=1), help="Task i builds q-groups i, i + n, i + 2n, … (default: $BATCH_TASK_COUNT, else 1)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="Directories with more root rows under them get rollups")
 @option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the shuffle")
@@ -1021,9 +1021,12 @@ def short_reduce_cmd(bucket, gen, index, K, mount, mem, stride, threads, R, scra
     """Each of the task's q-groups: every partition's roots of its literals → `drill/short/{roots,rollups,roots-index,rollups-index}/g###.parquet`."""
     from google.cloud import storage
 
+    import os
+
     prefix = f"{PREFIX}/{gen}"
     plan = read_json(f"gs://{bucket}/{prefix}/{DRILL}/short-plan.json")
     t = _task(index)
+    stride = stride or int(os.environ.get("BATCH_TASK_COUNT", "1"))
     client = storage.Client()
     b = client.bucket(bucket)
     smount = str(Path(mount).parent / scratch)
