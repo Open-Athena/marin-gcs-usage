@@ -922,7 +922,11 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // `maxDepth` caps the forest at dP + N (a `depth=1` diff walks one level): a root at or below the cap
     // has nothing inside it drawn, nor is its own row looked up past it.
     const shown = (r: string) => maxDepth == null || depthF.get(r)! <= dP + maxDepth
-    const readRoots = [...roots].filter(r => drawn(r) && netRoot(r).o > 1 && netRoot(r).b >= subdivMin && (maxDepth == null || depthF.get(r)! < dP + maxDepth)).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
+    // The `k` heaviest of `rs` by net bytes, ties by path (decorated once: a comparator asking `netRoot` cost
+    // ~2.6M map reads to order a static literal's ~80K roots).
+    const heaviest = (rs: string[], k: number): string[] => rs.map(r => [netRoot(r).b, r] as const)
+      .sort((x, y) => y[0] - x[0] || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0)).slice(0, k).map(x => x[1])
+    const readRoots = heaviest(roots.filter(r => drawn(r) && netRoot(r).o > 1 && netRoot(r).b >= subdivMin && (maxDepth == null || depthF.get(r)! < dP + maxDepth)), REGION_READS)
       .map(r => ({ path: r, depth: depthF.get(r)! }))
     const loose = looseThreshold(T, atten, readRoots.map(r => r.depth))
     t0 = performance.now()
@@ -933,7 +937,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     const firstPaintStatic = staticRoots && !!o.firstPaint
     let detailsOff = false
     const details = staticRoots && !firstPaintStatic && !(maxDepth != null && maxDepth <= 0) ? (async () => {
-      const want = [...roots].filter(r => drawn(r) && shown(r)).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
+      const want = heaviest(roots.filter(r => drawn(r) && shown(r)), ROOT_DETAILS)
       if (!want.length) return []
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
       try {
@@ -1056,12 +1060,14 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const fresh = matchRoots([...p2.depth.keys()].filter(p => rootFor(p) !== null && !underExcl(p)), negP, path)
       for (const e of fresh) exclude(e, scoped(e, p2.all.get(e)!, p2.mine.get(e)!))
     }
-    const aggsF = new Map<string, Agg>()
     const matchedAgg = newAgg()
     const rootNet = new Map<string, Agg>()
-    // The forest: the roots and every ancestor between P and them, each ancestor's aggregate the sum of
-    // its children's, built bottom-up (one sum per node; summing each root into all its ancestors cost
-    // ~depth sums per root, most of a static literal's ~80K-root build).
+    // The forest: the roots and every ancestor between P and them. Their bytes first, as plain numbers,
+    // bottom-up (one add per node); then aggregates for the drawn nodes only — each root summed once into
+    // the nearest drawn node at or above it, and drawn nodes into their drawn parents. A static literal's
+    // ~80K roots are almost all folded: an aggregate per root and per ancestor, summed level by level and
+    // then deleted, was most of the view's CPU on the edge.
+    const nb = new Map<string, number>()
     const levels: string[][] = []
     const atLevel = (p: string, d: number) => (levels[d] ??= []).push(p)
     for (const r of roots) {
@@ -1069,33 +1075,44 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       rootNet.set(r, a)
       sumAgg(matchedAgg, a)
       if (r === path) continue
-      aggsF.set(r, a)
+      nb.set(r, a.b)
       atLevel(r, depthF.get(r)!)
     }
     if (matchedAgg.b <= 0) return null
     for (const r of roots) {
       if (r === path) continue
       for (let q = parentOf(r), d = depthF.get(r)! - 1; q.length > path.length; q = parentOf(q), d--) {
-        if (aggsF.has(q)) break
-        aggsF.set(q, newAgg()); depthF.set(q, d); atLevel(q, d)
+        if (nb.has(q)) break
+        nb.set(q, 0); depthF.set(q, d); atLevel(q, d)
         if (q === '') break
       }
     }
     for (let d = levels.length - 1; d > dP + 1; d--) {
-      for (const p of levels[d] ?? []) sumAgg(aggsF.get(parentOf(p))!, aggsF.get(p)!)
+      for (const p of levels[d] ?? []) { const par = parentOf(p); nb.set(par, nb.get(par)! + nb.get(p)!) }
     }
     // The pixel budget over the forest's own nodes, as the plain view applies it to P's: a match root,
     // or an ancestor holding only roots, under its level's threshold (attenuated from P) folds into its
     // parent's `(other)`. Descendant-inclusive bytes keep the kept set ancestor-closed. Without it a
     // literal with 20K small roots (`tomat`: podcast files) shipped every one as a tile (10 MB).
-    const foldedF = new Map<string, number>()
     const thrTop = (d: number) => T * atten ** Math.max(0, d - dP - 1)
-    const folded: string[] = []
-    for (const [p, a] of aggsF) if (a.b < thrTop(depthF.get(p)!)) folded.push(p)
-    for (const p of folded) aggsF.delete(p)
-    for (const p of folded) {
+    const aggsF = new Map<string, Agg>()
+    for (const [p, b] of nb) if (b >= thrTop(depthF.get(p)!)) aggsF.set(p, rootNet.get(p) ?? newAgg())
+    const foldedF = new Map<string, number>()
+    for (const p of nb.keys()) {
+      if (aggsF.has(p)) continue
       const par = parentOf(p)
       if (par === path || aggsF.has(par)) foldedF.set(par, (foldedF.get(par) ?? 0) + 1)
+    }
+    for (const r of roots) {
+      if (r === path || aggsF.has(r)) continue
+      for (let q = parentOf(r); q.length > path.length; q = parentOf(q)) {
+        const k = aggsF.get(q)
+        if (k) { sumAgg(k, rootNet.get(r)!); break }
+        if (q === '') break
+      }
+    }
+    for (let d = levels.length - 1; d > dP + 1; d--) {
+      for (const p of levels[d] ?? []) { const a = aggsF.get(p); if (a) sumAgg(aggsF.get(parentOf(p))!, a) }
     }
     const below: string[] = []
     for (const [p, d] of p2.depth) {
@@ -1122,7 +1139,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     return {
       rootAll, rootAgg: matchedAgg, kept: aggsF, aggDepth: depthF, foldedOf: foldedF, threshold: T, thrAt: loose,
       tier: `${p1Tier}+${tierName}`, idx: regionIdx, truncated: searchCut || roots.length > HARD_CAP,
-      matches: [...roots].sort(),
+      matches: sortedOnce(roots),
       // Heaviest first (ties by path): the list a bulk action and the series read.
       matched: roots.map(r => ({ path: r, b: Math.round(rootNet.get(r)!.b), o: Math.round(rootNet.get(r)!.o) })).sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)),
       ...(excl.size ? { excluded: [...excl.keys()].sort(), excl } : {}),
@@ -1411,6 +1428,12 @@ const ROOT_DETAILS = 48
  *  ~20 groups to answer after phase 2 had already given up on them. */
 const DETAIL_GROUPS = 16
 
+/** `xs` in code-unit order: itself when it already is (a static literal's ~80K roots are), else a sorted copy. */
+function sortedOnce(xs: string[]): string[] {
+  for (let i = 1; i < xs.length; i++) if (xs[i - 1] > xs[i]) return [...xs].sort()
+  return xs
+}
+
 const parentOf = (p: string): string => {
   const cut = p.lastIndexOf('/')
   return cut === -1 ? '' : p.slice(0, cut)
@@ -1682,8 +1705,16 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   }
   let lookups = 0
   let capped = false
+  // Each side's match roots and excluded paths as sets (a static literal's ~80K roots: an ancestor walk per
+  // lookup, not a scan of every root).
+  const sets = new Map<Read, { m: Set<string>; e: Set<string> }>()
+  const setsOf = (v: Read) => { let x = sets.get(v); if (!x) sets.set(v, (x = { m: new Set(v.matches ?? []), e: new Set(v.excluded ?? []) })); return x }
+  const atOrUnder = (p: string, set: Set<string>): boolean => {
+    if (!set.size) return false
+    for (let q = p; ; q = parentOf(q)) { if (set.has(q)) return true; if (q === '' || q.length <= path.length) return false }
+  }
   const inQuery = (p: string, v: Read): boolean =>
-    !query || ((v.matches ?? []).some(m => p === m || p.startsWith(m + '/')) && !(v.excluded ?? []).some(e => p === e || p.startsWith(e + '/')))
+    !query || (atOrUnder(p, setsOf(v).m) && !atOrUnder(p, setsOf(v).e))
   // A path's lookup total less the side's excluded paths under it (NOT).
   const net = (v: Read, p: string, a: Agg): Agg => {
     if (!v.excl) return a
