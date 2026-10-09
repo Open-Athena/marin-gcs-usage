@@ -183,8 +183,11 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
   return { b: Number(b), o: Number(o), roots: roots.size }
 }
 
+/** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists). */
+const RESPONSE_V = 2
+
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
 export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | undefined): string {
-  return staticLiteral(query?.ast) && staticFilterStore(env) ? staticFilterStore(env)!.gen : ''
+  return staticLiteral(query?.ast) && staticFilterStore(env) ? `${staticFilterStore(env)!.gen}.${RESPONSE_V}` : ''
 }
