@@ -16,7 +16,9 @@ describe('the filter note: errors and completeness, spelled out', () => {
       `<span class="fnote">no matches<span class="fflag">approximate: ${NO_INDEX}</span></span>`],
     ['both', { matched: '1 KiB matched', coverage: { partialReason: 'x', approximateReason: 'y' } },
       '<span class="fnote">1 KiB matched<span class="fflag">partial results: x</span><span class="fflag">approximate: y</span></span>'],
-    ['a parse error, inline, instead of searching', { error: 'type at least 3 characters (“gr”)', matched: null },
+    ['the hex-run rule applied: an info icon carrying the note', { matched: '40 B matched', coverage: { hexRuns: { min: 16, tail: 8 } } },
+      '<span class="fnote">40 B matched<span class="tt-ref" tabindex="0"><span class="fflag fhex" role="note" aria-label="Matches inside long hex IDs (16+ hex digits) aren&#x27;t indexed.">ⓘ</span></span></span>'],
+        ['a parse error, inline, instead of searching', { error: 'type at least 3 characters (“gr”)', matched: null },
       '<span class="fnote ferr" role="alert">type at least 3 characters (“gr”)</span>'],
     ['nothing yet', { matched: null }, ''],
   ])('%s', (_, props, want) => {

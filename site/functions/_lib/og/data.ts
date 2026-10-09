@@ -14,6 +14,7 @@ import { parseOwner, queryParam, QueryError } from '../scope.js'
 import { snapshotsPrefix } from '../shared.js'
 import { decodeSel, resolveAfter } from '../../../src/scanSlug.js'
 import { ATTEN_DEFAULT, buildView, MIN_AREA_DEFAULT, NotFound } from '../view.js'
+import { hexQuery } from '../staticFilter.js'
 import { HI_CONTRAST } from '../../../src/colors.js'
 import { applyLedger } from '../../../src/ledgerOverlay.js'
 import { ownerIndex } from '../../../src/ownerIndex.js'
@@ -132,6 +133,8 @@ export async function mapCard(env: Env, site: Site, title: string, params: Recor
   const lens: Lens | undefined = lensUser ? { key: lensUser } : undefined
   let tree: TreeNode
   try {
+    // The static index's hex-run rule: the card's filter matches as the map's does.
+    query = (await hexQuery(env, query)).query
     const view = await buildView(env, { date, path, w: BOX_W, h: BOX_H, minArea: MIN_AREA_DEFAULT, atten: ATTEN_DEFAULT, lens, owner, query, maxDepth: 2 })
     tree = view.tree
   } catch (e) {

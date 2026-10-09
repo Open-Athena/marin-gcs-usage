@@ -17,7 +17,7 @@ import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, queryParam, QueryError, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { indexedGate, staticTag } from '../_lib/staticFilter.js'
+import { hexNote, hexQuery, indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, keepFor, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
@@ -88,7 +88,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     if (e instanceof QueryError) return new Response(`bad query: ${e.message}`, { status: 400 })
     throw e
   }
-  const query = qp.query
+  let query = qp.query
   // An indexed-only deployment: one literal, unscoped (`_lib/indexedOnly.ts`), before auth or any read.
   const refused = query && indexedOnly(ctx.env) ? rejectQuery(qRaw, url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
   if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
@@ -122,6 +122,9 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       if (scan instanceof Response) return scan
       date = scan
     }
+    // The static index's hex-run rule: substrings match where they `occur` under it, static or not (`hexRuns.ts`).
+    const hx = await hexQuery(ctx.env, query)
+    query = hx.query
     const [head, xtra, g, indexed] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date]), indexedScan(ctx.env, date, true)]))
     if (!indexed) return noScan('date', date)
     const cacheKey = cacheKeyFor('subtree',
@@ -175,7 +178,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       nodes: view.nodes,
       truncated: view.truncated,
       ...(owner ? { owner } : {}),
-      ...(query ? { q: qRaw, matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
+      ...(query ? { q: qRaw, ...hexNote(hx.hexRuns, query.ast), matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
       ...(view.interiors?.late ? { budgetCut: true } : {}),
       tree: view.tree,
     })

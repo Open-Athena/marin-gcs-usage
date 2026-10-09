@@ -4,6 +4,7 @@ import { HotMaps } from './HotMaps'
 import { HotSearchForm, HotTotals } from './HotPage'
 import { SiteKbd } from './SiteKbd'
 import type { HotRequest } from './hotModel'
+import { HexRunsInfo, hexRunsNote } from './FilterNote'
 import { loadName, loadNameRegistry, nameHasDetail, namePageParams, nameRequest, nameResultForRegistry, type NameQualification, type NameResult } from './nameModel'
 import { useDocTitle } from './title'
 import { fmtScan, fromMiss, scanMiss, useScans, useScanSel, type ScanMiss } from './scan'
@@ -136,6 +137,7 @@ export function NamePage() {
     {scansQ.error && <p role="alert">Couldn’t load the scan list ({scansQ.error.message}), so this page can’t tell which scan the link names.</p>}
     {request && !issue && query.isPending && <p role="status">Loading exact name summary…</p>}
     {request && !issue && query.error && <p role="alert">{query.error.message}</p>}
+    {request && !issue && result?.hexRuns && <p className="hot-note hex-runs" aria-label="Hex-run note"><HexRunsInfo min={result.hexRuns.min} /> {hexRunsNote(result.hexRuns.min)}</p>}
     {request && !issue && result && <><NamePlanStatus result={result} /><HotMaps result={result} request={detail} /><HotTotals result={result} request={detail} />
       <p className="hot-note">{detail ? 'Prepared bucket detail is available through the map actions and table links.' : result.capabilities ? 'These dated root summaries have exact bucket totals only; no prepared bucket detail or deeper drill-down.' : 'This on-demand result has root and bucket totals only; no prepared bucket detail or deeper drill-down.'}</p></>}
     <footer>No owner or Boolean filters in this preview. The <Link to="/hot">catalog-only preview</Link> and main <Link to="/">storage map</Link> are unchanged.</footer>

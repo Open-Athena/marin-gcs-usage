@@ -38,6 +38,8 @@ export interface DiffData {
    * (`FilterNote.tsx`). */
   partialReason?: string
   approximateReason?: string
+  /** With `q=`: the static index's hex-run rule applied to the literal (`FilterNote.tsx` `HexRunsInfo`). */
+  hexRuns?: { min: number; tail: number }
 }
 
 export type AreaMode = 'max' | 'delta'

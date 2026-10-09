@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Tooltip } from './Tooltip'
 
 /** What a filtered response says about its own completeness (`/api/subtree`,
  * `/api/diff`): a read budget stopped the search (`partial`), or the matches
@@ -6,14 +7,31 @@ import type { ReactNode } from 'react'
 export interface Coverage {
   partialReason?: string
   approximateReason?: string
+  /** The static name index's hex-run rule, applied to this literal (specs/static-hex-runs.md): its matches
+   * inside hex ids of `min`+ digits aren't counted. */
+  hexRuns?: { min: number; tail: number }
+}
+
+/** The hex-run note's text: why a hex-looking literal may match less than a substring search would. */
+export const hexRunsNote = (min: number): string => `Matches inside long hex IDs (${min}+ hex digits) aren't indexed.`
+
+/** An info icon whose tooltip says the hex-run rule applied (`hexRunsNote`). */
+export function HexRunsInfo({ min }: { min: number }) {
+  const note = hexRunsNote(min)
+  return (
+    <Tooltip content={note}>
+      <span className="fflag fhex" role="note" aria-label={note}>ⓘ</span>
+    </Tooltip>
+  )
 }
 
 /** The coverage flags, spelled out — never a silent "fewer matches". */
-export function FilterFlags({ partialReason, approximateReason }: Coverage) {
+export function FilterFlags({ partialReason, approximateReason, hexRuns }: Coverage) {
   return (
     <>
       {partialReason && <span className="fflag">partial results: {partialReason}</span>}
       {approximateReason && <span className="fflag">approximate: {approximateReason}</span>}
+      {hexRuns && <HexRunsInfo min={hexRuns.min} />}
     </>
   )
 }

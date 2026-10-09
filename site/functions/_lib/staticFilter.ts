@@ -28,6 +28,9 @@ import { type CatalogLookup, Drill, DRILL_DIR, DrillSource, type Rollup } from '
 import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanAt, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 import { type FilterReject, reject } from './indexedOnly.js'
+import { type HexRule, hexAffected, occurs } from './hexRuns.js'
+import type { Matcher } from './queryAst.js'
+import { compileQuery, type NamePred } from './pathQuery.js'
 
 export type { Hit } from './staticNames.js'
 export { type Rollup, rollupAt, rollupTotal } from './staticDrill.js'
@@ -65,8 +68,8 @@ export interface HitSource {
   readonly heavy?: boolean
 }
 
-/** The generation's scans (ids). */
-export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; gen: string }
+/** The generation's scans (ids); `hexRuns`: its hex-run rule (`hexRuns.ts`; absent or null = the full index). */
+export interface StaticFilterStore { source: HitSource; scans: () => Promise<string[]>; gen: string; hexRuns?: () => Promise<HexRule | null> }
 
 /** A suffix range read whole above this many rows (row-group granular) is declined: V = 100K (the
  *  catalog's membership bound, so every non-member fits) plus two 8K-row groups of slack. */
@@ -202,7 +205,7 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
     // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base and the runs (the fleet root from the tiers' catalog).
     const runs = async () => (await t.tiers.state()).tiers.flatMap(x => x.dir ? [x.dir] : [])
     const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2, pre), { cache: caches.default, prefix: pre }, { runs, catalog: t.catalog }) : null
-    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}`, hexRuns: () => t.names.hexRuns() } }
   }
   return held.store
 }
@@ -231,13 +234,40 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
 /** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
  *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget; 5: a 1–2
  *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
- *  the drill runs' scans). */
-const RESPONSE_V = 6
+ *  the drill runs' scans; 7: the hex-run rule — `hexRuns` on hex-affected literals, `occurs` in the fallback). */
+const RESPONSE_V = 7
 
-/** The cache keys' static marker: the generation when the static filter would answer this query's literal
- *  (so a response never outlives a switch of backend or generation), else ''. */
+/** The query's substring matchers (positive and negative): the literals the hex-run rule applies to. */
+export const subTexts = (ast: QueryAst | undefined): string[] =>
+  ast ? [...ast.alts.flat(), ...ast.neg].filter((m): m is Extract<Matcher, { kind: 'sub' }> => m.kind === 'sub').map(m => m.text) : []
+
+/** The cache keys' static marker: the generation when the static filter would answer this query's literal, or
+ *  when the query has any substring matcher (the generation's hex-run rule decides how the fallback matches it), so
+ *  a response never outlives a switch of backend or generation; else ''. */
 export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | undefined): string {
-  return staticLiteral(query?.ast) && staticFilterStore(env) ? `${staticFilterStore(env)!.gen}.${RESPONSE_V}` : ''
+  const s = staticFilterStore(env)
+  return s && (staticLiteral(query?.ast) || subTexts(query?.ast).length) ? `${s.gen}.${RESPONSE_V}` : ''
+}
+
+/** The deployment's hex-run rule: its static store's generation's (null: no static store, or a generation built
+ *  without the rule). The filter's predicate then matches substrings by `occurs` under it (`pathQuery.ts`), so the
+ *  static and the path-store answers for a literal agree. */
+export async function staticHexRule(env: StaticFilterEnv): Promise<HexRule | null> {
+  const s = staticFilterStore(env)
+  return s?.hexRuns ? await s.hexRuns() : null
+}
+
+/** `query` recompiled under the deployment's hex-run rule (`staticHexRule`), with the rule: unchanged when there is
+ *  none (or no query). */
+export async function hexQuery(env: StaticFilterEnv, query: NamePred | undefined): Promise<{ query: NamePred | undefined; hexRuns: HexRule | null }> {
+  const rule = query?.ast ? await staticHexRule(env) : null
+  return { query: rule ? compileQuery(query!.ast!, { hexRuns: rule }) : query, hexRuns: rule }
+}
+
+/** A response's `hexRuns` note: the rule, when it is on and some substring of the query is hex-affected (its
+ *  matches inside long hex ids aren't counted); else nothing. Never a refusal. */
+export function hexNote(rule: HexRule | null, ast: QueryAst | undefined): { hexRuns?: HexRule } {
+  return rule && subTexts(ast).some(t => hexAffected(t, rule)) ? { hexRuns: { min: rule.min, tail: rule.tail } } : {}
 }
 
 /** Why a static read declined: a scan outside the generation (`skey` null), or a heavy literal past the
@@ -254,8 +284,8 @@ export function declined(s: StaticFilterStore | null, skey: string | null, raw: 
 export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
   const key = staticLiteral(ast)
   if (!key) return reject('unsupported-terms')
-  if (path.toLowerCase().includes(key)) return null
   const s = staticFilterStore(env)
+  if (occurs(key, path.toLowerCase(), await staticHexRule(env))) return null
   const skey = s ? await staticKey(s, ast, dates) : null
   if (!skey) return declined(s, null, null)
   const found = await s!.source.hits(key, path)

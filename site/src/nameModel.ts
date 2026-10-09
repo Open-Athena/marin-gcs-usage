@@ -10,7 +10,8 @@ export interface NameExecution {
   source_identity: { generation?: string; snapshot_db?: string; history_manifest_sha256?: string; kind?: NameScanKind; target?: string; artifact_sha256?: string; artifact_bytes?: number; source_manifest_sha256?: string; source_prefix_proofs_checked?: true; postings?: string; through?: string; geometry?: 'preorder' | 'ordinal'; catalog?: string; max_rows?: number }
   registry?: NameQualification
 }
-export interface NameResult extends HotResult { execution: { after: NameExecution; before?: NameExecution }; logical_store?: string; capabilities?: { bucket_drill: false; child_drill: false; fallback: false } }
+/** `hexRuns`: the static index's hex-run rule applied to this literal (it is hex-affected): matches inside hex ids of `min`+ digits aren't counted. */
+export interface NameResult extends HotResult { execution: { after: NameExecution; before?: NameExecution }; logical_store?: string; capabilities?: { bucket_drill: false; child_drill: false; fallback: false }; hexRuns?: { min: number; tail: number } }
 /** `consolidated-store-v1`: a scan only the store holds. With the store's consolidated catalog (`catalog` in its identity),
  * literals registered on the scan itself answer from it and the rest on demand from the store's one consolidated name
  * index; without one, every literal answers on demand. Its bucket bounds are path preorder, or (a scan recording no
@@ -155,7 +156,7 @@ function datedExecution(body: Record<string, unknown>): NameExecution {
   if (identity.kind === 'static-names-v1') {
     const checked = staticIdentity(identity)
     const plan = body.plan === 'catalog' || body.plan === 'bounded-name-postings' ? body.plan : fail()
-    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets']) ||
+    if (!keys(body, ['schema', 'logical_store', 'target', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'plan', 'source', 'source_identity', 'validation', 'capabilities', 'root', 'buckets', ...('hexRuns' in body ? ['hexRuns'] : [])]) ||
         body.source !== (plan === 'catalog' ? STATIC_CATALOG_SOURCE : STATIC_SOURCE) || body.target !== 'static_names' || !keys(validation, validationKeys) ||
         typeof validation.description !== 'string' || !validation.description.trim() || validation.source_prefix_proofs_checked !== true || validation.independent_full_catalog_source_oracle !== false) fail()
     return { plan, source: body.source as string, validation: { description: validation.description, source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false }, source_identity: checked }
@@ -195,12 +196,19 @@ function datedView(value: unknown): { view: HotView; execution: NameExecution; s
   if (!same(root, sum)) fail()
   return { view: { target: body.target as string, date: body.date as string, pattern: body.pattern as string, root, buckets: buckets.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }, execution: datedExecution(body), store: body.logical_store as string }
 }
+/** A body's optional `hexRuns` note (`{ min, tail }`), checked. */
+function hexRunsOf(body: Record<string, unknown>): { hexRuns?: { min: number; tail: number } } {
+  if (!('hexRuns' in body)) return {}
+  const r = record(body.hexRuns)
+  if (!keys(r, ['min', 'tail']) || integer(r.min) < 2 || integer(r.tail) >= integer(r.min)) fail()
+  return { hexRuns: { min: integer(r.min), tail: integer(r.tail) } }
+}
 function parseDated(value: unknown, request: HotRequest): NameResult {
-  const body = record(value), cap = capabilities(body.capabilities)
+  const body = record(value), cap = capabilities(body.capabilities), hex = hexRunsOf(body)
   const after = datedView(request.from ? body.after : body), before = request.from ? datedView(body.before) : undefined
   if (after.view.date !== request.date || after.view.pattern !== request.name || (before && (before.view.date !== request.from || before.view.pattern !== request.name || before.store !== after.store))) fail()
-  if (!request.from) return { after: after.view, execution: { after: after.execution }, logical_store: after.store, capabilities: cap }
-  if (!keys(body, ['schema', 'logical_store', 'from', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'before', 'after', 'delta', 'capabilities', 'buckets']) || body.schema !== 'dated-name-summary-diff-v1' || body.from !== request.from || body.date !== request.date || body.logical_store !== after.store || body.pattern !== request.name || body.path !== '' || body.exact !== true || body.incremental !== false || body.levels !== 1 || body.scope !== HOT_SCOPE || !Array.isArray(body.buckets) || body.buckets.length !== after.view.buckets.length || before!.view.buckets.length !== after.view.buckets.length) fail()
+  if (!request.from) return { after: after.view, execution: { after: after.execution }, logical_store: after.store, capabilities: cap, ...hex }
+  if (!keys(body, ['schema', 'logical_store', 'from', 'date', 'pattern', 'path', 'exact', 'incremental', 'levels', 'scope', 'before', 'after', 'delta', 'capabilities', 'buckets', ...(hex.hexRuns ? ['hexRuns'] : [])]) || body.schema !== 'dated-name-summary-diff-v1' || body.from !== request.from || body.date !== request.date || body.logical_store !== after.store || body.pattern !== request.name || body.path !== '' || body.exact !== true || body.incremental !== false || body.levels !== 1 || body.scope !== HOT_SCOPE || !Array.isArray(body.buckets) || body.buckets.length !== after.view.buckets.length || before!.view.buckets.length !== after.view.buckets.length) fail()
   const change = delta(before!.view.root, after.view.root)
   if (!same(weights(body.delta, true), change)) fail()
   const rows = new Map((body.buckets as unknown[]).map(value => { const row = record(value); return [row.path, row] }))
@@ -214,7 +222,7 @@ function parseDated(value: unknown, request: HotRequest): NameResult {
     }
     if (!same(weights(row!.delta, true), delta(a, b))) fail()
   })
-  return { before: before!.view, after: after.view, delta: change, execution: { before: before!.execution, after: after.execution }, logical_store: after.store, capabilities: cap }
+  return { before: before!.view, after: after.view, delta: change, execution: { before: before!.execution, after: after.execution }, logical_store: after.store, capabilities: cap, ...hex }
 }
 export function parseName(value: unknown, request: HotRequest): NameResult {
   if (record(value).schema === 'dated-name-summary-v1' || record(value).schema === 'dated-name-summary-diff-v1') return parseDated(value, request)

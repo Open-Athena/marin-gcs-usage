@@ -420,7 +420,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
-        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; matches?: string[]; threshold?: number; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; matches?: string[]; threshold?: number; partialReason?: string; approximateReason?: string; hexRuns?: { min: number; tail: number } }
         pf.decoded()
         return j
       },
@@ -451,7 +451,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; partialReason?: string; approximateReason?: string; hexRuns?: { min: number; tail: number } }
         pf.decoded()
         return j
       },
@@ -617,7 +617,7 @@ function AppContent() {
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, hexRuns: d.hexRuns }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out) and the scroll
@@ -1383,8 +1383,8 @@ function AppContent() {
               {diff.lookups_capped && <> Some small one-sided names went unread (lookup budget); they may sit in “(other)”.</>}
               {diff.truncated && <> Largest changes shown — the diff walk was budget-capped, so the smallest movements aren’t enumerated (the totals are exact).</>}
             </>}><span className="info" tabIndex={0} aria-label="how this diff is read"> ⓘ</span></Tooltip>
-          )}{diff && fq && (diff.partialReason || diff.approximateReason) && (
-            <span className="fflags"><FilterFlags partialReason={diff.partialReason} approximateReason={diff.approximateReason} /></span>
+          )}{diff && fq && (diff.partialReason || diff.approximateReason || diff.hexRuns) && (
+            <span className="fflags"><FilterFlags partialReason={diff.partialReason} approximateReason={diff.approximateReason} hexRuns={diff.hexRuns} /></span>
           )}</h2>
           {/* 2-row header band above the map: scan pickers + presets (with the
               status/error line) sit as `controls`, the colour legend beneath
