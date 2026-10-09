@@ -367,6 +367,7 @@ async function planSubtree(
   nDesc: number | null,
   smallRows: number,
   tr?: Trace,
+  pathOnly = false,
 ): Promise<SubtreePlan> {
   const held = (plan: Span[]) => plan.reduce((n, x) => n + (x.rowEnd - x.rowStart), 0)
   const of = (variant: string, plan: Span[], read: SubtreePlan['read']): SubtreePlan => ({ variant, groups: plan.length, rows: held(plan), read })
@@ -377,7 +378,7 @@ async function planSubtree(
   // `n_desc` alone, and with large row groups the wrong pick decodes 4×
   // more (gcs at 32K-row groups: small drills over the 700K-row cap).
   // `smallRows`: below it the `path` read is taken without planning `bysize`.
-  if (isStore(pathIdx) && (nDesc == null || nDesc > smallRows)) {
+  if (!pathOnly && isStore(pathIdx) && (nDesc == null || nDesc > smallRows)) {
     // A lens prefers the user-first size sort where the scan has one (gcs
     // writes only `bysize-user`): a user's root reads their own groups.
     const sized = (lens ? await tryOpen(env, date, 'bysize-user') : null) ?? await tryOpen(env, date, sizeVariant(pathIdx.variant))
@@ -975,7 +976,11 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const planFor = (rs: { path: string; depth: number }[]) => {
         const nd = rootHit ? nDesc : rs.reduce<number | null>((n, r) => { const d = p1!.all.get(r.path)?.nd; return n == null || d == null ? null : n + d }, 0)
         const rects = rootRects(rs).map((q, i) => capLevels(q, rs[i])).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, dP + maxDepth) } : q)
-        return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr))
+        // Level-capped rects read the `path` sort alone: ~a group per level per root, so its worst case (a
+        // deep subtree's every level) can't happen, and planning `bysize` too doubled the span queries —
+        // D1 runs them in turn, and a diff's two sides' plans took seconds (`00241`: 15–17 s of spans).
+        const capped = rs.every(r => r.path !== path)
+        return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr, capped))
       }
       const plans = await Promise.all(groups.map(planFor))
       let room = o.phase2Groups ?? FILTER_PHASE2_GROUPS
@@ -1344,8 +1349,9 @@ async function readRootAllRows(env: Env, date: string, path: string, dP: number)
 
 /** Bumped when a filtered view's answer changes for the same inputs (the subtree and diff cache keys carry
  *  it with `q=`): 2 — phase 2 bounded (subdivision area, levels, read and time budgets), the tile budget;
- *  3 — a view the query matches draws its subtree again; 4 — `depth=N` caps phase 2 at dP + N. */
-export const FILTER_VIEW_V = 4
+ *  3 — a view the query matches draws its subtree again; 4 — `depth=N` caps phase 2 at dP + N;
+ *  5 — level-capped interiors from the `path` sort. */
+export const FILTER_VIEW_V = 5
 
 /** A filter view's phase 2 (the insides of its match roots) subdivides a root only when its tile is at
  *  least this many px² — room for a title and a few legible cells; a smaller root is one exact tile. */
