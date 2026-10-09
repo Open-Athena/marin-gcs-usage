@@ -2141,6 +2141,49 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     .bb-more { color: var(--ink-2); padding: 1px 0 3px; }
   }
 }
+// An action on a filter's matches (`MatchActions.tsx`): the controls, then — in the same box, which keeps its
+// width so the row or bar never jumps — a spinner / batch bar, the accepted state, or the muted reason.
+.mact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  vertical-align: middle;
+  &:focus { outline: none; }
+  &.warming button.trash, &.warming select { cursor: progress; }
+  .act-live { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+  .act-live:empty { display: none; }
+  .act-st { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .act-st.busy { color: var(--ink-2); }
+  .act-st.ok { color: var(--s1); }
+  .act-st.muted { color: var(--ink-3); display: inline-block; max-width: 100%; }
+  .act-st.err { color: var(--s3); white-space: normal; }
+  .act-confirm { white-space: normal; font-size: 12px; color: var(--ink); text-align: left; }
+  .act-note { color: var(--ink-2); }
+  .spin {
+    width: 10px; height: 10px; border-radius: 50%; flex: none;
+    border: 2px solid var(--ink-3); border-top-color: transparent; animation: busy-spin 0.8s linear infinite;
+  }
+  .act-bar {
+    display: inline-block; flex: none; width: 56px; height: 6px; border-radius: 3px; overflow: hidden;
+    background: color-mix(in srgb, var(--ink) 12%, transparent);
+    > i { display: block; height: 100%; background: var(--s1); transition: width 0.2s; }
+  }
+  button.act {
+    background: transparent; border: 1px solid var(--act, var(--line)); color: var(--act, var(--ink-2));
+    border-radius: 5px; font-size: 12px; padding: 0 6px; cursor: pointer;
+    &.go { --act: var(--s1); font-weight: 600; }
+    &.x { border: none; padding: 0 3px; color: var(--ink-3); }
+    &:disabled { opacity: 0.45; cursor: default; }
+  }
+}
+// A filtered table row's box: its width reserved whatever the state (the controls, a spinner, the accepted
+// line, the muted reason truncated with its tooltip); a confirm wraps within it.
+.children-tbl td.actions .mact { width: 13em; }
+.bulkbar .bb-acts { min-width: 18em; justify-content: flex-start; }
+.children-tbl .sel-bar .sel-acts { min-width: 16em; }
+
 @media (max-width: 600px) {
   // On a phone the bar wraps under the filter box; the panel spans the screen's width.
   .bulkbar .bb-review { position: static; }

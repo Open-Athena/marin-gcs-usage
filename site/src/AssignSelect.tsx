@@ -2,6 +2,9 @@ import { useState } from 'react'
 import { ownerPost, useOwnerMutations } from './owners'
 import type { PlanItem } from './batches'
 import { assignInBatches } from './filterCover'
+import { isBucketPrefix } from './batches'
+
+export { isBucketPrefix }
 import { Tooltip } from './Tooltip'
 import { UserChip, allUsers } from './UserChip'
 
@@ -14,15 +17,18 @@ export const ASSIGN_TIP =
  * saves at once (the tooltip says so); the control resets to its placeholder
  * because the assignee then shows as the row's / panel's owner.
  */
-export function AssignSelect({ items: item, assigned, compact, label }: {
+export function AssignSelect({ items: item = [], assigned, compact, label, onPick }: {
   /** What to assign: folder prefixes (`gs://…/`) and exact objects, each with its kind. Many = one batched POST. */
-  items: PlanItem | PlanItem[]
+  items?: PlanItem | PlanItem[]
   /** Current assignee id, if any (drives the placeholder and offers unassign). */
   assigned?: string | null
   /** Table-cell sizing. */
   compact?: boolean
   /** Placeholder override (the selection bar says "assign N…"). */
   label?: string
+  /** The pick goes here instead of being saved (`owner` null: unassign; `who` the name picked): a filtered
+   *  row's matches are only listed once picked (`useMatchAct`), which then confirms and sends them. */
+  onPick?: (owner: string | null, who: string) => void
 }) {
   const { post } = useOwnerMutations()
   const items = Array.isArray(item) ? item : [item]
@@ -51,21 +57,20 @@ export function AssignSelect({ items: item, assigned, compact, label }: {
           const v = e.target.value
           if (!v) return
           const owner = v === '@none' ? null : v
-          if (buckets.length) setPending(owner)
+          if (onPick) onPick(owner, owner === null ? 'nobody' : owner === '@me' ? 'you' : (users.find(u => u.id === owner)?.name ?? owner))
+          else if (buckets.length) setPending(owner)
           else save(owner)
         }}
       >
         <option value="">{label ?? (assigned ? 'reassign…' : 'assign…')}</option>
         <option value="@me">me</option>
         {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-        {(assigned || items.length > 1) && <option value="@none">— unassign —</option>}
+        {(assigned || items.length > 1 || onPick) && <option value="@none">— unassign —</option>}
       </select>
     </Tooltip>
   )
 }
 
-/** `gs://bucket/` — a whole bucket, no path below it. */
-export const isBucketPrefix = (p: string): boolean => /^[a-z0-9]+:\/\/[^/]+\/$/.test(p)
 
 /** The assignee by name + when, for a row or the panel. */
 export function Assignee({ who, ts, size = 15 }: { who: string; ts?: number; size?: number }) {
