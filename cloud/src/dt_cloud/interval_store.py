@@ -568,9 +568,10 @@ def download_served(bucket: str, prefix: str, dst: Path, *, workers: int = 16) -
 @option("-m", "--mount", help="Local mount of the data bucket (per-scan sorts are copied from it)")
 @option("-n", "--tasks", default=1, type=IntRange(min=1), help="Tasks the sampled dates are split over")
 @option("-o", "--out", default="/stage/out", help="Local output dir")
+@option("-s", "--scans", "scan_ids", help="Comma-separated scan ids to sample (default: the profile's `verify_scans`)")
 @option("-T", "--tmp", default="/stage/tmp", help="Local scratch (served store, per-scan copies, spill)")
 @option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
-def verify_cmd(bucket, profile, gen, index, mount, tasks, out, tmp) -> None:
+def verify_cmd(bucket, profile, gen, index, mount, tasks, out, scan_ids, tmp) -> None:
     """Parity against the per-scan path store over the profile's `verify_scans`: every
     view's tiles and every diff's rows, with both sides' read cost; `verify/t##.jsonl` + `.json`."""
     bucket = _bucket(bucket, profile)
@@ -583,8 +584,10 @@ def verify_cmd(bucket, profile, gen, index, mount, tasks, out, tmp) -> None:
     scans = read_json(f"gs://{bucket}/{prefix}/scans.json")
     outp = Path(out) / "verify"
     outp.mkdir(parents=True, exist_ok=True)
-    summaries = iv.verify_task(load_profile(profile)["verify_scans"], t, tasks, str(tmp / "served"), scans, outp / f"t{t:02d}.jsonl", tmp, mount)
-    (outp / f"t{t:02d}.json").write_text(json.dumps(summaries, indent=1) + "\n")
+    sampled = scan_ids.split(",") if scan_ids else load_profile(profile)["verify_scans"]
+    tag = f"t{t:02d}" if not scan_ids else f"t{t:02d}-{sampled[0]}"
+    summaries = iv.verify_task(sampled, t, tasks, str(tmp / "served"), scans, outp / f"{tag}.jsonl", tmp, mount)
+    (outp / f"{tag}.json").write_text(json.dumps(summaries, indent=1) + "\n")
     upload_tree(outp, bucket, f"{prefix}/verify")
     print(json.dumps(summaries), flush=True)
 
