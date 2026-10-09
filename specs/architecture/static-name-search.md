@@ -1,6 +1,6 @@
 # Static name search: rare terms without a server
 
-Can the below-catalog ("rare term") name search run from static files on R2/GCS, read by a Worker, with interactive latency and a bounded worst case? Measured 2026-10-08 on the consolidated store (70 scans, 2026-07-30 → 2026-10-08). **Yes, with a suffix-ordered, denormalized postings layout**: every rare query is one contiguous byte range of at most a few MB, exact on every date, and the only server work left is the daily build.
+Can the below-catalog ("rare term") name search run from static files on R2/GCS, read by a Worker, with interactive latency and a bounded worst case? Measured 2026-10-08 on the consolidated store (70 scans, 2026-07-30 → 2026-10-08). **Yes, with a suffix-ordered, denormalized postings layout**: every rare query is one contiguous byte range of at most a few MB, exact on every date, and the only server work left is the daily build. With the **static catalog** (gen `2026-10-08c`, below) every `/names` literal on every scan of the generation is answered without the query box: one- and two-character literals and literals whose suffix range exceeds V = 100K rows from a 25 MB catalog, everything else from the suffix shards (≤ V rows read).
 
 ## The query
 
@@ -106,9 +106,9 @@ LSM-style, no server:
 | `shards.json` | shard plan from the histograms: runs of 3-character prefixes of ≤ 50M suffix rows (a prefix is never split, so a literal's range is in one file), in 32 contiguous task groups | laptop |
 | `suffixes.json` | `suffix-map` expands each range's intervals once into `(s, …, shard)` rows written per reduce task; `shards` partitions its task's rows by shard and writes each sorted `(s, path, usr, vf)` as `sx/s####.parquet` (8K-row groups, zstd, `usr` dictionary) plus its sidecar; `sidecar` concatenates `sidecar.parquet` `(file, rg, s_min, s_max, offset, length, rows)` (from the rows written, not truncated statistics) and checks the shards don't overlap | Batch: 32 + 32 tasks |
 | `verify-answers.json` | `query` (sidecar → one ranged read per file → first-hit filter → per-bucket sums) vs `mega_names.answer(…, postings='m')` per (term, date) | laptop + VM |
-| `r2.dvc` (side effect) | `r2-copy`: `sx/`, `sidecar.parquet`, `shards.json`, `scans.json` → R2 `oa-gcs-usage-index` under the same keys, skipping what is there with the same size and md5 | the ch-store VM (holds the R2 keys), `nice`d |
+| `r2.dvc` (side effect) | `r2-copy`: `sx/`, `sidecar/`, `sidecar.parquet`, `shards.json`, `scans.json` (and, from gen `2026-10-08c`, `catalog/{cells,index}.parquet`, `catalog/{meta,members}.json`) → R2 `oa-gcs-usage-index` under the same keys, skipping what is there with the same size and md5 | the ch-store VM (holds the R2 keys), `nice`d |
 
-Outputs: `gs://oa-gcs-usage-dvx/static-names/<gen>/{scans,ranges,shards}.json, intervals/, hist/, digest/, sxmap/ (intermediate: 180 GB for 2026-10-08, deleted with its `sxmap-done/` markers once the shards were verified; the suffixes stage reruns map and reduce together), sx/, sidecar/, sidecar.parquet`. Everything is written through pyarrow in fixed row-group sizes under a total sort order, so a rerun over the same inputs and image is byte-identical. `append -f GEN` adds the next scan to a range's intervals (open versions × the scan, a full join) and writes the day's opened/closed versions as `delta/<date>/r####.parquet`, the daily delta source.
+Outputs: `gs://oa-gcs-usage-dvx/static-names/<gen>/{scans,ranges,shards}.json, intervals/, hist/, digest/, sx/, sidecar/, sidecar.parquet`; the shuffle (`sxmap/`, 180 GB for 2026-10-08, and its `sxmap-done/` markers) goes to the scratch bucket `gs://oa-gcs-usage-scratch/static-names/<gen>/` (us-east1, no soft delete, objects deleted at 7 days; mounted beside the data bucket in every Batch task), so deleting it never bills soft-deleted bytes (the suffixes stage reruns map and reduce together). Everything is written through pyarrow in fixed row-group sizes under a total sort order, so a rerun over the same inputs and image is byte-identical. `append -f GEN` adds the next scan to a range's intervals (open versions × the scan, a full join) and writes the day's opened/closed versions as `delta/<date>/r####.parquet`, the daily delta source.
 
 Run: `cd static-names/<gen> && PATH=$REPO/.venv/bin:$PATH dvx run verify-answers.json.dvc` (then `r2.dvc`).
 
@@ -139,6 +139,116 @@ Gotcha: DVX `git_deps` make a stage stale when the file changes. The Batch drive
 - Suffix map: one expansion of all 1.15B versions; reduce: ~330 shards × ~1 min sort/write plus each task's partition pass, 32 tasks ≈ 30–45 min wall; ~$15–30 on demand.
 - R2: ~200–250 GB at GCS egress ≈ $25–30 once; ~$3–4/month stored.
 
+## Coalesced versions (gen `2026-10-08c`)
+
+A name answer reads a version's key (`depth, path, usr`), liveness and two values, `size` and `n_files`; the intervals open a version on any change (`last_read`, the mean stamp, storage classes, …). `coalesce` merges a key's adjacent versions (`vt` = the next `vf`) while `(size, n_files)` hold, so the answers are unchanged (tested: shards over coalesced versions answer exactly as brute force over every version). It is a function of the intervals, so `2026-10-08c` reuses the verified `2026-10-08` intervals and the intervals' append-equals-rebuild property carries over: `coalesce_append` turns the intervals' daily `delta/` into the coalesced versions and their `cdelta/<date>/` (a key closed and reopened with the same values continues its version), byte-identical to coalescing the appended intervals (`test_coalesce_append_equals_rebuild`).
+
+Measured over all 256 ranges (`coalesce-report.json`; `coalesce` stage 8 min on 32 spot tasks):
+
+| | every change | `(size, n_files)` changes | ratio |
+|---|---:|---:|---:|
+| versions | 1,153,480,980 | 797,994,947 | 0.692 |
+| suffix rows | 16,501,534,337 | 13,235,105,643 | 0.802 |
+| 3-character prefixes ≥ 100K / 150K / 250K rows | 8,800 / 7,751 / 6,855 | 8,229 / 7,461 / 4,270 | |
+| shard files, bytes | 322, 150.6 GB | 262, 135.7 GB | 0.90 |
+
+Per named term (range rows): `s__marin-us-centr` 228,729 → 95,788; `1443` 182,473 → 143,039; `rt-0003` 166,608 → 111,055; `4431` 134,816 → 97,249; `bb-` 123,716 → 85,454; `5418` 109,281 → 80,049; `6437` 97,579 → 75,852; `00241` 52,833 → 42,361; `04521` 13,015 → 8,255; long-named podcast terms (`_(ep` 235,505, `our_3_` 230,436, `y_ba` 220,584, `nk080`, `pio`, `48.parquet`) are unchanged (one version per file). Total rows fall 19.8%, and the literals that are slow because their paths carry many versions fall 25–58%: 4 of the 10 named terms between 100K and 250K rows move under 100K. Adopted: `2026-10-08c` is the coalesced generation (shards: 13,235,105,643 rows, 262 files, 135.7 GB, 1,615,743 row groups, sidecar 30.0 MB; coalesce 8 min + map/shards 46 min on 32 spot tasks).
+
+## Static catalog: every query without the box (gen `2026-10-08c`)
+
+`dt-cloud static-names catalog …` (`cloud/src/dt_cloud/static_catalog.py`, run on Batch as `MODULE=static_catalog job/static-names.sh run …`).
+
+### Membership
+
+A lowercase literal `q` is a **member** iff
+
+- it has one or two characters and occurs in some name (depth ≥ 1) of some version, or
+- its suffix range (rows of the shards whose `s` starts with `q`: Σ over versions of `q`'s occurrences in the name, overlapping ones included) holds more than **V = 100,000** rows.
+
+Everything else is answered by the static reader, which then reads at most V rows (≤ V + 2 × 8,192 counting whole row groups). Properties:
+
+- **Factor-closed.** A member's prefixes and substrings of ≥ 3 characters are members (their ranges contain its rows one for one). So the members are found in one pass per shard over its sorted suffixes, level by level (`census`): the length-`L` prefixes with more than V rows, then, among their rows only, length `L + 1`. No separate census over names is needed.
+- **Monotone.** Rows are never removed (a closure only sets `vt`), so appending scans only grows ranges: once a member, always a member. Membership at a generation is a function of its scans alone, so an append equals a rebuild.
+- **No length cap.** Suffixes are stored whole and members are untruncated: at V = 100K the longest member has 39 characters and 929 members are longer than 24 (e.g. `xp_sft_qwen3_4b_selfinst`, 101,007 rows). The Worker's lookup is by the full lowercased literal.
+- **Bucket names need no special case.** Buckets are depth-1 rows (parent `''`), so they are suffix rows like any name: `east5` on 2026-10-08 is the whole of `marin-us-east5` (842 PB) plus other buckets' first hits, from the static reader, brute force and ClickHouse alike. The Worker's `bucket-name` skip (it assumed bucket names were depth 0) can go.
+
+**Choosing V.** The census kept every prefix with ≥ 50K rows (159,970 of them), so V can move without recounting:
+
+| V (rows) | long members | Σ their range rows | longer than 24 characters | longest |
+|---:|---:|---:|---:|---:|
+| 50K | 159,959 | 90.1B | 4,646 | 67 |
+| 75K | 103,918 | 86.7B | 1,213 | 46 |
+| **100K** | **82,616** | **84.9B** | **929** | **39** |
+| 125K | 58,458 | 82.2B | 441 | 29 |
+| 150K | 49,685 | 81.0B | 111 | 28 |
+| 250K | 31,985 | 77.5B | 80 | 28 |
+
+The Worker's decode cost is the bound that matters: ≤ 100K rows decode in ≤ 0.5 s, 106–139K in 0.4–1.0 s, 172–246K in 0.8–3.4 s. A non-member at V = 100K reads ≤ ~116K rows. Decoded bytes per row vary little at this size: over the ranges of 80–100K rows the decoded size (`s` + `path` + `usr` + fixed columns) is 180 B/row at the median, 270 at p90 and 411 at the max (16.6 / 24.4 / 39.4 MB per range), a 2.3× spread, so a row bound is within ~2.3× of a byte bound and simpler for the Worker to reason about; the census also records `ubytes`, and `members -B` adds a byte bound if the Worker's measurements call for it. Lowering V later re-runs only `members` → `catalog` (the census holds down to 50K).
+
+### Answers
+
+Per member and date `D`, per bucket: Σ `size`, `n_files` over first hits live on `D` (`vf ≤ D < vt`, depth ≥ 1, the name contains `q`, the lowercase parent path does not) — exactly `Reader.answer` and `mega_names.answer`. The answers stage walks a shard's rows level by level as the census does, and for each member prefix `q` of a row emits the row as two events, `+(size, n_files)` at `vf` and `−` at `vt` (none while open), counted only on the version's first occurrence of `q` (`instr(name, q)` = the row's position, so no dedup state). Events summed per `(q, bucket, t)` and accumulated in time order give the cells `(q, bucket, vf, b, o)`, one per change (the shape of the ClickHouse catalog's `catalog_cells`). One- and two-character literals come from the versions directly (`short`: each distinct character and pair of a name that its parent lacks), per key range, summed across ranges in `assemble`. Events are additive, so a shard is fed in chunks of row groups cut on `(s, path)` (one suffix can fill a shard: `s0124` is 99.8% `ccess`, from `_SUCCESS` markers).
+
+### Layout
+
+`gs://oa-gcs-usage-dvx/static-names/2026-10-08c/catalog/` (and R2 `oa-gcs-usage-index`, same keys):
+
+| Key | What |
+|---|---|
+| `cells.parquet` | `q` string, `bucket` string (dictionary), `vf` int64 (epoch seconds), `b`, `o` int64; zstd; sorted `(q, bucket, vf)` in code-point order; 4,096-row groups. Each member is led by one header row `(q, '', 0, rows, n)`: `rows` = its range rows (−1 for one or two characters), `n` = the cell rows that follow. A bucket's value on `D` is its newest cell with `vf ≤ D` (none: zero). |
+| `index.parquet` | per row group of `cells.parquet`: `rg` int32, `q_min`, `q_max` (its exact first and last `q`), `offset`, `length` (its contiguous byte span), `rows` int32, `chunks` list<int64> (per column in file order `q, bucket, vf, b, o`: `data_page_offset, total_compressed_size, dictionary_page_offset` or 0 — what `decodeGroup` needs, so no footer is parsed) |
+| `meta.json` | `gen`, `cells_rows`, `row_groups`, `members_short`, `members_long`, `max_len`, `bytes`, `index_bytes`, `cell_rg`, `membership.max_rows` (= V) |
+| `members.json` | the membership summary (V, counts by length) |
+
+Measured: **3,073,977 cell rows (82,616 long members + 16,897 one- and two-character literals, headers included), 25.2 MB in 751 row groups; `index.parquet` 59 KB.** A member holds at most 420 cells here; a lookup reads one or two row groups (~34 KB each). That is 0.02% of the shards' 135.7 GB.
+
+### How the Worker should consume it
+
+1. Per isolate (Cache API between isolates, like the shard group indexes): `catalog/meta.json` (V) and `catalog/index.parquet` (751 rows, 59 KB).
+2. `q` = the lowercased literal (`datedNameRequest`), any length ≤ 512, never truncated.
+3. **One or two characters** (`[...q].length ≤ 2`): the catalog, always. Not found → no name ever contained `q`: zero for every bucket on every date (exact).
+4. **Three or more**: the shard group index first (as today). If its selected groups hold ≤ V rows, `q` cannot be a member (its exact range is no larger): read it statically. Otherwise look it up in the catalog: found → its cells; not found → a non-member whose exact range is ≤ V, so the static read is bounded (≤ V + 2 × 8,192 rows).
+5. **Lookup:** groups `[a, b)` with `a` = first `g` with `q_max[g] ≥ q`, `b` = first `g` with `q_min[g] > q` (code-point `cmp`); `a == b` → not a member. Else one ranged GET of `cells.parquet` `[offset[a], offset[b−1] + length[b−1])`, decode those groups from `chunks` (columns `q` BYTE_ARRAY UTF8, `bucket` BYTE_ARRAY UTF8 dictionary-encoded, `vf`, `b`, `o` INT64; ZSTD), take the rows with `q` equal to the literal: the first must be the header `(q, '')`, else not a member.
+6. **Answer** for each requested date: `D` = the scan id as epoch seconds (`scanMs / 1000`); per bucket the last cell with `vf ≤ D`; absent buckets are zero. Diffs (`from`) read the same cells at both dates.
+7. The registry's `threshold_paths` is no longer needed for dispatch; any scan in the generation's `scans.json` is answerable. Today the Worker sends frozen and daily scans to the box (their per-scan indexes); their answers were not compared here, so moving them to the static path is a separate decision.
+8. Requests for a scan newer than the generation still need the box until the daily append is wired (below).
+
+### Daily append
+
+`static_catalog.append(prev, base, deltas, V)` (with `static_names.coalesce_append` making the coalesced `cdelta/<date>/` from the intervals' `append` delta): the catalog of a base generation's shards plus the scans since, kept LSM-style beside the shards' own deltas.
+
+- **Membership.** A prefix can cross V only if the base's row-group upper bound (from the sidecar) plus the deltas' opened suffix rows exceeds V; those candidates are found level by level over the deltas' suffix rows (O(delta)), and the ones not yet members are decided by an exact base count (only the two edge row groups' `s` column decoded).
+- **Cells.** Existing members and every one- and two-character literal get the new scan's events (opened `+` at `D`, closed `−` at `D`); a new member's cells are built from its whole history (the base shards' rows in its range, ≤ V by definition, plus every delta's opens and closes); a short literal first seen gets its first cells. The catalog file is rewritten (it is small: 25 MB).
+- **Equal to a rebuild:** `test_append_equals_rebuild` appends one and two scans at V = 2 and 5 (with literals crossing V on an append) and compares `cells.parquet` and `index.parquet` byte for byte with the catalog rebuilt over every scan.
+- Not wired yet: a `catalog append` CLI/Batch stage after the daily scan, and the shards' own delta files and close records (the Worker reads only base shards today). Until then each new scan means a new generation (≈ the build below).
+
+### Build and cost (2026-10-08c)
+
+| Stage | Wall | Batch |
+|---|---:|---|
+| `census` (every prefix ≥ 50K rows; `s` and string lengths only) | 5 min | 32 spot n2-highmem-16 |
+| `members` (V = 100K) | 28 s | laptop |
+| `catalog-short` (1–2 character literals per key range) | 11 min | 32 spot × 8 ranges |
+| `catalog-cells` (members' answers per shard) | first run ~3.6 h (see below); with the fix, 5.8 min for the 24 shards then left | 32 spot (+ a 24-task queue job) |
+| `catalog` (assemble + index) | 2.5 min | 1 spot |
+
+Spot n2-highmem-16 throughout. The whole 2026-10-08c build (coalesce, map/shards, census, short, answers, assemble, brute force) was ~165 spot VM-hours ≈ **$35–40**, of which ~115 VM-hours (~$27) were the first, slow answers run; at the fixed speed the catalog stages are ~10 VM-hours (~$3) and a whole generation from the intervals ~45 VM-hours (~$10). R2 egress for the generation ≈ 136 GB × $0.12 ≈ $16.
+
+**Why the first answers run was slow** (profiled on `s0058`, 50M rows, 650 members, 1,302 s): reading the shard's row groups with pyarrow through the gcsfuse mount was 1,070 s (one small GCS read per column chunk), deriving the lowercase name and parent (`regexp_extract`) 180 s, and the level loop itself (carry 23 s, events 25 s) under a minute; it was not rescanning per term or rereading row groups per cell (each shard is read once, all its members together). The fix (`e63d76e2`): download the shard to local SSD, read it with DuckDB in `(s, path)`-cut chunks, cut the parent by string slicing (the regex kept only for paths with a newline); 5–6× per shard, cells md5-equal. The worst shard (`s0101`: one 22-level chain of members carrying all 110M rows, 2.16B row-levels) is then bound by the level loop itself (~5.6M row-levels/s); carrying only `(row id, s)` through the levels would be the next lever.
+
+### Verification
+
+Terms (`job/static-names/catalog-terms.txt`, 118, from `catalog-terms.py`): the 37 named build terms, 17 one- and two-character literals, 9 bucket-name literals (`east5`, `us-east1`, `eu-west4`, `central2`, `us-central1`, `marin-us-c`, `west4`, `-us-`, `marin`), 4 hash-sampled members per length 3–12+ (up to 24 characters: `xp_sft_qwen3_4b_selfinst`), and 15 hash-sampled non-members with 80–100K range rows (the static reader's worst cases); dates 2026-10-08, 10-06, 10-01, 09-30, 09-15, 08-15, 07-30.
+
+| Check | Result |
+|---|---|
+| `verify-catalog.json`: catalog/static dispatch (`catalog query -x`) vs **brute force** straight from each date's scan file (`catalog brute`: the first-hit rule over the scan's rows; v1 and v2 sources; 7 spot tasks, 16 min) | **826 / 826 (term, date) equal**; 65 terms from the catalog, 53 static; every static range ≤ V (max 99,754 rows; at most 106,496 rows / 3.1 MB read) |
+| `verify-catalog-ch.json`: the same answers vs ClickHouse `mega_names.answer(…, postings='m')` (the 54 non-short terms with ranges ≤ 250K, plus the 37 named terms' 2026-10-08 answers) | **637 / 637 equal**; brute force and ClickHouse also agree on all 637 |
+| `census-check.json`: the census's three-character prefixes (counted from the sorted shards) vs the coalesce stage's histograms (counted from the versions) | equal: 9,891 prefixes ≥ 50K, 13,089,236,781 rows |
+| Local (`cloud/tests/test_static_catalog.py`) | census = brute force over every substring; at V = 1, 4, 8 membership is exactly "short and present, or > V rows", every member equals brute force on every date, every non-member ≤ V; answers fed in several chunks; brute-force SQL = the version oracle; append = rebuild byte for byte |
+
+Lookup cost from the laptop (Python, GCS, cold process): a catalog answer 0.10 s median, 0.42 s max, one ranged read of ≤ 2 row groups.
+
 ## Alternatives compared
 
 | Design | Size | Round trips per rare query | Bytes per rare query | Verdict |
@@ -155,10 +265,10 @@ Nothing on the query path: catalog lookups are static (`mega-index.md`), rare te
 
 ## Plan to production
 
-1. **Weight and bound.** Switch the cost-weighted census's weight to suffix-range rows (versions × occurrences) and pick `V` from a byte budget (e.g. ≤ 4 MB per query → `V` ≈ 140K). Rebuild the catalog with it.
-2. **Full base build.** Full suffixes, 4–8K-row groups, files split by suffix prefix, on GCS then R2; sidecar rows into D1. Verify against `mega_names.answer` on a broad term/date sample.
-3. **Worker reader.** `site/functions`: catalog first, else D1 sidecar → R2 range → hyparquet decode → filter/sum. Behind the existing `/api/name-summary` contract; measure Worker latency cold and warm on R2.
-4. **Daily deltas + compaction** as a Batch stage after the daily scan; drop the ClickHouse query service.
+1. ~~Weight and bound~~: done as the static catalog's membership (suffix-range rows > V = 100K, plus every one- and two-character literal), gen `2026-10-08c`.
+2. ~~Full base build~~: done, `2026-10-08` (every version) and `2026-10-08c` (coalesced versions + catalog), verified, on R2.
+3. **Worker reader** (hot-preview worktree): consume the catalog as in "How the Worker should consume it"; point `STATIC_GEN` at `2026-10-08c`; drop the `short`, `bucket-name` and `registry-weight` skips; measure cold/warm latency.
+4. **Daily append** as a Batch stage after the daily scan: intervals `append` → `coalesce_append` → the shards' delta files (+ close records, read by the Worker beside the base) and `static_catalog.append`; weekly compaction into a new base generation.
 5. Retire the always-on VM (keep ClickHouse only for ad-hoc experiments, if at all).
 
 ## Files
@@ -167,5 +277,6 @@ Nothing on the query path: catalog lookups are static (`mega-index.md`), rare te
 - `job/ch-store/static-name-query.py`: the one-range reader and per-date answers.
 - `job/ch-store/static-name-term-stats.sh`, `static-name-terms.txt`: the per-term table.
 - `cloud/src/dt_cloud/static_names.py` (`dt-cloud static-names …`), `cloud/tests/test_static_names.py`, `job/static-names.sh`, `job/static-names/{ch-answers.py,terms.txt}`, `static-names/<gen>/*.dvc` (the DVX stages).
-- Built data: `gs://oa-gcs-usage-dvx/static-names/2026-10-08/` and R2 `oa-gcs-usage-index` `static-names/2026-10-08/`.
+- `cloud/src/dt_cloud/static_catalog.py` (`dt-cloud static-names catalog …`), `cloud/tests/test_static_catalog.py`, `job/static-names/{catalog-terms.py,catalog-terms.txt,catalog-ch-terms.txt}`.
+- Built data: `gs://oa-gcs-usage-dvx/static-names/{2026-10-08,2026-10-08c}/` and R2 `oa-gcs-usage-index` `static-names/{2026-10-08,2026-10-08c}/`; intermediates in `gs://oa-gcs-usage-scratch/static-names/` (7-day expiry).
 - Prototype data: `default.sx_names`, `default.sx_rows`, `default.sx_proto` on the VM; `gs://oa-gcs-usage-dvx/scratch/bench/ch-store/static/sx-{4096,16384}.parquet` (1.5 GiB).
