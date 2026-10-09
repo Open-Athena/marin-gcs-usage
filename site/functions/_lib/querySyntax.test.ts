@@ -31,6 +31,18 @@ describe('`simple`: parse table', () => {
     ['ttl|', [[sub('ttl')]], []],
     ['abc | -x', [[sub('abc')], []], [sub('x')]],
     ['/ckpt.*final/', [[re('ckpt.*final')]], []],
+    ['^tomat', [[{ kind: 'sub', text: 'tomat', start: true }]], []],
+    ['.JSON$', [[{ kind: 'sub', text: '.json', end: true }]], []],
+    ['^config.json$', [[{ kind: 'sub', text: 'config.json', start: true, end: true }]], []],
+    ['^ckpt*final', [[{ kind: 'glob', pieces: ['ckpt', 'final'], start: true }]], []],
+    ['ckpt -^tmp', [[sub('ckpt')]], [{ kind: 'sub', text: 'tmp', start: true }]],
+    ['"^a$"', [[sub('^a$')]], []],
+    ['"^"abc', [[sub('^abc')]], []],
+    ['abc"$"', [[sub('abc$')]], []],
+    ['a^b$c', [[sub('a^b$c')]], []],
+    ['^', [[sub('^')]], []],
+    ['$', [[sub('$')]], []],
+    ['^$', [[sub('^$')]], []],
   ])('%s', (q, alts, neg) => {
     expect(simple.parse(q)).toEqual({ ast: { alts, neg } })
   })

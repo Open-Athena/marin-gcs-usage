@@ -23,10 +23,20 @@ function regexError(source: string): ParseResult | null {
  * shorter term could only be answered by a scan. Exclusions are exempt. */
 export const MIN_TERM = 3
 
+/** A term's anchors: `^` before it (a segment starts there), `$` after it (one ends there). */
+export interface Anchors { start?: boolean; end?: boolean }
+
 /** Literal pieces (lowercase) → a matcher: one piece is a substring, more are
- * joined by in-segment wildcards. */
-const piecesMatcher = (pieces: string[]): Matcher =>
-  pieces.length === 1 ? { kind: 'sub', text: pieces[0] } : { kind: 'glob', pieces }
+ * joined by in-segment wildcards; anchored as `a` says. */
+const piecesMatcher = (pieces: string[], a: Anchors = {}): Matcher => {
+  const anchors = { ...(a.start ? { start: true as const } : {}), ...(a.end ? { end: true as const } : {}) }
+  return pieces.length === 1 ? { kind: 'sub', text: pieces[0], ...anchors } : { kind: 'glob', pieces, ...anchors }
+}
+
+/** How a matcher reads back in the box (`^…$` around its literal, `*` between pieces). */
+export const matcherText = (m: Matcher): string => m.kind === 'regex'
+  ? `/${m.source}/`
+  : `${m.start ? '^' : ''}${m.kind === 'sub' ? m.text : m.pieces.join('*')}${m.end ? '$' : ''}`
 
 /** `simple` (the default): GitHub-search-like terms over the full path.
  *
@@ -35,8 +45,10 @@ const piecesMatcher = (pieces: string[]): Matcher =>
  * - `a|b` — OR, binding looser than AND (`a b|c` = (a AND b) OR c);
  * - `-x` — NOT, of the whole query; only negatives = "everything except";
  * - `*` — any characters within one segment, also in a term with `/`;
- * - `"a b"` — a quoted term is literal (spaces, a leading `-`, `*`, `|`); an
- *   unterminated quote runs to the end;
+ * - `^q` / `q$` / `^q$` — anchored: some name (path segment) starts with,
+ *   ends with, or is `q` (an unquoted `^` first, `$` last);
+ * - `"a b"` — a quoted term is literal (spaces, a leading `-`, `*`, `|`, `^`,
+ *   `$`); an unterminated quote runs to the end;
  * - `/…/` — the whole query a full-path regex: an unadvertised fallback (the
  *   `regex` syntax is the advertised way), never served by the search index.
  *
@@ -74,21 +86,31 @@ export function makeSimple({ minTerm = MIN_TERM }: { minTerm?: number } = {}): Q
         if (c === '|') { alts.push({ terms: [], any: false }); i++; continue }
         let isNeg = false
         if (c === '-' && i + 1 < s.length && !sep(s[i + 1])) { isNeg = true; i++ }
-        const pieces = ['']
+        let pieces = ['']
         let quoted = false
+        // An unquoted `^` opening the term, and an unquoted `$` closing it, are anchors.
+        const start = s[i] === '^'
+        if (start) i++
+        let end = false
         while (i < s.length && (quoted || !sep(s[i]))) {
           const ch = s[i++]
+          end = ch === '$' && !quoted
           if (ch === '"') quoted = !quoted
           else if (ch === '*' && !quoted) pieces.push('')
           else pieces[pieces.length - 1] += ch
         }
+        if (end) pieces[pieces.length - 1] = pieces[pieces.length - 1].slice(0, -1)
+        // Anchors around nothing (`^`, `$`, `^$`) are the characters themselves.
+        const bare = pieces.every(p => !p)
+        if (bare && (start || end)) pieces = [`${start ? '^' : ''}${end ? '$' : ''}`]
+        const anchors = bare ? {} : { start, end }
         const alt = alts[alts.length - 1]
         alt.any = true
         if (pieces.length === 1 && !pieces[0]) continue // `""`
-        if (isNeg) neg.push(piecesMatcher(pieces))
+        if (isNeg) neg.push(piecesMatcher(pieces, anchors))
         else {
-          if (short == null && Math.max(...pieces.map(p => p.length)) < minTerm) short = pieces.join('*')
-          alt.terms.push(piecesMatcher(pieces))
+          if (short == null && Math.max(...pieces.map(p => p.length)) < minTerm) short = matcherText(piecesMatcher(pieces, anchors))
+          alt.terms.push(piecesMatcher(pieces, anchors))
         }
       }
       // A blank alternative (`a|`, `||`) adds nothing; one that held only
@@ -109,7 +131,10 @@ export function makeSimple({ minTerm = MIN_TERM }: { minTerm?: number } = {}): Q
         { form: 'a|b', meaning: 'either (OR; looser than AND)', example: 'ttl=7d|tmp' },
         { form: '-x', meaning: 'exclude, like GitHub search: drops what contains x and subtracts its bytes', example: 'ckpt -tmp' },
         { form: '*', meaning: 'any characters within one name', example: '*.safetensors' },
-        { form: '"…"', meaning: 'literal: spaces, a leading -, |, *', example: '"a b"' },
+        { form: '^x', meaning: 'a file or folder name starting with x', example: '^ckpt' },
+        { form: 'x$', meaning: 'a file or folder name ending with x', example: '.safetensors$' },
+        { form: '^x$', meaning: 'a file or folder named exactly x', example: '^config.json$' },
+        { form: '"…"', meaning: 'literal: spaces, a leading -, |, *, ^, $', example: '"a b"' },
         { form: 'a/b', meaning: 'a term with / spans segments', example: 'run-a/ckpt' },
       ],
       notes: [
@@ -136,7 +161,7 @@ export const regex: QuerySyntax = {
     placeholder: 'filter paths by regex',
     forms: [
       { form: 're', meaning: 'matches anywhere in the path', example: 'ckpt.*final' },
-      { form: '^…', meaning: 'anchored at the bucket', example: '^my-bucket/tmp/' },
+      { form: '^…', meaning: 'anchored at the bucket (the full path’s start, not a name’s)', example: '^my-bucket/tmp/' },
       { form: '…$', meaning: 'anchored at the name’s end', example: '\\.safetensors$' },
       { form: '[^/]*', meaning: 'stay within one name', example: 'ckpt[^/]*final' },
     ],

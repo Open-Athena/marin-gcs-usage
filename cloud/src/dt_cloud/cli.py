@@ -5342,11 +5342,13 @@ from .static_catalog import cli as _static_catalog  # noqa: E402
 from .static_runner import add_cmd as _static_runs_add  # noqa: E402
 from .static_names import cli as _static_names  # noqa: E402
 from .static_roots import cli as _static_roots  # noqa: E402
+from .static_anchors import cli as _static_anchors  # noqa: E402
 
 _static_names.add_command(_static_catalog)
 _static_append.add_command(_static_runs_add)
 _static_names.add_command(_static_append)
 _static_names.add_command(_static_roots)
+_static_names.add_command(_static_anchors)
 main.add_command(_static_names)
 
 from .scan_runs import cli as _scan_runs  # noqa: E402

@@ -1,7 +1,8 @@
 /**
  * `FILTER_INDEXED_ONLY=1` (a deployment flag): the map's filter accepts only what the static name index
- * answers exactly — one literal substring of a file or folder name (no `/`, no `*`, no regex, no exclusion,
- * no second term or alternative), unscoped — and every other form is a 400 with a reason code, never a slow
+ * answers exactly — one literal substring of a file or folder name, or one anchored literal (`^q` a name
+ * starting with it, `q$` ending with it, `^q$` the whole name; specs/search-extensions.md §2), with no `/`,
+ * `*`, regex, exclusion, second term or alternative, unscoped — and every other form is a 400 with a reason code, never a slow
  * or approximate scan of the path store (specs/architecture/static-name-search.md, "Indexed-only filter").
  * A literal on a scan the index doesn't cover is the same 400 (`scan-not-indexed`).
  *
@@ -21,6 +22,7 @@ export type FilterRejectCode =
   | 'unsupported-scope'
   | 'scan-not-indexed'
   | 'term-too-common'
+  | 'anchor-too-short'
 
 export interface FilterReject { code: FilterRejectCode; message: string }
 
@@ -35,6 +37,7 @@ export const REJECT_MESSAGES: Record<FilterRejectCode, string> = {
   'unsupported-scope': 'Search isn’t available with an owner, user or storage-class scope here; clear the scope to search.',
   'scan-not-indexed': 'Search isn’t available for this scan yet.',
   'term-too-common': 'This term matches too many files to search here; try a longer one.',
+  'anchor-too-short': 'An anchored term needs at least 3 characters before “$” (add the dot: “.gz$”) and 2 after “^”.',
 }
 
 export const reject = (code: FilterRejectCode): FilterReject => ({ code, message: REJECT_MESSAGES[code] })
@@ -53,6 +56,11 @@ export function rejectQuery(q: string | null | undefined, qs?: string | null, de
   return r.ast ? rejectAst(r.ast) : null
 }
 
+/** The fewest characters an anchored literal needs (code points): `q$` reads the suffix shards (suffixes of ≥ 3
+ *  characters), `^q` the name index's range `/q…` (one shard needs its first three characters, `/` included);
+ *  `^q$` is one exact key. */
+export const ANCHOR_MIN = { end: 3, start: 2, exact: 1 } as const
+
 /** Why a parsed query isn't one indexed literal; null when it is. */
 export function rejectAst(ast: QueryAst): FilterReject | null {
   const all = [...ast.alts.flat(), ...ast.neg]
@@ -62,6 +70,10 @@ export function rejectAst(ast: QueryAst): FilterReject | null {
   const m = ast.alts[0][0]
   if (m.kind === 'glob') return reject('unsupported-glob')
   if (m.kind === 'sub' && m.text.includes('/')) return reject('unsupported-slash')
+  if (m.kind === 'sub' && (m.start || m.end)) {
+    const need = m.start && m.end ? ANCHOR_MIN.exact : m.start ? ANCHOR_MIN.start : ANCHOR_MIN.end
+    if ([...m.text].length < need) return reject('anchor-too-short')
+  }
   return null
 }
 
@@ -83,7 +95,10 @@ export const INDEXED_HELP: SyntaxHelp = {
   placeholder: 'search names, e.g. ckpt',
   forms: [
     { form: 'text', meaning: 'every file or folder whose name contains it (the outermost ones)', example: 'ckpt' },
-    { form: '"…"', meaning: 'literal, spaces included', example: '"final ckpt"' },
+    { form: '^text', meaning: 'names starting with it', example: '^train' },
+    { form: 'text$', meaning: 'names ending with it (3+ characters)', example: '.safetensors$' },
+    { form: '^text$', meaning: 'names that are exactly it', example: '^config.json$' },
+    { form: '"…"', meaning: 'literal, spaces, ^ and $ included', example: '"final ckpt"' },
   ],
   notes: [
     'One term only: no exclusions (-x), several terms, a|b, wildcards (*), “/” or regular expressions.',
