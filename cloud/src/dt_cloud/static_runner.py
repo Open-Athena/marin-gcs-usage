@@ -231,6 +231,8 @@ class Runner:
                 runs = self.read_json(self.manifests()[-1])["runs"] if self.manifests() else []
                 if self.cfg.drill and f"deltas/{scan_id}" in {r["key"] for r in runs}:
                     self.drill(scan_id)
+                if self.cfg.anchors and f"deltas/{scan_id}" in {r["key"] for r in runs}:
+                    self.anchors(scan_id)
                 self.r2(scan_id)
                 self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
             return []
@@ -291,6 +293,9 @@ class Runner:
         # 4. drill (the profile's `drill`): reads the run's `sx/`, `cdelta/` and catalog, and the earlier runs' drills.
         if self.cfg.drill:
             self.drill(d)
+        # 4b. anchors (the profile's `anchors`): the run's name index and `q$` / `^q$` rollups, over the earlier tiers'.
+        if self.cfg.anchors:
+            self.anchors(d)
         # 5. publish: the binary counter's merges, then `manifests/<d>.json` (written once).
         if self.exists(f"{self.root}/manifests/{d}.json"):
             self.log(f"{d} publish: done")
@@ -325,6 +330,22 @@ class Runner:
                 raise RuntimeError(f"{run}/drill/meta.json: not written (both tasks succeeded)")
         self.stage(f"{d} drill (long ∥ short)", build)
 
+    def anchors(self, d: str) -> None:
+        """The run's `names/` and `anchors/` (`static_anchors run`): one task; done once `anchors/meta.json` is there."""
+        run = f"{self.root}/deltas/{d}"
+        if self.exists(f"{run}/anchors/meta.json"):
+            self.log(f"{d} anchors: done")
+            return
+        vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
+        args = ["run", "-g", self.cfg.gen, "-d", d, "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
+        name, spec = self.job("anchors", d, 1, "static_anchors", args)
+
+        def build():
+            self.run_job(name, spec)
+            if not self.exists(f"{run}/anchors/meta.json"):
+                raise RuntimeError(f"{run}/anchors/meta.json: not written (the task succeeded)")
+        self.stage(f"{d} anchors", build)
+
     def r2(self, d: str) -> None:
         """One job: `r2-copy` of each run the manifest lists (its `drill/meta.json`, which makes its drill live, last), then
         `r2-verify` (every served file of those runs on R2), then `r2-copy` of `manifests/` (each copy skips what R2 holds)."""
@@ -335,8 +356,9 @@ class Runner:
             return
         cmds = []
         for r in runs:
-            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-x", "drill/meta.json"], mount=False))
+            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-x", "drill/meta.json", "-x", "anchors/meta.json"], mount=False))
             cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", "drill/meta.json"], mount=False))
+            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", "anchors/meta.json"], mount=False))
         cmds.append(task_command(self.cfg, "static_names", ["r2-verify", "-g", self.cfg.gen, "-m", d], mount=False))
         cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", self.cfg.gen, "-o", "manifests/"], mount=False))
         name = job_id("r2", d, self.now())
