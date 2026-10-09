@@ -1110,7 +1110,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
 }
 
 /** The most match roots a response lists (`matches` / `matched`) beyond those the tree draws. */
-export const MATCH_LIST_CAP = 1000
+export const MATCH_LIST_CAP = 200
 
 /** A response's match lists: every root the tree keeps, then the heaviest others up to
  * `MATCH_LIST_CAP`, and the whole set's count and totals. */

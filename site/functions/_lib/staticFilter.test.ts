@@ -215,7 +215,7 @@ describe('matchLists: a response lists the tree\'s roots, then the heaviest, up 
     const few = [m(0), m(1)]
     expect(matchLists(few, new Map())).toEqual({ matches: ['p00000', 'p00001'], matched: few, matchCount: { n: 2, b: 19_999, o: 2 } })
     const many = Array.from({ length: MATCH_LIST_CAP + 3 }, (_, i) => m(i))
-    const got = matchLists(many, new Map([['p01002', 1]]))
+    const got = matchLists(many, new Map([[m(MATCH_LIST_CAP + 2).path, 1]]))
     expect([got.matched!.length, got.matched!.at(-1), got.matched!.at(-2), got.matchCount, got.matchesCapped]).toEqual([
       MATCH_LIST_CAP + 1, m(MATCH_LIST_CAP + 2), m(MATCH_LIST_CAP - 1),
       { n: MATCH_LIST_CAP + 3, b: many.reduce((n, x) => n + x.b, 0), o: MATCH_LIST_CAP + 3 }, true,
