@@ -1,0 +1,15 @@
+outs:
+- md5: 290e7afd4ea77d18b7825ce98e2fc70a
+  size: 91616
+  hash: md5
+  path: catalog.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_catalog JOB_ID=sn-2026-10-08c-assemble-$(date -u +%H%M%S)
+      ../../job/static-names.sh run assemble 1 -g 2026-10-08c > /dev/null && dt-cloud
+      static-names manifest -g 2026-10-08c catalog > catalog.json
+    deps:
+      catalog-cells.json: 513ea0f6e8f03e7255967c48fafe9048
+      catalog-short.json: 9ee622e63a53d2e9127bfd3499493346
+    git_deps:
+      ../../cloud/src/dt_cloud/static_catalog.py: a9d00354861e108618ff208b90060424effa2558

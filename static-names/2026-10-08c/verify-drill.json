@@ -1,0 +1,3646 @@
+{
+ "pairs": 2270,
+ "equal": 2270,
+ "by_source": {
+  "roots": 251,
+  "rollup": 203,
+  "plain": 1
+ },
+ "max_rows_read": 114688,
+ "max_bytes": 2777216,
+ "diff": {},
+ "io": [
+  {
+   "q": "-0",
+   "P": "marin-eu-west4/datakit/llm-quality-classifier/inference/sonnet46-thr05/quality-llm",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 437431,
+   "s": 2.457
+  },
+  {
+   "q": "-0",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 77688,
+   "s": 0.994
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central1/datakit/quality/nemotron_full_10k_gridv1",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 315440,
+   "s": 0.718
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/datakit/store/june-67b-a2b-length64k/2026.08.24",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50663,
+   "s": 0.411
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/datakit/tokenize",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 549009,
+   "s": 0.696
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/tempered_best_of_n/advisor_proposed",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 305969,
+   "s": 0.611
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/tempered_best_of_n/advisor_proposed/llama_3_1_8b_instruct_chat_followup/topk_a16_b16",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 115533,
+   "s": 0.422
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 417572,
+   "s": 0.627
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep/llama_3_1_8b_instruct_chat_followup",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 189103,
+   "s": 0.468
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/url_index/full/nemotron_full/_parts",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 357306,
+   "s": 0.614
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/users/benjaminfeuer/snowball-replay/hf-rows-v1-20260908/partitions",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50663,
+   "s": 0.403
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-central2/users/benjaminfeuer/snowball-replay/hf-rows-v1-20260908/partitions/raw",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50663,
+   "s": 0.43
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-east5",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50663,
+   "s": 0.329
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-east5/sam",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50663,
+   "s": 0.204
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-east5/sam/results",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50663,
+   "s": 0.225
+  },
+  {
+   "q": "-0",
+   "P": "marin-us-west4/raw",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 427217,
+   "s": 0.592
+  },
+  {
+   "q": "-324",
+   "P": "marin-us-central1",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 55141,
+   "s": 1.759
+  },
+  {
+   "q": "-324",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 55141,
+   "s": 0.409
+  },
+  {
+   "q": ".",
+   "P": "marin-eu-west4/data/datakit/tokenized/grug-llama-official-32k/train/nemotron_cc",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 444377,
+   "s": 2.489
+  },
+  {
+   "q": ".",
+   "P": "marin-eu-west4/datakit/llm-quality-classifier/inference/sonnet46-thr05/quality-llm",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 476682,
+   "s": 0.708
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 73056,
+   "s": 0.566
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 410633,
+   "s": 0.753
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 376424,
+   "s": 0.683
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 58185,
+   "s": 0.216
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 58185,
+   "s": 0.168
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 58185,
+   "s": 0.383
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 58185,
+   "s": 0.4
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 58185,
+   "s": 0.22
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 45848,
+   "s": 0.239
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 45848,
+   "s": 0.407
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/datakit/minhash",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 517707,
+   "s": 0.769
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 322094,
+   "s": 0.647
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep/llama_3_1_8b_instruct_chat_followup",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 257993,
+   "s": 0.47
+  },
+  {
+   "q": ".",
+   "P": "marin-us-central2/ego-dex-3",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 466854,
+   "s": 0.625
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 72491,
+   "s": 0.642
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 442057,
+   "s": 2.091
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 378803,
+   "s": 0.706
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 43216,
+   "s": 0.219
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 43216,
+   "s": 0.512
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/crawl/finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 43216,
+   "s": 0.233
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 43216,
+   "s": 0.217
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 43216,
+   "s": 0.203
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 43216,
+   "s": 0.349
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 43216,
+   "s": 0.519
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 352501,
+   "s": 0.671
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd/CC-MAIN-2024-18",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 352501,
+   "s": 0.594
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/tempered_best_of_n/advisor_proposed",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 305419,
+   "s": 0.624
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/tempered_best_of_n/advisor_proposed/llama_3_1_8b_instruct_chat_followup/topk_a16_b16",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 118393,
+   "s": 0.415
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep/llama_3_1_8b_instruct_chat_followup",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 188111,
+   "s": 0.589
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-east5/downstream_scaling",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 572421,
+   "s": 0.632
+  },
+  {
+   "q": ".gz",
+   "P": "marin-us-east5/downstream_scaling/evals",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 572421,
+   "s": 0.615
+  },
+  {
+   "q": ".json",
+   "P": "marin-eu-west4/datakit",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 97847,
+   "s": 0.519
+  },
+  {
+   "q": ".json",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 97847,
+   "s": 0.344
+  },
+  {
+   "q": ".json",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 26347,
+   "s": 0.182
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central1/tokenized/common_pile",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 1024533,
+   "s": 4.203
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 83091,
+   "s": 0.232
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 413069,
+   "s": 0.928
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 373723,
+   "s": 0.844
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 49962,
+   "s": 0.451
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 49962,
+   "s": 0.386
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 49962,
+   "s": 0.357
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 49962,
+   "s": 0.383
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/datakit/store/june-67b-a2b-length64k/2026.08.24/cluster=8",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 1098283,
+   "s": 0.905
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd/CC-MAIN-2024-18",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 356565,
+   "s": 0.814
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 323925,
+   "s": 0.705
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80232,
+   "s": 0.467
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80232,
+   "s": 0.398
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 379476,
+   "s": 0.929
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 276391,
+   "s": 0.835
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 276391,
+   "s": 0.967
+  },
+  {
+   "q": ".json",
+   "P": "marin-us-east5/downstream_scaling",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 506072,
+   "s": 1.178
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-eu-west4/tmp/ttl=1d/datakit-nemotron-smoke/datakit-nemotron-ferry-37219982338-1/datakit/dedup_a2e034ff/metadata/cc",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 125072,
+   "s": 1.579
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 119683,
+   "s": 0.44
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 119683,
+   "s": 0.257
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 16384,
+   "bytes": 162394,
+   "s": 0.43
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42711,
+   "s": 0.219
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42711,
+   "s": 0.283
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_4_of_10/html-2652c0",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42711,
+   "s": 0.363
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/datakit/minhash",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 509744,
+   "s": 0.692
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 2777216,
+   "s": 0.627
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker/objects",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 2777216,
+   "s": 0.723
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 920780,
+   "s": 0.709
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics/run_id",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 920780,
+   "s": 0.532
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/url_index",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 582966,
+   "s": 0.538
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-central2/users/benjaminfeuer/snowball-replay/hf-rows-v1-20260908/partitions/raw/source_id=00063",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 290955,
+   "s": 0.485
+  },
+  {
+   "q": ".parquet",
+   "P": "marin-us-east5/protein-structure/MarinFold/exp100_only_correct_contacts_v1_train/runs/r0_full/nll",
+   "source": "rollup",
+   "rows_read": 915,
+   "bytes": 12266,
+   "s": 0.281
+  },
+  {
+   "q": "0",
+   "P": "marin-eu-west4/datakit/decontam",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 364555,
+   "s": 1.752
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region/us-east5/med_quality",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 555657,
+   "s": 0.718
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93747,
+   "s": 0.502
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93747,
+   "s": 0.255
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/crawl/finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93747,
+   "s": 0.323
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93747,
+   "s": 0.38
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93747,
+   "s": 0.359
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-4plus",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93747,
+   "s": 0.455
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-4plus/html-119c1e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93747,
+   "s": 0.437
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 178610,
+   "s": 0.507
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep/llama_3_1_8b_instruct_chat_followup",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 144749,
+   "s": 0.491
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker/objects",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 2193202,
+   "s": 0.604
+  },
+  {
+   "q": "0",
+   "P": "marin-us-central2/scratch",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 471322,
+   "s": 0.638
+  },
+  {
+   "q": "0",
+   "P": "marin-us-east1/gcsfuse_mount/huggingface-cache/datasets/downloads",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 1541388,
+   "s": 1.405
+  },
+  {
+   "q": "0",
+   "P": "marin-us-east5/documents/baseline_llm_extraction/med_quality",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 490331,
+   "s": 0.616
+  },
+  {
+   "q": "0488",
+   "P": "marin-us-central2",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 447380,
+   "s": 1.537
+  },
+  {
+   "q": "0488",
+   "P": "marin-us-central2/crawl",
+   "source": "roots",
+   "rows_read": 57344,
+   "bytes": 268535,
+   "s": 0.535
+  },
+  {
+   "q": "0488",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 148640,
+   "s": 0.416
+  },
+  {
+   "q": "0488",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 148640,
+   "s": 0.399
+  },
+  {
+   "q": "079.json",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 327199,
+   "s": 1.381
+  },
+  {
+   "q": "079.json",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 327199,
+   "s": 0.426
+  },
+  {
+   "q": "079.json",
+   "P": "marin-us-central2",
+   "source": "roots",
+   "rows_read": 57344,
+   "bytes": 298368,
+   "s": 0.503
+  },
+  {
+   "q": "079.json",
+   "P": "marin-us-central2/crawl",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 230815,
+   "s": 0.523
+  },
+  {
+   "q": "079.json",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 82860,
+   "s": 0.413
+  },
+  {
+   "q": "27.0.0.",
+   "P": "marin-eu-west4/re10k_frames_latents_cameras_v0",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 375120,
+   "s": 1.223
+  },
+  {
+   "q": "27.0.0.",
+   "P": "marin-eu-west4/re10k_frames_latents_cameras_v0/latents_tensorstore",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 375120,
+   "s": 0.473
+  },
+  {
+   "q": "27.0.0.",
+   "P": "marin-eu-west4/re10k_frames_latents_cameras_v0/latents_tensorstore/train",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 375120,
+   "s": 0.487
+  },
+  {
+   "q": "27.0.0.",
+   "P": "marin-us-east5",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 719464,
+   "s": 0.439
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips/The_Lawfare_Podcast",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 601013,
+   "s": 2.078
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74811,
+   "s": 0.488
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74811,
+   "s": 0.242
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 16384,
+   "bytes": 119940,
+   "s": 0.309
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 45129,
+   "s": 0.446
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 45129,
+   "s": 0.484
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 45129,
+   "s": 0.173
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 45129,
+   "s": 0.229
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_6_of_10/html-8fb1f5/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 45129,
+   "s": 0.279
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/filtered_subsets",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 461892,
+   "s": 0.658
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker/objects",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 2585966,
+   "s": 0.596
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 252830,
+   "s": 0.542
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 252830,
+   "s": 0.453
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 252830,
+   "s": 0.481
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 167896,
+   "s": 0.427
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/tmp/zephyr/15823f226ecc",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 249358,
+   "s": 0.615
+  },
+  {
+   "q": "4",
+   "P": "marin-us-central2/users/benjaminfeuer/snowball-replay/hf-rows-v1-20260908/partitions",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 467558,
+   "s": 0.569
+  },
+  {
+   "q": "4",
+   "P": "marin-us-east1/gcsfuse_mount/huggingface-cache/datasets/downloads",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 1514077,
+   "s": 0.804
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 25841,
+   "s": 0.798
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 25841,
+   "s": 0.327
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 292300,
+   "s": 1.359
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 309586,
+   "s": 0.515
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 309586,
+   "s": 0.548
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-4plus/outlinks",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 207084,
+   "s": 0.517
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-4plus/outlinks/raw_finemath-crawl",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 207084,
+   "s": 0.517
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-4plus/outlinks/raw_finemath-crawl/finemath-4plus-cda274",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 207084,
+   "s": 0.407
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 25841,
+   "s": 0.293
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 25841,
+   "s": 0.371
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/documents/open-web-math",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 179365,
+   "s": 0.518
+  },
+  {
+   "q": "46_",
+   "P": "marin-us-central2/documents/open-web-math/html-test-v2-191fde",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 179365,
+   "s": 0.426
+  },
+  {
+   "q": "47.tmp",
+   "P": "marin-eu-west4",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50674,
+   "s": 0.5
+  },
+  {
+   "q": "47.tmp",
+   "P": "marin-eu-west4/datakit",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50674,
+   "s": 0.33
+  },
+  {
+   "q": "47.tmp",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50674,
+   "s": 0.442
+  },
+  {
+   "q": "47.tmp",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50674,
+   "s": 0.404
+  },
+  {
+   "q": "47.tmp",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed/cluster=37",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50674,
+   "s": 0.376
+  },
+  {
+   "q": "47.tmp",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed/cluster=37/quality=0",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 1987739,
+   "s": 0.795
+  },
+  {
+   "q": "47.tmp",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed/cluster=39",
+   "source": "roots",
+   "rows_read": 57344,
+   "bytes": 1276817,
+   "s": 0.583
+  },
+  {
+   "q": "553_war",
+   "P": "marin-us-central2",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 432887,
+   "s": 1.302
+  },
+  {
+   "q": "553_war",
+   "P": "marin-us-central2/crawl",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 338252,
+   "s": 0.451
+  },
+  {
+   "q": "553_war",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "roots",
+   "rows_read": 16384,
+   "bytes": 51912,
+   "s": 0.227
+  },
+  {
+   "q": "553_war",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 209254,
+   "s": 0.414
+  },
+  {
+   "q": "553_war",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 209254,
+   "s": 0.351
+  },
+  {
+   "q": "63-of",
+   "P": "marin-eu-west4",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 24975,
+   "s": 0.656
+  },
+  {
+   "q": "63-of",
+   "P": "marin-eu-west4/datakit",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 24975,
+   "s": 0.393
+  },
+  {
+   "q": "63-of",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 24975,
+   "s": 0.333
+  },
+  {
+   "q": "63-of",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed",
+   "source": "roots",
+   "rows_read": 16384,
+   "bytes": 144292,
+   "s": 1.038
+  },
+  {
+   "q": "63-of",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 24975,
+   "s": 0.323
+  },
+  {
+   "q": "63-of",
+   "P": "marin-us-central2",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 441819,
+   "s": 0.583
+  },
+  {
+   "q": "63-of",
+   "P": "marin-us-central2/datakit",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 355967,
+   "s": 0.479
+  },
+  {
+   "q": "63-of",
+   "P": "marin-us-central2/datakit/store/june-67b-a2b-length64k/2026.08.24",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 198795,
+   "s": 0.295
+  },
+  {
+   "q": "63-of",
+   "P": "marin-us-east5/datakit/store_8ac06c74",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 291691,
+   "s": 0.431
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 55991,
+   "s": 0.621
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 55991,
+   "s": 0.355
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 290806,
+   "s": 1.188
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 142470,
+   "s": 0.425
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 142470,
+   "s": 0.45
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-4plus",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 250878,
+   "s": 0.657
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 55991,
+   "s": 0.759
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl/medu-dclm-mmlu-sciences",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 215686,
+   "s": 0.394
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 55991,
+   "s": 0.574
+  },
+  {
+   "q": "853",
+   "P": "marin-us-central2/documents",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 370831,
+   "s": 0.429
+  },
+  {
+   "q": "853",
+   "P": "marin-us-east5",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 741894,
+   "s": 0.812
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central1",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 395951,
+   "s": 1.255
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 54563,
+   "s": 0.651
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 54563,
+   "s": 0.351
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/finemath-3plus",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 411720,
+   "s": 0.6
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/finemath-3plus/html-5abc5d",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 411720,
+   "s": 0.483
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 54563,
+   "s": 0.38
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 333806,
+   "s": 0.581
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-4plus/html-119c1e",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 219034,
+   "s": 0.459
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 54563,
+   "s": 0.412
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 108882,
+   "s": 0.378
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 108882,
+   "s": 0.286
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 108882,
+   "s": 0.372
+  },
+  {
+   "q": "93.jsonl",
+   "P": "marin-us-central2/documents",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 339335,
+   "s": 0.488
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central1/checkpoints",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 806926,
+   "s": 1.775
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 16384,
+   "bytes": 179693,
+   "s": 0.524
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.241
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/crawl/finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.204
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.254
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.24
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.356
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.272
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.316
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.372
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85778,
+   "s": 0.256
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 345188,
+   "s": 0.469
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 352153,
+   "s": 0.54
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 352153,
+   "s": 0.51
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 352153,
+   "s": 0.519
+  },
+  {
+   "q": "_",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 352153,
+   "s": 0.54
+  },
+  {
+   "q": "_",
+   "P": "marin-us-east5/sam/results/gpt2-train-fineweb-two-phases-v4-full-cfx-0/None",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 142027,
+   "s": 0.53
+  },
+  {
+   "q": "_",
+   "P": "marin-us-east5/sam/results/gpt2-train-fineweb-two-phases-v4-full-cfx-0/None/inputs",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 142027,
+   "s": 0.653
+  },
+  {
+   "q": "_",
+   "P": "marin-us-west4/julian/experiments",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 582694,
+   "s": 0.596
+  },
+  {
+   "q": "_",
+   "P": "marin-us-west4/julian/experiments/egodex-diffusion",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 582694,
+   "s": 0.524
+  },
+  {
+   "q": "_chunk033_1980s-2040s.",
+   "P": "marin-us-central1",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50587,
+   "s": 0.737
+  },
+  {
+   "q": "_chunk033_1980s-2040s.",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50587,
+   "s": 0.486
+  },
+  {
+   "q": "_ft",
+   "P": "marin-us-central1",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 607722,
+   "s": 1.282
+  },
+  {
+   "q": "_ft",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 607722,
+   "s": 0.521
+  },
+  {
+   "q": "ce.",
+   "P": "marin-us-east1",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 455515,
+   "s": 0.857
+  },
+  {
+   "q": "ce.",
+   "P": "marin-us-east1/documents",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 371344,
+   "s": 0.303
+  },
+  {
+   "q": "ce.",
+   "P": "marin-us-east1/documents/fast_curation",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 371344,
+   "s": 0.392
+  },
+  {
+   "q": "ce.",
+   "P": "marin-us-east1/documents/fast_curation/lpv11_fastpipe_v2_1_fused-2a076ddfcb",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 371344,
+   "s": 0.395
+  },
+  {
+   "q": "ce.",
+   "P": "marin-us-east1/documents/fast_curation/lpv11_fastpipe_v2_1_fused-2a076ddfcb/kept",
+   "source": "roots",
+   "rows_read": 16384,
+   "bytes": 180838,
+   "s": 0.352
+  },
+  {
+   "q": "cess",
+   "P": "marin-eu-west4/raw/dclm/a3b142c/huggingface.co/datasets/mlfoundations/dclm-baseline-1.0",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 201339,
+   "s": 1.923
+  },
+  {
+   "q": "cess",
+   "P": "marin-eu-west4/raw/dclm/a3b142c/huggingface.co/datasets/mlfoundations/dclm-baseline-1.0/resolve",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 201339,
+   "s": 0.422
+  },
+  {
+   "q": "cess",
+   "P": "marin-eu-west4/raw/dclm/a3b142c/huggingface.co/datasets/mlfoundations/dclm-baseline-1.0/resolve/a3b142c",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 201339,
+   "s": 0.381
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 49391,
+   "s": 0.497
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 414234,
+   "s": 0.669
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 401938,
+   "s": 0.631
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 31347,
+   "s": 0.235
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 31347,
+   "s": 0.264
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 31347,
+   "s": 0.431
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 31347,
+   "s": 0.38
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 31347,
+   "s": 0.185
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 19306,
+   "s": 0.258
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 19306,
+   "s": 0.317
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 350191,
+   "s": 0.703
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd/CC-MAIN-2024-18",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 350191,
+   "s": 0.493
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/raw",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 320319,
+   "s": 0.48
+  },
+  {
+   "q": "cess",
+   "P": "marin-us-central2/train_test_overlap/ngrams_final",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 317176,
+   "s": 0.611
+  },
+  {
+   "q": "ch_0121.",
+   "P": "marin-us-central1",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 376293,
+   "s": 1.505
+  },
+  {
+   "q": "ch_0121.",
+   "P": "marin-us-central1/documents",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 376293,
+   "s": 0.461
+  },
+  {
+   "q": "ch_0121.",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated",
+   "source": "roots",
+   "rows_read": 57344,
+   "bytes": 331291,
+   "s": 0.44
+  },
+  {
+   "q": "ch_0121.",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region",
+   "source": "roots",
+   "rows_read": 57344,
+   "bytes": 331291,
+   "s": 0.491
+  },
+  {
+   "q": "ch_0121.",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region/europe-west4",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 190106,
+   "s": 0.382
+  },
+  {
+   "q": "ch_0121.",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region/europe-west4/llm_pipeline_v1_1",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 190106,
+   "s": 0.381
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41117,
+   "s": 0.429
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41117,
+   "s": 0.251
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41117,
+   "s": 0.449
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41117,
+   "s": 0.165
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41117,
+   "s": 0.172
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_4_of_10/html-2652c0",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42092,
+   "s": 0.365
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42092,
+   "s": 0.329
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42092,
+   "s": 0.257
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42092,
+   "s": 0.38
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 42092,
+   "s": 0.377
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 348278,
+   "s": 2.769
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.542
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.518
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.505
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.504
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.478
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.504
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.498
+  },
+  {
+   "q": "example",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 313786,
+   "s": 0.522
+  },
+  {
+   "q": "ing_with",
+   "P": "marin-us-central1",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 65839,
+   "s": 0.757
+  },
+  {
+   "q": "ing_with",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 65839,
+   "s": 0.313
+  },
+  {
+   "q": "js",
+   "P": "marin-eu-west4/datakit",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 14803,
+   "s": 0.465
+  },
+  {
+   "q": "js",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 14803,
+   "s": 0.171
+  },
+  {
+   "q": "js",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 26188,
+   "s": 0.184
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 86931,
+   "s": 0.269
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 415590,
+   "s": 1.49
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 377420,
+   "s": 0.575
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 47795,
+   "s": 0.354
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 47795,
+   "s": 0.22
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 47795,
+   "s": 0.205
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 47795,
+   "s": 0.378
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/datakit/store/june-67b-a2b-length64k/2026.08.24/cluster=8",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 1102159,
+   "s": 0.723
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd/CC-MAIN-2024-18",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 380593,
+   "s": 0.544
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 324701,
+   "s": 0.522
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/evaluation/grug_logprob",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 756106,
+   "s": 0.635
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74223,
+   "s": 0.314
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74223,
+   "s": 0.338
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 345410,
+   "s": 0.522
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 276985,
+   "s": 0.522
+  },
+  {
+   "q": "js",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 276985,
+   "s": 0.425
+  },
+  {
+   "q": "js",
+   "P": "marin-us-east5/downstream_scaling",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 558398,
+   "s": 0.627
+  },
+  {
+   "q": "json",
+   "P": "marin-eu-west4/datakit",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 99704,
+   "s": 0.471
+  },
+  {
+   "q": "json",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 99704,
+   "s": 0.21
+  },
+  {
+   "q": "json",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 26253,
+   "s": 0.168
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 85429,
+   "s": 0.297
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 441246,
+   "s": 4.513
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 379693,
+   "s": 0.649
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48859,
+   "s": 0.542
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48859,
+   "s": 0.185
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48859,
+   "s": 0.282
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48859,
+   "s": 0.336
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/datakit/store/june-67b-a2b-length64k/2026.08.24/cluster=8",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 1098787,
+   "s": 0.92
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd/CC-MAIN-2024-18",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 352739,
+   "s": 0.785
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 356476,
+   "s": 0.682
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/evaluation/grug_logprob",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 790302,
+   "s": 0.709
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 78762,
+   "s": 0.358
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 78762,
+   "s": 0.394
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 351403,
+   "s": 0.592
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 318305,
+   "s": 0.52
+  },
+  {
+   "q": "json",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 318305,
+   "s": 0.591
+  },
+  {
+   "q": "json",
+   "P": "marin-us-east5/downstream_scaling",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 558121,
+   "s": 0.774
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region/us-west4/med_quality",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 531202,
+   "s": 0.788
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 77037,
+   "s": 0.187
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 415343,
+   "s": 0.731
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 378418,
+   "s": 0.61
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 44012,
+   "s": 0.187
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 44012,
+   "s": 0.359
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/crawl/finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 44012,
+   "s": 0.172
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 44012,
+   "s": 0.226
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 44012,
+   "s": 0.344
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 44012,
+   "s": 0.317
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 44012,
+   "s": 0.336
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/documents/quality_filtering/reasoning_fasttext_classifier/fasttext/fineweb_2024_18-50e6fd/CC-MAIN-2024-18",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 358860,
+   "s": 0.709
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/tempered_best_of_n/advisor_proposed",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 347815,
+   "s": 0.917
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 76219,
+   "s": 0.322
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 76219,
+   "s": 0.341
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 351946,
+   "s": 0.62
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 296561,
+   "s": 0.588
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 296561,
+   "s": 0.584
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-east5/downstream_scaling",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 570954,
+   "s": 0.749
+  },
+  {
+   "q": "jsonl",
+   "P": "marin-us-east5/downstream_scaling/evals",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 570954,
+   "s": 0.648
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80641,
+   "s": 0.422
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80641,
+   "s": 0.384
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80641,
+   "s": 0.291
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region/europe-west4",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80641,
+   "s": 0.319
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region/europe-west4/llm_pipeline_v1_1",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80641,
+   "s": 0.29
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1/documents/baseline_llm_extraction_consolidated/by_region/us-west4/med_quality",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 484118,
+   "s": 1.573
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 80641,
+   "s": 0.232
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips/PBD_Podcast",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 478045,
+   "s": 0.591
+  },
+  {
+   "q": "k",
+   "P": "marin-us-central2/scratch/llm_curated_flop_sidecars/by_region/europe-west4",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 344382,
+   "s": 0.535
+  },
+  {
+   "q": "k",
+   "P": "marin-us-east5/experiments",
+   "source": "roots",
+   "rows_read": 57344,
+   "bytes": 426777,
+   "s": 0.463
+  },
+  {
+   "q": "k",
+   "P": "marin-us-east5/protein-structure/MarinFold/exp100_only_correct_contacts_v1_train/runs/r0_full/documents",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 779435,
+   "s": 0.563
+  },
+  {
+   "q": "k",
+   "P": "marin-us-west4/documents/baseline_llm_extraction/med_quality",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 404378,
+   "s": 0.528
+  },
+  {
+   "q": "pa",
+   "P": "marin-eu-west4/datakit/quality",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 452308,
+   "s": 1.866
+  },
+  {
+   "q": "pa",
+   "P": "marin-eu-west4/documents",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 966732,
+   "s": 0.6
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70091,
+   "s": 0.417
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70091,
+   "s": 0.165
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70091,
+   "s": 0.268
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70091,
+   "s": 0.231
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 67933,
+   "s": 0.193
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_4_of_10/html-2652c0",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 67933,
+   "s": 0.369
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/tempered_best_of_n/advisor_proposed",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 198790,
+   "s": 0.477
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep/llama_3_1_8b_instruct_chat_followup",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 157866,
+   "s": 0.326
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 2581138,
+   "s": 0.67
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker/objects",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 2581138,
+   "s": 0.703
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 907641,
+   "s": 0.559
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics/run_id",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 907641,
+   "s": 0.537
+  },
+  {
+   "q": "pa",
+   "P": "marin-us-east5/protein-structure/MarinFold/exp100_only_correct_contacts_v1_train/runs/r0_full/nll",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 129051,
+   "s": 0.306
+  },
+  {
+   "q": "par",
+   "P": "marin-eu-west4/documents",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 955228,
+   "s": 2.39
+  },
+  {
+   "q": "par",
+   "P": "marin-eu-west4/tmp/ttl=1d/datakit-nemotron-smoke/datakit-nemotron-ferry-37219982338-1/datakit/dedup_a2e034ff/metadata/cc",
+   "source": "roots",
+   "rows_read": 16384,
+   "bytes": 81126,
+   "s": 0.407
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70357,
+   "s": 0.384
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70357,
+   "s": 0.186
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70357,
+   "s": 0.385
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70357,
+   "s": 0.174
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70463,
+   "s": 0.259
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_4_of_10/html-2652c0",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70463,
+   "s": 0.289
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/datakit/minhash",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 507615,
+   "s": 0.671
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 2776091,
+   "s": 0.724
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker/objects",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 2776091,
+   "s": 0.644
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 918868,
+   "s": 0.805
+  },
+  {
+   "q": "par",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics/run_id",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 918868,
+   "s": 0.633
+  },
+  {
+   "q": "par",
+   "P": "marin-us-east1/documents/baseline_lpv11_fastpipe_v2_1_fused_deduped/500000warcs/dedup_c075/verified/outputs/source_000",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 190419,
+   "s": 0.513
+  },
+  {
+   "q": "par",
+   "P": "marin-us-east5/protein-structure/MarinFold/exp100_only_correct_contacts_v1_train/runs/r0_full/nll",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 130696,
+   "s": 0.352
+  },
+  {
+   "q": "q",
+   "P": "marin-eu-west4/datakit/embed",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 480105,
+   "s": 1.812
+  },
+  {
+   "q": "q",
+   "P": "marin-eu-west4/tmp/ttl=1d/datakit-nemotron-smoke/datakit-nemotron-ferry-37219982338-1/datakit/dedup_a2e034ff/metadata/cc",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 130077,
+   "s": 0.379
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50468,
+   "s": 0.33
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 50468,
+   "s": 0.23
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41150,
+   "s": 0.281
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41150,
+   "s": 0.202
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41150,
+   "s": 0.159
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_4_of_10/html-2652c0",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 41150,
+   "s": 0.347
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 2581261,
+   "s": 0.746
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/finelog/marin/_finelog/tables/iris.worker/objects",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 2581261,
+   "s": 0.658
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 914728,
+   "s": 0.65
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/finelog/marin/levanter.metrics/run_id",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 914728,
+   "s": 0.577
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/url_index",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 609588,
+   "s": 0.736
+  },
+  {
+   "q": "q",
+   "P": "marin-us-central2/users/benjaminfeuer/snowball-replay/hf-rows-v1-20260908/partitions/raw/source_id=00063",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 291639,
+   "s": 0.589
+  },
+  {
+   "q": "q",
+   "P": "marin-us-east5/protein-structure/MarinFold/exp100_only_correct_contacts_v1_train/runs/r0_full/nll",
+   "source": "rollup",
+   "rows_read": 3550,
+   "bytes": 46466,
+   "s": 0.307
+  },
+  {
+   "q": "son",
+   "P": "marin-eu-west4/datakit",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 15243,
+   "s": 0.546
+  },
+  {
+   "q": "son",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 15243,
+   "s": 0.19
+  },
+  {
+   "q": "son",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 26822,
+   "s": 0.235
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 93489,
+   "s": 0.2
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 413671,
+   "s": 2.076
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/attributes/eli5-100k-oh-100k-rw-200k-chris-929e34/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 402661,
+   "s": 0.586
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48126,
+   "s": 0.389
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48126,
+   "s": 0.369
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48126,
+   "s": 0.288
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48126,
+   "s": 0.314
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/datakit/store/june-67b-a2b-length64k/2026.08.24/cluster=8",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 1103461,
+   "s": 0.826
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/documents/quality_filtering/exp163_compare_bert_fasttext_fineweb/bert/fineweb_2024_18-402f6b/CC-MAIN-2024-18",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 355887,
+   "s": 0.586
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/downstream_scaling/evals/delphi/gsm8k/joint_decode_avg_v2/unnormalized_add_bytes_union/student_sweep",
+   "source": "roots",
+   "rows_read": 81920,
+   "bytes": 324515,
+   "s": 0.624
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/evaluation/grug_logprob",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 748659,
+   "s": 0.59
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 76305,
+   "s": 0.302
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 76305,
+   "s": 0.362
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 348810,
+   "s": 0.53
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 276752,
+   "s": 0.456
+  },
+  {
+   "q": "son",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 276752,
+   "s": 0.751
+  },
+  {
+   "q": "son",
+   "P": "marin-us-east5/downstream_scaling",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 557926,
+   "s": 0.996
+  },
+  {
+   "q": "tmp",
+   "P": "marin-eu-west4",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74584,
+   "s": 0.822
+  },
+  {
+   "q": "tmp",
+   "P": "marin-eu-west4/datakit",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74584,
+   "s": 0.502
+  },
+  {
+   "q": "tmp",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74584,
+   "s": 0.523
+  },
+  {
+   "q": "tmp",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74584,
+   "s": 0.447
+  },
+  {
+   "q": "tmp",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed/cluster=37",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 74584,
+   "s": 0.366
+  },
+  {
+   "q": "tmp",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed/cluster=37/quality=0",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 1989166,
+   "s": 1.284
+  },
+  {
+   "q": "tmp",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518/cluster=5",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 2758249,
+   "s": 0.828
+  },
+  {
+   "q": "tmp",
+   "P": "marin-us-central1/tokenized/common_pile",
+   "source": "roots",
+   "rows_read": 49152,
+   "bytes": 955080,
+   "s": 0.514
+  },
+  {
+   "q": "tmp",
+   "P": "marin-us-east5/datakit/store_8ac06c74/cluster=1",
+   "source": "roots",
+   "rows_read": 40960,
+   "bytes": 938706,
+   "s": 0.471
+  },
+  {
+   "q": "tmp",
+   "P": "marin-us-east5/tokenized",
+   "source": "roots",
+   "rows_read": 90112,
+   "bytes": 1872780,
+   "s": 0.619
+  },
+  {
+   "q": "tmp",
+   "P": "marin-us-west4",
+   "source": "roots",
+   "rows_read": 32768,
+   "bytes": 699409,
+   "s": 0.511
+  },
+  {
+   "q": "train",
+   "P": "marin-us-central1",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 70541,
+   "s": 0.777
+  },
+  {
+   "q": "train",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 555119,
+   "s": 1.15
+  },
+  {
+   "q": "train",
+   "P": "marin-us-central2",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 678216,
+   "s": 0.536
+  },
+  {
+   "q": "train",
+   "P": "marin-us-central2/checkpoints/data_grads",
+   "source": "roots",
+   "rows_read": 24576,
+   "bytes": 90728,
+   "s": 0.331
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central1/evaluation/harbor/swebench-verified/OpenThinker-Agent-v1-SFT-daytona-tier-2",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 354951,
+   "s": 1.529
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central1/evaluation/harbor/swebench-verified/OpenThinker-Agent-v1-SFT-daytona-tier-2/terminus-2",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 354951,
+   "s": 0.433
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central1/evaluation/harbor/swebench-verified/OpenThinker-Agent-v1-SFT-daytona-tier-2/terminus-2/harbor_trials",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 354951,
+   "s": 0.507
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central1/evaluation/harbor/terminal-bench",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 451560,
+   "s": 0.619
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central1/podcast_audio_top1000_60s_clips/The_Bobby_Bones_Show",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 532015,
+   "s": 0.636
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 66730,
+   "s": 0.414
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 66730,
+   "s": 0.159
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/html-00c550",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 66730,
+   "s": 0.327
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/crawl/medu",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 66730,
+   "s": 0.179
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 52408,
+   "s": 0.151
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_4_of_10/html-2652c0",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 52408,
+   "s": 0.337
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 65110,
+   "s": 0.372
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 65110,
+   "s": 0.291
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 65110,
+   "s": 0.313
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 65110,
+   "s": 0.276
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 379253,
+   "s": 0.631
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 296236,
+   "s": 0.434
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 296236,
+   "s": 0.494
+  },
+  {
+   "q": "x",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 296236,
+   "s": 0.523
+  },
+  {
+   "q": "x",
+   "P": "marin-us-east1/re10k_clips",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 1080228,
+   "s": 0.667
+  },
+  {
+   "q": "z",
+   "P": "marin-eu-west4/datakit/store",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 12692,
+   "s": 0.383
+  },
+  {
+   "q": "z",
+   "P": "marin-eu-west4/datakit/store/_smoke_v0.1_20260518_mixed/cluster=4/quality=4",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 1226078,
+   "s": 1.819
+  },
+  {
+   "q": "z",
+   "P": "marin-eu-west4/datakit/store/v0.1_20260518",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 16038,
+   "s": 0.142
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 83169,
+   "s": 0.264
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/attributes/classifier-ablations-experiments/eli5-100k-oh-100k-rw-200k-005776/CC-MAIN-2020-50",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 411705,
+   "s": 0.586
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48060,
+   "s": 0.163
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/crawl/finemath-3plus/outlinks/raw_finemath-3plus-ce1ad7",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48060,
+   "s": 0.348
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48060,
+   "s": 0.19
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/crawl/finemath-crawl/finemath-3plus/outlinks/raw_finemath-crawl/finemath-3plus-f6a55e",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48060,
+   "s": 0.158
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/crawl/medu/medu-dclm-pretraining-subset-mmlu-science/local-shard_0_of_10/html-3ff4e8/medu/medu-dclm-pretraining-subset-mmlu-science",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 48060,
+   "s": 0.343
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 73890,
+   "s": 0.385
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "rollup",
+   "rows_read": 8192,
+   "bytes": 73890,
+   "s": 0.344
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/raw/SlimPajama-627B-262830/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd/train",
+   "source": "roots",
+   "rows_read": 65536,
+   "bytes": 350290,
+   "s": 0.611
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 383236,
+   "s": 0.491
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 383236,
+   "s": 0.472
+  },
+  {
+   "q": "z",
+   "P": "marin-us-central2/raw/slimpajama-494ebf/2d0accd/huggingface.co/datasets/cerebras/SlimPajama-627B/resolve/2d0accd",
+   "source": "roots",
+   "rows_read": 73728,
+   "bytes": 383236,
+   "s": 0.463
+  },
+  {
+   "q": "z",
+   "P": "marin-us-east5/datakit/store_8ac06c74/cluster=21",
+   "source": "roots",
+   "rows_read": 114688,
+   "bytes": 840112,
+   "s": 0.609
+  },
+  {
+   "q": "z",
+   "P": "marin-us-east5/protein-structure/MarinFold/exp100_only_correct_contacts_v1_train/runs/r0_full/documents",
+   "source": "roots",
+   "rows_read": 106496,
+   "bytes": 720922,
+   "s": 0.687
+  },
+  {
+   "q": "z",
+   "P": "marin-us-west4/tmp",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 385349,
+   "s": 0.623
+  },
+  {
+   "q": "z",
+   "P": "marin-us-west4/tmp/ttl=1d",
+   "source": "roots",
+   "rows_read": 98304,
+   "bytes": 385349,
+   "s": 0.498
+  }
+ ]
+}

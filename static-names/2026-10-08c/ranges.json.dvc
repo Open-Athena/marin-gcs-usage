@@ -1,0 +1,11 @@
+outs:
+- md5: 0e64092bfd59936b30b9f7b42738edd6
+  size: 86120
+  hash: md5
+  path: ranges.json
+meta:
+  computation:
+    cmd: cp ../2026-10-08/ranges.json ranges.json && gcloud storage cp --verbosity=error
+      ranges.json gs://oa-gcs-usage-dvx/static-names/2026-10-08c/ranges.json
+    deps:
+      ../2026-10-08/ranges.json: 0e64092bfd59936b30b9f7b42738edd6

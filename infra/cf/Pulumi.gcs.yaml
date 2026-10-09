@@ -9,4 +9,5 @@ config:
   gcs-usage-cf:branchAliases:
     - {domain: dev.gcs.oa.dev, branch: dev}
   gcs-usage-cf:kvName: oa-gcs-usage-cache
+  gcs-usage-cf:r2Bucket: oa-gcs-usage-index   # Worker-served indexes (static name search)
   gcs-usage-cf:queryBoxHost: gcs-query.oa.dev   # the ch-store query box, via a named tunnel

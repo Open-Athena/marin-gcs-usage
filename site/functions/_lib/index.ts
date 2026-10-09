@@ -794,7 +794,9 @@ const groupKey = (h: IndexHandle, rg: number) => `${storeKey(h.env)}|${h.date}|$
  * neighbouring groups of a sort are adjacent in its file), `RUN_READS`
  * runs in flight, and each group decoded from its run's bytes. `f` maps each
  * group's rows (kept per group, in input order). */
-async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: string }[], f: (rows: Row[]) => T): Promise<T[]> {
+/** `stop`: the caller no longer wants the answer (a time budget ran out) — groups not yet fetched or decoded
+ *  are skipped (their slots stay empty), so abandoned work stops taking the isolate's CPU. */
+async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: string }[], f: (rows: Row[]) => T, stop?: () => boolean): Promise<T[]> {
   const out: T[] = new Array(groups.length)
   const miss: { i: number; rg: number; json: string; start: number; end: number }[] = []
   groups.forEach((g, i) => {
@@ -808,8 +810,10 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
     miss.push({ i, ...g, start, end })
   })
   await mapLimit(planRuns(miss), RUN_READS, async run => {
+    if (stop?.()) return
     const file = bufferSlice(await fetchRange(h, run.start, run.end), run.start)
     for (const g of run.items) {
+      if (stop?.()) return
       const rows = await readGroup(h, g.json, undefined, file)
       cachePut(groupKey(h, g.rg), rows, rows.length * ROW_BYTES)
       out[g.i] = f(rows)
@@ -957,13 +961,14 @@ export async function readRects(
   thrAt?: (depth: number) => number,
   lens?: Lens,
   plan?: Span[],
+  stop?: () => boolean,
 ): Promise<Row[]> {
   if (!rects.length) return []
   const kept = plan ?? await planRects(h, rects, thrAt, lens)
   // A row passes the lens iff its usr equals the key.
   const lensOk = (r: Row) => !lens || r.usr === lens.key
   const inRect = (r: Row) => rects.some(q => r.depth >= q.dLo && r.depth <= q.dHi && r.path >= q.pLo && r.path <= q.pHi)
-  return decodeSpans(h, kept, r => inRect(r) && lensOk(r))
+  return decodeSpans(h, kept, r => inRect(r) && lensOk(r), stop)
 }
 
 /** The row groups a `readRects` decodes — the span queries' candidates
@@ -993,7 +998,7 @@ export async function planRects(
  * subtree reads. Caps the group count and the rows decoded: a broad lens (a
  * big user spread across the estate) can select few-enough groups but still
  * decode millions of rows and blow the Worker CPU. Error cleanly instead. */
-async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boolean): Promise<Row[]> {
+async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boolean, stop?: () => boolean): Promise<Row[]> {
   if (kept.length > 250) throw new Error('query too wide: drill deeper or raise minArea')
   const totalRows = kept.reduce((n, s) => n + (s.rowEnd - s.rowStart), 0)
   if (totalRows > 700_000) throw new Error('query too wide: drill deeper or raise minArea')
@@ -1002,7 +1007,7 @@ async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boole
   h.trace?.('rgjson', now() - t0)
   h.trace?.('ngroups', kept.length)
   t0 = now()
-  const perGroup = await readGroupsCached(h, kept.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep))
+  const perGroup = await readGroupsCached(h, kept.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop)
   h.trace?.('groups', now() - t0, h.variant)
   return perGroup.flat()
 }
@@ -1222,12 +1227,13 @@ export async function readSizeRects(
   thrAt: (depth: number) => number,
   lens?: Lens,
   plan?: Span[],
+  stop?: () => boolean,
 ): Promise<Row[]> {
   if (!rects.length) return []
   const kept = plan ?? await planSizeRects(h, rects, thrAt, lens)
   const lensOk = (r: Row) => !lens || r.usr === lens.key
   const inRect = (r: Row) => rects.some(q => r.depth >= q.dLo && r.depth <= q.dHi && r.path >= q.pLo && r.path < q.pHi)
-  return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r))
+  return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r), stop)
 }
 
 /** A point lookup `(depth, path)` or a one-level range under a prefix. */
@@ -1251,7 +1257,7 @@ export async function readAsks(
   h: IndexHandle,
   asks: Ask[],
   keep: (r: Row) => boolean,
-  { columns, maxGroups = 60, spanCap = 4000 }: { columns?: string[]; maxGroups?: number; spanCap?: number } = {},
+  { columns, maxGroups = 60, spanCap = 4000, stop }: { columns?: string[]; maxGroups?: number; spanCap?: number; stop?: () => boolean } = {},
 ): Promise<{ rows: Row[]; groups: number }> {
   // One rectangle per depth over its asks' [min, max] path, halved while it
   // selects more groups than its asks could need: sparse asks across a deep
@@ -1302,7 +1308,7 @@ export async function readAsks(
       const j = jsons.get(s.rg)
       return j ? (await readGroup(h, j, columns)).filter(keep) : []
     })
-    : await readGroupsCached(h, spans.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep))
+    : await readGroupsCached(h, spans.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop)
   h.trace?.('groups', now() - t0)
   return { rows: perGroup.flat(), groups: spans.length }
 }

@@ -1,0 +1,22 @@
+# Supplements the fleet's 35-query workload with genuinely broad central2
+# names. Measured 2026-10-01: 6.16M zarr.json, 3.08M data/offsets,
+# 3.07M input_ids, 2.93M shard_ledger.json and 1.62M .zarray occurrences.
+# These are occurrences, not necessarily outermost match roots.
+views: ["", marin-us-central2, marin-eu-west4]
+queries:
+  - id: zarr-json
+    q: zarr.json
+  - id: data
+    q: data
+  - id: offsets
+    q: offsets
+  - id: input-ids
+    q: input_ids
+  - id: shard-ledger
+    q: shard_ledger.json
+  - id: zarray
+    q: .zarray
+  - id: root-hit
+    q: central2
+  - id: numeric-000
+    q: "000"

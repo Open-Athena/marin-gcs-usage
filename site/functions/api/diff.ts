@@ -16,10 +16,12 @@ import { type Env, requireViewer } from '../_lib/auth.js'
 import { pathGens, storeReady, type Lens } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_lib/scope.js'
-import { ATTEN_DEFAULT, buildDiff, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
+import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
+import { staticTag } from '../_lib/staticFilter.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
+import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
 const SCAN_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{4})?$/
 
 export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
@@ -82,11 +84,22 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     const [head, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), pathGens(ctx.env, [from, to])]))
     const cacheKey = cacheKeyFor('diff',
       `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensTag}` +
-        `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}&g=${g}`,
+        `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}`,
       storeKey(ctx.env),
     )
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return hit
+
+    // The serving box first, when the deployment has one (`_lib/queryBox.ts`).
+    const env = ctx.env as Env & BoxEnv
+    const box = boxFor(env, url)
+    let engine = env.QUERY_BOX_URL ? 'worker;box=skip' : undefined
+    if (box) {
+      const a = await st.time('box', askBox(env, box, 'diff', url.searchParams))
+      if (a.kind === 'answer' && a.status !== 200) return boxStatus(a)
+      if (a.kind === 'answer') return await cacheStore(ctx.env, cacheKey, a.body, { 'server-timing': st.header(), 'x-query-engine': a.engine }, ctx.waitUntil?.bind(ctx))
+      engine = `worker;fallback=${a.why}`
+    }
 
     const diff = await buildDiff(ctx.env, { from, to, path, w, h, minArea, atten, top, lens, owner, query, classes, summary, depth, trace: st.trace })
     const body = JSON.stringify({
@@ -99,7 +112,8 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
       ...diff,
       threshold: Math.round(diff.threshold),
     })
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header() }, ctx.waitUntil?.bind(ctx))
+    // A phase 2 cut short by its time budget may complete on a retry (the isolate holds the groups it read): not kept.
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !diff.interiors?.late)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })

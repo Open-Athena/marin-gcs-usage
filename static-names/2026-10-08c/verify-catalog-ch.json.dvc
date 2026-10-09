@@ -1,0 +1,14 @@
+outs:
+- md5: eba226fd280eb1a7a1d77c41546f8ece
+  size: 13559
+  hash: md5
+  path: verify-catalog-ch.json
+meta:
+  computation:
+    cmd: cat ../2026-10-08/ch-answers.jsonl ch-catalog-answers.jsonl > ../../tmp/sn-2026-10-08c-ch-ref.jsonl
+      && dt-cloud static-names catalog verify -V 100000 ../../tmp/sn-2026-10-08c-ch-ref.jsonl
+      catalog-answers.jsonl > verify-catalog-ch.json
+    deps:
+      ../2026-10-08/ch-answers.jsonl: 911164fa40959b02dacb277424168fb7
+      ch-catalog-answers.jsonl: 60a5717d1c6d1fadc2ebb1080830e4ce
+      catalog-answers.jsonl: 9aeeed87c369b18aaf72f1ffc17de152

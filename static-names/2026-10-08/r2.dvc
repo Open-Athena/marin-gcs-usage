@@ -1,0 +1,6 @@
+meta:
+  computation:
+    cmd: ../../job/static-names.sh r2 2026-10-08 > ../../tmp/static-names-r2-2026-10-08.json
+    deps:
+      suffixes.json: 55adf91534cf88ed7aaa6c8ca9e65ffa
+      verify-answers.json: 68e9991303f8f8728c6cd03b4c5aa815

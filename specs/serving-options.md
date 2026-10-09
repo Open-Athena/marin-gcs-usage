@@ -1,6 +1,6 @@
 # Serving options for filters, diffs and history: a platform survey
 
-Status: research (2026-10-03). Desk research plus napkin math, no new measurements. It answers "could Lambda / Cloud Run / Modal / a real database replace the [serving box][filter-query-service] or the Worker?". Every price and limit below links to its source. Where a number isn't documented, the text says so instead of guessing. Estimates (marked *est.*) are mine and are what the proposed benchmark would check.
+Status: research (2026-10-03), plus benchmarks A′ and B measured the same day (§5, §6). It answers "could Lambda / Cloud Run / Modal / a real database replace the [serving box][filter-query-service] or the Worker?". Every price and limit below links to its source. Where a number isn't documented, the text says so instead of guessing. Estimates (marked *est.*) are mine and are what the proposed benchmark would check.
 
 ## Baseline (from our own measurements)
 
@@ -245,6 +245,139 @@ Querying full `path` strings is out on any engine: 95 GiB decoded per scan.
 - If B lands within 2×, move diffs and history to ClickHouse and keep the custom index only for filters, or drop it if B is within 1.5×.
 - If neither, buy the 1-year commitment and stop.
 
+## 5. Measured: A′, the custom index on GCE suspend/resume (2026-10-03)
+
+Setup: one n2-highmem-8 (8 vCPU, 64 GB) in us-east1-c, Debian 12, a 500 GB pd-ssd boot disk, labelled `purpose=serving-exp`. It ran `dt-cloud bench-serve -e mem` (new: the bench engine loaded once and answering `GET /run` over HTTP) in the gcs job image, holding phase 2's `mem` index for 2026-10-01 (a copy, `scratch/bench/serving-exp/mem-index/2026-10-01/`). `job/serving-exp-suspend.sh` drove it from a laptop, so every time below runs from the `gcloud` call, not from inside the VM. Records: `tmp/serving-exp/a-*.jsonl` (not committed).
+
+**Before any suspend:** the cold load from GCS took 140 s (119 s to copy 40.4 GB, 21 s to load), 40.7 GB resident. Two full runs: 105/105 exact, p50 0.44 / 0.45 s, p90 2.21 / 2.19 s, max 5.97 / 5.94 s, matching phase 2 (§6.2 of the serving-box spec). The first-query probe below (`safetensors`, its 3 views) took 0.30–0.37 s per view.
+
+### 5.1 Measured: suspend and resume, 3 cycles
+
+| suspended for | `suspend` call | `resume` call | → `RUNNING` | → `/health` answers | → first exact answer (3 views) | first view after / before | all 105 after: p50 / p90 / max |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 60 s | 62.7 s | 12.8 s | 13.5 s | 17.5 s | 29.9 s | 7.7 s / 0.34 s | 0.47 / 2.54 / 6.85 s |
+| 5 min | 100.6 s | 13.5 s | 14.3 s | 18.9 s | 31.2 s | 7.9 s / 0.37 s | 0.51 / 2.22 / 5.88 s |
+| 32 min | 61.8 s | 13.1 s | 13.8 s | 17.6 s | 31.5 s | 8.5 s / 0.33 s | 0.66 / 2.20 / 5.80 s |
+
+All 105 answers stayed exact after every resume.
+
+- **Resume is about 13 s of API time plus 4 s until the process answers.** It didn't depend on how long the VM had been suspended (1 min to 32 min). The 24 h case wasn't run.
+- **Memory comes back lazily.** The first query after a resume took 7.7–8.5 s against 0.34 s before: its vocabulary scan touches the whole 6.6 GB lowercase blob, which pages in on first touch. The second view of the same query took 0.7 s, the third 0.35 s. A full run straight after a resume was 5–50% slower at the median and back to normal at p90 and max.
+- **So the first exact answer arrives about 30 s after the resume call** (26 s for one view, plus the probe's other two views and ssh). That is well past the ~10 s the decision rule asked for.
+- **Suspending took 62–101 s** (writing 64 GB of memory out), so a box suspended after each burst of use can't take a new query for a minute or two.
+
+### 5.2 Measured: stop/start with a reload from the PD
+
+| `stop` call | `start` call | → ssh | → `/health` (index reloaded) | → first exact answer | first view | all 105 after |
+|---:|---:|---:|---:|---:|---:|---|
+| 28.1 s | 8.9 s | 25.5 s | 138.1 s | 141.8 s | 1.27 s | 0.44 / 2.19 / 5.83 s |
+
+The reload read 40.4 GB from the 500 GB pd-ssd in 103 s (about 390 MB/s) into fully resident arrays, so the answers after it are as fast as ever. A stop/start costs about 140 s to the first answer against a resume's 30 s, and phase 2's gcsfuse cache (89 s from GCS to RAM) would be close to the same.
+
+### 5.3 Measured: what suspension costs
+
+- **No vCPU or memory charges while suspended.** The preserved memory and device state are billed at $0.000232877 per GiB-hour ([pricing][gce-suspend-price]), about $0.17 per GiB-month, the pd-ssd rate. 64 GB of memory is about **$11 a month**, plus the disks: $85 a month for this 500 GB pd-ssd, or about $10 for a 100 GB pd-balanced plus the index in GCS.
+- **Suspension is limited to 60 days**, after which the VM is stopped ([suspend][gce-suspend]).
+- **Running cost:** $0.52 an hour on demand for n2-highmem-8. A box awake 4 hours a day costs about $64 a month plus storage, against $383 always on.
+
+**Verdict for A′:** suspend/resume works and is exact, but at gcs's size the first answer comes about 30 s after the resume call, three times the decision rule's ~10 s, and suspending takes a minute or more. It fits "warm standby, woken by a cron or a first visitor who sees a 30 s spinner", not a box woken per request. A stop/start costs 140 s to first answer and is no cheaper to hold.
+
+## 6. Measured: B, self-hosted ClickHouse with SCD-2 history (2026-10-03)
+
+Setup: one n2-standard-8 (8 vCPU, 32 GB) in us-east1-c with a 500 GB pd-ssd boot disk, labelled `purpose=serving-exp`, running ClickHouse 26.9.8 (the stable channel, text index GA). `job/serving-exp-ch.sh` drove it; its SQL and scripts are in `job/serving-exp-ch/`. The bench client is `dt-cloud bench-engine -e ch` (new, `dt_cloud.bench.ch`) in the gcs job image on the same VM, so its latencies include the HTTP round trips to ClickHouse but no network hop.
+
+### 6.1 Measured: the latest scan's tables and the 105-query bench
+
+**Layout.** `dt-cloud bench-ch-export` turns phase 2's `mem` index plus its generation's `path` sort into interval-encoded nodes: each node gets `pre`, its rank in a depth-first order, and `post` = `pre` + its subtree's node count − 1. "Under X" is then `X.pre < pre ≤ X.post`, and "has an ancestor in this set" is a running max of `post` in `pre` order: integer work, never a path string. The `pre`/`post` pass over 778M nodes took 53 s in numpy, and the export 846 s on a Batch n2-highmem-16. Tables:
+
+- `names (nid, l)` `ORDER BY l`, with a text index `text(tokenizer = ngrams(3))` on `l`: 127M lowercase names;
+- `nodes_by_name (nid, pre, post, depth, b, o, path)` `ORDER BY (nid, pre)`: a name's nodes are one primary-key range;
+- `nodes (pre, post, depth, nid, b, o, path)` `ORDER BY pre`: a subtree is one primary-key range (the children of a trailing-`/` term's stems).
+
+**Query plan** (`ChIndex.evaluate`, `truth.view_truth`'s semantics, as the DuckDB engine): the names passing each term's segment test (`LIKE` / `startsWith` / `endsWith` / `match`) → their nodes strictly under the view → full-path `p`/`n` flags on `lowerUTF8(path)` → roots = outermost of `p ∧ ¬n` and exclusions = outermost of `n` (one window pass each), each exclusion charged to the root holding it (one window pass over both). Each answer is a handful of statements on one HTTP session with temporary tables.
+
+**Load** (from local parquet on the VM): `names` 147 s, including the text index; `nodes` 266 s; `nodes_by_name` 375 s; merging `names` into one part another 373 s. About 19 minutes, plus the 14-minute export.
+
+| | on disk | uncompressed |
+|---|---:|---:|
+| `names` (2.57 GB of it the text index) | 3.6 GB | 6.6 GB |
+| `nodes` | 8.5 GB | 119 GB |
+| `nodes_by_name` | 11.0 GB | 119 GB |
+| **one scan, total** | **23.1 GB** | |
+
+**Results:** 105/105 exact on every pass. Warm is the second of two back-to-back passes; cold drops ClickHouse's caches and the OS page cache before every answer, so each one reads from the pd-ssd.
+
+| | p50 | p90 | max | over 10 s |
+|---|---:|---:|---:|---:|
+| `mem` on n2-highmem-8 (§6.2 of the serving-box spec) | 0.44 s | 2.1 s | 5.2 s | 0 |
+| pass bar (2× `mem`, max ≤ 10 s) | 0.88 s | 4.2 s | 10 s | 0 |
+| ClickHouse warm | **0.20 s** | **1.46 s** | **4.33 s** | 0 |
+| ClickHouse cold | 1.03 s | 4.67 s | 6.25 s | 0 |
+
+- **Warm, ClickHouse beats the in-memory index** at the median and the tail, holding none of it in process memory. **Cold, it misses the 2× bar slightly** at p50 (1.03 s against 0.88 s) and p90 (4.67 s against 4.2 s), with no answer over 10 s.
+- **The slowest answers are at the store root:** `step` (18.7M roots) 4.3 s warm / 6.2 s cold; `ext-npy` (20.4M roots) 2.7 / 3.1 s; dense substrings and AND/NOT queries (`eval`, `qwen sft`, `moe 1e23`, `nemotron -dclm|dolma`, `ckpt -eval`) 2.2–2.7 s warm and 4.7–6.1 s cold. Cold regexes pay most (`re-grug-moe` 0.67 → 6.25 s, `re-tokenizer-json` 0.04 → 2.90 s): `match` over the names can't use the text index, so it reads the whole `names` table (3.6 GB) from disk.
+- **One rewrite mattered.** The first version deduplicated candidates with a `GROUP BY` and carried path strings through the window passes: `step` took 12.4 s and `ext-npy` 11.4 s warm. Window passes over `(pre, post, b, o)` only, with the root paths joined back only for listing, brought them to 4.3 s and 2.7 s.
+- **Memory:** the server holds 1.6–1.9 GB resident between queries, the largest bench query peaked at 2.8 GB, and a full warm pass from a dropped page cache pulled 5.9 GB into it. The working set is about 11 GB, so **16 GB would very likely do** for the latest scan (not run). The other 16 GB of this box only helped the bulk history build (§6.2).
+
+### 6.2 Measured: SCD-2 history over 7 daily scans
+
+**Sources:** per scan (2026-09-27 … 10-03), the per-object listings (`listing/<date>/<bucket>/shard-*.parquet`, about 10 GB a day) and `dir-cache/dir-stats.parquet`. dir-stats holds each dir's *direct* objects only (12.5 GB a day, 178M dirs), and dirs with no direct objects are absent, so the dir rollups had to be built. Copying a day's files from GCS to the VM took 45–77 s.
+
+**Build:**
+
+1. Raw rows, per scan: `obj_raw (path, s, size, created, sc)` and `dir_raw` (direct stats), both `ORDER BY (path, s)`. Loading took 263–328 s for a day's objects (557–564M rows) and 116–151 s for its dir-stats, about 7 minutes a scan.
+2. Dir rollups, bottom-up one depth at a time: rollup(x) = direct(x) + Σ rollup(children) (`dir-rollup.sh`). This took 78 minutes for all 7 scans, about 11 minutes a scan. The first attempt summed every row into each of its ancestors (about 10B rows) and ran out of memory on one huge top-level dir. The rollups match the 2026-10-01 path index exactly on every bucket's bytes and objects, and 217M dirs + 561M objects = its 778M nodes.
+3. SCD-2 intervals (`hist-build.sql`): one pass per table in primary-key order (`optimize_aggregation_in_order`). Each path's scans become runs of identical, consecutive presence, and each run becomes one `[vf, vt)` row, `ORDER BY (depth, path, vf)`. This took 835 s for objects and 365 s for dirs.
+
+All 7 scans took about 2.4 hours on 8 vCPU. A daily increment would be about 20 minutes: 7 for the raw rows, 11 for the rollups, plus extending the intervals, which wasn't built here.
+
+**Churn per scan:** "opened" counts new and changed paths, "closed" counts deleted and changed ones, each as a fraction of the rows present at that scan.
+
+| scan | objects present | opened | closed | dirs present | opened | closed |
+|---|---:|---:|---:|---:|---:|---:|
+| 09-28 | 558.1M | 0.115% | 0.054% | 217.1M | 0.065% | 0.051% |
+| 09-29 | 558.6M | 0.146% | 0.057% | 217.2M | 0.040% | 0.021% |
+| 09-30 | 559.9M | 0.452% | 0.219% | 217.2M | 0.107% | 0.088% |
+| 10-01 | 561.1M | 0.426% | 0.206% | 217.2M | 0.126% | 0.116% |
+| 10-02 | 562.8M | 0.459% | 0.168% | 217.3M | 0.147% | 0.106% |
+| 10-03 | 564.2M | 0.416% | 0.164% | 217.3M | 0.041% | 0.052% |
+
+- **Seven scans in SCD-2 hold 1.009 scan-equivalents of objects and 1.004 of dirs:** 569M object versions (4.2 GB on disk) and 218M dir versions (2.4 GB), against 3.9B and 1.5B raw rows (19 GB).
+- **Object churn ran at 0.12–0.46% a scan**, two to four times §4.6's 0.1–0.2%, and it rose from 09-30 on. **Dir churn ran at 0.04–0.15%.** Per scan of all 778M rows, that's about 2.1M new versions, roughly 0.27%. At that rate 1,000 daily scans come to about 2.9B rows, roughly 20 GB at these compression rates: still a few scans' worth, as §4.6 predicted.
+
+**History queries:** each was timed cold (ClickHouse's caches and the OS page cache dropped first) and warm (best of 2), through `clickhouse-client` (whose ~0.05 s start-up is included). Scans are 0 = 09-27 … 6 = 10-03, and the deep dir is `marin-us-central2/grug`.
+
+| query | cold | warm | rows read |
+|---|---:|---:|---:|
+| as-of 09-28: the store root's buckets | 0.32 s | 0.10 s | 8K |
+| as-of 09-28: a bucket's children (dirs + direct objects) | 0.32 s | 0.11 s | 25K |
+| as-of 09-28: a deep dir's children | 0.30 s | 0.10 s | small |
+| diff at the root, adjacent scans | 0.26 s | 0.10 s | 8K |
+| diff at the root, 6 days apart | 0.27 s | 0.10 s | 8K |
+| diff at a bucket's children, adjacent scans | 0.28 s | 0.11 s | 25K |
+| diff at a bucket's children, 6 days apart | 0.31 s | 0.10 s | 25K |
+| every changed object under a bucket, 6 days, rolled up to its children | 1.02 s | 0.50 s | 259M |
+| filtered diff at the root (`checkpoints`), 6 days, per bucket | 1.35 s | 0.21 s | 525M |
+| filtered diff at a bucket (`step-`), adjacent scans, per child | 0.66 s | 0.14 s | 259M |
+| bytes over time for one dir, every scan | 0.26 s | 0.10 s | small |
+| bytes over time for every bucket | 0.25 s | 0.10 s | 8K |
+
+- **As-of views, view-level diffs and series are primary-key ranges** on `(depth, path, vf)`: a few granules, about 0.1 s warm and 0.3 s cold, whether the scans compared are 1 day or 6 days apart.
+- **Object-level diffs and filtered diffs don't yet read only the delta.** `vf`/`vt` aren't in the sort key, so the query scans every version under the prefix (259M rows for `marin-us-central2`, 525M for the whole store). That still takes 0.14–0.5 s warm and 0.66–1.35 s cold. A projection or a changes table keyed by `vf` and `vt` would make them proportional to churn (not built).
+- Dir rollups can't be filtered, since the filter applies to object paths, so a filtered diff sums object versions up to the view's children (exact, as above).
+
+### 6.3 Measured: verdict and the always-on box
+
+- **Pass bar:** exact on all 105; warm p50/p90/max 0.20/1.46/4.33 s, inside 2× of `mem` (and faster); cold 1.03/4.67/6.25 s, just outside 2× at p50 and p90; nothing over 10 s. History (as-of, diffs, series) answers in 0.1–0.5 s warm and 0.25–1.35 s cold.
+- **Smallest always-on box that would serve it:**
+  - Measured: an n2-standard-8 (8 vCPU, 32 GB) at $0.389/h, about **$284 a month** on demand.
+  - Not run but supported by the measured ~11 GB working set: 8 vCPU with 16 GB, e.g. an e2 custom 8 vCPU / 16 GB at about $160 a month, or e2-standard-8 (32 GB) at about $196.
+  - Disk: about 30 GB of serving data (23 GB for the latest scan, 6.6 GB of history) plus the raw staging the builds need. Cold latency depends on the disk; these runs used a 500 GB pd-ssd.
+  - Fewer vCPUs (n2-standard-4, $142) would slow every multi-threaded scan; not measured.
+- **Against the `mem` box:** it serves filters as fast warm, holds no 41 GB in RAM (a 16–32 GB box instead of 64 GB), keeps months of history in a few more GB, and answers diffs and as-of views over any two scans. That is §4.6's design point, measured. Per the decision rule, B lands within 2× (warm well inside, cold at the edge), so diffs and history move to ClickHouse, and the custom index is no longer needed for filters on a warm box.
+
+**Cost of both experiments:** about $4 of the $40 budget (VMs about 6 h, Batch about 0.5 h of n2-highmem-16). Both VMs, their disks and the Batch job records were deleted and checked gone. The index copies and exports under `scratch/bench/serving-exp/` were deleted, except the run records under `runs/`.
+
 [filter-query-service]: filter-query-service.md
 [p0]: filter-query-service-p0.md
 [path-store]: path-store.md
@@ -295,3 +428,4 @@ Querying full `path` strings is out on any engine: 95 GiB decoded per scan.
 [md-pricing]: https://motherduck.com/product/pricing/
 [md-sizes]: https://motherduck.com/docs/about-motherduck/billing/duckling-sizes/
 [md-blog]: https://motherduck.com/blog/scaling-duckdb-with-ducklings/
+[gce-suspend-price]: https://cloud.google.com/compute/vm-instance-pricing#suspended_vm_instances

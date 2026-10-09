@@ -1,0 +1,12 @@
+outs:
+- md5: 6c08bc2c84a7f155ed1a86b5f183aea7
+  size: 17945
+  hash: md5
+  path: scans.json
+meta:
+  computation:
+    cmd: dt-cloud static-names scans -t 2026-10-08 > scans.json && gcloud storage
+      cp --verbosity=error scans.json gs://oa-gcs-usage-dvx/static-names/2026-10-08/scans.json
+    fetch:
+      schedule: manual
+      last_run: '2026-10-08T17:44:48.207970+00:00'

@@ -69,6 +69,10 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_SYNTAX = "simple"                     # the path filter's default syntax (`simple` | `regex`); unset = `simple`
 # OBJECT_BUCKETS = "my-bucket"                # comma-separated scanned buckets `/v1/objects` serves to members
 # STORES_JSON = '{"meta": {"scope": "meta"}}'  # secondary stores: `{"<key>": {"scope": …, "vars": {…}, "secrets": {…}}}`
+# QUERY_BOX_URL = "https://box.example"      # the serving box (`dt-cloud serve-query`): subtree / diff / series ask it first; unset = Worker-only
+# QUERY_BOX_TIMEOUT_MS = "20000"             # per box request; past it the Worker answers
+# QUERY_BOX_COARSE = "1"                    # dev-only `/api/coarse` (the `/coarse` viewer); unset = 404
+# QUERY_BOX_COARSE_URL = "https://box.example"  # where `/api/coarse` asks; unset = QUERY_BOX_URL
 
 # --- Plans and deletion (_lib/plans.ts, _lib/dispatch.ts) ---
 # STORE_SCHEME = "s3://"                      # the URI scheme staged prefixes carry
@@ -90,6 +94,22 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # SLACK_ADMIN_CHANNEL = "C0123456789"          # channel id staged-plan threads post to (with SLACK_BOT_TOKEN); unset = no Slack
 
 # --- Link previews (specs/done/dogi.md) ---
+# --- Frozen root name-search preview; private viewer gate, no scan fallback ---
+# QUERY_BOX_HOT_L1 = "1"                    # enable only on an approved private preview
+# QUERY_BOX_HOT_L2 = "1"                    # optional accepted bucket detail; separately approved, same URL/token
+# QUERY_BOX_NAME_SUMMARY = "1"              # optional bounded name summaries; private approved preview only, same URL/token
+# QUERY_BOX_DATED_NAMES = "1"               # opt in only after dated catalogs/proofs are accepted; new scans may be catalog-only
+# QUERY_BOX_HOT_L1_URL = "https://catalog.example"  # existing operator-managed VM/tunnel
+# NAME_SUMMARY_STATIC = "1"                 # dated name summaries: below-catalog literals on consolidated scans from the static suffix shards in INDEX_R2 (`_lib/staticNames.ts`)
+# STATIC_MAX_ROWS = "400000"                # the static reader's ceiling on suffix rows per query (default 400K; the catalog threshold bounds it lower)
+# FILTER_STATIC = "1"                       # the map's filter (`q=`): a single literal's match roots on any scan of the static name index's generation, from INDEX_R2 (`_lib/staticFilter.ts`)
+# FILTER_STATIC_HEAVY = "1"                 # with FILTER_STATIC: heavy literals (catalog members, and every 1–2 character one) from the drilldown under `drill/` (`_lib/staticDrill.ts`): match roots, or a heavy directory's per-child rollup; base-generation scans only
+# FILTER_DETAILS_MS = "300"                # with FILTER_STATIC: ms a filtered view waits past phase 2 for its roots' kind/ages/classes (unset: until they land)
+# FILTER_PHASE2_MS = "1500"                # ms a filtered view's phase 2 (its match roots' insides) may take; reads still running then are dropped and those roots drawn whole (`interiors` in the response; default 1500)
+# STATIC_BENCH = "1"                        # dev: `/api/static-bench`, R2 read timings over INDEX_R2
+# [[r2_buckets]]                            # Worker-served indexes (the static name-search shards)
+# binding = "INDEX_R2"
+# bucket_name = "<index bucket>"
 # OG_CARDS = "1"                              # any value: every page gets its own preview card; unset = the static `og.jpg`
 
 # Secrets — `wrangler pages secret put`, never in this file:
@@ -103,6 +123,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # secret GCP_SA_KEY                         a service-account key that submits Batch jobs and acts as JOB_SA
 # secret SLACK_BOT_TOKEN                    staged-plan threads (with SLACK_ADMIN_CHANNEL)
 # secret SLACK_SIGNING_SECRET               Slack's interactive buttons (`/slack/actions`)
+# secret QUERY_BOX_TOKEN                    the bearer secret the serving box checks (with QUERY_BOX_URL)
 #
 # Not set here:
 # builtin ASSETS                            Pages' static assets binding

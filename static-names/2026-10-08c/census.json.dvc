@@ -1,0 +1,14 @@
+outs:
+- md5: 782f5cc26ed98ddc183c2380ec99a2f1
+  size: 45440
+  hash: md5
+  path: census.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_catalog JOB_ID=sn-2026-10-08c-census-$(date -u +%H%M%S)
+      ../../job/static-names.sh run census 32 -g 2026-10-08c -f 50000 > /dev/null
+      && dt-cloud static-names manifest -g 2026-10-08c catalog/census > census.json
+    deps:
+      suffixes.json: 3472744b97aced097ed9acd99b9cd783
+    git_deps:
+      ../../cloud/src/dt_cloud/static_catalog.py: a9d00354861e108618ff208b90060424effa2558

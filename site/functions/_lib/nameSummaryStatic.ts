@@ -1,0 +1,176 @@
+/** `/api/name-summary` and its registry from the static name index on R2 alone (`NAME_SUMMARY_STATIC=1`
+ *  with the `INDEX_R2` binding; specs/architecture/static-name-search.md): no query box. Unset, both routes
+ *  ask the box as before (`nameSummary.ts`), the fallback while the static path beds in.
+ *
+ *  - Registry: every scan in the generation's `scans.json`, the buckets from `STORE_BUCKETS`, the catalog's
+ *    membership bound V from `catalog/meta.json`.
+ *  - A literal of one or two characters: the catalog (`staticCatalog.ts`); a miss is zero everywhere.
+ *  - Longer: the suffix shards' group index first (`staticNames.ts`). A range of ≤ V rows (row-group
+ *    granular, an upper bound) cannot be a member: read it. Otherwise the catalog: a member answers from
+ *    its cells; a miss has an exact range ≤ V, so the read is bounded (≤ V + 2 row groups).
+ *  - Bucket geometry: the answer is root and bucket totals only (no drill), so each bucket's `pre`/`post`
+ *    is its ordinal position in `bucket_paths` (the box's `ordinal` geometry). */
+import { datedNameRequest, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, STATIC_SOURCE } from '../../src/nameModel.js'
+import { HOT_SCOPE } from '../../src/hotModel.js'
+import { json } from './auth.js'
+import { privateHeaders } from './hotL1.js'
+import { catalogAnswer, type CatalogIo, type CatalogMeta, type Member } from './staticCatalog.js'
+import { type Answer, type Blobs, cacheIndexes, type Io, r2Blobs, STATIC_GEN, STATIC_PREFIX, type Totals } from './staticNames.js'
+import { tiers } from './staticRuns.js'
+
+export type StaticNameEnv = { NAME_SUMMARY_STATIC?: string; INDEX_R2?: R2Bucket; STATIC_MAX_ROWS?: string; STORE_BUCKETS?: string; STORE?: string }
+export const staticEnabled = (env: StaticNameEnv): boolean => env.NAME_SUMMARY_STATIC === '1' && !!env.INDEX_R2
+
+/** A non-member's static read above this many rows is refused (it should never exceed V + 2 row groups). */
+const MAX_ROWS = 400_000
+const CAPABILITIES = { bucket_drill: false, child_drill: false, fallback: false }
+const VALIDATION = {
+  description: `exact first-hit totals from the static name index (generation ${STATIC_GEN}: suffix postings and catalog, rebuilt from the scans and checked against brute force offline); no per-request source oracle`,
+  source_prefix_proofs_checked: true, independent_full_catalog_source_oracle: false,
+}
+
+/** The generation's readers: suffix shards, catalog, `scans.json`'s scan ids (sorted), and a clock for the timings. */
+/** The suffix reader (`StaticNames`, or `TieredNames` over the base and its daily runs). */
+export interface NameReader {
+  extent(key: string, io: Io): Promise<{ rows: number } | null>
+  answer(key: string, dates: string[], maxRows?: number): Promise<{ io: Io; answer: Answer | null }>
+}
+/** The catalog (`StaticCatalog`, or `TieredCatalog`). */
+export interface CatalogReader { info(): Promise<CatalogMeta>; lookup(q: string): Promise<{ io: CatalogIo; member: Member | null }> }
+export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; clock: () => Promise<number> }
+let held: { r2: R2Bucket; store: Store } | undefined
+
+// The Workers clock only advances across I/O; a cache miss pins "now" after CPU-bound work (decode).
+const tick = async () => { await caches.default.match('https://static-names.invalid/tick'); return Date.now() }
+
+/** The isolate's readers over the bound bucket (indexes held across requests). */
+export function store(r2: R2Bucket): Store {
+  if (held?.r2 !== r2) {
+    const blobs = r2Blobs(r2)
+    // The base generation plus its daily runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
+    const pre = (dir: string | null) => dir ? `${STATIC_PREFIX}/${dir}` : STATIC_PREFIX
+    const t = tiers(blobs, { indexCache: dir => cacheIndexes(caches.default, pre(dir)), catalogCache: dir => cacheIndexes(caches.default, pre(dir), 'catalog-v1'), clock: tick })
+    held = { r2, store: { names: t.names, catalog: t.catalog, scans: t.scans, clock: tick } }
+  }
+  return held.store
+}
+/** The suffix reader alone (`/api/static-bench`). */
+export const names = (r2: R2Bucket): NameReader => store(r2).names
+
+/** `scans.json`'s scan ids, sorted (held once loaded). */
+export function scanIds(blobs: Blobs): () => Promise<string[]> {
+  let ids: Promise<string[]> | undefined
+  return () => {
+    ids ??= blobs.json<{ scans: { id: string }[] }>('scans.json').then(d => d.scans.map(s => s.id).sort())
+    ids.catch(() => { ids = undefined })
+    return ids
+  }
+}
+const bucketPaths = (env: StaticNameEnv): string[] => {
+  const paths = (env.STORE_BUCKETS ?? '').split(',').map(s => s.trim()).filter(Boolean).sort()
+  if (!paths.length) throw new Error('static names: STORE_BUCKETS is unset')
+  return paths
+}
+const logicalStore = (env: StaticNameEnv) => `${env.STORE ?? 'gcs'}_fleet`
+
+/** The registry: which scans exist, the buckets, and the catalog's bound. */
+export async function staticRegistryBody(env: StaticNameEnv, s: Store): Promise<unknown> {
+  const [dates, meta] = await Promise.all([s.scans(), s.catalog.info()])
+  const body = {
+    schema: 'static-name-registry-v1', logical_store: logicalStore(env), generation: STATIC_GEN, max_rows: meta.membership.max_rows,
+    bucket_paths: bucketPaths(env), dates, levels: 1, scope: HOT_SCOPE, capabilities: { ...CAPABILITIES },
+  }
+  parseNameRegistry(body) // the page's own contract check
+  return body
+}
+
+export type Plan = 'catalog' | 'bounded-name-postings'
+export interface KeyAnswer { plan: Plan; answers: Record<string, Totals>; io: { suffix?: Io; catalog?: CatalogIo; ms: Record<string, number> } }
+
+/** One literal's per-date bucket totals by the dispatch above. */
+export async function answerKey(s: Store, key: string, days: string[], maxRows = MAX_ROWS): Promise<KeyAnswer> {
+  const V = (await s.catalog.info()).membership.max_rows
+  const ms: Record<string, number> = {}
+  let t = await s.clock()
+  const lap = async (name: string) => { const now = await s.clock(); ms[name] = (ms[name] ?? 0) + now - t; t = now }
+  const fromCatalog = async (): Promise<KeyAnswer | { catalog: CatalogIo }> => {
+    const { io, member } = await s.catalog.lookup(key)
+    await lap('catalog')
+    return member ? { plan: 'catalog', answers: catalogAnswer(member, days), io: { catalog: io, ms } } : { catalog: io }
+  }
+  if ([...key].length <= 2) {
+    const c = await fromCatalog()
+    return 'plan' in c ? c : { plan: 'catalog', answers: Object.fromEntries(days.map(d => [d, {}])), io: { catalog: c.catalog, ms } }
+  }
+  const probe: Io = { shard: null, groups: 0, bytes: 0, rows_read: 0, rows_matching: 0, index: 'none', ms: {} }
+  const ext = await s.names.extent(key, probe)
+  await lap('extent')
+  let catalog: CatalogIo | undefined
+  if (ext && ext.rows > V) {
+    const c = await fromCatalog()
+    if ('plan' in c) return c
+    catalog = c.catalog
+  }
+  const { io, answer } = await s.names.answer(key, days, maxRows)
+  await lap('suffix')
+  if (!answer) throw new Error(`static names: ${JSON.stringify(key)} reads ${io.rows_read} rows, over ${maxRows}`)
+  io.index = probe.index
+  return { plan: 'bounded-name-postings', answers: answer.answers, io: { suffix: io, ...(catalog ? { catalog } : {}), ms } }
+}
+
+const safe = (v: bigint): number => { const n = Number(v); if (!Number.isSafeInteger(n)) throw new Error('static names: total exceeds 2^53'); return n }
+const unavailable = () => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': '1' })
+
+/** `/api/name-summary` from R2: a 400 for a scan outside the generation, a 503 on any failure (never a box answer). */
+export async function staticSummary(env: StaticNameEnv, params: URLSearchParams, s: Store = store(env.INDEX_R2!)): Promise<Response> {
+  const t0 = Date.now()
+  try {
+    const request = datedNameRequest(params), key = request.name
+    const days = request.from ? [request.from, request.date] : [request.date]
+    const [have, meta] = await Promise.all([s.scans(), s.catalog.info()])
+    if (days.some(d => !have.includes(d))) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.' }, 400, privateHeaders)
+    const { plan, answers, io } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
+    const paths = bucketPaths(env), store_ = logicalStore(env)
+    const sides = days.map(date => {
+      const totals = answers[date]
+      if (Object.keys(totals).some(b => !paths.includes(b))) throw new Error('static names: a bucket outside STORE_BUCKETS')
+      const buckets = paths.map((path, i) => { const [b, o] = totals[path] ?? [0n, 0n]; return { path, pre: i + 1, post: i + 1, b: safe(b), o: safe(o) } })
+      return {
+        schema: 'dated-name-summary-v1', logical_store: store_, target: 'static_names', date, pattern: key, path: '', exact: true, incremental: false, levels: 1,
+        scope: HOT_SCOPE, plan, source: plan === 'catalog' ? STATIC_CATALOG_SOURCE : STATIC_SOURCE,
+        source_identity: { kind: 'static-names-v1', generation: STATIC_GEN, max_rows: meta.membership.max_rows },
+        validation: { ...VALIDATION }, capabilities: { ...CAPABILITIES },
+        root: { b: buckets.reduce((a, x) => a + x.b, 0), o: buckets.reduce((a, x) => a + x.o, 0) }, buckets,
+      }
+    })
+    let body: unknown = sides[0]
+    if (request.from) {
+      const [before, after] = sides
+      const d = (a: { b: number; o: number }, b: { b: number; o: number }) => ({ b: b.b - a.b, o: b.o - a.o })
+      body = {
+        schema: 'dated-name-summary-diff-v1', logical_store: store_, from: request.from, date: request.date, pattern: key, path: '',
+        exact: true, incremental: false, levels: 1, scope: HOT_SCOPE, before, after, delta: d(before.root, after.root), capabilities: { ...CAPABILITIES },
+        buckets: before.buckets.map((a, i) => { const b = after.buckets[i]; return { path: a.path, before: { pre: a.pre, post: a.post, b: a.b, o: a.o }, after: { pre: b.pre, post: b.post, b: b.b, o: b.o }, delta: d(a, b) } }),
+      }
+    }
+    parseName(body, request) // the page's own contract check, before it leaves the Worker
+    const total = Date.now() - t0
+    return json(body, 200, {
+      ...privateHeaders, 'x-query-engine': 'name-summary-static', 'x-static-io': JSON.stringify({ gen: STATIC_GEN, plan, ...io }),
+      'server-timing': [...Object.entries(io.ms).map(([k, v]) => `${k};dur=${v}`), `static;dur=${total}`].join(', '),
+    })
+  } catch (error) {
+    console.error('static name summary failed', error)
+    return unavailable()
+  }
+}
+
+/** `/api/name-summary-registry` from R2. */
+export async function staticRegistry(env: StaticNameEnv, s: Store = store(env.INDEX_R2!)): Promise<Response> {
+  try {
+    return json(await staticRegistryBody(env, s), 200, { ...privateHeaders, 'x-query-engine': 'name-summary-registry-static' })
+  } catch (error) {
+    console.error('static name registry failed', error)
+    return unavailable()
+  }
+}

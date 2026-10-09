@@ -1,0 +1,16 @@
+outs:
+- md5: 14a4a78cd071e37ef90d238a3c5b34df
+  size: 824
+  hash: md5
+  path: drill.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-drill-index-$(date -u +%H%M%S)
+      ../../job/static-names.sh run index 1 -g 2026-10-08c -R 100000 -K 256 > /dev/null
+      && gcloud storage cat gs://oa-gcs-usage-dvx/static-names/2026-10-08c/drill/meta.json
+      > drill.json
+    deps:
+      drill-long.json: 5af46e7f628a4b5a9ce33653cc22562b
+      drill-short.json: 786113083c1b9349b24ceca8e0024d95
+    git_deps:
+      ../../cloud/src/dt_cloud/static_roots.py: b60999a7063df6a0af900ec8466ebb38cdf17db2
