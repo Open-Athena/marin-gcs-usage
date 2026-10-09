@@ -96,6 +96,12 @@ STATIC_GEN = "2026-10-08c"   # the static name index generation on INDEX_R2 (req
 # substring. Regex, globs, exclusions, several terms, `/` and owner/lens scopes
 # get an inline "not supported here" (Ryan, 2026-10-09: "just support what's
 # fast and robust").
+# Heavy literals (catalog members, every 1–2 character term) answer exactly from
+# the drilldown (`drill/` on INDEX_R2): the base generation's scans and each
+# per-scan run whose drill has landed (`static-names runs add`), so plain
+# substring search has no common/rare seam. A broken tier cuts the stack to a
+# 400 `scan-not-indexed` for later scans, never a 500 (static-robust).
+FILTER_STATIC_HEAVY = "1"
 FILTER_INDEXED_ONLY = "1"
 META_TREE_URL = "https://cw-s3.oa.dev/meta"   # /scans outputs link into the /meta tree
 
