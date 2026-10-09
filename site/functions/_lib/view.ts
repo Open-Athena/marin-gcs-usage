@@ -351,7 +351,7 @@ async function readSubtree(
 
 /** `readSubtree`'s plan, before any group is fetched: the sort it would read, how many row groups and
  *  rows that read decodes, and the read itself — so a caller can hold reads to a group budget. */
-interface SubtreePlan { variant: string; groups: number; rows: number; read: () => Promise<Row[]> }
+interface SubtreePlan { variant: string; groups: number; rows: number; read: (stop?: () => boolean) => Promise<Row[]> }
 
 async function planSubtree(
   env: Env,
@@ -365,7 +365,7 @@ async function planSubtree(
   tr?: Trace,
 ): Promise<SubtreePlan> {
   const held = (plan: Span[]) => plan.reduce((n, x) => n + (x.rowEnd - x.rowStart), 0)
-  const of = (variant: string, plan: Span[], read: () => Promise<Row[]>): SubtreePlan => ({ variant, groups: plan.length, rows: held(plan), read })
+  const of = (variant: string, plan: Span[], read: SubtreePlan['read']): SubtreePlan => ({ variant, groups: plan.length, rows: held(plan), read })
   // A store generation: plan the read on both sorts (span queries only, no
   // decode) and decode whichever holds fewer rows. The cost of a `path` read
   // is ~one group per depth of the subtree, of a `bysize` read ~one group per
@@ -380,12 +380,12 @@ async function planSubtree(
     if (sized) {
       const sh = withTrace(sized, tr)
       const [pp, sp] = await Promise.all([planRects(pathIdx, rects, thrAt, lens), planSizeRects(sh, rects, thrAt, lens)])
-      if (held(sp) < held(pp)) return of(sized.variant, sp, () => readSizeRects(sh, rects, thrAt, lens, sp))
-      return of(pathIdx.variant, pp, () => readRects(pathIdx, rects, thrAt, lens, pp))
+      if (held(sp) < held(pp)) return of(sized.variant, sp, stop => readSizeRects(sh, rects, thrAt, lens, sp, stop))
+      return of(pathIdx.variant, pp, stop => readRects(pathIdx, rects, thrAt, lens, pp, stop))
     }
   }
   const pp = await planRects(pathIdx, rects, thrAt, lens)
-  return of(pathIdx.variant, pp, () => readRects(pathIdx, rects, thrAt, lens, pp))
+  return of(pathIdx.variant, pp, stop => readRects(pathIdx, rects, thrAt, lens, pp, stop))
 }
 
 /** Rows under P, from P's own rows: `n_desc` (the same on every owner
@@ -913,13 +913,14 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // `ROOT_DETAILS` roots, beside phase 2 (one batched read; a batch too wide leaves them plain).
     // The first paint skips both: the roots alone, exact, from the static read.
     const firstPaintStatic = staticRoots && !!o.firstPaint
+    let detailsOff = false
     const details = staticRoots && !firstPaintStatic && !(maxDepth != null && maxDepth <= 0) ? (async () => {
       const want = [...roots].filter(drawn).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
       if (!want.length) return []
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
       try {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
-        return (await readAsks(h, want.map(r => ({ depth: depthF.get(r)!, path: r })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: 60 })).rows
+        return (await readAsks(h, want.map(r => ({ depth: depthF.get(r)!, path: r })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: 60, stop: () => detailsOff })).rows
       } catch (e) {
         if (!/too wide/.test(String((e as Error).message ?? e))) throw e
         tr?.('details', 0, 'too wide')
@@ -948,7 +949,11 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const ms = Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS
       const late = Symbol('late')
       let timer: ReturnType<typeof setTimeout> | null = null
-      const expired = new Promise<typeof late>(r => { timer = setTimeout(() => r(late), ms) })
+      // Past the budget the abandoned reads stop decoding (`stop`): they'd hold the isolate's CPU, and the
+      // answer is built on that same thread.
+      let over = false
+      const stop = () => over
+      const expired = new Promise<typeof late>(r => { timer = setTimeout(() => { over = true; r(late) }, ms) })
       const skipped = { budget: 0, wide: 0, late: 0 }
       const settle = async <X>(p: Promise<X>): Promise<X | typeof late | Error> => {
         p.catch(() => {})
@@ -970,7 +975,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         if (pl === late) skipped.late += n
         else if (pl instanceof Error) skipped.wide += n
         else if (pl.groups > room) skipped.budget += n
-        else { room -= pl.groups; admitted.push({ rs: groups[i], read: settle(pl.read()), variant: pl.variant }) }
+        else { room -= pl.groups; admitted.push({ rs: groups[i], read: settle(pl.read(stop)), variant: pl.variant }) }
       })
       for (const x of admitted) {
         const got = await x.read
@@ -997,6 +1002,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       : await Promise.race([details, new Promise<typeof late>(r => setTimeout(() => r(late), budget))]).then(x => {
         if (x !== late) return x
         tr?.('details', performance.now() - t0, 'late')
+        detailsOff = true
         details.catch(() => {})
         return [] as Row[]
       })
