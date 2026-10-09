@@ -2,11 +2,11 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, expect, it, vi } from 'vitest'
-import { NamePage, catalogDomain, scanList, staticDomain } from './NamePage'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { NamePage, catalogDomain, nameUrlParams, scanList, staticDomain } from './NamePage'
 import { nameDiff, nameFixture } from './nameTestFixtures'
 import { parseName, parseNameRegistry } from './nameModel'
-import { dailyNameFixture, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
+import { SUB_DAILY_SCANS, dailyNameFixture, datedNameRegistry, fiveBucketFixture, fiveBucketRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
 
 vi.mock('./SiteKbd', () => ({ SiteKbd: () => null }))
 const { roots } = vi.hoisted(() => ({ roots: [] as { b: number }[] }))
@@ -89,7 +89,7 @@ it.each(['gcs_other', 'gcs'])('refuses a cached response with unrelated store/so
   try {
     const html = render(client, '/names?date=2026-10-06&name=datakit')
     expect([...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)).toEqual([store === 'gcs_other'
-      ? 'Name summary returned a different logical store or bucket set from the available-scan registry.' : 'Name summary returned a different pinned daily source from the available-scan registry.'])
+      ? 'Name summary returned a different logical store or bucket set from the available-scan registry.' : 'Name summary returned a different pinned per-scan source from the available-scan registry.'])
     expect(tableRows(html)).toEqual([])
     expect(roots).toEqual([])
   } finally { client.clear() }
@@ -164,4 +164,49 @@ it('describes a cost-weighted registry by the on-demand rows it bounds', () => {
 
 it('describes the static name index\'s dispatch by its bound', () => {
   expect(staticDomain({ generation: '2026-10-08c', max_rows: 100000 })).toBe('Every scan answers from the static name index (generation 2026-10-08c) with no query server: literals of one or two characters, and literals with more than 100,000 index rows, from its precomputed catalog; every other literal from its suffix postings, reading at most 100,000 rows.')
+})
+
+describe('two scans on one day: ?d= addresses each, a day picks the later', () => {
+  // distinct totals per scan, so the table shows which one answered
+  const seeded = () => {
+    const client = new QueryClient()
+    client.setQueryData(['name-summary-registry'], parseNameRegistry(fiveBucketRegistry()))
+    for (const [date, b] of [['2026-10-09T0601', 6], ['2026-10-09T1802', 18]] as const)
+      client.setQueryData(['name-summary', date, 'datakit', undefined], parseName(fiveBucketFixture('catalog', date, b), { date, name: 'datakit' }))
+    return client
+  }
+  const view = (html: string) => [html.match(/<select name="date">(.*?)<\/select>/)?.[1], tableRows(html)[0], [...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)]
+  const opts = (sel: string) => SUB_DAILY_SCANS.map(day => day === sel ? `<option selected="">${day}</option>` : `<option>${day}</option>`).join('')
+  it.each([
+    ['/names?d=261009&name=datakit', '2026-10-09T1802', 18],
+    ['/names?d=261009-18&name=datakit', '2026-10-09T1802', 18],
+    ['/names?d=261009-0601&name=datakit', '2026-10-09T0601', 6],
+    ['/names?d=261009-06&name=datakit', '2026-10-09T0601', 6],
+    ['/names?name=datakit', '2026-10-09T1802', 18],
+    // legacy links: the old key and ISO spellings
+    ['/names?date=2026-10-09&name=datakit', '2026-10-09T1802', 18],
+    ['/names?date=2026-10-09T0601&name=datakit', '2026-10-09T0601', 6],
+    ['/names?d=2026-10-09T0601&name=datakit', '2026-10-09T0601', 6],
+  ] as const)('%s → %s', (path, scan, b) => {
+    const client = seeded()
+    try {
+      expect(view(render(client, path))).toEqual([opts(scan), ['All buckets', String(b), '6'], []])
+    } finally { client.clear() }
+  })
+  it('a slug matching no scan is an explicit unavailable selection', () => {
+    const client = seeded()
+    try {
+      expect(view(render(client, '/names?d=261010&name=datakit'))).toEqual([`<option value="2026-10-10" selected="">2026-10-10 (unavailable)</option>${opts('')}`, undefined, ['This scan is unavailable in the name-summary registry; it is not a zero-match result.']])
+    } finally { client.clear() }
+  })
+})
+
+it('a /names search writes the canonical ?d= (latest floats, as on the map)', () => {
+  const write = (qs: string) => nameUrlParams(new URLSearchParams(qs), SUB_DAILY_SCANS).toString()
+  expect([
+    write('name=gof&date=2026-10-09T1802'),
+    write('name=gof&date=2026-10-09T0601'),
+    write('name=gof&date=2026-10-09T1802&from=2026-10-09T0601'),
+    write('name=gof&date=2026-10-08&from='),
+  ]).toEqual(['name=gof', 'd=261009-0601&name=gof', 'd=-261009-0601&name=gof', 'd=261008&name=gof'])
 })
