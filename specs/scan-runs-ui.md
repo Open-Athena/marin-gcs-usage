@@ -5,7 +5,7 @@ Show each scan job's run the way `/staged` shows deletion runs: when it ran, how
 ## Status
 
 - Built on `scan-runs` (off `cloud`): migration, `dt-cloud scan-run record | backfill`, `/api/scan-runs`, `/scans` and `/scans/<run>`, tests.
-- **Gated on Ryan's go**: applying the migration to a deployment's D1 (gcs's prod D1 `oa-gcs-usage-auth` is also dev.gcs.oa.dev's) and the backfill's write to it. Until then the backfill has run read-only into a local SQLite file, and the UI was checked against a local D1 seeded from it.
+- **Gated on Ryan's go** (§Rollout): applying the migration to a deployment's D1 (gcs's prod D1 `oa-gcs-usage-auth` is also dev.gcs.oa.dev's, so a dev deploy needs it too) and the backfill's writes. Until then the backfill has run read-only into local SQLite, and the UI was checked on a local stack (`gcs` + `scan-runs`, `./dev --local-db`, the local D1 seeded from the backfill's `-n` SQL).
 - The job glue (§Job glue) is for the deployment sessions to apply on `gcs` / `cw-s3`.
 
 ## Decisions
@@ -38,7 +38,7 @@ Scan ids go through `dt_cloud.scan_id` (no private regexes, no "daily"): a job's
 
 ### The UI
 
-- `/scans`: one row per orchestrating run (downstream jobs fold into their parent), newest first: scan (→ map at `?d=<slug>`), kind, status (failed rows say where/why), started, a duration bar split by phase, output bytes and Δ vs the previous scan, cost, links. Above it, a DIY-SVG strip of duration per scan (stacked by phase) with failures marked.
+- `/scans`: one row per orchestrating run (downstream jobs fold into their parent), newest first: scan (→ the run; its kind and downstream count under it), status (a failed one's tip says where and why), started, duration, a bar split by phase, output bytes and Δ vs the previous scan, cost, links (details, map at `?d=<slug>`, Batch, logs). Above it, a DIY-SVG strip of duration per run over time, stacked by phase, failures in the danger ink; the charts draw at their measured width. Under 900 px the phase bar and links fold away, under 640 px the start time.
 - `/scans/<run id>`: the phase timeline (a Gantt on the run's clock, overlapped phases on their own lane), the outputs table (bytes / objects / rows, Δ vs previous scan, links to the `/meta` tree), the downstream jobs, the scan's other runs, and the Batch / Cloud Logging links.
 - `/meta` is the `meta` secondary store: the scan of the deployments' own data bucket (the treemap at `/meta/<bucket>/<key>`, staff-only, mounted on cw-s3.oa.dev). It is not on gcs.oa.dev, so its base is config: `META_TREE_URL` (e.g. `https://cw-s3.oa.dev/meta`); unset = no meta links. The meta store is itself scanned periodically, so a just-written output appears there after its next meta scan.
 - Gate: `requireViewer`, as `/staged`'s run reads.
@@ -51,44 +51,44 @@ Scan ids go through `dt_cloud.scan_id` (no private regexes, no "daily"): a job's
 - **Cloud Logging** (30 days): phase markers (each phase's end is its log line's time), the done / NOP markers (scan id, NOP status), the ERR trap's `+ fail_alert <rc> <line> <cmd>` (failed command). A server-side prefilter on each marker's literal head; the full regexes run locally.
 - **The data bucket**: each scan's outputs. An index generation (`{gen}`) goes to the run whose window holds its stamp (a REPROC's generation is the REPROC's); every other output to the scan's latest succeeded run among the kinds that write it.
 
-gcs, measured 2026-10-09 (read-only, into a local SQLite file): **242 runs over 73 scans** (2026-07-30 → 2026-10-09T1236) from 517 Batch jobs: 76 scan runs (65 succeeded, 10 failed, 1 running), 48 REPROCs, 118 listing fan-out jobs linked to their parents.
+gcs, measured 2026-10-09 (read-only, into a local SQLite file; ~35 s): **242 runs over 73 scans** (2026-07-30 → 2026-10-09T1236) from 517 Batch jobs: 76 scan runs (65 succeeded, 10 failed, 1 running), 48 REPROCs (46 succeeded, 2 cancelled), 118 listing fan-out jobs linked to their parents. cw-s3 (dry, the same way): 145 runs over 145 scans (130 succeeded, 15 failed).
 
 | field | recovered for |
 |---|---|
 | status, start / end, machine, tasks, cost, Batch failure reason | every run (Batch keeps its jobs) |
 | scan id | every run (env, the listing command, else the creation date) |
-| phases | runs since 2026-09-09 (Logging's 30-day retention): 33 runs |
+| phases | runs since 2026-09-10 (Logging's 30-day retention): 36 runs |
 | failed command | none in the window (the ERR trap's line is xtrace; recent failures were OOM / max-runtime kills, which never reach the trap) |
-| listing (per bucket, rows), dir-cache, snapshot | every scan whose prefixes remain (listing: 62 scans) |
-| path-index tiers (+ rows) | scans since 2026-09-07 (earlier generations lived outside `listing/<scan>/index/`) |
+| listing (per bucket, rows), dir-cache, snapshot | every scan whose prefixes remain (listing + dir-cache: 62 runs, snapshot: 69) |
+| path-index tiers (+ rows) | 36 runs, scans since 2026-09-07 (earlier generations lived outside `listing/<scan>/index/`) |
 | static name index runs | 2026-10-09 (the first appended run) |
 | drill / interval store | not per scan yet: no output entry |
 
 ## Job glue
 
-### gcs (`job/run.sh`, for the disky-gcs session)
+Written as untracked specs in the deployment worktrees, for their sessions to apply (nothing committed to `gcs` / `cw-s3`):
 
-- Check in `job/scan-runs.json` (the profile; the backfill's copy is in this branch's `tmp/glue/gcs-scan-runs.json`, reproduced in the handoff).
-- Add `0040_scan_runs.sql` to `site/migrations/gcs/` (the cw file verbatim).
-- In `run.sh`, after the scan id and `$GEN` are set:
+- `wt/gcs/specs/scan-runs-glue.md`: `0040_scan_runs.sql` for the gcs lineage, `job/scan-runs.json`, and a `job/run.sh` patch.
+- `wt/cw-s3/specs/scan-runs-glue.md`: `job/scan-runs.json` and a `job/cw-run.sh` patch (which also adds phase markers; cw-run.sh had none).
+
+The shape of both patches:
 
 ```bash
-# Scan-run record (specs/scan-runs-ui.md): never fatal (`scan-run record` exits 0 on any error).
 export SCAN_RUNS_PROFILE=${SCAN_RUNS_PROFILE:-job/scan-runs.json}
-SR_KIND=scan; [ "${REPROC:-0}" = "1" ] && SR_KIND=reproc
-scan_run() { { set +x; } 2>/dev/null; [ "${SCRATCH:-0}" = "1" ] || dt-cloud scan-run record -k "$SR_KIND" -g "$GEN" "$@" "$SNAP_ID"; set -x; }
-phase() { echo "PHASE $1: ${SECONDS}s (wall${2:+, $2})" >&2; SR_LAST=$1; scan_run -P "$1" ${2:+-q "$2"}; }
-scan_run_exit() { local rc=$?; scan_run -x "$rc" ${SR_FAIL:+-F "$SR_FAIL"} ${SR_ERR:+-e "$SR_ERR"}; }
-trap scan_run_exit EXIT
-scan_run -S -J "$BATCH_JOB_ID_NAME" -R "${BATCH_REGION:-us-central1}"   # -J only if the job name is known
+scan_run() { { set +x; } 2>/dev/null; [ -n "${BATCH_JOB_UID:-}" ] && (cd /app && dt-cloud scan-run record -k "$SR_KIND" -g "$GEN" "$@" "$SNAP_ID"); set -x; }
+phase() { echo "PHASE $1: ${SECONDS}s (wall${2:+, $2})" >&2; scan_run -P "$1" ${2:+-q "$2"}; }
+scan_run_exit() { local rc=$?; scan_run -x "$rc" ${SR_ERR:+-e "$SR_ERR"}; exit "$rc"; }
+trap scan_run_exit EXIT     # after the branches that exit as other jobs (sweep, access-only, benchmarks)
+scan_run -S -B              # -B: the Batch facts (machine, SPOT, cost) from the job whose uid is $BATCH_JOB_UID
+# … `phase <name>` replaces each `echo "PHASE <name>: …"`; `fail_alert` sets SR_ERR; the NOP branch calls `scan_run -N`
 ```
 
-  - Replace each `echo "PHASE <name>: ${SECONDS}s (wall…)" >&2` with `phase <name>` (`phase access-ingest "overlapped the listing"`); the marker line is unchanged, so the backfill keeps parsing old and new logs alike.
-  - In `fail_alert`, set `SR_ERR="exit $rc: $cmd (run.sh:$line)"` before posting, so the EXIT trap records it.
-  - The NOP branch: `scan_run -N` before its `exit 0` (the EXIT trap's `-x 0` then keeps status `nop`? No: `-x` sets `succeeded`, so the NOP branch should `trap - EXIT` after recording).
-  - Run `dt-cloud scan-run record` from the image's `dt-cloud` (needs `cloud` merged into `gcs` first).
-- After applying the migration, the backfill: `dt-cloud scan-run backfill -c job/scan-runs.json -o` (D1 from `$D1_DB_ID`).
+The marker lines are unchanged, so the backfill parses old and new logs alike. A stubbed-CLI run of the helpers checked the call sequence and that the exit code survives the trap.
 
-### cw-s3 (`job/cw-run.sh`)
+## Rollout (needs Ryan's go)
 
-The same helpers; its profile (`job/scan-runs.json` on `cw-s3`) differs in: kinds (`scan` = `commands: job/cw-run.sh`, scan id from `^CW-SCAN-JOB-DONE (\S+)` else the task's start as `%Y-%m-%dT%H%M`), outputs (`snapshots/cw/{scan}/`, `cw-l2/{scan}/` per bucket parquet, `cw-l2/{scan}/index/{gen}/` tiers, the R2 copy under the same keys), prices (`n2-standard-8`). cw-run.sh has no PHASE markers yet: add `phase list-<bucket>`, `phase import-<bucket>`, `phase webdata`, `phase publish`, `phase index-write`, `phase index-sync`, `phase publish-r2`, `phase over-time`, `phase warm`, `phase probe`, `phase digest`. Its migration is this branch's `0016_scan_runs.sql` (cw lineage), applied with `wrangler d1 migrations apply oa-cw-s3-usage-db --remote` after Ryan's go.
+1. Merge `scan-runs` into `cloud`; the deployments merge `cloud`.
+2. Apply the migration: gcs `wrangler d1 migrations apply oa-gcs-usage-auth --remote` (prod D1, which dev.gcs.oa.dev shares); cw `… oa-cw-s3-usage-db --remote`.
+3. Backfill each: `dt-cloud scan-run backfill -c job/scan-runs.json -o`.
+4. Apply the job glue, rebuild the images.
+5. `META_TREE_URL` in each `site/wrangler.toml`, deploy.
