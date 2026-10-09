@@ -30,7 +30,7 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
-import { fetchCover, prefetchCover, rowCover, useFilterCover } from './filterCover'
+import { fetchCover, matchedListOf, prefetchCover, rowCover, rowMatchesOf, useFilterCover } from './filterCover'
 import { HttpError } from './batches'
 import type { RowSource } from './MatchActions'
 import { type MatchFields, seriesMatches } from './filterMatches'
@@ -884,6 +884,15 @@ function AppContent() {
   // The table's path segments, stable while `mapPath` is (a fresh array per
   // render defeated every memo keyed on it).
   const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
+  // Each table row's listed match roots: from the table's own path's response (full, else its first paint) —
+  // exact when its `matched` list is every root, a lower bound when it is capped, unknown otherwise.
+  const tblPath = mapPath ? tblSegs.join('/') : null
+  const tblRowMatches = useMemo(() => {
+    if (!fq || tblPath == null) return undefined
+    const i = subtreePaths.indexOf(tblPath)
+    const d = i < 0 ? undefined : (subtreeQs[i]?.data ?? coarseQs[i]?.data) as (MatchFields & { matchesCapped?: boolean; partialReason?: string; approximateReason?: string; rollup?: unknown }) | undefined
+    return rowMatchesOf(d?.matched, matchedListOf(d))
+  }, [fq, subStamp, tblPath, subtreePaths]) // eslint-disable-line react-hooks/exhaustive-deps
   const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
   // Worklist rows / children table → drill the map to a prefix (the new path
   // starts at the top, where the map is).
@@ -1329,6 +1338,7 @@ function AppContent() {
               onOpen={openPath}
               onOpenObject={openObject}
               filter={tblFilter}
+              rowMatches={tblRowMatches}
               brush={brush}
               onBrush={setBrush}
             /></div>
