@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Env } from './auth'
-import { openIndex, readRects, readSizeRects, type Rect, type Row } from './index'
+import { keyedOnTotal, openIndex, planSizeRects, readRects, readSizeRects, type Rect, type Row } from './index'
 import { sqliteD1 } from './testD1'
 import { type D1Variant, readJson, seedGeneration } from './testStore'
 import { buildView, type ViewNode } from './view'
@@ -59,25 +59,18 @@ const perPath = (rows: Row[]) => {
   return Object.fromEntries([...m].sort(([a], [b]) => (a < b ? -1 : 1)))
 }
 
-// The exact cases are `it.fails` until the `bysize` sort is keyed on the path's
-// total (specs/bysize-path-total.md): the read-time completion is gone, so a
-// per-slice store still drops slices under the threshold.
+// The fixture's `bysize` is keyed on each path's total (`tot`, specs/bysize-path-total.md):
+// a read keeps every slice of every path whose total clears the threshold.
 describe('bysize over owner slices', () => {
   const read = async (q: Rect, thrAt: (d: number) => number) =>
     order(await readSizeRects(await openIndex(env, DATE, 'bysize'), [q], thrAt))
 
-  it('per slice (the bug): a drawn dir is short of its small slices, and an all-small-slices dir is missing', async () => {
-    const thr = () => 512 * KiB
-    expect(perPath(await read(subtree('bk/m'), thr))).toEqual({
-      'bk/m/big': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
-      'bk/m/big/a': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
-      'bk/m/big/a/f0': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
-      'bk/m/twin': { b: 600 * KiB, us: { alice: 600 * KiB } },
-      'bk/m/twin/f0': { b: 600 * KiB, us: { alice: 600 * KiB } },
-    })
+  it('the cut: `bysize` carries each path\'s total and is keyed on it', async () => {
+    const h = await openIndex(env, DATE, 'bysize')
+    expect([keyedOnTotal(h), keyedOnTotal(await openIndex(env, DATE, 'path'))]).toEqual([true, false])
   })
 
-  it.fails('completed: every slice of every path whose total clears the threshold, nothing else', async () => {
+  it('every slice of every path whose total clears the threshold, nothing else', async () => {
     const thr = () => 512 * KiB
     const got = await read(subtree('bk/m'), thr)
     expect(got).toEqual(await brute(subtree('bk/m'), thr))
@@ -93,7 +86,7 @@ describe('bysize over owner slices', () => {
     })
   })
 
-  it.fails('equals brute force over roots, thresholds, attenuations and depth caps', async () => {
+  it('equals brute force over roots, thresholds, attenuations and depth caps', async () => {
     const cases: [string, number, number, number][] = []
     for (const P of ['', 'bk', 'bk/m', 'bk/m/deep', 'bk/s']) {
       for (const t of [1, 100 * KiB, 301 * KiB, 512 * KiB, 640 * KiB, 2 * 1024 * KiB]) {
@@ -112,7 +105,39 @@ describe('bysize over owner slices', () => {
     expect([cases.length, bad]).toEqual([270, []])
   })
 
-  it.fails('the view: tile bytes and owner breakdowns are the paths\' totals', async () => {
+  // `fixtures/v2-slices/plans.json`: the engine planner (`disk-tree tiers plan`, `gen.py`
+  // SLICE_PLANS) over the `bysize` sidecar — `b_max` is `MAX(tot)` — and the rows that pass
+  // (`tot ≥ thrAt(depth)`, from the parquet). The reader selects those groups and keeps those rows.
+  it('plans: the reader\'s groups and rows are the engine planner\'s', async () => {
+    type Plan = { tier: string; path: string; depth: number; thr: number; atten: number; max_depth: number | null; d_lo: number; d_hi: number | null; p_lo: string; p_hi: string; selected: number[]; matched: number }
+    const plans = (await readJson<Plan[]>('v2-slices/plans.json')).filter(p => p.tier === 'bysize')
+    const h = await openIndex(env, DATE, 'bysize')
+    const got: unknown[] = []
+    for (const p of plans) {
+      const rect: Rect = { dLo: p.d_lo, dHi: p.d_hi ?? 1e9, pLo: p.p_lo, pHi: p.p_hi }
+      const thrAt = (d: number) => p.thr * p.atten ** Math.max(0, d - p.depth - 1)
+      got.push([p.path, p.thr, (await planSizeRects(h, [rect], thrAt)).map(s => s.rg), (await readSizeRects(h, [rect], thrAt)).length])
+    }
+    expect(got).toEqual(plans.map(p => [p.path, p.thr, p.selected, p.matched]))
+    expect(plans.map(p => [p.path, p.selected, p.matched])).toEqual([['', [0, 1], 3328], ['bk/w', [0, 1], 3300], ['bk/m', [0, 1], 17], ['bk/m', [0, 1], 11]])
+  })
+
+  it('a lens thresholds the owner\'s slice, not the path\'s total', async () => {
+    const thr = () => 301 * KiB
+    const q = subtree('bk/m')
+    const got = order(await readSizeRects(await openIndex(env, DATE, 'bysize'), [q], thr, { key: 'alice' }))
+    const all = await readRects(await openIndex(env, DATE, 'path'), [q])
+    expect(got).toEqual(order(all.filter(r => r.usr === 'alice' && r.size >= thr())))
+    expect(perPath(got)).toEqual({
+      'bk/m/big': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
+      'bk/m/big/a': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
+      'bk/m/big/a/f0': { b: 2048 * KiB, us: { alice: 2048 * KiB } },
+      'bk/m/twin': { b: 600 * KiB, us: { alice: 600 * KiB } },
+      'bk/m/twin/f0': { b: 600 * KiB, us: { alice: 600 * KiB } },
+    })
+  })
+
+  it('the view: tile bytes and owner breakdowns are the paths\' totals', async () => {
     const view = await buildView(env, { date: DATE, path: 'bk/m', w: 64, h: 64, minArea: 12, atten: 1, threshold: 512 * KiB })
     const tiles: Record<string, number> = {}
     const walk = (n: ViewNode, at: string) => {
