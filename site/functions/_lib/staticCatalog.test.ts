@@ -164,11 +164,24 @@ describe('static dispatch', () => {
     const outside = await staticSummary(ENV, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
     expect([outside.status, await outside.json()]).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])
     // With an index to ask: a scan the store has but the static index doesn't is that 400; a slug naming no scan is a 404.
-    const db = (d: string | null) => ({ prepare: () => ({ bind: () => ({ first: async () => ({ d }) }) }) }) as unknown as D1Database
+    const db = (d: string | null) => ({ prepare: () => ({ bind: () => ({ first: async () => ({ d }), all: async () => ({ results: d ? [{ date: d }] : [] }) }) }) }) as unknown as D1Database
     const unindexed = await staticSummary({ ...ENV, DB: db('2026-09-02') }, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
     expect([unindexed.status, await unindexed.json()]).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])
     const miss = await staticSummary({ ...ENV, DB: db(null) }, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
     expect([miss.status, await miss.json()]).toEqual([404, { error: 'no scan matches date=2026-09-02' }])
+    // The store's scans decide what a day names, as on the map (`scanArg.ts` `indexedScan`): the index's
+    // latest scan of a day is never answered for a newer store scan of that day.
+    const storeDb = (scans: string[]) => ({ prepare: (sql: string) => ({ bind: (arg: string) => ({ first: async () => {
+      const hits = scans.filter(d => sql.includes('LIKE') ? d.startsWith(arg.slice(0, -1)) : d === arg).sort()
+      return { d: hits.at(-1) ?? null }
+    }, all: async () => ({ results: scans.filter(d => d.startsWith(arg.slice(0, -1))).map(date => ({ date })) }) }) }) }) as unknown as D1Database
+    const sub = { ...fixtureStore(), scans: async () => [...DATES, '2026-09-20T0430'].sort() }
+    const db2 = storeDb([...DATES, '2026-09-20T0430', '2026-09-20T1236'])
+    const ask = async (date: string) => { const r = await staticSummary({ ...ENV, DB: db2 }, params({ date, name: 'foo' }), sub); return [r.status, r.status === 200 ? (await r.json() as { date: string }).date : await r.json()] }
+    expect(await ask('2026-09-20')).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])
+    expect(await ask('2026-09-20T1236')).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])
+    expect(await ask('2026-09-21')).toEqual([404, { error: 'no scan matches date=2026-09-21' }])
+    expect(await ask('2026-09-01')).toEqual([200, '2026-09-01'])
     const broken: Store = { ...fixtureStore(), catalog: new StaticCatalog({ ...files(), json: async () => { throw new Error('gone') } }) }
     const failed = await staticSummary(ENV, params({ date: '2026-09-01', name: 'foo' }), broken)
     expect([failed.status, failed.headers.get('retry-after'), await failed.json()]).toEqual([503, '1', { error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }])

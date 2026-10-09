@@ -8,7 +8,7 @@ import { stringParam, useUrlState } from 'use-prms'
 import { bareEmpty, legacyOwner, ownerParam } from './ownerParam'
 import { AGE_MODES, AgeChart } from './AgeChart'
 import { canonId, shortName, shortUserKey } from './UserChip'
-import { signInUrl, useCanAssign, useIdent as useIdentity } from './auth'
+import { signInUrl, useCanAssign, useCanStage, useIdent as useIdentity } from './auth'
 import { AttributionRules } from './AttributionRules'
 import { DiffTreemap, DiffHeader, useDiffModel } from './DiffTreemap'
 import { DiffTable } from './DiffTable'
@@ -29,9 +29,12 @@ import { LifecycleFold } from './LifecycleFold'
 import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
-import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
+import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
+import { useFilterCover } from './filterCover'
+import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
-import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
+import { apiError, INDEXED_SYNTAX, useFilterCaps, useIndexedScans } from './filterCaps'
+import { LoadFailure, mapSlot } from './LoadFailure'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
@@ -41,7 +44,8 @@ import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import { canvasWidth } from './canvas'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, fromMiss, pendingNote, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fromMiss, pendingNote, latestScan, nearestScan, noScansYet, scanInstant, useScan } from './scan'
+import { scanCmp } from './scanSlug'
 import { hrefWithScan, NoScanMatch } from './NoScanMatch'
 import { selOf } from './scanSlug'
 import { SizeOverTime } from './SizeOverTime'
@@ -149,6 +153,7 @@ function AppContent() {
     navigate({ pathname: legacy ? `${base}/${legacy.replace(/^\/+|\/+$/g, '')}` : store.path, search: rest ? `?${rest}` : '', hash }, { replace: true })
   }, [search, hash, navigate, store])
   const canAssign = useCanAssign()
+  const canStage = useCanStage()
   const ident = useIdentity()
   // The owner axis (`Store.owners`): the ownership ledger overlays the map
   // and the table for any signed-in viewer; admins assign from it.
@@ -176,7 +181,7 @@ function AppContent() {
   const { indexedOnly: indexedOnly0 } = useFilterCaps()
   const [fFloat] = useUrlState('f', stringParam())
   const indexedScans = useIndexedScans(indexedOnly0 && !!fFloat)
-  const { asof, miss, pending, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store, indexedOnly0 && fFloat ? indexedScans : undefined)
+  const { asof, miss, pending, scans, times, label: fmtS, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store, indexedOnly0 && fFloat ? indexedScans : undefined)
   const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
@@ -214,6 +219,9 @@ function AppContent() {
   // The box edits a local draft; the URL (and every query keyed on it) follows
   // after a 250 ms pause — one request pair per phrase, not per keystroke.
   const [fqDraft, setFqDraft] = useState<string | null>(null)
+  // Brushing: the view's child (by name) hovered in either the treemap or its
+  // children table, lit in both (a ring on the cell, the row's hover tint).
+  const [brush, setBrush] = useState<string | null>(null)
   useEffect(() => {
     if (fqDraft == null) return
     const t = setTimeout(() => { setFq(fqDraft || undefined); setFqDraft(null) }, 250)
@@ -327,14 +335,14 @@ function AppContent() {
   // pinned row, `?f=`) exactly like the map — one code path for every scope;
   // the batch job's root-only `diff.json` is no longer read here.
   const prevScan = asof ? scans[scans.indexOf(asof) + 1] ?? null : null
-  const earlier = useMemo(() => (asof ? scans.filter(s => s < asof) : []), [asof, scans])
-  const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
+  const earlier = useMemo(() => (asof ? scans.filter(s => scanCmp(s, asof, times) < 0) : []), [asof, scans, times])
+  const spanScan = span && asof ? nearestScan(earlier, scanInstant(asof, times) - span, times) : null
   // A pinned start (`from`) wins over a look-back span; both fall back to the
   // immediately-previous scan. `from` is a slug: the latest earlier scan it
   // matches (the resolver). One matching none is a miss — the diff says so
   // and draws nothing, never the nearest scan instead.
-  const fromScan = from && asof ? latestScan(from, earlier) : null
-  const startMiss = useMemo(() => fromMiss(from, asof, scans), [from, asof, scans])
+  const fromScan = from && asof ? latestScan(from, earlier, times) : null
+  const startMiss = useMemo(() => fromMiss(from, asof, scans, times), [from, asof, scans, times])
   const diffPrev = startMiss ? null : fromScan ?? spanScan ?? prevScan
   // Hour-rounded span back from `to` — the previous scan clears it, anything
   // else round-trips as its own span (nearest-scan resolution recovers it,
@@ -342,14 +350,16 @@ function AppContent() {
   const spanTo = (to: string, from: string): number | undefined =>
     scans[scans.indexOf(to) + 1] === from
       ? undefined
-      : Math.max(3600_000, Math.round((scanTime(to) - scanTime(from)) / 3600_000) * 3600_000)
+      : Math.max(3600_000, Math.round((scanInstant(to, times) - scanInstant(from, times)) / 3600_000) * 3600_000)
   const pickBefore = (scan: string) => { if (asof) setSpan(spanTo(asof, scan)) }
-  // A brush on the size chart hands back scan-id prefixes; each resolves to
-  // the latest scan matching it, and the pair becomes the page's `?d=` (after + span).
+  // A brush on the size chart hands back the scan ids its ends sit on (else a
+  // prefix, which resolves to the latest scan matching it — never a date-only
+  // id read as its whole day), and the pair becomes the page's `?d=` (after + span).
+  const brushScan = (v: string) => (scans.includes(v) ? v : latestScan(v, scans, times))
   const brushRange = (from: string, to: string) => {
-    const toScan = latestScan(to, scans)
-    const fromScan = latestScan(from, scans)
-    if (!toScan || !fromScan || toScan <= fromScan) return
+    const toScan = brushScan(to)
+    const fromScan = brushScan(from)
+    if (!toScan || !fromScan || scanCmp(toScan, fromScan, times) <= 0) return
     setRange(toScan, spanTo(toScan, fromScan))
   }
   const diffWindow: [string, string] | undefined = diffPrev && asof ? [diffPrev, asof] : undefined
@@ -366,16 +376,16 @@ function AppContent() {
   // rather than mislabeled.
   const spanPicks = useMemo(() => {
     if (!asof) return []
-    const t0 = scanTime(asof)
+    const t0 = scanInstant(asof, times)
     const picks: { label: string; ms: number; scan: string }[] = []
     for (const [label, days] of SPANS) {
       const ms = days * DAY
-      const best = nearestScan(earlier, t0 - ms)
-      if (!best || Math.abs(scanTime(best) - (t0 - ms)) > ms / 4) continue
+      const best = nearestScan(earlier, t0 - ms, times)
+      if (!best || Math.abs(scanInstant(best, times) - (t0 - ms)) > ms / 4) continue
       if (!picks.some(p => p.scan === best)) picks.push({ label, ms, scan: best })
     }
     return picks
-  }, [asof, earlier])
+  }, [asof, earlier, times])
   // Lazy drill (specs/done/path-index-lazy-drill.md step 3, now the primary
   // source): the map's base is the pixel-budget subtree at the store root,
   // and every level of the drilled path gets its own subtree query, grafted
@@ -408,7 +418,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; matches?: string[]; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -439,7 +449,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -551,11 +561,29 @@ function AppContent() {
   // depth-1 one, or a refresh; a corner marker, nothing dimmed).
   const mapStale = !tree && !!lastTree.current
   const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
+  // The asked-for view failed (any non-2xx, its retries spent): the slot states it — a held tree from another
+  // scan or scope would sit dimmed under "loading" forever (gcs 2026-10-09: 80 s of a gray map on a 500).
+  const mapFailed = mapSlot(tree, lastTree.current, rootErr) === 'failed'
+  const retryMap = () => { for (const q of [...subtreeQs, ...coarseQs]) if (q.isError) void q.refetch() }
+  // A failed attempt being retried: say so on the held map's marker.
+  const mapRetrying = subtreeQs[0]?.failureReason && !rootErr ? `retrying (${subtreeQs[0].failureReason.message.slice(0, 80)})…` : null
 
-  // Bulk actions target the outermost matched prefixes — the nodes the server
-  // flagged `m` (a match root's whole subtree comes along, so its descendants
-  // aren't flagged).
-  const fMatches = useMemo(() => (tree && fq ? collectFlagged(tree) : []), [tree, fq])
+  // Bulk actions (the bar, the table's rows) under a filter take its matches under the view as the fewest
+  // exact prefixes (`/api/filter-cover`): every match, listed, never a drawn subset or a row's whole prefix.
+  // Unscoped only — under an owner or class scope a match's scoped bytes aren't a prefix.
+  const canStageHere = store.staging && canStage
+  const canAssignHere = ownersMode && canAssign
+  const coverScoped = !!activeLens || ownerMode !== 'all' || !!classSet
+  const coverQ = useFilterCover(sfetch, store.key, { date: asof ?? null, path: graftPath, q: fq, qs: syntax.id, enabled: !!fq && !coverScoped && (canAssignHere || canStageHere) })
+  const tblFilter = useMemo(() => {
+    if (!fq) return undefined
+    const c = coverQ.data
+    const why = coverScoped ? 'Clear the owner or storage-class scope to act on the matches.'
+      : coverQ.error ? `Can’t list this row’s matches: ${coverQ.error.message}`
+      : c && !c.complete ? c.reason
+      : undefined
+    return { items: c?.complete ? c.items : null, why }
+  }, [fq, coverQ.data, coverQ.error, coverScoped])
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
@@ -566,14 +594,11 @@ function AppContent() {
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     return !!(d as { rollup?: unknown } | undefined)?.rollup
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
-  const matchedRoots = useMemo((): string[] | undefined => {
+  const fSeries = useMemo(() => {
     if (!fq) return undefined
     // The first paint carries the same roots (the full read adds only what is inside them).
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    // A bounded transport list is not a safe predicate for table actions or
-    // a historical series. The map/totals are still exact; those secondary
-    // consumers stay disabled rather than silently using a subset.
-    return d?.matchesTruncated ? undefined : d?.matched?.map(x => x.path)
+    return seriesMatches(d)
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
@@ -583,7 +608,7 @@ function AppContent() {
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, matchesTotal: d.matchesTotal, matchesTruncated: d.matchesTruncated }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
@@ -834,7 +859,6 @@ function AppContent() {
   }, [mapTree, drillPath])
   // The table's path segments, stable while `mapPath` is (a fresh array per
   // render defeated every memo keyed on it).
-  const tblActionable = useMemo(() => inMatchRoots(matchedRoots, !!fq), [matchedRoots, fq])
   const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
   const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
   // Worklist rows / children table → drill the map to a prefix and show it.
@@ -913,7 +937,7 @@ function AppContent() {
       scans.map(s => [
         `scan:${s}`,
         {
-          label: `Scan ${fmtScan(s)}`,
+          label: `Scan ${fmtS(s)}`,
           group: 'Scans',
           handler: () => setDP(s),
         },
@@ -1086,7 +1110,7 @@ function AppContent() {
       <SiteNav menu={menu} crumbs={crumbs}>
         {asof && scans.length > 1 && (
           <span className="tb-scan">
-            <ScanCombobox value={asof} scans={scans} onChange={setDP} label="Scan date" />
+            <ScanCombobox value={asof} scans={scans} onChange={setDP} label="Scan date" fmt={fmtS} />
           </span>
         )}
         {/* How fresh the page's scan is, at a glance (the picker shows only
@@ -1161,8 +1185,8 @@ function AppContent() {
             </FilterNote>
           </span>
         )}
-        {fq && fMatches.length > 0 && (
-          <BulkBar matches={fMatches} total={fCoverage?.matchesTotal} incomplete={fCoverage?.matchesTruncated} scheme={store.scheme} query={fq} />
+        {fq && !coverScoped && (
+          <BulkBar cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error?.message} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
         )}
       </SiteNav>
 
@@ -1173,7 +1197,7 @@ function AppContent() {
         <p className="disambig">
           <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
           {dMatches.map(s => (
-            <button key={s} className={s === asof ? 'on' : ''} onClick={() => setDP(s)}>{fmtScan(s)}</button>
+            <button key={s} className={s === asof ? 'on' : ''} onClick={() => setDP(s)}>{fmtS(s)}</button>
           ))}
         </p>
       )}
@@ -1193,7 +1217,7 @@ function AppContent() {
 
       <DiskSpace space={meta?.disk_space} />
 
-      {mapTree ? (
+      {mapTree && !mapFailed ? (
         <>
           {/* Remount per store: the treemap's caches are tied to the tree it
               mounted with, and a switch can swap `tree` without ever passing
@@ -1232,7 +1256,9 @@ function AppContent() {
             onPathChange={onMapPath}
             objects={objects}
             onOpen={p => openObject(p.slice(1).map(n => n.n))}
-          />{mapStale ? <Busy label="loading view…" /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
+            brush={brush}
+            onBrush={setBrush}
+          />{mapStale ? <Busy label={mapRetrying ?? 'loading view…'} /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
           {/* A drilled directory with nothing drawable under it: the scope came
               up empty, or (a v1 scan) it holds only objects or directories
               under this view's floor. Say so rather than show a blank canvas. */}
@@ -1279,21 +1305,22 @@ function AppContent() {
               onPickUser={u => pickUser(u, false)}
               onOpen={openPath}
               onOpenObject={openObject}
-              actionable={tblActionable}
+              filter={tblFilter}
+              brush={brush}
+              onBrush={setBrush}
             /></div>
           )}
         </>
       ) : miss ? (
-        <NoScanMatch miss={miss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan)} />
-      ) : refusalOf(rootErr) ? (
-        // The filter's refusal (indexed-only): its reason, inline — not a failed view.
-        <p className="loading filter-refused" role="status">{refusalOf(rootErr)!.reason}</p>
-      ) : rootErr ? (
+        <NoScanMatch miss={miss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, true, times)} />
+      ) : rootErr && /^(409|413)/.test(rootErr.message) ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
-            : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in, or narrow the scope'
-            : `view failed: ${rootErr.message}`}
+            : 'this view is too wide for the index — drill in, or narrow the scope'}
         </p>
+      ) : rootErr ? (
+        // The filter's refusal (indexed-only) as its reason, inline; any other failure as its message, a 5xx with a retry.
+        <LoadFailure err={rootErr} what="view" onRetry={retryMap} />
       ) : noScansYet(scansQ) ? (
         // The list answered and is empty: no snapshot has index rows in D1,
         // so no view will ever load — a skeleton here would spin forever.
@@ -1315,12 +1342,12 @@ function AppContent() {
           chart still hides under any scope. */}
       <SizeOverTime
         scopeLabel={store.rootLabel}
-        paths={matchedRoots}
-        pathsTotal={fCoverage?.matchesTotal}
+        paths={fSeries?.paths}
+        pathsTotal={fSeries?.pathsTotal}
         queryOnly={fRollup}
         filterLabel={fq ?? undefined}
         filterQs={fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : undefined}
-        scans={scans} prefix={drillPath}
+        scans={scans} times={times} fmt={fmtS} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}
         ledgerRev={ledgerRev}
@@ -1331,7 +1358,7 @@ function AppContent() {
 
       {startMiss && (
         <section id="diff">
-          <NoScanMatch what="diff start" miss={startMiss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false)} />
+          <NoScanMatch what="diff start" miss={startMiss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false, times)} />
         </section>
       )}
       {asof && diffPrev && (
@@ -1357,7 +1384,7 @@ function AppContent() {
             {/* Both endpoints: the window's start, and the page's scan again
                 (the bar's picker — one scan, stated where the diff reads). */}
             <Explain text={<>The diff window's start — the size chart's shaded band reads from here to the scan. Drag on the size chart to set both ends.</>}>
-              <ScanCombobox value={diffPrev} scans={earlier} onChange={startPinned ? setFrom : pickBefore} label="Diff from scan" />
+              <ScanCombobox value={diffPrev} scans={earlier} onChange={startPinned ? setFrom : pickBefore} label="Diff from scan" fmt={fmtS} />
             </Explain>
             <Explain text={startPinned
               ? <>Start is <b>pinned</b> to this scan — the window's near end stays put as new scans arrive. Click to track a duration back from the end instead.</>
@@ -1370,7 +1397,7 @@ function AppContent() {
               </button>
             </Explain>
             <span className="arrow"> → </span>
-            <ScanCombobox value={asof} scans={scans} onChange={setDP} label="Diff to scan (the page's scan)" />
+            <ScanCombobox value={asof} scans={scans} onChange={setDP} label="Diff to scan (the page's scan)" fmt={fmtS} />
             {endIsLatest && (
               <Explain text={endPinned
                 ? <>End is <b>pinned</b> to this scan. Click to follow the latest scan as new ones arrive.</>
@@ -1384,7 +1411,7 @@ function AppContent() {
             {!startPinned && spanPicks.length > 0 && (
               <span className="gran spans" role="radiogroup" aria-label="Diff span (back from the after scan)">
                 {spanPicks.map(({ label, ms, scan }) => (
-                  <Explain key={label} text={<>Diff over the last {label}: {fmtScan(scan)} → {fmtScan(asof)}</>}>
+                  <Explain key={label} text={<>Diff over the last {label}: {fmtS(scan)} → {fmtS(asof)}</>}>
                     <button role="radio" aria-checked={diffPrev === scan} className={diffPrev === scan ? 'on' : ''}
                       onClick={() => setSpan(scan === prevScan ? undefined : ms)}>
                       {label}
@@ -1397,20 +1424,17 @@ function AppContent() {
               <>
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
               </>
-            ) : refusalOf(diffErr) && !diffStale ? (
-              // The filter's refusal: its reason, inline — no status, nothing to retry.
-              <span className="tab-note filter-refused"> · {refusalOf(diffErr)!.reason}</span>
-            ) : diffErr && !diffStale ? (
+            ) : diffErr && !diffStale && /^(404|409)/.test(diffErr.message) ? (
               <span className="tab-note">
                 {' '}· {diffErr.message.startsWith('404')
                   ? <><code>{graftPath || '/'}</code> is in neither scan’s index — pick other scans or drill up.</>
-                  : diffErr.message.startsWith('409')
-                    ? <>no per-user index for one of these scans — pick newer scans, or clear the user.</>
-                    : <>couldn’t diff {fmtScan(diffPrev)} → {fmtScan(asof)} ({diffErr.message}).</>}
-                {' '}<button type="button" className="linkish" onClick={() => diffQ.refetch()}>retry</button>
+                  : <>no per-user index for one of these scans — pick newer scans, or clear the user.</>}
               </span>
+            ) : diffErr && !diffStale ? (
+              // The filter's refusal as its reason; any other failure as its message, a 5xx with a retry.
+              <>{' · '}<LoadFailure as="span" className="tab-note" err={diffErr} what={`diff ${fmtS(diffPrev)} → ${fmtS(asof)}`} onRetry={() => void diffQ.refetch()} /></>
             ) : (
-              <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
+              <span className="loading"> · aligning {fmtS(diffPrev)} → {fmtS(asof)}…</span>
             )}
           </span>} />
           {/* The slot keeps the treemap's height through a reload: the last
@@ -1428,7 +1452,7 @@ function AppContent() {
                   row's name drills like its cell (and scrolls the maps up). */}
               <DiffTable model={diffModel} scheme={store.scheme} segs={segs} onDrill={rel => openPath([...segs, ...rel])} onOpen={rel => openObject([...segs, ...rel])} />
               {diffStaleOther
-                ? <Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} />
+                ? <Busy label={`aligning ${fmtS(diffPrev)} → ${fmtS(asof)}…`} />
                 : diffRefining
                   ? <Busy label="aligning rows…" corner />
                   : null}
@@ -1436,7 +1460,7 @@ function AppContent() {
           )}
           {diff && diff.rows.length === 0 && !diffStale && <p className="hint">No changes in this scope between the two scans.</p>}
           {!diff && diffStale && (
-            <div className="diff-tm tm-skel busy-host stale" aria-busy="true"><Busy label={`aligning ${fmtScan(diffPrev)} → ${fmtScan(asof)}…`} /></div>
+            <div className="diff-tm tm-skel busy-host stale" aria-busy="true"><Busy label={`aligning ${fmtS(diffPrev)} → ${fmtS(asof)}…`} /></div>
           )}
         </section>
       )}
@@ -1458,7 +1482,7 @@ function AppContent() {
         </h2>
         {ageQ.isPending && !!asof && <Skeleton height={220} label="loading ages…" />}
         {age.length > 0 && (
-          <AgeChart rows={age} baseRows={diffPrev ? ageBase : undefined} diffLabels={diffPrev && asof ? { from: fmtScan(diffPrev), to: fmtScan(asof) } : undefined} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
+          <AgeChart rows={age} baseRows={diffPrev ? ageBase : undefined} diffLabels={diffPrev && asof ? { from: fmtS(diffPrev), to: fmtS(asof) } : undefined} catOrder={catOrder} mode={ageMode} onMode={m => setAgeModeP(m)} modes={ageModes} userIdx={userIdx} readRange={ageReadRange} />
         )}
       </section>
       )}
