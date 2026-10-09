@@ -8,6 +8,9 @@ import { sqliteD1 } from './testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from './testStore'
 import { buildDiff, buildView, capTiles, MATCH_LIST_CAP, matchLists, tileBudget, type ViewNode, type View } from './view'
 import { searchKey } from './search'
+import { resetUpgrades } from './edgeCache'
+import { warmSubtree } from '../api/subtree'
+import { onRequestGet as diffGet } from '../api/diff'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('./testStore')).S3Store }))
 
@@ -470,6 +473,70 @@ describe('the diff shares one gate across its reads', () => {
     } finally { spy.slowMs = 0 }
     const full = await buildDiff(envStatic(), { from: A, to: B, path: '', w: W, h: H, minArea: MIN_AREA, atten: ATTEN, top: 500, query: q('tomat') })
     expect([gate.dead, cut.interiors, full.interiors, cut.total_a, cut.total_b, cut.matchCount]).toEqual([true, { read: 0, skipped: 6, reason: '3 past the time budget', late: 6 }, undefined, full.total_a, full.total_b, full.matchCount])
+  })
+})
+
+describe('a budget-cut answer upgrades to the full one in the background (`upgradePartial`)', () => {
+  // The viewer-facing phase 2 gets 5 ms against 40 ms span queries (cut); the background run's
+  // `UPGRADE_PHASE2_MS` doesn't. A colo cache that keeps what it's given; `waitUntil` collects the runs.
+  const harness = () => {
+    const held = new Map<string, Response>()
+    const prev = (globalThis as unknown as { caches: unknown }).caches
+    ;(globalThis as unknown as { caches: unknown }).caches = { default: {
+      match: async (k: Request) => held.get(k.url)?.clone(),
+      put: async (k: Request, r: Response) => { held.set(k.url, r) },
+    } }
+    const bg: Promise<unknown>[] = []
+    const env = envStatic()
+    ;(env as unknown as Record<string, string>).FILTER_PHASE2_MS = '5'
+    ;(env as unknown as Record<string, string>).DEV_EMAIL = 'dev@example.test'
+    ;(env as unknown as Record<string, string>).STORE_BUCKET = 'my-data'
+    resetUpgrades()
+    spy.slowMs = 40
+    const restore = () => { spy.slowMs = 0; (globalThis as unknown as { caches: unknown }).caches = prev }
+    return { env, bg, waitUntil: (p: Promise<unknown>) => { bg.push(p) }, restore }
+  }
+  /** What a response says about its answer: cache tier, partial flag, upgrade, and the body's cut / interiors. */
+  const said = async (r: Response) => {
+    const b = await r.json() as { budgetCut?: true; interiors?: unknown }
+    return [r.headers.get('x-cache'), r.headers.get('x-cache-partial'), r.headers.get('x-cache-upgrade'), b.budgetCut ?? null, b.interiors ?? null]
+  }
+
+  it('subtree: the miss serves the partial and schedules the run; a partial hit meanwhile is deduped; then the hit is whole', async () => {
+    const { env, bg, waitUntil, restore } = harness()
+    const url = `http://localhost/api/subtree?date=${A}&path=&q=tomat&full=1&w=${W}&h=${H}&minArea=${MIN_AREA}&atten=${ATTEN}`
+    try {
+      const miss = await said(await warmSubtree(env, url, waitUntil))
+      const during = await said(await warmSubtree(env, url, waitUntil))
+      const runs = bg.length
+      await Promise.all(bg)
+      const after = await warmSubtree(env, url, waitUntil)
+      const body = await after.clone().json() as { tree: ViewNode }
+      const full = await view(envStatic(), A, '', 'tomat')
+      expect([miss, during, runs, await said(after), body.tree]).toEqual([
+        ['miss', 'ttl=120', 'scheduled', true, { read: 0, skipped: 3, reason: '3 past the time budget', late: 3 }],
+        ['hit', 'ttl=120', 'in-flight', true, { read: 0, skipped: 3, reason: '3 past the time budget', late: 3 }],
+        2, // the miss's cache put, and the run
+        ['hit', null, null, null, null],
+        JSON.parse(JSON.stringify(full.tree)),
+      ])
+    } finally { restore() }
+  })
+
+  it('diff: the same — the background run\'s `phase2Ms` reaches both sides', async () => {
+    const { env, bg, waitUntil, restore } = harness()
+    const url = `http://localhost/api/diff?from=${A}&to=${B}&path=&q=tomat&w=${W}&h=${H}&minArea=${MIN_AREA}&atten=${ATTEN}`
+    const get = () => diffGet({ request: new Request(url), env, waitUntil })
+    try {
+      const miss = await get()
+      const missSaid = await said(miss)
+      await Promise.all(bg)
+      const after = await get()
+      expect([missSaid.slice(0, 4), await said(after)]).toEqual([
+        ['miss', 'ttl=120', 'scheduled', true],
+        ['hit', null, null, null, null],
+      ])
+    } finally { restore() }
   })
 })
 
