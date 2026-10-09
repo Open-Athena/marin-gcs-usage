@@ -1,0 +1,29 @@
+{
+  "name": "gcs",
+  "comment": "The gcs deployment's scan-run profile (specs/scan-runs-ui.md): `dt-cloud scan-run -c job/scan-runs.json`. Prices: n2 list $/h, us-central1, compute only (vCPU 0.031611 + GB 0.004237).",
+  "project": "oa-internal-450019",
+  "regions": ["us-central1", "europe-west4"],
+  "jobs": [
+    {"kind": "reproc", "where": {"entrypoint": "^$", "env": ["REPROC"], "no_env": ["GATE", "SCRATCH", "SNAP_PATH", "SWEEP", "ACCESS_ONLY"]},
+     "scan": [{"env": "SNAP_ID"}, {"env": "SNAPSHOT_DATE"}, {"log": "^SNAPSHOT-JOB-DONE (\\S+)"}]},
+    {"kind": "scan", "where": {"name": "^(job-|gcs-usage-snapshot)", "image": "gcs-usage-snapshot(:latest|@sha256:)", "entrypoint": "^$",
+                              "no_env": ["REPROC", "GATE", "SCRATCH", "SNAP_PATH", "SWEEP", "ACCESS_ONLY", "SWEEP_BENCHMARK_PLAN"]},
+     "scan": [{"env": "SNAP_ID"}, {"env": "SNAPSHOT_DATE"}, {"log": "^SNAPSHOT-JOB-(?:DONE|NOP) (\\S+)"}, {"created": "%Y-%m-%d"}]},
+    {"kind": "listing", "downstream": true, "where": {"commands": "disk-tree bulk-list \"gcs://"},
+     "scan": [{"commands": "/listing/(\\d{4}-\\d{2}-\\d{2}(?:T\\d{4})?)/\\$b"}]}
+  ],
+  "overlapped": ["access-ingest"],
+  "nop_marker": "^SNAPSHOT-JOB-NOP ",
+  "error_marker": "^\\+ fail_alert (?P<rc>\\d+) (?P<line>\\d+) (?P<cmd>.*)",
+  "outputs": [
+    {"key": "listing", "uri": "gs://oa-gcs-usage-dvx/listing/{scan}/", "exclude": ["dir-cache/", "index/"], "split": "dir",
+     "rows": {"json": "_SUCCESS.json", "field": "objects"}, "after": "listing-fanout", "kinds": ["scan"]},
+    {"key": "dir-cache", "uri": "gs://oa-gcs-usage-dvx/listing/{scan}/dir-cache/", "after": "path-index", "kinds": ["scan"]},
+    {"key": "path-index", "uri": "gs://oa-gcs-usage-dvx/listing/{scan}/index/{gen}/", "split": "stem", "rows": "groups", "after": "path-index upload"},
+    {"key": "snapshot", "uri": "gs://oa-gcs-usage-dvx/snapshots/{scan}/", "after": "publish"},
+    {"key": "static", "uri": "gs://oa-gcs-usage-dvx/static-names/2026-10-08c/manifests/{scan}.json", "manifest": true, "kinds": ["scan"]}
+  ],
+  "prices": {"n2-highmem-32": 2.0962, "n2-highmem-16": 1.0481, "n2-highmem-8": 0.5241, "n2-standard-32": 1.5539, "n2-standard-8": 0.3885},
+  "spot_factor": 0.3,
+  "log_days": 30
+}
