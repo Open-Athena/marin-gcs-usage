@@ -9,7 +9,9 @@ import pytest
 from click.testing import CliRunner
 
 from dt_cloud.cli import main
-from dt_cloud.scan_id import check_scan_id, is_scan_id, latest_scan, snapshot_scans
+import datetime as dt
+
+from dt_cloud.scan_id import META_PATH, check_scan_id, is_scan_id, latest_scan, scan_slug, scan_time, snapshot_scans
 
 SCANS = ["2026-10-08", "2026-10-09T0601", "2026-10-09T1802", "2026-10-09T1215"]
 
@@ -26,6 +28,21 @@ def test_check_scan_id_names_both_forms():
     with pytest.raises(ValueError) as e:
         check_scan_id("2026-10-09 12:00")
     assert str(e.value) == "not a scan id: '2026-10-09 12:00' (want YYYY-MM-DD or YYYY-MM-DDTHHMM)"
+
+
+def test_scan_time_and_slug():
+    utc = dt.timezone.utc
+    assert [scan_time(s) for s in ["2026-10-09", "2026-10-09T0601"]] == [dt.datetime(2026, 10, 9, tzinfo=utc), dt.datetime(2026, 10, 9, 6, 1, tzinfo=utc)]
+    assert [scan_slug(s) for s in ["2026-10-09", "2026-10-09T0601"]] == ["261009", "261009-0601"]
+    for f in (scan_time, scan_slug):
+        with pytest.raises(ValueError):
+            f("261009")
+
+
+def test_meta_path_extracts_the_scan_id():
+    assert [m and m.group(1) for m in map(META_PATH.search, [
+        "bkt/snapshots/2026-10-09/meta.json", "bkt/snapshots/2026-10-09T0601/meta.json", "bkt/snapshots/cw/meta.json", "bkt/snapshots/2026-10-09T06/meta.json",
+    ])] == ["2026-10-09", "2026-10-09T0601", None, None]
 
 
 def test_latest_scan_picks_the_latest_match():

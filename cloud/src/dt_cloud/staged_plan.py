@@ -31,13 +31,12 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .scan_id import is_scan_id
+
 # `gs://<bucket>/<path>`: the bucket per GCS naming (lowercase, digits, `-`,
 # `_`, `.`), then a non-empty path — the bucket root is not a plan item.
 CANONICAL_RE = re.compile(r"^gs://([a-z0-9][a-z0-9._-]*)/(.+)$")
 SEGMENT_RE = re.compile(r"^[^/\\]+$")
-# A scan id: `YYYY-MM-DD`, or cw's `YYYY-MM-DDTHHMM`.
-SCAN_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:T\d{4})?$")
-
 
 class PlanError(Exception):
     """A malformed plan.json — the dispatch's snapshot is wrong, not the data."""
@@ -124,7 +123,7 @@ def parse_plan(d: object) -> StagedPlan:
     for prefix, date in raw_as_of.items():
         if prefix not in items:
             raise PlanError(f"as_of names {prefix!r}, which is not a sweep item")
-        if not isinstance(date, str) or not SCAN_RE.match(date):
+        if not isinstance(date, str) or not is_scan_id(date):
             raise PlanError(f"as_of[{prefix!r}] must be a scan date, got {date!r}")
         bucket, rel = split_prefix(prefix)
         as_of.setdefault(bucket, {})[rel] = date
