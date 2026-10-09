@@ -344,6 +344,30 @@ Dry runs on 2026-10-09 (UTC, gcs, `runs add -n`): `2026-10-10` and `2026-10-09T1
 - **Footprint.** **~1.1 GB/day** on R2, about 0.8% of a full 135.7 GB copy; 30 days ≈ 34 GB ≈ $0.50/month. A day's suffix rows are 0.33% of the base's 13.2B.
 - **Tiers.** Tier merges collapse close records against their opens, so merged runs hold at most the sum of their days. Compaction at level 5 (32 days) folds them into a new base.
 
+### Egress: merges re-upload (corrected 2026-10-09)
+
+The `$0.13/day` above counts only a run's own upload. Every tier merge writes a new run that also goes to R2. GCP bills internet egress on every byte that leaves it: a merged run written on a Batch VM is billed in full when uploaded, wherever its inputs were read from. Reading the merge's inputs from R2 instead of GCS saves nothing, because GCS reads in-region are already free. So under the binary counter a row is uploaded once per level it passes through. Over the 32 scans before compaction that is 5 uploads per row (32 runs at level 0, 16 merges of 2 runs at level 1, …, 2 of 16 at level 4: 5 × 32 run-sizes in all). Compaction then uploads the whole new base again.
+
+| | run (per scan) | uploads per scan, amortized | + compaction | ≈ egress |
+|---|---:|---:|---:|---:|
+| gcs (1 scan/day) | 1.1 GB sx + 2.15 GB drill | ~5 × 3.25 GB ≈ 16 GB/day | base 136 GB sx + 299 GB drill per 32 days ≈ 14 GB/day | **≈ $3.5/day** |
+| cw (4 scans/day, estimated from `2026-10-09cw`'s versions: 10–80M suffix rows a scan at 37.8 B/row) | 0.4–3 GB sx (+ drill, unmeasured) | ~5 × that × 4 ≈ 8–60 GB/day | base 119 GB sx per 32 scans = 8 days ≈ 15 GB/day | **≈ $3–9/day** + drill |
+
+Levers (none built):
+
+- **(a) Merge and compact where egress is free.** R2 charges no egress, so a job outside GCP can read runs from R2 and write the merged run back to R2 for free. GCP then pays egress only once per row, on the run's first upload. For cw, a CoreWeave node does this (cw's own compute; CoreWeave doesn't bill internet egress). The merge (`merge_sorted` + `write_run_shards`, `merge_parquets`, `merge_tiers`) is pure Python/DuckDB over parquet, so it ports as is. It needs an R2 read/write key on that node and the GCS-side bookkeeping (the run's `meta.json`, the manifest) written after the R2 copy. `cdelta` merges stay on GCS (they're small and never served).
+- **(b) Merge less often.** A base-`b` counter merges `b` runs of a level into one: each row is uploaded about `log_b n` times instead of `log_2 n` (b = 4: 2.5 instead of 5 over 32 scans), and readers read up to `(b − 1) · log_b n` runs (4 → ~7 at n = 32).
+- **(c) No R2 merges between compactions.** Readers fan out over every run since the last compaction: each row is uploaded once plus once per compaction. This is fine for gcs's daily cadence with weekly compaction (≤ 7 runs). It's too many runs for cw at 6-hourly unless compaction is ~2-daily, which re-uploads the base each time.
+- **(d) Fewer suffix rows per hash name** (approved 2026-10-09; specs/static-hex-runs.md). 79% of cw's suffix rows (1% of gcs's) are suffixes of names holding a run of ≥ 16 hex digits. Indexing such a run only from its start keeps 27% of cw's suffix rows (3.7× fewer), and cuts every upload and merge of them by the same factor.
+
+**Recommended:** (d) for both deployments (cw: a rebuilt generation; gcs: at its next compaction), then (a) for cw on a CoreWeave node, and for gcs (b) with b = 4, plus compaction only when the run count or the summed run bytes cross a bound, not at a fixed level.
+
+### Shard size: the split `path` (planned, with the next compaction)
+
+Measured on `2026-10-09cw` (specs/cw-static-names.md, "Why 3.8× gcs's bytes per row"): the `path` column repeats on every suffix row the name the row's `s` already holds. Storing it as `parent` (dictionary-encoded) + `head` (the name before the suffix) + `tail` (null unless the name's tail differs from `s` in case) gives path = `parent/head + (tail ?? s)` with no second lookup. That is −26 to −33% on cw's shards at zstd 9 against today's writer (39.1 → 26.6, 47.3 → 31.7 and 34.8 → 24.3 B/row on 64K-row samples of three shards); zstd 9 alone gives −7.5%. Nothing else in the format (DELTA_BYTE_ARRAY, 16K/32K groups, dictionaries) moves it by more than 1%.
+
+It is a format change for every `sx` reader and writer (`write_sorted`'s callers, `Reader`, `staticNames.ts` `decodeGroup`/`FirstHits`, the merges' sort key, census/answers, the drill builders). The sort order stays `(s, path, usr, vf)`, with `path` rebuilt for comparison. Land it at a **compaction**, which rewrites the base and would re-upload it anyway, so the re-encode costs no extra egress. Readers dispatch on the file's columns, so old-format tiers (gcs's `2026-10-08c` and its runs) keep working until compacted.
+
 ## Verification
 
 **Python** (`cloud/tests/test_static_append.py`, exact equality; the base is the fixture's first three scans, plus two runs, each run separately and merged):

@@ -14,7 +14,7 @@ import { type Env, requireViewer } from '../_lib/auth.js'
 import { storeReady } from '../_lib/index.js'
 import { queryParam, QueryError } from '../_lib/scope.js'
 import { allMatchRoots, FILTER_VIEW_V, NotFound, pathTotals } from '../_lib/view.js'
-import { COVER_V, coverSet } from '../_lib/cover.js'
+import { COVER_V, coverFloor, coverSet, overCapReason } from '../_lib/cover.js'
 import { indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
@@ -22,8 +22,16 @@ import { storeKey, withStore } from '../_lib/stores.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
 
-/** The most items a response lists; past it, none (`complete: false`). */
+/** The most items a response lists; past it, none (`complete: false`). A deployment's `COVER_ITEMS_MAX` env
+ *  overrides it (tests). */
 export const COVER_ITEMS_MAX = 50_000
+const coverCap = (env: Env): number => Number((env as { COVER_ITEMS_MAX?: string }).COVER_ITEMS_MAX) || COVER_ITEMS_MAX
+
+/** Row groups the over-cap bound's lookups (`coverFloor`) may read per call, and in all: a few shallow depth
+ *  bands, not the cover's deepest-first walk (gcs 10-09 `nemotron`: 70,450 roots, 22 s cold to say "too many"). */
+export const COVER_FLOOR_CALL_GROUPS = 16
+export const COVER_FLOOR_GROUPS = 32
+
 /** Row groups the one-object roots' kind lookups may read, all together (separate from the folders'). */
 export const COVER_KIND_GROUPS = 64
 /** Folders collapse at this depth or deeper (2: never a whole bucket). */
@@ -83,15 +91,24 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
       : found?.coverage.partial?.length ? `Not every match here could be listed (${found.coverage.partial.join('; ')}).`
       : found?.coverage.approximate?.length ? `Small matches may be missing here (${found.coverage.approximate.join('; ')}).`
       : null
+    const cap = coverCap(ctx.env)
+    // More roots than the cap: first a lower bound on the cover's size (`coverFloor`, a few shallow lookups —
+    // the roots alone aren't one, full folders collapse them). Past the cap, the same refusal the cover would
+    // give, without its walk; else the cover decides. At or under the cap by roots, the cover is too.
+    const floor = !why && roots.length > cap
+      ? await st.time('floor', coverFloor(roots, path, pathTotals(ctx.env, date, { call: COVER_FLOOR_CALL_GROUPS, total: COVER_FLOOR_GROUPS }), { minDepth: COVER_MIN_DEPTH, cap }))
+      : null
     let body: Record<string, unknown>
     if (why || !roots.length) {
       body = { date, path, q: qRaw, items: [], roots: sum, complete: !why, ...(why ? { reason: why } : {}), looked: 0, unchecked: 0 }
+    } else if (floor?.over) {
+      body = { date, path, q: qRaw, items: [], roots: sum, complete: false, reason: overCapReason(floor.n, !floor.exact), looked: floor.looked, unchecked: 0 }
     } else {
       const cover = await st.time('cover', coverSet(roots, path, pathTotals(ctx.env, date), { minDepth: COVER_MIN_DEPTH, kinds: pathTotals(ctx.env, date, { call: 16, total: COVER_KIND_GROUPS }) }))
-      const tooMany = cover.items.length > COVER_ITEMS_MAX
+      const tooMany = cover.items.length > cap
       body = {
         date, path, q: qRaw, items: tooMany ? [] : cover.items, roots: sum, complete: !tooMany,
-        ...(tooMany ? { reason: `The matches here come to ${cover.items.length.toLocaleString('en-US')} separate folders and files — more than ${COVER_ITEMS_MAX.toLocaleString('en-US')} at once. Open a folder below to act on part of them.` } : {}),
+        ...(tooMany ? { reason: overCapReason(cover.items.length) } : {}),
         looked: cover.looked, unchecked: cover.unchecked,
       }
     }

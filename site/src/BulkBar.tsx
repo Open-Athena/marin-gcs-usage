@@ -8,8 +8,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { ownerPost, useOwnerMutations } from './owners'
 import { useStage } from './plans'
 import { allUsers } from './UserChip'
+import { Tooltip } from './Tooltip'
 import { useUnits } from './units'
-import { actionTargets, ASSIGN_CHUNK, assignInBatches, chunks, type CoverItem, type FilterCover, groupItems, STAGE_CHUNK, targetsText } from './filterCover'
+import { actionTargets, ASSIGN_CHUNK, assignInBatches, chunks, CoverError, type CoverItem, type FilterCover, groupItems, STAGE_CHUNK, targetsText } from './filterCover'
 
 /** Items listed per folder in the review panel (the folder's checkbox still takes or drops all of them). */
 export const LIST_PER_GROUP = 100
@@ -49,10 +50,34 @@ export function caveats(t: { buckets: number; unknown: number }, action: 'assign
   return out
 }
 
-export function BulkBar({ cover, loading, error, scheme, query, canAssign, canStage }: {
+/** A refusal, not a failure: a 4xx from `/api/filter-cover` (the query or scope can't be turned into
+ *  items). A 5xx or a network error (no status) is a failure, and the only thing the bar shows in red. */
+export const refused = (e: Error): boolean => e instanceof CoverError && e.status < 500
+
+/** The bar when the matches can't be acted on here (over the cap, not all listable, refused): the summary as
+ *  usual, the actions disabled, the reason in a muted tooltip on them — never a red line. */
+function MutedBar({ head, tip, canAssign, canStage }: { head?: string; tip: string; canAssign: boolean; canStage: boolean }) {
+  return (
+    <span className="bulkbar">
+      {head && <span className="bb-scope">{head}</span>}
+      <Tooltip content={<span className="bb-tip">{tip}</span>}>
+        <span className="bb-muted">
+          {canAssign && <button type="button" className="act assign" disabled>assign to me</button>}
+          {canStage && <button type="button" className="act stage" disabled>stage for deletion</button>}
+        </span>
+      </Tooltip>
+    </span>
+  )
+}
+
+export function BulkBar({ onWant, cover, loading, error, scheme, query, canAssign, canStage }: {
+  /** Set while the matches aren't listed yet (`/api/filter-cover` is fetched on demand): the bar is one
+   *  button that asks for them. */
+  onWant?: () => void
   cover?: FilterCover
   loading?: boolean
-  error?: string | null
+  /** The cover query's failure: a `CoverError` 4xx is a refusal (muted), anything else a failure (red). */
+  error?: Error | null
   scheme: string
   query: string
   canAssign: boolean
@@ -74,12 +99,17 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
   const stageT = useMemo(() => actionTargets(kept, scheme, 'stage'), [kept, scheme])
 
   if (!canAssign && !canStage) return null
+  if (onWant) return <span className="bulkbar"><button type="button" className="act" onClick={onWant}>act on the matches…</button></span>
   if (loading) return <span className="bulkbar"><span className="bb-scope">listing the matches…</span></span>
-  if (error) return <span className="bulkbar"><span className="bb-warn">Can’t act on the matches: {error}</span></span>
+  if (error) {
+    if (refused(error)) return <MutedBar tip={error.message} canAssign={canAssign} canStage={canStage} />
+    return <span className="bulkbar"><span className="bb-warn">Can’t act on the matches: {error.message}</span></span>
+  }
   if (!cover || !cover.roots.n) return null
   const keptB = kept.reduce((n, i) => n + i.b, 0)
   if (!cover.complete) {
-    return <span className="bulkbar"><span className="bb-scope">{plural(cover.roots.n, 'match', 'matches')}:</span> <span className="bb-warn">{cover.reason}</span></span>
+    return <MutedBar head={`${plural(cover.roots.n, 'match', 'matches')} · ${fmtBytes(cover.roots.b)}`}
+      tip={cover.reason ?? 'These matches can’t be acted on here.'} canAssign={canAssign} canStage={canStage} />
   }
   const busy = progress != null
   const note = `bulk filter:'${query}'${memo ? ` — ${memo}` : ''}`

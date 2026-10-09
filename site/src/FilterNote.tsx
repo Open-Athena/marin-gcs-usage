@@ -6,12 +6,19 @@ import type { ReactNode } from 'react'
 export interface Coverage {
   partialReason?: string
   approximateReason?: string
+  /** A heavy literal's fleet root from the static catalog alone (`rollup.bucketsOnly`): exact per-bucket
+   *  totals, but no view inside a bucket without the full index. */
+  bucketsOnly?: boolean
 }
 
+/** The `bucketsOnly` flag's words. */
+export const BUCKETS_ONLY = 'per-bucket totals only: searching inside a bucket for this term needs the full search index'
+
 /** The coverage flags, spelled out — never a silent "fewer matches". */
-export function FilterFlags({ partialReason, approximateReason }: Coverage) {
+export function FilterFlags({ partialReason, approximateReason, bucketsOnly }: Coverage) {
   return (
     <>
+      {bucketsOnly && <span className="fflag">{BUCKETS_ONLY}</span>}
       {partialReason && <span className="fflag">partial results: {partialReason}</span>}
       {approximateReason && <span className="fflag">approximate: {approximateReason}</span>}
     </>

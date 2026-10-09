@@ -1236,6 +1236,10 @@ export async function readSizeRects(
   return decodeSpans(h, kept, r => r.size >= thrAt(r.depth) && inRect(r) && lensOk(r), stop)
 }
 
+/** Lookups this isolate found too wide (`readAsks`' `rememberWide`), oldest dropped past `TOO_WIDE_HELD`. */
+const tooWide = new Map<string, string>()
+const TOO_WIDE_HELD = 256
+
 /** A point lookup `(depth, path)` or a one-level range under a prefix. */
 export type Ask = { depth: number; path: string } | { depth: number; under: string }
 
@@ -1257,8 +1261,13 @@ export async function readAsks(
   h: IndexHandle,
   asks: Ask[],
   keep: (r: Row) => boolean,
-  { columns, maxGroups = 60, spanCap = 4000, stop }: { columns?: string[]; maxGroups?: number; spanCap?: number; stop?: () => boolean } = {},
+  { columns, maxGroups = 60, spanCap = 4000, stop, rememberWide }: { columns?: string[]; maxGroups?: number; spanCap?: number; stop?: () => boolean; rememberWide?: boolean } = {},
 ): Promise<{ rows: Row[]; groups: number }> {
+  // `rememberWide`: a lookup this isolate already found too wide (same generation, asks and budget) throws
+  // before any span query — the answer can't change while the generation stands.
+  const wideKey = rememberWide ? `${h.mode}\0${h.date}\0${h.variant}\0${'gen' in h ? h.gen : ''}\0${maxGroups}\0${asks.map(a => `${a.depth}:${'path' in a ? a.path : `${a.under}/`}`).join('\n')}` : null
+  const known = wideKey != null ? tooWide.get(wideKey) : undefined
+  if (known) throw new Error(`lookup too wide: ${known} (cap ${maxGroups}, remembered)`)
   // One rectangle per depth over its asks' [min, max] path, halved while it
   // selects more groups than its asks could need: sparse asks across a deep
   // store (gcs's ~1,260 assignment prefixes over 8k-row groups) would otherwise
@@ -1275,10 +1284,16 @@ export async function readAsks(
   }
   let parts = [...byDepth.entries()].map(([depth, l]) => ({ depth, asks: l.sort((x, y) => (lo(x) < lo(y) ? -1 : lo(x) > lo(y) ? 1 : 0)) }))
   const found = new Map<number, Span>()
+  // The group budget is checked as the plan grows, not after it: once the groups found pass `maxGroups` the
+  // lookup can only fail, so no further span query (nor halving) is started — wide asks (a filter's 48 root
+  // details over many depths) paid every span query and then threw anyway.
+  const over = () => found.size > maxGroups
+  let cut = false
   let t0 = now()
-  while (parts.length) {
+  while (parts.length && !over()) {
     const next: typeof parts = []
     await mapLimit(parts, SPAN_QUERIES, async ({ depth, asks: part }) => {
+      if (over()) { cut = true; return }
       const rect = { dLo: depth, dHi: depth, pLo: lo(part[0]), pHi: part.reduce((m, a) => (hi(a) > m ? hi(a) : m), hi(part[0])) }
       const cap = part.length > 1 ? Math.min(spanCap, 4 * part.length + 16) : spanCap
       let cand: Span[]
@@ -1294,9 +1309,17 @@ export async function readAsks(
     })
     parts = next
   }
+  if (parts.length) cut = true
   h.trace?.('spans', now() - t0)
   const spans = [...found.values()].sort((a, b) => a.rg - b.rg)
-  if (spans.length > maxGroups) throw new Error(`lookup too wide: ${spans.length} row groups (cap ${maxGroups})`)
+  if (over()) {
+    const n = `${cut ? '≥' : ''}${spans.length} row groups`
+    if (wideKey != null) {
+      tooWide.set(wideKey, n)
+      if (tooWide.size > TOO_WIDE_HELD) tooWide.delete(tooWide.keys().next().value!)
+    }
+    throw new Error(`lookup too wide: ${n} (cap ${maxGroups})`)
+  }
   t0 = now()
   const jsons = await fetchGroupJson(h, spans.map(s => s.rg))
   h.trace?.('rgjson', now() - t0)

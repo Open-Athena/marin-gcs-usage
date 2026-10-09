@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { staticRegistry, staticSummary } from './nameSummaryStatic.js'
-import { staticFilterStore, staticTag } from './staticFilter.js'
+import { rollupAt, staticFilterStore, staticTag } from './staticFilter.js'
 import { staticGen, staticPrefix } from './staticNames.js'
 import { fixture } from './testStore.js'
 
@@ -87,7 +87,24 @@ describe('STATIC_GEN', () => {
     const env = { FILTER_STATIC: '1', INDEX_R2: r2(log), STATIC_GEN: GEN }
     const s = staticFilterStore(env)!
     expect([s.gen, await s.scans(), staticTag(env, { ast: { neg: [], alts: [[{ kind: 'sub', text: 'qqq' }]] } as never })])
-      .toEqual([GEN, ['2026-08-01', '2026-09-01', ...RUNS], `${GEN}.7`])
+      .toEqual([GEN, ['2026-08-01', '2026-09-01', ...RUNS], `${GEN}.8`])
     expect(log.filter(k => !k.includes(`static-names/${GEN}/`))).toEqual([])
+  })
+
+  it('with no drilldown (`FILTER_STATIC_HEAVY` unset), a heavy literal\'s fleet root is the catalog\'s buckets — `/api/name-summary`\'s numbers — and below it nothing', async () => {
+    const env = { FILTER_STATIC: '1', INDEX_R2: r2([]), STATIC_GEN: GEN, NAME_SUMMARY_STATIC: '1', STORE_BUCKETS: BUCKETS, STORE: 'cw' }
+    const s = staticFilterStore(env)!
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const date of ['2026-09-01', '2026-10-03T1800']) {
+      const root = await s.source.hits('su', '')
+      const { kids, rest } = rollupAt(root!.rollup!, date)
+      got.push([date, root!.rollup!.bucketsOnly, root!.io.from, kids.map(([c, b, o]) => [c, Number(b), Number(o)]), rest])
+      const summary = await (await staticSummary(env, new URLSearchParams({ name: 'su', date }))).json() as { plan: string; buckets: { path: string; b: number; o: number }[] }
+      want.push([date, true, 'catalog', summary.buckets.filter(b => b.b || b.o).map(b => [b.path, b.b, b.o]), [0n, 0n]])
+      expect(summary.plan).toBe('catalog')
+    }
+    expect(got).toEqual(want)
+    expect([s.source.heavy, await s.source.hits('su', 'bkt-a')]).toEqual([false, null])
   })
 })

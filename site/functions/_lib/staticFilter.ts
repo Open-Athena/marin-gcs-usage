@@ -24,7 +24,7 @@
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
-import { type CatalogLookup, Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
+import { type CatalogLookup, Drill, DRILL_DIR, DrillSource, type Rollup, type RollupCell } from './staticDrill.js'
 import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanAt, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 import { ANCHOR_MIN, type FilterReject, type FilterRejectCode, reject } from './indexedOnly.js'
@@ -102,7 +102,7 @@ export class SuffixHits implements HitSource {
   private cut = new WeakMap<Hit[], Map<string, Hit[]>>()
   constructor(
     readonly names: HitReader,
-    readonly opts: { maxRows?: number; heavy?: HitSource | null; cache?: HitCache | null; waitMs?: number; anchored?: HitSource | null } = {},
+    readonly opts: { maxRows?: number; heavy?: HitSource | null; catalog?: CatalogLookup | null; cache?: HitCache | null; waitMs?: number; anchored?: HitSource | null } = {},
   ) {}
 
   why(key: string): FilterRejectCode | undefined { return parseKey(key).mode ? this.opts.anchored?.why?.(key) : undefined }
@@ -140,12 +140,19 @@ export class SuffixHits implements HitSource {
 
   get heavy(): boolean { return !!this.opts.heavy }
 
+  /** A literal the light reader declines: the heavy source's; without one, the catalog's buckets at the fleet
+   *  root (`catalogRoot`), and nothing below it (`declined`: `term-too-common`). */
+  private heavyHits(key: string, root: string): Promise<Found | null> {
+    if (this.opts.heavy) return this.opts.heavy.hits(key, root)
+    return root === '' && this.opts.catalog ? catalogRoot(this.opts.catalog, key) : Promise.resolve(null)
+  }
+
   async hits(key: string, root: string): Promise<Found | null> {
     // Anchored keys (`^q`, `q$`, `^q$`): the anchored source's (`staticAnchors.ts`), else nobody's.
     if (parseKey(key).mode) return this.opts.anchored ? this.opts.anchored.hits(key, root) : null
-    if (shortLiteral(key)) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
+    if (shortLiteral(key)) return this.heavyHits(key, root)
     const got = await this.all(key)
-    if (!got) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
+    if (!got) return this.heavyHits(key, root)
     const scans = got.scans ? { scans: got.scans } : {}
     if (root === '') return { hits: got.hits, io: got.io, ...scans }
     // One array per (literal, root) while the literal is held: the view's per-isolate phase 1 is keyed by it.
@@ -158,6 +165,18 @@ export class SuffixHits implements HitSource {
     }
     return { hits, io: got.io, ...scans }
   }
+}
+
+/** A heavy literal's fleet root with no drilldown (`FILTER_STATIC_HEAVY` off): the catalog's per-bucket cells —
+ *  `/api/name-summary`'s numbers — as a rollup of the buckets, exact in bytes and objects, its root rows unknown
+ *  (`rows` null) and nothing below a bucket (`bucketsOnly`). A one- or two-character miss is zero everywhere (no
+ *  cells); a longer non-member declines (null). `scans`: the catalog's stack, when it reports one. */
+export async function catalogRoot(catalog: CatalogLookup, key: string): Promise<Found | null> {
+  const got = await catalog.lookup(key)
+  if (!got.member && !shortLiteral(key)) return null
+  const cells: RollupCell[] = (got.member?.cells ?? []).map(x => ({ kind: 1, child: x.bucket, vf: Number(x.vf) * 1000, b: x.b, o: x.o }))
+  const buckets = new Set(cells.map(x => x.child)).size
+  return { rollup: { dir: '', kept: buckets, rows: null, children: buckets, cells, bucketsOnly: true }, io: { from: 'catalog' }, ...(got.scans ? { scans: got.scans } : {}) }
 }
 
 /** A literal's first hits across isolates (the colo's Cache API). */
@@ -214,6 +233,7 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
     // Heavy literals (`FILTER_STATIC_HEAVY=1`): the drilldown over the base and the runs (the fleet root from the tiers' catalog).
     const runs = async () => (await t.tiers.state()).tiers.flatMap(x => x.dir ? [x.dir] : [])
     const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2, pre), { cache: caches.default, prefix: pre }, { runs, catalog: t.catalog }) : null
+    // Without it, a heavy literal's fleet root from the catalog's buckets (`catalogRoot`).
     // Anchored terms (`^q`, `q$`, `^q$`; `staticAnchors.ts`): on unless `FILTER_STATIC_ANCHORS=0`; a generation
     // without `anchors/meta.json` declines them.
     const sub = (dir: string | null, s: string) => `${tierPre(dir)}/${s}`
@@ -225,7 +245,7 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
         top: dir => cacheIndexes(caches.default, sub(dir, 'anchors'), 'top-v1'),
       },
     })
-    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, anchored }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
   }
   return held.store
 }
@@ -254,8 +274,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
 /** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
  *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget; 5: a 1–2
  *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
- *  the drill runs' scans; 7: anchored terms — `^q`, `q$` were literals before). */
-const RESPONSE_V = 7
+ *  the drill runs' scans; 7: with no drilldown, a heavy literal's fleet root from the catalog's buckets and a
+ *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before). */
+const RESPONSE_V = 8
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
@@ -264,8 +285,9 @@ export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | unde
 }
 
 /** Why a static read declined: a scan outside the generation (`skey` null), or a heavy literal past the
- *  drill base, is `scan-not-indexed`; a heavy literal with no heavy source (`FILTER_STATIC_HEAVY` off) is
- *  `term-too-common` — on every scan alike, indexed or not. */
+ *  drill base, is `scan-not-indexed`; a heavy literal with no heavy source (`FILTER_STATIC_HEAVY` off) below
+ *  the fleet root (where the catalog answers, `catalogRoot`) is `term-too-common` — on every scan alike,
+ *  indexed or not. */
 export function declined(s: StaticFilterStore | null, skey: string | null, raw: Found | null): FilterReject {
   const why = s && skey && !raw ? s.source.why?.(skey) : undefined
   if (why) return reject(why)

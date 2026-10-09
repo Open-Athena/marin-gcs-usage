@@ -3,10 +3,12 @@ import type { Env } from './auth'
 import { parseQuery } from './scope'
 import { Drill, type DrillAnswer, rollupAt, rollupTotal } from './staticDrill'
 import { covers, drillSource, type Found, type HitSource, injectedStores, liveTotal, SuffixHits, type StaticFilterStore } from './staticFilter'
+import { catalogAnswer, StaticCatalog } from './staticCatalog'
+import { FilterRejected, REJECT_MESSAGES } from './indexedOnly'
 import { type Blobs, type Hit, scanAt, StaticNames } from './staticNames'
 import { sqliteD1 } from './testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from './testStore'
-import { buildDiff, buildView, type DiffRow, type View, type ViewNode } from './view'
+import { buildDiff, buildView, type DiffRow, NotFound, type View, type ViewNode } from './view'
 import { searchKey } from './search'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('./testStore')).S3Store }))
@@ -410,5 +412,95 @@ describe('the fleet root\'s root count (`matchCount.n` of a catalog view)', () =
       want.push([t, edges.length, edges.reduce((s, e) => s + e.length, 0)])
     }
     expect(got).toEqual(want)
+  })
+})
+
+describe('no drilldown (`FILTER_STATIC_HEAVY` off): a heavy literal never reads as the approximate walk\'s "no matches"', () => {
+  /** The static store without a heavy source: the suffix index (literals over `maxRows` suffix rows are heavy)
+   *  and, for a heavy literal's fleet root, the base catalog — as `staticFilterStore` wires it. */
+  const noDrill = (maxRows = 0): StaticFilterStore =>
+    ({ source: new SuffixHits(new StaticNames(blobsOf(filterFiles)), { maxRows, heavy: null, catalog: new StaticCatalog(drillBlobs()) }), scans: async () => [...DATES], gen: 'fixture' })
+  /** Every catalog member (the literals the drill answers from the catalog at the fleet root). */
+  const MEMBERS = ['tomat', 'f00', '0', '.', 'a', 'om', 't']
+  /** A view's refusal, else its tier ('not found': a path the scan lacks). */
+  const outcome = async (p: Promise<View>) => p.then(v => v.tier, e => e instanceof FilterRejected ? e.reject : e instanceof NotFound ? 'not found' : Promise.reject(e))
+
+  it('the fleet root: bucket tiles and the match count exactly the catalog\'s cells (`/api/name-summary`\'s numbers) = brute force', async () => {
+    const catalog = new StaticCatalog(drillBlobs())
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const t of MEMBERS) for (const d of DATES) {
+      const v = await view(envStatic(noDrill()), d, '', t, { threshold: 0.5 })
+      got.push([t, d, v.tier, v.tree.b, v.tree.o, top(v), matchedRows(v), v.matchCount, v.matchesCapped, v.rollup, v.approximate, v.partial])
+      const { member } = await catalog.lookup(t)
+      const cells = Object.entries(catalogAnswer(member!, [d])[d]).map(([c, [b, o]]) => [c, Number(b), Number(o)] as [string, number, number])
+      // The same cells as brute force from the objects.
+      expect([t, d, Object.fromEntries(cells.map(([c, b, o]) => [c, [b, o]]))]).toEqual([t, d, expected.views[t][''][d]])
+      const [b, o] = total(expected.views[t][''][d]!)
+      const roots = cells.filter(([c]) => c.toLowerCase().includes(t))
+      const buckets = new Set(member!.cells.map(c => c.bucket)).size
+      want.push([t, d, 'rollup', b, o,
+        cells.map(([c, cb, co]) => [c, cb, co, ...(c.toLowerCase().includes(t) ? ['m'] : [])]).sort((x, y) => (y[1] as number) - (x[1] as number)),
+        roots.sort((x, y) => (x[0] < y[0] ? -1 : 1)),
+        { n: roots.length, b, o }, true, { children: buckets, kept: buckets, rows: null, bucketsOnly: true }, undefined, undefined])
+    }
+    expect(got).toEqual(want)
+    // Spelled out for one: `tomat` on B — three buckets, `tomato-bk` itself a match root.
+    const v = await view(envStatic(noDrill()), B, '', 'tomat', { threshold: 0.5 })
+    expect([top(v), v.matchCount, v.rollup]).toEqual([
+      [['bk', 20127, 8], ['tomato-bk', 110, 2, 'm'], ['zz', 10, 1]],
+      { n: 1, b: 20247, o: 11 },
+      { children: 3, kept: 3, rows: null, bucketsOnly: true },
+    ])
+  })
+
+  it('a one- or two-character literal no name holds: exactly zero at the root (no walk, no approximate flag)', async () => {
+    const v = await view(envStatic(noDrill()), A, '', 'qq')
+    expect([v.tier, v.tree.b, v.tree.o, v.matched, v.approximate]).toEqual(['none', 0, 0, [], undefined])
+  })
+
+  it('below the root: `term-too-common`, never the walk — at every heavy path, both scans', async () => {
+    const drill = newDrill()
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const t of MEMBERS) for (const P of expected.paths.filter(p => p !== '' && p !== 'nope')) {
+      const a = await drill.view(t, P)
+      if (a.source === 'plain' || a.source === 'none') continue
+      for (const d of DATES) {
+        const missing = await outcome(view(base, d, P, t)) === 'not found'
+        got.push([t, P, d, await outcome(view(envStatic(noDrill()), d, P, t))])
+        want.push([t, P, d, missing ? 'not found' : { code: 'term-too-common', message: REJECT_MESSAGES['term-too-common'] }])
+      }
+    }
+    expect(got).toEqual(want)
+    expect([got.length, got.filter(g => (g as unknown[])[3] === 'not found').length]).toEqual([222, 9])
+  })
+
+  it('the root under an owner pool (the catalog knows no owners): `unsupported-scope`, not the walk', async () => {
+    expect(await outcome(view(envStatic(noDrill()), A, '', '0', { owner: 'unowned' }))).toEqual({ code: 'unsupported-scope', message: REJECT_MESSAGES['unsupported-scope'] })
+  })
+
+  it('a view the literal matches is the plain view, as before', async () => {
+    expect(await outcome(view(envStatic(noDrill()), A, 'tomato-bk', 'tomat'))).toBe((await view(base, A, 'tomato-bk', 'tomat')).tier)
+  })
+
+  it('light literals (within the suffix bound) are unaffected: the same views as the search sidecars\'', async () => {
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const t of ['tomat', 'ckpt', 'bin', 'ttl']) for (const P of ['', 'bk', 'bk/data']) for (const d of DATES) {
+      const [s, r] = await Promise.all([view(envStatic(noDrill(1e9)), d, P, t), view(base, d, P, t)])
+      got.push([t, P, d, s.tier.split('+')[0], sansP1({ ...s, tier: '' }), matchedRows(s)])
+      want.push([t, P, d, r.matched?.length ? 'static' : 'none', sansP1({ ...r, tier: '' }), matchedRows(r)])
+    }
+    expect(got).toEqual(want)
+  })
+
+  it('with the drilldown (`FILTER_STATIC_HEAVY=1`), unchanged: the root from the catalog with its root count, rollups below', async () => {
+    const at = async (P: string) => { const v = await view(envStatic(), A, P, '0', { threshold: 0.5 }); return [P, v.tier, v.matchCount, v.rollup] }
+    expect(await Promise.all(['', 'bk', 'bk/fill'].map(at))).toEqual([
+      ['', 'rollup', { n: 3000, b: 1023750, o: 3000 }, { children: 1, kept: 1, rows: 3000 }],
+      ['bk', 'rollup', { n: 3000, b: 1023750, o: 3000 }, { children: 1, kept: 1, rows: 3000 }],
+      ['bk/fill', 'rollup', { n: 3000, b: 1023750, o: 3000 }, { children: 3000, kept: 3, rows: 3000 }],
+    ])
   })
 })

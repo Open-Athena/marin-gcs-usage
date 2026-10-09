@@ -23,29 +23,50 @@ export interface FilterCover {
   unchecked: number
 }
 
-/** The cover of `q`'s matches under `path` on `date` (null while not wanted). */
-export function useFilterCover(
+/** A failed `/api/filter-cover` (its HTTP status: a 5xx is worth one retry, a 4xx never). */
+export class CoverError extends Error {
+  constructor(message: string, readonly status: number) { super(message) }
+}
+
+/** One retry, on a 5xx (the cold cover's D1 stall or isolate limit: gcs 10-09 `nemotron`, a 503 at 46 s). */
+export const coverRetry = (failures: number, e: Error): boolean => failures < 1 && e instanceof CoverError && e.status >= 500
+
+/** Which (scan, path, query) the viewer asked to act on: the cover is fetched only for that one — it costs
+ *  seconds to tens of seconds cold (gcs 10-09 `nemotron`: 22–44 s), and most filtered page loads never act. */
+export const coverWant = (o: { date: string | null; path: string; q: string | undefined; qs?: string }): string => JSON.stringify([o.date, o.path, o.q ?? '', o.qs ?? ''])
+
+/** The cover query's options (`useFilterCover`): disabled until wanted (`enabled`), one retry on a 5xx. */
+export function coverQuery(
   fetcher: (url: string, init?: RequestInit) => Promise<Response>,
   storeKey: string,
   o: { date: string | null; path: string; q: string | undefined; qs?: string; enabled: boolean },
 ) {
-  return useQuery<FilterCover>({
+  return {
     queryKey: ['filter-cover', storeKey, o.date, o.path, o.q, o.qs ?? ''],
     enabled: o.enabled && !!o.date && !!o.q,
     staleTime: Infinity,
-    retry: false,
-    queryFn: async ({ signal }) => {
+    retry: coverRetry,
+    queryFn: async ({ signal }: { signal?: AbortSignal }): Promise<FilterCover> => {
       const qs = new URLSearchParams({ cv: String(COVER_V), date: o.date!, path: o.path, q: o.q!, ...(o.qs ? { qs: o.qs } : {}) })
       const r = await fetcher(`/api/filter-cover?${qs}`, { credentials: 'include', signal })
       const text = await r.text()
       if (!r.ok) {
         let msg = text
         try { msg = (JSON.parse(text) as { error?: string }).error ?? text } catch { /* plain text */ }
-        throw new Error(msg)
+        throw new CoverError(msg, r.status)
       }
       return JSON.parse(text) as FilterCover
     },
-  })
+  }
+}
+
+/** The cover of `q`'s matches under `path` on `date` (null while not wanted). */
+export function useFilterCover(
+  fetcher: (url: string, init?: RequestInit) => Promise<Response>,
+  storeKey: string,
+  o: { date: string | null; path: string; q: string | undefined; qs?: string; enabled: boolean },
+) {
+  return useQuery<FilterCover>(coverQuery(fetcher, storeKey, o))
 }
 
 const under = (p: string, a: string) => p === a || p.startsWith(a + '/')

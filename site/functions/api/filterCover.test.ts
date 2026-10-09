@@ -3,6 +3,7 @@ import type { Env } from '../_lib/auth'
 import { sqliteD1 } from '../_lib/testD1'
 import { type D1Variant, FILES, fixture, readJson, seedGeneration } from '../_lib/testStore'
 import { SEARCH_FILES, searchKey } from '../_lib/search'
+import { overCapReason } from '../_lib/cover'
 import { onRequestGet as filterCover } from './filter-cover'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('../_lib/testStore')).S3Store }))
@@ -66,5 +67,31 @@ describe('/api/filter-cover', () => {
     expect(await cover(`date=${A}&path=&q=ttl -misc`)).toEqual([400, { error: 'A filter with exclusions can’t be turned into whole folders or files to act on; drop the exclusion to act on the matches.', code: 'cover-exclusions' }])
     expect(await cover(`date=${A}&path=`)).toEqual([400, { error: 'q= (a filter) is required' }])
     expect(await cover(`date=2026-10-02&path=&q=ttl`)).toEqual([404, { error: 'no scan matches date=2026-10-02' }])
+  })
+
+  // Over the cap by its lower bound (`coverFloor`): the over-cap answer, without the cover's walk. `ttl`'s six
+  // roots sit in `bk/fill` (2), `bk/iris` (1), `bk/tmp` (2) and `zz/Checkpoints` (1, which collapses).
+  const ROOTS = { n: 6, b: 7000 + 5000 + 500 + 5242880 + 2097152 + 10, o: 8 }
+  /** The answer, and the phases its `Server-Timing` names (`floor`: the bound's lookups; `cover`: the walk). */
+  const phased = async (qs: string, env: { COVER_ITEMS_MAX?: string } = {}) => {
+    const r = await filterCover({ request: new Request(`http://localhost/api/filter-cover?${qs}`), env: { ...base, ...env } as Env })
+    const phases = (r.headers.get('server-timing') ?? '').split(', ').map(p => p.split(';')[0])
+    return [r.status, await r.json(), phases.filter(p => p === 'floor' || p === 'cover')]
+  }
+  it('over the cap before any lookup: four floor folders > 3 — no lookup (`looked: 0`), no walk', async () => {
+    expect(await phased(`date=${A}&path=&q=ttl`, { COVER_ITEMS_MAX: '3' })).toEqual([200, {
+      date: A, path: '', q: 'ttl', items: [], roots: ROOTS, complete: false,
+      reason: overCapReason(4, true), looked: 0, unchecked: 0,
+    }, ['floor']])
+  })
+  it('over the cap after one lookup of the four floor folders: exactly six items > 5, no walk', async () => {
+    expect(await phased(`date=${A}&path=&q=ttl`, { COVER_ITEMS_MAX: '5' })).toEqual([200, {
+      date: A, path: '', q: 'ttl', items: [], roots: ROOTS, complete: false,
+      reason: overCapReason(6), looked: 4, unchecked: 0,
+    }, ['floor']])
+  })
+  it('at the cap by roots: no bound, the cover as usual', async () => {
+    const [status, body, phases] = await phased(`date=${A}&path=&q=ttl`, { COVER_ITEMS_MAX: '6' })
+    expect([status, (body as { complete: boolean }).complete, (body as { items: unknown[] }).items.length, phases]).toEqual([200, true, 6, ['cover']])
   })
 })
