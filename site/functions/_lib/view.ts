@@ -1535,6 +1535,8 @@ export interface Diff {
   lookups: number
   /** The lookup budget ran out: some one-sided names may really be folded. */
   lookups_capped: boolean
+  /** …by time (`FILTER_WALK_MS`): a retry may get further, so the answer is served but not cached. */
+  lookups_late?: true
   /** With `q=`: the union of both scans' match roots (capped like a view's, `matchLists`). */
   matched?: { path: string; b: number; o: number }[]
   matchCount?: { n: number; b: number; o: number }
@@ -1631,7 +1633,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   }
   const walkStart = performance.now()
   // A filtered diff's lookups stop after `FILTER_WALK_MS` as they do past `LOOKUP_CAP` (`lookups_capped`).
-  const walkOver = () => !!query && performance.now() - walkStart > FILTER_WALK_MS
+  let late = false
+  const walkOver = () => (late ||= !!query && performance.now() - walkStart > FILTER_WALK_MS)
   const matchedUnion = query ? [...new Map([...(va?.matched ?? []), ...(vb?.matched ?? [])].map(m => [m.path, m])).values()].sort((x, y) => x.path < y.path ? -1 : 1) : undefined
   const totals = {
     total_a: Math.round(va?.rootAgg.b ?? 0),
@@ -1845,6 +1848,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     truncated: frontier.length > o.top,
     lookups,
     lookups_capped: capped,
+    ...(late ? { lookups_late: true as const } : {}),
   }
 }
 
