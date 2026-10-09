@@ -1,9 +1,12 @@
 outs:
-- path: members.json
+- md5: 5bbed246a8b95487ec3151bad4a625aa
+  size: 654
+  hash: md5
+  path: members.json
 meta:
   computation:
     cmd: dt-cloud static-names catalog members -g 2026-10-08c -V 100000 > members.json
     deps:
-      census.json: ''
+      census.json: 782f5cc26ed98ddc183c2380ec99a2f1
     git_deps:
-      ../../cloud/src/dt_cloud/static_catalog.py: ''
+      ../../cloud/src/dt_cloud/static_catalog.py: 50eded69739f0ee0d1905b7793950791c0b8886d
