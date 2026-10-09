@@ -1,0 +1,1657 @@
+{
+ "gen": "2026-10-08c",
+ "drill/short": [
+  {
+   "key": "drill/short/rollups-index/g000.parquet",
+   "size": 6150,
+   "md5": "7b69125911a27b5077feac8eb1f86c4f",
+   "crc32c": "+wsI3w==",
+   "generation": 1791529066838688
+  },
+  {
+   "key": "drill/short/rollups-index/g001.parquet",
+   "size": 5699,
+   "md5": "f3693678f79cfebd7dcfa0fc8e88f936",
+   "crc32c": "1dcl/A==",
+   "generation": 1791529723769334
+  },
+  {
+   "key": "drill/short/rollups-index/g002.parquet",
+   "size": 4882,
+   "md5": "a123fe93de2bb6c813f48a092e20d13f",
+   "crc32c": "mV9/Gw==",
+   "generation": 1791529185212854
+  },
+  {
+   "key": "drill/short/rollups-index/g003.parquet",
+   "size": 5349,
+   "md5": "707c2eabc43d3a2108869ec65ba55168",
+   "crc32c": "phhKtA==",
+   "generation": 1791529320982943
+  },
+  {
+   "key": "drill/short/rollups-index/g004.parquet",
+   "size": 5153,
+   "md5": "655d181ad776198048efec711d8db7df",
+   "crc32c": "NuznIQ==",
+   "generation": 1791529012750212
+  },
+  {
+   "key": "drill/short/rollups-index/g005.parquet",
+   "size": 5526,
+   "md5": "c5b0cad2de82c227cdfad118cabe0054",
+   "crc32c": "/Y/NvA==",
+   "generation": 1791529294289465
+  },
+  {
+   "key": "drill/short/rollups-index/g006.parquet",
+   "size": 6534,
+   "md5": "ecb74012938389e4ba04ff45c2b56358",
+   "crc32c": "CSG7bA==",
+   "generation": 1791529133303806
+  },
+  {
+   "key": "drill/short/rollups-index/g007.parquet",
+   "size": 5945,
+   "md5": "33a2a45f4b3df767244bd0f00d4b03a2",
+   "crc32c": "M3S13A==",
+   "generation": 1791529791181919
+  },
+  {
+   "key": "drill/short/rollups-index/g008.parquet",
+   "size": 6451,
+   "md5": "91548bb6308e8d9fcba027759a2dac4b",
+   "crc32c": "jPlZ8w==",
+   "generation": 1791529183699597
+  },
+  {
+   "key": "drill/short/rollups-index/g009.parquet",
+   "size": 6450,
+   "md5": "a4837ad12a05bd2f77af8f551825d2fe",
+   "crc32c": "Z734Qg==",
+   "generation": 1791529189017087
+  },
+  {
+   "key": "drill/short/rollups-index/g010.parquet",
+   "size": 5669,
+   "md5": "d04e01c436098a302c3bbf8ed79f2d38",
+   "crc32c": "opo6gw==",
+   "generation": 1791529200721820
+  },
+  {
+   "key": "drill/short/rollups-index/g011.parquet",
+   "size": 6393,
+   "md5": "215d38f84c9bc74662917e958a9833c0",
+   "crc32c": "g3FPLw==",
+   "generation": 1791529205595440
+  },
+  {
+   "key": "drill/short/rollups-index/g012.parquet",
+   "size": 5685,
+   "md5": "25fafb4edaf74fa345b1426b43267845",
+   "crc32c": "IAhg6w==",
+   "generation": 1791529209376951
+  },
+  {
+   "key": "drill/short/rollups-index/g013.parquet",
+   "size": 5299,
+   "md5": "1f7d5189d1e78cb1dbaf167413b382a6",
+   "crc32c": "DfC6yQ==",
+   "generation": 1791529030863698
+  },
+  {
+   "key": "drill/short/rollups-index/g014.parquet",
+   "size": 6194,
+   "md5": "3f514248dedb9db8656e14adb18b13d7",
+   "crc32c": "oBhcAA==",
+   "generation": 1791529264073657
+  },
+  {
+   "key": "drill/short/rollups-index/g015.parquet",
+   "size": 6037,
+   "md5": "159b1b970aeb36213c86fe9cd9cb2944",
+   "crc32c": "UZTygA==",
+   "generation": 1791529229985376
+  },
+  {
+   "key": "drill/short/rollups-index/g016.parquet",
+   "size": 5368,
+   "md5": "cd5e23c14606c3e0458fc04af6168b50",
+   "crc32c": "nKeTfA==",
+   "generation": 1791528974357533
+  },
+  {
+   "key": "drill/short/rollups-index/g017.parquet",
+   "size": 5889,
+   "md5": "59fe53c05bd7cd44df8ca9ec8a80c7b9",
+   "crc32c": "DYua+g==",
+   "generation": 1791529363565887
+  },
+  {
+   "key": "drill/short/rollups-index/g018.parquet",
+   "size": 5925,
+   "md5": "d819dacb187495922cfb542a32b41b84",
+   "crc32c": "12b6AA==",
+   "generation": 1791529803614925
+  },
+  {
+   "key": "drill/short/rollups-index/g019.parquet",
+   "size": 6227,
+   "md5": "62fbe4df8264289b99466955bfca818a",
+   "crc32c": "4zVF9w==",
+   "generation": 1791529173307670
+  },
+  {
+   "key": "drill/short/rollups-index/g020.parquet",
+   "size": 5575,
+   "md5": "c01ad90db5be554a4903a4f2ee1bf6a2",
+   "crc32c": "Hf296w==",
+   "generation": 1791529164126117
+  },
+  {
+   "key": "drill/short/rollups-index/g021.parquet",
+   "size": 5238,
+   "md5": "8bac21f936aaeb4f2a66f1cc267c03f1",
+   "crc32c": "2yIq7Q==",
+   "generation": 1791529187010784
+  },
+  {
+   "key": "drill/short/rollups-index/g022.parquet",
+   "size": 4576,
+   "md5": "83e5427a170fb2b06b9de9b45575d861",
+   "crc32c": "eCZ1XQ==",
+   "generation": 1791529823771516
+  },
+  {
+   "key": "drill/short/rollups-index/g023.parquet",
+   "size": 5183,
+   "md5": "30ab1881edb2dd65f888fd2f4daaadf6",
+   "crc32c": "Ltbk2w==",
+   "generation": 1791529636374122
+  },
+  {
+   "key": "drill/short/rollups-index/g024.parquet",
+   "size": 4719,
+   "md5": "e0c72eedb8133d7c81d99e06474e66a4",
+   "crc32c": "1RNHqQ==",
+   "generation": 1791529246855350
+  },
+  {
+   "key": "drill/short/rollups-index/g025.parquet",
+   "size": 5039,
+   "md5": "192eb24b30820713a9e60fad1d4119ff",
+   "crc32c": "hl5SoA==",
+   "generation": 1791529265948637
+  },
+  {
+   "key": "drill/short/rollups-index/g026.parquet",
+   "size": 4300,
+   "md5": "40c85e3e02642d341af2e8adab39eef5",
+   "crc32c": "KhEMpQ==",
+   "generation": 1791529103589972
+  },
+  {
+   "key": "drill/short/rollups-index/g027.parquet",
+   "size": 5780,
+   "md5": "10a3a907ea9cfd61f46b8b1376bf9be2",
+   "crc32c": "YWTbWQ==",
+   "generation": 1791529237302990
+  },
+  {
+   "key": "drill/short/rollups-index/g028.parquet",
+   "size": 5682,
+   "md5": "bb7dbc72f0f30501784883a7107a2c24",
+   "crc32c": "t8Flsg==",
+   "generation": 1791529205159812
+  },
+  {
+   "key": "drill/short/rollups-index/g029.parquet",
+   "size": 6027,
+   "md5": "6b375bcecc0f9296803fe844485d4e89",
+   "crc32c": "aWQ4JQ==",
+   "generation": 1791529004686261
+  },
+  {
+   "key": "drill/short/rollups-index/g030.parquet",
+   "size": 4850,
+   "md5": "df66aa87afcf398d7b2783e6a2f4b9c9",
+   "crc32c": "IUCJJQ==",
+   "generation": 1791529296919856
+  },
+  {
+   "key": "drill/short/rollups-index/g031.parquet",
+   "size": 4748,
+   "md5": "ab9b0638229ab690da280a7a356612a1",
+   "crc32c": "FCS2+w==",
+   "generation": 1791529243224608
+  },
+  {
+   "key": "drill/short/rollups-index/g032.parquet",
+   "size": 5504,
+   "md5": "0542bf1cc0a91d76f36311139a80fe53",
+   "crc32c": "1XZ2xw==",
+   "generation": 1791529256887595
+  },
+  {
+   "key": "drill/short/rollups-index/g033.parquet",
+   "size": 5788,
+   "md5": "6095449c7135c3ef46e3add3272b5f01",
+   "crc32c": "bGtiuQ==",
+   "generation": 1791529876599146
+  },
+  {
+   "key": "drill/short/rollups-index/g034.parquet",
+   "size": 5549,
+   "md5": "0d4adbb30d2e2469f69d396f88da7a54",
+   "crc32c": "fKwLJg==",
+   "generation": 1791529140451802
+  },
+  {
+   "key": "drill/short/rollups-index/g035.parquet",
+   "size": 5489,
+   "md5": "5bedcbac7e90cdbf6fd5b5311e99896a",
+   "crc32c": "1p29jQ==",
+   "generation": 1791529817264063
+  },
+  {
+   "key": "drill/short/rollups-index/g036.parquet",
+   "size": 5440,
+   "md5": "1b6d52fb03ae6e07377ab625a97914da",
+   "crc32c": "x+MtgA==",
+   "generation": 1791529254625741
+  },
+  {
+   "key": "drill/short/rollups-index/g037.parquet",
+   "size": 5083,
+   "md5": "e1cd8c4773a94e5b9a5e6b01fb52ed97",
+   "crc32c": "8v4imQ==",
+   "generation": 1791529174549205
+  },
+  {
+   "key": "drill/short/rollups-index/g038.parquet",
+   "size": 4318,
+   "md5": "be4b705ff23528c5f1f7654a534e480e",
+   "crc32c": "7nx0Yg==",
+   "generation": 1791529685043776
+  },
+  {
+   "key": "drill/short/rollups-index/g039.parquet",
+   "size": 4654,
+   "md5": "032a54a3cfcd2089e457de8e328d3856",
+   "crc32c": "80nUXA==",
+   "generation": 1791529697752000
+  },
+  {
+   "key": "drill/short/rollups-index/g040.parquet",
+   "size": 5695,
+   "md5": "8ef7e32a0f6dda6407f95064ac46ba12",
+   "crc32c": "qKu8Qw==",
+   "generation": 1791529895884028
+  },
+  {
+   "key": "drill/short/rollups-index/g041.parquet",
+   "size": 3547,
+   "md5": "89d5d16ab3164d6042cc06e893d9bf3b",
+   "crc32c": "E30wyg==",
+   "generation": 1791529352600991
+  },
+  {
+   "key": "drill/short/rollups-index/g042.parquet",
+   "size": 5781,
+   "md5": "a76574ab5944c66691fed7bf3e445b87",
+   "crc32c": "n7IbAQ==",
+   "generation": 1791529900311752
+  },
+  {
+   "key": "drill/short/rollups-index/g043.parquet",
+   "size": 5288,
+   "md5": "9242e3d00763dd27a5077f298d20ff36",
+   "crc32c": "JDDffg==",
+   "generation": 1791529556412938
+  },
+  {
+   "key": "drill/short/rollups-index/g044.parquet",
+   "size": 5766,
+   "md5": "e5d7932921d9ae84e4e51e7bb917dfbd",
+   "crc32c": "xJfJlw==",
+   "generation": 1791529739678443
+  },
+  {
+   "key": "drill/short/rollups-index/g045.parquet",
+   "size": 5315,
+   "md5": "9ddbf5b616727c4b25c3cb162ebb3aa9",
+   "crc32c": "mwR+dQ==",
+   "generation": 1791529717286884
+  },
+  {
+   "key": "drill/short/rollups-index/g046.parquet",
+   "size": 4852,
+   "md5": "e09561424766e6899282ae503e57f710",
+   "crc32c": "V+0qdA==",
+   "generation": 1791529585792498
+  },
+  {
+   "key": "drill/short/rollups-index/g047.parquet",
+   "size": 4998,
+   "md5": "cf5e9374190fb15ca4fc1e018b99b896",
+   "crc32c": "oFYR7g==",
+   "generation": 1791529553640111
+  },
+  {
+   "key": "drill/short/rollups-index/g048.parquet",
+   "size": 4084,
+   "md5": "239c208c3d4166c581b3e035d9a033ac",
+   "crc32c": "j0TAbA==",
+   "generation": 1791529887016083
+  },
+  {
+   "key": "drill/short/rollups-index/g049.parquet",
+   "size": 4755,
+   "md5": "c532409d6de4e3b550c92a03c3e6c1bd",
+   "crc32c": "Ze/pFA==",
+   "generation": 1791529223625138
+  },
+  {
+   "key": "drill/short/rollups-index/g050.parquet",
+   "size": 5228,
+   "md5": "fc280aefba707d7c6e2a74db0063829e",
+   "crc32c": "qwxMPQ==",
+   "generation": 1791529894768587
+  },
+  {
+   "key": "drill/short/rollups-index/g051.parquet",
+   "size": 4377,
+   "md5": "3dea6e48cdaf09a632a50735d6c199e9",
+   "crc32c": "o4Yzgw==",
+   "generation": 1791529617760658
+  },
+  {
+   "key": "drill/short/rollups-index/g052.parquet",
+   "size": 6058,
+   "md5": "e891efdd1746422cc75426bcf9a9fbff",
+   "crc32c": "BLQYdw==",
+   "generation": 1791529738103762
+  },
+  {
+   "key": "drill/short/rollups-index/g053.parquet",
+   "size": 4863,
+   "md5": "44d2d4c46b4e8fb91525506cdbd965f7",
+   "crc32c": "ahDLNA==",
+   "generation": 1791529825818324
+  },
+  {
+   "key": "drill/short/rollups-index/g054.parquet",
+   "size": 4965,
+   "md5": "6f5180c3d1ff6dd2b9829436272e7c83",
+   "crc32c": "nwr9dA==",
+   "generation": 1791529775535017
+  },
+  {
+   "key": "drill/short/rollups-index/g055.parquet",
+   "size": 3779,
+   "md5": "ef87ab863a130355472e3663a9ade363",
+   "crc32c": "K0ahvg==",
+   "generation": 1791529981651191
+  },
+  {
+   "key": "drill/short/rollups-index/g056.parquet",
+   "size": 4782,
+   "md5": "9dd515a3b2cf8cb00b119f1b2cfa09d8",
+   "crc32c": "tHTuwA==",
+   "generation": 1791529329445897
+  },
+  {
+   "key": "drill/short/rollups-index/g057.parquet",
+   "size": 5668,
+   "md5": "0849cfe5bc472840a692f0396fc50627",
+   "crc32c": "TqMzMg==",
+   "generation": 1791529781862158
+  },
+  {
+   "key": "drill/short/rollups-index/g058.parquet",
+   "size": 4475,
+   "md5": "729001140a916a1d8107cf858edb9cbc",
+   "crc32c": "56PUBg==",
+   "generation": 1791529463774237
+  },
+  {
+   "key": "drill/short/rollups/g000.parquet",
+   "size": 1466971,
+   "md5": "202a82973dba4c86796cefcd5a75dfac",
+   "crc32c": "P+O1Cg==",
+   "generation": 1791529066608673
+  },
+  {
+   "key": "drill/short/rollups/g001.parquet",
+   "size": 865942,
+   "md5": "e0dd0d11cc6ba1740662db0c3c5fa895",
+   "crc32c": "bfbPbg==",
+   "generation": 1791529723579074
+  },
+  {
+   "key": "drill/short/rollups/g002.parquet",
+   "size": 620442,
+   "md5": "bdfea709f533a8509e9d3d4a504d6cdf",
+   "crc32c": "KJrBHg==",
+   "generation": 1791529185039790
+  },
+  {
+   "key": "drill/short/rollups/g003.parquet",
+   "size": 601185,
+   "md5": "28eefcc4364a104dca483eaebafb06a0",
+   "crc32c": "k1sI7Q==",
+   "generation": 1791529320807535
+  },
+  {
+   "key": "drill/short/rollups/g004.parquet",
+   "size": 378587,
+   "md5": "c1d5e5fea3e0f0fc50590e21cc25c004",
+   "crc32c": "yZO4gQ==",
+   "generation": 1791529012578720
+  },
+  {
+   "key": "drill/short/rollups/g005.parquet",
+   "size": 821115,
+   "md5": "ae3d73fc0a694ad231afa4d2fb338c81",
+   "crc32c": "0VBviQ==",
+   "generation": 1791529294124225
+  },
+  {
+   "key": "drill/short/rollups/g006.parquet",
+   "size": 1619152,
+   "md5": "f2ac59f97f92d8bd789c717b94cce422",
+   "crc32c": "ZnzKZQ==",
+   "generation": 1791529133135408
+  },
+  {
+   "key": "drill/short/rollups/g007.parquet",
+   "size": 1572022,
+   "md5": "6b0ba8b6c99f04f2bf3efa57fe78b429",
+   "crc32c": "7X42PA==",
+   "generation": 1791529791015363
+  },
+  {
+   "key": "drill/short/rollups/g008.parquet",
+   "size": 1638801,
+   "md5": "10a51a0c38117ad9a22e8b468886ba55",
+   "crc32c": "UoAcCw==",
+   "generation": 1791529183527073
+  },
+  {
+   "key": "drill/short/rollups/g009.parquet",
+   "size": 1615233,
+   "md5": "8e1cba45689a5238643b614cb4a7fda2",
+   "crc32c": "KZOTAA==",
+   "generation": 1791529188836402
+  },
+  {
+   "key": "drill/short/rollups/g010.parquet",
+   "size": 1346152,
+   "md5": "af8a5e8c3405063364248a245a3b2828",
+   "crc32c": "H6GpIA==",
+   "generation": 1791529200560419
+  },
+  {
+   "key": "drill/short/rollups/g011.parquet",
+   "size": 1697185,
+   "md5": "89cb0b9536ed7876d772546c19b42025",
+   "crc32c": "miZdjw==",
+   "generation": 1791529205436727
+  },
+  {
+   "key": "drill/short/rollups/g012.parquet",
+   "size": 1297446,
+   "md5": "fea44fa91fc79a7836d735fa60b5cfbb",
+   "crc32c": "oSpDQA==",
+   "generation": 1791529209216063
+  },
+  {
+   "key": "drill/short/rollups/g013.parquet",
+   "size": 1100442,
+   "md5": "e1a439e6cd8dd9cb0aa2ebcfb8d1ac60",
+   "crc32c": "qBQdFw==",
+   "generation": 1791529030692838
+  },
+  {
+   "key": "drill/short/rollups/g014.parquet",
+   "size": 1621021,
+   "md5": "2cb3561782d043b5a5229a6a2eb20d2c",
+   "crc32c": "UopDBA==",
+   "generation": 1791529263922604
+  },
+  {
+   "key": "drill/short/rollups/g015.parquet",
+   "size": 1605885,
+   "md5": "5801b4dd9591f4e210e891bef5215b9e",
+   "crc32c": "sfu2Pw==",
+   "generation": 1791529229797498
+  },
+  {
+   "key": "drill/short/rollups/g016.parquet",
+   "size": 1020859,
+   "md5": "6141709999f61396f4939930e15e36dd",
+   "crc32c": "7Km/xg==",
+   "generation": 1791528974219599
+  },
+  {
+   "key": "drill/short/rollups/g017.parquet",
+   "size": 1360232,
+   "md5": "30f07f4661866c9586c7821c89eae5ef",
+   "crc32c": "gmP3fg==",
+   "generation": 1791529363343620
+  },
+  {
+   "key": "drill/short/rollups/g018.parquet",
+   "size": 1410780,
+   "md5": "7c4136f84db4865405df137310d1e46a",
+   "crc32c": "NIQymw==",
+   "generation": 1791529803410487
+  },
+  {
+   "key": "drill/short/rollups/g019.parquet",
+   "size": 1547720,
+   "md5": "c34a5eebc2aba62af7e4225599164442",
+   "crc32c": "iPDRJw==",
+   "generation": 1791529173141872
+  },
+  {
+   "key": "drill/short/rollups/g020.parquet",
+   "size": 1225639,
+   "md5": "b523f27c86d322fe8bf4c5a5006a03a2",
+   "crc32c": "yjMf1w==",
+   "generation": 1791529163955942
+  },
+  {
+   "key": "drill/short/rollups/g021.parquet",
+   "size": 1116034,
+   "md5": "76340bb882b2bab3ec4c9c00c4f2f334",
+   "crc32c": "3ci9tQ==",
+   "generation": 1791529186843309
+  },
+  {
+   "key": "drill/short/rollups/g022.parquet",
+   "size": 587462,
+   "md5": "bf2f2e8e9e999658094a81a083e17923",
+   "crc32c": "EzEl1w==",
+   "generation": 1791529823610062
+  },
+  {
+   "key": "drill/short/rollups/g023.parquet",
+   "size": 757000,
+   "md5": "6ec2ec1ccbaa0355c5ee4e28f2581163",
+   "crc32c": "sB1egA==",
+   "generation": 1791529636214296
+  },
+  {
+   "key": "drill/short/rollups/g024.parquet",
+   "size": 1006939,
+   "md5": "bf378b1812915bf6ee63d2544cade7a1",
+   "crc32c": "Tbw0eA==",
+   "generation": 1791529246657688
+  },
+  {
+   "key": "drill/short/rollups/g025.parquet",
+   "size": 1004977,
+   "md5": "c48db20de33e585676841d313a53ab24",
+   "crc32c": "LBhkCQ==",
+   "generation": 1791529265760546
+  },
+  {
+   "key": "drill/short/rollups/g026.parquet",
+   "size": 757954,
+   "md5": "1cf573d9824a7b4a735064f293735da0",
+   "crc32c": "XCHcAw==",
+   "generation": 1791529103422859
+  },
+  {
+   "key": "drill/short/rollups/g027.parquet",
+   "size": 1051074,
+   "md5": "74316d452ae0cecb59d7656ad0a01ef1",
+   "crc32c": "HAyZGA==",
+   "generation": 1791529237110881
+  },
+  {
+   "key": "drill/short/rollups/g028.parquet",
+   "size": 1391915,
+   "md5": "c4507ae8e63eb1c683e9e57d8c04756c",
+   "crc32c": "4pcQuw==",
+   "generation": 1791529204969385
+  },
+  {
+   "key": "drill/short/rollups/g029.parquet",
+   "size": 1301596,
+   "md5": "bcc58689b7713aaa50848c48334bd9fe",
+   "crc32c": "X4UiEQ==",
+   "generation": 1791529004495307
+  },
+  {
+   "key": "drill/short/rollups/g030.parquet",
+   "size": 517078,
+   "md5": "3e25a5a15a6230da06168f5d4d751362",
+   "crc32c": "7gHYtg==",
+   "generation": 1791529296761445
+  },
+  {
+   "key": "drill/short/rollups/g031.parquet",
+   "size": 760483,
+   "md5": "998350094b397e69aea0fb80b1ca8e61",
+   "crc32c": "1kz3Dw==",
+   "generation": 1791529243040169
+  },
+  {
+   "key": "drill/short/rollups/g032.parquet",
+   "size": 1117706,
+   "md5": "4c18d865afbb46ffb678e74bde06c965",
+   "crc32c": "CsTwsA==",
+   "generation": 1791529256700284
+  },
+  {
+   "key": "drill/short/rollups/g033.parquet",
+   "size": 903406,
+   "md5": "93dc4a704d1aa1b3978c1552e31a8ab8",
+   "crc32c": "5fiyIQ==",
+   "generation": 1791529876394905
+  },
+  {
+   "key": "drill/short/rollups/g034.parquet",
+   "size": 1048953,
+   "md5": "34a0a68f75fc67aa9991a191a866c0f7",
+   "crc32c": "rgX69Q==",
+   "generation": 1791529140264153
+  },
+  {
+   "key": "drill/short/rollups/g035.parquet",
+   "size": 680822,
+   "md5": "03a46c33467fd3d903e65be8bda40ffd",
+   "crc32c": "/Ou0+A==",
+   "generation": 1791529817096896
+  },
+  {
+   "key": "drill/short/rollups/g036.parquet",
+   "size": 612387,
+   "md5": "2aa306bbbbbcbb4f53dcc38be333ecb0",
+   "crc32c": "jTP27w==",
+   "generation": 1791529254471444
+  },
+  {
+   "key": "drill/short/rollups/g037.parquet",
+   "size": 924331,
+   "md5": "4dee6a4281816a2d529e21e08e4755f2",
+   "crc32c": "L6ttZQ==",
+   "generation": 1791529174355627
+  },
+  {
+   "key": "drill/short/rollups/g038.parquet",
+   "size": 465980,
+   "md5": "93550a1038a6bbaf377e7d4dd693566e",
+   "crc32c": "eXBC1A==",
+   "generation": 1791529684829269
+  },
+  {
+   "key": "drill/short/rollups/g039.parquet",
+   "size": 531400,
+   "md5": "b1a4415e288317e855fdfd934208e2a6",
+   "crc32c": "P+jqcQ==",
+   "generation": 1791529697587075
+  },
+  {
+   "key": "drill/short/rollups/g040.parquet",
+   "size": 998756,
+   "md5": "9a104812baac017d5dd762fb648b876f",
+   "crc32c": "Z8KYWg==",
+   "generation": 1791529895704435
+  },
+  {
+   "key": "drill/short/rollups/g041.parquet",
+   "size": 243980,
+   "md5": "05decfd0c3f4dee712326b3c6aceae46",
+   "crc32c": "CF/oog==",
+   "generation": 1791529352470436
+  },
+  {
+   "key": "drill/short/rollups/g042.parquet",
+   "size": 729197,
+   "md5": "a9aef5e68d8115ef14d842c7a7f88143",
+   "crc32c": "8FC5aw==",
+   "generation": 1791529900135409
+  },
+  {
+   "key": "drill/short/rollups/g043.parquet",
+   "size": 720212,
+   "md5": "65647d49d47186c77cc5bef2287b0d1d",
+   "crc32c": "1XSDqg==",
+   "generation": 1791529556202712
+  },
+  {
+   "key": "drill/short/rollups/g044.parquet",
+   "size": 761292,
+   "md5": "e18f2caebc02b669f64ab77f80cb17b6",
+   "crc32c": "7gUz5g==",
+   "generation": 1791529739487347
+  },
+  {
+   "key": "drill/short/rollups/g045.parquet",
+   "size": 572193,
+   "md5": "56a531de6423d727ec40270af1527f00",
+   "crc32c": "K2xkyQ==",
+   "generation": 1791529717113012
+  },
+  {
+   "key": "drill/short/rollups/g046.parquet",
+   "size": 475240,
+   "md5": "ae622e7e39f81b489e07be95cd5349c9",
+   "crc32c": "anP5vQ==",
+   "generation": 1791529585606147
+  },
+  {
+   "key": "drill/short/rollups/g047.parquet",
+   "size": 514684,
+   "md5": "8eee9c18a56dd7a5921fde52d7ba1f0c",
+   "crc32c": "+GbUdg==",
+   "generation": 1791529553446805
+  },
+  {
+   "key": "drill/short/rollups/g048.parquet",
+   "size": 328812,
+   "md5": "1ba29260165f650de56d61a7113aaa09",
+   "crc32c": "LEwECg==",
+   "generation": 1791529886830154
+  },
+  {
+   "key": "drill/short/rollups/g049.parquet",
+   "size": 430623,
+   "md5": "857f6b7f8f357f1d9603c7fd2c9d6bf0",
+   "crc32c": "APFvNA==",
+   "generation": 1791529223467417
+  },
+  {
+   "key": "drill/short/rollups/g050.parquet",
+   "size": 597647,
+   "md5": "45e07c20a7680ea4414c563b7d41777d",
+   "crc32c": "bU02kg==",
+   "generation": 1791529894587619
+  },
+  {
+   "key": "drill/short/rollups/g051.parquet",
+   "size": 388453,
+   "md5": "6bc829cec18dba2717fafb003500db00",
+   "crc32c": "fWFD3w==",
+   "generation": 1791529617574154
+  },
+  {
+   "key": "drill/short/rollups/g052.parquet",
+   "size": 1180719,
+   "md5": "3b38b6f7a63d8ee7a1521a7defe87450",
+   "crc32c": "UKtcRA==",
+   "generation": 1791529737919612
+  },
+  {
+   "key": "drill/short/rollups/g053.parquet",
+   "size": 588317,
+   "md5": "037195257af20af4e7e634e512172a49",
+   "crc32c": "AUTDeQ==",
+   "generation": 1791529825627194
+  },
+  {
+   "key": "drill/short/rollups/g054.parquet",
+   "size": 620098,
+   "md5": "a3b4c155c7efeb410cc7b6a617267e95",
+   "crc32c": "aM09fg==",
+   "generation": 1791529775315036
+  },
+  {
+   "key": "drill/short/rollups/g055.parquet",
+   "size": 311129,
+   "md5": "45cd1e4bf286b0fc9aa3228ca78a11a4",
+   "crc32c": "Hx2kuw==",
+   "generation": 1791529981486529
+  },
+  {
+   "key": "drill/short/rollups/g056.parquet",
+   "size": 241463,
+   "md5": "833fcec9ecdb6021d3f567c94752180e",
+   "crc32c": "DQJUEQ==",
+   "generation": 1791529329336978
+  },
+  {
+   "key": "drill/short/rollups/g057.parquet",
+   "size": 527197,
+   "md5": "3f2d8b0417074739349a1219e4ab2800",
+   "crc32c": "0fYa/Q==",
+   "generation": 1791529781663750
+  },
+  {
+   "key": "drill/short/rollups/g058.parquet",
+   "size": 222364,
+   "md5": "b265ee8b7ae0782d0d2e18084cee54cf",
+   "crc32c": "DWW1vA==",
+   "generation": 1791529463633842
+  },
+  {
+   "key": "drill/short/roots-index/g000.parquet",
+   "size": 3503931,
+   "md5": "142f02255dc52ee0d2bb4458297dd360",
+   "crc32c": "XdEHmQ==",
+   "generation": 1791529066765573
+  },
+  {
+   "key": "drill/short/roots-index/g001.parquet",
+   "size": 3523475,
+   "md5": "82cb8ee5b621fd091f7da56492f06b1e",
+   "crc32c": "hXTrLA==",
+   "generation": 1791529723702048
+  },
+  {
+   "key": "drill/short/roots-index/g002.parquet",
+   "size": 2233244,
+   "md5": "ed12880c55ef12243213ffb8d715fd90",
+   "crc32c": "IJ9QyA==",
+   "generation": 1791529185158525
+  },
+  {
+   "key": "drill/short/roots-index/g003.parquet",
+   "size": 2376970,
+   "md5": "13828be550c75d7ba31cc0139d7fd3ab",
+   "crc32c": "aExq3g==",
+   "generation": 1791529320917377
+  },
+  {
+   "key": "drill/short/roots-index/g004.parquet",
+   "size": 1820434,
+   "md5": "dc30eb3d71d96e6af74ae5d47ceb0d00",
+   "crc32c": "wDHsnw==",
+   "generation": 1791529012674650
+  },
+  {
+   "key": "drill/short/roots-index/g005.parquet",
+   "size": 2491111,
+   "md5": "e3b019566ec571a0ae32f672837fba60",
+   "crc32c": "62Yq+A==",
+   "generation": 1791529294234564
+  },
+  {
+   "key": "drill/short/roots-index/g006.parquet",
+   "size": 3090750,
+   "md5": "cc05788c90ae289018f7e10ca05d4f29",
+   "crc32c": "8fdNig==",
+   "generation": 1791529133242964
+  },
+  {
+   "key": "drill/short/roots-index/g007.parquet",
+   "size": 2869152,
+   "md5": "f70df4a8644009dc0f31153fe930fe68",
+   "crc32c": "6XERzQ==",
+   "generation": 1791529791125664
+  },
+  {
+   "key": "drill/short/roots-index/g008.parquet",
+   "size": 2944041,
+   "md5": "00a50b074723be58841300c3ceb36293",
+   "crc32c": "TsRRYw==",
+   "generation": 1791529183648003
+  },
+  {
+   "key": "drill/short/roots-index/g009.parquet",
+   "size": 3147261,
+   "md5": "0722ef7f4e0a161bfb8c24c2f0d65508",
+   "crc32c": "j97hIA==",
+   "generation": 1791529188958629
+  },
+  {
+   "key": "drill/short/roots-index/g010.parquet",
+   "size": 2987110,
+   "md5": "7e7077d190ff3a93f1b9c64c94f48a75",
+   "crc32c": "yGChQg==",
+   "generation": 1791529200665029
+  },
+  {
+   "key": "drill/short/roots-index/g011.parquet",
+   "size": 3061865,
+   "md5": "d695dfe5a4c894baaf2fee2d0a566468",
+   "crc32c": "W+D1Tg==",
+   "generation": 1791529205546288
+  },
+  {
+   "key": "drill/short/roots-index/g012.parquet",
+   "size": 2897966,
+   "md5": "d93e05927f61e8a9a6c6655c0ac008b6",
+   "crc32c": "XdtjXA==",
+   "generation": 1791529209322981
+  },
+  {
+   "key": "drill/short/roots-index/g013.parquet",
+   "size": 2209506,
+   "md5": "cf2ea23169181a37703343bb8e40dfc2",
+   "crc32c": "SOEnuQ==",
+   "generation": 1791529030800719
+  },
+  {
+   "key": "drill/short/roots-index/g014.parquet",
+   "size": 2964568,
+   "md5": "3f93e6cebd15d148d6b26f48dc1078ee",
+   "crc32c": "UsYS2g==",
+   "generation": 1791529264019131
+  },
+  {
+   "key": "drill/short/roots-index/g015.parquet",
+   "size": 2848600,
+   "md5": "ff47908486242e1ae73ceeb25d088b67",
+   "crc32c": "VeSBlg==",
+   "generation": 1791529229925776
+  },
+  {
+   "key": "drill/short/roots-index/g016.parquet",
+   "size": 1891381,
+   "md5": "2c160736ed685bba10971073d4234977",
+   "crc32c": "1fRGAQ==",
+   "generation": 1791528974298864
+  },
+  {
+   "key": "drill/short/roots-index/g017.parquet",
+   "size": 2822798,
+   "md5": "b7a3d26e968c4917f7ca4356ccafbf49",
+   "crc32c": "1xMu2g==",
+   "generation": 1791529363494712
+  },
+  {
+   "key": "drill/short/roots-index/g018.parquet",
+   "size": 2858613,
+   "md5": "df0d6731c27a3a59cfa39c5b78b39746",
+   "crc32c": "lD9ucg==",
+   "generation": 1791529803551510
+  },
+  {
+   "key": "drill/short/roots-index/g019.parquet",
+   "size": 2922169,
+   "md5": "243d40921e2573912cc6d1e0d86d25bf",
+   "crc32c": "cboixA==",
+   "generation": 1791529173254825
+  },
+  {
+   "key": "drill/short/roots-index/g020.parquet",
+   "size": 2614466,
+   "md5": "ec0a58ef7636bb19df9445f4e6df0430",
+   "crc32c": "PCEKUg==",
+   "generation": 1791529164070322
+  },
+  {
+   "key": "drill/short/roots-index/g021.parquet",
+   "size": 2746846,
+   "md5": "23e61f861405b3358774435a96406bc9",
+   "crc32c": "zPn7cg==",
+   "generation": 1791529186950296
+  },
+  {
+   "key": "drill/short/roots-index/g022.parquet",
+   "size": 2966802,
+   "md5": "669c6dfc1442719ca2930c14a7a223dd",
+   "crc32c": "dWd+GA==",
+   "generation": 1791529823711251
+  },
+  {
+   "key": "drill/short/roots-index/g023.parquet",
+   "size": 2995902,
+   "md5": "1b30f9b5aa75f1384f1830ee64fb4f0e",
+   "crc32c": "bIxVAg==",
+   "generation": 1791529636314690
+  },
+  {
+   "key": "drill/short/roots-index/g024.parquet",
+   "size": 3068475,
+   "md5": "65568a48cdca69d77d7a41e784a0e8ea",
+   "crc32c": "6HIKCA==",
+   "generation": 1791529246791097
+  },
+  {
+   "key": "drill/short/roots-index/g025.parquet",
+   "size": 3176443,
+   "md5": "d76604e1f3c05225c752c33827620234",
+   "crc32c": "Ew7dOA==",
+   "generation": 1791529265886111
+  },
+  {
+   "key": "drill/short/roots-index/g026.parquet",
+   "size": 2374785,
+   "md5": "003531c7c038ed432cc9a9f5273472f7",
+   "crc32c": "E1x0mA==",
+   "generation": 1791529103526012
+  },
+  {
+   "key": "drill/short/roots-index/g027.parquet",
+   "size": 2940229,
+   "md5": "c012caad4dd9331d837dbcc78916794e",
+   "crc32c": "3vgoPg==",
+   "generation": 1791529237237970
+  },
+  {
+   "key": "drill/short/roots-index/g028.parquet",
+   "size": 3351421,
+   "md5": "500816e92d0b4c88a824eea7ee4ab544",
+   "crc32c": "3LFEEg==",
+   "generation": 1791529205100307
+  },
+  {
+   "key": "drill/short/roots-index/g029.parquet",
+   "size": 2682603,
+   "md5": "8c2bf01d999feb3e05bf3cac35ee7f09",
+   "crc32c": "n0B2gw==",
+   "generation": 1791529004616176
+  },
+  {
+   "key": "drill/short/roots-index/g030.parquet",
+   "size": 2428121,
+   "md5": "26e4a08272e312274ffb785b1c2378f5",
+   "crc32c": "ZRl9sA==",
+   "generation": 1791529296862660
+  },
+  {
+   "key": "drill/short/roots-index/g031.parquet",
+   "size": 2701044,
+   "md5": "26625b03c69ff3dd55b8850ba701aedc",
+   "crc32c": "F3vhtw==",
+   "generation": 1791529243171852
+  },
+  {
+   "key": "drill/short/roots-index/g032.parquet",
+   "size": 3124386,
+   "md5": "62dd230cf1cfdc53e83fd1d701f3af6d",
+   "crc32c": "bbdvtQ==",
+   "generation": 1791529256828997
+  },
+  {
+   "key": "drill/short/roots-index/g033.parquet",
+   "size": 2883509,
+   "md5": "e48bcbb8bc56f9d2462859cd09879b32",
+   "crc32c": "7yoUCQ==",
+   "generation": 1791529876518093
+  },
+  {
+   "key": "drill/short/roots-index/g034.parquet",
+   "size": 3646618,
+   "md5": "574c4bb768720f5f72f125f40fcc4924",
+   "crc32c": "DxANHA==",
+   "generation": 1791529140382164
+  },
+  {
+   "key": "drill/short/roots-index/g035.parquet",
+   "size": 2518221,
+   "md5": "034ffbeaf7ff907a5bfd632f52d31a55",
+   "crc32c": "cOPl0Q==",
+   "generation": 1791529817209721
+  },
+  {
+   "key": "drill/short/roots-index/g036.parquet",
+   "size": 2398331,
+   "md5": "502f6001d3408ddac33030a1acb6ee30",
+   "crc32c": "TiHFhw==",
+   "generation": 1791529254565779
+  },
+  {
+   "key": "drill/short/roots-index/g037.parquet",
+   "size": 2930295,
+   "md5": "4ac677256f51f066720467067d0720d8",
+   "crc32c": "wf2A4w==",
+   "generation": 1791529174489056
+  },
+  {
+   "key": "drill/short/roots-index/g038.parquet",
+   "size": 2357723,
+   "md5": "415b476fe91c428bc97a55050bfe6ff0",
+   "crc32c": "7UtoEQ==",
+   "generation": 1791529684968053
+  },
+  {
+   "key": "drill/short/roots-index/g039.parquet",
+   "size": 2992207,
+   "md5": "c0af24ef95cf0d1ee664c1a6a320304f",
+   "crc32c": "UccjTA==",
+   "generation": 1791529697693628
+  },
+  {
+   "key": "drill/short/roots-index/g040.parquet",
+   "size": 2917739,
+   "md5": "d5879f6134f3fb1686f5addb9cc521e8",
+   "crc32c": "AhMyTw==",
+   "generation": 1791529895825138
+  },
+  {
+   "key": "drill/short/roots-index/g041.parquet",
+   "size": 912128,
+   "md5": "667dea102e3286a3123aa45dc55f11a7",
+   "crc32c": "x0WH3Q==",
+   "generation": 1791529352545089
+  },
+  {
+   "key": "drill/short/roots-index/g042.parquet",
+   "size": 2967495,
+   "md5": "109d266803e63dfd1acf199938d07bd1",
+   "crc32c": "HWUcWw==",
+   "generation": 1791529900266135
+  },
+  {
+   "key": "drill/short/roots-index/g043.parquet",
+   "size": 2862712,
+   "md5": "73f39bd37b27cc51af68fc66ae12a40d",
+   "crc32c": "qlE1Dw==",
+   "generation": 1791529556340792
+  },
+  {
+   "key": "drill/short/roots-index/g044.parquet",
+   "size": 2504228,
+   "md5": "97d438cbdcf7b0822dc9c3c03e0c4c38",
+   "crc32c": "F7p4dQ==",
+   "generation": 1791529739614189
+  },
+  {
+   "key": "drill/short/roots-index/g045.parquet",
+   "size": 2349143,
+   "md5": "928397d4538608559cb0486e19d7f86a",
+   "crc32c": "BU5DZg==",
+   "generation": 1791529717223515
+  },
+  {
+   "key": "drill/short/roots-index/g046.parquet",
+   "size": 2210417,
+   "md5": "b8a03115c313d26422200b225524539c",
+   "crc32c": "m2HlEg==",
+   "generation": 1791529585727697
+  },
+  {
+   "key": "drill/short/roots-index/g047.parquet",
+   "size": 2304045,
+   "md5": "09fe09cef3a8d2bc381b81f916888c2d",
+   "crc32c": "yhy6Bw==",
+   "generation": 1791529553583870
+  },
+  {
+   "key": "drill/short/roots-index/g048.parquet",
+   "size": 2281709,
+   "md5": "8a5c5336dd9ec465f07dae58d48039ad",
+   "crc32c": "XCN+4A==",
+   "generation": 1791529886952868
+  },
+  {
+   "key": "drill/short/roots-index/g049.parquet",
+   "size": 1525961,
+   "md5": "aa13490d44a7a3cc4dc4c3a06d1ef086",
+   "crc32c": "M9GZBA==",
+   "generation": 1791529223559573
+  },
+  {
+   "key": "drill/short/roots-index/g050.parquet",
+   "size": 2445228,
+   "md5": "77f5bc2bc616d9eb1facf43a1f0a2713",
+   "crc32c": "2G9OVw==",
+   "generation": 1791529894699916
+  },
+  {
+   "key": "drill/short/roots-index/g051.parquet",
+   "size": 2155179,
+   "md5": "47d330af0aeaa24e9e44e5d522e2e2e1",
+   "crc32c": "zjf2Ug==",
+   "generation": 1791529617696390
+  },
+  {
+   "key": "drill/short/roots-index/g052.parquet",
+   "size": 3081093,
+   "md5": "35566745df337e1f904930c683bf8bfd",
+   "crc32c": "nmQAjw==",
+   "generation": 1791529738030130
+  },
+  {
+   "key": "drill/short/roots-index/g053.parquet",
+   "size": 2622620,
+   "md5": "57349111cc75315569c79775774fd310",
+   "crc32c": "ec2fxQ==",
+   "generation": 1791529825743300
+  },
+  {
+   "key": "drill/short/roots-index/g054.parquet",
+   "size": 2613809,
+   "md5": "ef51010c74231b02886f58e032bf36b9",
+   "crc32c": "xk++xw==",
+   "generation": 1791529775481732
+  },
+  {
+   "key": "drill/short/roots-index/g055.parquet",
+   "size": 2174404,
+   "md5": "1a5350b16676e1c556950a0db3b837bd",
+   "crc32c": "wtKSlg==",
+   "generation": 1791529981593562
+  },
+  {
+   "key": "drill/short/roots-index/g056.parquet",
+   "size": 1114817,
+   "md5": "c2f338edeb00435571d1c0e923211195",
+   "crc32c": "LfXlUA==",
+   "generation": 1791529329391704
+  },
+  {
+   "key": "drill/short/roots-index/g057.parquet",
+   "size": 2383957,
+   "md5": "147891596b0040826e0d58b522bdf14c",
+   "crc32c": "gXltuw==",
+   "generation": 1791529781784490
+  },
+  {
+   "key": "drill/short/roots-index/g058.parquet",
+   "size": 1279717,
+   "md5": "84165855b27319bfec4b3418c8d7b3bf",
+   "crc32c": "1VUiJA==",
+   "generation": 1791529463710945
+  },
+  {
+   "key": "drill/short/roots/g000.parquet",
+   "size": 1824597858,
+   "md5": "fcbe35ab14d46f3282f65c7cfdb9224f",
+   "crc32c": "gNa4Jw==",
+   "generation": 1791529066510123
+  },
+  {
+   "key": "drill/short/roots/g001.parquet",
+   "size": 1536306519,
+   "md5": "4f8dbab81626e93bed4db20c13a9a421",
+   "crc32c": "3owLvQ==",
+   "generation": 1791529723485178
+  },
+  {
+   "key": "drill/short/roots/g002.parquet",
+   "size": 1105858997,
+   "md5": "04e4701213dd783174c3333242ebe81e",
+   "crc32c": "jD8pKw==",
+   "generation": 1791529184970106
+  },
+  {
+   "key": "drill/short/roots/g003.parquet",
+   "size": 1235875029,
+   "md5": "6be7861b0240bd5ab9f2059ecff27cb8",
+   "crc32c": "X8ZBMQ==",
+   "generation": 1791529320714966
+  },
+  {
+   "key": "drill/short/roots/g004.parquet",
+   "size": 748120000,
+   "md5": "a90780b39e4773e31efdbb6af0e5479c",
+   "crc32c": "v3c2kw==",
+   "generation": 1791529012500362
+  },
+  {
+   "key": "drill/short/roots/g005.parquet",
+   "size": 1152576818,
+   "md5": "4e47c4ec7bdf2ac601734d97fdd0a92c",
+   "crc32c": "Ufp6Qg==",
+   "generation": 1791529294046691
+  },
+  {
+   "key": "drill/short/roots/g006.parquet",
+   "size": 1541666884,
+   "md5": "7d81e10e0d7b8a87f86c37b50cc10015",
+   "crc32c": "OcoilA==",
+   "generation": 1791529132942477
+  },
+  {
+   "key": "drill/short/roots/g007.parquet",
+   "size": 1824462338,
+   "md5": "772e820c8434a45074312efac9a1b3e1",
+   "crc32c": "V7nFtg==",
+   "generation": 1791529790902059
+  },
+  {
+   "key": "drill/short/roots/g008.parquet",
+   "size": 1799945412,
+   "md5": "008912e9a86ad68a3198b3f8c439b844",
+   "crc32c": "K1MiMQ==",
+   "generation": 1791529183437261
+  },
+  {
+   "key": "drill/short/roots/g009.parquet",
+   "size": 1538111310,
+   "md5": "0e7e7455065b8f13f0ea8aa6b9f820ae",
+   "crc32c": "9Cjreg==",
+   "generation": 1791529188753632
+  },
+  {
+   "key": "drill/short/roots/g010.parquet",
+   "size": 1822632996,
+   "md5": "feba182c667281daf23ed7b201a73f25",
+   "crc32c": "Vj0Bkw==",
+   "generation": 1791529200484231
+  },
+  {
+   "key": "drill/short/roots/g011.parquet",
+   "size": 1929580250,
+   "md5": "cefac6fff899f60d57473cba966d350f",
+   "crc32c": "vvfIRw==",
+   "generation": 1791529205343317
+  },
+  {
+   "key": "drill/short/roots/g012.parquet",
+   "size": 1692939827,
+   "md5": "0cc3126169902902030576517428a879",
+   "crc32c": "a5pg1Q==",
+   "generation": 1791529209083993
+  },
+  {
+   "key": "drill/short/roots/g013.parquet",
+   "size": 1635217227,
+   "md5": "4f4717babc91804528fc9fba73b83a73",
+   "crc32c": "IoaTnA==",
+   "generation": 1791529030610521
+  },
+  {
+   "key": "drill/short/roots/g014.parquet",
+   "size": 1811660248,
+   "md5": "575b38500484eca1b7f978c4e173a67d",
+   "crc32c": "FwNPYw==",
+   "generation": 1791529263829660
+  },
+  {
+   "key": "drill/short/roots/g015.parquet",
+   "size": 1895038918,
+   "md5": "79d3c2fbdf2169ba9b03cf64f1bbe20a",
+   "crc32c": "uMnCuA==",
+   "generation": 1791529229708244
+  },
+  {
+   "key": "drill/short/roots/g016.parquet",
+   "size": 1309405983,
+   "md5": "47299f9ca52bf10e6c2d8a8be07317c0",
+   "crc32c": "296xbQ==",
+   "generation": 1791528974129581
+  },
+  {
+   "key": "drill/short/roots/g017.parquet",
+   "size": 1756446921,
+   "md5": "abfb4d9258dc6841eed7c21bab920463",
+   "crc32c": "w+kBFg==",
+   "generation": 1791529363251652
+  },
+  {
+   "key": "drill/short/roots/g018.parquet",
+   "size": 1796630945,
+   "md5": "b153f2d477b5ab7d97850dee45cbdef1",
+   "crc32c": "Rq34JA==",
+   "generation": 1791529803319575
+  },
+  {
+   "key": "drill/short/roots/g019.parquet",
+   "size": 2033923639,
+   "md5": "c277846ab2dff5471274b49d24713152",
+   "crc32c": "KV0UbQ==",
+   "generation": 1791529173033440
+  },
+  {
+   "key": "drill/short/roots/g020.parquet",
+   "size": 1660480185,
+   "md5": "566903733e997264cbbab0db5097d606",
+   "crc32c": "CW8fMQ==",
+   "generation": 1791529163883623
+  },
+  {
+   "key": "drill/short/roots/g021.parquet",
+   "size": 1652188864,
+   "md5": "577f27c4ce0592e1820cd448430ca538",
+   "crc32c": "M836AQ==",
+   "generation": 1791529186765662
+  },
+  {
+   "key": "drill/short/roots/g022.parquet",
+   "size": 1105060202,
+   "md5": "ddc3034f88dfb43398b84dfb7a8defc5",
+   "crc32c": "9yjCWQ==",
+   "generation": 1791529823537950
+  },
+  {
+   "key": "drill/short/roots/g023.parquet",
+   "size": 1415850800,
+   "md5": "ee3d87093174d5ebbe2a0ddd91c6f042",
+   "crc32c": "RsI8yw==",
+   "generation": 1791529636119856
+  },
+  {
+   "key": "drill/short/roots/g024.parquet",
+   "size": 2188919299,
+   "md5": "0434bc0b4bf672c90934d5daa6cf4f90",
+   "crc32c": "Ud2+OQ==",
+   "generation": 1791529246569415
+  },
+  {
+   "key": "drill/short/roots/g025.parquet",
+   "size": 2199803956,
+   "md5": "4373e245226b1f946660f0ff4517c0d2",
+   "crc32c": "4F6OEQ==",
+   "generation": 1791529265688010
+  },
+  {
+   "key": "drill/short/roots/g026.parquet",
+   "size": 1720623929,
+   "md5": "db5ff8f644ee38247e96e10f141a11e1",
+   "crc32c": "MmyPSQ==",
+   "generation": 1791529103333406
+  },
+  {
+   "key": "drill/short/roots/g027.parquet",
+   "size": 1286811310,
+   "md5": "dd21ba6d9483f8ca008eccae938d26e6",
+   "crc32c": "8jEAjw==",
+   "generation": 1791529237016446
+  },
+  {
+   "key": "drill/short/roots/g028.parquet",
+   "size": 2915846919,
+   "md5": "c787b7906938af59ab4610e15b226f0d",
+   "crc32c": "fk9WKw==",
+   "generation": 1791529204841912
+  },
+  {
+   "key": "drill/short/roots/g029.parquet",
+   "size": 1531934776,
+   "md5": "a0ff38a54acd02d5cf746b837ae3d36d",
+   "crc32c": "33YHZg==",
+   "generation": 1791529004397222
+  },
+  {
+   "key": "drill/short/roots/g030.parquet",
+   "size": 1165587912,
+   "md5": "2a6425b0635b26fff31ed9478e436910",
+   "crc32c": "AwStFA==",
+   "generation": 1791529296671699
+  },
+  {
+   "key": "drill/short/roots/g031.parquet",
+   "size": 1769947315,
+   "md5": "bb3f026be285e352bff320a4b84166c6",
+   "crc32c": "3n6srQ==",
+   "generation": 1791529242951158
+  },
+  {
+   "key": "drill/short/roots/g032.parquet",
+   "size": 2092952339,
+   "md5": "bab65f91e9b825114b8b3c6e2ad54ec9",
+   "crc32c": "kKXSXA==",
+   "generation": 1791529256626589
+  },
+  {
+   "key": "drill/short/roots/g033.parquet",
+   "size": 1471420201,
+   "md5": "fe7bdd0848f1a2d445b258e0a700dc1c",
+   "crc32c": "NgZ8gg==",
+   "generation": 1791529876315847
+  },
+  {
+   "key": "drill/short/roots/g034.parquet",
+   "size": 1652198723,
+   "md5": "989614928c67d3d797881b351e6b2138",
+   "crc32c": "jhDeDQ==",
+   "generation": 1791529140163648
+  },
+  {
+   "key": "drill/short/roots/g035.parquet",
+   "size": 1253528309,
+   "md5": "c0fada8eb8c3ac7d90903a48962867ef",
+   "crc32c": "SI2rig==",
+   "generation": 1791529817006730
+  },
+  {
+   "key": "drill/short/roots/g036.parquet",
+   "size": 1235213564,
+   "md5": "b00baf32c62730f281bcea91814a6a88",
+   "crc32c": "LsFR2Q==",
+   "generation": 1791529254388763
+  },
+  {
+   "key": "drill/short/roots/g037.parquet",
+   "size": 1040311015,
+   "md5": "6197e2e56bb5bf0db3f6557a1bf56d74",
+   "crc32c": "+vkP9A==",
+   "generation": 1791529174271758
+  },
+  {
+   "key": "drill/short/roots/g038.parquet",
+   "size": 955370024,
+   "md5": "1c8a0376ee5335001b324a970f71bbe7",
+   "crc32c": "xQFmNQ==",
+   "generation": 1791529684718363
+  },
+  {
+   "key": "drill/short/roots/g039.parquet",
+   "size": 1311846186,
+   "md5": "24c7c94446906f547b8b6d36ce704202",
+   "crc32c": "I/dJlA==",
+   "generation": 1791529697512504
+  },
+  {
+   "key": "drill/short/roots/g040.parquet",
+   "size": 1400987610,
+   "md5": "388a4d33f64f399d50e73f8565fda482",
+   "crc32c": "aVlGzQ==",
+   "generation": 1791529895615039
+  },
+  {
+   "key": "drill/short/roots/g041.parquet",
+   "size": 316376648,
+   "md5": "281c5b4f9770a9ab194df786eaf1804a",
+   "crc32c": "K7++og==",
+   "generation": 1791529352386846
+  },
+  {
+   "key": "drill/short/roots/g042.parquet",
+   "size": 1298397535,
+   "md5": "669306794b72f3e6d05f2dc3b59927b5",
+   "crc32c": "xzFSKw==",
+   "generation": 1791529900051404
+  },
+  {
+   "key": "drill/short/roots/g043.parquet",
+   "size": 1536583078,
+   "md5": "9f8306e19f8f1485febf9e48ab49082d",
+   "crc32c": "t7TTfQ==",
+   "generation": 1791529556108166
+  },
+  {
+   "key": "drill/short/roots/g044.parquet",
+   "size": 1411677793,
+   "md5": "ec4747a2026b137d1aea1ceae5fc5464",
+   "crc32c": "voB1Xw==",
+   "generation": 1791529739393765
+  },
+  {
+   "key": "drill/short/roots/g045.parquet",
+   "size": 1196158684,
+   "md5": "6f5410d1aa5956cd4e0cc1db4cb9fa89",
+   "crc32c": "m8oI4g==",
+   "generation": 1791529717016947
+  },
+  {
+   "key": "drill/short/roots/g046.parquet",
+   "size": 935719956,
+   "md5": "30304b907f3453c67caf42c9f69b30ae",
+   "crc32c": "Hjzayw==",
+   "generation": 1791529585530529
+  },
+  {
+   "key": "drill/short/roots/g047.parquet",
+   "size": 1217097363,
+   "md5": "6dbce18987a7a22ed97373f1dfa647f7",
+   "crc32c": "WXjlSA==",
+   "generation": 1791529553363226
+  },
+  {
+   "key": "drill/short/roots/g048.parquet",
+   "size": 789422101,
+   "md5": "9fb2cd73749480b50efc578ca5bc1c80",
+   "crc32c": "cHgDgg==",
+   "generation": 1791529886756240
+  },
+  {
+   "key": "drill/short/roots/g049.parquet",
+   "size": 952619781,
+   "md5": "eb2860413c08178115b62b4098dcbac5",
+   "crc32c": "0tVoZA==",
+   "generation": 1791529223384865
+  },
+  {
+   "key": "drill/short/roots/g050.parquet",
+   "size": 1228206183,
+   "md5": "d91dfbb5b7be23ef45a62fc952935c6a",
+   "crc32c": "kFDzPA==",
+   "generation": 1791529894497191
+  },
+  {
+   "key": "drill/short/roots/g051.parquet",
+   "size": 636737682,
+   "md5": "3f14974ff7b4dc13e81367b620e138d8",
+   "crc32c": "X3FJnQ==",
+   "generation": 1791529617494139
+  },
+  {
+   "key": "drill/short/roots/g052.parquet",
+   "size": 2002048220,
+   "md5": "e97011570bb42e820dfce936ab32153f",
+   "crc32c": "sO8BzA==",
+   "generation": 1791529737823353
+  },
+  {
+   "key": "drill/short/roots/g053.parquet",
+   "size": 913932525,
+   "md5": "e610b095525f0e044cca8196acc9e0cd",
+   "crc32c": "F0jNeA==",
+   "generation": 1791529825544494
+  },
+  {
+   "key": "drill/short/roots/g054.parquet",
+   "size": 1140551763,
+   "md5": "0ee60c4f680064ffc44a1f11acd0cad8",
+   "crc32c": "jbt4lA==",
+   "generation": 1791529775231140
+  },
+  {
+   "key": "drill/short/roots/g055.parquet",
+   "size": 855674137,
+   "md5": "aa6aa0865fef7152fa950c8ccecf1e95",
+   "crc32c": "dBnluQ==",
+   "generation": 1791529981402167
+  },
+  {
+   "key": "drill/short/roots/g056.parquet",
+   "size": 312173128,
+   "md5": "389828ca44c06e1a70e7e34c9c362513",
+   "crc32c": "DeQ0eA==",
+   "generation": 1791529329262305
+  },
+  {
+   "key": "drill/short/roots/g057.parquet",
+   "size": 1149862226,
+   "md5": "88581c260c39bfd0b35b13ce3933d201",
+   "crc32c": "dLbIAA==",
+   "generation": 1791529781566490
+  },
+  {
+   "key": "drill/short/roots/g058.parquet",
+   "size": 591729960,
+   "md5": "42d5a3f230209e939f6ffb63aeb24ece",
+   "crc32c": "Cs5gYg==",
+   "generation": 1791529463550448
+  }
+ ]
+}

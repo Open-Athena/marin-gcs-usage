@@ -1,0 +1,15 @@
+outs:
+- md5: 2fb0a5288db18d2a7eb4b07fab97c536
+  size: 120
+  hash: md5
+  path: drill-aliases.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-drill-digest-$(date -u +%H%M%S)
+      ../../job/static-names.sh run digest 32 -g 2026-10-08c > /dev/null && dt-cloud
+      static-names roots alias-plan -g 2026-10-08c > drill-aliases.json
+    deps:
+      members.json: 5bbed246a8b95487ec3151bad4a625aa
+      suffixes.json: 3472744b97aced097ed9acd99b9cd783
+    git_deps:
+      ../../cloud/src/dt_cloud/static_roots.py: b60999a7063df6a0af900ec8466ebb38cdf17db2

@@ -1,0 +1,15 @@
+outs:
+- md5: 9ee622e63a53d2e9127bfd3499493346
+  size: 91378
+  hash: md5
+  path: catalog-short.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_catalog JOB_ID=sn-2026-10-08c-short-$(date -u +%H%M%S)
+      ../../job/static-names.sh run short 32 -g 2026-10-08c -n 8 > /dev/null && dt-cloud
+      static-names manifest -b oa-gcs-usage-scratch -g 2026-10-08c catalog-short >
+      catalog-short.json
+    deps:
+      cintervals.json: 507b62fa89d4e26f31847040c9c86711
+    git_deps:
+      ../../cloud/src/dt_cloud/static_catalog.py: a9d00354861e108618ff208b90060424effa2558

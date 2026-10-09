@@ -65,7 +65,7 @@ if not pin:  # one-off overrides forwarded only for manual submits, never the cr
               "SWEEP_BENCHMARK_PLAN", "SWEEP_BENCHMARK_BUCKET", "SWEEP_BENCHMARK_WORKERS", "SWEEP_BENCHMARK_ROOTS", "SWEEP_BENCHMARK_RESULTS_PER_ROOT", "SWEEP_BENCHMARK_OUT",
               "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS", "GATE", "GATE_K", "GATE_P", "GATE_THREADS", "GATE_HIST",
               "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
-              "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT", "INDEX_RETAIN", "PATH_INDEX_RG_ROWS", "PATH_INDEX_USER_SORT_TIERS", "PATH_INDEX_SEARCH"]:  # SLACK_WEBHOOK is a secretVariable (see below)
+              "GCS_ALERT_CEILING_TB", "GCS_ALERT_SPIKE_PCT", "INDEX_RETAIN", "PATH_INDEX_RG_ROWS", "PATH_INDEX_USER_SORT_TIERS", "PATH_INDEX_SEARCH", "CH_STORE_URL"]:  # SLACK_WEBHOOK is a secretVariable (see below)
         if k in os.environ:
             v[k] = os.environ[k]
 print(json.dumps(v))

@@ -1,0 +1,14 @@
+outs:
+- md5: ac369a75c02b21f7dc5ac9c18dc57795
+  size: 183695573
+  hash: md5
+  path: drill-answers.jsonl
+meta:
+  computation:
+    cmd: dt-cloud static-names roots drill-query -g 2026-10-08c -c ../../job/static-names/drill-cases.jsonl
+      -d 2026-10-08 -d 2026-10-01 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30 > drill-answers.jsonl
+    deps:
+      drill.json: 14a4a78cd071e37ef90d238a3c5b34df
+    git_deps:
+      ../../job/static-names/drill-cases.jsonl: a63c3a409d4e8feda646d99147668060879ba8e7
+      ../../cloud/src/dt_cloud/static_roots.py: b60999a7063df6a0af900ec8466ebb38cdf17db2

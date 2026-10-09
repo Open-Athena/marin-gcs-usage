@@ -1,0 +1,44 @@
+{
+ "gen": "2026-10-08c",
+ "R": 100000,
+ "K": 256,
+ "rg": 8192,
+ "idx_rg": 1024,
+ "dispatch_rows": 116384,
+ "long_roots": {
+  "files": 260,
+  "row_groups": 4178159,
+  "rows": 34226403531,
+  "bytes": 215122853794,
+  "index_bytes": 459219128,
+  "index_row_groups": 4081,
+  "top_bytes": 842149
+ },
+ "long_rollups": {
+  "files": 259,
+  "row_groups": 2214,
+  "rows": 17036099,
+  "bytes": 101900586,
+  "index_bytes": 235772,
+  "index_row_groups": 3,
+  "top_bytes": 3481
+ },
+ "short_roots": {
+  "files": 59,
+  "row_groups": 1583420,
+  "rows": 12971156040,
+  "bytes": 83502850320,
+  "index_bytes": 176183149,
+  "index_row_groups": 1547,
+  "top_bytes": 321195
+ },
+ "short_rollups": {
+  "files": 59,
+  "row_groups": 866,
+  "rows": 6866923,
+  "bytes": 53422684,
+  "index_bytes": 94013,
+  "index_row_groups": 1,
+  "top_bytes": 3113
+ }
+}

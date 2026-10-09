@@ -1,0 +1,14 @@
+outs:
+- md5: 5af46e7f628a4b5a9ce33653cc22562b
+  size: 190194
+  hash: md5
+  path: drill-long.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-drill-build-$(date -u +%H%M%S)
+      ../../job/static-names.sh run build 32 -g 2026-10-08c -R 100000 -K 256 > /dev/null
+      && dt-cloud static-names manifest -g 2026-10-08c drill/long > drill-long.json
+    deps:
+      drill-aliases.json: 2fb0a5288db18d2a7eb4b07fab97c536
+    git_deps:
+      ../../cloud/src/dt_cloud/static_roots.py: b60999a7063df6a0af900ec8466ebb38cdf17db2

@@ -1,0 +1,16 @@
+outs:
+- md5: 55adf91534cf88ed7aaa6c8ca9e65ffa
+  size: 53682
+  hash: md5
+  path: suffixes.json
+meta:
+  computation:
+    cmd: SPOT=1 JOB_ID=sn-2026-10-08-map-$(date -u +%H%M%S) ../../job/static-names.sh
+      run suffix-map 32 -g 2026-10-08 -n 8 > /dev/null && SPOT=1 JOB_ID=sn-2026-10-08-shards-$(date
+      -u +%H%M%S) ../../job/static-names.sh run shards 32 -g 2026-10-08 > /dev/null
+      && dt-cloud static-names sidecar -g 2026-10-08 > suffixes.json
+    deps:
+      intervals.json: 7c9452d7769175794c331c41e23fda73
+      shards.json: 2f5e5ee54e702649d3208692017c3cb1
+    git_deps:
+      ../../cloud/src/dt_cloud/static_names.py: 87f3b9aea5d89aa51c83bec5d07400b0b2867401

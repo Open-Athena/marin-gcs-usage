@@ -1,0 +1,15 @@
+outs:
+- md5: 9aeeed87c369b18aaf72f1ffc17de152
+  size: 154345
+  hash: md5
+  path: catalog-answers.jsonl
+meta:
+  computation:
+    cmd: dt-cloud static-names catalog query -g 2026-10-08c -x -d 2026-10-08 -d 2026-10-06
+      -d 2026-10-01 -d 2026-09-30 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30  -t ../../job/static-names/catalog-terms.txt
+      > catalog-answers.jsonl
+    deps:
+      catalog.json: 290e7afd4ea77d18b7825ce98e2fc70a
+      suffixes.json: 3472744b97aced097ed9acd99b9cd783
+    git_deps:
+      ../../job/static-names/catalog-terms.txt: 4698ed450d8cf5b0bd516dd8890c578bb9f032f9

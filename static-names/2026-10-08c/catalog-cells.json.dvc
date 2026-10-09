@@ -1,0 +1,15 @@
+outs:
+- md5: 513ea0f6e8f03e7255967c48fafe9048
+  size: 45400
+  hash: md5
+  path: catalog-cells.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_catalog JOB_ID=sn-2026-10-08c-answers-$(date -u +%H%M%S)
+      ../../job/static-names.sh run answers 32 -g 2026-10-08c > /dev/null && dt-cloud
+      static-names manifest -g 2026-10-08c catalog/cells > catalog-cells.json
+    deps:
+      members.json: 5bbed246a8b95487ec3151bad4a625aa
+      suffixes.json: 3472744b97aced097ed9acd99b9cd783
+    git_deps:
+      ../../cloud/src/dt_cloud/static_catalog.py: a9d00354861e108618ff208b90060424effa2558

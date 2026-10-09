@@ -1,0 +1,14 @@
+outs:
+- md5: 60a5717d1c6d1fadc2ebb1080830e4ce
+  size: 82493
+  hash: md5
+  path: ch-catalog-answers.jsonl
+meta:
+  computation:
+    cmd: ../../job/static-names.sh ch-answers 2026-10-08,2026-10-06,2026-10-01,2026-09-30,2026-09-15,2026-08-15,2026-07-30
+      $PWD/../../job/static-names/catalog-ch-terms.txt > ch-catalog-answers.jsonl
+    deps:
+      scans.json: 6c08bc2c84a7f155ed1a86b5f183aea7
+    git_deps:
+      ../../job/static-names/catalog-ch-terms.txt: 48d56bcd505b0f2e5da00b1badefe0071fbf02d6
+      ../../job/static-names/ch-answers.py: bfaae1b05b4863240bbb0545d6e9db11fa2e78f6

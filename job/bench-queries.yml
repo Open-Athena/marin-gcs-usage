@@ -1,0 +1,127 @@
+# gcs's filter-bench query set (specs/filter-query-service.md §6 phase 1).
+# Ground truth: `dt-cloud bench-truth job/bench-queries.yml <gen> -o <truth>`;
+# scoring: `dt-cloud probe -Q job/bench-queries.yml -T <truth>`.
+#
+# Terms were picked from a sample of the 2026-10-01 vocabulary (127M names):
+# counts below are names containing the term / rows with those names, from
+# that sample's job (`scratch/bench/out/bench-x-*`).
+views: ["", marin-us-central2, marin-us-central2/grug]
+queries:
+  # --- phase 0's four ---------------------------------------------------------
+  - id: tomat
+    q: tomat
+    views: ["", marin-us-central2, marin-us-east5]
+    why: "phase 0; 21.7k names, 21.7k scattered roots (4 big dirs + podcast mp3s, `automat…`); the Worker's candidate list is over budget"
+  - id: grug
+    q: grug
+    why: "phase 0; dir-shaped (8.3k names); matches the `marin-us-central2/grug` view root itself"
+  - id: safetensors
+    q: safetensors
+    why: "phase 0; 1.3k names but 89k file roots (over the 50k list cap), deep under checkpoints"
+  - id: ckpt-not-eval
+    q: ckpt -eval
+    why: "phase 0, NOT subtraction; on full paths here (phase 0 tested the last segment only)"
+  # --- anchors (as they work today) --------------------------------------------
+  - id: tomat-start
+    q: /tomat
+    why: "a segment starts with `tomat` (402 names); `/` term → the index's anchored branch"
+  - id: tomat-end
+    q: tomat/
+    why: "a segment ends with `tomat`; a term ending in `/` is unindexable → the Worker must flag it approximate"
+  - id: ckpts-step
+    q: checkpoints/step-
+    why: "a term spanning segments; candidates are every `step-…` name (231k names, 18.5M rows)"
+  # --- selective -------------------------------------------------------------
+  - id: tensorstore
+    q: tensorstore
+    why: "very selective (30 names, 38 rows)"
+  - id: opt-state
+    q: opt_state
+    why: "one name, 48.6k rows (a dir in every checkpoint): few candidates, many roots"
+  - id: config-json
+    q: config.json
+    why: "24 names, 528k rows: few names, each very common"
+  - id: isoflop-3e20
+    q: isoflop-3e+20
+    why: "punctuation (`+`) in the term; 516 names"
+  # --- hashes and digits -----------------------------------------------------
+  - id: hex6
+    q: 27f2fb
+    why: "a 6-hex run-name suffix (39 names)"
+  - id: hex16
+    q: 781bc3291c81ce28
+    why: "a long hex hash (content-addressed dirs); exact name and prefix of a longer one"
+  - id: step-10000
+    q: step-10000
+    why: "digit-heavy checkpoint step (72 names, 25.7k rows); also matches `step-100000…`"
+  - id: shard-of
+    q: 00001-of
+    why: "shard numbering (5.9k names, 33k rows)"
+  - id: model-of-4
+    q: model-*-of-00004
+    why: "`*` glob with digits (the safetensors shard pattern)"
+  - id: shard-00
+    q: shard_00
+    why: "digit-heavy and broad (90k names, 1.5M rows)"
+  # --- broad -------------------------------------------------------------------
+  - id: eval
+    q: eval
+    why: "broad (150k names, 387k rows)"
+  - id: checkpoint
+    q: checkpoint
+    why: "dir-shaped and heavy (6.4k names, 236k rows; `checkpoints` is the heaviest name)"
+  - id: step
+    q: step-
+    why: "very broad and numbered (244k names, 18.7M rows)"
+  - id: podcast
+    q: podcast
+    why: "811k candidate names (podcast clips), far over the Worker's candidate budget"
+  # --- NOT, AND, OR ---------------------------------------------------------------
+  - id: grug-not-ckpts
+    q: grug -checkpoints
+    why: "NOT subtracts a large part of each root (run dirs minus their checkpoints)"
+  - id: not-ckpts
+    q: -checkpoints
+    why: "only a NOT term: everything except; the view root is the single match root"
+  - id: not-tensorstore
+    q: -tensorstore
+    why: "only a NOT term whose exclusions the index finds in full (30 names): no budget flag to hide behind, so the net total must be exact"
+  - id: nemotron-or-dolma-not-dclm
+    q: nemotron -dclm|dolma
+    why: "OR with a NOT that applies to both alternatives"
+  - id: qwen-and-sft
+    q: qwen sft
+    why: "AND across segments (model name in one, `sft` in another)"
+  - id: tootsie-or-isoflop
+    q: tootsie|isoflop
+    why: "OR of two dir-shaped terms"
+  - id: moe-and-1e23
+    q: moe 1e23
+    why: "AND, both terms in the same run-dir names; digits"
+  # --- file extensions -----------------------------------------------------------
+  - id: ext-pt
+    q: "*.pt"
+    why: "an extension glob (56k names, 91k rows; also `.pth`, `.ptx`)"
+  - id: ext-npy
+    q: .npy
+    why: "a broad extension (209k names, 20M rows)"
+  - id: ext-wav
+    q: .wav
+    why: "a rare extension (128 names)"
+  # --- regex syntax ---------------------------------------------------------------
+  - id: re-safetensors
+    q: \.safetensors$
+    qs: regex
+    why: "regex, end-anchored; never served by the index → the Worker must flag it approximate"
+  - id: re-step-dir
+    q: /step-[0-9]+$
+    qs: regex
+    why: "regex for step dirs only (non-monotone: their contents don't match)"
+  - id: re-grug-moe
+    q: ^marin-us-central2/grug/[^/]*moe[^/]*$
+    qs: regex
+    why: "regex anchored at the bucket; one level of run dirs"
+  - id: re-tokenizer-json
+    q: tokenizer\.json$
+    qs: regex
+    why: "regex for one file name in many places"

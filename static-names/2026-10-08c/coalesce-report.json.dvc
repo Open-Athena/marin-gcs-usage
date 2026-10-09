@@ -1,0 +1,11 @@
+outs:
+- md5: e2dff55559aad1bf401b8a1da0c57a10
+  size: 2715
+  hash: md5
+  path: coalesce-report.json
+meta:
+  computation:
+    cmd: dt-cloud static-names coalesce-report -g 2026-10-08c -H 2026-10-08 -v 100000
+      -v 150000 -v 250000 > coalesce-report.json
+    deps:
+      cintervals.json: 507b62fa89d4e26f31847040c9c86711

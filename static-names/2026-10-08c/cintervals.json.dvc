@@ -1,0 +1,18 @@
+outs:
+- md5: 507b62fa89d4e26f31847040c9c86711
+  size: 127450
+  hash: md5
+  path: cintervals.json
+meta:
+  computation:
+    cmd: gcloud storage cp --verbosity=error ../../job/static-names/terms.txt gs://oa-gcs-usage-dvx/static-names/2026-10-08c/terms.txt
+      && SPOT=1 JOB_ID=sn-2026-10-08c-coalesce-$(date -u +%H%M%S) ../../job/static-names.sh
+      run coalesce 32 -g 2026-10-08c -I 2026-10-08 -n 8 -t /gcs/oa-gcs-usage-dvx/static-names/2026-10-08c/terms.txt
+      > /dev/null && dt-cloud static-names manifest -g 2026-10-08c cintervals chist
+      cstats > cintervals.json
+    deps:
+      ../2026-10-08/intervals.json: 7c9452d7769175794c331c41e23fda73
+      ranges.json: 0e64092bfd59936b30b9f7b42738edd6
+    git_deps:
+      ../../cloud/src/dt_cloud/static_names.py: 87f3b9aea5d89aa51c83bec5d07400b0b2867401
+      ../../job/static-names/terms.txt: 2ee0d00ce5a1d496a76f296275755f3b404c8b65
