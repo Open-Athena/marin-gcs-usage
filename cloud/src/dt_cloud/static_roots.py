@@ -1215,10 +1215,13 @@ def gcs_drill(bucket: str, gen: str, kind: str) -> Drill:
 @option("-g", "--gen", required=True, help="Generation")
 def drill_query_cmd(bucket, cases_file, dates, gen) -> None:
     """Answer drill cases from the roots/rollups (the Worker's logic, over GCS): one JSON line per case."""
-    drills = {k: gcs_drill(bucket, gen, k) for k in ("long", "short")}
+    drills: dict[str, Drill] = {}
     for t, P in _cases(cases_file):
+        kind = "short" if len(t) <= 2 else "long"
+        if kind not in drills:
+            drills[kind] = gcs_drill(bucket, gen, kind)
         t0 = monotonic()
-        out = drills["short" if len(t) <= 2 else "long"].view(t, P, list(dates))
+        out = drills[kind].view(t, P, list(dates))
         out["s"] = round(monotonic() - t0, 3)
         print(json.dumps(out), flush=True)
 
