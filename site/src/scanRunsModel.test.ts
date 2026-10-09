@@ -94,7 +94,7 @@ describe('links', () => {
     ])
   })
   it('map, Batch and logs', () => {
-    expect([mapHref('2026-10-08'), mapHref('2026-10-09T1236'), mapHref('nope')]).toEqual(['/?d=261008', '/?d=261009-1236', null])
+    expect([mapHref('2026-10-08'), mapHref('2026-10-09T1236'), mapHref('nope')]).toEqual(['/?d=261008', '/?d=2610091236', null])
     expect(batchHref('p', 'us-central1', 'job-1')).toBe('https://console.cloud.google.com/batch/jobsDetail/regions/us-central1/jobs/job-1/details?project=p')
     expect(decodeURIComponent(logsHref('p', { run_id: 'uid-1', started_ts: 1_800_000_000 }))).toBe(
       'https://console.cloud.google.com/logs/query;query=labels.job_uid="uid-1"\nlog_id("batch_task_logs")\ntimestamp >= "2027-01-15T07:50:00.000Z"?project=p')
