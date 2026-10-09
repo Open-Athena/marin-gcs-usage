@@ -17,7 +17,11 @@ Where the box differs from the Worker, deliberately:
   `firstPaint`; `truncated` is false.
 - Roots and their synthesized ancestors under their level's threshold fold
   into their parent's `(other)` (counted in `f`), and a root holding one
-  object is a leaf, as the Worker does; `matches` / `matched` list the drawn
+  object is a leaf, as the Worker does. Phase 2 subdivides only roots whose
+  tile is at least `FILTER_SUBDIV_AREA` px², `FILTER_SUBDIV_LEVELS` deep,
+  `depth=N` capping it at the view's dP + N, and the tree keeps at most
+  `tile_budget(w, h)` nodes (`cap_tiles`) — the Worker's read and time
+  budgets don't apply (the box reads every such root: no `interiors`); `matches` / `matched` list the drawn
   roots plus the heaviest others up to `MATCH_LIST_CAP`, with `matchCount`.
 - **Ties** between siblings of equal bytes are ordered by path.
 - **The diff's lookups** are exact point reads with no cap, and a match of
@@ -48,6 +52,12 @@ HARD_CAP = 50_000
 REGION_READS = 24
 # The most match roots a response lists beyond those its tree draws (the Worker's `MATCH_LIST_CAP`).
 MATCH_LIST_CAP = 200
+# Phase 2 subdivides a root only when its tile is at least this many px² (the Worker's `FILTER_SUBDIV_AREA`)…
+FILTER_SUBDIV_AREA = 64 * 64
+# …to at most this many levels below it (`FILTER_SUBDIV_LEVELS`; the view root itself, on a hit, uncapped).
+FILTER_SUBDIV_LEVELS = 3
+# px² per drawn tile: a view draws at most w·h / this many nodes (`TILE_AREA`, `tileBudget`).
+TILE_AREA = 96
 CHUNK = 1 << 21  # roots aggregated at a time
 LIST_CHUNK = 1 << 16
 CLASS_LETTERS = {"s": "1", "n": "2", "c": "3", "a": "4"}
@@ -536,8 +546,13 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
 
     fold = not hit
     draw = np.zeros(len(roots), bool) if hit else net_b >= thr_top(rd)
-    multi = net_o > 1
-    cand = np.flatnonzero(draw & multi)
+    # Subdivided: drawn, more than one object, a tile of at least FILTER_SUBDIV_AREA px², and above the
+    # `depth=N` cap (the Worker's `readRoots`); any other root is one exact tile.
+    subdiv_min = T * (FILTER_SUBDIV_AREA / min_area)
+    sub = draw & (net_o > 1) & (net_b >= subdiv_min)
+    if max_depth is not None:
+        sub &= rd < dP + max_depth
+    cand = np.flatnonzero(sub)
     top = cand[np.argsort(-net_b[cand], kind="stable")[:REGION_READS]]
     deepest = int(rd[top].max()) if len(top) else dP
 
@@ -560,12 +575,16 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
     P2_ids: list[np.ndarray] = []
     P2_sets: list[AggSet] = []
     if not (max_depth is not None and max_depth <= 0):
-        # (A hit holding one object is a leaf too.)
-        F = (np.array([v], np.int64) if tot.o[0] > 1 else np.zeros(0, np.int64)) if hit else roots[draw & multi]
-        Frd = np.full(len(F), dP, np.int64) if hit else rd[draw & multi]
+        # (A hit holding one object, or too small to subdivide, is a leaf too.) Below a match root,
+        # FILTER_SUBDIV_LEVELS levels; below the view root (a hit) unbounded; `depth=N`: to dP + N.
+        hit_sub = tot.o[0] > 1 and tot.b[0] >= subdiv_min and (max_depth is None or max_depth > 0)
+        F = (np.array([v], np.int64) if hit_sub else np.zeros(0, np.int64)) if hit else roots[sub]
+        Frd = np.full(len(F), dP, np.int64) if hit else rd[sub]
         while len(F):
             dch = np.where(F < 0, 0, ix.depth_of(np.maximum(F, 0))).astype(np.int64) + 1
-            ok = np.ones(len(F), bool) if max_depth is None else dch <= Frd + max_depth
+            ok = np.ones(len(F), bool) if hit else dch <= Frd + FILTER_SUBDIV_LEVELS
+            if max_depth is not None:
+                ok &= dch <= dP + max_depth
             F, Frd, dch = F[ok], Frd[ok], dch[ok]
             if not len(F):
                 break
@@ -612,6 +631,10 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
         depth[p] = depths[i]
     if v in folded_of_id:
         folded_of[path] = folded_of_id[v]
+    for p in cap_tiles(kept, depth, path, tile_budget(w, h)):
+        par = parent_of(p)
+        if par == path or par in kept:
+            folded_of[par] = folded_of.get(par, 0) + 1
     if hit:
         root_agg = whole.agg(0, users)
         root_paths.add(path)
@@ -630,6 +653,30 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
 def parent_of(p: str) -> str:
     i = p.rfind("/")
     return "" if i < 0 else p[:i]
+
+
+def tile_budget(w: int, h: int) -> int:
+    """The most nodes a w×h canvas draws (`TILE_AREA` px² each; the Worker's `tileBudget`)."""
+    return max(1, (w * h) // TILE_AREA)
+
+
+def cap_tiles(kept: dict, depth: dict, path: str, budget: int) -> list[str]:
+    """The Worker's `capTiles`: cut `kept` (ancestor-closed under `path`) to its `budget` heaviest
+    nodes, ancestor-closed still — by bytes, ties shallowest first, then by path; a node whose parent
+    fell out goes with it. Mutates `kept`; returns the paths it dropped (their bytes stay in the
+    parent's `(other)`)."""
+    if len(kept) <= budget:
+        return []
+    order = sorted(kept, key=lambda p: (-kept[p].b, depth[p], p))
+    keep = set(order[:budget])
+    for p in sorted(keep, key=lambda p: depth[p]):
+        par = parent_of(p)
+        if par != path and par not in keep:
+            keep.discard(p)
+    dropped = [p for p in order if p not in keep]
+    for p in dropped:
+        del kept[p]
+    return dropped
 
 
 def kids_index(kept: dict, path: str) -> dict:

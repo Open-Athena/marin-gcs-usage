@@ -339,6 +339,28 @@ def test_fold_under_threshold(own):
     )
 
 
+def test_cap_tiles():
+    # The Worker's `capTiles` cases (staticFilter.test.ts): the heaviest, ancestor-closed (a node
+    # whose parent fell out goes too), ties shallowest first.
+    class B:
+        def __init__(self, b: int):
+            self.b = b
+
+    sizes = {"a": 10, "a/x": 10, "a/x/1": 6, "a/y": 4, "b": 7, "b/z": 7}
+    depth = {p: len(p.split("/")) for p in sizes}
+
+    def cap(sz: dict, dep: dict, budget: int) -> tuple[list[str], list[str]]:
+        kept = {p: B(b) for p, b in sz.items()}
+        return bv.cap_tiles(kept, dep, "", budget), list(kept)
+
+    assert cap(sizes, depth, 3) == (["b/z", "a/x/1", "a/y"], ["a", "a/x", "b"])
+    assert cap(sizes, depth, 5) == (["a/y"], ["a", "a/x", "a/x/1", "b", "b/z"])
+    # A child heavier than its parent (data that disagrees with itself) never leaves an orphan.
+    assert cap({"a": 1, "a/x": 9, "b": 5}, {"a": 1, "a/x": 2, "b": 1}, 2) == (["a/x", "a"], ["b"])
+    assert cap(sizes, depth, 6) == ([], list(sizes))
+    assert (bv.tile_budget(1280, 896), bv.tile_budget(256, 256), bv.tile_budget(1, 1)) == (11946, 682, 1)
+
+
 def test_regex_verify_on_lowercase(fixture_ix):
     # A case-insensitive regex tested on the lowercase paths (and a path
     # holding a case exception, the Kelvin-sign `Key`, on its original case)
