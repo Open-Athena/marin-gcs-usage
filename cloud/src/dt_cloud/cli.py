@@ -5353,3 +5353,7 @@ _static_names.add_command(_static_catalog)
 _static_names.add_command(_static_append)
 _static_names.add_command(_static_roots)
 main.add_command(_static_names)
+
+from .interval_store import cli as _interval_store  # noqa: E402
+
+main.add_command(_interval_store)
