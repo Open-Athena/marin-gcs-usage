@@ -33,3 +33,19 @@ describe('pageView: page URL → card kind, view params, title', () => {
       .toEqual([null, null, null, null, null, null, { kind: 'map', params: { path: 'b' }, title: 'b' }, { kind: 'map', params: { path: 'b' }, title: 'b' }])
   })
 })
+
+describe('the card view keys the scan by the canonical ?d= (legacy and ISO spellings fold in)', () => {
+  it.each([
+    ['/?d=261009', '261009'],
+    ['/?d=2026-10-09', '261009'],
+    ['/?d=2026-10-09T1200', '261009-1200'],
+    ['/?date=2026-10-09', '261009'],
+    ['/?date=2026-10-09&from=2026-10-05', '261009-261005'],
+    ['/users?date=2026-10-09T0601', '261009-0601'],
+    ['/user/alice?d=2026-10-06', '261006'],
+    ['/assignments?d=261009-12', '261009-12'],
+    ['/?d=junk', undefined],
+  ])('%s → d=%s', (path, d) => {
+    expect(pv(path)?.params.d).toBe(d)
+  })
+})

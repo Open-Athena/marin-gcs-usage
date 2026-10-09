@@ -11,7 +11,7 @@ import { useStore, useStoreFetch } from './store'
 import { useUnits } from './units'
 import { Skeleton } from './Busy'
 import { bandCallouts, pickAnnotations, relativeSeries, stackSeries, unitTicks, youngestGenesis } from './series'
-import { DAY, fmtScan } from './scan'
+import { DAY, fmtScan, scanTime } from './scan'
 import type { Band } from './series'
 import { stringParam } from 'use-prms'
 import { perf, usePerfCommit } from './perf'
@@ -130,8 +130,8 @@ const fmtXTip = (x: number) => fmtScan(dateOfX(x))
 // UTC time. Two scans a day must not share an x (the bands key by x, and a
 // shared x drew the total as a vertical step against the band).
 export const xOfScan = (d: string) => {
-  const m = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2})(\d{2}))?$/.exec(d)
-  return m ? new Date(`${m[1]}T${m[2] ?? '00'}:${m[3] ?? '00'}:00Z`).getTime() : new Date(d.slice(0, 10)).getTime()
+  const t = scanTime(d)
+  return Number.isNaN(t) ? new Date(d.slice(0, 10)).getTime() : t
 }
 // Signed formats for the relative modes: `+1.2 Ti` / `−340 Gi` / `0`, `+3.1%`.
 const signed = (y: number, mag: string) => (y < 0 ? `−${mag}` : y > 0 ? `+${mag}` : mag)

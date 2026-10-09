@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { consolidatedCatalogFixture, consolidatedCatalogNameRegistry, consolidatedCatalogRegistry, consolidatedCatalogSource, consolidatedNameFixture, consolidatedNameRegistry, consolidatedSource, dailyNameFixture, datedCapabilities, datedNameRegistry, legacyNameRegistry, mixedDatedNameDiff, staticNameFixture, staticNameRegistry } from './datedNameTestFixtures'
 import type { NameQualification } from './nameModel'
+import { SUB_DAILY_SCANS, fiveBucketFixture, fiveBucketRegistry } from './datedNameTestFixtures'
 import { datedNameRequest, loadName, loadNameRegistry, nameHasDetail, nameRequest, nameResultForRegistry, parseName, parseNameRegistry } from './nameModel'
 
 const request = { date: '2026-10-06', name: 'datakit', from: '2026-10-05' }
@@ -109,7 +110,7 @@ describe('independently numbered dated root summaries', () => {
     expect(registry.dates[0]).toEqual({ date: '2026-09-15', plans: ['bounded-name-postings'], kind: 'consolidated-store-v1', source_identity: body.source_identity })
     expect(nameResultForRegistry(result, registry)).toBe(result)
     const moved = parseName({ ...body, source_identity: { ...body.source_identity, postings: 'other' } }, { date: '2026-09-15', name: 'datakit' })
-    expect(() => nameResultForRegistry(moved, registry)).toThrow('Name summary returned a different pinned daily source from the available-scan registry.')
+    expect(() => nameResultForRegistry(moved, registry)).toThrow('Name summary returned a different pinned per-scan source from the available-scan registry.')
   })
   it.each(['catalog plan', 'own-index source', 'registry', 'unknown postings', 'through date', 'geometry kind'])('refuses a consolidated answer with a mismatched %s', issue => {
     const body: Record<string, unknown> & ReturnType<typeof consolidatedNameFixture> = consolidatedNameFixture()
@@ -176,7 +177,7 @@ describe('scan-specific availability', () => {
   it('separates available scan dates from registry qualification dates and preserves old metadata', () => {
     expect(parseNameRegistry(legacyNameRegistry())).toEqual(expectedOld)
     expect(parseNameRegistry(datedNameRegistry())).toEqual(expected)
-    expect(nameRequest(new URLSearchParams(), scans)).toEqual({ date: '2026-10-05', name: 'datakit' })
+    expect(nameRequest(new URLSearchParams(), scans)).toEqual({ date: '2026-10-06', name: 'datakit' })
     expect(nameRequest(new URLSearchParams('date=2026-10-06&name=DATAKIT&from=2026-10-05'), scans)).toEqual(request)
     expect(datedNameRequest(new URLSearchParams('date=2026-10-08&name=A%26B'))).toEqual({ date: '2026-10-08', name: 'a&b' })
   })
@@ -201,7 +202,7 @@ describe('scan-specific availability', () => {
     if (issue === 'artifact hash') result.execution.after.source_identity.artifact_sha256 = 'e'.repeat(64)
     if (issue === 'source hash') result.execution.after.source_identity.source_manifest_sha256 = 'e'.repeat(64)
     if (issue === 'source bytes') result.execution.after.source_identity.artifact_bytes = 2000
-    expect(() => nameResultForRegistry(result, registry)).toThrow(issue === 'scan plan' ? 'Name summary returned a different scan or execution plan from the available-scan registry.' : issue === 'logical store' || issue === 'bucket paths' ? 'Name summary returned a different logical store or bucket set from the available-scan registry.' : 'Name summary returned a different pinned daily source from the available-scan registry.')
+    expect(() => nameResultForRegistry(result, registry)).toThrow(issue === 'scan plan' ? 'Name summary returned a different scan or execution plan from the available-scan registry.' : issue === 'logical store' || issue === 'bucket paths' ? 'Name summary returned a different logical store or bucket set from the available-scan registry.' : 'Name summary returned a different pinned per-scan source from the available-scan registry.')
   })
   it('rejects oversized or recursive dated metadata rather than walking an unbounded availability graph', () => {
     const oversized = datedNameRegistry(); oversized.dates = Array.from({ length: 401 }, () => oversized.dates[2])
@@ -259,9 +260,11 @@ describe('the static name index', () => {
   })
   it.each([
     ['unsorted dates', { dates: ['2026-10-05', '2026-10-04'] }],
-    ['a bad generation', { generation: 'latest' }],
+    ['a bad generation', { generation: 'Latest/1' }],
     ['a zero bound', { max_rows: 0 }],
-    ['five buckets', { bucket_paths: Array.from('abcde', letter => `bucket-${letter}`) }],
+    ['duplicate buckets', { bucket_paths: ['bucket-a', 'bucket-b', 'bucket-a'] }],
+    ['a bucket with a slash', { bucket_paths: ['bucket-a', 'bucket/b'] }],
+    ['no buckets', { bucket_paths: [] }],
     ['an extra key', { legacy: legacyNameRegistry() }],
   ])('refuses a registry with %s', (_, override) => {
     expect(() => parseNameRegistry({ ...staticNameRegistry(), ...override })).toThrow('Name summary returned an invalid dated contract.')
@@ -277,5 +280,54 @@ describe('the static name index', () => {
     const request = { date: '2026-10-06', name: 'datakit' }
     expect(() => nameResultForRegistry(parseName(staticNameFixture('catalog', '2026-10-06'), request), parseNameRegistry(datedNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
     expect(() => nameResultForRegistry(parseName(dailyNameFixture(), request), parseNameRegistry(staticNameRegistry()))).toThrow('Name summary returned a different scan or execution plan from the available-scan registry.')
+  })
+})
+
+describe('sub-daily scan ids and any fleet size (specs/scan-ids-not-dates.md)', () => {
+  it('parses a five-bucket registry of sub-daily scans and its generation', () => {
+    const registry = parseNameRegistry(fiveBucketRegistry())
+    expect([registry.bucket_paths, registry.static, registry.dates.map(row => row.date)]).toEqual([
+      ['bucket-a', 'bucket-b', 'bucket-c', 'bucket-d', 'bucket-e'],
+      { generation: '2026-10-09cw', max_rows: 100000 },
+      SUB_DAILY_SCANS,
+    ])
+  })
+  it('parses a five-bucket answer at a sub-daily scan, bound to its registry', () => {
+    const body = fiveBucketFixture('catalog', '2026-10-09T0601'), registry = parseNameRegistry(fiveBucketRegistry())
+    const result = nameResultForRegistry(parseName(body, { date: '2026-10-09T0601', name: 'datakit' }), registry)
+    expect([result.after.date, result.after.root, result.after.buckets.map(row => [row.path, row.pre, row.post, row.b, row.o])]).toEqual(['2026-10-09T0601', { b: 10, o: 6 }, [
+      ['bucket-a', 13, 15, 10, 4], ['bucket-b', 10, 12, 0, 2], ['bucket-c', 7, 9, 0, 0], ['bucket-d', 4, 6, 0, 0], ['bucket-e', 1, 3, 0, 0],
+    ]])
+  })
+  it('datedNameRequest accepts scan ids, not just dates', () => {
+    expect(datedNameRequest(new URLSearchParams('date=2026-10-09T1802&from=2026-10-09T0601&name=gof'))).toEqual({ date: '2026-10-09T1802', name: 'gof', from: '2026-10-09T0601' })
+    for (const params of ['date=2026-10-09T2460', 'date=2026-10-09T12', 'date=2026-10-09T1802&from=2026-10-09T1802']) expect(() => datedNameRequest(new URLSearchParams(params))).toThrow(Error)
+  })
+  it('nameRequest resolves slugs to the latest matching scan; a day is its later scan', () => {
+    const req = (qs: string) => nameRequest(new URLSearchParams(qs), SUB_DAILY_SCANS)
+    expect([
+      req('name=gof'),
+      req('date=2026-10-09&name=gof'),
+      req('date=261009&name=gof'),
+      req('date=261009-06&name=gof'),
+      req('date=2026-10-09T0601&name=gof'),
+      req('date=261009&from=261009&name=gof'),
+      req('date=261009-0601&from=261008&name=gof'),
+    ]).toEqual([
+      { date: '2026-10-09T1802', name: 'gof' },
+      { date: '2026-10-09T1802', name: 'gof' },
+      { date: '2026-10-09T1802', name: 'gof' },
+      { date: '2026-10-09T0601', name: 'gof' },
+      { date: '2026-10-09T0601', name: 'gof' },
+      { date: '2026-10-09T1802', name: 'gof', from: '2026-10-09T0601' },
+      { date: '2026-10-09T0601', name: 'gof', from: '2026-10-08' },
+    ])
+    for (const qs of ['date=261010&name=gof', 'date=261008&from=261009&name=gof']) expect(() => req(qs)).toThrow('This scan is unavailable in the name-summary registry; it is not a zero-match result.')
+  })
+  it.each([
+    ['a duplicate bucket', ['bucket-a', 'bucket-a']],
+    ['a slash', ['bucket-a', 'bucket/b']],
+  ])('refuses a dated registry with %s', (_, bucket_paths) => {
+    expect(() => parseNameRegistry({ ...datedNameRegistry(), bucket_paths })).toThrow('Name summary returned an invalid dated contract.')
   })
 })

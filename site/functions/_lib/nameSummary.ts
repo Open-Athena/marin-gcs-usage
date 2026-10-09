@@ -4,6 +4,11 @@ import { datedNameRequest, nameRequest, parseName, parseNameRegistry } from '../
 import { type StaticNameEnv, staticEnabled, staticRegistry, staticSummary } from './nameSummaryStatic.js'
 
 export type NameSummaryEnv = HotL1Env & StaticNameEnv & { QUERY_BOX_NAME_SUMMARY?: string; QUERY_BOX_DATED_NAMES?: string }
+/** The routes are on with the box's flag or with the static name index alone (`NAME_SUMMARY_STATIC=1` + `INDEX_R2`):
+ *  a deployment on the static index needs no `QUERY_BOX_*` var, so the box can go without the routes going with it. */
+export const namesEnabled = (env: NameSummaryEnv): boolean => env.QUERY_BOX_NAME_SUMMARY === '1' || staticEnabled(env)
+/** Dated requests (any scan, `from`): the static index is dated by construction. */
+export const datedNames = (env: NameSummaryEnv): boolean => env.QUERY_BOX_DATED_NAMES === '1' || staticEnabled(env)
 export const NAME_MAX_BYTES = 64 << 10
 export const NAME_TIMEOUT_MS = 8000
 export function nameSummaryParams(url: URL, dated = false): URLSearchParams {
@@ -16,12 +21,12 @@ export function nameRegistryParams(url: URL): void {
 }
 const unavailable = (retry = '1'): Response => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': retry })
 export async function askNameSummary(env: NameSummaryEnv, params: URLSearchParams): Promise<Response> {
-  // The static name index answers every dated request when enabled; unset, the box does (the fallback).
-  if (env.QUERY_BOX_DATED_NAMES === '1' && staticEnabled(env)) return staticSummary(env, params)
+  // The static name index answers every request when enabled (its failures are 503s, never a box call); unset, the box does.
+  if (staticEnabled(env)) return staticSummary(env, params)
   return askNameBackend(env, params)
 }
 export async function askNameSummaryRegistry(env: NameSummaryEnv): Promise<Response> {
-  if (env.QUERY_BOX_DATED_NAMES === '1' && staticEnabled(env)) return staticRegistry(env)
+  if (staticEnabled(env)) return staticRegistry(env)
   return askNameBackend(env)
 }
 async function askNameBackend(env: NameSummaryEnv, params?: URLSearchParams): Promise<Response> {
