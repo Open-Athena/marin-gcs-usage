@@ -776,7 +776,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // A root under its level's threshold folds into its parent's `(other)` (below): nothing inside it
     // is drawn, so it is neither read nor looked up.
     const drawn = (r: string) => netRoot(r).b >= T * atten ** Math.max(0, depthF.get(r)! - dP - 1)
-    const readRoots = [...roots].filter(drawn).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
+    // A root holding one object (a file, or a dir around one) has nothing to draw inside: a leaf. Its
+    // rect would still cost a span plan — on the size sort, a group per size bucket (`tomat` under
+    // `podcast_audio`: 24 single-file roots, ~25 s).
+    const readRoots = [...roots].filter(r => drawn(r) && netRoot(r).o > 1).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
       .map(r => ({ path: r, depth: depthF.get(r)! }))
     const loose = looseThreshold(T, atten, readRoots.map(r => r.depth))
     t0 = performance.now()

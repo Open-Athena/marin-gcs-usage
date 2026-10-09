@@ -406,7 +406,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string }
+        const j = await r.json() as { tree: TreeNode; tier?: string; matched?: { path: string; b: number; o: number }[]; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -523,14 +523,15 @@ function AppContent() {
   // its own per-path index, below).
   const matchedRoots = useMemo((): string[] | undefined => {
     if (!fq) return undefined
-    const m = subtreeQs[subtreeQs.length - 1]?.data?.matched ?? subtreeQs[0]?.data?.matched
+    // The first paint carries the same roots (the full read adds only what is inside them).
+    const m = subtreeQs[subtreeQs.length - 1]?.data?.matched ?? coarseQs[coarseQs.length - 1]?.data?.matched ?? subtreeQs[0]?.data?.matched
     return m?.map(x => x.path)
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
-    const d = subtreeQs[subtreeQs.length - 1]?.data ?? subtreeQs[0]?.data
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null

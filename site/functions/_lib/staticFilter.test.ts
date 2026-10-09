@@ -149,6 +149,12 @@ describe('static filter: the treemap / table view (`/api/subtree`)', () => {
     }
   })
 
+  it('a root holding one object is a leaf (nothing inside it is read)', async () => {
+    const v = await view(envStatic(), B, 'bk', 'tomat')
+    const node = v.tree.c!.find(c => c.n === 'new-tomat')!
+    expect([node.b, node.o, node.k, node.m, node.c]).toEqual([400, 1, 'dir', 1, undefined])
+  })
+
   it('the first paint: the match roots alone, exact, as leaves under their ancestors', async () => {
     const leaves = (n: ViewNode, path: string, out: [string, number, number][] = []): [string, number, number][] => {
       if (n.m) { expect(n.c).toBeUndefined(); out.push([path, n.b, n.o]) }
