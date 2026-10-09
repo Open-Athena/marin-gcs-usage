@@ -6,6 +6,7 @@ import { searchKey } from '../_lib/search'
 import { type FilterRejectCode, REJECT_MESSAGES, rejectQuery } from '../_lib/indexedOnly'
 import { drillSource, injectedStores, SuffixHits, type StaticFilterStore } from '../_lib/staticFilter'
 import { type Blobs, StaticNames } from '../_lib/staticNames'
+import { StaticCatalog } from '../_lib/staticCatalog'
 import { onRequestGet as subtree } from './subtree'
 import { onRequestGet as diff } from './diff'
 import { onRequestGet as series } from './series'
@@ -157,6 +158,27 @@ describe('the map routes, flag set: a heavy literal with no heavy source (`FILTE
       call(subtree, `date=${B}&path=bk/fill&q=0`, env),
       call(subtree, `date=${B}&path=bk&q=tomat`, env),
     ])).toEqual([refusal('scan-not-indexed'), refusal('scan-not-indexed')])
+  })
+})
+
+describe('the map routes, flag unset, no drilldown: a heavy literal is the catalog\'s buckets at the root, refused below', () => {
+  // as `staticFilterStore` wires `FILTER_STATIC_HEAVY` off: the suffix index (40-row bound) and the base catalog
+  const noDrill = (): StaticFilterStore => ({ source: new SuffixHits(new StaticNames(blobsOf(filterFiles)), { maxRows: 40, catalog: new StaticCatalog(blobsOf(drillFiles)) }), scans: async () => [A, B], gen: 'fixture' })
+  const body = async (route: Route, qs: string, env: Env) => (await route({ request: new Request(`http://localhost/api/x?${qs}`), env })).json() as Promise<Record<string, unknown>>
+  it('subtree and diff below the root: `term-too-common` (not an approximate walk); a light literal answers', async () => {
+    const env = envOf(false, noDrill())
+    expect(await Promise.all([
+      call(subtree, `date=${A}&path=bk/fill&q=0`, env),
+      call(subtree, `date=${B}&path=bk&q=0`, env),
+      call(diff, `from=${A}&to=${B}&path=bk/fill&q=0`, env),
+      call(subtree, `date=${A}&path=bk&q=tomat`, env),
+    ])).toEqual([refusal('term-too-common'), refusal('term-too-common'), refusal('term-too-common'), [200, 'ok']])
+  })
+  it('subtree at the root: the bucket totals, exact, flagged `bucketsOnly`, no approximate note', async () => {
+    const j = await body(subtree, `date=${A}&path=&q=0`, envOf(false, noDrill()))
+    const tree = j.tree as { b: number; o: number; c: { n: string; b: number; o: number }[] }
+    expect([tree.b, tree.o, tree.c.map(c => [c.n, c.b, c.o]), j.matchCount, j.rollup, j.approximate, j.approximateReason])
+      .toEqual([1023750, 3000, [['bk', 1023750, 3000]], { n: 0, b: 1023750, o: 3000 }, { children: 1, kept: 1, rows: null, bucketsOnly: true }, undefined, undefined])
   })
 })
 
