@@ -940,7 +940,9 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     }
     const below: string[] = []
     for (const [p, d] of p2.depth) {
-      const r = rootFor(p); if (r === null || !aggsF.has(r)) continue
+      // The view root itself (a query the view matches, e.g. NOT-only) is never in `aggsF`, yet its
+      // phase-2 rows are drawn.
+      const r = rootFor(p); if (r === null || (r !== path && !aggsF.has(r))) continue
       if (underExcl(p)) continue
       const a = minus(scoped(p, p2.all.get(p)!, p2.mine.get(p)!), cut.get(p), lostKids.get(p))
       if (a.b <= 0) continue

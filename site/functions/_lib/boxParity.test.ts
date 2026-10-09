@@ -41,7 +41,7 @@ beforeAll(async () => {
   const filesC = Object.fromEntries(Object.entries(files).map(([k, f]) => [k, { parquet: f.parquet.replace('v2-search/', 'v2-search-b/'), groups: f.groups.replace('v2-search/', 'v2-search-b/') }]))
   seedGeneration(raw, { date: C, gen: 'g', dir: dirOf(C), variants: vC, files: filesC })
   for (const role of ['rows', 'trigrams', 'rowsSearch'] as const) FILES.set(searchKey(dirOf(C), role), fixture(`v2-search-b/${SEARCH_FILES[role]}`))
-  env = { DB: db, ROOT_LABEL: 'root', GCS_HMAC_KEY_ID: 'k', GCS_HMAC_SECRET: 's' } as Env
+  env = { DB: db, ROOT_LABEL: 'root', GCS_HMAC_KEY_ID: 'k', GCS_HMAC_SECRET: 's', STORE_BUCKET: 'my-data' } as Env
 })
 
 /** One case: a query on a view, with the canvas params that matter. */
@@ -86,7 +86,7 @@ describe('the Worker’s filtered bodies, for the box’s parity test', () => {
         case: c,
         body: {
           date: A, path: c.path, w, h, minArea, atten, tier: view.tier, index: view.index, threshold: Math.round(view.threshold), nodes: view.nodes, truncated: view.truncated,
-          q: c.q, matches: view.matches, matched: view.matched ?? [], ...(view.excluded ? { excluded: view.excluded } : {}),
+          q: c.q, matches: view.matches, matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.excluded ? { excluded: view.excluded } : {}),
           partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason, tree: view.tree,
         },
       })

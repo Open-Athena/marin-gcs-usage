@@ -168,28 +168,27 @@ def test_subtree_scoped(own):
     ix = own["ix"]
     head = {"date": "2026-10-01", "w": 1280, "h": 896, "minArea": 12, "atten": 2, "tier": "box", "index": "mem", "truncated": False}
     assert body(ix, "b", "ckpt") == {
-        **head, "path": "b", "threshold": 0, "nodes": 7, "q": "ckpt",
+        **head, "path": "b", "threshold": 0, "nodes": 6, "q": "ckpt",
         "matches": ["b/u1/ckpt", "b/u2/ckpt"],
         "matched": [{"path": "b/u2/ckpt", "b": 200, "o": 1}, {"path": "b/u1/ckpt", "b": 150, "o": 2}],
+        "matchCount": {"n": 2, "b": 350, "o": 3},
         # `d`: the size-weighted mean write day ((100·20000 + 50·20002 + 200·20006) / 350 = 20003.7).
         "tree": {"n": "b", "k": "dir", "b": 350, "o": 3, "d": 20004, "a": 20010, "cb": {"2": 200}, "us": [["bob", 200], ["alice", 150]], "c": [
             {"n": "u2", "k": "dir", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]], "c": [
-                {"n": "ckpt", "k": "dir", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]], "m": 1, "c": [
-                    {"n": "c.bin", "k": "file", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]]}]}]},
+                {"n": "ckpt", "k": "dir", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]], "m": 1}]},
             {"n": "u1", "k": "dir", "b": 150, "o": 2, "d": 20001, "a": 20010, "us": [["alice", 150]], "c": [
                 {"n": "ckpt", "k": "dir", "b": 150, "o": 2, "d": 20001, "a": 20010, "us": [["alice", 150]], "m": 1, "c": [
                     {"n": "a.bin", "k": "file", "b": 100, "o": 1, "d": 20000, "a": 20010, "us": [["alice", 100]]},
                     {"n": "b.bin", "k": "file", "b": 50, "o": 1, "d": 20002, "us": [["alice", 50]]}]}]}]},
     }
-    # Owner pool: owned, but not by Alice. Her root stays a (zero) node and a
-    # `matched` entry, as the Worker keeps every root.
+    # A root holding one object (`b/u2/ckpt`) is a leaf: nothing inside it is read or drawn.
+    # Owner pool: owned, but not by Alice. Her root stays a (zero) `matched`
+    # entry, and folds out of the tree (zero bytes are under any threshold).
     got = body(ix, "", "ckpt", owner_raw="!alice")
     assert (got["owner"], got["matched"], got["tree"]["b"], got["tree"]["c"][0]["c"]) == (
         {"not": ["alice"]}, [{"path": "b/u2/ckpt", "b": 200, "o": 1}, {"path": "b/u1/ckpt", "b": 0, "o": 0}], 200, [
             {"n": "u2", "k": "dir", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]], "c": [
-                {"n": "ckpt", "k": "dir", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]], "m": 1, "c": [
-                    {"n": "c.bin", "k": "file", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]]}]}]},
-            {"n": "u1", "k": "dir", "b": 0, "o": 0, "c": [{"n": "ckpt", "k": "dir", "b": 0, "o": 0, "m": 1}]},
+                {"n": "ckpt", "k": "dir", "b": 200, "o": 1, "d": 20006, "cb": {"2": 200}, "us": [["bob", 200]], "m": 1}]},
         ],
     )
     # Nothing in scope: the empty view.
@@ -250,23 +249,23 @@ def test_diff_changes(two):
                                           ast=parse_simple("ckpt"), q="ckpt")))
     assert got == {
         "prev": "2026-09-30", "curr": "2026-10-01", "path": "b", "q": "ckpt",
-        # The expanded skeleton (`x`), then the changed frontier by |Δ|.
+        # The expanded skeleton (`x`), then the changed frontier by |Δ|. The one-object roots
+        # (`u2/ckpt`, `u3/ckpt`) are leaves: nothing inside them is read, so they are the frontier.
         "rows": [
             {"p": "u1", "d": 1, "k": "dir", "s": "changed", "a": 150, "b": 170, "oa": 2, "ob": 2, "x": True},
             {"p": "u2", "d": 1, "k": "dir", "s": "changed", "a": 200, "b": 260, "oa": 1, "ob": 1, "x": True},
             {"p": "u3", "d": 1, "k": "dir", "s": "added", "a": 0, "b": 5, "oa": 0, "ob": 1, "x": True},
             {"p": "u1/ckpt", "d": 2, "k": "dir", "s": "changed", "a": 150, "b": 170, "oa": 2, "ob": 2, "x": True},
-            {"p": "u2/ckpt", "d": 2, "k": "dir", "s": "changed", "a": 200, "b": 260, "oa": 1, "ob": 1, "x": True},
-            {"p": "u3/ckpt", "d": 2, "k": "dir", "s": "added", "a": 0, "b": 5, "oa": 0, "ob": 1, "x": True},
             {"p": "u1/ckpt/z.bin", "d": 3, "k": "file", "s": "added", "a": 0, "b": 70, "oa": 0, "ob": 1},
-            {"p": "u2/ckpt/c.bin", "d": 3, "k": "file", "s": "changed", "a": 200, "b": 260, "oa": 1, "ob": 1},
+            {"p": "u2/ckpt", "d": 2, "k": "dir", "s": "changed", "a": 200, "b": 260, "oa": 1, "ob": 1},
             {"p": "u1/ckpt/b.bin", "d": 3, "k": "file", "s": "removed", "a": 50, "b": 0, "oa": 1, "ob": 0},
-            {"p": "u3/ckpt/n.bin", "d": 3, "k": "file", "s": "added", "a": 0, "b": 5, "oa": 0, "ob": 1},
+            {"p": "u3/ckpt", "d": 2, "k": "dir", "s": "added", "a": 0, "b": 5, "oa": 0, "ob": 1},
         ],
         "total_a": 350, "total_b": 435, "objects_a": 3, "objects_b": 4, "threshold": 0, "tier": "box",
         "matched": [{"path": "b/u1/ckpt", "b": 170, "o": 2}, {"path": "b/u2/ckpt", "b": 260, "o": 1}, {"path": "b/u3/ckpt", "b": 5, "o": 1}],
+        "matchCount": {"n": 3, "b": 435, "o": 4},
         # Lookups: the names one side lacks inside its query (`z.bin`, `b.bin`).
-        "expansions": 7, "truncated": False, "lookups": 2, "lookups_capped": False,
+        "expansions": 5, "truncated": False, "lookups": 2, "lookups_capped": False,
     }
 
 
@@ -327,14 +326,15 @@ def test_server(server, own):
     ]
 
 
-def test_fold_past_hard_cap(own, monkeypatch):
-    # Past HARD_CAP match roots, the ones under the forest threshold fold
-    # into their parent (here: all 100 one-byte `f0xx` objects, into
-    # `c/many`, left a leaf); `matches` / `matched` still list every root.
-    monkeypatch.setattr(bv, "HARD_CAP", 10)
+def test_fold_under_threshold(own):
+    # Match roots under their level's threshold fold into their parent (here:
+    # all 100 one-byte `f0xx` objects, into `c/many`, left a leaf), as the
+    # Worker folds them; `matches` / `matched` list every root (≤
+    # `MATCH_LIST_CAP`), `matchCount` sums them.
     g = body(own["ix"], "c", "f0", min_area=5000, w=128, h=128)
-    assert ({k: g[k] for k in ("threshold", "nodes", "folded", "truncated")}, len(g["matches"]), g["matched"][:2], g["tree"]) == (
-        {"threshold": 31, "nodes": 1, "folded": 100, "truncated": False}, 100, [{"path": "c/many/f000", "b": 1, "o": 1}, {"path": "c/many/f001", "b": 1, "o": 1}],
+    assert ({k: g.get(k) for k in ("threshold", "nodes", "truncated", "matchCount", "matchesCapped")}, len(g["matches"]), g["matched"][:2], g["tree"]) == (
+        {"threshold": 31, "nodes": 1, "truncated": False, "matchCount": {"n": 100, "b": 100, "o": 100}, "matchesCapped": None}, 100,
+        [{"path": "c/many/f000", "b": 1, "o": 1}, {"path": "c/many/f001", "b": 1, "o": 1}],
         {"n": "c", "k": "dir", "b": 100, "o": 100, "d": 20000, "c": [{"n": "many", "k": "dir", "b": 100, "o": 100, "d": 20000}]},
     )
 

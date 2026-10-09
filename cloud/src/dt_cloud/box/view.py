@@ -15,10 +15,10 @@ Where the box differs from the Worker, deliberately:
 
 - **Every match is found** (no search budget): no `partial`, `approximate`,
   `firstPaint`; `truncated` is false.
-- **Past `HARD_CAP` match roots** (50K), roots below the forest threshold
-  fold into their parent's `(other)` (counted in `f`) instead of each being
-  drawn; `folded` says how many. `matches` / `matched` still list every
-  root, streamed. Below the cap every root is drawn, as the Worker does.
+- Roots and their synthesized ancestors under their level's threshold fold
+  into their parent's `(other)` (counted in `f`), and a root holding one
+  object is a leaf, as the Worker does; `matches` / `matched` list the drawn
+  roots plus the heaviest others up to `MATCH_LIST_CAP`, with `matchCount`.
 - **Ties** between siblings of equal bytes are ordered by path.
 - **The diff's lookups** are exact point reads with no cap, and a match of
   the store root itself covers every path under it (the Worker's
@@ -46,6 +46,8 @@ ATTEN_DEFAULT = 2
 QUANT = 128
 HARD_CAP = 50_000
 REGION_READS = 24
+# The most match roots a response lists beyond those its tree draws (the Worker's `MATCH_LIST_CAP`).
+MATCH_LIST_CAP = 200
 CHUNK = 1 << 21  # roots aggregated at a time
 LIST_CHUNK = 1 << 16
 CLASS_LETTERS = {"s": "1", "n": "2", "c": "3", "a": "4"}
@@ -524,11 +526,20 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
         return None
     T = float(threshold) if threshold is not None else float(tot.b[0]) * min_area / (w * h)
     # The `(other)` threshold attenuates from the deepest of the read roots
-    # (the Worker reads the REGION_READS heaviest).
-    top = np.argsort(-net_b, kind="stable")[:REGION_READS]
+    # (the Worker reads the REGION_READS heaviest). A root holding one object
+    # has nothing to draw inside: a leaf, never read (the Worker's `readRoots`).
+    # The pixel budget over the forest's own nodes (the Worker's `thrTop`): a
+    # root, or an ancestor holding only roots, under its level's threshold
+    # (attenuated from the view root) folds into its parent's `(other)`.
+    def thr_top(d: np.ndarray) -> np.ndarray:
+        return T * np.power(float(atten), np.maximum(0, d - dP - 1).astype(np.float64))
+
+    fold = not hit
+    draw = np.zeros(len(roots), bool) if hit else net_b >= thr_top(rd)
+    multi = net_o > 1
+    cand = np.flatnonzero(draw & multi)
+    top = cand[np.argsort(-net_b[cand], kind="stable")[:REGION_READS]]
     deepest = int(rd[top].max()) if len(top) else dP
-    fold = (not hit) and len(roots) > HARD_CAP
-    draw = np.zeros(len(roots), bool) if hit else (net_b >= T if fold else np.ones(len(roots), bool))
 
     # Synthesized ancestors between the view root and the roots: Σ net roots
     # under each (the chunks' partial sums merged).
@@ -537,7 +548,7 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
         A_ids, A = u, _concat([y for _, y in anc_parts]).group_sum(g, len(u))
     else:
         A_ids, A = np.zeros(0, np.int64), AggSet.zeros(0)
-    A_draw = (A.b >= T) if fold else np.ones(len(A_ids), bool)
+    A_draw = A.b >= thr_top(ix.depth_of(A_ids).astype(np.int64)) if len(A_ids) else np.zeros(0, bool)
     # Folded direct members per parent: roots and ancestors under the threshold.
     folded_of_id: dict[int, int] = {}
     for ids in (roots[~draw] if not hit else np.zeros(0, np.int64), A_ids[~A_draw]):
@@ -549,8 +560,9 @@ def filter_view(ix: MemIndex, path: str, ast: Ast, *, w: int, h: int, min_area: 
     P2_ids: list[np.ndarray] = []
     P2_sets: list[AggSet] = []
     if not (max_depth is not None and max_depth <= 0):
-        F = np.array([v], np.int64) if hit else roots[draw]
-        Frd = np.array([dP], np.int64) if hit else rd[draw]
+        # (A hit holding one object is a leaf too.)
+        F = (np.array([v], np.int64) if tot.o[0] > 1 else np.zeros(0, np.int64)) if hit else roots[draw & multi]
+        Frd = np.full(len(F), dP, np.int64) if hit else rd[draw & multi]
         while len(F):
             dch = np.where(F < 0, 0, ix.depth_of(np.maximum(F, 0))).astype(np.int64) + 1
             ok = np.ones(len(F), bool) if max_depth is None else dch <= Frd + max_depth
@@ -694,6 +706,16 @@ def match_lists(ix: MemIndex, r: Read) -> dict:
     rank = np.empty(len(order), np.int64)
     rank[order] = np.arange(len(order))
     morder = np.lexsort((rank, -b))
+    count = {"n": len(order), "b": js_round(float(b.sum())), "o": js_round(float(o.sum()))}
+    capped = len(order) > MATCH_LIST_CAP
+    if capped:
+        # The drawn roots always, then the heaviest others up to the cap (`matchLists`).
+        import pyarrow.compute as pc
+
+        drawn = pc.is_in(roots, value_set=pa.array(sorted(r.root_paths), pa.large_string())).to_numpy(zero_copy_only=False)
+        md = drawn[morder]
+        morder = morder[md | (np.cumsum(~md) <= MATCH_LIST_CAP)]
+        order = order[np.isin(order, morder)]
 
     def matches():
         for i in range(0, len(order), LIST_CHUNK):
@@ -705,7 +727,7 @@ def match_lists(ix: MemIndex, r: Read) -> dict:
             ps = roots.take(pa.array(sel)).to_pylist()
             yield [{"path": p, "b": int(bb), "o": int(oo)} for p, bb, oo in zip(ps, b[sel].tolist(), o[sel].tolist())]
 
-    out = {"matches": matches, "matched": matched, "n": len(order)}
+    out = {"matches": matches, "matched": matched, "n": len(order), "count": count, "capped": capped}
     if len(r.excluded):
         ex, eo = _sorted_paths(ix, r.excluded)
 
@@ -740,12 +762,15 @@ def subtree_body(ix: MemIndex, r: Read | None, *, date: str, path: str, w: int, 
     lists = match_lists(ix, r)
     tree = build_tree(r, root_label)
     pre = {**head, "tier": "box", "index": "mem", "threshold": js_round(r.threshold), "nodes": len(r.kept), "truncated": False,
-           **({"folded": r.folded} if r.folded else {}), **({"owner": own} if own else {}), "q": q}
+           **({"owner": own} if own else {}), "q": q}
     s = json.dumps(pre, ensure_ascii=False, separators=(",", ":"))
     yield s[:-1] + ',"matches":'
     yield from _json_list_chunks(lists["matches"]())
     yield ',"matched":'
     yield from _json_list_chunks(lists["matched"]())
+    yield ',"matchCount":' + json.dumps(lists["count"], separators=(",", ":"))
+    if lists["capped"]:
+        yield ',"matchesCapped":true'
     if "excluded" in lists:
         yield ',"excluded":'
         yield from _json_list_chunks(lists["excluded"]())
@@ -829,9 +854,11 @@ def _side_lists(ix: MemIndex, r: Read | None):
     return arr.take(pa.array(order)), r.net_b[order], r.net_o[order]
 
 
-def _matched_union(ixa: MemIndex, va: Read | None, ixb: MemIndex, vb: Read | None) -> Iterator[list]:
+def _matched_union(ixa: MemIndex, va: Read | None, ixb: MemIndex, vb: Read | None) -> tuple[Iterator[list], dict, bool]:
     """Both sides' `matched` by path, the newer side's entry kept for a path
-    in both."""
+    in both; capped as `matchLists` caps it (either side's kept nodes, then
+    the heaviest others up to `MATCH_LIST_CAP`). Returns (chunks, count,
+    capped)."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -846,9 +873,21 @@ def _matched_union(ixa: MemIndex, va: Read | None, ixb: MemIndex, vb: Read | Non
     if len(order) > 1:
         keep[1:] = pc.not_equal(ps.slice(1), ps.slice(0, len(ps) - 1)).to_numpy(zero_copy_only=False)
     sel = order[keep]
-    for i in range(0, len(sel), LIST_CHUNK):
-        s = sel[i : i + LIST_CHUNK]
-        yield [{"path": p, "b": int(x), "o": int(y)} for p, x, y in zip(paths.take(pa.array(s)).to_pylist(), b[s].tolist(), o[s].tolist())]
+    count = {"n": len(sel), "b": js_round(float(b[sel].sum())), "o": js_round(float(o[sel].sum()))}
+    capped = len(sel) > MATCH_LIST_CAP
+    if capped:
+        kept = sorted(set(va.kept if va else ()) | set(vb.kept if vb else ()))
+        drawn = pc.is_in(paths.take(pa.array(sel)), value_set=pa.array(kept, pa.large_string())).to_numpy(zero_copy_only=False)
+        heavy = np.lexsort((np.arange(len(sel)), -b[sel]))  # heaviest first, ties by path
+        dh = drawn[heavy]
+        sel = sel[np.sort(heavy[dh | (np.cumsum(~dh) <= MATCH_LIST_CAP)])]
+
+    def chunks() -> Iterator[list]:
+        for i in range(0, len(sel), LIST_CHUNK):
+            s = sel[i : i + LIST_CHUNK]
+            yield [{"path": p, "b": int(x), "o": int(y)} for p, x, y in zip(paths.take(pa.array(s)).to_pylist(), b[s].tolist(), o[s].tolist())]
+
+    return chunks(), count, capped
 
 
 def diff_body(ixa: MemIndex, ixb: MemIndex, *, prev: str, curr: str, path: str, w: int, h: int, min_area: float, atten: float, top: int,
@@ -953,7 +992,9 @@ def diff_body(ixa: MemIndex, ixb: MemIndex, *, prev: str, curr: str, path: str, 
     skeleton = [r for r in rows if r.get("x")]
     pre = {**head, "rows": skeleton + frontier[:top], **totals}
     s = json.dumps(pre, ensure_ascii=False, separators=(",", ":"))
+    chunks, count, capped = _matched_union(ixa, va, ixb, vb)
     yield s[:-1] + ',"matched":'
-    yield from _json_list_chunks(_matched_union(ixa, va, ixb, vb))
+    yield from _json_list_chunks(chunks)
+    yield ',"matchCount":' + json.dumps(count, separators=(",", ":")) + (',"matchesCapped":true' if capped else "")
     tail = {"expansions": expansions, "truncated": len(frontier) > top, "lookups": lookups, "lookups_capped": False}
     yield "," + json.dumps(tail, separators=(",", ":"))[1:]
