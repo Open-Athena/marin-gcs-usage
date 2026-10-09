@@ -49,7 +49,10 @@ export function caveats(t: { buckets: number; unknown: number }, action: 'assign
   return out
 }
 
-export function BulkBar({ cover, loading, error, scheme, query, canAssign, canStage }: {
+export function BulkBar({ onWant, cover, loading, error, scheme, query, canAssign, canStage }: {
+  /** Set while the matches aren't listed yet (`/api/filter-cover` is fetched on demand): the bar is one
+   *  button that asks for them. */
+  onWant?: () => void
   cover?: FilterCover
   loading?: boolean
   error?: string | null
@@ -74,6 +77,7 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
   const stageT = useMemo(() => actionTargets(kept, scheme, 'stage'), [kept, scheme])
 
   if (!canAssign && !canStage) return null
+  if (onWant) return <span className="bulkbar"><button type="button" className="act" onClick={onWant}>act on the matches…</button></span>
   if (loading) return <span className="bulkbar"><span className="bb-scope">listing the matches…</span></span>
   if (error) return <span className="bulkbar"><span className="bb-warn">Can’t act on the matches: {error}</span></span>
   if (!cover || !cover.roots.n) return null
