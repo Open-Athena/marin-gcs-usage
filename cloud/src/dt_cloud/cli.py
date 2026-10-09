@@ -3358,6 +3358,44 @@ def index_write(age_only: bool, bucket: str | None, mem: str, out_dir: Path, row
     print(json.dumps(s))
 
 
+@main.command("index-recut")
+@option("-c", "--check", is_flag=True, help="Then check the re-cut `bysize`'s root and depth-1 views against per-path sums over the `path` sort (`bysize_check`), printed as `check` in the JSON; exit 1 unless every view is exact")
+@option("-m", "--mem", default="8GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=8, type=int, help="DuckDB threads")
+@option("-r", "--row-group-rows", default=8192, type=int, help="Parquet row-group size of the re-cut sorts (default 8192, the store's)")
+@option("-t", "--tier", "tiers", multiple=True, default=("bysize",), type=Choice(["path", "bysize"]), help="Sorts to re-cut (repeatable; default `bysize`)")
+@option("-W", "--work", type=Path, required=True, help="Local work dir (created; must not exist): the source copy, the cut, DuckDB's spill")
+@argument("src")
+@argument("out")
+def index_recut(check: bool, mem: str, threads: int, row_group_rows: int, tiers: tuple[str, ...], work: Path, src: str, out: str) -> None:
+    """Re-cut a published store generation's sorts from its `path` sort: SRC is
+    the generation dir holding `path-index.parquet`, OUT a new generation dir
+    (local or a URL, e.g. `gs://<bucket>/listing/<scan>/index/<gen>`) that
+    must not hold the sorts yet — nothing published is overwritten. Writes
+    each sort under its served name with its `.groups.json` and
+    `.groups.parquet`; `index-sync -v <variant> -g <gen>` then points the scan
+    at it (spec `bysize-path-total.md`: a labeled `bysize` keyed on the
+    path's total)."""
+    from .index import recut_sorts
+
+    sorts = recut_sorts(src, out, tiers=tiers, work=work, mem=mem, threads=threads, row_group_rows=row_group_rows)
+    res: dict = {"src": src, "out": out, "sorts": sorts}
+    ok = True
+    if check:
+        from .bysize_check import check_views
+
+        con = duckdb.connect()
+        con.execute(f"SET memory_limit='{mem}'; SET threads={threads}; SET temp_directory='{work / '.duckdb-tmp'}'")
+        checks = check_views(str(work / "src.parquet"), str(work / "out" / "path-index-bysize.parquet"), con=con)
+        res["check"] = [{**asdict(c), "exact": c.exact} for c in checks]
+        for c in checks:
+            err(f"check {c.path or '(root)'}: thr {c.thr:,.0f}; {c.equal}/{c.ref_paths} paths exact (candidate {c.cand_paths}); per-slice: {c.slice_short} short + {c.slice_missing} missing, {c.slice_missing_bytes:,} B; {c.groups} groups / {c.rows:,} rows")
+        ok = all(c.exact for c in checks)
+    print(json.dumps(res))
+    if not ok:
+        raise SystemExit(1)
+
+
 @main.command("over-time-groups")
 @option("-b", "--bucket", envvar="DATA_BUCKET", required=True, help="Data bucket the D1 `path` dirs resolve against; default $DATA_BUCKET")
 @option("-g", "--gen", required=True, help="Generation id for the published index dirs (the run's, e.g. the job's $GEN)")

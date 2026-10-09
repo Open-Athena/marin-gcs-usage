@@ -61,8 +61,9 @@ def _site_dir() -> Path:
 INDEX_VERSION_LEGACY = 1
 INDEX_VERSION_STORE = 2
 #: Size column candidates, first present wins (the engine's `groups.SIZE_COLS`):
-#: a store sort's `size`, a legacy index's `b`.
-SIZE_COLS = ("size", "b")
+#: a labeled `bysize`'s path total `tot` (its sort key), a store sort's `size`,
+#: a legacy index's `b`.
+SIZE_COLS = ("tot", "size", "b")
 
 
 def _schema_json(md: "pq.FileMetaData") -> dict:
