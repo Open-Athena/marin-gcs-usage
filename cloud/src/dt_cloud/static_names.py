@@ -800,27 +800,33 @@ class Reader:
         """Per date: `{bucket: [bytes, objects]}` of the first hits live on that scan."""
         key = term.lower()
         hit, io = self.rows(key)
-        hit = [r for r in hit if key in r["path"].rsplit("/", 1)[-1].lower()]
-        answers = {}
-        for d in dates:
-            D = scan_epoch(d) * 1000
-            seen, totals = set(), {}
-            for r in hit:
-                vf, vt = _ms(r["vf"]), _ms(r["vt"])
-                if not (vf <= D < vt) or r["depth"] < 1:
-                    continue
-                k = (r["path"], r["usr"], vf)
-                if k in seen:
-                    continue
-                seen.add(k)
-                parent = r["path"].rsplit("/", 1)[0] if "/" in r["path"] else ""
-                if key in parent.lower():
-                    continue
-                bkt = r["path"].split("/", 1)[0]
-                b_, o_ = totals.get(bkt, (0, 0))
-                totals[bkt] = (b_ + r["size"], o_ + r["n_files"])
-            answers[d] = {k: list(v) for k, v in sorted(totals.items())}
-        return {"q": key, "io": io, "rows_matching": len(hit), "answers": answers}
+        return answer_rows(key, hit, io, dates)
+
+
+def answer_rows(key: str, rows: list[dict], io: dict, dates: list[str]) -> dict:
+    """`Reader.answer` over a literal's range rows (`key` lowercased): the rows whose name contains it, and per
+    date the first hits live on it summed per bucket."""
+    hit = [r for r in rows if key in r["path"].rsplit("/", 1)[-1].lower()]
+    answers = {}
+    for d in dates:
+        D = scan_epoch(d) * 1000
+        seen, totals = set(), {}
+        for r in hit:
+            vf, vt = _ms(r["vf"]), _ms(r["vt"])
+            if not (vf <= D < vt) or r["depth"] < 1:
+                continue
+            k = (r["path"], r["usr"], vf)
+            if k in seen:
+                continue
+            seen.add(k)
+            parent = r["path"].rsplit("/", 1)[0] if "/" in r["path"] else ""
+            if key in parent.lower():
+                continue
+            bkt = r["path"].split("/", 1)[0]
+            b_, o_ = totals.get(bkt, (0, 0))
+            totals[bkt] = (b_ + r["size"], o_ + r["n_files"])
+        answers[d] = {k: list(v) for k, v in sorted(totals.items())}
+    return {"q": key, "io": io, "rows_matching": len(hit), "answers": answers}
 
 
 def _ms(v) -> int:
@@ -1371,7 +1377,9 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
              # the drilldown (static_roots): roots, rollups, their two-level indexes, aliases, meta
              "drill/meta.json", "drill/aliases.parquet", "drill/long/roots/", "drill/long/rollups/", "drill/short/roots/",
              "drill/short/rollups/", "drill/long-roots-index", "drill/long-rollups-index", "drill/short-roots-index",
-             "drill/short-rollups-index")
+             "drill/short-rollups-index",
+             # the daily runs' manifests (`static_append`; a run's own files are copied with `-g GEN/deltas/<run>`)
+             "manifests/")
 
 
 @cli.command("r2-copy")
