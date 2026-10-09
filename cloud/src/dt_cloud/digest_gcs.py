@@ -16,33 +16,11 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
-from .digest import AVATAR_REV, GIB, MINUS, TIB, DigestConfig, Reply, Unit, _pct, _pct_val, _tb, deg, load_window
+from .digest import AVATAR_REV, GIB, MINUS, TIB, DigestConfig, Reply, Unit, _dlink, _pct, _pct_val, _span, _tb, deg, load_window, scan_ts
 
 
 def _usd(v: float) -> str:
     return ("+$" if v >= 0 else f"{MINUS}$") + f"{abs(v):,}"
-
-
-def _yy(scan: str) -> str:
-    """A scan id's compact `?d=` slug — the site's canonical form (`site/src/scanSlug.ts`
-    `encodeScan`): `2026-08-03` → `260803`, `2026-08-03T0601` → `260803-0601`."""
-    day, _, hhmm = scan.partition("T")
-    return day[2:].replace("-", "") + (f"-{hhmm}" if hhmm else "")
-
-
-def _when(scan: str) -> dt.datetime:
-    """A scan id's instant (UTC); a date-only id reads as its midnight."""
-    day, _, hhmm = scan.partition("T")
-    d = dt.date.fromisoformat(day)
-    return dt.datetime(d.year, d.month, d.day, int(hhmm[:2] or 0), int(hhmm[2:] or 0), tzinfo=dt.timezone.utc)
-
-
-def _span(end: str, base: str | dt.datetime) -> str:
-    """The `?d=<end>-<span>` look-back from ``base`` to ``end``: `Nd`, with an
-    `Nh` remainder when sub-daily scans make it a fractional day."""
-    secs = (_when(end) - (base if isinstance(base, dt.datetime) else _when(base))).total_seconds()
-    days, hours = divmod(round(secs / 3600), 24)
-    return (f"{days}d" if days else "") + (f"{hours}h" if hours else "") or "0h"
 
 
 @dataclass(frozen=True)
@@ -124,11 +102,11 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, cfg: DigestC
     last_mon = list(weeks)[-1]
     # the lead-in scan (sliced off `rows`, named by the first row's `prev`) is
     # the first week's baseline; absent one, a day before the first row
-    base: str | dt.datetime = rows[0].prev or _when(rows[0].date) - dt.timedelta(days=1)
+    base = scan_ts(rows[0].prev) if rows[0].prev else scan_ts(rows[0].date) - dt.timedelta(days=1)
     for mon, ws in weeks.items():
         end = ws[-1]
         b_tb, b_cost = (prev_end.tb, prev_end.cost) if prev_end is not None else (base_tb, base_cost)
-        b_scan = prev_end.date if prev_end is not None else base
+        b_at = scan_ts(prev_end.date) if prev_end is not None else base
         wdtb = end.tb - b_tb
         wpct = wdtb / b_tb * 100 if b_tb else 0
         partial = " _(partial)_" if len({w.day for w in ws}) < 7 and mon == last_mon else ""
@@ -137,7 +115,7 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, cfg: DigestC
         # size-over-time chart, where the week shows as the highlighted window
         # with the Diff section right below it
         lines.append(
-            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_yy(end.date)}-{_span(end.date, b_scan)}#over-time){partial} — "
+            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_dlink(end.date)}-{_span(b_at, scan_ts(end.date))}#over-time){partial} — "
             f"**{end.tb:,.0f} TB** ({_tb(wdtb)}, {_pct(wdtb, end.tb)}%) · ${end.cost:,}/mo ({_usd(end.cost - b_cost)})"
         )
         prev_end = end
@@ -175,12 +153,12 @@ def reply(r: Scan, cfg: DigestConfig, platform: str = "slack") -> Reply:
     # ↗︎ = NE arrow + text-presentation selector: renders as a font
     # glyph in link colour (bare ↗ gets emoji-ized by Slack into the
     # cartoonish :arrow_upper_right:)
-    url = f"{cfg.site_url}/?d={_yy(r.date)}#diff"
+    url = f"{cfg.site_url}/?d={_dlink(r.date)}#diff"
     link = f"· [view →]({url})" if platform == "discord" else f"[↗︎]({url})"
     body = f"${r.cost:,}/mo ({_usd(dcost)}) {link}"
     # project the scan's Δ% over its real interval to a weekly rate (a day: ×7)
     # (a daily scan keeps the fixed ×7 even across a missed day)
-    hours = (_when(r.date) - _when(r.prev)).total_seconds() / 3600 if r.prev and "T" in r.date + r.prev else 24
+    hours = (scan_ts(r.date) - scan_ts(r.prev)).total_seconds() / 3600 if r.prev and "T" in r.date + r.prev else 24
     avatar = f"{cfg.need('icons_base')}/arrows/av_deg{deg(_pct_val(dtb, r.tb), 168 / hours if hours > 0 else 7)}.png?v={AVATAR_REV}"
     return Reply(sender, body, icon_url=avatar)
 

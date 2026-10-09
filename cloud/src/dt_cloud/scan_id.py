@@ -15,6 +15,10 @@ from pathlib import Path
 SCAN_ID = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2}))?")
 
 
+# A published scan's `meta.json` path (`…/<scan id>/meta.json`); group 1 is the id.
+META_PATH = re.compile(rf"/({SCAN_ID.pattern})/meta\.json$")
+
+
 def is_scan_id(value: object) -> bool:
     """A full, calendar-valid scan id (``YYYY-MM-DD`` or ``YYYY-MM-DDTHHMM``)."""
     if not isinstance(value, str) or not (m := SCAN_ID.fullmatch(value)):
@@ -44,6 +48,24 @@ def scan_id_option(ctx, param, value):  # noqa: ANN001 — a click callback
         return check_scan_id(value)
     except ValueError as e:
         raise BadParameter(str(e)) from None
+
+
+def scan_time(scan: str) -> dt.datetime:
+    """A scan id's UTC instant; a date-only id reads as its midnight (`site/src/scanSlug.ts` `scanTime`)."""
+    if not (m := SCAN_ID.fullmatch(scan)):
+        raise ValueError(f"not a scan id: {scan!r}")
+    y, mo, d, hh, mm = m.groups()
+    return dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mm or 0), tzinfo=dt.timezone.utc)
+
+
+def scan_slug(scan: str) -> str:
+    """A scan id's canonical `?d=` slug (`scanSlug.ts` `encodeScan`): the year's
+    leading `20` dropped, `-` before the time — `2026-09-15T0001` → `260915-0001`,
+    `2026-09-15` → `260915`."""
+    if not (m := SCAN_ID.fullmatch(scan)):
+        raise ValueError(f"not a scan id: {scan!r}")
+    y, mo, d, hh, mm = m.groups()
+    return f"{y[2:]}{mo}{d}" + (f"-{hh}{mm}" if hh else "")
 
 
 def latest_scan(prefix: str, scans: list[str]) -> str | None:
