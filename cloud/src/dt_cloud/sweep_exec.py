@@ -144,12 +144,49 @@ def delete_batch(client, bkt, blobs: list) -> list[tuple[object, str]]:
     return [(blob, settled.get(id(blob), "delete_failed")) for blob in blobs]
 
 
-def list_roots(dirs: set[str], approved: tuple[str, ...], bucket: str) -> list[str]:
+def exact_only_dirs(approved: tuple[str, ...], approved_objects: tuple[str, ...], bucket: str) -> set[str]:
+    """The dirs (``a/b``, ``''`` = bucket root) of the bucket's exact items
+    (specs/file-assign.md) that no prefix band covers: there only the exact
+    keys are eligible, so a new sibling is not drift and the dir is its own
+    listing root."""
+    pre = f"gs://{bucket}/"
+    bands = [a for a in approved if a.startswith(pre)]
+    out: set[str] = set()
+    for o in approved_objects:
+        if not o.startswith(pre):
+            continue
+        dn = o[len(pre):].rpartition("/")[0]
+        if not any(f"{pre}{dn}/".startswith(b) for b in bands):
+            out.add(dn)
+    return out
+
+
+def band_namer(approved: tuple[str, ...], approved_objects: tuple[str, ...]):
+    """``band(bucket, dn, name)``: the band a decision row is accounted to — its
+    exact item when ``gs://bucket/name`` is one, else the longest approved
+    prefix covering its dir (its top-level segment when none does)."""
+    exact = set(approved_objects)
+
+    def band(bucket: str, dn: str, name: str | None = None) -> str:
+        if name is not None and f"gs://{bucket}/{name}" in exact:
+            return f"gs://{bucket}/{name}"
+        p = f"gs://{bucket}/{dn}/" if dn else f"gs://{bucket}/"
+        hits = [a for a in approved if p.startswith(a)]
+        if hits:
+            return max(hits, key=len)
+        top = dn.split("/", 1)[0] if dn else ""
+        return f"gs://{bucket}/{top}/" if top else f"gs://{bucket}/"
+
+    return band
+
+
+def list_roots(dirs: set[str], approved: tuple[str, ...], bucket: str, exact_dirs: set[str] = frozenset()) -> list[str]:
     """Prefix-free listing roots covering every manifest dir: each dir cut to
     one segment below its band (its top-level segment when no band covers
     it), so a band fans out into its children's listings; a dir that *is* its
     band (or a root's ancestor) becomes the root itself and swallows the
-    deeper ones. `''` = the whole bucket."""
+    deeper ones. An exact-only dir (``exact_dirs``) is its own root. `''` =
+    the whole bucket."""
     root_of_band: dict[str, int] = {}
     for a in approved:
         pre = f"gs://{bucket}/"
@@ -159,6 +196,9 @@ def list_roots(dirs: set[str], approved: tuple[str, ...], bucket: str) -> list[s
     roots: set[str] = set()
     for dn in dirs:
         hit = max((r for r in root_of_band if dn == r or (dn.startswith(r + "/") if r else True)), key=len, default=None)
+        if hit is None and dn in exact_dirs:
+            roots.add(dn)
+            continue
         depth = root_of_band[hit] if hit is not None else 0
         roots.add("/".join(dn.split("/")[: depth + 1]) if dn else "")
     out = sorted(roots)
@@ -241,14 +281,8 @@ def execute_plan(
         raise ValueError("diagnostic manifests cannot be used for real deletion")
     client = client or storage.Client()
     approved = tuple(plan.get("approved") or ())
-
-    def band_of(bucket: str, dn: str) -> str:
-        p = f"gs://{bucket}/{dn}/" if dn else f"gs://{bucket}/"
-        hits = [a for a in approved if p.startswith(a)]
-        if hits:
-            return max(hits, key=len)
-        top = dn.split("/", 1)[0] if dn else ""
-        return f"gs://{bucket}/{top}/" if top else f"gs://{bucket}/"
+    approved_objects = tuple(plan.get("approved_objects") or ())
+    band_of = band_namer(approved, approved_objects)
 
     mode = "deleted" if for_real else "would-delete"
     summary: dict = {"plan": plan_dir, "for_real": for_real, "drift": drift, "buckets": {}}
@@ -363,7 +397,11 @@ def execute_plan(
         # buffered until the listing has moved past it (its keys are contiguous
         # under `dn/`, nested dirs form a stack), and only then deleted — drift
         # discovered late still gates the whole directory.
-        roots = list_roots(dirs_all, approved, bucket)
+        # An exact-only dir holds no prefix band: only its exact keys are
+        # eligible, so a live sibling there is not drift (specs/file-assign.md).
+        exact_dirs = exact_only_dirs(approved, approved_objects, bucket)
+        drift_scope = dirs_all - exact_dirs
+        roots = list_roots(dirs_all, approved, bucket, exact_dirs)
 
         def root_count(root: str) -> int:
             lo, hi = _bisect(root + "/") if root else (0, len(order))
@@ -457,7 +495,7 @@ def execute_plan(
                     else:
                         p["todo"].append(blob)
                     w = next(want, None)
-                elif dn in dirs_all:
+                elif dn in drift_scope:
                     p = ensure(dn)
                     p["extra_o"] += 1
                     p["extra_b"] += blob.size or 0
@@ -570,12 +608,12 @@ def execute_plan(
                         roots_skipped += 1
                         continue
                     for dn, out, drifted, dbytes in done:
-                        band = bands.setdefault(band_of(bucket, dn), Counter())
                         if drifted:
                             drift_dirs.append(drifted)
-                            band["drift_new_objects"] += drifted["new_objects"]
+                            bands.setdefault(band_of(bucket, dn), Counter())["drift_new_objects"] += drifted["new_objects"]
                         total_deleted_b += dbytes
-                        for _name, size, _gen, decision, _dn in out:
+                        for name, size, _gen, decision, _dn in out:
+                            band = bands.setdefault(band_of(bucket, dn, name), Counter())
                             counts[decision] += 1
                             if decision == "delete":
                                 band["bytes"] += size
@@ -891,13 +929,7 @@ def undo_run(
                 )
             windows[bucket] = (after, before)
 
-    def band_of(bucket: str, dn: str) -> str:
-        p = f"gs://{bucket}/{dn}/" if dn else f"gs://{bucket}/"
-        hits = [a for a in approved if p.startswith(a)]
-        if hits:
-            return max(hits, key=len)
-        top = dn.split("/", 1)[0] if dn else ""
-        return f"gs://{bucket}/{top}/" if top else f"gs://{bucket}/"
+    band_of = band_namer(approved, tuple(plan.get("approved_objects") or ()))
 
     def wanted(bucket: str, name: str) -> bool:
         if not prefixes:
@@ -962,7 +994,7 @@ def undo_run(
         bands: dict[str, Counter] = {}
         restored_b = 0
         for r in rows:
-            band = bands.setdefault(band_of(bucket, r["dir"]), Counter())
+            band = bands.setdefault(band_of(bucket, r["dir"], r["name"]), Counter())
             band[r["decision"]] += 1
             if r["decision"] in ("restored", "bulk_restored"):
                 restored_b += r["size_bytes"]
