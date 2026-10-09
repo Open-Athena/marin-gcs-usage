@@ -80,6 +80,11 @@ export interface Env {
   FILTER_PHASE2_MS?: string
   /** Worker-served indexes (the static name index's suffix shards and catalog). */
   INDEX_R2?: R2Bucket
+  /** `intervals`: the dates `INTERVAL_STORE_GEN` holds read their path store from the change-interval
+   *  store on `INDEX_R2` (`index.ts` `openInterval`, specs/interval-store.md); unset = per-scan stores. */
+  PATH_STORE?: string
+  /** The interval store generation (`interval-store/<gen>/` on `INDEX_R2`). */
+  INTERVAL_STORE_GEN?: string
   STORE_ACCESS_KEY_ID?: string
   STORE_SECRET_ACCESS_KEY?: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */

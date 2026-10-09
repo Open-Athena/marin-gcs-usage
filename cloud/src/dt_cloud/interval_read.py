@@ -184,7 +184,7 @@ def tree(path: str, root: Agg, kept: dict[str, Agg], thr_at, root_name: str = "a
         kids.setdefault(par if par in kept else path, []).append(p)
 
     def build(p: str, a: Agg) -> dict:
-        n = node(root_name if p == path else p.rsplit("/", 1)[-1], a)
+        n = node(root_name if p == "" else p.rsplit("/", 1)[-1], a)
         cps = kids.get(p, [])
         if not cps:
             return n
@@ -199,10 +199,16 @@ def tree(path: str, root: Agg, kept: dict[str, Agg], thr_at, root_name: str = "a
     return build(path, root)
 
 
+def canon(n: dict) -> str:
+    """A node without its children as canonical JSON (sorted keys, compact): what orders siblings that tie
+    on bytes and name (`intervalStore.test.ts` `canon` is the same)."""
+    return json.dumps({k: v for k, v in n.items() if k != "c"}, sort_keys=True, separators=(",", ":"))
+
+
 def flatten(t: dict) -> dict[str, dict]:
     """A tree as `{key: node-without-children}`, keyed by the names from the root (an `(other)` under its
     parent). A tile whose parent isn't drawn hangs off the root, so two such tiles can share a key: the
-    later ones get `#2`, `#3`… in their siblings' order (bytes, then name)."""
+    later ones get `#2`, `#3`… in their siblings' order (bytes, name, then `canon`)."""
     out: dict[str, dict] = {}
 
     def rec(n: dict, p: str) -> None:
@@ -211,7 +217,7 @@ def flatten(t: dict) -> dict[str, dict]:
             i += 1
             k = f"{p}#{i}"
         out[k] = {x: v for x, v in n.items() if x != "c"}
-        for c in sorted(n.get("c", []), key=lambda c: (-c["b"], c["n"], json.dumps(c, sort_keys=True))):
+        for c in sorted(n.get("c", []), key=lambda c: (-c["b"], c["n"], canon(c))):
             rec(c, f"{p}/{c['n']}")
 
     rec(t, "")

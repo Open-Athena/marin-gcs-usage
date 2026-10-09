@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -241,6 +241,7 @@ function merge(a: Agg, r: Row): void {
   if (r.cls3) a.cb['3'] = (a.cb['3'] ?? 0) + r.cls3
   if (r.cls4) a.cb['4'] = (a.cb['4'] ?? 0) + r.cls4
   if (r.usr) a.ub[r.usr] = (a.ub[r.usr] ?? 0) + r.size
+  if (r.us) for (const u in r.us) a.ub[u] = (a.ub[u] ?? 0) + r.us[u]
   a.kind = r.kind
   if (r.n_children != null) a.nc = r.n_children
   if (r.n_desc != null) a.nd = r.n_desc
@@ -434,7 +435,8 @@ export async function readRootRows(env: Env, date: string): Promise<{ path: stri
   return [...by.values()]
 }
 
-export async function readRootAgg(env: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
+export async function readRootAgg(env0: Env, o: { date: string; path: string; lens?: Lens; owner?: OwnerScope; by?: string; classes?: ClassScope }): Promise<{ b: number; o: number } | null> {
+  const env = sliced(env0, o)
   const { date, path, lens, owner, classes } = o
   const dP = path === '' ? 0 : path.split('/').length
   const readRoot = (idx: IndexHandle, l?: Lens) =>
@@ -1230,6 +1232,18 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     }
   }
   }
+  // The interval store keeps read days in their own sort (specs/interval-store.md §2.2): the tiles' and
+  // the root's, looked up as of the scan.
+  if (plain && idx.asOf != null) {
+    t0 = performance.now()
+    const rootPaths = path === '' ? [...new Set(rootRows.map(r => r.path))] : [path]
+    const lr = await ivLastRead(env, date, [...aggs.keys(), ...rootPaths])
+    for (const [p, a] of aggs) { const d = lr.get(p); if (d != null) a.a = d }
+    let ra: number | null = null
+    for (const p of rootPaths) { const d = lr.get(p); if (d != null) ra = ra == null ? d : Math.max(ra, d) }
+    rootAgg.a = ra
+    tr?.('reads', performance.now() - t0, `${lr.size}`)
+  }
   let matches: string[] | undefined
   if (query) {
     // Only a claims fold filters a partial read; a view root the query matches is matched whole.
@@ -1427,7 +1441,11 @@ function kidsIndex(kept: Map<string, Agg>, path: string): Map<string, string[]> 
 /** The store root's crumb label: `ROOT_LABEL` (wrangler var) per deployment. */
 const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 'all buckets' : path.split('/').pop()!)
 
-export async function buildView(env: Env, o: ViewOpts): Promise<View> {
+/** A read scoped by owner or class needs owner-slice rows: per-scan stores (`perScan`). */
+const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? perScan(env) : env)
+
+export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
+  const env = sliced(env0, o)
   const { path, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const cov: Coverage = {}
@@ -1576,7 +1594,8 @@ function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable
  * it exists there it shows with its real size (it crossed the floor), else
  * it was added / removed. `(other)` is parent − Σ named on each side, so its
  * Δ is the sub-floor churn, truthfully. */
-export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
+export async function buildDiff(env0: Env, o: DiffOpts): Promise<Diff> {
+  const env = sliced(env0, o)
   const { from, to, path, lens, owner, query } = o
   const dP = path === '' ? 0 : path.split('/').length
   const tr = o.trace
