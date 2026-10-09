@@ -63,32 +63,29 @@ The map's `?d=` already canonicalizes to the compact form (`261002`, `261002-120
     - The covered list comes from `/api/filter-scans`; the pieces are `floatingScan`, `selectScan` and `pendingNote`.
     - Checked on dev only with every scan indexed: T1236 was already appended, so no note showed. The "newest scan unindexed" case is covered by tests only.
 
-### Left
-1. **Real start times for date-only scans (coordinator's preferred design over midnight).**
-   - The design:
-     - A date-only scan's effective time is its real start, about 04:30Z for 2026-10-09.
-     - Its canonical slug is that minute (`2610090430`), and the hour/minute slugs match it.
-     - `261009` stays the day's latest scan by real time.
-     - Pickers, nearest-scan links and labels use it, and the id stays `2026-10-09`.
-     - When the time is unknown, fall back to the midnight form above.
-   - Where the time is recorded: each bucket listing's `listing/<id>/<bucket>/_SUCCESS.json` carries `started` (`disk_tree/find/bulk*.py`); the scan's start is the earliest across its buckets.
-     - `meta.json` has only `published` (the end of the job).
-     - The `index_schema.gen` stamp is the time the job started, but a reprocess re-stamps it, so it isn't the scan's time.
-   - Suggested plan:
-     - `path-index` writes `meta.started` (the earliest listing `started`).
-     - A backfill command stamps existing metas; the gcs session runs it, since it writes GCS.
-     - The scan-list API exposes `started` for date-only scans on days with more than one scan. Only those need it; a single-scan day's `261009` is already unique.
-     - `scanKey` takes that time where it's known, and so do the TS and Python resolvers and `scanArg`. `scanArg` needs it outside D1, from meta.
-2. **Dropdown (`ScanCombobox`, `ScanPicker`, the `?d=` disambiguation strip):**
-   - On a day with more than one scan, every row is a time. The date-only row shows its real start (2026-10-09 → local "12:30a"), or "(time unknown)" when there's none.
-   - Order the rows by real time.
-   - A single-scan day keeps "10/8".
-   - Pinning the date-only row must pin exactly it. `fdfe3df2` makes `setDP` write `2610090000`; confirm on dev in Chrome, which hasn't been done yet.
-3. **The `26100900` no-match links:** fixed under the midnight design (tests in `scanSlug.test.ts` and `noScanMatch.test.ts`). Re-key them to the real time with item 1.
-4. **Timezone leak** ("no scan matches date=2026-10-09T0836"):
-   - No client path builds an id from local time (`fmtScan` is display-only; `dateOfX` and the pickers pass UTC ids).
-   - Not reproduced yet. Check on dev with the network panel open: the 8:36a entry, the diff pin, the dropdown and the brush.
-5. **The disambiguation strip** ("?d=261009 matches 2 scans"): its buttons call `setDP(id)`, which is exact since `fdfe3df2`; verify on dev.
+### Done on `scan-times` (2026-10-09)
+Items 1–3 below are implemented; 4 isn't reproduced; 5 is verified.
+- **A date-only scan's start (items 1 and 3).**
+  - `path-index` writes `meta.started`: the earliest `started` across the listing `_SUCCESS.json` markers beside its `-l` globs (`dt_cloud/scan_started.py` `listing_started`).
+  - `dt-cloud stamp-started ROOT [SCANS…]` back-stamps the existing metas. By default it stamps date-only ids; `-a` adds timed ids, and `-n` is a dry run. It skips a meta that already has `started`, or whose markers carry none (before 2026-09-08).
+  - The key (`scanKey(id, times)`) is the start minute when it's known (`ScanTimes`, from `startKey`), else midnight. Midnight stays an alias, so `…0000` links keep resolving.
+  - The key drives every resolver, `exactSlug`, the ordering (`sortScans`/`scanCmp`), the nearest-scan links and the size chart's x. Only date-only scans that share their day need a start (`timesNeeded`), and a start on another UTC day is ignored.
+  - Client: `useScanTimes` reads those metas through the page's own `['meta', store, id]` query. Functions: `scanArg` resolves a slug among its day's scans with `_lib/scanTimes.ts`, as does the OG resolver. Python: `scan_key`, `scan_slug`, `latest_scan` and `resolve_slug` take `times`, and `healthcheck -d` reads the needed metas.
+  - The dry run against `gs://oa-gcs-usage-dvx` covered 71 date-only scans: 32 to stamp (2026-09-08 through 10-09; 10/9 → `2026-10-09T04:31:04.542Z`, slug `2610090431`) and 39 with no `started` in their markers. **To apply (gcs session):** `dt-cloud stamp-started gs://oa-gcs-usage-dvx`.
+- **The dropdown (item 2).**
+  - `useScan` returns the scans sorted by time, plus `times` and a `label` (`scanLabeler`).
+  - On a shared day, every row is a time: the date-only one shows its start ("12:31a"), or "(time unknown)" until the backfill runs. A single-scan day keeps "10/8".
+  - The label is used by `ScanCombobox`, `ScanPicker`, both disambiguation strips, `NoScanMatch`, the diff labels and the chart tooltip.
+  - The chart's pick and brush hand back the exact scan id under the point. A date-only id used to read as its whole day, so it picked the day's latest scan.
+- **Checked on dev** (gcs + `scan-times`, `dev.gcs.oa.dev`, prod data without the backfill):
+  - Unknown-time path, live: the 10/9 group reads "8:36a ✓ / (time unknown)", and picking the latter pins `?d=2610090000` and shows it. The strip reads "10/9 8:36a · 10/9 (time unknown)"; its buttons pin `2610090000`, and the newest floats.
+  - The end pin writes `2610091236`, and the start pin writes `2610090000` (or `2610080000`). A chart pick on the date-only point pins `2610090000`. The 26100905 miss offers "← 10/9 (time unknown) · 10/9 8:36a →".
+  - Known-time path: the start was injected into the page's query cache (a client-only fixture; prod metas aren't stamped). The rows read "8:36a / 12:31a", picking 12:31a pins `?d=2610090431`, the strip reads "10/9 8:36a · 10/9 12:31a", and the miss links read "← 10/9 12:31a" (`2610090431`).
+  - Not checked live: the server's `d=` resolution by start (`scanArg`, OG). Unit tests cover both, and they work once the metas are stamped.
+- **Item 4 (the "date=2026-10-09T0836" leak): not reproduced.** Covered on dev: the 8:36a entry, the end and start pins, both dropdowns, the brush and a chart pick. No request or URL carried `0836`, and there were no 4xx responses. No client path builds an id from local time: `dateOfX` is UTC, and picks now return exact ids.
+
+### Still open
+- `/names` (`NamePage`) keeps the midnight form for a date-only scan. It resolves, but isn't labelled by the start.
 
 ### Throwaway worktrees and branches to delete
-`wt/scan-slug-gcs` (`scan-slug-gcs`), `wt/scan-slug-2-gcs` (`scan-slug-2-gcs`) and `wt/scan-slug-3-gcs` (`scan-slug-3-gcs`; the current dev deploy, `gcs-dev` → 906c1102c), plus the merged `wt/scan-slug` and `wt/scan-slug-2`.
+`wt/scan-slug-gcs` (`scan-slug-gcs`), `wt/scan-slug-2-gcs` (`scan-slug-2-gcs`) and `wt/scan-slug-3-gcs` (`scan-slug-3-gcs`), plus the merged `wt/scan-slug` and `wt/scan-slug-2`. The current dev deploy is `gcs-dev` → `78d13f6a` (gcs + `scan-times`; its throwaway worktree and branch are already deleted).
