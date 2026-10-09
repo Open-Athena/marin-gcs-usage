@@ -39,7 +39,9 @@ import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import { canvasWidth } from './canvas'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, fromMiss, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { hrefWithScan, NoScanMatch } from './NoScanMatch'
+import { selOf } from './scanSlug'
 import { SizeOverTime } from './SizeOverTime'
 import { useStore, useStoreFetch } from './store'
 import { perf } from './perf'
@@ -167,7 +169,7 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/done/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
-  const { asof, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store)
+  const { asof, miss, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store)
   const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
@@ -314,9 +316,11 @@ function AppContent() {
   const spanScan = span && asof ? nearestScan(earlier, scanTime(asof) - span) : null
   // A pinned start (`from`) wins over a look-back span; both fall back to the
   // immediately-previous scan. `from` is a slug: the latest earlier scan it
-  // matches (the resolver), else the earlier scan nearest its instant.
-  const fromScan = from && asof ? latestScan(from, earlier) ?? nearestScan(earlier, scanTime(from)) : null
-  const diffPrev = fromScan ?? spanScan ?? prevScan
+  // matches (the resolver). One matching none is a miss — the diff says so
+  // and draws nothing, never the nearest scan instead.
+  const fromScan = from && asof ? latestScan(from, earlier) : null
+  const startMiss = useMemo(() => fromMiss(from, asof, scans), [from, asof, scans])
+  const diffPrev = startMiss ? null : fromScan ?? spanScan ?? prevScan
   // Hour-rounded span back from `to` — the previous scan clears it, anything
   // else round-trips as its own span (nearest-scan resolution recovers it,
   // and the link keeps following `latest`).
@@ -1258,6 +1262,8 @@ function AppContent() {
             /></div>
           )}
         </>
+      ) : miss ? (
+        <NoScanMatch miss={miss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan)} />
       ) : rootErr ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
@@ -1299,6 +1305,11 @@ function AppContent() {
         window={diffWindow}
       />
 
+      {startMiss && (
+        <section id="diff">
+          <NoScanMatch what="diff start" miss={startMiss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false)} />
+        </section>
+      )}
       {asof && diffPrev && (
         <section id="diff">
           <h2>Diff{diff && (

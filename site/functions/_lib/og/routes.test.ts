@@ -38,13 +38,16 @@ describe('the card view keys the scan by the canonical ?d= (legacy and ISO spell
   it.each([
     ['/?d=261009', '261009'],
     ['/?d=2026-10-09', '261009'],
-    ['/?d=2026-10-09T1200', '261009-1200'],
+    ['/?d=2026-10-09T1200', '2610091200'],
+    ['/?d=261009-1200', '2610091200'],
+    ['/?d=26100912', '26100912'],
     ['/?date=2026-10-09', '261009'],
     ['/?date=2026-10-09&from=2026-10-05', '261009-261005'],
-    ['/users?date=2026-10-09T0601', '261009-0601'],
+    ['/users?date=2026-10-09T0601', '2610090601'],
     ['/user/alice?d=2026-10-06', '261006'],
-    ['/assignments?d=261009-12', '261009-12'],
-    ['/?d=junk', undefined],
+    ['/assignments?d=261009-12', '26100912'],
+    // unparseable: kept verbatim, so the card is a miss (404), not the latest scan
+    ['/?d=junk', 'junk'],
   ])('%s → d=%s', (path, d) => {
     expect(pv(path)?.params.d).toBe(d)
   })
