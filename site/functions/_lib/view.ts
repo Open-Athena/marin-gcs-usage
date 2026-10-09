@@ -31,7 +31,7 @@
 import type { Env } from './auth.js'
 import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
-import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
+import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
 import { type SearchFound, type SearchLimits, searchRoots } from './search.js'
 import { planNegative, planPositive } from './searchQuery.js'
@@ -800,8 +800,20 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         return rollupRead(env, o, shits.rollup, { dP, rootAll, idx, details: h, trace: tr })
       }
       if (shits) {
-        p1 = aggregateHits(shits.hits)
-        roots = [...p1.depth.keys()].sort()
+        // Per isolate: the same held hits, scan and owner scope aggregate the same (a view's first paint,
+        // its full read, a diff's sides and floors, other canvases).
+        const memoKey = `${date}\0${owner ? ownerKey(owner) : ''}`
+        let byHits = staticPhase1.get(shits.hits!)
+        if (!byHits) staticPhase1.set(shits.hits!, (byHits = new Map()))
+        let m = byHits.get(memoKey)
+        if (!m) {
+          const agg = aggregateHits(shits.hits!)
+          m = { p1: agg, roots: [...agg.depth.keys()].sort() }
+          byHits.set(memoKey, m)
+          if (byHits.size > 8) byHits.delete(byHits.keys().next().value!)
+        }
+        p1 = m.p1
+        roots = m.roots
         p1Tier = shits.io.from === 'drill' ? 'drill' : 'static'
         staticRoots = true
       }
@@ -1049,7 +1061,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       for (const [r, m] of d.mine) {
         const a = rootAggOf.get(r)
         if (!a) continue
-        a.kind = m.kind; a.wts = m.wts; a.wb = m.wb; a.a = m.a; a.cb = m.cb; a.nc = m.nc; a.nd = m.nd
+        // A copy: phase 1's aggregates may be the isolate's (`staticPhase1`), shared across views.
+        rootAggOf.set(r, { ...a, kind: m.kind, wts: m.wts, wb: m.wb, a: m.a, cb: m.cb, nc: m.nc, nd: m.nd })
       }
       tr?.('details', performance.now() - t0, String(d.mine.size))
       netOf.clear()
@@ -1421,6 +1434,10 @@ export function capTiles(kept: Map<string, { b: number }>, depth: Map<string, nu
 /** Assigned regions read (largest first) per lens view; the rest are
  * manifest-valued leaves. Two span queries' worth of rects. */
 const REGION_READS = 24
+/** Phase 1 of a static literal's view per isolate: the held hits array (`staticFilter.ts` keeps it while the
+ *  literal is held) → per scan and owner scope, its aggregates and sorted roots. Read-only once built. */
+const staticPhase1 = new WeakMap<Hit[], Map<string, { p1: { all: Map<string, Agg>; mine: Map<string, Agg>; depth: Map<string, number> }; roots: string[] }>>()
+
 /** Static match roots whose own rows (kind, ages, classes) are looked up per view, heaviest first. */
 const ROOT_DETAILS = 48
 /** …from at most this many row groups (wider declines after the span plan, fetching nothing): the lookups
