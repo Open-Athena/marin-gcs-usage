@@ -1395,7 +1395,11 @@ def verify_intervals_cmd(bucket, gen, only, ch_tsv) -> None:
 #: What the Worker reads (`r2-copy`): the shards, their sidecars, the plan and scans, and the catalog's served files
 #: (not its census or per-shard cells).
 R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", "catalog/cells.parquet", "catalog/index.parquet",
-             "catalog/meta.json", "catalog/members.json")
+             "catalog/meta.json", "catalog/members.json",
+             # the drilldown (static_roots): roots, rollups, their two-level indexes, aliases, meta
+             "drill/meta.json", "drill/aliases.parquet", "drill/long/roots/", "drill/long/rollups/", "drill/short/roots/",
+             "drill/short/rollups/", "drill/long-roots-index", "drill/long-rollups-index", "drill/short-roots-index",
+             "drill/short-rollups-index")
 
 
 @cli.command("r2-copy")
