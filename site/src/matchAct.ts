@@ -29,16 +29,14 @@ export function caveats(t: { buckets: number; unknown: number }, action: ActKind
   return out
 }
 
-/** Past this many items an action asks first (the bulk bar always asks: it has the review list; a table row
- *  asks for anything but the one item its label names, `ActDeps.shown`). */
+/** Past this many items a row's action asks first (the bulk bar always asks: it has the review list). */
 export const CONFIRM_OVER = 50
 
 export type ActState =
   | { s: 'idle' }
   /** Listing the matches (`/api/filter-cover`, or the cached slice): a spinner. */
   | { s: 'resolving'; req: ActReq }
-  /** Large, a whole bucket's assignment, or a row's items not just the one its label names: what it will
-   *  send, and a confirm. */
+  /** Large (or a whole bucket's assignment): what it will send, and a confirm. */
   | { s: 'confirm'; req: ActReq; got: Resolved }
   /** Sending: `batch` of `batches` POSTs done (a bar when there are several, else a spinner). */
   | { s: 'sending'; req: ActReq; t: Targets; batch: number; batches: number }
@@ -64,9 +62,6 @@ export interface ActDeps {
   asOf?: () => string | null | undefined
   /** Ask before every send, not just large ones. */
   alwaysConfirm?: boolean
-  /** A table row's action: the path its label names (below the store root). Anything but exactly one item at
-   *  or under it asks first, however small — the label must never under-state what a click sends. */
-  shown?: string
   /** After anything landed (refresh what shows it). */
   landed?: (kind: ActKind) => void
 }
@@ -79,14 +74,6 @@ export const targetsOf = (got: Resolved, req: ActReq, d: Pick<ActDeps, 'pick' | 
  *  it, so one is never assigned without asking. */
 export const bucketsIn = (t: Targets): string[] => t.items.filter(i => i.kind === 'prefix' && isBucketPrefix(i.key)).map(i => i.key)
 
-/** Whether a row's targets are exactly what its label names: one item, at or under `shown` (its key below
- *  `scheme`, a folder's trailing `/` dropped). */
-export function withinShown(t: Pick<Targets, 'items'>, shown: string, scheme: string): boolean {
-  if (t.items.length !== 1) return false
-  const p = t.items[0].key.slice(scheme.length).replace(/\/$/, '')
-  return p === shown || p.startsWith(`${shown}/`)
-}
-
 /** Why nothing would be sent, in words (every match unchecked, or only whole buckets to stage). */
 export function nothingReason(t: Targets, kind: ActKind): string {
   if (t.unknown && !t.buckets) return 'These matches couldn’t be checked (file or folder?); open the folder to act on them.'
@@ -95,12 +82,11 @@ export function nothingReason(t: Targets, kind: ActKind): string {
 }
 
 /** What follows a resolve: muted (not all listed, or nothing to send), a confirm, or straight to sending. */
-export function afterResolve(got: Resolved, req: ActReq, d: Pick<ActDeps, 'pick' | 'scheme' | 'alwaysConfirm' | 'shown'>): ActState | { s: 'go'; t: Targets } {
+export function afterResolve(got: Resolved, req: ActReq, d: Pick<ActDeps, 'pick' | 'scheme' | 'alwaysConfirm'>): ActState | { s: 'go'; t: Targets } {
   if (!got.complete) return { s: 'muted', reason: got.reason ?? 'These matches can’t all be listed here; open a folder below to act on its matches.' }
   const t = targetsOf(got, req, d)
   if (!t.items.length) return { s: 'muted', reason: nothingReason(t, req.kind) }
   if (d.alwaysConfirm || t.items.length > CONFIRM_OVER || (req.kind === 'assign' && bucketsIn(t).length)) return { s: 'confirm', req, got }
-  if (d.shown != null && !withinShown(t, d.shown, d.scheme)) return { s: 'confirm', req, got }
   return { s: 'go', t }
 }
 
