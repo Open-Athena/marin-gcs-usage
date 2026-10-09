@@ -1,6 +1,6 @@
 # Anchored name search: `^q`, `q$`, `^q$`
 
-Status: 2026-10-09, in progress on branch `anchors`. Built from option 2 of `specs/search-extensions.md` (2b ends-with heavy, 2c the name index), with Ryan's syntax `^q` / `q$`. The heavy-`^q` drill (2d) is not built: its census decides.
+Status: 2026-10-09: built for gcs gen `2026-10-08c` and its two runs (10-09, 10-09T1236), verified 1,110/1,110 against brute force, on GCS and R2, served by dev (`dev.gcs.oa.dev`). Code on branch `anchors` (not on prod). Built from option 2 of `specs/search-extensions.md` (2b ends-with heavy, 2c the name index), with Ryan's syntax `^q` / `q$`. The heavy-`^q` drill (2d) is not built: its census decides.
 
 ## Semantics
 
@@ -68,3 +68,56 @@ Per (key, P):
 
 - **Python** (`cloud/tests/test_static_anchors.py`). Base + two runs + the runs merged, R = 3, K = 2, small groups. Every key (20: `q$`, `^q`, `^q$`, including buckets, absent keys and short `^q`) at every path on every scan, through the reader at three whole-range bounds (light, scoped, rollups), equals brute force from the versions. The name index is one row per coalesced version. The scan-file brute-force SQL equals the version brute force. Mutations caught: a contains-style parent test, a stack ignoring the runs, a largest-`vt` combine.
 - **TypeScript** (`staticAnchors.test.ts` on `fixtures/static-anchors/`, built by the Python builder). The same sweep through `AnchoredSource` for the base, the first run and both runs (16 tests), plus a run without `anchors/meta.json`, a generation without anchors, a mutated parent test, keys, `SuffixHits` routing; syntax, predicate and indexed-only cases.
+
+## Built: gcs `2026-10-08c` (2026-10-09)
+
+All runs were spot n2-highmem-16 in us-east1 through the deployment's `job/static-names.sh` (`MODULE=static_anchors`, `ENV_JSON` setting `STATIC_NAMES_PROFILE=gcs`).
+
+| Stage | Wall | Output |
+|---|---:|---|
+| `names` (1 task) | 20 min | 797,994,947 rows (exactly the coalesced versions), 13 shards, 7.5 GB |
+| `census` (1 task) | 3 min | 7,863 prefixes ≥ 50K rows; **2,788 over V** (4.07B rows summed over the prefix chains) |
+| `rollups -k end` (16 tasks, 262 shards) | 24 min (5.5 task-hours; the largest shards ~15 min) | 3,864 heavy exact suffixes, 29,938 heavy dirs, 3,122,781 cells |
+| `rollups -k exact` (6 tasks, 13 shards) | 6 min (0.26 task-hours) | 194 heavy exact names, 2,476 heavy dirs, 374,902 cells |
+| `index` (1 task, n2-highmem-4) | 2 min | `meta.json`; key tables (1.5 GB, GCS only) |
+| `run -d 2026-10-09` | 12 min | 479 heavy suffixes touched, 1,843 delta headers, 63 newly heavy dirs (149 probes, 16.2M prior rows); names 38 MB |
+| `run -d 2026-10-09T1236` | 16.5 min | 825 heavy suffixes touched, 2,221 deltas, 100 newly heavy (393 probes, 39.6M rows); names 90 MB |
+| R2 (`r2-batch`, `-x anchors/meta.json`, then `-o anchors/meta.json`, per tier) | 6 × ~2.5 min | base 307 objects, 7.54 GB; runs 38 MB and 90 MB |
+
+**Heavy `^q` census.**
+
+- Measured over V: `^step` 18.7M, `^shard` 36.6M, `^part-` 38.4M, `^data` 59.3M, `^.zarray` 2.4M, `^config` 418K, `^results` 380K, `^train` 288K, `^eval` 225K, `^model` 173K.
+- Light (< 50K): `^ckpt`, `^tokenized`, `^qwen`, `^llama`, `^tmp`, `^events`, `^marin`, `^_success`.
+- By band: 1,548 prefixes hold 100–250K rows, 307 hold 250–400K, 933 more than 400K.
+- A heavy-`^q` drill would be the size of the long drill, and is not built: those terms decline (`term-too-common`).
+- Raising the `^q` whole-range bound to 400K rows would serve 1,855 of the 2,788 at a cold decode of a few seconds. This is a reader constant, not an index change.
+
+**Verification.**
+
+- Cases: 34 keys (18 `q$`, 8 `^q`, 8 `^q$`). For each, the fleet root, then the two largest children, then the largest child at each level down to depth 4: 236 (key, P), from the Python reader on the base.
+- `anchors brute` (5 tasks, 11 min) over the scans 2026-10-08, 10-01 (v2), 09-15 (v1), 10-09 and 10-09T1236.
+- `anchors query`: the Python reader over GCS (base and both runs).
+- **1,110 / 1,110 (key, P, scan) equal**: 950 non-empty, 29.2M children. By source: 66 rollup, 86 scoped roots, 70 light; plus 10 plain and 4 declined.
+- Files: `gs://oa-gcs-usage-dvx/static-names/2026-10-08c/anchors/verify/{cases.jsonl,answers.jsonl,verify.json,brute/}`.
+
+**Dev** (`dev.gcs.oa.dev`, a throwaway `gcs` + `anchors` merge), cold:
+
+- `?f=.json$`: fleet root 111,277,916 objects, from the rollup; subtree 2.0 s, diff 2.0 s, series 1.2 s.
+- `marin-us-central1?f=.json$`: subtree 3.4–4.1 s, diff 4.2 s, series 2.4 s.
+- `?f=^config.json$`: 412,876 objects, 1.1 GB; subtree 1.2–2.0 s, diff 2.1 s, series 1.2 s.
+- `?f=^ckpt$`: no matches on every scan (brute force agrees); subtree 0.25 s.
+- `?f=^train`: `term-too-common`, inline.
+- `^a`, `gz$`: `anchor-too-short`.
+- Warm, every view is 60–210 ms.
+
+**Cost.** About 10 spot VM-hours ≈ $2.2, plus R2 egress of 7.7 GB ≈ $0.9, plus laptop reads of GCS for the cases and the reader (a few GB) ≈ $0.3–0.5. **≈ $3.5 in all.**
+
+- Per scan, the `anchors` stage is 12–17 min on one spot VM (~$0.05) and 40–90 MB to R2 (~$0.01). That's slower than the drill-runner's 30 min target allows only if it isn't run in parallel with the drill (it is sequential after it today).
+- Storage: R2 +7.6 GB (~$0.11/month), GCS +9 GB.
+
+**Left.**
+
+- Compaction (`static_compact`) must rebuild `names/` and `anchors/` for the new generation (the base stages over it).
+- The anchors stage could run in parallel with the drill, which reads none of its outputs.
+- The `^q` bound decision (above).
+- The "N others" count after K kept children in a delta is a lower bound.
