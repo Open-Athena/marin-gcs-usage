@@ -24,10 +24,12 @@ import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
 
 /** The most items a response lists; past it, none (`complete: false`). */
 export const COVER_ITEMS_MAX = 50_000
+/** Row groups the one-object roots' kind lookups may read, all together (separate from the folders'). */
+export const COVER_KIND_GROUPS = 32
 /** Folders collapse at this depth or deeper (2: never a whole bucket). */
 export const COVER_MIN_DEPTH = 2
 /** Bumped when the response's shape changes. */
-const COVER_V = 2
+const COVER_V = 3
 
 type Ctx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
 const jsonRes = (body: unknown, status: number) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -87,7 +89,7 @@ export async function onRequestGet(ctx0: Ctx): Promise<Response> {
     if (why || !roots.length) {
       body = { date, path, q: qRaw, items: [], roots: sum, complete: !why, ...(why ? { reason: why } : {}), looked: 0, unchecked: 0 }
     } else {
-      const cover = await st.time('cover', coverSet(roots, path, pathTotals(ctx.env, date), { minDepth: COVER_MIN_DEPTH }))
+      const cover = await st.time('cover', coverSet(roots, path, pathTotals(ctx.env, date), { minDepth: COVER_MIN_DEPTH, kinds: pathTotals(ctx.env, date, { call: 16, total: COVER_KIND_GROUPS }) }))
       const tooMany = cover.items.length > COVER_ITEMS_MAX
       body = {
         date, path, q: qRaw, items: tooMany ? [] : cover.items, roots: sum, complete: !tooMany,

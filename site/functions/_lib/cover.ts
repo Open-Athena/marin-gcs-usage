@@ -13,7 +13,8 @@
  *  objects poisons every ancestor). A lookup over budget (`null`) stops collapsing: the remaining
  *  candidates count as not full, so the cover is still exact — just not minimal there. A root of one object
  *  may be an object or a folder holding one: its kind is looked up too (a folder prefix ends in `/`, an
- *  object's key doesn't); one the lookup can't place is `kind: null`, and nothing acts on it. */
+ *  object's key doesn't), within its own budget (`kinds`: the static index has no kinds, and a big flat
+ *  folder's objects cost a row group per 8K); one it can't place is `kind: null`, and nothing acts on it. */
 
 export interface CoverRoot { path: string; b: number; o: number }
 export type Kind = 'file' | 'dir'
@@ -52,7 +53,13 @@ export async function coverSet(
   roots: CoverRoot[],
   view: string,
   lookup: Lookup,
-  { minDepth = 1, full = isFull, kindChunk = 2048 }: { minDepth?: number; full?: (m: { b: number; o: number }, t: { b: number; o: number }) => boolean; kindChunk?: number } = {},
+  { minDepth = 1, full = isFull, kindChunk = 2048, kinds: kindLookup = lookup }: {
+    minDepth?: number
+    full?: (m: { b: number; o: number }, t: { b: number; o: number }) => boolean
+    kindChunk?: number
+    /** The kinds' own lookup (default `lookup`): its budget is the kinds', not the folders'. */
+    kinds?: Lookup
+  } = {},
 ): Promise<Cover> {
   const floor = Math.max(minDepth, depthOf(view))
   // Each candidate folder's matched sums: every proper ancestor of a root, at or below the view, at ≥ floor.
@@ -92,7 +99,7 @@ export async function coverSet(
     .sort((x, y) => depthOf(x) - depthOf(y) || (x < y ? -1 : x > y ? 1 : 0))
   const kinds = new Map<string, PathTotal>()
   for (let i = 0; i < ambiguous.length; i += kindChunk) {
-    const got = await lookup(ambiguous.slice(i, i + kindChunk))
+    const got = await kindLookup(ambiguous.slice(i, i + kindChunk))
     if (!got) break
     for (const [p, t] of got) kinds.set(p, t)
   }
