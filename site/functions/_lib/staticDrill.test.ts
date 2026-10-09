@@ -386,12 +386,29 @@ describe('the fleet root\'s root count (`matchCount.n` of a catalog view)', () =
       if (a.source !== 'catalog') continue
       const io = { top: 'isolate' as const, index_reads: 0, index_bytes: 0, groups: 0, bytes: 0, rows_read: 0 }
       const lo: [string, string] = [a.c, ''], hi: [string, string] = [a.c + '\0', '']
-      const sel = await drill.files[a.kind].roots.select(lo, hi, io)
-      const all = await drill.files[a.kind].roots.read(lo, hi, sel.groups!, io, () => 1)
+      const roots = (await drill.state()).tiers[0].files[a.kind].roots
+      const sel = await roots.select(lo, hi, io)
+      const all = await roots.read(lo, hi, sel.groups!, io, () => 1)
       got.push([t, a.rollup.rows])
       want.push([t, all.length])
     }
     expect(got).toEqual(want)
     expect(got.map(x => (x as [string, number])[0])).toEqual(['tomat', 'f00', '0', '.', 'a', 'om', 't'])
+  })
+
+  it('the count reads only the data groups straddling the range\'s edges, each on its own (not the span between)', async () => {
+    const roots = (await newDrill().state()).tiers[0].files.short.roots
+    const got: unknown[] = []
+    const want: unknown[] = []
+    for (const t of ['0', '.']) {
+      const lo: [string, string] = [t, ''], hi: [string, string] = [t + '\0', '']
+      const io = { top: 'isolate' as const, index_reads: 0, index_bytes: 0, groups: 0, bytes: 0, rows_read: 0 }
+      await roots.count(lo, hi, io)
+      const all = (await roots.select(lo, hi, { ...io })).groups!
+      const edges = [all[0], all[all.length - 1]].filter(e => e.qMin < t || e.qMax > t || e.qMax === t + '\0')
+      got.push([t, io.groups, io.bytes])
+      want.push([t, edges.length, edges.reduce((s, e) => s + e.length, 0)])
+    }
+    expect(got).toEqual(want)
   })
 })

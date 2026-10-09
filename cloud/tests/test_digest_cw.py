@@ -162,9 +162,11 @@ def test_rows_from_meta_buckets_switch():
         f"[hot]({SITE}/hot-data?d=2609020000-12h#over-time): 90.8% of 100Ti (9.2 Ti free)",
         icon_url=f"{AV}-30.png?v=4",
     )
-    # the OP headline carries the clause too, Δ vs the month's base scan
+    # the OP headline carries the clause too, Δ vs the month's base scan, the
+    # bucket linked (as in the replies) over the same month-to-date span
     assert D.op_body(month, SEP, None, CFG).split("\n")[0] == (
-        f":arrow_deg30: **+2.0 TiB** [month-to-date]({SITE}/?d=2609020000-1d#over-time) · 712 TiB · 78.2% of 1 PB · hot-data 91 TiB · [dashboard]({SITE}/)"
+        f":arrow_deg30: **+2.0 TiB** [month-to-date]({SITE}/?d=2609020000-1d#over-time) · 712 TiB · 78.2% of 1 PB · "
+        f"[hot]({SITE}/hot-data?d=2609020000-1d#over-time) 91 TiB · [dashboard]({SITE}/)"
     )
 
 
