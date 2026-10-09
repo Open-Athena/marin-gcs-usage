@@ -758,7 +758,7 @@ def verify_cmd(bucket, profile, gen, index, mount, tasks, out, scan_ids, tmp) ->
 
 
 #: What the Worker reads: the scans and the served sorts with their group indexes.
-R2_SERVED = ("scans.json", "served/path.", "served/bysize.", "served/reads.")
+R2_SERVED = ("scans.json", "served/path.", "served/bysize.", "served/reads.", "served/slices.", "served/slices-")
 
 
 @cli.command("r2-copy")
