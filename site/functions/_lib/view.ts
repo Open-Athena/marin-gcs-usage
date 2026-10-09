@@ -121,6 +121,8 @@ export interface ViewOpts {
   maxTiles?: number
   /** With `query`: phase 2's row-group budget (default `FILTER_PHASE2_GROUPS`). */
   phase2Groups?: number
+  /** With `query`: only the filter's floor (`Read.threshold`, from the match roots' total) — no forest. */
+  floorOnly?: boolean
 }
 
 export interface View {
@@ -892,6 +894,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     if (matchedPre.b <= 0) return null
     // Phase 2.
     const T = o.threshold ?? filterThreshold(matchedPre.b, w, h, minArea)
+    // A diff's floor pass wants this side's floor alone: no forest.
+    if (o.floorOnly) return { rootAll, rootAgg: matchedPre, kept: new Map(), aggDepth: new Map(), foldedOf: new Map(), threshold: T, thrAt: rebasedThreshold(T, atten, dP), tier: p1Tier, idx, truncated: false, ownerLens: ol, scoped }
     const withFloors = tiers.filter(t => floorOf(t.idx) != null).map(t => ({ name: t.name, floor: floorOf(t.idx)!, idx: t.idx }))
     const chosen = o.firstPaint ? (withFloors[0] ?? 'fine') : pickTier(withFloors, T)
     const regionIdx = chosen === 'fine' ? (fine ?? withTrace(await openFine(env, date, 'path'), tr)) : chosen.idx
@@ -1561,8 +1565,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   let floor: number | undefined
   if (query && ra && rb && !o.summary && o.threshold == null) {
     const [ta, tb] = await Promise.all([
-      readView(env, { ...o, date: from, maxDepth: 0 }, {}),
-      readView(env, { ...o, date: to, maxDepth: 0 }, {}),
+      readView(env, { ...o, date: from, maxDepth: 0, floorOnly: true }, {}),
+      readView(env, { ...o, date: to, maxDepth: 0, floorOnly: true }, {}),
     ])
     if (ta && tb) floor = Math.max(ta.threshold, tb.threshold)
     tr?.('floors', performance.now() - t0)
