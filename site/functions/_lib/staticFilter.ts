@@ -77,39 +77,44 @@ const HELD_HITS = 400_000
 
 const under = (p: string, root: string): boolean => root === '' || p.startsWith(root + '/')
 
-/** What `SuffixHits` reads: a literal's first hits, refused (null) above `maxRows`. `version` names the index's
- *  current state (the runs' manifest, by its newest scan, `staticRuns.ts`): the hit lists span every scan, so they are
- *  held and cached per version. A single generation is `StaticNames` (no `version`: 'base'). */
+/** What `SuffixHits` reads: a literal's first hits, refused (null) above `maxRows`. `snapshot` names the index's
+ *  current state (the runs' manifest, by its newest scan, `staticRuns.ts`) and the scans it covers: the hit lists
+ *  span every scan, so they are held and cached per version. A read reports the stack it was read over (`version`,
+ *  `scans`): a tier that fails mid-read cuts the stack, and that answer is exact on the remaining scans only. A
+ *  single generation is `StaticNames` (no `snapshot`: 'base', every scan of the store). */
 export interface HitReader {
-  read(key: string, maxRows?: number): Promise<{ io: Io; fold: FirstHits | null }>
-  version?(): Promise<string>
+  read(key: string, maxRows?: number): Promise<{ io: Io; fold: FirstHits | null; version?: string; scans?: string[] }>
+  snapshot?(): Promise<{ version: string; scans: string[] }>
 }
 
 /** The light source: the literal's suffix range from the shards, folded to its first hits once (per
  *  isolate, and per colo through `cache`), then cut to `under`. Literals over `maxRows` go to `heavy`. */
 export class SuffixHits implements HitSource {
-  private held = new Map<string, Promise<{ hits: Hit[]; io: Record<string, unknown> } | null>>()
+  private held = new Map<string, Promise<{ hits: Hit[]; io: Record<string, unknown>; scans?: string[] } | null>>()
   private cut = new WeakMap<Hit[], Map<string, Hit[]>>()
   constructor(
     readonly names: HitReader,
     readonly opts: { maxRows?: number; heavy?: HitSource | null; cache?: HitCache | null; waitMs?: number } = {},
   ) {}
 
-  /** Every first hit of `key` (null: over `maxRows`, the heavy source's business). */
-  async all(key: string): Promise<{ hits: Hit[]; io: Record<string, unknown> } | null> {
-    const version = (await this.names.version?.()) ?? 'base'
+  /** Every first hit of `key` (null: over `maxRows`, the heavy source's business), and the scans they are exact
+   *  on (absent: every scan of the store). */
+  async all(key: string): Promise<{ hits: Hit[]; io: Record<string, unknown>; scans?: string[] } | null> {
+    const snap = await this.names.snapshot?.()
+    const version = snap?.version ?? 'base'
     // The base generation's entries keep their keys; a day's runs version theirs.
     const vkey = version === 'base' ? key : `${key}@${version}`
     const p = shared(this.held, vkey, async () => {
       const cached = await this.opts.cache?.get(vkey)
-      if (cached) return { hits: cached, io: { from: 'cache', version } }
-      const { io, fold } = await this.names.read(key, this.opts.maxRows ?? MAX_ROWS)
+      if (cached) return { hits: cached, io: { from: 'cache', version }, scans: snap?.scans }
+      const { io, fold, version: read = 'base', scans } = await this.names.read(key, this.opts.maxRows ?? MAX_ROWS)
       if (!fold) return null
-      await this.opts.cache?.put(vkey, fold.hits)
-      return { hits: fold.hits, io: { from: 'shards', version, shard: io.shard, groups: io.groups, bytes: io.bytes, rows_read: io.rows_read, tiers: io.tiers ?? 1, ms: io.ms } }
+      // A stack cut mid-read (a broken tier) is another version's answer: never cached (or held) under this one.
+      if (read === version) await this.opts.cache?.put(vkey, fold.hits)
+      return { hits: fold.hits, io: { from: 'shards', version: read, shard: io.shard, groups: io.groups, bytes: io.bytes, rows_read: io.rows_read, tiers: io.tiers ?? 1, ms: io.ms }, scans }
     }, this.opts.waitMs ?? 20_000)
-    // Bound what the isolate holds: drop the oldest literals past `HELD_HITS` hits.
-    void p.then(() => this.trim(), () => {})
+    // Bound what the isolate holds: drop the oldest literals past `HELD_HITS` hits; a cut read is dropped at once.
+    void p.then(got => { if (got && got.io.version !== version) this.held.delete(vkey); return this.trim() }, () => {})
     return p
   }
 
@@ -129,7 +134,8 @@ export class SuffixHits implements HitSource {
     if (shortLiteral(key)) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
     const got = await this.all(key)
     if (!got) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
-    if (root === '') return { hits: got.hits, io: got.io }
+    const scans = got.scans ? { scans: got.scans } : {}
+    if (root === '') return { hits: got.hits, io: got.io, ...scans }
     // One array per (literal, root) while the literal is held: the view's per-isolate phase 1 is keyed by it.
     let byRoot = this.cut.get(got.hits)
     if (!byRoot) this.cut.set(got.hits, (byRoot = new Map()))
@@ -138,7 +144,7 @@ export class SuffixHits implements HitSource {
       byRoot.set(root, (hits = got.hits.filter(h => under(h.path, root))))
       if (byRoot.size > 32) byRoot.delete(byRoot.keys().next().value!)
     }
-    return { hits, io: got.io }
+    return { hits, io: got.io, ...scans }
   }
 }
 

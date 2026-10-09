@@ -35,10 +35,11 @@ const validation = (gen: string) => ({
 /** The suffix reader (`StaticNames`, or `TieredNames` over the base and its runs). */
 export interface NameReader {
   extent(key: string, io: Io): Promise<{ rows: number } | null>
-  answer(key: string, dates: string[], maxRows?: number): Promise<{ io: Io; answer: Answer | null }>
+  /** `scans`: the ones the answer is exact on (a tiered reader's stack, cut at a broken tier); absent, all. */
+  answer(key: string, dates: string[], maxRows?: number): Promise<{ io: Io; answer: Answer | null; scans?: string[] }>
 }
 /** The catalog (`StaticCatalog`, or `TieredCatalog`). */
-export interface CatalogReader { info(): Promise<CatalogMeta>; lookup(q: string): Promise<{ io: CatalogIo; member: Member | null }> }
+export interface CatalogReader { info(): Promise<CatalogMeta>; lookup(q: string): Promise<{ io: CatalogIo; member: Member | null; scans?: string[] }> }
 export interface Store { names: NameReader; catalog: CatalogReader; scans: () => Promise<string[]>; clock: () => Promise<number> }
 let held: { r2: R2Bucket; gen: string; store: Store } | undefined
 
@@ -87,7 +88,8 @@ export async function staticRegistryBody(env: StaticNameEnv, s: Store): Promise<
 }
 
 export type Plan = 'catalog' | 'bounded-name-postings'
-export interface KeyAnswer { plan: Plan; answers: Record<string, Totals>; io: { suffix?: Io; catalog?: CatalogIo; ms: Record<string, number> } }
+/** `scans`: the ones the answers are exact on, when a tiered read was cut at a broken tier (absent: all). */
+export interface KeyAnswer { plan: Plan; answers: Record<string, Totals>; io: { suffix?: Io; catalog?: CatalogIo; ms: Record<string, number> }; scans?: string[] }
 
 /** One literal's per-date bucket totals by the dispatch above. */
 export async function answerKey(s: Store, key: string, days: string[], maxRows = MAX_ROWS): Promise<KeyAnswer> {
@@ -95,32 +97,37 @@ export async function answerKey(s: Store, key: string, days: string[], maxRows =
   const ms: Record<string, number> = {}
   let t = await s.clock()
   const lap = async (name: string) => { const now = await s.clock(); ms[name] = (ms[name] ?? 0) + now - t; t = now }
-  const fromCatalog = async (): Promise<KeyAnswer | { catalog: CatalogIo }> => {
-    const { io, member } = await s.catalog.lookup(key)
+  const fromCatalog = async (): Promise<KeyAnswer | { catalog: CatalogIo; scans?: string[] }> => {
+    const { io, member, scans } = await s.catalog.lookup(key)
     await lap('catalog')
-    return member ? { plan: 'catalog', answers: catalogAnswer(member, days), io: { catalog: io, ms } } : { catalog: io }
+    const sc = scans ? { scans } : {}
+    return member ? { plan: 'catalog', answers: catalogAnswer(member, days), io: { catalog: io, ms }, ...sc } : { catalog: io, ...sc }
   }
   if ([...key].length <= 2) {
     const c = await fromCatalog()
-    return 'plan' in c ? c : { plan: 'catalog', answers: Object.fromEntries(days.map(d => [d, {}])), io: { catalog: c.catalog, ms } }
+    return 'plan' in c ? c : { plan: 'catalog', answers: Object.fromEntries(days.map(d => [d, {}])), io: { catalog: c.catalog, ms }, ...(c.scans ? { scans: c.scans } : {}) }
   }
   const probe: Io = { shard: null, groups: 0, bytes: 0, rows_read: 0, rows_matching: 0, index: 'none', ms: {} }
   const ext = await s.names.extent(key, probe)
   await lap('extent')
-  let catalog: CatalogIo | undefined
+  let catalog: CatalogIo | undefined, missed: string[] | undefined
   if (ext && ext.rows > V) {
     const c = await fromCatalog()
     if ('plan' in c) return c
     catalog = c.catalog
+    missed = c.scans
   }
-  const { io, answer } = await s.names.answer(key, days, maxRows)
+  const { io, answer, scans } = await s.names.answer(key, days, maxRows)
   await lap('suffix')
   if (!answer) throw new Error(`static names: ${JSON.stringify(key)} reads ${io.rows_read} rows, over ${maxRows}`)
   io.index = probe.index
-  return { plan: 'bounded-name-postings', answers: answer.answers, io: { suffix: io, ...(catalog ? { catalog } : {}), ms } }
+  // A miss's membership was decided on the catalog's stack: the answer is exact where both stacks reach.
+  const both = missed && scans ? scans.filter(d => missed!.includes(d)) : missed ?? scans
+  return { plan: 'bounded-name-postings', answers: answer.answers, io: { suffix: io, ...(catalog ? { catalog } : {}), ms }, ...(both ? { scans: both } : {}) }
 }
 
 const safe = (v: bigint): number => { const n = Number(v); if (!Number.isSafeInteger(n)) throw new Error('static names: total exceeds 2^53'); return n }
+const notIndexed = () => json({ error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }, 400, privateHeaders)
 const unavailable = () => json({ error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }, 503, { ...privateHeaders, 'retry-after': '1' })
 
 /** `/api/name-summary` from R2: a 400 for a scan outside the generation, a 503 on any failure (never a box answer). */
@@ -149,12 +156,14 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
     for (const [k, raw, got] of [['date', asked.date, date], ['from', asked.from, from]] as const) {
       if (raw === undefined) continue
       if (!got) return noScan(k, raw)
-      if (!have.includes(got)) return json({ error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }, 400, privateHeaders)
+      if (!have.includes(got)) return notIndexed()
     }
     if (from && date && from >= date) return json({ error: '`from` must be an earlier scan than `date`.' }, 400, privateHeaders)
     const request = { ...asked, date: date!, ...(from === undefined || from === null ? {} : { from }) }
     const days = from ? [from, date!] : [date!]
-    const { plan, answers, io } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
+    const { plan, answers, io, scans } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
+    // A tier broke during the read: the index answers the scans before it only.
+    if (scans && days.some(d => !scans.includes(d))) return notIndexed()
     const paths = bucketPaths(env), store_ = logicalStore(env)
     const sides = days.map(date => {
       const totals = answers[date]

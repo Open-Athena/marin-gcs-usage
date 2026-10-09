@@ -33,7 +33,8 @@ import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
 import { useFilterCover } from './filterCover'
 import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
-import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
+import { apiError, INDEXED_SYNTAX, useFilterCaps, useIndexedScans } from './filterCaps'
+import { LoadFailure, mapSlot } from './LoadFailure'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
@@ -554,6 +555,12 @@ function AppContent() {
   // depth-1 one, or a refresh; a corner marker, nothing dimmed).
   const mapStale = !tree && !!lastTree.current
   const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
+  // The asked-for view failed (any non-2xx, its retries spent): the slot states it — a held tree from another
+  // scan or scope would sit dimmed under "loading" forever (gcs 2026-10-09: 80 s of a gray map on a 500).
+  const mapFailed = mapSlot(tree, lastTree.current, rootErr) === 'failed'
+  const retryMap = () => { for (const q of [...subtreeQs, ...coarseQs]) if (q.isError) void q.refetch() }
+  // A failed attempt being retried: say so on the held map's marker.
+  const mapRetrying = subtreeQs[0]?.failureReason && !rootErr ? `retrying (${subtreeQs[0].failureReason.message.slice(0, 80)})…` : null
 
   // Bulk actions (the bar, the table's rows) under a filter take its matches under the view as the fewest
   // exact prefixes (`/api/filter-cover`): every match, listed, never a drawn subset or a row's whole prefix.
@@ -1204,7 +1211,7 @@ function AppContent() {
 
       <DiskSpace space={meta?.disk_space} />
 
-      {mapTree ? (
+      {mapTree && !mapFailed ? (
         <>
           {/* Remount per store: the treemap's caches are tied to the tree it
               mounted with, and a switch can swap `tree` without ever passing
@@ -1243,7 +1250,7 @@ function AppContent() {
             onPathChange={onMapPath}
             objects={objects}
             onOpen={p => openObject(p.slice(1).map(n => n.n))}
-          />{mapStale ? <Busy label="loading view…" /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
+          />{mapStale ? <Busy label={mapRetrying ?? 'loading view…'} /> : mapBusy ? <Busy corner label="filling in…" /> : null}</div>
           {/* A drilled directory with nothing drawable under it: the scope came
               up empty, or (a v1 scan) it holds only objects or directories
               under this view's floor. Say so rather than show a blank canvas. */}
@@ -1296,15 +1303,14 @@ function AppContent() {
         </>
       ) : miss ? (
         <NoScanMatch miss={miss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan)} />
-      ) : refusalOf(rootErr) ? (
-        // The filter's refusal (indexed-only): its reason, inline — not a failed view.
-        <p className="loading filter-refused" role="status">{refusalOf(rootErr)!.reason}</p>
-      ) : rootErr ? (
+      ) : rootErr && /^(409|413)/.test(rootErr.message) ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
-            : rootErr.message.startsWith('413') ? 'this view is too wide for the index — drill in, or narrow the scope'
-            : `view failed: ${rootErr.message}`}
+            : 'this view is too wide for the index — drill in, or narrow the scope'}
         </p>
+      ) : rootErr ? (
+        // The filter's refusal (indexed-only) as its reason, inline; any other failure as its message, a 5xx with a retry.
+        <LoadFailure err={rootErr} what="view" onRetry={retryMap} />
       ) : noScansYet(scansQ) ? (
         // The list answered and is empty: no snapshot has index rows in D1,
         // so no view will ever load — a skeleton here would spin forever.
@@ -1408,18 +1414,15 @@ function AppContent() {
               <>
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
               </>
-            ) : refusalOf(diffErr) && !diffStale ? (
-              // The filter's refusal: its reason, inline — no status, nothing to retry.
-              <span className="tab-note filter-refused"> · {refusalOf(diffErr)!.reason}</span>
-            ) : diffErr && !diffStale ? (
+            ) : diffErr && !diffStale && /^(404|409)/.test(diffErr.message) ? (
               <span className="tab-note">
                 {' '}· {diffErr.message.startsWith('404')
                   ? <><code>{graftPath || '/'}</code> is in neither scan’s index — pick other scans or drill up.</>
-                  : diffErr.message.startsWith('409')
-                    ? <>no per-user index for one of these scans — pick newer scans, or clear the user.</>
-                    : <>couldn’t diff {fmtScan(diffPrev)} → {fmtScan(asof)} ({diffErr.message}).</>}
-                {' '}<button type="button" className="linkish" onClick={() => diffQ.refetch()}>retry</button>
+                  : <>no per-user index for one of these scans — pick newer scans, or clear the user.</>}
               </span>
+            ) : diffErr && !diffStale ? (
+              // The filter's refusal as its reason; any other failure as its message, a 5xx with a retry.
+              <>{' · '}<LoadFailure as="span" className="tab-note" err={diffErr} what={`diff ${fmtScan(diffPrev)} → ${fmtScan(asof)}`} onRetry={() => void diffQ.refetch()} /></>
             ) : (
               <span className="loading"> · aligning {fmtScan(diffPrev)} → {fmtScan(asof)}…</span>
             )}
