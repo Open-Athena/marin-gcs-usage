@@ -154,7 +154,7 @@ def _views(world, stack: list[Path], dates: list[str], keys=KEYS, **kw) -> tuple
             for d in dates:
                 D = sn.scan_epoch(d) * 1000
                 b = an.brute_view(world["versions"], key, P, D)
-                if v["source"] == "rollup":
+                if v["source"] in ("rollup", "catalog"):
                     kept = v["answers"][d]
                     rest = [sum(x[0] for c, x in b.items() if c not in kept), sum(x[1] for c, x in b.items() if c not in kept)]
                     got.append((key, P, d, kept, v["rest"][d]))
@@ -182,14 +182,15 @@ def test_base_views_equal_brute_force(world):
 
 
 def test_base_views_at_a_small_light_bound(world):
-    """With the whole-range bound at 0 (and 8) rows the `q$` / `^q$` views with rows are scoped (roots or a rollup), the
-    `^q` ones declined."""
-    got, want, sources = _views(world, [world["base"]], IDS[:BASE], max_rows=0)
+    """With the whole-range bounds at 0 (and 8) rows the `q$` / `^q$` views with rows are scoped (roots or a rollup); the
+    `^q` ones are the starts-with catalog at the fleet root, scoped reads below it, declined past the bound."""
+    got, want, sources = _views(world, [world["base"]], IDS[:BASE], max_rows=0, start_max_rows=0)
     assert got == want
-    assert sources["rollup"] > 0 and sources["roots"] > 0 and sources["declined"] > 0  # light: only the keys with no rows
-    got, want, sources = _views(world, [world["base"]], IDS[:BASE], max_rows=8)
+    # light: only the keys with no rows; `^q` below the root: declined unless no group meets the path
+    assert min(sources[k] for k in ("rollup", "roots", "catalog", "declined")) > 0
+    got, want, sources = _views(world, [world["base"]], IDS[:BASE], max_rows=8, start_max_rows=8)
     assert got == want
-    assert min(sources[k] for k in ("light", "roots", "rollup", "declined", "plain")) > 0
+    assert min(sources[k] for k in ("light", "roots", "rollup", "catalog", "scoped", "declined", "plain")) > 0
 
 
 @pytest.mark.parametrize("stack", ["run1", "run2", "merged"])
@@ -197,10 +198,117 @@ def test_tiered_views_equal_brute_force(world, stack):
     tiers = {"run1": [world["base"], world["runs"][0]], "run2": [world["base"], *world["runs"]], "merged": [world["base"], world["merged"]]}[stack]
     dates = IDS[:BASE + (1 if stack == "run1" else 2)]
     for mr in (an.MAX_ROWS, 8, 0):
-        got, want, sources = _views(world, tiers, dates, max_rows=mr)
+        got, want, sources = _views(world, tiers, dates, max_rows=mr, start_max_rows=mr if mr != an.MAX_ROWS else None)
         assert got == want
         if mr != an.MAX_ROWS:
-            assert sources["rollup"] > 0 and sources["roots"] > 0
+            assert sources["rollup"] > 0 and sources["roots"] > 0 and sources["catalog"] > 0
+
+
+def _prefixes(paths: list[str]) -> list[str]:
+    """Every `^q` key (q ≥ 2 characters) of the fixture's lowercase names, plus two absent ones."""
+    out = {an.term_key(n[:L], "start") for p in paths for n in [p.rsplit("/", 1)[-1].lower()] for L in range(2, len(n) + 1)}
+    return sorted(out | {"/zz", "/qq"})
+
+
+def _start_rows(tiers: list[Path]) -> dict[str, int]:
+    """Per `^q` key, its stored rows over the tiers' name indexes (the reader's whole-range count, row exact)."""
+    n: dict[str, int] = {}
+    for t in tiers:
+        for f in sorted((t / an.NAMES / "sx").glob("*.parquet")):
+            for s in pq.read_table(f, columns=["s"]).column("s").to_pylist():
+                for L in range(3, len(s) + 1):
+                    n[s[:L]] = n.get(s[:L], 0) + 1
+    return n
+
+
+@pytest.mark.parametrize("stack", ["base", "run1", "run2", "merged"])
+def test_start_catalog_root_equals_brute_force(world, stack):
+    """The fleet root of every `^q` prefix of every name, from the starts-with catalog alone (bounds 0): its members are
+    exactly the prefixes with more than R rows over the tiers, and each member's per-bucket answer on every scan equals
+    brute force (kept buckets and the remainder)."""
+    tiers = {"base": [world["base"]], "run1": [world["base"], world["runs"][0]], "run2": [world["base"], *world["runs"]],
+             "merged": [world["base"], world["merged"]]}[stack]
+    dates = IDS[:BASE + {"base": 0, "run1": 1}.get(stack, 2)]
+    keys = _prefixes(world["paths"])
+    rows = _start_rows(tiers)
+    got, want, sources = _views(world, tiers, dates, keys=keys, max_rows=0, start_max_rows=0)
+    assert got == want
+    reader = _reader(tiers, max_rows=0, start_max_rows=0)
+    members = sorted(k for k in keys if reader.view(k, "", dates)["source"] == "catalog")
+    heavy = sorted(k for k in keys if rows.get(k, 0) > R)
+    # Heaviness is sticky: a merged run stores fewer rows than its inputs did (a version's open and close records are
+    # one), so its stack may keep members whose rows dropped back to R.
+    assert (members == heavy) if stack != "merged" else set(heavy) <= set(members)
+    assert len(heavy) > 10
+
+
+def test_start_scoped_reads_and_the_decline_boundary(world):
+    """Below the root a `^q` past its whole-range bound reads the groups of its range whose path bounds meet the view
+    path: exact at a bound equal to their rows (`upper`), declined one row under it."""
+    tiers = [world["base"], *world["runs"]]
+    probe = _reader(tiers)
+    seen = 0
+    for key in ["/tr", "/train", "/conf", "/b1", "/tomat", "/da", "/c", "/f", "/g"]:
+        whole = sum(t.names.select(key, False)[2] for t in probe.anch)
+        for P in _dirs(world["paths"]):
+            if P == "" or an.term_in_path(key, P):
+                continue
+            upper = sum(t.names.select(key, False, P)[2] for t in probe.anch)
+            if not 0 < upper < whole:
+                continue
+            v = _reader(tiers, start_max_rows=upper).view(key, P, IDS)
+            assert (v["source"], v["upper"]) == ("scoped", upper)
+            assert v["answers"] == {d: an.brute_view(world["versions"], key, P, sn.scan_epoch(d) * 1000) for d in IDS}
+            assert _reader(tiers, start_max_rows=upper - 1).view(key, P, IDS) == {"key": key, "P": P, "source": "declined", "upper": upper}
+            seen += 1
+    assert seen > 20
+
+
+def test_start_hit_cap(world):
+    """Past `start_max_hits` first hits a whole `^q` read is heavy (the root: the catalog) and a scoped one declined."""
+    tiers = [world["base"], *world["runs"]]
+    D = sn.scan_epoch(IDS[-1]) * 1000
+    capped = _reader(tiers, start_max_hits=1)
+    root = capped.view("/tr", "", IDS)
+    assert (root["source"], root["answers"][IDS[-1]]) == ("catalog", an.brute_view(world["versions"], "/tr", "", D))
+    assert capped.view("/tr", "b2", IDS)["source"] == "declined"
+    roomy = _reader(tiers, start_max_hits=1000)
+    assert [(v["source"], v["answers"][IDS[-1]]) for v in (roomy.view("/tr", "", IDS), roomy.view("/tr", "b2", IDS))] == [
+        ("light", an.brute_view(world["versions"], "/tr", "", D)), ("light", an.brute_view(world["versions"], "/tr", "b2", D))]
+
+
+def test_start_bound_is_raised():
+    """`^q` reads up to 400K rows (+ two groups) whole or scoped; `q$` / `^q$` keep V + two groups."""
+    assert (an.START_MAX_ROWS, an.START_MAX_HITS, an.MAX_ROWS) == (400_000 + 2 * 8192, 150_000, 100_000 + 2 * 8192)
+    assert (an.AnchoredReader([]).start_max_rows, an.AnchoredReader([]).start_max_hits) == (an.START_MAX_ROWS, an.START_MAX_HITS)
+
+
+def test_start_catalog_mutations_fail(world, monkeypatch, tmp_path):
+    """The catalog's root fails brute force when the reader ignores the runs' cells, and when the builder's first-hit
+    test is the contains literal's (the lowercase parent holds the prefix anywhere, not at a segment's start)."""
+    import shutil
+
+    keys = _prefixes(world["paths"])
+
+    def differs(tiers: list[Path], dates: list[str]) -> bool:
+        got, want, _ = _views(world, tiers, dates, keys=keys, max_rows=0, start_max_rows=0)
+        return got != want
+
+    assert not differs([world["base"], *world["runs"]], IDS)
+    with monkeypatch.context() as m:
+        m.setattr(an, "stack", lambda parts: (lambda ps: (ps[0][0], ps[0][1:]) if ps else None)([p for p in parts if p]))
+        assert differs([world["base"], *world["runs"]], IDS)
+    mutant = tmp_path / "mutant"
+    shutil.copytree(world["base"], mutant)
+    shutil.rmtree(mutant / an.START_DIR)
+    orig = an.first_hit_sql
+    with monkeypatch.context() as m:
+        m.setattr(an, "first_hit_sql", lambda mode, key="s", par="par": f"NOT contains({par}, substring({key}, 2))" if mode == "start" else orig(mode, key, par))
+        con, files = world["con"], an.Tier(mutant).files("exact")
+        con.execute("DROP TABLE IF EXISTS cells")
+        an.start_base(con, files, an.start_heads_sql(an.prefix_counts_sql(files), R), R, K, "cells")
+        an.write_start(con, "cells", mutant / an.START_DIR, R, K)
+    assert differs([mutant], IDS[:BASE])
 
 
 def test_runs_make_directories_heavy_and_write_deltas(world):
