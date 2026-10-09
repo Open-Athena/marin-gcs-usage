@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { useOwnerMutations } from './owners'
+import { ownerPost, useOwnerMutations } from './owners'
+import type { PlanItem } from './batches'
 import { assignInBatches } from './filterCover'
 import { Tooltip } from './Tooltip'
 import { UserChip, allUsers } from './UserChip'
 
 export const ASSIGN_TIP =
-  'Assign this prefix an owner — you by default, or anyone you name. Overrides the inferred owner (paths, W&B runs, sidecars) and pulls it out of the “Unowned” pool so it counts as that person’s data.'
+  'Assign this folder (or file) an owner — you by default, or anyone you name. Overrides the inferred owner (paths, W&B runs, sidecars) and pulls it out of the “Unowned” pool so it counts as that person’s data.'
 
 /**
  * Ownership assignment as one native select — "me", then everyone the site
@@ -13,9 +14,9 @@ export const ASSIGN_TIP =
  * saves at once (the tooltip says so); the control resets to its placeholder
  * because the assignee then shows as the row's / panel's owner.
  */
-export function AssignSelect({ prefix, assigned, compact, label }: {
-  /** `gs://…/` prefix(es) to assign (trailing slash). Many = one batched POST. */
-  prefix: string | string[]
+export function AssignSelect({ items: item, assigned, compact, label }: {
+  /** What to assign: folder prefixes (`gs://…/`) and exact objects, each with its kind. Many = one batched POST. */
+  items: PlanItem | PlanItem[]
   /** Current assignee id, if any (drives the placeholder and offers unassign). */
   assigned?: string | null
   /** Table-cell sizing. */
@@ -24,14 +25,14 @@ export function AssignSelect({ prefix, assigned, compact, label }: {
   label?: string
 }) {
   const { post } = useOwnerMutations()
-  const prefixes = Array.isArray(prefix) ? prefix : [prefix]
+  const items = Array.isArray(item) ? item : [item]
   const users = [...new Map(allUsers().map(u => [u.name, u])).values()]
   // A whole bucket is never a casual assignment: the newest action on an
   // ancestor wins, so it also overrides every assignment beneath it. Ask once.
-  const buckets = prefixes.filter(isBucketPrefix)
+  const buckets = items.filter(i => i.kind === 'prefix' && isBucketPrefix(i.key)).map(i => i.key)
   const [pending, setPending] = useState<string | null | undefined>(undefined)
   // `ASSIGN_CHUNK` per POST (the API takes ≤ 500 actions at once): a filtered row's or selection's matches may be more.
-  const save = (owner: string | null) => { void assignInBatches(prefixes, pattern => ({ pattern, owner }), a => post.mutateAsync(a)).catch(() => {}); setPending(undefined) }
+  const save = (owner: string | null) => { void assignInBatches(items, i => ownerPost(i, owner), a => post.mutateAsync(a)).catch(() => {}); setPending(undefined) }
   if (pending !== undefined) {
     const name = pending === null ? 'nobody' : pending === '@me' ? 'you' : (users.find(u => u.id === pending)?.name ?? pending)
     return (
@@ -57,7 +58,7 @@ export function AssignSelect({ prefix, assigned, compact, label }: {
         <option value="">{label ?? (assigned ? 'reassign…' : 'assign…')}</option>
         <option value="@me">me</option>
         {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-        {(assigned || prefixes.length > 1) && <option value="@none">— unassign —</option>}
+        {(assigned || items.length > 1) && <option value="@none">— unassign —</option>}
       </select>
     </Tooltip>
   )

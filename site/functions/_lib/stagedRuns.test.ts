@@ -212,7 +212,7 @@ describe('emptied stage batches — replayed from the plan_items audit trail', (
   const ins = (batch_id: number, staged: string[], absorbed: string[] = [], covered: string[] = []) =>
     ({ action: 'insert', old_json: absorbed.length ? JSON.stringify({ absorbed }) : null, new_json: JSON.stringify({ staged, covered, batch_id, note: null }) })
   const del = (prefixes: string[]) => ({ action: 'delete', old_json: JSON.stringify({ prefixes, own: false }), new_json: null })
-  const item = (prefix: string, batch_id: number) => ({ prefix, note: null, added_by: 'ann', added_ts: 1, batch_id, as_of: null })
+  const item = (prefix: string, batch_id: number) => ({ prefix, kind: 'prefix' as const, note: null, added_by: 'ann', added_ts: 1, batch_id, as_of: null })
 
   it('absorbed into later batches, unstaged, covered from the start; batches with items left are not emptied', () => {
     const a = 'gs://b/x/a/'; const b = 'gs://b/x/b/'; const c = 'gs://b/y/c/'; const x = 'gs://b/x/'; const y = 'gs://b/y/'

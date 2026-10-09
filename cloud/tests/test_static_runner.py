@@ -62,15 +62,15 @@ class Fake:
         words = self.calls[-1][2].split()
         d = words[words.index("-d") + 1] if "-d" in words else None
         out = {"append": [f"{ROOT}/deltas/{d}/dhist/r{i:04d}.parquet" for i in range(8)], "shards": [f"{ROOT}/deltas/{d}/sidecar.parquet"],
-               "catalog": [f"{ROOT}/deltas/{d}/catalog/meta.json"]}.get(stage, [])
+               "catalog": [f"{ROOT}/deltas/{d}/catalog/meta.json"], "drill": [f"{ROOT}/deltas/{d}/drill/meta.json"]}.get(stage, [])
         for key in out:
             self.keys[key] = None
         if stage == "publish":
             self.keys[f"{ROOT}/manifests/{d}.json"] = {"runs": self.runs(d)}
 
-    def daily(self, **kw) -> sd.Runner:
+    def daily(self, cfg: Profile = CFG, **kw) -> sd.Runner:
         return sd.Runner(
-            cfg=CFG, exists=lambda key: key in self.keys, count=lambda p, s: sum(1 for x in self.keys if x.startswith(p) and x.endswith(s)),
+            cfg=cfg, exists=lambda key: key in self.keys, count=lambda p, s: sum(1 for x in self.keys if x.startswith(p) and x.endswith(s)),
             read_json=lambda key: self.keys[key], published=lambda layouts, start: [s for s in self.pub if s > start],
             run_job=self.run_job, prepare=lambda d: self.calls.append(("prepare", d)) or self.keys.__setitem__(f"{ROOT}/deltas/{d}/scans.json", None),
             prune=lambda d: self.calls.append(("prune", d)), list_keys=lambda p: [x for x in self.keys if x.startswith(p)],
@@ -82,17 +82,27 @@ def _py(module: str, *args: str, mount: bool = True) -> str:
     return f"set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && python3 -u -m dt_cloud.{module} {' '.join(args)}{m}"
 
 
-def _chain(d: str, runs: list[str]) -> list[tuple]:
+def _r2(d: str, runs: list[str]) -> tuple:
+    """The R2 job: each run's served files but its `drill/meta.json`, then that; a check of them all; the manifests last."""
+    cmds = []
+    for r in runs:
+        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-x", "drill/meta.json", mount=False))
+        cmds.append(_py("static_names", "r2-copy", "-g", f"{GEN}/deltas/{r}", "-o", "drill/meta.json", mount=False))
+    cmds.append(_py("static_names", "r2-verify", "-g", GEN, "-m", d, mount=False))
+    cmds.append(_py("static_names", "r2-copy", "-g", GEN, "-o", "manifests/", mount=False))
+    return ("r2", 1, " && ".join(f"( {c} )" for c in cmds))
+
+
+def _chain(d: str, runs: list[str], drill: bool = False) -> list[tuple]:
     g = f"-g {GEN} -d {d}"
-    r2 = " && ".join(f"( {_py('static_names', 'r2-copy', '-g', f'{GEN}/deltas/{r}', mount=False)} )" for r in runs)
-    r2 += f" && ( {_py('static_names', 'r2-copy', '-g', GEN, '-o', 'manifests/', mount=False)} )"
     return [
         ("prepare", d),
         ("append", 4, _py("static_append", "append", g, "-n", "2")),
         ("shards", 1, _py("static_append", "shards", g)),
         ("catalog", 1, _py("static_append", "catalog", g)),
+        *([("drill", 2, _py("static_drill", "build", g, "-k", "task", "-M", "90GB", "-p", "16"))] if drill else []),
         ("publish", 1, _py("static_append", "publish", g)),
-        ("r2", 1, r2),
+        _r2(d, runs),
         ("prune", d),
     ]
 
@@ -128,6 +138,37 @@ def test_an_appended_scan_reruns_only_the_r2_copy_and_prune():
     f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": [{"key": f"deltas/{d}", "scans": [d]}]}}, [d])
     assert f.daily().run(d) == []
     assert f.calls == _chain(d, [d])[5:]
+
+
+DRILL = Profile(**{**CFG.__dict__, "drill": True})
+
+
+def test_the_drill_stage_runs_after_shards_and_catalog_before_publish():
+    """With the profile's `drill`: one job of two tasks (long ∥ short, the machine's memory and threads) once the run's
+    shards and catalog are there, and publish only after it (its `meta.json` is what publish checks)."""
+    d = "2026-10-09T0001"
+    f = Fake({}, [d])
+    assert f.daily(DRILL).run(d) == [d]
+    assert f.calls == _chain(d, [d], drill=True)
+
+
+def test_a_rerun_skips_a_built_drill():
+    d = "2026-10-09T0001"
+    done = {f"{ROOT}/deltas/{d}/scans.json": None, **{f"{ROOT}/deltas/{d}/dhist/r{i:04d}.parquet": None for i in range(8)},
+            f"{ROOT}/deltas/{d}/sidecar.parquet": None, f"{ROOT}/deltas/{d}/catalog/meta.json": None, f"{ROOT}/deltas/{d}/drill/meta.json": None}
+    f = Fake(done, [d])
+    f.daily(DRILL).run(d)
+    assert f.calls == _chain(d, [d], drill=True)[5:]
+
+
+def test_an_appended_scan_without_its_drill_gets_it_then_the_r2_copy():
+    """gcs 2026-10-09T1236: appended (its manifest lists `deltas/<id>` itself) before the drill stage existed: a rerun builds
+    its drill, then copies it (its `meta.json` last) and prunes."""
+    d = "2026-10-09T1236"
+    runs = [{"key": "deltas/2026-10-09", "scans": ["2026-10-09"]}, {"key": f"deltas/{d}", "scans": [d]}]
+    f = Fake({f"{ROOT}/manifests/{d}.json": {"runs": runs}}, [d])
+    assert f.daily(DRILL).run(d) == []
+    assert f.calls == [_chain(d, [], drill=True)[4], _r2(d, ["2026-10-09", d]), ("prune", d)]
 
 
 def test_dry_run_submits_nothing():

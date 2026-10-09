@@ -1,6 +1,6 @@
 # Static name search: per-scan append
 
-Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the entry point `dt-cloud static-names runs add` (`static_runner.py`; it replaces `job/static-daily.sh` on `gcs-static`). Not yet scheduled; not on prod.
+Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and served by the dev site. Code on `cloud` (2026-10-09: the pipeline, the reader behind `FILTER_STATIC` / `NAME_SUMMARY_STATIC`, default off); the entry point `dt-cloud static-names runs add` (`static_runner.py`; it replaces `job/static-daily.sh` on `gcs-static`). Not yet scheduled; not on prod. The drilldown's run for 2026-10-09 (`deltas/2026-10-09/drill/`, "Drilldown runs" below) is verified (653/653 against brute force) and on R2; the site does not read runs' drills yet.
 
 
 ## State (2026-10-09 15:00 UTC)
@@ -11,10 +11,15 @@ Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and s
   - the counter never merges a run holding a tier it can't carry (`pinned_runs`, `MERGED_ENTRIES`);
   - a merged run's catalog gets its `meta.json`;
   - `publish` refuses a manifest whose runs lack a reader file (`RUN_FILES`).
+- **Superseded** (`drill-runner`): merges carry `drill/` (`merge_drills` → `merge_tiers`), so the pin rule is replaced by drill parity: `push_run(drilled=…)` merges two runs only when both carry `drill/` or neither does (a drilled run with one without would drop the one's drill: the reader stops at the first run without one), and the merged run is drilled iff its inputs are. `MERGED_ENTRIES` would also have pinned 10-09 for good (its `drill-verify/`).
 - **Rules:**
-  1. Write a manifest only after every file of every run it lists exists on that store, R2 included. The runner copies the runs first and the manifest last, in one job chained with `&&`.
+  1. Write a manifest only after every file of every run it lists exists on that store, R2 included. GCS: `publish` checks `RUN_FILES` and, for a run with `drill/meta.json`, every file it implies (`static_drill.tier_files`). R2: the runner's one job copies each listed run (its `drill/meta.json` last), then `r2-verify -m <id>` (every served file of every listed run on R2, same size and md5), then the manifest, chained with `&&`.
   2. Manifests are immutable. Never rewrite a published key; fix forward with a new manifest instead (the next scan's).
-- Next gcs scan: `2026-10-10` (cron 07:00 UTC) → `runs add -c 2026-10-10`. With 10-09 pinned, the counter merges T1236 + 10-10 into level 1.
+  3. A manifest's runs never cover fewer scans with a drill than the last manifest's (`drill_scans`): `publish` refuses otherwise.
+- **The drill stage** is in `runs add` (profile `drill`, on in gcs's example): after shards ∥ catalog, before publish (see "Entry point").
+- **T1236's drill** (built after the fact, 2026-10-09 15:40–16:18 UTC; the runner's drill job with `-t` to a scratch trial, staged tree `54acae4b…`): one Batch job, 2 spot n2-highmem-16 tasks, **37 min wall** (long 21 min, short 34 min: 120K probes 12 min, 509 dirs settled 9 min); 3.65 GB on GCS, 3.25 GB served. Verified against brute force from each scan file: **683/683 views on T1236 and 683/683 on 10-09** (389 roots, 294 rollups; `deltas/2026-10-09T1236/drill-verify/`). Copied md5-identical to `deltas/2026-10-09T1236/drill/` (`meta.json` last), then to R2 by the runner's R2 job (16 new keys, `drill/meta.json` last; `r2-verify`: 50/50 served files of both listed runs). No manifest touched: the readers probe `<run>/drill/meta.json`. The site's TS readers over R2 (current `cloud`) see drill tiers `[base, deltas/2026-10-09, deltas/2026-10-09T1236]` and answer `son` / `ab` on all three scans. Cost ≈ $1 (drill ≈ $0.5, brute ×2, R2).
+- **Per-scan time:** with T1236's other stages (≈ 28 min), the chain is ≈ 65 min, past the ~30 min target; the drill's short kind is the tail (probes and settling). T1236 was a 12 h delta of 85.7M suffix rows (10-09's daily: 44M).
+- Next gcs scan: `2026-10-10` (cron 07:00 UTC) → `runs add -c 2026-10-10`. With T1236's drill built, the stage builds 10-10's and the counter merges T1236 + 10-10 into level 1, drill included.
 
 ## Why
 
@@ -174,13 +179,109 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 - An indexed date's answers never change when a run lands: a later close sets a `vt` after that date. So response cache keys (`staticTag`) stay per generation.
 - A literal's hit list spans every date, so it is held and cached per manifest date (`SuffixHits`: `<key>@<date>`; the base alone keeps the bare key).
 - `MAX_ROWS` (the filter's bound) applies to the summed extent. A literal near V whose runs add close records can then go over it and fall back, which is correct but slower. Compaction resets this.
-- Heavy literals (`HitSource` `heavy`, the per-member roots index being built on `ch-store`) need their own per-run deltas. That is out of scope here; until then a heavy literal declines on a date past the base, as it does today.
+- Heavy literals (`HitSource` `heavy`, the drilldown of `specs/architecture/static-name-search.md`) read the drill tiers below. Until a run has its `drill/`, a heavy literal declines on a date past the base, as it does today.
+
+## Drilldown runs (heavy terms)
+
+The base generation's `drill/` (spec `static-name-search.md`, "Drilldown for heavy terms") answers a catalog member's filtered view at any directory P: its match roots under P (`roots`), or for a heavy `(q, dir)` (more than R = 100K roots under it) per-child running sums with the K = 256 children of largest peak bytes kept by name and the rest summed into a remainder (`rollups`). Each run gets its own `drill/`, in the base's layout and schemas, read beside the base like the suffix runs.
+
+### Per scan D: the `drill` stage (1 Batch job of 2 tasks, after `catalog`, before `publish`)
+
+`python -m dt_cloud.static_drill build -g GEN -d D -k task`: task 0 builds the long kind, task 1 the short, each on a whole machine; each uploads its files and its part (`meta.<kind>.json`), and the second to finish writes `meta.json` from both (`join_meta`). A rerun task whose part is there only joins. The stage is done once `deltas/<D>/drill/meta.json` exists.
+
+1. **Delta roots.** A member's roots at D are first-hit rows of D's version delta, so they are a function of the run's own rows:
+   - long members: `static_roots.member_roots` over the run's suffix rows (`sx/`: opens and close records alike) for every long member as of the previous tier;
+   - short literals: `short_roots` over the run's `cdelta` (a literal first seen at D simply has no earlier rows);
+   - each row is `(q, path, usr, vf, vt, size, n_files)`: an open (`vf` = D, `vt` = OPEN) or a close record (`vf` < D, `vt` = D, the version's own values). Combine rule as the suffix runs: rows equal on `(q, path, usr, vf)` are one root, the **smallest `vt`** wins.
+   - **A literal that became a member at D** (a long header new in the run's catalog): its whole history, `member_roots` over its tiered suffix range (base ⊕ runs combined; at most V rows in the base by definition, plus the runs'), written into this run. It starts a class of its own (below).
+2. **Classes (aliases).** Base aliases group members with identical root sets. Two members of a class can diverge at D (`x.js` adds a root for `.js` but not for `.json`). Classes only ever split: a root identity `(path, usr, vf)` in one member's set and not the other's never goes away. So the classes at D are the classes before D refined by the digest of each member's delta (`static_roots`' order-free `(n, h1, h2)`), the canonical being the class's least member in code-point order, as the base's. The run's `aliases.parquet` is that map for every long member; only canonical members' rows are written.
+3. **Rollups.** For every heavy `(c, dir)` with delta roots under it (heavy = it has a rollup in some tier; it stays heavy), with the previous state read from the tiers (below):
+   - per child X: `Δ` = Σ opens − Σ close records under X (bytes, objects);
+   - a kept child's new running cell at D, the remainder's (Σ `Δ` of the rest), each only where it changes — the rebuild's cells at D exactly;
+   - **kept set.** The rebuild keeps the top K by `(peak bytes desc, child)`. A child outside the kept set lost to the K-th at D−1, and the K-th only rises (kept peaks only grow), so X can enter only if its value on D, `(v_D(X), X)`, beats the new K-th. Candidates are the non-kept children with positive byte `Δ` (and any child with no earlier roots), pruned by `v_D(X) ≤ min(remainder_{D−1}, K-th peak_{D−1}) + Δ(X)`; the survivors' `v_D` are exact: new children's `Δ`, a root child's path total from D's open versions (`copen`), a heavy child's own updated rollup, else its roots under `dir/X` read from the tiers (≤ the dispatch bound);
+   - if an existing child leaves (or one with earlier roots enters), the whole `(c, dir)` is **restated**: header, every kept child's cells and the remainder's, over its whole history (the entrant's series read as above, the leaver's from its cells), under a **full header** (`kind` 0). Otherwise the run holds only the cells dated in it under a **delta header** (`kind` −1, so it sorts first, as a full header does). A child with no earlier roots that joins (fewer than K kept) or goes to the remainder needs no restatement (it has no history to move);
+   - **header.** `b` (root rows under `dir`) grows by the opens; `o` (children with roots, ever) by the children new at D: a root child is new iff its path never had a version (`cintervals` ⊕ every run's `cdelta`); a directory child that is kept was not new; a non-kept one is new iff no tier holds a root under it before D (an index probe: a group boundary key inside the range settles it, else the group's `q`, `path` decoded). Dirs with no remainder need no probe (every existing child is kept, by name). `vf` (kept count) is `min(K, o)`.
+4. **Heavy dirs.** A `(c, dir)` becomes heavy when `S(c, dir)`, its stored root rows summed over the tiers (base ⊕ every run, close records counted), exceeds R; its rollup is then built in full from its roots read from the tiers (`rollup_sql`'s rule, one directory) under a full header. `S` comes from the base measurement (`roots-measure/`: exact per `(q, dir)` with ≥ 10K rows; below that, an exact count from the base index and at most two decoded groups when the runs could push it over) plus each run's `state/dcount-<kind>.parquet` (rows per non-heavy `(q, dir)` in that run, GCS only).
+5. **Write.** Roots sorted `(q, path, usr, vf)` and rollups sorted `(q, dir, kind, child, vf)` in 8,192-row groups, files cut at `q` boundaries, the two-level indexes and top files exactly as the base's (`write_indexed`, `write_index_levels`); `meta.json` last.
+
+### Run layout (`static-names/<gen>/<run>/drill/`)
+
+| Key | What |
+|---|---|
+| `meta.json` | as the base's (`R`, `K`, `rg`, `idx_rg`, `dispatch_rows`, per set files / row groups / rows / bytes), plus `first`, `last`, `level`, `scans`, `classes`, `new_members`, `heavy_new`, `restated`; written last: a run's drill is live iff it exists |
+| `aliases.parquet` | `(q, canonical)` for every long member as of the run's last scan |
+| `long/roots/r####.parquet`, `short/roots/r####.parquet` | roots, `ROOT_SCHEMA`, in **2,048-row groups** (`rg` in the meta; the base's are 8,192), so each run adds little to the reader's summed slack |
+| `long/rollups/r####.parquet`, `short/rollups/r####.parquet` | rollups, `ROLLUP_SCHEMA`; `kind` 0 full header, **−1 delta header** (`vf` kept count, `b` root rows under `dir`, `o` children ever), 1 kept child's cells, 2 remainder's cells; the header is a `(q, dir)`'s first row either way |
+| `{long,short}-{roots,rollups}-index.parquet`, `….top.parquet` | the two-level indexes, as the base's |
+| `state/dcount-{long,short}.parquet` | GCS only: `(q, dir, rows)` per non-heavy `(q, dir)` with rows in the run |
+
+### Reader (base ⊕ runs)
+
+Tiers are the base and every manifest run whose `drill/meta.json` exists (oldest first); a date past the last such run declines as today.
+
+1. Long term `t`: per tier, `c_i = aliases_i[t] ?? t` (each tier's own map). Short: `c_i = t`.
+2. **Dispatch.** Sum each tier's roots bound for `[(c_i, P/), (c_i, P0))` (the base's two-level `select`). At most `R + 2 · Σ_i rg_i` (each tier's `rg` from its meta: 116,384 for the base alone, 120,480 with one run, 136,864 with five): read the roots of every tier, combine on `(path, usr, vf)` with the smallest `vt`, and answer as the base. Otherwise `(t, P)` is heavy: since each tier's bound is at most its rows + 2·`rg`, the stored rows exceed R, and the builder has given it a rollup.
+3. **Rollups.** Each tier's rows for `[(c_i, P), (c_i, P\0))`; walk the tiers newest first, taking each tier's cells (its rows' first is the header: `kind` 0 or −1), and stop after the first tier whose header is `kind` 0 (it holds the whole history). The header is the newest tier's; the cells are the union; per date each `(kind, child)`'s newest cell with `vf ≤ D`, as the base.
+
+The combine is commutative over roots, and rollup tiers only ever add later cells or restate, so runs merge in any grouping.
+
+### Aliases: why each tier keeps its own map
+
+The other choice, dropping an alias forward (writing the diverged member's own rows from D on), would make the run copy the member's whole base root set (up to 227M rows for `.js`) the day it diverges, and divergence is common in the big nested families. Keeping the base aliasing plus per-member deltas instead costs one map per tier and one rule (`c_i = aliases_i[t] ?? t`, applied per tier, the base's lookup unchanged), and the run rows stay deltas; classes that stay together still share one copy.
+
+### Heavy dirs and exactness
+
+- The roots of base ⊕ runs (per member, combined) are exactly a rebuild's.
+- Every rollup holds exactly the rebuild's cells, kept set and header for the same `(q, dir)`.
+- Heaviness is by `S` (stored rows) rather than the rebuild's distinct root rows: close records count once per tier until a merge collapses them, and a rollup is never dropped once built. So a run can hold a rollup a rebuild would not have (a directory within its closes of R), and the summed bound can send a few directories near R the other way. Such a view is still exact against brute force: roots are the whole answer; a rollup's kept children are exact and its remainder is the total less them. Compaction resets it.
+
+### Tier merges and compaction
+
+- **Merge** (when the binary counter carries, in `publish`; only runs that all carry `drill/`, `push_run(drilled=…)`): the newest input's alias map; each input's rows re-keyed to the merged canonicals (`alias_i(c)` for each merged canonical `c`: its class at input `i` contains `c`'s) and combined (roots: smallest `vt`; rollups: the newest-full-header rule, the merged header `kind` 0 if any included input was full); `dcount` summed.
+- **Compaction** into a new base generation reruns the drill build (`roots digest` → `build` / `short-*` → `index`) on the compacted generation (~85 VM-hours ≈ $19 at today's size); a fold of the runs into the base drill is not built.
+
+### The 2026-10-09 run (measured)
+
+`dt-cloud static-names daily drill build -g 2026-10-08c -d 2026-10-09` (now `runs drill build`) on one spot n2-highmem-16 (`MODULE=static_drill`), first to the scratch bucket, then copied to `deltas/2026-10-09/drill/` (server side) and to R2 with `r2-batch` (`meta.json` in a last pass).
+
+| Step | long | short |
+|---|---:|---:|
+| delta roots | 84,479,040 (14,143,806 of them the whole history of the 141 new members) | 49,330,377 |
+| classes | 35,915 → 35,916 (one split), +141 new | — |
+| heavy dirs touched / newly heavy | 13,612 / 423 | 9,345 / 144 |
+| probes (children new or not) | 84,381 (26,611 had earlier roots) | 338,492 (94,643) |
+| candidates to enter a kept set / dirs settled / restated | 26,691 / 629 / 618 | 98,053 / 648 / 600 |
+| rollup rows / `dcount` rows | 242,088 / 10,369,274 | 241,139 / 1,998,647 |
+| time | 23.8 min | 38.6 min |
+
+- **Footprint.** 2.15 GB served (long roots 1.28 GB in 2 files, short roots 0.85 GB, rollups 6.6 MB, indexes 7.7 MB, aliases), plus 43 MB of `state/` on GCS only: 0.7% of the base drill's 299 GB. Roots compress to 15 B/row for long and 17 B/row for short, against the base's 6.3 B/row: a day's rows are scattered paths. That is ≈ 2× the light run's 1.1 GB/day, and ≈ 65 GB per 30 days ≈ $1/month on R2.
+- **Cost.** The build ran 62 min (one spot VM ≈ $0.25). The steps behind it, at that run's code: history 55 s; probes 7.5 + 20 min, `CachedGroupFile` group reads 0.35 + 0.62 GB from the base files through the mount; settling 7.5 + 14.7 min; newly heavy dirs' earlier roots 38.8M + 12.7M rows. Since then, probes bisect within cached groups and settling preloads its inputs; not yet re-measured. R2 egress ≈ 2.15 GB × $0.12 ≈ $0.26/day. All told ≈ **$0.5/day**, about the light run's.
+- **The first attempt** (`sn-drill-build-20261009-a`) was stopped after 85 min. New members' history went through the Python reader (27 min for 12.2M suffix rows; now DuckDB, `history_table`), settling looked up `dr` per directory, and newly heavy rows were inserted one by one.
+
+**Verification** (`deltas/2026-10-09/drill-verify/`):
+- **Cases.** 654 `(term, P)` pairs over 46 terms (34 long, 12 short): the base's 455 `drill-cases.jsonl` plus 215 from `drill cases` (what the run changed: per term, its run rollups with a full header first, then a delta header, then parents of its run roots; plus 8 new members). 95 of the cases read a rollup the run restated or built, 37 a delta-header rollup, and 48 a new member.
+- **10-09 vs brute force** from the 10-09 scan file (`roots drill-brute -S <run scans.json>`, 1 spot task, 9 min): **653 / 653 equal** (1 plain). 343 were read from roots, up to 110,731 rows; 310 from rollups, 91 of them with a remainder. 507 are non-empty, comparing 1,306,746 children, and 44 cases have more than 200K children.
+- **10-08, tiered vs the base alone.** All 605 comparable cases are equal: every child both name is equal, and so are the totals (kept + remainder). That leaves out the 48 new-member cases, which the base drill cannot answer. 546 views are identical. In the other 59, a restated kept set names other children on every date, exactly as a rebuild through 10-09 does.
+- **Read cost** (laptop over GCS): 0.40 s median and 5.0 s max per case for both dates.
+
+### R2 layout for the reader (`oa-gcs-usage-index`)
+
+- `static-names/2026-10-08c/drill/…`: the base (unchanged).
+- `static-names/2026-10-08c/deltas/2026-10-09/drill/`:
+  - `meta.json` (`rg` 2048, `R`, `K`, `first`/`last`/`level`/`scans`);
+  - `aliases.parquet` (all 82,757 long members → their canonical at 10-09);
+  - `long-roots-index.parquet` + `.top.parquet` (41 top entries);
+  - `long-rollups-index…`, `short-roots-index…`, `short-rollups-index…`;
+  - `long/roots/r0000.parquet`, `r0001.parquet`;
+  - `long/rollups/r0000.parquet`, `short/roots/r0000.parquet`, `short/rollups/r0000.parquet`.
+- Manifest `manifests/2026-10-09.json` is unchanged (it predates the drill). A reader takes a run's drill as live iff `<run>/drill/meta.json` exists. Index `file` paths are relative to the tier's `drill/`, as the base's.
 
 ## Implementation
 
 - `cloud/src/dt_cloud/static_append.py`: the stages, `dt-cloud static-names runs {prepare,append,shards,catalog,publish,prune,rebuild-state,verify}` (Batch tasks run `python -m dt_cloud.static_append <stage> …`).
 - `cloud/src/dt_cloud/static_runner.py`: the chain, `dt-cloud static-names runs add SCAN_ID [-c] [-n] [-t TERMS]` (below).
 - `cloud/src/dt_cloud/static_profile.py`: the deployment profile (`Profile`); `static_profile_examples.py`: `gcs` and `cw`, worked examples. `cloud/src/dt_cloud/scan_ids.py`: scan ids (`SCAN_ID`, `scan_epoch`, `check_order`).
+- `cloud/src/dt_cloud/static_drill.py`: `dt-cloud static-names runs drill {build,query,cases}` (Batch: `python -m dt_cloud.static_drill build …`), tests `cloud/tests/test_static_drill.py`; `merge_tiers` for the binary counter's merges (not yet called from `publish`, nor from `runs add`).
 - Tier merges use `pyrmts.runs` (pinned 541bc8e).
 - Reader: `site/functions/_lib/staticRuns.ts` (`Tiers`, `TieredNames`, `TieredCatalog`), wired into `nameSummaryStatic.ts` and `staticFilter.ts`; the generation is the deployment's `STATIC_GEN` var (required).
 
@@ -195,15 +296,15 @@ A deployment may scan once a day, every 6 h, or once more on demand; nothing her
 ### Entry point: `dt-cloud static-names runs add SCAN_ID`
 
 ```
-prepare → append (key ranges, `append_tasks` tasks) → shards ∥ catalog → publish (Batch: tier merges + manifests/<id>.json) → R2 (each run in the manifest, then manifests/) [→ verify, -t] → prune
+prepare → append (key ranges, `append_tasks` tasks) → shards ∥ catalog → [drill: long ∥ short] → publish (Batch: tier merges + manifests/<id>.json) → R2 (each run in the manifest, its drill/meta.json last; r2-verify; then manifests/) [→ verify, -t] → prune
 ```
 
-- **Strictly in scan-id order.** The published scans (under the base's layouts) after the generation's newest (base + the newest manifest's runs), through SCAN_ID, are pending. SCAN_ID must be the oldest of them, else exit 3 naming the others; `-c` appends every pending scan in order. A scan already appended reruns only the R2 copy and prune.
-- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/<id>/scans.json` (prepare), all `ranges.json` `k` of `deltas/<id>/dhist/` (append; `append` also skips done ranges within a job), `deltas/<id>/sidecar.parquet` (shards), `deltas/<id>/catalog/meta.json` (catalog), `manifests/<id>.json` (publish), `deltas/<id>/verify.json` (verify). `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
+- **Strictly in scan-id order.** The published scans (under the base's layouts) after the generation's newest (base + the newest manifest's runs), through SCAN_ID, are pending. SCAN_ID must be the oldest of them, else exit 3 naming the others; `-c` appends every pending scan in order. A scan already appended reruns only the R2 copy and prune (and, with `drill`, builds its drill first when the newest manifest lists its own level-0 run without one: T1236's case).
+- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/<id>/scans.json` (prepare), all `ranges.json` `k` of `deltas/<id>/dhist/` (append; `append` also skips done ranges within a job), `deltas/<id>/sidecar.parquet` (shards), `deltas/<id>/catalog/meta.json` (catalog), `deltas/<id>/drill/meta.json` (drill), `manifests/<id>.json` (publish), `deltas/<id>/verify.json` (verify). `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
 - **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/<id>.json` (`if_generation_match=0`), and the scratch bucket's `state/<id>/`. The one delete is `prune`'s: earlier scans' `state/<prev>/` in the scratch bucket, once `state/<id>/` is complete.
 - **Exit status:** 0 done; 3 the scan is not published yet, or an earlier published scan is pending (without `-c`), or `prepare` refuses; 1 a stage failed.
 - **GCS and Batch over their APIs** (ADC; no `gcloud`), so it runs inside a scan job's image. Batch jobs are named `sn-<stage>-<id>-<hhmmss>` and labelled `purpose=static-names`, `stage`, `gen`.
-- **R2:** one Batch job per scan (every run the manifest lists, then `manifests/`), as the profile's R2 account, with the R2 key from Secret Manager (`secretVariables`) and the endpoint from its secret or `R2_ENDPOINT`.
+- **R2:** one Batch job per scan (every run the manifest lists, each with its `drill/meta.json` last; `r2-verify`; then `manifests/`), as the profile's R2 account, with the R2 key from Secret Manager (`secretVariables`) and the endpoint from its secret or `R2_ENDPOINT`.
 - **`-n`:** dry run. It reports each stage as done or that it would run; it submits and writes nothing.
 - **Scheduling:** after a scan's `path` sort is written, run `dt-cloud static-names runs add -c <id>` (gcs: from `job/run.sh` after `index-sync`; cw: from `job/cw-run.sh`). On exit 3, try again later; it is safe to run on a timer.
 
@@ -217,6 +318,12 @@ python -m dt_cloud.static_append catalog -g GEN -d ID -m /gcs/BUCKET
 python -m dt_cloud.static_append publish -g GEN -d ID -m /gcs/BUCKET          # merges (if the counter carries), then manifests/ID.json
 python -m dt_cloud.static_names r2-copy -g GEN/deltas/ID && python -m dt_cloud.static_names r2-copy -g GEN -o manifests/
 dt-cloud static-names runs prune -g GEN -d ID [-n]
+MODULE=static_drill SPOT=1 job/static-names.sh run build 1 -g 2026-10-08c -d D [-t gs://<scratch>/…/drill]          # the run's drill/ (meta.json last)
+dt-cloud static-names runs drill cases -g 2026-10-08c -r deltas/D -t job/static-names/drill-terms.txt > cases.jsonl     # + drill-cases.jsonl
+dt-cloud static-names runs drill query -g 2026-10-08c -r deltas/D -c cases.jsonl -d D > answers.jsonl
+MODULE=static_roots SPOT=1 job/static-names.sh run drill-brute 1 -g 2026-10-08c -d D -c gs://…/cases.jsonl -k gs://…/answers.jsonl -S gs://…/deltas/D/scans.json -O …/deltas/D/drill-verify/brute.jsonl
+dt-cloud static-names roots drill-verify brute.jsonl answers.jsonl
+job/static-names.sh r2-batch 2026-10-08c/deltas/D -o drill/{l,s,a}; then -o drill/meta.json                            # wt/gcs-static's r2-batch
 ```
 
 Dry runs on 2026-10-09 (UTC, gcs, `runs add -n`): `2026-10-10` and `2026-10-09T1236` exit 3 (not published yet), and `2026-10-09` (appended) reruns only the R2 copy and prune.

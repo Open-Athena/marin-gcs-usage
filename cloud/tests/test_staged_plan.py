@@ -94,7 +94,7 @@ def test_as_of_groups_by_bucket_like_sweep() -> None:
 
 @pytest.mark.parametrize(("as_of", "error"), [
     ([], "as_of must be an object of prefix -> scan date"),
-    ({f"gs://{E1}/other/": "2026-10-06"}, f"as_of names 'gs://{E1}/other/', which is not a sweep item"),
+    ({f"gs://{E1}/other/": "2026-10-06"}, f"as_of names 'gs://{E1}/other/', which is not a plan item"),
     ({f"gs://{E1}/ckpt/old/": "yesterday"}, f"as_of['gs://{E1}/ckpt/old/'] must be a scan date, got 'yesterday'"),
     ({f"gs://{E1}/ckpt/old/": 20261006}, f"as_of['gs://{E1}/ckpt/old/'] must be a scan date, got 20261006"),
 ])
