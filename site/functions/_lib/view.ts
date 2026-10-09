@@ -920,7 +920,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
       try {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
-        return (await readAsks(h, want.map(r => ({ depth: depthF.get(r)!, path: r })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: 60, stop: () => detailsOff })).rows
+        return (await readAsks(h, want.map(r => ({ depth: depthF.get(r)!, path: r })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: DETAIL_GROUPS, stop: () => detailsOff })).rows
       } catch (e) {
         if (!/too wide/.test(String((e as Error).message ?? e))) throw e
         tr?.('details', 0, 'too wide')
@@ -1333,8 +1333,9 @@ export const FILTER_SUBDIV_AREA = 64 * 64
 export const FILTER_SUBDIV_LEVELS = 3
 /** …reading at most this many row groups (admitted heaviest root depth first; a read past it is skipped). */
 export const FILTER_PHASE2_GROUPS = 24
-/** …within this many ms (`FILTER_PHASE2_MS` overrides): a read still running then is dropped. */
-export const FILTER_PHASE2_MS = 2500
+/** …within this many ms (`FILTER_PHASE2_MS` overrides): a read still running then is dropped. With the
+ *  root details' wait past it (`FILTER_DETAILS_MS`, dev 300) and the build, a full view lands in ~2 s. */
+export const FILTER_PHASE2_MS = 1500
 /** px² per drawn tile: a view draws at most w·h / this many nodes (1280×768: 10,240 — what the plain
  *  view's busiest paths draw). */
 export const TILE_AREA = 96
@@ -1364,6 +1365,10 @@ export function capTiles(kept: Map<string, { b: number }>, depth: Map<string, nu
 const REGION_READS = 24
 /** Static match roots whose own rows (kind, ages, classes) are looked up per view, heaviest first. */
 const ROOT_DETAILS = 48
+/** …from at most this many row groups (wider declines after the span plan, fetching nothing): the lookups
+ *  share the request's six connections with phase 2, and roots spread over many depths (`00241`) took
+ *  ~20 groups to answer after phase 2 had already given up on them. */
+const DETAIL_GROUPS = 16
 
 const parentOf = (p: string): string => {
   const cut = p.lastIndexOf('/')

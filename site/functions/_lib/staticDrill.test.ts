@@ -260,7 +260,7 @@ describe('the map\'s views from the drilldown (`/api/subtree`)', () => {
     }
     expect(got).toEqual(want)
     expect(n).toBe(256)
-  })
+  }, 30_000) // ~1.5 s alone; past the 5 s default when the whole suite runs in parallel
 
   it('rollup answers: a cell per kept child (match roots marked), the rest in `(other)`; the matched totals exact', async () => {
     const drill = newDrill()
