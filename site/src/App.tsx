@@ -1,6 +1,6 @@
 import { Explain } from './Help'
-import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query'
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { MdLayers } from 'react-icons/md'
 import { useActions } from 'use-kbd'
@@ -30,7 +30,9 @@ import { ClassMixTip, Tooltip } from './Tooltip'
 import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
-import { coverWant, useFilterCover } from './filterCover'
+import { fetchCover, matchedListOf, prefetchCover, rowCover, rowMatchesOf, useFilterCover } from './filterCover'
+import { HttpError } from './batches'
+import type { RowSource } from './MatchActions'
 import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
 import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
@@ -581,23 +583,27 @@ function AppContent() {
   const canStageHere = store.staging && canStage
   const canAssignHere = ownersMode && canAssign
   const coverScoped = !!activeLens || ownerMode !== 'all' || !!classSet
-  // Fetched only once the viewer opens the bulk bar (or a row asks for its matches) for this scan, path
-  // and filter: a cold cover costs seconds, and most filtered page loads never act on the matches.
-  const coverArgs = { date: asof ?? null, path: graftPath, q: fq, qs: syntax.id }
-  const [coverWanted, setCoverWanted] = useState<string | null>(null)
-  const coverOn = coverWanted === coverWant(coverArgs)
-  const wantCover = coverOn ? undefined : () => setCoverWanted(coverWant(coverArgs))
-  const coverQ = useFilterCover(sfetch, store.key, { ...coverArgs, enabled: coverOn && !!fq && !coverScoped && (canAssignHere || canStageHere) })
-  const tblFilter = useMemo(() => {
+  // Fetched on the viewer's intent (hovering or focusing the bulk bar, a row or its controls) and awaited
+  // by a click, per scan, path and filter: a cold cover costs seconds, and most filtered page loads never act.
+  // The page only observes the cache (`enabled: false`); `prefetchCover` / `fetchCover` fill it, deduped.
+  const qc = useQueryClient()
+  const coverArgs = useMemo(() => ({ date: asof ?? null, path: graftPath, q: fq, qs: syntax.id }), [asof, graftPath, fq, syntax.id])
+  const coverKey = JSON.stringify([store.key, coverArgs])
+  const coverQ = useFilterCover(sfetch, store.key, { ...coverArgs, enabled: false })
+  const coverOk = !!fq && !!coverArgs.date && (canAssignHere || canStageHere)
+  const coverIntent = useCallback(() => { if (coverOk && !coverScoped) void prefetchCover(qc, sfetch, store.key, coverArgs) }, [coverOk, coverScoped, qc, sfetch, store.key, coverArgs])
+  const noScan = (): Promise<never> => Promise.reject(new HttpError('This scan isn’t loaded yet; try again in a moment.', 409))
+  const coverResolve = useCallback(() => coverArgs.date ? fetchCover(qc, sfetch, store.key, coverArgs) : noScan(), [qc, sfetch, store.key, coverArgs])
+  const tblFilter = useMemo((): RowSource | undefined => {
     if (!fq) return undefined
-    const c = coverQ.data
-    const why = coverScoped ? 'Clear the owner or storage-class scope to act on the matches.'
-      : !coverOn ? 'List the matches (“act on the matches” above) to act on this row’s.'
-      : coverQ.error ? `Can’t list this row’s matches: ${coverQ.error.message}`
-      : c && !c.complete ? c.reason
-      : undefined
-    return { items: c?.complete ? c.items : null, why, want: wantCover }
-  }, [fq, coverQ.data, coverQ.error, coverScoped, coverOn]) // eslint-disable-line react-hooks/exhaustive-deps
+    // Under an owner or class scope a match's scoped bytes aren't a prefix: the click says so, muted.
+    const scoped = (): Promise<never> => Promise.reject(new HttpError('Clear the owner or storage-class scope to act on the matches.', 409))
+    return {
+      key: `${coverKey}|${coverScoped}`,
+      resolve: row => coverScoped ? scoped() : !coverArgs.date ? noScan() : rowCover(qc, sfetch, store.key, coverArgs, row),
+      prefetch: row => coverScoped || !coverOk ? Promise.resolve() : rowCover(qc, sfetch, store.key, coverArgs, row).catch(() => {}),
+    }
+  }, [fq, coverKey, coverScoped, coverOk, qc, sfetch, store.key, coverArgs]) // eslint-disable-line react-hooks/exhaustive-deps
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
@@ -622,7 +628,8 @@ function AppContent() {
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, bucketsOnly: !!(d as { rollup?: { bucketsOnly?: true } }).rollup?.bucketsOnly }
+    const r = (d as { rollup?: { bucketsOnly?: true; scopedBelow?: true } } | undefined)?.rollup
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, bucketsOnly: r?.bucketsOnly ? (r.scopedBelow ? 'scoped' as const : true) : false }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out) and the scroll
@@ -878,6 +885,15 @@ function AppContent() {
   // The table's path segments, stable while `mapPath` is (a fresh array per
   // render defeated every memo keyed on it).
   const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
+  // Each table row's listed match roots: from the table's own path's response (full, else its first paint) —
+  // exact when its `matched` list is every root, a lower bound when it is capped, unknown otherwise.
+  const tblPath = mapPath ? tblSegs.join('/') : null
+  const tblRowMatches = useMemo(() => {
+    if (!fq || tblPath == null) return undefined
+    const i = subtreePaths.indexOf(tblPath)
+    const d = i < 0 ? undefined : (subtreeQs[i]?.data ?? coarseQs[i]?.data) as (MatchFields & { matchesCapped?: boolean; partialReason?: string; approximateReason?: string; rollup?: unknown }) | undefined
+    return rowMatchesOf(d?.matched, matchedListOf(d))
+  }, [fq, subStamp, tblPath, subtreePaths]) // eslint-disable-line react-hooks/exhaustive-deps
   const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
   // Worklist rows / children table → drill the map to a prefix (the new path
   // starts at the top, where the map is).
@@ -1189,6 +1205,7 @@ function AppContent() {
                 onChange={e => setFqDraft(e.target.value)}
                 placeholder={boxSyntax.describe().placeholder}
                 aria-label="Filter tree by path"
+                data-log-input="filter"
                 aria-invalid={!!fErr}
                 size={30}
               />
@@ -1202,7 +1219,8 @@ function AppContent() {
           </span>
         )}
         {fq && !coverScoped && (
-          <BulkBar onWant={wantCover} cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} error={coverQ.error} scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
+          <BulkBar cover={coverQ.data} loading={coverQ.isFetching && !coverQ.data} onIntent={coverIntent} resolve={coverResolve} resetKey={coverKey}
+            scheme={store.scheme} query={fq} canAssign={canAssignHere} canStage={canStageHere} />
         )}
       </SiteNav>
 
@@ -1322,6 +1340,7 @@ function AppContent() {
               onOpen={openPath}
               onOpenObject={openObject}
               filter={tblFilter}
+              rowMatches={tblRowMatches}
               brush={brush}
               onBrush={setBrush}
             /></div>

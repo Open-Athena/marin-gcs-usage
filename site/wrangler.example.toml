@@ -74,6 +74,9 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_BOX_COARSE = "1"                    # dev-only `/api/coarse` (the `/coarse` viewer); unset = 404
 # QUERY_BOX_COARSE_URL = "https://box.example"  # where `/api/coarse` asks; unset = QUERY_BOX_URL
 
+# --- Session log (specs/session-log.md; tables: migrations/<lineage>/…_session_log.sql; on/off: the switch at /admin) ---
+# SESSION_LOG_RETAIN_DAYS = "30"             # days a session's log is kept (default 30)
+
 # --- Plans and deletion (_lib/plans.ts, _lib/dispatch.ts) ---
 # STORE_SCHEME = "s3://"                      # the URI scheme staged prefixes carry
 # STORE_BUCKETS = "my-bucket,my-other-bucket"  # comma-separated scanned buckets, first = primary
@@ -92,6 +95,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # D1_DB_ID = "<d1-database-id>"               # `sweep`: the D1 its runs are recorded to (dispatch requires it; = the `DB` binding's id)
 # D1_DB_NAME = "<d1-database-name>"           # `sweep`: that D1's name
 # SWEEP_S3_ENDPOINT = "https://s3.example.com"  # `plan-sweep`: the S3 endpoint its runs delete through
+# DISKY_LABELS = "app=disky,deployment=<name>"  # cost-attribution labels on the executor jobs' VMs + disks (each adds `component`); unset = none
 # SLACK_ADMIN_CHANNEL = "C0123456789"          # channel id staged-plan threads post to (with SLACK_BOT_TOKEN); unset = no Slack
 
 # --- Link previews (specs/done/dogi.md) ---
@@ -106,9 +110,13 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # STATIC_MAX_ROWS = "400000"                # the static reader's ceiling on suffix rows per query (default 400K; the catalog threshold bounds it lower)
 # FILTER_STATIC = "1"                       # the map's filter (`q=`): a single literal's match roots on any scan of the static name index's generation, from INDEX_R2 (`_lib/staticFilter.ts`)
 # FILTER_STATIC_HEAVY = "1"                 # with FILTER_STATIC: heavy literals (catalog members, and every 1–2 character one) from the drilldown under `drill/` (`_lib/staticDrill.ts`): match roots, or a heavy directory's per-child rollup; base-generation scans only
+# FILTER_STATIC_ANCHORS = "0"               # with FILTER_STATIC: turns off anchored terms (`^q`, `q$`, `^q$`) from the name index and the `q$` / `^q$` rollups under `names/`, `anchors/` (`_lib/staticAnchors.ts`; on by default, a generation without `anchors/meta.json` declines them)
 # FILTER_INDEXED_ONLY = "1"                # with FILTER_STATIC: the map's filter takes only one literal substring of a name, unscoped, on a scan the static index covers; every other form is a 400 `{ error, code }` (`_lib/indexedOnly.ts`), never a path-store scan
 # FILTER_DETAILS_MS = "300"                # with FILTER_STATIC: ms a filtered view waits past phase 2 for its roots' kind/ages/classes (unset: until they land)
 # FILTER_PHASE2_MS = "1500"                # ms a filtered view's phase 2 (its match roots' insides) may take; reads still running then are dropped and those roots drawn whole (`interiors` in the response; default 1500)
+# PATH_STORE = "intervals"                 # read the dates INTERVAL_STORE_GEN holds from the change-interval path store on INDEX_R2 (`_lib/index.ts` `openInterval`, specs/interval-store.md); lenses and owner pools still read per-scan stores. `opt-in`: only requests with `ps=iv`
+# INTERVAL_STORE_GEN = "2026-10-09"         # with PATH_STORE: the generation, `interval-store/<gen>/` on INDEX_R2
+# INTERVAL_STORE_REV = "2"                  # with PATH_STORE: bump when the generation's files are rewritten in place (re-keys the caches)
 # STATIC_BENCH = "1"                        # dev: `/api/static-bench`, R2 read timings over INDEX_R2
 # [[r2_buckets]]                            # Worker-served indexes (the static name-search shards)
 # binding = "INDEX_R2"

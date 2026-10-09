@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { fmtScan, scanGroups, type ScanLabel } from './scan'
+import { slog } from './sessionLogBoot'
 
 /**
  * A scan chooser as an ARIA combobox (a filterable listbox), replacing the
@@ -47,9 +48,10 @@ export function ScanCombobox({ value, scans, onChange, label, className, fmt = f
   }, [])
 
   const commit = useCallback((id: string) => {
+    slog('pick', { n: `scan:${label}`, v: id })
     onChange(id)
     close()
-  }, [onChange, close])
+  }, [onChange, close, label])
 
   // Open: seed the active option with the current value (or the first row) and
   // focus the filter input.

@@ -47,8 +47,8 @@ export interface Cover {
 export const COVER_V = 6
 
 /** Why a cover over the item cap (`/api/filter-cover` `COVER_ITEMS_MAX`) isn't offered (shown muted, on the disabled actions). */
-export const overCapReason = (n: number): string =>
-  `Too many matches to act on at once (${n.toLocaleString('en-US')}); narrow the search or open a folder below. Agents can bulk-assign via the API.`
+export const overCapReason = (n: number, atLeast = false): string =>
+  `Too many matches to act on at once (${atLeast ? 'at least ' : ''}${n.toLocaleString('en-US')}); narrow the search or open a folder below. Agents can bulk-assign via the API.`
 
 /** Kind lookups: the fewest paths a too-wide chunk is halved to, and the most calls. */
 export const MIN_KIND_CHUNK = 64
@@ -137,6 +137,57 @@ export async function coverSet(
     items.set(r.path, { path: r.path, kind, b: r.b, o: r.o, roots: 1 })
   }
   return { items: [...items.values()].sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)), looked, unchecked }
+}
+
+/** A lower bound on `coverSet(roots, view, …)`'s item count, under any lookup budget: what decides an over-cap
+ *  cover without computing it (`/api/filter-cover`).
+ *
+ *  The root count alone isn't one: full folders collapse many roots into one item (a folder of 70K matching
+ *  run dirs is one item). The bound is the cover found top-down, one depth at a time from the floor. Every
+ *  root is either *settled* (its item is known: a root at or above the current depth, or a folder proven
+ *  full whose ancestors were all proven not full) or under one *open* folder at the current depth (not yet
+ *  proven not full). An open folder holds at least one item of the cover whatever its fullness, and open
+ *  folders are disjoint, so `settled + open` never exceeds the minimum cover — which `coverSet` never goes
+ *  below (a lookup it can't make only stops collapsing). Each round looks up the open folders: a full one
+ *  settles as one item, the rest open their children at the next depth (roots there settle). The count only
+ *  grows; it stops as soon as it passes `cap` (`over`), at a lookup over budget or too wide (the count so far
+ *  is still a bound), or when nothing is open (`exact`: the minimum cover's size).
+ *
+ *  Round 0 reads nothing: the roots at or above the floor, plus the distinct floor-depth folders holding the
+ *  rest. A filter whose matches sit one level below few folders passes the cap after one small lookup. */
+export async function coverFloor(
+  roots: CoverRoot[],
+  view: string,
+  lookup: Lookup,
+  { minDepth = 1, full = isFull, cap }: { minDepth?: number; full?: (m: { b: number; o: number }, t: { b: number; o: number }) => boolean; cap: number },
+): Promise<{ n: number; over: boolean; exact: boolean; looked: number }> {
+  const floor = Math.max(minDepth, depthOf(view))
+  const at = (p: string, d: number) => p.split('/').slice(0, d).join('/')
+  let settled = 0, looked = 0
+  let open = new Map<string, CoverRoot[]>()
+  const place = (r: CoverRoot, d: number) => {
+    if (depthOf(r.path) <= d) { settled++; return }
+    const a = at(r.path, d), rs = open.get(a)
+    if (rs) rs.push(r); else open.set(a, [r])
+  }
+  for (const r of roots) place(r, floor)
+  for (let d = floor; ; d++) {
+    const n = settled + open.size
+    if (n > cap || !open.size) return { n, over: n > cap, exact: !open.size, looked }
+    const ask = [...open.keys()].sort()
+    const got = await lookup(ask)
+    if (!got || got === 'wide') return { n, over: false, exact: false, looked }
+    looked += ask.length
+    const next = open
+    open = new Map()
+    for (const a of ask) {
+      const rs = next.get(a)!
+      const t = got.get(a)
+      const m = rs.reduce((s, r) => ({ b: s.b + r.b, o: s.o + r.o }), { b: 0, o: 0 })
+      if (t && t.kind === 'dir' && full(m, t)) settled++
+      else for (const r of rs) place(r, d + 1)
+    }
+  }
 }
 
 /** What an action names for an item: a folder's prefix (`…/`), an object's key; null for an unknown kind. */

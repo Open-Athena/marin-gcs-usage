@@ -70,6 +70,9 @@ export interface Rollup {
   /** The fleet root from the catalog alone, no drilldown behind it (`staticFilter.ts` `catalogRoot`): a
    *  bucket's view needs the full index (`FILTER_STATIC_HEAVY`), so drilling in is refused. */
   bucketsOnly?: true
+  /** With `bucketsOnly`: a view below answers where the term's rows there are few enough (`^q`'s scoped reads,
+   *  `staticAnchors.ts`), and is refused elsewhere. */
+  scopedBelow?: true
 }
 
 /** A rollup on scan `date`: each kept child's totals (zeros left out, sorted by name) and the remainder's — per
@@ -197,7 +200,7 @@ const newIo = (): DrillIo => ({ top: 'isolate', index_reads: 0, index_bytes: 0, 
 export class GroupFile {
   private top?: Promise<Top>
   private optional?: Promise<boolean>
-  constructor(readonly blobs: Blobs, readonly kind: Kind, readonly set: Set_, readonly meta: () => Promise<DrillMeta>, readonly cache?: IndexCache<Top>) {}
+  constructor(readonly blobs: Blobs, readonly kind: Kind | 'end' | 'exact' | 'start', readonly set: Set_, readonly meta: () => Promise<DrillMeta>, readonly cache?: IndexCache<Top>) {}
 
   get indexFile(): string { return `${this.kind}-${this.set}-index.parquet` }
   get topFile(): string { return `${this.kind}-${this.set}-index.top.parquet` }

@@ -17,7 +17,7 @@ GCS = Profile(
     layouts=("listing/{id}/path-index.parquet", "listing/{id}/index/{gen}/path-index.parquet"),
     bucket="oa-gcs-usage-dvx", scratch="oa-gcs-usage-scratch", gen="2026-10-08c",
     r2_bucket="oa-gcs-usage-index", r2_secrets={"key_id": "gcs-static-index-r2-key-id", "secret": "gcs-static-index-r2-secret"},
-    project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com", drill=True,
+    project=PROJECT, region="us-east1", image=IMAGE, sa=f"gcs-usage-job@{PROJECT}.iam.gserviceaccount.com", drill=True, anchors=True,
 )
 
 #: CoreWeave S3 buckets: scans every 6 h (`cw-l2/<id>/index/<gen>/`), the same data and scratch buckets as gcs, its own

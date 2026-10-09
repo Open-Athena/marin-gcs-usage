@@ -70,7 +70,7 @@ export async function undoSweepRun(
   const jobId = `gcs-undo-${jobStampOf(now)}z`
   const spec = sweepJobSpec({
     cfg, jobSa: env.JOB_SA, region, script: undoScript({ bulk }), actor, siteUrl,
-    env: { OP: 'undo', TARGET_RUN: runId },
+    env: { OP: 'undo', TARGET_RUN: runId }, component: 'sweep-undo',
   })
   const token = await gcpToken(env.GCP_SA_KEY)
   const failed = await submitSweepJob(cfg, token, region, jobId, spec)

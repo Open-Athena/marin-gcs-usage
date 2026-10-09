@@ -21,15 +21,23 @@ export type NamePred = ((path: string) => boolean) & {
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+/** `body` with a matcher's anchors: `start` — at the path's start or right
+ * after a `/` (a segment starts there), `end` — at its end or right before a
+ * `/` (a segment ends there). */
+const anchored = (body: string, m: { start?: true; end?: true }): RegExp =>
+  new RegExp(`${m.start ? '(?:^|/)' : ''}${body}${m.end ? '(?=/|$)' : ''}`)
+
 /** A matcher's test, given the path and its lowercase. */
 export function matcherTest(m: Matcher): (path: string, lower: string) => boolean {
   switch (m.kind) {
     case 'sub': {
       const s = m.text
-      return (_, l) => l.includes(s)
+      if (!m.start && !m.end) return (_, l) => l.includes(s)
+      const re = anchored(esc(s), m)
+      return (_, l) => re.test(l)
     }
     case 'glob': {
-      const re = new RegExp(m.pieces.map(esc).join('[^/]*'))
+      const re = anchored(m.pieces.map(esc).join('[^/]*'), m)
       return (_, l) => re.test(l)
     }
     case 'regex': {

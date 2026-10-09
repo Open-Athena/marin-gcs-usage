@@ -27,21 +27,26 @@ import { StaticCatalog } from './staticCatalog.js'
 import { type CatalogLookup, Drill, DRILL_DIR, DrillSource, type Rollup, type RollupCell } from './staticDrill.js'
 import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanAt, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
-import { type FilterReject, reject } from './indexedOnly.js'
+import { ANCHOR_MIN, type FilterReject, type FilterRejectCode, reject } from './indexedOnly.js'
+import { AnchoredSource, parseKey, termInPath, termKey } from './staticAnchors.js'
 
 export type { Hit } from './staticNames.js'
 export { type Rollup, rollupAt, rollupTotal } from './staticDrill.js'
 
-/** The literal a query is, when the static index can answer it exactly (lowercase), else null. */
+/** The key of the literal a query is, when the static index can answer it exactly, else null: a plain literal
+ *  (lowercase) itself, an anchored one (`^q`, `q$`, `^q$`; at least `ANCHOR_MIN` characters) `staticAnchors.ts`'s
+ *  `termKey` (`/q`, `q/`, `/q/`). */
 export function staticLiteral(ast: QueryAst | undefined): string | null {
   if (!ast || ast.neg.length || ast.alts.length !== 1 || ast.alts[0].length !== 1) return null
   const m = ast.alts[0][0]
   if (m.kind !== 'sub' || m.text.includes('/') || !m.text) return null
-  return m.text
+  const start = !!m.start, end = !!m.end
+  if ((start || end) && [...m.text].length < (start && end ? ANCHOR_MIN.exact : start ? ANCHOR_MIN.start : ANCHOR_MIN.end)) return null
+  return termKey({ text: m.text, start, end })
 }
 
 /** One or two characters: never a suffix-range read (the shards hold suffixes of ≥ 3); the heavy source's. */
-export const shortLiteral = (key: string): boolean => [...key].length <= 2
+export const shortLiteral = (key: string): boolean => [...key].length <= 2 && !parseKey(key).mode
 
 /** What a source found for a literal under a path, any date: its match roots (`hits`: first hits, each a
  *  version of an owner slice), or — a heavy literal under a heavy directory — the path's per-child totals
@@ -58,8 +63,15 @@ export const covers = (found: Found, dates: string[]): boolean => !found.scans |
 /** A literal's match roots under a path, any date: what the filter needs from an index. `null` = this
  *  source can't answer the literal (the caller falls back). `under` = `''` (everything) or a path, whose
  *  strict descendants are wanted. */
+/** `firstPaint`: a view's fast first paint asks — a source may answer coarser now (`^q`'s fleet root from its
+ *  catalog while its range is not yet read), the full read following. */
+export interface HitOpts { firstPaint?: boolean }
+
 export interface HitSource {
-  hits(key: string, under: string): Promise<Found | null>
+  hits(key: string, under: string, opts?: HitOpts): Promise<Found | null>
+  /** Why `hits` last declined `key`, when the source knows better than "not indexed" (an anchored prefix too
+   *  common to read: `term-too-common`). */
+  why?(key: string): FilterRejectCode | undefined
   /** Whether a heavy literal (short, or past the suffix bound) has a source (`FILTER_STATIC_HEAVY`'s
    *  drilldown): without one, `hits` declines it on every scan — the term, not the scan, is the reason. */
   readonly heavy?: boolean
@@ -94,8 +106,10 @@ export class SuffixHits implements HitSource {
   private cut = new WeakMap<Hit[], Map<string, Hit[]>>()
   constructor(
     readonly names: HitReader,
-    readonly opts: { maxRows?: number; heavy?: HitSource | null; catalog?: CatalogLookup | null; cache?: HitCache | null; waitMs?: number } = {},
+    readonly opts: { maxRows?: number; heavy?: HitSource | null; catalog?: CatalogLookup | null; cache?: HitCache | null; waitMs?: number; anchored?: HitSource | null } = {},
   ) {}
+
+  why(key: string): FilterRejectCode | undefined { return parseKey(key).mode ? this.opts.anchored?.why?.(key) : undefined }
 
   /** Every first hit of `key` (null: over `maxRows`, the heavy source's business), and the scans they are exact
    *  on (absent: every scan of the store). */
@@ -137,7 +151,9 @@ export class SuffixHits implements HitSource {
     return root === '' && this.opts.catalog ? catalogRoot(this.opts.catalog, key) : Promise.resolve(null)
   }
 
-  async hits(key: string, root: string): Promise<Found | null> {
+  async hits(key: string, root: string, opts?: HitOpts): Promise<Found | null> {
+    // Anchored keys (`^q`, `q$`, `^q$`): the anchored source's (`staticAnchors.ts`), else nobody's.
+    if (parseKey(key).mode) return this.opts.anchored ? this.opts.anchored.hits(key, root, opts) : null
     if (shortLiteral(key)) return this.heavyHits(key, root)
     const got = await this.all(key)
     if (!got) return this.heavyHits(key, root)
@@ -187,7 +203,7 @@ export function cacheHits(cache: Cache, prefix: string, version = 'hits-v1'): Hi
   }
 }
 
-export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; FILTER_INDEXED_ONLY?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string }
+export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; FILTER_STATIC_ANCHORS?: string; FILTER_INDEXED_ONLY?: string; INDEX_R2?: R2Bucket; STATIC_GEN?: string }
 
 /** The drilldown over a bucket's generation: the base `drill/` and its `runs`' (`staticDrill.ts`), with the fleet
  *  root from `opts.catalog` (default: the base catalog); `cached`: its indexes in `cache` under `prefix` (the
@@ -222,7 +238,18 @@ export function staticFilterStore(env: StaticFilterEnv): StaticFilterStore | nul
     const runs = async () => (await t.tiers.state()).tiers.flatMap(x => x.dir ? [x.dir] : [])
     const heavy = env.FILTER_STATIC_HEAVY === '1' ? drillSource(r2Blobs(env.INDEX_R2, pre), { cache: caches.default, prefix: pre }, { runs, catalog: t.catalog }) : null
     // Without it, a heavy literal's fleet root from the catalog's buckets (`catalogRoot`).
-    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
+    // Anchored terms (`^q`, `q$`, `^q$`; `staticAnchors.ts`): on unless `FILTER_STATIC_ANCHORS=0`; a generation
+    // without `anchors/meta.json` declines them.
+    const sub = (dir: string | null, s: string) => `${tierPre(dir)}/${s}`
+    const anchored = env.FILTER_STATIC_ANCHORS === '0' ? null : new AnchoredSource(t.tiers, r2Blobs(env.INDEX_R2, pre), {
+      cache: cacheHits(caches.default, pre, 'anchored-hits-v1'),
+      caches: {
+        index: (dir, s) => cacheIndexes(caches.default, sub(dir, s)),
+        keys: (dir, s) => cacheIndexes(caches.default, sub(dir, s), 'keys-v1'),
+        top: dir => cacheIndexes(caches.default, sub(dir, 'anchors'), 'top-v1'),
+      },
+    })
+    held = { r2: env.INDEX_R2, gen, store: { source: new SuffixHits(t.names, { cache: cacheHits(caches.default, pre), heavy, catalog: heavy ? null : t.catalog, anchored }), scans: t.scans, gen: `${gen}${heavy ? '+drill' : ''}` } }
   }
   return held.store
 }
@@ -252,8 +279,9 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
  *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget; 5: a 1–2
  *  character literal's fleet-root `matchCount.n` counted from the roots index, not 0; 6: heavy literals on
  *  the drill runs' scans; 7: with no drilldown, a heavy literal's fleet root from the catalog's buckets and a
- *  `term-too-common` refusal below it, never the approximate walk). */
-const RESPONSE_V = 7
+ *  `term-too-common` refusal below it, never the approximate walk; 8: anchored terms — `^q`, `q$` were literals before;
+ *  9: a heavy `^q` — its fleet root from the starts-with catalog, scoped reads below, a 400K-row bound). */
+const RESPONSE_V = 9
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
@@ -266,20 +294,22 @@ export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | unde
  *  the fleet root (where the catalog answers, `catalogRoot`) is `term-too-common` — on every scan alike,
  *  indexed or not. */
 export function declined(s: StaticFilterStore | null, skey: string | null, raw: Found | null): FilterReject {
-  return s && skey && !raw && s.source.heavy === false ? reject('term-too-common') : reject('scan-not-indexed')
+  const why = s && skey && !raw ? s.source.why?.(skey) : undefined
+  if (why) return reject(why)
+  return s && skey && !raw && s.source.heavy === false && !parseKey(skey).mode ? reject('term-too-common') : reject('scan-not-indexed')
 }
 
 /** An indexed-only deployment's coverage test (`indexedOnly.ts`): `ast` (one literal, `rejectAst` passed) is
  *  answered statically under `path` on every one of `dates`, else the refusal `declined` names. A view root
  *  the literal matches is the plain view (nothing to search). The answer is held per isolate, so the view's
  *  own read reuses it. */
-export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
+export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[], opts?: HitOpts): Promise<FilterReject | null> {
   const key = staticLiteral(ast)
   if (!key) return reject('unsupported-terms')
-  if (path.toLowerCase().includes(key)) return null
+  if (termInPath(key, path)) return null
   const s = staticFilterStore(env)
   const skey = s ? await staticKey(s, ast, dates) : null
   if (!skey) return declined(s, null, null)
-  const found = await s!.source.hits(key, path)
+  const found = await s!.source.hits(key, path, opts)
   return found && covers(found, dates) ? null : declined(s, skey, found)
 }

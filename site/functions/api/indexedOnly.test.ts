@@ -111,6 +111,25 @@ describe('rejectQuery: what an indexed-only deployment refuses', () => {
       'unsupported-regex', 'unsupported-regex', 'unsupported-glob', 'unsupported-exclusion', 'unsupported-exclusion', 'unsupported-terms', 'unsupported-terms', 'unsupported-slash',
     ])
   })
+  it('one anchored literal passes (`^q` from 2 characters, `q$` from 3, `^q$` from 1); shorter ones, globs and slashes don\'t', () => {
+    const code = (q: string) => rejectQuery(q)?.code ?? null
+    expect([
+      code('^train'), code('.json$'), code('^config.json$'), code('^ab'), code('.gz$'), code('^x$'), code('"^a"'), code('^TRAIN'),
+      code('^a'), code('gz$'), code('^ab*cd'), code('^a/b'), code('^ckpt -tmp'), code('^a .json$'),
+    ]).toEqual([
+      null, null, null, null, null, null, null, null,
+      'anchor-too-short', 'anchor-too-short', 'unsupported-glob', 'unsupported-slash', 'unsupported-exclusion', 'unsupported-terms',
+    ])
+  })
+})
+
+describe('anchor-too-short is worded for the anchor used', () => {
+  it('`^q` says 2 after the caret, `q$` 3 before the dollar', () => {
+    expect([rejectQuery('^a')?.message, rejectQuery('gz$')?.message]).toEqual([
+      'A “^” term needs at least 2 characters after the “^” (e.g. “^ck”).',
+      'A “$” term needs at least 3 characters before the “$” (add the dot: “.gz$”).',
+    ])
+  })
 })
 
 describe('the map routes, flag set: each rejected form is a 400 with its code; unset, the same request answers', () => {

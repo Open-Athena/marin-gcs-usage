@@ -1429,6 +1429,10 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
              "drill/meta.json", "drill/aliases.parquet", "drill/long/roots/", "drill/long/rollups/", "drill/short/roots/",
              "drill/short/rollups/", "drill/long-roots-index", "drill/long-rollups-index", "drill/short-roots-index",
              "drill/short-rollups-index",
+             # anchored search (static_anchors): the name index, the `q$` / `^q$` rollups, their indexes, meta (not `anchors/keys*`, GCS only)
+             "names/", "anchors/meta.json", "anchors/rollups/", "anchors/end-rollups-index", "anchors/exact-rollups-index",
+             # its starts-with catalog (`^q`'s fleet root): rollups, index, meta (its own liveness marker)
+             "anchors/start/meta.json", "anchors/start/rollups/", "anchors/start/start-rollups-index",
              # the runs' manifests (`static_append`; a run's own files are copied with `-g GEN/deltas/<run>`)
              "manifests/")
 
