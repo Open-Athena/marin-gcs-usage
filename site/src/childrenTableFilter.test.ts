@@ -51,10 +51,11 @@ beforeEach(() => { selected.clear(); staged.length = 0 })
 
 describe('the children table under a filter', () => {
   it('a row holding one match shows the path to it (as its tile), others their own name', () => {
+    // At the root no name is elided, so no row carries the full-path tooltip (it would repeat the cell).
     expect(rows(render({ items })).map(r => [name(r), tip(r)])).toEqual([
-      ['marin-us-central1/show', ''],
-      ['marin-eu-west4/tomat', ''],
-      ['bkt-none', ''],
+      ['marin-us-central1/show', undefined],
+      ['marin-eu-west4/tomat', undefined],
+      ['bkt-none', undefined],
     ])
   })
   it('each row acts on its folder matches; a row of lone files (or none listed) has no checkbox and says why', () => {
