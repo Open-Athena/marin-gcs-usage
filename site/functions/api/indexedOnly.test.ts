@@ -123,6 +123,15 @@ describe('rejectQuery: what an indexed-only deployment refuses', () => {
   })
 })
 
+describe('anchor-too-short is worded for the anchor used', () => {
+  it('`^q` says 2 after the caret, `q$` 3 before the dollar', () => {
+    expect([rejectQuery('^a')?.message, rejectQuery('gz$')?.message]).toEqual([
+      'A “^” term needs at least 2 characters after the “^” (e.g. “^ck”).',
+      'A “$” term needs at least 3 characters before the “$” (add the dot: “.gz$”).',
+    ])
+  })
+})
+
 describe('the map routes, flag set: each rejected form is a 400 with its code; unset, the same request answers', () => {
   for (const [what, qs, code] of FORMS) {
     it(what, async () => {
