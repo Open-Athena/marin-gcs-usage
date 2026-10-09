@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
+import { type IndexHandle, isStore, ivLastRead, type Lens, openIndex, perScan, planRects, slices, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerKey, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -1630,8 +1630,8 @@ function kidsIndex(kept: Map<string, Agg>, path: string): Map<string, string[]> 
 /** The store root's crumb label: `ROOT_LABEL` (wrangler var) per deployment. */
 const rootName = (path: string, env?: Env) => (path === '' ? env?.ROOT_LABEL ?? 'all buckets' : path.split('/').pop()!)
 
-/** A read scoped by owner or class needs owner-slice rows: per-scan stores (`perScan`). */
-const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? perScan(env) : env)
+/** A read scoped by owner or class needs owner-slice rows: the interval store's slice sorts (`slices`). */
+const sliced = (env: Env, o: { lens?: Lens; owner?: OwnerScope; classes?: ClassScope; by?: string }): Env => (o.lens || o.owner || o.classes || o.by ? slices(env) : env)
 
 export async function buildView(env0: Env, o: ViewOpts): Promise<View> {
   const env = sliced(env0, o)

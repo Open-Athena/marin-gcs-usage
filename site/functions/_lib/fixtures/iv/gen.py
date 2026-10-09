@@ -81,7 +81,42 @@ def main() -> None:
     (HERE / "expected.json").write_text(json.dumps(expected, indent=1, sort_keys=True) + "\n")
     shutil.rmtree(work)
     print(f"{len(expected)} views; files: {sorted(p.name for p in (out / 'served').iterdir())}", file=sys.stderr)
+    slices_gen()
+
+
+#: `g2`: the per-scan store fixtures `v2-slices` (multi-owner slices) and `v2-lens` as three scans —
+#: slices, lens, slices again (every version closes and reopens) — so `intervalStore.test.ts` compares
+#: sliced reads (lens, owner pools) of the interval store with the per-scan reader over the same files.
+G2 = "g2"
+G2_SCANS = [("2026-09-30T0007", "v2-slices"), ("2026-09-30T0008", "v2-lens"), ("2026-09-30T0009", "v2-slices")]
+
+
+def slices_gen() -> None:
+    from dt_cloud import interval_store as ist
+    from dt_cloud import static_names as sn
+
+    fx = HERE.parent
+    work = HERE / "work2"
+    shutil.rmtree(work, ignore_errors=True)
+    scans = [{"id": d, "src": f"{name}/path-index.parquet", "ts": sn.scan_epoch(d), "version": 2} for d, name in G2_SCANS]
+    doc = {"bucket": "b", "scans": scans}
+    ranges = {"k": 1, "ranges": [{"i": 0, "lo": [0, ""], "hi": None}]}
+    con = duckdb.connect()
+    d = ist.build_range(doc, ranges, 0, work / "out", con, mount=str(fx))
+    ist.fold_range(str(work / "out"), 0, work / "out", con)
+    ds = ist.build_slices_range(doc, ranges, 0, work / "out", con, mount=str(fx))
+    assert d["eq"] and ds["eq"], (d["eq"], ds["eq"])
+    out = HERE / "interval-store" / G2
+    shutil.rmtree(out, ignore_errors=True)
+    for sort, (sub, _, _) in ist.SORTS.items():
+        if sort == "reads":
+            continue
+        ist.write_served(con, f"read_parquet('{work}/out/{sub}/r*.parquet')", sort, out / "served" / f"{sort}.parquet", ist.SUB_SCHEMA[sub],
+                         rg_rows=256, stamps=[x["ts"] for x in scans])
+    (out / "scans.json").write_text(json.dumps({"scans": [{"id": x["id"], "ts": x["ts"]} for x in scans]}, indent=1) + "\n")
+    shutil.rmtree(work)
+    print(f"{G2}: {sorted(p.name for p in (out / 'served').iterdir())}", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main()
+    slices_gen() if sys.argv[1:] == ["g2"] else main()

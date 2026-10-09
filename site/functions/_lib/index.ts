@@ -419,6 +419,12 @@ export function withPathStore<C extends { request: Request; env: Env }>(ctx: C):
 /** `env` reading per-scan stores only: what a read needs whose rows must be owner slices (a user lens,
  *  an owner pool, owner totals) — the interval store folds a path's slices into one row. */
 export const perScan = (env: Env): Env => (intervalsOn(env) ? { ...env, PATH_STORE: undefined } : env)
+/** `env` reading owner-slice rows (a user lens, an owner pool, owner totals, class scopes): the interval
+ *  store's slice sorts where its generation has them (`openInterval`), else per-scan stores. */
+export const slices = (env: Env): Env => (intervalsOn(env) ? { ...env, [IV_SLICED]: true } as Env : env)
+/** The marker `slices` sets on an env (a symbol: not a binding or var; object spreads carry it). */
+export const IV_SLICED = Symbol('interval-store slices')
+const isSliced = (env: Env): boolean => !!(env as Env & { [IV_SLICED]?: boolean })[IV_SLICED]
 export const IV_PREFIX = 'interval-store'
 /** `INTERVAL_STORE_REV`: a generation's files were rewritten in place (a re-cut): every cache keyed by
  *  them (colo ranges and footers, isolate handles and groups, response keys) takes the revision. */
@@ -426,6 +432,10 @@ const ivRev = (env: Env): string => (env.INTERVAL_STORE_REV ? `@${env.INTERVAL_S
 const ivKey = (env: Env, key: string): string => (env.INTERVAL_STORE_REV ? `${key}?rev=${env.INTERVAL_STORE_REV}` : key)
 /** The sorts the store serves (the reads sort is looked up by `ivLastRead`). */
 const IV_SORTS = new Set(['path', 'bysize', 'reads'])
+/** Under `slices(env)`: each per-scan variant a sliced read opens → the store's owner-slice sort. */
+const IV_SLICE_SORTS = new Map([['path', 'slices'], ['bysize', 'slices-bysize'], ['bysize-user', 'slices-bysize-user']])
+/** Generations found without slice sorts (their sliced reads go per-scan), held a minute. */
+const ivNoSlices = new Map<string, number>()
 
 /** `INDEX_R2` as a `ByteStore`. */
 export function r2Bytes(r2: R2Bucket): ByteStore {
@@ -453,24 +463,43 @@ async function ivScans(env: Env): Promise<Map<string, number>> {
 }
 
 /** A served sort of the interval store as an index handle as of `date`'s scan (`pq` mode over its
- *  `.groups.parquet`, bytes from `INDEX_R2`); null when the store doesn't hold that date or sort. */
+ *  `.groups.parquet`, bytes from `INDEX_R2`); null when the store doesn't hold that date or sort. Under
+ *  `slices(env)` the variant reads its owner-slice sort (`IV_SLICE_SORTS`; the handle keeps the variant's
+ *  name, so lens-sorted logic holds); a held date's other variants (a v1 `user` sort) are refused, so a
+ *  sliced read of a held date never mixes in per-scan rows. A generation without slice sorts: null. */
 export async function openInterval(env: Env, date: string, variant: string): Promise<IndexHandle | null> {
-  if (!IV_SORTS.has(variant)) return null
+  const sliced = isSliced(env)
+  const file0 = sliced ? IV_SLICE_SORTS.get(variant) : IV_SORTS.has(variant) ? variant : undefined
+  if (sliced && !file0 && (variant === 'user' || variant.startsWith('coarse'))) {
+    const held = (await ivScans(env)).has(date)
+    if (held && !ivNoSlices.has(env.INTERVAL_STORE_GEN!)) throw new Error(`index variant '${variant}' not synced for ${date}`)
+  }
+  if (!file0) return null
   const asOf = (await ivScans(env)).get(date)
   if (asOf == null) return null
   const gen = env.INTERVAL_STORE_GEN!
-  const ck = `iv:${gen}${ivRev(env)}:${date}:${variant}`
-  return shared(handles, ck, async (): Promise<IndexHandle> => {
-    const src = r2Bytes(env.INDEX_R2!)
-    const dir = `${IV_PREFIX}/${gen}/served`
-    const key = ivKey(env, `${dir}/${variant}.parquet`)
-    const footer = await openFooter(env, ivKey(env, `${dir}/${variant}.groups.parquet`), src)
-    const kv = new Map((footer.metadata.key_value_metadata ?? []).map(e => [e.key, e.value]))
-    const schema = JSON.parse(kv.get('schema')!) as SchemaElement[]
-    const version = Number(kv.get('version'))
-    const file: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
-    return { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
-  }, 300_000)
+  if (sliced) {
+    const at = ivNoSlices.get(gen)
+    if (at != null && Date.now() - at < 60_000) return null
+  }
+  const ck = `iv:${gen}${ivRev(env)}:${date}:${variant}${sliced ? ':s' : ''}`
+  try {
+    return await shared(handles, ck, async (): Promise<IndexHandle> => {
+      const src = r2Bytes(env.INDEX_R2!)
+      const dir = `${IV_PREFIX}/${gen}/served`
+      const key = ivKey(env, `${dir}/${file0}.parquet`)
+      const footer = await openFooter(env, ivKey(env, `${dir}/${file0}.groups.parquet`), src)
+      const kv = new Map((footer.metadata.key_value_metadata ?? []).map(e => [e.key, e.value]))
+      const schema = JSON.parse(kv.get('schema')!) as SchemaElement[]
+      const version = Number(kv.get('version'))
+      const file: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
+      return { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}${sliced ? ':s' : ''}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
+    }, 300_000)
+  } catch (e) {
+    if (!sliced || (e as Error).name !== 'NotFoundError') throw e
+    ivNoSlices.set(gen, Date.now())
+    return null
+  }
 }
 
 /** Each path's `last_read` at a scan, from the interval store's `reads` sort (absent = never read): per
@@ -519,7 +548,7 @@ export async function ivLastRead(env: Env, date: string, paths: string[], maxGro
  * names on a v1 index, the layer-2's on a store sort (§1.1). `usr` and the
  * class pivots only where the file has them (cw has neither). */
 export const V1_ROW_COLUMNS = ['path', 'depth', 'usr', 'b', 'o', 'wts', 'wb', 'c2', 'c3', 'c4', 'a']
-export const IV_ROW_COLUMNS = ['depth', 'path', 'vf', 'vt', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'wts', 'wb', 'c2', 'c3', 'c4', 'us', 'last_read']
+export const IV_ROW_COLUMNS = ['depth', 'path', 'usr', 'vf', 'vt', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'wts', 'wb', 'c2', 'c3', 'c4', 'us', 'last_read']
 export const V2_ROW_COLUMNS = ['path', 'depth', 'usr', 'kind', 'size', 'n_files', 'n_children', 'n_desc', 'mtime', 'mtime_mean', 'last_read', 'sum_storage_class_id_2', 'sum_storage_class_id_3', 'sum_storage_class_id_4']
 
 /** What a shaped read projects: a v1 index reads every column (its columns
@@ -540,10 +569,13 @@ export function rowColumns(version: number, schema: SchemaElement[]): string[] |
 export function columnsFor(h: IndexHandle, fields: (keyof Row)[]): string[] {
   const v2: Partial<Record<keyof Row, string[]>> = { size: ['size'], n_files: ['n_files'], last_read: ['last_read'], cls2: ['sum_storage_class_id_2'], cls3: ['sum_storage_class_id_3'], cls4: ['sum_storage_class_id_4'], mtime_mean: ['mtime_mean', 'size'], mtime_w: ['mtime_mean', 'size'] }
   const v1: Partial<Record<keyof Row, string[]>> = { size: ['b'], n_files: ['o'], last_read: ['a'], cls2: ['c2'], cls3: ['c3'], cls4: ['c4'], mtime_mean: ['wts', 'wb'], mtime_w: ['wb'] }
-  const map = isStore(h) ? v2 : v1
+  const v3: Partial<Record<keyof Row, string[]>> = { size: ['size'], n_files: ['n_files'], last_read: ['last_read'], cls2: ['c2'], cls3: ['c3'], cls4: ['c4'], mtime_mean: ['wts', 'wb'], mtime_w: ['wb'], us: ['us', 'size'] }
+  const map = h.version >= 3 ? v3 : isStore(h) ? v2 : v1
   const have = new Set(h.schema.slice(1).map(l => l.name))
   const out = new Set<string>()
   for (const f of fields) for (const c of map[f] ?? [f]) if (have.has(c)) out.add(c)
+  // An interval store's rows are versions: a read keeps those live at its scan, by `vf`/`vt`.
+  if (h.asOf != null) for (const c of ['vf', 'vt']) out.add(c)
   return [...out]
 }
 
@@ -843,7 +875,8 @@ const toRowV3 = (r: Record<string, unknown>): Row => {
   return {
     path: str(r.path),
     depth: num(r.depth),
-    usr: null,
+    // A slice sort's row is one owner's slice (`usr`); a path sort's folds them into `us`.
+    usr: r.usr == null || r.usr === '' ? null : str(r.usr),
     kind: str(r.kind) === 'file' ? 'file' : 'dir',
     size,
     n_files: num(r.n_files),
@@ -856,7 +889,7 @@ const toRowV3 = (r: Record<string, unknown>): Row => {
     cls2: num(r.c2),
     cls3: num(r.c3),
     cls4: num(r.c4),
-    us: usMap(str(r.us), size),
+    us: r.us == null ? null : usMap(str(r.us), size),
     vf: num(r.vf),
     vt: num(r.vt),
   }
