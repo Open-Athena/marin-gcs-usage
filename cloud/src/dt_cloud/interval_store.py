@@ -19,7 +19,7 @@ from time import monotonic
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from click import IntRange, group, option
+from click import Choice, IntRange, group, option
 
 from . import static_names as sn
 from .static_names import OPEN, U64, connect, q, range_preds, read_json, upload_tree, write_sorted
@@ -200,6 +200,124 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, con, *, mount: str
     return doc
 
 
+# ── Served sorts ───────────────────────────────────────────────────────────
+
+#: A version's size bucket, `⌊log2 size⌋` as a bit length (exact for any int64; the path store's
+#: `bysize` key, `find/tiers.py`); NULL for size 0, which sorts last.
+BUCKET = "CASE WHEN size > 0 THEN length(bin(size)) - 1 END"
+#: Each served sort: its source rows, its order, and which column bounds a group's sizes. Every sort is
+#: two segments in one file — the versions open at the generation's last scan, then the closed ones —
+#: so a read at that scan prunes the closed segment by `vt_max` alone.
+SORTS = {
+    "path": ("pv", "depth, path, vf", "size"),
+    "bysize": ("pv", f"({BUCKET}) DESC NULLS LAST, path, vf", "size"),
+    "reads": ("rd", "depth, path, vf", None),
+}
+SEGMENTS = (("open", f"vt = {OPEN}"), ("hist", f"vt <> {OPEN}"))
+GROUPS_SCHEMA = pa.schema([
+    pa.field("rg", pa.int32(), nullable=False),
+    pa.field("seg", pa.int8(), nullable=False),
+    pa.field("d_min", pa.int32(), nullable=False),
+    pa.field("d_max", pa.int32(), nullable=False),
+    pa.field("p_min", pa.string(), nullable=False),
+    pa.field("p_max", pa.string(), nullable=False),
+    pa.field("b_min", pa.int64(), nullable=False),
+    pa.field("b_max", pa.int64(), nullable=False),
+    pa.field("u_min", pa.string()),
+    pa.field("u_max", pa.string()),
+    pa.field("vf_min", pa.int64(), nullable=False),
+    pa.field("vf_max", pa.int64(), nullable=False),
+    pa.field("vt_min", pa.int64(), nullable=False),
+    pa.field("vt_max", pa.int64(), nullable=False),
+    pa.field("row_start", pa.int64(), nullable=False),
+    pa.field("row_end", pa.int64(), nullable=False),
+    pa.field("rg_json", pa.string(), nullable=False),
+])
+GROUPS_STAT_COLS = ["d_min", "d_max", "p_min", "p_max", "b_min", "b_max", "u_min", "u_max", "vf_min", "vf_max", "vt_min", "vt_max"]
+#: The served store's `index_schema.version` analogue: 3 = interval rows (`vf`/`vt`, one row per path).
+STORE_VERSION = 3
+
+
+def _bounds(t: pa.Table, seg: int, size_col: str | None) -> dict:
+    import pyarrow.compute as pc
+
+    def mm(c):
+        r = pc.min_max(t.column(c))
+        return r["min"].as_py(), r["max"].as_py()
+
+    d, p, vf, vt = mm("depth"), mm("path"), mm("vf"), mm("vt")
+    b = mm(size_col) if size_col else (0, 0)
+    return {"seg": seg, "d_min": d[0], "d_max": d[1], "p_min": p[0], "p_max": p[1], "b_min": b[0], "b_max": b[1],
+            "u_min": None, "u_max": None, "vf_min": vf[0], "vf_max": vf[1], "vt_min": vt[0], "vt_max": vt[1], "rows": t.num_rows}
+
+
+def write_served(con, src: str, sort: str, out: Path, schema: pa.Schema, *, rg_rows: int = SERVED_RG) -> dict:
+    """One served sort of `src` (a relation of `schema` rows) to `out`: its open segment then its closed
+    one, each in `rg_rows`-row groups (a segment's last may be short, so no group mixes them), zstd, in
+    the sort's order. Writes `<out stem>.groups.parquet` beside it (`GROUPS_SCHEMA`: per group the exact
+    bounds of its rows — never truncated statistics — and the compact metadata the Worker revives)."""
+    _, order, size_col = SORTS[sort]
+    cols = ", ".join(schema.names)
+    bounds: list[dict] = []
+    out.parent.mkdir(parents=True, exist_ok=True)
+    dictionary = [c for c in ("kind", "us") if c in schema.names]
+    with pq.ParquetWriter(out, schema, compression=sn.CODEC, use_dictionary=dictionary, write_statistics=["depth", "vf", "vt"]) as w:
+        for seg, (name, where) in enumerate(SEGMENTS):
+            pending: list[pa.RecordBatch] = []
+            n = 0
+
+            def flush(final: bool) -> None:
+                nonlocal pending, n
+                if not pending:
+                    return
+                t = pa.Table.from_batches(pending, schema=schema).combine_chunks()
+                off = 0
+                while t.num_rows - off >= rg_rows or (final and off < t.num_rows):
+                    g = t.slice(off, min(rg_rows, t.num_rows - off))
+                    w.write_table(g, row_group_size=rg_rows)
+                    bounds.append(_bounds(g, seg, size_col))
+                    off += g.num_rows
+                rest = t.slice(off)
+                pending, n = ([rest.combine_chunks().to_batches()[0]] if rest.num_rows else []), rest.num_rows
+
+            for b in sn._batches(con, f"SELECT {cols} FROM {src} WHERE {where} ORDER BY {order}"):
+                if b.num_rows:
+                    pending.append(b.cast(schema) if b.schema != schema else b)
+                    n += b.num_rows
+                    if n >= rg_rows:
+                        flush(False)
+            flush(True)
+            err(f"  {sort}/{name}: {sum(x['rows'] for x in bounds if x['seg'] == seg):,} rows")
+        w.add_key_value_metadata({"store": "interval", "version": str(STORE_VERSION), "sort": sort, "order": order,
+                                  "segments": ",".join(n for n, _ in SEGMENTS), "open": str(OPEN)})
+    md = pq.read_metadata(out)
+    rows, start = [], 0
+    for g in range(md.num_row_groups):
+        rg = md.row_group(g)
+        chunks = [rg.column(c) for c in range(rg.num_columns)]
+        codecs = {cc.compression for cc in chunks}
+        cmeta = [[cc.data_page_offset, cc.total_compressed_size, cc.dictionary_page_offset or 0] for cc in chunks]
+        bd = bounds[g]
+        if bd["rows"] != rg.num_rows:
+            raise RuntimeError(f"{out}: group {g} holds {rg.num_rows} rows, the writer saw {bd['rows']}")
+        rows.append({"rg": g, **{k: v for k, v in bd.items() if k != "rows"}, "row_start": start, "row_end": start + rg.num_rows,
+                     "rg_json": json.dumps([rg.num_rows, codecs.pop(), cmeta], separators=(",", ":"))})
+        start += rg.num_rows
+    from disk_tree.find.groups import schema_json
+
+    sj = schema_json(md)
+    t = pa.table({c: [r[c] for r in rows] for c in GROUPS_SCHEMA.names}, schema=GROUPS_SCHEMA)
+    kv = {"groups_v": "1", "version": str(STORE_VERSION), "schema": json.dumps(sj["schema"], separators=(",", ":")), "sort": sort,
+          "rows": str(start), "segments": json.dumps({n: sum(1 for r in rows if r["seg"] == i) for i, (n, _) in enumerate(SEGMENTS)})}
+    gp = out.with_name(out.name.removesuffix(".parquet") + ".groups.parquet")
+    with pq.ParquetWriter(gp, GROUPS_SCHEMA, compression="zstd", write_statistics=GROUPS_STAT_COLS, store_schema=False) as w:
+        w.write_table(t, row_group_size=512)
+        w.add_key_value_metadata(kv)
+    return {"sort": sort, "rows": start, "groups": len(rows), "bytes": out.stat().st_size, "groups_bytes": gp.stat().st_size,
+            "segments": {n: {"groups": sum(1 for r in rows if r["seg"] == i), "rows": sum(r["row_end"] - r["row_start"] for r in rows if r["seg"] == i)}
+                         for i, (n, _) in enumerate(SEGMENTS)}}
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
@@ -260,6 +378,84 @@ def build_cmd(bucket, force, gen, index, mount, mem, per_task, out, threads, onl
             shutil.rmtree(outp)
             shutil.rmtree(moved)
         print(json.dumps({k: v for k, v in doc.items() if k != "scans"}), flush=True)
+
+
+@cli.command("cut")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
+@option("-g", "--gen", required=True, help="Generation (its pv/, rd/ range files)")
+@option("-i", "--index", type=int, help="Task index → sort (path, bysize, reads; default: $BATCH_TASK_INDEX)")
+@option("-m", "--mount", help="Local mount of the data bucket")
+@option("-M", "--mem", default="80GB", help="DuckDB memory limit")
+@option("-o", "--out", default="/stage/out", help="Local output dir (uploaded, then removed)")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-r", "--rg-rows", default=SERVED_RG, type=int, help="Rows per served row group")
+@option("-s", "--sort", "sorts", multiple=True, type=Choice(list(SORTS)), help="Sort(s) to cut (default: the task's)")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+@option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
+def cut_cmd(bucket, gen, index, mount, mem, out, threads, rg_rows, sorts, tmp, no_upload) -> None:
+    """Cut the served sorts from the range files: `served/<sort>.parquet` + `.groups.parquet`."""
+    prefix = f"{PREFIX}/{gen}"
+    todo = list(sorts) or [list(SORTS)[sn._task(index)]]
+    con = connect(threads, mem, tmp)
+    root = f"{mount}/{prefix}" if mount else f"gs://{bucket}/{prefix}"
+    for sort in todo:
+        sub, _, _ = SORTS[sort]
+        schema = PV_SCHEMA if sub == "pv" else RD_SCHEMA
+        t0 = monotonic()
+        dst = Path(out) / "served" / f"{sort}.parquet"
+        doc = write_served(con, f"read_parquet({q(root + '/' + sub + '/r*.parquet')})", sort, dst, schema, rg_rows=rg_rows)
+        doc["s"] = round(monotonic() - t0, 1)
+        err(f"cut {sort}: {doc['rows']:,} rows, {doc['groups']:,} groups, {doc['bytes']:,} B in {doc['s']}s")
+        (Path(out) / "served" / f"{sort}.json").write_text(json.dumps(doc, sort_keys=True) + "\n")
+        if not no_upload:
+            upload_tree(Path(out) / "served", bucket, f"{prefix}/served")
+            shutil.rmtree(Path(out) / "served")
+        print(json.dumps(doc), flush=True)
+
+
+def download_served(bucket: str, prefix: str, dst: Path, *, workers: int = 16) -> None:
+    """The generation's served sorts (+ `.groups.parquet`) to `dst`, chunked in parallel."""
+    from google.cloud import storage
+    from google.cloud.storage import transfer_manager as tm
+
+    b = storage.Client().bucket(bucket)
+    dst.mkdir(parents=True, exist_ok=True)
+    for blob in storage.Client().list_blobs(bucket, prefix=f"{prefix}/served/"):
+        name = blob.name.rsplit("/", 1)[-1]
+        if not name.endswith(".parquet"):
+            continue
+        out = dst / name
+        if out.exists() and out.stat().st_size == blob.size:
+            continue
+        t0 = monotonic()
+        tm.download_chunks_concurrently(b.blob(blob.name), str(out), chunk_size=64 << 20, max_workers=workers)
+        err(f"served {name}: {blob.size:,} B in {monotonic() - t0:.0f}s")
+
+
+@cli.command("verify")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
+@option("-g", "--gen", required=True, help="Generation")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-m", "--mount", help="Local mount of the data bucket (per-scan sorts are copied from it)")
+@option("-n", "--tasks", default=1, type=IntRange(min=1), help="Tasks the sampled dates are split over")
+@option("-o", "--out", default="/stage/out", help="Local output dir")
+@option("-T", "--tmp", default="/stage/tmp", help="Local scratch (served store, per-scan copies, spill)")
+def verify_cmd(bucket, gen, index, mount, tasks, out, tmp) -> None:
+    """Parity against the per-scan path store over the sampled dates (`interval_verify.DATES`): every
+    view's tiles and every diff's rows, with both sides' read cost; `verify/t##.jsonl` + `.json`."""
+    from . import interval_verify as iv
+
+    prefix = f"{PREFIX}/{gen}"
+    t = sn._task(index)
+    tmp = Path(tmp)
+    download_served(bucket, prefix, tmp / "served")
+    scans = read_json(f"gs://{bucket}/{prefix}/scans.json")
+    outp = Path(out) / "verify"
+    outp.mkdir(parents=True, exist_ok=True)
+    summaries = iv.verify_task(gen, t, tasks, str(tmp / "served"), scans, outp / f"t{t:02d}.jsonl", tmp, mount)
+    (outp / f"t{t:02d}.json").write_text(json.dumps(summaries, indent=1) + "\n")
+    upload_tree(outp, bucket, f"{prefix}/verify")
+    print(json.dumps(summaries), flush=True)
 
 
 if __name__ == "__main__":

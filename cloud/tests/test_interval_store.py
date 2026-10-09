@@ -168,3 +168,76 @@ def test_digests_say_every_scan_reconstructs(built):
     rows = [sum(d["scans"][j]["rows"] for d in docs) for j in range(len(scans["scans"]))]
     assert rows == [len(o) for o in oracle]
     assert [sum(d["scans"][j]["live"] for d in docs) for j in range(len(scans["scans"]))] == rows
+
+
+@pytest.fixture(scope="module")
+def served(built, tmp_path_factory):
+    """The fixture's served sorts, in tiny row groups so group planning has something to prune."""
+    out, scans, _, _ = built
+    dst = tmp_path_factory.mktemp("served")
+    con = duckdb.connect()
+    for sort, (sub, _, _) in ist.SORTS.items():
+        schema = ist.PV_SCHEMA if sub == "pv" else ist.RD_SCHEMA
+        ist.write_served(con, f"read_parquet('{out}/{sub}/r*.parquet')", sort, dst / f"{sort}.parquet", schema, rg_rows=4)
+    return dst
+
+
+def _scans(built):
+    from dt_cloud.interval_verify import Scan
+
+    out, scans, _, _ = built
+    root = out.parent
+    con = duckdb.connect()
+    return [(s, Scan(con, str(root / s["src"]), s["version"], s["src"])) for s in scans["scans"]]
+
+
+def test_served_groups_split_open_from_closed(served):
+    g = pq.read_table(served / "path.groups.parquet").to_pylist()
+    segs = [x["seg"] for x in g]
+    assert segs == sorted(segs) and set(segs) == {0, 1}
+    assert all(x["vt_min"] == x["vt_max"] == sn.OPEN for x in g if x["seg"] == 0)
+    assert all(x["vt_max"] < sn.OPEN for x in g if x["seg"] == 1)
+    t = pq.read_table(served / "bysize.parquet")
+    buckets = [(s.bit_length() - 1 if s > 0 else -1) for s in t["size"].to_pylist()]
+    n_open = sum(x["row_end"] - x["row_start"] for x in pq.read_table(served / "bysize.groups.parquet").to_pylist() if x["seg"] == 0)
+    for seg in (buckets[:n_open], buckets[n_open:]):
+        assert seg == sorted(seg, key=lambda b: (b < 0, -b))
+
+
+@pytest.mark.parametrize("wh", [(4, 4), (8, 6), (30, 30)])
+def test_views_equal_the_per_scan_reference(built, served, wh):
+    from dt_cloud import interval_read as ir
+    from dt_cloud.interval_verify import compare
+
+    store = ir.Store(served)
+    w, h = wh
+    checked = 0
+    for s, scan in _scans(built):
+        for path in ["", "b1", "b2", "b1/gof", "b2/e", "b2/f"]:
+            for md in (None, 1):
+                want = scan.view(path, w, h, max_depth=md)
+                got = store.view(s["ts"], path, w, h, max_depth=md)
+                assert compare(got["tree"], want["tree"], with_f=True) == [], (s["id"], path, md)
+                checked += want["tree"] is not None
+    assert checked >= 60
+
+
+def test_diffs_equal_the_per_scan_reference(built, served):
+    from dt_cloud import interval_read as ir
+
+    store = ir.Store(served)
+    sc = _scans(built)
+    n_changed = 0
+    for (sa, a), (sb, b) in zip(sc, sc[1:]):
+        for path in ["", "b1", "b2/e"]:
+            ra, rb = a.root_b(path), b.root_b(path)
+            if ra <= 0 or rb <= 0:
+                continue
+            thr = max(ra, rb) * ir.MIN_AREA / (8 * 6)
+            want = ir.diff(a.view(path, 8, 6, threshold=thr), b.view(path, 8, 6, threshold=thr), a.lookup, b.lookup)
+            cost = ir.Cost()
+            got = ir.diff(store.view(sa["ts"], path, 8, 6, threshold=thr), store.view(sb["ts"], path, 8, 6, threshold=thr),
+                          lambda p: store.lookup(sa["ts"], p, cost), lambda p: store.lookup(sb["ts"], p, cost))
+            assert got == want, (sa["id"], sb["id"], path)
+            n_changed += sum(1 for r in want if r[2] != "unchanged")
+    assert n_changed > 0
