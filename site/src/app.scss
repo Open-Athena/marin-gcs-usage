@@ -2161,6 +2161,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   .act-st.err { color: var(--s3); white-space: normal; }
   .act-confirm { white-space: normal; font-size: 12px; color: var(--ink); text-align: left; }
   .act-note { color: var(--ink-2); }
+  .act-items { display: flex; flex-direction: column; gap: 1px; margin: 3px 0; }
+  .act-items code { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .act-more { color: var(--ink-3); font-size: 11px; }
   .spin {
     width: 10px; height: 10px; border-radius: 50%; flex: none;
     border: 2px solid var(--ink-3); border-top-color: transparent; animation: busy-spin 0.8s linear infinite;
