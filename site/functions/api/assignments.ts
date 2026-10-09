@@ -14,7 +14,7 @@ import { primaryOnly } from '../_lib/stores.js'
 import { hasLedger } from '../_lib/ledger.js'
 import { ownerTotals } from '../_lib/ownerTotals.js'
 import { storeReady } from '../_lib/index.js'
-import { isScanId } from '../../src/scanSlug.js'
+import { scanArg } from '../_lib/scanArg.js'
 
 interface Cell { by: string; to: string; bytes: number; objects: number; prefixes: string[] }
 
@@ -29,8 +29,9 @@ export const onRequestGet = async (ctx: Ctx): Promise<Response> => {
   if (!storeReady(env)) return json({ error: 'index reader not configured' }, 503)
   const gated = await requireViewer(ctx)
   if (gated instanceof Response) return gated
-  const date = new URL(request.url).searchParams.get('date') ?? ''
-  if (!isScanId(date)) return json({ error: 'date=YYYY-MM-DD[THHMM] required' }, 400)
+  const scan = await scanArg(env, new URL(request.url).searchParams)
+  if (scan instanceof Response) return scan
+  const date = scan
   try {
     // Assigner is `actions.actor` (an email); resolve it to a canonical user
     // id so self-assignments land on the diagonal and the UI renders one chip

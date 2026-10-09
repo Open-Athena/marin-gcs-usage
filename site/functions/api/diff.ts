@@ -23,6 +23,7 @@ import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
 import { isScanId } from '../../src/scanSlug.js'
+import { scanArg } from '../_lib/scanArg.js'
 
 export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> => {
   // `store=<key>`: a secondary store's env overlay (none = the primary, as is).
@@ -72,6 +73,9 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
 
   const gated = await st.time('auth', requireViewer(ctx as never))
   if (gated instanceof Response) return gated
+  // Both ends must be indexed scans: a miss is a 404, never another scan.
+  const miss = (await Promise.all(['from', 'to'].map(key => scanArg(ctx.env, url.searchParams, key)))).find(r => r instanceof Response)
+  if (miss) return miss
 
   // One guard over the D1 pre-step, the cache match and the build (see
   // subtree.ts): a D1 stall becomes a retryable 503, not a raw 500 page.

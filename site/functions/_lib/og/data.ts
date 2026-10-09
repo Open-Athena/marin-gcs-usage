@@ -10,7 +10,7 @@ import { loadRegistry, canonId } from '../identity.js'
 import { loadLedger } from '../ledger.js'
 import { parseOwner, queryParam, QueryError } from '../scope.js'
 import { snapshotsPrefix } from '../shared.js'
-import { decodeSel, latestScan, resolveAfter } from '../../../src/scanSlug.js'
+import { decodeSel, resolveAfter } from '../../../src/scanSlug.js'
 import { ATTEN_DEFAULT, buildView, MIN_AREA_DEFAULT, NotFound } from '../view.js'
 import { HI_CONTRAST } from '../../../src/colors.js'
 import { applyLedger } from '../../../src/ledgerOverlay.js'
@@ -28,18 +28,32 @@ const BOX_W = 1120
 const BOX_H = 410
 
 /** A `?d=` selection's "after" scan prefix (ISO), in any spelling the page
- * accepts (`scanSlug.ts` `decodeSel`): compact (`261002`, `261002-1200`) or
- * ISO (`2026-10-02`, `2026-10-02T1200`). A look-back or `from` suffix is
- * ignored (the card draws the after scan). */
+ * accepts (`scanSlug.ts` `decodeSel`): dashless compact (`261002`,
+ * `2610021200`), legacy (`261002-1200`) or ISO (`2026-10-02T1200`). A
+ * look-back or `from` suffix is ignored (the card draws the after scan). */
 export function scanOfSel(d: string | undefined): string | undefined {
   return decodeSel(d)?.d
 }
 
+/** A card's `?d=` names no indexed scan: `serveCard` answers 404, never a card
+ * of another scan. */
+export class NoScanMatch extends Error {
+  constructor(readonly d: string) { super(`no scan matches d=${d}`) }
+}
+
 /** The scan a card draws: the latest scan matching the selection (the
- * resolver — a day's slug is that day's latest scan), else the latest. */
+ * resolver — a day's slug is that day's latest scan); the latest scan when
+ * `d` pins no end (absent, or a look-back only). Throws `NoScanMatch` when it
+ * names no scan. Null only when there are no scans at all. */
 export async function resolveScan(env: Env, d: string | undefined): Promise<string | null> {
   const scans = (await pathScans(env, true)).results.map(r => r.date)
-  return latestScan(scanOfSel(d), scans) ?? resolveAfter(undefined, scans)
+  const sel = decodeSel(d)
+  if (sel?.invalid || sel?.d) {
+    const scan = resolveAfter(sel, scans)
+    if (!scan) throw new NoScanMatch(d!)
+    return scan
+  }
+  return resolveAfter(undefined, scans)
 }
 
 /** The scan's `meta.json` user list (rank = colour slot), or none. */
