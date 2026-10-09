@@ -124,6 +124,8 @@ export interface ViewOpts {
   phase2Rows?: number
   /** With `query`: only the filter's floor (`Read.threshold`, from the match roots' total) — no forest. */
   floorOnly?: boolean
+  /** With `query`: ms the static roots' detail lookups may run past phase 2 (default `FILTER_DETAILS_MS`). */
+  detailsWait?: number
 }
 
 export interface View {
@@ -1022,7 +1024,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // The lookups ride beside phase 2 and may wait `FILTER_DETAILS_MS` past it, no longer: they are
     // display fields (kind, ages, classes) and their span plans cost seconds where roots spread over
     // many depths (`00241`: ~8.5 s for 48 roots, against 6 s for phase 2).
-    const budget = Number(env.FILTER_DETAILS_MS) || Infinity
+    const budget = o.detailsWait ?? (Number(env.FILTER_DETAILS_MS) || Infinity)
     const late = Symbol('late')
     const detailRows = budget === Infinity ? await details
       : await Promise.race([details, new Promise<typeof late>(r => setTimeout(() => r(late), budget))]).then(x => {
@@ -1548,6 +1550,8 @@ export interface Diff {
 }
 
 const LOOKUP_CAP = 240
+/** A filtered diff's one-sided lookups run this long, at most (each level's are one batched read a side). */
+export const FILTER_WALK_MS = 800
 
 /** Two sides' `interiors`, summed (reasons joined when they differ). */
 function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable<View['interiors']> {
@@ -1591,6 +1595,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   // each side's floor, so both forests are read once, at the shared one. (Reading both first and then
   // re-reading the lighter side at the shared floor paid that side's phase 2 twice.)
   let floor: number | undefined
+  // A diff draws its roots' kinds only (no ages, no classes): the lookups that land by phase 2's end are
+  // taken, none waited for (with a deployment's finite `FILTER_DETAILS_MS`; unset waits, as views do).
+  const wait = Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}
   if (query && ra && rb && !o.summary && o.threshold == null) {
     const [ta, tb] = await Promise.all([
       readView(env, { ...o, date: from, maxDepth: 0, floorOnly: true }, {}),
@@ -1600,8 +1607,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     tr?.('floors', performance.now() - t0)
   }
   let [va, vb] = await Promise.all([
-    ra ? readView(env, { ...o, date: from, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
-    rb ? readView(env, { ...o, date: to, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
+    ra ? readView(env, { ...o, date: from, ...wait, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
+    rb ? readView(env, { ...o, date: to, ...wait, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
   ])
   // Without the pre-pass (a summary, or one side without matches then), a side whose floor differs is
   // re-read at the larger.
@@ -1623,6 +1630,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     for (const v of [va, vb]) for (const [p, a] of v.kept) if (a.kind === 'file') v.kept.delete(p)
   }
   const walkStart = performance.now()
+  // A filtered diff's lookups stop after `FILTER_WALK_MS` as they do past `LOOKUP_CAP` (`lookups_capped`).
+  const walkOver = () => !!query && performance.now() - walkStart > FILTER_WALK_MS
   const matchedUnion = query ? [...new Map([...(va?.matched ?? []), ...(vb?.matched ?? [])].map(m => [m.path, m])).values()].sort((x, y) => x.path < y.path ? -1 : 1) : undefined
   const totals = {
     total_a: Math.round(va?.rootAgg.b ?? 0),
@@ -1674,7 +1683,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   }
   const lookup = async (date: string, v: Read, p: string, depth: number): Promise<Agg | null> => {
     if (!inQuery(p, v)) return null
-    if (lookups >= LOOKUP_CAP) { capped = true; return null }
+    if (lookups >= LOOKUP_CAP || walkOver()) { capped = true; return null }
     lookups++
     const rows = await readRows(await fine(date), depth, depth, p, p, undefined, lens)
     const needTot = !!v.ownerLens?.needsTotal(p)
@@ -1708,7 +1717,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
       }
     }
     if (lens || !todo.length) { await perAsk(todo); return out }
-    const room = Math.max(0, LOOKUP_CAP - lookups)
+    const room = walkOver() ? 0 : Math.max(0, LOOKUP_CAP - lookups)
     const take = todo.slice(0, room)
     if (todo.length > room) { capped = true; for (const q of todo.slice(room)) out.set(q.cp, null) }
     if (!take.length) return out
