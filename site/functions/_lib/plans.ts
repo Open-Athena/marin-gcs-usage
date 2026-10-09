@@ -59,6 +59,39 @@ export function relPrefix(raw: string, bucket: string): string {
   return s
 }
 
+/** What a plan item (or an owner action) names: a folder `prefix` — every
+ * key under it — or one exact `object` key (specs/file-assign.md). Always
+ * carried explicitly (`plan_items.kind`, NULL = prefix), never read off the
+ * string's shape. */
+export type ItemKind = 'prefix' | 'object'
+export interface PlanItem { key: string; kind: ItemKind }
+
+/** `s3://bucket/a/b.txt` (any scheme) or `/a/b.txt` or `a/b.txt` -> `a/b.txt`
+ * (relative; nothing appended: an object key is exact). */
+export function relObject(raw: string, bucket: string): string {
+  let s = raw.trim().replace(SCHEME_RE, "").replace(/^\/+/, "")
+  if (s.startsWith(`${bucket}/`)) s = s.slice(bucket.length + 1)
+  return s
+}
+
+// An exact object key: non-empty, no leading slash, no `.`/`..` segment, no
+// backslash, and no trailing slash (a folder-placeholder object is not an
+// exact item — that keeps an object's stored string apart from any prefix's).
+const OBJECT_RE = /^(?!\/)(?!.*(?:^|\/)[.]{1,2}(?:\/|$))[^\\]*[^\\/]$/
+
+/** Canonical stored form of an exact object item: `<scheme><bucket>/<key>`,
+ * the bucket resolved as for a prefix. Null when the key is malformed (empty,
+ * a bucket root, `.`/`..` segments, a backslash, or a trailing slash). */
+export function canonicalObject(raw: string, shape: PrefixShape, bucket: string = bucketOf(raw, shape.buckets)): string | null {
+  const rel = relObject(raw, bucket)
+  if (!rel || rel.includes('//') || !OBJECT_RE.test(rel)) return null
+  return `${shape.scheme}${bucket}/${rel}`
+}
+
+/** A plan item relative to its bucket: a prefix keeps its trailing slash, an
+ * object key stays exact. */
+export const relItem = (i: PlanItem, bucket: string): string => (i.kind === 'object' ? relObject(i.key, bucket) : relPrefix(i.key, bucket))
+
 /** Canonical stored form of a plan-item prefix: `<scheme><bucket>/<path>/`
  * in the deployment's shape, the bucket resolved from the raw (`bucketOf`
  * over the shape's buckets) unless given. */
@@ -81,6 +114,21 @@ export function coveredBy(p: string, set: ReadonlySet<string>): boolean {
     if (i + 1 < p.length && set.has(p.slice(0, i + 1))) return true
   }
   return false
+}
+
+/** Item `a` covers item `b`: a prefix covers itself and every prefix or
+ * object under it; an object covers only the identical object (never
+ * `key.bak`, never `key/…`). */
+export const coversItem = (a: PlanItem, b: PlanItem): boolean =>
+  a.kind === 'object' ? b.kind === 'object' && b.key === a.key : covers(a.key, b.key)
+
+/** `uncovered` over mixed items: drop each item a staged prefix strictly
+ * covers (a prefix nested in a prefix, an object under a prefix). Only
+ * prefixes cover: `coveredBy` probes an item's `/`-cuts, never the item
+ * itself, against the prefix set alone. */
+export function uncoveredItems(all: readonly PlanItem[]): PlanItem[] {
+  const prefixes = new Set(all.filter(i => i.kind === 'prefix').map(i => i.key))
+  return all.filter(i => !coveredBy(i.key, prefixes))
 }
 
 /** The prefixes of `all` that no other member covers — the set a delete
@@ -111,25 +159,36 @@ export function uncovered(all: readonly string[]): string[] {
  * the plan + batch ids and what happened, or an error for a malformed prefix. */
 export async function stageItems(
   db: D1Database,
-  rawPrefixes: string[],
+  raw: string[] | { prefixes?: readonly string[]; objects?: readonly string[] },
   who: string,
   note: string | null,
   shape: PrefixShape,
   asOf: string | null,
-): Promise<{ plan_id: number; batch_id: number; staged: string[]; covered: string[]; absorbed: string[]; as_of: string | null } | { error: string }> {
-  const prefixes: string[] = []
+): Promise<{ plan_id: number; batch_id: number; staged: string[]; /** The staged items that are exact objects (absent: none). */ staged_objects?: string[]; covered: string[]; absorbed: string[]; as_of: string | null } | { error: string }> {
+  const { prefixes: rawPrefixes = [], objects: rawObjects = [] } = Array.isArray(raw) ? { prefixes: raw } : raw
+  const items: PlanItem[] = []
+  const add = (i: PlanItem) => { if (!items.some(x => x.key === i.key && x.kind === i.kind)) items.push(i) }
   for (const r of rawPrefixes) {
     const c = canonicalPrefix(r, shape)
     if (!c) return { error: `bad prefix ${JSON.stringify(r)}` }
-    if (!prefixes.includes(c)) prefixes.push(c)
+    add({ key: c, kind: 'prefix' })
   }
-  if (!prefixes.length) return { error: 'prefixes required' }
+  for (const r of rawObjects) {
+    const c = canonicalObject(r, shape)
+    if (!c) return { error: `bad object key ${JSON.stringify(r)}` }
+    add({ key: c, kind: 'object' })
+  }
+  if (!items.length) return { error: 'prefixes or objects required' }
   const ts = Math.floor(Date.now() / 1000)
   const open = await db.prepare("SELECT id FROM plans WHERE state = 'open' ORDER BY created_ts DESC LIMIT 1").first<{ id: number }>()
-  const have = open
-    ? (await db.prepare('SELECT prefix FROM plan_items WHERE plan_id = ?').bind(open.id).all<{ prefix: string }>()).results.map(r => r.prefix)
+  const have: PlanItem[] = open
+    ? (await db.prepare('SELECT prefix, kind FROM plan_items WHERE plan_id = ?').bind(open.id).all<{ prefix: string; kind: string | null }>()).results
+      .map(r => ({ key: r.prefix, kind: r.kind === 'object' ? 'object' : 'prefix' }))
     : []
-  const { staged, covered, absorbed } = planStaging(have, uncovered(prefixes))
+  const plan = planStagingItems(have, uncoveredItems(items))
+  const keys = (is: PlanItem[]) => is.map(i => i.key)
+  const staged = keys(plan.staged), covered = keys(plan.covered), absorbed = keys(plan.absorbed)
+  const stagedObjects = keys(plan.staged.filter(i => i.kind === 'object'))
 
   // Every write below is ONE `db.batch` — one D1 transaction, all or nothing
   // (a request cut off mid-gesture used to leave a partial batch). Ids minted
@@ -154,16 +213,18 @@ export async function stageItems(
     stmts.push(db.prepare(`DELETE FROM plan_items WHERE plan_id = ${planId} AND prefix IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(absorbed)))
   }
   // A re-staged prefix keeps its row — first batch, first `as_of` (`OR IGNORE`).
+  // The kind rides in the row (`kind`: NULL = prefix, 'object' = exact key).
   stmts.push(db.prepare(
-    `INSERT OR IGNORE INTO plan_items (plan_id, prefix, batch_id, added_by, added_ts, as_of)
-     SELECT ${planId}, value, ${batchId}, ?, ?, ? FROM json_each(?)`,
-  ).bind(who, ts, asOf, JSON.stringify(staged)))
+    `INSERT OR IGNORE INTO plan_items (plan_id, prefix, batch_id, added_by, added_ts, as_of, kind)
+     SELECT ${planId}, json_extract(value, '$.key'), ${batchId}, ?, ?, ?, json_extract(value, '$.kind') FROM json_each(?)`,
+  ).bind(who, ts, asOf, JSON.stringify(plan.staged.map(i => ({ key: i.key, kind: i.kind === 'object' ? 'object' : null })))))
+  const audited = { staged, ...(stagedObjects.length ? { objects: stagedObjects } : {}), covered, batch_id: 0, note, as_of: asOf }
   stmts.push(db.prepare(`${edit} SELECT 'plan_items', CAST(${planId} AS TEXT), 'insert', ?, ?, ?, json_set(?, '$.batch_id', ${batchId})`)
-    .bind(who, ts, absorbed.length ? JSON.stringify({ absorbed }) : null, JSON.stringify({ staged, covered, batch_id: 0, note, as_of: asOf })))
+    .bind(who, ts, absorbed.length ? JSON.stringify({ absorbed }) : null, JSON.stringify(audited)))
   stmts.push(db.prepare(`SELECT ${planId} AS plan_id, ${batchId} AS batch_id`))
   const out = await db.batch<{ plan_id: number; batch_id: number }>(stmts)
   const ids = out[out.length - 1].results[0]
-  return { plan_id: ids.plan_id, batch_id: ids.batch_id, staged, covered, absorbed, as_of: asOf }
+  return { plan_id: ids.plan_id, batch_id: ids.batch_id, staged, ...(stagedObjects.length ? { staged_objects: stagedObjects } : {}), covered, absorbed, as_of: asOf }
 }
 
 /** Fold stage batches `ids` into batch `into`: one logical staging that went
@@ -210,26 +271,35 @@ export async function mergeBatches(
 }
 
 /** The no-nesting rule for one gesture against a plan's current items (pure):
- * `staged` = the new prefixes no existing item covers, `covered` = the new
- * prefixes an existing item already names, `absorbed` = existing items a new
- * prefix covers (to remove). A prefix already in the plan stays as it is. */
-export function planStaging(have: readonly string[], add: readonly string[]): { staged: string[]; covered: string[]; absorbed: string[] } {
-  const haveSet = new Set(have)
-  const staged: string[] = []
-  const covered: string[] = []
+ * `staged` = the new items no existing prefix covers, `covered` = the new
+ * items an existing prefix already names, `absorbed` = existing items a new
+ * prefix covers (to remove). An item already in the plan stays as it is. Only
+ * prefixes cover or absorb: an object names its one key (specs/file-assign.md). */
+export function planStagingItems(have: readonly PlanItem[], add: readonly PlanItem[]): { staged: PlanItem[]; covered: PlanItem[]; absorbed: PlanItem[] } {
+  const same = (a: PlanItem, b: PlanItem) => a.key === b.key && a.kind === b.kind
+  const havePrefixes = new Set(have.filter(i => i.kind === 'prefix').map(i => i.key))
+  const staged: PlanItem[] = []
+  const covered: PlanItem[] = []
   for (const p of add) {
-    if (haveSet.has(p)) { staged.push(p); continue }
-    if (coveredBy(p, haveSet)) covered.push(p)
+    if (have.some(h => same(h, p))) { staged.push(p); continue }
+    if (coveredBy(p.key, havePrefixes)) covered.push(p)
     else staged.push(p)
   }
-  const stagedSet = new Set(staged)
-  const absorbed = have.filter(h => !stagedSet.has(h) && coveredBy(h, stagedSet))
+  const stagedPrefixes = new Set(staged.filter(i => i.kind === 'prefix').map(i => i.key))
+  const absorbed = have.filter(h => !staged.some(x => same(x, h)) && coveredBy(h.key, stagedPrefixes))
   return { staged, covered, absorbed }
+}
+
+/** `planStagingItems` over prefixes alone (the pre-`kind` shape). */
+export function planStaging(have: readonly string[], add: readonly string[]): { staged: string[]; covered: string[]; absorbed: string[] } {
+  const pre = (key: string): PlanItem => ({ key, kind: 'prefix' })
+  const r = planStagingItems(have.map(pre), add.map(pre))
+  return { staged: r.staged.map(i => i.key), covered: r.covered.map(i => i.key), absorbed: r.absorbed.map(i => i.key) }
 }
 
 export interface StageBatchRow { id: number; plan_id: number; note: string | null; created_by: string; created_ts: number }
 /** `as_of`: the scan the item was staged against (NULL = before `as_of` existed). */
-export interface PlanItemRow { prefix: string; note: string | null; added_by: string; added_ts: number; batch_id: number | null; as_of: string | null }
+export interface PlanItemRow { prefix: string; kind: ItemKind; note: string | null; added_by: string; added_ts: number; batch_id: number | null; as_of: string | null }
 
 /** A `plan_items` audit row (`admin_edits`, `tbl = 'plan_items'`, pk = the plan id). */
 export interface PlanEdit { action: string; old_json: string | null; new_json: string | null }
@@ -320,11 +390,11 @@ export async function planDetail(db: D1Database, id: number, staging: boolean): 
   if (!plan) return null
   const items = staging
     ? await db.prepare(
-      `SELECT i.prefix, COALESCE(i.note, b.note) AS note, i.added_by, i.added_ts, i.batch_id, i.as_of
+      `SELECT i.prefix, COALESCE(i.kind, 'prefix') AS kind, COALESCE(i.note, b.note) AS note, i.added_by, i.added_ts, i.batch_id, i.as_of
        FROM plan_items i LEFT JOIN stage_batches b ON b.id = i.batch_id
        WHERE i.plan_id = ? ORDER BY i.added_ts DESC, i.prefix`,
     ).bind(id).all<PlanItemRow>()
-    : await db.prepare('SELECT prefix, note, added_by, added_ts, NULL AS batch_id, as_of FROM plan_items WHERE plan_id = ? ORDER BY added_ts DESC, prefix').bind(id).all<PlanItemRow>()
+    : await db.prepare("SELECT prefix, COALESCE(kind, 'prefix') AS kind, note, added_by, added_ts, NULL AS batch_id, as_of FROM plan_items WHERE plan_id = ? ORDER BY added_ts DESC, prefix").bind(id).all<PlanItemRow>()
   const batches = staging
     ? (await db.prepare('SELECT * FROM stage_batches WHERE plan_id = ? ORDER BY created_ts DESC').bind(id).all<StageBatchRow>()).results
     : []
@@ -391,25 +461,45 @@ export interface PlanBucketsSnapshot {
   plan_id: number
   name: string
   sweep: string[]
+  /** The exact-object items (`gs://<bucket>/<key>`), present only when the
+   * plan has any — a prefix-only plan.json is what it always was. An executor
+   * that predates them ignores the field: the safe direction. */
+  objects?: string[]
   buckets: string[]
-  /** Each item's `as_of` scan, keyed like `sweep` (items staged before
+  /** Each item's `as_of` scan, keyed like `sweep` / `objects` (items staged before
    * `as_of` existed are absent: the dispatch scan stands in). The executor
    * deletes only objects unchanged in both that scan and the dispatch scan. */
   as_of: Record<string, string>
 }
 
-/** A plan's items with their `as_of` scans, prefix-sorted. */
-async function planItems(db: D1Database, planId: number): Promise<{ prefix: string; as_of: string | null }[]> {
-  return (await db.prepare("SELECT prefix, as_of FROM plan_items WHERE plan_id = ? ORDER BY prefix").bind(planId).all<{ prefix: string; as_of: string | null }>()).results
+/** A plan's items with their kinds and `as_of` scans, key-sorted. */
+export async function planItems(db: D1Database, planId: number): Promise<(PlanItem & { as_of: string | null })[]> {
+  return (await db.prepare("SELECT prefix, kind, as_of FROM plan_items WHERE plan_id = ? ORDER BY prefix").bind(planId).all<{ prefix: string; kind: string | null; as_of: string | null }>()).results
+    .map(r => ({ key: r.prefix, kind: r.kind === 'object' ? 'object' : 'prefix', as_of: r.as_of }))
+}
+
+/** The digest's input lines for a plan's items: a prefix as itself, an object
+ * as `=<key>` — so a prefix-only plan digests as it always did, and an item's
+ * kind is part of what a dry run reviewed. */
+export const digestLines = (items: readonly PlanItem[]): string[] => items.map(i => (i.kind === 'object' ? `=${i.key}` : i.key))
+
+/** `digestLines` of a plan's current items (every reader that gates on, or
+ * versions by, the plan's item set). */
+export async function planItemLines(db: D1Database, planId: number): Promise<string[]> {
+  return digestLines(await planItems(db, planId))
 }
 
 export async function snapshotPlanBuckets(db: D1Database, planId: number, shape: PrefixShape): Promise<PlanBucketsSnapshot | null> {
   const plan = await db.prepare("SELECT id, name FROM plans WHERE id = ?").bind(planId).first<{ id: number; name: string }>()
   if (!plan) return null
   const items = await planItems(db, planId)
-  const sweep = items.map(r => r.prefix)
-  const as_of = Object.fromEntries(items.filter(r => r.as_of).map(r => [r.prefix, r.as_of!]))
-  return { plan_id: planId, name: plan.name, sweep, buckets: Object.keys(planBuckets(sweep, shape.buckets)), as_of }
+  const sweep = items.filter(r => r.kind === 'prefix').map(r => r.key)
+  const objects = items.filter(r => r.kind === 'object').map(r => r.key)
+  const as_of = Object.fromEntries(items.filter(r => r.as_of).map(r => [r.key, r.as_of!]))
+  return {
+    plan_id: planId, name: plan.name, sweep, ...(objects.length ? { objects } : {}),
+    buckets: Object.keys(planBuckets(items.map(r => r.key), shape.buckets)), as_of,
+  }
 }
 
 export async function audit(
@@ -480,15 +570,18 @@ export const auditRunControl = (
  * item's `as_of` scan (keyed by the relative prefix). Returns null if the plan
  * is missing. */
 export async function snapshotPlan(db: D1Database, planId: number, shape: PrefixShape): Promise<
-  { plan_id: number; name: string; bucket: string; sweep: string[]; as_of: Record<string, string> } | null
+  { plan_id: number; name: string; bucket: string; sweep: string[]; objects?: string[]; as_of: Record<string, string> } | null
 > {
   const plan = await db.prepare("SELECT id, name FROM plans WHERE id = ?").bind(planId).first<{ id: number; name: string }>()
   if (!plan) return null
   const items = await planItems(db, planId)
-  const { bucket, sweep } = planBucket(items.map(r => r.prefix), shape.buckets)
-  // keyed by the relative prefix, as `sweep` is (`planBucket` keeps order)
-  const as_of = Object.fromEntries(items.flatMap((r, i) => r.as_of ? [[sweep[i], r.as_of]] : []))
-  return { plan_id: planId, name: plan.name, bucket, sweep, as_of }
+  const { bucket } = planBucket(items.map(r => r.key), shape.buckets)
+  const rel = items.map(r => relItem(r, bucket))
+  const sweep = rel.filter((_, i) => items[i].kind === 'prefix')
+  const objects = rel.filter((_, i) => items[i].kind === 'object')
+  // keyed by the relative item (prefix or exact key), as `sweep` / `objects` are
+  const as_of = Object.fromEntries(items.flatMap((r, i) => r.as_of ? [[rel[i], r.as_of]] : []))
+  return { plan_id: planId, name: plan.name, bucket, sweep, ...(objects.length ? { objects } : {}), as_of }
 }
 
 // ── The real-deletion gate (specs/done/staged-slack.md) ─────────────────────────

@@ -25,7 +25,7 @@ import type { D1Database } from '@cloudflare/workers-types'
 import { type BatchConfig, batchConfig, notConfigured } from './batchConfig.js'
 import { type DispatchErr, type DispatchReq, type ExecEnv, type Executor, type Prepared, refuse } from './dispatch.js'
 import { batchJobsUrl, batchRegionFor, gcpToken } from './gcp.js'
-import { bucketOf, NO_SHAPE, type PlanBucketsSnapshot, prefixShape, snapshotPlanBuckets } from './plans.js'
+import { bucketOf, digestLines, NO_SHAPE, type PlanBucketsSnapshot, prefixShape, snapshotPlanBuckets } from './plans.js'
 import { listSweepJobs, reflectSweepRuns } from './sweepReflect.js'
 import { DEFAULT_SWEEP_MACHINE, SWEEP_MACHINES, type SweepMachine } from './sweepMachines.js'
 import { RUN_ID_RE, SCAN_ID_RE } from '../../src/scanSlug.js'
@@ -186,11 +186,14 @@ async function prepare(env: ExecEnv, db: D1Database, req: DispatchReq): Promise<
   if (requested.some(b => !shape.buckets.includes(b))) return refuse(400, 'bad bucket name')
   const snapshot: PlanBucketsSnapshot | null = await snapshotPlanBuckets(db, req.planId, shape)
   if (!snapshot) return refuse(404, 'no such plan')
-  if (!snapshot.sweep.length) return refuse(400, 'plan has no items to sweep')
+  if (!snapshot.sweep.length && !snapshot.objects?.length) return refuse(400, 'plan has no items to sweep')
   const buckets = bucketCut(snapshot.buckets, requested)
   if (!buckets.length) return refuse(400, 'buckets name none of the plan\'s', { plan_buckets: snapshot.buckets })
   // The run acts on the items in its cut: that set is what the digest names.
-  const prefixes = snapshot.sweep.filter(p => buckets.includes(bucketOf(p, shape.buckets)))
+  const prefixes = digestLines([
+    ...snapshot.sweep.map(key => ({ key, kind: 'prefix' as const })),
+    ...(snapshot.objects ?? []).map(key => ({ key, kind: 'object' as const })),
+  ].filter(i => buckets.includes(bucketOf(i.key, shape.buckets))))
 
   const launch: Prepared['launch'] = async (date, digest, reviewed) => {
     const reviewedPrefix = `gs://${cfg.dataBucket}/sweep/runs/`

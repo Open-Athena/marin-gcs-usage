@@ -16,7 +16,7 @@ import { batchConfig, notConfigured } from './batchConfig.js'
 import { jobStamp, runGsPath, runMountPath, secretRef, submitBatch, sweepBatchSpec } from './cwBatch.js'
 import { type DispatchReq, type ExecEnv, type Executor, type Prepared, refuse } from './dispatch.js'
 import { gcpToken } from './gcp.js'
-import { NO_SHAPE, PlanSpansBuckets, prefixShape, snapshotPlan } from './plans.js'
+import { NO_SHAPE, PlanSpansBuckets, planItemLines, prefixShape, snapshotPlan } from './plans.js'
 import { listBatchJobs, reflectRuns } from './runReflect.js'
 import { SCAN_ID_RE } from '../../src/scanSlug.js'
 
@@ -36,9 +36,9 @@ async function prepare(env: ExecEnv, db: D1Database, req: DispatchReq): Promise<
     throw e
   }
   if (!snapshot) return refuse(404, 'no such plan')
-  if (!snapshot.sweep.length) return refuse(400, 'plan has no items to sweep')
+  if (!snapshot.sweep.length && !snapshot.objects?.length) return refuse(400, 'plan has no items to sweep')
   const plan = snapshot
-  const prefixes = (await db.prepare('SELECT prefix FROM plan_items WHERE plan_id = ?').bind(req.planId).all<{ prefix: string }>()).results.map(i => i.prefix)
+  const prefixes = await planItemLines(db, req.planId)
 
   const launch: Prepared['launch'] = async (date, digest) => {
     const jobId = `cw-sweep-${req.mode}-${jobStamp()}z`

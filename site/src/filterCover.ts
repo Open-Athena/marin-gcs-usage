@@ -3,6 +3,7 @@
 // (or folders every object of which matches) — never a row's whole prefix.
 import { useQuery } from '@tanstack/react-query'
 import { COVER_V, type CoverItem } from '../functions/_lib/cover'
+import type { PlanItem } from './batches'
 
 export { ASSIGN_CHUNK, assignInBatches, chunks, STAGE_CHUNK, stageInBatches } from './batches'
 
@@ -64,23 +65,35 @@ export function groupItems(items: readonly CoverItem[]): CoverGroup[] {
     .sort((x, y) => y.b - x.b || (x.parent < y.parent ? -1 : x.parent > y.parent ? 1 : 0))
 }
 
-/** What an action sends for the kept items, and what it leaves out and why. Both act on folder prefixes
- *  only: the ledger accepts `…/` patterns, and a plan item is canonicalized to `…/` (`plans.ts`
- *  `relPrefix`), so an object key would stage as `key/`, which deletes nothing — a lone matching file (in a
- *  folder that also holds non-matching files) can't be acted on by itself. Staging never takes a whole
- *  bucket (a plan item can't name one). An item whose kind the server couldn't look up is never sent. */
-export interface Targets { prefixes: string[]; b: number; o: number; files: number; buckets: number; unknown: number }
+/** What an action sends for the kept items, and what it leaves out and why. A folder every object of which
+ *  matches goes as a prefix (`…/`); a lone matching file goes as an exact object item (specs/file-assign.md:
+ *  it owns / deletes that one key, never `key.bak`). Staging never takes a whole bucket (a plan item can't
+ *  name one). An item whose kind the server couldn't look up is never sent: file or folder decides what it
+ *  names. `folders` / `files`: how many of each `items` holds. */
+export interface Targets { items: PlanItem[]; b: number; o: number; folders: number; files: number; buckets: number; unknown: number }
 export function actionTargets(items: readonly CoverItem[], scheme: string, action: 'assign' | 'stage'): Targets {
-  const t: Targets = { prefixes: [], b: 0, o: 0, files: 0, buckets: 0, unknown: 0 }
+  const t: Targets = { items: [], b: 0, o: 0, folders: 0, files: 0, buckets: 0, unknown: 0 }
   for (const i of items) {
     if (i.kind === null) { t.unknown++; continue }
-    if (i.kind === 'file') { t.files++; continue }
-    if (action === 'stage' && depthOf(i.path) < 2) { t.buckets++; continue }
-    t.prefixes.push(`${scheme}${i.path}/`)
+    if (i.kind === 'dir' && action === 'stage' && depthOf(i.path) < 2) { t.buckets++; continue }
+    if (i.kind === 'file') {
+      t.items.push({ key: `${scheme}${i.path}`, kind: 'object' })
+      t.files++
+    } else {
+      t.items.push({ key: `${scheme}${i.path}/`, kind: 'prefix' })
+      t.folders++
+    }
     t.b += i.b
     t.o += i.o
   }
   return t
+}
+
+/** What an action sends, in words: `2 folders, 3 files`. */
+export function targetsText(t: { folders: number; files: number }): string {
+  const n = (k: number, one: string) => `${k.toLocaleString('en-US')} ${k === 1 ? one : `${one}s`}`
+  const parts = [t.folders && n(t.folders, 'folder'), t.files && n(t.files, 'file')].filter(Boolean)
+  return parts.length ? parts.join(', ') : 'nothing'
 }
 
 /** A row's label under a filter: the drawn chain of single children below it, as the treemap tile labels a
