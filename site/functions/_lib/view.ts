@@ -160,7 +160,8 @@ export interface View {
    * the rest in `(other)`), not its match roots. The tree's top-level cells are those children (leaves: a
    * drill re-dispatches); `matched` lists only the kept children that are match roots themselves, so
    * `matchesCapped` is set, and `matchCount.n` is `rows`, the root rows under P over every scan (an upper
-   * bound on this scan's; null — and `n` the listed count — at the fleet root of a 1–2 character literal). */
+   * bound on this scan's; at the fleet root a long literal's alias entry, a 1–2 character one's counted from
+   * the roots index). */
   rollup?: { children: number; kept: number; rows: number | null }
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
