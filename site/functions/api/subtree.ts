@@ -19,7 +19,7 @@ import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
-import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
+import { cacheKeyFor, cacheMatch, cacheStore, keepFor, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
@@ -176,10 +176,12 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       truncated: view.truncated,
       ...(owner ? { owner } : {}),
       ...(query ? { q: qRaw, matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), ...(view.interiors ? { interiors: view.interiors } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
+      ...(view.interiors?.late ? { budgetCut: true } : {}),
       tree: view.tree,
     })
-    // A phase 2 cut short by its time budget may complete on a retry (the isolate holds the groups it read): not kept.
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !view.interiors?.late)
+    // A phase 2 cut short by its time budget: kept briefly (`keepFor`), so a retry or a second viewer isn't
+    // another full recompute; its totals and match counts are exact, only the drawn interiors partial.
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), keepFor(view.interiors))
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
     if (e instanceof FilterRejected) return new Response(rejectBody(e.reject), { status: 400, headers: { 'content-type': 'application/json' } })
