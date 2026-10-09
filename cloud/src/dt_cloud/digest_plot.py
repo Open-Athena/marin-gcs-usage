@@ -171,11 +171,13 @@ def render_quota(
     redact: bool = False,
     diff=None,
     diff_label: str = "",
+    scope: str = "",
 ) -> None:
     """Render the PNG for ``rows`` (each ``{ts, tb}``: a UTC datetime and TiB)
     to ``out``. With ``quota_tib``, the quota line (labelled ``quota_name``)
     and headroom band; with ``diff`` (a :class:`DiffNode` root) the treemap
-    panel below. ``redact`` drops the numbers (y tick labels, the call-out) —
+    panel below. ``scope`` names what both panels measure (the primary
+    bucket, when the digest tracks several) in the header and the treemap's title. ``redact`` drops the numbers (y tick labels, the call-out) —
     the shape of the month without the sizes, for a public README."""
     plt, mdates = _mpl()
 
@@ -230,14 +232,14 @@ def render_quota(
     ax.yaxis.set_major_formatter(lambda v, _: f"{v:,.0f}")
     _weekly_ticks(ax, mdates)
     ax.set_title(title, color=INK, fontsize=14, fontweight="bold", loc="left", pad=10)
-    ax.text(1.0, 1.04, f"{host} · TiB", transform=ax.transAxes, ha="right", va="bottom", color=DIM, fontsize=9)
+    ax.text(1.0, 1.04, f"{host} · {scope + ' · ' if scope else ''}TiB", transform=ax.transAxes, ha="right", va="bottom", color=DIM, fontsize=9)
     if redact:
         ax.tick_params(axis="y", labelleft=False, left=False)
         ax.text(0.0, -0.22, f"sizes omitted — sign in at {host} for the numbers", transform=ax.transAxes, ha="left", va="top", color=DIM, fontsize=8)
 
     if ax2 is not None:
         ax2.set_facecolor(BG)
-        _draw_treemap(ax2, diff, diff_label)
+        _draw_treemap(ax2, diff, diff_label, scope)
 
     _save(fig, out, 1.2)
 
@@ -442,7 +444,7 @@ def _draw_node(ax, node, x: float, y: float, w: float, h: float, depth: int, top
         _draw_node(ax, k, *r, depth + 1)
 
 
-def _draw_treemap(ax, diff: DiffNode, label: str) -> None:
+def _draw_treemap(ax, diff: DiffNode, label: str, scope: str = "") -> None:
     """The nested diff treemap on ``ax`` (axes coords 0..1, y down): the
     top-level dirs squarified by area, each box's kids squarified inside it,
     recursively."""
@@ -454,7 +456,7 @@ def _draw_treemap(ax, diff: DiffNode, label: str) -> None:
     leaves = list(_leaves(diff))
     grew = sum(n.delta for n in leaves if n.delta > 0)
     shrank = -sum(n.delta for n in leaves if n.delta < 0)
-    ax.set_title(f"What changed — {label}", color=INK, fontsize=12, fontweight="bold", loc="left", pad=8)
+    ax.set_title(f"What changed{' in ' + scope if scope else ''} — {label}", color=INK, fontsize=12, fontweight="bold", loc="left", pad=8)
     ax.text(1.0, 1.012, f"grew +{grew / TIB:,.1f} Ti · shrank −{shrank / TIB:,.1f} Ti · area = |Δ|", transform=ax.transAxes, ha="right", va="bottom", color=DIM, fontsize=8.5)
 
 
