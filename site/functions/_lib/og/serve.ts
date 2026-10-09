@@ -16,7 +16,7 @@ import { imageParams, splitImageParams } from './cred.js'
 import { warmUrls } from './warm.js'
 
 import { canonId, loadRegistry } from '../identity.js'
-import { openPlanId, planDigest } from '../plans.js'
+import { openPlanId, planDigest, planItemLines } from '../plans.js'
 import { NoScanMatch, resolveScan } from './data.js'
 import { warmSubtree } from '../../api/subtree.js'
 
@@ -54,8 +54,7 @@ async function stagedVersion(env: OgEnv): Promise<string | null> {
   if (!env.DB) return null
   const plan = await openPlanId(env.DB).catch(() => null)
   if (plan == null) return null
-  const items = (await env.DB.prepare('SELECT prefix FROM plan_items WHERE plan_id = ?').bind(plan).all<{ prefix: string }>()).results
-  return stagedImageVersion(env, await planDigest(items.map(i => i.prefix)))
+  return stagedImageVersion(env, await planDigest(await planItemLines(env.DB, plan)))
 }
 
 /** Stamp a page's HTML with its card when it has one. */
