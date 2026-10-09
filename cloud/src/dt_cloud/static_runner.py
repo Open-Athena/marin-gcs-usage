@@ -35,6 +35,7 @@ from typing import Callable
 
 from click import argument, command, option
 
+from .cost_labels import label_batch_spec
 from .scan_id import SCAN_ID
 from .static_names import PREFIX, err
 from .static_profile import Profile, profile
@@ -113,7 +114,7 @@ def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage:
             env["R2_ENDPOINT"] = cfg.r2_endpoint
         secrets = cfg.r2_env_secrets()
         environment["secretVariables"] = {k: f"projects/{cfg.project}/secrets/{v}/versions/latest" for k, v in sorted(secrets.items())}
-    return {
+    return label_batch_spec({
         "taskGroups": [{
             "taskCount": tasks,
             "parallelism": tasks,
@@ -146,7 +147,11 @@ def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage:
         },
         "labels": {"purpose": "static-names", "stage": stage, "gen": _label(cfg.gen)},
         "logsPolicy": {"destination": "CLOUD_LOGGING"},
-    }
+    }, STAGE_COMPONENTS.get(stage, "static-names"))
+
+
+#: A stage's cost-attribution `component` (`cost_labels`); the rest of the chain is `static-names`.
+STAGE_COMPONENTS = {"drill": "drill", "anchors": "anchors"}
 
 
 def _label(v: str) -> str:

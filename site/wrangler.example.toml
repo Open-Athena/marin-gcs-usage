@@ -96,6 +96,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # D1_DB_ID = "<d1-database-id>"               # `sweep`: the D1 its runs are recorded to (dispatch requires it; = the `DB` binding's id)
 # D1_DB_NAME = "<d1-database-name>"           # `sweep`: that D1's name
 # SWEEP_S3_ENDPOINT = "https://s3.example.com"  # `plan-sweep`: the S3 endpoint its runs delete through
+# DISKY_LABELS = "app=disky,deployment=<name>"  # cost-attribution labels on the executor jobs' VMs + disks (each adds `component`); unset = none
 # SLACK_ADMIN_CHANNEL = "C0123456789"          # channel id staged-plan threads post to (with SLACK_BOT_TOKEN); unset = no Slack
 
 # --- Link previews (specs/done/dogi.md) ---
