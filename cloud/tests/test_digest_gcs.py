@@ -278,3 +278,20 @@ def test_converge_discord_edit_replies():
         ("edit", "m3", "$19,374/mo (−$410) \u00b7 [view \u2192](https://site.example.org/?d=260804#diff)", []),
     ]
     assert state["posted"] == {"2026-08-03": "m2", "2026-08-04": "m3"}
+
+
+def test_plot_takes_sub_daily_scan_ids(tmp_path) -> None:
+    """Two scans on one day (`2026-10-09` and `2026-10-09T1236`) plot as two
+    instants; a `T` id crashed `render_tiers` (`date.fromisoformat`) in the
+    2026-10-09T1236 job's digest steps."""
+    from dt_cloud.digest_plot import render_tiers
+
+    rows = [
+        {"date": "2026-10-08", "std": 30.0, "near": 1.0, "cold": 2900.0, "arch": 0.0},
+        {"date": "2026-10-09", "std": 30.0, "near": 1.0, "cold": 2910.0, "arch": 0.0},
+        {"date": "2026-10-09T1236", "std": 30.0, "near": 1.0, "cold": 2620.0, "arch": 0.0},
+    ]
+    out = tmp_path / "tiers.png"
+    render_tiers(rows, out, "marin GCS — October 2026", "gcs.oa.dev")
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert E._md("2026-10-09T1236") == "10/9"
