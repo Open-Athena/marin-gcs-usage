@@ -910,7 +910,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // least `FILTER_SUBDIV_AREA` px² (bytes ≥ T · that / minArea). A smaller root is one tile, exact from
     // phase 1 (its bytes, objects and owners), with nothing inside it read; a drill re-reads it whole.
     const subdivMin = T * (FILTER_SUBDIV_AREA / minArea)
-    const readRoots = [...roots].filter(r => drawn(r) && netRoot(r).o > 1 && netRoot(r).b >= subdivMin).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
+    // `maxDepth` caps the forest at dP + N (a `depth=1` diff walks one level): a root at or below the cap
+    // has nothing inside it drawn, nor is its own row looked up past it.
+    const shown = (r: string) => maxDepth == null || depthF.get(r)! <= dP + maxDepth
+    const readRoots = [...roots].filter(r => drawn(r) && netRoot(r).o > 1 && netRoot(r).b >= subdivMin && (maxDepth == null || depthF.get(r)! < dP + maxDepth)).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
       .map(r => ({ path: r, depth: depthF.get(r)! }))
     const loose = looseThreshold(T, atten, readRoots.map(r => r.depth))
     t0 = performance.now()
@@ -921,7 +924,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     const firstPaintStatic = staticRoots && !!o.firstPaint
     let detailsOff = false
     const details = staticRoots && !firstPaintStatic && !(maxDepth != null && maxDepth <= 0) ? (async () => {
-      const want = [...roots].filter(drawn).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
+      const want = [...roots].filter(r => drawn(r) && shown(r)).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
       if (!want.length) return []
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
       try {
@@ -971,7 +974,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const capLevels = (q: Rect, r: { path: string }) => r.path === path ? q : { ...q, dHi: Math.min(q.dHi, q.dLo + FILTER_SUBDIV_LEVELS - 1) }
       const planFor = (rs: { path: string; depth: number }[]) => {
         const nd = rootHit ? nDesc : rs.reduce<number | null>((n, r) => { const d = p1!.all.get(r.path)?.nd; return n == null || d == null ? null : n + d }, 0)
-        const rects = rootRects(rs).map((q, i) => capLevels(q, rs[i])).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q)
+        const rects = rootRects(rs).map((q, i) => capLevels(q, rs[i])).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, dP + maxDepth) } : q)
         return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr))
       }
       const plans = await Promise.all(groups.map(planFor))
@@ -1341,8 +1344,8 @@ async function readRootAllRows(env: Env, date: string, path: string, dP: number)
 
 /** Bumped when a filtered view's answer changes for the same inputs (the subtree and diff cache keys carry
  *  it with `q=`): 2 — phase 2 bounded (subdivision area, levels, read and time budgets), the tile budget;
- *  3 — a view the query matches draws its subtree again. */
-export const FILTER_VIEW_V = 3
+ *  3 — a view the query matches draws its subtree again; 4 — `depth=N` caps phase 2 at dP + N. */
+export const FILTER_VIEW_V = 4
 
 /** A filter view's phase 2 (the insides of its match roots) subdivides a root only when its tile is at
  *  least this many px² — room for a title and a few legible cells; a smaller root is one exact tile. */

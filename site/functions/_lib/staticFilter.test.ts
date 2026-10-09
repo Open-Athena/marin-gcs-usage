@@ -344,6 +344,12 @@ describe('static filter: a bounded view — the canvas\'s tiles, exact totals', 
     expect([capTiles(none, depth, '', 6), none.size]).toEqual([[], 6])
   })
 
+  it('`depth=N` (a diff\'s first level): nothing inside the roots below dP + N is read', async () => {
+    const v = await view(envStatic(), A, '', 'tomat', { maxDepth: 2 })
+    const inside = /^(bk\/data\/tomato|bk\/data\/raw\/tomat-1|tomato-bk\/a|tomato-bk\/c)\//
+    expect([v.interiors, flatTree(v.tree)]).toEqual([undefined, FULL.filter(r => !inside.test((r as [string])[0]))])
+  })
+
   it('phase 2 over its read budget: the subdividable roots are drawn whole and the response says so', async () => {
     const byRows = await view(envStatic(), A, '', 'tomat', { phase2Rows: 0 })
     const v = await view(envStatic(), A, '', 'tomat', { phase2Groups: 0 })
