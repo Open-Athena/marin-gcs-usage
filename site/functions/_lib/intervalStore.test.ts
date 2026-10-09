@@ -91,6 +91,14 @@ describe('interval store', () => {
     expect([held === heldOff, other === otherOff]).toEqual([false, true])
   })
 
+  it('keys a rewritten generation apart by its revision, reading the same objects', async () => {
+    const rev = { ...env, INTERVAL_STORE_REV: '2' }
+    const [h, g, g0] = await Promise.all([openIndex(rev, '2026-08-03', 'path'), pathGens(rev, ['2026-08-03']), pathGens(env, ['2026-08-03'])])
+    const c = cases.find(x => x.date === '2026-08-03' && x.path === 'b2/e' && x.w === 8 && x.depth == null)!
+    const v = await buildView(rev, { date: c.date, path: c.path, w: 8, h: 6, minArea: 12, atten: 2 })
+    expect([h.gen, g === g0, flatten(v.tree)['']]).toEqual(['iv:g1@2', false, c.tiles['']])
+  })
+
   it('decodes owner slices', () => {
     expect([usMap('', 5), usMap('alice', 5), usMap('[["alice",0],["bob",10]]', 10)]).toEqual([null, { alice: 5 }, { alice: 0, bob: 10 }])
   })

@@ -86,6 +86,8 @@ export interface Env {
   PATH_STORE?: string
   /** The interval store generation (`interval-store/<gen>/` on `INDEX_R2`). */
   INTERVAL_STORE_GEN?: string
+  /** A revision of the generation's files (rewritten in place): keys every cache over them apart. */
+  INTERVAL_STORE_REV?: string
   STORE_ACCESS_KEY_ID?: string
   STORE_SECRET_ACCESS_KEY?: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */

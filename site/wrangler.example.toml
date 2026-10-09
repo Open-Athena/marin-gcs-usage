@@ -108,6 +108,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # FILTER_PHASE2_MS = "1500"                # ms a filtered view's phase 2 (its match roots' insides) may take; reads still running then are dropped and those roots drawn whole (`interiors` in the response; default 1500)
 # PATH_STORE = "intervals"                 # read the dates INTERVAL_STORE_GEN holds from the change-interval path store on INDEX_R2 (`_lib/index.ts` `openInterval`, specs/interval-store.md); lenses and owner pools still read per-scan stores. `opt-in`: only requests with `ps=iv`
 # INTERVAL_STORE_GEN = "2026-10-09"         # with PATH_STORE: the generation, `interval-store/<gen>/` on INDEX_R2
+# INTERVAL_STORE_REV = "2"                  # with PATH_STORE: bump when the generation's files are rewritten in place (re-keys the caches)
 # STATIC_BENCH = "1"                        # dev: `/api/static-bench`, R2 read timings over INDEX_R2
 # [[r2_buckets]]                            # Worker-served indexes (the static name-search shards)
 # binding = "INDEX_R2"

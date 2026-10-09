@@ -317,7 +317,7 @@ export async function pathGens(env: Env, dates: string[]): Promise<string> {
   // The interval store's dates: their answers are the store's generation's, keyed apart.
   if (intervalsOn(env)) {
     const held = await ivScans(env)
-    for (const d of uniq) if (held.has(d)) gens.set(d, `iv:${env.INTERVAL_STORE_GEN}`)
+    for (const d of uniq) if (held.has(d)) gens.set(d, `iv:${env.INTERVAL_STORE_GEN}${ivRev(env)}`)
   }
   for (const d of [...uniq].sort()) {
     for (const ch of `${d}=${gens.get(d) ?? ''};`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193)
@@ -417,13 +417,19 @@ export function withPathStore<C extends { request: Request; env: Env }>(ctx: C):
  *  an owner pool, owner totals) — the interval store folds a path's slices into one row. */
 export const perScan = (env: Env): Env => (intervalsOn(env) ? { ...env, PATH_STORE: undefined } : env)
 export const IV_PREFIX = 'interval-store'
+/** `INTERVAL_STORE_REV`: a generation's files were rewritten in place (a re-cut): every cache keyed by
+ *  them (colo ranges and footers, isolate handles and groups, response keys) takes the revision. */
+const ivRev = (env: Env): string => (env.INTERVAL_STORE_REV ? `@${env.INTERVAL_STORE_REV}` : '')
+const ivKey = (env: Env, key: string): string => (env.INTERVAL_STORE_REV ? `${key}?rev=${env.INTERVAL_STORE_REV}` : key)
 /** The sorts the store serves (the reads sort is looked up by `ivLastRead`). */
 const IV_SORTS = new Set(['path', 'bysize', 'reads'])
 
 /** `INDEX_R2` as a `ByteStore`. */
 export function r2Bytes(r2: R2Bucket): ByteStore {
   return {
-    async get(key, { offset, length }) {
+    async get(key0, { offset, length }) {
+      // A `?…` suffix versions a key for the caches (`ivKey`); the object is the key before it.
+      const key = key0.split('?')[0]
       const o = await r2.get(key, { range: { offset, length } })
       if (!o) throw Object.assign(new Error(`${key}: not found`), { name: 'NotFoundError' })
       return { bytes: new Uint8Array(await o.arrayBuffer()), totalSize: o.size }
@@ -450,17 +456,17 @@ export async function openInterval(env: Env, date: string, variant: string): Pro
   const asOf = (await ivScans(env)).get(date)
   if (asOf == null) return null
   const gen = env.INTERVAL_STORE_GEN!
-  const ck = `iv:${gen}:${date}:${variant}`
+  const ck = `iv:${gen}${ivRev(env)}:${date}:${variant}`
   return shared(handles, ck, async (): Promise<IndexHandle> => {
     const src = r2Bytes(env.INDEX_R2!)
     const dir = `${IV_PREFIX}/${gen}/served`
-    const key = `${dir}/${variant}.parquet`
-    const footer = await openFooter(env, `${dir}/${variant}.groups.parquet`, src)
+    const key = ivKey(env, `${dir}/${variant}.parquet`)
+    const footer = await openFooter(env, ivKey(env, `${dir}/${variant}.groups.parquet`), src)
     const kv = new Map((footer.metadata.key_value_metadata ?? []).map(e => [e.key, e.value]))
     const schema = JSON.parse(kv.get('schema')!) as SchemaElement[]
     const version = Number(kv.get('version'))
     const file: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
-    return { mode: 'pq', file, env, date, variant, gen: `iv:${gen}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
+    return { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
   }, 300_000)
 }
 
