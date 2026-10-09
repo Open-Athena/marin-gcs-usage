@@ -229,3 +229,29 @@ def test_execute_takes_a_staged_plan(tmp_path: Path, monkeypatch: pytest.MonkeyP
     r = CliRunner().invoke(cli.main, ["sweep", "execute", "--no-record", str(plan_dir)])
     assert (r.exit_code, r.exception) == (0, None)
     assert calls == [{"plan_dir": str(plan_dir), "for_real": False, "drift": "skip"}]
+
+
+def test_record_bands_chunks_statements(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run's bands go to D1 in bounded statements (one statement of 6,627
+    rows hit SQLITE_TOOBIG on 2026-10-09 and recorded none), idempotently."""
+    from dt_cloud import index_footer, sweep_exec
+
+    sent: list[str] = []
+    monkeypatch.setattr(index_footer, "_creds", lambda: ("tok", "acct"))
+    monkeypatch.setattr(index_footer, "_d1_query", lambda sql, acct, tok: sent.append(sql) or [])
+    monkeypatch.setattr(sweep_exec, "BAND_ROWS_PER_STATEMENT", 2)
+    summary = {"buckets": {
+        "b1": {"bands": {"gs://b1/a/": {"bytes": 10, "objects": 1}, "gs://b1/b/": {"bytes": 20, "objects": 2, "gone": 1}}},
+        "b2": {"bands": {"gs://b2/c/": {"bytes": 30, "objects": 3, "overwritten": 1, "drift_new_objects": 4}}},
+        "b3": {"bands": {}},
+    }}
+    assert sweep_exec.record_bands("r1", summary) == 3
+    head = "INSERT INTO deletion_bands (run_id, prefix, bytes, objects, gone, overwritten, drift_new_objects, undone_objects) VALUES "
+    tail = " ON CONFLICT (run_id, prefix) DO NOTHING"
+    assert sent == [
+        head + "('r1', 'gs://b1/a/', 10, 1, 0, 0, 0, 0), ('r1', 'gs://b1/b/', 20, 2, 1, 0, 0, 0)" + tail,
+        head + "('r1', 'gs://b2/c/', 30, 3, 0, 1, 4, 0)" + tail,
+    ]
+    sent.clear()
+    assert sweep_exec.record_bands("r1", {"buckets": {"b3": {"bands": {}}}}) == 0
+    assert sent == []
