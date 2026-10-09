@@ -37,6 +37,19 @@ set -x
 
 DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
+# Deployment config (specs/oa-decoupling.md): `dt-cloud` carries no defaults for these.
+export DATA_BUCKET=$DATA
+export SITE_URL=${SITE_URL:-https://gcs.oa.dev}
+export GCP_PROJECT=${GCP_PROJECT:-oa-internal-450019}
+export JOB_SA=${JOB_SA:-gcs-usage-job@oa-internal-450019.iam.gserviceaccount.com}
+export JOB_IMAGE=${JOB_IMAGE:-us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:latest}
+# Buckets listed from a VM in their own region (cross-ocean list pages pay full RTT).
+export LISTING_REGIONS=${LISTING_REGIONS:-'{"marin-eu-west4":"europe-west4"}'}
+export ACCESS_LOG_BUCKET=${ACCESS_LOG_BUCKET:-marin-usage-logs}
+export ACCESS_BUCKETS=${ACCESS_BUCKETS:-"marin-us-central1 marin-us-central2 marin-us-east1 marin-us-east5 marin-eu-west4 marin-us-west1 marin-us-west4"}
+export WARM_PATHS=${WARM_PATHS:-",marin-us-central2,marin-us-east5,marin-us-central1,marin-eu-west4,marin-us-west4,marin-us-east1"}
+# The scanned fleet (`submit-listing -b`, one per bucket).
+FLEET=(marin-us-central2 marin-eu-west4 marin-us-central1 marin-us-east5 marin-us-east1 marin-us-west4)
 # This deployment's D1 (site/wrangler.toml `oa-gcs-usage-auth`): index-sync,
 # index-gc and index-dir name it explicitly — the base CLI has no default D1
 # (a57f615), so a misconfigured job can't write footers into another deploy's.
@@ -194,6 +207,9 @@ if [ "${REPROC:-0}" != "1" ]; then
   [ -n "${LISTING_MACHINE:-}" ] && LZ+=(-m "$LISTING_MACHINE")
   [ -n "${LISTING_PROCS:-}" ] && LZ+=(-P "$LISTING_PROCS")
   [ -n "${LISTING_WORKERS:-}" ] && LZ+=(-w "$LISTING_WORKERS")
+  for b in "${FLEET[@]}"; do LZ+=(-b "$b"); done
+  # central2's chunk weights may also come from the pre-DIY listing layout (opt-in since `cloud` dropped the default).
+  LZ+=(-L marin-us-central2=central2-listing)
   dt-cloud job submit-listing -d "$DATE" -W "${LZ[@]}"
 fi
 echo "PHASE listing-fanout: ${SECONDS}s (wall)" >&2

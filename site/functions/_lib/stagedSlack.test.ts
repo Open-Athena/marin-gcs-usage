@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PLAN_SENDER, fmtBytes, nameSlug, personSender, renderParent, runEvent, stageEvent, stagedCardUrl, type RunRow } from './stagedSlack.js'
+import { PLAN_SENDER, fmtBytes, nameSlug, personSender, renderParent, runEvent, runUrl, stageEvent, stagedCardUrl, type RunRow } from './stagedSlack.js'
 import { sqliteD1 } from './testD1.js'
 
 const run = (o: Partial<RunRow>): RunRow => ({
@@ -43,23 +43,28 @@ describe('renderParent', () => {
 
 describe('run events', () => {
   it('reads as a sentence per phase', () => {
-    expect(runEvent(run({ finished_ts: null }), 'dispatched', 'Slack')).toBe(':test_tube: Dry-run dispatched by ann via Slack on scan 2026-09-28T1201 (`cw-sweep-dry-1`)')
-    expect(runEvent(run({ skipped_gone: 2 }), 'finished')).toBe(':test_tube: Dry-run finished: would delete *2.0 TiB* / 1,234 objects (gone since scan: 2, overwritten: 0).')
-    expect(runEvent(run({ mode: 'real', run_id: 'cw-sweep-real-1', undo_deadline: 1_790_604_800 }), 'finished')).toBe(':white_check_mark: Real deletion finished: deleted *2.0 TiB* / 1,234 objects; undoable until 2026-09-28 14:13Z (www).')
-    expect(runEvent(run({ plan_digest: '' }), 'failed')).toBe(':x: Dry-run `cw-sweep-dry-1` ended without a result (its Batch job stopped before the run summary); check its logs in www.')
+    const site = 'https://cw-s3.oa.dev'
+    const link = '<https://cw-s3.oa.dev/staged?run=cw-sweep-dry-1|cw-sweep-dry-1>'
+    expect(runEvent(run({ finished_ts: null }), 'dispatched', { via: 'Slack' })).toBe(':test_tube: Dry-run dispatched by ann via Slack on scan 2026-09-28T1201 (`cw-sweep-dry-1`)')
+    expect(runEvent(run({ finished_ts: null }), 'dispatched', { via: 'www', mentions: { 'ann@openathena.ai': '<@U1>' }, siteUrl: site }))
+      .toBe(`:test_tube: Dry-run dispatched by <@U1> via www on scan 2026-09-28T1201 (${link})`)
+    expect(runEvent(run({ skipped_gone: 2 }), 'finished', { siteUrl: site })).toBe(`:test_tube: Dry-run ${link} finished: would delete *2.0 TiB* / 1,234 objects (gone since scan: 2, overwritten: 0).`)
+    expect(runEvent(run({ mode: 'real', run_id: 'cw-sweep-real-1', undo_deadline: 1_790_604_800 }), 'finished')).toBe(':white_check_mark: Real deletion `cw-sweep-real-1` finished: deleted *2.0 TiB* / 1,234 objects; undoable until 2026-09-28 14:13Z (www).')
+    expect(runEvent(run({ plan_digest: '' }), 'failed', { siteUrl: site })).toBe(`:x: Dry-run ${link} ended without a result (its Batch job stopped before the run summary); check its logs in www.`)
+    expect(runUrl(site, '2026-09-28-p1/20260928T120000Z')).toBe('https://cw-s3.oa.dev/staged?run=2026-09-28-p1%2F20260928T120000Z')
     expect([fmtBytes(0), fmtBytes(1536), fmtBytes(3 * 1024 ** 3)]).toEqual(['0 B', '1.5 KiB', '3.0 GiB'])
   })
 })
 
 describe('mentions and sizes', () => {
   const base = { planId: 7, siteUrl: 'https://cw-s3.oa.dev', items: 3, batches: 2, stagers: [] as string[], digest: 'D1', actions: true, closed: false, runs: [] as RunRow[] }
-  const size = { scan: '2026-10-02', b: 51 * 2 ** 40, o: 179327698, empty: 5, owners: [{ label: '<@U1>', b: 16 * 2 ** 40 }, { label: 'percy-liang', b: 6 * 2 ** 40 }] }
+  const size = { scan: '2026-10-02', b: 51 * 2 ** 40, o: 179327698, empty: 5, owners: [{ label: '<@U1>', b: 16 * 2 ** 40 }, { label: 'hedy-lamarr', b: 6 * 2 ** 40 }] }
   it('the parent names stagers by mention (else the local part) and carries the size line', () => {
     const v = { ...base, stagers: ['a.b@x.org', 'c.d@x.org'], mentions: { 'a.b@x.org': '<@UA>' }, size }
     expect((renderParent(v).blocks[0] as { text: { text: string } }).text.text.split('\n')).toEqual([
       `*Staged for deletion* · plan #${base.planId} · ${base.items} prefixes in ${base.batches} batches`,
       'staged by <@UA>, c.d',
-      '*51.0 TiB* · 179,327,698 objects at scan 2026-10-02 · 5 empty · owners: <@U1> 16.0 TiB, percy-liang 6.0 TiB',
+      '*51.0 TiB* · 179,327,698 objects at scan 2026-10-02 · 5 empty · owners: <@U1> 16.0 TiB, hedy-lamarr 6.0 TiB',
     ])
   })
   it('a stage reply: mention, size line, then the note and prefixes', () => {
@@ -75,8 +80,8 @@ describe('mentions and sizes', () => {
 
 describe('nameSlug: a Slack name as the canonical owner id', () => {
   it('lowercase, accents folded, other runs to one dash', () => {
-    expect(['Chi-Heem Wong', 'Percy Liang', 'José  Núñez', ' Will Held (he/him) '].map(nameSlug))
-      .toEqual(['chi-heem-wong', 'percy-liang', 'jose-nunez', 'will-held-he-him'])
+    expect(['Grace Hopper', 'Hedy Lamarr', 'Émilie  du Châtelet', ' Alan Turing (he/him) '].map(nameSlug))
+      .toEqual(['grace-hopper', 'hedy-lamarr', 'emilie-du-chatelet', 'alan-turing-he-him'])
   })
 })
 
@@ -106,11 +111,16 @@ describe('the plan card', () => {
       ['section', 'section', 'actions'],
     ])
   })
-  it('no card without cards on, nor without a token table to back it (the cw lineage); the gcs lineage case is in og/revocation.test.ts', async () => {
-    const { db } = await sqliteD1('cw')
-    expect([
-      await stagedCardUrl({ SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789'),
-      await stagedCardUrl({ OG_CARDS: '1', SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789'),
-    ]).toEqual([null, null])
+  it('no card without cards on; with them, a full card backed by a fresh `og_tokens` row (cw `0010`)', async () => {
+    const { db, raw } = await sqliteD1('cw')
+    const off = await stagedCardUrl({ SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789', 1790000000)
+    const on = await stagedCardUrl({ OG_CARDS: '1', SESSION_SECRET: 's3cret' }, db, 'https://site.example.org', 'abcdef0123456789', 1790000000)
+    const rows = raw.prepare('SELECT token, kind, view, page, minted_by, minted_ts, exp_day FROM og_tokens').all() as { token: string }[]
+    expect([off, on?.replace(/t=\w{10}&/, 't=<token>&').replace(/sig=\w+$/, 'sig=<sig>'), rows.map(r => ({ ...r, token: r.token.length }))]).toEqual([
+      null,
+      'https://site.example.org/og/staged.png?t=<token>&v=abcdef01&sig=<sig>',
+      [{ token: 10, kind: 'staged', view: '', page: '/staged', minted_by: 'slack:staged', minted_ts: 1790000000, exp_day: 293 }],
+    ])
+    expect(on).toContain(`t=${rows[0].token}&`)
   })
 })

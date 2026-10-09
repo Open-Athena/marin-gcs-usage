@@ -76,18 +76,24 @@ const AUTH_MODE = process.env.VITE_AUTH_MODE ?? VARS.AUTH_MODE ?? 'app'
 // `STORE` in wrangler.toml, or `VITE_STORES_EXTRA` in the environment; unset →
 // the single-store build, unchanged.
 const STORES_EXTRA = process.env.VITE_STORES_EXTRA ?? VARS.STORES_EXTRA ?? ''
+// The deployment's name (`ROOT_LABEL` under [vars]), e.g. for a store's tab title.
+const ROOT_LABEL = process.env.VITE_ROOT_LABEL ?? VARS.ROOT_LABEL ?? ''
 // The prod ↔ dev host pair `g d` toggles between (`src/hosts.ts`); a deployment
 // without a dev alias leaves them unset and gets no binding.
 const PROD_HOST = process.env.VITE_PROD_HOST ?? VARS.PROD_HOST ?? ''
 const DEV_HOST = process.env.VITE_DEV_HOST ?? VARS.DEV_HOST ?? ''
+// The source link (src/SiteKbd.tsx); unset = this repo.
+const REPO_URL = process.env.VITE_REPO_URL ?? VARS.REPO_URL ?? ''
 
 export default defineConfig({
   define: {
     'import.meta.env.VITE_STORE': JSON.stringify(STORE),
     'import.meta.env.VITE_AUTH_MODE': JSON.stringify(AUTH_MODE),
     'import.meta.env.VITE_STORES_EXTRA': JSON.stringify(STORES_EXTRA),
+    'import.meta.env.VITE_ROOT_LABEL': JSON.stringify(ROOT_LABEL),
     'import.meta.env.VITE_PROD_HOST': JSON.stringify(PROD_HOST),
     'import.meta.env.VITE_DEV_HOST': JSON.stringify(DEV_HOST),
+    'import.meta.env.VITE_REPO_URL': JSON.stringify(REPO_URL),
   },
   plugins: [react(), devSeriesIndex],
   server: {

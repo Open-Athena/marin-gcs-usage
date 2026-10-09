@@ -108,7 +108,7 @@ sheet_sync = RunJobCron(
     time_zone="UTC",
     sa_email=job.email_literal,
     image=f"{region}-docker.pkg.dev/{project}/cloud-run-source-deploy/gcs-sheet-sync:latest",
-    secret_env={"GCS_USAGE_TOKEN": "gcs-sheet-sync-token"},
+    secret_env={"SITE_TOKEN": "gcs-sheet-sync-token"},
     adopt=adopt,
     existing=True,
     opts=pulumi.ResourceOptions(depends_on=[secrets]),
@@ -139,16 +139,19 @@ gcp.storage.Bucket(
 )
 grant_bucket(f"{DATA_BUCKET}-job", bucket=DATA_BUCKET, role="roles/storage.objectAdmin", member=job.member, member_email=job.email_literal, adopt=adopt, existing=True)
 grant_bucket(f"{DATA_BUCKET}-browse", bucket=DATA_BUCKET, role="roles/storage.objectViewer", member=browse.member, member_email=browse.email_literal, adopt=adopt, existing=True)
+# The site's dispatch drops each run's `plan.json` into `sweep/runs/<job>/` before
+# submitting the job (`_lib/sweepDispatch.ts`): create-only, no read/overwrite/delete.
+grant_bucket(f"{DATA_BUCKET}-dispatch", bucket=DATA_BUCKET, role="roles/storage.objectCreator", member=dispatch.member, member_email=dispatch.email_literal, adopt=adopt)
 
 # The scanned fleet (Marin's buckets, another project): the job lists and reads
 # every bucket and deletes from the swept ones (`objectUser`); the browser reads.
 FLEET = {
-    "marin-us-east1": False,
+    "marin-us-east1": True,
     "marin-us-east5": True,
     "marin-us-central1": True,
     "marin-us-central2": True,
     "marin-eu-west4": True,
-    "marin-us-west4": False,
+    "marin-us-west4": True,
 }
 for bucket, swept in FLEET.items():
     roles = ["roles/storage.legacyBucketReader", "roles/storage.objectViewer"] + (["roles/storage.objectUser"] if swept else [])

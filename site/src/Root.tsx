@@ -10,6 +10,9 @@ import { PrivacyPage } from './PrivacyPage'
 import { FilesRedirect } from './FilesRedirect'
 import { AssignmentsPage } from './AssignmentsPage'
 import { StagedPage } from './StagedPage'
+import { RunPage } from './RunPage'
+import { HotPage } from './HotPage'
+import { NamePage } from './NamePage'
 import { OgPage } from './OgPage'
 import { UserOgPage, UserPage, UsersOgPage, UsersPage } from './UserPage'
 import { StoreProvider } from './store'
@@ -64,6 +67,9 @@ export default function Root() {
       )}
       {/* The opt-in deletion console: what the trash gesture staged, and its runs. */}
       <Route path="/staged" element={<AuthGate><StagedPage /></AuthGate>} />
+      <Route path="/runs/*" element={<AuthGate><RunPage /></AuthGate>} />
+      <Route path="/hot" element={<AuthGate><HotPage /></AuthGate>} />
+      <Route path="/names" element={<AuthGate><NamePage /></AuthGate>} />
       {/* Retired pages: the mark & sweep console became /staged; the review
           lenses became the home page's owner axis. Old links land somewhere sane. */}
       <Route path="/sweep" element={<Navigate to="/staged" replace />} />

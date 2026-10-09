@@ -17,7 +17,8 @@ import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 import { snapshotsPrefix } from '../_lib/shared.js'
 import { type Lens, makeStore, pathGens, pathScans, storeReady } from '../_lib/index.js'
 import { ledgerHead } from '../_lib/ledger.js'
-import { classKey, parseClasses, parseOwner } from '../_lib/scope.js'
+import { classKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
+import { liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
 import { readRootAgg, readRootRows } from '../_lib/view.js'
 import { type OverTime, overTimePoint, readOverTime } from '../_lib/overTime.js'
 import { parsePaths } from '../_lib/filter.js'
@@ -93,11 +94,26 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   }
   const owner = parseOwner(url.searchParams.get('o'))
   const classes = parseClasses(url.searchParams.get('cl'))
+  // `q=` (`qs=`): the map's filter. A single literal on a scan of the static name index's generation is
+  // answered from it — Σ that scan's own match roots under `path` (`staticFilter.ts`); other scans and
+  // other queries take `paths=`, the current scan's match roots, as before. A view root the query
+  // matches is matched whole: its plain series.
+  let qp: ReturnType<typeof queryParam>
+  try {
+    qp = queryParam(url.searchParams, env.QUERY_SYNTAX)
+  } catch (e) {
+    if (e instanceof QueryError) return json({ error: `bad query: ${e.message}` }, 400)
+    throw e
+  }
+  const query = qp.query && !qp.query(path) ? qp.query : undefined
+  if (qp.query && !query) paths.length = 0
+  const sfs = query && !lens && !classes ? staticFilterStore(env) : null
+  const skey = sfs ? staticLiteral(query!.ast) : null
   // `split=roots` (specs/done/root-geneses.md §1): the unscoped store root only —
   // one trace per depth-1 row (bucket) beside the total.
   const split = url.searchParams.get('split')
   if (split && split !== 'roots') return json({ error: 'bad split (want roots)' }, 400)
-  if (split && (path || paths.length || lens || owner || classes)) return json({ error: 'split=roots is for the unscoped store root only' }, 400)
+  if (split && (path || paths.length || lens || owner || classes || query)) return json({ error: 'split=roots is for the unscoped store root only' }, 400)
 
   // Every scan with a synced floor-free index, oldest first.
   const rows = await st.time('scans', pathScans(env, true))
@@ -105,7 +121,7 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // A user lens applies the live claims, so its key carries the ledger head.
   const head = lens ? await ledgerHead(env) : 0
   // Unscoped whole-bucket series only: scans without tiers still have a total in meta.json.
-  const extra = path === '' && !paths.length && !lens && !owner && !classes ? await st.time('unindexed', unindexedScans(env, new Set(dates))) : []
+  const extra = path === '' && !paths.length && !query && !lens && !owner && !classes ? await st.time('unindexed', unindexedScans(env, new Set(dates))) : []
   // Two-tier cache (colo + KV, `_lib/edgeCache.ts`), keyed by every input
   // including the scan list and the ledger head, so an entry is immutable and
   // a new scan is a new key. This used to `cache.put` a `private` response
@@ -113,7 +129,7 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // chart load re-read one point per scan (≈8 rounds of D1 + range reads for
   // a 94-scan history, 5–20 s) while the diff beside it was a cache hit.
   const g = await st.time('gens', pathGens(env, dates))
-  const cacheKey = cacheKeyFor('series', `${encodeURIComponent(path)}?P=${encodeURIComponent(paths.join(','))}&l=${lensRaw ?? ''}&o=${owner ?? ''}&cl=${classKey(classes)}&s=${split ?? ''}&d=${dates.join(',')}&x=${extra.join(',')}&head=${head}&g=${g}`, storeKey(env))
+  const cacheKey = cacheKeyFor('series', `${encodeURIComponent(path)}?P=${encodeURIComponent(paths.join(','))}&l=${lensRaw ?? ''}&o=${owner ?? ''}&cl=${classKey(classes)}&s=${split ?? ''}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? url.searchParams.get('q') ?? '' : '')}&st=${staticTag(env, query)}&d=${dates.join(',')}&x=${extra.join(',')}&head=${head}&g=${g}`, storeKey(env))
   const hit = await st.time('cache', cacheMatch(env, cacheKey))
   if (hit) return hit
 
@@ -143,7 +159,15 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // absent, the groups are floor-free); only the unsealed tip falls through to
   // the per-scan read. Lens / owner / class scopes and `split` aren't in the
   // index. Any line unreadable → all per-scan.
-  const indexable = !split && !lens && !owner && !classes
+  // The static filter's match roots under `path`, or its rollup there (a heavy literal under a heavy
+  // directory: the per-child running totals give every scan's total). Null: not a static literal, declined,
+  // or a rollup under an owner pool (rollups carry no owners).
+  const found = skey ? await st.time('static', sfs!.source.hits(skey, path)) : null
+  const shits = found?.rollup && owner ? null : found
+  // The scans it is exact on: the drilldown's are its base generation's.
+  const sscans = shits ? new Set(shits.scans ?? await sfs!.scans()) : null
+  if (query && !shits && !paths.length) return json({ error: 'a filtered series needs its match roots (paths=)' }, 400)
+  const indexable = !split && !lens && !owner && !classes && !shits
   const lines = indexable ? await st.time('overtime', Promise.all((paths.length ? paths : [path]).map(p => readOverTime(env, p)))) : []
   const ot: OverTime[] | null = lines.length && lines.every(Boolean) ? lines as OverTime[] : null
 
@@ -156,6 +180,13 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // since a silently absent point looks like a gap in the data.
   const point = async (date: string, tries = 2): Promise<{ date: string; b: number; o: number } | null> => {
     try {
+      if (shits && sscans!.has(date)) {
+        const t = shits.rollup ? rollupTotal(shits.rollup, date) : liveTotal(shits.hits, date, u => ownerOk(u, owner))
+        return { date, b: t.b, o: t.o }
+      }
+      // A scan the answer doesn't cover: the client's match roots (`paths=`), unless they come from a rollup,
+      // which lists only some of them (a gap, not a wrong point).
+      if (shits && (!paths.length || shits.rollup)) return null
       const covered = ot ? overTimePoint(ot, date) : undefined
       if (covered !== undefined) return covered && { date, ...covered }
       if (split) {

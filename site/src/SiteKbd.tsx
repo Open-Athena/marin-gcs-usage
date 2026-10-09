@@ -10,11 +10,13 @@ import { useStore } from './store'
 import { STORES } from './stores'
 import { useTheme } from './theme'
 import { useUnits } from './units'
-import { useCanStage } from './auth'
+import { useCanAssign, useCanStage, useIdent, useSignOut } from './auth'
+import { openDialog } from './dialogs'
 import { useShare } from './sharePreview'
 
-export const REPO_URL = 'https://github.com/Open-Athena/marin-gcs-usage'
-const CW_URL = 'https://cw-s3.oa.dev/'
+/** The source link (SpeedDial, omnibar, user menu): the deployment's
+ * `REPO_URL` (wrangler `[vars]`, read at build time), else this repo. */
+export const REPO_URL = import.meta.env.VITE_REPO_URL || 'https://github.com/runsascoded/disky'
 const HOSTS = hostPair(import.meta.env.VITE_PROD_HOST, import.meta.env.VITE_DEV_HOST)
 
 
@@ -26,7 +28,7 @@ const HOSTS = hostPair(import.meta.env.VITE_PROD_HOST, import.meta.env.VITE_DEV_
  * HotkeysProvider sits in Root) and can push extra SpeedDial buttons via
  * `extra`.
  */
-export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }: {
+export function SiteKbd({ extra = [], placeholder }: {
   extra?: SpeedDialAction[]
   placeholder?: string
 }) {
@@ -44,11 +46,17 @@ export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }
   // the other configured stores follow as switches (a single-store build has
   // none).
   const store = useStore()
+  placeholder ??= store.owners ? 'Pages, users, actions…' : 'Pages and actions…'
+  const canShare = useCanStage()
+  const canAssign = useCanAssign()
+  const ident = useIdent()
+  const signOut = useSignOut()
+  // The ☰ menu's pages, gated as it gates them.
   const PAGES: [string, string][] = [
     [store.path, 'Map (home)'],
-    ['/users', 'Users — storage by owner'],
+    ...(canAssign && store.owners ? [['/users', 'Users — storage by owner'], ['/assignments', 'Assignments']] as [string, string][] : []),
+    ...(store.staging ? [['/staged', 'Staged deletions']] as [string, string][] : []),
   ]
-  const canShare = useCanStage()
   const { share, status: shareStatus } = useShare()
   useActions({
     ...(canShare ? {
@@ -59,6 +67,11 @@ export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }
         handler: () => void share('preview'),
       },
     } : {}),
+    'dialog:about': { label: 'About — the data, axes & colors', group: 'Site', handler: () => openDialog('about') },
+    ...(canShare ? { 'dialog:share': { label: 'Share…', group: 'Share', handler: () => openDialog('share') } } : {}),
+    ...(ident && !ident.guest ? { 'dialog:profile': { label: 'Profile… (name + avatar)', group: 'Site', handler: () => openDialog('profile') } } : {}),
+    ...(canAssign ? { 'dialog:token': { label: 'Agent / CLI token…', group: 'Site', handler: () => openDialog('token') } } : {}),
+    ...(ident ? { 'auth:logout': { label: 'Log out', group: 'Site', handler: signOut } } : {}),
     'help:toggle': {
       label: `Help line: ${help} (toggle)`,
       group: 'View',
@@ -77,7 +90,9 @@ export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }
         { label: `${s.label} store (${s.path})`, group: 'Pages', handler: () => navigate(s.path) },
       ]),
     ),
-    'page:cw': { label: 'CoreWeave usage ↗ (cw-s3.oa.dev)', group: 'Pages', handler: () => window.open(CW_URL, '_blank', 'noreferrer') },
+    ...(store.peer ? {
+      'page:peer': { label: `${store.peer.label} ↗ (${new URL(store.peer.href).host})`, group: 'Pages', handler: () => window.open(store.peer!.href, '_blank', 'noreferrer') },
+    } : {}),
     'page:github': { label: 'Source on GitHub ↗', group: 'Pages', handler: () => window.open(REPO_URL, '_blank', 'noreferrer') },
     ...Object.fromEntries(
       USERS.filter(u => pathname !== `/user/${u}`).map(u => [
@@ -108,7 +123,7 @@ export function SiteKbd({ extra = [], placeholder = 'Pages, users, actions…' }
     'units:suffix': {
       label: `Unit suffix: ${suffixB ? 'TiB/TB → Ti/T (drop B)' : 'Ti/T → TiB/TB (show B)'}`,
       group: 'View',
-      defaultBindings: ['B'],
+      defaultBindings: pathname.startsWith('/runs/') || pathname === '/staged' ? [] : ['B'],
       handler: toggleSuffixB,
     },
   })

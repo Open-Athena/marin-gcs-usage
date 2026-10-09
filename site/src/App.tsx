@@ -391,8 +391,9 @@ function AppContent() {
   const coarseQs = useQueries({
     queries: subtreePaths.map((p, i) => ({
       queryKey: ['subtree', store.key, asof, p, canW, scopeQs, 'depth1'],
-      // Deepest path only — see `dataFor`; ancestors never use it.
-      enabled: !!asof && i === subtreePaths.length - 1,
+      // Deepest path only — see `dataFor`; ancestors use it only under a filter, where it is the
+      // exact forest of match roots (cheap from the static name index).
+      enabled: !!asof && (i === subtreePaths.length - 1 || !!fq),
       staleTime: Infinity,
       retry: false,
       // Plain view: one depth band. Filtered view: the whole forest from the
@@ -405,7 +406,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string }
+        const j = await r.json() as { tree: TreeNode; tier?: string; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -425,8 +426,20 @@ function AppContent() {
   // arithmetic (`(other)` = parent − Σ kids) negative — its layout then never
   // converges until a consistent tree lands. The previous *rendered* tree is
   // held whole instead, below (`mapTree`).
-  const dataFor = (i: number): TreeNode | null =>
-    subtreeQs[i]?.data?.tree ?? (i === subtreePaths.length - 1 ? coarseQs[i]?.data?.tree ?? null : null)
+  // Under a filter an ancestor may stand in with its first-paint forest, when that forest carries the
+  // next spine segment WITH children (an ancestor of match roots): a drilled deep link then paints
+  // from the cheap reads instead of waiting on every ancestor's full forest.
+  const spineHasKids = (t: TreeNode, i: number): boolean => {
+    const seg = subtreePaths[i + 1]?.split('/').pop()
+    return !!t.c?.some(k => k.n === seg && k.c?.length)
+  }
+  const dataFor = (i: number): TreeNode | null => {
+    const full = subtreeQs[i]?.data?.tree
+    if (full) return full
+    const coarse = coarseQs[i]?.data?.tree ?? null
+    if (i === subtreePaths.length - 1) return coarse
+    return fq && coarse && spineHasKids(coarse, i) ? coarse : null
+  }
   const baseTree: TreeNode | null = dataFor(0)
   // Whether this scan lists objects (a path-store generation, whose leaves
   // can be objects) or is a v1 dir-only index — every response of one scan
@@ -508,9 +521,17 @@ function AppContent() {
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
+  // A heavy literal's view from its rollup (the server's `rollup`): its cells are children, not match
+  // roots, and the series is the query's own sum per scan (`queryOnly`).
+  const fRollup = useMemo(() => {
+    if (!fq) return false
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
+    return !!(d as { rollup?: unknown } | undefined)?.rollup
+  }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const matchedRoots = useMemo((): string[] | undefined => {
     if (!fq) return undefined
-    const d = subtreeQs[subtreeQs.length - 1]?.data ?? subtreeQs[0]?.data
+    // The first paint carries the same roots (the full read adds only what is inside them).
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     // A bounded transport list is not a safe predicate for table actions or
     // a historical series. The map/totals are still exact; those secondary
     // consumers stay disabled rather than silently using a subset.
@@ -520,7 +541,7 @@ function AppContent() {
   // read without the search index (`approximate`) — shown beside the count.
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
-    const d = subtreeQs[subtreeQs.length - 1]?.data ?? subtreeQs[0]?.data
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, matchesTotal: d.matchesTotal, matchesTruncated: d.matchesTruncated }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
@@ -531,7 +552,7 @@ function AppContent() {
   const { fmtBytes } = useUnits()
   // The treemap's drill path now lives in the URL *path* (below the store's own
   // route prefix), so a drilled prefix is a real shareable URL —
-  // `/marin-us-central1/ego-dex`, not `/?p=marin-us-central1/ego-dex`. View
+  // `/my-bucket/some/dir`, not `/?p=my-bucket/some/dir`. View
   // options stay query params (`?c`, `?mt`, …); the section stays in the `#hash`.
   const storeBase = store.path === '/' ? '' : store.path
   const drillPath = pathname.slice(storeBase.length).replace(/^\/+/, '')
@@ -1241,7 +1262,9 @@ function AppContent() {
         scopeLabel={store.rootLabel}
         paths={matchedRoots}
         pathsTotal={fCoverage?.matchesTotal}
+        queryOnly={fRollup}
         filterLabel={fq ?? undefined}
+        filterQs={fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : undefined}
         scans={scans} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}
@@ -1428,7 +1451,7 @@ function AppContent() {
       {hasAttr && mapTree && <AttributionRules tree={mapTree} />}
 
       <SiteKbd
-        placeholder="Users, color modes, scans, pages…"
+        placeholder={store.owners ? 'Users, color modes, scans, pages…' : 'Color modes, scans, pages, actions…'}
         extra={[{ key: 'lens', label: `Class lens: ${lens ? 'on' : 'off'} (s)`, icon: <MdLayers />, onClick: () => setLens(v => !v) }]}
       />
     </main>

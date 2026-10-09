@@ -140,15 +140,21 @@ const fmtPct = (y: number) => {
   return a === 0 ? '0%' : signed(y, `${a >= 10 ? a.toFixed(0) : a.toFixed(1)}%`)
 }
 
-export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, pathsTotal, filterLabel }: {
+export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, pathsTotal, queryOnly, filterLabel, filterQs }: {
   /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
   scopeLabel?: string
   /** The page filter's match roots: the series is their sum per scan. */
   paths?: string[]
   /** Exact count when the server bounded the auxiliary match list. */
   pathsTotal?: number
+  /** The filter's view was a rollup (a heavy literal): `paths` lists only some match roots, so the series
+   * is asked for the query alone (the server sums the rollup per scan). */
+  queryOnly?: boolean
   /** The filter text, for the subtitle. */
   filterLabel?: string
+  /** The filter as query params (`&q=…&qs=…`): a static-index literal is summed per scan server-side
+   *  from that scan's own match roots, whatever their number; `paths` is the fallback. */
+  filterQs?: string
   scans: string[]
   prefix: string
   /** The owner axis's user: their bytes under `prefix`, per scan. */
@@ -194,11 +200,11 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
 
   // The store root, unscoped: one trace per root (specs/done/root-geneses.md §2).
   const split = !prefix && !user && !pool && !paths?.length && !filterLabel
-  const scope = (user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : '') + (paths?.length ? `&paths=${encodeURIComponent(paths.join(','))}` : '') + (split ? '&split=roots' : '')
-  // A filter with more match roots than one series request charts: say so,
-  // rather than send a request the server refuses (or the URL can't carry).
+  // A filter with more match roots than one series request charts sends only the query: the server
+  // answers it from the static name index, or refuses (400) and the chart says why.
   const nPaths = pathsTotal ?? paths?.length ?? 0
-  const tooMany = nPaths > SERIES_MAX_PATHS
+  const overMax = nPaths > SERIES_MAX_PATHS
+  const scope = (user ? `&lens=user:${encodeURIComponent(user)}` : pool ? `&o=${pool}` : '') + (paths?.length && !overMax && !queryOnly ? `&paths=${encodeURIComponent(paths.join(','))}` : '') + (filterLabel && filterQs ? filterQs : '') + (split ? '&split=roots' : '')
   // The subtree's store: its key in the query key (two mounted stores may
   // share a prefix spelling), its `store=` on the request.
   const store = useStore()
@@ -207,7 +213,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
     queryKey: ['series', store.key, prefix, scope, scans.length],
     // Under a filter, wait for its match roots: the whole-store series is not
     // what the page asked for.
-    enabled: scans.length > 1 && !(filterLabel && !paths?.length) && !tooMany,
+    enabled: scans.length > 1 && !(filterLabel && !paths?.length && !((queryOnly || overMax) && filterQs)) && !(overMax && !filterQs),
     staleTime: 5 * 60_000,
     queryFn: async () => {
       const pf = perf.start('series', `${prefix || '/'}${scope}|n${scans.length}`)
@@ -219,6 +225,8 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
     },
   })
   usePerfCommit('series')
+  // Too many match roots for `paths=`, and the server couldn't sum the query itself.
+  const tooMany = overMax && (!filterQs || /: 400$/.test(seriesQ.error?.message ?? ''))
 
   const label = user ? shortName(user) : pool ?? (prefix || 'total')
   // The x-range cut: points on or after (latest − N days). Applied to every
@@ -375,7 +383,7 @@ export function SizeOverTime({ scans, prefix, user, pool, onPickDate, onBrush, w
           </label>
         </div>
       )}
-      {seriesQ.isError && <p className="sub"><i>series unavailable</i></p>}
+      {seriesQ.isError && !tooMany && <p className="sub"><i>series unavailable</i></p>}
       {tooMany ? (
         <p className="loading">size over time charts up to {SERIES_MAX_PATHS} matches; this filter has {nPaths.toLocaleString()}. Narrow it to chart.</p>
       ) : allZero ? (

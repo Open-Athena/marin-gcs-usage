@@ -17,6 +17,7 @@ import { ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, queryParam, QueryError, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
+import { staticTag } from '../_lib/staticFilter.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/queryBox.js'
@@ -97,7 +98,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     const [head, xtra, g] = await st.time('pre', Promise.all([lens && ctx.env.DB ? ledgerHead(ctx.env) : Promise.resolve(0), hasExtras(ctx.env, date), pathGens(ctx.env, [date])]))
     const cacheKey = cacheKeyFor('subtree',
       `${date}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&l=${lensRaw ?? ''}` +
-        `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}`,
+        `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}`,
       storeKey(ctx.env),
     )
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
@@ -139,7 +140,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
       nodes: view.nodes,
       truncated: view.truncated,
       ...(owner ? { owner } : {}),
-      ...(query ? { q: qRaw, matches: view.matches, matched: view.matched ?? [], ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
+      ...(query ? { q: qRaw, matches: view.matches ?? [], matched: view.matched ?? [], ...(view.matchCount ? { matchCount: view.matchCount } : {}), ...(view.matchesCapped ? { matchesCapped: true } : {}), ...(view.rollup ? { rollup: view.rollup } : {}), ...(view.excluded ? { excluded: view.excluded } : {}), ...(view.firstPaint ? { firstPaint: true } : {}), partial: view.partial, partialReason: view.partialReason, approximate: view.approximate, approximateReason: view.approximateReason } : {}),
       tree: view.tree,
     })
     return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))

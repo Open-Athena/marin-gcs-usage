@@ -41,7 +41,10 @@ const piecesMatcher = (pieces: string[]): Matcher =>
  *   `regex` syntax is the advertised way), never served by the search index.
  *
  * Every positive term needs `MIN_TERM` (3) literal characters in a row (a
- * `*` term: its longest piece); exclusions are exempt. Blank, `|`-only and
+ * `*` term: its longest piece); exclusions are exempt, and so is a query that
+ * is one literal alone (`ab`, `.`): the static name index's drilldown answers
+ * any single literal exactly, and elsewhere the search reads it as a bounded
+ * names scan (flagged when it is cut). Blank, `|`-only and
  * `""`-only queries are "nothing to filter by"; the errors are a short term
  * and an invalid `/…/` regex. */
 export const simple: QuerySyntax = makeSimple()
@@ -61,6 +64,8 @@ export function makeSimple({ minTerm = MIN_TERM }: { minTerm?: number } = {}): Q
       const s = raw.toLowerCase()
       const alts: { terms: Matcher[]; any: boolean }[] = [{ terms: [], any: false }]
       const neg: Matcher[] = []
+      /** The first positive term under `minTerm`, an error unless it is the whole query. */
+      let short: string | null = null
       const sep = (c: string) => c === '|' || /\s/.test(c)
       let i = 0
       while (i < s.length) {
@@ -81,13 +86,16 @@ export function makeSimple({ minTerm = MIN_TERM }: { minTerm?: number } = {}): Q
         alt.any = true
         if (pieces.length === 1 && !pieces[0]) continue // `""`
         if (isNeg) neg.push(piecesMatcher(pieces))
-        else if (Math.max(...pieces.map(p => p.length)) < minTerm) {
-          return { error: `type at least ${minTerm} characters (“${pieces.join('*')}”)`, code: 'short-term' }
-        } else alt.terms.push(piecesMatcher(pieces))
+        else {
+          if (short == null && Math.max(...pieces.map(p => p.length)) < minTerm) short = pieces.join('*')
+          alt.terms.push(piecesMatcher(pieces))
+        }
       }
       // A blank alternative (`a|`, `||`) adds nothing; one that held only
       // negatives is "everything" (the negatives are the query's).
       const kept = alts.filter(a => a.any).map(a => a.terms)
+      const lone = kept.length === 1 && kept[0].length === 1 && kept[0][0].kind === 'sub' && !neg.length
+      if (short != null && !lone) return { error: `type at least ${minTerm} characters (“${short}”)`, code: 'short-term' }
       if (!kept.some(a => a.length) && !neg.length) return { ast: null }
       return { ast: { alts: kept.length ? kept : [[]], neg } }
     },
@@ -105,7 +113,7 @@ export function makeSimple({ minTerm = MIN_TERM }: { minTerm?: number } = {}): Q
         { form: 'a/b', meaning: 'a term with / spans segments', example: 'run-a/ckpt' },
       ],
       notes: [
-        `Each term needs at least ${minTerm} characters in a row (a * term: its longest part); exclusions are exempt.`,
+        `Each term needs at least ${minTerm} characters in a row (a * term: its longest part); exclusions, and a query of one word alone, are exempt.`,
         'Exclusions apply to the whole query (every | alternative); only exclusions = everything except them.',
       ],
     }),
