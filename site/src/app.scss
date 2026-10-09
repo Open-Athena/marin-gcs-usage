@@ -1097,6 +1097,7 @@ body:has(.og) :is(.help-chip, .help-card) { display: none; }
 .object-panel .cell-tail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 // The full value behind a clipped table cell (the leaf viewer's tables, via
 // file-tree's `elide.tooltip`): a long GCS path, wrapped so it fits the panel.
+.tooltip-content .bb-tip { color: var(--ink-2); }
 .tooltip-content .pin-hint { color: var(--ink-3); font-size: 10.5px; margin-top: 5px; }
 .tooltip-content.pinned { border-color: var(--ink-3); }
 .tt-ref.pinnable { cursor: pointer; }
@@ -2106,6 +2107,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
   .bb-confirm { color: var(--ink); }
   .bb-note { color: var(--ink-2); }
   .bb-warn { color: var(--s3); }
+  // Disabled actions with their reason in a tooltip: the hover lands on the wrapper, not the disabled buttons.
+  .bb-muted { display: inline-flex; gap: 5px; button:disabled { pointer-events: none; } }
   .bb-progress { color: var(--s1); }
   // The review list floats below the bar (a native <details>), so opening it shifts nothing.
   .bb-review {
