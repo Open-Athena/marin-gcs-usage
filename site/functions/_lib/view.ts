@@ -126,6 +126,8 @@ export interface ViewOpts {
   floorOnly?: boolean
   /** With `query`: ms the static roots' detail lookups may run past phase 2 (default `FILTER_DETAILS_MS`). */
   detailsWait?: number
+  /** With `query`: phase 2's time budget, ms (default `FILTER_PHASE2_MS`, env or constant). */
+  phase2Ms?: number
 }
 
 export interface View {
@@ -958,7 +960,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // 32K rows from the store, six in flight per request: `00241`'s 167 groups took 15 s), and the
       // whole phase within `FILTER_PHASE2_MS`. A root left out is drawn as one exact tile; the response
       // says how many (`interiors`).
-      const ms = Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS
+      const ms = o.phase2Ms ?? (Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS)
       const late = Symbol('late')
       let timer: ReturnType<typeof setTimeout> | null = null
       // Past the budget the abandoned reads stop decoding (`stop`): they'd hold the isolate's CPU, and the
@@ -1535,7 +1537,7 @@ export interface Diff {
   lookups: number
   /** The lookup budget ran out: some one-sided names may really be folded. */
   lookups_capped: boolean
-  /** …by time (`FILTER_WALK_MS`): a retry may get further, so the answer is served but not cached. */
+  /** …by time (`FILTER_WALK_MS`). */
   lookups_late?: true
   /** With `q=`: the union of both scans' match roots (capped like a view's, `matchLists`). */
   matched?: { path: string; b: number; o: number }[]
@@ -1554,6 +1556,8 @@ export interface Diff {
 const LOOKUP_CAP = 240
 /** A filtered diff's one-sided lookups run this long, at most (each level's are one batched read a side). */
 export const FILTER_WALK_MS = 800
+/** …and its two sides' phase 2 this long (each; they run at once). */
+export const FILTER_DIFF_PHASE2_MS = 900
 
 /** Two sides' `interiors`, summed (reasons joined when they differ). */
 function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable<View['interiors']> {
@@ -1599,7 +1603,8 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   let floor: number | undefined
   // A diff draws its roots' kinds only (no ages, no classes): the lookups that land by phase 2's end are
   // taken, none waited for (with a deployment's finite `FILTER_DETAILS_MS`; unset waits, as views do).
-  const wait = Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}
+  // Its phase 2 runs both sides at once, then the walk's lookups (`FILTER_WALK_MS`): a smaller share each.
+  const wait = { ...(Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}), phase2Ms: Math.min(Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS, FILTER_DIFF_PHASE2_MS) }
   if (query && ra && rb && !o.summary && o.threshold == null) {
     const [ta, tb] = await Promise.all([
       readView(env, { ...o, date: from, maxDepth: 0, floorOnly: true }, {}),
@@ -1634,6 +1639,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   const walkStart = performance.now()
   // A filtered diff's lookups stop after `FILTER_WALK_MS` as they do past `LOOKUP_CAP` (`lookups_capped`).
   let late = false
+  let lookupsOff = false
   const walkOver = () => (late ||= !!query && performance.now() - walkStart > FILTER_WALK_MS)
   const matchedUnion = query ? [...new Map([...(va?.matched ?? []), ...(vb?.matched ?? [])].map(m => [m.path, m])).values()].sort((x, y) => x.path < y.path ? -1 : 1) : undefined
   const totals = {
@@ -1727,7 +1733,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     const want = new Map(take.map(q => [`${q.d}\0${q.cp}`, q]))
     let got: Row[]
     try {
-      got = (await readAsks(await fine(date), take.map(q => ({ depth: q.d, path: q.cp })), r => want.has(`${r.depth}\0${r.path}`), { maxGroups: 120 })).rows
+      got = (await readAsks(await fine(date), take.map(q => ({ depth: q.d, path: q.cp })), r => want.has(`${r.depth}\0${r.path}`), { maxGroups: 120, stop: () => lookupsOff })).rows
     } catch (e) {
       if (!/too wide/.test(String((e as Error).message ?? e))) throw e
       await perAsk(take)
@@ -1798,10 +1804,21 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     }
     const found = new Map<string, Agg | null>() // `${side}:${cp}`
     const sideAsks = (side: 1 | 2) => asks.filter(q => q.side === side)
-    const [gotA, gotB] = await Promise.all([
+    const level2 = Promise.all([
       va && sideAsks(1).length ? lookupMany(from, va, sideAsks(1)) : new Map<string, Agg | null>(),
       vb && sideAsks(2).length ? lookupMany(to, vb, sideAsks(2)) : new Map<string, Agg | null>(),
     ])
+    // A filtered diff's level waits for its lookups until `FILTER_WALK_MS` is spent, no longer: the names
+    // still unanswered read as one-sided, as past `LOOKUP_CAP` (`lookups_capped`, `lookups_late`).
+    const left = query ? FILTER_WALK_MS - (performance.now() - walkStart) : Infinity
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const none = [new Map<string, Agg | null>(), new Map<string, Agg | null>()] as const
+    const [gotA, gotB] = left === Infinity ? await level2 : await Promise.race([
+      level2,
+      new Promise<typeof none>(r => { timer = setTimeout(() => { if (asks.length) { late = true; capped = true; lookupsOff = true } r(none) }, Math.max(0, left)) }),
+    ])
+    if (timer != null) clearTimeout(timer)
+    level2.catch(() => {})
     for (const [cp, agg] of gotA) found.set(`1:${cp}`, agg)
     for (const [cp, agg] of gotB) found.set(`2:${cp}`, agg)
     for (const { it, expand, names } of plans) {
