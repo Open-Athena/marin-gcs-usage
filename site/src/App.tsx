@@ -33,7 +33,7 @@ import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
 import { coverWant, useFilterCover } from './filterCover'
 import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
-import { apiError, INDEXED_SYNTAX, useFilterCaps, useIndexedScans } from './filterCaps'
+import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
 import { LoadFailure, mapSlot } from './LoadFailure'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
@@ -491,8 +491,13 @@ function AppContent() {
   // answers alike, so the first that has landed says.
   const objects = listsObjects([...subtreeQs, ...coarseQs].find(q => q.data?.tier)?.data?.tier)
   const rootErr = subtreeQs[0]?.error as Error | undefined
+  // A drilled view the filter refuses (a heavy literal with no drilldown is `term-too-common` below the fleet
+  // root): its reason, in the box's note and the map slot, as the root's would be — never the held parent's tiles.
+  const deepErr = subtreePaths.length > 1 ? subtreeQs[subtreePaths.length - 1]?.error as Error | undefined : undefined
+  const deepRefused = !rootErr && fq && refusalOf(deepErr) ? deepErr : undefined
+  const viewErr = rootErr ?? deepRefused
   // The box's error: the client's own parse, else the server's 400.
-  const fErr = fParse.error ?? fScopeRefused ?? /^400: bad query: (.*)/s.exec(rootErr?.message ?? '')?.[1]
+  const fErr = fParse.error ?? fScopeRefused ?? /^400: bad query: (.*)/s.exec(viewErr?.message ?? '')?.[1]
   // useQueries returns a fresh array each render; stamp the data so the graft
   // memo re-runs exactly when a response lands.
   // Both tiers stamp the graft: a depth-1 tree landing must re-run it just
@@ -565,7 +570,7 @@ function AppContent() {
   const mapBusy = mapStale || subtreeQs.some(q => q.isFetching)
   // The asked-for view failed (any non-2xx, its retries spent): the slot states it — a held tree from another
   // scan or scope would sit dimmed under "loading" forever (gcs 2026-10-09: 80 s of a gray map on a 500).
-  const mapFailed = mapSlot(tree, lastTree.current, rootErr) === 'failed'
+  const mapFailed = !!deepRefused || mapSlot(tree, lastTree.current, rootErr) === 'failed'
   const retryMap = () => { for (const q of [...subtreeQs, ...coarseQs]) if (q.isError) void q.refetch() }
   // A failed attempt being retried: say so on the held map's marker.
   const mapRetrying = subtreeQs[0]?.failureReason && !rootErr ? `retrying (${subtreeQs[0].failureReason.message.slice(0, 80)})…` : null
@@ -617,7 +622,7 @@ function AppContent() {
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, bucketsOnly: !!(d as { rollup?: { bucketsOnly?: true } }).rollup?.bucketsOnly }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out) and the scroll
@@ -1329,9 +1334,9 @@ function AppContent() {
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
             : 'this view is too wide for the index — drill in, or narrow the scope'}
         </p>
-      ) : rootErr ? (
-        // The filter's refusal (indexed-only) as its reason, inline; any other failure as its message, a 5xx with a retry.
-        <LoadFailure err={rootErr} what="view" onRetry={retryMap} />
+      ) : viewErr ? (
+        // The filter's refusal as its reason, inline; any other failure as its message, a 5xx with a retry.
+        <LoadFailure err={viewErr} what="view" onRetry={retryMap} />
       ) : noScansYet(scansQ) ? (
         // The list answered and is empty: no snapshot has index rows in D1,
         // so no view will ever load — a skeleton here would spin forever.
