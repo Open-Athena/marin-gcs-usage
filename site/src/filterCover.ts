@@ -116,8 +116,57 @@ export function groupItems(items: readonly CoverItem[]): CoverGroup[] {
     .sort((x, y) => y.b - x.b || (x.parent < y.parent ? -1 : x.parent > y.parent ? 1 : 0))
 }
 
-/** A row's label under a filter: the drawn chain of single children below it, as the treemap tile labels a
- *  collapsed chain (`a/b/c`, or `a/…/z` past three) — so a row holding one match shows the path to it. */
+/** A row's match roots: how many lie at or under it, and the path when there is exactly one. `atLeast`: the
+ *  response's list was capped, so `n` counts only the listed ones (the row may hold more, and a lone listed
+ *  one is never taken as the only one). */
+export interface RowMatches { n: number; one?: string; atLeast?: true }
+
+/** How far a response's `matched` list can be trusted per row: `exact` (every match root), `capped` (a prefix
+ *  of them, heaviest first: counts are lower bounds), or `null` (partial, approximate, a rollup, or absent). */
+export type MatchedList = 'exact' | 'capped' | null
+
+/** A response's `matched` list's trust (`MatchedList`), from its own flags. */
+export function matchedListOf(d: { matched?: unknown; matchesCapped?: boolean; partialReason?: string; approximateReason?: string; rollup?: unknown } | undefined): MatchedList {
+  if (!d?.matched || d.partialReason || d.approximateReason || d.rollup) return null
+  return d.matchesCapped ? 'capped' : 'exact'
+}
+
+/** The listed match roots at or under each row (paths below the store root, the rows' own format), from a
+ *  response's `matched` list: exact counts (and the one path) on an `exact` list; on a `capped` one, only a
+ *  lower bound when it lists more than one under the row (one or none listed there says nothing); otherwise
+ *  unknown (`null`). */
+export function rowMatchesOf(matched: readonly { path: string }[] | undefined, list: MatchedList): (row: string) => RowMatches | null {
+  if (!matched || !list) return () => null
+  return row => {
+    let n = 0
+    let one: string | undefined
+    for (const m of matched) if (m.path === row || m.path.startsWith(`${row}/`)) { n++; one = m.path }
+    if (list === 'capped') return n > 1 ? { n, atLeast: true } : null
+    return n === 1 ? { n, one } : { n }
+  }
+}
+
+/** A filtered row's label: the path to its match when it holds exactly one (an exact list) and the drawn chain
+ *  reaches it (cut at the match, never past it), else its own name — with the count when it holds several
+ *  (`· 9 matches`; `· 9+ matches` from a capped list) or one the drawn tree doesn't reach. `segs` are the
+ *  label's segments from the row down (what it opens); `row` is the row's path below the store root. The count
+ *  only ever comes from `m`: the drawn tree (`chainOf`) is capped by pixels, so a lone drawn child says
+ *  nothing about what else matched. */
+export function rowLabel(node: ChainNode, row: string, m: RowMatches | null): { label: string; segs: string[]; count?: number; atLeast?: true } {
+  const own = { label: node.n, segs: [node.n] }
+  if (!m || m.n === 0) return own
+  if (m.atLeast) return m.n > 1 ? { ...own, count: m.n, atLeast: true } : own
+  if (m.n === 1 && m.one != null) {
+    if (m.one === row) return own
+    const segs = [node.n, ...m.one.slice(row.length + 1).split('/')]
+    const chain = chainOf(node).segs
+    if (segs.every((s, i) => chain[i] === s)) return { label: segs.length > 3 ? `${segs[0]}/…/${segs[segs.length - 1]}` : segs.join('/'), segs }
+  }
+  return { ...own, count: m.n }
+}
+
+/** The drawn chain of single children below a node, as the treemap tile labels a collapsed chain (`a/b/c`, or
+ *  `a/…/z` past three). Drawn only: a table row's label takes it only up to its one exact match (`rowLabel`). */
 export interface ChainNode { n: string; c?: ChainNode[] }
 export function chainOf(node: ChainNode): { label: string; segs: string[] } {
   const segs = [node.n]

@@ -2,7 +2,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TreeNode } from './types'
-import type { CoverItem } from './filterCover'
+import { type CoverItem, type RowMatches, rowMatchesOf } from './filterCover'
 
 // The table's own logic under a filter, with its surroundings stubbed: the selection is preset (`selected`),
 // and the assign / trash controls render what they would send.
@@ -55,8 +55,10 @@ const src = (items: CoverItem[]) => ({
   key: 'K', prefetch: async () => {},
   resolve: async (row: string) => { asked.push(row); return { items: items.filter(i => i.path === row || i.path.startsWith(`${row}/`)), complete: true } },
 })
-const render = (filter?: ReturnType<typeof src>) => renderToStaticMarkup(createElement(ChildrenTable, {
-  node, segs: [], scheme: 'gs://', ownerIdx: { assignmentOf: () => null } as never, onOpen: () => {}, onOpenObject: () => {}, filter,
+/** Each row's exact match roots: the response's full list (every root of `items`). */
+const exact = rowMatchesOf(items, 'exact')
+const render = (filter?: ReturnType<typeof src>, rowMatches: ((row: string) => RowMatches | null) | undefined = exact) => renderToStaticMarkup(createElement(ChildrenTable, {
+  node, segs: [], scheme: 'gs://', ownerIdx: { assignmentOf: () => null } as never, onOpen: () => {}, onOpenObject: () => {}, filter, rowMatches,
 }))
 const rows = (html: string) => [...(html.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? '').matchAll(/<tr[^>]*>(.*?)<\/tr>/g)].map(([, r]) => r)
 const name = (row: string) => /<td class="prefix">(.*?)<\/td>/.exec(row)![1].replace(/<[^>]+>/g, '')
@@ -68,12 +70,26 @@ const actionsCell = (row: string) => /<td class="actions">(.*)<\/td>$/.exec(row)
 beforeEach(() => { selected.clear(); staged.length = 0; acts.length = 0; asked.length = 0 })
 
 describe('the children table under a filter', () => {
-  it('a row holding one match shows the path to it (as its tile), others their own name', () => {
+  it('a row holding exactly one match shows the path to it (as its tile); several: its name and how many; none: its name', () => {
     // At the root no name is elided, so no row carries the full-path tooltip (it would repeat the cell).
+    // `marin-us-central1` draws one chain (`show`) but holds 3 matches: never labelled as `…/show`.
     expect(rows(render(src(items))).map(r => [name(r), tip(r)])).toEqual([
-      ['marin-us-central1/show', undefined],
+      ['marin-us-central1 · 3 matches', undefined],
       ['marin-eu-west4/tomat', undefined],
       ['bkt-none', undefined],
+    ])
+  })
+  it('the label never rests on the drawn tree: a lone drawn child with more matches undrawn (gcs `marin-us-east5`), or an unknown count, is the row\'s name', () => {
+    // As on gcs prod: `marin-eu-west4` drew only `tomat`, but held 9 match roots.
+    const nine = (row: string) => (row === 'marin-eu-west4' ? { n: 9 } : exact(row))
+    const label = (html: string) => rows(html).map(r => /<td class="prefix">(.*?)<\/td>/.exec(r)![1].replace(/<\/?a[^>]*>/g, ''))
+    // A capped list (gcs prod's fleet root): a lower bound for a row listing several; one listed says nothing.
+    const capped = rowMatchesOf([...items, { path: 'marin-eu-west4/x.parquet' }], 'capped')
+    expect([label(render(src(items), nine)), label(render(src(items), () => null)), label(render(src(items))), label(render(src(items), capped))]).toEqual([
+      ['marin-us-central1<span class="row-n"> · 3 matches</span>', 'marin-eu-west4<span class="row-n"> · 9 matches</span>', 'bkt-none'],
+      ['marin-us-central1', 'marin-eu-west4', 'bkt-none'],
+      ['marin-us-central1<span class="row-n"> · 3 matches</span>', 'marin-eu-west4/tomat', 'bkt-none'],
+      ['marin-us-central1<span class="row-n"> · 3+ matches</span>', 'marin-eu-west4<span class="row-n"> · 2+ matches</span>', 'bkt-none'],
     ])
   })
   it('every row offers its actions at once over its own path (no "list" step), and every row is selectable', () => {
