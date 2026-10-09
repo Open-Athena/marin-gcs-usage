@@ -9,6 +9,7 @@ import { boolParam, useUrlState } from 'use-prms'
 import { shortName } from './UserChip'
 import { useStore, useStoreFetch } from './store'
 import { useUnits } from './units'
+import { fmtBytesStep } from './types'
 import { Skeleton } from './Busy'
 import { bandCallouts, pickAnnotations, relativeSeries, stackSeries, unitTicks, youngestGenesis } from './series'
 import { DAY, fmtScan, scanTime } from './scan'
@@ -172,7 +173,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   /** The page's current diff window (scan ids), shaded on the chart. */
   window?: [string, string]
 }) {
-  const { fmtBytes, units } = useUnits()
+  const { fmtBytes, units, suffixB } = useUnits()
   const [fitP, setFitP] = useUrlState('fit', boolParam)
   const yFrom: YFrom = fitP ? 'data' : 'zero'
   const setYFrom = (y: YFrom) => setFitP(y === 'data')
@@ -286,7 +287,21 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   // annotate the total (stacked: each band's own height too, inside the band;
   // lines in bytes: nothing — the total isn't drawn and six lines' worth of
   // labels would be noise). Picking is a pure helper (`pickAnnotations`, tested).
-  const fmtY = values === 'pct' ? fmtPct : relative ? (y: number) => signed(y, fmtBytes(Math.abs(y))) : fmtBytes
+  const yTickValues = useMemo(() => {
+    if (values === 'pct') return undefined // the chart's own nice ticks, formatted as %
+    const ys = series.filter(s => s.plot !== false).flatMap(s => s.points.map(p => p.y))
+    if (!ys.length) return undefined
+    const max = Math.max(0, ...ys)
+    const min = relative ? Math.min(0, ...ys) : yFrom === 'data' ? Math.min(...ys) : 0
+    // Fit mode pads 5% each side (TimeSeries), so tick that slightly wider range.
+    const pad = yFrom === 'data' ? (max - min) * 0.05 : 0
+    return unitTicks(relative ? min - pad : Math.max(0, min - pad), max + pad, units === 'iec' ? 1024 : 1000)
+  }, [series, units, yFrom, values, relative])
+  // A fitted axis can span a sliver of a large total: its labels (ticks,
+  // tooltip, callouts) carry enough decimals to tell the ticks apart.
+  const tickStep = yTickValues && yTickValues.length > 1 ? yTickValues[1] - yTickValues[0] : 0
+  const fmtFit = (y: number) => fmtBytesStep(y, tickStep, units, suffixB)
+  const fmtY = values === 'pct' ? fmtPct : relative ? (y: number) => signed(y, fmtBytes(Math.abs(y))) : yFrom === 'data' ? fmtFit : fmtBytes
   const annotations = useMemo((): Annotation[] => {
     const winX = win ? [xOfScan(win[0]), xOfScan(win[1])] as [number, number] : undefined
     const radius = extrema ? radiusDays * DAY : undefined
@@ -311,16 +326,6 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
     return out
   }, [series, relTotal, roots, stacked, relative, win, extrema, radiusDays, floorPct, fmtY, fmtBytes])
 
-  const yTickValues = useMemo(() => {
-    if (values === 'pct') return undefined // the chart's own nice ticks, formatted as %
-    const ys = series.filter(s => s.plot !== false).flatMap(s => s.points.map(p => p.y))
-    if (!ys.length) return undefined
-    const max = Math.max(0, ...ys)
-    const min = relative ? Math.min(0, ...ys) : yFrom === 'data' ? Math.min(...ys) : 0
-    // Fit mode pads 5% each side (TimeSeries), so tick that slightly wider range.
-    const pad = yFrom === 'data' ? (max - min) * 0.05 : 0
-    return unitTicks(relative ? min - pad : Math.max(0, min - pad), max + pad, units === 'iec' ? 1024 : 1000)
-  }, [series, units, yFrom, values, relative])
 
   const firstX = total[0]?.x
   if (scans.length < 2) return null
