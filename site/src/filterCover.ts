@@ -8,6 +8,7 @@ import { HttpError, type PlanItem } from './batches'
 export { ASSIGN_CHUNK, assignInBatches, chunks, STAGE_CHUNK, stageInBatches } from './batches'
 export { actionTargets, type Resolved, rowItems, type Targets, targetsText } from './coverTargets'
 import { type Resolved, rowItems } from './coverTargets'
+import { slog } from './sessionLogBoot'
 
 export type { CoverItem } from '../functions/_lib/cover'
 
@@ -79,8 +80,13 @@ export const fetchCover = (qc: QueryClient, fetcher: Fetcher, storeKey: string, 
 
 /** Start the cover for `a` on the viewer's intent (hover, focus): a nop when cached or in flight. Never throws
  *  (a failure is the click's to report). */
-export const prefetchCover = (qc: QueryClient, fetcher: Fetcher, storeKey: string, a: CoverArgs): Promise<void> =>
-  qc.prefetchQuery(coverQuery(fetcher, storeKey, { ...a, enabled: true }))
+export function prefetchCover(qc: QueryClient, fetcher: Fetcher, storeKey: string, a: CoverArgs): Promise<void> {
+  const o = coverQuery(fetcher, storeKey, { ...a, enabled: true })
+  // The session log sees the intents that start a fetch, not the repeats that find it cached or in flight.
+  const st = qc.getQueryState(o.queryKey)
+  if (st?.data === undefined && st?.fetchStatus !== 'fetching') slog('prefetch', { w: 'cover', p: a.path, ...(a.date ? { d: a.date } : {}) })
+  return qc.prefetchQuery(o)
+}
 
 /** A table row's matches (`row`: its path below the store root): the view's cover sliced to the row when it
  *  is cached and complete (no request), else the row's own cover (`path=row`) — under the cap even when the

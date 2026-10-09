@@ -1195,6 +1195,7 @@ function AppContent() {
                 onChange={e => setFqDraft(e.target.value)}
                 placeholder={boxSyntax.describe().placeholder}
                 aria-label="Filter tree by path"
+                data-log-input="filter"
                 aria-invalid={!!fErr}
                 size={30}
               />

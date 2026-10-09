@@ -2783,3 +2783,40 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
   .share-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; .err { color: var(--danger, #e05050); font-size: 12px; } }
   .share-url { display: block; margin-top: 10px; font-size: 11px; word-break: break-all; opacity: 0.8; }
 }
+
+// /admin/sessions (specs/session-log.md): the session list, the strip chart and the timeline.
+.sessions-page {
+  max-width: 1200px;
+  .err { color: var(--danger); }
+  .dim { color: var(--ink-3); }
+  .sessions-filters {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0; font-size: 13px;
+    input:not([type]) , input[type="date"] { font: inherit; padding: 3px 6px; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 4px; }
+  }
+  .session-meta { font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+  table.sessions {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .num { text-align: right; white-space: nowrap; }
+    tr.has-err td { background: color-mix(in srgb, var(--danger) 9%, transparent); }
+    tr.load td { border-top: 2px solid var(--ink-3); }
+    tr.focused td { outline: 2px solid var(--s1); outline-offset: -2px; }
+    td.ev { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  }
+  .lane-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; background: var(--lane); }
+  .lane-nav { --lane: var(--s1); }
+  .lane-input { --lane: var(--s5); }
+  .lane-api { --lane: var(--other); }
+  .lane-error { --lane: var(--danger); }
+  .lane-page { --lane: var(--s7); }
+  .session-strip {
+    margin: 12px 0;
+    svg { display: block; width: 100%; height: 70px; cursor: pointer; }
+    .lane-bg { fill: var(--panel); &:nth-child(even) { fill: var(--surface); } }
+    .tick { stroke: var(--lane); stroke-width: 1.5; &.err { stroke: var(--danger); stroke-width: 2.5; } &.hot { stroke: var(--ink); stroke-width: 3; } }
+    figcaption { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--ink-2); margin-top: 4px; }
+    .lanes { display: inline-flex; gap: 12px; flex-wrap: wrap; }
+  }
+}
+// The privacy notice while the session log is on (About, /privacy).
+.session-log-note { font-size: 12.5px; color: var(--ink-2); border-left: 3px solid var(--s4); padding: 4px 10px; }

@@ -33,7 +33,7 @@ Each batch carries a per-tab session id (`sid`, in `sessionStorage`, so it survi
 | `console` | `msg` | `console.error` |
 | `viewport` | `w`, `h`, `dpr` | boot and `resize` (debounced 500 ms) |
 | `vis` | `s` (`visible` / `hidden`) | `visibilitychange` |
-| `dropped` | `n` | buffer overflow (oldest events dropped) |
+| `dropped` | `n` | events past the per-load cap |
 
 ### What is not recorded
 
@@ -47,7 +47,7 @@ Strings are truncated at log time (labels 60, filter 200, URLs 300, messages 300
 ## Transport
 
 - Client-side buffer; flush every 10 s, when 200 events accumulate, on `visibilitychange → hidden`, and on `pagehide`. Interval flushes use `fetch(…, {keepalive: true})` (through the original, unwrapped `fetch`: the logger never logs itself); hide/pagehide use `navigator.sendBeacon`. Nothing awaits a flush and failures are dropped, never retried: the log can lose a batch, it can't slow the app.
-- Caps: a batch's body ≤ 60 000 bytes (split across several posts otherwise; `sendBeacon` / `keepalive` share a 64 KiB in-flight budget), buffer ≤ 1000 events (oldest dropped, counted in a `dropped` event), ≤ 20 000 events per page load.
+- Caps: a batch's body ≤ 60 000 bytes (split across several posts otherwise; `sendBeacon` / `keepalive` share a 64 KiB in-flight budget); the buffer never exceeds 200 (it flushes there); ≤ 20 000 events per page load, past which events are counted, not kept (a `dropped` event per flush).
 - Server: `POST /api/session-log` (`requireViewer`; anonymous `public` viewers are logged with no email on a `PUBLIC_READ` deploy). Body ≤ 64 KiB (413), ≤ 300 events (413), schema-validated (400), per session ≤ 20 000 events (429). Replies 204. A response of 503 (off / expired) stops the client.
 - Boot: `GET /api/session-log` (`no-store`) answers `{enabled, until}`; `enabled` only while the window is open *and* the request has a viewer identity, so the sign-in page never logs. While off it costs that one request per page load; the logger itself is a lazily imported chunk, loaded only when on. Errors raised before the chunk arrives are held (≤ 20) and replayed into the log.
 
@@ -97,7 +97,11 @@ Discord draft (for the announcement):
 
 ## Overhead
 
-Measured (see the commit): the logger is a separate chunk loaded only when on; the main bundle grows by the boot shim only. Per-event CPU: `log()` is an object push plus truncation (measured in `sessionLog.test.ts`'s budget check); JSON serialization happens once per flush.
+Measured on the build (`pnpm -C site build`, vs. the spec commit):
+
+- Main chunk: +2.7 KB raw / +1.2 KB gzip (the boot shim, the notice, the lazy route); CSS +2.4 KB / +0.4 KB gzip. The logger (`sessionLog-*.js`, 7.7 KB / 3.5 KB gzip) loads only while on; the viewer (`SessionsPage-*.js`, 9.9 KB / 3.9 KB gzip) only on `/admin/sessions`.
+- Off: one `GET /api/session-log` per page load, nothing else.
+- On: `log()` ≈ 0.2 µs per event including its share of the per-flush serialization (node, M-series laptop); a wrapped `fetch` adds ≈ 1.7 µs per request. `sessionLog.test.ts` keeps a loose budget check (< 20 µs/event).
 
 ## Enable (gcs)
 
