@@ -779,8 +779,6 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     const readRoots = [...roots].filter(drawn).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
       .map(r => ({ path: r, depth: depthF.get(r)! }))
     const loose = looseThreshold(T, atten, readRoots.map(r => r.depth))
-    // The forest's rows: Σ n_desc over the roots read (null = a root without it).
-    const forestRows = rootHit ? nDesc : readRoots.reduce<number | null>((n, r) => { const nd = p1!.all.get(r.path)?.nd; return n == null || nd == null ? null : n + nd }, 0)
     t0 = performance.now()
     // Static roots carry bytes, objects and owners only: each root's own rows (kind, written time,
     // read day, class mix, child counts) come from the `path` sort by point lookups, the heaviest
@@ -803,10 +801,21 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     let rows2: Row[] = []
     let variant: string | undefined
     if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic && readRoots.length) {
-      const got = await readSubtree(env, date, regionIdx, rootRects(readRoots).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q), loose, undefined, forestRows, smallRows, tr)
-      rows2 = got.rows
-      variant = got.variant
-      if (isStore(regionIdx)) tierName = variant
+      // One read per root depth, each at that depth's own threshold (rows are re-tested per root
+      // below, so the kept set is the one-read answer's): one read at the deepest root's threshold
+      // took every shallower root's subtree at a fraction of its own — `tomat`'s four depth-2 dirs at
+      // half their threshold for one depth-3 root. Heaviest first, in turn, so a group two depths
+      // share is fetched once (the reader's group cache).
+      const byDepth = new Map<number, { path: string; depth: number }[]>()
+      for (const r of readRoots) byDepth.set(r.depth, [...(byDepth.get(r.depth) ?? []), r])
+      const groups = [...byDepth.values()].sort((x, y) => y.reduce((n, r) => n + netRoot(r.path).b, 0) - x.reduce((n, r) => n + netRoot(r.path).b, 0))
+      for (const rs of groups) {
+        const nd = rootHit ? nDesc : rs.reduce<number | null>((n, r) => { const d = p1!.all.get(r.path)?.nd; return n == null || d == null ? null : n + d }, 0)
+        const got = await readSubtree(env, date, regionIdx, rootRects(rs).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q), rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr)
+        rows2.push(...got.rows)
+        variant ??= got.variant
+      }
+      if (isStore(regionIdx) && variant) tierName = variant
     }
     tr?.('rows', performance.now() - t0, variant)
     const detailRows = await details
