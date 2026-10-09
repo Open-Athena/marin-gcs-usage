@@ -19,7 +19,7 @@
  *  base catalog's per-bucket cells are the same thing, every bucket kept. */
 import { parquetReadObjects, type FileMetaData, type RowGroup } from 'hyparquet'
 import type { CatalogMeta, Member } from './staticCatalog.js'
-import type { Found, HitSource } from './staticFilter.js'
+import type { Found, HitCache, HitSource } from './staticFilter.js'
 import { type Blobs, cmp, decodeFlat, type FlatSchema, type Hit, type IndexCache, scanMs } from './staticNames.js'
 import { compressors } from './zstd.js'
 
@@ -339,7 +339,9 @@ const HELD = 400_000
 export class DrillSource implements HitSource {
   private held = new Map<string, Promise<DrillAnswer>>()
   private sizes = new Map<string, number>()
-  constructor(readonly drill: Drill, readonly scans: () => Promise<string[]>) {}
+  /** `cache`: roots answers across isolates (the colo's Cache API) — decoding a member's ~80K roots from the
+   *  drill's parquet is seconds of an edge isolate's CPU, each new isolate again. */
+  constructor(readonly drill: Drill, readonly scans: () => Promise<string[]>, readonly cache?: HitCache) {}
 
   /** `t`'s view at `P` (isolate-held). */
   answer(t: string, P: string): Promise<DrillAnswer> {
@@ -362,7 +364,19 @@ export class DrillSource implements HitSource {
 
   async hits(key: string, under: string): Promise<Found | null> {
     const t0 = Date.now()
+    const k = `${key}\0${under}`
+    if (this.cache && !this.held.has(k)) {
+      const hits = await this.cache.get(k)
+      if (hits) {
+        const kind: Kind = [...key].length <= 2 ? 'short' : 'long'
+        const p = Promise.resolve<DrillAnswer>({ source: 'roots', kind, c: key, upper: hits.length, hits, io: newIo() })
+        this.held.set(k, p); this.sizes.set(k, hits.length)
+        return { hits, io: { from: 'drill', source: 'roots', cache: 'colo', ms: Date.now() - t0 }, scans: await this.scans() }
+      }
+    }
+    const fresh = !this.held.has(k)
     const a = await this.answer(key, under)
+    if (fresh && a.source === 'roots' && this.cache) await this.cache.put(k, a.hits).catch(() => {})
     if (a.source === 'plain' || a.source === 'none') return null
     const scans = await this.scans()
     const io = { from: 'drill', source: a.source, kind: a.kind, c: a.c, upper: a.upper, ...a.io, ms: Date.now() - t0 }

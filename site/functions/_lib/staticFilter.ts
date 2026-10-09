@@ -158,7 +158,7 @@ export function drillSource(blobs: Blobs, cache?: Cache): DrillSource {
   const pre = `${STATIC_PREFIX}/${DRILL_DIR}`
   const catalog = new StaticCatalog(blobs, cache ? cacheIndexes(cache, STATIC_PREFIX, 'catalog-v1') : undefined)
   const drill = new Drill(drillBlobs, catalog, cache ? { top: cacheIndexes(cache, pre, 'top-v1'), aliases: cacheIndexes(cache, pre, 'aliases-v2') } : undefined)
-  return new DrillSource(drill, scanList(blobs))
+  return new DrillSource(drill, scanList(blobs), cache ? cacheHits(cache, pre, 'roots-v1') : undefined)
 }
 
 /** A test's store for an env object (in place of the R2 binding's). */
