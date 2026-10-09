@@ -754,10 +754,13 @@ def brute_sql(src: str, version: int, cases: str) -> str:
     match = """CASE c.m WHEN 'start' THEN starts_with(x.l, c.k) AND NOT contains('/' || x.par, '/' || c.k)
         WHEN 'end' THEN ends_with(x.l, c.k) AND NOT contains(x.par || '/', c.k || '/')
         ELSE x.l = c.k AND NOT contains('/' || x.par || '/', '/' || c.k || '/') END"""
-    return f"""WITH x AS (SELECT path, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf FROM read_parquet({q(src)}) WHERE depth >= 1)
-        SELECT c.key, c.P, CASE WHEN c.P = '' THEN split_part(x.path, '/', 1) ELSE split_part(substring(x.path, length(c.P) + 2), '/', 1) END AS child,
-            sum(x.sz)::BIGINT AS b, sum(x.nf)::BIGINT AS o
-        FROM x JOIN {cases} AS c ON (c.P = '' OR starts_with(x.path, c.P || '/')) AND {match}
+    # Each row is matched once per distinct key, then joined to that key's cases (P a prefix).
+    return f"""WITH x AS (SELECT path, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf FROM read_parquet({q(src)}) WHERE depth >= 1),
+        c AS (SELECT DISTINCT key, k, m FROM {cases}),
+        mt AS (SELECT c.key, x.path, x.sz, x.nf FROM x, c WHERE {match})
+        SELECT cs.key, cs.P, CASE WHEN cs.P = '' THEN split_part(mt.path, '/', 1) ELSE split_part(substring(mt.path, length(cs.P) + 2), '/', 1) END AS child,
+            sum(mt.sz)::BIGINT AS b, sum(mt.nf)::BIGINT AS o
+        FROM mt JOIN {cases} AS cs ON cs.key = mt.key AND (cs.P = '' OR starts_with(mt.path, cs.P || '/'))
         GROUP BY ALL"""
 
 
