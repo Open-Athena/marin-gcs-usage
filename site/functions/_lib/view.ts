@@ -1777,8 +1777,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   let floor: number | undefined
   // A diff draws its roots' kinds only (no ages, no classes): the lookups that land by phase 2's end are
   // taken, none waited for (with a deployment's finite `FILTER_DETAILS_MS`; unset waits, as views do).
-  // Its phase 2 runs both sides at once, then the walk's lookups (`FILTER_WALK_MS`): a smaller share each.
-  const wait = { ...(Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}), phase2Ms: Math.min(Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS, FILTER_DIFF_PHASE2_MS) }
+  // Its phase 2 runs both sides at once, then the walk's lookups (`FILTER_WALK_MS`): a smaller share each
+  // (`o.phase2Ms`, a background full run's, overrides).
+  const wait = { ...(Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}), phase2Ms: o.phase2Ms ?? Math.min(Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS, FILTER_DIFF_PHASE2_MS) }
   // Every read of this diff shares one phase-2 gate: a side whose round read nothing in time stops the
   // re-read at the shared floor from paying its budget again.
   const gate: Phase2Gate = o.phase2Gate ?? { dead: false }
