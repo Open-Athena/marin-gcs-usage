@@ -1,0 +1,25 @@
+outs:
+- md5: 23aec8dffa1d4a043000d798b0cc0083
+  size: 186344059
+  hash: md5
+  path: drill-brute.jsonl
+meta:
+  computation:
+    cmd: gcloud storage cp --verbosity=error ../../job/static-names/drill-cases.jsonl
+      drill-answers.jsonl gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/ &&
+      SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-drill-brute-$(date -u +%H%M%S)
+      ../../job/static-names.sh run drill-brute 5 -g 2026-10-08c -d 2026-10-08 -d
+      2026-10-01 -d 2026-09-15 -d 2026-08-15 -d 2026-07-30 -c /gcs/oa-gcs-usage-dvx/static-names/2026-10-08c/verify/drill-cases.jsonl
+      -k /gcs/oa-gcs-usage-dvx/static-names/2026-10-08c/verify/drill-answers.jsonl
+      > /dev/null && gcloud storage cat gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/drill-brute/2026-10-08.jsonl
+      gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/drill-brute/2026-10-01.jsonl
+      gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/drill-brute/2026-09-15.jsonl
+      gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/drill-brute/2026-08-15.jsonl
+      gs://oa-gcs-usage-dvx/static-names/2026-10-08c/verify/drill-brute/2026-07-30.jsonl
+      > drill-brute.jsonl
+    deps:
+      scans.json: 6c08bc2c84a7f155ed1a86b5f183aea7
+      drill-answers.jsonl: ac369a75c02b21f7dc5ac9c18dc57795
+    git_deps:
+      ../../job/static-names/drill-cases.jsonl: a63c3a409d4e8feda646d99147668060879ba8e7
+      ../../cloud/src/dt_cloud/static_roots.py: b60999a7063df6a0af900ec8466ebb38cdf17db2

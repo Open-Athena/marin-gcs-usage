@@ -1,0 +1,19 @@
+outs:
+- md5: 61119f91e097d9a9615bec6462d95c38
+  size: 195244
+  hash: md5
+  path: roots-measure.json
+meta:
+  computation:
+    cmd: SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-roots-measure-$(date -u
+      +%H%M%S) ../../job/static-names.sh run measure 32 -g 2026-10-08c > /dev/null
+      && SPOT=1 MODULE=static_roots JOB_ID=sn-2026-10-08c-roots-measure-short-$(date
+      -u +%H%M%S) ../../job/static-names.sh run measure-short 32 -g 2026-10-08c -n
+      32 > /dev/null && dt-cloud static-names roots measure-report -g 2026-10-08c
+      > roots-measure.json
+    deps:
+      members.json: 5bbed246a8b95487ec3151bad4a625aa
+      suffixes.json: 3472744b97aced097ed9acd99b9cd783
+      cintervals.json: 507b62fa89d4e26f31847040c9c86711
+    git_deps:
+      ../../cloud/src/dt_cloud/static_roots.py: b60999a7063df6a0af900ec8466ebb38cdf17db2
