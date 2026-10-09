@@ -40,6 +40,7 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
+import { liveRows, staticFilterStore, staticKey } from './staticFilter.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -645,6 +646,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     let p1: ReturnType<typeof aggregate> | null = null
     let p1Tier = ''
     let searchCut = false
+    /** Phase 1 came from the static index: its aggregates know bytes, objects and owners only. */
+    let staticRoots = false
     // The search reads the `path` sort (its names' row groups are that
     // sort's); a lens without claims keeps the old read.
     const pathIdx = !tiers.length && !lens ? (sort === 'path' && fine ? fine : withTrace(await openFine(env, date, 'path'), tr)) : null
@@ -657,7 +660,20 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       p1 = { all: new Map([[path, rootAll]]), mine: new Map([[path, rootMine]]), depth: new Map([[path, dP]]) }
       p1Tier = 'root'
     } else {
-      const plan = store && pq ? planPositive(pq) : null
+      // The static name index (`staticFilter.ts`): a single literal's match roots on any scan of its
+      // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
+      const sfs = !lens && !classes ? staticFilterStore(env) : null
+      const skey = sfs ? await staticKey(sfs, pq, [date]) : null
+      const shits = skey ? await sfs!.source.hits(skey, path) : null
+      tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.hits.length}` : skey ? 'declined' : undefined)
+      if (shits) {
+        const rows = liveRows(shits.hits, date)
+        p1 = aggregate(rows)
+        roots = [...p1.depth.keys()].sort()
+        p1Tier = 'static'
+        staticRoots = true
+      }
+      const plan = !shits && store && pq ? planPositive(pq) : null
       const searched = plan ? await searchRoots(env, pathIdx!, query, plan, path, o.searchLimits, `pos:${JSON.stringify(pq)}`) : null
       if (searched) traceSearch('pos', searched)
       // A search cut before it found anything (its heaviest name alone is
@@ -671,18 +687,18 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         noteCoverage(cov, 'partial', found.reason)
       } else if (searched) {
         noteCoverage(cov, 'partial', `the search stopped before finding a match (${searched.reason}); showing a thresholded read`)
-      } else {
+      } else if (!shits) {
         // Phase 1 is a thresholded read: what it can't see, it can't match.
         noteCoverage(cov, 'approximate', lens ? APPROX_LENS : !store || plan ? APPROX_NO_INDEX : APPROX_UNINDEXED)
       }
-      for (const t of found ? [] : tiers) {
+      for (const t of found || shits ? [] : tiers) {
         const rs = await readRows(t.idx, dP + 1, 1e9, pLo, pHi, t === tiers[0] ? undefined : thrAt)
         p1 = aggregate(rs)
         roots = matchRoots(p1.depth.keys(), query, path)
         p1Tier = t.name
         if (roots.length) break
       }
-      const fineIdx = roots.length || found ? null : pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
+      const fineIdx = roots.length || found || shits ? null : pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
       if (fineIdx && !isStore(fineIdx) && rootAll.o > (o.v1ScanObjects ?? V1_FILTER_SCAN_OBJECTS)) noteCoverage(cov, 'approximate', APPROX_V1_TOO_BIG)
       if (fineIdx && (isStore(fineIdx) || rootAll.o <= (o.v1ScanObjects ?? V1_FILTER_SCAN_OBJECTS))) {
         // Every depth: `maxDepth` caps what phase 2 draws, never where
@@ -758,15 +774,42 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // The forest's rows: Σ n_desc over the roots read (null = a root without it).
     const forestRows = rootHit ? nDesc : readRoots.reduce<number | null>((n, r) => { const nd = p1!.all.get(r.path)?.nd; return n == null || nd == null ? null : n + nd }, 0)
     t0 = performance.now()
+    // Static roots carry bytes, objects and owners only: each root's own rows (kind, written time,
+    // read day, class mix, child counts) come from the `path` sort by point lookups, the heaviest
+    // `ROOT_DETAILS` roots, beside phase 2 (one batched read; a batch too wide leaves them plain).
+    // The first paint skips both: the roots alone, exact, from the static read.
+    const firstPaintStatic = staticRoots && !!o.firstPaint
+    const details = staticRoots && !firstPaintStatic ? (async () => {
+      const want = [...roots].sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
+      const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
+      try {
+        const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
+        return (await readAsks(h, want.map(r => ({ depth: depthF.get(r)!, path: r })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: 60 })).rows
+      } catch (e) {
+        if (!/too wide/.test(String((e as Error).message ?? e))) throw e
+        tr?.('details', 0, 'too wide')
+        return []
+      }
+    })() : Promise.resolve([] as Row[])
     let rows2: Row[] = []
     let variant: string | undefined
-    if (!(maxDepth != null && maxDepth <= 0)) {
+    if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic) {
       const got = await readSubtree(env, date, regionIdx, rootRects(readRoots).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q), loose, undefined, forestRows, smallRows, tr)
       rows2 = got.rows
       variant = got.variant
       if (isStore(regionIdx)) tierName = variant
     }
     tr?.('rows', performance.now() - t0, variant)
+    const detailRows = await details
+    if (detailRows.length) {
+      const d = aggregate(detailRows)
+      for (const [r, m] of d.mine) {
+        const a = rootAggOf.get(r)
+        if (!a) continue
+        a.kind = m.kind; a.wts = m.wts; a.wb = m.wb; a.a = m.a; a.cb = m.cb; a.nc = m.nc; a.nd = m.nd
+      }
+      tr?.('details', performance.now() - t0, String(d.mine.size))
+    }
     const p2 = aggregate(rows2)
     // Excluded paths only phase 2 saw (without the index, below phase 1's read).
     if (negP) {
@@ -921,7 +964,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   }
   let matches: string[] | undefined
   if (query) {
-    noteCoverage(cov, 'approximate', APPROX_LENS)
+    // Only a claims fold filters a partial read; a view root the query matches is matched whole.
+    if (ol) noteCoverage(cov, 'approximate', APPROX_LENS)
     const f = nameFilter(
       { path, agg: rootAgg },
       new Map([...aggs].map(([p, agg]) => [p, { depth: aggDepth.get(p)!, agg }])),
@@ -971,6 +1015,8 @@ async function readRootAllRows(env: Env, date: string, path: string, dP: number)
 /** Claimed regions read (largest first) per lens view; the rest are
  * manifest-valued leaves. Two span queries' worth of rects. */
 const REGION_READS = 24
+/** Static match roots whose own rows (kind, ages, classes) are looked up per view, heaviest first. */
+const ROOT_DETAILS = 240
 
 const parentOf = (p: string): string => {
   const cut = p.lastIndexOf('/')
@@ -1126,7 +1172,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   t0 = performance.now()
   // A depth-capped walk only ever consults rows down to that depth, so the
   // views read just those bands (`depth=1`: two groups instead of ~25 a side).
-  const cap = o.depth != null ? { maxDepth: o.depth } : {}
+  // A filtered summary needs only the match roots' totals (phase 1), not the forest under them — unless
+  // exclusions, which phase 2 also finds.
+  const cap = o.summary && query && !query.neg ? { maxDepth: 0 } : o.depth != null ? { maxDepth: o.depth } : {}
   // Either side's coverage notes, merged (a re-read below adds the same ones).
   const cov: Coverage = {}
   let [va, vb] = await Promise.all([

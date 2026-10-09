@@ -1238,6 +1238,7 @@ function AppContent() {
         scopeLabel={store.rootLabel}
         paths={matchedRoots}
         filterLabel={fq ?? undefined}
+        filterQs={fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : undefined}
         scans={scans} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}

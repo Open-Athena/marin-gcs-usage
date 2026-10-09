@@ -70,6 +70,11 @@ export interface Env {
   /** The path filter's default syntax (`q=` without `qs=`; `querySyntax.ts`
    *  ids). Mirrors the client's `Store.querySyntax`. Unset = `simple`. */
   QUERY_SYNTAX?: string
+  /** `1`: a single-literal `q=` is answered from the static name index on `INDEX_R2`
+   *  (`_lib/staticFilter.ts`) on every scan of its generation. */
+  FILTER_STATIC?: string
+  /** Worker-served indexes (the static name index's suffix shards and catalog). */
+  INDEX_R2?: R2Bucket
   STORE_ACCESS_KEY_ID?: string
   STORE_SECRET_ACCESS_KEY?: string
   /** Global second cache tier behind the colo cache (`_lib/edgeCache.ts`). */

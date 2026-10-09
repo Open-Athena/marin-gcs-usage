@@ -252,6 +252,11 @@ export function scanMs(id: string): number {
 export type Totals = Record<string, [bigint, bigint]>
 export interface Answer { rows_read: number; rows_matching: number; answers: Record<string, Totals> }
 
+/** One first hit: a version of a `(path, usr)` slice whose lowercase name contains the key and whose
+ *  lowercase parent does not (depth ≥ 1, deduped by `(path, usr, vf)`), live on `[vf, vt)` (epoch ms). Only
+ *  liveness is left to decide per date. */
+export interface Hit { path: string; depth: number; usr: string; vf: number; vt: number; size: bigint; n: bigint }
+
 /** The first-hit fold (`Reader.answer`), fed one decoded row group at a time so only first hits are held.
  *  Everything but liveness is decided once per row: the suffix and name match, depth, the `(path, usr, vf)`
  *  dedup (a version's rows whose suffix starts with the key are its occurrences of the key, so only a name
@@ -260,10 +265,8 @@ export interface Answer { rows_read: number; rows_matching: number; answers: Rec
 export class FirstHits {
   rows_read = 0
   rows_matching = 0
+  readonly hits: Hit[] = []
   private seen = new Set<string>()
-  private buckets: string[] = []
-  private bucketOf = new Map<string, number>()
-  private hit: { b: number; vf: bigint; vt: bigint; size: bigint; n: bigint }[] = []
   constructor(readonly key: string) {}
   add(cols: SxColumns): void {
     const key = this.key
@@ -281,21 +284,20 @@ export class FirstHits {
         this.seen.add(k)
       }
       if ((slash < 0 ? '' : p.slice(0, slash)).toLowerCase().includes(key)) continue
-      const first = p.indexOf('/'), bucket = first < 0 ? p : p.slice(0, first)
-      let b = this.bucketOf.get(bucket)
-      if (b === undefined) { b = this.buckets.length; this.buckets.push(bucket); this.bucketOf.set(bucket, b) }
-      this.hit.push({ b, vf: cols.vf[i], vt: cols.vt[i], size: cols.size[i], n: cols.n_files[i] })
+      this.hits.push({ path: p, depth: cols.depth[i], usr: cols.usr[i], vf: Number(cols.vf[i]), vt: Number(cols.vt[i]), size: cols.size[i], n: cols.n_files[i] })
     }
   }
   answer(dates: string[]): Answer {
     const answers: Record<string, Totals> = {}
     for (const d of dates) {
-      const D = BigInt(scanMs(d)), sums: [bigint, bigint][] = this.buckets.map(() => [0n, 0n]), live = this.buckets.map(() => false)
-      for (const h of this.hit) {
+      const D = scanMs(d), sums = new Map<string, [bigint, bigint]>()
+      for (const h of this.hits) {
         if (!(h.vf <= D && D < h.vt)) continue
-        sums[h.b][0] += h.size; sums[h.b][1] += h.n; live[h.b] = true
+        const first = h.path.indexOf('/'), bucket = first < 0 ? h.path : h.path.slice(0, first)
+        const t = sums.get(bucket)
+        if (t) { t[0] += h.size; t[1] += h.n } else sums.set(bucket, [h.size, h.n])
       }
-      answers[d] = Object.fromEntries(this.buckets.map((name, b) => [name, b] as const).filter(([, b]) => live[b]).sort(([x], [y]) => x < y ? -1 : x > y ? 1 : 0).map(([name, b]) => [name, sums[b]]))
+      answers[d] = Object.fromEntries([...sums].sort(([x], [y]) => x < y ? -1 : x > y ? 1 : 0))
     }
     return { rows_read: this.rows_read, rows_matching: this.rows_matching, answers }
   }
@@ -366,23 +368,23 @@ export class StaticNames {
     return { shard, idx, a, b, rows }
   }
 
-  /** Answer `key` (lowercased, ≥ 3 characters) on each date; `maxRows` refuses (null) a range above it
-   *  before any data is fetched. */
-  async answer(key: string, dates: string[], maxRows = Infinity): Promise<{ io: Io; answer: Answer | null }> {
+  /** `key`'s first hits (lowercased, ≥ 3 characters): its range read once and folded; `maxRows` refuses
+   *  (null) a range above it before any data is fetched. */
+  async read(key: string, maxRows = Infinity): Promise<{ io: Io; fold: FirstHits | null }> {
     const io: Io = { shard: null, groups: 0, bytes: 0, rows_read: 0, rows_matching: 0, index: 'none', ms: {} }
     let t = await this.clock()
     const lap = async (name: string) => { const now = await this.clock(); io.ms[name] = now - t; t = now }
     const ext = await this.extent(key, io)
     await lap('index')
-    if (!ext || ext.a === ext.b) return { io, answer: { rows_read: 0, rows_matching: 0, answers: Object.fromEntries(dates.map(d => [d, {}])) } }
+    const fold = new FirstHits(key)
+    if (!ext || ext.a === ext.b) return { io, fold }
     io.groups = ext.b - ext.a
-    if (ext.rows > maxRows) { io.rows_read = ext.rows; return { io, answer: null } }
+    if (ext.rows > maxRows) { io.rows_read = ext.rows; return { io, fold: null } }
     const [start, end] = groupSpan(ext.idx, ext.a, ext.b)
     const buf = await this.blobs.range(shardFile(ext.shard.i), start, end - start)
     io.bytes = buf.byteLength
     await lap('fetch')
     // One group at a time: peak memory is one group's columns plus the first hits, not the whole range.
-    const fold = new FirstHits(key)
     let decode = 0
     for (let g = ext.a; g < ext.b; g++) {
       const t1 = await this.clock()
@@ -394,10 +396,19 @@ export class StaticNames {
     await lap('decode')
     io.ms.filter = io.ms.decode - decode
     io.ms.decode = decode
+    io.rows_read = fold.rows_read
+    io.rows_matching = fold.rows_matching
+    return { io, fold }
+  }
+
+  /** Answer `key` (lowercased, ≥ 3 characters) on each date; `maxRows` refuses (null) a range above it
+   *  before any data is fetched. */
+  async answer(key: string, dates: string[], maxRows = Infinity): Promise<{ io: Io; answer: Answer | null }> {
+    const { io, fold } = await this.read(key, maxRows)
+    if (!fold) return { io, answer: null }
+    const t = await this.clock()
     const answer = fold.answer(dates)
-    await lap('answer')
-    io.rows_read = answer.rows_read
-    io.rows_matching = answer.rows_matching
+    io.ms.answer = await this.clock() - t
     return { io, answer }
   }
 }

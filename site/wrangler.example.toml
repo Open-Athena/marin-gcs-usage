@@ -98,6 +98,7 @@ ROOT_LABEL = "my buckets"                   # the store root's crumb label
 # QUERY_BOX_HOT_L1_URL = "https://catalog.example"  # existing operator-managed VM/tunnel
 # NAME_SUMMARY_STATIC = "1"                 # dated name summaries: below-catalog literals on consolidated scans from the static suffix shards in INDEX_R2 (`_lib/staticNames.ts`)
 # STATIC_MAX_ROWS = "400000"                # the static reader's ceiling on suffix rows per query (default 400K; the catalog threshold bounds it lower)
+# FILTER_STATIC = "1"                       # the map's filter (`q=`): a single literal's match roots on any scan of the static name index's generation, from INDEX_R2 (`_lib/staticFilter.ts`)
 # STATIC_BENCH = "1"                        # dev: `/api/static-bench`, R2 read timings over INDEX_R2
 # [[r2_buckets]]                            # Worker-served indexes (the static name-search shards)
 # binding = "INDEX_R2"
