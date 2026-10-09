@@ -83,11 +83,13 @@ export const RUN_ID_RE = /^\d{4}-\d{2}-\d{2}-p\d+\/\d{8}T\d{6}Z$/
 
 /** The undo job's bash: `sweep undo` looks the run up in D1, refuses past
  * its deadline, restores exactly the generations its `deleted/` log names,
- * and records the outcome (`undo_state`, `deletion_bands.undone_objects`). */
-export const undoScript = (): string => [
+ * and records the outcome (`undo_state`, `deletion_bands.undone_objects`).
+ * `bulk` (opt-in) adds `-B`: whole logged dirs via GCS bulk restore, each
+ * gated by the executor's exactness precheck (the rest per object). */
+export const undoScript = ({ bulk = false }: { bulk?: boolean } = {}): string => [
   'set -euo pipefail',
   EXIT_TRAP,
-  'dt-cloud sweep undo "$TARGET_RUN"',
+  `dt-cloud sweep undo${bulk ? ' -B' : ''} "$TARGET_RUN"`,
 ].join('\n')
 
 export interface SweepJobSpec {

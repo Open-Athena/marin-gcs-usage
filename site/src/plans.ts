@@ -1,4 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { getCurrentScan } from './owners'
 import { DEFAULT_STORE } from './stores'
 import { type DeletionRun, EXEC_CAPS, type ExecCaps, type ExecJob } from './runs'
 
@@ -19,6 +20,8 @@ export interface StageResult {
   covered: string[]
   /** Removed: staged descendants a new prefix now names. */
   absorbed: string[]
+  /** The scan the new items are staged against (null: no scan synced yet). */
+  as_of: string | null
 }
 
 /** One trash gesture: the prefixes it stages and an optional shared memo (the
@@ -37,7 +40,8 @@ export interface PlanSummary {
   created_ts: number
   closed_ts: number | null
 }
-export interface StagedItem { prefix: string; note: string | null; added_by: string; added_ts: number; batch_id: number | null }
+/** `as_of`: the scan the item was staged against (null: staged before `as_of` existed). */
+export interface StagedItem { prefix: string; note: string | null; added_by: string; added_ts: number; batch_id: number | null; as_of: string | null }
 export interface StageBatch { id: number; plan_id: number; note: string | null; created_by: string; created_ts: number }
 /** A stage batch with no items left, and what became of what it staged
  *  (`functions/_lib/plans.ts` `emptiedBatches`). */
@@ -46,6 +50,8 @@ export interface EmptiedBatch extends StageBatch {
   covered: number
   absorbed: { into: number; n: number }[]
   unstaged: number
+  /** Taken out by the real run that deleted them. */
+  deleted: number
 }
 export interface StagedPlan { plan: PlanSummary | null; items: StagedItem[]; batches: StageBatch[]; emptied?: EmptiedBatch[]; runs: DeletionRun[] }
 /** A plan as `GET /api/plans` lists it. */
@@ -77,11 +83,13 @@ async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> 
 
 /** Stage prefixes for deletion (POST /api/plans/stage). Pass canonical
  *  `<scheme>bucket/…/` prefixes (trailing slash) and, optionally, one memo for
- *  the whole gesture. Invalidates the plans query so /staged reflects it. */
+ *  the whole gesture. The gesture is "as of" the scan on screen: the executor
+ *  deletes only objects that scan already had, unchanged. Invalidates the
+ *  plans query so /staged reflects it. */
 export function useStage() {
   const qc = useQueryClient()
   return useMutation<StageResult, Error, StageArgs>({
-    mutationFn: ({ prefixes, note }: StageArgs) => call('/api/plans/stage', 'POST', { prefixes, note: note?.trim() || undefined }),
+    mutationFn: ({ prefixes, note }: StageArgs) => call('/api/plans/stage', 'POST', { prefixes, note: note?.trim() || undefined, as_of: getCurrentScan() }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['plans'] }) },
   })
 }

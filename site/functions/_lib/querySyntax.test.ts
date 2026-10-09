@@ -37,17 +37,22 @@ describe('`simple`: parse table', () => {
   it('nothing to filter by', () => {
     expect(['', '  ', '|', '||', '""'].map(q => simple.parse(q))).toEqual([{ ast: null }, { ast: null }, { ast: null }, { ast: null }, { ast: null }])
   })
-  it('errors: a positive term under 3 characters in a row (exclusions exempt), an invalid `/…/` regex', () => {
-    expect(['gr', 'ckpt gr', 'ckpt|gr', 'a*b*cd', '"ab"', 'ckpt - x', '/a(/', '/[z-a]/'].map(q => simple.parse(q))).toEqual<ParseResult[]>([
+  it('errors: a positive term under 3 characters in a row (exclusions, and a lone literal, exempt), an invalid `/…/` regex', () => {
+    expect(['gr x', 'ckpt gr', 'ckpt|gr', 'a*b*cd', '"ab" "cd"', 'ckpt - x', 'gr -tmp', '/a(/', '/[z-a]/'].map(q => simple.parse(q))).toEqual<ParseResult[]>([
       { error: 'type at least 3 characters (“gr”)', code: 'short-term' },
       { error: 'type at least 3 characters (“gr”)', code: 'short-term' },
       { error: 'type at least 3 characters (“gr”)', code: 'short-term' },
       { error: 'type at least 3 characters (“a*b*cd”)', code: 'short-term' },
       { error: 'type at least 3 characters (“ab”)', code: 'short-term' },
       { error: 'type at least 3 characters (“-”)', code: 'short-term' },
+      { error: 'type at least 3 characters (“gr”)', code: 'short-term' },
       { error: 'invalid regex: Invalid regular expression: /a(/i: Unterminated group', code: 'invalid-regex' },
       { error: 'invalid regex: Invalid regular expression: /[z-a]/i: Range out of order in character class', code: 'invalid-regex' },
     ])
+  })
+  it('a lone literal has no minimum (the static drilldown answers it): one or two characters, quoted or not', () => {
+    expect(['gr', '"ab"', '.', 'A', ' x '].map(q => simple.parse(q))).toEqual<ParseResult[]>(
+      [[sub('gr')], [sub('ab')], [sub('.')], [sub('a')], [sub('x')]].map(t => ({ ast: { alts: [t], neg: [] } })))
   })
   it('no minimum in the `/…/` fallback', () => {
     expect(simple.parse('/gr/')).toEqual({ ast: { alts: [[re('gr')]], neg: [] } })
@@ -90,7 +95,7 @@ describe('the registry', () => {
   })
   it('`parseAst` throws a typed parse error', () => {
     const codeOf = (q: string) => { try { parseAst(q); return null } catch (e) { return [(e as QueryError).code, (e as Error).message] } }
-    expect([codeOf('/a(/'), codeOf('gr'), codeOf('ttl')]).toEqual([
+    expect([codeOf('/a(/'), codeOf('gr x'), codeOf('ttl')]).toEqual([
       ['invalid-regex', 'invalid regex: Invalid regular expression: /a(/i: Unterminated group'],
       ['short-term', 'type at least 3 characters (“gr”)'],
       null,

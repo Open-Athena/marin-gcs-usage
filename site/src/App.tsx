@@ -388,7 +388,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}: ${(await r.text()).slice(0, 120)}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; threshold?: number; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -404,8 +404,9 @@ function AppContent() {
   const coarseQs = useQueries({
     queries: subtreePaths.map((p, i) => ({
       queryKey: ['subtree', store.key, asof, p, canW, scopeKey, 'depth1'],
-      // Deepest path only — see `dataFor`; ancestors never use it.
-      enabled: !!asof && i === subtreePaths.length - 1,
+      // Deepest path only — see `dataFor`; ancestors use it only under a filter, where it is the
+      // exact forest of match roots (cheap from the static name index).
+      enabled: !!asof && (i === subtreePaths.length - 1 || !!fq),
       staleTime: Infinity,
       retry: false,
       // Plain view: one depth band. Filtered view: the whole forest from the
@@ -418,7 +419,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string }
+        const j = await r.json() as { tree: TreeNode; tier?: string; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -438,8 +439,20 @@ function AppContent() {
   // arithmetic (`(other)` = parent − Σ kids) negative — its layout then never
   // converges until a consistent tree lands. The previous *rendered* tree is
   // held whole instead, below (`mapTree`).
-  const dataFor = (i: number): TreeNode | null =>
-    subtreeQs[i]?.data?.tree ?? (i === subtreePaths.length - 1 ? coarseQs[i]?.data?.tree ?? null : null)
+  // Under a filter an ancestor may stand in with its first-paint forest, when that forest carries the
+  // next spine segment WITH children (an ancestor of match roots): a drilled deep link then paints
+  // from the cheap reads instead of waiting on every ancestor's full forest.
+  const spineHasKids = (t: TreeNode, i: number): boolean => {
+    const seg = subtreePaths[i + 1]?.split('/').pop()
+    return !!t.c?.some(k => k.n === seg && k.c?.length)
+  }
+  const dataFor = (i: number): TreeNode | null => {
+    const full = subtreeQs[i]?.data?.tree
+    if (full) return full
+    const coarse = coarseQs[i]?.data?.tree ?? null
+    if (i === subtreePaths.length - 1) return coarse
+    return fq && coarse && spineHasKids(coarse, i) ? coarse : null
+  }
   const baseTree: TreeNode | null = dataFor(0)
   // Whether this scan lists objects (a path-store generation, whose leaves
   // can be objects) or is a v1 dir-only index — every response of one scan
@@ -526,17 +539,28 @@ function AppContent() {
   // The filter's match roots (the deepest subtree response carries them);
   // the series sums them per scan (the age chart follows the drill instead —
   // its own per-path index, below).
+  // A heavy literal's view from its rollup (the server's `rollup`): its cells are children, not match
+  // roots, and the series is the query's own sum per scan (`queryOnly`).
+  const fRollup = useMemo(() => {
+    if (!fq) return false
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
+    return !!(d as { rollup?: unknown } | undefined)?.rollup
+  }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const matchedRoots = useMemo((): string[] | undefined => {
     if (!fq) return undefined
-    const m = subtreeQs[subtreeQs.length - 1]?.data?.matched ?? subtreeQs[0]?.data?.matched
-    return m?.map(x => x.path)
+    // The first paint carries the same roots (the full read adds only what is inside them).
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
+    // A bounded transport list is not a safe predicate for table actions or
+    // a historical series. The map/totals are still exact; those secondary
+    // consumers stay disabled rather than silently using a subset.
+    return d?.matchesTruncated ? undefined : d?.matched?.map(x => x.path)
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
-    const d = subtreeQs[subtreeQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
+    const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, matchesTotal: d.matchesTotal, matchesTruncated: d.matchesTruncated }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
@@ -1113,7 +1137,7 @@ function AppContent() {
           </span>
         )}
         {fq && fMatches.length > 0 && (
-          <BulkBar matches={fMatches} scheme={store.scheme} query={fq} />
+          <BulkBar matches={fMatches} total={fCoverage?.matchesTotal} incomplete={fCoverage?.matchesTruncated} scheme={store.scheme} query={fq} />
         )}
       </SiteNav>
 
@@ -1261,7 +1285,10 @@ function AppContent() {
       <SizeOverTime
         scopeLabel={store.rootLabel}
         paths={matchedRoots}
+        pathsTotal={fCoverage?.matchesTotal}
+        queryOnly={fRollup}
         filterLabel={fq ?? undefined}
+        filterQs={fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : undefined}
         scans={scans} prefix={drillPath}
         user={ownerUser}
         pool={ownerMode === 'unowned' ? 'unowned' : ownerMode === 'owned' ? 'owned' : null}

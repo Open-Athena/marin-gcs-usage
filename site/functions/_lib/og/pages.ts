@@ -7,7 +7,8 @@ import { canonId, loadRegistry } from '../identity.js'
 import { loadLedger } from '../ledger.js'
 import { ownerTotals } from '../ownerTotals.js'
 import { openPlanId } from '../plans.js'
-import { prefixesAt, type PrefixStat } from '../prefixes.js'
+import { type PrefixStat } from '../prefixes.js'
+import { stagedStats } from '../stagedSlack.js'
 import { filterStaged } from '../../../src/stagedFilter.js'
 import { ownerIndex } from '../../../src/ownerIndex.js'
 import { type CardData, type CardTile, type Grid, fmtB } from './card.js'
@@ -110,10 +111,11 @@ export async function stagedCard(env: Env, site: Site, title: string, params: Re
   if (!env.DB) return { ...base, subtitle: '', total: '', empty: 'nothing staged' }
   const plan = await openPlanId(env.DB).catch(() => null)
   const rows = plan == null ? [] : (await env.DB.prepare('SELECT prefix, added_by FROM plan_items WHERE plan_id = ?').bind(plan).all<{ prefix: string; added_by: string }>()).results
-  const date = await resolveScan(env, undefined)
-  if (!rows.length || !date) return { ...base, subtitle: plan == null ? '' : `plan #${plan}`, total: '', empty: 'nothing staged' }
-  const [{ stats }, reg, ledger, users] = await Promise.all([
-    prefixesAt(env, date, rows.map(r => r.prefix).slice(0, 1000)),
+  // Every prefix, sized at the latest scan (as the Slack parent's totals are).
+  const at = rows.length ? await stagedStats(env, rows.map(r => r.prefix)) : null
+  if (!rows.length || !at) return { ...base, subtitle: plan == null ? '' : `plan #${plan}`, total: '', empty: 'nothing staged' }
+  const { scan: date, stats } = at
+  const [reg, ledger, users] = await Promise.all([
     regOf(env),
     loadLedger(env).catch(() => ({ ownerRows: [] })),
     scanUsersOf(env, date).catch(() => []),

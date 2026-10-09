@@ -424,13 +424,16 @@ describe('NOT: excluded descendants leave their roots’ totals and the tree', (
     expect(got).toEqual(want)
   })
 
-  it('an excluded path below the pixel budget is still subtracted — only the index finds it', async () => {
+  // Without the index the exclusion is found only where phase 2's read holds it: the root's insides now read
+  // from the `path` sort (level-capped), whose groups carry every row of the range, below the threshold too
+  // (the size sort's read kept only rows over it, and missed this one).
+  it('an excluded path below the pixel budget is still subtracted — the index finds it, and so does a read holding its group', async () => {
     const all = await allRows(PLAIN)
     const size = (p: string) => all.filter(r => r.path === p).reduce((n, r) => n + r.size, 0)
     const o = { w: 1280, h: 800, minArea: 12, atten: 1, path: '', query: parseQuery('bk -notes')! }
     const [a, b] = await Promise.all([buildView(env, { ...o, date: SEARCH }), buildView(env, { ...o, date: PLAIN })])
     expect([a.excluded, a.tree.b]).toEqual([['bk/iris/notes.txt'], size('bk') - 50])
-    expect([b.excluded, b.tree.b]).toEqual([undefined, size('bk')])
+    expect([b.excluded, b.tree.b]).toEqual([['bk/iris/notes.txt'], size('bk') - 50])
     expect([coverage(a), coverage(b)]).toEqual([{}, { approximate: APPROX_NO_INDEX }])
   })
 

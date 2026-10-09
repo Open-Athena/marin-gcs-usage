@@ -2386,9 +2386,9 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
     &:hover { color: var(--ink); }
     svg { width: 11px; height: 11px; }
   }
-  .fold-all { margin-left: auto; display: inline-flex; gap: 4px; }
+  .fold-all { margin-left: auto; display: inline-flex; gap: 4px; button { display: inline-flex; align-items: center; gap: 5px; } }
   .batch-head {
-    .fold { background: none; border: 0; color: var(--ink-2); cursor: pointer; padding: 0 2px; font-size: 13px; &:hover { color: var(--ink); } }
+    .fold { background: none; border: 0; color: var(--ink-2); cursor: pointer; padding: 2px 3px; display: inline-flex; align-items: center; &:hover { color: var(--ink); } }
     .memo { flex-basis: 100%; padding-left: 20px; }
   }
   .stage-batch.folded { margin: 6px 0; }
@@ -2409,7 +2409,14 @@ kbd { font: inherit; font-size: 11px; padding: 0 4px; border: 1px solid var(--li
     .err { color: var(--danger, #e05050); font-size: 12px; }
     .group-by { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   }
-  .staged-actions { display: flex; align-items: center; gap: 12px; margin: 6px 0 10px; font-size: 13px; .sel-all { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; } }
+  // The selection is page-level state: its bar sticks under the top bar while
+  // the batches scroll by, and lets go after the last one.
+  .staged-actions {
+    display: flex; align-items: center; gap: 12px; margin: 6px 0 10px; padding: 6px 0; font-size: 13px;
+    position: sticky; top: var(--topbar-h, 48px); z-index: 3; background: var(--surface); border-bottom: 1px solid var(--line);
+    .sel-all { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  }
+  .staged-settled { margin: 18px 0 6px; > summary { cursor: pointer; font-size: 13px; } }
   .stage-batch { margin: 12px 0 18px; scroll-margin-top: 70px; &:target { outline: 1px solid var(--ink-3); outline-offset: 6px; } }
   .batch-permalink { color: var(--ink-3); font-size: 12px; }
   .batch-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); .memo { color: var(--ink); } }
