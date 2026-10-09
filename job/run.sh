@@ -393,6 +393,26 @@ fi
 cp /tmp/rules.json "/gcs/$DATA/snapshots/rules.json" 2>/dev/null || true
 phase publish
 
+# Static name index (specs/static-append.md): append this scan to the search
+# index on R2 — every per-scan stage, the heavy-literal drill included — before
+# index-sync lists the scan, so it appears already searchable. `-c` first
+# appends any earlier published scan still pending, in scan-id order (a
+# missed day catches up). Bounded and never fatal: past STATIC_NAMES_TIMEOUT or
+# on a failure the scan still publishes (browse and diff work; search says "not
+# available for this scan yet") and the alert says how to resume — every stage
+# skips what's done, so a rerun picks up where this one stopped.
+if [ "${SKIP_STATIC_NAMES:-0}" != "1" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  if R2_ENDPOINT=${R2_ENDPOINT:-https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com} STATIC_NAMES_PROFILE=gcs \
+      timeout "${STATIC_NAMES_TIMEOUT:-90m}" dt-cloud static-names runs add -c "$SNAP_ID"; then
+    phase static-names
+  else
+    rc=$?
+    echo "WARN: static-names runs add failed for $SNAP_ID (exit $rc$([ $rc = 124 ] && echo ', timed out'))" >&2
+    slack_post "⚠️ \`dt-cloud\` $SNAP_ID: the search index append failed (exit $rc$([ $rc = 124 ] && echo ', timed out after '"${STATIC_NAMES_TIMEOUT:-90m}")) — the scan publishes, search says \"not available\" for it. Resume: \`STATIC_NAMES_PROFILE=gcs dt-cloud static-names runs add -c $SNAP_ID\`."
+    phase static-names "failed (exit $rc)"
+  fi
+fi
+
 # Footer-in-D1: sync the path-index parquet footer into the site's D1 so the
 # reader skips the cold-isolate footer parse (specs/done/path-agnostic-serving.md
 # §2.1). Needs CLOUDFLARE_API_TOKEN (D1 write) + CLOUDFLARE_ACCOUNT_ID — set as
