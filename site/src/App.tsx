@@ -391,8 +391,9 @@ function AppContent() {
   const coarseQs = useQueries({
     queries: subtreePaths.map((p, i) => ({
       queryKey: ['subtree', store.key, asof, p, canW, scopeQs, 'depth1'],
-      // Deepest path only — see `dataFor`; ancestors never use it.
-      enabled: !!asof && i === subtreePaths.length - 1,
+      // Deepest path only — see `dataFor`; ancestors use it only under a filter, where it is the
+      // exact forest of match roots (cheap from the static name index).
+      enabled: !!asof && (i === subtreePaths.length - 1 || !!fq),
       staleTime: Infinity,
       retry: false,
       // Plain view: one depth band. Filtered view: the whole forest from the
@@ -425,8 +426,20 @@ function AppContent() {
   // arithmetic (`(other)` = parent − Σ kids) negative — its layout then never
   // converges until a consistent tree lands. The previous *rendered* tree is
   // held whole instead, below (`mapTree`).
-  const dataFor = (i: number): TreeNode | null =>
-    subtreeQs[i]?.data?.tree ?? (i === subtreePaths.length - 1 ? coarseQs[i]?.data?.tree ?? null : null)
+  // Under a filter an ancestor may stand in with its first-paint forest, when that forest carries the
+  // next spine segment WITH children (an ancestor of match roots): a drilled deep link then paints
+  // from the cheap reads instead of waiting on every ancestor's full forest.
+  const spineHasKids = (t: TreeNode, i: number): boolean => {
+    const seg = subtreePaths[i + 1]?.split('/').pop()
+    return !!t.c?.some(k => k.n === seg && k.c?.length)
+  }
+  const dataFor = (i: number): TreeNode | null => {
+    const full = subtreeQs[i]?.data?.tree
+    if (full) return full
+    const coarse = coarseQs[i]?.data?.tree ?? null
+    if (i === subtreePaths.length - 1) return coarse
+    return fq && coarse && spineHasKids(coarse, i) ? coarse : null
+  }
   const baseTree: TreeNode | null = dataFor(0)
   // Whether this scan lists objects (a path-store generation, whose leaves
   // can be objects) or is a v1 dir-only index — every response of one scan

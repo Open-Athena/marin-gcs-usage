@@ -785,7 +785,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // `ROOT_DETAILS` roots, beside phase 2 (one batched read; a batch too wide leaves them plain).
     // The first paint skips both: the roots alone, exact, from the static read.
     const firstPaintStatic = staticRoots && !!o.firstPaint
-    const details = staticRoots && !firstPaintStatic ? (async () => {
+    const details = staticRoots && !firstPaintStatic && !(maxDepth != null && maxDepth <= 0) ? (async () => {
       const want = [...roots].filter(drawn).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
       if (!want.length) return []
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
