@@ -147,7 +147,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   scopeLabel?: string
   /** The page filter's match roots: the series is their sum per scan. */
   paths?: string[]
-  /** Exact count when the server bounded the auxiliary match list. */
+  /** The match roots' exact count (`matchCount.n`): more than `SERIES_MAX_PATHS` asks with the query alone. */
   pathsTotal?: number
   /** The filter's view was a rollup (a heavy literal): `paths` lists only some match roots, so the series
    * is asked for the query alone (the server sums the rollup per scan). */

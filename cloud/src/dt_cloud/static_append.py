@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
 
@@ -208,17 +209,31 @@ def merge_cdeltas(files_oldest_first: list[str], out: Path) -> int:
 # ── 3. Catalogs ────────────────────────────────────────────────────────────
 
 
-def merge_catalogs(tiers: list[Path], out: Path) -> dict:
+def merge_catalogs(tiers: list[Path], out: Path, membership: dict | None = None) -> dict:
     """Tiers' catalogs (oldest first) merged into `out/{cells,index}.parquet` by `pyrmts.runs` on `(q, bucket, vf)`,
     the newest tier's row winning (headers; cells are never duplicated across tiers): the base plus every run is
-    the whole catalog, equal to a rebuild; runs alone, a merged run's catalog."""
+    the whole catalog, equal to a rebuild; runs alone, a merged run's catalog. `membership` (a merged run's: the
+    newest input's): also `out/meta.json`, which the readers require of every tier."""
     from pyrmts.runs import merge_parquets
 
     out.mkdir(parents=True, exist_ok=True)
     stream = merge_parquets([t / "cells.parquet" for t in tiers], ["q", "bucket", "vf"], reduce="newest")
     rows, index = sc.write_cells(stream, out / "cells.parquet")
     pq.write_table(index, out / "index.parquet", compression=CODEC)
-    return {"cells_rows": rows, "row_groups": index.num_rows, "bytes": (out / "cells.parquet").stat().st_size}
+    doc = {"cells_rows": rows, "row_groups": index.num_rows, "bytes": (out / "cells.parquet").stat().st_size}
+    if membership is not None:
+        meta = {**doc, "index_bytes": (out / "index.parquet").stat().st_size, "cell_rg": sc.CELL_RG, "membership": membership}
+        (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
+    return doc
+
+
+#: What every run a manifest lists must hold (the readers' files), checked before the manifest is written.
+RUN_FILES = ("meta.json", "shards.json", "sidecar.parquet", "catalog/meta.json", "catalog/cells.parquet", "catalog/index.parquet")
+
+
+def missing_files(runs: list[dict], exists: Callable[[str], bool]) -> list[str]:
+    """`<run key>/<file>` for every `RUN_FILES` entry a listed run lacks (`exists(key/file)`)."""
+    return [f"{r['key']}/{f}" for r in runs for f in RUN_FILES if not exists(f"{r['key']}/{f}")]
 
 
 def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list[str]], V: int, out: Path, tmp: Path) -> dict:
@@ -338,12 +353,24 @@ class TieredCatalog:
 # ── 4. The binary counter and manifests ────────────────────────────────────
 
 
-def push_run(runs: list[dict], new: dict) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
+#: What a merge carries into the merged run: a run holding anything else (another stage's tier, e.g. the drilldown's
+#: `drill/`) is pinned, never merged, so the merge can't drop what it doesn't know how to merge.
+MERGED_ENTRIES = frozenset({"meta.json", "scans.json", "shards.json", "sx", "sidecar", "sidecar.parquet", "catalog", "cdelta",
+                            "dhist", "verify.json", "terms.txt"})
+
+
+def pinned_runs(runs: list[dict], entries: Callable[[str], set[str]]) -> set[str]:
+    """The keys of `runs` holding an entry a merge would drop (`entries(key)`: the run dir's top-level names)."""
+    return {r["key"] for r in runs if entries(r["key"]) - MERGED_ENTRIES}
+
+
+def push_run(runs: list[dict], new: dict, pinned: set[str] | frozenset[str] = frozenset()) -> tuple[list[dict], list[tuple[list[dict], dict]]]:
     """Add a level-0 run (oldest first) and carry: while the two newest runs share a level, they merge into one a
-    level up. Returns the runs after, and the merges to perform in order (`(inputs, output)`)."""
+    level up — unless either is `pinned` (it holds a tier the merge can't carry), which stops the carry there.
+    Returns the runs after, and the merges to perform in order (`(inputs, output)`)."""
     runs = [*runs, {**new, "level": 0}]
     merges = []
-    while len(runs) >= 2 and runs[-1]["level"] == runs[-2]["level"]:
+    while len(runs) >= 2 and runs[-1]["level"] == runs[-2]["level"] and not {runs[-1]["key"], runs[-2]["key"]} & set(pinned):
         a, b = runs[-2], runs[-1]
         m = {"key": run_key(a["first"], b["last"]), "first": a["first"], "last": b["last"], "level": a["level"] + 1,
              "scans": [*a["scans"], *b["scans"]]}
@@ -615,7 +642,15 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     meta["rows"] = plan["total_rows"]
     if not b.blob(f"{run}/catalog/meta.json").exists():
         raise SystemExit(f"{run}: no catalog yet")
-    after, merges = push_run(runs, {"key": run_key(date, date), "first": date, "last": date, "scans": [date], **meta})
+    def entries(key: str) -> set[str]:
+        it = _gcs().list_blobs(bucket, prefix=f"{prefix}/{key}/", delimiter="/")
+        names = {Path(x.name).name for x in it}
+        return names | {Path(p.rstrip("/")).name for p in it.prefixes}
+
+    pinned = pinned_runs(runs, entries)
+    if pinned:
+        err(f"pinned (not merged: tiers a merge would drop): {sorted(pinned)}")
+    after, merges = push_run(runs, {"key": run_key(date, date), "first": date, "last": date, "scans": [date], **meta}, pinned)
     if dry_run:
         print(json.dumps({"merges": [[[r["key"] for r in ins], m["key"]] for ins, m in merges],
                           "manifest": manifest(gen, [s["id"] for s in base["scans"]], after)}, indent=1))
@@ -627,7 +662,8 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
             outp = Path(tmp) / "merge" / m["key"]
             dirs = [Path(mount) / prefix / r["key"] for r in ins]
             doc = merge_shards(dirs, outp)
-            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog")
+            membership = json.loads((dirs[-1] / "catalog" / "meta.json").read_text())["membership"]
+            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership)
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
             upload_tree(outp, bucket, f"{prefix}/{m['key']}")
             shutil.rmtree(outp)
@@ -639,6 +675,9 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     key = f"{prefix}/manifests/{date}.json"
     if b.blob(key).exists():
         raise SystemExit(f"{key} exists: manifests are never rewritten")
+    # A manifest only after every file of every run it lists exists (the readers need each tier whole).
+    if missing := missing_files(after, lambda k: b.blob(f"{prefix}/{k}").exists()):
+        raise SystemExit(f"not publishing {key}: listed runs lack {missing}")
     b.blob(key).upload_from_string(json.dumps(doc, indent=1) + "\n", if_generation_match=0)
     print(json.dumps(doc, indent=1))
 

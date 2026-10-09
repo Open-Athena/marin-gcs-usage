@@ -31,6 +31,7 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { DEFAULT_SYNTAX, SYNTAXES, syntaxById } from './filterTree'
 import { useFilterCover } from './filterCover'
+import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
 import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
@@ -413,7 +414,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; matches?: string[]; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -444,7 +445,7 @@ function AppContent() {
           { credentials: 'include', signal },
         ))
         if (!r.ok) { pf.fail(); throw new Error(`${r.status}`) }
-        const j = await r.json() as { tree: TreeNode; tier?: string; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; partialReason?: string; approximateReason?: string }
+        const j = await r.json() as MatchFields & { tree: TreeNode; tier?: string; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
       },
@@ -583,14 +584,11 @@ function AppContent() {
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
     return !!(d as { rollup?: unknown } | undefined)?.rollup
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
-  const matchedRoots = useMemo((): string[] | undefined => {
+  const fSeries = useMemo(() => {
     if (!fq) return undefined
     // The first paint carries the same roots (the full read adds only what is inside them).
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    // A bounded transport list is not a safe predicate for table actions or
-    // a historical series. The map/totals are still exact; those secondary
-    // consumers stay disabled rather than silently using a subset.
-    return d?.matchesTruncated ? undefined : d?.matched?.map(x => x.path)
+    return seriesMatches(d)
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   // The same response's completeness: a budget-cut search (`partial`) or a
   // read without the search index (`approximate`) — shown beside the count.
@@ -600,7 +598,7 @@ function AppContent() {
   const fCoverage = useMemo(() => {
     if (!fq) return undefined
     const d = subtreeQs[subtreeQs.length - 1]?.data ?? coarseQs[coarseQs.length - 1]?.data ?? subtreeQs[0]?.data
-    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason, matchesTotal: d.matchesTotal, matchesTruncated: d.matchesTruncated }
+    return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
   // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
@@ -1335,8 +1333,8 @@ function AppContent() {
           chart still hides under any scope. */}
       <SizeOverTime
         scopeLabel={store.rootLabel}
-        paths={matchedRoots}
-        pathsTotal={fCoverage?.matchesTotal}
+        paths={fSeries?.paths}
+        pathsTotal={fSeries?.pathsTotal}
         queryOnly={fRollup}
         filterLabel={fq ?? undefined}
         filterQs={fq ? `&q=${encodeURIComponent(fq)}&qs=${syntax.id}` : undefined}
