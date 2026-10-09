@@ -128,7 +128,7 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
     const request = datedNameRequest(params), key = request.name
     const days = request.from ? [request.from, request.date] : [request.date]
     const [have, meta] = await Promise.all([s.scans(), s.catalog.info()])
-    if (days.some(d => !have.includes(d))) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.' }, 400, privateHeaders)
+    if (days.some(d => !have.includes(d))) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.', code: 'scan-not-indexed' }, 400, privateHeaders)
     const { plan, answers, io } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
     const paths = bucketPaths(env), store_ = logicalStore(env)
     const sides = days.map(date => {

@@ -1,5 +1,6 @@
 import { type Ctx, json, requireViewer } from '../_lib/auth.js'
 import { HotQueryError, privateHeaders } from '../_lib/hotL1.js'
+import { indexedOnly, reject } from '../_lib/indexedOnly.js'
 import { askNameSummary, nameSummaryParams, type NameSummaryEnv } from '../_lib/nameSummary.js'
 
 export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Response> {
@@ -9,6 +10,11 @@ export async function onRequest(ctx: Ctx & { env: NameSummaryEnv }): Promise<Res
   if (ctx.env.QUERY_BOX_NAME_SUMMARY !== '1') return json({ error: 'Name summaries are not enabled.' }, 404, privateHeaders)
   if (ctx.request.method !== 'GET') return json({ error: 'Only GET is supported.' }, 405, { ...privateHeaders, allow: 'GET' })
   if (ctx.env.STORE_KEY !== undefined || ctx.env.STORE_SCOPE !== undefined) return json({ error: 'Name summaries serve the primary frozen index only.' }, 409, privateHeaders)
+  // An indexed-only deployment (`_lib/indexedOnly.ts`): one name literal; `/` is refused with its reason code.
+  if (indexedOnly(ctx.env as { FILTER_INDEXED_ONLY?: string }) && (new URL(ctx.request.url).searchParams.get('name') ?? '').includes('/')) {
+    const r = reject('unsupported-slash')
+    return json({ error: r.message, code: r.code }, 400, privateHeaders)
+  }
   let params: URLSearchParams
   try { params = nameSummaryParams(new URL(ctx.request.url), ctx.env.QUERY_BOX_DATED_NAMES === '1') } catch (error) {
     if (error instanceof HotQueryError) return json({ error: error.message }, 400, privateHeaders)

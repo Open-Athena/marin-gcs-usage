@@ -161,7 +161,7 @@ describe('static dispatch', () => {
 
   it('refuses a scan outside the generation (400) and fails closed (503) when the index is unreadable', async () => {
     const outside = await staticSummary(ENV, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
-    expect([outside.status, await outside.json()]).toEqual([400, { error: 'This scan is not in the static name index. This is not a zero-match result.' }])
+    expect([outside.status, await outside.json()]).toEqual([400, { error: 'This scan is not in the static name index. This is not a zero-match result.', code: 'scan-not-indexed' }])
     const broken: Store = { ...fixtureStore(), catalog: new StaticCatalog({ ...files(), json: async () => { throw new Error('gone') } }) }
     const failed = await staticSummary(ENV, params({ date: '2026-09-01', name: 'foo' }), broken)
     expect([failed.status, failed.headers.get('retry-after'), await failed.json()]).toEqual([503, '1', { error: 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.' }])

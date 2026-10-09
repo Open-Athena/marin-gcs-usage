@@ -73,6 +73,10 @@ export interface Env {
   /** `1`: a single-literal `q=` is answered from the static name index on `INDEX_R2`
    *  (`_lib/staticFilter.ts`) on every scan of its generation. */
   FILTER_STATIC?: string
+  /** `1`: the map's filter accepts only what the static name index answers exactly — one literal substring
+   *  of a name, unscoped, on a scan the index covers (`_lib/indexedOnly.ts`); anything else is a 400 with a
+   *  reason code, never a path-store scan. */
+  FILTER_INDEXED_ONLY?: string
   /** With `FILTER_STATIC`: how long (ms) a filtered view waits past its phase-2 read for the static
    *  roots' own rows (kind, ages, classes) before answering without them; unset = until they land. */
   FILTER_DETAILS_MS?: string

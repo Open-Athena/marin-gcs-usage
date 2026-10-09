@@ -17,7 +17,8 @@ import { pathGens, storeReady, type Lens } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_lib/scope.js'
 import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { staticTag } from '../_lib/staticFilter.js'
+import { indexedGate, staticTag } from '../_lib/staticFilter.js'
+import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
@@ -65,10 +66,16 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
   try {
     qp = queryParam(url.searchParams, ctx.env.QUERY_SYNTAX)
   } catch (e) {
+    // Indexed-only: a form it refuses is refused as such (`a b` is "one term", not "too short").
+    const r = e instanceof QueryError && indexedOnly(ctx.env) ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) : null
+    if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     if (e instanceof QueryError) return new Response(`bad query: ${e.message}`, { status: 400 })
     throw e
   }
   const query = qp.query
+  // An indexed-only deployment: one literal, unscoped (`_lib/indexedOnly.ts`), before auth or any read.
+  const refused = query && indexedOnly(ctx.env) ? rejectQuery(qRaw, url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
+  if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
 
   const gated = await st.time('auth', requireViewer(ctx as never))
   if (gated instanceof Response) return gated
@@ -87,6 +94,11 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
         `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}`,
       storeKey(ctx.env),
     )
+    // …and both scans covered by the static index for this literal (else `scan-not-indexed`).
+    if (query && indexedOnly(ctx.env)) {
+      const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [from, to]))
+      if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
+    }
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return hit
 
@@ -116,6 +128,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !diff.interiors?.late)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
+    if (e instanceof FilterRejected) return new Response(rejectBody(e.reject), { status: 400, headers: { 'content-type': 'application/json' } })
     if (e instanceof LensUnavailable) return new Response('lens index not available for a scan', { status: 409 })
     const msg = String((e as Error).message ?? e)
     if (msg.startsWith('query too wide')) return new Response(msg, { status: 413 })

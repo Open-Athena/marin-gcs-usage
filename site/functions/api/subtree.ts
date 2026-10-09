@@ -17,7 +17,8 @@ import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { parseOwner, queryParam, QueryError, classKey, parseClasses } from '../_lib/scope.js'
 import { hasExtras } from '../_lib/extras.js'
 import { ATTEN_DEFAULT, buildView, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
-import { staticTag } from '../_lib/staticFilter.js'
+import { indexedGate, staticTag } from '../_lib/staticFilter.js'
+import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
@@ -79,10 +80,16 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
   try {
     qp = queryParam(url.searchParams, ctx.env.QUERY_SYNTAX)
   } catch (e) {
+    // Indexed-only: a form it refuses is refused as such (`a b` is "one term", not "too short").
+    const r = e instanceof QueryError && indexedOnly(ctx.env) ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) : null
+    if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
     if (e instanceof QueryError) return new Response(`bad query: ${e.message}`, { status: 400 })
     throw e
   }
   const query = qp.query
+  // An indexed-only deployment: one literal, unscoped (`_lib/indexedOnly.ts`), before auth or any read.
+  const refused = query && indexedOnly(ctx.env) ? rejectQuery(qRaw, url.searchParams.get('qs'), ctx.env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
+  if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
 
   // Data is gated (store-specific scope), like /data/*.
   let id: Identity | null = null
@@ -111,6 +118,11 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
         `&o=${rawOwner ?? ''}&b=${by ?? ''}&D=${depth ?? ''}&cl=${classKey(classes)}&x=${xtra ? 1 : 0}&F=${query && !full ? 0 : 1}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}`,
       storeKey(ctx.env),
     )
+    // …and a scan the static index covers for this literal (else `scan-not-indexed`, not a path-store scan).
+    if (query && indexedOnly(ctx.env)) {
+      const r = await st.time('indexed', indexedGate(ctx.env, query.ast, path, [date]))
+      if (r) return new Response(rejectBody(r), { status: 400, headers: { 'content-type': 'application/json' } })
+    }
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))
     if (hit) return hit
 
@@ -157,6 +169,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
     return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !view.interiors?.late)
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found', { status: 404 })
+    if (e instanceof FilterRejected) return new Response(rejectBody(e.reject), { status: 400, headers: { 'content-type': 'application/json' } })
     // 409 (not 500): a lens index missing for this scan is deterministic —
     // the client falls back instead of retrying forever.
     if (e instanceof LensUnavailable) return new Response('lens index not available for this scan', { status: 409 })

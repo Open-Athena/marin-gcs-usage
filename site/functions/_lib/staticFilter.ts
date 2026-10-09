@@ -27,6 +27,7 @@ import { StaticCatalog } from './staticCatalog.js'
 import { Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
 import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanMs, STATIC_GEN, STATIC_PREFIX } from './staticNames.js'
 import { tiers } from './staticRuns.js'
+import { type FilterReject, reject } from './indexedOnly.js'
 
 export type { Hit } from './staticNames.js'
 export { type Rollup, rollupAt, rollupTotal } from './staticDrill.js'
@@ -146,7 +147,7 @@ export function cacheHits(cache: Cache, prefix = STATIC_PREFIX, version = 'hits-
   }
 }
 
-export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; INDEX_R2?: R2Bucket }
+export type StaticFilterEnv = { FILTER_STATIC?: string; FILTER_STATIC_HEAVY?: string; FILTER_INDEXED_ONLY?: string; INDEX_R2?: R2Bucket }
 
 /** The drilldown over a bucket's generation (`drill/`, the base catalog for the fleet root, the base scans). */
 export function drillSource(blobs: Blobs, cache?: Cache): DrillSource {
@@ -220,4 +221,18 @@ const RESPONSE_V = 4
  *  (so a response never outlives a switch of backend or generation), else ''. */
 export function staticTag(env: StaticFilterEnv, query: { ast?: QueryAst } | undefined): string {
   return staticLiteral(query?.ast) && staticFilterStore(env) ? `${staticFilterStore(env)!.gen}.${RESPONSE_V}` : ''
+}
+
+/** An indexed-only deployment's coverage test (`indexedOnly.ts`): `ast` (one literal, `rejectAst` passed) is
+ *  answered statically under `path` on every one of `dates`, else `scan-not-indexed` — a scan outside the
+ *  generation, or a heavy literal past the drill base. A view root the literal matches is the plain view
+ *  (nothing to search). The answer is held per isolate, so the view's own read reuses it. */
+export async function indexedGate(env: StaticFilterEnv, ast: QueryAst | undefined, path: string, dates: string[]): Promise<FilterReject | null> {
+  const key = staticLiteral(ast)
+  if (!key) return reject('unsupported-terms')
+  if (path.toLowerCase().includes(key)) return null
+  const s = staticFilterStore(env)
+  if (!s || !await staticKey(s, ast, dates)) return reject('scan-not-indexed')
+  const found = await s.source.hits(key, path)
+  return found && covers(found, dates) ? null : reject('scan-not-indexed')
 }
