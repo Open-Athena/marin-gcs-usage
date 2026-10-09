@@ -19,7 +19,7 @@ import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_
 import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
-import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
+import { cacheKeyFor, cacheMatch, cacheStore, keepFor, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
 import { lensParam, ME_UNRESOLVED, resolveLens } from '../_lib/me.js'
 import { askBox, boxFor, boxStatus, type BoxEnv } from '../_lib/queryBox.js'
@@ -127,9 +127,10 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
       ...(query ? { q: qRaw } : {}),
       ...diff,
       threshold: Math.round(diff.threshold),
+      ...(diff.interiors?.late ? { budgetCut: true } : {}),
     })
-    // A phase 2 cut short by its time budget may complete on a retry (the isolate holds the groups it read): not kept.
-    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), !diff.interiors?.late)
+    // A phase 2 cut short by its time budget: kept briefly (`keepFor`, as subtree.ts).
+    return await cacheStore(ctx.env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx), keepFor(diff.interiors))
   } catch (e) {
     if (e instanceof NotFound) return new Response('path not found in either scan', { status: 404 })
     if (e instanceof FilterRejected) return new Response(rejectBody(e.reject), { status: 400, headers: { 'content-type': 'application/json' } })

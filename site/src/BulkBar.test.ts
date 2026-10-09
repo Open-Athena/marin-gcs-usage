@@ -1,12 +1,18 @@
-import { createElement } from 'react'
+import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { applyToggle, BulkBar, caveats } from './BulkBar'
-import { actionTargets, groupItems, type FilterCover, targetsText } from './filterCover'
+import { overCapReason } from '../functions/_lib/cover'
+import { actionTargets, CoverError, groupItems, type FilterCover, targetsText } from './filterCover'
 
 vi.mock('./owners', () => ({ useOwnerMutations: () => ({ post: { error: null } }) }))
 vi.mock('./plans', () => ({ useStage: () => ({ error: null }) }))
 vi.mock('./UserChip', () => ({ allUsers: () => [] }))
+// The tooltip's content rendered inline (the real one mounts it on hover), so the markup pins it.
+vi.mock('./Tooltip', async () => {
+  const { createElement: h } = await import('react')
+  return { Tooltip: ({ content, children }: { content: ReactNode; children: ReactNode }) => h('span', { className: 'tt' }, children, h('span', { className: 'tt-tip' }, content)) }
+})
 vi.mock('./units', () => ({ useUnits: () => ({ fmtBytes: (b: number) => `${b} B` }) }))
 
 // The Adam_Carolla `tomat` shape: every match a file directly in one folder that also holds other files (no
@@ -19,8 +25,8 @@ const cover = (o: Partial<FilterCover> = {}): FilterCover => ({
   items: [{ path: 'marin-eu-west4/tomat', kind: 'dir', b: 50, o: 2, roots: 2 }, ...clips],
   ...o,
 })
-const render = (c: FilterCover, opts: { canAssign?: boolean; canStage?: boolean } = {}) =>
-  renderToStaticMarkup(createElement(BulkBar, { cover: c, scheme: 'gs://', query: 'tomat', canAssign: opts.canAssign ?? true, canStage: opts.canStage ?? true }))
+const render = (c: FilterCover | undefined, opts: { canAssign?: boolean; canStage?: boolean; error?: Error } = {}) =>
+  renderToStaticMarkup(createElement(BulkBar, { cover: c, error: opts.error, scheme: 'gs://', query: 'tomat', canAssign: opts.canAssign ?? true, canStage: opts.canStage ?? true }))
 const text = (html: string) => html.replace(/<[^>]+>/g, '|').split('|').map(s => s.trim()).filter(Boolean)
 
 describe('the bulk bar lists the matches as prefixes, grouped by folder, for review', () => {
@@ -39,13 +45,40 @@ describe('the bulk bar lists the matches as prefixes, grouped by folder, for rev
       'assign to me', 'stage for deletion',
     ])
   })
-  it('an incomplete list says why, in plain words, and offers nothing', () => {
-    expect(text(render(cover({ complete: false, items: [], reason: 'There are too many matches under this folder to list them. Open a folder below to act on its matches.' })))).toEqual([
-      '5 matches:', 'There are too many matches under this folder to list them. Open a folder below to act on its matches.',
-    ])
-  })
   it('nothing to offer a viewer who can neither assign nor stage', () => {
     expect(render(cover(), { canAssign: false, canStage: false })).toBe('')
+  })
+})
+
+// The muted states (over the cap, not all listable, a refused query): the usual summary, the actions disabled
+// with the reason in their tooltip, and no red. Only a real failure (5xx, network) is red.
+describe('over the cap, unlisted or refused: muted; failed: red', () => {
+  const muted = (head: string | null, tip: string, actions = ['assign to me', 'stage for deletion']) =>
+    `<span class="bulkbar">${head ? `<span class="bb-scope">${head}</span>` : ''}<span class="tt"><span class="bb-muted">${actions.map(a =>
+      `<button type="button" class="act ${a === 'assign to me' ? 'assign' : 'stage'}" disabled="">${a}</button>`).join('')}</span><span class="tt-tip"><span class="bb-tip">${tip}</span></span></span></span>`
+  it('over the cap (gcs 10-09 `nemotron`): the normal summary, both actions disabled, the reason muted', () => {
+    const c = cover({ complete: false, items: [], roots: { n: 70_450, b: 718, o: 6_580_000 }, reason: overCapReason(70_390) })
+    expect(render(c)).toBe(muted('70,450 matches · 718 B',
+      'Too many matches to act on at once (70,390); narrow the search or open a folder below. Agents can bulk-assign via the API.'))
+  })
+  it('only the actions the viewer may take', () => {
+    const c = cover({ complete: false, items: [], reason: overCapReason(60_000) })
+    expect(render(c, { canStage: false })).toBe(muted('5 matches · 350 B', overCapReason(60_000), ['assign to me']))
+    expect(render(c, { canAssign: false })).toBe(muted('5 matches · 350 B', overCapReason(60_000), ['stage for deletion']))
+  })
+  it('a list that can\'t be made (a roll-up): the same muted treatment', () => {
+    const reason = 'There are too many matches under this folder to list them. Open a folder below to act on its matches.'
+    expect(render(cover({ complete: false, items: [], reason }))).toBe(muted('5 matches · 350 B', reason))
+  })
+  it('a refused query (4xx): muted, no summary (nothing was listed)', () => {
+    const msg = 'A filter with exclusions can’t be turned into whole folders or files to act on; drop the exclusion to act on the matches.'
+    expect(render(undefined, { error: new CoverError(msg, 400) })).toBe(muted(null, msg))
+  })
+  it('a failure (5xx, or the network): red', () => {
+    expect(render(undefined, { error: new CoverError('filter-cover: 503', 503) })).toBe(
+      '<span class="bulkbar"><span class="bb-warn">Can’t act on the matches: filter-cover: 503</span></span>')
+    expect(render(undefined, { error: new TypeError('Failed to fetch') })).toBe(
+      '<span class="bulkbar"><span class="bb-warn">Can’t act on the matches: Failed to fetch</span></span>')
   })
 })
 
@@ -88,3 +121,16 @@ describe('deselect: a folder\'s worth or one item, and what each action then sen
     ])
   })
 })
+
+describe('the matches are listed on demand', () => {
+  const bar = (p: Record<string, unknown>) => text(renderToStaticMarkup(createElement(BulkBar, { scheme: 'gs://', query: 'tomat', canAssign: true, canStage: true, ...p })))
+  it('not yet asked for: one button that asks (no count, no actions); asked for: the listing, then the bar', () => {
+    expect([bar({ onWant: () => {} }), bar({ loading: true }), bar({ cover: cover() }).slice(0, 2), bar({ onWant: () => {}, canAssign: false, canStage: false })]).toEqual([
+      ['act on the matches…'],
+      ['listing the matches…'],
+      ['5 matches → 1 folder, 3 files · 350 B', 'review'],
+      [],
+    ])
+  })
+})
+
