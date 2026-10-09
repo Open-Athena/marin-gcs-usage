@@ -29,7 +29,7 @@ export const COVER_KIND_GROUPS = 32
 /** Folders collapse at this depth or deeper (2: never a whole bucket). */
 export const COVER_MIN_DEPTH = 2
 /** Bumped when the response's shape changes. */
-const COVER_V = 3
+const COVER_V = 4
 
 type Ctx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
 const jsonRes = (body: unknown, status: number) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })

@@ -2068,8 +2068,9 @@ export const COVER_LOOKUP_GROUPS = 60
 export const COVER_TOTAL_GROUPS = 240
 
 /** Totals and kinds of paths on `date` from the `path` sort (every owner slice summed), by point lookups:
- *  null for a call past `COVER_LOOKUP_GROUPS`, or once the calls together pass `COVER_TOTAL_GROUPS`. */
-export function pathTotals(env: Env, date: string, budget = { call: COVER_LOOKUP_GROUPS, total: COVER_TOTAL_GROUPS }): (paths: string[]) => Promise<Map<string, { b: number; o: number; kind: 'file' | 'dir' }> | null> {
+ *  `'wide'` for a call that would read more than `budget.call` row groups (or than what's left), null once
+ *  the calls together have read `budget.total`. */
+export function pathTotals(env: Env, date: string, budget = { call: COVER_LOOKUP_GROUPS, total: COVER_TOTAL_GROUPS }): (paths: string[]) => Promise<Map<string, { b: number; o: number; kind: 'file' | 'dir' }> | null | 'wide'> {
   let h: Promise<IndexHandle> | undefined
   let used = 0
   return async paths => {
@@ -2080,7 +2081,8 @@ export function pathTotals(env: Env, date: string, budget = { call: COVER_LOOKUP
     try {
       got = await readAsks(await h, paths.map(p => ({ depth: p.split('/').length, path: p })), r => want.has(r.path), { maxGroups: Math.min(budget.call, budget.total - used) })
     } catch (e) {
-      if (/too wide/.test(String((e as Error).message ?? e))) { used = budget.total; return null }
+      // Too wide for this call: nothing was read (the plan stops before any group), so the budget stands.
+      if (/too wide/.test(String((e as Error).message ?? e))) return 'wide'
       throw e
     }
     used += got.groups

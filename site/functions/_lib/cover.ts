@@ -20,8 +20,9 @@ export interface CoverRoot { path: string; b: number; o: number }
 export type Kind = 'file' | 'dir'
 /** A path's total bytes and objects on the scan (every owner slice summed), and what it is. */
 export interface PathTotal { b: number; o: number; kind: Kind }
-/** Totals of `paths` (each a folder or object path below the store root), or null: over the read budget. */
-export type Lookup = (paths: string[]) => Promise<Map<string, PathTotal> | null>
+/** Totals of `paths` (each a folder or object path below the store root); null: the read budget is spent;
+ *  `'wide'`: these paths at once are too wide for one call (fewer may fit). */
+export type Lookup = (paths: string[]) => Promise<Map<string, PathTotal> | null | 'wide'>
 
 export interface CoverItem {
   path: string
@@ -40,6 +41,10 @@ export interface Cover {
   /** Candidate folders left unchecked (a lookup over budget): the cover is exact but may not be minimal. */
   unchecked: number
 }
+
+/** Kind lookups: the fewest paths a too-wide chunk is halved to, and the most calls. */
+export const MIN_KIND_CHUNK = 64
+export const MAX_KIND_CALLS = 24
 
 export const depthOf = (p: string): number => (p === '' ? 0 : p.split('/').length)
 const parentOf = (p: string): string => { const i = p.lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i) }
@@ -79,7 +84,8 @@ export async function coverSet(
   for (const d of [...byDepth.keys()].sort((x, y) => y - x)) {
     const ask = byDepth.get(d)!.filter(a => !notFull.has(a)).sort()
     if (!ask.length) continue
-    const got = stopped ? null : await lookup(ask)
+    const got0 = stopped ? null : await lookup(ask)
+    const got = got0 === 'wide' ? null : got0
     if (!got) { stopped = true; unchecked += ask.length; for (const a of ask) poison(a); continue }
     looked += ask.length
     for (const a of ask) {
@@ -98,10 +104,18 @@ export async function coverSet(
   const ambiguous = roots.filter(r => r.o <= 1 && !outermostFull(r.path)).map(r => r.path)
     .sort((x, y) => depthOf(x) - depthOf(y) || (x < y ? -1 : x > y ? 1 : 0))
   const kinds = new Map<string, PathTotal>()
-  for (let i = 0; i < ambiguous.length; i += kindChunk) {
-    const got = await kindLookup(ambiguous.slice(i, i + kindChunk))
-    if (!got) break
+  // A chunk too wide for one call is halved (down to `MIN_KIND_CHUNK`, past which it is skipped); a spent
+  // budget stops; at most `MAX_KIND_CALLS` calls.
+  for (let i = 0, size = kindChunk, calls = 0; i < ambiguous.length && calls < MAX_KIND_CALLS; calls++) {
+    const got = await kindLookup(ambiguous.slice(i, i + size))
+    if (got === null) break
+    if (got === 'wide') {
+      if (size > MIN_KIND_CHUNK) { size = Math.max(MIN_KIND_CHUNK, size >> 1); continue }
+      i += size
+      continue
+    }
     for (const [p, t] of got) kinds.set(p, t)
+    i += size
   }
   const items = new Map<string, CoverItem>()
   for (const r of roots) {

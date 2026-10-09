@@ -162,6 +162,16 @@ describe('coverSet', () => {
     ])
   })
 
+  it('a kind chunk too wide for one call is halved, not the end of the kinds', async () => {
+    const s: Store = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`b/m${i % 3}/tomat${String(i).padStart(3, '0')}`, 1]).concat([['b/m0/x', 1], ['b/m1/x', 1], ['b/m2/x', 1]]))
+    const t = totals(s)
+    const sizes: number[] = []
+    // A call over 100 paths is too wide; the budget itself never runs out.
+    const look: Lookup = async paths => { sizes.push(paths.length); return paths.length > 100 ? 'wide' : new Map(paths.map(p => [p, t.get(p)!] as const)) }
+    const got = await coverSet(matchRoots(s, 'tomat', ''), '', look, { minDepth: 2, kindChunk: 256 })
+    expect([sizes, got.items.filter(i => i.kind === 'file').length]).toEqual([[3, 256, 128, 64, 64, 64, 64, 44], 300])
+  })
+
   it('over the lookup budget: stays exact, stops collapsing, and leaves unknown kinds unplaced', async () => {
     const roots = matchRoots(FIX, 'tomat', '')
     const got = await coverSet(roots, '', lookupOf(FIX, 3), { minDepth: 2 })
