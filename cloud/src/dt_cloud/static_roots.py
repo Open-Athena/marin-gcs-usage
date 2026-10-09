@@ -777,7 +777,7 @@ def alias_plan_cmd(bucket, gen) -> None:
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-F", "--force", is_flag=True, help="Rebuild (overwrite) shards whose outputs exist (with -o)")
-@option("-K", "--keep", "K", default=1000, type=int, help="Children kept by name per heavy directory (the rest: the remainder)")
+@option("-K", "--keep", "K", default=256, type=int, help="Children kept by name per heavy directory (the rest: the remainder)")
 @option("-l", "--lease", default=5400, type=int, help="Seconds after which another task may take over a claimed, unfinished shard")
 @option("-m", "--mount", required=True, help="Local mount of the bucket (for `catalog/members.parquet`)")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
@@ -926,7 +926,7 @@ def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratc
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX): the first q-group")
-@option("-K", "--keep", "K", default=1000, type=int, help="Children kept by name per heavy directory")
+@option("-K", "--keep", "K", default=256, type=int, help="Children kept by name per heavy directory")
 @option("-m", "--mount", required=True, help="Local mount of the bucket (the scratch bucket mounted beside it)")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-n", "--stride", default=1, type=IntRange(min=1), help="Task i builds q-groups i, i + n, i + 2n, …")
@@ -971,7 +971,7 @@ def short_reduce_cmd(bucket, gen, index, K, mount, mem, stride, threads, R, scra
 @cli.command("index")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
-@option("-K", "--keep", "K", default=1000, type=int, help="The build's -K (recorded)")
+@option("-K", "--keep", "K", default=256, type=int, help="The build's -K (recorded)")
 @option("-R", "--read-rows", "R", default=100_000, type=int, help="The build's -R (recorded)")
 def index_cmd(bucket, gen, K, R) -> None:
     """Concatenate the per-file group indexes into `drill/{long,short}-{roots,rollups}-index.parquet` (`file`
@@ -1140,6 +1140,46 @@ def drill_verify_cmd(ref_jsonl, answers_jsonl) -> None:
     print(json.dumps(report, indent=1))
     if diffs or not pairs:
         raise SystemExit(1)
+
+
+@cli.command("drill-cases")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-g", "--gen", required=True, help="Generation (its `roots-measure/`)")
+@option("-n", "--per-depth", default=2, type=int, help="Directories per (term, depth, heavy|light)")
+@option("-R", "--read-rows", "R", default=100_000, type=int, help="Heavy: more root rows under the directory than this")
+@option("-s", "--shards", help="Long terms: only members of these shards (comma-separated); default all")
+@argument("terms", nargs=-1)
+def drill_cases_cmd(bucket, gen, n, R, shards, terms) -> None:
+    """Verification cases `{q, P}` (JSON lines) for TERMS from the measurement's directory tables: per term and
+    depth, the `-n` largest heavy directories (rollup reads) and the `-n` largest light ones with at least 10K
+    roots (roots reads), deterministic. Short terms read `roots-measure/short/`."""
+    import tempfile
+
+    import duckdb
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}/{MEASURE}"
+    client = storage.Client()
+    want = {int(x) for x in shards.split(",")} if shards else None
+    with tempfile.TemporaryDirectory() as d:
+        for blob in client.list_blobs(bucket, prefix=f"{prefix}/dirs/"):
+            if want is None or int(Path(blob.name).stem[1:]) in want:
+                blob.download_to_filename(f"{d}/{Path(blob.name).name}")
+        (Path(d) / "short").mkdir()
+        for sub in ("dirs", "top"):
+            for blob in client.list_blobs(bucket, prefix=f"{prefix}/short/{sub}/"):
+                blob.download_to_filename(f"{d}/short/{sub}-{Path(blob.name).name}")
+        con = duckdb.connect()
+        con.execute(f"""CREATE TABLE dl AS SELECT q, k, dir, "rows" FROM read_parquet({q(d + '/s*.parquet')})
+            UNION ALL SELECT q, k, dir, "rows" FROM read_parquet({q(d + '/short/dirs-*.parquet')})
+            UNION ALL SELECT q, 1, dir, sum("rows")::BIGINT FROM read_parquet({q(d + '/short/top-*.parquet')}) GROUP BY q, dir""")
+        con.execute("CREATE TABLE t (q VARCHAR)")
+        con.executemany("INSERT INTO t VALUES (?)", [(x.lower(),) for x in terms])
+        rows = con.execute(f"""SELECT q, dir FROM (
+                SELECT q, dir, row_number() OVER (PARTITION BY q, k, "rows" > {R} ORDER BY "rows" DESC, dir) AS r
+                FROM dl SEMI JOIN t USING (q) WHERE "rows" >= 10000) WHERE r <= {n} ORDER BY q, dir""").fetchall()
+    for t_, P in rows:
+        print(json.dumps({"q": t_, "P": P}))
 
 
 if __name__ == "__main__":
