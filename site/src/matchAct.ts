@@ -29,8 +29,13 @@ export function caveats(t: { buckets: number; unknown: number }, action: ActKind
   return out
 }
 
-/** Past this many items a row's action asks first (the bulk bar always asks: it has the review list). */
+/** Past this many items an action asks first, by default (the bulk bar always asks: it has the review list; a
+ *  table row asks past one, `ROW_CONFIRM_OVER`). */
 export const CONFIRM_OVER = 50
+
+/** A table row's action asks before sending more than one item: its label names one path at most, so a click
+ *  must never send more than that without listing what it would send. */
+export const ROW_CONFIRM_OVER = 1
 
 export type ActState =
   | { s: 'idle' }
@@ -62,6 +67,8 @@ export interface ActDeps {
   asOf?: () => string | null | undefined
   /** Ask before every send, not just large ones. */
   alwaysConfirm?: boolean
+  /** Ask past this many items (default `CONFIRM_OVER`). */
+  confirmOver?: number
   /** After anything landed (refresh what shows it). */
   landed?: (kind: ActKind) => void
 }
@@ -82,11 +89,11 @@ export function nothingReason(t: Targets, kind: ActKind): string {
 }
 
 /** What follows a resolve: muted (not all listed, or nothing to send), a confirm, or straight to sending. */
-export function afterResolve(got: Resolved, req: ActReq, d: Pick<ActDeps, 'pick' | 'scheme' | 'alwaysConfirm'>): ActState | { s: 'go'; t: Targets } {
+export function afterResolve(got: Resolved, req: ActReq, d: Pick<ActDeps, 'pick' | 'scheme' | 'alwaysConfirm' | 'confirmOver'>): ActState | { s: 'go'; t: Targets } {
   if (!got.complete) return { s: 'muted', reason: got.reason ?? 'These matches can’t all be listed here; open a folder below to act on its matches.' }
   const t = targetsOf(got, req, d)
   if (!t.items.length) return { s: 'muted', reason: nothingReason(t, req.kind) }
-  if (d.alwaysConfirm || t.items.length > CONFIRM_OVER || (req.kind === 'assign' && bucketsIn(t).length)) return { s: 'confirm', req, got }
+  if (d.alwaysConfirm || t.items.length > (d.confirmOver ?? CONFIRM_OVER) || (req.kind === 'assign' && bucketsIn(t).length)) return { s: 'confirm', req, got }
   return { s: 'go', t }
 }
 
