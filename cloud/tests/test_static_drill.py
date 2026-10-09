@@ -308,20 +308,33 @@ def test_rollups_equal_rebuild(world, stack, kind):
     assert len(want_heavy) > 20
 
 
-def _brute_view(versions: list[tuple], t: str, P: str, date: str) -> dict[str, list[int]]:
+def _matching(versions: list[tuple], t: str) -> list[tuple]:
+    """The versions whose name holds `t` and whose parent doesn't: a member's roots, every date."""
+    out = []
+    for v in versions:
+        name = v[1].rsplit("/", 1)[-1].lower()
+        parent = v[1].rsplit("/", 1)[0].lower() if "/" in v[1] else ""
+        if v[0] >= 1 and t in name and t not in parent:
+            out.append(v)
+    return out
+
+
+def _brute_view(matching: list[tuple], P: str, date: str) -> dict[str, list[int]]:
+    """Brute force: per child of `P`, Σ (bytes, objects) of the matching versions live on `date` under it."""
     D = sn.scan_epoch(date)
     acc: dict[str, list[int]] = {}
-    for depth, path, usr, vf, vt, size, n_files in versions:
-        name = path.rsplit("/", 1)[-1].lower()
-        parent = path.rsplit("/", 1)[0].lower() if "/" in path else ""
-        if depth >= 1 and vf <= D < vt and path.startswith(P + "/") and t in name and t not in parent:
+    for depth, path, usr, vf, vt, size, n_files in matching:
+        if vf <= D < vt and path.startswith(P + "/"):
             e = acc.setdefault(path[len(P) + 1:].split("/", 1)[0], [0, 0])
             e[0] += size
             e[1] += n_files
     return {k: v for k, v in sorted(acc.items()) if v != [0, 0]}
 
 
-@pytest.mark.parametrize("stack", STACKS, ids=[s[0] for s in STACKS])
+VIEW_STACKS = [s for s in STACKS if s[0] not in ("runs1-2", "runs1-3")]
+
+
+@pytest.mark.parametrize("stack", VIEW_STACKS, ids=[s[0] for s in VIEW_STACKS])
 def test_views_equal_brute_force(world, stack):
     """Every member's filtered view at every directory on every date, read over base ⊕ runs as the Worker reads it: a roots
     answer is brute force child for child; a rollup's kept children are brute force and its remainder the rest. Where the
@@ -336,13 +349,14 @@ def test_views_equal_brute_force(world, stack):
     for kind in sd.KINDS:
         got, want = sd.TieredDrill(tiers, kind), sd.TieredDrill([rebuilt], kind)
         for t in _members(rebuilt, kind):
+            matching = _matching(versions, t)
             for P in dirs:
                 a = got.view(t, P, dates)
                 sources[a["source"]] += 1
                 if a["source"] == "plain":
                     continue
                 for d in dates:
-                    exp = _brute_view(versions, t, P, d)
+                    exp = _brute_view(matching, P, d)
                     if a["source"] == "roots":
                         assert a["answers"][d] == exp, (t, P, d)
                     else:

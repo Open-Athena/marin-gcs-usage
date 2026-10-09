@@ -11,10 +11,13 @@ Status: 2026-10-09 appended, verified (175/175 against brute force), on R2 and s
   - the counter never merges a run holding a tier it can't carry (`pinned_runs`, `MERGED_ENTRIES`);
   - a merged run's catalog gets its `meta.json`;
   - `publish` refuses a manifest whose runs lack a reader file (`RUN_FILES`).
+- **Superseded** (`drill-runner`): merges carry `drill/` (`merge_drills` → `merge_tiers`), so the pin rule is replaced by drill parity: `push_run(drilled=…)` merges two runs only when both carry `drill/` or neither does (a drilled run with one without would drop the one's drill: the reader stops at the first run without one), and the merged run is drilled iff its inputs are. `MERGED_ENTRIES` would also have pinned 10-09 for good (its `drill-verify/`).
 - **Rules:**
-  1. Write a manifest only after every file of every run it lists exists on that store, R2 included. The runner copies the runs first and the manifest last, in one job chained with `&&`.
+  1. Write a manifest only after every file of every run it lists exists on that store, R2 included. GCS: `publish` checks `RUN_FILES` and, for a run with `drill/meta.json`, every file it implies (`static_drill.tier_files`). R2: the runner's one job copies each listed run (its `drill/meta.json` last), then `r2-verify -m <id>` (every served file of every listed run on R2, same size and md5), then the manifest, chained with `&&`.
   2. Manifests are immutable. Never rewrite a published key; fix forward with a new manifest instead (the next scan's).
-- Next gcs scan: `2026-10-10` (cron 07:00 UTC) → `runs add -c 2026-10-10`. With 10-09 pinned, the counter merges T1236 + 10-10 into level 1.
+  3. A manifest's runs never cover fewer scans with a drill than the last manifest's (`drill_scans`): `publish` refuses otherwise.
+- **The drill stage** is in `runs add` (profile `drill`, on in gcs's example): after shards ∥ catalog, before publish (see "Entry point").
+- Next gcs scan: `2026-10-10` (cron 07:00 UTC) → `runs add -c 2026-10-10`. With T1236's drill built, the stage builds 10-10's and the counter merges T1236 + 10-10 into level 1, drill included.
 
 ## Why
 
@@ -180,7 +183,9 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 
 The base generation's `drill/` (spec `static-name-search.md`, "Drilldown for heavy terms") answers a catalog member's filtered view at any directory P: its match roots under P (`roots`), or for a heavy `(q, dir)` (more than R = 100K roots under it) per-child running sums with the K = 256 children of largest peak bytes kept by name and the rest summed into a remainder (`rollups`). Each run gets its own `drill/`, in the base's layout and schemas, read beside the base like the suffix runs.
 
-### Per scan D: the `drill` stage (1 Batch task, after `catalog`)
+### Per scan D: the `drill` stage (1 Batch job of 2 tasks, after `catalog`, before `publish`)
+
+`python -m dt_cloud.static_drill build -g GEN -d D -k task`: task 0 builds the long kind, task 1 the short, each on a whole machine; each uploads its files and its part (`meta.<kind>.json`), and the second to finish writes `meta.json` from both (`join_meta`). A rerun task whose part is there only joins. The stage is done once `deltas/<D>/drill/meta.json` exists.
 
 1. **Delta roots.** A member's roots at D are first-hit rows of D's version delta, so they are a function of the run's own rows:
    - long members: `static_roots.member_roots` over the run's suffix rows (`sx/`: opens and close records alike) for every long member as of the previous tier;
@@ -230,7 +235,7 @@ The other choice, dropping an alias forward (writing the diverged member's own r
 
 ### Tier merges and compaction
 
-- **Merge** (when the binary counter carries, in `publish`): the newest input's alias map; each input's rows re-keyed to the merged canonicals (`alias_i(c)` for each merged canonical `c`: its class at input `i` contains `c`'s) and combined (roots: smallest `vt`; rollups: the newest-full-header rule, the merged header `kind` 0 if any included input was full); `dcount` summed.
+- **Merge** (when the binary counter carries, in `publish`; only runs that all carry `drill/`, `push_run(drilled=…)`): the newest input's alias map; each input's rows re-keyed to the merged canonicals (`alias_i(c)` for each merged canonical `c`: its class at input `i` contains `c`'s) and combined (roots: smallest `vt`; rollups: the newest-full-header rule, the merged header `kind` 0 if any included input was full); `dcount` summed.
 - **Compaction** into a new base generation reruns the drill build (`roots digest` → `build` / `short-*` → `index`) on the compacted generation (~85 VM-hours ≈ $19 at today's size); a fold of the runs into the base drill is not built.
 
 ### The 2026-10-09 run (measured)
@@ -289,15 +294,15 @@ A deployment may scan once a day, every 6 h, or once more on demand; nothing her
 ### Entry point: `dt-cloud static-names runs add SCAN_ID`
 
 ```
-prepare → append (key ranges, `append_tasks` tasks) → shards ∥ catalog → publish (Batch: tier merges + manifests/<id>.json) → R2 (each run in the manifest, then manifests/) [→ verify, -t] → prune
+prepare → append (key ranges, `append_tasks` tasks) → shards ∥ catalog → [drill: long ∥ short] → publish (Batch: tier merges + manifests/<id>.json) → R2 (each run in the manifest, its drill/meta.json last; r2-verify; then manifests/) [→ verify, -t] → prune
 ```
 
-- **Strictly in scan-id order.** The published scans (under the base's layouts) after the generation's newest (base + the newest manifest's runs), through SCAN_ID, are pending. SCAN_ID must be the oldest of them, else exit 3 naming the others; `-c` appends every pending scan in order. A scan already appended reruns only the R2 copy and prune.
-- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/<id>/scans.json` (prepare), all `ranges.json` `k` of `deltas/<id>/dhist/` (append; `append` also skips done ranges within a job), `deltas/<id>/sidecar.parquet` (shards), `deltas/<id>/catalog/meta.json` (catalog), `manifests/<id>.json` (publish), `deltas/<id>/verify.json` (verify). `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
+- **Strictly in scan-id order.** The published scans (under the base's layouts) after the generation's newest (base + the newest manifest's runs), through SCAN_ID, are pending. SCAN_ID must be the oldest of them, else exit 3 naming the others; `-c` appends every pending scan in order. A scan already appended reruns only the R2 copy and prune (and, with `drill`, builds its drill first when the newest manifest lists its own level-0 run without one: T1236's case).
+- **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/<id>/scans.json` (prepare), all `ranges.json` `k` of `deltas/<id>/dhist/` (append; `append` also skips done ranges within a job), `deltas/<id>/sidecar.parquet` (shards), `deltas/<id>/catalog/meta.json` (catalog), `deltas/<id>/drill/meta.json` (drill), `manifests/<id>.json` (publish), `deltas/<id>/verify.json` (verify). `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
 - **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/<id>.json` (`if_generation_match=0`), and the scratch bucket's `state/<id>/`. The one delete is `prune`'s: earlier scans' `state/<prev>/` in the scratch bucket, once `state/<id>/` is complete.
 - **Exit status:** 0 done; 3 the scan is not published yet, or an earlier published scan is pending (without `-c`), or `prepare` refuses; 1 a stage failed.
 - **GCS and Batch over their APIs** (ADC; no `gcloud`), so it runs inside a scan job's image. Batch jobs are named `sn-<stage>-<id>-<hhmmss>` and labelled `purpose=static-names`, `stage`, `gen`.
-- **R2:** one Batch job per scan (every run the manifest lists, then `manifests/`), as the profile's R2 account, with the R2 key from Secret Manager (`secretVariables`) and the endpoint from its secret or `R2_ENDPOINT`.
+- **R2:** one Batch job per scan (every run the manifest lists, each with its `drill/meta.json` last; `r2-verify`; then `manifests/`), as the profile's R2 account, with the R2 key from Secret Manager (`secretVariables`) and the endpoint from its secret or `R2_ENDPOINT`.
 - **`-n`:** dry run. It reports each stage as done or that it would run; it submits and writes nothing.
 - **Scheduling:** after a scan's `path` sort is written, run `dt-cloud static-names runs add -c <id>` (gcs: from `job/run.sh` after `index-sync`; cw: from `job/cw-run.sh`). On exit 3, try again later; it is safe to run on a timer.
 
