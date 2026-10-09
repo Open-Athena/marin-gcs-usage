@@ -316,7 +316,7 @@ The Python reference is `static_roots.Drill` over `GroupFile` (two-level; `gcs_d
 | `drill-answers.jsonl` | `drill-query` over the cases (Python reader, GCS ranged reads) | 4.4 min (455 cases × 5 dates) | laptop |
 | `drill-brute.jsonl` | `drill-brute` per date straight from the scan file (`-k`: past 200K children only the drill's kept children, plus the exact total) | ~3–8 min per date | 5 spot |
 | `verify-drill.json` | `drill-verify` | 3 s | laptop |
-| `r2.dvc` | `r2-copy` (`R2_SERVED` now includes `drill/`): 652 objects, 299.4 GB | | the ch-store VM |
+| `r2.dvc` | `r2-copy` (`R2_SERVED` now includes `drill/`): 652 objects, 299.4 GB, to `oa-gcs-usage-index` `static-names/2026-10-08c/drill/` | 55.7 min (~90 MB/s) | the ch-store VM, `nice`d |
 
 | Set | Rows | Bytes | Row groups | Index / top | Heavy `(q, dir)` | Rollup cells |
 |---|---:|---:|---:|---:|---:|---:|
