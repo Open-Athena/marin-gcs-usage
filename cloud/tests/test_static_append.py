@@ -237,3 +237,28 @@ def test_merge_cdeltas(runs, tmp_path):
     got = _read(tmp_path / "m.parquet")
     assert got == sorted(want.values(), key=lambda r: (r[0], r[1], r[2], r[3], r[7]))
     assert n == len(want) < len(rows)
+
+
+@pytest.mark.parametrize("day", [0, 1])
+def test_verify_terms_against_the_scan(runs, day):
+    """`verify`'s checks (the stage run on the real run) all hold on the fixture: brute force from a run's scan file vs
+    the base and the runs through it, tiered, per literal and under its drill roots; on the first run, also the day
+    before vs the base alone."""
+    root, scans = runs["root"], runs["scans"]["scans"]
+    base = runs["base"]
+    n = len(scans) - K + day
+    scan, before, base_last = scans[n], scans[n - 1]["id"], scans[len(scans) - K - 1]["id"]
+    run_dirs = runs["runs"][:day + 1]
+    con = sn.connect(2, "1GB", runs["tmp"] / "vtmp")
+    terms = [*TERMS, "b2", "e5418"]
+    report = sa.verify_terms(con, str(root / scan["src"]), scan["version"], scan["id"], before, terms,
+                             sa.TieredReader([_reader(base["out"], base["side"]), *(_reader(d, pq.read_table(d / "sidecar.parquet")) for d in run_dirs)]),
+                             sa.TieredCatalog([_catalog(base["final"]), *(_catalog(d / "catalog") for d in run_dirs)]),
+                             _reader(base["out"], base["side"]), _catalog(base["final"]), base_last)
+    con.execute("DROP TABLE sc")
+    failed = {t: {k: v for k, v in d["equal"].items() if not v} for t, d in report["terms"].items() if not all(d["equal"].values())}
+    assert failed == {}
+    assert report["equal"] == report["checks"] >= len(terms)
+    assert sorted({d["source"] for d in report["terms"].values()}) == ["absent-short", "catalog", "static"]
+    assert sum(1 for d in report["terms"].values() for k in d["equal"] if k.startswith("root:")) >= 1
+    assert all(("before" in d["equal"]) == (day == 0) for d in report["terms"].values())

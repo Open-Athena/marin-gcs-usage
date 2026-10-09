@@ -566,5 +566,116 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     print(json.dumps(doc, indent=1))
 
 
+def verify_terms(con, src: str, version: int, date: str, before: str, terms: list[str], reader: TieredReader, catalog: TieredCatalog,
+                 base_reader: Reader, base_catalog: sc.Catalog, base_last: str) -> dict:
+    """`verify`'s checks over given readers (the base plus runs, tiered; the base alone) and the date's scan file `src`.
+    The day-before check (tiered = the base alone) runs only when `before` is in the base (≤ `base_last`)."""
+    from .static_catalog import PARENT
+    from .static_names import NAME
+
+    t0 = monotonic()
+    con.execute(f"""CREATE TABLE sc AS SELECT path, usr, size, n_files, {NAME} AS l, {PARENT} AS par
+        FROM ({scan_sql(con, src, ['depth >= 1'], version)})""")
+    err(f"verify: {con.execute('SELECT count(*) FROM sc').fetchone()[0]:,} keys of {date} in {monotonic() - t0:.0f}s")
+    D = scan_epoch(date) * 1000
+    report: dict = {"date": date, "before": before, "terms": {}}
+    pairs = equal = 0
+    for t in terms:
+        brute = [tuple(r) for r in con.execute(f"""SELECT path, usr, size, n_files FROM sc WHERE contains(l, {q(t)}) AND NOT contains(par, {q(t)})
+            ORDER BY path, usr""").fetchall()] if len(t) >= 3 else None
+        bucket_tot: dict[str, list[int]] = {}
+        for bk, b_, o_ in con.execute(f"""SELECT split_part(path, '/', 1), sum(size)::BIGINT, sum(n_files)::BIGINT FROM sc
+                WHERE contains(l, {q(t)}) AND NOT contains(par, {q(t)}) GROUP BY 1""").fetchall():
+            if b_ or o_:
+                bucket_tot[bk] = [int(b_), int(o_)]
+        bucket_tot = dict(sorted(bucket_tot.items()))
+        nz = lambda d: {k: list(v) for k, v in d.items() if v[0] or v[1]}  # noqa: E731
+
+        def check_before(answer: dict) -> dict:
+            return {"before": nz(answer) == base_before()} if before <= base_last else {}
+
+        def base_before() -> dict:
+            """The base generation alone, the day before (verified when it was built)."""
+            c = base_catalog.answer(t, [before])
+            if c is not None:
+                return nz(c["answers"][before])
+            return nz(base_reader.answer(t, [before])["answers"][before]) if len(t) >= 3 else {}
+
+        doc: dict = {}
+        cat = catalog.answer(t, [before, date])
+        if cat is not None:
+            doc["source"] = "catalog"
+            doc["equal"] = {"buckets": nz(cat["answers"][date]) == bucket_tot, **check_before(cat["answers"][before])}
+        elif len(t) < 3:  # a short literal in no name of any tier: zero everywhere
+            doc["source"] = "absent-short"
+            doc["equal"] = {"buckets": bucket_tot == {}, **check_before({})}
+        else:
+            doc["source"] = "static"
+            hits = sorted((p, u, s_, n) for p, u, vf, vt, s_, n in reader.hits(t) if vf <= D < vt)
+            roots = _roots(brute, t)
+            doc["hits"] = len(brute)
+            doc["roots"] = {r: len(_under(brute, r)) for r in roots}
+            ans = reader.answer(t, [before, date])["answers"]
+            doc["equal"] = {"hits": hits == brute, **{f"root:{r}": _under(hits, r) == _under(brute, r) for r in roots},
+                            "buckets": nz(ans[date]) == bucket_tot, **check_before(ans[before])}
+        pairs += len(doc["equal"])
+        equal += sum(1 for v in doc["equal"].values() if v)
+        report["terms"][t] = doc
+        err(f"verify {t!r}: {doc['source']}, {sum(doc['equal'].values())}/{len(doc['equal'])} equal")
+    report.update(checks=pairs, equal=equal, s=round(monotonic() - t0, 1))
+    return report
+
+
+def _roots(hits: list[tuple], term: str, k: int = 2) -> list[str]:
+    """Drill roots to check a literal's hits under: `''`, its `k` buckets and `k` depth-2 dirs holding the most hits
+    (none containing the literal: a root the literal matches is itself a match, not a view root)."""
+    from collections import Counter
+
+    out = [""]
+    for depth in (1, 2):
+        c = Counter("/".join(h[0].split("/")[:depth]) for h in hits if h[0].count("/") >= depth)
+        out += [r for r, _ in sorted(c.items(), key=lambda x: (-x[1], x[0])) if term not in r.lower()][:k]
+    return out
+
+
+def _under(hits: list[tuple], root: str) -> list[tuple]:
+    return [h for h in hits if root == "" or h[0].startswith(root + "/")]
+
+
+@cli.command("verify")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-d", "--date", required=True, help="The run's scan")
+@option("-g", "--gen", required=True, help="Base generation")
+@option("-m", "--mount", required=True, help="Local mount of the data bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-t", "--terms-file", required=True, help="Literals, one per line (a path or gs:// URL)")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def verify_cmd(bucket, date, gen, mount, mem, threads, terms_file, tmp) -> None:
+    """The base plus the newest manifest's runs, read as the Worker reads them, against brute force straight from the
+    date's scan file (its rows merged per key, the first-hit rule): per literal, a catalog member's per-bucket totals,
+    else its live first hits `(path, usr, size, n_files)` as a list — whole, and under a few drill roots. Also the day
+    before: the tiered answers equal the base's. JSON report → `deltas/<D>/verify.json`; exit 1 on any difference."""
+    from .static_catalog import gcs_catalog
+    from .static_names import gcs_reader, read_text
+
+    prefix = f"{PREFIX}/{gen}"
+    m = read_json(f"gs://{bucket}/{prefix}/manifests/{date}.json")
+    scan = read_json(f"gs://{bucket}/{prefix}/{run_key(date, date)}/scans.json")["scans"][0]
+    before = m["scans"][m["scans"].index(date) - 1]
+    terms = sorted({x.lower() for x in read_text(terms_file).splitlines() if x.strip()})
+    dirs = [prefix, *(f"{prefix}/{r['key']}" for r in m["runs"])]
+    con = connect(threads, mem, tmp)
+    report = verify_terms(con, f"{mount}/{scan['src']}", scan["version"], date, before, terms,
+                          TieredReader([gcs_reader(bucket, d) for d in dirs]), TieredCatalog([gcs_catalog(bucket, d) for d in dirs]),
+                          gcs_reader(bucket, prefix), gcs_catalog(bucket, prefix), m["scans"][m["base_scans"] - 1])
+    report["tiers"] = len(dirs)
+    body = json.dumps(report, indent=1) + "\n"
+    _gcs().bucket(bucket).blob(f"{prefix}/{run_key(date, date)}/verify.json").upload_from_string(body)
+    print(body)
+    if report["equal"] != report["checks"]:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     cli()
