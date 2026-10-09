@@ -131,12 +131,47 @@ def built(tmp_path_factory):
     docs = [ist.build_range(scans_doc, ranges, i, out, con, mount=str(root)) for i in range(3)]
     for i in range(3):
         ist.fold_range(str(out), i, out, con)
+    for i in range(3):
+        ist.build_slices_range(scans_doc, ranges, i, out, con, mount=str(root))
     return out, scans_doc, oracle, docs
 
 
 def _live(out: Path, sub: str, ts: int) -> list[dict]:
     t = pa.concat_tables([pq.read_table(p) for p in sorted((out / sub).glob("r*.parquet"))])
     return [r for r in t.to_pylist() if r["vf"] <= ts < r["vt"]]
+
+
+def _slice_oracle(root: Path, scan: dict) -> dict[tuple[int, str, str | None], dict]:
+    """A scan's rows summed per `(depth, path, usr)` as the reader's `merge` would (`_oracle` per slice)."""
+    t = pq.read_table(root / scan["src"]).to_pylist()
+    v = scan["version"]
+    rows = [{"path": r["path"], "depth": r["depth"], "usr": r["usr"], "size": r["size"] if v == 2 else r["b"],
+             "n_files": r["n_files"] if v == 2 else r["o"], "kind": r.get("kind", "dir"),
+             "mtime_mean": r["mtime_mean"] if v == 2 else (r["wts"] / r["wb"] if r["wb"] else 0.0),
+             "last_read": r["last_read"] if v == 2 else r["a"]} for r in t]
+    out = {}
+    for usr in {r["usr"] for r in rows}:
+        for k, a in _oracle([r for r in rows if r["usr"] == usr], v).items():
+            out[(*k, usr)] = {c: x for c, x in a.items() if c != "us"}
+    return out
+
+
+def test_slice_versions_reconstruct_every_scan(built):
+    out, scans, _, _ = built
+    root = out.parent
+    n = 0
+    for s in scans["scans"]:
+        got = {}
+        for r in _live(out, "sv", s["ts"]):
+            got[(r["depth"], r["path"], r["usr"])] = {"kind": r["kind"], "size": r["size"], "n_files": r["n_files"], "n_children": r["n_children"],
+                                                      "n_desc": r["n_desc"], "mtime": r["mtime"], "dr": round(r["wts"] / r["wb"]) if r["wb"] > 0 else 0,
+                                                      "wb": r["wb"], "c2": r["c2"], "c3": r["c3"], "c4": r["c4"], "last_read": r["last_read"]}
+        want = _slice_oracle(root, s)
+        assert got == want, s["id"]
+        n += len(want)
+    assert n == sum(d["rows"] for d in json.loads((out / "sv-digest" / "r0000.json").read_text())["scans"]) + sum(
+        d["rows"] for i in (1, 2) for d in json.loads((out / "sv-digest" / f"r{i:04d}.json").read_text())["scans"])
+    assert [json.loads((out / "sv-digest" / f"r{i:04d}.json").read_text())["eq"] for i in range(3)] == [True, True, True]
 
 
 def test_path_versions_reconstruct_every_scan(built):

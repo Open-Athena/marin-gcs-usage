@@ -84,6 +84,19 @@ PV_COLS = PV_SCHEMA.names
 #: Path versions with the read day folded in (`fold`): a version per run of equal change columns *and*
 #: `last_read` (-1: never read). What the served path sorts hold.
 PVL_SCHEMA = PV_SCHEMA.append(pa.field("last_read", pa.int32(), nullable=False))
+#: Owner-slice versions (`build --slices`): one row per `(depth, path, usr)` — the per-scan store's own
+#: rows, a v1 index's duplicates summed — with every value, `last_read` in the key, `usr` NULL where no
+#: owner is named. What the slice sorts hold (a user lens, owner pools, owner totals).
+SV_SCHEMA = pa.schema([
+    pa.field("depth", pa.uint8(), nullable=False),
+    pa.field("path", pa.string(), nullable=False),
+    pa.field("usr", pa.string()),
+    *[f for f in PVL_SCHEMA if f.name not in ("depth", "path", "us")],
+])
+SV_KEY = ["depth", "path", "usr"]
+SV_CHANGE = [c for c in CHANGE_COLS if c != "us"] + ["last_read"]
+SV_STATE = [*SV_CHANGE, "wts"]
+SV_HASH = "hash(depth, path, usr, kind, size, n_files, n_children, n_desc, mtime, dr, wb, c2, c3, c4, last_read)"
 
 # ── Per-scan rows → one row per path ───────────────────────────────────────
 
@@ -134,6 +147,24 @@ def us_sql_from_raw() -> str:
              ELSE '[' || string_agg(CASE WHEN usr <> '' THEN '[' || to_json(usr)::VARCHAR || ',' || b::VARCHAR || ']' END, ',' ORDER BY usr) || ']' END AS us
         FROM (SELECT depth, path, usr, sum(size)::BIGINT AS b, count(*) AS nr FROM raw GROUP BY depth, path, usr)
         GROUP BY depth, path"""
+
+
+def slice_rows_sql(con, src: str, preds: list[str], version: int | None = None) -> str:
+    """One scan's owner slices in the range, one row per `(depth, path, usr)` (`usr` '' where none is
+    named): `path_rows_sql`'s sums and maxima per slice instead of per path."""
+    version = version or sn.source_version(con, src)
+    if version == 2:
+        cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({q(src)})").fetchall()}
+        sel = V2_ROW.format(**{k: (c if c in cols else "NULL") for k, c in sn.V2_OPTIONAL.items()})
+    else:
+        sel = V1_ROW
+    raw = " UNION ALL ".join(f"SELECT {sel} FROM read_parquet({q(src)}) WHERE {p}" for p in preds)
+    return f"""WITH raw AS ({raw})
+        SELECT depth, path, usr, CASE WHEN bool_and(is_file) THEN 'file' ELSE 'dir' END AS kind, sum(size)::BIGINT AS size,
+            sum(n_files)::BIGINT AS n_files, max(n_children) AS n_children, max(n_desc) AS n_desc, max(mtime) AS mtime,
+            CASE WHEN sum(mw) > 0 THEN round(sum(wt) / sum(mw), 0) ELSE 0 END::DOUBLE AS dr, sum(mw)::BIGINT AS wb,
+            sum(c2)::BIGINT AS c2, sum(c3)::BIGINT AS c3, sum(c4)::BIGINT AS c4, sum(wt)::DOUBLE AS wts, max(last_read) AS last_read
+        FROM raw GROUP BY depth, path, usr"""
 
 
 #: Per-version hash of the change columns: what a version and a scan's row are compared by.
@@ -221,6 +252,50 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, con, *, mount: str
     return doc
 
 
+def build_slices_range(scans: dict, ranges: dict, i: int, out: Path, con, *, mount: str | None) -> dict:
+    """Range `i`'s owner-slice versions over every scan: `sv/r####.parquet` (`SV_SCHEMA`, sorted
+    `(depth, path, usr, vf)`) and `sv-digest/r####.json` — per scan the rows and Σ hash of its slices
+    next to those of the versions live at it (equal iff every scan reconstructs)."""
+    from pyrmts.intervals import islands_sql, stamped_sql
+
+    t0 = monotonic()
+    r = ranges["ranges"][i]
+    preds = range_preds(r)
+    srcs = [(sn._src(scans["bucket"], s["src"], mount), s["ts"], s.get("version")) for s in scans["scans"]]
+    stamps = [ts for _, ts, _ in srcs]
+    for t in ("lng", "sv"):
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    for j, (p, _, v) in enumerate(srcs):
+        sql = f"SELECT {j}::BIGINT AS __scan, * FROM ({slice_rows_sql(con, p, preds, v)})"
+        con.execute(f"CREATE TABLE lng AS {sql}" if j == 0 else f"INSERT INTO lng {sql}")
+    t_long = monotonic() - t0
+    src_dig = {j: [n, int(h) % U64] for j, n, h in con.execute(f"SELECT __scan, count(*), sum({SV_HASH}::HUGEINT) FROM lng GROUP BY __scan").fetchall()}
+    runs = islands_sql("SELECT * FROM lng", SV_KEY, SV_STATE, carried=CARRIED)
+    con.execute(f"CREATE TABLE sv AS {stamped_sql(runs, SV_KEY, SV_STATE, stamps, OPEN)}")
+    t_kernel = monotonic() - t0 - t_long
+    con.execute("DROP TABLE lng")
+    dig = _prefix_digests(con, "sv", SV_HASH, stamps)
+    per_scan = []
+    for j, sc in enumerate(scans["scans"]):
+        a, b = src_dig.get(j, [0, 0]), dig[j]
+        per_scan.append({"id": sc["id"], "rows": a[0], "live": b[0], "eq": a == b})
+    name = f"r{i:04d}"
+    sel = ", ".join("nullif(usr, '') AS usr" if c == "usr" else c for c in SV_SCHEMA.names)
+    n = write_sorted(sn._batches(con, f"SELECT {sel} FROM sv ORDER BY depth, path, usr, vf"), out / "sv" / f"{name}.parquet",
+                     SV_SCHEMA, RANGE_RG, dictionary=["kind", "usr"])
+    doc = {
+        "range": r, "i": i, "versions": n,
+        "open": con.execute(f"SELECT count(*) FROM sv WHERE vt = {OPEN}").fetchone()[0],
+        "scans": per_scan, "eq": all(x["eq"] for x in per_scan),
+        "long_s": round(t_long, 1), "kernel_s": round(t_kernel, 1), "s": round(monotonic() - t0, 1),
+    }
+    con.execute("DROP TABLE sv")
+    (out / "sv-digest").mkdir(parents=True, exist_ok=True)
+    (out / "sv-digest" / f"{name}.json").write_text(json.dumps(doc, sort_keys=True) + "\n")
+    err(f"slices {i}: {n:,} versions ({doc['open']:,} open), eq={doc['eq']} in {doc['s']}s (long {doc['long_s']}s, kernel {doc['kernel_s']}s)")
+    return doc
+
+
 # ── Read days folded into the path versions ──────────────────────────────
 
 
@@ -278,9 +353,13 @@ SORTS = {
     "path": ("pvl", "depth, path, vf", "size"),
     "bysize": ("pvl", f"({BUCKET}) DESC NULLS LAST, path, vf", "size"),
     "reads": ("rd", "depth, path, vf", None),
+    # Owner slices, as the per-scan store's `path`, `bysize` and `bysize-user` sorts.
+    "slices": ("sv", "depth, path, usr NULLS FIRST, vf", "size"),
+    "slices-bysize": ("sv", f"({BUCKET}) DESC NULLS LAST, path, usr NULLS FIRST, vf", "size"),
+    "slices-bysize-user": ("sv", f"usr NULLS FIRST, ({BUCKET}) DESC NULLS LAST, path, vf", "size"),
 }
 #: Each range-file dir's schema.
-SUB_SCHEMA = {"pv": PV_SCHEMA, "pvl": PVL_SCHEMA, "rd": RD_SCHEMA}
+SUB_SCHEMA = {"pv": PV_SCHEMA, "pvl": PVL_SCHEMA, "rd": RD_SCHEMA, "sv": SV_SCHEMA}
 GROUPS_SCHEMA = pa.schema([
     pa.field("rg", pa.int32(), nullable=False),
     pa.field("seg", pa.int32(), nullable=False),
@@ -335,8 +414,10 @@ def _bounds(t: pa.Table, seg: int, size_col: str | None) -> dict:
 
     d, p, vf, vt = mm("depth"), mm("path"), mm("vf"), mm("vt")
     b = mm(size_col) if size_col else (0, 0)
+    # A slice sort's owner range (NULL owners ignored, as the per-scan footers' `u_min`/`u_max`).
+    u = mm("usr") if "usr" in t.column_names else (None, None)
     return {"seg": seg, "d_min": d[0], "d_max": d[1], "p_min": p[0], "p_max": p[1], "b_min": b[0], "b_max": b[1],
-            "u_min": None, "u_max": None, "vf_min": vf[0], "vf_max": vf[1], "vt_min": vt[0], "vt_max": vt[1], "rows": t.num_rows}
+            "u_min": u[0], "u_max": u[1], "vf_min": vf[0], "vf_max": vf[1], "vt_min": vt[0], "vt_max": vt[1], "rows": t.num_rows}
 
 
 def write_served(con, src: str, sort: str, out: Path, schema: pa.Schema, *, rg_rows: int = SERVED_RG,
@@ -353,7 +434,7 @@ def write_served(con, src: str, sort: str, out: Path, schema: pa.Schema, *, rg_r
     cols = ", ".join(schema.names)
     bounds: list[dict] = []
     out.parent.mkdir(parents=True, exist_ok=True)
-    dictionary = [c for c in ("kind", "us") if c in schema.names]
+    dictionary = [c for c in ("kind", "us", "usr") if c in schema.names]
     seg_rows: dict[int, int] = {}
     with pq.ParquetWriter(out, schema, compression=sn.CODEC, use_dictionary=dictionary, write_statistics=["depth", "vf", "vt"]) as w:
         pending: list[pa.Table] = []
@@ -460,10 +541,11 @@ def cli() -> None:
 @option("-o", "--out", default="/stage/out", help="Local output dir (uploaded, then removed)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n; a Batch job's tasks split them)")
+@option("-S", "--slices", is_flag=True, help="Build the owner-slice versions (`sv/`, `sv-digest/`) instead of the path versions")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB database + spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
 @option("-P", "--profile", help="Deployment profile (`interval_profiles/<name>.json` or a path; default $INTERVAL_STORE_PROFILE)")
-def build_cmd(bucket, profile, force, gen, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
+def build_cmd(bucket, profile, force, gen, index, mount, mem, per_task, out, threads, only, slices, tmp, no_upload) -> None:
     """Build key ranges' path and read versions over every scan of GEN's `scans.json`, verifying each
     scan's reconstruction (digest written last: it marks the range done)."""
     bucket = _bucket(bucket, profile)
@@ -491,18 +573,20 @@ def build_cmd(bucket, profile, force, gen, index, mount, mem, per_task, out, thr
     con.execute(f"SET threads={threads}; SET memory_limit='{mem}'; SET preserve_insertion_order=false; SET parquet_metadata_cache=true")
     con.execute(f"SET temp_directory={q(str(Path(tmp) / 'spill'))}")
     err(f"interval-store build: duckdb {duckdb.__version__}, pyarrow {pa.__version__}, {len(scans['scans'])} scans, ranges {todo}")
+    dig = "sv-digest" if slices else "digest"
     for i in todo:
-        if not force and b.blob(f"{prefix}/digest/r{i:04d}.json").exists():
+        if not force and b.blob(f"{prefix}/{dig}/r{i:04d}.json").exists():
             err(f"range {i}: already built")
             continue
         outp = Path(out) / f"r{i}"
-        doc = build_range(scans, ranges, i, outp, con, mount=mount)
+        doc = (build_slices_range if slices else build_range)(scans, ranges, i, outp, con, mount=mount)
         if not no_upload:
-            digest = outp / "digest"
+            # The digest marks the range done: uploaded last.
+            digest = outp / dig
             moved = Path(out) / f"r{i}-digest"
             shutil.move(str(digest), moved)
             upload_tree(outp, bucket, prefix)
-            upload_tree(moved, bucket, f"{prefix}/digest")
+            upload_tree(moved, bucket, f"{prefix}/{dig}")
             shutil.rmtree(outp)
             shutil.rmtree(moved)
         print(json.dumps({k: v for k, v in doc.items() if k != "scans"}), flush=True)
