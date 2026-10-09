@@ -99,7 +99,7 @@ export class StaticCatalog {
     return p
   }
 
-  /** `q`'s cells, or null when it is not a member. `partial`: this file is one tier of several (the daily runs,
+  /** `q`'s cells, or null when it is not a member. `partial`: this file is one tier of several (the base and its runs,
    *  `staticRuns.ts`): its cells are a part, and the header's count (`n`) covers every tier, so it is returned,
    *  not checked here. */
   async lookup(q: string, opts: { partial?: boolean } = {}): Promise<{ io: CatalogIo; member: Member | null }> {

@@ -289,6 +289,7 @@ def test_rebuild_open_without_runs_is_the_base_open_rows(runs, tmp_path):
 # ── prune: the newest complete state only ──────────────────────────────────
 
 GEN = "g1"
+DATA, SCR = "data-bucket", "scratch-bucket"
 SP = f"{sn.PREFIX}/{GEN}/state"
 
 
@@ -336,20 +337,20 @@ class _GCS:
 def _day(day: str, copen: int = 2, done: int = 2, size: int = 100) -> dict:
     """A day's state objects in the scratch bucket: the first `copen` / `done` of 2 ranges."""
     return {
-        **{(sn.SCRATCH_BUCKET, f"{SP}/{day}/copen/r{i:04d}.parquet"): size for i in range(copen)},
-        **{(sn.SCRATCH_BUCKET, f"{SP}/{day}/done/r{i:04d}.json"): 1 for i in range(done)},
+        **{(SCR, f"{SP}/{day}/copen/r{i:04d}.parquet"): size for i in range(copen)},
+        **{(SCR, f"{SP}/{day}/done/r{i:04d}.json"): 1 for i in range(done)},
     }
 
 
 def _published(*days: str) -> dict:
-    return {(sn.DATA_BUCKET, f"{sn.PREFIX}/{GEN}/manifests/{d}.json"): 1 for d in days}
+    return {(DATA, f"{sn.PREFIX}/{GEN}/manifests/{d}.json"): 1 for d in days}
 
 
 # Never touched: another generation's state, the scratch bucket's other prefixes, the data bucket's runs.
 OTHERS = {
-    (sn.SCRATCH_BUCKET, f"{sn.PREFIX}/g0/state/2026-10-01/copen/r0000.parquet"): 5,
-    (sn.SCRATCH_BUCKET, f"{sn.PREFIX}/{GEN}/sxmap/r0000.parquet"): 5,
-    (sn.DATA_BUCKET, f"{sn.PREFIX}/{GEN}/deltas/2026-10-09/cdelta/r0000.parquet"): 5,
+    (SCR, f"{sn.PREFIX}/g0/state/2026-10-01/copen/r0000.parquet"): 5,
+    (SCR, f"{sn.PREFIX}/{GEN}/sxmap/r0000.parquet"): 5,
+    (DATA, f"{sn.PREFIX}/{GEN}/deltas/2026-10-09/cdelta/r0000.parquet"): 5,
 }
 
 
@@ -358,21 +359,21 @@ def test_prune_keeps_only_the_newest_complete_state():
              **_published("2026-10-10", "2026-10-11"), **OTHERS}
     keep = {**_day("2026-10-11"), **_day("2026-10-12", copen=1, done=0), **_published("2026-10-10", "2026-10-11"), **OTHERS}
     gcs = _GCS(store)
-    assert sa.prune_state(gcs, GEN, "2026-10-11", 2) == {
+    assert sa.prune_state(gcs, GEN, "2026-10-11", 2, bucket=DATA, scratch=SCR) == {
         "date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"],
         "delete": [{"day": "2026-10-09", "objects": 4, "bytes": 202}, {"day": "2026-10-10", "objects": 4, "bytes": 16}],
         "deleted": 8,
     }
     assert store == keep
     # Idempotent: the rerun finds nothing before the day.
-    assert sa.prune_state(gcs, GEN, "2026-10-11", 2) == {"date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"], "delete": [], "deleted": 0}
+    assert sa.prune_state(gcs, GEN, "2026-10-11", 2, bucket=DATA, scratch=SCR) == {"date": "2026-10-11", "keep": ["2026-10-11", "2026-10-12"], "delete": [], "deleted": 0}
     assert store == keep
 
 
 def test_prune_dry_run_deletes_nothing():
     store = {**_day("2026-10-09"), **_day("2026-10-10"), **_published("2026-10-10"), **OTHERS}
     before = dict(store)
-    assert sa.prune_state(_GCS(store), GEN, "2026-10-10", 2, dry_run=True) == {
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-10", 2, bucket=DATA, scratch=SCR, dry_run=True) == {
         "date": "2026-10-10", "keep": ["2026-10-10"], "delete": [{"day": "2026-10-09", "objects": 4, "bytes": 202}], "deleted": 0,
     }
     assert store == before
@@ -381,7 +382,7 @@ def test_prune_dry_run_deletes_nothing():
 def test_prune_with_one_state_is_a_noop():
     store = {**_day("2026-10-09"), **_published("2026-10-09"), **OTHERS}
     before = dict(store)
-    assert sa.prune_state(_GCS(store), GEN, "2026-10-09", 2) == {"date": "2026-10-09", "keep": ["2026-10-09"], "delete": [], "deleted": 0}
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-09", 2, bucket=DATA, scratch=SCR) == {"date": "2026-10-09", "keep": ["2026-10-09"], "delete": [], "deleted": 0}
     assert store == before
 
 
@@ -397,7 +398,7 @@ def test_prune_refuses_while_the_day_is_incomplete(day, published, msg):
     store = {**_day("2026-10-09"), **day, **_published("2026-10-09", *(["2026-10-10"] if published else [])), **OTHERS}
     before = dict(store)
     with pytest.raises(sa.StateIncomplete) as e:
-        sa.prune_state(_GCS(store), GEN, "2026-10-10", 2)
+        sa.prune_state(_GCS(store), GEN, "2026-10-10", 2, bucket=DATA, scratch=SCR)
     assert (str(e.value), store) == (msg, before)
 
 
@@ -413,7 +414,7 @@ def test_prune_keeps_only_the_newest_complete_state_of_sub_daily_scans():
     store = {**_day("2026-10-09T1801"), **_day("2026-10-10T0001", size=7), **_day("2026-10-10T0601"),
              **_day("2026-10-10T1202", copen=1, done=0), **_published("2026-10-10T0001", "2026-10-10T0601"), **OTHERS}
     keep = {**_day("2026-10-10T0601"), **_day("2026-10-10T1202", copen=1, done=0), **_published("2026-10-10T0001", "2026-10-10T0601"), **OTHERS}
-    assert sa.prune_state(_GCS(store), GEN, "2026-10-10T0601", 2) == {
+    assert sa.prune_state(_GCS(store), GEN, "2026-10-10T0601", 2, bucket=DATA, scratch=SCR) == {
         "date": "2026-10-10T0601", "keep": ["2026-10-10T0601", "2026-10-10T1202"],
         "delete": [{"day": "2026-10-09T1801", "objects": 4, "bytes": 202}, {"day": "2026-10-10T0001", "objects": 4, "bytes": 16}],
         "deleted": 8,

@@ -1,4 +1,4 @@
-"""`dt_cloud.static_daily`: the per-scan append chain's order (strictly by scan id, catching up on request), its stage
+"""`dt_cloud.static_runner`: the per-scan append chain's order (strictly by scan id, catching up on request), its stage
 skipping (a rerun resumes at the first missing output), and the Batch jobs it submits."""
 from __future__ import annotations
 
@@ -6,13 +6,15 @@ from datetime import datetime, timezone
 
 import pytest
 
-from dt_cloud import static_daily as sd
+from dt_cloud import static_runner as sd
+from dt_cloud.static_profile import Profile, load_profile
+from dt_cloud.static_profile_examples import CW
 
 GEN = "2026-10-09cw"
 ROOT = f"static-names/{GEN}"
-CFG = sd.Config(gen=GEN, project="proj", image="img@sha256:0", sa="build@proj", r2_bucket="idx", bucket="data", scratch="scr",
-                r2_sa="copy@proj", r2_secrets={"R2_ENDPOINT": "s-end", "R2_ACCESS_KEY_ID": "s-id", "R2_SECRET_ACCESS_KEY": "s-key"},
-                append_tasks=4)
+CFG = Profile(name="test", layouts=("x/{id}/p",), gen=GEN, project="proj", region="us-east1", image="img@sha256:0", sa="build@proj",
+              r2_bucket="idx", bucket="data", scratch="scr", r2_sa="copy@proj",
+              r2_secrets={"endpoint": "s-end", "key_id": "s-id", "secret": "s-key"}, append_tasks=4)
 NOW = datetime(2026, 10, 9, 12, 34, 56, tzinfo=timezone.utc)
 
 
@@ -66,8 +68,8 @@ class Fake:
         if stage == "publish":
             self.keys[f"{ROOT}/manifests/{d}.json"] = {"runs": self.runs(d)}
 
-    def daily(self, **kw) -> sd.Daily:
-        return sd.Daily(
+    def daily(self, **kw) -> sd.Runner:
+        return sd.Runner(
             cfg=CFG, exists=lambda key: key in self.keys, count=lambda p, s: sum(1 for x in self.keys if x.startswith(p) and x.endswith(s)),
             read_json=lambda key: self.keys[key], published=lambda layouts, start: [s for s in self.pub if s > start],
             run_job=self.run_job, prepare=lambda d: self.calls.append(("prepare", d)) or self.keys.__setitem__(f"{ROOT}/deltas/{d}/scans.json", None),
@@ -168,7 +170,7 @@ def test_r2_job_spec():
 
 
 def test_task_command_from_mounted_source():
-    cfg = sd.Config(**{**CFG.__dict__, "src": ("/gcs/data/static-names/src/t/dt_cloud", "/gcs/data/static-names/src/pyrmts-r/pyrmts")})
+    cfg = Profile(**{**CFG.__dict__, "src": ("/gcs/data/static-names/src/t/dt_cloud", "/gcs/data/static-names/src/pyrmts-r/pyrmts")})
     assert sd.task_command(cfg, "static_append", ["shards", "-d", "2026-10-09T0001"]) == (
         "set -euo pipefail; mkdir -p /stage/tmp /stage/out /stage/src && cp -r /gcs/data/static-names/src/t/dt_cloud "
         "/gcs/data/static-names/src/pyrmts-r/pyrmts /stage/src/ && cd /stage && PYTHONPATH=/stage/src python3 -u -m dt_cloud.static_append "
@@ -179,18 +181,29 @@ def test_job_ids_are_batch_safe():
     assert [sd.job_id("append", s, NOW) for s in ("2026-10-09T1236", "2026-10-10")] == ["sn-append-2026-10-09-1236-123456", "sn-append-2026-10-10-123456"]
 
 
-def test_config_from_env(monkeypatch):
-    """cw's deployment config: the build account, the scan job's R2 secrets for the copy as its own account."""
-    for k, v in {"STATIC_NAMES_GEN": GEN, "STATIC_NAMES_IMAGE": "img", "STATIC_NAMES_SA": "build@p", "STATIC_NAMES_R2_SA": "cw@p",
-                 "R2_BUCKET": "idx", "STATIC_NAMES_R2_SECRETS": "endpoint=cw-r2-endpoint,key_id=cw-r2-id,secret=cw-r2-key",
-                 "STATIC_NAMES_SPOT": "0", "STATIC_NAMES_SRC": "/gcs/a/x,/gcs/a/y"}.items():
-        monkeypatch.setenv(k, v)
-    monkeypatch.delenv("R2_ENDPOINT", raising=False)
-    cfg = sd.Config.from_env(project="p")
-    assert (cfg.gen, cfg.image, cfg.sa, cfg.r2_sa, cfg.r2_bucket, cfg.r2_secrets, cfg.spot, cfg.src, cfg.region) == (
-        GEN, "img", "build@p", "cw@p", "idx",
-        {"R2_ENDPOINT": "cw-r2-endpoint", "R2_ACCESS_KEY_ID": "cw-r2-id", "R2_SECRET_ACCESS_KEY": "cw-r2-key"}, False, ("/gcs/a/x", "/gcs/a/y"), "us-east1")
-    monkeypatch.setenv("STATIC_NAMES_R2_SECRETS", "endpoint=e,key_id=i")
+def test_profile_is_an_example_with_env_over_it():
+    """cw's example, with a staged source tree and on-demand VMs by env; every other field the example's."""
+    env = {"STATIC_NAMES_PROFILE": "cw", "STATIC_NAMES_SPOT": "0", "STATIC_NAMES_SRC": "/gcs/a/x,/gcs/a/y", "R2_ENDPOINT": "https://e"}
+    p = load_profile(env)
+    assert p == Profile(**{**CW.__dict__, "spot": False, "src": ("/gcs/a/x", "/gcs/a/y"), "r2_endpoint": "https://e"})
+    assert sd.ready(p) == p
+    assert p.r2_env_secrets() == {"R2_ENDPOINT": "cw-s3-r2-endpoint", "R2_ACCESS_KEY_ID": "cw-s3-r2-access-key-id",
+                                  "R2_SECRET_ACCESS_KEY": "cw-s3-r2-secret-access-key"}
+
+
+def test_profile_by_env_alone_and_missing_fields(tmp_path):
+    """No profile selected: nothing is assumed, a missing field is an error naming its variable; a JSON file works too."""
     with pytest.raises(SystemExit) as e:
-        sd.Config.from_env(project="p")
-    assert str(e.value) == "STATIC_NAMES_R2_SECRETS needs secret=<secret name>"
+        sd.ready(load_profile({"GCP_PROJECT": "p"}))
+    assert str(e.value) == "static names: no gen in the deployment profile: set STATIC_NAMES_GEN (or STATIC_NAMES_PROFILE)"
+    f = tmp_path / "mine.json"
+    f.write_text('{"layouts": ["s/{id}/p.parquet"], "bucket": "b", "scratch": "s", "gen": "g", "region": "r", "image": "i", "sa": "a",'
+                 ' "r2_bucket": "rb", "r2_secrets": {"key_id": "k", "secret": "x"}}')
+    with pytest.raises(SystemExit) as e:
+        sd.ready(load_profile({"STATIC_NAMES_PROFILE": str(f), "GCP_PROJECT": "p"}))
+    assert str(e.value) == "static names: the R2 endpoint: set R2_ENDPOINT, or name its secret in STATIC_NAMES_R2_SECRETS (endpoint=…)"
+    p = sd.ready(load_profile({"STATIC_NAMES_PROFILE": str(f), "GCP_PROJECT": "p", "R2_ENDPOINT": "https://e"}))
+    assert (p.name, p.layouts, p.project, p.spot) == ("mine.json", ("s/{id}/p.parquet",), "p", True)
+    with pytest.raises(SystemExit) as e:
+        load_profile({"STATIC_NAMES_R2_SECRETS": "key_id=k,oops"})
+    assert str(e.value) == "STATIC_NAMES_R2_SECRETS: 'oops' is not endpoint=|key_id=|secret=<secret name>"

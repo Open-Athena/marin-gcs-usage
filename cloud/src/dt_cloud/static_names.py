@@ -3,8 +3,8 @@ suffix-ordered, denormalized postings, rebuilt from primary sources.
 
 Two stages, each embarrassingly parallel on GCP Batch (`job/static-names.sh`):
 
-1. **Intervals.** Every published scan's `path` sort (`LAYOUTS`: gcs's `listing/<date>/…/path-index.parquet`,
-   or a deployment's own key templates, e.g. `cw-l2/<scan>/index/<gen>/path-index.parquet`)
+1. **Intervals.** Every published scan's `path` sort (the deployment profile's key templates, e.g.
+   `listing/<scan>/index/<gen>/path-index.parquet` or `cw-l2/<scan>/index/<gen>/path-index.parquet`)
    becomes SCD-2 version intervals: one row per `(depth, path, usr)` version with `[vf, vt)`
    (`vt` = 2106 while open) and its values, exactly the versions the ClickHouse store's
    `nodes`/`closures` hold (`chstore/ingest.py`): a key's rows merged per scan as the
@@ -13,7 +13,7 @@ Two stages, each embarrassingly parallel on GCP Batch (`job/static-names.sh`):
    was absent from a scan in between. The kernel is `pyrmts.intervals` (gaps-and-islands,
    key-range planning and predicates, one-scan append), run per `(depth, path)` key range
    (`ranges.json`), so a range task reads only its row groups of each scan. `append` adds
-   one scan to a range's intervals (open versions × the scan: a full join), the daily
+   one scan to a range's intervals (open versions × the scan: a full join), the per-scan
    delta, and must equal a rebuild.
 2. **Suffixes.** From the intervals: one row per (lowercase name suffix of three or more
    characters, version): `(s, depth, path, usr, vf, vt, size, n_files)`, sorted by `s`,
@@ -44,13 +44,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
+from .scan_ids import SCAN_ID, check_order, scan_epoch, scan_label  # noqa: F401 (re-exported: the stages' scan-id helpers)
+from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
+
 err = partial(print, file=sys.stderr, flush=True)
 
-#: The deployment's buckets (env-configurable; the defaults are gcs's): the data bucket holds the scans and the
-#: generations (`static-names/<gen>/`); the scratch bucket the intermediates (the suffix shuffle, its markers, the
-#: daily open-version state) — us-east1, no soft delete, objects deleted at 7 days.
-DATA_BUCKET = os.environ.get("STATIC_NAMES_BUCKET", "oa-gcs-usage-dvx")
-SCRATCH_BUCKET = os.environ.get("STATIC_NAMES_SCRATCH", "oa-gcs-usage-scratch")
 PREFIX = "static-names"
 OPEN = 4291747200  # 2106-01-01 00:00:00 UTC: a version's `vt` while open (`chstore.schema.OPEN`)
 U64 = 1 << 64
@@ -106,37 +104,14 @@ def q(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-#: A scan id, the scan's key (never its date: a deployment may scan several times a day): `YYYY-MM-DDTHHMM` (UTC, the
-#: scan job's `SNAP_ID`), or a bare `YYYY-MM-DD` (gcs's daily scans before sub-daily ids). Either form sorts in time
-#: order, a bare date as that day's midnight, before its `T…` scans; only `D` and `DT0000` share a stamp, which
-#: `pick_scans` refuses.
-SCAN_ID = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{4})?")
-
-
-def scan_epoch(scan_id: str) -> int:
-    """A scan id (`2026-10-01` or `2026-10-01T0003`, UTC) as epoch seconds (`chstore.schema.scan_dt`)."""
-    if not SCAN_ID.fullmatch(scan_id):
-        raise ValueError(f"{scan_id!r} is not a scan id (YYYY-MM-DD or YYYY-MM-DDTHHMM)")
-    fmt = "%Y-%m-%dT%H%M" if "T" in scan_id else "%Y-%m-%d"
-    return int(datetime.strptime(scan_id, fmt).replace(tzinfo=timezone.utc).timestamp())
-
-
-def scan_label(ts: int) -> str:
-    """Epoch seconds as a scan-id-shaped label: the date at midnight, else the date and minute (reports only)."""
-    t = datetime.fromtimestamp(ts, timezone.utc)
-    return t.strftime("%Y-%m-%d" if ts % 86400 == 0 else "%Y-%m-%dT%H%M")
 
 
 # ── Scans ──────────────────────────────────────────────────────────────────
 
 
-#: Where scans' `path` sorts live in the data bucket, as key templates: `{id}` is the scan id (one path segment),
-#: `{gen}` the store generation (a scan's newest wins, a template without one counts as the oldest). gcs's (the
-#: default): before generations `listing/<date>/path-index.parquet`, then `listing/<date>/index/<gen>/…`. Another
-#: deployment passes its own (`scans -L`, or `STATIC_NAMES_LAYOUTS`, comma-separated); the base's `scans.json`
-#: records them, so the daily `prepare` finds the next scan the same way.
-GCS_LAYOUTS = ("listing/{id}/path-index.parquet", "listing/{id}/index/{gen}/path-index.parquet")
-LAYOUTS = tuple(os.environ["STATIC_NAMES_LAYOUTS"].split(",")) if os.environ.get("STATIC_NAMES_LAYOUTS") else GCS_LAYOUTS
+#: Where scans' `path` sorts live in the data bucket: key templates (`static_profile.Profile.layouts`), `{id}` the
+#: scan id (one path segment), `{gen}` the store generation (a scan's newest wins; a template without one counts as the
+#: oldest). The base's `scans.json` records them, so a run's `prepare` finds the next scan the same way.
 
 
 def layout_glob(layout: str) -> tuple[str, re.Pattern]:
@@ -149,7 +124,7 @@ def layout_glob(layout: str) -> tuple[str, re.Pattern]:
     return glob, re.compile(rx)
 
 
-def pick_scans(objects: Iterable[tuple[str, dict]], layouts: Iterable[str] = GCS_LAYOUTS, *, start: str | None = None,
+def pick_scans(objects: Iterable[tuple[str, dict]], layouts: Iterable[str], *, start: str | None = None,
                through: str | None = None) -> list[dict]:
     """Each scan's newest `path` sort among `(key, pins)` listings: keys matched against `layouts` (ids that are not
     scan ids, e.g. `cw-l2/over-time-dev/`, are skipped), the greatest `{gen}` per id, ids in `[start, through]`.
@@ -172,16 +147,14 @@ def pick_scans(objects: Iterable[tuple[str, dict]], layouts: Iterable[str] = GCS
         if cur is None or gen > cur["gen"]:
             found[sid] = {"id": sid, "gen": gen, "src": key, **pins}
     scans = [found[d] for d in sorted(found)]
+    check_order(found)
     for s in scans:
         del s["gen"]
         s["ts"] = scan_epoch(s["id"])
-    for a, b in zip(scans, scans[1:]):
-        if a["ts"] >= b["ts"]:
-            raise ValueError(f"scans {a['id']} and {b['id']}: ids out of time order (stamps {a['ts']}, {b['ts']})")
     return scans
 
 
-def list_scans(bucket: str = DATA_BUCKET, *, layouts: Iterable[str] = LAYOUTS, start: str | None = None,
+def list_scans(bucket: str, *, layouts: Iterable[str], start: str | None = None,
                through: str | None = None) -> dict:
     """Every scan's `path` sort, as the store ingests it (`chstore.ingest.default_src`): per scan id the newest
     generation under `layouts` (`pick_scans`); pinned by GCS generation, size, md5 and crc32c."""
@@ -197,10 +170,7 @@ def list_scans(bucket: str = DATA_BUCKET, *, layouts: Iterable[str] = LAYOUTS, s
                                "md5": base64.b64decode(b.md5_hash).hex() if b.md5_hash else None, "crc32c": b.crc32c}
 
     scans = pick_scans(objects(), layouts, start=start, through=through)
-    doc = {"bucket": bucket, "scans": scans}
-    if tuple(layouts) != GCS_LAYOUTS:
-        doc["layouts"] = layouts
-    return doc
+    return {"bucket": bucket, "layouts": layouts, "scans": scans}
 
 
 # ── Key ranges ─────────────────────────────────────────────────────────────
@@ -996,15 +966,15 @@ def _task(index: int | None) -> int:
 
 
 @cli.command("scans")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Data bucket")
-@option("-L", "--layout", "layouts", multiple=True, help="Key template of the scans' `path` sorts, `{id}` the scan id and `{gen}` the store generation; repeat (default: $STATIC_NAMES_LAYOUTS, else gcs's `listing/{id}/[index/{gen}/]path-index.parquet`)")
+@option("-b", "--bucket", default=data_bucket, help="Data bucket")
+@option("-L", "--layout", "layouts", multiple=True, help="Key template of the scans' `path` sorts, `{id}` the scan id and `{gen}` the store generation; repeat (default: the profile's, $STATIC_NAMES_LAYOUTS)")
 @option("-s", "--start", help="First scan id (inclusive)")
 @option("-t", "--through", help="Last scan id (inclusive)")
 def scans_cmd(bucket: str, layouts: tuple[str, ...], start: str | None, through: str | None) -> None:
     """Print the scans manifest (JSON): each scan's newest `path` sort, pinned by generation and md5."""
     from google.cloud import storage
 
-    doc = list_scans(bucket, layouts=layouts or LAYOUTS, start=start, through=through)
+    doc = list_scans(bucket, layouts=layouts or profile_layouts(), start=start, through=through)
     b = storage.Client().bucket(bucket)
     for s in doc["scans"]:
         s["version"] = _version_from_footer(b, s["src"])
@@ -1036,7 +1006,7 @@ def ranges_cmd(k: int, mount: str | None, scans_json: str) -> None:
 
 
 @cli.command("intervals")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
 @option("-C", "--coalesced", is_flag=True, help="The coalesced versions straight from the scans (`cintervals/`, `chist/`; `cdone/r####.json` marks a range done), not the full intervals")
 @option("-g", "--gen", required=True, help="Output generation: gs://BUCKET/static-names/GEN/")
 @option("-f", "--force", is_flag=True, help="Rebuild ranges whose digest is already uploaded")
@@ -1095,7 +1065,7 @@ def intervals_cmd(bucket, coalesced, gen, force, index, mount, mem, per_task, ou
 
 
 @cli.command("append")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
 @option("-f", "--from-gen", "from_gen", required=True, help="Generation whose intervals the scan is appended to")
 @option("-g", "--gen", required=True, help="Output generation (its scans.json = FROM's plus the scan)")
 @option("-i", "--index", type=int, help="Range index (default: $BATCH_TASK_INDEX)")
@@ -1126,7 +1096,7 @@ def append_cmd(bucket, from_gen, gen, index, mount, mem, out, threads, tmp, no_u
 
 
 @cli.command("coalesce")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket (the scratch bucket for a measurement)")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket (the scratch bucket for a measurement)")
 @option("-f", "--force", is_flag=True, help="Redo ranges whose stats are already uploaded")
 @option("-g", "--gen", required=True, help="Output generation: gs://BUCKET/static-names/GEN/{cintervals,chist,cstats}/")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -1144,7 +1114,7 @@ def coalesce_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task,
     range's `cintervals/`, `chist/` and `cstats/` (written last: marks the range done)."""
     from google.cloud import storage
 
-    ranges = read_json(f"gs://{DATA_BUCKET}/{PREFIX}/{intervals_gen}/ranges.json")
+    ranges = read_json(f"gs://{data_bucket()}/{PREFIX}/{intervals_gen}/ranges.json")
     todo = [int(x) for x in only.split(",")] if only else list(range(_task(index) * per_task, min((_task(index) + 1) * per_task, ranges["k"])))
     lits = [x for x in read_text(terms).splitlines() if x.strip()] if terms else None
     prefix = f"{PREFIX}/{gen}"
@@ -1166,7 +1136,7 @@ def coalesce_cmd(bucket, force, gen, index, intervals_gen, mount, mem, per_task,
 
 
 @cli.command("coalesce-report")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation holding `cstats/` and `chist/`")
 @option("-H", "--hist-gen", required=True, help="Generation holding the uncoalesced `hist/`")
 @option("-v", "--threshold", "thresholds", multiple=True, type=int, default=[100_000, 150_000], help="Range-row thresholds to count prefixes at; repeat")
@@ -1194,7 +1164,7 @@ def coalesce_report_cmd(bucket, gen, hist_gen, thresholds) -> None:
         for name, g, sub in (("before", hist_gen, "hist"), ("after", gen, "chist")):
             dd = Path(tmpd) / name
             dd.mkdir()
-            for blob in client.list_blobs(DATA_BUCKET if name == "before" else bucket, prefix=f"{PREFIX}/{g}/{sub}/"):
+            for blob in client.list_blobs(data_bucket() if name == "before" else bucket, prefix=f"{PREFIX}/{g}/{sub}/"):
                 blob.download_to_filename(str(dd / Path(blob.name).name))
             sets[name] = str(dd / "*.parquet")
         con = duckdb.connect()
@@ -1208,7 +1178,7 @@ def coalesce_report_cmd(bucket, gen, hist_gen, thresholds) -> None:
 
 
 @cli.command("plan-shards")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-H", "--hist", "hist_dir", default="hist", help="Histogram subdir (`chist`: the coalesced versions')")
 @option("-n", "--target-rows", default=50_000_000, type=int, help="Suffix rows per shard file")
@@ -1233,7 +1203,7 @@ def plan_shards_cmd(bucket, gen, hist_dir, target_rows, tasks) -> None:
 
 
 @cli.command("suffix-map")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
 @option("-C", "--coalesced", is_flag=True, help="Expand GEN's coalesced versions (`cintervals/`) instead of intervals")
 @option("-f", "--force", is_flag=True, help="Redo ranges already mapped")
 @option("-g", "--gen", required=True, help="Generation (its `shards.json` plan; intervals from -I or GEN)")
@@ -1245,7 +1215,7 @@ def plan_shards_cmd(bucket, gen, hist_dir, target_rows, tasks) -> None:
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n)")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the shuffle (`sxmap/`, `sxmap-done/`)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket for the shuffle (`sxmap/`, `sxmap-done/`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, mem, per_task, out, threads, only, scratch, tmp) -> None:
     """Expand ranges' intervals into suffix rows tagged with their shard, written per reduce task
@@ -1278,7 +1248,7 @@ def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, m
 
 
 @cli.command("shards")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-b", "--bucket", default=data_bucket, help="Output bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
 @option("-m", "--mount", required=True, help="Local mount of the bucket")
@@ -1286,7 +1256,7 @@ def suffix_map_cmd(bucket, coalesced, force, gen, index, intervals_gen, mount, m
 @option("-o", "--out", default="/stage/out", help="Local output dir")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
 @option("-P", "--partial", is_flag=True, help="Accept fewer mapped ranges than ranges (a dev build over some ranges)")
-@option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket holding the shuffle (mounted beside -m: `<-m>/../SCRATCH`)")
+@option("-S", "--scratch", default=scratch_bucket, help="Bucket holding the shuffle (mounted beside -m: `<-m>/../SCRATCH`)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill + partition dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
 def shards_cmd(bucket, gen, index, mount, mem, out, threads, partial, scratch, tmp, no_upload) -> None:
@@ -1310,7 +1280,7 @@ def shards_cmd(bucket, gen, index, mount, mem, out, threads, partial, scratch, t
 
 
 @cli.command("sidecar")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 def sidecar_cmd(bucket, gen) -> None:
     """Concatenate the per-shard sidecars into `sidecar.parquet` (sorted `(file, rg)`, which is `s`
@@ -1339,7 +1309,7 @@ def sidecar_cmd(bucket, gen) -> None:
 
 
 @cli.command("manifest")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @argument("subdirs", nargs=-1, required=True)
 def manifest_cmd(bucket, gen, subdirs) -> None:
@@ -1413,7 +1383,7 @@ def ch_digest_sql_cmd(closures, nodes, only, ranges_json) -> None:
 
 
 @cli.command("verify-intervals")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-r", "--range", "only", help="Comma-separated range indices (default: every range)")
 @argument("ch_tsv")
@@ -1459,12 +1429,12 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
              "drill/meta.json", "drill/aliases.parquet", "drill/long/roots/", "drill/long/rollups/", "drill/short/roots/",
              "drill/short/rollups/", "drill/long-roots-index", "drill/long-rollups-index", "drill/short-roots-index",
              "drill/short-rollups-index",
-             # the daily runs' manifests (`static_append`; a run's own files are copied with `-g GEN/deltas/<run>`)
+             # the runs' manifests (`static_append`; a run's own files are copied with `-g GEN/deltas/<run>`)
              "manifests/")
 
 
 @cli.command("r2-copy")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Source GCS bucket")
+@option("-b", "--bucket", default=data_bucket, help="Source GCS bucket")
 @option("-g", "--gen", required=True, help="Generation")
 @option("-n", "--dry-run", is_flag=True, help="List what would be copied")
 @option("-o", "--only", help="Copy only the served keys under this generation-relative prefix (e.g. `manifests/`)")
@@ -1536,7 +1506,7 @@ def compare_answers_cmd(ch_jsonl, static_jsonl) -> None:
 
 
 @cli.command("query")
-@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
 @option("-g", "--gen", required=True, help="Generation")
 @argument("terms", nargs=-1, required=True)

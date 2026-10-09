@@ -228,15 +228,15 @@ describe('DrillSource: roots answers across isolates (the colo cache)', () => {
       async put(url: string, r: Response) { held.set(url, await r.text()) },
     } as unknown as Cache
     const first: string[] = []
-    const a = (await drillSource(drillBlobs(first), colo).hits('tomat', 'bk'))!
+    const a = (await drillSource(drillBlobs(first), { cache: colo, prefix: 'g' }).hits('tomat', 'bk'))!
     const later: string[] = []
-    const b = (await drillSource(drillBlobs(later), colo).hits('tomat', 'bk'))!
+    const b = (await drillSource(drillBlobs(later), { cache: colo, prefix: 'g' }).hits('tomat', 'bk'))!
     const key = (h: Hit) => `${h.path} ${h.depth} ${h.usr} ${h.vf} ${h.vt} ${h.size} ${h.n}`
     // The colo also holds the drill's index tops and aliases (their own keys).
     const answers = () => [...held.keys()].filter(u => u.includes('/roots-v1/')).map(u => decodeURIComponent(u.split('/').pop()!))
     expect([answers(), first.some(k => k.includes('roots')), b.hits!.map(key), later.filter(k => k.includes('roots')), b.scans])
       .toEqual([['tomat\0bk.json'], true, a.hits!.map(key), [], DATES])
-    await drillSource(drillBlobs(), colo).hits('0', 'bk/fill')
+    await drillSource(drillBlobs(), { cache: colo, prefix: 'g' }).hits('0', 'bk/fill')
     expect(answers()).toEqual(['tomat\0bk.json'])
   })
 })

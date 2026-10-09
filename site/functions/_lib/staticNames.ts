@@ -23,14 +23,13 @@
 import { type FileMetaData, parquetRead, type RowGroup } from 'hyparquet'
 import { compressors } from './zstd.js'
 
-/** The generation a deployment serves when its `STATIC_GEN` var is unset (gcs's base, from before the var). */
-export const STATIC_GEN = '2026-10-08c'
 /** A generation's key prefix in the deployment's `INDEX_R2` bucket. */
 export const staticPrefix = (gen: string): string => `static-names/${gen}`
-export const STATIC_PREFIX = staticPrefix(STATIC_GEN)
-/** The deployment's generation (`STATIC_GEN`, e.g. cw's `2026-10-09cw`), else `STATIC_GEN`'s default; one path segment. */
+/** The deployment's generation, its `STATIC_GEN` var (e.g. gcs's `2026-10-08c`, cw's `2026-10-09cw`): required with the
+ *  static index on, one path segment. */
 export function staticGen(env: { STATIC_GEN?: string }): string {
-  const gen = env.STATIC_GEN?.trim() || STATIC_GEN
+  const gen = env.STATIC_GEN?.trim()
+  if (!gen) throw new Error('static names: STATIC_GEN is unset (the static name index generation in INDEX_R2)')
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(gen)) throw new Error(`static names: bad STATIC_GEN ${JSON.stringify(gen)}`)
   return gen
 }
@@ -314,14 +313,14 @@ export class FirstHits {
 
 // --- storage seam (R2 in the Worker, files in tests) -------------------------------------------
 
-/** Ranged reads of the generation's objects (keys relative to `STATIC_PREFIX`). */
+/** Ranged reads of the generation's objects (keys relative to a generation's `staticPrefix`). */
 export interface Blobs {
   /** `[offset, offset + length)` of `key`; `length` omitted = to the end. */
   range(key: string, offset: number, length?: number): Promise<ArrayBuffer>
   /** The last `n` bytes and the object's size. */
   suffix(key: string, n: number): Promise<{ buf: ArrayBuffer; size: number }>
   json<T>(key: string): Promise<T>
-  /** Keys under `prefix` (relative to the same root), when the store can list (the daily runs' manifests). */
+  /** Keys under `prefix` (relative to the same root), when the store can list (the runs' manifests). */
   list?(prefix: string): Promise<string[]>
 }
 
@@ -424,8 +423,8 @@ export class StaticNames {
   }
 }
 
-/** `Blobs` over an R2 bucket binding (keys under `STATIC_PREFIX`). */
-export function r2Blobs(r2: R2Bucket, prefix = STATIC_PREFIX): Blobs {
+/** `Blobs` over an R2 bucket binding (keys under `prefix`, a generation's `staticPrefix`). */
+export function r2Blobs(r2: R2Bucket, prefix: string): Blobs {
   const get = async (key: string, range?: R2Range) => {
     const o = await r2.get(`${prefix}/${key}`, range ? { range } : undefined)
     if (!o) throw new Error(`static names: ${prefix}/${key} is missing`)
@@ -449,7 +448,7 @@ export function r2Blobs(r2: R2Bucket, prefix = STATIC_PREFIX): Blobs {
 }
 
 /** The colo's Cache API as the index tier between isolates (JSON; ~1 MB per shard group index). */
-export function cacheIndexes<T = GroupIndex>(cache: Cache, prefix = STATIC_PREFIX, version = 'index-v2'): IndexCache<T> {
+export function cacheIndexes<T = GroupIndex>(cache: Cache, prefix: string, version = 'index-v2'): IndexCache<T> {
   const url = (file: string) => `https://static-names.invalid/${prefix}/${file}.${version}.json`
   return {
     async get(file) {

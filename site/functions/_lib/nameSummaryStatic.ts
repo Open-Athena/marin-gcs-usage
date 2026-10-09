@@ -30,7 +30,7 @@ const validation = (gen: string) => ({
 })
 
 /** The generation's readers: suffix shards, catalog, `scans.json`'s scan ids (sorted), and a clock for the timings. */
-/** The suffix reader (`StaticNames`, or `TieredNames` over the base and its daily runs). */
+/** The suffix reader (`StaticNames`, or `TieredNames` over the base and its runs). */
 export interface NameReader {
   extent(key: string, io: Io): Promise<{ rows: number } | null>
   answer(key: string, dates: string[], maxRows?: number): Promise<{ io: Io; answer: Answer | null }>
@@ -44,10 +44,10 @@ let held: { r2: R2Bucket; gen: string; store: Store } | undefined
 const tick = async () => { await caches.default.match('https://static-names.invalid/tick'); return Date.now() }
 
 /** The isolate's readers over the bound bucket's generation `gen` (`staticGen(env)`; indexes held across requests). */
-export function store(r2: R2Bucket, gen = staticGen({})): Store {
+export function store(r2: R2Bucket, gen: string): Store {
   if (held?.r2 !== r2 || held.gen !== gen) {
     const root = staticPrefix(gen), blobs = r2Blobs(r2, root)
-    // The base generation plus its daily runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
+    // The base generation plus its runs (`staticRuns.ts`), each tier's indexes cached under its own prefix.
     const pre = (dir: string | null) => dir ? `${root}/${dir}` : root
     const t = tiers(blobs, { indexCache: dir => cacheIndexes(caches.default, pre(dir)), catalogCache: dir => cacheIndexes(caches.default, pre(dir), 'catalog-v1'), clock: tick })
     held = { r2, gen, store: { names: t.names, catalog: t.catalog, scans: t.scans, clock: tick } }
@@ -55,7 +55,7 @@ export function store(r2: R2Bucket, gen = staticGen({})): Store {
   return held.store
 }
 /** The suffix reader alone (`/api/static-bench`). */
-export const names = (r2: R2Bucket, gen?: string): NameReader => store(r2, gen).names
+export const names = (r2: R2Bucket, gen: string): NameReader => store(r2, gen).names
 
 /** `scans.json`'s scan ids, sorted (held once loaded). */
 export function scanIds(blobs: Blobs): () => Promise<string[]> {

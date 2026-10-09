@@ -1,10 +1,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { staticRegistry, staticSummary } from './nameSummaryStatic.js'
 import { staticFilterStore, staticTag } from './staticFilter.js'
-import { STATIC_GEN, staticGen, staticPrefix } from './staticNames.js'
+import { staticGen, staticPrefix } from './staticNames.js'
 import { fixture } from './testStore.js'
 
-// The generation is deployment config (`STATIC_GEN`): every read of a deployment's static name index is under its own
+// The generation is required deployment config (`STATIC_GEN`): every read of a deployment's static name index is under its own
 // `static-names/<gen>/` in `INDEX_R2`, and the responses name it. The bucket here holds `fixtures/static-runs/` (a base
 // and its runs, the manifests through 2026-10-02 visible) as cw's generation `2026-10-09cw`.
 
@@ -49,9 +49,9 @@ beforeEach(() => { vi.stubGlobal('caches', { default: { match: async () => undef
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('STATIC_GEN', () => {
-  it('is the deployment\'s generation, else the default; one path segment', () => {
-    expect([staticGen({}), staticGen({ STATIC_GEN: '' }), staticGen({ STATIC_GEN: GEN }), staticPrefix(GEN)])
-      .toEqual([STATIC_GEN, STATIC_GEN, GEN, 'static-names/2026-10-09cw'])
+  it('is the deployment\'s generation, required (no deployment is assumed); one path segment', () => {
+    expect([staticGen({ STATIC_GEN: GEN }), staticPrefix(GEN)]).toEqual([GEN, 'static-names/2026-10-09cw'])
+    for (const env of [{}, { STATIC_GEN: ' ' }]) expect(() => staticGen(env)).toThrow('static names: STATIC_GEN is unset (the static name index generation in INDEX_R2)')
     expect(() => staticGen({ STATIC_GEN: 'a/b' })).toThrow('static names: bad STATIC_GEN "a/b"')
   })
 

@@ -1,35 +1,29 @@
-"""`dt-cloud static-names daily run SCAN_ID`: the static name index's per-scan append chain (specs/static-daily-append.md),
+"""`dt-cloud static-names runs add SCAN_ID`: append one scan to the static name index as a run (specs/static-append.md),
 in Python, so a deployment's scan job calls it directly (no `gcloud`: GCS and Batch over their APIs):
 
     prepare → append (key ranges on Batch) → shards ∥ catalog → publish (tier merges + `manifests/<id>.json`)
       → R2 (each run the manifest lists, then the manifest, last) [→ verify] → prune
 
-Scans are appended **strictly in scan-id order** (specs/scan-ids-not-dates.md: a scan's key is its id, two scans a day
-are two runs). Given SCAN_ID, every published scan after the generation's newest (base + live runs) and up to SCAN_ID
-is pending; the oldest pending must be SCAN_ID itself, else the run refuses (exit 3), or with `-c` catches up every
-pending scan in order. Each stage is skipped when its output is in the data bucket, so a rerun resumes at the first
-missing one; the R2 copy skips objects already there, so it always runs.
+The unit is a scan: any deployment may scan once a day, every 6 h, or once more on demand, and each scan is its own
+run (specs/scan-ids-not-dates.md). Scans are added **strictly in scan-id order**: given SCAN_ID, every published scan
+after the generation's newest (base + live runs) and up to SCAN_ID is pending; the oldest pending must be SCAN_ID
+itself, else it refuses (exit 3), or with `-c` catches up every pending scan in order. Each stage is skipped when its
+output is in the data bucket, so a rerun resumes at the first missing one; the R2 copy skips objects already there,
+so it always runs.
 
 Exit status: 0 done, 3 not published yet or not the next scan, 1 a stage failed.
 
-Deployment config (env; the CLI's options override): `STATIC_NAMES_GEN` (the base generation), `STATIC_NAMES_BUCKET`
-/ `STATIC_NAMES_SCRATCH` (`static_names`), `GCP_PROJECT`, `STATIC_NAMES_REGION` (us-east1), `STATIC_NAMES_IMAGE` (the job
-image: `dt_cloud` + `pyrmts`), `STATIC_NAMES_SA` (the stages' account: the data and scratch buckets),
-`STATIC_NAMES_R2_SA` (the R2 copy's account; default the stages'), `R2_BUCKET`, the R2 credentials as Secret Manager
-secret names `STATIC_NAMES_R2_SECRETS` (`endpoint=NAME,key_id=NAME,secret=NAME`; `endpoint` may instead be the plain
-`R2_ENDPOINT`), `STATIC_NAMES_MACHINE` (n2-highmem-16), `STATIC_NAMES_SSD` (750 GB), `STATIC_NAMES_SPOT` (1),
-`STATIC_NAMES_APPEND_TASKS` (16), `STATIC_NAMES_SRC` (comma-separated mounted dirs copied onto the tasks' PYTHONPATH in
-place of the image's own code, e.g. `/gcs/<bucket>/static-names/src/<tree>/dt_cloud`).
+Config: the deployment profile (`static_profile`: `STATIC_NAMES_PROFILE` = an example or a JSON file, then each
+field's env var); a run needs its generation, buckets, layouts, region, image, accounts, R2 bucket and R2 secrets.
 """
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from math import ceil
 from time import monotonic
@@ -37,7 +31,9 @@ from typing import Callable
 
 from click import argument, command, option
 
-from .static_names import DATA_BUCKET, GCS_LAYOUTS, PREFIX, SCAN_ID, SCRATCH_BUCKET, err
+from .scan_ids import SCAN_ID
+from .static_names import PREFIX, err
+from .static_profile import Profile, profile
 
 #: Exit status: the scan is not published yet, or is not the next one to append.
 NOT_NEXT = 3
@@ -47,73 +43,18 @@ class NotNext(Exception):
     """The scan can't be appended now (not published, or an earlier published scan is pending): exit 3."""
 
 
-@dataclass(frozen=True)
-class Config:
-    gen: str
-    project: str
-    image: str
-    sa: str
-    r2_bucket: str
-    bucket: str = DATA_BUCKET
-    scratch: str = SCRATCH_BUCKET
-    region: str = "us-east1"
-    r2_sa: str | None = None
-    #: Secret Manager secret names, by the env var each sets in the R2 copy: `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`,
-    #: `R2_SECRET_ACCESS_KEY`. `r2_endpoint` (plain) replaces the endpoint's secret.
-    r2_secrets: dict[str, str] = field(default_factory=dict)
-    r2_endpoint: str | None = None
-    machine: str = "n2-highmem-16"
-    ssd_gb: int = 750
-    spot: bool = True
-    append_tasks: int = 16
-    src: tuple[str, ...] = ()
+def ready(p: Profile, gen: str | None = None) -> Profile:
+    """`p` (with `gen` over its own) checked for everything a run needs; the project defaults to the credentials'."""
+    if gen:
+        p = replace(p, gen=gen)
+    if not p.project:
+        from .gcp import gcp_project
 
-    @classmethod
-    def from_env(cls, **over) -> "Config":
-        e = os.environ.get
-        secrets = {}
-        names = {"endpoint": "R2_ENDPOINT", "key_id": "R2_ACCESS_KEY_ID", "secret": "R2_SECRET_ACCESS_KEY"}
-        for part in filter(None, (e("STATIC_NAMES_R2_SECRETS") or "").split(",")):
-            k, _, v = part.partition("=")
-            if k.strip() not in names or not v.strip():
-                raise SystemExit(f"STATIC_NAMES_R2_SECRETS: {part!r} is not endpoint=|key_id=|secret=<secret name>")
-            secrets[names[k.strip()]] = v.strip()
-
-        def need(name: str, what: str) -> str:
-            v = (e(name) or "").strip()
-            if not v:
-                raise SystemExit(f"{name} is unset: export {what}")
-            return v
-
-        kw = {k: v for k, v in over.items() if v is not None}
-        if "project" not in kw:
-            from .gcp import gcp_project
-
-            kw["project"] = gcp_project()
-        cfg = dict(
-            gen=kw.pop("gen", None) or need("STATIC_NAMES_GEN", "the base generation (static-names/<gen>/)"),
-            image=kw.pop("image", None) or need("STATIC_NAMES_IMAGE", "the job image (dt_cloud + pyrmts)"),
-            sa=kw.pop("sa", None) or need("STATIC_NAMES_SA", "the account the stages run as (data + scratch buckets)"),
-            r2_bucket=kw.pop("r2_bucket", None) or need("R2_BUCKET", "the R2 bucket serving the index"),
-            region=e("STATIC_NAMES_REGION") or "us-east1",
-            r2_sa=e("STATIC_NAMES_R2_SA") or None,
-            r2_secrets=secrets,
-            r2_endpoint=e("R2_ENDPOINT") or None,
-            machine=e("STATIC_NAMES_MACHINE") or "n2-highmem-16",
-            ssd_gb=int(e("STATIC_NAMES_SSD") or 750),
-            spot=(e("STATIC_NAMES_SPOT") or "1") != "0",
-            append_tasks=int(e("STATIC_NAMES_APPEND_TASKS") or 16),
-            src=tuple(s for s in (e("STATIC_NAMES_SRC") or "").split(",") if s),
-            bucket=DATA_BUCKET, scratch=SCRATCH_BUCKET,
-        )
-        cfg.update(kw)
-        out = cls(**cfg)
-        if "R2_ENDPOINT" not in out.r2_secrets and not out.r2_endpoint:
-            raise SystemExit("the R2 endpoint: set R2_ENDPOINT, or name its secret in STATIC_NAMES_R2_SECRETS (endpoint=…)")
-        for part, k in (("key_id", "R2_ACCESS_KEY_ID"), ("secret", "R2_SECRET_ACCESS_KEY")):
-            if k not in out.r2_secrets:
-                raise SystemExit(f"STATIC_NAMES_R2_SECRETS needs {part}=<secret name>")
-        return out
+        p = replace(p, project=gcp_project())
+    for f in ("gen", "bucket", "scratch", "layouts", "region", "image", "sa", "r2_bucket"):
+        p.need(f)
+    p.r2_env_secrets()
+    return p
 
 
 # ── Order ──────────────────────────────────────────────────────────────────
@@ -140,7 +81,7 @@ def pending_scans(have: list[str], published: list[str], scan_id: str, catch_up:
 # ── Batch ──────────────────────────────────────────────────────────────────
 
 
-def task_command(cfg: Config, module: str, args: list[str], *, mount: bool = True) -> str:
+def task_command(cfg: Profile, module: str, args: list[str], *, mount: bool = True) -> str:
     """A stage task's shell command: `python -m dt_cloud.<module> <args> [-m /gcs/<bucket>]`, from the image's code or
     (`cfg.src`) the given mounted dirs."""
     prep = "mkdir -p /stage/tmp /stage/out"
@@ -152,7 +93,7 @@ def task_command(cfg: Config, module: str, args: list[str], *, mount: bool = Tru
     return f"set -euo pipefail; {prep} && cd /stage && {py} dt_cloud.{module} {shlex.join([*args, *m])}"
 
 
-def job_spec(cfg: Config, name: str, tasks: int, commands: list[str], *, stage: str, scratch: bool = True, r2: bool = False,
+def job_spec(cfg: Profile, name: str, tasks: int, commands: list[str], *, stage: str, scratch: bool = True, r2: bool = False,
              machine: str | None = None, ssd_gb: int | None = None) -> dict:
     """A Batch job of `tasks` tasks (in parallel) running `commands` (one shell script, `&&`-chained) in the image, the
     data bucket (and `scratch`) mounted read-only under /gcs, a local SSD at /stage. `r2`: as the R2 account, with its
@@ -164,9 +105,10 @@ def job_spec(cfg: Config, name: str, tasks: int, commands: list[str], *, stage: 
     environment: dict = {"variables": env}
     if r2:
         env["R2_BUCKET"] = cfg.r2_bucket
-        if cfg.r2_endpoint and "R2_ENDPOINT" not in cfg.r2_secrets:
+        if "endpoint" not in cfg.r2_secrets:
             env["R2_ENDPOINT"] = cfg.r2_endpoint
-        environment["secretVariables"] = {k: f"projects/{cfg.project}/secrets/{v}/versions/latest" for k, v in sorted(cfg.r2_secrets.items())}
+        secrets = cfg.r2_env_secrets()
+        environment["secretVariables"] = {k: f"projects/{cfg.project}/secrets/{v}/versions/latest" for k, v in sorted(secrets.items())}
     return {
         "taskGroups": [{
             "taskCount": tasks,
@@ -216,7 +158,7 @@ def job_id(stage: str, scan_id: str, now: datetime | None = None) -> str:
 class BatchRunner:
     """Submit a Batch job and wait for it (REST over ADC, `batch.submit_job` / `gcp.batch_job`)."""
 
-    def __init__(self, cfg: Config, log: Callable[[str], None]):
+    def __init__(self, cfg: Profile, log: Callable[[str], None]):
         self.cfg, self.log = cfg, log
 
     def __call__(self, name: str, spec: dict) -> None:
@@ -243,11 +185,11 @@ class BatchRunner:
 
 
 @dataclass
-class Daily:
+class Runner:
     """The chain over injectable effects (tests pass fakes): `exists(key)` / `count(prefix, suffix)` / `read_json(key)` on
     the data bucket (keys relative to it), `published()` the scan ids under the base's layouts, `run_job(name, spec)`,
-    `prepare(scan_id)` and `prune(scan_id)` (the `daily` CLI's local stages), `list_keys(prefix)`, `log`."""
-    cfg: Config
+    `prepare(scan_id)` and `prune(scan_id)` (the `runs` CLI's local stages), `list_keys(prefix)`, `log`."""
+    cfg: Profile
     exists: Callable[[str], bool]
     count: Callable[[str, str], int]
     read_json: Callable[[str], dict]
@@ -371,8 +313,8 @@ class Daily:
         self.stage(f"{d} r2 ({len(runs)} runs + manifests/)", lambda: self.run_job(name, spec))
 
 
-def gcs_daily(cfg: Config, *, dry_run: bool = False, verify_terms: str | None = None) -> Daily:
-    """`Daily` over the real data bucket, Batch, and the `daily` CLI's `prepare` / `prune`."""
+def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None = None) -> Runner:
+    """`Runner` over the real data bucket, Batch, and the `runs` CLI's `prepare` / `prune`."""
     from google.cloud import storage
 
     from . import static_append as sa
@@ -382,7 +324,7 @@ def gcs_daily(cfg: Config, *, dry_run: bool = False, verify_terms: str | None = 
     b = client.bucket(cfg.bucket)
 
     def published(layouts, start):
-        return [s["id"] for s in list_scans(cfg.bucket, layouts=layouts or GCS_LAYOUTS, start=start)["scans"]]
+        return [s["id"] for s in list_scans(cfg.bucket, layouts=layouts or cfg.layouts, start=start)["scans"]]
 
     def prepare(d):
         try:
@@ -392,10 +334,10 @@ def gcs_daily(cfg: Config, *, dry_run: bool = False, verify_terms: str | None = 
 
     def prune(d):
         k = read_json(f"gs://{cfg.bucket}/{PREFIX}/{cfg.gen}/ranges.json")["k"]
-        doc = sa.prune_state(client, cfg.gen, d, k, bucket=cfg.bucket, dry_run=dry_run)
+        doc = sa.prune_state(client, cfg.gen, d, k, bucket=cfg.bucket, scratch=cfg.scratch, dry_run=dry_run)
         err(json.dumps(doc))
 
-    return Daily(
+    return Runner(
         cfg=cfg,
         exists=lambda key: b.blob(key).exists(),
         count=lambda prefix, suffix: sum(1 for x in client.list_blobs(cfg.bucket, prefix=prefix) if x.name.endswith(suffix)),
@@ -410,24 +352,24 @@ def gcs_daily(cfg: Config, *, dry_run: bool = False, verify_terms: str | None = 
     )
 
 
-@command("run")
+@command("add")
 @option("-c", "--catch-up", is_flag=True, help="Append every earlier published scan still pending first, in scan-id order")
-@option("-g", "--gen", help="Base generation (default: $STATIC_NAMES_GEN)")
+@option("-g", "--gen", help="Base generation (default: the profile's, $STATIC_NAMES_GEN)")
 @option("-n", "--dry-run", is_flag=True, help="Report each stage's state and what would run; submit and write nothing")
-@option("-t", "--verify-terms", help="Also run `daily verify` with this terms file (a gs:// URL)")
+@option("-t", "--verify-terms", help="Also run `runs verify` with this terms file (a gs:// URL)")
 @argument("scan_id")
-def run_cmd(catch_up: bool, gen: str | None, dry_run: bool, verify_terms: str | None, scan_id: str) -> None:
+def add_cmd(catch_up: bool, gen: str | None, dry_run: bool, verify_terms: str | None, scan_id: str) -> None:
     """Append SCAN_ID to the static name index: prepare → append → shards ∥ catalog → publish → R2 → prune, each stage
     skipped when its output exists. Exit 3 when SCAN_ID is not published yet, or an earlier published scan is pending
     (without -c)."""
-    cfg = Config.from_env(gen=gen)
-    daily = gcs_daily(cfg, dry_run=dry_run, verify_terms=verify_terms)
+    cfg = ready(profile(), gen)
+    runner = gcs_runner(cfg, dry_run=dry_run, verify_terms=verify_terms)
     try:
-        done = daily.run(scan_id, catch_up=catch_up)
+        done = runner.run(scan_id, catch_up=catch_up)
     except NotNext as e:
-        err(f"static-names daily run {scan_id}: {e}")
+        err(f"static-names runs add {scan_id}: {e}")
         sys.exit(NOT_NEXT)
     except RuntimeError as e:
-        err(f"static-names daily run {scan_id}: {e}")
+        err(f"static-names runs add {scan_id}: {e}")
         sys.exit(1)
     print(json.dumps({"gen": cfg.gen, "scan": scan_id, "appended": done, "dry_run": dry_run}))

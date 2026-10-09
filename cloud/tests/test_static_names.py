@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from dt_cloud import static_names as sn
+from dt_cloud.static_profile_examples import GCS
 
 DATES = ["2026-07-30", "2026-07-31", "2026-08-02", "2026-08-03", "2026-08-04"]
 V2_FROM = 3  # scans from here on are store generations (v2); earlier ones v1 indexes
@@ -434,7 +435,7 @@ def test_pick_scans_gcs_layouts():
         ("listing/2026-07-31/index/20260801T000000Z/path-index.parquet", _pins(3)),
         ("listing/2026-07-31/index/20260731T000000Z/path-index.parquet", _pins(4)),
     ]
-    assert sn.pick_scans(objects) == [
+    assert sn.pick_scans(objects, GCS.layouts) == [
         {"id": "2026-07-30", "src": "listing/2026-07-30/path-index.parquet", "generation": 1, "size": 1, "ts": sn.scan_epoch("2026-07-30")},
         {"id": "2026-07-31", "src": "listing/2026-07-31/index/20260801T000000Z/path-index.parquet", "generation": 3, "size": 3,
          "ts": sn.scan_epoch("2026-07-31")},
