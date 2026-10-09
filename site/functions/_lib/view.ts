@@ -59,6 +59,9 @@ const COARSE_EXPS = [16, 20, 24]
  * is cheaper (gcs's 32K-row groups: a 2K-row dir 20 levels deep decoded
  * ~1.3M rows from `path`). The two span queries cost ~20 ms. */
 export const SMALL_SUBTREE_ROWS = 0
+/** On the interval store, a subtree with more rows than this (or an unknown count) reads `bysize`
+ * without planning `path` (`planSubtree`). */
+export const IV_PATH_PLAN_ROWS = 1 << 18
 /** A v1 floor-free tier is sorted `(depth, path)`, so a size threshold can't
  * prune it: the filter's no-match fallback reads every row under the path.
  * For a whole bucket that read exceeds the Worker's limits (a bucket-level
@@ -383,6 +386,16 @@ async function planSubtree(
   // `n_desc` alone, and with large row groups the wrong pick decodes 4×
   // more (gcs at 32K-row groups: small drills over the 700K-row cap).
   // `smallRows`: below it the `path` read is taken without planning `bysize`.
+  // The interval store plans from footer groups it must fetch and decode (no D1): a big subtree's
+  // `path` plan touches most of them, and `bysize` is the cheaper read there anyway, so it isn't planned.
+  if (!pathOnly && pathIdx.asOf != null && (nDesc == null || nDesc > IV_PATH_PLAN_ROWS)) {
+    const sized = await tryOpen(env, date, 'bysize')
+    if (sized) {
+      const sh = withTrace(sized, tr)
+      const sp = await planSizeRects(sh, rects, thrAt, lens)
+      return of(sized.variant, sp, stop => readSizeRects(sh, rects, thrAt, lens, sp, stop))
+    }
+  }
   if (!pathOnly && isStore(pathIdx) && (nDesc == null || nDesc > smallRows)) {
     // A lens prefers the user-first size sort where the scan has one (gcs
     // writes only `bysize-user`): a user's root reads their own groups.
