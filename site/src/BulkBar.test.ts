@@ -26,9 +26,9 @@ const text = (html: string) => html.replace(/<[^>]+>/g, '|').split('|').map(s =>
 describe('the bulk bar lists the matches as prefixes, grouped by folder, for review', () => {
   it('summarizes, groups heaviest folder first, and offers assign + stage (no cap, no jargon)', () => {
     expect(text(render(cover()))).toEqual([
-      '5 matches → 4 prefixes · 350 B',
+      '5 matches → 1 folder, 3 files · 350 B',
       'review',
-      'Each line is a folder whose every file matches, or a single match. Untick false positives — a whole folder’s worth, or one at a time.',
+      'Each line is a folder whose every file matches, or a single match. Untick false positives — a whole folder’s worth, or one at a time. Owners and deletions are set per folder: a lone matching file in a folder with other files can’t be acted on by itself.',
       'all', 'none',
       `${SHOW}/`, '3/3 · 300 B',
       'ACS_Rotten_Tomatoes_chunk000.mp3', '100 B',
@@ -65,16 +65,19 @@ describe('deselect: a folder\'s worth or one item, and what each action then sen
     expect(kept(noOne)).toEqual(['marin-eu-west4/tomat', clips[0].path, clips[2].path])
     expect(kept(applyToggle(noOne, [clips[1].path], false))).toEqual(c.items.map(i => i.path))
   })
-  it('assign sends folder prefixes only (files can\'t be owned alone); stage sends files and folders, never a bucket', () => {
+  it('both actions send folder prefixes only (an object key would stage as `key/`, deleting nothing); stage never a bucket', () => {
     const items = [...c.items, { path: 'tomatoes-bucket', kind: 'dir' as const, b: 9, o: 1, roots: 1 }, { path: 'x/unk', kind: null, b: 1, o: 1, roots: 1 }]
     expect(actionTargets(items, 'gs://', 'assign')).toEqual({ prefixes: ['gs://marin-eu-west4/tomat/', 'gs://tomatoes-bucket/'], b: 59, o: 3, files: 3, buckets: 0, unknown: 1 })
-    expect(actionTargets(items, 'gs://', 'stage')).toEqual({ prefixes: ['gs://marin-eu-west4/tomat/', ...clips.map(i => `gs://${i.path}`)], b: 350, o: 5, files: 0, buckets: 1, unknown: 1 })
+    expect(actionTargets(items, 'gs://', 'stage')).toEqual({ prefixes: ['gs://marin-eu-west4/tomat/'], b: 50, o: 2, files: 3, buckets: 1, unknown: 1 })
   })
   it('says what it leaves out, in plain words', () => {
     expect(caveats({ files: 3, buckets: 0, unknown: 1 }, 'assign')).toEqual([
-      '3 matching files sit in folders that also hold files that don’t match. Owners are set per folder, so assigning leaves them out.',
+      '3 matching files sit in folders that also hold files that don’t match. Owners and deletions are set per folder, so assigning leaves them out.',
       '1 match couldn’t be checked (file or folder?) and is left out; open its folder to act on it.',
     ])
-    expect(caveats({ files: 3, buckets: 2, unknown: 0 }, 'stage')).toEqual(['2 whole buckets can’t be staged; they are left out.'])
+    expect(caveats({ files: 1, buckets: 2, unknown: 0 }, 'stage')).toEqual([
+      '1 matching file sits in folders that also hold files that don’t match. Owners and deletions are set per folder, so staging leaves it out.',
+      '2 whole buckets can’t be staged; they are left out.',
+    ])
   })
 })

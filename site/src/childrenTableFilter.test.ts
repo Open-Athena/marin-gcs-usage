@@ -57,11 +57,12 @@ describe('the children table under a filter', () => {
       ['bkt-none', ''],
     ])
   })
-  it('each row acts on its matches: assign its folder matches, and a row of lone files has nothing to assign (said why)', () => {
+  it('each row acts on its folder matches; a row of lone files (or none listed) has no checkbox and says why', () => {
     const html = render({ items })
     expect(assigns(html)).toEqual([[['gs://marin-eu-west4/tomat/'], '']])
+    expect(checkboxes(html)).toEqual(['no box', 'box', 'no box'])
     expect(rows(html).map(r => /data-tip="([^"]*)"><span class="none">—/.exec(actionsCell(r))?.[1] ?? null)).toEqual([
-      'This row’s matches are files in folders that also hold files that don’t match. Owners are set per folder, so they can’t be assigned on their own.',
+      'This row’s matches are files in folders that also hold files that don’t match. Owners and deletions are set per folder, so they can’t be acted on by themselves.',
       null,
       'Listing this row’s matches…',
     ])
@@ -69,9 +70,9 @@ describe('the children table under a filter', () => {
   it('the selection is the rows\' match roots, never their whole prefixes', () => {
     selected.add('gs://marin-eu-west4').add('gs://marin-us-central1')
     const html = render({ items })
-    // The selection bar's assign: the one folder match (files can't be owned alone); its trash count: all four.
+    // The selection bar's assign and trash: the one folder match (lone files can't be acted on by themselves).
     expect(assigns(html).at(-1)).toEqual([['gs://marin-eu-west4/tomat/'], 'assign 1…'])
-    expect(/trash (\d+)<\/button>/.exec(html)?.[1]).toBe('4')
+    expect(/trash (\d+)<\/button>/.exec(html)?.[1]).toBe('1')
     expect(html.includes('gs://marin-eu-west4/"') || html.includes('gs://marin-us-central1/"')).toBe(false)
   })
   it('no row acts while the matches aren\'t listed (and says why)', () => {

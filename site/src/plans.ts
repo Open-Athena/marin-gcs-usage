@@ -2,7 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { getCurrentScan } from './owners'
 import { DEFAULT_STORE } from './stores'
 import { type DeletionRun, EXEC_CAPS, type ExecCaps, type ExecJob } from './runs'
-import { stageInBatches } from './filterCover'
+import { stageMany as stageManyVia } from './batches'
 
 export type { DeletionRun, ExecJob } from './runs'
 export { LIVE_STATES } from './runs'
@@ -83,18 +83,9 @@ async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> 
 }
 
 /** Stage `prefixes` in `STAGE_CHUNK`-sized POSTs, then fold the batches into the first
- *  (`stageInBatches`): one gesture, one batch to review, however many prefixes. */
-export async function stageMany(prefixes: string[], note?: string, post: typeof call = call): Promise<StageResult> {
-  const as_of = getCurrentScan()
-  const all: StageResult[] = []
-  const r = await stageInBatches(prefixes,
-    async part => { const x = await post<StageResult>('/api/plans/stage', 'POST', { prefixes: part, note: note?.trim() || undefined, as_of }); all.push(x); return x },
-    (planId, into, ids) => post(`/api/plans/${planId}/batches/merge`, 'POST', { into, ids }))
-  return {
-    plan_id: r.plan_id ?? all[0]?.plan_id, batch_id: r.batch_id ?? all[0]?.batch_id,
-    staged: all.flatMap(x => x.staged), covered: all.flatMap(x => x.covered), absorbed: all.flatMap(x => x.absorbed), as_of: all[0]?.as_of ?? null,
-  }
-}
+ *  (`batches.ts` `stageMany`): one gesture, one batch to review, however many prefixes. */
+export const stageMany = (prefixes: string[], note?: string, post: typeof call = call): Promise<StageResult> =>
+  stageManyVia(prefixes, note, getCurrentScan(), post)
 
 /** Stage prefixes for deletion (POST /api/plans/stage, batched past `STAGE_CHUNK`). Pass canonical
  *  `<scheme>bucket/…/` prefixes (trailing slash) and, optionally, one memo for

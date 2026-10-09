@@ -32,10 +32,18 @@ export function applyToggle(dropped: ReadonlySet<string>, paths: readonly string
   return n
 }
 
+/** The kept items in words: `2 folders, 3 files` (unchecked ones counted as `matches`). */
+export function itemsText(items: readonly CoverItem[]): string {
+  const dirs = items.filter(i => i.kind === 'dir').length, files = items.filter(i => i.kind === 'file').length
+  const unk = items.length - dirs - files
+  const parts = [dirs && plural(dirs, 'folder'), files && plural(files, 'file'), unk && `${plural(unk, 'unchecked match', 'unchecked matches')}`].filter(Boolean)
+  return parts.length ? parts.join(', ') : 'nothing'
+}
+
 /** What the bar says about the kept items for each action, in plain words (one sentence per caveat). */
 export function caveats(t: { files: number; buckets: number; unknown: number }, action: 'assign' | 'stage'): string[] {
   const out: string[] = []
-  if (action === 'assign' && t.files) out.push(`${plural(t.files, 'matching file')} ${t.files === 1 ? 'sits' : 'sit'} in folders that also hold files that don’t match. Owners are set per folder, so assigning leaves ${t.files === 1 ? 'it' : 'them'} out.`)
+  if (t.files) out.push(`${plural(t.files, 'matching file')} ${t.files === 1 ? 'sits' : 'sit'} in folders that also hold files that don’t match. Owners and deletions are set per folder, so ${action === 'assign' ? 'assigning' : 'staging'} leaves ${t.files === 1 ? 'it' : 'them'} out.`)
   if (action === 'stage' && t.buckets) out.push(`${plural(t.buckets, 'whole bucket')} can’t be staged; ${t.buckets === 1 ? 'it is' : 'they are'} left out.`)
   if (t.unknown) out.push(`${plural(t.unknown, 'match', 'matches')} couldn’t be checked (file or folder?) and ${t.unknown === 1 ? 'is' : 'are'} left out; open ${t.unknown === 1 ? 'its' : 'their'} folder to act on ${t.unknown === 1 ? 'it' : 'them'}.`)
   return out
@@ -100,12 +108,12 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
   return (
     <span className="bulkbar">
       <span className="bb-scope">
-        {plural(cover.roots.n, 'match', 'matches')} → {kept.length === items.length ? plural(items.length, 'prefix', 'prefixes') : `${kept.length.toLocaleString('en-US')} of ${plural(items.length, 'prefix', 'prefixes')}`} · {fmtBytes(keptB)}
+        {plural(cover.roots.n, 'match', 'matches')} → {itemsText(kept)}{kept.length < items.length ? ` (${(items.length - kept.length).toLocaleString('en-US')} unticked)` : ''} · {fmtBytes(keptB)}
       </span>
       <details className="bb-review">
         <summary>review</summary>
         <div className="bb-panel" role="group" aria-label="Matches to act on">
-          <p className="bb-help">Each line is a folder whose every file matches, or a single match. Untick false positives — a whole folder’s worth, or one at a time.</p>
+          <p className="bb-help">Each line is a folder whose every file matches, or a single match. Untick false positives — a whole folder’s worth, or one at a time. Owners and deletions are set per folder: a lone matching file in a folder with other files can’t be acted on by itself.</p>
           <div className="bb-bulk">
             <button type="button" className="act" onClick={() => toggle(items.map(i => i.path), false)}>all</button>
             <button type="button" className="act" onClick={() => toggle(items.map(i => i.path), true)}>none</button>

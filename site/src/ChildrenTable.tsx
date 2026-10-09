@@ -130,7 +130,9 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   // uri; the bar above the table stages or assigns the whole selection at once.
   // Under a filter a row stands for its matches: its cover items (`rowItems`), never its whole prefix.
   const itemsOf = (k: TreeNode): CoverItem[] => filter?.items ? rowItems(filter.items, [...segs, k.n].join('/')) : []
-  const acts = (k: TreeNode) => !k.n.startsWith('(') && (!filter || itemsOf(k).length > 0)
+  // …and acts only when one of them is a folder: owners and deletions are per folder prefix, so a lone
+  // matching file can't be acted on by itself (`actionTargets`).
+  const acts = (k: TreeNode) => !k.n.startsWith('(') && (!filter || itemsOf(k).some(i => i.kind === 'dir'))
   const selectable = useMemo(() => shown.filter(acts), [shown, filter, segs]) // eslint-disable-line react-hooks/exhaustive-deps
   const sel = useRowSelection(selectable, uriOfKid)
   useRowSelectionKeys(sel, 'tbl', 'Children table')
@@ -309,23 +311,18 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
                 {showSel && (
                   <td className="actions">
                     {!synthetic && !acts(k) && (
-                      <Tooltip content={filter?.why ?? 'Listing this row’s matches…'}>
+                      <Tooltip content={its.length ? 'This row’s matches are files in folders that also hold files that don’t match. Owners and deletions are set per folder, so they can’t be acted on by themselves.' : filter?.why ?? 'Listing this row’s matches…'}>
                         <span className="none">—</span>
                       </Tooltip>
                     )}
                     {!synthetic && acts(k) && (
                       <>
                         {canTrash && rowStage.length > 0 && (
-                          <Tooltip content={filter ? `Stage this row’s ${rowStage.length === 1 ? 'match' : `${rowStage.length.toLocaleString('en-US')} matches`} for deletion (not the rest of the folder) — an admin approves and dispatches from /staged` : 'Stage this prefix for deletion — an admin approves and dispatches from /staged'}>
+                          <Tooltip content={filter ? `Stage this row’s ${rowStage.length === 1 ? 'matching folder' : `${rowStage.length.toLocaleString('en-US')} matching folders`} for deletion (not the rest of the row) — an admin approves and dispatches from /staged` : 'Stage this prefix for deletion — an admin approves and dispatches from /staged'}>
                             <button type="button" className="trash" onClick={() => filter ? stage.mutate({ prefixes: rowStage }) : trash(uri, k.k)} aria-label="trash"><FaRegTrashCan /></button>
                           </Tooltip>
                         )}
                         {assigning && rowAssign.length > 0 && <AssignSelect prefix={filter ? rowAssign : rowAssign[0]} assigned={filter ? null : cl?.who ?? null} compact />}
-                        {assigning && filter && !rowAssign.length && (
-                          <Tooltip content="This row’s matches are files in folders that also hold files that don’t match. Owners are set per folder, so they can’t be assigned on their own.">
-                            <span className="none">—</span>
-                          </Tooltip>
-                        )}
                       </>
                     )}
                   </td>
