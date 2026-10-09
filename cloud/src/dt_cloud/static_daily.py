@@ -283,7 +283,7 @@ class Daily:
             self.log(f"{scan_id}: already appended; the R2 copy and prune only")
             if scan_id == have[-1]:
                 self.r2(scan_id)
-                self.stage("prune", lambda: self.prune(scan_id))
+                self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
             return []
         if len(todo) > 1:
             self.log(f"catching up {len(todo)} scans: {', '.join(todo)}")
