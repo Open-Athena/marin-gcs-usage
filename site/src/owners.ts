@@ -11,6 +11,7 @@ import { useMemo } from 'react'
 export { foldLatest, newer, ownerIndex } from './ownerIndex'
 export type { Owner, OwnerIndex, OwnerRow } from './ownerIndex'
 import { ownerIndex, type OwnerIndex, type OwnerRow } from './ownerIndex'
+import type { ItemKind } from './batches'
 
 // 30s poll: several people assign concurrently, and the map should reflect
 // their assignments without a reload.
@@ -31,10 +32,17 @@ export function useOwners(enabled: boolean) {
  * resolves the actor's canonical user id. */
 export interface OwnerPost {
   pattern: string
+  /** What `pattern` names: a folder (`'prefix'`, the default) or one exact object key. */
+  kind?: ItemKind
   owner: string | null
   memo?: string
   scan?: string
 }
+
+/** The action for one item: `kind` rides along only for an exact object, so a folder's POST is what it
+ *  always was. */
+export const ownerPost = (i: { key: string; kind: ItemKind }, owner: string | null, memo?: string): OwnerPost =>
+  ({ pattern: i.key, ...(i.kind === 'object' ? { kind: 'object' as const } : {}), owner, ...(memo ? { memo } : {}) })
 
 // The scan id the viewer is looking at, stamped onto posted actions. Set by
 // App (module-level: mutations fire from deep components that don't
@@ -65,8 +73,8 @@ export function useOwnerMutations() {
   // `owner` omitted → assign to the actor (`'@me'`); a canonical user id →
   // assign it to that user; `release: true` → clear ownership.
   const assign = {
-    mutate: (v: { prefix: string; owner?: string | null; release?: boolean }) =>
-      post.mutate({ pattern: v.prefix, owner: v.release ? null : (v.owner ?? '@me') }),
+    mutate: (v: { prefix: string; kind?: ItemKind; owner?: string | null; release?: boolean }) =>
+      post.mutate({ pattern: v.prefix, ...(v.kind === 'object' ? { kind: v.kind } : {}), owner: v.release ? null : (v.owner ?? '@me') }),
     error: post.error,
   }
   return { post, assign }

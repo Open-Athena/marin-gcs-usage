@@ -2,7 +2,7 @@
 // backfill` writes, and the pure derivations `/scans` shows — each output's
 // delta against the previous scan, a run's summary row, phase lanes, links.
 // DOM-free: the Functions (`_lib/scanRuns.ts`) and the pages share it.
-import { encodeScan, isScanId } from './scanSlug'
+import { exactSlug, isScanId } from './scanSlug'
 
 export type ScanRunStatus = 'running' | 'succeeded' | 'failed' | 'nop'
 
@@ -186,9 +186,10 @@ export function metaHref(base: string | null | undefined, uri: string): string |
   return `${base!.replace(/\/$/, '')}/${m[1]}${dir ? `/${dir}` : ''}`
 }
 
-/** The map at a scan (`/?d=<slug>`). */
-export const mapHref = (scan: string, storePath = '/'): string | null =>
-  isScanId(scan) ? `${storePath.replace(/\/$/, '')}/?d=${encodeScan(scan)}` : null
+/** The map at a scan (`/?d=<slug>`): `slug` its canonical slug (`useMinSlug`),
+ * else its minute (`exactSlug`; never the day slug, the day's latest scan). */
+export const mapHref = (scan: string, storePath = '/', slug: (id: string) => string = exactSlug): string | null =>
+  isScanId(scan) ? `${storePath.replace(/\/$/, '')}/?d=${slug(scan)}` : null
 
 export const batchHref = (project: string, region: string, job: string): string =>
   `https://console.cloud.google.com/batch/jobsDetail/regions/${region}/jobs/${job}/details?project=${encodeURIComponent(project)}`

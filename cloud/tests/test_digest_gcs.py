@@ -57,7 +57,7 @@ def test_rows_from_meta_deltas():
 def test_reply_grow():
     assert D.reply(ROWS[0], CFG) == E.Reply(
         "8/3 — 3,030 TB (+30.0, 1.0%)",
-        "$19,784/mo (+$615) [\u2197\ufe0e](https://site.example.org/?d=2608030000#diff)",
+        "$19,784/mo (+$615) [\u2197\ufe0e](https://site.example.org/?d=260803#diff)",
         icon_url="https://icons.example.org/arrows/av_deg50.png?v=4",
     )
 
@@ -65,14 +65,14 @@ def test_reply_grow():
 def test_reply_shrink():
     assert D.reply(ROWS[1], CFG) == E.Reply(
         "8/4 — 3,010 TB (−20.0, 0.7%)",
-        "$19,374/mo (−$410) [\u2197\ufe0e](https://site.example.org/?d=2608040000#diff)",
+        "$19,374/mo (−$410) [\u2197\ufe0e](https://site.example.org/?d=260804#diff)",
         icon_url="https://icons.example.org/arrows/av_deg-40.png?v=4",
     )
 
 
 def test_reply_discord_link_text():
     # Discord: the bare glyph is too small, so the link reads "view →"
-    assert D.reply(ROWS[0], CFG, platform="discord").body == "$19,784/mo (+$615) \u00b7 [view \u2192](https://site.example.org/?d=2608030000#diff)"
+    assert D.reply(ROWS[0], CFG, platform="discord").body == "$19,784/mo (+$615) \u00b7 [view \u2192](https://site.example.org/?d=260803#diff)"
 
 
 def test_op_body():
@@ -80,7 +80,7 @@ def test_op_body():
         ":arrow_deg20: **+10.0 TB** month-to-date · [dashboard](https://site.example.org/)",
         "",
         "*Weekly summaries*",
-        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=2608040000-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=260804-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
         "",
         "![GCS usage — August 2026](https://x/p.png)",
     ]
@@ -93,7 +93,7 @@ def test_op_body_full_week_not_partial():
         dm.append((f"2026-08-0{d}", _meta(3000 + i, 300 + i, 600, 1500, 600)))
     rows = D.rows_from_meta(dm, CFG.prices)[1:]
     bullet = D.op_body(rows, date(2026, 8, 1), "https://x/p.png", CFG).split("\n")[3]
-    assert bullet.startswith(":arrow_deg0: [wk of 8/3](https://site.example.org/?d=2608090000-7d#over-time) — ")
+    assert bullet.startswith(":arrow_deg0: [wk of 8/3](https://site.example.org/?d=260809-7d#over-time) — ")
 
 
 # ---- sub-daily scans: two scans on one day are two rows, never merged -----
@@ -119,12 +119,12 @@ def test_sub_daily_replies_are_distinct_units():
     assert TPL.units(SUB, "sender") == [
         E.Unit("2026-08-03T0601", "2026-08-03T0601", E.Reply(
             "8/3 06:01Z — 3,030 TB (+30.0, 1.0%)",
-            "$19,784/mo (+$615) [\u2197\ufe0e](https://site.example.org/?d=2608030601#diff)",
+            "$19,784/mo (+$615) [\u2197\ufe0e](https://site.example.org/?d=26080306#diff)",
             icon_url="https://icons.example.org/arrows/av_deg40.png?v=4",
         )),
         E.Unit("2026-08-03T1801", "2026-08-03T1801", E.Reply(
             "8/3 18:01Z — 3,010 TB (−20.0, 0.7%)",
-            "$19,374/mo (−$410) [\u2197\ufe0e](https://site.example.org/?d=2608031801#diff)",
+            "$19,374/mo (−$410) [\u2197\ufe0e](https://site.example.org/?d=26080318#diff)",
             icon_url="https://icons.example.org/arrows/av_deg-50.png?v=4",
         )),
     ]
@@ -133,7 +133,7 @@ def test_sub_daily_replies_are_distinct_units():
 def test_sub_daily_op_body_spans_from_the_lead_scan():
     # one day of the week seen (partial), the span from the 8/2 lead-in to 8/3 18:01Z
     assert D.op_body(SUB, date(2026, 8, 1), None, CFG).split("\n")[3] == (
-        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=2608031801-1d18h#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)"
+        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=26080318-1d18h#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)"
     )
 
 
@@ -150,7 +150,7 @@ def test_op_body_without_plot():
         ":arrow_deg20: **+10.0 TB** month-to-date · [dashboard](https://site.example.org/)",
         "",
         "*Weekly summaries*",
-        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=2608040000-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+        ":arrow_deg0: [wk of 8/3](https://site.example.org/?d=260804-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
     ]
 
 
@@ -221,13 +221,13 @@ OP_ONE_SCAN = "\n".join([
     "<:arrow_deg50:5> **+30.0 TB** month-to-date · [dashboard](https://site.example.org/)",
     "",
     "*Weekly summaries*",
-    "<:arrow_deg20:2> [wk of 8/3](https://site.example.org/?d=2608030000-1d#over-time) _(partial)_ — **3,030 TB** (+30.0, 1.0%) · $19,784/mo (+$615)",
+    "<:arrow_deg20:2> [wk of 8/3](https://site.example.org/?d=260803-1d#over-time) _(partial)_ — **3,030 TB** (+30.0, 1.0%) · $19,784/mo (+$615)",
 ])
 OP_TWO_SCANS = "\n".join([
     "<:arrow_deg20:2> **+10.0 TB** month-to-date · [dashboard](https://site.example.org/)",
     "",
     "*Weekly summaries*",
-    "<:arrow_deg0:1> [wk of 8/3](https://site.example.org/?d=2608040000-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
+    "<:arrow_deg0:1> [wk of 8/3](https://site.example.org/?d=260804-2d#over-time) _(partial)_ — **3,010 TB** (+10.0, 0.3%) · $19,374/mo (+$205)",
 ])
 CAL = "https://icons.example.org/calendar.png?v=2"
 AV = "https://icons.example.org/arrows/av_deg"
@@ -240,7 +240,7 @@ def test_converge_discord_fresh_then_incremental():
     state = E.converge_discord(TPL, ROWS[:1], AUG, {}, hook=hook, bot=bot, emoji=EMOJI, plot=plot, save=lambda s: saves.append(dict(s)))
     assert hook.calls == [
         ("post", OP_ONE_SCAN, None, "GCS usage — August 2026", CAL, [plot]),
-        ("post", "$19,784/mo (+$615) \u00b7 [view \u2192](https://site.example.org/?d=2608030000#diff)", "t1", "8/3 — 3,030 TB (+30.0, 1.0%)", f"{AV}50.png?v=4", []),
+        ("post", "$19,784/mo (+$615) \u00b7 [view \u2192](https://site.example.org/?d=260803#diff)", "t1", "8/3 — 3,030 TB (+30.0, 1.0%)", f"{AV}50.png?v=4", []),
     ]
     assert bot.calls == [("create_thread", "m1", "GCS usage — August 2026")]
     assert state == {"op_id": "m1", "thread_id": "t1", "posted": {"2026-08-03": "m2"}}
@@ -256,7 +256,7 @@ def test_converge_discord_fresh_then_incremental():
     state = E.converge_discord(TPL, ROWS, AUG, state, hook=hook, bot=bot, emoji=EMOJI, plot=plot)
     assert hook.calls == [
         ("edit", "m1", OP_TWO_SCANS, [plot]),
-        ("post", "$19,374/mo (−$410) \u00b7 [view \u2192](https://site.example.org/?d=2608040000#diff)", "t1", "8/4 — 3,010 TB (−20.0, 0.7%)", f"{AV}-40.png?v=4", []),
+        ("post", "$19,374/mo (−$410) \u00b7 [view \u2192](https://site.example.org/?d=260804#diff)", "t1", "8/4 — 3,010 TB (−20.0, 0.7%)", f"{AV}-40.png?v=4", []),
     ]
     assert bot.calls == []
     assert state == {"op_id": "m1", "thread_id": "t1", "posted": {"2026-08-03": "m2", "2026-08-04": "m3"}}
@@ -274,8 +274,8 @@ def test_converge_discord_edit_replies():
     E.converge_discord(TPL, ROWS, AUG, state, hook=hook, bot=bot, emoji=EMOJI, plot="/x/plot.png", edit_replies=True, reply_hook=rhook)
     assert hook.calls == [("edit", "m1", OP_TWO_SCANS, ["/x/plot.png"])]
     assert rhook.calls == [
-        ("edit", "m2", "$19,784/mo (+$615) \u00b7 [view \u2192](https://site.example.org/?d=2608030000#diff)", []),
-        ("edit", "m3", "$19,374/mo (−$410) \u00b7 [view \u2192](https://site.example.org/?d=2608040000#diff)", []),
+        ("edit", "m2", "$19,784/mo (+$615) \u00b7 [view \u2192](https://site.example.org/?d=260803#diff)", []),
+        ("edit", "m3", "$19,374/mo (−$410) \u00b7 [view \u2192](https://site.example.org/?d=260804#diff)", []),
     ]
     assert state["posted"] == {"2026-08-03": "m2", "2026-08-04": "m3"}
 
@@ -295,3 +295,26 @@ def test_plot_takes_sub_daily_scan_ids(tmp_path) -> None:
     render_tiers(rows, out, "marin GCS — October 2026", "gcs.oa.dev")
     assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     assert E._md("2026-10-09T1236") == "10/9"
+
+
+def test_links_use_each_scans_canonical_slug():
+    # 10/8 alone on its day; 10/9's date-only run (started 04:30Z, `meta.started`) and a 12:36Z scan. At 16:00Z the
+    # 10/8 link is its day, 10/9's are their hours; at 12:50Z the 12:36Z scan's hour hasn't ended: its minute.
+    import datetime as dt
+
+    dm = [
+        ("2026-10-08", _meta(3000, 300, 600, 1500, 600)),
+        ("2026-10-09", {**_meta(3030, 330, 600, 1500, 600), "started": "2026-10-09T04:30:12.345Z"}),
+        ("2026-10-09T1236", _meta(3010, 310, 600, 1500, 600)),
+    ]
+    at = lambda h, m=0: dt.datetime(2026, 10, 9, h, m, tzinfo=dt.timezone.utc)  # noqa: E731
+    urls = lambda now: [D.reply(r, CFG).body.rsplit("(", 1)[1] for r in D.rows_from_meta(dm, CFG.prices, now)]  # noqa: E731
+    assert urls(at(16)) == [
+        "https://site.example.org/?d=261008#diff)",
+        "https://site.example.org/?d=26100904#diff)",
+        "https://site.example.org/?d=26100912#diff)",
+    ]
+    assert urls(at(12, 50))[2] == "https://site.example.org/?d=2610091236#diff)"
+    # without the start, 10/9's hours stay unknown: both by their minutes
+    dm[1] = ("2026-10-09", _meta(3030, 330, 600, 1500, 600))
+    assert urls(at(16))[1:] == ["https://site.example.org/?d=2610090000#diff)", "https://site.example.org/?d=2610091236#diff)"]

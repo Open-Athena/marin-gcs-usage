@@ -9,7 +9,7 @@ import { useDocTitle } from './title'
 import { fmtScan, fromMiss, scanMiss, useScans, useScanSel, type ScanMiss } from './scan'
 import { DEFAULT_STORE } from './stores'
 import { hrefWithScan, NoScanMatch } from './NoScanMatch'
-import { encodeSel, exactPrefix, isScanId, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
+import { encodeSel, exactPrefix, isScanId, minPrefix, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
 import './hot.scss'
 
 export function NamePlanStatus({ result }: { result: NameResult }) {
@@ -70,11 +70,13 @@ export function unindexedScans(scanParams: URLSearchParams, indexed: readonly st
   return [scanParams.get('date'), scanParams.get('from')].filter((d): d is string => !!d && isScanId(d) && !indexed.includes(d))
 }
 
-export function nameUrlParams(form: URLSearchParams, dates: readonly string[] | undefined): URLSearchParams {
+export function nameUrlParams(form: URLSearchParams, dates: readonly string[] | undefined, now = new Date()): URLSearchParams {
   const date = form.get('date') ?? undefined, from = form.get('from') || undefined
   const latest = dates && resolveAfter(undefined, dates)
-  // each a picked scan id, written as its exact prefix (a date-only scan as its midnight)
-  const d = encodeSel({ ...(date && date !== latest ? { d: exactPrefix(date) } : {}), ...(from ? { from: exactPrefix(from) } : {}) })
+  // each a picked scan id, written as its canonical prefix among the store's scans (`minPrefix`; no starts
+  // here, so a date-only scan sharing its day is its midnight), or its minute before they answer
+  const pin = (id: string) => (dates ? minPrefix(id, dates, {}, now) : exactPrefix(id))
+  const d = encodeSel({ ...(date && date !== latest ? { d: pin(date) } : {}), ...(from ? { from: pin(from) } : {}) })
   return new URLSearchParams({ ...(d ? { d } : {}), name: form.get('name') ?? '' })
 }
 

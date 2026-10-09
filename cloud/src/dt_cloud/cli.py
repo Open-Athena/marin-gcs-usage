@@ -4039,13 +4039,18 @@ def sweep_manifest(only_buckets: tuple[str, ...], date: str, workers: int, out: 
     root = root or f"gs://{data_bucket()}"
     out = out or f"gs://{data_bucket()}/sweep/{date}-p{sp.plan_id}"
     err(f"sweep manifest: scan {date} from plan {sp.plan_id} ({sp.name!r}) → {out}"
-        + f" · {sum(len(sp.sweep[b]) for b in buckets)} staged prefix(es) on {', '.join(buckets)}")
+        + f" · {sum(len(sp.sweep.get(b, ())) for b in buckets)} staged prefix(es)"
+        + f" + {sum(len(sp.objects.get(b, ())) for b in buckets)} exact object(s) on {', '.join(buckets)}")
     # The staged prefixes are the run's bands: `sweep execute` lists one
     # segment below each and accounts per band, so every `deletion_bands` row
     # is one staged item.
     summary: dict = {
         "date": date, "plan_id": sp.plan_id, "plan_name": sp.name,
         "approved": [a for b in buckets for a in sp.bands(b)],
+        # exact items (specs/file-assign.md): each matches its one key only,
+        # and is its own band in the executor's accounting (absent when none,
+        # so a prefix-only plan's summary is what it always was)
+        **({"approved_objects": objs} if (objs := [a for b in buckets for a in sp.exact(b)]) else {}),
         # items staged as of another scan: their objects must be unchanged
         # in that scan too (else `skipped_after_as_of`)
         "as_of": {f"gs://{b}/{rel}": scan for b in buckets for rel, scan in sorted(sp.as_of.get(b, {}).items()) if scan != date},
@@ -4053,7 +4058,10 @@ def sweep_manifest(only_buckets: tuple[str, ...], date: str, workers: int, out: 
     }
 
     t0 = time.monotonic()
-    summary["buckets"] = build_manifests(root, date, {b: sp.sweep[b] for b in buckets}, out, workers=workers or None, as_of=sp.as_of)
+    summary["buckets"] = build_manifests(
+        root, date, {b: sp.sweep.get(b, ()) for b in buckets}, out, workers=workers or None, as_of=sp.as_of,
+        objects_by_bucket={b: sp.objects[b] for b in buckets if b in sp.objects},
+    )
     err(f"manifest: {time.monotonic() - t0:.0f}s")
 
     tot = {c: [0, 0] for c in CATEGORIES}
@@ -5339,12 +5347,14 @@ def publish_r2(
 
 from .static_append import cli as _static_append  # noqa: E402
 from .static_catalog import cli as _static_catalog  # noqa: E402
+from .static_drill import cli as _static_drill  # noqa: E402
 from .static_runner import add_cmd as _static_runs_add  # noqa: E402
 from .static_names import cli as _static_names  # noqa: E402
 from .static_roots import cli as _static_roots  # noqa: E402
 from .static_anchors import cli as _static_anchors  # noqa: E402
 
 _static_names.add_command(_static_catalog)
+_static_append.add_command(_static_drill)
 _static_append.add_command(_static_runs_add)
 _static_names.add_command(_static_append)
 _static_names.add_command(_static_roots)

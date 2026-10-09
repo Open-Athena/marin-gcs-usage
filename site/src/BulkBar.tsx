@@ -1,14 +1,15 @@
 // Bulk actions over the filter's matches (`gcs:specs/done/selection-actions.md`): assign an owner to, or
-// stage for deletion, every match under the view — as the fewest exact prefixes (`/api/filter-cover`: a
-// folder every object of which matches stands for its matches), listed by parent folder so false
+// stage for deletion, every match under the view — as the fewest exact items (`/api/filter-cover`: a
+// folder every object of which matches stands for its matches; a lone matching file is sent as that one
+// object, specs/file-assign.md), listed by parent folder so false
 // positives can be dropped (a whole folder's worth, or one by one) before anything is sent. Large sets go
 // in batches (`assignInBatches` / `stageInBatches`), never a refusal.
 import { useEffect, useMemo, useState } from 'react'
-import { type OwnerPost, useOwnerMutations } from './owners'
+import { ownerPost, useOwnerMutations } from './owners'
 import { useStage } from './plans'
 import { allUsers } from './UserChip'
 import { useUnits } from './units'
-import { actionTargets, ASSIGN_CHUNK, assignInBatches, chunks, type CoverItem, type FilterCover, groupItems, STAGE_CHUNK } from './filterCover'
+import { actionTargets, ASSIGN_CHUNK, assignInBatches, chunks, type CoverItem, type FilterCover, groupItems, STAGE_CHUNK, targetsText } from './filterCover'
 
 /** Items listed per folder in the review panel (the folder's checkbox still takes or drops all of them). */
 export const LIST_PER_GROUP = 100
@@ -41,9 +42,8 @@ export function itemsText(items: readonly CoverItem[]): string {
 }
 
 /** What the bar says about the kept items for each action, in plain words (one sentence per caveat). */
-export function caveats(t: { files: number; buckets: number; unknown: number }, action: 'assign' | 'stage'): string[] {
+export function caveats(t: { buckets: number; unknown: number }, action: 'assign' | 'stage'): string[] {
   const out: string[] = []
-  if (t.files) out.push(`${plural(t.files, 'matching file')} ${t.files === 1 ? 'sits' : 'sit'} in folders that also hold files that don’t match. Owners and deletions are set per folder, so ${action === 'assign' ? 'assigning' : 'staging'} leaves ${t.files === 1 ? 'it' : 'them'} out.`)
   if (action === 'stage' && t.buckets) out.push(`${plural(t.buckets, 'whole bucket')} can’t be staged; ${t.buckets === 1 ? 'it is' : 'they are'} left out.`)
   if (t.unknown) out.push(`${plural(t.unknown, 'match', 'matches')} couldn’t be checked (file or folder?) and ${t.unknown === 1 ? 'is' : 'are'} left out; open ${t.unknown === 1 ? 'its' : 'their'} folder to act on ${t.unknown === 1 ? 'it' : 'them'}.`)
   return out
@@ -88,13 +88,14 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
     setDone(null)
     try {
       if (p.kind === 'assign') {
-        const n = await assignInBatches(assignT.prefixes, (pattern): OwnerPost => ({ pattern, owner: p.owner ?? '@me', memo: note }), a => post.mutateAsync(a),
+        await assignInBatches(assignT.items, i => ownerPost(i, p.owner ?? '@me', note), a => post.mutateAsync(a),
           (d, t) => setProgress(`${p.label}: ${d.toLocaleString('en-US')}/${t.toLocaleString('en-US')}…`))
-        setDone(`assigned ${plural(n, 'prefix', 'prefixes')}`)
+        setDone(`assigned ${targetsText(assignT)}`)
       } else {
-        setProgress(`${p.label}: ${stageT.prefixes.length.toLocaleString('en-US')}…`)
-        const r = await stage.mutateAsync({ prefixes: stageT.prefixes, note: memo })
-        setDone(`staged ${plural(r.staged.length, 'prefix', 'prefixes')} for deletion (plan ${r.plan_id})`)
+        setProgress(`${p.label}: ${stageT.items.length.toLocaleString('en-US')}…`)
+        const r = await stage.mutateAsync({ prefixes: stageT.items, note: memo })
+        const files = r.staged_objects?.length ?? 0
+        setDone(`staged ${targetsText({ folders: r.staged.length - files, files })} for deletion (plan ${r.plan_id})`)
       }
       setPending(null)
       setMemo('')
@@ -103,7 +104,7 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
     }
   }
   const t = pending?.kind === 'stage' ? stageT : assignT
-  const batches = pending ? chunks(t.prefixes, pending.kind === 'stage' ? STAGE_CHUNK : ASSIGN_CHUNK).length : 0
+  const batches = pending ? chunks(t.items, pending.kind === 'stage' ? STAGE_CHUNK : ASSIGN_CHUNK).length : 0
 
   return (
     <span className="bulkbar">
@@ -113,7 +114,7 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
       <details className="bb-review">
         <summary>review</summary>
         <div className="bb-panel" role="group" aria-label="Matches to act on">
-          <p className="bb-help">Each line is a folder whose every file matches, or a single match. Untick false positives — a whole folder’s worth, or one at a time. Owners and deletions are set per folder: a lone matching file in a folder with other files can’t be acted on by itself.</p>
+          <p className="bb-help">Each line is a folder whose every file matches (sent as that folder), or a single matching file (sent as exactly that file — never its neighbours). Untick false positives — a whole folder’s worth, or one at a time.</p>
           <div className="bb-bulk">
             <button type="button" className="act" onClick={() => toggle(items.map(i => i.path), false)}>all</button>
             <button type="button" className="act" onClick={() => toggle(items.map(i => i.path), true)}>none</button>
@@ -124,7 +125,7 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
         </div>
       </details>
       {canAssign && <>
-        <button type="button" className="act assign" disabled={busy || !assignT.prefixes.length}
+        <button type="button" className="act assign" disabled={busy || !assignT.items.length}
           onClick={() => {
             const v = assign.trim()
             const owner = v ? (allUsers().find(u => u.name.toLowerCase() === v.toLowerCase())?.id ?? v) : '@me'
@@ -135,16 +136,16 @@ export function BulkBar({ cover, loading, error, scheme, query, canAssign, canSt
         <input list="bb-assign-users" value={assign} onChange={e => setAssign(e.target.value)} placeholder="you" size={7} aria-label="Assign matches to user" />
         <datalist id="bb-assign-users">{allUsers().map(u => <option key={u.id} value={u.name} />)}</datalist>
       </>}
-      {canStage && <button type="button" className="act stage" disabled={busy || !stageT.prefixes.length} onClick={() => setPending({ kind: 'stage', label: 'stage' })}>stage for deletion</button>}
+      {canStage && <button type="button" className="act stage" disabled={busy || !stageT.items.length} onClick={() => setPending({ kind: 'stage', label: 'stage' })}>stage for deletion</button>}
       <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="memo" size={10} aria-label="Bulk memo" />
       {progress && <span className="bb-progress">{progress}</span>}
       {done && !progress && <span className="bb-progress">{done}</span>}
       {pending && !progress && (
         <span className="bb-confirm">
-          {pending.label} <b>{plural(t.prefixes.length, 'prefix', 'prefixes')}</b> ({fmtBytes(t.b)}, {plural(t.o, 'file')})
+          {pending.label} <b>{targetsText(t)}</b> ({fmtBytes(t.b)}, {plural(t.o, 'object')})
           {batches > 1 ? `, sent in ${batches} batches` : ''}?
           {caveats(t, pending.kind).map(c => <span key={c} className="bb-note"> {c}</span>)}
-          <button type="button" className="act go" disabled={!t.prefixes.length} onClick={() => void run(pending)}>confirm</button>
+          <button type="button" className="act go" disabled={!t.items.length} onClick={() => void run(pending)}>confirm</button>
           <button type="button" className="act" onClick={() => setPending(null)}>cancel</button>
         </span>
       )}

@@ -292,7 +292,7 @@ export function UsersPage() {
         </div>
         <p className="sub">Everyone who owns storage{asof && <> in the {asof} scan</>}, largest first — the scan’s attribution with live assignments applied. Click a user (row or tile) for their breakdown.</p>
       </header>
-      {scan.miss && <NoScanMatch miss={scan.miss} fmt={scan.label} hrefFor={s => hrefWithScan(location.pathname, location.search, selOf(new URLSearchParams(location.search)), s, true, scan.times)} />}
+      {scan.miss && <NoScanMatch miss={scan.miss} fmt={scan.label} hrefFor={s => hrefWithScan(location.pathname, location.search, selOf(new URLSearchParams(location.search)), s, true, scan.times, scan.scans)} />}
       {ownedErr && <p className="tab-note" style={{ color: 'var(--s3)' }}>Couldn’t load the owner totals: {ownedErr.message}</p>}
       {metaQ.isLoading && <Skeleton height={300} label="loading users…" />}
       {metaQ.data && (

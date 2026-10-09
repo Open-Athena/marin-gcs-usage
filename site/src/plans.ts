@@ -2,7 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { getCurrentScan } from './owners'
 import { DEFAULT_STORE } from './stores'
 import { type DeletionRun, EXEC_CAPS, type ExecCaps, type ExecJob } from './runs'
-import { stageMany as stageManyVia } from './batches'
+import { type PlanItem, stageMany as stageManyVia } from './batches'
 
 export type { DeletionRun, ExecJob } from './runs'
 export { LIVE_STATES } from './runs'
@@ -15,8 +15,10 @@ export { LIVE_STATES } from './runs'
 export interface StageResult {
   plan_id: number
   batch_id: number
-  /** What this gesture added (a re-staged prefix counts). */
+  /** What this gesture added (a re-staged item counts). */
   staged: string[]
+  /** The staged items that are exact objects (absent: none). */
+  staged_objects?: string[]
   /** Skipped: a staged ancestor already names them. */
   covered: string[]
   /** Removed: staged descendants a new prefix now names. */
@@ -28,7 +30,8 @@ export interface StageResult {
 /** One trash gesture: the prefixes it stages and an optional shared memo (the
  *  reason for the deletion, stored once on the batch — not copied per path). */
 export interface StageArgs {
-  prefixes: string[]
+  /** Folder prefixes and exact objects; a bare string is a folder prefix. */
+  prefixes: (string | PlanItem)[]
   note?: string
 }
 
@@ -42,7 +45,7 @@ export interface PlanSummary {
   closed_ts: number | null
 }
 /** `as_of`: the scan the item was staged against (null: staged before `as_of` existed). */
-export interface StagedItem { prefix: string; note: string | null; added_by: string; added_ts: number; batch_id: number | null; as_of: string | null }
+export interface StagedItem { prefix: string; /** What `prefix` names (absent: a folder — a pre-`kind` server). */ kind?: 'prefix' | 'object'; note: string | null; added_by: string; added_ts: number; batch_id: number | null; as_of: string | null }
 export interface StageBatch { id: number; plan_id: number; note: string | null; created_by: string; created_ts: number }
 /** A stage batch with no items left, and what became of what it staged
  *  (`functions/_lib/plans.ts` `emptiedBatches`). */
@@ -84,7 +87,7 @@ async function call<T>(url: string, method = 'GET', body?: unknown): Promise<T> 
 
 /** Stage `prefixes` in `STAGE_CHUNK`-sized POSTs, then fold the batches into the first
  *  (`batches.ts` `stageMany`): one gesture, one batch to review, however many prefixes. */
-export const stageMany = (prefixes: string[], note?: string, post: typeof call = call): Promise<StageResult> =>
+export const stageMany = (prefixes: (string | PlanItem)[], note?: string, post: typeof call = call): Promise<StageResult> =>
   stageManyVia(prefixes, note, getCurrentScan(), post)
 
 /** Stage prefixes for deletion (POST /api/plans/stage, batched past `STAGE_CHUNK`). Pass canonical
