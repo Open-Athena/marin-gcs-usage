@@ -29,7 +29,7 @@ from click import IntRange, group, option
 from . import static_catalog as sc
 from .static_names import (
     ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, DATA_BUCKET, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SCRATCH_BUCKET, SX_RG,
-    SX_SCHEMA, Reader, _batches, _src, _sx_cast, _task, answer_rows, connect, err, hist_sql, plan_shards, q, range_preds,
+    SX_SCHEMA, Reader, _batches, _src, _sx_cast, _task, answer_rows, connect, err, hist_sql, q, range_preds,
     read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
 )
 
@@ -82,20 +82,59 @@ def append_open(con, prev_sql: str, scan: dict, r: dict, name: str, out: Path, *
 # ── 2. A run's shards ──────────────────────────────────────────────────────
 
 
-def write_run_shards(con, table: str, out: Path, target_rows: int = RUN_SHARD_ROWS) -> dict:
-    """`table`'s suffix rows (`s, depth, path, usr, vf, vt, size, n_files, p3`, epoch seconds) as a run's shards:
-    `shards.json` (`plan_shards` over the rows' prefix counts, one task), `sx/s####.parquet` sorted `(s, path,
-    usr, vf)` in `SX_RG`-row groups, `sidecar/s####.parquet` and `sidecar.parquet`."""
+def write_run_shards(batches, out: Path, target_rows: int = RUN_SHARD_ROWS, plan: dict | None = None) -> dict:
+    """Sorted suffix-row batches (`SX_SCHEMA`) as shards, cut on the fly. Without `plan`, a shard closes at the first
+    three-character-prefix boundary after it holds `target_rows` rows (a prefix is never split, so a literal's rows
+    are one contiguous range of one file). With `plan` (a `shards.json`), at its boundaries instead: shard `i` holds
+    the prefixes in `[lo, hi)`, written (empty or not) as the build writes it — a compaction cut to a full build's
+    plan is that build, byte for byte. Writes `sx/s####.parquet` in `SX_RG`-row groups, `sidecar/s####.parquet`,
+    `sidecar.parquet` and `shards.json` (`[lo, hi)` per shard)."""
+    from itertools import groupby
+
+    import pyarrow.compute as pc
+
+    state = {"sid": 0, "n": 0, "last": None}
+    shards: list[dict] = [] if plan is None else [{"i": x["i"], "lo": x["lo"], "rows": 0, "p3": set()} for x in plan["shards"]]
+    los = [x["lo"] for x in shards]
+
+    def tagged():
+        for b in batches:
+            if b.num_rows == 0:
+                continue
+            p3 = pc.utf8_slice_codeunits(b.column("s"), 0, 3)
+            off = 0
+            while off < b.num_rows:
+                rest, rp3 = b.slice(off), p3.slice(off)
+                cut = rest.num_rows
+                if plan is not None:
+                    while state["sid"] + 1 < len(los) and rp3[0].as_py() >= los[state["sid"] + 1]:
+                        state["sid"] += 1
+                    if state["sid"] + 1 < len(los):
+                        i = pc.index(pc.greater_equal(rp3, los[state["sid"] + 1]), True).as_py()
+                        if i > 0:
+                            cut = i
+                elif state["n"] >= target_rows:
+                    i = pc.index(pc.not_equal(rp3, state["last"]), True).as_py()
+                    if i == 0:
+                        state["sid"] += 1
+                        state["n"] = 0
+                    elif i > 0:
+                        cut = i
+                if plan is None and state["n"] == 0 and state["sid"] == len(shards):
+                    shards.append({"i": state["sid"], "lo": rp3[0].as_py(), "rows": 0, "p3": set()})
+                sh = shards[state["sid"]]
+                sh["rows"] += cut
+                sh["p3"].update(pc.unique(rp3.slice(0, cut)).to_pylist())
+                state["n"] += cut
+                state["last"] = rp3[cut - 1].as_py()
+                off += cut
+                yield state["sid"], rest.slice(0, cut)
+
     out.mkdir(parents=True, exist_ok=True)
-    hist = out / "hist.tmp.parquet"
-    con.execute(f"COPY (SELECT p3, count(*)::BIGINT AS n FROM {table} GROUP BY p3 ORDER BY p3) TO {q(str(hist))} (FORMAT parquet)")
-    plan = plan_shards([hist], target_rows, 1)
-    hist.unlink()
-    (out / "shards.json").write_text(json.dumps(plan, indent=1) + "\n")
-    sides, total = [], 0
-    for s in plan["shards"]:
-        name = f"s{s['i']:04d}"
-        cond = f"p3 >= {q(s['lo'])}" + (f" AND p3 < {q(s['hi'])}" if s["hi"] is not None else "")
+    (out / "sidecar").mkdir(parents=True, exist_ok=True)
+
+    def write(sid: int, batches_) -> None:
+        name = f"s{sid:04d}"
         stats: list[tuple[str, str, int]] = []
 
         def on_group(g: pa.Table) -> None:
@@ -103,18 +142,27 @@ def write_run_shards(con, table: str, out: Path, target_rows: int = RUN_SHARD_RO
             stats.append((col[0].as_py(), col[g.num_rows - 1].as_py(), g.num_rows))
 
         dst = out / "sx" / f"{name}.parquet"
-        sql = f"SELECT s, depth, path, usr, vf, vt, size, n_files FROM {table} WHERE {cond} ORDER BY s, path, usr, vf"
-        rows = write_sorted((_sx_cast(b) for b in _batches(con, sql)), dst, SX_SCHEMA, SX_RG, on_group=on_group, dictionary=["usr"])
-        if rows != s["rows"]:
-            raise RuntimeError(f"run shard {s['i']}: {rows:,} rows written, {s['rows']:,} planned")
-        side = sidecar_rows(dst, f"sx/{name}.parquet", stats)
-        (out / "sidecar").mkdir(parents=True, exist_ok=True)
-        pq.write_table(side, out / "sidecar" / f"{name}.parquet", compression=CODEC)
-        sides.append(side)
-        total += rows
-    side = pa.concat_tables(sides) if sides else sidecar_rows_empty()
+        write_sorted(batches_, dst, SX_SCHEMA, SX_RG, on_group=on_group, dictionary=["usr"])
+        pq.write_table(sidecar_rows(dst, f"sx/{name}.parquet", stats), out / "sidecar" / f"{name}.parquet", compression=CODEC)
+
+    written = set()
+    for sid, grp in groupby(tagged(), key=lambda x: x[0]):
+        write(sid, (b for _, b in grp))
+        written.add(sid)
+    for sh in shards:
+        if sh["i"] not in written:
+            write(sh["i"], iter(()))
+    for k, sh in enumerate(shards):
+        sh["hi"] = shards[k + 1]["lo"] if k + 1 < len(shards) else None
+        sh["prefixes"] = len(sh.pop("p3"))
+        if plan is not None and sh["rows"] != plan["shards"][k]["rows"]:
+            raise RuntimeError(f"shard {k}: {sh['rows']:,} rows written, {plan['shards'][k]['rows']:,} planned")
+    total = sum(sh["rows"] for sh in shards)
+    doc = {"target_rows": target_rows, "total_rows": total, "shards": [{k: sh[k] for k in ("i", "lo", "hi", "rows", "prefixes")} for sh in shards]}
+    (out / "shards.json").write_text(json.dumps(plan if plan is not None else doc, indent=1) + "\n")
+    side = pa.concat_tables([pq.read_table(out / "sidecar" / f"s{sh['i']:04d}.parquet") for sh in shards]) if shards else sidecar_rows_empty()
     pq.write_table(side, out / "sidecar.parquet", compression=CODEC, row_group_size=1 << 20)
-    return {"rows": total, "shards": len(plan["shards"]), "row_groups": side.num_rows,
+    return {"rows": total, "shards": len(shards), "row_groups": side.num_rows,
             "bytes": sum(f.stat().st_size for f in (out / "sx").glob("*.parquet")) if (out / "sx").exists() else 0}
 
 
@@ -126,47 +174,50 @@ def sidecar_rows_empty() -> pa.Table:
 
 def delta_shards(con, cdelta_files: list[str], out: Path, target_rows: int = RUN_SHARD_ROWS) -> dict:
     """One scan's run shards from its `cdelta` files: every version's suffix rows (depth ≥ 1), the opened ones
-    open and the closed ones with their final `vt` (close records)."""
-    con.execute(f"CREATE OR REPLACE TABLE rx AS {suffix_sql(cdelta_files)}")
-    doc = write_run_shards(con, "rx", out, target_rows)
-    con.execute("DROP TABLE rx")
-    return doc
+    open and the closed ones with their final `vt` (close records), sorted `(s, path, usr, vf)` by DuckDB."""
+    sql = f"SELECT s, depth, path, usr, vf, vt, size, n_files FROM ({suffix_sql(cdelta_files)}) ORDER BY s, path, usr, vf"
+    return write_run_shards((_sx_cast(b) for b in _batches(con, sql)), out, target_rows)
 
 
-def merge_shards(con, run_dirs: list[Path], out: Path, target_rows: int = RUN_SHARD_ROWS) -> dict:
-    """Runs' suffix rows merged into one run: rows equal on `(s, path, usr, vf)` are one version's row, and the
-    smallest `vt` wins (a close record over the open row it closes)."""
-    files = [str(f) for d in run_dirs for f in sorted((d / "sx").glob("*.parquet"))]
-    if not files:
-        con.execute("CREATE OR REPLACE TABLE mx (s VARCHAR, depth UTINYINT, path VARCHAR, usr VARCHAR, vf BIGINT, vt BIGINT, size BIGINT, n_files BIGINT, p3 VARCHAR)")
-    else:
-        con.execute(f"""CREATE OR REPLACE TABLE mx AS SELECT s, any_value(depth) AS depth, path, usr, epoch(vf)::BIGINT AS vf,
-                epoch(min(vt))::BIGINT AS vt, any_value(size) AS size, any_value(n_files) AS n_files, substring(s, 1, 3) AS p3
-            FROM read_parquet([{', '.join(q(f) for f in files)}]) GROUP BY s, path, usr, vf""")
-    doc = write_run_shards(con, "mx", out, target_rows)
-    con.execute("DROP TABLE mx")
-    return doc
+def _run_batches(d: Path, columns: list[str] | None = None):
+    """A run's suffix rows in order: its shard files (in prefix order) row group by row group."""
+    from pyrmts.runs import parquet_batches
+
+    for f in sorted((d / "sx").glob("*.parquet")):
+        yield from parquet_batches(f, columns)
+
+
+def merge_shards(run_dirs: list[Path], out: Path, target_rows: int = RUN_SHARD_ROWS, plan: dict | None = None) -> dict:
+    """Runs (oldest first; the base first for a compaction) merged by `pyrmts.runs.merge_sorted` (streaming k-way):
+    rows equal on `(s, path, usr, vf)` are one version's row, and the smallest `vt` wins (a close record over the row
+    it closes). `plan`: cut to that shard plan (a compaction into a new base) instead of by `target_rows`."""
+    from pyrmts.runs import merge_sorted
+
+    stream = merge_sorted([_run_batches(d) for d in run_dirs], ["s", "path", "usr", "vf"], reduce={"vt": "min"})
+    return write_run_shards(stream, out, target_rows, plan)
+
+
+def merge_cdeltas(files_oldest_first: list[str], out: Path) -> int:
+    """Version deltas merged (`(depth, path, usr, vf)` identity, smallest `vt`, `op` 1 if opened in any)."""
+    from pyrmts.runs import merge_parquets
+
+    stream = merge_parquets(files_oldest_first, ["depth", "path", "usr", "vf", "op"], identity=["depth", "path", "usr", "vf"],
+                            reduce={"vt": "min", "op": "max"})
+    return write_sorted(stream, out, CDELTA_SCHEMA, INTERVAL_RG, dictionary=["usr"])
 
 
 # ── 3. Catalogs ────────────────────────────────────────────────────────────
 
 
-def merged_cells_sql(tiers: list[Path]) -> str:
-    """The cells of tiers (catalog dirs, oldest first) merged: every cell, and per literal the newest tier's
-    header. Sorted `(q, bucket, vf)`."""
-    parts = [f"SELECT *, {k} AS tier FROM read_parquet({q(str(t / 'cells.parquet'))})" for k, t in enumerate(tiers)]
-    return f"""WITH t AS ({' UNION ALL '.join(parts)}),
-        h AS (SELECT q, arg_max(b, tier) AS b, arg_max(o, tier) AS o FROM t WHERE bucket = '' GROUP BY q)
-        SELECT q, '' AS bucket, 0::BIGINT AS vf, b, o FROM h
-        UNION ALL SELECT q, bucket, vf, b, o FROM t WHERE bucket <> ''
-        ORDER BY q, bucket, vf"""
+def merge_catalogs(tiers: list[Path], out: Path) -> dict:
+    """Tiers' catalogs (oldest first) merged into `out/{cells,index}.parquet` by `pyrmts.runs` on `(q, bucket, vf)`,
+    the newest tier's row winning (headers; cells are never duplicated across tiers): the base plus every run is
+    the whole catalog, equal to a rebuild; runs alone, a merged run's catalog."""
+    from pyrmts.runs import merge_parquets
 
-
-def merge_catalogs(con, tiers: list[Path], out: Path) -> dict:
-    """Tiers' catalogs merged into `out/{cells,index}.parquet` (the base plus every run: the whole catalog, equal
-    to a rebuild; or runs alone: a merged run's catalog)."""
     out.mkdir(parents=True, exist_ok=True)
-    rows, index = sc.write_cells(_batches(con, merged_cells_sql(tiers)), out / "cells.parquet")
+    stream = merge_parquets([t / "cells.parquet" for t in tiers], ["q", "bucket", "vf"], reduce="newest")
+    rows, index = sc.write_cells(stream, out / "cells.parquet")
     pq.write_table(index, out / "index.parquet", compression=CODEC)
     return {"cells_rows": rows, "row_groups": index.num_rows, "bytes": (out / "cells.parquet").stat().st_size}
 
@@ -179,7 +230,7 @@ def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list
     for d in (prev, full):
         if d.exists():
             shutil.rmtree(d)
-    merge_catalogs(con, tiers, prev)
+    merge_catalogs(tiers, prev)
     doc = sc.append(con, prev=prev, base=base, deltas=deltas, V=V, out=full)
     pf, ff = q(str(prev / "cells.parquet")), q(str(full / "cells.parquet"))
     gone = con.execute(f"SELECT count(*) FILTER (WHERE bucket <> ''), count(*) FROM (SELECT * FROM read_parquet({pf}) EXCEPT SELECT * FROM read_parquet({ff}))").fetchone()
@@ -495,14 +546,11 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     if merges:
         if not mount:
             raise SystemExit("the counter carries: pass -m (the merges read the runs)")
-        import duckdb
-
-        con = duckdb.connect()
         for ins, m in merges:
             outp = Path(tmp) / "merge" / m["key"]
             dirs = [Path(mount) / prefix / r["key"] for r in ins]
-            doc = merge_shards(con, dirs, outp)
-            merge_catalogs(con, [d / "catalog" for d in dirs], outp / "catalog")
+            doc = merge_shards(dirs, outp)
+            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog")
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
             upload_tree(outp, bucket, f"{prefix}/{m['key']}")
             shutil.rmtree(outp)

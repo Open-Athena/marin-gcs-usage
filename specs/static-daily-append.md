@@ -50,8 +50,13 @@ The base generation's coalesced versions (`cintervals/r####.parquet`, `CINTERVAL
 ### 4. Tier merge (when the counter carries) and manifest
 
 - **Binary counter.** Runs carry a level; a day's run is level 0. After adding it, while the two newest runs have the same level `k`, they merge into one run of level `k + 1` spanning both. So after n days the live runs are the binary digits of n: at most ⌊log₂ n⌋ + 1 runs, and each day's rows are rewritten O(log n) times in all.
-- **Merge.** A k-way merge of the runs' sorted `sx` with the combine rule below, then re-sharded. The catalogs are unioned, keeping the newest header per `q` and its cell count. The `cdelta`s are concatenated with the same combine on `(depth, path, usr, vf)`.
-- **Compaction into a new base generation.** When the counter would reach level 5 (32 days), or on demand, the base plus its runs fold into a new generation. Today that is the full build (~45 VM-hours ≈ $10). A streaming base ⊕ runs merge (pyrmts Phase 2) would replace it.
+- **Merge.** `pyrmts.runs.merge_sorted` (pyrmts Phase 2, a streaming k-way merge) runs over the runs' `sx` (each run's shard files in prefix order), with `reduce={'vt': 'min'}` on `(s, path, usr, vf)`. The merged stream is re-cut into shards at three-character-prefix boundaries (`write_run_shards`).
+  - The catalogs merge with `merge_parquets(tiers, ['q', 'bucket', 'vf'], reduce='newest')`.
+  - The `cdelta`s merge with `identity=(depth, path, usr, vf)`, `reduce={'vt': 'min', 'op': 'max'}` (`merge_cdeltas`). The per-day `cdelta`s are kept anyway: the catalog append consumes one per scan, as point events.
+- **Compaction into a new base generation.** When the counter would reach level 5 (32 days), or on demand, the base plus its runs fold into a new generation.
+  - The same merge (base first) is cut to the new generation's shard plan (`merge_shards(..., plan=…)`: shard `i` holds prefixes `[lo, hi)`, empty ones written as the build writes them). It is then the full build byte for byte (`test_compaction_equals_full_build`).
+  - The catalog merge of base ⊕ runs is likewise the rebuilt catalog byte for byte.
+  - At fleet scale this runs per base shard (a shard's prefix range of every run), in parallel on Batch.
 - **Publish.** Every new file goes to R2 (`r2-copy`) before `manifests/<D>.json`; the manifest is uploaded last, so a reader never sees a run that is not all there.
 
 ## Formats

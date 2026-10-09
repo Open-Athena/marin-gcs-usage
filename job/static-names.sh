@@ -6,7 +6,7 @@
 #
 #   job/static-names.sh stage-src                 # upload HEAD's dt_cloud tree → gs://$B/static-names/src/<tree>/ (prints <tree>)
 #   job/static-names.sh run KIND TASKS ARGS…      # one Batch job of TASKS tasks, each `python -m dt_cloud.$MODULE KIND -m /gcs/$B ARGS…`
-#                                                 # (MODULE: static_names, or static_catalog); the scratch bucket ($S: the suffix shuffle and
+#                                                 # (MODULE: static_names, static_catalog or static_append); the scratch bucket ($S: the suffix shuffle and
 #                                                 # other intermediates, 7-day expiry, no soft delete) is mounted at /gcs/$S;
 #                                                 # waits for it and exits nonzero unless every task succeeded
 #   job/static-names.sh wait JOB                  # wait for a submitted job
@@ -46,6 +46,21 @@ stage_src() {
   git archive HEAD:cloud/src/dt_cloud | tar -x -C "$d/dt_cloud"
   gcloud storage rsync -r --verbosity=error "$d/dt_cloud" "gs://$B/static-names/src/$t/dt_cloud" > /dev/null
   echo "$t"
+}
+
+# `pyrmts` (pure Python; `pyrmts.intervals`) is not in the job image: stage the locked venv's copy, content-addressed by
+# the archive commit `cloud/pyproject.toml` pins, and put it on the tasks' PYTHONPATH beside `dt_cloud`.
+pyrmts_rev() { grep -o 'pyrmts/archive/[0-9a-f]*' cloud/pyproject.toml | head -1 | cut -d/ -f3; }
+stage_pyrmts() {
+  local r d src
+  r=$(pyrmts_rev)
+  if gcloud storage ls "gs://$B/static-names/src/pyrmts-$r/pyrmts/intervals.py" > /dev/null 2>&1; then echo "$r"; return; fi
+  src=$(${PYTHON:-.venv/bin/python} -c 'import os, pyrmts; print(os.path.dirname(pyrmts.__file__))')
+  d=tmp/static-names-src/pyrmts-$r
+  rm -rf "$d" && mkdir -p "$d"
+  cp -r "$src" "$d/pyrmts" && find "$d" -name __pycache__ -prune -exec rm -rf {} +
+  gcloud storage rsync -r --verbosity=error "$d/pyrmts" "gs://$B/static-names/src/pyrmts-$r/pyrmts" > /dev/null
+  echo "$r"
 }
 
 wait_job() {
@@ -88,10 +103,11 @@ run)
   TASKS=${3:?TASKS}
   shift 3
   SRC=${SRC:-$(stage_src)}
+  PYRMTS=$(stage_pyrmts)
   JOB_ID=${JOB_ID:-sn-$KIND-$(date -u +%Y%m%d-%H%M%S)}
   CPU=$(( ${MACHINE##*-} * 1000 ))
   MEM_MIB=$(( ${MACHINE##*-} * 7700 ))
-  cmd="set -euo pipefail; mkdir -p /stage/src /stage/tmp /stage/out && cp -r /gcs/$B/static-names/src/$SRC/dt_cloud /stage/src/ && cd /stage && \
+  cmd="set -euo pipefail; mkdir -p /stage/src /stage/tmp /stage/out && cp -r /gcs/$B/static-names/src/$SRC/dt_cloud /gcs/$B/static-names/src/pyrmts-$PYRMTS/pyrmts /stage/src/ && cd /stage && \
 PYTHONPATH=/stage/src python3 -u -m dt_cloud.${MODULE:-static_names} $KIND -m /gcs/$B $(printf '%q ' "$@")"
   if [ -n "${SPOT:-}" ]; then MODEL=SPOT; RETRIES=3; else MODEL=STANDARD; RETRIES=0; fi
   spec=$(mktemp)

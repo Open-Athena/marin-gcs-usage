@@ -83,8 +83,8 @@ def runs(fixture, tmp_path_factory):  # noqa: F811
             sa.catalog_delta(con, tiers, shards, deltas, V, run / "catalog", tmp / "work" / scan["id"])
             run_dirs.append(run)
         merged_dir = tmp / "runs" / "merged"
-        sa.merge_shards(con, run_dirs, merged_dir, target_rows=9)
-        sa.merge_catalogs(con, [d / "catalog" for d in run_dirs], merged_dir / "catalog")
+        sa.merge_shards(run_dirs, merged_dir, target_rows=9)
+        sa.merge_catalogs([d / "catalog" for d in run_dirs], merged_dir / "catalog")
     finally:
         sa.SX_RG = rg
     return {"root": root, "scans": scans, "merged": merged, "full": full, "base": base, "runs": run_dirs, "merged_run": merged_dir,
@@ -149,7 +149,7 @@ def test_catalog_equals_rebuild(runs):
     full = runs["full"]["final"]
     for name, tiers in (("each", [d / "catalog" for d in runs["runs"]]), ("merged", [runs["merged_run"] / "catalog"])):
         out = tmp / "check" / name
-        sa.merge_catalogs(con, [runs["base"]["final"], *tiers], out)
+        sa.merge_catalogs([runs["base"]["final"], *tiers], out)
         assert (out / "cells.parquet").read_bytes() == (full / "cells.parquet").read_bytes(), name
         assert (out / "index.parquet").read_bytes() == (full / "index.parquet").read_bytes(), name
     tiered = sa.TieredCatalog([_catalog(runs["base"]["final"]), *(_catalog(d / "catalog") for d in runs["runs"])])
@@ -197,3 +197,43 @@ def test_a_literal_crosses_v_on_an_append(runs):
     for run, scan in zip(runs["runs"], runs["scans"]["scans"][-K:]):
         olds += sum(1 for r in pq.read_table(run / "catalog" / "cells.parquet").to_pylist() if r["bucket"] != "" and r["vf"] < scan["ts"])
     assert olds > 0
+
+
+def test_compaction_equals_full_build(runs, tmp_path):
+    """Base ⊕ runs compacted (the k-way merge cut to the full build's shard plan) is the full build byte for byte:
+    every shard file, every sidecar; likewise through the merged run."""
+    import json
+
+    full = runs["full"]["out"]
+    plan = json.loads((full / "shards.json").read_text()) if (full / "shards.json").exists() else None
+    if plan is None:
+        from dt_cloud import static_names as sn_
+
+        plan = sn_.plan_shards(sorted((runs["full"]["build"] / "chist").glob("*.parquet")), target_rows=60, tasks=2)
+    rg, sa.SX_RG = sa.SX_RG, 5  # the fixture's build row groups
+    try:
+        for name, tiers in (("each", runs["runs"]), ("merged", [runs["merged_run"]])):
+            out = tmp_path / name
+            sa.merge_shards([runs["base"]["out"], *tiers], out, plan=plan)
+            want = sorted(p.name for p in (full / "sx").glob("*.parquet"))
+            assert sorted(p.name for p in (out / "sx").glob("*.parquet")) == want
+            for f in want:
+                assert (out / "sx" / f).read_bytes() == (full / "sx" / f).read_bytes(), (name, f)
+                assert (out / "sidecar" / f).read_bytes() == (full / "sidecar" / f).read_bytes(), (name, f)
+    finally:
+        sa.SX_RG = rg
+
+
+def test_merge_cdeltas(runs, tmp_path):
+    """Two days' version deltas merged: one row per version, the smallest `vt`, `op` 1 if it opened in either day."""
+    files = [str(f) for d in runs["runs"] for f in sorted((d / "cdelta").glob("*.parquet"))]
+    rows = [r for f in files for r in _read(Path(f))]
+    want: dict[tuple, tuple] = {}
+    for r in rows:
+        k = r[:4]
+        cur = want.get(k)
+        want[k] = r if cur is None else (*r[:4], min(cur[4], r[4]), *r[5:7], max(cur[7], r[7]))
+    n = sa.merge_cdeltas(files, tmp_path / "m.parquet")
+    got = _read(tmp_path / "m.parquet")
+    assert got == sorted(want.values(), key=lambda r: (r[0], r[1], r[2], r[3], r[7]))
+    assert n == len(want) < len(rows)
