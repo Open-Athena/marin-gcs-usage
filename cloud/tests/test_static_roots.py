@@ -132,3 +132,72 @@ def test_partitioned_dir_stats_sum_to_whole(built):  # noqa: F811
             e[4] = max(e[4], r["max_child"])
     assert len(whole) > 50
     assert sorted(deep + [(*k, *v) for k, v in top.items()]) == whole
+
+
+def _brute_view(versions: list[tuple], t: str, P: str, date: str) -> dict[str, list[int]]:
+    D = sn.scan_epoch(date)
+    acc: dict[str, list[int]] = {}
+    for depth, path, usr, vf, vt, size, n_files in versions:
+        if depth >= 1 and vf <= D < vt and path.startswith(P + "/") and _is_root(t, path):
+            e = acc.setdefault(path[len(P) + 1:].split("/", 1)[0], [0, 0])
+            e[0] += size
+            e[1] += n_files
+    return {k: v for k, v in sorted(acc.items()) if v != [0, 0]}
+
+
+def _local(out):
+    def fetch(file: str, lo: int, hi: int) -> bytes:
+        with open(out / file, "rb") as fh:
+            fh.seek(lo)
+            return fh.read(hi - lo)
+
+    return fetch, lambda file: (out / file).stat().st_size
+
+
+@pytest.mark.parametrize("R,K,rg", [(3, 2, 4), (10, 1, 8), (10**6, 5, 8192)])
+def test_drill_equals_brute_force(built, tmp_path, R, K, rg):  # noqa: F811
+    from test_static_names import DATES
+
+    root, scans, merged, ranges, plan, build, out, con, tmp = built
+    rows, terms = _member_roots(built, agg=False, chunk_rows=7)
+    con.execute("DROP TABLE IF EXISTS st")
+    for r in ranges["ranges"]:
+        src = str(build / "cintervals" / f"r{r['i']:04d}.parquet")
+        sr.short_roots(con, f"SELECT * FROM read_parquet({sn.q(src)})", "st")
+    old, sr.ROOT_RG = sr.ROOT_RG, rg
+    try:
+        docs = {kind: sr.build_roots(con, table, R, K, tmp_path / kind, "x") for kind, table in (("long", "rt"), ("short", "st"))}
+    finally:
+        sr.ROOT_RG = old
+    versions = _versions(merged)
+    shorts = {r[0] for r in con.execute("SELECT DISTINCT q FROM st").fetchall()}
+    drills = {}
+    for kind in ("long", "short"):
+        fetch, size_of = _local(tmp_path / kind)
+        idx = lambda sub: __import__("pyarrow.parquet").parquet.read_table(tmp_path / kind / sub / "x.parquet")  # noqa: E731
+        drills[kind] = sr.Drill(sr.GroupFile(idx("roots-index"), fetch, size_of), sr.GroupFile(idx("rollups-index"), fetch, size_of), R, rg)
+    dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p} | {"nope", "a"})
+    sources: dict[str, int] = {}
+    for t in sorted(terms | shorts):
+        drill = drills["short" if len(t) <= 2 else "long"]
+        for P in dirs:
+            got = drill.view(t, P, DATES)
+            sources[got["source"]] = sources.get(got["source"], 0) + 1
+            if got["source"] == "plain":
+                assert t in P.lower()
+                continue
+            for d in DATES:
+                exp = _brute_view(versions, t, P, d)
+                if got["source"] == "roots":
+                    assert got["answers"][d] == exp, (t, P, d)
+                else:
+                    kept = got["answers"][d]
+                    assert kept == {c: v for c, v in exp.items() if c in kept}, (t, P, d)
+                    rest = [sum(v[i] for c, v in exp.items() if c not in kept) for i in (0, 1)]
+                    assert got["rest"][d] == rest, (t, P, d)
+                    assert got["header"]["kept"] <= K
+            if got["source"] == "roots":
+                assert got["rows"] <= R + 2 * rg
+    assert sources.get("roots", 0) > 100
+    if R < 100:  # rollups are read only past the dispatch bound R + 2·rg
+        assert sources.get("rollup", 0) > (10 if R + 2 * rg < 15 else 0), (sources, docs)
