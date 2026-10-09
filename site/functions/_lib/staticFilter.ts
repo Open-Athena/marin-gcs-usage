@@ -86,6 +86,7 @@ export interface HitReader {
  *  isolate, and per colo through `cache`), then cut to `under`. Literals over `maxRows` go to `heavy`. */
 export class SuffixHits implements HitSource {
   private held = new Map<string, Promise<{ hits: Hit[]; io: Record<string, unknown> } | null>>()
+  private cut = new WeakMap<Hit[], Map<string, Hit[]>>()
   constructor(
     readonly names: HitReader,
     readonly opts: { maxRows?: number; heavy?: HitSource | null; cache?: HitCache | null; waitMs?: number } = {},
@@ -123,7 +124,16 @@ export class SuffixHits implements HitSource {
     if (shortLiteral(key)) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
     const got = await this.all(key)
     if (!got) return this.opts.heavy ? this.opts.heavy.hits(key, root) : null
-    return { hits: root === '' ? got.hits : got.hits.filter(h => under(h.path, root)), io: got.io }
+    if (root === '') return { hits: got.hits, io: got.io }
+    // One array per (literal, root) while the literal is held: the view's per-isolate phase 1 is keyed by it.
+    let byRoot = this.cut.get(got.hits)
+    if (!byRoot) this.cut.set(got.hits, (byRoot = new Map()))
+    let hits = byRoot.get(root)
+    if (!hits) {
+      byRoot.set(root, (hits = got.hits.filter(h => under(h.path, root))))
+      if (byRoot.size > 32) byRoot.delete(byRoot.keys().next().value!)
+    }
+    return { hits, io: got.io }
   }
 }
 
