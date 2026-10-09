@@ -20,8 +20,8 @@
   .sr-chart { margin-top: 8px; }
   .sr-svgwrap { position: relative; }
   .sr-svgtip { position: absolute; transform: translate(-50%, calc(-100% - 12px)); pointer-events: none; white-space: nowrap; z-index: 5; }
-  svg { display: block; text { fill: var(--ink-3); font-size: 12px; } .grid { stroke: var(--line); } .axis { stroke: var(--ink-3); } }
-  .sr-strip, .sr-gantt { width: 100%; height: auto; }
+  svg { display: block; text { fill: var(--ink-3); font-size: 11.5px; } .grid { stroke: var(--line); } .axis { stroke: var(--ink-3); } }
+  .sr-strip, .sr-gantt { max-width: 100%; }
   .sr-col { cursor: pointer;
     .sr-col-hit { fill: transparent; }
     .sr-col-total { fill: var(--other); }
@@ -42,10 +42,16 @@
     .fold { background: none; border: 0; color: var(--ink-2); cursor: pointer; padding: 0 4px 0 0; font: inherit; }
     .fold-pad { display: inline-block; width: 14px; }
   }
-  @media (max-width: 640px) {
-    h1 { font-size: 19px; }
-    .sr-gantt .lbl, .sr-gantt .dur { font-size: 20px; }
-    .sr-strip text { font-size: 20px; }
-  }
+  @media (max-width: 640px) { h1 { font-size: 19px; } }
 }
 .sr-tip { border-collapse: collapse; td { padding: 1px 6px 1px 0; } .num { text-align: right; } }
+.scans-page {
+  .sr-kind { font-size: 12px; color: var(--ink-3); }
+  .sr-gantt { .lbl { font-size: 12.5px; } .dur, .tick { font-size: 11.5px; } .tail .lbl { fill: var(--ink-3); font-style: italic; } }
+  .sr-strip .tick { font-size: 11.5px; }
+  @media (max-width: 900px) { .hide-md { display: none; } }
+  @media (max-width: 640px) {
+    .hide-sm { display: none; }
+    table.runs { font-size: 13px; }
+  }
+}

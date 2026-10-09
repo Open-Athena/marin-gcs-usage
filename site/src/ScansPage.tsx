@@ -3,13 +3,13 @@
 // previous scan — from the D1 rows `dt-cloud scan-run record | backfill`
 // writes. DIY SVG: a duration strip over all runs, a phase bar per row, and a
 // phase timeline per run.
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { SiteNav } from './SiteNav'
 import { SiteKbd } from './SiteKbd'
 import { Tooltip } from './Tooltip'
-import { fmtDur } from './runs'
+import { fmtDur as fmtDurM } from './runs'
 import { axisTicks } from './runChart'
 import { fmtBytesPrecise, fmtN } from './types'
 import { useUnits } from './units'
@@ -42,6 +42,9 @@ const useScanRun = (id: string) => useQuery<DetailResponse, Error>({
   refetchInterval: q => (q.state.data?.run.status === 'running' ? 30_000 : false), staleTime: 15_000,
 })
 
+/** `fmtDur`, with seconds under a minute (a 3 s publish isn't `0m`). */
+const fmtDur = (s: number): string => (s < 60 ? `${Math.round(s)}s` : fmtDurM(s))
+
 const utc = (ts: number | null): string => (ts == null ? '—' : new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' '))
 const scanHref = (id: string) => `/scans/${encodeURIComponent(id)}`
 const PALETTE = ['--s1', '--s2', '--s4', '--s7', '--s5', '--s6', '--s3', '--s8']
@@ -69,6 +72,23 @@ function useSvgTip() {
   })
   const el = tip && <div className="sr-svgtip tooltip-content" style={{ left: tip.x, top: tip.y }}>{tip.content}</div>
   return { on, el }
+}
+
+/** The wrapper's width in CSS px, so a chart draws at 1:1 (text stays legible
+ * on a phone instead of scaling down with a fixed viewBox). Measured before
+ * observing: a hidden tab never gets the first ResizeObserver callback. */
+function useWidth<T extends HTMLElement>(fallback = 720): [RefObject<T | null>, number] {
+  const ref = useRef<T>(null)
+  const [w, setW] = useState(fallback)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setW(el.clientWidth || fallback)
+    const ro = new ResizeObserver(() => setW(el.clientWidth || fallback))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [fallback])
+  return [ref, w]
 }
 
 const usd = (x: number | null | undefined) => (x == null ? '—' : `$${x < 10 ? x.toFixed(2) : Math.round(x).toLocaleString('en-US')}`)
@@ -99,9 +119,10 @@ function PhaseBar({ spans, secs, color, width = 160 }: { spans: PhaseSpan[]; sec
 /** Duration per run over time, stacked by phase; a failed run in the danger ink. */
 function DurationStrip({ runs, color, onPick }: { runs: RunSummary[]; color: (p: string) => string; onPick: (id: string) => void }) {
   const tip = useSvgTip()
+  const [ref, W] = useWidth<HTMLDivElement>()
   const pts = runs.filter(r => r.secs != null && r.run.started_ts != null)
   if (pts.length < 2) return null
-  const W = 1000, H = 180, L = 44, R = 8, T = 8, B = 22
+  const H = W < 500 ? 150 : 190, L = 36, R = 6, T = 8, B = 20
   const t0 = Math.min(...pts.map(p => p.run.started_ts!)), t1 = Math.max(...pts.map(p => p.run.started_ts!))
   const span = Math.max(3600, t1 - t0)
   const hours = Math.max(...pts.map(p => p.secs!)) / 3600
@@ -109,12 +130,12 @@ function DurationStrip({ runs, color, onPick }: { runs: RunSummary[]; color: (p:
   const top = ticks[ticks.length - 1] || 1
   const x = (t: number) => L + ((t - t0) / span) * (W - L - R)
   const y = (h: number) => H - B - (h / top) * (H - T - B)
-  const bw = Math.max(2, Math.min(14, ((W - L - R) / pts.length) * 0.7))
+  const bw = Math.max(1.5, Math.min(14, ((W - L - R) / pts.length) * 0.7))
   const days = [...new Set(pts.map(p => new Date(p.run.started_ts! * 1000).toISOString().slice(0, 10)))]
-  const labelEvery = Math.max(1, Math.ceil(days.length / 8))
+  const labelEvery = Math.max(1, Math.ceil(days.length / Math.max(2, Math.floor(W / 90))))
   return (
-    <div className="sr-svgwrap">
-      <svg className="sr-strip" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Run duration over time, by phase">
+    <div className="sr-svgwrap" ref={ref}>
+      <svg className="sr-strip" width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Run duration over time, by phase">
         {ticks.map(h => <g key={h}><line className="grid" x1={L} x2={W - R} y1={y(h)} y2={y(h)} /><text className="tick" x={L - 6} y={y(h) + 4} textAnchor="end">{h}h</text></g>)}
         {days.filter((_, i) => i % labelEvery === 0).map(d => {
           const t = Date.parse(`${d}T00:00:00Z`) / 1000
@@ -145,7 +166,7 @@ function DurationStrip({ runs, color, onPick }: { runs: RunSummary[]; color: (p:
 
 function Legend({ order, color }: { order: string[]; color: (p: string) => string }) {
   if (!order.length) return null
-  return <div className="sr-legend">{order.map(p => <span key={p}><i className="sw" style={{ background: color(p) }} />{p}</span>)}<span><i className="sw failed" />failed</span></div>
+  return <div className="sr-legend">{order.map(p => <span key={p}><i className="sw" style={{ background: color(p) }} />{p}</span>)}<span><i className="sw" style={{ background: 'var(--other)' }} />unmarked (before the first / after the last phase marker)</span><span><i className="sw failed" />failed</span></div>
 }
 
 function Links({ run, links }: { run: ScanRun; links: Links }) {
@@ -188,12 +209,12 @@ export function ScansPage() {
         <div className="runs-wrap">
           <table className="runs sr-runs">
             <thead><tr>
-              <th>scan</th><th>kind</th><th>status</th><th>started (UTC)</th>
-              <th className="num">duration</th><th>phases</th>
+              <th>scan</th><th>status</th><th className="hide-sm">started (UTC)</th>
+              <th className="num">duration</th><th className="hide-md">phases</th>
               <th className="num"><Tooltip content="Bytes of the run's top-level outputs (listing, index, snapshot, …).">wrote</Tooltip></th>
               <th className="num"><Tooltip content="Against the previous scan's same structures. Green grew, red shrank.">Δ prev</Tooltip></th>
               <th className="num"><Tooltip content="Compute estimate: the machine's list $/h × run hours × tasks, including the run's downstream jobs (listing fan-out).">cost</Tooltip></th>
-              <th>links</th>
+              <th className="hide-md">links</th>
             </tr></thead>
             <tbody>
               {shown.map(s => {
@@ -201,16 +222,16 @@ export function ScansPage() {
                 const map = r.status === 'succeeded' ? mapHref(r.scan, DEFAULT_STORE.path) : null
                 return (
                   <tr key={r.run_id} className={r.status === 'failed' ? 'failed' : undefined}>
-                    <td className="nb"><Link to={scanHref(r.run_id)}><code>{r.scan}</code></Link></td>
-                    <td>{r.kind}{s.downstream > 0 && <Tooltip content={`${s.downstream} downstream job${s.downstream > 1 ? 's' : ''} (listing fan-out, …)`}><span className="dim"> +{s.downstream}</span></Tooltip>}</td>
+                    <td className="nb"><Link to={scanHref(r.run_id)}><code>{r.scan}</code></Link>
+                      <div className="sr-kind">{r.kind}{s.downstream > 0 && <Tooltip content={`${s.downstream} downstream job${s.downstream > 1 ? 's' : ''} (listing fan-out, …)`}><span> + {s.downstream} job{s.downstream > 1 ? 's' : ''}</span></Tooltip>}</div></td>
                     <td><Status run={r} failedAt={s.failed_at} /></td>
-                    <td className="nb">{utc(r.started_ts)}</td>
+                    <td className="nb hide-sm">{utc(r.started_ts)}</td>
                     <td className="num nb">{s.secs == null ? <span className="dim">—</span> : fmtDur(s.secs)}</td>
-                    <td><PhaseBar spans={s.spans} secs={s.secs} color={color} /></td>
+                    <td className="hide-md"><PhaseBar spans={s.spans} secs={s.secs} color={color} width={130} /></td>
                     <td className="num nb">{bytes(s.out_bytes)}</td>
                     <td className={`num nb ${deltaClass(s.delta_bytes)}`}>{delta(s.delta_bytes)}</td>
                     <td className="num nb">{s.cost_usd == null ? <span className="dim">—</span> : usd(s.cost_usd)}</td>
-                    <td className="nb links"><Link to={scanHref(r.run_id)}>details</Link>{map && <> · <Link to={map}>map</Link></>}{' · '}<Links run={r} links={q.data!} /></td>
+                    <td className="nb links hide-md"><Link to={scanHref(r.run_id)}>details</Link>{map && <> · <Link to={map}>map</Link></>}{' · '}<Links run={r} links={q.data!} /></td>
                   </tr>
                 )
               })}
@@ -226,22 +247,29 @@ export function ScansPage() {
 /** The run's phases on its clock: one row per phase. */
 function PhaseTimeline({ spans, secs, color }: { spans: PhaseSpan[]; secs: number | null; color: (p: string) => string }) {
   const tip = useSvgTip()
+  const [ref, W] = useWidth<HTMLDivElement>()
   if (!spans.length || !secs) return <p className="dim">No phase markers for this run (the job records its phases; the backfill recovers them from the last 30 days of logs).</p>
-  const W = 1000, rowH = 24, L = 170, R = 80
-  const H = spans.length * rowH + 22
+  const last = Math.max(...spans.map(s => s.end))
+  const tail = secs - last > 30 ? [{ phase: 'after the last marker', start: last, end: secs, status: 'done' as const, note: 'Steps after the last phase marker (index sync, health check, cache warm-up, digests, …)', lane: 0, tail: true }] : []
+  const rows: (PhaseSpan & { tail?: boolean })[] = [...spans, ...tail]
+  const narrow = W < 500
+  const rowH = 24, L = narrow ? 112 : 160, R = narrow ? 40 : 56
+  const H = rows.length * rowH + 24
   const x = (t: number) => L + (t / secs) * (W - L - R)
-  const step = [60, 300, 600, 900, 1800, 3600, 7200, 14400].find(s => secs / s <= 8) ?? 28800
+  const maxTicks = Math.max(3, Math.floor((W - L - R) / 60))
+  const step = [60, 300, 600, 900, 1800, 3600, 7200, 14400].find(s => secs / s <= maxTicks) ?? 28800
+  const cut = narrow ? 15 : 22
   const ticks = Array.from({ length: Math.floor(secs / step) + 1 }, (_, i) => i * step)
   return (
-    <div className="sr-svgwrap">
-      <svg className="sr-gantt" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Phase timeline">
-        {ticks.map(t => <g key={t}><line className="grid" x1={x(t)} x2={x(t)} y1={0} y2={H - 18} /><text className="tick" x={x(t)} y={H - 4} textAnchor="middle">{t ? fmtDur(t).replace(' 00m', 'h') : '0'}</text></g>)}
-        {spans.map((s, i) => (
-          <g key={s.phase} {...tip.on(<><div><b>{s.phase}</b>{s.lane ? ' — beside the main sequence' : ''}</div><div>{fmtDur(s.start)} → {fmtDur(s.end)} · {fmtDur(s.end - s.start)}</div>{s.note && <div className="dim">{s.note}</div>}</>)}>
+    <div className="sr-svgwrap" ref={ref}>
+      <svg className="sr-gantt" width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Phase timeline">
+        {ticks.map(t => <g key={t}><line className="grid" x1={x(t)} x2={x(t)} y1={0} y2={H - 20} /><text className="tick" x={x(t)} y={H - 5} textAnchor="middle">{t ? fmtDur(t).replace(' 00m', '') : '0'}</text></g>)}
+        {rows.map((s, i) => (
+          <g key={s.phase} className={s.tail ? 'tail' : undefined} {...tip.on(<><div><b>{s.phase}</b>{s.lane ? ' — beside the main sequence' : ''}</div><div>{fmtDur(s.start)} → {fmtDur(s.end)} · {fmtDur(s.end - s.start)}</div>{s.note && <div className="dim">{s.note}</div>}</>)}>
             <rect className="sr-row-hit" x={0} y={i * rowH} width={W} height={rowH} />
-            <text className="lbl" x={L - 8} y={i * rowH + 16} textAnchor="end">{s.phase.length > 24 ? `${s.phase.slice(0, 23)}…` : s.phase}</text>
-            <rect x={x(s.start)} y={i * rowH + 5} width={Math.max(2, x(s.end) - x(s.start))} height={rowH - 10} rx={2} style={{ fill: color(s.phase) }} className={s.status === 'failed' ? 'failed' : undefined} />
-            <text className="dur" x={x(s.end) + 6} y={i * rowH + 16}>{fmtDur(s.end - s.start)}</text>
+            <text className="lbl" x={L - 8} y={i * rowH + 16} textAnchor="end">{s.phase.length > cut ? `${s.phase.slice(0, cut - 1)}…` : s.phase}</text>
+            <rect x={x(s.start)} y={i * rowH + 5} width={Math.max(2, x(s.end) - x(s.start))} height={rowH - 10} rx={2} style={{ fill: s.tail ? 'var(--other)' : color(s.phase) }} className={s.status === 'failed' ? 'failed' : undefined} />
+            <text className="dur" x={x(s.end) + 5} y={i * rowH + 16}>{fmtDur(s.end - s.start)}</text>
           </g>
         ))}
       </svg>
@@ -272,7 +300,7 @@ function OutputsTable({ outputs, meta }: { outputs: OutputDelta[]; meta: string 
         <td className="num nb">{o.objects == null ? '—' : fmtN(o.objects)}</td>
         <td className="num nb">{o.rows == null ? <span className="dim">—</span> : fmtN(o.rows)}</td>
         <td className={`num nb ${deltaClass(o.delta_rows)}`}>{o.delta_rows == null ? '—' : `${o.delta_rows > 0 ? '+' : o.delta_rows < 0 ? '−' : '±'}${fmtN(Math.abs(o.delta_rows))}`}</td>
-        <td className="nb">{o.gen ? <code className="dim">{o.gen}</code> : ''}</td>
+        <td className="nb hide-md">{o.gen ? <code className="dim">{o.gen}</code> : ''}</td>
         <td className="nb">{href ? <a href={href} target="_blank" rel="noreferrer">meta ↗</a> : <span className="dim">—</span>}</td>
       </tr>
     )
@@ -283,7 +311,7 @@ function OutputsTable({ outputs, meta }: { outputs: OutputDelta[]; meta: string 
         <thead><tr>
           <th>structure</th><th className="num">bytes</th>
           <th className="num"><Tooltip content={`Against the previous scan${tops[0]?.prev_scan ? ` (${tops[0].prev_scan})` : ''}: the same structure's bytes.`}>Δ prev</Tooltip></th>
-          <th className="num">objects</th><th className="num">rows</th><th className="num">Δ rows</th><th>gen</th>
+          <th className="num">objects</th><th className="num">rows</th><th className="num">Δ rows</th><th className="hide-md">gen</th>
           <th><Tooltip content="The output's directory in the /meta tree (the deployments' own data bucket, scanned periodically: a just-written output appears after its next meta scan).">tree</Tooltip></th>
         </tr></thead>
         <tbody>{tops.flatMap(o => [row(o, false), ...(open.has(o.key) ? kids(o.key).map(k => row(k, true)) : [])])}</tbody>
