@@ -10,8 +10,10 @@ This file is the whole guide. Point your agent at it (in the [GitHub repo][API.m
 
 Every write is authenticated as **you** by a personal bearer token.
 
-- **Browser:** sign in at <https://gcs.oa.dev> with your `@openathena.ai` (or whitelisted) email, then reveal/mint your token from the user menu (top-right).
+- **Browser:** sign in at <https://gcs.oa.dev> with your `@openathena.ai` (or whitelisted) email, then open the avatar menu (top-right) → **Agent / CLI Token…** to mint (or rotate) it.
 - **API:** `POST /api/token` from a signed-in browser session mints (or rotates) it; the raw token is shown **once**. `GET /api/token` reports status (never the token); `DELETE /api/token` revokes it.
+
+**If you're an agent and have no token, ask your human for one** — e.g. *"Please open https://gcs.oa.dev, click your avatar (top-right) → Agent / CLI Token…, mint a token, and paste it here (or export it as `GCS_USAGE_TOKEN`)."* If they can't sign in, they request access from the sign-in page. Never ask for their password or a browser session cookie; the token is the only credential an agent needs, and they can revoke it from the same menu.
 
 The token carries the `gcs` and `gcs:assign` scopes (least privilege: it can read, stage and assign, not administer). Revoking it is instant. Share links (guest access) can't assign.
 
@@ -26,7 +28,7 @@ Prefixes are always `gs://marin-<bucket>/<dir>/…/`: **directory prefixes only*
 
 ## 2. HTTP API
 
-All under `$GCS_USAGE_URL`. Reads are open to any signed-in viewer; writes need `Authorization: Bearer $GCS_USAGE_TOKEN`. Scans are dated `YYYY-MM-DD`; `GET /data/scans.json` lists them, newest first.
+All under `$GCS_USAGE_URL`. Reads are open to any signed-in viewer; writes need `Authorization: Bearer $GCS_USAGE_TOKEN`. A scan's id is `YYYY-MM-DD`, or `YYYY-MM-DDTHHMM` when a day has more than one scan; `GET /data/scans.json` lists them, newest first, and a `date=` of a bare day means that day's latest scan.
 
 ### Identity
 
