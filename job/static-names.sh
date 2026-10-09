@@ -12,11 +12,15 @@
 #   job/static-names.sh wait JOB                  # wait for a submitted job
 #   job/static-names.sh r2 GEN [ARGS…]            # `static-names r2-copy -g GEN` on the ch-store VM (it holds the R2 keys, /data/r2-index.env),
 #                                                 # from the staged source tree; GCS → R2 bucket oa-gcs-usage-index, idempotent
+#   job/static-names.sh r2-batch GEN [ARGS…]      # the same copy as a 1-task Batch job, the R2 key from Secret Manager
+#                                                 # (`gcs-static-index-r2-{key-id,secret}`); R2_ENDPOINT or CLOUDFLARE_ACCOUNT_ID
 #   job/static-names.sh ch-answers DATES TERMS    # reference answers from the ch-store VM's ClickHouse (`mega_names.answer`, postings `m`),
 #                                                 # read-only, sequential; DATES comma-separated, TERMS a file of literals; JSON lines on stdout
 #
 # Env: MODULE (static_names), MACHINE (n2-highmem-16), SSD (750; n2 16-vCPU needs ≥2 local SSDs of 375), PARALLELISM (TASKS), SPOT (1: spot VMs,
-# 3 retries), MAX_RUN_SECONDS (14400), IMAGE (the pinned job image digest), SRC (a staged tree; default HEAD's), JOB_ID, DRY=1.
+# 3 retries), MAX_RUN_SECONDS (14400), IMAGE (the pinned job image digest), SRC (a staged tree; default HEAD's; `image`: the image's
+# own installed dt_cloud + pyrmts, for a job image built from the lock), NO_MOUNT=1 (no `-m`), ENV_JSON (the tasks'
+# Batch `environment`), JOB_ID, DRY=1.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PROJECT=oa-internal-450019
@@ -79,7 +83,7 @@ wait_job() {
   done
 }
 
-case ${1:?stage-src|run|wait|ch-answers} in
+case ${1:?stage-src|run|r2|r2-batch|wait|ch-answers} in
 stage-src) stage_src ;;
 r2)
   GEN=${2:?GEN}
@@ -92,6 +96,19 @@ r2)
       -e R2_ENDPOINT=https://74981a43be0de7712369306c7b19133d.r2.cloudflarestorage.com -e R2_BUCKET=oa-gcs-usage-index \
       --entrypoint nice \$(cat /data/image) -n 10 python3 -u -m dt_cloud.static_names r2-copy -g $GEN $EXTRA"
   ;;
+r2-batch)
+  # The same copy as a 1-task Batch job: the R2 key from Secret Manager (`gcs-static-index-r2-{key-id,secret}`,
+  # a token for bucket oa-gcs-usage-index only), the endpoint from R2_ENDPOINT (or CLOUDFLARE_ACCOUNT_ID).
+  GEN=${2:?GEN}
+  shift 2
+  R2_ENDPOINT=${R2_ENDPOINT:-https://${CLOUDFLARE_ACCOUNT_ID:?R2_ENDPOINT or CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com}
+  ENV_JSON=$(python3 -c 'import json, sys
+s = "projects/%s/secrets/gcs-static-index-r2-%s/versions/latest"
+print(json.dumps({"variables": {"R2_ENDPOINT": sys.argv[1], "R2_BUCKET": "oa-gcs-usage-index"},
+                  "secretVariables": {"AWS_ACCESS_KEY_ID": s % (sys.argv[2], "key-id"), "AWS_SECRET_ACCESS_KEY": s % (sys.argv[2], "secret")}}))' "$R2_ENDPOINT" "$PROJECT")
+  ENV_JSON=$ENV_JSON MODULE=static_names NO_MOUNT=1 MACHINE=${R2_MACHINE:-n2-highmem-4} SSD=375 PARALLELISM=1 \
+    JOB_ID=${JOB_ID:-sn-r2-$(date -u +%Y%m%d-%H%M%S)} exec "$0" run r2-copy 1 -g "$GEN" "$@"
+  ;;
 ch-answers)
   job/ch-store.sh sh "sudo mkdir -p /data/sn && sudo tee /data/sn/ch-answers.py > /dev/null" < job/static-names/ch-answers.py
   job/ch-store.sh sh "sudo tee /data/sn/terms.txt > /dev/null" < "${3:?TERMS}"
@@ -102,13 +119,21 @@ run)
   KIND=${2:?KIND}
   TASKS=${3:?TASKS}
   shift 3
-  SRC=${SRC:-$(stage_src)}
-  PYRMTS=$(stage_pyrmts)
   JOB_ID=${JOB_ID:-sn-$KIND-$(date -u +%Y%m%d-%H%M%S)}
   CPU=$(( ${MACHINE##*-} * 1000 ))
   MEM_MIB=$(( ${MACHINE##*-} * 7700 ))
-  cmd="set -euo pipefail; mkdir -p /stage/src /stage/tmp /stage/out && cp -r /gcs/$B/static-names/src/$SRC/dt_cloud /gcs/$B/static-names/src/pyrmts-$PYRMTS/pyrmts /stage/src/ && cd /stage && \
-PYTHONPATH=/stage/src python3 -u -m dt_cloud.${MODULE:-static_names} $KIND -m /gcs/$B $(printf '%q ' "$@")"
+  MOUNT_ARG=""
+  if [ -z "${NO_MOUNT:-}" ]; then MOUNT_ARG="-m /gcs/$B"; fi
+  if [ "${SRC:-}" = image ]; then
+    cmd="set -euo pipefail; mkdir -p /stage/tmp /stage/out && cd /stage && \
+python3 -u -m dt_cloud.${MODULE:-static_names} $KIND $MOUNT_ARG $(printf '%q ' "$@")"
+  else
+    SRC=${SRC:-$(stage_src)}
+    PYRMTS=$(stage_pyrmts)
+    cmd="set -euo pipefail; mkdir -p /stage/src /stage/tmp /stage/out && cp -r /gcs/$B/static-names/src/$SRC/dt_cloud /gcs/$B/static-names/src/pyrmts-$PYRMTS/pyrmts /stage/src/ && cd /stage && \
+PYTHONPATH=/stage/src python3 -u -m dt_cloud.${MODULE:-static_names} $KIND $MOUNT_ARG $(printf '%q ' "$@")"
+  fi
+  ENVJ=${ENV_JSON:-'{}'}
   if [ -n "${SPOT:-}" ]; then MODEL=SPOT; RETRIES=3; else MODEL=STANDARD; RETRIES=0; fi
   spec=$(mktemp)
   cat > "$spec" <<EOF
@@ -123,6 +148,7 @@ PYTHONPATH=/stage/src python3 -u -m dt_cloud.${MODULE:-static_names} $KIND -m /g
         "commands": $(python3 -c 'import json, sys; print(json.dumps(["-c", sys.argv[1]]))' "$cmd"),
         "volumes": ["/mnt/disks/gcs/$B:/gcs/$B:ro", "/mnt/disks/gcs/$S:/gcs/$S:ro", "/mnt/disks/stage:/stage:rw"]
       }}],
+      "environment": $ENVJ,
       "computeResource": {"cpuMilli": $CPU, "memoryMib": $MEM_MIB},
       "maxRetryCount": $RETRIES,
       "maxRunDuration": "${MAX_RUN_SECONDS:-14400}s",
