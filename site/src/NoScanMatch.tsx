@@ -1,15 +1,16 @@
 import { Link } from 'react-router-dom'
 import { fmtScan, type ScanLabel, type ScanMiss } from './scan'
-import { encodeSel, exactPrefix, type ScanSel, type ScanTimes } from './scanSlug'
+import { encodeSel, exactPrefix, minPrefix, type ScanSel, type ScanTimes } from './scanSlug'
 
 /** The URL a "no scan matches" link goes to: the same page and params, its
  * `?d=` re-pointed at `scan` — the end (`end: true`) or the pinned start —
- * keeping the rest of the selection; the legacy keys dropped. */
-export function hrefWithScan(pathname: string, search: string, sel: ScanSel | undefined, scan: string, end = true, times?: ScanTimes): string {
+ * keeping the rest of the selection; the legacy keys dropped. `scan` is written
+ * as its canonical slug among `scans` (`minPrefix`), or its minute without them. */
+export function hrefWithScan(pathname: string, search: string, sel: ScanSel | undefined, scan: string, end = true, times?: ScanTimes, scans?: readonly string[]): string {
   const sp = new URLSearchParams(search)
   sp.delete('date'); sp.delete('from')
   const base: ScanSel = sel && !sel.invalid ? sel : {}
-  const exact = exactPrefix(scan, times)
+  const exact = scans ? minPrefix(scan, scans, times) : exactPrefix(scan, times)
   const d = encodeSel(end ? { ...base, d: exact } : { ...base, from: exact, span: undefined })
   if (d) sp.set('d', d); else sp.delete('d')
   return `${pathname}?${sp}`

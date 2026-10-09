@@ -17,7 +17,8 @@
  * closest scans on either side to offer).
  *
  * The canonical (URL) form is the dashless compact one, `YYMMDD[HH[MM]]`
- * (`encodeScan`), which leaves `-` to `?d=`'s separators alone.
+ * (`encodeScan`), which leaves `-` to `?d=`'s separators alone; a pinned scan
+ * is written as its shortest permanent slug (`minSlug`).
  */
 
 const HOUR = 3600_000
@@ -175,6 +176,78 @@ export const exactPrefix = (id: string, times?: ScanTimes): string => (isScanId(
  * `2610091236`, date-only `2026-10-09` → its start `2610090430` (or midnight
  * `2610090000` when unknown) — never `261009`, the day's latest scan. */
 export const exactSlug = (id: string, times?: ScanTimes): string => encodeScan(exactPrefix(id, times))!
+
+// ---- the canonical slug: the shortest that names its scan for good ----
+//
+// A scan's canonical slug is the shortest of its day, its hour and its minute
+// (all of its key, `scanKey`) that names only that scan **and never can name
+// another** (`namesForGood`):
+//  - the day (`261008`) once that UTC day has ended, if no other scan shares it;
+//  - else the hour (`26100904`) once that hour has ended, if no other scan
+//    falls under it;
+//  - else the minute (`2610091236`): always permanent (`check_order` refuses two
+//    scans in one minute).
+// So today's scan links by its minute (or hour) and its slug shortens once the
+// period ends; the longer forms keep resolving to it, so a link already shared
+// never breaks. Resolution is unchanged (a day slug is that day's latest scan).
+// A date-only scan whose start isn't known (`ScanTimes`) could later be keyed
+// into any hour of its day, so no slug on that day stops at the hour.
+//
+// "Ended" is the period's UTC end: a scan is listed once indexed, and its id is
+// its start, so one started before the end but indexed after it could still
+// join a period whose slug already shortened (an in-flight scan). The cadences
+// in use (gcs daily, cw 6-hourly) never put two scans in one hour, and rarely in
+// one day across midnight.
+
+const MINUTE = 60_000
+
+/** The UTC end of the period a decoded prefix names: its day, hour or minute. */
+const periodEnd = (prefix: string): number =>
+  scanTime(prefix) + (prefix.length === 10 ? DAY : prefix.length === 13 ? HOUR : MINUTE)
+
+/** Whether the decoded `prefix` names the scan `id` alone among `scans`, and
+ * always will: a minute always; a day or an hour once it has ended (`now`), and
+ * an hour only on a day whose date-only scan (if any) has a known start. */
+export function namesForGood(prefix: string, id: string, scans: readonly string[], times?: ScanTimes, now = new Date()): boolean {
+  const under = scans.filter(s => scanUnder(s, prefix, times))
+  if (under.length !== 1 || under[0] !== id) return false
+  if (prefix.length >= 15) return true
+  if (now.getTime() < periodEnd(prefix)) return false
+  const day = prefix.slice(0, 10)
+  return prefix.length === 10 || !scans.some(s => s === day && !times?.[s])
+}
+
+/** The scan `id`'s canonical prefix (decoded form): the shortest of its key's
+ * day, hour and minute that `namesForGood`; the minute (`exactPrefix`) when
+ * `id` isn't among `scans`. What a picker writes as `d`. */
+export function minPrefix(id: string, scans: readonly string[], times?: ScanTimes, now = new Date()): string {
+  const k = exactPrefix(id, times)
+  for (const p of [k.slice(0, 10), k.slice(0, 13)]) if (namesForGood(p, id, scans, times, now)) return p
+  return k
+}
+
+/** The scan `id`'s canonical slug (`minPrefix`, encoded): `261008` (alone on a
+ * past day), `26100904` (alone in a past hour), else `2610091236`. */
+export const minSlug = (id: string, scans: readonly string[], times?: ScanTimes, now = new Date()): string =>
+  encodeScan(minPrefix(id, scans, times, now))!
+
+/** A decoded prefix in canonical form: when it names one scan for good
+ * (`namesForGood`), that scan's `minPrefix` (never a longer one); else as is —
+ * a day still in progress, or one holding several scans, stays the day's
+ * latest scan. */
+export function canonicalPrefix(prefix: string, scans: readonly string[], times?: ScanTimes, now = new Date()): string {
+  const id = latestScan(prefix, scans, times)
+  if (!id || !namesForGood(prefix, id, scans, times, now)) return prefix
+  const m = minPrefix(id, scans, times, now)
+  return m.length <= prefix.length ? m : prefix
+}
+
+/** A selection with each pinned endpoint in canonical form (`canonicalPrefix`). */
+export function canonicalizeSel(s: ScanSel | undefined, scans: readonly string[], times?: ScanTimes, now = new Date()): ScanSel | undefined {
+  if (!s || s.invalid) return s
+  const c = (p: string | undefined) => (p ? canonicalPrefix(p, scans, times, now) : undefined)
+  return sel(c(s.d), s.span, c(s.from))
+}
 
 /** Every scan matching a decoded prefix, newest first (`scans` in any order). */
 export function scanMatches(prefix: string | undefined, scans: readonly string[], times?: ScanTimes): string[] {
@@ -394,9 +467,12 @@ export function selOf(sp: URLSearchParams, now = new Date()): ScanSel | undefine
 
 /** A URL's scan selection in canonical form (`selOf`, re-encoded compactly),
  * or undefined when it selects nothing (absent); an unparseable value stays
- * verbatim (a miss). What a
- * page's own URL canonicalizes to, so OG/share views key by the same string. */
-export const canonicalSel = (sp: URLSearchParams, now = new Date()): string | undefined => encodeSel(selOf(sp, now))
+ * verbatim (a miss). Given the scan list (and `times`), each pinned endpoint
+ * that names one scan for good is that scan's shortest slug
+ * (`canonicalizeSel`): what a page's own URL canonicalizes to. Without one
+ * (the OG card's view key, a pure route) the spelling alone is canonicalized. */
+export const canonicalSel = (sp: URLSearchParams, now = new Date(), scans?: readonly string[], times?: ScanTimes): string | undefined =>
+  encodeSel(scans ? canonicalizeSel(selOf(sp, now), scans, times, now) : selOf(sp, now))
 
 /** The slug a missed selection names, for a "no scan matches" message: the
  * `invalid` value, or the canonical end slug. */

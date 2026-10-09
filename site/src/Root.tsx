@@ -1,4 +1,5 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { useEffect } from 'react'
 import { HotkeysProvider } from 'use-kbd'
 import { HelpCard, HelpProvider } from './Help'
 import { AdminDbPage } from './AdminDbPage'
@@ -37,6 +38,13 @@ const PERF = typeof location !== 'undefined' && new URLSearchParams(location.sea
 // session. One hotkey/omnibar registry for the whole site (SiteKbd renders
 // the chrome on each page; pages register their own actions on top of the
 // shared ones).
+/** Leave for the data bucket's `/meta` tree on its own host (`/meta/x?d=…` → `<to>/x?d=…`). */
+function MetaTreeRedirect({ to }: { to: string }) {
+  const { pathname, search, hash } = useLocation()
+  useEffect(() => { location.replace(to.replace(/\/$/, '') + pathname.replace(/^\/meta/, '') + search + hash) }, [to, pathname, search, hash])
+  return <p className="loading">Opening the data bucket's meta tree…</p>
+}
+
 export default function Root() {
   useLoadIdentities()
   return (
@@ -54,6 +62,10 @@ export default function Root() {
       <Route path="/admin/db" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/admin/db/:table" element={<AuthGate><AdminDbPage /></AuthGate>} />
       <Route path="/files/*" element={<AuthGate><FilesRedirect /></AuthGate>} />
+      {/* `/meta` served by another deployment (`Store.metaTree`): go there, keeping the subpath + query. */}
+      {DEFAULT_STORE.metaTree && !STORES.some(s => s.path.replace(/\/$/, '') === '/meta') && (
+        <Route path="/meta/*" element={<MetaTreeRedirect to={DEFAULT_STORE.metaTree} />} />
+      )}
       {/* The owner pages exist only on an attribution store; elsewhere they go home. */}
       {DEFAULT_STORE.owners ? (<>
       <Route path="/assignments" element={<AuthGate><AssignmentsPage /></AuthGate>} />

@@ -117,6 +117,51 @@ def scan_slug(scan: str, times: ScanTimes | None = None) -> str:
     return f"{k[2:4]}{k[5:7]}{k[8:10]}{k[11:15]}"
 
 
+def _period_end(prefix: str) -> dt.datetime:
+    """The UTC end of the period a decoded prefix (``YYYY-MM-DD[THH[MM]]``) names: its day, hour or minute."""
+    start = scan_time(prefix if len(prefix) != 13 else f"{prefix}00")
+    return start + (dt.timedelta(days=1) if len(prefix) == 10 else dt.timedelta(hours=1) if len(prefix) == 13 else dt.timedelta(minutes=1))
+
+
+def names_for_good(
+    prefix: str,
+    scan: str,
+    scans: Iterable[str],
+    times: ScanTimes | None = None,
+    now: dt.datetime | None = None,
+) -> bool:
+    """Whether the decoded `prefix` names `scan` alone among `scans`, and always will (`scanSlug.ts` `namesForGood`):
+    a minute always; a day or an hour once it has ended (`now`, default the current time), and an hour only on a day
+    whose date-only scan (if any) has a known start — an unknown one could later be keyed into any of its hours."""
+    scans = list(scans)
+    if [s for s in scans if scan_under(s, prefix, times)] != [scan]:
+        return False
+    if len(prefix) >= 15:
+        return True
+    if (now or dt.datetime.now(dt.timezone.utc)) < _period_end(prefix):
+        return False
+    day = prefix[:10]
+    return len(prefix) == 10 or not any(s == day and not (times or {}).get(s) for s in scans)
+
+
+def min_slug(
+    scan: str,
+    scans: Iterable[str],
+    times: ScanTimes | None = None,
+    now: dt.datetime | None = None,
+) -> str:
+    """A scan's canonical `?d=` slug (`scanSlug.ts` `minSlug`): the shortest of its key's day (``261008``), hour
+    (``26100904``) and minute (``2610091236``) that names it for good (`names_for_good`) — a day or an hour once it
+    has ended and holds no other scan, else the minute (`scan_slug`, also the fallback when `scan` isn't in `scans`).
+    The longer forms keep resolving to it, so a link already posted never breaks."""
+    scans = list(scans)
+    k = scan_key(scan, times)
+    for p in (k[:10], k[:13]):
+        if names_for_good(p, scan, scans, times, now):
+            return f"{p[2:4]}{p[5:7]}{p[8:10]}{p[11:13]}"
+    return scan_slug(scan, times)
+
+
 # A slug: dashless compact `YYMMDD[HH[MM]]` (canonical; 8 digits are always
 # YYMMDDHH), the legacy `YYMMDD-HH[MM]` / `YYMMDDTHH[MM]`, or ISO
 # `YYYY-MM-DD[THH[MM]]`.

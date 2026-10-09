@@ -12,7 +12,7 @@
  * best-effort — a Slack failure never fails the gesture that caused it.
  */
 import type { D1Database } from '@cloudflare/workers-types'
-import { type FinishedRun, type Gate, planDigest, planRuns, realGate, type RunRow, unstageDeleted } from './plans.js'
+import { type FinishedRun, type Gate, planDigest, planItemLines, planRuns, realGate, type RunRow, unstageDeleted } from './plans.js'
 import { slackApi, slackReady, type SlackEnv } from './slack.js'
 import type { Env } from './auth.js'
 import { pathScans, storeReady } from './index.js'
@@ -435,7 +435,7 @@ async function loadView(db: D1Database, planId: number, siteUrl: string, actions
     items: items.length,
     batches: batches?.n ?? 0,
     stagers: [...new Set(items.map(i => i.added_by))].sort(),
-    digest: await planDigest(items.map(i => i.prefix)),
+    digest: await planDigest(await planItemLines(db, planId)),
     closed: plan.state !== 'open',
     slack_ts: plan.slack_ts,
     slack_channel: plan.slack_channel,

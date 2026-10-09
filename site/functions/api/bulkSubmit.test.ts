@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import { onRequest as actionsRoute } from './actions'
 import { onRequest as plansRoute } from './plans/[[path]]'
-import { sqliteD1 } from '../_lib/testD1'
+import { GCS_LEDGER, sqliteD1 } from '../_lib/testD1'
 import { assignInBatches, stageMany } from '../../src/batches'
 
 const B = 'bkt'
@@ -42,9 +42,8 @@ describe('bulk submission against a local D1', () => {
   })
 
   it('assigns 1,100 folder prefixes in 3 POSTs (the API takes ≤ 500), one ledger row each', async () => {
-    const { db } = await sqliteD1('cw')
-    await db.prepare('CREATE TABLE actions (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, ts REAL, scan TEXT, pattern TEXT, set_owner INTEGER, owner TEXT, memo TEXT)').run()
-    await db.prepare('CREATE TABLE owner_prefixes (prefix TEXT, owner TEXT, ts REAL, action_id INTEGER, tombstoned REAL)').run()
+    const { db, raw } = await sqliteD1('cw')
+    raw.exec(GCS_LEDGER)
     const env = { ...base, DB: db }
     const prefixes = Array.from({ length: 1100 }, (_, i) => `gs://${B}/d${String(i).padStart(4, '0')}/`)
     const statuses: number[] = []

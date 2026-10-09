@@ -1,8 +1,12 @@
 """`dt-cloud static-names runs add SCAN_ID`: append one scan to the static name index as a run (specs/static-append.md),
 in Python, so a deployment's scan job calls it directly (no `gcloud`: GCS and Batch over their APIs):
 
-    prepare → append (key ranges on Batch) → shards ∥ catalog → publish (tier merges + `manifests/<id>.json`)
-      → R2 (each run the manifest lists, then the manifest, last) [→ verify] → prune
+    prepare → append (key ranges on Batch) → shards ∥ catalog → [drill (long ∥ short)] → publish (tier merges +
+      `manifests/<id>.json`) → R2 (each run the manifest lists, its `drill/meta.json` last; then a check that every
+      served file of those runs is on R2; then the manifest, last) [→ verify] → prune
+
+The drill stage (the heavy-term drilldown, `static_drill`) runs when the profile says so (`drill`): one Batch job of two
+tasks, `build -k task` (task 0 the long kind, task 1 the short; the second to finish writes `meta.json`).
 
 The unit is a scan: any deployment may scan once a day, every 6 h, or once more on demand, and each scan is its own
 run (specs/scan-ids-not-dates.md). Scans are added **strictly in scan-id order**: given SCAN_ID, every published scan
@@ -222,8 +226,11 @@ class Runner:
         have, layouts = self.have()
         todo = pending_scans(have, self.published(layouts, have[-1]), scan_id, catch_up)
         if not todo:
-            self.log(f"{scan_id}: already appended; the R2 copy and prune only")
+            self.log(f"{scan_id}: already appended; {'its drill, ' if self.cfg.drill else ''}the R2 copy and prune only")
             if scan_id == have[-1]:
+                runs = self.read_json(self.manifests()[-1])["runs"] if self.manifests() else []
+                if self.cfg.drill and f"deltas/{scan_id}" in {r["key"] for r in runs}:
+                    self.drill(scan_id)
                 self.r2(scan_id)
                 self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
             return []
@@ -281,32 +288,56 @@ class Runner:
                     for f in [ex.submit(self.run_job, name, spec) for name, spec in jobs]:
                         f.result()
             self.stage(f"{d} shards ∥ catalog", both)
-        # 4. publish: the binary counter's merges, then `manifests/<d>.json` (written once).
+        # 4. drill (the profile's `drill`): reads the run's `sx/`, `cdelta/` and catalog, and the earlier runs' drills.
+        if self.cfg.drill:
+            self.drill(d)
+        # 5. publish: the binary counter's merges, then `manifests/<d>.json` (written once).
         if self.exists(f"{self.root}/manifests/{d}.json"):
             self.log(f"{d} publish: done")
         else:
             name, spec = self.job("publish", d, 1, "static_append", ["publish", *g])
             self.stage(f"{d} publish", lambda: self.run_job(name, spec))
-        # 5. R2: the runs the manifest lists, then the manifest, last.
+        # 6. R2: the runs the manifest lists, then the manifest, last.
         self.r2(d)
-        # 6. verify (optional): brute force from the scan file vs the base + runs.
+        # 7. verify (optional): brute force from the scan file vs the base + runs.
         if self.verify_terms:
             if self.exists(f"{run}/verify.json"):
                 self.log(f"{d} verify: done")
             else:
                 name, spec = self.job("verify", d, 1, "static_append", ["verify", *g, "-t", self.verify_terms])
                 self.stage(f"{d} verify", lambda: self.run_job(name, spec))
-        # 7. prune: only the newest complete open-version state is kept.
+        # 8. prune: only the newest complete open-version state is kept.
         self.stage(f"{d} prune", lambda: self.prune(d))
 
+    def drill(self, d: str) -> None:
+        """The run's `drill/`: one job of two tasks (long ∥ short), each on a whole machine; done once `meta.json` is there."""
+        run = f"{self.root}/deltas/{d}"
+        if self.exists(f"{run}/drill/meta.json"):
+            self.log(f"{d} drill: done")
+            return
+        vcpus = int(self.cfg.machine.rsplit("-", 1)[-1])
+        args = ["build", "-g", self.cfg.gen, "-d", d, "-k", "task", "-M", f"{vcpus * 7700 * 3 // 4 // 1024}GB", "-p", str(vcpus)]
+        name, spec = self.job("drill", d, 2, "static_drill", args)
+
+        def build():
+            self.run_job(name, spec)
+            if not self.exists(f"{run}/drill/meta.json"):
+                raise RuntimeError(f"{run}/drill/meta.json: not written (both tasks succeeded)")
+        self.stage(f"{d} drill (long ∥ short)", build)
+
     def r2(self, d: str) -> None:
-        """One job: `r2-copy` of each run the manifest lists, then of `manifests/` (each skips what R2 already holds)."""
+        """One job: `r2-copy` of each run the manifest lists (its `drill/meta.json`, which makes its drill live, last), then
+        `r2-verify` (every served file of those runs on R2), then `r2-copy` of `manifests/` (each copy skips what R2 holds)."""
         key = f"{self.root}/manifests/{d}.json"
         runs = [r["key"] for r in self.read_json(key)["runs"]] if self.exists(key) else [f"deltas/{d} (and the merges publish makes)"]
         if self.dry_run:
-            self.log(f"{d} r2: would copy {', '.join(runs)}, then manifests/")
+            self.log(f"{d} r2: would copy {', '.join(runs)}, check them, then copy manifests/")
             return
-        cmds = [task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}"], mount=False) for r in runs]
+        cmds = []
+        for r in runs:
+            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-x", "drill/meta.json"], mount=False))
+            cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", "drill/meta.json"], mount=False))
+        cmds.append(task_command(self.cfg, "static_names", ["r2-verify", "-g", self.cfg.gen, "-m", d], mount=False))
         cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", self.cfg.gen, "-o", "manifests/"], mount=False))
         name = job_id("r2", d, self.now())
         spec = job_spec(self.cfg, name, 1, cmds, stage="r2", scratch=False, r2=True, machine="n2-highmem-4", ssd_gb=375)
@@ -359,7 +390,7 @@ def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None 
 @option("-t", "--verify-terms", help="Also run `runs verify` with this terms file (a gs:// URL)")
 @argument("scan_id")
 def add_cmd(catch_up: bool, gen: str | None, dry_run: bool, verify_terms: str | None, scan_id: str) -> None:
-    """Append SCAN_ID to the static name index: prepare → append → shards ∥ catalog → publish → R2 → prune, each stage
+    """Append SCAN_ID to the static name index: prepare → append → shards ∥ catalog → [drill] → publish → R2 → prune, each stage
     skipped when its output exists. Exit 3 when SCAN_ID is not published yet, or an earlier published scan is pending
     (without -c)."""
     cfg = ready(profile(), gen)

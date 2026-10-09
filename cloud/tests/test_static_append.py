@@ -191,27 +191,62 @@ def test_push_run_is_a_binary_counter():
     assert m["scans"] == ["2026-10-08", *days] and m["date"] == "2026-10-15" and m["base_scans"] == 1
 
 
-def test_push_run_never_merges_a_run_carrying_a_tier_it_cannot_merge():
-    """gcs 2026-10-09T1236: `deltas/2026-10-09` carries the drilldown's `drill/`, which a merge would drop (its reader stops
-    at the first tier without one), so the counter leaves it pinned and carries past it."""
-    entries = {"deltas/2026-10-09": {"meta.json", "scans.json", "shards.json", "sx", "sidecar", "sidecar.parquet", "catalog", "cdelta",
-                                     "dhist", "verify.json", "terms.txt", "drill", "drill-verify"},
-               "deltas/2026-10-09T1236": {"meta.json", "scans.json", "shards.json", "sx", "sidecar", "sidecar.parquet", "catalog", "cdelta", "dhist"}}
-    ids = ["2026-10-09", "2026-10-09T1236", "2026-10-10", "2026-10-10T1200"]
-    runs: list[dict] = []
+def _push_all(runs: list[dict], ids: list[str], drilled: set[str]) -> tuple[list[list[tuple[str, int]]], list[list[str]], set[str]]:
+    """Push each scan id's run (drilled iff its key is in `drilled`), as `publish` does; the levels and merges after each,
+    and the drilled keys (merged runs whose inputs were drilled, added)."""
+    drilled = set(drilled)
     levels, merges = [], []
     for d in ids:
-        pinned = sa.pinned_runs(runs, lambda k: entries.get(k, set()))
-        runs, m = sa.push_run(runs, {"key": sa.run_key(d, d), "first": d, "last": d, "scans": [d]}, pinned)
+        runs, m = sa.push_run(runs, {"key": sa.run_key(d, d), "first": d, "last": d, "scans": [d]}, drilled)
+        for ins, out in m:  # in order: a merge's input may be the one before's output
+            if all(r["key"] in drilled for r in ins):
+                drilled.add(out["key"])
         levels.append([(r["key"], r["level"]) for r in runs])
         merges.append([out["key"] for _, out in m])
+    return levels, merges, drilled
+
+
+#: gcs's runs after 2026-10-09T1236 (its manifest lists the two level-0 runs apart).
+LIVE = [{"key": "deltas/2026-10-09", "first": "2026-10-09", "last": "2026-10-09", "level": 0, "scans": ["2026-10-09"]},
+        {"key": "deltas/2026-10-09T1236", "first": "2026-10-09T1236", "last": "2026-10-09T1236", "level": 0, "scans": ["2026-10-09T1236"]}]
+
+
+def test_push_run_merges_drilled_runs_with_each_other():
+    """Every run carries `drill/` (the drill stage runs before publish): the counter carries as ever, and each merged run is
+    drilled (`merge_drills` builds its drill), so the drill covers every scan."""
+    levels, merges, drilled = _push_all(LIVE, ["2026-10-10", "2026-10-10T1200", "2026-10-11"],
+                                        {"deltas/2026-10-09", "deltas/2026-10-09T1236", "deltas/2026-10-10", "deltas/2026-10-10T1200", "deltas/2026-10-11"})
     assert levels == [
-        [("deltas/2026-10-09", 0)],
-        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236", 0)],
         [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-10", 1)],
         [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-10", 1), ("deltas/2026-10-10T1200", 0)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236_2026-10-11", 2)],
     ]
-    assert merges == [[], [], ["deltas/2026-10-09T1236_2026-10-10"], []]
+    assert merges == [["deltas/2026-10-09T1236_2026-10-10"], [], ["deltas/2026-10-10T1200_2026-10-11", "deltas/2026-10-09T1236_2026-10-11"]]
+    runs = [{"key": k, "scans": [k.removeprefix("deltas/")]} for k, _ in levels[-1]]
+    runs[-1]["scans"] = ["2026-10-09T1236", "2026-10-10", "2026-10-10T1200", "2026-10-11"]
+    assert sa.drill_scans(runs, drilled) == ["2026-10-09", "2026-10-09T1236", "2026-10-10", "2026-10-10T1200", "2026-10-11"]
+
+
+def test_push_run_never_merges_a_drilled_run_with_one_without():
+    """gcs 2026-10-09T1236: `deltas/2026-10-09` carried `drill/` and T1236 didn't; the counter merged them into a run without
+    one, and the reader (which stops at the first run without one) lost 10-09's drill. Two runs that differ on it are never
+    merged: the carry stops there, and the drill still covers every scan up to the first run without one."""
+    levels, merges, drilled = _push_all(LIVE[:1], ["2026-10-09T1236", "2026-10-10"], {"deltas/2026-10-09", "deltas/2026-10-10"})
+    assert levels == [
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236", 0)],
+        [("deltas/2026-10-09", 0), ("deltas/2026-10-09T1236", 0), ("deltas/2026-10-10", 0)],
+    ]
+    assert merges == [[], []]
+    assert sa.drill_scans(LIVE, drilled) == ["2026-10-09"]
+
+
+def test_push_run_merges_runs_without_drill_as_ever():
+    """A deployment without the drill stage: no run carries `drill/`, the counter carries as ever, the drill covers nothing past the base."""
+    levels, merges, drilled = _push_all([], ["2026-10-09", "2026-10-09T1236", "2026-10-10"], set())
+    assert levels == [[("deltas/2026-10-09", 0)], [("deltas/2026-10-09_2026-10-09T1236", 1)],
+                      [("deltas/2026-10-09_2026-10-09T1236", 1), ("deltas/2026-10-10", 0)]]
+    assert merges == [[], ["deltas/2026-10-09_2026-10-09T1236"], []]
+    assert drilled == set()
 
 
 def test_a_merged_run_is_whole(runs, tmp_path):
@@ -225,6 +260,23 @@ def test_a_merged_run_is_whole(runs, tmp_path):
     assert json.loads((merged / "catalog" / "meta.json").read_text())["membership"] == {"max_rows": V}
     assert sa.missing_files([run, {"key": "deltas/x"}], lambda k: k in have - {f"{merged.name}/catalog/meta.json"}) == [
         f"{merged.name}/catalog/meta.json", *(f"deltas/x/{f}" for f in sa.RUN_FILES)]
+
+
+def test_a_listed_runs_drill_is_whole():
+    """A listed run carrying `drill/` must hold every file its `meta.json` implies, else the manifest is refused."""
+    meta = {"long_roots": {"files": 2}, "long_rollups": {"files": 1}, "short_roots": {"files": 1}, "short_rollups": {"files": 0}}
+    run = {"key": "deltas/2026-10-09T1236"}
+    files = [f"deltas/2026-10-09T1236/{f}" for f in sa.RUN_FILES]
+    drill = [f"deltas/2026-10-09T1236/drill/{f}" for f in (
+        "meta.json", "aliases.parquet",
+        "long/roots/r0000.parquet", "long/roots/r0001.parquet", "long-roots-index.parquet", "long-roots-index.top.parquet",
+        "long/rollups/r0000.parquet", "long-rollups-index.parquet", "long-rollups-index.top.parquet", "state/dcount-long.parquet",
+        "short/roots/r0000.parquet", "short-roots-index.parquet", "short-roots-index.top.parquet",
+        "short-rollups-index.parquet", "short-rollups-index.top.parquet", "state/dcount-short.parquet")]
+    have = {*files, *drill}
+    assert sa.missing_files([run], have.__contains__, lambda k: meta) == []
+    assert sa.missing_files([run], (have - {drill[3], drill[-1]}).__contains__, lambda k: meta) == [drill[3], drill[-1]]
+    assert sa.missing_files([run], set(files).__contains__) == []
 
 
 def test_a_literal_crosses_v_on_an_append(runs):

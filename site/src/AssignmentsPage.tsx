@@ -21,7 +21,7 @@ interface Cell { by: string; to: string; bytes: number; prefixes: string[] }
 export function AssignmentsPage() {
   useDocTitle('Assignments')
   const { fmtBytes } = useUnits()
-  const { asof, miss, times, label } = useScan(DEFAULT_STORE)
+  const { asof, miss, scans, times, label } = useScan(DEFAULT_STORE)
   const location = useLocation()
   const q = useQuery<{ scan: string; head: number; cells: Cell[] }>({
     queryKey: ['assignments', asof],
@@ -67,7 +67,7 @@ export function AssignmentsPage() {
           {' '}By bytes at scan <b>{q.data?.scan ?? asof ?? '…'}</b>; a cell opens the map scoped to that pair.
         </p>
       </header>
-      {miss && <NoScanMatch miss={miss} fmt={label} hrefFor={scan => hrefWithScan(location.pathname, location.search, selOf(new URLSearchParams(location.search)), scan, true, times)} />}
+      {miss && <NoScanMatch miss={miss} fmt={label} hrefFor={scan => hrefWithScan(location.pathname, location.search, selOf(new URLSearchParams(location.search)), scan, true, times, scans)} />}
       {q.isLoading && <Skeleton height={320} label="loading matrix…" />}
       {q.error && <p className="err">{(q.error as Error).message}</p>}
       {q.data && !q.data.cells.length && <p className="dim">No owner assignments in the ledger yet.</p>}

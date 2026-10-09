@@ -14,6 +14,7 @@ import { axisTicks } from './runChart'
 import { fmtBytesPrecise, fmtN } from './types'
 import { useUnits } from './units'
 import { DEFAULT_STORE } from './stores'
+import { useMinSlug } from './scan'
 import {
   batchHref, logsHref, mapHref, metaHref, type OutputDelta, phaseOrder, type PhaseSpan, type RunSummary, type ScanRun,
   type ScanRunPhase,
@@ -178,6 +179,7 @@ function Links({ run, links }: { run: ScanRun; links: Links }) {
 
 export function ScansPage() {
   const q = useScanRuns()
+  const slug = useMinSlug(DEFAULT_STORE)
   const nav = useNavigate()
   const { bytes, delta } = useBytes()
   const [kind, setKind] = useState('')
@@ -219,7 +221,7 @@ export function ScansPage() {
             <tbody>
               {shown.map(s => {
                 const r = s.run
-                const map = r.status === 'succeeded' ? mapHref(r.scan, DEFAULT_STORE.path) : null
+                const map = r.status === 'succeeded' ? mapHref(r.scan, DEFAULT_STORE.path, slug) : null
                 return (
                   <tr key={r.run_id} className={r.status === 'failed' ? 'failed' : undefined}>
                     <td className="nb"><Link to={scanHref(r.run_id)}><code>{r.scan}</code></Link>
@@ -346,6 +348,7 @@ export function ScanRunPage() {
   const id = useParams()['*'] ?? ''
   const q = useScanRun(id)
   const list = useScanRuns()
+  const slug = useMinSlug(DEFAULT_STORE)
   useEffect(() => { document.title = q.data ? `Scan run ${q.data.run.scan}` : 'Scan run' }, [q.data])
   const order = useMemo(() => phaseOrder((list.data?.runs ?? []).flatMap(r => r.spans.map((s, i) => ({ phase: s.phase, seq: i })))), [list.data])
   const color = colorer(order.length ? order : (q.data?.spans ?? []).map(s => s.phase))
@@ -353,7 +356,7 @@ export function ScanRunPage() {
   const scanRun = (scan: string | null) => scan ? list.data?.runs.find(s => s.run.scan === scan && s.run.kind === 'scan' && s.run.status === 'succeeded') ?? list.data?.runs.find(s => s.run.scan === scan) : undefined
   const prev = scanRun(d?.prev_scan ?? null), next = scanRun(d?.next_scan ?? null)
   const r = d?.run
-  const map = r && r.status === 'succeeded' ? mapHref(r.scan, DEFAULT_STORE.path) : null
+  const map = r && r.status === 'succeeded' ? mapHref(r.scan, DEFAULT_STORE.path, slug) : null
   return (
     <main className="staged-page scans-page">
       <SiteNav />
