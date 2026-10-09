@@ -351,6 +351,7 @@ def test_coalesced_from_scans_equals_two_step(fixture, tmp_path):
                               f"ORDER BY depth, path, usr, vf").fetchall()
         assert [tuple(x) for x in carried] == _read(one / "cintervals" / f"{name}.parquet")
         assert doc["rows"] == len(carried)
+        assert doc["suffix_rows"] == json.loads((two / "cstats" / f"{name}.json").read_text())["suffix_rows"][1]
 
 
 def test_coalesce_append_equals_rebuild(fixture, tmp_path):

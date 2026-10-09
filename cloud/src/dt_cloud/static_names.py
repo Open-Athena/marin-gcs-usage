@@ -470,9 +470,10 @@ def build_range(scans: dict, ranges: dict, i: int, out: Path, *, mount: str | No
                             CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
         (out / "chist").mkdir(parents=True, exist_ok=True)
         pq.write_table(con.execute(hist_sql("civ")).to_arrow_table(), out / "chist" / f"{name}.parquet", compression=CODEC)
+        suffix_rows = con.execute(suffix_count_sql("civ")).fetchone()[1]
         con.execute("DROP TABLE civ")
-        doc = {"range": r, "rows": rows, "s": round(monotonic() - t0, 1)}
-        err(f"range {i}: {rows:,} coalesced versions in {doc['s']}s")
+        doc = {"range": r, "rows": rows, "suffix_rows": suffix_rows, "s": round(monotonic() - t0, 1)}
+        err(f"range {i}: {rows:,} coalesced versions, {suffix_rows:,} suffix rows in {doc['s']}s")
         return doc
     con.execute("DROP TABLE IF EXISTS iv")
     con.execute(f"CREATE TABLE iv AS {intervals_sql(con, sources, preds)}")
@@ -1034,6 +1035,7 @@ def ranges_cmd(k: int, mount: str | None, scans_json: str) -> None:
 
 @cli.command("intervals")
 @option("-b", "--bucket", default=DATA_BUCKET, help="Output bucket")
+@option("-C", "--coalesced", is_flag=True, help="The coalesced versions straight from the scans (`cintervals/`, `chist/`; `cdone/r####.json` marks a range done), not the full intervals")
 @option("-g", "--gen", required=True, help="Output generation: gs://BUCKET/static-names/GEN/")
 @option("-f", "--force", is_flag=True, help="Rebuild ranges whose digest is already uploaded")
 @option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
@@ -1045,9 +1047,11 @@ def ranges_cmd(k: int, mount: str | None, scans_json: str) -> None:
 @option("-r", "--range", "only", help="Comma-separated range indices (overrides -i/-n; a partial build)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
 @option("-U", "--no-upload", is_flag=True, help="Keep the outputs local")
-def intervals_cmd(bucket, gen, force, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
+def intervals_cmd(bucket, coalesced, gen, force, index, mount, mem, per_task, out, threads, only, tmp, no_upload) -> None:
     """Build key ranges' intervals over every scan of the generation's `scans.json`, one connection
-    per task (each range uploaded as it finishes; its digest, written last, marks it done)."""
+    per task (each range uploaded as it finishes; its digest, written last, marks it done). `-C`: the
+    coalesced versions in one pass instead (a deployment with no ClickHouse store to verify full intervals
+    against), byte-identical to `intervals` then `coalesce`."""
     from google.cloud import storage
 
     prefix = f"{PREFIX}/{gen}"
@@ -1063,12 +1067,20 @@ def intervals_cmd(bucket, gen, force, index, mount, mem, per_task, out, threads,
     import duckdb
 
     err(f"intervals: duckdb {duckdb.__version__}, pyarrow {pa.__version__}, ranges {todo}")
+    marker = "cdone" if coalesced else "digest"
     for i in todo:
-        if not force and b.blob(f"{prefix}/digest/r{i:04d}.json").exists():
+        if not force and b.blob(f"{prefix}/{marker}/r{i:04d}.json").exists():
             err(f"range {i}: already built")
             continue
         outp = Path(out) / f"r{i}"
-        doc = build_range(scans, ranges, i, outp, mount=mount, threads=threads, mem=mem, tmp=Path(tmp), con=con)
+        doc = build_range(scans, ranges, i, outp, mount=mount, threads=threads, mem=mem, tmp=Path(tmp), con=con, coalesced=coalesced)
+        if coalesced:
+            if not no_upload:
+                upload_tree(outp, bucket, prefix)
+                b.blob(f"{prefix}/cdone/r{i:04d}.json").upload_from_string(json.dumps(doc, sort_keys=True) + "\n")
+                shutil.rmtree(outp)
+            print(json.dumps(doc), flush=True)
+            continue
         if not no_upload:
             digest = outp / "digest"
             moved = Path(out) / f"r{i}-digest"
