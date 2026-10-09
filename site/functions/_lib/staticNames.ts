@@ -21,6 +21,7 @@
  *  parent path contains the key (an ancestor already covers it); `size`/`n_files` summed per first
  *  path segment. */
 import { type FileMetaData, parquetRead, type RowGroup } from 'hyparquet'
+import { isScanId, scanTime } from '../../src/scanSlug.js'
 import { compressors } from './zstd.js'
 
 /** A generation's key prefix in the deployment's `INDEX_R2` bucket. */
@@ -250,11 +251,11 @@ export async function decodeGroup(idx: GroupIndex, g: number, buf: ArrayBuffer, 
   return await decodeFlat(SX, idx.size, idx.rows[g], idx.chunks.slice(g * NC * 3, (g + 1) * NC * 3), buf, start) as unknown as SxColumns
 }
 
-/** A scan id (`2026-10-01`, or `2026-10-01T0003`, UTC) as epoch ms (`static_names.scan_epoch`). */
-export function scanMs(id: string): number {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2}))?$/.exec(id)
-  if (!m) throw new Error(`bad scan id ${id}`)
-  return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0))
+/** A scan id's instant (epoch ms, `scanSlug.ts` `scanTime`; `scan_id.scan_epoch` × 1000), refusing anything but a
+ *  full scan id: a version is live on a scan by comparing stamps, so a bad id must not read as "never". */
+export function scanAt(id: string): number {
+  if (!isScanId(id)) throw new Error(`bad scan id ${id}`)
+  return scanTime(id)
 }
 
 export type Totals = Record<string, [bigint, bigint]>
@@ -298,7 +299,7 @@ export class FirstHits {
   answer(dates: string[]): Answer {
     const answers: Record<string, Totals> = {}
     for (const d of dates) {
-      const D = scanMs(d), sums = new Map<string, [bigint, bigint]>()
+      const D = scanAt(d), sums = new Map<string, [bigint, bigint]>()
       for (const h of this.hits) {
         if (!(h.vf <= D && D < h.vt)) continue
         const first = h.path.indexOf('/'), bucket = first < 0 ? h.path : h.path.slice(0, first)

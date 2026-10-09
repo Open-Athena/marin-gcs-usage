@@ -490,4 +490,4 @@ def test_scan_labels_round_trip():
         assert sn.scan_label(sn.scan_epoch(sid)) == sid
     with pytest.raises(ValueError) as e:
         sn.scan_epoch("2026-10-08T06")
-    assert str(e.value) == "'2026-10-08T06' is not a scan id (YYYY-MM-DD or YYYY-MM-DDTHHMM)"
+    assert str(e.value) == "not a scan id: '2026-10-08T06' (want YYYY-MM-DD or YYYY-MM-DDTHHMM)"

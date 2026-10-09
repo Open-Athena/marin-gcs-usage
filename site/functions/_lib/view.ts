@@ -42,7 +42,7 @@ import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
 import { covers, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
-import { scanMs } from './staticNames.js'
+import { scanAt } from './staticNames.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -745,7 +745,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // `aggregate` over the static hits live on `date` (`vf ≤ D < vt`; `usr` '' = unowned), without a row
     // object per hit: a heavy literal's ~80K roots are held per isolate already, and copies cost memory.
     const aggregateHits = (hits: Hit[]): ReturnType<typeof aggregate> => {
-      const D = scanMs(date)
+      const D = scanAt(date)
       const mine = new Map<string, Agg>(); const depth = new Map<string, number>()
       const all = owner ? new Map<string, Agg>() : mine
       const add = (a: Agg, size: number, n: number, usr: string | null) => { a.b += size; a.o += n; if (usr) a.ub[usr] = (a.ub[usr] ?? 0) + size }

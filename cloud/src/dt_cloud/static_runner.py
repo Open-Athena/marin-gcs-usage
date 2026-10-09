@@ -31,7 +31,7 @@ from typing import Callable
 
 from click import argument, command, option
 
-from .scan_ids import SCAN_ID
+from .scan_id import SCAN_ID
 from .static_names import PREFIX, err
 from .static_profile import Profile, profile
 

@@ -25,7 +25,7 @@ import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
 import { Drill, DRILL_DIR, DrillSource, type Rollup } from './staticDrill.js'
-import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanMs, staticGen, staticPrefix } from './staticNames.js'
+import { type Blobs, cacheIndexes, type FirstHits, type Hit, type Io, r2Blobs, scanAt, staticGen, staticPrefix } from './staticNames.js'
 import { tiers } from './staticRuns.js'
 
 export type { Hit } from './staticNames.js'
@@ -205,7 +205,7 @@ export async function staticKey(s: StaticFilterStore | null, ast: QueryAst | und
 /** The filter's bytes and objects under the hits' root on `date` (Σ live first hits), with `keep` an
  *  owner test on the slice's `usr` (null = unowned). */
 export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) => boolean = () => true): { b: number; o: number; roots: number } {
-  const D = scanMs(date)
+  const D = scanAt(date)
   let b = 0n, o = 0n
   const roots = new Set<string>()
   for (const h of hits) {

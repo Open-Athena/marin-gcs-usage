@@ -44,7 +44,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from click import IntRange, argument, group, option
 
-from .scan_ids import SCAN_ID, check_order, scan_epoch, scan_label  # noqa: F401 (re-exported: the stages' scan-id helpers)
+from .scan_id import SCAN_ID, check_order, scan_epoch, scan_label  # noqa: F401 (re-exported: the stages' scan-id helpers)
 from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
 
 err = partial(print, file=sys.stderr, flush=True)

@@ -6,12 +6,11 @@ import { fixture } from './testStore.js'
 
 // The generation is required deployment config (`STATIC_GEN`): every read of a deployment's static name index is under its own
 // `static-names/<gen>/` in `INDEX_R2`, and the responses name it. The bucket here holds `fixtures/static-runs/` (a base
-// and its runs, the manifests through 2026-10-02 visible) as cw's generation `2026-10-09cw`.
+// and a run per scan, the last two on one day) as cw's generation `2026-10-09cw`.
 
 const GEN = '2026-10-09cw'
-// six: the registry contract (`nameModel.ts` `parseNameRegistry`) still requires gcs's bucket count
-const BUCKETS = 'bkt-a,bkt-b,bkt-c,bkt-d,bkt-e,bkt-f'
-const RUNS = ['2026-10-01', '2026-10-02']
+const BUCKETS = 'bkt-a,bkt-b'
+const RUNS = ['2026-10-01', '2026-10-02', '2026-10-03T0600', '2026-10-03T1800']
 const FILES = ['shards.json', 'sx/s0000.parquet', 'sx/s0001.parquet', 'catalog/cells.parquet', 'catalog/index.parquet', 'catalog/meta.json']
 const held = new Map<string, ArrayBuffer>()
 beforeAll(async () => {
@@ -62,9 +61,25 @@ describe('STATIC_GEN', () => {
     expect([reg.generation, reg.dates, reg.logical_store]).toEqual([GEN, ['2026-08-01', '2026-09-01', ...RUNS], 'cw_fleet'])
     const res = await staticSummary(env, new URLSearchParams({ name: 'qqq', date: '2026-10-02' }))
     const body = await res.json() as { source_identity: { generation: string }; buckets: { path: string; b: number; o: number }[] }
-    expect([res.status, body.source_identity.generation, body.buckets.filter(b => b.b || b.o).map(b => [b.path, b.b, b.o]), JSON.parse(res.headers.get('x-static-io')!).gen])
+    expect([res.status, body.source_identity.generation, body.buckets.map(b => [b.path, b.b, b.o]), JSON.parse(res.headers.get('x-static-io')!).gen])
       .toEqual([200, GEN, [['bkt-a', 30 + 32 + 34, 3], ['bkt-b', 31 + 33, 2]], GEN])
     expect(log.filter(k => !k.startsWith(`static-names/${GEN}/`) && !k.startsWith(`list static-names/${GEN}/`))).toEqual([])
+  })
+
+  it('answers a scan by its id, two scans of one day apart; a date slug is that day\'s latest scan', async () => {
+    const env = { NAME_SUMMARY_STATIC: '1', INDEX_R2: r2([]), STATIC_GEN: GEN, STORE_BUCKETS: BUCKETS, STORE: 'cw' }
+    const ask = async (q: Record<string, string>) => {
+      const res = await staticSummary(env, new URLSearchParams({ name: 'sub-', ...q }))
+      const body = await res.json() as { date?: string; from?: string; buckets: { path: string; b: number; o: number; after?: { b: number; o: number } }[]; delta?: { b: number; o: number } }
+      return [res.status, body.from ?? null, body.date, body.buckets.map(b => [b.path, b.after?.b ?? b.b, b.after?.o ?? b.o]), body.delta ?? null]
+    }
+    expect(await ask({ date: '2026-10-03T0600' })).toEqual([200, null, '2026-10-03T0600', [['bkt-a', 7, 1], ['bkt-b', 0, 0]], null])
+    expect(await ask({ date: '2026-10-03T1800' })).toEqual([200, null, '2026-10-03T1800', [['bkt-a', 0, 0], ['bkt-b', 9, 1]], null])
+    expect(await ask({ date: '2026-10-03' })).toEqual([200, null, '2026-10-03T1800', [['bkt-a', 0, 0], ['bkt-b', 9, 1]], null])
+    expect(await ask({ from: '2026-10-03T0600', date: '2026-10-03T1800' }))
+      .toEqual([200, '2026-10-03T0600', '2026-10-03T1800', [['bkt-a', 0, 0], ['bkt-b', 9, 1]], { b: 2, o: 0 }])
+    const missing = await staticSummary(env, new URLSearchParams({ name: 'sub-', date: '2026-10-04T0000' }))
+    expect([missing.status, await missing.json()]).toEqual([400, { error: 'This scan is not in the static name index. This is not a zero-match result.' }])
   })
 
   it('keys the map filter\'s store, its scans and its cache tag by the configured generation', async () => {

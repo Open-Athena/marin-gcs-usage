@@ -10,6 +10,7 @@
  *    its cells; a miss has an exact range ≤ V, so the read is bounded (≤ V + 2 row groups).
  *  - Bucket geometry: the answer is root and bucket totals only (no drill), so each bucket's `pre`/`post`
  *    is its ordinal position in `bucket_paths` (the box's `ordinal` geometry). */
+import { resolveScan } from '../../src/scanSlug.js'
 import { datedNameRequest, parseName, parseNameRegistry, STATIC_CATALOG_SOURCE, STATIC_SOURCE } from '../../src/nameModel.js'
 import { HOT_SCOPE } from '../../src/hotModel.js'
 import { json } from './auth.js'
@@ -127,10 +128,15 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
   try {
     const gen = staticGen(env)
     s ??= store(env.INDEX_R2!, gen)
-    const request = datedNameRequest(params), key = request.name
-    const days = request.from ? [request.from, request.date] : [request.date]
+    const asked = datedNameRequest(params), key = asked.name
     const [have, meta] = await Promise.all([s.scans(), s.catalog.info()])
-    if (days.some(d => !have.includes(d))) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.' }, 400, privateHeaders)
+    // A scan id the index holds is that scan; anything else is a slug for the latest scan it prefixes (`scanSlug.ts`
+    // `resolveScan`: `2026-10-09` = that day's latest scan), so a date link from before sub-daily scans still answers.
+    const resolve = (d: string) => have.includes(d) ? d : resolveScan(d, have)
+    const date = resolve(asked.date), from = asked.from === undefined ? undefined : resolve(asked.from)
+    if (!date || from === null || (from !== undefined && from >= date)) return json({ error: 'This scan is not in the static name index. This is not a zero-match result.' }, 400, privateHeaders)
+    const request = { ...asked, date, ...(from === undefined ? {} : { from }) }
+    const days = from ? [from, date] : [date]
     const { plan, answers, io } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))
     const paths = bucketPaths(env), store_ = logicalStore(env)
     const sides = days.map(date => {

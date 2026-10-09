@@ -3,7 +3,7 @@ import type { Env } from './auth'
 import { parseQuery } from './scope'
 import { Drill, type DrillAnswer, rollupAt, rollupTotal } from './staticDrill'
 import { covers, drillSource, type Found, type HitSource, injectedStores, liveTotal, SuffixHits, type StaticFilterStore } from './staticFilter'
-import { type Blobs, type Hit, scanMs, StaticNames } from './staticNames'
+import { type Blobs, type Hit, scanAt, StaticNames } from './staticNames'
 import { sqliteD1 } from './testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from './testStore'
 import { buildDiff, buildView, type DiffRow, type View, type ViewNode } from './view'
@@ -94,7 +94,7 @@ beforeAll(async () => {
 const n = (x: bigint) => Number(x)
 /** Live roots summed per child of `P` on `date` (zeros dropped, by name). */
 function childSums(hits: Hit[], P: string, date: string): Sums {
-  const D = scanMs(date), acc = new Map<string, [number, number]>()
+  const D = scanAt(date), acc = new Map<string, [number, number]>()
   for (const h of hits) {
     if (!(h.vf <= D && D < h.vt)) continue
     const c = (P === '' ? h.path : h.path.slice(P.length + 1)).split('/')[0]
