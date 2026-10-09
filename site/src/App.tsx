@@ -1312,7 +1312,7 @@ function AppContent() {
           )}
         </>
       ) : miss ? (
-        <NoScanMatch miss={miss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, true, times)} />
+        <NoScanMatch miss={miss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, true, times, scans)} />
       ) : rootErr && /^(409|413)/.test(rootErr.message) ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
@@ -1358,7 +1358,7 @@ function AppContent() {
 
       {startMiss && (
         <section id="diff">
-          <NoScanMatch what="diff start" miss={startMiss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false, times)} />
+          <NoScanMatch what="diff start" miss={startMiss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false, times, scans)} />
         </section>
       )}
       {asof && diffPrev && (
