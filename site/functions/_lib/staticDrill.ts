@@ -289,7 +289,9 @@ export class GroupFile {
       const [x, y] = meet(entries.length, i => [entries[i].qMin, entries[i].kMin], i => [entries[i].qMax, entries[i].kMax], lo, hi)
       for (const e of entries.slice(x, y)) { if (inside(e)) rows += e.rows; else partial.push(e) }
     }
-    if (partial.length) rows += (await this.read(lo, hi, partial, io, () => 1)).length
+    // Each straddling group read on its own: the two edges of a big range lie far apart in one file, and `read`
+    // fetches a file's groups as one span (606 MB for `4`'s base roots).
+    for (const n of await Promise.all(partial.map(e => this.read(lo, hi, [e], io, () => 1)))) rows += n.length
     return rows
   }
 
