@@ -42,6 +42,10 @@ export interface Cover {
   unchecked: number
 }
 
+/** `/api/filter-cover`'s version: in its cache key, and the client's `cv=` (a browser's private copy
+ *  must not outlive a change either). Bumped when an answer would change. */
+export const COVER_V = 5
+
 /** Kind lookups: the fewest paths a too-wide chunk is halved to, and the most calls. */
 export const MIN_KIND_CHUNK = 64
 export const MAX_KIND_CALLS = 24

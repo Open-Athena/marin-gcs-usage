@@ -14,7 +14,7 @@ import { type Env, requireViewer } from '../_lib/auth.js'
 import { storeReady } from '../_lib/index.js'
 import { queryParam, QueryError } from '../_lib/scope.js'
 import { allMatchRoots, FILTER_VIEW_V, NotFound, pathTotals } from '../_lib/view.js'
-import { coverSet } from '../_lib/cover.js'
+import { COVER_V, coverSet } from '../_lib/cover.js'
 import { indexedGate, staticTag } from '../_lib/staticFilter.js'
 import { FilterRejected, indexedOnly, rejectBody, rejectQuery } from '../_lib/indexedOnly.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
@@ -25,11 +25,9 @@ import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
 /** The most items a response lists; past it, none (`complete: false`). */
 export const COVER_ITEMS_MAX = 50_000
 /** Row groups the one-object roots' kind lookups may read, all together (separate from the folders'). */
-export const COVER_KIND_GROUPS = 32
+export const COVER_KIND_GROUPS = 64
 /** Folders collapse at this depth or deeper (2: never a whole bucket). */
 export const COVER_MIN_DEPTH = 2
-/** Bumped when the response's shape changes. */
-const COVER_V = 4
 
 type Ctx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
 const jsonRes = (body: unknown, status: number) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })

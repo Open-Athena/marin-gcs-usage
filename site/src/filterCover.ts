@@ -2,7 +2,7 @@
 // what the bulk bar and the table's rows do with them: under a filter, a selection is always match roots
 // (or folders every object of which matches) — never a row's whole prefix.
 import { useQuery } from '@tanstack/react-query'
-import type { CoverItem } from '../functions/_lib/cover'
+import { COVER_V, type CoverItem } from '../functions/_lib/cover'
 
 export { ASSIGN_CHUNK, assignInBatches, chunks, STAGE_CHUNK, stageInBatches } from './batches'
 
@@ -34,7 +34,7 @@ export function useFilterCover(
     staleTime: Infinity,
     retry: false,
     queryFn: async ({ signal }) => {
-      const qs = new URLSearchParams({ date: o.date!, path: o.path, q: o.q!, ...(o.qs ? { qs: o.qs } : {}) })
+      const qs = new URLSearchParams({ cv: String(COVER_V), date: o.date!, path: o.path, q: o.q!, ...(o.qs ? { qs: o.qs } : {}) })
       const r = await fetcher(`/api/filter-cover?${qs}`, { credentials: 'include', signal })
       const text = await r.text()
       if (!r.ok) {
