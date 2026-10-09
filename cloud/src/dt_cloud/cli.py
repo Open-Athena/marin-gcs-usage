@@ -4434,6 +4434,33 @@ def sweep_stop(plan_dir: str) -> None:
     _hard_exit()
 
 
+@sweep.command("record")
+@argument("run_dir")
+def sweep_record(run_dir: str) -> None:
+    """Re-record a finished run's per-prefix bands from RUN_DIR's summary
+    (`deleted-summary.json`, else `would-delete-summary.json`) onto its
+    `deletion_runs` row (found by `log_dir`). For a run whose final record
+    failed after the deletes were done; idempotent."""
+    import fsspec
+    from .index_footer import _creds, _d1_query, _q
+    from .sweep_exec import record_bands
+
+    run_dir = run_dir.rstrip("/")
+    fs, _ = fsspec.core.url_to_fs(run_dir)
+    names = [n for n in ("deleted", "would-delete") if fs.exists(f"{run_dir}/{n}-summary.json")]
+    if not names:
+        raise SystemExit(f"no deleted-/would-delete-summary.json under {run_dir}")
+    with fs.open(f"{run_dir}/{names[0]}-summary.json") as fh:
+        summary = json.load(fh)
+    tok, acct = _creds()
+    runs = _d1_query(f"SELECT run_id FROM deletion_runs WHERE log_dir = {_q(run_dir)}", acct, tok)
+    if len(runs) != 1:
+        raise SystemExit(f"expected one deletion_runs row with log_dir {run_dir}, found {len(runs)}")
+    run_id = runs[0]["run_id"]
+    n = record_bands(run_id, summary)
+    err(f"recorded {n:,} bands for {run_id}")
+
+
 @sweep.command("recovery-check")
 @option("-l", "--limit", default=1, type=int, help="Soft-deleted samples per prefix (1–100; not a full inventory)")
 @argument("prefixes", nargs=-1, required=True)
