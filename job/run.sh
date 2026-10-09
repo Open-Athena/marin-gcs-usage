@@ -12,7 +12,7 @@
 # site data dir — publishing to the bucket is the whole "publish" step.
 #
 # Buckets are mounted via GCS FUSE at /gcs/<bucket> (DuckDB needs local paths).
-# Env: SNAPSHOT_DATE (default today UTC), DATA_BUCKET, DUCKDB_MEM,
+# Env: SNAP_ID (scan id; default SNAPSHOT_DATE, else today UTC), DATA_BUCKET, DUCKDB_MEM,
 # SNAP_PATH (default snapshots/<date>).
 # Parallel/experimental runs: override SNAP_PATH so they write to their own
 # bucket path (the live site only reads snapshots/<date>/).
@@ -35,7 +35,13 @@ done
 unset n v
 set -x
 
-DATE=${SNAPSHOT_DATE:-$(date -u +%F)}
+# The scan id keys everything this run writes (listing/, snapshots/, the index
+# generation, D1): `YYYY-MM-DD` for the daily cron, or a sub-daily
+# `YYYY-MM-DDTHHMM` (SNAP_ID=…, as cw's job) for an extra scan on a day that
+# already has one — a date is never a scan's key. DATE is its UTC day, for
+# what is genuinely per-day (path-index `--asof`: the access-log cutoff).
+SNAP_ID=${SNAP_ID:-${SNAPSHOT_DATE:-$(date -u +%F)}}
+DATE=${SNAP_ID%%T*}
 DATA=${DATA_BUCKET:-oa-gcs-usage-dvx}
 # Deployment config (specs/oa-decoupling.md): `dt-cloud` carries no defaults for these.
 export DATA_BUCKET=$DATA
@@ -60,7 +66,7 @@ export D1_DB_NAME=${D1_DB_NAME:-oa-gcs-usage-auth}
 # The attribution roster lives with the data, not in the repo (`-i` /
 # `$DT_CLOUD_IDENTITIES`; no bundled default). Read through the job's GCS mount.
 export DT_CLOUD_IDENTITIES=${DT_CLOUD_IDENTITIES:-/gcs/$DATA/config/identities.yaml}
-SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
+SNAP_PATH=${SNAP_PATH:-snapshots/$SNAP_ID}
 # INDEX_PATH: where the floor-free path index (+ its by-user/by-team variants)
 # lands; default is colocated with the listing. SCRATCH=1 marks a verification
 # run: publish to SNAP_PATH/INDEX_PATH only, and skip every step that touches
@@ -68,11 +74,11 @@ SNAP_PATH=${SNAP_PATH:-snapshots/$DATE}
 # pipeline suffix can be re-run for an old date into a scratch location and
 # compared against what was published, without disturbing it.
 # GEN: this run's index generation. Its tiers live under
-# listing/$DATE/index/$GEN/ and D1 points at that dir once the footers are
+# listing/$SNAP_ID/index/$GEN/ and D1 points at that dir once the footers are
 # synced — a run never overwrites a parquet the site is reading
 # (specs/view-serving.md, "Index rewrite vs D1 footer").
 GEN=${GEN:-$(date -u +%Y%m%dT%H%M%SZ)}
-INDEX_DIR=listing/$DATE/index/$GEN
+INDEX_DIR=listing/$SNAP_ID/index/$GEN
 INDEX_PATH=${INDEX_PATH:-$INDEX_DIR/path-index.parquet}
 
 # Failure alerting: any command dying under `set -e` posts to Slack before the
@@ -109,7 +115,7 @@ PY
 }
 fail_alert() {
   local rc=$1 line=$2 cmd=$3
-  local msg="❌ \`dt-cloud\` snapshot job failed ($DATE): \`${cmd}\` exited $rc at run.sh:$line"
+  local msg="❌ \`dt-cloud\` snapshot job failed ($SNAP_ID): \`${cmd}\` exited $rc at run.sh:$line"
   [ -n "${BATCH_JOB_UID:-}" ] && msg+=$'\n'"<https://console.cloud.google.com/logs/query;query=labels.job_uid%3D%22$BATCH_JOB_UID%22?project=oa-internal-450019|task logs>"
   slack_post "$msg"
 }
@@ -166,7 +172,7 @@ fi
 if [ -n "${SWEEP:-}" ]; then
   [ "$SWEEP" = dry ] || [ "$SWEEP" = real ] || { echo "ERROR: SWEEP must be dry|real" >&2; exit 1; }
   [ -n "${SWEEP_PLAN:-}" ] || { echo "ERROR: SWEEP needs SWEEP_PLAN (a plan.json; /staged's dispatch writes one per run)" >&2; exit 1; }
-  sd=${SWEEP_DATE:-$DATE}
+  sd=${SWEEP_DATE:-$SNAP_ID}
   plan="gs://$DATA/sweep/runs/gcs-sweep-$SWEEP-$(date -u +%Y%m%d-%H%M%S)z"
   bflags=()
   for b in ${SWEEP_BUCKETS:-}; do bflags+=(-b "$b"); done
@@ -188,7 +194,7 @@ fi
 if [ "${NOP_IF_PUBLISHED:-0}" = "1" ] && [ -f "/gcs/$DATA/$SNAP_PATH/meta.json" ]; then
   [ "${SKIP_ACCESS:-0}" = "1" ] || dt-cloud access ingest ${ACCESS_ARGS:-} \
     || echo "WARN: access ingest failed (watermark self-heals next run)" >&2
-  echo "SNAPSHOT-JOB-NOP $DATE (already published)"
+  echo "SNAPSHOT-JOB-NOP $SNAP_ID (already published)"
   exit 0
 fi
 
@@ -227,7 +233,7 @@ if [ "${REPROC:-0}" != "1" ]; then
   for b in "${FLEET[@]}"; do LZ+=(-b "$b"); done
   # central2's chunk weights may also come from the pre-DIY listing layout (opt-in since `cloud` dropped the default).
   LZ+=(-L marin-us-central2=central2-listing)
-  dt-cloud job submit-listing -d "$DATE" -W "${LZ[@]}"
+  dt-cloud job submit-listing -d "$SNAP_ID" -W "${LZ[@]}"
 fi
 echo "PHASE listing-fanout: ${SECONDS}s (wall)" >&2
 
@@ -239,8 +245,8 @@ fi
 echo "PHASE access-ingest: ${SECONDS}s (wall, overlapped the listing)" >&2
 G=()
 for b in "${FLEET[@]}"; do
-  if [ -f "/gcs/$DATA/listing/$DATE/$b/_SUCCESS.json" ]; then G+=("/gcs/$DATA/listing/$DATE/$b/*.parquet")
-  else echo "ERROR: no completed $DATE listing for $b — aborting snapshot" >&2; exit 1; fi
+  if [ -f "/gcs/$DATA/listing/$SNAP_ID/$b/_SUCCESS.json" ]; then G+=("/gcs/$DATA/listing/$SNAP_ID/$b/*.parquet")
+  else echo "ERROR: no completed $SNAP_ID listing for $b — aborting snapshot" >&2; exit 1; fi
 done
 AG=("/gcs/$DATA/attr/attribution-2026-07-20.parquet" "/gcs/$DATA/attr/attribution-wandb.parquet")
 # Access-log layer-2a shards (read-recency join) — optional until the first
@@ -269,7 +275,7 @@ X=(); [ "$HAVE_ACCESS" = "1" ] && X+=(-x "$(loc "$XG")")
 # specs/done/cascade-gate.md instead of the snapshot — DT's `import -e duckdb
 # --label usr` per bucket on the same staged inputs, `cascade-a2a` against the
 # date's published path index, peak RSS + wall per bucket. Reports go to
-# gs://$DATA/gate/$DATE/; nothing is published. GATE_K = --partition-depth
+# gs://$DATA/gate/$SNAP_ID/; nothing is published. GATE_K = --partition-depth
 # (default 2), GATE_P = --partition-files (default 4M; keys over it split
 # recursively), GATE_THREADS = DuckDB threads (default 8), GATE_HIST=1 adds
 # --size-hist.
@@ -278,10 +284,10 @@ if [ "${GATE:-0}" = "1" ]; then
   mkdir -p "$GD/labels" "$GD/tiers" "$GD/l2" "$GD/db" "$GD/root"
   export DISK_TREE_ROOT="$GD/root"
   dt-cloud labels "${L[@]}" "${A[@]}" -o "$GD/labels"
-  srckey=$(dt-cloud index-dir "$DATE") || { echo "ERROR: no synced path index for $DATE to compare against" >&2; exit 1; }
+  srckey=$(dt-cloud index-dir "$SNAP_ID") || { echo "ERROR: no synced path index for $SNAP_ID to compare against" >&2; exit 1; }
   for b in "${FLEET[@]}"; do
     echo "GATE $b: import (k=${GATE_K:-2}, P=${GATE_P:-4000000}, n=${GATE_THREADS:-8}, mem=${DUCKDB_MEM:-100GB})" >&2
-    /usr/bin/time -v disk-tree import -e duckdb -l "$(loc "/gcs/$DATA/listing/$DATE/$b/*.parquet")" -b "$b" -s gcs \
+    /usr/bin/time -v disk-tree import -e duckdb -l "$(loc "/gcs/$DATA/listing/$SNAP_ID/$b/*.parquet")" -b "$b" -s gcs \
       -d "$GD/db" -k "${GATE_K:-2}" -P "${GATE_P:-4000000}" -n "${GATE_THREADS:-8}" -L "$GD/labels/labels-$b.parquet" -c usr -p storage_class_id -m ${GATE_HIST:+-H} \
       -i dirs -O "$GD/tiers" -r 8192 -S usr -M "${DUCKDB_MEM:-100GB}" -T "${DUCKDB_TMP:-/tmp}" \
       -t "${DATE}T00:00:00Z" -o "$GD/l2" > "$GD/import-$b.log" 2>&1 || echo "GATE $b: import FAILED (see import-$b.log)" >&2
@@ -290,9 +296,9 @@ if [ "${GATE:-0}" = "1" ]; then
       && echo "GATE $b: a2a exact" >&2 || echo "GATE $b: a2a DIFFERENT (see a2a-$b.txt)" >&2
     rm -rf "$GD/db"/* "$GD/l2"/*
   done
-  mkdir -p "/gcs/$DATA/gate/$DATE"
-  cp "$GD"/import-*.log "$GD"/a2a-*.txt "/gcs/$DATA/gate/$DATE/"
-  echo "PHASE gate: ${SECONDS}s (wall); reports at gs://$DATA/gate/$DATE/" >&2
+  mkdir -p "/gcs/$DATA/gate/$SNAP_ID"
+  cp "$GD"/import-*.log "$GD"/a2a-*.txt "/gcs/$DATA/gate/$SNAP_ID/"
+  echo "PHASE gate: ${SECONDS}s (wall); reports at gs://$DATA/gate/$SNAP_ID/" >&2
   exit 0
 fi
 
@@ -313,8 +319,8 @@ fi
 # the root filters it per row). `PATH_INDEX_USER_SORT_TIERS` overrides.
 PI_DIR="${STAGE_DIR:-/tmp}/path-index"
 mkdir -p "$PI_DIR"
-dt-cloud path-index -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$DATE" \
-  -c "/gcs/$DATA/listing/$DATE/dir-cache" \
+dt-cloud path-index -d "$DATE" "${L[@]}" "${A[@]}" "${X[@]}" -o "/tmp/snap/$SNAP_ID" \
+  -c "/gcs/$DATA/listing/$SNAP_ID/dir-cache" \
   -P "$PI_DIR/path-index.parquet" ${PATH_INDEX_RG_ROWS:+-r "$PATH_INDEX_RG_ROWS"} -u "${PATH_INDEX_USER_SORT_TIERS:-bysize}" \
   ${PATH_INDEX_SEARCH:+-S}  # PATH_INDEX_SEARCH=1: the filter's search sidecars too (specs/path-store-search.md; off until measured)
 echo "PHASE path-index: ${SECONDS}s (wall)" >&2
@@ -343,7 +349,7 @@ echo "PHASE webdata+stage: ${SECONDS}s (wall)" >&2
 # 3. publish to the canonical store — the live site reads these directly
 # (site/functions/data/[[path]].ts), so no site rebuild/deploy is needed.
 mkdir -p "/gcs/$DATA/$SNAP_PATH"
-cp "/tmp/snap/$DATE"/*.json "/gcs/$DATA/$SNAP_PATH/"
+cp "/tmp/snap/$SNAP_ID"/*.json "/gcs/$DATA/$SNAP_PATH/"
 # The fleet's lifecycle rules in force at this scan (Marin's tmp/ttl=<N>d TTLs
 # on every bucket): snapshotted next to the scan, keyed by bucket, so the site
 # can show them and diff them scan to scan. `job/lifecycle/<bucket>.json` is
@@ -367,7 +373,7 @@ echo "PHASE publish: ${SECONDS}s (wall)" >&2
 # even the `[ -n "$CLOUDFLARE_API_TOKEN" ]` test echoes the token under `set -x`.
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  dt-cloud index-sync -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$DATE" \
+  dt-cloud index-sync -d "/gcs/$DATA/$INDEX_DIR" -g "$GEN" -k "$INDEX_DIR" "$SNAP_ID" \
     || echo "WARN: index-sync failed (the site keeps serving the previous generation)" >&2
 else
   echo "WARN: no CLOUDFLARE_API_TOKEN/ACCOUNT_ID — skipping index-sync (scan stays unlisted)" >&2
@@ -382,10 +388,10 @@ set -x
 # and the Worker answers for this one (the box 409s a scan it lacks).
 # CLICKHOUSE_USER / CLICKHOUSE_PASSWORD (secrets) authenticate, if set.
 if [ -n "${CH_STORE_URL:-}" ]; then
-  if CLICKHOUSE_URL=$CH_STORE_URL dt-cloud ch-ingest -d "$DATE" "$PI_DIR/path-index.parquet"; then
+  if CLICKHOUSE_URL=$CH_STORE_URL dt-cloud ch-ingest -d "$SNAP_ID" "$PI_DIR/path-index.parquet"; then
     echo "PHASE ch-ingest: ${SECONDS}s (wall)" >&2
   else
-    echo "WARN: ch-ingest failed for $DATE (re-run: dt-cloud ch-ingest -d $DATE)" >&2
+    echo "WARN: ch-ingest failed for $SNAP_ID (re-run: dt-cloud ch-ingest -d $SNAP_ID)" >&2
   fi
 fi
 
@@ -399,11 +405,11 @@ fi
 # REPROC (no fresh publish to verify). The token rides in env, never the
 # cmdline, so xtrace is safe here.
 if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
-  if dt-cloud healthcheck -d "$DATE"; then
-    echo "healthcheck OK — $DATE is servable" >&2
+  if dt-cloud healthcheck -d "$SNAP_ID"; then
+    echo "healthcheck OK — $SNAP_ID is servable" >&2
   else
-    echo "WARN: post-snapshot healthcheck failed for $DATE" >&2
-    slack_post "⚠️ \`dt-cloud\` $DATE published but the live site health check failed — data is fine, serving may be degraded (e.g. missing D1 index footer → /users blank). Debug: \`dt-cloud healthcheck -d $DATE\`."
+    echo "WARN: post-snapshot healthcheck failed for $SNAP_ID" >&2
+    slack_post "⚠️ \`dt-cloud\` $SNAP_ID published but the live site health check failed — data is fine, serving may be degraded (e.g. missing D1 index footer → /users blank). Debug: \`dt-cloud healthcheck -d $SNAP_ID\`."
   fi
 fi
 
@@ -412,8 +418,8 @@ fi
 # compute — the home page's default requests at the common canvas widths
 # (`dt-cloud warm-cache`). Same token, same gating; never fatal.
 if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
-  dt-cloud warm-cache -d "$DATE" -r "gs://$DATA/snapshots" \
-    || echo "WARN: cache warm-up failed for $DATE" >&2
+  dt-cloud warm-cache -d "$SNAP_ID" -r "gs://$DATA/snapshots" \
+    || echo "WARN: cache warm-up failed for $SNAP_ID" >&2
 fi
 
 # Replay the site's page loads uncached (`dt-cloud probe -c`): every response
@@ -422,8 +428,8 @@ fi
 # (a 5xx or a dropped request) warns but never fails the snapshot.
 if [ -n "${GCS_USAGE_TOKEN:+set}" ] && [ "${REPROC:-0}" != "1" ]; then
   if ! dt-cloud probe -c -o "gs://$DATA/probes/"; then
-    echo "WARN: serving probe failed for $DATE" >&2
-    slack_post "⚠️ \`dt-cloud\` $DATE: a page-load probe got a 5xx or a dropped request — data is fine, some views may fail. Debug: \`dt-cloud probe -c\`."
+    echo "WARN: serving probe failed for $SNAP_ID" >&2
+    slack_post "⚠️ \`dt-cloud\` $SNAP_ID: a page-load probe got a 5xx or a dropped request — data is fine, some views may fail. Debug: \`dt-cloud probe -c\`."
   fi
 fi
 
@@ -466,9 +472,9 @@ fi
 # variant's rows only once that file exists (specs/path-store.md §1.6).
 { set +x; } 2>/dev/null
 if [ -n "${CLOUDFLARE_API_TOKEN:+set}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  dt-cloud index-gc -r "${INDEX_RETAIN:-30}" "$DATE" || echo "WARN: index-gc failed" >&2
+  dt-cloud index-gc -r "${INDEX_RETAIN:-30}" "$SNAP_ID" || echo "WARN: index-gc failed" >&2
 fi
 set -x
 
 echo "PHASE total: ${SECONDS}s (wall)" >&2
-echo "SNAPSHOT-JOB-DONE $DATE"
+echo "SNAPSHOT-JOB-DONE $SNAP_ID"

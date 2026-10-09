@@ -3,7 +3,8 @@
 # Cloud Run jobs cap at 32Gi with tmpfs-only storage — DuckDB spill lands in RAM and the
 # 470M-row webdata step OOMs there; Batch VMs give 64G RAM + a 200G boot disk for spill.
 #
-# Env overrides: SNAPSHOT_DATE (default today UTC, resolved inside run.sh), IMAGE,
+# Env overrides: SNAP_ID (a scan id, e.g. a sub-daily `YYYY-MM-DDTHHMM` for an extra scan) or
+# SNAPSHOT_DATE (default today UTC, resolved inside run.sh), IMAGE,
 # DUCKDB_MEM (default 48GB), DUCKDB_THREADS (default 8), SNAP_PATH,
 # LISTING_MACHINE/PROCS/WORKERS (DIY fan-out sizing) — forwarded when set.
 set -euo pipefail
@@ -61,7 +62,7 @@ v = {
 }
 v = {k: s for k, s in v.items() if s}
 if not pin:  # one-off overrides forwarded only for manual submits, never the cron spec
-    for k in ["SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "SWEEP", "SWEEP_PLAN", "SWEEP_DATE", "SWEEP_BUCKETS", "USER",
+    for k in ["SNAP_ID", "SNAPSHOT_DATE", "SNAP_PATH", "INDEX_PATH", "SCRATCH", "REPROC", "SWEEP", "SWEEP_PLAN", "SWEEP_DATE", "SWEEP_BUCKETS", "USER",
               "SWEEP_BENCHMARK_PLAN", "SWEEP_BENCHMARK_BUCKET", "SWEEP_BENCHMARK_WORKERS", "SWEEP_BENCHMARK_ROOTS", "SWEEP_BENCHMARK_RESULTS_PER_ROOT", "SWEEP_BENCHMARK_OUT",
               "ACCESS_ONLY", "SKIP_ACCESS", "ACCESS_ARGS", "GATE", "GATE_K", "GATE_P", "GATE_THREADS", "GATE_HIST",
               "LISTING_MACHINE", "LISTING_PROCS", "LISTING_WORKERS",
