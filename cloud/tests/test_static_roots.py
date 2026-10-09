@@ -69,7 +69,7 @@ def test_short_roots_equal_brute_force(built):  # noqa: F811
     con.execute("DROP TABLE IF EXISTS st")
     for r in ranges["ranges"]:
         src = str(build / "cintervals" / f"r{r['i']:04d}.parquet")
-        sr.short_roots(con, f"SELECT * FROM read_parquet({sn.q(src)})", "st")
+        sr.short_roots(con, f"SELECT * FROM read_parquet({sn.q(src)})", "st", pieces=3)
     got = con.execute("SELECT * FROM st ORDER BY ALL").fetchall()
     versions = _versions(merged)
     names = {v[1].rsplit("/", 1)[-1].lower() for v in versions if v[0] >= 1}
@@ -201,3 +201,24 @@ def test_drill_equals_brute_force(built, tmp_path, R, K, rg):  # noqa: F811
     assert sources.get("roots", 0) > 100
     if R < 100:  # rollups are read only past the dispatch bound R + 2·rg
         assert sources.get("rollup", 0) > (10 if R + 2 * rg < 15 else 0), (sources, docs)
+
+
+def test_brute_view_sql_equals_oracle(fixture):  # noqa: F811
+    """`drill-brute` straight from each scan file equals the versions' first hits under P on that date."""
+    root, scans, merged = fixture
+    versions = _versions(merged)
+    dirs = sorted({p.rsplit("/", 1)[0] for _, p, *_ in versions if "/" in p})
+    terms = ["gof", "5418", "pio", "a'b", "é5", "b", "1", "zzz", "/"]
+    cases = [(t, P) for t in terms for P in dirs]
+    con = sn.connect(2, "1GB", None)
+    con.execute("CREATE TABLE cases (term VARCHAR, P VARCHAR)")
+    con.executemany("INSERT INTO cases VALUES (?, ?)", cases)
+    nonzero = 0
+    for s in scans["scans"]:
+        got: dict = {c: {} for c in cases}
+        for term, P, child, b_, o_ in con.execute(sr.brute_view_sql(str(root / s["src"]), s["version"], "cases")).fetchall():
+            if b_ or o_:
+                got[(term, P)][child] = [b_, o_]
+        assert got == {(t, P): _brute_view(versions, t, P, s["id"]) for t, P in cases}, s["id"]
+        nonzero += sum(1 for v in got.values() if v)
+    assert nonzero > 20

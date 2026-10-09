@@ -25,7 +25,7 @@ from time import monotonic, time
 import pyarrow as pa
 import pyarrow.compute  # noqa: F401  (pa.compute)
 import pyarrow.parquet as pq
-from click import IntRange, group, option
+from click import IntRange, argument, group, option
 
 from .static_catalog import CHUNK_ROWS, PARENT
 from .static_names import (
@@ -86,10 +86,18 @@ def member_roots(con, rows_sql: str, members: str, into: str, agg: bool = False)
     con.execute("DROP TABLE IF EXISTS rx; DROP TABLE IF EXISTS rl; DROP TABLE IF EXISTS rpre")
 
 
-def short_roots(con, versions_sql: str, into: str, agg: bool = False) -> None:
+def short_roots(con, versions_sql: str, into: str, agg: bool = False, pieces: int = 1, log: str = "") -> None:
     """Add every one- and two-character literal's first-hit rows among `versions_sql`'s rows `(depth, path,
     usr, vf, vt, size, n_files)` to `into` (as `member_roots`): each distinct character and character pair of
-    the lowercase name that the lowercase parent does not contain (`static_catalog.short_events`' rule)."""
+    the lowercase name that the lowercase parent does not contain (`static_catalog.short_events`' rule). In
+    `pieces` passes by `hash(path)` (bounding the unnest's memory; a path's rows are in one piece)."""
+    if pieces > 1:
+        t0 = monotonic()
+        for k in range(pieces):
+            short_roots(con, f"SELECT * FROM ({versions_sql}) WHERE hash(path) % {pieces} = {k}", into, agg)
+            if log:
+                err(f"{log}: piece {k + 1}/{pieces} in {monotonic() - t0:.1f}s")
+        return
     con.execute(f"CREATE TABLE IF NOT EXISTS {into} ({RP_COLS if agg else ROOT_COLS})")
     hit = f"""SELECT g AS q, depth, path, usr, vf, vt, size, n_files FROM (
             SELECT unnest(list_distinct(list_transform(range(1, length(l) + 1), lambda p: substring(l, p, 1))
@@ -568,8 +576,9 @@ def download(bucket, keys: list[str], dst: Path, workers: int = 16) -> list[Path
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-n", "--parts", default=32, type=IntRange(min=1), help="Subtree partitions (= tasks)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-P", "--pieces", default=8, type=IntRange(min=1), help="Passes per partition by hash(path) (memory)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where the versions are downloaded")
-def measure_short_cmd(bucket, floor_rows, gen, index, mount, mem, parts, threads, tmp) -> None:
+def measure_short_cmd(bucket, floor_rows, gen, index, mount, mem, parts, threads, pieces, tmp) -> None:
     """One- and two-character literals' roots counted over one subtree partition of the coalesced versions →
     `roots-measure/short/{q,qdepth,dirs,hist,top}/p###.parquet` (`top`: the partial depth-1 directories)."""
     from google.cloud import storage
@@ -588,7 +597,7 @@ def measure_short_cmd(bucket, floor_rows, gen, index, mount, mem, parts, threads
     err(f"measure-short {name}: {len(local)} version files downloaded in {monotonic() - t0:.1f}s")
     con = connect(threads, mem, tmp)
     versions = f"SELECT * FROM read_parquet({q(str(Path(tmp) / 'cintervals' / '*.parquet'))}) WHERE {_partition(parts)} = {t}"
-    short_roots(con, versions, "rp", agg=True)
+    short_roots(con, versions, "rp", agg=True, pieces=pieces, log=f"measure-short {name}")
     n_rp, n_rows = con.execute("SELECT count(*), coalesce(sum(n), 0) FROM rp").fetchone()
     err(f"measure-short {name}: {n_rows:,} root rows, {n_rp:,} root paths in {monotonic() - t0:.1f}s")
     qs, qd = q_stats(con, "rp")
@@ -781,9 +790,10 @@ def _group_table(con, plan: dict) -> None:
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
 @option("-n", "--parts", default=32, type=IntRange(min=1), help="Subtree partitions (= tasks)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-P", "--pieces", default=8, type=IntRange(min=1), help="Passes per partition by hash(path) (memory)")
 @option("-S", "--scratch", default=SCRATCH_BUCKET, help="Bucket for the shuffle (an intermediate)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir, and where the versions are downloaded")
-def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, scratch, tmp) -> None:
+def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, pieces, scratch, tmp) -> None:
     """One subtree partition's short-literal roots, split by q-group → the scratch bucket's
     `static-names/GEN/drill-short-map/g###/p###.parquet` (a partition's marker: `drill-short-map/done/p###`)."""
     from google.cloud import storage
@@ -801,7 +811,8 @@ def short_map_cmd(bucket, gen, index, mount, mem, parts, threads, scratch, tmp) 
     keys = sorted(x.name for x in client.list_blobs(bucket, prefix=f"{prefix}/cintervals/") if x.name.endswith(".parquet"))
     download(b, keys, Path(tmp) / "cintervals")
     con = connect(threads, mem, tmp)
-    short_roots(con, f"SELECT * FROM read_parquet({q(str(Path(tmp) / 'cintervals' / '*.parquet'))}) WHERE {_partition(parts)} = {t}", "rt")
+    short_roots(con, f"SELECT * FROM read_parquet({q(str(Path(tmp) / 'cintervals' / '*.parquet'))}) WHERE {_partition(parts)} = {t}", "rt",
+                pieces=pieces, log=f"short-map {name}")
     _group_table(con, plan)
     part = Path(tmp) / "smap"
     shutil.rmtree(part, ignore_errors=True)
@@ -900,6 +911,137 @@ def index_cmd(bucket, gen, K, R) -> None:
                                      "bytes": nbytes, "index_bytes": len(body)}
     b.blob(f"{prefix}/meta.json").upload_from_string(json.dumps(meta, indent=1) + "\n")
     print(json.dumps(meta, indent=1))
+
+
+# ── Verification ───────────────────────────────────────────────────────────
+
+
+def brute_view_sql(src: str, version: int, cases: str) -> str:
+    """Per (case, child of its P): Σ size, n_files over one scan's rows (`src`, its `path` sort; v1 `b`/`o`)
+    strictly under P, at depth ≥ 1, whose lowercase name contains the term and whose lowercase parent does
+    not — the first-hit rule straight from the scan. `cases`: a table of `(term, P)`."""
+    size, n = ("size", "n_files") if version == 2 else ("b", "o")
+    return f"""SELECT c.term, c.P, split_part(substring(x.path, length(c.P) + 2), '/', 1) AS child, sum(x.sz)::BIGINT AS b, sum(x.nf)::BIGINT AS o
+        FROM (SELECT path, {NAME} AS l, {PARENT} AS par, {size} AS sz, {n} AS nf FROM read_parquet({q(src)}) WHERE depth >= 2) AS x
+        JOIN {cases} AS c ON starts_with(x.path, c.P || '/')
+        WHERE contains(x.l, c.term) AND NOT contains(x.par, c.term) GROUP BY ALL"""
+
+
+def _cases(path: str) -> list[tuple[str, str]]:
+    from .static_names import read_text
+
+    return [(d["q"], d["P"]) for d in map(json.loads, read_text(path).splitlines()) if d]
+
+
+@cli.command("drill-brute")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-c", "--cases", "cases_file", required=True, help="JSON lines `{q, P}` (a path or gs:// URL)")
+@option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat (task i answers the i-th)")
+@option("-g", "--gen", required=True, help="Generation (its `scans.json`; answers go to `verify/drill-brute/`)")
+@option("-i", "--index", type=int, help="Task index (default: $BATCH_TASK_INDEX)")
+@option("-m", "--mount", required=True, help="Local mount of the bucket")
+@option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
+def drill_brute_cmd(bucket, cases_file, dates, gen, index, mount, mem, threads, tmp) -> None:
+    """Reference drill views by brute force over one date's scan file → `verify/drill-brute/<date>.jsonl`
+    (`{date, q, P, children: {child: [bytes, objects]}}`, nonzero children)."""
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}"
+    date = dates[_task(index)]
+    scan = next(s for s in read_json(f"gs://{bucket}/{prefix}/scans.json")["scans"] if s["id"] == date)
+    cases = sorted({(t.lower(), P) for t, P in _cases(cases_file)})
+    con = connect(threads, mem, tmp)
+    con.execute("CREATE TABLE cases (term VARCHAR, P VARCHAR)")
+    con.executemany("INSERT INTO cases VALUES (?, ?)", cases)
+    t0 = monotonic()
+    got: dict[tuple[str, str], dict] = {c: {} for c in cases}
+    for term, P, child, b_, o_ in con.execute(brute_view_sql(f"{mount}/{scan['src']}", scan["version"], "cases")).fetchall():
+        if b_ or o_:
+            got[(term, P)][child] = [int(b_), int(o_)]
+    body = "".join(json.dumps({"date": date, "q": t, "P": P, "children": dict(sorted(got[(t, P)].items()))}) + "\n" for t, P in cases)
+    storage.Client().bucket(bucket).blob(f"{prefix}/verify/drill-brute/{date}.jsonl").upload_from_string(body)
+    err(f"drill-brute {date}: {len(cases)} cases in {monotonic() - t0:.1f}s")
+
+
+def gcs_drill(bucket: str, gen: str, kind: str) -> Drill:
+    from google.cloud import storage
+
+    prefix = f"{PREFIX}/{gen}/{DRILL}"
+    b = storage.Client().bucket(bucket)
+    meta = json.loads(b.blob(f"{prefix}/meta.json").download_as_bytes())
+    blobs: dict[str, object] = {}
+
+    def blob(file: str):
+        if file not in blobs:
+            blobs[file] = b.get_blob(f"{prefix}/{file}")
+        return blobs[file]
+
+    def fetch(file: str, lo: int, hi: int) -> bytes:
+        return blob(file).download_as_bytes(start=lo, end=hi - 1)
+
+    def size_of(file: str) -> int:
+        return int(blob(file).size)
+
+    idx = {sub: pq.read_table(pa.BufferReader(b.blob(f"{prefix}/{kind}-{sub}-index.parquet").download_as_bytes())) for sub in ("roots", "rollups")}
+    return Drill(GroupFile(idx["roots"], fetch, size_of), GroupFile(idx["rollups"], fetch, size_of), meta["R"], meta["rg"])
+
+
+@cli.command("drill-query")
+@option("-b", "--bucket", default=DATA_BUCKET, help="Bucket")
+@option("-c", "--cases", "cases_file", required=True, help="JSON lines `{q, P}`")
+@option("-d", "--date", "dates", multiple=True, required=True, help="Scan date; repeat")
+@option("-g", "--gen", required=True, help="Generation")
+def drill_query_cmd(bucket, cases_file, dates, gen) -> None:
+    """Answer drill cases from the roots/rollups (the Worker's logic, over GCS): one JSON line per case."""
+    drills = {k: gcs_drill(bucket, gen, k) for k in ("long", "short")}
+    for t, P in _cases(cases_file):
+        t0 = monotonic()
+        out = drills["short" if len(t) <= 2 else "long"].view(t, P, list(dates))
+        out["s"] = round(monotonic() - t0, 3)
+        print(json.dumps(out), flush=True)
+
+
+@cli.command("drill-verify")
+@argument("ref_jsonl")
+@argument("answers_jsonl")
+def drill_verify_cmd(ref_jsonl, answers_jsonl) -> None:
+    """Compare `drill-query` answers with `drill-brute` per (term, P, date): a roots answer must equal the
+    reference child for child; a rollup answer's kept children must equal theirs and its remainder the sum of
+    the rest. JSON report; exit 1 on any difference."""
+    ref = {}
+    for line in Path(ref_jsonl).read_text().splitlines():
+        if line.startswith("{"):
+            d = json.loads(line)
+            ref[(d["q"], d["P"], d["date"])] = d["children"]
+    pairs, diffs, src_n, io = 0, {}, {}, []
+    for line in Path(answers_jsonl).read_text().splitlines():
+        if not line.startswith("{"):
+            continue
+        d = json.loads(line)
+        src_n[d["source"]] = src_n.get(d["source"], 0) + 1
+        if d["source"] == "plain":
+            continue
+        io.append({"q": d["q"], "P": d["P"], "source": d["source"], "rows_read": d["io"]["rows_read"], "bytes": d["io"]["bytes"], "s": d["s"]})
+        for date, got in d["answers"].items():
+            exp = ref.get((d["q"], d["P"], date))
+            if exp is None:
+                continue
+            pairs += 1
+            if d["source"] == "roots":
+                ok = got == exp
+                rest = None
+            else:
+                rest = [sum(v[i] for c, v in exp.items() if c not in got) for i in (0, 1)]
+                ok = got == {c: v for c, v in exp.items() if c in got} and d["rest"][date] == rest
+            if not ok:
+                diffs[f"{d['q']} {d['P']} {date}"] = {"got": got, "rest": d.get("rest", {}).get(date), "ref": exp}
+    report = {"pairs": pairs, "equal": pairs - len(diffs), "by_source": src_n, "max_rows_read": max((x["rows_read"] for x in io), default=0),
+              "max_bytes": max((x["bytes"] for x in io), default=0), "diff": dict(list(diffs.items())[:20]), "io": io}
+    print(json.dumps(report, indent=1))
+    if diffs or not pairs:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
