@@ -31,7 +31,7 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
 import { QueryHelpTip } from './QueryHelp'
-import { apiErrorMessage, INDEXED_SYNTAX, useFilterCaps } from './filterCaps'
+import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps } from './filterCaps'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
@@ -402,7 +402,7 @@ function AppContent() {
           `/api/subtree?cv=${API_CV}&date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}${fq ? '&full=1' : ''}`,
           { credentials: 'include', signal },
         ))
-        if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
+        if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
         const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
@@ -717,7 +717,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
+      if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -745,7 +745,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
+      if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -764,7 +764,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
         { credentials: 'include', signal },
       )
-      if (!r.ok) throw new Error(apiErrorMessage(r.status, await r.text()))
+      if (!r.ok) throw apiError(r.status, await r.text())
       return r.json() as Promise<DiffData>
     },
   })
@@ -1279,6 +1279,9 @@ function AppContent() {
         </>
       ) : miss ? (
         <NoScanMatch miss={miss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan)} />
+      ) : refusalOf(rootErr) ? (
+        // The filter's refusal (indexed-only): its reason, inline — not a failed view.
+        <p className="loading filter-refused" role="status">{refusalOf(rootErr)!.reason}</p>
       ) : rootErr ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
@@ -1388,6 +1391,9 @@ function AppContent() {
               <>
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
               </>
+            ) : refusalOf(diffErr) && !diffStale ? (
+              // The filter's refusal: its reason, inline — no status, nothing to retry.
+              <span className="tab-note filter-refused"> · {refusalOf(diffErr)!.reason}</span>
             ) : diffErr && !diffStale ? (
               <span className="tab-note">
                 {' '}· {diffErr.message.startsWith('404')
