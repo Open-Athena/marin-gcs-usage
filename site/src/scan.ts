@@ -1,7 +1,7 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useQueries, useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useUrlAlias, useUrlState } from 'use-prms'
-import { decodeSel, encodeScan, encodeSel, exactPrefix, latestScan, legacyDateParam, legacyFromParam, mergeSel, scanCmp, scanMatches, scanNeighbors, scanParts, selSlug, sortScans, startKey, timesNeeded, type ScanSel, type ScanTimes } from './scanSlug'
+import { canonicalizeSel, decodeSel, encodeScan, encodeSel, exactSlug, latestScan, minPrefix, minSlug, legacyDateParam, legacyFromParam, mergeSel, scanCmp, scanMatches, scanNeighbors, scanParts, selSlug, sortScans, startKey, timesNeeded, type ScanSel, type ScanTimes } from './scanSlug'
 import { storeUrl, type Store } from './stores'
 
 // How often an unpinned tab re-checks for newly published scans.
@@ -59,6 +59,29 @@ export function useScanSel(): [ScanSel | undefined, (v: ScanSel | undefined) => 
   })
   const [, setSel] = useUrlState('d', selParam, true)
   return [sel, setSel]
+}
+
+/** Rewrite the URL's `?d=` in place (no history entry) to its canonical form
+ * once the scan list has answered: each pinned endpoint that names one scan for
+ * good becomes that scan's shortest slug (`canonicalizeSel`) — an old minute
+ * link `2610081236` reads `261008` once 10/8 is over and held no other scan. */
+function useCanonicalSel(sel: ScanSel | undefined, scans: readonly string[], loaded: boolean, times: ScanTimes) {
+  const [, replaceSel] = useUrlState('d', selParam, false)
+  const enc = encodeSel(sel)
+  const canon = loaded ? encodeSel(canonicalizeSel(sel, scans, times)) : enc
+  useEffect(() => {
+    if (canon !== enc) replaceSel(decodeSel(canon))
+  }, [canon, enc]) // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/** A scan id → its canonical `?d=` slug among the store's scans (`minSlug`),
+ * for links built outside a page's own selection (the scan-runs pages); the
+ * minute form (`exactSlug`) until the list answers. */
+export function useMinSlug(store: Store): (id: string) => string {
+  const scansQ = useScans(store)
+  const listed = useMemo(() => scansQ.data ?? [], [scansQ.data])
+  const times = useScanTimes(store, listed)
+  return useMemo(() => (scansQ.isSuccess ? (id: string) => minSlug(id, listed, times) : (id: string) => exactSlug(id, times)), [scansQ.isSuccess, listed, times])
 }
 
 /** A `?d=` slug that matches no scan: the slug as written (canonical when it
@@ -233,10 +256,11 @@ export function useScan(store: Store, indexed?: readonly string[] | null | 'load
     setSel(d || span0 || from0
       ? { ...(d ? { d } : {}), ...(span0 ? { span: span0 } : {}), ...(from0 ? { from: from0 } : {}) }
       : undefined)
-  // Setters take scan ids (a picker's choice) and write each as its exact
-  // prefix (`exactPrefix`): a date-only scan as its start (or midnight), never
-  // the day slug (which means the day's latest scan).
-  const exact = (v: string | undefined) => (v ? exactPrefix(v, times) : undefined)
+  useCanonicalSel(sel, scans, scansQ.isSuccess, times)
+  // Setters take scan ids (a picker's choice) and write each as its canonical
+  // prefix (`minPrefix`): the shortest of its day, hour and minute that names it
+  // for good — never a day or hour that holds (or may yet hold) another scan.
+  const exact = (v: string | undefined) => (v ? minPrefix(v, scans, times) : undefined)
   const setRange = (v: string | undefined, ms: number | undefined) =>
     write(v && v !== floating.scan ? exact(v) : undefined, ms, undefined)
   const setDP = (v: string | undefined) => write(v && v !== floating.scan ? exact(v) : undefined, span, from)

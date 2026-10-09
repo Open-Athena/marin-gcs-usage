@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from .digest import AVATAR_REV, GIB, MINUS, TIB, DigestConfig, Reply, Unit, _dlink, _pct, _pct_val, _span, _tb, deg, load_window, scan_ts
+from .digest import AVATAR_REV, GIB, MINUS, TIB, DigestConfig, Reply, Unit, _dlink, _pct, _pct_val, _span, _tb, deg, load_window, scan_slugs, scan_ts
 
 
 def _usd(v: float) -> str:
@@ -39,6 +39,8 @@ class Scan:
     arch: float
     # the previous scan's id (the delta's baseline); None only if no prior scan
     prev: str | None = None
+    # its canonical `?d=` slug (`scan_slugs`); None: its minute
+    slug: str | None = field(default=None, compare=False)
 
     @property
     def day(self) -> dt.date:
@@ -49,13 +51,15 @@ def _cost(class_bytes: dict, prices: dict[str, float]) -> float:
     return sum(class_bytes.get(c, 0) / GIB * prices[c] for c in prices)
 
 
-def rows_from_meta(dated_meta: list[tuple[str, dict]], prices: dict[str, float]) -> list[Scan]:
-    """Build ``Scan`` rows from ``(date, meta.json)`` pairs in date order.
+def rows_from_meta(dated_meta: list[tuple[str, dict]], prices: dict[str, float], now: dt.datetime | None = None) -> list[Scan]:
+    """Build ``Scan`` rows from ``(date, meta.json)`` pairs in date order, each with its canonical slug
+    (`scan_slugs`, as of ``now``).
 
     The first pair seeds the delta for the second; callers pass one scan of
     lead-in before the window they want, then slice it off."""
     out: list[Scan] = []
     ptb = pcost = prev = None
+    slugs = scan_slugs(dated_meta, now)
     for date, m in dated_meta:
         tb = m["total_bytes"] / TIB
         cb = m["class_bytes"]
@@ -72,6 +76,7 @@ def rows_from_meta(dated_meta: list[tuple[str, dict]], prices: dict[str, float])
                 cold=round(cb.get("3", 0) / TIB, 1),
                 arch=round(cb.get("4", 0) / TIB, 1),
                 prev=prev,
+                slug=slugs[date],
             )
         )
         ptb, pcost, prev = tb, cost, date
@@ -115,7 +120,7 @@ def op_body(rows: list[Scan], month: dt.date, plot_url: str | None, cfg: DigestC
         # size-over-time chart, where the week shows as the highlighted window
         # with the Diff section right below it
         lines.append(
-            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_dlink(end.date)}-{_span(b_at, scan_ts(end.date))}#over-time){partial} — "
+            f":arrow_deg{deg(wpct)}: [wk of {mon.month}/{mon.day}]({site_url}/?d={_dlink(end.date, end.slug)}-{_span(b_at, scan_ts(end.date))}#over-time){partial} — "
             f"**{end.tb:,.0f} TB** ({_tb(wdtb)}, {_pct(wdtb, end.tb)}%) · ${end.cost:,}/mo ({_usd(end.cost - b_cost)})"
         )
         prev_end = end
@@ -153,7 +158,7 @@ def reply(r: Scan, cfg: DigestConfig, platform: str = "slack") -> Reply:
     # ↗︎ = NE arrow + text-presentation selector: renders as a font
     # glyph in link colour (bare ↗ gets emoji-ized by Slack into the
     # cartoonish :arrow_upper_right:)
-    url = f"{cfg.site_url}/?d={_dlink(r.date)}#diff"
+    url = f"{cfg.site_url}/?d={_dlink(r.date, r.slug)}#diff"
     link = f"· [view →]({url})" if platform == "discord" else f"[↗︎]({url})"
     body = f"${r.cost:,}/mo ({_usd(dcost)}) {link}"
     # project the scan's Δ% over its real interval to a weekly rate (a day: ×7)

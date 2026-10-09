@@ -1,7 +1,7 @@
 import { Explain } from './Help'
 import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query'
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { MdLayers } from 'react-icons/md'
 import { useActions } from 'use-kbd'
 import { stringParam, useUrlState } from 'use-prms'
@@ -137,7 +137,9 @@ function AppContent() {
   // one per configured store under its path; the primary is the default).
   // Every data request goes through `sfetch`, which carries `store=<key>` for
   // a secondary store and is the global fetch for the primary.
-  const { pathname, search, hash } = useLocation()
+  const location = useLocation()
+  const { pathname, search } = location
+  const navType = useNavigationType()
   const navigate = useNavigate()
   const store = useStore()
   const sfetch = useStoreFetch()
@@ -150,8 +152,8 @@ function AppContent() {
     q.delete('path')
     const base = store.path === '/' ? '' : store.path
     const rest = q.toString()
-    navigate({ pathname: legacy ? `${base}/${legacy.replace(/^\/+|\/+$/g, '')}` : store.path, search: rest ? `?${rest}` : '', hash }, { replace: true })
-  }, [search, hash, navigate, store])
+    navigate({ pathname: legacy ? `${base}/${legacy.replace(/^\/+|\/+$/g, '')}` : store.path, search: rest ? `?${rest}` : '', hash: window.location.hash }, { replace: true })
+  }, [search, navigate, store])
   const canAssign = useCanAssign()
   const canStage = useCanStage()
   const ident = useIdentity()
@@ -322,7 +324,7 @@ function AppContent() {
     else if (l === 'unclaimed' || l === 'communal') sp.set('o', '')
     else if (l === 'user' || l === 'mine') sp.set('o', lu ? shortUserKey(canonId(lu)) : 'me')
     if (u && !sp.has('o')) sp.set('o', shortUserKey(canonId(u)))
-    navigate({ pathname, search: `?${bareEmpty(sp.toString(), 'o')}`, hash }, { replace: true })
+    navigate({ pathname, search: `?${bareEmpty(sp.toString(), 'o')}`, hash: window.location.hash }, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search])
   const metaQ = useQuery(scanQuery<Meta>('meta'))
@@ -611,9 +613,10 @@ function AppContent() {
     return d && { partialReason: d.partialReason, approximateReason: d.approximateReason }
   }, [fq, subStamp]) // eslint-disable-line react-hooks/exhaustive-deps
   const meta: Meta | null = metaQ.data ?? null
-  // Section `#hash` both ways (deep link in, scroll-spy out). Re-armed as the
-  // map, meta and scans land (sections mount off different queries).
-  useHashSpy({ ids: SECTION_IDS, hash, deps: [mapTree, meta, scans], legacy: LEGACY_ANCHORS, offset: topbarH })
+  // Section `#hash` both ways (deep link in, scroll-spy out) and the scroll
+  // position across navigation. A pending deep link is re-armed as the map,
+  // meta and scans land (sections mount off different queries).
+  useHashSpy({ ids: SECTION_IDS, location, navType, deps: [mapTree, meta, scans], legacy: LEGACY_ANCHORS, offset: topbarH })
   const [lens, setLens] = useState(false)  // treemap storage-class lens (hatch by cold fraction)
   const { fmtBytes } = useUnits()
   // The treemap's drill path now lives in the URL *path* (below the store's own
@@ -672,17 +675,20 @@ function AppContent() {
     [ageBaseQ.data],
   )
   // A drill leaves any opened object behind (`?open=` names a child of the
-  // drilled directory).
+  // drilled directory), and the section hash: a new path starts at the top
+  // (`useHashSpy`). Never copy the router's `hash` into a navigation — the spy
+  // rewrites the URL's behind the router's back, so it's whatever section was
+  // last *linked*, not the one in view (a crumb click warped to it).
   const drillTo = (segs: string[]) => {
     const q = new URLSearchParams(search)
     q.delete('open')
-    navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search: q.size ? `?${q}` : '', hash })
+    navigate({ pathname: segs.length ? `${storeBase}/${segs.join('/')}` : store.path, search: q.size ? `?${q}` : '' })
   }
   // `?open=<name>`: an object under the drilled directory, shown in the leaf
   // viewer below the map (objects.ts `openHref`). Opening pushes history, so
   // Back closes it.
   const [openP, setOpenP] = useUrlState('open', stringParam(), true)
-  const openObject = (segs: string[]) => navigate({ ...openHref(store.path, segs, search), hash })
+  const openObject = (segs: string[]) => navigate(openHref(store.path, segs, search))
   // Read-recency lens domain: the access-log observation window (meta), not
   // the tree's own min/max — "no reads" is only meaningful vs when logging began.
   const readRange = useMemo((): DateRange | null =>
@@ -861,11 +867,9 @@ function AppContent() {
   // render defeated every memo keyed on it).
   const tblSegs = useMemo(() => mapPath?.slice(1).map(n => n.n) ?? [], [mapPath])
   const onMapPath = (p: TreeNode[]) => drillTo(p.slice(1).map(n => n.n))
-  // Worklist rows / children table → drill the map to a prefix and show it.
-  const openPath = (segs: string[]) => {
-    drillTo(segs)
-    document.querySelector('.dt-treemap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
+  // Worklist rows / children table → drill the map to a prefix (the new path
+  // starts at the top, where the map is).
+  const openPath = (segs: string[]) => drillTo(segs)
   // A server user-lens map is already just that user's bytes — nothing to dim.
   const effHl: Highlight | null = activeLens ? null : hl
 
@@ -1312,7 +1316,7 @@ function AppContent() {
           )}
         </>
       ) : miss ? (
-        <NoScanMatch miss={miss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, true, times)} />
+        <NoScanMatch miss={miss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, true, times, scans)} />
       ) : rootErr && /^(409|413)/.test(rootErr.message) ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
@@ -1358,7 +1362,7 @@ function AppContent() {
 
       {startMiss && (
         <section id="diff">
-          <NoScanMatch what="diff start" miss={startMiss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false, times)} />
+          <NoScanMatch what="diff start" miss={startMiss} fmt={fmtS} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan, false, times, scans)} />
         </section>
       )}
       {asof && diffPrev && (

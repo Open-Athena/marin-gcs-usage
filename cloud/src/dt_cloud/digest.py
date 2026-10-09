@@ -38,7 +38,7 @@ from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from .scan_id import META_PATH, scan_slug, scan_time
+from .scan_id import META_PATH, min_slug, scan_slug, scan_time, start_key, times_needed
 
 TIB = 1024**4
 GIB = 1024**3
@@ -305,9 +305,24 @@ def _md(date: str) -> str:
     return f"{d.month}/{d.day}"
 
 
-# A scan id's UTC instant, and its `?d=` slug: `dt_cloud.scan_id`'s, the one definition.
+# A scan id's UTC instant: `dt_cloud.scan_id`'s, the one definition.
 scan_ts = scan_time
-_dlink = scan_slug
+
+
+def _dlink(scan: str, slug: str | None = None) -> str:
+    """A scan's `?d=` slug in a link: its canonical one (`slug`, from `scan_slugs`), else its minute (`scan_slug`)."""
+    return slug or scan_slug(scan)
+
+
+def scan_slugs(dated_meta: list[tuple[str, dict]], now: dt.datetime | None = None) -> dict[str, str]:
+    """Each scan's canonical `?d=` slug among ``dated_meta``'s scans (`min_slug`: ``261008``, ``26100904``,
+    ``2610091236``), as the site writes it: a date-only scan sharing its day keyed by its ``meta.started``
+    (`start_key`; only those, `times_needed`, as the site reads them). ``dated_meta`` must hold every scan of each
+    day it touches (`load_window`'s lead is a whole day). ``now``: default the current time."""
+    scans = [s for s, _ in dated_meta]
+    meta = dict(dated_meta)
+    times = {s: k for s in times_needed(scans) if (k := start_key(s, meta[s].get("started")))}
+    return {s: min_slug(s, scans, times, now) for s in scans}
 
 
 def _span(a: dt.datetime, b: dt.datetime) -> str:
