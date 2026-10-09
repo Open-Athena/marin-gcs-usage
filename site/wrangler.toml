@@ -120,6 +120,7 @@ QUERY_BOX_DATED_NAMES = "1"
 QUERY_BOX_HOT_L1_URL = "https://gcs-query.oa.dev"
 STATIC_BENCH = "1"   # /api/static-bench: R2 read timings for the static name-search prototype
 FILTER_STATIC = "1"   # the map's filter (`q=`): a single literal's match roots from the static name index on R2 (INDEX_R2; `_lib/staticFilter.ts`), exact on every scan of its generation
+FILTER_DETAILS_MS = "300"   # a static filter view waits this long past phase 2 for its roots' own rows (kind, ages, classes), then answers without them
 NAME_SUMMARY_STATIC = "1"   # /api/name-summary(-registry): every dated request from the static name index on R2 (INDEX_R2: suffix shards + catalog); unset = the query box (fallback)
 STORE = "gcs"
 AUTH_MODE = "app"

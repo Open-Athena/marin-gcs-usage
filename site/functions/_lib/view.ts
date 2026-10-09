@@ -807,21 +807,31 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // One read per root depth, each at that depth's own threshold (rows are re-tested per root
       // below, so the kept set is the one-read answer's): one read at the deepest root's threshold
       // took every shallower root's subtree at a fraction of its own — `tomat`'s four depth-2 dirs at
-      // half their threshold for one depth-3 root. Heaviest first, in turn, so a group two depths
-      // share is fetched once (the reader's group cache).
+      // half their threshold for one depth-3 root. In parallel: run in turn, roots spread over many
+      // depths (`00241`) paid each depth's span plans and fetches in series.
       const byDepth = new Map<number, { path: string; depth: number }[]>()
       for (const r of readRoots) byDepth.set(r.depth, [...(byDepth.get(r.depth) ?? []), r])
       const groups = [...byDepth.values()].sort((x, y) => y.reduce((n, r) => n + netRoot(r.path).b, 0) - x.reduce((n, r) => n + netRoot(r.path).b, 0))
-      for (const rs of groups) {
+      const reads = await Promise.all(groups.map(rs => {
         const nd = rootHit ? nDesc : rs.reduce<number | null>((n, r) => { const d = p1!.all.get(r.path)?.nd; return n == null || d == null ? null : n + d }, 0)
-        const got = await readSubtree(env, date, regionIdx, rootRects(rs).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q), rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr)
-        rows2.push(...got.rows)
-        variant ??= got.variant
-      }
+        return readSubtree(env, date, regionIdx, rootRects(rs).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q), rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr)
+      }))
+      for (const got of reads) { rows2.push(...got.rows); variant ??= got.variant }
       if (isStore(regionIdx) && variant) tierName = variant
     }
     tr?.('rows', performance.now() - t0, variant)
-    const detailRows = await details
+    // The lookups ride beside phase 2 and may wait `FILTER_DETAILS_MS` past it, no longer: they are
+    // display fields (kind, ages, classes) and their span plans cost seconds where roots spread over
+    // many depths (`00241`: ~8.5 s for 48 roots, against 6 s for phase 2).
+    const budget = Number(env.FILTER_DETAILS_MS) || Infinity
+    const late = Symbol('late')
+    const detailRows = budget === Infinity ? await details
+      : await Promise.race([details, new Promise<typeof late>(r => setTimeout(() => r(late), budget))]).then(x => {
+        if (x !== late) return x
+        tr?.('details', performance.now() - t0, 'late')
+        details.catch(() => {})
+        return [] as Row[]
+      })
     if (detailRows.length) {
       const d = aggregate(detailRows)
       for (const [r, m] of d.mine) {
@@ -1048,7 +1058,7 @@ async function readRootAllRows(env: Env, date: string, path: string, dP: number)
  * manifest-valued leaves. Two span queries' worth of rects. */
 const REGION_READS = 24
 /** Static match roots whose own rows (kind, ages, classes) are looked up per view, heaviest first. */
-const ROOT_DETAILS = 240
+const ROOT_DETAILS = 48
 
 const parentOf = (p: string): string => {
   const cut = p.lastIndexOf('/')

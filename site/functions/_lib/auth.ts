@@ -73,6 +73,9 @@ export interface Env {
   /** `1`: a single-literal `q=` is answered from the static name index on `INDEX_R2`
    *  (`_lib/staticFilter.ts`) on every scan of its generation. */
   FILTER_STATIC?: string
+  /** With `FILTER_STATIC`: how long (ms) a filtered view waits past its phase-2 read for the static
+   *  roots' own rows (kind, ages, classes) before answering without them; unset = until they land. */
+  FILTER_DETAILS_MS?: string
   /** Worker-served indexes (the static name index's suffix shards and catalog). */
   INDEX_R2?: R2Bucket
   STORE_ACCESS_KEY_ID?: string
