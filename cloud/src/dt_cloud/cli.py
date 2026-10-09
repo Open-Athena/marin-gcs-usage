@@ -3655,6 +3655,18 @@ def index_dir_cmd(store: str, variant: str, date: str) -> None:
     print(d)
 
 
+@main.command("cost-labels")
+@option("-c", "--component", help="This job's `component` label (scan, listing, static-names, sweep, …)")
+@option("-j", "--json", "as_json", is_flag=True, help="A JSON object (default: `k=v,…`, for gcloud's `--labels` / `--update-labels`)")
+def cost_labels_cmd(component: str | None, as_json: bool) -> None:
+    """Print the cost-attribution labels: `$DISKY_LABELS` plus `component` (empty when unset).
+
+    For shell submitters and `gcloud … --update-labels` (spec specs/cost-labels.md)."""
+    from .cost_labels import render
+
+    print(render(component, "json" if as_json else "gcloud"))
+
+
 @main.command("labels")
 @option("-a", "--attribution", "attributions", multiple=True, help="Attribution parquet(s) (as `path-index -a`)")
 @option("-i", "--identities", "identities_path", envvar=IDENTITIES_ENV, default=None, help=f"identities.yaml path or URL, needed with -a (${IDENTITIES_ENV}): the deployment's roster, kept outside the repo")

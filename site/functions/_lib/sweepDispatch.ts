@@ -23,6 +23,7 @@
 // the data bucket).
 import type { D1Database } from '@cloudflare/workers-types'
 import { type BatchConfig, batchConfig, notConfigured } from './batchConfig.js'
+import { labelBatchSpec } from './costLabels.js'
 import { type DispatchErr, type DispatchReq, type ExecEnv, type Executor, type Prepared, refuse } from './dispatch.js'
 import { batchJobsUrl, batchRegionFor, gcpToken } from './gcp.js'
 import { bucketOf, digestLines, NO_SHAPE, type PlanBucketsSnapshot, prefixShape, snapshotPlanBuckets } from './plans.js'
@@ -94,7 +95,7 @@ export const undoScript = ({ bulk = false }: { bulk?: boolean } = {}): string =>
 ].join('\n')
 
 export interface SweepJobSpec {
-  cfg: Pick<BatchConfig, 'project' | 'image' | 'cfAccountId' | 'dataBucket' | 'd1DbId' | 'd1DbName'>
+  cfg: Pick<BatchConfig, 'project' | 'image' | 'cfAccountId' | 'dataBucket' | 'd1DbId' | 'd1DbName' | 'labels'>
   /** The service account the job runs as (`JOB_SA`). */
   jobSa: string
   region: string
@@ -105,14 +106,16 @@ export interface SweepJobSpec {
   /** Per-job variables, ahead of the shared ones. */
   env: Record<string, string>
   machine?: SweepMachine
+  /** The jobs' cost-attribution `component` label (with `cfg.labels`). */
+  component?: string
 }
 
 /** The Batch job spec every gcs executor job shares (a sweep run, an undo):
  * the executor image running `bash -c <script>` as the job account, in the
  * region of its buckets, with the D1 + site credentials from Secret Manager. */
-export const sweepJobSpec = ({ cfg, jobSa, region, script, actor, siteUrl, env, machine = DEFAULT_SWEEP_MACHINE }: SweepJobSpec): unknown => {
+export const sweepJobSpec = ({ cfg, jobSa, region, script, actor, siteUrl, env, machine = DEFAULT_SWEEP_MACHINE, component = 'sweep' }: SweepJobSpec): unknown => {
   const SECRET = (name: string) => `projects/${cfg.project}/secrets/${name}/versions/latest`
-  return {
+  return labelBatchSpec({
     taskGroups: [{
       taskCount: 1,
       taskSpec: {
@@ -149,7 +152,7 @@ export const sweepJobSpec = ({ cfg, jobSa, region, script, actor, siteUrl, env, 
       location: { allowedLocations: [`regions/${region}`] },
     },
     logsPolicy: { destination: 'CLOUD_LOGGING' },
-  }
+  }, cfg.labels, component)
 }
 
 /** Submit a gcs executor job in `region`; null on success, else the refusal
