@@ -95,6 +95,20 @@ secrets = Secrets(
     existing=True,
 )
 
+# The static name index's R2 key (bucket `oa-gcs-usage-index` only, Object Read & Write): the daily
+# static-names chain's `r2-copy` reads it on Batch (`secretVariables`, `job/static-daily.sh`).
+static_secrets = Secrets(
+    "gcs-static-secrets",
+    project=project,
+    secrets={
+        "gcs-static-index-r2-key-id": {"app": "gcs-usage", "role": "static-index-r2"},
+        "gcs-static-index-r2-secret": {"app": "gcs-usage", "role": "static-index-r2"},
+    },
+    accessor=job.member,
+    accessor_email=job.email_literal,
+    adopt=adopt,
+)
+
 daily = BatchCron(
     "gcs-usage-snapshot-daily",
     project=project,
