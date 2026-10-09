@@ -88,3 +88,16 @@ describe('deselect: a folder\'s worth or one item, and what each action then sen
     ])
   })
 })
+
+describe('the matches are listed on demand', () => {
+  const bar = (p: Record<string, unknown>) => text(renderToStaticMarkup(createElement(BulkBar, { scheme: 'gs://', query: 'tomat', canAssign: true, canStage: true, ...p })))
+  it('not yet asked for: one button that asks (no count, no actions); asked for: the listing, then the bar', () => {
+    expect([bar({ onWant: () => {} }), bar({ loading: true }), bar({ cover: cover() }).slice(0, 2), bar({ onWant: () => {}, canAssign: false, canStage: false })]).toEqual([
+      ['act on the matches…'],
+      ['listing the matches…'],
+      ['5 matches → 1 folder, 3 files · 350 B', 'review'],
+      [],
+    ])
+  })
+})
+

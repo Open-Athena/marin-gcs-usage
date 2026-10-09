@@ -129,7 +129,14 @@ export interface ViewOpts {
   detailsWait?: number
   /** With `query`: phase 2's time budget, ms (default `FILTER_PHASE2_MS`, env or constant). */
   phase2Ms?: number
+  /** With `query`: the request's phase-2 gate (`Phase2Gate`), shared by every read of one request. */
+  phase2Gate?: Phase2Gate
 }
+
+/** One request's phase 2 across its reads (a diff's two sides, its re-read at the shared floor): once a round
+ *  reads nothing because its time budget ran out (`dead`), the request's later rounds skip phase 2 outright —
+ *  its D1 span plans were the whole cost and drew nothing (gcs 10-09 `nemotron`: `read:0`, 48 of 48 late). */
+export interface Phase2Gate { dead: boolean }
 
 export interface View {
   tree: ViewNode
@@ -167,7 +174,8 @@ export interface View {
   firstPaint?: boolean
   /** With `query`: phase 2 left `skipped` of the roots big enough to subdivide undivided — drawn as one
    *  exact tile each — past its read or time budget (`reason`; `late` of them past the time budget, which a
-   *  retry may not hit: such an answer is served but not cached); `read` were subdivided. Absent: every
+   *  retry may not hit: such an answer is kept only `PARTIAL_TTL` s, colo-only, and says `budgetCut`);
+   *  `read` were subdivided. Absent: every
    *  such root was. Totals are exact regardless. */
   interiors?: { read: number; skipped: number; reason: string; late?: number }
   /** With `query`: a read budget stopped the search — some matches may be
@@ -963,7 +971,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
       try {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
-        return (await readAsks(h, want.map(r => ({ depth: depthF.get(r)!, path: r })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: DETAIL_GROUPS, stop: () => detailsOff })).rows
+        return (await readAsks(h, want.map(r => ({ depth: depthF.get(r)!, path: r })), r => asks.has(`${r.depth}\0${r.path}`), { maxGroups: DETAIL_GROUPS, stop: () => detailsOff, rememberWide: true })).rows
       } catch (e) {
         if (!/too wide/.test(String((e as Error).message ?? e))) throw e
         tr?.('details', 0, 'too wide')
@@ -973,7 +981,11 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     let rows2: Row[] = []
     let variant: string | undefined
     let interiors: Read['interiors']
-    if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic && readRoots.length) {
+    if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic && readRoots.length && o.phase2Gate?.dead) {
+      // An earlier round of this request read nothing in its time: this one would too.
+      interiors = { read: 0, skipped: readRoots.length, reason: `${readRoots.length} past the time budget`, late: readRoots.length }
+      tr?.('interiors', 0, `gated ${readRoots.length}`)
+    } else if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic && readRoots.length) {
       // One read per root depth, each at that depth's own threshold (rows are re-tested per root
       // below, so the kept set is the one-read answer's): one read at the deepest root's threshold
       // took every shallower root's subtree at a fraction of its own — `tomat`'s four depth-2 dirs at
@@ -1031,6 +1043,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const wide: { path: string; depth: number }[][] = []
       plans.forEach((pl, i) => { if (!admit(groups[i], pl)) wide.push(groups[i]) })
       for (const rs of wide) {
+        // Past the time budget no solo plan can land: none is started (each costs D1 span queries).
+        if (over) { skipped.late += rs.length; continue }
         const each = rs.slice(0, rs.length > 1 ? FILTER_SPLIT_ROOTS : 0)
         const solo = await Promise.all(each.map(r => planFor([r])))
         each.forEach((r, i) => { if (!admit([r], solo[i])) skipped.budget++ })
@@ -1043,6 +1057,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         else { rows2.push(...got); variant ??= x.variant }
       }
       if (timer != null) clearTimeout(timer)
+      if (o.phase2Gate && skipped.late && !rows2.length) o.phase2Gate.dead = true
       const left = skipped.budget + skipped.wide + skipped.late
       if (left) {
         const why = [skipped.budget && `${skipped.budget} over the read budget`, skipped.wide && `${skipped.wide} too wide`, skipped.late && `${skipped.late} past the time budget`].filter(Boolean).join(', ')
@@ -1758,6 +1773,9 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   // taken, none waited for (with a deployment's finite `FILTER_DETAILS_MS`; unset waits, as views do).
   // Its phase 2 runs both sides at once, then the walk's lookups (`FILTER_WALK_MS`): a smaller share each.
   const wait = { ...(Number(env.FILTER_DETAILS_MS) ? { detailsWait: 0 } : {}), phase2Ms: Math.min(Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS, FILTER_DIFF_PHASE2_MS) }
+  // Every read of this diff shares one phase-2 gate: a side whose round read nothing in time stops the
+  // re-read at the shared floor from paying its budget again.
+  const gate: Phase2Gate = o.phase2Gate ?? { dead: false }
   if (query && ra && rb && !o.summary && o.threshold == null) {
     const [ta, tb] = await Promise.all([
       readView(env, { ...o, date: from, maxDepth: 0, floorOnly: true }, {}),
@@ -1767,15 +1785,15 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     tr?.('floors', performance.now() - t0)
   }
   let [va, vb] = await Promise.all([
-    ra ? readView(env, { ...o, date: from, ...wait, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
-    rb ? readView(env, { ...o, date: to, ...wait, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
+    ra ? readView(env, { ...o, date: from, ...wait, phase2Gate: gate, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
+    rb ? readView(env, { ...o, date: to, ...wait, phase2Gate: gate, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
   ])
   // Without the pre-pass (a summary, or one side without matches then), a side whose floor differs is
   // re-read at the larger.
   if (query && va && vb && va.threshold !== vb.threshold) {
     const shared = Math.max(va.threshold, vb.threshold)
-    if (va.threshold < shared) va = await readView(env, { ...o, date: from, threshold: shared, ...cap }, cov)
-    else vb = await readView(env, { ...o, date: to, threshold: shared, ...cap }, cov)
+    if (va.threshold < shared) va = await readView(env, { ...o, date: from, threshold: shared, phase2Gate: gate, ...cap }, cov)
+    else vb = await readView(env, { ...o, date: to, threshold: shared, phase2Gate: gate, ...cap }, cov)
   }
   tr?.('views', performance.now() - t0)
   // Nothing in scope on either side (a filter with no matches, an empty owner
