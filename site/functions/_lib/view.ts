@@ -41,9 +41,9 @@ import { shared } from './shared.js'
 import { storeKey } from './stores.js'
 import { extrasFor } from './extras.js'
 import { loadRegistry } from './identity.js'
-import { covers, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
+import { covers, declined, type Hit, type Rollup, rollupAt, staticFilterStore, staticKey } from './staticFilter.js'
 import { scanAt } from './staticNames.js'
-import { FilterRejected, indexedOnly, reject } from './indexedOnly.js'
+import { FilterRejected, indexedOnly } from './indexedOnly.js'
 
 export const MIN_AREA_DEFAULT = 12 // px² of the smallest legible cell (~3×4)
 // Each nesting level below the query root loses canvas to chrome (title bars,
@@ -791,13 +791,14 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // generation, exact, from one cached suffix-range read — no search sidecars, no thresholded walk.
       const sfs = !lens && !classes ? staticFilterStore(env) : null
       const skey = sfs ? await staticKey(sfs, pq, [date]) : null
-      let shits = skey ? await sfs!.source.hits(skey, path) : null
+      const raw = skey ? await sfs!.source.hits(skey, path) : null
+      let shits = raw
       // A heavy literal's drilldown answers its base generation's scans only, and its rollups know no
       // owners: past either, the view reads as before.
       const off = shits && !covers(shits, [date]) ? 'after the drill base' : shits?.rollup && owner ? 'rollup: no owners' : null
       if (off) shits = null
       // An indexed-only deployment never walks the path store for a filter (`indexedOnly.ts`).
-      if (!shits && indexedOnly(env)) throw new FilterRejected(reject('scan-not-indexed'))
+      if (!shits && indexedOnly(env)) throw new FilterRejected(declined(sfs, skey, raw))
       tr?.('static', performance.now() - t0, shits ? `${skey} ${shits.rollup ? `rollup ${shits.rollup.cells.length}` : shits.hits.length}` : skey ? `declined${off ? ` (${off})` : ''}` : undefined)
       if (shits?.rollup) {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)

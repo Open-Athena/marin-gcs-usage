@@ -31,7 +31,7 @@ import { Treemap } from './Treemap'
 import type { DateRange, Highlight, ShadeMode } from './Treemap'
 import { collectFlagged, DEFAULT_SYNTAX, inMatchRoots, SYNTAXES, syntaxById } from './filterTree'
 import { QueryHelpTip } from './QueryHelp'
-import { apiErrorMessage, INDEXED_SYNTAX, useFilterCaps } from './filterCaps'
+import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
 import { REJECT_MESSAGES, rejectQuery } from '../functions/_lib/indexedOnly'
 import { FilterFlags, FilterNote, matchedNote } from './FilterNote'
 import { BulkBar } from './BulkBar'
@@ -41,7 +41,7 @@ import { MultiSelect } from './MultiSelect'
 import { SiteNav, topbarH } from './SiteNav'
 import { canvasWidth } from './canvas'
 import type { MenuEntry } from './SiteNav'
-import { DAY, encodeScan, fmtScan, fromMiss, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
+import { DAY, encodeScan, fmtScan, fromMiss, pendingNote, latestScan, nearestScan, noScansYet, scanTime, useScan } from './scan'
 import { hrefWithScan, NoScanMatch } from './NoScanMatch'
 import { selOf } from './scanSlug'
 import { SizeOverTime } from './SizeOverTime'
@@ -171,7 +171,12 @@ function AppContent() {
   // Scan selection (`?d=YYMMDD`) + the polling scan list, shared with /users
   // and /user/:id via useScan (specs/done/scan-param-all-pages.md). Absent `?d` is
   // a first-class "latest", so a parked tab follows new scans.
-  const { asof, miss, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store)
+  // A filtered view with no `?d=` on an indexed-only deployment opens on the newest scan the static
+  // index covers (a just-published scan isn't searchable until the index appends it), and says so.
+  const { indexedOnly: indexedOnly0 } = useFilterCaps()
+  const [fFloat] = useUrlState('f', stringParam())
+  const indexedScans = useIndexedScans(indexedOnly0 && !!fFloat)
+  const { asof, miss, pending, scans, dMatches, dP, setDP, span, setSpan, from, setFrom, setEndPin, setRange, scansQ } = useScan(store, indexedOnly0 && fFloat ? indexedScans : undefined)
   const rulesQ = useRules()
   const rules: Rules | null = rulesQ.data ?? null
   // Ledger actions record which scan the actor was viewing.
@@ -402,7 +407,7 @@ function AppContent() {
           `/api/subtree?cv=${API_CV}&date=${asof}&path=${encodeURIComponent(p)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}${fq ? '&full=1' : ''}`,
           { credentials: 'include', signal },
         ))
-        if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
+        if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
         const j = await r.json() as { tree: TreeNode; tier?: string; matches?: string[]; matched?: { path: string; b: number; o: number }[]; matchesTotal?: number; matchesTruncated?: boolean; threshold?: number; partialReason?: string; approximateReason?: string }
         pf.decoded()
         return j
@@ -717,7 +722,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&depth=1`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
+      if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -745,7 +750,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}`,
         { credentials: 'include', signal },
       ))
-      if (!r.ok) { pf.fail(); throw new Error(apiErrorMessage(r.status, await r.text())) }
+      if (!r.ok) { pf.fail(); throw apiError(r.status, await r.text()) }
       const j = await r.json() as DiffData
       // No rows: the section says "no changes" and the map never mounts.
       if (j.rows.length) pf.decoded(); else pf.empty()
@@ -764,7 +769,7 @@ function AppContent() {
         `/api/diff?cv=${API_CV}&from=${diffPrev}&to=${asof}&path=${encodeURIComponent(graftPath)}&w=${canW}&h=${Math.round(canW * 0.6)}${scopeQs}&summary=1`,
         { credentials: 'include', signal },
       )
-      if (!r.ok) throw new Error(apiErrorMessage(r.status, await r.text()))
+      if (!r.ok) throw apiError(r.status, await r.text())
       return r.json() as Promise<DiffData>
     },
   })
@@ -1163,6 +1168,7 @@ function AppContent() {
 
       {/* Ambiguous `?d`: render the newest match (a best guess beats a dead
           end) with a strip listing every candidate to pin one. */}
+      {asof && pending.length > 0 && <p className="tab-note pending-index" role="status">{pendingNote(asof, pending)}</p>}
       {dMatches.length > 1 && (
         <p className="disambig">
           <code>?d={encodeScan(dP) ?? dP}</code> matches {dMatches.length} scans — showing the newest; pin one:
@@ -1279,6 +1285,9 @@ function AppContent() {
         </>
       ) : miss ? (
         <NoScanMatch miss={miss} hrefFor={scan => hrefWithScan(pathname, search, selOf(new URLSearchParams(search)), scan)} />
+      ) : refusalOf(rootErr) ? (
+        // The filter's refusal (indexed-only): its reason, inline — not a failed view.
+        <p className="loading filter-refused" role="status">{refusalOf(rootErr)!.reason}</p>
       ) : rootErr ? (
         <p className="loading">
           {rootErr.message.startsWith('409') ? 'no per-user index for this scan — pick a newer scan, or clear the user'
@@ -1388,6 +1397,9 @@ function AppContent() {
               <>
                 {diffStale && <span className="loading"> · aligning the rows…</span>}
               </>
+            ) : refusalOf(diffErr) && !diffStale ? (
+              // The filter's refusal: its reason, inline — no status, nothing to retry.
+              <span className="tab-note filter-refused"> · {refusalOf(diffErr)!.reason}</span>
             ) : diffErr && !diffStale ? (
               <span className="tab-note">
                 {' '}· {diffErr.message.startsWith('404')

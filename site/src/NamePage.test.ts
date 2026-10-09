@@ -3,9 +3,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { NamePage, catalogDomain, nameUrlParams, scanList, staticDomain } from './NamePage'
+import { NamePage, catalogDomain, nameScanParams, nameUrlParams, scanList, staticDomain } from './NamePage'
 import { nameDiff, nameFixture } from './nameTestFixtures'
-import { parseName, parseNameRegistry } from './nameModel'
+import { nameRequest, parseName, parseNameRegistry } from './nameModel'
+import { selOf } from './scanSlug'
 import { fmtScan } from './scan'
 import { SUB_DAILY_SCANS, dailyNameFixture, datedNameRegistry, fiveBucketFixture, fiveBucketRegistry, legacyNameRegistry, mixedDatedNameDiff } from './datedNameTestFixtures'
 
@@ -104,7 +105,7 @@ it('unknown dates remain explicit unavailable selections rather than silently ch
   try {
     const html = render(client, '/names?date=2026-10-07&name=datakit')
     expect(html.match(/<select name="date">(.*?)<\/select>/)?.[1]).toBe('<option value="2026-10-07" selected="">2026-10-07 (unavailable)</option><option>2026-10-04</option><option>2026-10-05</option><option>2026-10-06</option>')
-    expect(misses(html)).toEqual([['No scan matches 261007. Nearest: ← 10/6', [['/names?name=datakit&d=261006', '← 10/6']]]])
+    expect(misses(html)).toEqual([['No scan matches 261007. Nearest: ← 10/6', [['/names?name=datakit&d=2610060000', '← 10/6']]]])
     expect([...html.matchAll(/<p role="alert">(.*?)<\/p>/g)].map(([, text]) => text)).toEqual([])
     expect(roots).toEqual([])
   } finally { client.clear() }
@@ -200,13 +201,13 @@ describe('two scans on one day: ?d= addresses each, a day picks the later', () =
   })
   it.each([
     // an hour with no scan, between the 10/9 scans (UTC; display is viewer-local)
-    ['/names?d=26100903&name=datakit', 'No scan matches 26100903. Nearest: ← $A · $B →', [['/names?d=261008&name=datakit', '← $A'], ['/names?d=2610090601&name=datakit', '$B →']]],
+    ['/names?d=26100903&name=datakit', 'No scan matches 26100903. Nearest: ← $A · $B →', [['/names?d=2610080000&name=datakit', '← $A'], ['/names?d=2610090601&name=datakit', '$B →']]],
     // a day after every scan: only an earlier neighbour
     ['/names?d=261010&name=datakit', 'No scan matches 261010. Nearest: ← $C', [['/names?d=2610091802&name=datakit', '← $C']]],
     // unparseable: nothing to offer
     ['/names?d=junk&name=datakit', 'No scan matches junk. No scan to offer instead.', []],
     // a baseline naming no earlier scan
-    ['/names?d=2610091802-261007&name=datakit', 'No baseline scan matches 261007. Nearest: $A →', [['/names?d=2610091802-261008&name=datakit', '$A →']]],
+    ['/names?d=2610091802-261007&name=datakit', 'No baseline scan matches 261007. Nearest: $A →', [['/names?d=2610091802-2610080000&name=datakit', '$A →']]],
   ])('%s is a miss with links to the nearest scans, and nothing answered', (path, text, hrefs) => {
     const client = seeded()
     const lbl = { $A: fmtScan('2026-10-08'), $B: fmtScan('2026-10-09T0601'), $C: fmtScan('2026-10-09T1802') }
@@ -227,5 +228,19 @@ it('a /names search writes the canonical ?d= (latest floats, as on the map)', ()
     write('name=gof&date=2026-10-09T0601'),
     write('name=gof&date=2026-10-09T1802&from=2026-10-09T0601'),
     write('name=gof&date=2026-10-08&from='),
-  ]).toEqual(['name=gof', 'd=2610090601&name=gof', 'd=-2610090601&name=gof', 'd=261008&name=gof'])
+  ]).toEqual(['name=gof', 'd=2610090601&name=gof', 'd=-2610090601&name=gof', 'd=2610080000&name=gof'])
+})
+
+it('every registry scan, date-only or timed on the same day, round-trips through a /names search URL to itself', () => {
+  const DAY2 = ['2026-10-08', '2026-10-09', '2026-10-09T1236']
+  const pick = (date: string, from = '') => {
+    const url = nameUrlParams(new URLSearchParams({ name: 'gof', date, from }), DAY2)
+    return [url.toString(), nameRequest(nameScanParams(url, selOf(url), DAY2), DAY2)]
+  }
+  expect([pick('2026-10-08'), pick('2026-10-09'), pick('2026-10-09T1236'), pick('2026-10-09T1236', '2026-10-09')]).toEqual([
+    ['d=2610080000&name=gof', { date: '2026-10-08', name: 'gof' }],
+    ['d=2610090000&name=gof', { date: '2026-10-09', name: 'gof' }],
+    ['name=gof', { date: '2026-10-09T1236', name: 'gof' }],
+    ['d=-2610090000&name=gof', { date: '2026-10-09T1236', name: 'gof', from: '2026-10-09' }],
+  ])
 })

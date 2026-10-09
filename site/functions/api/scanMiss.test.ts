@@ -48,6 +48,9 @@ describe('scanArg — the Functions resolver', () => {
     ['d=261009-06', '2026-10-09T0601'],
     ['d=2026-10-09', '2026-10-09T1236'],
     ['d=261008', '2026-10-08'],
+    // a date-only scan's exact slug is its midnight (and the midnight hour takes it)
+    ['d=2610080000', '2026-10-08'],
+    ['d=26100800', '2026-10-08'],
     // a date-only id is exact: the 10/9 timed scans don't answer for it
     ['date=2026-10-09', [404, { error: 'no scan matches date=2026-10-09' }]],
     ['d=26100903', [404, { error: 'no scan matches d=26100903' }]],
@@ -58,6 +61,16 @@ describe('scanArg — the Functions resolver', () => {
   ])('%s → %j', async (qs, want) => {
     const r = await scanArg(await env(), new URLSearchParams(qs))
     expect(r instanceof Response ? await answer(r) : r).toEqual(want)
+  })
+})
+
+describe('a date-only and a timed scan on one day', () => {
+  it('the day slug is the latest; each scan by its exact slug', async () => {
+    const { db } = await sqliteD1('cw')
+    for (const date of ['2026-10-09', '2026-10-09T1236']) await db.prepare("INSERT INTO index_schema (date, variant, version, schema_json) VALUES (?, 'path', 2, '[]')").bind(date).run()
+    const e = { ...STORE, DB: db } as Env
+    expect(await Promise.all(['d=261009', 'd=2610090000', 'd=2610091236', 'date=2026-10-09', 'date=2026-10-09T1236'].map(qs => scanArg(e, new URLSearchParams(qs)))))
+      .toEqual(['2026-10-09T1236', '2026-10-09', '2026-10-09T1236', '2026-10-09', '2026-10-09T1236'])
   })
 })
 

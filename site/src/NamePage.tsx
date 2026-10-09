@@ -8,7 +8,7 @@ import { loadName, loadNameRegistry, nameHasDetail, namePageParams, nameRequest,
 import { useDocTitle } from './title'
 import { fromMiss, scanMiss, useScanSel, type ScanMiss } from './scan'
 import { hrefWithScan, NoScanMatch } from './NoScanMatch'
-import { encodeSel, isScanId, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
+import { encodeSel, exactPrefix, isScanId, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
 import './hot.scss'
 
 export function NamePlanStatus({ result }: { result: NameResult }) {
@@ -64,7 +64,8 @@ export function nameScanParams(url: URLSearchParams, sel: ScanSel | undefined, d
 export function nameUrlParams(form: URLSearchParams, dates: readonly string[] | undefined): URLSearchParams {
   const date = form.get('date') ?? undefined, from = form.get('from') || undefined
   const latest = dates && resolveAfter(undefined, dates)
-  const d = encodeSel({ ...(date && date !== latest ? { d: date } : {}), ...(from ? { from } : {}) })
+  // each a picked scan id, written as its exact prefix (a date-only scan as its midnight)
+  const d = encodeSel({ ...(date && date !== latest ? { d: exactPrefix(date) } : {}), ...(from ? { from: exactPrefix(from) } : {}) })
   return new URLSearchParams({ ...(d ? { d } : {}), name: form.get('name') ?? '' })
 }
 

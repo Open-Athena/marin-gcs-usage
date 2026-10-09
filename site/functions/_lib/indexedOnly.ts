@@ -20,6 +20,7 @@ export type FilterRejectCode =
   | 'unsupported-slash'
   | 'unsupported-scope'
   | 'scan-not-indexed'
+  | 'term-too-common'
 
 export interface FilterReject { code: FilterRejectCode; message: string }
 
@@ -33,6 +34,7 @@ export const REJECT_MESSAGES: Record<FilterRejectCode, string> = {
   'unsupported-slash': `${ONLY_PLAIN}; a term can’t contain “/” (it matches within one name).`,
   'unsupported-scope': 'Search isn’t available with an owner, user or storage-class scope here; clear the scope to search.',
   'scan-not-indexed': 'Search isn’t available for this scan yet.',
+  'term-too-common': 'This term matches too many files to search here; try a longer one.',
 }
 
 export const reject = (code: FilterRejectCode): FilterReject => ({ code, message: REJECT_MESSAGES[code] })

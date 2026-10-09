@@ -203,6 +203,7 @@ function NavMenu({ extra }: { extra?: MenuEntry[] }) {
               {canAssign && store.owners && link('/users', 'Users')}
               {canAssign && store.owners && link('/assignments', 'Assignments')}
               {store.staging && link('/staged', 'Staged')}
+              {link('/scans', 'Scan runs')}
               {/* The store switcher — only a multi-store deploy has one
                   (specs/multi-store.md phase 2): each configured store at its
                   own path, the current one marked. */}
