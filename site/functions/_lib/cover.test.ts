@@ -143,6 +143,38 @@ describe('coverSet', () => {
     expect((await coverSet(matchRoots(s, 'tomat', ''), '', lookupOf(s), { minDepth: 3 })).items.map(i => i.path)).toEqual(['b/x/tomat1', 'b/x/tomat2'])
   })
 
+  // The bulk bar's drilled views: a view folder (or a non-matching-name ancestor) every object of which
+  // matches collapses to itself; one level up, only the fully matching children do.
+  const SHOWS: Store = {
+    'b/clips/A/x_tomato_1.mp3': 10, 'b/clips/A/x_tomato_2.mp3': 20,
+    'b/clips/B/s1/tomat_a': 1, 'b/clips/B/s2/tomat_b': 2,
+    'b/clips/C/tomato_c': 3, 'b/clips/C/plain': 4,
+  }
+  it('the view folder itself collapses when every object under it matches', async () => {
+    expect((await coverSet(matchRoots(SHOWS, 'tomat', 'b/clips/A'), 'b/clips/A', lookupOf(SHOWS), { minDepth: 2 })).items).toEqual([
+      { path: 'b/clips/A', kind: 'dir', b: 30, o: 2, roots: 2 },
+    ])
+  })
+  it('a fully matching ancestor whose own name doesn\'t match collapses (from the view and from above it)', async () => {
+    expect((await coverSet(matchRoots(SHOWS, 'tomat', 'b/clips/B'), 'b/clips/B', lookupOf(SHOWS), { minDepth: 2 })).items).toEqual([
+      { path: 'b/clips/B', kind: 'dir', b: 3, o: 2, roots: 2 },
+    ])
+  })
+  it('a mixed parent: each fully matching child collapses, the parent doesn\'t', async () => {
+    expect((await coverSet(matchRoots(SHOWS, 'tomat', 'b/clips'), 'b/clips', lookupOf(SHOWS), { minDepth: 2 })).items).toEqual([
+      { path: 'b/clips/A', kind: 'dir', b: 30, o: 2, roots: 2 },
+      { path: 'b/clips/B', kind: 'dir', b: 3, o: 2, roots: 2 },
+      { path: 'b/clips/C/tomato_c', kind: 'file', b: 3, o: 1, roots: 1 },
+    ])
+  })
+  it('a view folder holding non-matches stays one item per match (the prod `Adam_Carolla_Show` shape)', async () => {
+    const s: Store = { 'b/pod/show/ep_Tomatoes_0': 5, 'b/pod/show/ep_Tomatoes_1': 5, 'b/pod/show/ep_other': 9 }
+    expect((await coverSet(matchRoots(s, 'tomat', 'b/pod/show'), 'b/pod/show', lookupOf(s), { minDepth: 2 })).items).toEqual([
+      { path: 'b/pod/show/ep_Tomatoes_0', kind: 'file', b: 5, o: 1, roots: 1 },
+      { path: 'b/pod/show/ep_Tomatoes_1', kind: 'file', b: 5, o: 1, roots: 1 },
+    ])
+  })
+
   it('prunes: an ancestor of a folder holding non-matches is never looked up', async () => {
     const s: Store = { 'b/p/q/tomat': 1, 'b/p/q/other': 1, 'b/p/r/tomat': 1 }
     const look = lookupOf(s)

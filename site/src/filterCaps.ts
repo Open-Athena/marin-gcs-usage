@@ -31,9 +31,9 @@ export const INDEXED_SYNTAX: QuerySyntax = { id: simple.id, parse: q => simple.p
 const REFUSAL = /^(?:unsupported-[a-z-]+|scan-not-indexed|term-too-common)$/
 
 /** A failed API response: `message` as `apiErrorMessage` words it; `refusal` the structured
- *  `{ error, code }` body's reason when its code is a filter refusal (`REFUSAL`). */
+ *  `{ error, code }` body's reason when its code is a filter refusal (`REFUSAL`); `status` the HTTP status. */
 export class ApiError extends Error {
-  constructor(message: string, readonly refusal?: { code: string; reason: string }) { super(message); this.name = 'ApiError' }
+  constructor(message: string, readonly refusal?: { code: string; reason: string }, readonly status?: number) { super(message); this.name = 'ApiError' }
 }
 
 /** A failed API response as a throwable `ApiError`. */
@@ -43,11 +43,21 @@ export function apiError(status: number, text: string): ApiError {
     const j = JSON.parse(text) as { error?: unknown; code?: unknown }
     if (status === 400 && typeof j.error === 'string' && typeof j.code === 'string' && REFUSAL.test(j.code)) refusal = { code: j.code, reason: j.error }
   } catch { /* not JSON */ }
-  return new ApiError(apiErrorMessage(status, text), refusal)
+  return new ApiError(apiErrorMessage(status, text), refusal, status)
 }
 
 /** An error's filter refusal (a reason to state inline, with no retry or status), else null. */
 export const refusalOf = (e: unknown): { code: string; reason: string } | null => (e instanceof ApiError && e.refusal) || null
+
+/** How a failed load reads inline: a filter refusal's reason, or the failure's message — with a retry when it may
+ *  pass next time (a 5xx, or no response at all), never for a 4xx (the same request fails the same way). */
+export type Failure = { refusal: string } | { message: string; retry: boolean }
+export function failureOf(e: unknown): Failure {
+  const r = refusalOf(e)
+  if (r) return { refusal: r.reason }
+  const status = e instanceof ApiError ? e.status : undefined
+  return { message: e instanceof Error ? e.message : String(e), retry: status == null || status >= 500 }
+}
 
 /** A failed API response as an error message: a structured refusal (`{ error, code }`) as the filter box's
  *  `bad query: …` (shown under the box), anything else as its status and text. */
