@@ -28,8 +28,10 @@ The base generation's coalesced versions (`cintervals/r####.parquet`, `CINTERVAL
   - `dhist/r####.parquet`: the delta's suffix rows per three-character prefix, for the shard plan.
 - The first append reads `prev` from the base's `cintervals/` (`WHERE vt = OPEN`).
 - **Where the state lives:**
-  - `copen/` goes to the scratch bucket (`gs://oa-gcs-usage-scratch/static-names/<gen>/state/<D>/copen/`, 7-day expiry, no soft delete).
-  - `cdelta/` goes to the data bucket under the run (`gs://oa-gcs-usage-dvx/static-names/<gen>/deltas/<D>/cdelta/`), kept permanently: it is small, and `copen` can always be refolded from the base's `cintervals` plus every `cdelta` (open rows, minus closes, plus opens) if the scratch copy expires.
+  - `copen/` goes to the scratch bucket (`gs://oa-gcs-usage-scratch/static-names/<gen>/state/<D>/copen/`, beside `state/<D>/done/r####.json`, each range's marker, written after its `copen`). The bucket has a 7-day age-based delete rule and no soft delete.
+  - `cdelta/` goes to the data bucket under the run (`gs://oa-gcs-usage-dvx/static-names/<gen>/deltas/<D>/cdelta/`), kept permanently: it is small (21.9 MB on 2026-10-09), and tier merges write new run dirs without touching the per-day ones.
+- **Only the newest complete state is kept** (`daily prune -g GEN -d D`, the chain's last stage). A day's state is a full copy of the open versions (4.4 GB on 2026-10-09), and the next append reads only the newest. Once `state/D/` is complete (every range's `copen/r####.parquet` and `done/r####.json`, for all `ranges.json` `k`) and D's run is published (`manifests/D.json`), `prune` deletes `state/<prev>/` for every prev < D. It never deletes before D is complete, so the only complete state is never deleted, and a rerun of D's append still finds its `prev`. It deletes nothing outside the scratch bucket's `static-names/<gen>/state/` (an object under there whose day dir isn't a date is an error), and it is idempotent: a rerun finds nothing before D. Without it, the 7-day rule alone would keep about a week of states (~31 GB).
+- **A lost state is rebuilt, not stored** (`daily rebuild-state -g GEN -d D -m MOUNT`, per task like `append`). The open versions after D are the base's `cintervals` open rows, minus every version a run's `cdelta` closed (`op` −1), plus every version one opened (`op` 1), over D's manifest's runs oldest first. A version's identity is `(depth, path, usr, vf)`, and one opened by a run has that run's `vf`, past every base version's. The rebuilt `copen` matches the appended one byte for byte (`test_rebuild_open_equals_the_appended_state`). This is the recovery when the newest state expires: the 7-day rule removes it if the daily chain stalls for a week. It reads the base's `cintervals` (4.72 GiB over 256 ranges for `2026-10-08c`) plus the runs' `cdelta`s (~22 MB a day), about what one day's `append` reads, and writes the same 4.4 GB `copen` the append would. That is cheap enough as a recovery path, so no state needs to be kept beyond the newest.
 
 ### 2. Delta suffix rows → the run's shards (1 Batch task)
 
@@ -162,7 +164,7 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 
 ## Implementation
 
-- `cloud/src/dt_cloud/static_append.py`: `dt-cloud static-names daily {prepare,append,shards,catalog,publish,verify}`, run as `MODULE=static_append job/static-names.sh run …`; the whole chain is `job/static-daily.sh DATE` (below).
+- `cloud/src/dt_cloud/static_append.py`: `dt-cloud static-names daily {prepare,append,shards,catalog,publish,prune,rebuild-state,verify}`, run as `MODULE=static_append job/static-names.sh run …`; the whole chain is `job/static-daily.sh DATE` (below).
 - `job/static-names.sh` stages `pyrmts` (not in the job image) beside `dt_cloud`.
 - Tier merges use `pyrmts.runs` (pinned 541bc8e).
 - Reader: `site/functions/_lib/staticRuns.ts` (`Tiers`, `TieredNames`, `TieredCatalog`), wired into `nameSummaryStatic.ts` and `staticFilter.ts`, on branch `daily-append-site`.
@@ -177,6 +179,7 @@ MODULE=static_append SPOT=1 job/static-names.sh run catalog 1 -g 2026-10-08c -d 
 dt-cloud static-names daily publish -g 2026-10-08c -d D [-m MOUNT]                                         # merges (if the counter carries), then manifests/D.json
 job/static-names.sh r2 2026-10-08c/deltas/D && job/static-names.sh r2 2026-10-08c                            # the run, then the manifest (last)
 MODULE=static_append SPOT=1 job/static-names.sh run verify 1 -g 2026-10-08c -d D -t gs://…/terms.txt
+dt-cloud static-names daily prune -g 2026-10-08c -d D [-n]                                                  # keep only state/D/ (refuses until it is complete)
 ```
 
 ### Daily entry point (gcs: `job/static-daily.sh DATE`)
@@ -184,11 +187,11 @@ MODULE=static_append SPOT=1 job/static-names.sh run verify 1 -g 2026-10-08c -d D
 One script runs the chain above for a scan, from a checkout (the stages' code is staged from HEAD) or, with `SRC=image`, from a job image built from the lock (its own `dt_cloud` + `pyrmts`):
 
 ```
-prepare → append (16 tasks × 16 ranges) → shards ∥ catalog → publish (Batch: tier merges + manifests/D.json) → R2 (each run in the manifest, then manifests/) [→ verify, with VERIFY_TERMS]
+prepare → append (16 tasks × 16 ranges) → shards ∥ catalog → publish (Batch: tier merges + manifests/D.json) → R2 (each run in the manifest, then manifests/) [→ verify, with VERIFY_TERMS] → prune
 ```
 
 - **Idempotent, resumable.** Each stage is skipped when its output is in the data bucket: `deltas/D/scans.json` (prepare), all `ranges.json` `k` of `deltas/D/dhist/` (append; `append` also skips done ranges within a job), `deltas/D/sidecar.parquet` (shards), `deltas/D/catalog/meta.json` (catalog), `manifests/D.json` (publish), `deltas/D/verify.json` (verify). A rerun after a failure resumes at the first missing output. `r2-copy` skips objects already on R2 (size + md5), so the R2 step always runs.
-- **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/D.json` (`if_generation_match=0`), and the scratch bucket's `state/D/`. Nothing is overwritten or deleted.
+- **Writes only new keys:** the scan's run dir, merged run dirs (`deltas/<first>_<last>/`), `manifests/D.json` (`if_generation_match=0`), and the scratch bucket's `state/D/`. Nothing is overwritten. The one delete is `prune`'s: earlier days' `state/<prev>/` in the scratch bucket, once `state/D/` is complete. It always runs (it is a no-op when nothing precedes D).
 - **Exit status:** 0 done; 3 the scan is not published yet (no `listing/D/{index/*/,}path-index.parquet`) or is not the next scan after the live runs (`prepare` refuses); else a stage failed.
 - **Progress:** one line per stage start and end (UTC, elapsed) to stderr and `tmp/static-daily/D.log`, each stage's output in `D.log.<stage>.out`; Batch jobs are named `sn-<stage>-D-<hhmmss>` and labelled `purpose=static-names`.
 - **`-n`:** dry run. It reports each stage as done or names the command it would run; it submits and writes nothing.
@@ -203,7 +206,7 @@ Dry runs on 2026-10-09 (UTC morning): `-n 2026-10-10` exits 3 (not published yet
 
 | Stage | Tasks | Run time | Output |
 |---|---:|---:|---|
-| `append` (256 ranges) | 16 (+ a 1-task smoke run) | 3.5 min each (≤ 19 s per range) | 1,291,160 versions opened, 387,872 closed, 609,231,660 open; `cdelta` 21.9 MB; `copen` 4.4 GB (scratch) |
+| `append` (256 ranges) | 16 (+ a 1-task smoke run) | 3.5 min each (≤ 19 s per range) | 1,291,160 versions opened, 387,872 closed, 609,231,660 open; `cdelta` 21.9 MB; `copen` 4.4 GB (scratch; only the newest day's is kept) |
 | `shards` | 1 | 1.2 min | 44,125,015 suffix rows, one 1.05 GB shard (25 B/row: sparse paths compress worse than the base's 10 B/row) |
 | `catalog` | 1 | 5.6 min | 94,549 cell rows (874 KB): 17,811 headers (17,670 changed), 141 new members |
 | `publish`, `r2-copy` | laptop, VM | seconds; 17 s copy | 8 objects, 1.12 GB to R2; the manifest last |

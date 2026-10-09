@@ -70,6 +70,14 @@ function PrefixStatus({ state, execution }: { state: StagedState; execution: Pre
 const searchName = (who: string) => `${canonId(who)} ${shortName(who)}`
 
 /** Whoami's admin flag: the plan-first console keys on it server-side too. */
+/** Select / deselect a set of rows by key — a batch (every page, folded or
+ *  not) or everything shown — half-checked when some of them are selected. */
+function KeysCheckbox({ sel, keys, label }: { sel: { selected: Set<string>; setKeys: (keys: Iterable<string>, on: boolean) => void }; keys: string[]; label: string }) {
+  const n = keys.filter(k => sel.selected.has(k)).length
+  const all = n === keys.length
+  return <input type="checkbox" checked={all} ref={el => { if (el) el.indeterminate = n > 0 && !all }} onChange={() => sel.setKeys(keys, !all)} aria-label={label} />
+}
+
 function useIsAdmin(): boolean {
   const [admin, setAdmin] = useState(false)
   useEffect(() => {
@@ -355,7 +363,7 @@ export function StagedPage() {
           </div>
 
           <div className="staged-actions">
-            {activeShownRows.length > 0 && <label className="sel-all"><input type="checkbox" checked={sel.pageAll} onChange={sel.togglePage} aria-label="select all shown" /> {sel.selected.size ? `${sel.selected.size} selected · ${fmtBytes(selTotal.b)}` : 'select'}</label>}
+            {activeShownRows.length > 0 && <label className="sel-all"><KeysCheckbox sel={sel} keys={shownPrefixes} label={q.trim() ? 'select all matching' : 'select all'} /> {sel.selected.size ? `${sel.selected.size} selected · ${fmtBytes(selTotal.b)}` : 'select'}</label>}
             {sel.selected.size > 0 && <button type="button" onClick={sel.clear}>deselect</button>}
             {removable.length > 0 && (
               <button type="button" disabled={busy} onClick={() => unstage.mutate(removable, { onSuccess: () => sel.clear() })}>unstage {removable.length}</button>
@@ -375,11 +383,8 @@ export function StagedPage() {
             const np = Math.max(1, Math.ceil(g.rows.length / pageSize))
             const setPg = (p: number) => setPages(ps => ({ ...ps, [k]: p }))
             const shown = g.rows.slice(pg * pageSize, (pg + 1) * pageSize)
-            // This batch's selectable rows on its current page (indices into `visible`).
-            const mineIdx = shown.map(r => visible.indexOf(r)).filter(i => i >= 0)
-            const batchAll = mineIdx.length > 0 && mineIdx.every(i => sel.isSelected(visible[i]))
-            const batchSome = !batchAll && mineIdx.some(i => sel.isSelected(visible[i]))
-            const toggleBatch = () => { mineIdx.forEach(i => { if (sel.isSelected(visible[i]) === batchAll) sel.toggle(i) }); sel.commit() }
+            // Every page of the batch, open or folded.
+            const batchKeys = g.rows.filter(r => activePrefixes.has(r.prefix)).map(r => r.prefix)
             if (g.emptied) return (
               <section key={k} id={batchAnchor(g.id)} className="stage-batch folded emptied">
                 <div className="batch-head">
@@ -393,6 +398,7 @@ export function StagedPage() {
             return (
               <section key={k} id={batchAnchor(g.id)} className={`stage-batch${open ? '' : ' folded'}${status.settled && status.deleted > 0 ? ' completed' : ''}`}>
                 {g.id !== -1 && <div className="batch-head">
+                  {batchKeys.length > 0 && <KeysCheckbox sel={sel} keys={batchKeys} label={`select all ${batchKeys.length} in batch ${g.id ?? 'earlier'}`} />}
                   <button type="button" className="fold" aria-expanded={open} aria-label={open ? 'collapse batch' : 'expand batch'}
                     onClick={() => setFolds(f => ({ ...f, [k]: open }))}>{open ? '▾' : '▸'}</button>
                   {(status.deleted > 0 || status.empty === g.rows.length) && <span className={`staged-status ${status.deleted > 0 ? 'deleted' : 'empty'}`}>{status.settled && status.deleted > 0 ? '✓ Deleted' : status.deleted > 0 ? `${status.deleted} deleted` : 'Empty at scan'}</span>}
@@ -422,11 +428,8 @@ export function StagedPage() {
                       }]}
                       namePrefix={r => <PrefixStatus {...outcomes.get(r.prefix)!} />}
                       lead={{
-                        header: mineIdx.length > 0
-                          ? <input type="checkbox" checked={batchAll} ref={el => { if (el) el.indeterminate = batchSome }} onChange={toggleBatch}
-                            title={np > 1 ? 'select / deselect this page of the batch' : 'select / deselect the batch'} aria-label={`select all in batch ${g.id ?? ''}`} />
-                          : null,
-                        cell: r => activePrefixes.has(r.prefix) ? <input type="checkbox" checked={sel.selected.has(r.prefix)} onChange={() => { const i = visible.indexOf(r); if (i >= 0) { sel.toggle(i); sel.commit() } }} aria-label={`select ${r.prefix}`} /> : null,
+                        header: g.id === -1 && batchKeys.length > 0 ? <KeysCheckbox sel={sel} keys={batchKeys} label="select all" /> : null,
+                        cell: r => activePrefixes.has(r.prefix) ? <input type="checkbox" checked={sel.selected.has(r.prefix)} onChange={e => sel.setKeys([r.prefix], e.target.checked)} aria-label={`select ${r.prefix}`} /> : null,
                       }}
                       rowProps={r => { const i = visible.indexOf(r); const state = outcomes.get(r.prefix)!.state; if (i < 0) return { className: `staged-${state}` }; const props = sel.rowProps(i); return { ref: sel.rowRef(i), ...props, className: `${props.className ?? ''} staged-${state}` } }}
                       trail={r => activePrefixes.has(r.prefix) && canRemove(r) && <Tooltip content="Unstage this prefix (does not stop a dispatched run)"><button type="button" className="rm" aria-label="Unstage prefix" disabled={busy} onClick={() => unstage.mutate([r.prefix])}>×</button></Tooltip>}

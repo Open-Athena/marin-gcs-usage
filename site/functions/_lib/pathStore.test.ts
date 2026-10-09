@@ -210,6 +210,20 @@ describe('reads', () => {
     expect(GETS.filter(g => g.key === key).map(g => [g.offset, g.length])).toEqual([[spans[0][0], spans[3][1] - spans[0][0]]])
   })
 
+  it('a stopped read fetches and decodes nothing more (a filter view past its time budget)', async () => {
+    const { db, raw } = await sqliteD1('cw')
+    const v2 = await readJson<Record<string, D1Variant>>('v2/d1.json')
+    const dir = 'cw-l2/io3/index/g'
+    seedGeneration(raw, { date: 'io3', gen: 'g', dir, variants: v2, files: v2Files })
+    const h = await openIndex({ DB: db, ROOT_LABEL: 'root', GCS_HMAC_KEY_ID: 'k', GCS_HMAC_SECRET: 's' } as Env, 'io3')
+    const rect: Rect = { dLo: 1, dHi: 1e9, pLo: '', pHi: '￿' }
+    GETS.length = 0
+    const stopped = await readRects(h, [rect], undefined, undefined, undefined, () => true)
+    expect([stopped, GETS.filter(g => g.key === `${dir}/path-index.parquet`)]).toEqual([[], []])
+    const all = await readRects(h, [rect], undefined, undefined, undefined, () => false)
+    expect(all.length).toBe(v2.path.rows.reduce((n, r) => n + r.row_end - r.row_start, 0))
+  })
+
   it('point lookups read path: an object row and a dir row, from the groups that may hold them', async () => {
     const h = await openIndex(env, V2)
     const want = new Set(['bk/flat', 'bk/small/s1'])
@@ -547,6 +561,7 @@ it('fixtures are registered', () => {
     ...['path-index-bysize-by-user', 'path-index-bysize', 'path-index'].flatMap(s => ['groups.json', 'groups.parquet', 'parquet'].map(x => `cw-l2/${V2_LENS_PQ}/index/g8/${s}.${x}`)),
     ...['path-index-bysize', 'path-index'].flatMap(s => ['groups.json', 'groups.parquet', 'parquet'].map(x => `cw-l2/io/index/g7/${s}.${x}`)),
     ...['path-index-bysize', 'path-index'].flatMap(s => ['groups.json', 'parquet'].map(x => `cw-l2/io2/index/g/${s}.${x}`)),
+    ...['path-index-bysize', 'path-index'].flatMap(s => ['groups.json', 'parquet'].map(x => `cw-l2/io3/index/g/${s}.${x}`)),
     `listing/${V1}/index/g1/path-index.groups.json`, `listing/${V1}/index/g1/path-index.parquet`,
     `listing/${V2_STALE}/index/g0/path-index-coarse20.groups.json`, `listing/${V2_STALE}/index/g0/path-index-coarse20.parquet`,
     `listing/${V2_LENS}/index/g0/path-index-by-user.groups.json`, `listing/${V2_LENS}/index/g0/path-index-by-user.parquet`,

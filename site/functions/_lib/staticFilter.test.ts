@@ -6,7 +6,7 @@ import { type Blobs, StaticNames } from './staticNames'
 import { parseAst } from './querySyntax'
 import { sqliteD1 } from './testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from './testStore'
-import { buildDiff, buildView, MATCH_LIST_CAP, matchLists, type ViewNode, type View } from './view'
+import { buildDiff, buildView, capTiles, MATCH_LIST_CAP, matchLists, tileBudget, type ViewNode, type View } from './view'
 import { searchKey } from './search'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('./testStore')).S3Store }))
@@ -81,11 +81,20 @@ const sansP1 = (v: View) => ({ ...v, tier: v.tier.replace(/^(static|search)\+/, 
 const matchedRows = (v: { matched?: { path: string; b: number; o: number }[] }) =>
   (v.matched ?? []).map(m => [m.path, m.b, m.o]).sort((x, y) => (x[0] < y[0] ? -1 : 1))
 
+/** A tree as `[path, bytes, objects, ('m')?, ('f<n>')?]` rows, depth first (`(other)` under its parent). */
+const flatTree = (n: ViewNode, path = '', out: unknown[] = []): unknown[] => {
+  out.push([path || '/', n.b, n.o, ...(n.m ? ['m'] : []), ...(n.f != null ? [`f${n.f}`] : [])])
+  for (const c of n.c ?? []) flatTree(c, c.n === '(other)' ? `${path}/(other)` : path ? `${path}/${c.n}` : c.n, out)
+  return out
+}
+
 /** `tomat` at the root on A over a 128×128 canvas (threshold 18,047 · 12 / 128² ≈ 13 bytes at depth 1,
  *  doubling per level): `zz/Checkpoints/TOMAT` (10 bytes) folds with its ancestors `zz/Checkpoints` and
  *  `zz` into the root's residual (10 bytes: under the threshold, so no `(other)` tile); the 77-byte
  *  `tomat-tomat.bin` (depth 4: 106) into `bk/runs/x`'s `(other)` (`f` = 1 fold). Match roots carry
- *  `m`; their insides are phase 2's path-store rows. */
+ *  `m`; their insides are phase 2's path-store rows — for the roots with room for them: bytes ≥ T ·
+ *  `FILTER_SUBDIV_AREA` / minArea ≈ 4,512 (a 64×64 tile). `tomat-1` (150 bytes, ~136 px²) and
+ *  `tomato-bk` (110) are one exact tile each, nothing inside them read. */
 const FOLDED: unknown[] = [
   ['/', 18047, 10],
   ['bk', 17927, 7],
@@ -100,12 +109,7 @@ const FOLDED: unknown[] = [
   ['bk/data/Tomatoes.csv', 700, 1, 'm'],
   ['bk/data/raw', 150, 2],
   ['bk/data/raw/tomat-1', 150, 2, 'm'],
-  ['bk/data/raw/tomat-1/x.bin', 100, 1],
-  ['bk/data/raw/tomat-1/TOMAT-inner', 50, 1],
-  ['bk/data/raw/tomat-1/TOMAT-inner/y.bin', 50, 1],
   ['tomato-bk', 110, 2, 'm'],
-  ['tomato-bk/a', 100, 1],
-  ['tomato-bk/a/b.bin', 100, 1],
 ]
 
 describe('staticLiteral: the queries the static index answers exactly', () => {
@@ -257,6 +261,139 @@ describe('static filter: dispatch', () => {
     const key = (h: Hit) => `${h.path} ${h.usr} ${h.vf}`
     expect(hits.map(key).sort()).toEqual([
       `bk/runs/x/ckpt-tomat.pt alice ${Date.UTC(2026, 9, 4)}`, `bk/runs/x/ckpt-tomat.pt alice ${Date.UTC(2026, 9, 5)}`, `bk/runs/x/tomat-tomat.bin  ${Date.UTC(2026, 9, 4)}`,
+    ])
+  })
+})
+
+
+describe('static filter: a bounded view — the canvas\'s tiles, exact totals', () => {
+  /** `tomat` at the root on A, every node drawn (1280×768: threshold ≈ 0.22 bytes, so only the budgets bound it). */
+  const FULL: unknown[] = [
+    ['/', 18047, 10],
+    ['bk', 17927, 7],
+    ['bk/runs', 9077, 2],
+    ['bk/runs/x', 9077, 2],
+    ['bk/runs/x/ckpt-tomat.pt', 9000, 1, 'm'],
+    ['bk/runs/x/tomat-tomat.bin', 77, 1, 'm'],
+    ['bk/data', 8850, 5],
+    ['bk/data/tomato', 8000, 2, 'm'],
+    ['bk/data/tomato/a.bin', 5000, 1],
+    ['bk/data/tomato/b.bin', 3000, 1],
+    ['bk/data/Tomatoes.csv', 700, 1, 'm'],
+    ['bk/data/raw', 150, 2],
+    ['bk/data/raw/tomat-1', 150, 2, 'm'],
+    ['bk/data/raw/tomat-1/x.bin', 100, 1],
+    ['bk/data/raw/tomat-1/TOMAT-inner', 50, 1],
+    ['bk/data/raw/tomat-1/TOMAT-inner/y.bin', 50, 1],
+    ['tomato-bk', 110, 2, 'm'],
+    ['tomato-bk/a', 100, 1],
+    ['tomato-bk/a/b.bin', 100, 1],
+    ['tomato-bk/c', 10, 1],
+    ['tomato-bk/c/tomat.txt', 10, 1],
+    ['zz', 10, 1],
+    ['zz/Checkpoints', 10, 1],
+    ['zz/Checkpoints/TOMAT', 10, 1, 'm'],
+  ]
+  /** The drawn nodes, heaviest first (ties shallowest first, then by path): what a budget of k keeps. */
+  const byWeight = (rows: unknown[]) => (rows as [string, number][])
+    .filter(([p]) => p !== '/' && !p.endsWith('(other)'))
+    .sort((x, y) => y[1] - x[1] || x[0].split('/').length - y[0].split('/').length || (x[0] < y[0] ? -1 : 1))
+    .map(([p]) => p)
+
+  it('unbounded: every node', async () => {
+    const v = await view(envStatic(), A, '', 'tomat', { maxTiles: Infinity })
+    expect([v.nodes, v.interiors, flatTree(v.tree)]).toEqual([23, undefined, FULL])
+  })
+
+  it('a budget of k draws the k heaviest nodes; the rest fold into `(other)`, totals unchanged', async () => {
+    const full = await view(envStatic(), A, '', 'tomat', { maxTiles: Infinity })
+    const order = byWeight(FULL)
+    for (const k of [1, 2, 4, 6, 10, 15, 22]) {
+      const v = await view(envStatic(), A, '', 'tomat', { maxTiles: k })
+      const drawn = byWeight(flatTree(v.tree))
+      expect([k, v.nodes, [...drawn].sort(), v.tree.b, v.tree.o, v.matchCount, v.matched])
+        .toEqual([k, k, order.slice(0, k).sort(), full.tree.b, full.tree.o, full.matchCount, full.matched])
+    }
+    expect(flatTree((await view(envStatic(), A, '', 'tomat', { maxTiles: 4 })).tree)).toEqual([
+      ['/', 18047, 10],
+      ['bk', 17927, 7],
+      ['bk/runs', 9077, 2],
+      ['bk/runs/x', 9077, 2],
+      ['bk/runs/x/ckpt-tomat.pt', 9000, 1, 'm'],
+      ['bk/runs/x/(other)', 77, 1, 'f1'],
+      ['bk/(other)', 8850, 5, 'f1'],
+      ['/(other)', 120, 3, 'f2'],
+    ])
+  })
+
+  it('the default budget is w·h / 96 px² per tile', () => {
+    expect([tileBudget(1280, 768), tileBudget(512, 384), tileBudget(1, 1)]).toEqual([10_240, 2_048, 1])
+  })
+
+  it('capTiles: the heaviest, ancestor-closed (a node whose parent fell out goes too), ties shallowest first', () => {
+    const kept = new Map(Object.entries({ a: { b: 10 }, 'a/x': { b: 10 }, 'a/x/1': { b: 6 }, 'a/y': { b: 4 }, b: { b: 7 }, 'b/z': { b: 7 } }))
+    const depth = new Map([...kept.keys()].map(p => [p, p.split('/').length]))
+    const k3 = new Map(kept)
+    expect([capTiles(k3, depth, '', 3), [...k3.keys()]]).toEqual([['b/z', 'a/x/1', 'a/y'], ['a', 'a/x', 'b']])
+    const k5 = new Map(kept)
+    expect([capTiles(k5, depth, '', 5), [...k5.keys()]]).toEqual([['a/y'], ['a', 'a/x', 'a/x/1', 'b', 'b/z']])
+    // A child heavier than its parent (data that disagrees with itself) never leaves an orphan.
+    const odd = new Map(Object.entries({ a: { b: 1 }, 'a/x': { b: 9 }, b: { b: 5 } }))
+    expect([capTiles(odd, new Map([['a', 1], ['a/x', 2], ['b', 1]]), '', 2), [...odd.keys()]]).toEqual([['a/x', 'a'], ['b']])
+    const none = new Map(kept)
+    expect([capTiles(none, depth, '', 6), none.size]).toEqual([[], 6])
+  })
+
+  it('`depth=N` (a diff\'s first level): nothing inside the roots below dP + N is read', async () => {
+    const v = await view(envStatic(), A, '', 'tomat', { maxDepth: 2 })
+    const inside = /^(bk\/data\/tomato|bk\/data\/raw\/tomat-1|tomato-bk\/a|tomato-bk\/c)\//
+    expect([v.interiors, flatTree(v.tree)]).toEqual([undefined, FULL.filter(r => !inside.test((r as [string])[0]))])
+  })
+
+  it('phase 2 over its read budget: the subdividable roots are drawn whole and the response says so', async () => {
+    const byRows = await view(envStatic(), A, '', 'tomat', { phase2Rows: 0 })
+    const v = await view(envStatic(), A, '', 'tomat', { phase2Groups: 0 })
+    expect(byRows).toEqual(v)
+    const full = await view(envStatic(), A, '', 'tomat', { maxTiles: Infinity })
+    expect([v.interiors, v.tree.b, v.matchCount, v.matched]).toEqual([{ read: 0, skipped: 3, reason: '3 over the read budget' }, full.tree.b, full.matchCount, full.matched])
+    expect(flatTree(v.tree)).toEqual(FULL.filter(r => !/^(bk\/data\/tomato|bk\/data\/raw\/tomat-1|tomato-bk)\//.test((r as [string])[0])))
+  })
+})
+
+describe('a view whose root the query matches (NOT): its own forest', () => {
+  // Phase 2 kept a row only under a drawn match root other than the view root, so these drew empty.
+  it('`tomat -nomatch` at `bk/data/tomato`: the root and what is inside it', async () => {
+    const v = await view(base, A, 'bk/data/tomato', 'tomat -nomatch')
+    expect([v.matches, v.excluded, flatTree(v.tree)]).toEqual([
+      ['bk/data/tomato'], undefined,
+      [['/', 8000, 2, 'm'], ['a.bin', 5000, 1], ['b.bin', 3000, 1]],
+    ])
+  })
+  it('`tomat -a.bin` at `bk/data/tomato`: the root less its excluded file (one object left: a leaf)', async () => {
+    const v = await view(base, A, 'bk/data/tomato', 'tomat -a.bin')
+    expect([v.matches, v.excluded, flatTree(v.tree)]).toEqual([['bk/data/tomato'], ['bk/data/tomato/a.bin'], [['/', 3000, 1, 'm']]])
+  })
+})
+
+describe('phase 2: a depth\'s roots over the budget together', () => {
+  // Two match roots at one depth (`bk/data/tomato`, `bk/data/raw`; served as static hits), one read.
+  const two: HitSource = {
+    async hits() {
+      const h = (path: string, size: number, n: number): Hit => ({ path, depth: 3, usr: '', vf: 0, vt: 9e15, size: BigInt(size), n: BigInt(n) })
+      return { hits: [h('bk/data/tomato', 8000, 2), h('bk/data/raw', 183, 3)], io: { from: 'test' } }
+    },
+  }
+  const env = () => envStatic({ source: two, scans: async () => [...DATES], gen: 'two' })
+  it('in budget: both subdivided; over it: each planned alone, and each counted once', async () => {
+    const all = await view(env(), A, '', 'tomat')
+    const none = await view(env(), A, '', 'tomat', { phase2Groups: 0 })
+    expect([all.interiors, flatTree(all.tree), none.interiors, flatTree(none.tree)]).toEqual([
+      undefined,
+      [['/', 8183, 5], ['bk', 8183, 5], ['bk/data', 8183, 5], ['bk/data/tomato', 8000, 2, 'm'], ['bk/data/tomato/a.bin', 5000, 1], ['bk/data/tomato/b.bin', 3000, 1],
+        ['bk/data/raw', 183, 3, 'm'], ['bk/data/raw/tomat-1', 150, 2], ['bk/data/raw/tomat-1/x.bin', 100, 1], ['bk/data/raw/tomat-1/TOMAT-inner', 50, 1],
+        ['bk/data/raw/tomat-1/TOMAT-inner/y.bin', 50, 1], ['bk/data/raw/plain.bin', 33, 1]],
+      { read: 0, skipped: 2, reason: '2 over the read budget' },
+      [['/', 8183, 5], ['bk', 8183, 5], ['bk/data', 8183, 5], ['bk/data/tomato', 8000, 2, 'm'], ['bk/data/raw', 183, 3, 'm']],
     ])
   })
 })

@@ -15,7 +15,7 @@
     "tier": "search+path",
     "index": "d1",
     "threshold": 77,
-    "nodes": 16,
+    "nodes": 13,
     "truncated": false,
     "q": "ttl",
     "matches": [
@@ -174,32 +174,7 @@
            "b": 500,
            "o": 2,
            "d": 20697,
-           "m": 1,
-           "c": [
-            {
-             "n": "inner-ttl",
-             "k": "dir",
-             "b": 300,
-             "o": 1,
-             "d": 20697,
-             "c": [
-              {
-               "n": "w.bin",
-               "k": "file",
-               "b": 300,
-               "o": 1,
-               "d": 20697
-              }
-             ]
-            },
-            {
-             "n": "v.bin",
-             "k": "file",
-             "b": 200,
-             "o": 1,
-             "d": 20697
-            }
-           ]
+           "m": 1
           }
          ]
         }
@@ -224,7 +199,7 @@
     "tier": "search+path",
     "index": "d1",
     "threshold": 77,
-    "nodes": 15,
+    "nodes": 12,
     "truncated": false,
     "q": "ttl",
     "matches": [
@@ -370,32 +345,7 @@
          "b": 500,
          "o": 2,
          "d": 20697,
-         "m": 1,
-         "c": [
-          {
-           "n": "inner-ttl",
-           "k": "dir",
-           "b": 300,
-           "o": 1,
-           "d": 20697,
-           "c": [
-            {
-             "n": "w.bin",
-             "k": "file",
-             "b": 300,
-             "o": 1,
-             "d": 20697
-            }
-           ]
-          },
-          {
-           "n": "v.bin",
-           "k": "file",
-           "b": 200,
-           "o": 1,
-           "d": 20697
-          }
-         ]
+         "m": 1
         }
        ]
       }
@@ -1079,10 +1029,10 @@
     "h": 896,
     "minArea": 12,
     "atten": 2,
-    "tier": "search+path",
+    "tier": "search+fine",
     "index": "d1",
     "threshold": 22,
-    "nodes": 11,
+    "nodes": 8,
     "truncated": false,
     "q": "ttl -14d",
     "matches": [
@@ -1193,32 +1143,7 @@
            "b": 500,
            "o": 2,
            "d": 20697,
-           "m": 1,
-           "c": [
-            {
-             "n": "inner-ttl",
-             "k": "dir",
-             "b": 300,
-             "o": 1,
-             "d": 20697,
-             "c": [
-              {
-               "n": "w.bin",
-               "k": "file",
-               "b": 300,
-               "o": 1,
-               "d": 20697
-              }
-             ]
-            },
-            {
-             "n": "v.bin",
-             "k": "file",
-             "b": 200,
-             "o": 1,
-             "d": 20697
-            }
-           ]
+           "m": 1
           }
          ]
         }
@@ -1240,10 +1165,10 @@
     "h": 896,
     "minArea": 12,
     "atten": 2,
-    "tier": "search+path",
+    "tier": "search+fine",
     "index": "d1",
     "threshold": 22,
-    "nodes": 10,
+    "nodes": 7,
     "truncated": false,
     "q": "ttl -14d",
     "matches": [
@@ -1341,32 +1266,7 @@
          "b": 500,
          "o": 2,
          "d": 20697,
-         "m": 1,
-         "c": [
-          {
-           "n": "inner-ttl",
-           "k": "dir",
-           "b": 300,
-           "o": 1,
-           "d": 20697,
-           "c": [
-            {
-             "n": "w.bin",
-             "k": "file",
-             "b": 300,
-             "o": 1,
-             "d": 20697
-            }
-           ]
-          },
-          {
-           "n": "v.bin",
-           "k": "file",
-           "b": 200,
-           "o": 1,
-           "d": 20697
-          }
-         ]
+         "m": 1
         }
        ]
       }
@@ -18148,10 +18048,10 @@
     "h": 896,
     "minArea": 12,
     "atten": 2,
-    "tier": "search+path",
+    "tier": "search+fine",
     "index": "d1",
     "threshold": 77,
-    "nodes": 12,
+    "nodes": 9,
     "truncated": false,
     "q": "ttl",
     "matches": [
@@ -18226,16 +18126,7 @@
            "b": 5242880,
            "o": 2,
            "d": 20697,
-           "m": 1,
-           "c": [
-            {
-             "n": "run-a",
-             "k": "dir",
-             "b": 5242880,
-             "o": 2,
-             "d": 20697
-            }
-           ]
+           "m": 1
           },
           {
            "n": "ttl=7d",
@@ -18285,23 +18176,7 @@
            "b": 500,
            "o": 2,
            "d": 20697,
-           "m": 1,
-           "c": [
-            {
-             "n": "inner-ttl",
-             "k": "dir",
-             "b": 300,
-             "o": 1,
-             "d": 20697
-            },
-            {
-             "n": "v.bin",
-             "k": "file",
-             "b": 200,
-             "o": 1,
-             "d": 20697
-            }
-           ]
+           "m": 1
           }
          ]
         }
@@ -46060,7 +45935,7 @@
     "objects_a": 8,
     "objects_b": 9,
     "threshold": 77,
-    "tier": "search+path",
+    "tier": "search+fine",
     "matched": [
      {
       "path": "bk/fill/zz-TTL-b",

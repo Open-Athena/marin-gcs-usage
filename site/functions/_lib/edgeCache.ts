@@ -80,7 +80,14 @@ export async function cacheMatch(env: CacheEnv, key: Request): Promise<Response 
  * response. With ``waitUntil`` (the Pages `EventContext`'s) the writes run
  * after the response is sent — a KV put is hundreds of ms the viewer needn't
  * wait for; without it they complete first. */
-export async function cacheStore(env: CacheEnv, key: Request, body: string, headers: Record<string, string> = {}, waitUntil?: (p: Promise<unknown>) => void): Promise<Response> {
+export async function cacheStore(env: CacheEnv, key: Request, body: string, headers: Record<string, string> = {}, waitUntil?: (p: Promise<unknown>) => void, store = true): Promise<Response> {
+  // `store` false: an answer that may differ on a retry (a time budget cut it short) is served, not kept.
+  if (!store) {
+    const res = clientRes(body, 'miss')
+    for (const [k, v] of Object.entries(headers)) res.headers.set(k, v)
+    res.headers.set('x-cache-store', 'skipped')
+    return res
+  }
   const puts = async () => {
     const ps: Promise<unknown>[] = [colo().put(key, publicRes(body))]
     if (env.CACHE_KV) ps.push(env.CACHE_KV.put(await kvKey(key), body, { expirationTtl: KV_TTL }))

@@ -21,7 +21,6 @@
  *  Dates: an answer carries the scans it covers (`Found.scans`; absent = every scan of the store). The light
  *  index spans the base generation and its daily runs; the drilldown only the base generation's scans, so a
  *  heavy literal on a newer scan declines (`covers`) and that view reads as before. */
-import type { Row } from './index.js'
 import type { QueryAst } from './queryAst.js'
 import { shared } from './shared.js'
 import { StaticCatalog } from './staticCatalog.js'
@@ -159,7 +158,7 @@ export function drillSource(blobs: Blobs, cache?: Cache): DrillSource {
   const pre = `${STATIC_PREFIX}/${DRILL_DIR}`
   const catalog = new StaticCatalog(blobs, cache ? cacheIndexes(cache, STATIC_PREFIX, 'catalog-v1') : undefined)
   const drill = new Drill(drillBlobs, catalog, cache ? { top: cacheIndexes(cache, pre, 'top-v1'), aliases: cacheIndexes(cache, pre, 'aliases-v2') } : undefined)
-  return new DrillSource(drill, scanList(blobs))
+  return new DrillSource(drill, scanList(blobs), cache ? cacheHits(cache, pre, 'roots-v1') : undefined)
 }
 
 /** A test's store for an env object (in place of the R2 binding's). */
@@ -200,22 +199,6 @@ export async function staticKey(s: StaticFilterStore | null, ast: QueryAst | und
   return dates.every(d => have.includes(d)) ? key : null
 }
 
-/** The hits live on `date` (scan id), as index rows of their owner slices (`usr` '' → null). Only
- *  `path, depth, usr, size, n_files` are known; the rest is left empty (a fold, not a row's word). */
-export function liveRows(hits: Hit[], date: string): Row[] {
-  const D = scanMs(date)
-  const out: Row[] = []
-  for (const h of hits) {
-    if (!(h.vf <= D && D < h.vt)) continue
-    out.push({
-      path: h.path, depth: h.depth, usr: h.usr === '' ? null : h.usr, kind: null as unknown as Row['kind'],
-      size: Number(h.size), n_files: Number(h.n), n_children: null, n_desc: null, mtime: null,
-      mtime_mean: null, mtime_w: 0, last_read: null, cls2: 0, cls3: 0, cls4: 0,
-    })
-  }
-  return out
-}
-
 /** The filter's bytes and objects under the hits' root on `date` (Σ live first hits), with `keep` an
  *  owner test on the slice's `usr` (null = unowned). */
 export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) => boolean = () => true): { b: number; o: number; roots: number } {
@@ -230,8 +213,8 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
 }
 
 /** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
- *  3: heavy literals from the drilldown, rollup views). */
-const RESPONSE_V = 3
+ *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget). */
+const RESPONSE_V = 4
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */
