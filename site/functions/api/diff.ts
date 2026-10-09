@@ -16,7 +16,7 @@ import { type Env, requireViewer } from '../_lib/auth.js'
 import { pathGens, storeReady, type Lens } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, parseClasses, parseOwner, queryParam, QueryError } from '../_lib/scope.js'
-import { ATTEN_DEFAULT, buildDiff, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
+import { ATTEN_DEFAULT, buildDiff, FILTER_VIEW_V, LensUnavailable, MIN_AREA_DEFAULT, NotFound, QUANT } from '../_lib/view.js'
 import { staticTag } from '../_lib/staticFilter.js'
 import { cacheKeyFor, cacheMatch, cacheStore, serverTiming } from '../_lib/edgeCache.js'
 import { LENS_PRIMARY_ONLY, storeKey, withStore } from '../_lib/stores.js'
@@ -84,7 +84,7 @@ export const onRequestGet = async (ctx0: { request: Request; env: Env; waitUntil
     const [head, g] = await st.time('pre', Promise.all([lens && ctx.env.DB || owner && await hasLedger(ctx.env) ? ledgerHead(ctx.env) : Promise.resolve(0), pathGens(ctx.env, [from, to])]))
     const cacheKey = cacheKeyFor('diff',
       `${from}/${to}/${encodeURIComponent(path)}?w=${w}&h=${h}&a=${minArea}&t=${atten}&n=${top}&l=${lensTag}` +
-        `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}&g=${g}&st=${staticTag(ctx.env, query)}`,
+        `&o=${rawOwner ?? ''}&cl=${classKey(classes)}&qs=${query ? qp.syntax : ''}&q=${encodeURIComponent(query ? qRaw : '')}&head=${head}&s=${summary ? 1 : 0}&D=${depth ?? ''}&g=${g}&st=${staticTag(ctx.env, query)}${query ? `&fv=${FILTER_VIEW_V}` : ''}`,
       storeKey(ctx.env),
     )
     const hit = await st.time('match', cacheMatch(ctx.env, cacheKey))

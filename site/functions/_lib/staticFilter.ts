@@ -230,8 +230,8 @@ export function liveTotal(hits: Hit[], date: string, keep: (usr: string | null) 
 }
 
 /** Bumped when a static response's shape changes (2: roots folded under the pixel budget, capped lists;
- *  3: heavy literals from the drilldown, rollup views). */
-const RESPONSE_V = 3
+ *  3: heavy literals from the drilldown, rollup views; 4: bounded phase 2 and the tile budget). */
+const RESPONSE_V = 4
 
 /** The cache keys' static marker: the generation when the static filter would answer this query's literal
  *  (so a response never outlives a switch of backend or generation), else ''. */

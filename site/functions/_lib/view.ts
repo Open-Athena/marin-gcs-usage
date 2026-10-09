@@ -29,7 +29,7 @@
  * `f = n_children(P) − kept` — objects and dirs alike.
  */
 import type { Env } from './auth.js'
-import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, type Trace, withTrace } from './index.js'
+import { type IndexHandle, isStore, type Lens, openIndex, planRects, planSizeRects, readAsks, readRects, readRows, readSizeRects, type Rect, type Row, sizeVariant, type Span, TooWide, type Trace, withTrace } from './index.js'
 import { type FoldedLens, ownerLens, poolLens } from './owners.js'
 import { type ClassScope, classRow, nameFilter, type NamePred, ownerOk, type OwnerScope } from './scope.js'
 import { filterThreshold, looseThreshold, matchRoots, pickTier, rebasedThreshold, rootRects } from './filter.js'
@@ -116,6 +116,10 @@ export interface ViewOpts {
   v1ScanObjects?: number
   /** The search index's read budgets (default `SEARCH_LIMITS`). */
   searchLimits?: SearchLimits
+  /** With `query`: the most nodes the tree draws (default `tileBudget(w, h)`). */
+  maxTiles?: number
+  /** With `query`: phase 2's row-group budget (default `FILTER_PHASE2_GROUPS`). */
+  phase2Groups?: number
 }
 
 export interface View {
@@ -151,6 +155,10 @@ export interface View {
   rollup?: { children: number; kept: number; rows: number | null }
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
+  /** With `query`: phase 2 left `skipped` of the roots big enough to subdivide undivided — drawn as one
+   *  exact tile each — past its read or time budget (`reason`); `read` were subdivided. Absent: every
+   *  such root was. Totals are exact regardless. */
+  interiors?: { read: number; skipped: number; reason: string }
   /** With `query`: a read budget stopped the search — some matches may be
    * missing (`partialReason` says why). Never silent. */
   partial?: true
@@ -220,9 +228,9 @@ function merge(a: Agg, r: Row): void {
     a.wb += r.mtime_w
   }
   if (r.last_read != null) a.a = a.a == null ? r.last_read : Math.max(a.a, r.last_read)
-  for (const [k, v] of [['2', r.cls2], ['3', r.cls3], ['4', r.cls4]] as [string, number][]) {
-    if (v) a.cb[k] = (a.cb[k] ?? 0) + v
-  }
+  if (r.cls2) a.cb['2'] = (a.cb['2'] ?? 0) + r.cls2
+  if (r.cls3) a.cb['3'] = (a.cb['3'] ?? 0) + r.cls3
+  if (r.cls4) a.cb['4'] = (a.cb['4'] ?? 0) + r.cls4
   if (r.usr) a.ub[r.usr] = (a.ub[r.usr] ?? 0) + r.size
   a.kind = r.kind
   if (r.n_children != null) a.nc = r.n_children
@@ -336,6 +344,27 @@ async function readSubtree(
   smallRows: number,
   tr?: Trace,
 ): Promise<{ rows: Row[]; variant: string }> {
+  const plan = await planSubtree(env, date, pathIdx, rects, thrAt, lens, nDesc, smallRows, tr)
+  return { rows: await plan.read(), variant: plan.variant }
+}
+
+/** `readSubtree`'s plan, before any group is fetched: the sort it would read, how many row groups and
+ *  rows that read decodes, and the read itself — so a caller can hold reads to a group budget. */
+interface SubtreePlan { variant: string; groups: number; rows: number; read: () => Promise<Row[]> }
+
+async function planSubtree(
+  env: Env,
+  date: string,
+  pathIdx: IndexHandle,
+  rects: Rect[],
+  thrAt: (depth: number) => number,
+  lens: Lens | undefined,
+  nDesc: number | null,
+  smallRows: number,
+  tr?: Trace,
+): Promise<SubtreePlan> {
+  const held = (plan: Span[]) => plan.reduce((n, x) => n + (x.rowEnd - x.rowStart), 0)
+  const of = (variant: string, plan: Span[], read: () => Promise<Row[]>): SubtreePlan => ({ variant, groups: plan.length, rows: held(plan), read })
   // A store generation: plan the read on both sorts (span queries only, no
   // decode) and decode whichever holds fewer rows. The cost of a `path` read
   // is ~one group per depth of the subtree, of a `bysize` read ~one group per
@@ -350,12 +379,12 @@ async function readSubtree(
     if (sized) {
       const sh = withTrace(sized, tr)
       const [pp, sp] = await Promise.all([planRects(pathIdx, rects, thrAt, lens), planSizeRects(sh, rects, thrAt, lens)])
-      const held = (plan: Span[]) => plan.reduce((n, x) => n + (x.rowEnd - x.rowStart), 0)
-      if (held(sp) < held(pp)) return { rows: await readSizeRects(sh, rects, thrAt, lens, sp), variant: sized.variant }
-      return { rows: await readRects(pathIdx, rects, thrAt, lens, pp), variant: pathIdx.variant }
+      if (held(sp) < held(pp)) return of(sized.variant, sp, () => readSizeRects(sh, rects, thrAt, lens, sp))
+      return of(pathIdx.variant, pp, () => readRects(pathIdx, rects, thrAt, lens, pp))
     }
   }
-  return { rows: await readRects(pathIdx, rects, thrAt, lens), variant: pathIdx.variant }
+  const pp = await planRects(pathIdx, rects, thrAt, lens)
+  return of(pathIdx.variant, pp, () => readRects(pathIdx, rects, thrAt, lens, pp))
 }
 
 /** Rows under P, from P's own rows: `n_desc` (the same on every owner
@@ -536,6 +565,8 @@ interface Read {
   /** …and their scoped aggregates (what a diff's point lookups subtract). */
   excl?: Map<string, Agg>
   firstPaint?: boolean
+  /** A filter view's phase 2 left some roots' insides unread (`View.interiors`). */
+  interiors?: { read: number; skipped: number; reason: string }
   /** The assignments fold behind a user lens (null: no lens, or no assignments). */
   ownerLens: FoldedLens | null
   /** A path's scoped share of its total (owner pool / lens applied). `all` =
@@ -672,9 +703,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
   const rootHit = !!query && query(path)
   if (query && !ol && (!rootHit || negP)) {
     const sumAgg = (into: Agg, from: Agg) => {
-      for (const k of ['b', 'o', 'wts', 'wb'] as const) into[k] += from[k]
+      into.b += from.b; into.o += from.o; into.wts += from.wts; into.wb += from.wb
       if (from.a != null) into.a = into.a == null ? from.a : Math.max(into.a, from.a)
-      for (const key of ['cb', 'ub'] as const) for (const [k, v] of Object.entries(from[key])) into[key][k] = (into[key][k] ?? 0) + v
+      for (const k in from.cb) into.cb[k] = (into.cb[k] ?? 0) + from.cb[k]
+      for (const k in from.ub) into.ub[k] = (into.ub[k] ?? 0) + from.ub[k]
     }
     // `a` less `cut`, keeping what the row says the path is.
     const minus = (a: Agg, cut: Agg | undefined, lostKids = 0): Agg => {
@@ -685,15 +717,18 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       out.nc = a.nc == null ? null : Math.max(0, a.nc - lostKids)
       return out
     }
-    // Scoped aggregates per path from a row set (class + owner pool).
+    // Scoped aggregates per path from a row set (class + owner pool). Without an owner pool every row is
+    // in scope, so a path's scoped aggregate is its total: one object serves both (a static literal's
+    // ~80K roots built two each).
     const aggregate = (rs: Row[]): { all: Map<string, Agg>; mine: Map<string, Agg>; depth: Map<string, number> } => {
-      const all = new Map<string, Agg>(); const mine = new Map<string, Agg>(); const depth = new Map<string, number>()
+      const mine = new Map<string, Agg>(); const depth = new Map<string, number>()
+      const all = owner ? new Map<string, Agg>() : mine
       for (const r0 of rs) {
         const r = classRow(r0, classes)
         let m = mine.get(r.path)
-        if (!m) { mine.set(r.path, (m = newAgg())); all.set(r.path, newAgg()); depth.set(r.path, r.depth) }
+        if (!m) { mine.set(r.path, (m = newAgg())); if (owner) all.set(r.path, newAgg()); depth.set(r.path, r.depth) }
         if (ownerOk(r.usr, owner)) merge(m, r)
-        merge(all.get(r.path)!, r)
+        if (owner) merge(all.get(r.path)!, r)
       }
       return { all, mine, depth }
     }
@@ -794,7 +829,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     /** Σ excluded aggregates under each path, and excluded direct children. */
     const cut = new Map<string, Agg>()
     const lostKids = new Map<string, number>()
+    /** Memoized `netRoot`s; an exclusion clears them. */
+    const netOf = new Map<string, Agg>()
     const exclude = (e: string, a: Agg) => {
+      netOf.clear()
       excl.set(e, a)
       const r = rootFor(e)!
       lostKids.set(parentOf(e), (lostKids.get(parentOf(e)) ?? 0) + 1)
@@ -825,7 +863,12 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         for (const e of matchRoots(p1.depth.keys(), negP, path)) if (rootFor(e) !== null) exclude(e, scoped(e, p1.all.get(e)!, p1.mine.get(e)!))
       }
     }
-    const netRoot = (r: string) => minus(rootAggOf.get(r)!, cut.get(r), lostKids.get(r))
+    // A root's net aggregate, memoized in `netOf` (sorts and filters ask it per comparison).
+    const netRoot = (r: string): Agg => {
+      let a = netOf.get(r)
+      if (!a) netOf.set(r, (a = minus(rootAggOf.get(r)!, cut.get(r), lostKids.get(r))))
+      return a
+    }
     const matchedPre = newAgg()
     for (const r of roots) sumAgg(matchedPre, netRoot(r))
     if (matchedPre.b <= 0) return null
@@ -838,10 +881,13 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // A root under its level's threshold folds into its parent's `(other)` (below): nothing inside it
     // is drawn, so it is neither read nor looked up.
     const drawn = (r: string) => netRoot(r).b >= T * atten ** Math.max(0, depthF.get(r)! - dP - 1)
-    // A root holding one object (a file, or a dir around one) has nothing to draw inside: a leaf. Its
-    // rect would still cost a span plan — on the size sort, a group per size bucket (`tomat` under
-    // `podcast_audio`: 24 single-file roots, ~25 s).
-    const readRoots = [...roots].filter(r => drawn(r) && netRoot(r).o > 1).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
+    // Phase 2 subdivides only the roots the canvas can show structure in: drawn, holding more than one
+    // object (a single-object root is a leaf, and its rect would still cost a span plan — on the size
+    // sort a group per size bucket: `tomat` under `podcast_audio`, 24 single-file roots, ~25 s), and at
+    // least `FILTER_SUBDIV_AREA` px² (bytes ≥ T · that / minArea). A smaller root is one tile, exact from
+    // phase 1 (its bytes, objects and owners), with nothing inside it read; a drill re-reads it whole.
+    const subdivMin = T * (FILTER_SUBDIV_AREA / minArea)
+    const readRoots = [...roots].filter(r => drawn(r) && netRoot(r).o > 1 && netRoot(r).b >= subdivMin).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
       .map(r => ({ path: r, depth: depthF.get(r)! }))
     const loose = looseThreshold(T, atten, readRoots.map(r => r.depth))
     t0 = performance.now()
@@ -865,6 +911,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     })() : Promise.resolve([] as Row[])
     let rows2: Row[] = []
     let variant: string | undefined
+    let interiors: Read['interiors']
     if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic && readRoots.length) {
       // One read per root depth, each at that depth's own threshold (rows are re-tested per root
       // below, so the kept set is the one-read answer's): one read at the deepest root's threshold
@@ -873,12 +920,54 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // depths (`00241`) paid each depth's span plans and fetches in series.
       const byDepth = new Map<number, { path: string; depth: number }[]>()
       for (const r of readRoots) byDepth.set(r.depth, [...(byDepth.get(r.depth) ?? []), r])
-      const groups = [...byDepth.values()].sort((x, y) => y.reduce((n, r) => n + netRoot(r.path).b, 0) - x.reduce((n, r) => n + netRoot(r.path).b, 0))
-      const reads = await Promise.all(groups.map(rs => {
+      const weight = (rs: { path: string }[]) => rs.reduce((n, r) => n + netRoot(r.path).b, 0)
+      const groups = [...byDepth.values()].sort((x, y) => weight(y) - weight(x))
+      // Bounded: each root's insides to `FILTER_SUBDIV_LEVELS` levels (deeper rows come back childless,
+      // drillable — and every level costs the `path` sort a group per root), the reads planned first and
+      // admitted heaviest first within `FILTER_PHASE2_GROUPS` row groups (each a ranged GET of up to
+      // 32K rows from the store, six in flight per request: `00241`'s 167 groups took 15 s), and the
+      // whole phase within `FILTER_PHASE2_MS`. A root left out is drawn as one exact tile; the response
+      // says how many (`interiors`).
+      const ms = Number(env.FILTER_PHASE2_MS) || FILTER_PHASE2_MS
+      const late = Symbol('late')
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const expired = new Promise<typeof late>(r => { timer = setTimeout(() => r(late), ms) })
+      const skipped = { budget: 0, wide: 0, late: 0 }
+      const settle = async <X>(p: Promise<X>): Promise<X | typeof late | Error> => {
+        p.catch(() => {})
+        try { return await Promise.race([p, expired]) } catch (e) {
+          if (e instanceof TooWide || /too wide/.test(String((e as Error).message ?? e))) return e as Error
+          throw e
+        }
+      }
+      const levels = (q: Rect, r: { path: string }) => r.path === path ? q : { ...q, dHi: Math.min(q.dHi, q.dLo + FILTER_SUBDIV_LEVELS - 1) }
+      const plans = await Promise.all(groups.map(rs => {
         const nd = rootHit ? nDesc : rs.reduce<number | null>((n, r) => { const d = p1!.all.get(r.path)?.nd; return n == null || d == null ? null : n + d }, 0)
-        return readSubtree(env, date, regionIdx, rootRects(rs).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q), rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr)
+        const rects = rootRects(rs).map((q, i) => levels(q, rs[i])).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q)
+        return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr))
       }))
-      for (const got of reads) { rows2.push(...got.rows); variant ??= got.variant }
+      let room = o.phase2Groups ?? FILTER_PHASE2_GROUPS
+      const admitted: { rs: { path: string }[]; read: Promise<Row[] | typeof late | Error>; variant: string }[] = []
+      plans.forEach((pl, i) => {
+        const n = groups[i].length
+        if (pl === late) skipped.late += n
+        else if (pl instanceof Error) skipped.wide += n
+        else if (pl.groups > room) skipped.budget += n
+        else { room -= pl.groups; admitted.push({ rs: groups[i], read: settle(pl.read()), variant: pl.variant }) }
+      })
+      for (const x of admitted) {
+        const got = await x.read
+        if (got === late) skipped.late += x.rs.length
+        else if (got instanceof Error) skipped.wide += x.rs.length
+        else { rows2.push(...got); variant ??= x.variant }
+      }
+      if (timer != null) clearTimeout(timer)
+      const left = skipped.budget + skipped.wide + skipped.late
+      if (left) {
+        const why = [skipped.budget && `${skipped.budget} over the read budget`, skipped.wide && `${skipped.wide} too wide`, skipped.late && `${skipped.late} past the time budget`].filter(Boolean).join(', ')
+        interiors = { read: readRoots.length - left, skipped: left, reason: why }
+        tr?.('interiors', 0, `skipped ${left}`)
+      }
       if (isStore(regionIdx) && variant) tierName = variant
     }
     tr?.('rows', performance.now() - t0, variant)
@@ -902,6 +991,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         a.kind = m.kind; a.wts = m.wts; a.wb = m.wb; a.a = m.a; a.cb = m.cb; a.nc = m.nc; a.nd = m.nd
       }
       tr?.('details', performance.now() - t0, String(d.mine.size))
+      netOf.clear()
     }
     const p2 = aggregate(rows2)
     // Excluded paths only phase 2 saw (without the index, below phase 1's read).
@@ -912,27 +1002,39 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     const aggsF = new Map<string, Agg>()
     const matchedAgg = newAgg()
     const rootNet = new Map<string, Agg>()
+    // The forest: the roots and every ancestor between P and them, each ancestor's aggregate the sum of
+    // its children's, built bottom-up (one sum per node; summing each root into all its ancestors cost
+    // ~depth sums per root, most of a static literal's ~80K-root build).
+    const levels: string[][] = []
+    const atLevel = (p: string, d: number) => (levels[d] ??= []).push(p)
     for (const r of roots) {
       const a = netRoot(r)
       rootNet.set(r, a)
       sumAgg(matchedAgg, a)
       if (r === path) continue
       aggsF.set(r, a)
-      for (let q = parentOf(r); q.length > path.length; q = parentOf(q)) {
-        let e = aggsF.get(q)
-        if (!e) { aggsF.set(q, (e = newAgg())); depthF.set(q, q.split('/').length) }
-        sumAgg(e, a)
+      atLevel(r, depthF.get(r)!)
+    }
+    if (matchedAgg.b <= 0) return null
+    for (const r of roots) {
+      if (r === path) continue
+      for (let q = parentOf(r), d = depthF.get(r)! - 1; q.length > path.length; q = parentOf(q), d--) {
+        if (aggsF.has(q)) break
+        aggsF.set(q, newAgg()); depthF.set(q, d); atLevel(q, d)
         if (q === '') break
       }
     }
-    if (matchedAgg.b <= 0) return null
+    for (let d = levels.length - 1; d > dP + 1; d--) {
+      for (const p of levels[d] ?? []) sumAgg(aggsF.get(parentOf(p))!, aggsF.get(p)!)
+    }
     // The pixel budget over the forest's own nodes, as the plain view applies it to P's: a match root,
     // or an ancestor holding only roots, under its level's threshold (attenuated from P) folds into its
     // parent's `(other)`. Descendant-inclusive bytes keep the kept set ancestor-closed. Without it a
     // literal with 20K small roots (`tomat`: podcast files) shipped every one as a tile (10 MB).
     const foldedF = new Map<string, number>()
     const thrTop = (d: number) => T * atten ** Math.max(0, d - dP - 1)
-    const folded = [...aggsF].filter(([p, a]) => a.b < thrTop(depthF.get(p)!)).map(([p]) => p)
+    const folded: string[] = []
+    for (const [p, a] of aggsF) if (a.b < thrTop(depthF.get(p)!)) folded.push(p)
     for (const p of folded) aggsF.delete(p)
     for (const p of folded) {
       const par = parentOf(p)
@@ -953,6 +1055,13 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       const par = parentOf(p)
       if (aggsF.has(par)) foldedF.set(par, (foldedF.get(par) ?? 0) + 1)
     }
+    // The tile budget (`tileBudget`): past it only the heaviest nodes are drawn and the rest fold into
+    // their parents' `(other)`, exact by subtraction.
+    const capped = capTiles(aggsF, depthF, path, o.maxTiles ?? tileBudget(w, h))
+    for (const p of capped) {
+      const par = parentOf(p)
+      if (par === path || aggsF.has(par)) foldedF.set(par, (foldedF.get(par) ?? 0) + 1)
+    }
     return {
       rootAll, rootAgg: matchedAgg, kept: aggsF, aggDepth: depthF, foldedOf: foldedF, threshold: T, thrAt: loose,
       tier: `${p1Tier}+${tierName}`, idx: regionIdx, truncated: searchCut || roots.length > HARD_CAP,
@@ -960,7 +1069,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       // Heaviest first (ties by path): the list a bulk action and the series read.
       matched: roots.map(r => ({ path: r, b: Math.round(rootNet.get(r)!.b), o: Math.round(rootNet.get(r)!.o) })).sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)),
       ...(excl.size ? { excluded: [...excl.keys()].sort(), excl } : {}),
-      ...(o.firstPaint ? { firstPaint: true } : {}), ownerLens: ol, scoped,
+      ...(o.firstPaint ? { firstPaint: true } : {}), ...(interiors ? { interiors } : {}), ownerLens: ol, scoped,
     }
   }
 
@@ -1189,6 +1298,43 @@ async function readRootAllRows(env: Env, date: string, path: string, dP: number)
   return read(await openFine(env, date, 'path'))
 }
 
+/** Bumped when a filtered view's answer changes for the same inputs (the subtree and diff cache keys carry
+ *  it with `q=`): 2 — phase 2 bounded (subdivision area, levels, read and time budgets), the tile budget. */
+export const FILTER_VIEW_V = 2
+
+/** A filter view's phase 2 (the insides of its match roots) subdivides a root only when its tile is at
+ *  least this many px² — room for a title and a few legible cells; a smaller root is one exact tile. */
+export const FILTER_SUBDIV_AREA = 64 * 64
+/** …to at most this many levels below the root (rows at the last level come back childless: drillable). */
+export const FILTER_SUBDIV_LEVELS = 3
+/** …reading at most this many row groups (admitted heaviest root depth first; a read past it is skipped). */
+export const FILTER_PHASE2_GROUPS = 24
+/** …within this many ms (`FILTER_PHASE2_MS` overrides): a read still running then is dropped. */
+export const FILTER_PHASE2_MS = 2500
+/** px² per drawn tile: a view draws at most w·h / this many nodes (1280×768: 10,240 — what the plain
+ *  view's busiest paths draw). */
+export const TILE_AREA = 96
+
+/** The most nodes a w×h canvas draws (`TILE_AREA` px² each). */
+export const tileBudget = (w: number, h: number): number => Math.max(1, Math.floor((w * h) / TILE_AREA))
+
+/** Cut `kept` (ancestor-closed under `path`) to its `budget` heaviest nodes, ancestor-closed still: by
+ *  bytes, ties shallowest first, then by path — an ancestor holds at least its descendants' bytes, so it
+ *  ranks ahead of them — and a node whose parent fell out goes with it. Mutates `kept`; returns the
+ *  paths it dropped. Exact either way: a dropped node's bytes stay in its parent's `(other)`. */
+export function capTiles(kept: Map<string, { b: number }>, depth: Map<string, number>, path: string, budget: number): string[] {
+  if (kept.size <= budget) return []
+  const order = [...kept.keys()].sort((x, y) => kept.get(y)!.b - kept.get(x)!.b || depth.get(x)! - depth.get(y)! || (x < y ? -1 : x > y ? 1 : 0))
+  const keep = new Set(order.slice(0, budget))
+  for (const p of [...keep].sort((x, y) => depth.get(x)! - depth.get(y)!)) {
+    const par = parentOf(p)
+    if (par !== path && !keep.has(par)) keep.delete(p)
+  }
+  const dropped = order.filter(p => !keep.has(p))
+  for (const p of dropped) kept.delete(p)
+  return dropped
+}
+
 /** Assigned regions read (largest first) per lens view; the rest are
  * manifest-valued leaves. Two span queries' worth of rects. */
 const REGION_READS = 24
@@ -1263,7 +1409,7 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     return node
   }
   const tree = build(path, v.rootAgg)
-  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? { ...matchLists(v.matched, kept), ...(v.matchCount ? { matchCount: v.matchCount, matchesCapped: true as const } : {}) } : v.matches ? { matches: v.matches } : {}), ...(v.rollup ? { rollup: v.rollup } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(query ? coverageFields(cov) : {}) }
+  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? { ...matchLists(v.matched, kept), ...(v.matchCount ? { matchCount: v.matchCount, matchesCapped: true as const } : {}) } : v.matches ? { matches: v.matches } : {}), ...(v.rollup ? { rollup: v.rollup } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(v.interiors ? { interiors: v.interiors } : {}), ...(query ? coverageFields(cov) : {}) }
 }
 
 /** The most match roots a response lists (`matches` / `matched`) beyond those the tree draws. */
@@ -1329,6 +1475,8 @@ export interface Diff {
   matched?: { path: string; b: number; o: number }[]
   matchCount?: { n: number; b: number; o: number }
   matchesCapped?: true
+  /** With `q=`: either side's phase 2 left roots undivided (`View.interiors`), summed over the sides that did. */
+  interiors?: { read: number; skipped: number; reason: string }
   /** With `q=`: either side's `partial` / `approximate` (`View`), reasons
    * merged. */
   partial?: true
@@ -1338,6 +1486,12 @@ export interface Diff {
 }
 
 const LOOKUP_CAP = 240
+
+/** Two sides' `interiors`, summed (reasons joined when they differ). */
+function sumInteriors(a?: View['interiors'], b?: View['interiors']): NonNullable<View['interiors']> {
+  const xs = [a, b].filter((x): x is NonNullable<View['interiors']> => !!x)
+  return { read: xs.reduce((n, x) => n + x.read, 0), skipped: xs.reduce((n, x) => n + x.skipped, 0), reason: [...new Set(xs.map(x => x.reason))].join(' · ') }
+}
 
 /** What changed under P between two scans (specs/view-serving.md §2):
  * both sides are read from their index tiers at ONE absolute byte floor —
@@ -1369,12 +1523,25 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
   const cap = o.summary && query && !query.neg ? { maxDepth: 0 } : o.depth != null ? { maxDepth: o.depth } : {}
   // Either side's coverage notes, merged (a re-read below adds the same ones).
   const cov: Coverage = {}
+  // A filtered diff plans each side's forest by its own matched bytes and draws both at the larger side's
+  // floor: the match roots alone (phase 1, `maxDepth: 0` — the static index's are held per isolate) say
+  // each side's floor, so both forests are read once, at the shared one. (Reading both first and then
+  // re-reading the lighter side at the shared floor paid that side's phase 2 twice.)
+  let floor: number | undefined
+  if (query && ra && rb && !o.summary && o.threshold == null) {
+    const [ta, tb] = await Promise.all([
+      readView(env, { ...o, date: from, maxDepth: 0 }, {}),
+      readView(env, { ...o, date: to, maxDepth: 0 }, {}),
+    ])
+    if (ta && tb) floor = Math.max(ta.threshold, tb.threshold)
+    tr?.('floors', performance.now() - t0)
+  }
   let [va, vb] = await Promise.all([
-    ra ? readView(env, { ...o, date: from, ...(query ? {} : { threshold }), ...cap }, cov) : null,
-    rb ? readView(env, { ...o, date: to, ...(query ? {} : { threshold }), ...cap }, cov) : null,
+    ra ? readView(env, { ...o, date: from, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
+    rb ? readView(env, { ...o, date: to, ...(query ? floor != null ? { threshold: floor } : {} : { threshold }), ...cap }, cov) : null,
   ])
-  // A filtered diff plans each side's forest by its own matched bytes; the
-  // shared floor is the larger, and the other side is re-read at it.
+  // Without the pre-pass (a summary, or one side without matches then), a side whose floor differs is
+  // re-read at the larger.
   if (query && va && vb && va.threshold !== vb.threshold) {
     const shared = Math.max(va.threshold, vb.threshold)
     if (va.threshold < shared) va = await readView(env, { ...o, date: from, threshold: shared, ...cap }, cov)
@@ -1408,6 +1575,7 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
       const roll = vb?.matchCount ?? va?.matchCount
       return { matched: matched!.sort((x, y) => x.path < y.path ? -1 : 1), matchCount: roll ?? matchCount, ...(matchesCapped || roll ? { matchesCapped: true as const } : {}) }
     })() : {}),
+    ...(va?.interiors || vb?.interiors ? { interiors: sumInteriors(va?.interiors, vb?.interiors) } : {}),
     ...(query ? coverageFields(cov) : {}),
   }
   if (o.summary) return { rows: [], ...totals, expansions: 0, truncated: false, lookups: 0, lookups_capped: false }

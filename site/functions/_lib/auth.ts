@@ -76,6 +76,8 @@ export interface Env {
   /** With `FILTER_STATIC`: how long (ms) a filtered view waits past its phase-2 read for the static
    *  roots' own rows (kind, ages, classes) before answering without them; unset = until they land. */
   FILTER_DETAILS_MS?: string
+  /** A filter view's phase-2 time budget, ms (`view.ts` `FILTER_PHASE2_MS`). */
+  FILTER_PHASE2_MS?: string
   /** Worker-served indexes (the static name index's suffix shards and catalog). */
   INDEX_R2?: R2Bucket
   STORE_ACCESS_KEY_ID?: string
