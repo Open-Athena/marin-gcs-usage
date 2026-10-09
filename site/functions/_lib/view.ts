@@ -969,21 +969,32 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
         }
       }
       const capLevels = (q: Rect, r: { path: string }) => r.path === path ? q : { ...q, dHi: Math.min(q.dHi, q.dLo + FILTER_SUBDIV_LEVELS - 1) }
-      const plans = await Promise.all(groups.map(rs => {
+      const planFor = (rs: { path: string; depth: number }[]) => {
         const nd = rootHit ? nDesc : rs.reduce<number | null>((n, r) => { const d = p1!.all.get(r.path)?.nd; return n == null || d == null ? null : n + d }, 0)
         const rects = rootRects(rs).map((q, i) => capLevels(q, rs[i])).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q)
         return settle(planSubtree(env, date, regionIdx, rects, rebasedThreshold(T, atten, rs[0].depth), undefined, nd, smallRows, tr))
-      }))
+      }
+      const plans = await Promise.all(groups.map(planFor))
       let room = o.phase2Groups ?? FILTER_PHASE2_GROUPS
       let roomRows = o.phase2Rows ?? FILTER_PHASE2_ROWS
       const admitted: { rs: { path: string }[]; read: Promise<Row[] | typeof late | Error>; variant: string }[] = []
-      plans.forEach((pl, i) => {
-        const n = groups[i].length
-        if (pl === late) skipped.late += n
-        else if (pl instanceof Error) skipped.wide += n
-        else if (pl.groups > room || pl.rows > roomRows) skipped.budget += n
-        else { room -= pl.groups; roomRows -= pl.rows; admitted.push({ rs: groups[i], read: settle(pl.read(stop)), variant: pl.variant }) }
-      })
+      const admit = (rs: { path: string }[], pl: SubtreePlan | typeof late | Error): boolean => {
+        if (pl === late) skipped.late += rs.length
+        else if (pl instanceof Error) skipped.wide += rs.length
+        else if (pl.groups > room || pl.rows > roomRows) return false
+        else { room -= pl.groups; roomRows -= pl.rows; admitted.push({ rs, read: settle(pl.read(stop)), variant: pl.variant }) }
+        return true
+      }
+      // A depth's roots together over the budget: its heaviest `FILTER_SPLIT_ROOTS` planned one by one, each
+      // admitted if it fits (the lighter ones' rects can be most of a shared read).
+      const wide: { path: string; depth: number }[][] = []
+      plans.forEach((pl, i) => { if (!admit(groups[i], pl)) wide.push(groups[i]) })
+      for (const rs of wide) {
+        const each = rs.slice(0, rs.length > 1 ? FILTER_SPLIT_ROOTS : 0)
+        const solo = await Promise.all(each.map(r => planFor([r])))
+        each.forEach((r, i) => { if (!admit([r], solo[i])) skipped.budget++ })
+        skipped.budget += rs.length - each.length
+      }
       for (const x of admitted) {
         const got = await x.read
         if (got === late) skipped.late += x.rs.length
@@ -1344,6 +1355,8 @@ export const FILTER_SUBDIV_LEVELS = 3
  *  `checkpoints`: 24 groups, 0.6 s of Server-Timing, 2 s to the client). */
 export const FILTER_PHASE2_GROUPS = 16
 export const FILTER_PHASE2_ROWS = 160_000
+/** …a depth's roots over that budget together are planned one by one, its heaviest this many. */
+export const FILTER_SPLIT_ROOTS = 4
 /** …within this many ms (`FILTER_PHASE2_MS` overrides): a read still running then is dropped. With the
  *  root details' wait past it (`FILTER_DETAILS_MS`, dev 300) and the build, a full view lands in ~2 s. */
 export const FILTER_PHASE2_MS = 1500

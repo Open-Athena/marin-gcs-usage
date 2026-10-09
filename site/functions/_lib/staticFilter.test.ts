@@ -368,3 +368,26 @@ describe('a view whose root the query matches (NOT): its own forest', () => {
     expect([v.matches, v.excluded, flatTree(v.tree)]).toEqual([['bk/data/tomato'], ['bk/data/tomato/a.bin'], [['/', 3000, 1, 'm']]])
   })
 })
+
+describe('phase 2: a depth\'s roots over the budget together', () => {
+  // Two match roots at one depth (`bk/data/tomato`, `bk/data/raw`; served as static hits), one read.
+  const two: HitSource = {
+    async hits() {
+      const h = (path: string, size: number, n: number): Hit => ({ path, depth: 3, usr: '', vf: 0, vt: 9e15, size: BigInt(size), n: BigInt(n) })
+      return { hits: [h('bk/data/tomato', 8000, 2), h('bk/data/raw', 183, 3)], io: { from: 'test' } }
+    },
+  }
+  const env = () => envStatic({ source: two, scans: async () => [...DATES], gen: 'two' })
+  it('in budget: both subdivided; over it: each planned alone, and each counted once', async () => {
+    const all = await view(env(), A, '', 'tomat')
+    const none = await view(env(), A, '', 'tomat', { phase2Groups: 0 })
+    expect([all.interiors, flatTree(all.tree), none.interiors, flatTree(none.tree)]).toEqual([
+      undefined,
+      [['/', 8183, 5], ['bk', 8183, 5], ['bk/data', 8183, 5], ['bk/data/tomato', 8000, 2, 'm'], ['bk/data/tomato/a.bin', 5000, 1], ['bk/data/tomato/b.bin', 3000, 1],
+        ['bk/data/raw', 183, 3, 'm'], ['bk/data/raw/tomat-1', 150, 2], ['bk/data/raw/tomat-1/x.bin', 100, 1], ['bk/data/raw/tomat-1/TOMAT-inner', 50, 1],
+        ['bk/data/raw/tomat-1/TOMAT-inner/y.bin', 50, 1], ['bk/data/raw/plain.bin', 33, 1]],
+      { read: 0, skipped: 2, reason: '2 over the read budget' },
+      [['/', 8183, 5], ['bk', 8183, 5], ['bk/data', 8183, 5], ['bk/data/tomato', 8000, 2, 'm'], ['bk/data/raw', 183, 3, 'm']],
+    ])
+  })
+})
