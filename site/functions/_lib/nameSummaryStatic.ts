@@ -131,19 +131,27 @@ export async function staticSummary(env: StaticNameEnv, params: URLSearchParams,
     s ??= store(env.INDEX_R2!, gen)
     const asked = datedNameRequest(params), key = asked.name
     const [have, meta] = await Promise.all([s.scans(), s.catalog.info()])
-    // A scan id the index holds is that scan; anything else is a slug for the latest scan it prefixes (`scanSlug.ts`
-    // `resolveScan`: `2026-10-09` = that day's latest scan), so a date link from before sub-daily scans still answers.
-    const resolve = (d: string) => have.includes(d) ? d : resolveScan(d, have)
-    const date = resolve(asked.date), from = asked.from === undefined ? undefined : resolve(asked.from)
-    if (from !== undefined && from !== null && date && from >= date) return json({ error: '`from` must be an earlier scan than `date`.' }, 400, privateHeaders)
-    // A side the index lacks: a scan the store has but the index doesn't cover yet is a 400 `scan-not-indexed`; a slug
-    // or id naming no scan at all is the uniform 404 (`scanArg.ts`), never another scan.
-    for (const [k, raw, got] of [['date', asked.date, date], ['from', asked.from, from]] as const) {
-      if (raw === undefined || got) continue
+    // `date` / `from` name a scan of the STORE, resolved as every page and API does (`scanArg.ts`
+    // `indexedScan`: a held id is itself, a slug the latest store scan it names; `2026-10-09` = that day's
+    // latest scan when no scan is that id) — never the latest scan the static index happens to hold, which
+    // would answer for another scan than the map's. A store scan the index doesn't cover yet is a 400
+    // `scan-not-indexed`; a value naming no scan at all is the uniform 404.
+    const resolve = async (raw: string): Promise<string | null> => {
+      if (have.includes(raw)) return raw
       const prefix = decodeScan(raw)
-      if (prefix && await indexedScan(env as unknown as Env, prefix, isScanId(raw))) return json({ error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }, 400, privateHeaders)
-      return noScan(k, raw)
+      if (!prefix) return null
+      // No store index to ask (no D1): the static index's own scans, an exact id as given.
+      if (!env.DB) return resolveScan(raw, have) ?? (isScanId(raw) ? raw : null)
+      const e = env as unknown as Env
+      return (isScanId(raw) ? await indexedScan(e, raw, true) : null) ?? await indexedScan(e, prefix, false)
     }
+    const date = await resolve(asked.date), from = asked.from === undefined ? undefined : await resolve(asked.from)
+    for (const [k, raw, got] of [['date', asked.date, date], ['from', asked.from, from]] as const) {
+      if (raw === undefined) continue
+      if (!got) return noScan(k, raw)
+      if (!have.includes(got)) return json({ error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }, 400, privateHeaders)
+    }
+    if (from && date && from >= date) return json({ error: '`from` must be an earlier scan than `date`.' }, 400, privateHeaders)
     const request = { ...asked, date: date!, ...(from === undefined || from === null ? {} : { from }) }
     const days = from ? [from, date!] : [date!]
     const { plan, answers, io } = await answerKey(s, key, days, Number(env.STATIC_MAX_ROWS ?? MAX_ROWS))

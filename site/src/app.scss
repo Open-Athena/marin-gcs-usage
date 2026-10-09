@@ -2075,8 +2075,44 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 1; }
     padding: 1px 6px;
   }
   .bb-confirm { color: var(--ink); }
+  .bb-note { color: var(--ink-2); }
   .bb-warn { color: var(--s3); }
   .bb-progress { color: var(--s1); }
+  // The review list floats below the bar (a native <details>), so opening it shifts nothing.
+  .bb-review {
+    position: relative;
+    > summary { cursor: pointer; color: var(--s1); list-style: none; text-decoration: underline dotted; }
+    > summary::-webkit-details-marker { display: none; }
+  }
+  .bb-panel {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 4px);
+    left: 0;
+    width: min(560px, calc(100vw - 32px));
+    max-height: min(60vh, 520px);
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    padding: 6px 8px;
+    color: var(--ink);
+    .bb-help { margin: 0 0 4px; color: var(--ink-2); }
+    .bb-bulk { display: flex; gap: 4px; margin-bottom: 4px; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    .bb-group > ul { padding-left: 18px; }
+    .bb-row { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; cursor: pointer; }
+    .bb-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
+    .bb-parent code { font-weight: 600; }
+    .bb-n { color: var(--ink-2); white-space: nowrap; }
+    .bb-more { color: var(--ink-2); padding: 1px 0 3px; }
+  }
+}
+@media (max-width: 600px) {
+  // On a phone the bar wraps under the filter box; the panel spans the screen's width.
+  .bulkbar .bb-review { position: static; }
+  .bulkbar .bb-panel { left: 16px; right: 16px; width: auto; }
 }
 
 // `gaps` treemap-tiling chip — sits in the crumbs bar beside ⛶, so it stays
