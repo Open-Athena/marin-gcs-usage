@@ -70,7 +70,7 @@ Deleted objects stay recoverable for 7 days from their deletion (each run's `und
 | `GET /api/estate?date=<scan>&user=<id \| me>` | One user's estate: `{ user, date, head, bytes, objects, mix, assignments }`; `assignments` are their live assignments, each `{ prefix, ts, bytes, objects }`. |
 | `GET /api/assignments?date=<scan>` | The assigner × assignee matrix (who assigned what to whom, in bytes). |
 | `GET /api/actions` | The live ownership ledger: `{ owners: [...] }`, every expanded prefix (`prefix, owner, ts, who, memo, action_id`). `?log=1` is every action, newest first, with its status. |
-| `POST /api/actions` | Assign: one action or an array (≤500) of `{ pattern, owner, memo?, scan? }`. `owner` is a user id (as `/api/owners` keys them), `'@me'` resolves to you, `null` clears. Prefix patterns only. The newest assignment on a prefix or any ancestor wins. |
+| `POST /api/actions` | Assign: one action or an array (≤500) of `{ pattern, owner, memo?, scan?, kind? }`. `owner` is a user id (as `/api/owners` keys them), `'@me'` resolves to you, `null` clears. `pattern` is a directory prefix (`gs://marin-…/dir/`), or one object's exact path with `kind: 'object'`. The newest assignment on a prefix or any ancestor wins. For more than 500, send several arrays (e.g. a search's matches, page by page). |
 
 ### Data
 
