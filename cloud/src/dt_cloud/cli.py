@@ -499,7 +499,7 @@ def rules(identities_path: str, out: Path | None) -> None:
 
 
 @main.command()
-@option("-d", "--date", default=None, help="Scan id or prefix: YYYY-MM-DD[THH[MM]] — the latest scan it matches (default: latest from scans.json)")
+@option("-d", "--date", default=None, help="Scan slug: YYMMDD[HH[MM]] or YYYY-MM-DD[THH[MM]] — the latest scan it names; one naming none fails (default: latest from scans.json)")
 @option("-f", "--max-age-days", default=2, type=int, help="Freshness: latest scan must be within this many days")
 @option("-j", "--json", "as_json", is_flag=True, help="Emit machine-readable JSON to stdout")
 @option("-s", "--subdir", default=None, help="Snapshot subdir under /data/ (default: $SNAPSHOTS_SUBDIR; `cw` for the CoreWeave deployment, empty for the default store)")

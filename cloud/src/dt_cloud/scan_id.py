@@ -59,19 +59,53 @@ def scan_time(scan: str) -> dt.datetime:
 
 
 def scan_slug(scan: str) -> str:
-    """A scan id's canonical `?d=` slug (`scanSlug.ts` `encodeScan`): the year's
-    leading `20` dropped, `-` before the time — `2026-09-15T0001` → `260915-0001`,
-    `2026-09-15` → `260915`."""
+    """A scan id's canonical `?d=` slug (`scanSlug.ts` `encodeScan`): dashless
+    `YYMMDD[HHMM]`, the year's leading `20` dropped — `2026-09-15T0001` →
+    `2609150001`, `2026-09-15` → `260915`."""
     if not (m := SCAN_ID.fullmatch(scan)):
         raise ValueError(f"not a scan id: {scan!r}")
     y, mo, d, hh, mm = m.groups()
-    return f"{y[2:]}{mo}{d}" + (f"-{hh}{mm}" if hh else "")
+    return f"{y[2:]}{mo}{d}{hh or ''}{mm or ''}"
+
+
+# A slug: dashless compact `YYMMDD[HH[MM]]` (canonical; 8 digits are always
+# YYMMDDHH), the legacy `YYMMDD-HH[MM]` / `YYMMDDTHH[MM]`, or ISO
+# `YYYY-MM-DD[THH[MM]]`.
+_COMPACT = re.compile(r"(\d{2})(\d{2})(\d{2})(?:[T-]?(\d{2})(\d{2})?)?")
+_ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(\d{2})?)?")
+
+
+def slug_prefix(slug: str) -> str | None:
+    """A slug → the scan-id prefix it names (`26100912` → `2026-10-09T12`), or
+    None if it isn't one (`scanSlug.ts` `decodeScan`, minus its year-less forms)."""
+    if m := _COMPACT.fullmatch(slug):
+        y, mo, d, hh, mm = m.groups()
+        y = f"20{y}"
+    elif m := _ISO.fullmatch(slug):
+        y, mo, d, hh, mm = m.groups()
+    else:
+        return None
+    try:
+        dt.date(int(y), int(mo), int(d))
+    except ValueError:
+        return None
+    if (hh and int(hh) > 23) or (mm and int(mm) > 59):
+        return None
+    return f"{y}-{mo}-{d}" + (f"T{hh}{mm or ''}" if hh else "")
 
 
 def latest_scan(prefix: str, scans: list[str]) -> str | None:
     """The latest scan (any order in) whose id starts with `prefix`; None if none."""
     matches = [s for s in scans if s.startswith(prefix)]
     return max(matches) if matches else None
+
+
+def resolve_slug(slug: str, scans: list[str]) -> str | None:
+    """The resolver: the latest scan a slug names (`261009` a day, `26100912` an
+    hour, `2610091236` a minute; legacy and ISO spellings too), or None — a miss,
+    never the nearest or latest scan instead."""
+    prefix = slug_prefix(slug)
+    return latest_scan(prefix, scans) if prefix else None
 
 
 def snapshot_scans(data_root: Path) -> list[str]:
