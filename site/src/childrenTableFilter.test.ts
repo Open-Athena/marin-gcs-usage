@@ -6,7 +6,7 @@ import type { CoverItem } from './filterCover'
 
 // The table's own logic under a filter, with its surroundings stubbed: the selection is preset (`selected`),
 // and the assign / trash controls render what they would send.
-const { selected, staged } = vi.hoisted(() => ({ selected: new Set<string>(), staged: [] as string[][] }))
+const { selected, staged, acts } = vi.hoisted(() => ({ selected: new Set<string>(), staged: [] as string[][], acts: [] as { resolve: () => Promise<unknown> }[] }))
 vi.mock('./auth', () => ({ useCanAssign: () => true, useCanStage: () => true }))
 vi.mock('./store', () => ({ useStore: () => ({ staging: true, owners: true }) }))
 vi.mock('./plans', () => ({ useStage: () => ({ error: null, mutate: (v: { prefixes: string[] }) => staged.push(v.prefixes) }) }))
@@ -14,6 +14,17 @@ vi.mock('./perf', () => ({ usePerfCommit: () => {} }))
 vi.mock('./units', () => ({ useUnits: () => ({ fmtBytes: (b: number) => `${b} B` }) }))
 vi.mock('use-prms', () => ({ intParam: () => ({}), useUrlState: () => [20, () => {}] }))
 vi.mock('./Tooltip', () => ({ Tooltip: ({ content, children }: { content: ReactNode; children: ReactNode }) => createElement('span', { 'data-tip': typeof content === 'string' ? content : '' }, children) }))
+// A filtered row's controls as a marker naming what it acts on; the selection's action records its deps.
+vi.mock('./MatchActions', async () => {
+  const { createElement: h } = await import('react')
+  return {
+    RowActs: ({ path, src }: { path: string; src: { key: string } }) => h('i', { 'data-row': path, 'data-src': src.key }),
+    ActStatus: () => h('span', { className: 'act-live' }),
+    useActDeps: () => ({}),
+    useKeepFocus: () => ({ ref: () => {}, handlers: {} }),
+    useMatchAct: (deps: { resolve: () => Promise<unknown> }) => { acts.push(deps); return { state: { s: 'idle' }, confirmT: null, start: async () => {} } },
+  }
+})
 vi.mock('./AssignSelect', () => ({ AssignSelect: ({ items, label }: { items: unknown; label?: string }) => createElement('i', { 'data-assign': JSON.stringify(items), 'data-label': label ?? '' }) }))
 vi.mock('./rowSelection', () => ({
   useRowSelectionKeys: () => {},
@@ -38,7 +49,13 @@ const items: CoverItem[] = [
   ...[1, 2, 3].map(i => ({ path: `marin-us-central1/show/x${i}.mp3`, kind: 'file' as const, b: 100, o: 1, roots: 1 })),
 ]
 const files = [1, 2, 3].map(i => ({ key: `gs://marin-us-central1/show/x${i}.mp3`, kind: 'object' }))
-const render = (filter?: { items: CoverItem[] | null; why?: string }) => renderToStaticMarkup(createElement(ChildrenTable, {
+/** The filter's row source: `resolve` slices `items` to the row (recording each row asked for). */
+const asked: string[] = []
+const src = (items: CoverItem[]) => ({
+  key: 'K', prefetch: async () => {},
+  resolve: async (row: string) => { asked.push(row); return { items: items.filter(i => i.path === row || i.path.startsWith(`${row}/`)), complete: true } },
+})
+const render = (filter?: ReturnType<typeof src>) => renderToStaticMarkup(createElement(ChildrenTable, {
   node, segs: [], scheme: 'gs://', ownerIdx: { assignmentOf: () => null } as never, onOpen: () => {}, onOpenObject: () => {}, filter,
 }))
 const rows = (html: string) => [...(html.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? '').matchAll(/<tr[^>]*>(.*?)<\/tr>/g)].map(([, r]) => r)
@@ -48,47 +65,40 @@ const assigns = (html: string) => [...html.matchAll(/data-assign="([^"]*)" data-
 const checkboxes = (html: string) => rows(html).map(r => /<td class="col-sel">(.*?)<\/td>/.exec(r)?.[1] === '' ? 'no box' : 'box')
 const actionsCell = (row: string) => /<td class="actions">(.*)<\/td>$/.exec(row)?.[1] ?? ''
 
-beforeEach(() => { selected.clear(); staged.length = 0 })
+beforeEach(() => { selected.clear(); staged.length = 0; acts.length = 0; asked.length = 0 })
 
 describe('the children table under a filter', () => {
   it('a row holding one match shows the path to it (as its tile), others their own name', () => {
     // At the root no name is elided, so no row carries the full-path tooltip (it would repeat the cell).
-    expect(rows(render({ items })).map(r => [name(r), tip(r)])).toEqual([
+    expect(rows(render(src(items))).map(r => [name(r), tip(r)])).toEqual([
       ['marin-us-central1/show', undefined],
       ['marin-eu-west4/tomat', undefined],
       ['bkt-none', undefined],
     ])
   })
-  it('each row acts on its matches — a folder as its prefix, lone files as exact objects; a row with none listed has no checkbox and says why', () => {
-    const html = render({ items })
-    expect(assigns(html)).toEqual([
-      [files, ''],
-      [[{ key: 'gs://marin-eu-west4/tomat/', kind: 'prefix' }], ''],
+  it('every row offers its actions at once over its own path (no "list" step), and every row is selectable', () => {
+    const html = render(src(items))
+    expect(rows(html).map(r => [/data-row="([^"]*)" data-src="([^"]*)"/.exec(actionsCell(r))?.slice(1)])).toEqual([
+      [['marin-us-central1', 'K']],
+      [['marin-eu-west4', 'K']],
+      [['bkt-none', 'K']],
     ])
-    expect(checkboxes(html)).toEqual(['box', 'box', 'no box'])
-    expect(rows(html).map(r => /data-tip="([^"]*)"><span class="none">—/.exec(actionsCell(r))?.[1] ?? null)).toEqual([
-      null,
-      null,
-      'Listing this row’s matches…',
-    ])
-    expect(rows(html).map(r => /data-tip="(Stage[^"]*)"/.exec(actionsCell(r))?.[1] ?? null)).toEqual([
-      'Stage this row’s matching 3 files for deletion (not the rest of the row) — an admin approves and dispatches from /staged',
-      'Stage this row’s matching 1 folder for deletion (not the rest of the row) — an admin approves and dispatches from /staged',
-      null,
-    ])
+    expect([checkboxes(html), assigns(html), html.includes('>list<')]).toEqual([['box', 'box', 'box'], [], false])
   })
-  it('the selection is the rows\' match roots, never their whole prefixes', () => {
+  it('the selection acts on the selected rows\' matches (resolved on the click), never their whole prefixes', async () => {
     selected.add('gs://marin-eu-west4').add('gs://marin-us-central1')
-    const html = render({ items })
-    // The selection bar's assign and trash: the folder match and the three lone files, each with its kind.
-    expect(assigns(html).at(-1)).toEqual([[...files, { key: 'gs://marin-eu-west4/tomat/', kind: 'prefix' }], 'assign 4…'])
-    expect(/trash (\d+)<\/button>/.exec(html)?.[1]).toBe('4')
-    expect(html.includes('gs://marin-eu-west4/&quot;') || html.includes('gs://marin-us-central1/&quot;')).toBe(false)
-  })
-  it('no row acts while the matches aren\'t listed (and says why)', () => {
-    const html = render({ items: null, why: 'There are too many matches under this folder to list them. Open a folder below to act on its matches.' })
-    expect([checkboxes(html), assigns(html)]).toEqual([['no box', 'no box', 'no box'], []])
-    expect(rows(html).map(r => /data-tip="([^"]*)"/.exec(actionsCell(r))?.[1])).toEqual(Array(3).fill('There are too many matches under this folder to list them. Open a folder below to act on its matches.'))
+    const html = render(src(items))
+    // The bar: the count, then trash and assign over the rows' matches (no per-match count before the click).
+    expect(/<div class="sel-bar-dock">(.*)<\/div><\/section>$/.exec(html)![1].replace(/<svg.*?<\/svg>/, '<svg/>')).toBe(
+      '<span class="sel-bar"><b>2</b> selected · 350 B<span class="acts"><span class="mact sel-acts" tabindex="-1">'
+      + '<span data-tip="Optional: one note for this deletion — why these matches go. Stored with the batch, visible to the admin who dispatches."><input class="memo" placeholder="note (optional)" aria-label="deletion note" value=""/></span>'
+      + '<span data-tip=""><button type="button" class="trash" aria-label="trash selected"><svg/> trash</button></span><i data-label="assign 2…"></i><span class="act-live"></span></span>'
+      + '<button type="button" class="quiet">deselect</button></span></span>')
+    const got = await acts.at(-1)!.resolve()
+    expect([asked, got]).toEqual([
+      ['marin-us-central1', 'marin-eu-west4'],
+      { items: [...items.slice(1), items[0]], complete: true },
+    ])
   })
   it('without a filter every row acts on its own prefix, named as itself', () => {
     selected.add('gs://bkt-none')

@@ -20,7 +20,8 @@ import { fmtN } from './types'
 import { useUnits } from './units'
 import { usePerfCommit } from './perf'
 import { pathText } from './pathCrumbs'
-import { actionTargets, chainOf, type CoverItem, rowItems, targetsText } from './filterCover'
+import { chainOf, rowsCover } from './filterCover'
+import { ActStatus, RowActs, type RowSource, useActDeps, useKeepFocus, useMatchAct } from './MatchActions'
 
 // Sortable, paged listing of the treemap's current node's children — the
 // tabular twin of the map above it: every named row is a link, a directory
@@ -51,11 +52,11 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   onOpen: (segs: string[]) => void
   /** An object row was opened: show it in the leaf viewer. */
   onOpenObject: (segs: string[]) => void
-  /** Under a filter: the matches under the view as the fewest exact prefixes (`/api/filter-cover`) —
-   *  what a row's checkbox, trash and assign act on (the row's own items, never its whole prefix). `items`
-   *  null: not available (loading, incomplete, or a scoped view; `why` says so) — no row acts. Absent: no
-   *  filter, every row acts on its own prefix. */
-  filter?: { items: CoverItem[] | null; why?: string; want?: () => void }
+  /** Under a filter: where a row's matches come from (`/api/filter-cover`, as the fewest exact prefixes) —
+   *  what its trash and assign, and the selection's, act on (the row's own matches, never its whole
+   *  prefix). Every row offers them at once; the matches are fetched on intent and awaited on the click.
+   *  Absent: no filter, every row acts on its own prefix. */
+  filter?: RowSource
   /** Brushing with the treemap: the child (by name) lit as hovered, and the
    *  row under the pointer, `null` on leave. */
   brush?: string | null
@@ -133,12 +134,9 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   const uriOfKid = (k: TreeNode) => scheme + [...segs, k.n].join('/')
   // Rows select (click / shift / ⌘, checkboxes, j/k) into one set keyed by
   // uri; the bar above the table stages or assigns the whole selection at once.
-  // Under a filter a row stands for its matches: its cover items (`rowItems`), never its whole prefix.
-  const itemsOf = (k: TreeNode): CoverItem[] => filter?.items ? rowItems(filter.items, [...segs, k.n].join('/')) : []
-  // …and acts when any of them is placed (a folder goes as its prefix, a lone matching file as that exact
-  // object — `actionTargets`); an unchecked match (kind unknown) never acts.
-  const acts = (k: TreeNode) => !k.n.startsWith('(') && (!filter || itemsOf(k).some(i => i.kind !== null))
-  const selectable = useMemo(() => shown.filter(acts), [shown, filter, segs]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Under a filter a row stands for its matches (resolved on the click), never its whole prefix.
+  const acts = (k: TreeNode) => !k.n.startsWith('(')
+  const selectable = useMemo(() => shown.filter(acts), [shown])
   const sel = useRowSelection(selectable, uriOfKid)
   useRowSelectionKeys(sel, 'tbl', 'Children table')
   // Selection survives paging and sort by key, but not a drill: the rows
@@ -161,11 +159,18 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   // What each selected row acts on: an object's key, a directory's prefix.
   const kindOf = new Map(kids.map(k => [uriOfKid(k), k.k]))
   const selKids = kids.filter(k => sel.selected.has(uriOfKid(k)))
-  // Unfiltered: each selected row's own prefix. Under a filter: the selected rows' match items, per action.
-  const selItems = filter ? selKids.flatMap(itemsOf) : []
-  const selAssign = filter ? actionTargets(selItems, scheme, 'assign').items : [...sel.selected].map(u => actionItem(u, kindOf.get(u)))
-  const selStage = filter ? actionTargets(selItems, scheme, 'stage').items : selAssign
-  const trashSel = () => { if (selStage.length) stage.mutate({ prefixes: selStage, note: memo }, { onSuccess: () => { sel.clear(); setMemo('') } }) }
+  // Unfiltered: each selected row's own prefix. Under a filter: the selected rows' matches, resolved on the click.
+  const selAssign = [...sel.selected].map(u => actionItem(u, kindOf.get(u)))
+  const trashSel = () => { if (selAssign.length) stage.mutate({ prefixes: selAssign, note: memo }, { onSuccess: () => { sel.clear(); setMemo('') } }) }
+  const sendDeps = useActDeps()
+  const selPaths = selKids.map(k => [...segs, k.n].join('/'))
+  const selAct = useMatchAct({
+    ...sendDeps, scheme,
+    resolve: () => filter ? rowsCover(filter.resolve, selPaths) : Promise.reject(new Error('no filter')),
+    landed: k => { sendDeps.landed?.(k); sel.clear(); setMemo('') },
+  }, `${filter?.key}|${path}`)
+  const selFocus = useKeepFocus(selAct.state.s)
+  const [hovered, setHovered] = useState<string | null>(null)
   const selBytes = selKids.reduce((s, k) => s + k.b, 0)
   // Everything a row derives from the tree and the ledger — owner shares and
   // the resolved assignment — computed once per page of rows × ledger, so a
@@ -183,8 +188,7 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
     const to = chain && chain.segs.length > 1 ? rowTarget([...segs, ...chain.segs.slice(0, -1)], end.n, end.k, false) : rowTarget(segs, k.n, k.k, synthetic)
     const label = chain && chain.segs.length > 1 ? chain.label : k.n
     const fullSegs = chain ? [...segs, ...chain.segs] : kidSegs
-    const its = filter ? itemsOf(k) : []
-    return { k, synthetic, kidSegs, fullSegs, label, uri, to, shares: ownerShares(k), cl, si: selectable.indexOf(k), its }
+    return { k, synthetic, kidSegs, fullSegs, label, uri, to, shares: ownerShares(k), cl, si: selectable.indexOf(k) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [shown, path, scheme, ownerIdx, selectable, filter])
   // Every hook above runs on every render: an empty page (a drill can leave
@@ -196,19 +200,43 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
   // row is outside the current year.
   const createdParts = (d: number) => epochDaysToMonthShort(d).split(' ')
   const hasYr = shown.some(k => k.d != null && createdParts(k.d).length > 1)
-  const selBar = showSel && sel.selected.size > 0 && (
+  // Under a filter the selection's trash / assign resolve the selected rows' matches on the click, then turn
+  // into the action's progress and accepted state (which outlives the selection it cleared).
+  const filterSelBar = filter && showSel && (sel.selected.size > 0 || selAct.state.s !== 'idle') && (
     <span className="sel-bar">
-      <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}{filter && <> · {selItems.length.toLocaleString('en-US')} {selItems.length === 1 ? 'match' : 'matches'}</>}
+      {sel.selected.size > 0 && <><b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}</>}
+      <span className="acts">
+        <span className="mact sel-acts" tabIndex={-1} ref={selFocus.ref} {...selFocus.handlers}>
+          {selAct.state.s === 'idle' && <>
+            {canTrash && (<>
+              <Tooltip content="Optional: one note for this deletion — why these matches go. Stored with the batch, visible to the admin who dispatches.">
+                <input className="memo" value={memo} onChange={e => setMemo(e.target.value)} placeholder="note (optional)" aria-label="deletion note" />
+              </Tooltip>
+              <Tooltip content={<>Stage the selected rows’ matches for deletion (not the rest of each row) — an admin approves and dispatches from <b>/staged</b></>}>
+                <button type="button" className="trash" onClick={() => void selAct.start({ kind: 'stage', memo })} aria-label="trash selected"><FaRegTrashCan /> trash</button>
+              </Tooltip>
+            </>)}
+            {assigning && <AssignSelect label={`assign ${sel.selected.size}…`} onPick={(owner, who) => void selAct.start({ kind: 'assign', owner, who })} />}
+          </>}
+          <ActStatus state={selAct.state} confirmT={selAct.confirmT} act={selAct} fmtBytes={fmtBytes} />
+        </span>
+        {sel.selected.size > 0 && <button type="button" className="quiet" onClick={sel.clear}>deselect</button>}
+      </span>
+    </span>
+  )
+  const selBar = filter ? filterSelBar : showSel && sel.selected.size > 0 && (
+    <span className="sel-bar">
+      <b>{sel.selected.size}</b> selected · {fmtBytes(selBytes)}
       <span className="acts">
         {canTrash && (<>
           <Tooltip content="Optional: one note for this deletion — why these prefixes go. Stored with the batch, visible to the admin who dispatches.">
             <input className="memo" value={memo} onChange={e => setMemo(e.target.value)} placeholder="note (optional)" aria-label="deletion note" />
           </Tooltip>
           <Tooltip content={<>Stage every selected folder and file for deletion — an admin approves and dispatches from <b>/staged</b></>}>
-            <button type="button" className="trash" onClick={trashSel} aria-label="trash selected"><FaRegTrashCan /> trash {filter ? selStage.length.toLocaleString('en-US') : sel.selected.size}</button>
+            <button type="button" className="trash" onClick={trashSel} aria-label="trash selected"><FaRegTrashCan /> trash {sel.selected.size}</button>
           </Tooltip>
         </>)}
-        {assigning && selAssign.length > 0 && <AssignSelect items={selAssign} label={`assign ${filter ? selAssign.length.toLocaleString('en-US') : sel.selected.size}…`} />}
+        {assigning && selAssign.length > 0 && <AssignSelect items={selAssign} label={`assign ${sel.selected.size}…`} />}
         <button type="button" className="quiet" onClick={sel.clear}>deselect</button>
       </span>
     </span>
@@ -268,14 +296,14 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
           </tr>
         </thead>
         <tbody>
-          {rowData.map(({ k, synthetic, kidSegs, fullSegs, label, uri, to, shares, cl, si, its }) => {
-            const rowAssignT = filter ? actionTargets(its, scheme, 'assign') : null
-            const rowStageT = filter ? actionTargets(its, scheme, 'stage') : null
-            const rowAssign = rowAssignT ? rowAssignT.items : [actionItem(uri, k.k)]
-            const rowStage = rowStageT ? rowStageT.items : [actionItem(uri, k.k)]
+          {rowData.map(({ k, synthetic, kidSegs, fullSegs, label, uri, to, shares, cl, si }) => {
+            const rowItem = actionItem(uri, k.k)
+            // A row's hover is intent to act on it (under a filter: its matches are fetched after a short dwell).
+            const enter = () => { onBrush?.(k.n); if (filter) setHovered(k.n) }
+            const leave = () => { onBrush?.(null); if (filter) setHovered(h => (h === k.n ? null : h)) }
             return (
               <tr key={k.n} ref={si >= 0 ? sel.rowRef(si) : undefined} {...(si >= 0 && showSel ? sel.rowProps(si) : {})}
-                {...(onBrush && !synthetic ? { onMouseEnter: () => onBrush(k.n), onMouseLeave: () => onBrush(null) } : {})}
+                {...((onBrush || filter) && !synthetic ? { onMouseEnter: enter, onMouseLeave: leave } : {})}
                 data-brushed={brush === k.n || undefined}>
                 {showSel && <td className="col-sel">{si >= 0 && <input type="checkbox" checked={sel.isSelected(k)} onChange={() => sel.toggle(si)} />}</td>}
                 <td className="prefix">
@@ -323,21 +351,18 @@ export function ChildrenTable({ node, segs, scheme, ownerIdx, userIdx, onPickUse
                 )}
                 {showSel && (
                   <td className="actions">
-                    {!synthetic && !acts(k) && (
-                      <Tooltip content={its.length ? 'This row’s matches couldn’t be checked (file or folder?), so nothing acts on them; open the folder to act on them.' : filter?.why ?? 'Listing this row’s matches…'}>
-                        {filter?.want && !its.length
-                          ? <button type="button" className="act" onClick={filter.want}>list</button>
-                          : <span className="none">—</span>}
-                      </Tooltip>
+                    {!synthetic && filter && (
+                      <RowActs key={filter.key} path={kidSegs.join('/')} src={filter} intent={hovered === k.n} scheme={scheme}
+                        canTrash={canTrash} assigning={assigning} fmtBytes={fmtBytes} />
                     )}
-                    {!synthetic && acts(k) && (
+                    {!synthetic && !filter && (
                       <>
-                        {canTrash && rowStage.length > 0 && (
-                          <Tooltip content={rowStageT ? `Stage this row’s matching ${targetsText(rowStageT)} for deletion (not the rest of the row) — an admin approves and dispatches from /staged` : k.k === 'file' ? 'Stage this file for deletion (exactly this object) — an admin approves and dispatches from /staged' : 'Stage this folder for deletion — an admin approves and dispatches from /staged'}>
-                            <button type="button" className="trash" onClick={() => filter ? stage.mutate({ prefixes: rowStage }) : trash(uri, k.k)} aria-label="trash"><FaRegTrashCan /></button>
+                        {canTrash && (
+                          <Tooltip content={k.k === 'file' ? 'Stage this file for deletion (exactly this object) — an admin approves and dispatches from /staged' : 'Stage this folder for deletion — an admin approves and dispatches from /staged'}>
+                            <button type="button" className="trash" onClick={() => trash(uri, k.k)} aria-label="trash"><FaRegTrashCan /></button>
                           </Tooltip>
                         )}
-                        {assigning && rowAssign.length > 0 && <AssignSelect items={filter ? rowAssign : rowAssign[0]} assigned={filter ? null : cl?.who ?? null} compact />}
+                        {assigning && <AssignSelect items={rowItem} assigned={cl?.who ?? null} compact />}
                       </>
                     )}
                   </td>
