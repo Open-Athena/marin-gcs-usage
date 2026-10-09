@@ -1,6 +1,6 @@
 # Anchored name search: `^q`, `q$`, `^q$`
 
-Status: 2026-10-09: built for gcs gen `2026-10-08c` and its two runs (10-09, 10-09T1236), verified 1,110/1,110 against brute force, on GCS and R2, served by dev (`dev.gcs.oa.dev`). Code on branch `anchors` (not on prod). Built from option 2 of `specs/search-extensions.md` (2b ends-with heavy, 2c the name index), with Ryan's syntax `^q` / `q$`. The heavy-`^q` drill (2d) is not built: its census decides.
+Status: 2026-10-09: built for gcs gen `2026-10-08c` and its two runs (10-09, 10-09T1236), verified 1,110/1,110 against brute force, on GCS and R2, served by dev (`dev.gcs.oa.dev`). Code on branch `anchors` (not on prod). Built from option 2 of `specs/search-extensions.md` (2b ends-with heavy, 2c the name index), with Ryan's syntax `^q` / `q$`. The heavy-`^q` drill (2d) is not built; heavy `^q` degrades instead ("Heavy `^q`" below: a starts-with catalog at the fleet root, scoped reads below, branch `anchor-degrade`).
 
 ## Semantics
 
@@ -41,7 +41,7 @@ Per (key, P):
 2. **Scoped** (`q$`, `^q$`). Over the anchored tiers, the groups meeting `[(k, P/), (k, P0))`: their rows ≤ `R + 4·Σ rg` → read them, keeping the rows under P. Each tier's bound is at most its true rows plus four groups: two straddling P's range, and the two groups at the ends of `k`'s run that hold other keys.
 3. **Rollup.** Otherwise the true rows exceed R, so the builder made `(k, P)`'s rollup in some tier. The tiers' rollup rows stack newest first down to a full header (`DRILL_RULES.stack`).
 
-`^q` past step 1 declines with `term-too-common`.
+`^q` has its own bound and no step 2–3: see "Heavy `^q`" below (the fleet root from the starts-with catalog, scoped reads below it).
 
 **Tiers.** The base and the manifest's runs, up to the first run without `anchors/meta.json`. Answers carry the scans of the tiers they read (`Found.scans`), so a scan past the anchored stack is `scan-not-indexed` (a light `q$` excepted). A generation without `anchors/meta.json` declines every anchored key past light `q$`.
 
@@ -115,9 +115,63 @@ All runs were spot n2-highmem-16 in us-east1 through the deployment's `job/stati
 - Per scan, the `anchors` stage is 12–17 min on one spot VM (~$0.05) and 40–90 MB to R2 (~$0.01). It runs after the drill today, so it adds to the per-scan wall time; it could run in parallel with it.
 - Storage: R2 +7.6 GB (~$0.11/month), GCS +9 GB.
 
+## Heavy `^q`: graceful degradation (2026-10-09, branch `anchor-degrade`)
+
+Before: a `^q` whose range held more than V + 2 groups declined everywhere (`term-too-common`), map, diff and series alike. No aggregate of a prefix existed: the contains catalog and the drill are keyed by contains literals, the `end` / `exact` rollups by a whole suffix or a whole name, and the census holds only row counts. So even the fleet root's per-bucket table had nothing to read.
+
+**Dispatch for `^q`** (`staticAnchors.ts`, mirrored by `AnchoredReader`):
+
+1. **Whole range** ≤ `START_MAX_ROWS` (400K + 2 groups) rows over the anchored tiers: read once, folded, held, cut to P (as before, with the larger bound). Abandoned past `START_MAX_HITS` (150K) first hits, which then counts as heavy.
+2. **Fleet root, heavy:** the **starts-with catalog** (`anchors/start/`): per prefix with more than R rows, per bucket, the running Σ size and n_files of its first hits (the rollup layout at `dir = ''`, K = 256 kept buckets, stacked newest tier first). Exact per bucket on every scan its tiers cover. The answer is `bucketsOnly` + `scopedBelow` (the client flags "per-bucket totals only at the top: inside a bucket, this term is searched where its matches are few enough").
+3. **View path P, heavy:** the groups of the prefix's range whose `path` bounds meet `[P/, P0)`; read when they hold ≤ `START_MAX_ROWS` rows and fold to ≤ `START_MAX_HITS` hits, else `term-too-common`. P's rows are **not** contiguous within the range: it is sorted `(s, path)`, so they are contiguous per name. A group spanning many names (`step-1000`, `step-1001`, …) has wide path bounds and is not pruned. This is the limit of the scoped read (below).
+4. **First paint:** a view's first-paint request for the fleet root answers from the catalog while the range isn't held yet (`HitOpts.firstPaint`, through `indexedGate` and `readView`); the full request does step 1. So the root shows bucket tiles at once and the full read replaces them.
+
+**Index** (per tier, new keys only): `anchors/start/{meta.json, start-rollups-index.parquet, start-rollups-index.top.parquet, rollups/start-s####.parquet}`. `meta.json` is the catalog's own liveness marker, written last (tiers published before it keep their `anchors/meta.json`). The reader uses the prefix of anchored tiers that carry one. Its answers carry those tiers' scans.
+
+- **Base** (`anchors start -g GEN`): per name shard, the census prefixes past R in the shard's three-character range, summed per `(prefix, bucket, vf, vt)` one prefix length at a time (no `(row, prefix)` pairs materialized), then `rollup_cells` at level 0.
+- **Run** (`start_run`; `anchors start -d ID`, and `anchors run` builds it for new runs): candidates are every prefix of the run's names whose run rows plus each prior tier's name-sidecar bound over `[k, k + U+10FFFF)` pass R. A prefix heavy before gets a delta header and cells at D (`delta_cells`, mode `start`). One the run makes heavy is restated from every tier's first hits (prior rows ≤ R, read exactly).
+- **Merged runs:** `merge_rollups` over the inputs' `start` files, when every input carries one.
+- **Runner:** the anchors stage is done once `anchors/meta.json` and (when the base has a catalog) `anchors/start/meta.json` are there. `anchors run` on a run whose anchors exist builds only its catalog. R2 copies `anchors/start/meta.json` before `anchors/meta.json` (`R2_SERVED` lists the catalog).
+
+**Built (gcs `2026-10-08c`)**, spot n2-highmem-16 us-east1 through `job/static-names.sh run start`:
+
+| Tier | Wall | Output |
+|---|---:|---|
+| base | 5.3 min (13 shards, 11–50 s each) | 2,788 prefixes (= the census over V), 89,474 rows, 720 KB |
+| run 2026-10-09 | ~3 min | 3,757 rows |
+| run 2026-10-09T1236 | ~3 min | 7,053 rows |
+
+R2: `r2-batch` per tier (`-o anchors/start/ -x anchors/start/meta.json`, then `-o anchors/start/meta.json`; it needs `-b oa-gcs-usage-dvx`, since its `ENV_JSON` has no profile). Cost: ~15 VM-minutes ≈ $0.10, plus the brute-force job (3 tasks) ≈ $0.15. **≈ $0.3 in all.**
+
+**Measured: the Worker reader, cold, on a laptop over GCS ranged reads** (`StaticNames` + `AnchoredSource`; fetched sizes include the name shard's group index, which the colo caches):
+
+| View | Source | Time | Read | Heap held (after GC) / peak |
+|---|---|---:|---|---|
+| `^train` root, whole (before the hit cap) | 246,555 hits from 311K rows | 4.6–6.2 s | 22 MB | **72 MB / 135 MB**, cache JSON 36 MB |
+| `^eval` root | 38,921 hits from 246K rows | 2.7–6.3 s | 19 MB | 16 MB |
+| `^train` root, capped | catalog (whole abandoned at 150K hits) | 3.3 s | 22 MB | 5 MB |
+| `^step` / `^data` / `^config` root | catalog | 1.5–2.4 s | 14–20 MB (footer) | 2–6 MB |
+| `^train` in a bucket | scoped, 196–254K rows, 37–83K hits | 9–10.5 s (incl. the abandoned whole read) | 44 MB | 32 MB |
+| `^config` in a bucket | scoped, 25–123K rows | 2.4–10 s | 29 MB | 3–9 MB |
+| `^results` in us-central1 | scoped, 319K rows, 84K hits | 12 s | 44 MB | 37 MB / 129 MB |
+
+Why the hit cap: a 400K-row read can hold ~400K first hits at ~300 B each (≈ 120 MB), past a Worker isolate's 128 MB. 150K hits ≈ 45 MB held. Peaks are garbage awaiting GC (one group's decoded columns at a time).
+
+**Verified** (`anchors query` over GCS vs `anchors brute -o anchors/verify-start/brute` on 2026-10-08, 10-09, 10-09T1236): `^train`, `^train-`, `^config`, `^step`, `^data` at the root, every bucket and a deeper path. **84 / 84 (case, scan) equal**: 5 catalog roots, 23 scoped. 15 declined, 1 plain. Files: `gs://oa-gcs-usage-dvx/static-names/2026-10-08c/anchors/verify-start/`.
+
+| Term | Root | Buckets | Deeper |
+|---|---|---|---|
+| `^train` (311K rows) | catalog, 870 TB | 6/6 scoped (196–254K rows read) | `us-central2/tokenized` scoped |
+| `^train-` | catalog | 6/6 scoped (180K) | `us-central2/raw` scoped |
+| `^config` (418K) | catalog | 5/6 scoped; `us-central1` past the hit cap | `us-central{1,2}/checkpoints` scoped |
+| `^step` (18.7M) | catalog, 768 TB | only `us-west4` (360K); 5 declined (0.5–18.7M) | `us-west4/checkpoints` scoped; `us-central2/checkpoints`, `eu-west4/checkpoints` declined (12.3M, 467K: no pruning) |
+| `^data` (59.3M) | catalog, 1.69 PB | 6/6 declined (26–53M) | `us-central2/raw` declined (26M); `eu-west4/datakit` plain |
+
+**What's still missing:** a per-directory aggregate for heavy prefixes below the root, the `^q` analog of the `exact` rollups (rollups at each heavy `(prefix, dir)`), or a copy of each heavy prefix's rows sorted by path so a scoped read is one contiguous range. Either is the size of the long drill (4.07B prefix-row pairs over the 2,788 prefixes), which is why `^step` / `^data` below the root still decline. A cheaper middle step: the catalog at level 1 too (per `(prefix, bucket)`, children = top-level dirs), built the same way (`heavy_dirs` capped at `lvl ≤ 1`).
+
 **Left.**
 
 - Compaction (`static_compact`) must rebuild `names/` and `anchors/` for the new generation (the base stages over it).
 - The anchors stage could run in parallel with the drill, which reads none of its outputs.
-- The `^q` bound decision (above).
+- ~~The `^q` bound decision (above).~~ Raised to 400K rows with a 150K first-hit cap: "Heavy `^q`" below.
 - The "N others" count after K kept children in a delta is a lower bound.

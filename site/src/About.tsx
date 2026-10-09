@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { SessionLogNote } from './SessionLogNote'
 import { useStore } from './store'
 
 // The onboarding copy that used to sit above the map as two folds. It lives
@@ -19,6 +20,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
           <strong>{store.title}</strong>
           <button type="button" className="token-x" onClick={onClose} aria-label="Close">✕</button>
         </div>
+        <SessionLogNote />
         <h3>The data</h3>
         {store.about ?? <p>{store.desc}</p>}
         {store.staging && <>

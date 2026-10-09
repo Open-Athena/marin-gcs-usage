@@ -1,7 +1,7 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
 import { COVER_V } from '../functions/_lib/cover'
-import { assignInBatches, chainOf, CoverError, coverQuery, coverRetry, fetchCover, type FilterCover, prefetchCover, rowCover, rowItems, rowsCover, stageInBatches } from './filterCover'
+import { assignInBatches, chainOf, CoverError, coverQuery, coverRetry, fetchCover, type FilterCover, prefetchCover, rowCover, rowItems, matchedListOf, rowLabel, rowMatchesOf, rowsCover, stageInBatches } from './filterCover'
 import { stageMany } from './plans'
 
 describe('large sets go in batches, never refused', () => {
@@ -46,6 +46,98 @@ describe('a filtered row: its label and its matches', () => {
     expect(chainOf({ n: 'a', c: [{ n: 'b', c: [{ n: 'c', c: [{ n: 'd' }] }] }] })).toEqual({ label: 'a/…/d', segs: ['a', 'b', 'c', 'd'] })
     expect(chainOf({ n: 'a', c: [{ n: '(other)' }] })).toEqual({ label: 'a', segs: ['a'] })
     expect(chainOf({ n: 'a', c: [{ n: 'x' }, { n: 'y' }] })).toEqual({ label: 'a', segs: ['a'] })
+  })
+  // gcs prod, `?f=tomat`: `marin-us-east5` drew one child (`tomat`), but held 9 match roots — `tomat/` and 8
+  // `flan_*_rotten_tomatoes_*.parquet` files too small to draw. Its label named only `tomat`.
+  const east5 = { n: 'marin-us-east5', c: [{ n: 'tomat', c: [{ n: 'a' }, { n: 'b' }] }] }
+  const flan = Array.from({ length: 8 }, (_, i) => ({ path: `marin-us-east5/data/hrm_text_split/flan_direct/flan_${i}_rotten_tomatoes_part_00000.parquet` }))
+  it('a row names the path to its match only when it holds exactly one (cut at the match); several: its name and how many; unknown: its name', () => {
+    expect([
+      rowLabel(east5, 'marin-us-east5', { n: 1, one: 'marin-us-east5/tomat' }),
+      rowLabel(east5, 'marin-us-east5', { n: 9 }),
+      rowLabel(east5, 'marin-us-east5', null),
+      rowLabel(east5, 'marin-us-east5', { n: 0 }),
+      // A capped list's lower bound: several listed → `9+`; one listed says nothing.
+      rowLabel(east5, 'marin-us-east5', { n: 9, atLeast: true }),
+      rowLabel(east5, 'marin-us-east5', { n: 1, atLeast: true }),
+      // The drawn chain runs past the match (`tomat` drew one child): the label stops at the match.
+      rowLabel({ n: 'b', c: [{ n: 'tomat', c: [{ n: 'only' }] }] }, 'b', { n: 1, one: 'b/tomat' }),
+      // The row is the match itself.
+      rowLabel(east5, 'marin-us-east5', { n: 1, one: 'marin-us-east5' }),
+      // One match the drawn chain doesn't reach (drawn elsewhere, or not at all): the name and the count.
+      rowLabel(east5, 'marin-us-east5', { n: 1, one: flan[0].path }),
+      rowLabel({ n: 'a', c: [{ n: 'b', c: [{ n: 'c', c: [{ n: 'd' }] }] }] }, 'x/a', { n: 1, one: 'x/a/b/c/d' }),
+    ]).toEqual([
+      { label: 'marin-us-east5/tomat', segs: ['marin-us-east5', 'tomat'] },
+      { label: 'marin-us-east5', segs: ['marin-us-east5'], count: 9 },
+      { label: 'marin-us-east5', segs: ['marin-us-east5'] },
+      { label: 'marin-us-east5', segs: ['marin-us-east5'] },
+      { label: 'marin-us-east5', segs: ['marin-us-east5'], count: 9, atLeast: true },
+      { label: 'marin-us-east5', segs: ['marin-us-east5'] },
+      { label: 'b/tomat', segs: ['b', 'tomat'] },
+      { label: 'marin-us-east5', segs: ['marin-us-east5'] },
+      { label: 'marin-us-east5', segs: ['marin-us-east5'], count: 1 },
+      { label: 'a/…/d', segs: ['a', 'b', 'c', 'd'] },
+    ])
+  })
+  it('a row\'s match count: exact from a full root list, a lower bound (more than one listed) from a capped one, else unknown', () => {
+    const matched = [{ path: 'marin-us-east5/tomat' }, ...flan, { path: 'marin-us-east5x/tomat' }, { path: 'marin-eu-west4/tomat' }]
+    const exact = rowMatchesOf(matched, 'exact')
+    const capped = rowMatchesOf(matched, 'capped')
+    expect([
+      exact('marin-us-east5'), exact('marin-eu-west4'), exact('marin-us-east5/tomat'), exact('bkt-none'),
+      capped('marin-us-east5'), capped('marin-eu-west4'), capped('bkt-none'),
+      rowMatchesOf(matched, null)('marin-us-east5'), rowMatchesOf(undefined, 'exact')('marin-us-east5'),
+    ]).toEqual([
+      { n: 9 }, { n: 1, one: 'marin-eu-west4/tomat' }, { n: 1, one: 'marin-us-east5/tomat' }, { n: 0 },
+      { n: 9, atLeast: true }, null, null,
+      null, null,
+    ])
+  })
+  it('a response\'s list is exact only uncapped and complete: capped, or unknown when partial, approximate or a rollup', () => {
+    const m = [{ path: 'a/tomat', b: 1, o: 1 }]
+    expect([
+      matchedListOf({ matched: m }),
+      matchedListOf({ matched: m, matchesCapped: true }),
+      matchedListOf({ matched: m, partialReason: 'cut' }),
+      matchedListOf({ matched: m, approximateReason: 'no index' }),
+      matchedListOf({ matched: m, rollup: {} }),
+      matchedListOf({}),
+      matchedListOf(undefined),
+    ]).toEqual(['exact', 'capped', null, null, null, null, null])
+  })
+  // gcs prod, 2026-10-09 scan, `/api/subtree?q=tomat&full=1` (shape as served; names shortened): the fleet
+  // root lists 205 of 21,735 match roots (`matchesCapped`), the paths below the store root as the rows' are;
+  // drilled into `marin-us-east5`, the list is every root (9).
+  it('the real response shapes: the capped root says `9+`, never the path; the drilled exact list names its one match', () => {
+    const P = 'marin-us-east5/data/hrm_text_split/flan_direct/'
+    const e5 = ['marin-us-east5/tomat', ...['t0_fsopt', 'flan_fsopt', 'flan_fsnoopt', 't0_fsnoopt', 't0_zsopt', 't0_zsnoopt', 'flan_zsopt', 'flan_zsnoopt'].map(f => `${P}${f}_part_00000.parquet`)]
+    const root = {
+      matched: [
+        { path: 'marin-eu-west4/tomat', b: 4543930137403, o: 420738 }, { path: e5[0], b: 2120947096049, o: 121162 },
+        { path: 'marin-us-central1/tomat', b: 486396327578, o: 19893 }, { path: 'marin-us-east1/tomat', b: 212692920492, o: 18791 },
+        ...Array.from({ length: 193 }, (_, i) => ({ path: `marin-us-central1/podcast_audio/show/ep${i}_rotten_tomatoes.mp3`, b: 1000 - i, o: 1 })),
+        ...e5.slice(1).map((path, i) => ({ path, b: 100 - i, o: 1 })),
+      ],
+      matchCount: { n: 21735, b: 7396315609520, o: 603889 }, matchesCapped: true,
+    }
+    const drilled = { matched: e5.map((path, i) => ({ path, b: 9 - i, o: 1 })), matchCount: { n: 9, b: 2121011255780, o: 121170 } }
+    const atRoot = rowMatchesOf(root.matched, matchedListOf(root))
+    const inE5 = rowMatchesOf(drilled.matched, matchedListOf(drilled))
+    const e5Node = { n: 'marin-us-east5', c: [{ n: 'tomat', c: [{ n: 'results' }, { n: 'cache' }, { n: 'x' }] }] }
+    expect([
+      root.matched.length,
+      rowLabel(e5Node, 'marin-us-east5', atRoot('marin-us-east5')),
+      rowLabel({ n: 'marin-eu-west4', c: [{ n: 'tomat' }] }, 'marin-eu-west4', atRoot('marin-eu-west4')),
+      rowLabel({ n: 'tomat', c: [{ n: 'results' }, { n: 'cache' }] }, 'marin-us-east5/tomat', inE5('marin-us-east5/tomat')),
+      rowLabel({ n: 'data', c: [{ n: 'hrm_text_split', c: [{ n: 'flan_direct' }] }] }, 'marin-us-east5/data', inE5('marin-us-east5/data')),
+    ]).toEqual([
+      205,
+      { label: 'marin-us-east5', segs: ['marin-us-east5'], count: 9, atLeast: true },
+      { label: 'marin-eu-west4', segs: ['marin-eu-west4'] },
+      { label: 'tomat', segs: ['tomat'] },
+      { label: 'data', segs: ['data'], count: 8 },
+    ])
   })
   it('a row\'s matches are the items at or under it, never a sibling sharing its name as a prefix', () => {
     const items = [{ path: 'b/x/tomat', kind: 'dir' as const, b: 1, o: 1, roots: 1 }, { path: 'b/xy/tomat', kind: 'dir' as const, b: 2, o: 1, roots: 1 }, { path: 'b/x', kind: 'dir' as const, b: 3, o: 1, roots: 1 }]
