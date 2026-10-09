@@ -777,11 +777,11 @@ const footersInFlight = new Map<string, Promise<unknown[]>>()
  *  per-scan store; an interval store's footer serves every scan, so its entries are keyed without one. */
 async function footerOnce<T>(h: PqHandle, part: string, make: () => Promise<[T[], number]>): Promise<T[]> {
   const k = `${storeKey(h.env)}|${h.asOf != null ? 'iv' : h.date}|${h.variant}|${h.gen}|${part}`
-  const hit = cacheGet<T>(k)
+  const hit = footerCache.get<T>(k)
   if (hit) return hit
   const pending = footersInFlight.get(k)
   if (pending) return pending as Promise<T[]>
-  const p = make().then(([v, bytes]) => { cachePut(k, v, bytes); return v })
+  const p = make().then(([v, bytes]) => { footerCache.put(k, v, bytes); return v })
   footersInFlight.set(k, p)
   try {
     return await p
@@ -1051,33 +1051,49 @@ export interface Span extends GroupSpan { rg: number }
  * keeps well inside the isolate's 128 MB with concurrent requests. */
 const GROUP_CACHE_CAP = 24 << 20
 const ROW_BYTES = 160 // a shaped Row with a ~60-char path, roughly
-/** Tier groups (`…|<rg>` → `Row[]`) and a cold footer's decoded groups
- * (`…|fg:<n>` → `BlobGroup[]`), one LRU, each entry with its estimated bytes. */
-const groupCache = new Map<string, { v: unknown[]; bytes: number }>()
-let groupCacheBytes = 0
+/** A cold footer's decoded groups (`…|fg:<n>` → `BlobGroup[]`) and their metadata (`…|fj:<n>`), in an
+ *  LRU of their own: an interval store's reads touch tens of footer groups (~0.5 MB each with their
+ *  `rg_json`), which in the rows' LRU evicted the very row groups a warm read wanted. */
+const FOOTER_CACHE_CAP = 12 << 20
+
+/** An LRU of decoded entries by an estimated byte size. */
+class Lru {
+  private m = new Map<string, { v: unknown[]; bytes: number }>()
+  private bytes = 0
+  constructor(private cap: number) {}
+  get<T>(k: string): T[] | undefined {
+    const hit = this.m.get(k)
+    if (!hit) return undefined
+    this.m.delete(k)
+    this.m.set(k, hit) // most recent last
+    return hit.v as T[]
+  }
+  put(k: string, v: unknown[], bytes: number): void {
+    if (bytes > this.cap) return
+    const old = this.m.get(k)
+    if (old) {
+      this.m.delete(k)
+      this.bytes -= old.bytes
+    }
+    while (this.bytes + bytes > this.cap && this.m.size) {
+      const [k0, e0] = this.m.entries().next().value as [string, { bytes: number }]
+      this.m.delete(k0)
+      this.bytes -= e0.bytes
+    }
+    this.m.set(k, { v, bytes })
+    this.bytes += bytes
+  }
+}
+/** Tier groups (`…|<rg>` → `Row[]`) and the search's decoded entries. */
+const groupCache = new Lru(GROUP_CACHE_CAP)
+const footerCache = new Lru(FOOTER_CACHE_CAP)
 
 export function cacheGet<T>(k: string): T[] | undefined {
-  const hit = groupCache.get(k)
-  if (!hit) return undefined
-  groupCache.delete(k)
-  groupCache.set(k, hit) // LRU: most recent last
-  return hit.v as T[]
+  return groupCache.get<T>(k)
 }
 
 export function cachePut(k: string, v: unknown[], bytes: number): void {
-  if (bytes > GROUP_CACHE_CAP) return
-  const old = groupCache.get(k)
-  if (old) {
-    groupCache.delete(k)
-    groupCacheBytes -= old.bytes
-  }
-  while (groupCacheBytes + bytes > GROUP_CACHE_CAP && groupCache.size) {
-    const [k0, e0] = groupCache.entries().next().value as [string, { bytes: number }]
-    groupCache.delete(k0)
-    groupCacheBytes -= e0.bytes
-  }
-  groupCache.set(k, { v, bytes })
-  groupCacheBytes += bytes
+  groupCache.put(k, v, bytes)
 }
 
 const groupKey = (h: IndexHandle, rg: number) => `${storeKey(h.env)}|${h.date}|${h.variant}|${h.gen}|${rg}`
