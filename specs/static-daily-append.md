@@ -35,7 +35,7 @@ The base generation's coalesced versions (`cintervals/r####.parquet`, `CINTERVAL
 
 - Every `cdelta` row at depth ≥ 1 is expanded to its suffix rows (`suffix_sql`), opens and closes alike.
 - A close record is the closing version's suffix rows with their final `vt`. It carries the same `size` and `n_files` as the version, so it is self-contained: a reader holding only the record can answer for it.
-- The rows are planned into shards (`plan_shards` over `dhist`, ~50M rows per shard), sorted, and written in the base's format (format below). The run gets its own `shards.json`, `sx/`, `sidecar/` and `sidecar.parquet`.
+- DuckDB sorts the rows `(s, path, usr, vf)`. `write_run_shards` streams them into shards in the base's format (format below), closing a shard at the first three-character-prefix boundary past ~50M rows, so no plan pass is needed. The run gets its own `shards.json` (same shape as the base's), `sx/`, `sidecar/` and `sidecar.parquet`.
 
 ### 3. Catalog delta (1 Batch task)
 
@@ -155,9 +155,29 @@ There is no tombstone and no `op` column at this level: a close record is the ve
 **Dispatch** (`nameSummaryStatic.ts`, `staticFilter.ts`):
 
 - The scan list is the manifest's `scans` (else `scans.json`).
-- The cache keys (`staticTag`, `cacheHits`) carry the manifest date, so a new day never serves a cached older hit list.
+- An indexed date's answers never change when a run lands: a later close sets a `vt` after that date. So response cache keys (`staticTag`) stay per generation.
+- A literal's hit list spans every date, so it is held and cached per manifest date (`SuffixHits`: `<key>@<date>`; the base alone keeps the bare key).
 - `MAX_ROWS` (the filter's bound) applies to the summed extent. A literal near V whose runs add close records can then go over it and fall back, which is correct but slower. Compaction resets this.
 - Heavy literals (`HitSource` `heavy`, the per-member roots index being built on `ch-store`) need their own per-run deltas. That is out of scope here; until then a heavy literal declines on a date past the base, as it does today.
+
+## Implementation
+
+- `cloud/src/dt_cloud/static_append.py`: `dt-cloud static-names daily {prepare,append,shards,catalog,publish,verify}`, run as `MODULE=static_append job/static-names.sh run …`.
+- `job/static-names.sh` stages `pyrmts` (not in the job image) beside `dt_cloud`.
+- Tier merges use `pyrmts.runs` (pinned 541bc8e).
+- Reader: `site/functions/_lib/staticRuns.ts` (`Tiers`, `TieredNames`, `TieredCatalog`), wired into `nameSummaryStatic.ts` and `staticFilter.ts`, on branch `daily-append-site`.
+
+Per scan D:
+
+```bash
+dt-cloud static-names daily prepare -g 2026-10-08c -d D                                                    # laptop: pin D's path sort → deltas/D/scans.json
+MODULE=static_append SPOT=1 job/static-names.sh run append 16 -g 2026-10-08c -d D -n 16                     # 256 ranges
+MODULE=static_append SPOT=1 PARALLELISM=1 job/static-names.sh run shards 1 -g 2026-10-08c -d D
+MODULE=static_append SPOT=1 job/static-names.sh run catalog 1 -g 2026-10-08c -d D
+dt-cloud static-names daily publish -g 2026-10-08c -d D [-m MOUNT]                                         # merges (if the counter carries), then manifests/D.json
+job/static-names.sh r2 2026-10-08c/deltas/D && job/static-names.sh r2 2026-10-08c                            # the run, then the manifest (last)
+MODULE=static_append SPOT=1 job/static-names.sh run verify 1 -g 2026-10-08c -d D -t gs://…/terms.txt
+```
 
 ## Cost and footprint
 
@@ -169,9 +189,28 @@ Estimated before the 2026-10-09 run, to be replaced by measurements:
 
 ## Verification
 
-- **Local, exact equality:**
-  - the direct coalesced append equals the rebuild's `cintervals` (open rows), and its `cdelta` equals `coalesce_append`'s;
-  - for every (term, path, date), base + runs read through the reader logic equal a full rebuild's reader, and equal brute force;
-  - the merged catalog equals the rebuilt catalog member for member;
-  - tiered merges (1, 2 and 3 runs, merged and unmerged) give the same answers.
-- **Real run, 2026-10-09:** 30 terms × several drill paths, answers vs brute force straight from the 10-09 scan file (`catalog brute`, plus a path-restricted variant), exact match counts reported.
+**Python** (`cloud/tests/test_static_append.py`, exact equality; the base is the fixture's first three scans, plus two runs, each run separately and merged):
+
+- the open versions after each append equal the rebuild's open `cintervals`; each `cdelta`'s opens and closes are exactly the rebuild's versions opened and closed at D;
+- base ⊕ runs under the combine rule holds exactly the rebuild's suffix rows;
+- every literal's first hits `(path, usr, vf, vt, size, n_files)` equal the rebuild reader's, so every drill path and date agrees, and per-bucket answers equal brute force on every date;
+- base ⊕ runs' catalogs are the rebuilt `cells.parquet` and `index.parquet` byte for byte, including a literal that crossed V on an append;
+- a compaction (base ⊕ runs cut to the full build's plan) is the full build's shards and sidecars byte for byte;
+- merged `cdelta`s equal the combine;
+- `verify_terms` (the real-run check) passes on both runs;
+- the counter's levels and merges are a binary counter.
+
+**TypeScript** (`site/functions/_lib/staticRuns.test.ts`, fixture `fixtures/static-runs/gen.py`: a base through 09-01, runs for 10-01 and 10-02 with close records and a literal crossing V). Every literal on every date equals a brute-force oracle through each of:
+
+- the suffix reader, at each manifest;
+- the catalog (cells exactly);
+- `/api/name-summary`'s dispatch;
+- the map filter's per-root live totals.
+
+A new manifest is picked up after the TTL. A mutation that keeps the largest `vt` fails 4 of the 9 tests.
+
+**Real run** (`daily verify`, Batch): brute force from D's scan file versus the base + runs read through the reader logic. Per literal:
+
+- a catalog member: its per-bucket totals;
+- otherwise: its live first hits as a list, both whole and under drill roots (`''`, its top buckets, its top depth-2 dirs);
+- in both cases: the day before, tiered, equals the base alone.
