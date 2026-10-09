@@ -14,6 +14,8 @@ census, V = sys.argv[1], int(sys.argv[2])
 named = [".safetensors", "model-0000", ".json", "step-", "checkpoint", "tmp", "ttl=", "glm52", "codecontests", "rollouts",
          "qwen", "trace_jobs", "eval_sessions", ".parquet", "_success", "shard", ".jsonl.gz", "optimizer", "iris", "skyrl"]
 short = ["a", "e", "0", "1", "_", ".", "-", "=", "zz", "ab", "_s", ".j", "q", "x9", "~"]
+# Literals inside hex runs (content-addressed names: most of cw's suffix rows), below V.
+hexy = ["3f9a", "a3f9c2", "9e1b77d0"]
 buckets = ["marin-us-east-02a", "east-02", "hero", "checkpoints", "east-06a", "rhoarnet", "west-04a", "-us-", "marin"]
 
 
@@ -30,7 +32,7 @@ for q in members:
     by_len.setdefault(min(len(q), 12), []).append(q)
 sampled = [q for L in sorted(by_len) for q in by_len[L][:4]]
 out, seen = [], set()
-for t in named + short + buckets + sampled + near[:15]:
+for t in named + short + hexy + buckets + sampled + near[:15]:
     if t.lower() not in seen and "\n" not in t and "/" not in t:
         seen.add(t.lower())
         out.append(t)
