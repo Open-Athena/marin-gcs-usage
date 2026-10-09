@@ -58,14 +58,23 @@ def scan_time(scan: str) -> dt.datetime:
     return dt.datetime(int(y), int(mo), int(d), int(hh or 0), int(mm or 0), tzinfo=dt.timezone.utc)
 
 
+def scan_key(scan: str) -> str:
+    """A scan id's matching key: a date-only id reads as its midnight ``T0000``
+    (`scanSlug.ts` `scanKey`) — the instant `scan_time` gives it. A date and its
+    ``T0000`` are one instant, so `check_order` refuses the pair: the key never
+    collides with a real scan."""
+    return f"{scan}T0000" if len(scan) == 10 else scan
+
+
 def scan_slug(scan: str) -> str:
-    """A scan id's canonical `?d=` slug (`scanSlug.ts` `encodeScan`): dashless
-    `YYMMDD[HHMM]`, the year's leading `20` dropped — `2026-09-15T0001` →
-    `2609150001`, `2026-09-15` → `260915`."""
+    """A scan id's exact `?d=` slug (`scanSlug.ts` `exactSlug`), resolving to
+    exactly that scan: dashless `YYMMDDHHMM`, the year's leading `20` dropped —
+    `2026-09-15T0001` → `2609150001`, and a date-only `2026-09-15` its midnight,
+    `2609150000` (never `260915`, the day slug: that day's *latest* scan)."""
     if not (m := SCAN_ID.fullmatch(scan)):
         raise ValueError(f"not a scan id: {scan!r}")
     y, mo, d, hh, mm = m.groups()
-    return f"{y[2:]}{mo}{d}{hh or ''}{mm or ''}"
+    return f"{y[2:]}{mo}{d}{hh or '00'}{mm or '00'}"
 
 
 # A slug: dashless compact `YYMMDD[HH[MM]]` (canonical; 8 digits are always
@@ -95,8 +104,9 @@ def slug_prefix(slug: str) -> str | None:
 
 
 def latest_scan(prefix: str, scans: list[str]) -> str | None:
-    """The latest scan (any order in) whose id starts with `prefix`; None if none."""
-    matches = [s for s in scans if s.startswith(prefix)]
+    """The latest scan (any order in) under `prefix` — a date-only scan as its
+    midnight (`scan_key`), so ``…T00`` / ``…T0000`` find it; None if none."""
+    matches = [s for s in scans if s.startswith(prefix) or scan_key(s).startswith(prefix)]
     return max(matches) if matches else None
 
 

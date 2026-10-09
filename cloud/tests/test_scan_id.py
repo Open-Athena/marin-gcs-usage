@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from dt_cloud.cli import main
 import datetime as dt
 
-from dt_cloud.scan_id import META_PATH, check_order, check_scan_id, is_scan_id, latest_scan, resolve_slug, scan_epoch, scan_label, scan_slug, scan_time, slug_prefix, snapshot_scans
+from dt_cloud.scan_id import META_PATH, check_order, check_scan_id, is_scan_id, latest_scan, resolve_slug, scan_epoch, scan_key, scan_label, scan_slug, scan_time, slug_prefix, snapshot_scans
 
 SCANS = ["2026-10-08", "2026-10-09T0601", "2026-10-09T1802", "2026-10-09T1215"]
 
@@ -33,7 +33,7 @@ def test_check_scan_id_names_both_forms():
 def test_scan_time_and_slug():
     utc = dt.timezone.utc
     assert [scan_time(s) for s in ["2026-10-09", "2026-10-09T0601"]] == [dt.datetime(2026, 10, 9, tzinfo=utc), dt.datetime(2026, 10, 9, 6, 1, tzinfo=utc)]
-    assert [scan_slug(s) for s in ["2026-10-09", "2026-10-09T0601"]] == ["261009", "2610090601"]
+    assert [scan_slug(s) for s in ["2026-10-09", "2026-10-09T0601"]] == ["2610090000", "2610090601"]
     for f in (scan_time, scan_slug):
         with pytest.raises(ValueError):
             f("261009")
@@ -126,3 +126,19 @@ def test_order_refuses_two_ids_at_one_instant():
     with pytest.raises(ValueError) as e:
         check_order(["2026-10-09T0000", "2026-10-09"])
     assert str(e.value) == "scans 2026-10-09 and 2026-10-09T0000: ids out of time order (stamps 1791504000, 1791504000)"
+
+
+def test_date_only_and_timed_scan_on_one_day():
+    # gcs 10/9: the date-only run and 12:36Z. The day slug is the latest; each
+    # scan's exact slug (`scan_slug`) resolves to exactly it.
+    scans = ["2026-10-08", "2026-10-09", "2026-10-09T1236"]
+    assert [scan_slug(s) for s in scans] == ["2610080000", "2610090000", "2610091236"]
+    assert [resolve_slug(scan_slug(s), scans) for s in scans] == scans
+    assert [resolve_slug(s, scans) for s in ["261009", "2026-10-09", "26100900", "2610090000", "26100912", "26100904"]] == [
+        "2026-10-09T1236", "2026-10-09T1236", "2026-10-09", "2026-10-09", "2026-10-09T1236", None,
+    ]
+    assert scan_key("2026-10-09") == "2026-10-09T0000"
+    assert scan_key("2026-10-09T1236") == "2026-10-09T1236"
+    # the key never collides with a real scan: a date and its T0000 are refused together
+    with pytest.raises(ValueError):
+        check_order(["2026-10-09", "2026-10-09T0000"])
