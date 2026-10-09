@@ -12,7 +12,7 @@ import { useUnits } from './units'
 import { fmtBytesStep } from './types'
 import { Skeleton } from './Busy'
 import { bandCallouts, pickAnnotations, relativeSeries, stackSeries, unitTicks, youngestGenesis } from './series'
-import { DAY, fmtScan, scanTime } from './scan'
+import { DAY, fmtScan, scanInstant, type ScanLabel, type ScanTimes } from './scan'
 import type { Band } from './series'
 import { stringParam } from 'use-prms'
 import { perf, usePerfCommit } from './perf'
@@ -123,16 +123,12 @@ export const dateOfX = (x: number) => {
   return iso.slice(11, 16) === '00:00' ? iso.slice(0, 10) : `${iso.slice(0, 10)}T${iso.slice(11, 13)}${iso.slice(14, 16)}`
 }
 const fmtX = (x: number) => new Date(x).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
-// The tooltip's x: the scan's canonical label (`fmtScan`) — a sub-daily scan
-// shows its local 12-hour time with a bare a/p (`9/23 8:01a`), exactly like the
-// scan dropdown/header; a date-only scan stays a bare date. Distinguishes the
-// two scans of a day, which `fmtX`'s date-only axis label can't.
-const fmtXTip = (x: number) => fmtScan(dateOfX(x))
-// A scan's instant: `YYYY-MM-DD` = UTC midnight, `YYYY-MM-DDTHHMM` = that
-// UTC time. Two scans a day must not share an x (the bands key by x, and a
-// shared x drew the total as a vertical step against the band).
-export const xOfScan = (d: string) => {
-  const t = scanTime(d)
+// A scan's instant: `YYYY-MM-DDTHHMM` = that UTC time, `YYYY-MM-DD` = its
+// start when known (`times`), else UTC midnight. Two scans a day must not share
+// an x (the bands key by x, and a shared x drew the total as a vertical step
+// against the band).
+export const xOfScan = (d: string, times?: ScanTimes) => {
+  const t = scanInstant(d, times)
   return Number.isNaN(t) ? new Date(d.slice(0, 10)).getTime() : t
 }
 // Signed formats for the relative modes: `+1.2 Ti` / `−340 Gi` / `0`, `+3.1%`.
@@ -142,7 +138,7 @@ const fmtPct = (y: number) => {
   return a === 0 ? '0%' : signed(y, `${a >= 10 ? a.toFixed(0) : a.toFixed(1)}%`)
 }
 
-export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, pathsTotal, queryOnly, filterLabel, filterQs }: {
+export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, ledgerRev, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, pathsTotal, queryOnly, filterLabel, filterQs }: {
   /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
   scopeLabel?: string
   /** The page filter's match roots: the series is their sum per scan. */
@@ -158,6 +154,10 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
    *  from that scan's own match roots, whatever their number; `paths` is the fallback. */
   filterQs?: string
   scans: string[]
+  /** The date-only scans' known starts (`useScan`): each sits at its start. */
+  times?: ScanTimes
+  /** A scan's label (the page's `scanLabeler`) — the tooltip's x. */
+  fmt?: ScanLabel
   prefix: string
   /** The owner axis's user: their bytes under `prefix`, per scan. */
   user?: string | null
@@ -238,11 +238,17 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   // trace, so the stack, the total and the callouts agree.
   const xFrom = useMemo(() => {
     const days = X_RANGES.find(([r]) => r === xRange)![1]
-    const last = seriesQ.data?.points.reduce((m, p) => Math.max(m, xOfScan(p.date)), 0) ?? 0
+    const last = seriesQ.data?.points.reduce((m, p) => Math.max(m, xOfScan(p.date, times)), 0) ?? 0
     return days ? last - days * 86_400_000 : -Infinity
-  }, [seriesQ.data, xRange])
-  const toPts = (points: { date: string; b: number }[]): Pt[] => points.map(p => ({ x: xOfScan(p.date), y: p.b })).filter(p => p.x >= xFrom).sort((a, b) => a.x - b.x)
-  const total = useMemo(() => toPts(seriesQ.data?.points ?? []), [seriesQ.data, xFrom])
+  }, [seriesQ.data, xRange, times])
+  const toPts = (points: { date: string; b: number }[]): Pt[] => points.map(p => ({ x: xOfScan(p.date, times), y: p.b })).filter(p => p.x >= xFrom).sort((a, b) => a.x - b.x)
+  const total = useMemo(() => toPts(seriesQ.data?.points ?? []), [seriesQ.data, xFrom, times])
+  // x → the scan id it plots (a pick or brush names that exact scan, and the
+  // tooltip labels it); an x no point sits on falls back to its UTC minute.
+  const idOfX = useMemo(() => {
+    const m = new Map((seriesQ.data?.points ?? []).map(p => [xOfScan(p.date, times), p.date]))
+    return (x: number) => m.get(x) ?? dateOfX(x)
+  }, [seriesQ.data, times])
   // The roots' traces (split mode), keyed by bucket, coloured by slot (largest
   // at the latest scan = slot 0, as the map colours the root's children).
   const roots = useMemo(() => {
@@ -252,7 +258,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
     const bySize = [...rs].sort((a, b) => latest(b) - latest(a))
     const slot = new Map(bySize.map((r, i) => [r.path, i]))
     return rs.map(r => ({ key: r.path, color: DEFAULT_PALETTE[slot.get(r.path)! % DEFAULT_PALETTE.length], points: toPts(r.points) }))
-  }, [seriesQ.data, xFrom])
+  }, [seriesQ.data, xFrom, times])
   // The x before which the total lacks a root — the total is dashed there.
   const genesis = useMemo(() => youngestGenesis(roots), [roots])
   // The relative modes' traces: each root, and the total, against its own
@@ -304,7 +310,7 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
   const fmtFit = (y: number) => fmtBytesStep(y, tickStep, units, suffixB)
   const fmtY = values === 'pct' ? fmtPct : relative ? (y: number) => signed(y, fmtBytes(Math.abs(y))) : yFrom === 'data' ? fmtFit : fmtBytes
   const annotations = useMemo((): Annotation[] => {
-    const winX = win ? [xOfScan(win[0]), xOfScan(win[1])] as [number, number] : undefined
+    const winX = win ? [xOfScan(win[0], times), xOfScan(win[1], times)] as [number, number] : undefined
     const radius = extrema ? radiusDays * DAY : undefined
     const floor = floorPct / 100
     if (roots.length && !stacked && !relative) return []
@@ -409,15 +415,15 @@ export function SizeOverTime({ scans, prefix, user, pool, ledgerRev, onPickDate,
           getY0={stacked ? p => p.y0 ?? 0 : undefined}
           formatY={fmtY}
           formatX={fmtX}
-          formatTipX={fmtXTip}
+          formatTipX={x => fmt(idOfX(x))}
           yTickValues={yTickValues}
           yFrom={relative ? 'zero' : yFrom}
           yLabel={values === 'pct' ? 'growth' : relative ? 'bytes since start' : 'stored bytes'}
           height={220}
           annotations={annotations}
-          onPickX={onPickDate && (x => onPickDate(dateOfX(x)))}
-          onBrush={onBrush && ((x0, x1) => onBrush(dateOfX(x0), dateOfX(x1)))}
-          window={win && [xOfScan(win[0]), xOfScan(win[1])]}
+          onPickX={onPickDate && (x => onPickDate(idOfX(x)))}
+          onBrush={onBrush && ((x0, x1) => onBrush(idOfX(x0), idOfX(x1)))}
+          window={win && [xOfScan(win[0], times), xOfScan(win[1], times)]}
         />
       ) : (
         seriesQ.isLoading ? <Skeleton height={220} label="loading series…" /> : <p className="loading">fewer than two scans hold this path</p>

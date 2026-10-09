@@ -4,29 +4,36 @@
  *   ?date=<scan id>   (also `from=`, `to=`) exactly that scan
  *   ?d=<slug>         the latest indexed scan the slug names (`261009` a day,
  *                     `26100912` an hour, `2610091236` a minute — a date-only
- *                     scan's exact slug is its midnight, `2610090000`; legacy
- *                     and ISO spellings too)
+ *                     scan sharing its day is keyed by its start, `meta.started`
+ *                     (`2610090430`), else its midnight, `2610090000`, which
+ *                     stays an alias; legacy and ISO spellings too)
  *
  * A scan id or slug naming no indexed scan is a 404 `{error: "no scan matches
  * d=26100912"}` — never the nearest or the latest scan instead. */
-import { decodeScan, isScanId } from '../../src/scanSlug.js'
+import { decodeScan, isScanId, latestScan } from '../../src/scanSlug.js'
 import { type Env, json } from './auth.js'
+import { scanTimes } from './scanTimes.js'
 import { d1Variant, isPrimary, storeKey } from './stores.js'
 
 /** The latest indexed scan matching `prefix` (exact: only `prefix` itself).
  * Without a D1 there is no index to ask: an exact id passes as given, a slug
- * resolves to nothing. */
+ * resolves to nothing. A slug resolves among its day's indexed scans (every
+ * decoded prefix names at least a day, and a date-only scan only ever matches
+ * on its own day) by the shared resolver, with the starts of that day's
+ * date-only scans (`scanTimes`, read from their metas only when the day holds
+ * more than one scan). */
 export async function indexedScan(env: Env, prefix: string, exact: boolean): Promise<string | null> {
   if (!env.DB) return exact ? prefix : null
-  // A decoded prefix is `[0-9T-]` only: no LIKE metacharacters to escape. A
-  // date-only id matches as its midnight (`scanSlug.ts` `scanKey`), so its
-  // exact slug `YYMMDD0000` (and the hour `YYMMDD00`) finds it.
-  const cond = exact ? 'date = ?' : "(date LIKE ? OR (length(date) = 10 AND date || 'T0000' LIKE ?))"
-  const args = exact ? [prefix] : [`${prefix}%`, `${prefix}%`]
-  const r = isPrimary(env)
-    ? await env.DB.prepare(`SELECT MAX(date) AS d FROM index_schema WHERE variant = 'path' AND ${cond}`).bind(...args).first<{ d: string | null }>()
-    : await env.DB.prepare(`SELECT MAX(date) AS d FROM index_schema WHERE store = ? AND variant = ? AND ${cond}`).bind(storeKey(env), d1Variant(env, 'path'), ...args).first<{ d: string | null }>()
-  return r?.d ?? null
+  // A decoded prefix is `[0-9T-]` only: no LIKE metacharacters to escape.
+  const where = isPrimary(env) ? "variant = 'path'" : 'store = ? AND variant = ?'
+  const scope = isPrimary(env) ? [] : [storeKey(env), d1Variant(env, 'path')]
+  if (exact) {
+    const r = await env.DB.prepare(`SELECT MAX(date) AS d FROM index_schema WHERE ${where} AND date = ?`).bind(...scope, prefix).first<{ d: string | null }>()
+    return r?.d ?? null
+  }
+  const r = await env.DB.prepare(`SELECT DISTINCT date FROM index_schema WHERE ${where} AND date LIKE ?`).bind(...scope, `${prefix.slice(0, 10)}%`).all<{ date: string }>()
+  const day = r.results.map(x => x.date)
+  return latestScan(prefix, day, await scanTimes(env, day))
 }
 
 /** The 404 a miss answers: `{error: "no scan matches <key>=<value>"}`. */
