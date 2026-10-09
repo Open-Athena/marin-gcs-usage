@@ -44,12 +44,22 @@ MEMORY_MIB=${MEMORY_MIB:-15000}
 DATA_BUCKET=${DATA_BUCKET:-oa-gcs-usage-dvx}
 JOB_ID=${JOB_ID:-cw-meta-scan-$(date -u +%Y%m%d-%H%M%S)}
 
+labels() {  # cost labels (specs/cost-labels.md): $DISKY_LABELS + component $1, as JSON; {} when unset
+  python3 - "$1" <<'PY'
+import json, os, sys
+d = dict(i.strip().split("=", 1) for i in os.environ.get("DISKY_LABELS", "").split(",") if i.strip())
+print(json.dumps({**d, "component": sys.argv[1]} if d else {}))
+PY
+}
+
 vars() {
   python3 - <<'EOF'
 import json, os
 pin = bool(os.environ.get("PIN"))
 g = (lambda k, d="": d) if pin else os.environ.get
 v = {
+    # the stack's cost labels (PIN keeps them: `submitter_spec` passes them through)
+    **({"DISKY_LABELS": os.environ["DISKY_LABELS"]} if os.environ.get("DISKY_LABELS") else {}),
     "DATA_BUCKET": g("DATA_BUCKET", "oa-gcs-usage-dvx"),
     # The scan's roots (`<scheme>://<bucket>`, space-separated; the first is the
     # store's primary root): the GCS data bucket, then cw's R2 serving bucket.
@@ -118,8 +128,10 @@ cat > "$spec" <<EOF
       }
     }],
     "serviceAccount": {"email": "$SA"},
-    "location": {"allowedLocations": ["regions/$REGION"]}
+    "location": {"allowedLocations": ["regions/$REGION"]},
+    "labels": $(labels meta-scan)
   },
+  "labels": $(labels meta-scan),
   "logsPolicy": {"destination": "CLOUD_LOGGING"}
 }
 EOF

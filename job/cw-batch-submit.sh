@@ -33,6 +33,14 @@ MEMORY_MIB=${MEMORY_MIB:-30000}
 DATA_BUCKET=${DATA_BUCKET:-oa-gcs-usage-dvx}
 JOB_ID=${JOB_ID:-cw-scan-$(date -u +%Y%m%d-%H%M%S)}
 
+labels() {  # cost labels (specs/cost-labels.md): $DISKY_LABELS + component $1, as JSON; {} when unset
+  python3 - "$1" <<'PY'
+import json, os, sys
+d = dict(i.strip().split("=", 1) for i in os.environ.get("DISKY_LABELS", "").split(",") if i.strip())
+print(json.dumps({**d, "component": sys.argv[1]} if d else {}))
+PY
+}
+
 vars() {
   python3 - <<'EOF'
 import json, os
@@ -42,6 +50,8 @@ import json, os
 pin = bool(os.environ.get("PIN"))
 g = (lambda k, d="": d) if pin else os.environ.get
 v = {
+    # the stack's cost labels (PIN keeps them: `submitter_spec` passes them through)
+    **({"DISKY_LABELS": os.environ["DISKY_LABELS"]} if os.environ.get("DISKY_LABELS") else {}),
     "SWEEP_BUCKET": g("SWEEP_BUCKET", "marin-us-east-02a"),
     "SWEEP_S3_ENDPOINT": g("SWEEP_S3_ENDPOINT", "https://cwobject.com"),
     "DATA_BUCKET": g("DATA_BUCKET", "oa-gcs-usage-dvx"),
@@ -117,8 +127,10 @@ cat > "$spec" <<EOF
       }
     }],
     "serviceAccount": {"email": "$SA"},
-    "location": {"allowedLocations": ["regions/$REGION"]}
+    "location": {"allowedLocations": ["regions/$REGION"]},
+    "labels": $(labels scan)
   },
+  "labels": $(labels scan),
   "logsPolicy": {"destination": "CLOUD_LOGGING"}
 }
 EOF

@@ -63,6 +63,7 @@ DATA_BUCKET = "oa-gcs-usage-dvx"
 GCP_PROJECT = "oa-internal-450019"
 META_TREE_URL = "https://cw-s3.oa.dev/meta"  # /scans outputs link into the meta tree
 SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:cw"
+DISKY_LABELS = "app=disky,deployment=cw-s3"  # cost labels on executor jobs (specs/cost-labels.md)
 SWEEP_S3_ENDPOINT = "https://cwobject.com"
 REPO_URL = "https://github.com/Open-Athena/marin-gcs-usage"  # the site's "Source on GitHub" link (build-time)
 # The in-app viewer policy (specs/done/oidc-cutover-cw.md): these domains get the
@@ -168,6 +169,7 @@ DATA_BUCKET = "oa-gcs-usage-dvx"
 GCP_PROJECT = "oa-internal-450019"
 META_TREE_URL = "https://cw-s3.oa.dev/meta"  # /scans outputs link into the meta tree
 SWEEP_IMAGE = "us-central1-docker.pkg.dev/oa-internal-450019/cloud-run-source-deploy/gcs-usage-snapshot:cw"
+DISKY_LABELS = "app=disky,deployment=cw-s3"  # cost labels on executor jobs (specs/cost-labels.md)
 SWEEP_S3_ENDPOINT = "https://cwobject.com"
 VIEWER_DOMAINS = "coreweave.com"
 # The opt-in trash model (specs/staged-delete.md): any full viewer stages

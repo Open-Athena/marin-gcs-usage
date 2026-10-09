@@ -19,7 +19,7 @@ from pathlib import Path
 import pulumi
 import pulumi_gcp as gcp
 
-from gcp_jobs import Adopt, BatchCron, JobAccount, Secrets, grant_bucket, grant_secret
+from gcp_jobs import Adopt, BatchCron, JobAccount, Secrets, cost_labels, grant_bucket, grant_secret, labeled_provider
 
 cfg = pulumi.Config()
 gcp_cfg = pulumi.Config("gcp")
@@ -31,6 +31,10 @@ job_dir = Path(__file__).resolve().parents[2] / "job"
 STACK = "cw-s3"
 if pulumi.get_stack() != STACK:
     raise ValueError(f"this branch's gcp/ manages only the {STACK!r} stack, not {pulumi.get_stack()!r}")
+
+# Cost attribution (specs/cost-labels.md): `$DISKY_LABELS` (app=disky,deployment=cw-s3, from the
+# shell's `.envrc`) becomes every labelable resource's default labels.
+labeled_provider("cw-s3-labeled", project=project, region=region, labels=cost_labels())
 
 dispatch = JobAccount(
     "cw-s3-dispatch",
