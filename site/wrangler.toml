@@ -91,6 +91,7 @@ SLACK_ADMIN_CHANNEL = "C0C579HNRFB"
 # FILTER_STATIC_HEAVY stays dev-only until its daily delta exists.
 FILTER_STATIC = "1"
 NAME_SUMMARY_STATIC = "1"
+STATIC_GEN = "2026-10-08c"   # the static name index generation on INDEX_R2 (required: no default)
 
 # Secrets (set with `wrangler pages secret put <NAME> --project-name oa-gcs-usage`):
 #   SESSION_SECRET   — HMAC key for session cookies + IP hashing
@@ -133,6 +134,7 @@ FILTER_STATIC = "1"   # the map's filter (`q=`): a single literal's match roots 
 FILTER_STATIC_HEAVY = "1"   # with FILTER_STATIC: heavy literals (catalog members, every 1–2 character one) from the drilldown (`drill/` on INDEX_R2; `_lib/staticDrill.ts`) — match roots, or a heavy directory's per-child rollup; the base generation's scans only
 FILTER_DETAILS_MS = "300"   # a static filter view waits this long past phase 2 for its roots' own rows (kind, ages, classes), then answers without them
 NAME_SUMMARY_STATIC = "1"   # /api/name-summary(-registry): every dated request from the static name index on R2 (INDEX_R2: suffix shards + catalog); unset = the query box (fallback)
+STATIC_GEN = "2026-10-08c"   # the static name index generation on INDEX_R2 (required: no default)
 STORE = "gcs"
 AUTH_MODE = "app"
 ROOT_LABEL = "marin GCS (dev)"
