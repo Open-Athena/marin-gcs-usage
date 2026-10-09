@@ -1439,7 +1439,8 @@ R2_SERVED = ("sx/", "sidecar/", "sidecar.parquet", "shards.json", "scans.json", 
 @option("-n", "--dry-run", is_flag=True, help="List what would be copied")
 @option("-o", "--only", help="Copy only the served keys under this generation-relative prefix (e.g. `manifests/`)")
 @option("-w", "--workers", default=8, type=int, help="Parallel copies")
-def r2_copy_cmd(bucket, gen, dry_run, only, workers) -> None:
+@option("-x", "--exclude", multiple=True, help="Skip the served keys under this generation-relative prefix (repeatable; e.g. a run's `drill/meta.json`, copied last)")
+def r2_copy_cmd(bucket, gen, dry_run, only, workers, exclude) -> None:
     """Copy the generation's served files (shards, sidecar, plan, scans) GCS → R2 under the same keys,
     skipping objects already there with the same size and md5 (`publish.copy_one`'s streaming copy,
     the GCS md5 stamped as metadata). R2 via `R2_ENDPOINT`, `R2_BUCKET` and AWS_* (or R2_*) keys."""
@@ -1449,7 +1450,8 @@ def r2_copy_cmd(bucket, gen, dry_run, only, workers) -> None:
 
     prefix = f"{PREFIX}/{gen}"
     objs = [o for o in pub.list_source(bucket, [prefix + "/"]) if o.key.removeprefix(prefix + "/").startswith(R2_SERVED)
-            and (only is None or o.key.removeprefix(prefix + "/").startswith(only))]
+            and (only is None or o.key.removeprefix(prefix + "/").startswith(only))
+            and not any(o.key.removeprefix(prefix + "/").startswith(x) for x in exclude)]
     s3, r2 = pub.r2_client(), pub.r2_bucket()
     with ThreadPoolExecutor(workers) as ex:
         todo = [o for o, do in ex.map(lambda o: (o, pub.should_copy(o, pub.head_dest(s3, r2, o.key))), objs) if do]

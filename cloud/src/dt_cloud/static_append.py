@@ -208,6 +208,20 @@ def merge_cdeltas(files_oldest_first: list[str], out: Path) -> int:
 # ── 3. Catalogs ────────────────────────────────────────────────────────────
 
 
+def merge_drills(dirs: list[Path], out: Path, run: dict, tmp: str | Path | None = None) -> dict | None:
+    """The merged run's `drill/` (`static_drill.merge_tiers` of the inputs', oldest first), when every input has one; else
+    none (a heavy literal then declines past the base, and the gap is logged)."""
+    from .static_drill import Tier, merge_tiers
+
+    have = [(d / "drill" / "meta.json").exists() for d in dirs]
+    if not all(have):
+        err(f"{run['key']}: no drill/ ({sum(have)} of {len(dirs)} inputs have one)")
+        return None
+    con = connect(16, "100GB", tmp)
+    return merge_tiers(con, [Tier(d / "drill", d.name) for d in dirs], out,
+                       tier={k: run[k] for k in ("key", "first", "last", "level", "scans")})
+
+
 def merge_catalogs(tiers: list[Path], out: Path) -> dict:
     """Tiers' catalogs (oldest first) merged into `out/{cells,index}.parquet` by `pyrmts.runs` on `(q, bucket, vf)`,
     the newest tier's row winning (headers; cells are never duplicated across tiers): the base plus every run is
@@ -628,6 +642,7 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
             dirs = [Path(mount) / prefix / r["key"] for r in ins]
             doc = merge_shards(dirs, outp)
             merge_catalogs([d / "catalog" for d in dirs], outp / "catalog")
+            merge_drills(dirs, outp / "drill", m, tmp)
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
             upload_tree(outp, bucket, f"{prefix}/{m['key']}")
             shutil.rmtree(outp)

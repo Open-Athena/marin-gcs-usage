@@ -274,8 +274,8 @@ GROUP_INDEX_SCHEMA = pa.schema([
 ])
 
 
-def write_indexed(batches, out: Path, schema: pa.Schema, key: str, name: str, dictionary: list[str]) -> tuple[int, pa.Table]:
-    """Write sorted batches as `ROOT_RG`-row groups and cut their `GROUP_INDEX_SCHEMA` rows (`file` = `name`)."""
+def write_indexed(batches, out: Path, schema: pa.Schema, key: str, name: str, dictionary: list[str], rg: int | None = None) -> tuple[int, pa.Table]:
+    """Write sorted batches as `rg`-row groups (default `ROOT_RG`) and cut their `GROUP_INDEX_SCHEMA` rows (`file` = `name`)."""
     from .static_names import write_sorted
 
     stats: list[tuple] = []
@@ -284,7 +284,7 @@ def write_indexed(batches, out: Path, schema: pa.Schema, key: str, name: str, di
         qc, kc = g.column("q"), g.column(key)
         stats.append((qc[0].as_py(), kc[0].as_py(), qc[g.num_rows - 1].as_py(), kc[g.num_rows - 1].as_py()))
 
-    rows = write_sorted(batches, out, schema, ROOT_RG, on_group=on_group, dictionary=dictionary)
+    rows = write_sorted(batches, out, schema, rg or ROOT_RG, on_group=on_group, dictionary=dictionary)
     md = pq.ParquetFile(out).metadata
     if md.num_row_groups != len(stats):
         raise RuntimeError(f"{out}: {md.num_row_groups} row groups, {len(stats)} recorded")
@@ -523,8 +523,6 @@ class Drill:
         self.roots, self.rollups, self.R, self.rg, self.aliases = roots, rollups, R, rg, aliases or {}
 
     def view(self, term: str, P: str, dates: list[str]) -> dict:
-        from .static_names import scan_epoch
-
         t = term.lower()
         if t in P.lower():
             return {"q": t, "P": P, "source": "plain", "answers": None}
@@ -534,33 +532,51 @@ class Drill:
         out: dict = {"q": t, "P": P, "upper": ub}
         if ub <= self.R + 2 * self.rg:
             rows, io = self.roots.read(lo, hi, groups)
-            out.update(source="roots", io=io, rows=len(rows), answers={})
-            for d in dates:
-                D = scan_epoch(d)
-                acc: dict[str, list[int]] = {}
-                for r in rows:
-                    if r["vf"] <= D < r["vt"]:
-                        c = r["path"][len(P) + 1:].split("/", 1)[0]
-                        e = acc.setdefault(c, [0, 0])
-                        e[0] += r["size"]
-                        e[1] += r["n_files"]
-                out["answers"][d] = {k: v for k, v in sorted(acc.items()) if v != [0, 0]}
+            out.update(source="roots", io=io, rows=len(rows), answers=roots_answers(rows, P, dates))
             return out
         rows, io = self.rollups.read((c, P), (c, P + "\x00"))
-        out.update(source="rollup", io=io, rows=len(rows), answers={}, rest={})
+        out.update(source="rollup", io=io, rows=len(rows))
         if not rows or rows[0]["kind"] != 0:
             raise RuntimeError(f"({t!r}, {P!r}): {ub:,} root rows bound, but no rollup")
-        out["header"] = {"kept": rows[0]["vf"], "rows": rows[0]["b"], "children": rows[0]["o"]}
-        out["kept"] = sorted({r["child"] for r in rows[1:] if r["kind"] == 1})
-        for d in dates:
-            D = scan_epoch(d)
-            cur: dict[tuple[int, str], tuple[int, int]] = {}
-            for r in rows[1:]:
-                if r["vf"] <= D:
-                    cur[(r["kind"], r["child"])] = (r["b"], r["o"])
-            out["answers"][d] = {c: list(v) for (kd, c), v in sorted(cur.items()) if kd == 1 and v != (0, 0)}
-            out["rest"][d] = list(cur.get((2, ""), (0, 0)))
+        out.update(rollup_view(rows[0], rows[1:], dates))
         return out
+
+
+def roots_answers(rows: list[dict], P: str, dates: list[str]) -> dict[str, dict[str, list[int]]]:
+    """Per date, Σ size, n_files of the roots (`rows`, all under `P/`) live on it, by child of `P` (nonzero only)."""
+    from .static_names import scan_epoch
+
+    out = {}
+    for d in dates:
+        D = scan_epoch(d)
+        acc: dict[str, list[int]] = {}
+        for r in rows:
+            if r["vf"] <= D < r["vt"]:
+                c = r["path"][len(P) + 1:].split("/", 1)[0]
+                e = acc.setdefault(c, [0, 0])
+                e[0] += r["size"]
+                e[1] += r["n_files"]
+        out[d] = {k: v for k, v in sorted(acc.items()) if v != [0, 0]}
+    return out
+
+
+def rollup_view(header: dict, cells: list[dict], dates: list[str]) -> dict:
+    """A rollup's header and cells (kept children `kind` 1, the remainder `kind` 2) → per date each kept child's
+    newest cell with `vf ≤ D` (nonzero) and the remainder's."""
+    from .static_names import scan_epoch
+
+    out: dict = {"header": {"kept": header["vf"], "rows": header["b"], "children": header["o"]},
+                 "kept": sorted({r["child"] for r in cells if r["kind"] == 1}), "answers": {}, "rest": {}}
+    cells = sorted(cells, key=lambda r: r["vf"])
+    for d in dates:
+        D = scan_epoch(d)
+        cur: dict[tuple[int, str], tuple[int, int]] = {}
+        for r in cells:
+            if r["vf"] <= D:
+                cur[(r["kind"], r["child"])] = (r["b"], r["o"])
+        out["answers"][d] = {c: list(v) for (kd, c), v in sorted(cur.items()) if kd == 1 and v != (0, 0)}
+        out["rest"][d] = list(cur.get((2, ""), (0, 0)))
+    return out
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
@@ -1139,9 +1155,11 @@ BRUTE_CHILDREN = 200_000
 @option("-k", "--kept", "kept_file", help="`drill-query` answers (a path or gs:// URL): the children each rollup case names")
 @option("-m", "--mount", required=True, help="Local mount of the bucket")
 @option("-M", "--mem", default="100GB", help="DuckDB memory limit")
+@option("-O", "--out", "out_key", help="Bucket key to write (default `<gen>/verify/drill-brute/<date>.jsonl`)")
 @option("-p", "--threads", default=16, type=int, help="DuckDB threads")
+@option("-S", "--scans", "scans_json", help="A `scans.json` holding the date (default the generation's; a run's for a date past it)")
 @option("-T", "--tmp", default="/stage/tmp", help="DuckDB spill dir")
-def drill_brute_cmd(bucket, cases_file, dates, gen, index, kept_file, mount, mem, threads, tmp) -> None:
+def drill_brute_cmd(bucket, cases_file, dates, gen, index, kept_file, mount, mem, out_key, threads, scans_json, tmp) -> None:
     """Reference drill views by brute force over one date's scan file → `verify/drill-brute/<date>.jsonl`
     (`{date, q, P, total: [bytes, objects], n: children, children: {child: [bytes, objects]}}`, nonzero
     children; a case with more than `BRUTE_CHILDREN` lists only the children `-k` names for it)."""
@@ -1151,7 +1169,7 @@ def drill_brute_cmd(bucket, cases_file, dates, gen, index, kept_file, mount, mem
 
     prefix = f"{PREFIX}/{gen}"
     date = dates[_task(index)]
-    scan = next(s for s in read_json(f"gs://{bucket}/{prefix}/scans.json")["scans"] if s["id"] == date)
+    scan = next(s for s in read_json(scans_json or f"gs://{bucket}/{prefix}/scans.json")["scans"] if s["id"] == date)
     cases = sorted({(t.lower(), P) for t, P in _cases(cases_file)})
     con = connect(threads, mem, tmp)
     con.execute("CREATE TABLE cases (term VARCHAR, P VARCHAR)")
@@ -1177,7 +1195,7 @@ def drill_brute_cmd(bucket, cases_file, dates, gen, index, kept_file, mount, mem
         got[(term, P)][child] = [int(b_), int(o_)]
     body = "".join(json.dumps({"date": date, "q": t, "P": P, "total": list(tot.get((t, P), (0, 0, 0))[:2]), "n": tot.get((t, P), (0, 0, 0))[2],
                                "children": dict(sorted(got[(t, P)].items()))}) + "\n" for t, P in cases)
-    storage.Client().bucket(bucket).blob(f"{prefix}/verify/drill-brute/{date}.jsonl").upload_from_string(body)
+    storage.Client().bucket(bucket).blob(out_key or f"{prefix}/verify/drill-brute/{date}.jsonl").upload_from_string(body)
     err(f"drill-brute {date}: {len(cases)} cases in {monotonic() - t0:.1f}s")
 
 
