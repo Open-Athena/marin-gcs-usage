@@ -136,6 +136,11 @@ export interface View {
   /** With a NOT query: the outermost excluded paths under the match roots
    * (subtracted from their roots' totals, absent from the tree). */
   excluded?: string[]
+  /** With `query`: every match root's count and summed bytes / objects — `matches` and `matched` list
+   * at most `MATCH_LIST_CAP` of them (the tree's own roots always, then the heaviest), `matchesCapped`
+   * when they leave some out. */
+  matchCount?: { n: number; b: number; o: number }
+  matchesCapped?: true
   /** With `query`: read from the coarsest tier for the first paint. */
   firstPaint?: boolean
   /** With `query`: a read budget stopped the search — some matches may be
@@ -768,7 +773,10 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     const chosen = o.firstPaint ? (withFloors[0] ?? 'fine') : pickTier(withFloors, T)
     const regionIdx = chosen === 'fine' ? (fine ?? withTrace(await openFine(env, date, 'path'), tr)) : chosen.idx
     let tierName = chosen === 'fine' ? 'fine' : chosen.name
-    const readRoots = [...roots].sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
+    // A root under its level's threshold folds into its parent's `(other)` (below): nothing inside it
+    // is drawn, so it is neither read nor looked up.
+    const drawn = (r: string) => netRoot(r).b >= T * atten ** Math.max(0, depthF.get(r)! - dP - 1)
+    const readRoots = [...roots].filter(drawn).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, REGION_READS)
       .map(r => ({ path: r, depth: depthF.get(r)! }))
     const loose = looseThreshold(T, atten, readRoots.map(r => r.depth))
     // The forest's rows: Σ n_desc over the roots read (null = a root without it).
@@ -780,7 +788,8 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     // The first paint skips both: the roots alone, exact, from the static read.
     const firstPaintStatic = staticRoots && !!o.firstPaint
     const details = staticRoots && !firstPaintStatic ? (async () => {
-      const want = [...roots].sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
+      const want = [...roots].filter(drawn).sort((x, y) => netRoot(y).b - netRoot(x).b).slice(0, ROOT_DETAILS)
+      if (!want.length) return []
       const asks = new Set(want.map(r => `${depthF.get(r)}\0${r}`))
       try {
         const h = pathIdx ?? fine ?? withTrace(await openFine(env, date, 'path'), tr)
@@ -793,7 +802,7 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
     })() : Promise.resolve([] as Row[])
     let rows2: Row[] = []
     let variant: string | undefined
-    if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic) {
+    if (!(maxDepth != null && maxDepth <= 0) && !firstPaintStatic && readRoots.length) {
       const got = await readSubtree(env, date, regionIdx, rootRects(readRoots).map(q => maxDepth != null ? { ...q, dHi: Math.min(q.dHi, q.dLo + maxDepth - 1) } : q), loose, undefined, forestRows, smallRows, tr)
       rows2 = got.rows
       variant = got.variant
@@ -833,10 +842,21 @@ async function readView(env: Env, o: ViewOpts, cov: Coverage = {}): Promise<Read
       }
     }
     if (matchedAgg.b <= 0) return null
+    // The pixel budget over the forest's own nodes, as the plain view applies it to P's: a match root,
+    // or an ancestor holding only roots, under its level's threshold (attenuated from P) folds into its
+    // parent's `(other)`. Descendant-inclusive bytes keep the kept set ancestor-closed. Without it a
+    // literal with 20K small roots (`tomat`: podcast files) shipped every one as a tile (10 MB).
     const foldedF = new Map<string, number>()
+    const thrTop = (d: number) => T * atten ** Math.max(0, d - dP - 1)
+    const folded = [...aggsF].filter(([p, a]) => a.b < thrTop(depthF.get(p)!)).map(([p]) => p)
+    for (const p of folded) aggsF.delete(p)
+    for (const p of folded) {
+      const par = parentOf(p)
+      if (par === path || aggsF.has(par)) foldedF.set(par, (foldedF.get(par) ?? 0) + 1)
+    }
     const below: string[] = []
     for (const [p, d] of p2.depth) {
-      const r = rootFor(p); if (r === null) continue
+      const r = rootFor(p); if (r === null || !aggsF.has(r)) continue
       if (underExcl(p)) continue
       const a = minus(scoped(p, p2.all.get(p)!, p2.mine.get(p)!), cut.get(p), lostKids.get(p))
       if (a.b <= 0) continue
@@ -1086,7 +1106,20 @@ export async function buildView(env: Env, o: ViewOpts): Promise<View> {
     return node
   }
   const tree = build(path, v.rootAgg)
-  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matches ? { matches: v.matches } : {}), ...(v.matched ? { matched: v.matched } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(query ? coverageFields(cov) : {}) }
+  return { tree, tier: v.tier, index: v.idx.mode, threshold: v.threshold, nodes: kept.size, truncated: v.truncated, ...(v.matched ? matchLists(v.matched, kept) : v.matches ? { matches: v.matches } : {}), ...(v.excluded ? { excluded: v.excluded } : {}), ...(v.firstPaint ? { firstPaint: true } : {}), ...(query ? coverageFields(cov) : {}) }
+}
+
+/** The most match roots a response lists (`matches` / `matched`) beyond those the tree draws. */
+export const MATCH_LIST_CAP = 1000
+
+/** A response's match lists: every root the tree keeps, then the heaviest others up to
+ * `MATCH_LIST_CAP`, and the whole set's count and totals. */
+export function matchLists(matched: { path: string; b: number; o: number }[], kept: Map<string, unknown>): Pick<View, 'matches' | 'matched' | 'matchCount' | 'matchesCapped'> {
+  const count = { n: matched.length, b: matched.reduce((n, m) => n + m.b, 0), o: matched.reduce((n, m) => n + m.o, 0) }
+  if (matched.length <= MATCH_LIST_CAP) return { matches: matched.map(m => m.path).sort(), matched, matchCount: count }
+  let room = MATCH_LIST_CAP
+  const list = matched.filter(m => kept.has(m.path) || room-- > 0)
+  return { matches: list.map(m => m.path).sort(), matched: list, matchCount: count, matchesCapped: true }
 }
 
 // --- the diff: two scans, one byte floor -----------------------------------
@@ -1135,8 +1168,10 @@ export interface Diff {
   lookups: number
   /** The lookup budget ran out: some one-sided names may really be folded. */
   lookups_capped: boolean
-  /** With `q=`: the union of both scans' match roots. */
+  /** With `q=`: the union of both scans' match roots (capped like a view's, `matchLists`). */
   matched?: { path: string; b: number; o: number }[]
+  matchCount?: { n: number; b: number; o: number }
+  matchesCapped?: true
   /** With `q=`: either side's `partial` / `approximate` (`View`), reasons
    * merged. */
   partial?: true
@@ -1209,7 +1244,11 @@ export async function buildDiff(env: Env, o: DiffOpts): Promise<Diff> {
     objects_b: Math.round(vb?.rootAgg.o ?? 0),
     threshold: query ? ((vb ?? va)!.threshold) : threshold,
     tier: (vb ?? va)!.tier,
-    ...(matchedUnion ? { matched: matchedUnion } : {}),
+    ...(matchedUnion ? (() => {
+      const keptBoth = new Map([...(va?.kept ?? []), ...(vb?.kept ?? [])])
+      const { matched, matchCount, matchesCapped } = matchLists([...matchedUnion].sort((x, y) => y.b - x.b || (x.path < y.path ? -1 : 1)), keptBoth)
+      return { matched: matched!.sort((x, y) => x.path < y.path ? -1 : 1), matchCount, ...(matchesCapped ? { matchesCapped } : {}) }
+    })() : {}),
     ...(query ? coverageFields(cov) : {}),
   }
   if (o.summary) return { rows: [], ...totals, expansions: 0, truncated: false, lookups: 0, lookups_capped: false }

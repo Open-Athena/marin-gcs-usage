@@ -6,7 +6,7 @@ import { type Blobs, StaticNames } from './staticNames'
 import { parseAst } from './querySyntax'
 import { sqliteD1 } from './testD1'
 import { type D1Variant, fixture, FILES, readJson, seedGeneration } from './testStore'
-import { buildDiff, buildView, type ViewNode, type View } from './view'
+import { buildDiff, buildView, MATCH_LIST_CAP, matchLists, type ViewNode, type View } from './view'
 import { searchKey } from './search'
 
 vi.mock('@rdub/file-tree/stores/s3', async () => ({ S3Store: (await import('./testStore')).S3Store }))
@@ -68,11 +68,45 @@ beforeAll(async () => {
 const q = (t: string) => parseQuery(t)!
 const view = (env: Env, date: string, path: string, t: string, extra: Partial<Parameters<typeof buildView>[1]> = {}) =>
   buildView(env, { date, path, w: W, h: H, minArea: MIN_AREA, atten: ATTEN, query: q(t), ...extra })
+/** A tree whose `(other)` folds carry no written-time / read-day / class mix: a static view looks up
+ *  only the drawn roots' own rows, so a fold of static roots under a synthesized ancestor has bytes and
+ *  objects, not those (the search view knows every root's row). */
+const sansFoldDetail = (n: ViewNode): ViewNode => {
+  const { d: _d, a: _a, cb: _cb, ...rest } = n
+  return { ...(n.n === '(other)' ? rest : n), ...(n.c ? { c: n.c.map(sansFoldDetail) } : {}) } as ViewNode
+}
 /** The view with its tier's phase-1 name dropped (`static+bysize` ~ `search+bysize`). */
-const sansP1 = (v: View) => ({ ...v, tier: v.tier.replace(/^(static|search)\+/, '+') })
+const sansP1 = (v: View) => ({ ...v, tier: v.tier.replace(/^(static|search)\+/, '+'), tree: sansFoldDetail(v.tree) })
 /** `matched` as brute force's `[path, bytes, objects]`, by path. */
 const matchedRows = (v: { matched?: { path: string; b: number; o: number }[] }) =>
   (v.matched ?? []).map(m => [m.path, m.b, m.o]).sort((x, y) => (x[0] < y[0] ? -1 : 1))
+
+/** `tomat` at the root on A over a 128×128 canvas (threshold 18,047 · 12 / 128² ≈ 13 bytes at depth 1,
+ *  doubling per level): `zz/Checkpoints/TOMAT` (10 bytes) folds with its ancestors `zz/Checkpoints` and
+ *  `zz` into the root's residual (10 bytes: under the threshold, so no `(other)` tile); the 77-byte
+ *  `tomat-tomat.bin` (depth 4: 106) into `bk/runs/x`'s `(other)` (`f` = 1 fold). Match roots carry
+ *  `m`; their insides are phase 2's path-store rows. */
+const FOLDED: unknown[] = [
+  ['/', 18047, 10],
+  ['bk', 17927, 7],
+  ['bk/runs', 9077, 2],
+  ['bk/runs/x', 9077, 2],
+  ['bk/runs/x/ckpt-tomat.pt', 9000, 1, 'm'],
+  ['bk/runs/x/(other)', 77, 1, 'f1'],
+  ['bk/data', 8850, 5],
+  ['bk/data/tomato', 8000, 2, 'm'],
+  ['bk/data/tomato/a.bin', 5000, 1],
+  ['bk/data/tomato/b.bin', 3000, 1],
+  ['bk/data/Tomatoes.csv', 700, 1, 'm'],
+  ['bk/data/raw', 150, 2],
+  ['bk/data/raw/tomat-1', 150, 2, 'm'],
+  ['bk/data/raw/tomat-1/x.bin', 100, 1],
+  ['bk/data/raw/tomat-1/TOMAT-inner', 50, 1],
+  ['bk/data/raw/tomat-1/TOMAT-inner/y.bin', 50, 1],
+  ['tomato-bk', 110, 2, 'm'],
+  ['tomato-bk/a', 100, 1],
+  ['tomato-bk/a/b.bin', 100, 1],
+]
 
 describe('staticLiteral: the queries the static index answers exactly', () => {
   it('one positive substring of ≥ 3 characters without `/`; nothing else', () => {
@@ -98,6 +132,22 @@ describe('static filter: the treemap / table view (`/api/subtree`)', () => {
       expect(got).toEqual(want)
     })
   }
+
+  it('a small canvas folds the roots under its threshold into `(other)` — the same as the search view', async () => {
+    const flat = (n: ViewNode, path: string, out: unknown[] = []): unknown[] => {
+      out.push([path || '/', n.b, n.o, ...(n.m ? ['m'] : []), ...(n.f != null ? [`f${n.f}`] : [])])
+      for (const c of n.c ?? []) flat(c, c.n === '(other)' ? `${path}/(other)` : path ? `${path}/${c.n}` : c.n, out)
+      return out
+    }
+    const small = { w: 128, h: 128 }
+    const [s, r] = await Promise.all([view(envStatic(), A, '', 'tomat', small), view(base, A, '', 'tomat', small)])
+    expect(sansP1(s)).toEqual(sansP1(r))
+    expect(flat(s.tree, '')).toEqual(FOLDED)
+    for (const date of DATES) for (const root of ROOTS) for (const t of TERMS) {
+      const [s2, r2] = await Promise.all([view(envStatic(), date, root, t, small), view(base, date, root, t, small)])
+      expect([date, root, t, sansP1(s2)]).toEqual([date, root, t, sansP1(r2)])
+    }
+  })
 
   it('the first paint: the match roots alone, exact, as leaves under their ancestors', async () => {
     const leaves = (n: ViewNode, path: string, out: [string, number, number][] = []): [string, number, number][] => {
@@ -156,6 +206,20 @@ describe('static filter: size over time (`/api/series`)', () => {
       want.push([t, root, expected.series[t][root]])
     }
     expect(got).toEqual(want)
+  })
+})
+
+describe('matchLists: a response lists the tree\'s roots, then the heaviest, up to the cap', () => {
+  it('under the cap: all, with the count; over it: kept + heaviest, capped', () => {
+    const m = (i: number) => ({ path: `p${String(i).padStart(5, '0')}`, b: 10_000 - i, o: 1 })
+    const few = [m(0), m(1)]
+    expect(matchLists(few, new Map())).toEqual({ matches: ['p00000', 'p00001'], matched: few, matchCount: { n: 2, b: 19_999, o: 2 } })
+    const many = Array.from({ length: MATCH_LIST_CAP + 3 }, (_, i) => m(i))
+    const got = matchLists(many, new Map([['p01002', 1]]))
+    expect([got.matched!.length, got.matched!.at(-1), got.matched!.at(-2), got.matchCount, got.matchesCapped]).toEqual([
+      MATCH_LIST_CAP + 1, m(MATCH_LIST_CAP + 2), m(MATCH_LIST_CAP - 1),
+      { n: MATCH_LIST_CAP + 3, b: many.reduce((n, x) => n + x.b, 0), o: MATCH_LIST_CAP + 3 }, true,
+    ])
   })
 })
 
