@@ -99,8 +99,11 @@ if cfg.get_bool("legacyJobAccess"):
 
 # The jobs' work dir and snapshots live in gcs's data bucket (gcs's stack owns it).
 data = grant_bucket("oa-gcs-usage-dvx-cw-job", bucket="oa-gcs-usage-dvx", role="roles/storage.objectAdmin", member=job.member, member_email=job.email_literal, adopt=adopt)
+# The static name index's per-scan stages (specs/cw-static-names.md, IAM option ii) run as this account; their shuffle
+# lives in gcs's scratch bucket (7-day expiry; gcs's stack owns it).
+scratch = grant_bucket("oa-gcs-usage-scratch-cw-job", bucket="oa-gcs-usage-scratch", role="roles/storage.objectAdmin", member=job.member, member_email=job.email_literal, adopt=adopt)
 
-ready = [job, secrets, cf_token, data]
+ready = [job, secrets, cf_token, data, scratch]
 scan = BatchCron(
     "cw-usage-snapshot",
     project=project,
