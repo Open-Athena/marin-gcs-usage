@@ -5,15 +5,21 @@ import { useQuery } from '@tanstack/react-query'
 import type { QuerySyntax } from '../functions/_lib/queryAst'
 import { INDEXED_HELP } from '../functions/_lib/indexedOnly'
 import { simple } from '../functions/_lib/querySyntax'
+import { useStore, useStoreFetch } from './store'
 
-export interface FilterCaps { indexedOnly: boolean }
+/** `rootLabel`: the store root's label (`ROOT_LABEL`), the unfiltered view's root crumb — absent when the
+ *  deployment sets none, or before it loads. */
+export interface FilterCaps { indexedOnly: boolean; rootLabel?: string }
 
-/** The deployment's filter capabilities (unloaded or unreachable: none, i.e. every form). */
+/** The deployment's filter capabilities for this subtree's store (unloaded or unreachable: none, i.e. every
+ *  form, and no root label). */
 export function useFilterCaps(): FilterCaps {
+  const store = useStore()
+  const sfetch = useStoreFetch()
   const q = useQuery({
-    queryKey: ['filter-caps'],
+    queryKey: ['filter-caps', store.key],
     queryFn: async (): Promise<FilterCaps> => {
-      const r = await fetch('/api/filter-caps', { credentials: 'include' })
+      const r = await sfetch('/api/filter-caps', { credentials: 'include' })
       if (!r.ok) return { indexedOnly: false }
       return await r.json() as FilterCaps
     },

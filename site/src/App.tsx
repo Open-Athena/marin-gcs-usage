@@ -36,6 +36,7 @@ import type { RowSource } from './MatchActions'
 import { type MatchFields, seriesMatches } from './filterMatches'
 import { QueryHelpTip } from './QueryHelp'
 import { apiError, INDEXED_SYNTAX, refusalOf, useFilterCaps, useIndexedScans } from './filterCaps'
+import { RootCrumb } from './RootCrumb'
 import { actBlock } from './matchAct'
 import { type BlindPanel, blindNote, blindShown } from './filterBlind'
 import { LoadFailure, mapSlot } from './LoadFailure'
@@ -212,7 +213,7 @@ function AppContent() {
   const syntax = (qsP && syntaxById(qsP)) || storeSyntax
   // An indexed-only deployment (`FILTER_INDEXED_ONLY`): one literal substring of a name, unscoped; any
   // other form is refused inline, never sent.
-  const { indexedOnly } = useFilterCaps()
+  const { indexedOnly, rootLabel } = useFilterCaps()
   const boxSyntax = indexedOnly ? INDEXED_SYNTAX : syntax
   const fParse = useMemo((): { ok: boolean; error?: string } => {
     if (qsP && !syntaxById(qsP)) return { ok: false, error: `unknown query syntax '${qsP}' (want ${SYNTAXES.map(x => x.id).join('|')})` }
@@ -1130,7 +1131,7 @@ function AppContent() {
   const crumbCopy = pathCopy(store.scheme, segs, true)
   const crumbs = (
     <span className="tb-path" aria-label="Drilled path">
-      <Tooltip content={store.rootLabel}><button type="button" className={segs.length ? '' : 'here'} onClick={() => drillTo([])}>{mapTree?.n ?? store.rootLabel}</button></Tooltip>
+      <RootCrumb treeName={mapTree?.n} rootLabel={rootLabel} scopeWord={store.rootLabel} here={!segs.length} onClick={() => drillTo([])} />
       {segs.map((sg, i) => (
         <span key={i}>
           <span className="sep">/</span>
@@ -1388,6 +1389,7 @@ function AppContent() {
           chart still hides under any scope. */}
       <SizeOverTime
         scopeLabel={store.rootLabel}
+        refused={fq && refusalOf(viewErr) ? viewErr : undefined}
         paths={fSeries?.paths}
         pathsTotal={fSeries?.pathsTotal}
         queryOnly={fRollup}

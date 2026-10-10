@@ -10,7 +10,6 @@ import { shortName } from './UserChip'
 import { useStore, useStoreFetch } from './store'
 import { useUnits } from './units'
 import { fmtBytesStep } from './types'
-import { Skeleton } from './Busy'
 import { bandCallouts, pickAnnotations, relativeSeries, seriesGaps, stackSeries, unitTicks, youngestGenesis } from './series'
 import { DAY, fmtScan, scanInstant, type ScanLabel, type ScanTimes } from './scan'
 import type { Band } from './series'
@@ -19,6 +18,7 @@ import { perf, usePerfCommit } from './perf'
 import { SERIES_MAX_PATHS } from '../functions/_lib/seriesLimits'
 import { ApiError, apiError } from './filterCaps'
 import { LoadFailure } from './LoadFailure'
+import { SeriesEmpty } from './SeriesEmpty'
 
 // Stored bytes over the historical scans, scoped exactly like the map: the
 // drilled prefix, a user, or an owner pool (`/api/series` — one row read per
@@ -139,9 +139,12 @@ const fmtPct = (y: number) => {
   return a === 0 ? '0%' : signed(y, `${a >= 10 ? a.toFixed(0) : a.toFixed(1)}%`)
 }
 
-export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, ledgerRev, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', paths, pathsTotal, queryOnly, filterLabel, filterQs }: {
+export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, ledgerRev, onPickDate, onBrush, window: win, scopeLabel = 'all buckets', refused, paths, pathsTotal, queryOnly, filterLabel, filterQs }: {
   /** The store's root scope word for the unscoped subtitle (`all buckets`, `the whole bucket`). */
   scopeLabel?: string
+  /** The page view's filter refusal (`term-too-common`, …): no match roots to sum, so the series is never asked
+   *  for, and the chart's slot states the refusal instead. */
+  refused?: unknown
   /** The page filter's match roots: the series is their sum per scan. */
   paths?: string[]
   /** The match roots' exact count (`matchCount.n`): more than `SERIES_MAX_PATHS` asks with the query alone. */
@@ -401,7 +404,8 @@ export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, 
           </label>
         </div>
       )}
-      {seriesQ.isError && !tooMany && <LoadFailure err={seriesQ.error} what="series" className="sub" onRetry={() => void seriesQ.refetch()} />}
+      {/* A refetch's failure over a chart still drawn; with no chart, the slot below states it. */}
+      {seriesQ.isError && !tooMany && (allZero || series.length > 0) && <LoadFailure err={seriesQ.error} what="series" className="sub" onRetry={() => void seriesQ.refetch()} />}
       {tooMany ? (
         <p className="loading">size over time charts up to {SERIES_MAX_PATHS} matches; this filter has {nPaths.toLocaleString()}. Narrow it to chart.</p>
       ) : allZero ? (
@@ -430,7 +434,7 @@ export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, 
           gaps={gaps.xs}
         />
       ) : (
-        seriesQ.isLoading ? <Skeleton height={220} label="loading series…" /> : <p className="loading">fewer than two scans hold this path</p>
+        <SeriesEmpty err={refused ?? (seriesQ.isError ? seriesQ.error : undefined)} loading={seriesQ.isLoading} onRetry={() => void seriesQ.refetch()} />
       )}
       {gaps.note && !tooMany && <p className="gap-note">{gaps.note}</p>}
       {roots.length > 0 && (
