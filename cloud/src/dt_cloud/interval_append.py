@@ -60,7 +60,16 @@ from . import append_runner as ar
 from . import interval_store as ist
 from . import static_names as sn
 from .append_runner import (  # noqa: F401 — NOT_NEXT, StateIncomplete: as this module has always offered them
-    NOT_NEXT, Carry, GcsRunStore, StateIncomplete, duckdb_args, exit_on, latest_key, plan_carries, run_key, scans_of,
+    NOT_NEXT,
+    Carry,
+    GcsRunStore,
+    StateIncomplete,
+    duckdb_args,
+    exit_on,
+    latest_key,
+    plan_carries,
+    run_key,
+    scans_of,
 )
 from .static_names import OPEN, U64, err, q, read_json, upload_tree, write_sorted
 from .static_profile import Profile, from_mapping

@@ -36,17 +36,24 @@ field's env var); a run needs its generation, buckets, layouts, region, image, a
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import partial
 from math import ceil
-from typing import Callable
 
 from click import argument, command, option
 
 from . import append_runner as ar
 from .append_runner import (  # noqa: F401 — the shared names, as this module has always offered them
-    NOT_NEXT, BatchRunner, NotNext, StillRunning, duckdb_args, exit_on, pending_scans, task_command,
+    NOT_NEXT,
+    BatchRunner,
+    NotNext,
+    StillRunning,
+    duckdb_args,
+    exit_on,
+    pending_scans,
+    task_command,
 )
 from .static_names import PREFIX, err
 from .static_profile import Profile, profile

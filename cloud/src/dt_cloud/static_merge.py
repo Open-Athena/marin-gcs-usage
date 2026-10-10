@@ -23,8 +23,21 @@ from click import Choice, IntRange, group, option
 
 from . import append_runner as ar
 from .append_runner import (  # noqa: F401 — the shared names, as this module has always offered them
-    LEASE_S, MANIFEST, REV_DIGITS, Carry, LocalRunStore, Published, RunStore, Superseded, lease_stale, manifest_keys, manifest_name,
-    newest, parse_manifest, plan_carries, rebase,
+    LEASE_S,
+    MANIFEST,
+    REV_DIGITS,
+    Carry,
+    LocalRunStore,
+    Published,
+    RunStore,
+    Superseded,
+    lease_stale,
+    manifest_keys,
+    manifest_name,
+    newest,
+    parse_manifest,
+    plan_carries,
+    rebase,
 )
 from .static_names import PREFIX, connect, err
 from .static_profile import data_bucket, scratch_bucket
