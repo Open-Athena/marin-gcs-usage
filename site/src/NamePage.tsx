@@ -9,6 +9,7 @@ import { loadName, loadNameRegistry, NAME_DIRS_ONLY, nameHasDetail, namePagePara
 import { useDocTitle } from './title'
 import { fmtScan, fromMiss, scanMiss, useScans, useScanSel, type ScanMiss } from './scan'
 import { DEFAULT_STORE } from './stores'
+import { useFilterCaps } from './filterCaps'
 import { hrefWithScan, NoScanMatch } from './NoScanMatch'
 import { encodeSel, exactPrefix, isScanId, minPrefix, resolveAfter, resolveBefore, selOf, type ScanSel } from './scanSlug'
 import './hot.scss'
@@ -84,6 +85,7 @@ export function nameUrlParams(form: URLSearchParams, dates: readonly string[] | 
 
 export function NamePage() {
   useDocTitle('Name summaries preview')
+  const { rootLabel } = useFilterCaps()
   const [rawParams, setParams] = useSearchParams()
   const location = useLocation()
   // The scan selection is the map's `?d=` (one key and codec on every page):
@@ -117,7 +119,7 @@ export function NamePage() {
   const uncataloged = consolidated.filter(row => !row.plans.includes('catalog')), cataloged = consolidated.filter(row => row.plans.includes('catalog'))
   const catalogOnly = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'daily-scalar-source-v1' && !row.plans.includes('bounded-name-postings')) ?? []
   return <main className="hot-page">
-    <header><Link to="/">marin GCS</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
+    <header><Link to="/">{rootLabel ?? 'Map'}</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
     <p className="hot-scope">Case-insensitive literal substring within any path component name; no slash-crossing. Matching directories cover their descendants, counted once. Exact bytes and object counts, including zero-byte objects. A leading ^ or trailing $ is an anchor, which this page doesn’t search; write \^ or \$ (or quote it) to search them literally.</p>
     {dates && !registry.error && <HotSearchForm key={rawParams.toString()} params={params} dates={registry.data?.dated ? dates : undefined} onSearch={next => setParams(nameUrlParams(next, storeScans))} />}
     {registry.data && !registry.error && <p id="hot-availability" className="hot-note">{registry.data.static ? staticDomain(registry.data.static)
