@@ -118,7 +118,7 @@ export function NamePage() {
   const catalogOnly = registry.data?.dates.filter(row => [request?.date, request?.from].includes(row.date) && row.kind === 'daily-scalar-source-v1' && !row.plans.includes('bounded-name-postings')) ?? []
   return <main className="hot-page">
     <header><Link to="/">marin GCS</Link><h1>Name search — exact root summaries</h1>{dates && !registry.error && <p>Available scans: {scanList(dates)}.</p>}</header>
-    <p className="hot-scope">Case-insensitive literal substring within any path component name; no slash-crossing. Matching directories cover their descendants, counted once. Exact bytes and object counts, including zero-byte objects.</p>
+    <p className="hot-scope">Case-insensitive literal substring within any path component name; no slash-crossing. Matching directories cover their descendants, counted once. Exact bytes and object counts, including zero-byte objects. A leading ^ or trailing $ is an anchor, which this page doesn’t search; write \^ or \$ (or quote it) to search them literally.</p>
     {dates && !registry.error && <HotSearchForm key={rawParams.toString()} params={params} dates={registry.data?.dated ? dates : undefined} onSearch={next => setParams(nameUrlParams(next, storeScans))} />}
     {registry.data && !registry.error && <p id="hot-availability" className="hot-note">{registry.data.static ? staticDomain(registry.data.static)
       : catalogOnly.length

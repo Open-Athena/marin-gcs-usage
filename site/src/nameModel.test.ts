@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadName, nameHasDetail, namePageParams, nameRequest, parseName } from './nameModel'
+import { loadName, nameHasDetail, nameLiteral, namePageParams, nameRequest, parseName } from './nameModel'
 import { nameDiff, nameFixture } from './nameTestFixtures'
 
 const request = { date: '2026-10-05', name: 'datakit' }
@@ -67,5 +67,45 @@ describe('requests and explicit failures', () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('private backend details', { status })); vi.stubGlobal('fetch', fetcher)
     await expect(loadName(request)).rejects.toEqual(new Error(message))
     expect(fetcher.mock.calls.length).toBe(1)
+  })
+})
+describe('`nameLiteral`: an entry under the map term’s escape rules', () => {
+  it.each([
+    ['foo', { anchored: false, text: 'foo' }],
+    ['foo\\$', { anchored: false, text: 'foo$' }],
+    ['\\^foo', { anchored: false, text: '^foo' }],
+    ['\\^foo\\$', { anchored: false, text: '^foo$' }],
+    ['"^foo"', { anchored: false, text: '^foo' }],
+    ['"foo$"', { anchored: false, text: 'foo$' }],
+    ['"^foo', { anchored: false, text: '^foo' }],
+    ['a\\\\b', { anchored: false, text: 'a\\b' }],
+    ['a\\b', { anchored: false, text: 'a\\b' }],
+    ['foo\\', { anchored: false, text: 'foo\\' }],
+    ['a^b$c', { anchored: false, text: 'a^b$c' }],
+    ['^', { anchored: false, text: '^' }],
+    ['$', { anchored: false, text: '$' }],
+    ['^$', { anchored: false, text: '^$' }],
+    ['^foo', { anchored: true }],
+    ['foo$', { anchored: true }],
+    ['^foo$', { anchored: true }],
+    ['^foo\\$', { anchored: true }],
+    ['foo\\\\$', { anchored: true }],
+  ])('%s', (raw, want) => {
+    expect(nameLiteral(raw)).toEqual(want)
+  })
+})
+describe('/names with an escaped `^`/`$`', () => {
+  it('sends the entry as written; the answer’s pattern is the literal', async () => {
+    const body = nameFixture('bounded-name-postings', '2026-10-05', 'foo$'), fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(body)))
+    vi.stubGlobal('fetch', fetcher)
+    expect((await loadName({ ...request, name: 'FOO\\$' })).after.pattern).toBe('foo$')
+    expect(fetcher.mock.calls).toEqual([['/api/name-summary?date=2026-10-05&name=foo%5C%24', { signal: undefined }]])
+  })
+  it('a bare anchor is refused before any request', async () => {
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher)
+    const msg = 'Starts-with (^) and ends-with ($) search isn’t indexed on this deployment yet; search for a plain substring instead.'
+    await expect(loadName({ ...request, name: '^foo' })).rejects.toEqual(new Error(msg))
+    await expect(loadName({ ...request, name: 'foo$' })).rejects.toEqual(new Error(msg))
+    expect(fetcher.mock.calls).toEqual([])
   })
 })

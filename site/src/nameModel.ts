@@ -23,6 +23,24 @@ export type NameScanKind = 'frozen-history' | 'daily-scalar-source-v1' | 'consol
 export interface NameScan { date: string; plans: NamePlan[]; kind: NameScanKind; qualification_dates?: string[]; source_identity?: NameExecution['source_identity']; registry?: NameQualification }
 /** `static`: the static name index's generation and catalog bound V (`static-name-registry-v1`; every scan is `static-names-v1`). */
 export interface NameRegistry { dated: boolean; dates: NameScan[]; logical_store?: string; bucket_paths?: string[]; static?: { generation: string; max_rows: number } }
+/** A /names entry as the literal it searches, under the map's `simple` term rules (`querySyntax.ts`): a quoted span
+ *  is literal (an unterminated quote runs to the end); unquoted, `\^`, `\$` and `\\` are the characters themselves
+ *  and any other `\` is itself, while a leading `^` or a trailing `$` is an anchor — `anchored`, which /names (no
+ *  anchored reader) refuses rather than answer as a literal. Anchors around nothing (`^`, `$`, `^$`) are the characters. */
+export function nameLiteral(raw: string): { anchored: false; text: string } | { anchored: true } {
+  const start = raw.startsWith('^')
+  let text = '', quoted = false, end = false
+  for (let i = start ? 1 : 0; i < raw.length;) {
+    const c = raw[i++]
+    end = c === '$' && !quoted
+    if (c === '\\' && !quoted && i < raw.length && '^$\\'.includes(raw[i])) text += raw[i++]
+    else if (c === '"') quoted = !quoted
+    else text += c
+  }
+  if (end) text = text.slice(0, -1)
+  if (!text && (start || end)) return { anchored: false, text: `${start ? '^' : ''}${end ? '$' : ''}` }
+  return start || end ? { anchored: true } : { anchored: false, text }
+}
 export function namePageParams(params: URLSearchParams): URLSearchParams {
   const next = new URLSearchParams(params)
   if (!next.has('name')) next.set('name', 'datakit')
@@ -251,6 +269,9 @@ export async function loadName(
   const params = new URLSearchParams({ date: request.date, name: request.name, ...(request.from ? { from: request.from } : {}) })
   const checked = nameRequest(params, availableDates)
   params.set('name', checked.name)
+  // The entry as written travels (the server reads it by `nameLiteral` too); the answer's pattern is the literal.
+  const literal = nameLiteral(checked.name)
+  if (literal.anchored) throw new Error(REJECT_MESSAGES['anchor-not-indexed'])
   const response = await fetch(`/api/name-summary?${params}`, { signal })
   if (!response.ok) {
     if (response.status === 400) {
@@ -262,7 +283,7 @@ export async function loadName(
       ? availableDates ? 'This literal or scan is unavailable for the selected name-summary plan; it is not a zero-match result.' : 'Invalid name-summary request. Check the literal and frozen scan dates; this is not a zero-match result.'
       : 'Name summary is unavailable, busy or exceeded its work budget. This is not a zero-match result. Try again.')
   }
-  return parseName(await response.json(), checked)
+  return parseName(await response.json(), { ...checked, name: literal.text })
 }
 
 function registryBinding(value: unknown, scalar: boolean): NameQualification {
