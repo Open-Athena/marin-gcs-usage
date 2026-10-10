@@ -152,6 +152,8 @@ export interface RowSource {
   resolve: (row: string) => Promise<Resolved>
   /** Start the fetch on intent: a nop when cached or in flight. */
   prefetch: (row: string) => Promise<unknown>
+  /** Why this view's matches can't be acted on (`actBlock`): no row offers an action, nor does the selection. */
+  blocked?: string | null
 }
 
 export type Warm = 'cold' | 'warming' | 'ready'

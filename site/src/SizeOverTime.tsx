@@ -11,7 +11,7 @@ import { useStore, useStoreFetch } from './store'
 import { useUnits } from './units'
 import { fmtBytesStep } from './types'
 import { Skeleton } from './Busy'
-import { bandCallouts, pickAnnotations, relativeSeries, stackSeries, unitTicks, youngestGenesis } from './series'
+import { bandCallouts, pickAnnotations, relativeSeries, seriesGaps, stackSeries, unitTicks, youngestGenesis } from './series'
 import { DAY, fmtScan, scanInstant, type ScanLabel, type ScanTimes } from './scan'
 import type { Band } from './series'
 import { stringParam } from 'use-prms'
@@ -26,7 +26,7 @@ import { LoadFailure } from './LoadFailure'
 // precomputed per prefix and nothing is floored.
 
 interface Pt { x: number; y: number; y0?: number }
-interface Series { path: string; points: { date: string; b: number; o: number }[]; roots?: { path: string; points: { date: string; b: number; o: number }[] }[] }
+interface Series { path: string; points: { date: string; b: number; o: number }[]; unindexed?: string[]; roots?: { path: string; points: { date: string; b: number; o: number }[] }[] }
 
 // Default prominence-suppression radius for the local-extrema callouts, in days
 // (≈6 scans at the 12-hourly cadence): peaks/dips within this of a more
@@ -244,6 +244,8 @@ export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, 
   }, [seriesQ.data, xRange, times])
   const toPts = (points: { date: string; b: number }[]): Pt[] => points.map(p => ({ x: xOfScan(p.date, times), y: p.b })).filter(p => p.x >= xFrom).sort((a, b) => a.x - b.x)
   const total = useMemo(() => toPts(seriesQ.data?.points ?? []), [seriesQ.data, xFrom, times])
+  // Scans the answer doesn't cover (a filter's static index): gaps in the line, with a muted note — never zeros.
+  const gaps = useMemo(() => seriesGaps(seriesQ.data?.unindexed, total.map(p => p.x), d => xOfScan(d, times), xFrom, fmtX), [seriesQ.data, total, times, xFrom])
   // x → the scan id it plots (a pick or brush names that exact scan, and the
   // tooltip labels it); an x no point sits on falls back to its UTC minute.
   const idOfX = useMemo(() => {
@@ -425,10 +427,12 @@ export function SizeOverTime({ scans, times, fmt = fmtScan, prefix, user, pool, 
           onPickX={onPickDate && (x => onPickDate(idOfX(x)))}
           onBrush={onBrush && ((x0, x1) => onBrush(idOfX(x0), idOfX(x1)))}
           window={win && [xOfScan(win[0], times), xOfScan(win[1], times)]}
+          gaps={gaps.xs}
         />
       ) : (
         seriesQ.isLoading ? <Skeleton height={220} label="loading series…" /> : <p className="loading">fewer than two scans hold this path</p>
       )}
+      {gaps.note && !tooMany && <p className="gap-note">{gaps.note}</p>}
       {roots.length > 0 && (
         <div className="legend roots-legend">
           {roots.map(r => (

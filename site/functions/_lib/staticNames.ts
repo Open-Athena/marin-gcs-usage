@@ -19,10 +19,12 @@
  *  contains it; per date `D` (epoch ms of the scan id): live `vf ≤ D < vt`, depth ≥ 1, deduped by
  *  `(path, usr, vf)` (a name holding the key twice has two suffix rows), dropped when the lowercase
  *  parent path contains the key (an ancestor already covers it); `size`/`n_files` summed per first
- *  path segment. */
+ *  path segment. On a generation built with the hex-run rule (`hexRuns.ts`, its `catalog/meta.json`
+ *  `hex_runs`), "contains" is `occurs` under the rule, in the name test and the parent test alike. */
 import { type FileMetaData, parquetRead, type RowGroup } from 'hyparquet'
 import { isScanId, scanTime } from '../../src/scanSlug.js'
 import { compressors } from './zstd.js'
+import { firstOccurrence, type HexRule, occurs } from './hexRuns.js'
 
 /** A generation's key prefix in the deployment's `INDEX_R2` bucket. */
 export const staticPrefix = (gen: string): string => `static-names/${gen}`
@@ -333,23 +335,24 @@ export class FirstHits {
   rows_matching = 0
   readonly hits: Hit[] = []
   private seen = new Set<string>()
-  constructor(readonly key: string) {}
+  /** `rule`: the generation's hex-run rule (`hexRuns.ts`; null = the full index): "contains" is `occurs` under it. */
+  constructor(readonly key: string, readonly rule: HexRule | null = null) {}
   add(cols: SxColumns): void {
-    const key = this.key
+    const key = this.key, rule = this.rule
     this.rows_read += cols.path.length
     for (let i = 0; i < cols.path.length; i++) {
       if (!cols.s[i].startsWith(key)) continue
       const p = cols.path[i], slash = p.lastIndexOf('/'), name = p.slice(slash + 1).toLowerCase()
-      const at = name.indexOf(key)
+      const at = firstOccurrence(key, name, rule)
       if (at < 0) continue
       this.rows_matching++
       if (cols.depth[i] < 1) continue
-      if (name.indexOf(key, at + 1) >= 0) {
+      if (firstOccurrence(key, name, rule, at + 1) >= 0) {
         const k = `${p}\0${cols.usr[i]}\0${cols.vf[i]}`
         if (this.seen.has(k)) continue
         this.seen.add(k)
       }
-      if ((slash < 0 ? '' : p.slice(0, slash)).toLowerCase().includes(key)) continue
+      if (occurs(key, (slash < 0 ? '' : p.slice(0, slash)).toLowerCase(), rule)) continue
       this.hits.push({ path: p, depth: cols.depth[i], usr: cols.usr[i], vf: Number(cols.vf[i]), vt: Number(cols.vt[i]), size: cols.size[i], n: cols.n_files[i] })
     }
   }
@@ -390,7 +393,7 @@ export interface IndexCache<T = GroupIndex> { get(file: string): Promise<T | nul
 /** How `StaticNames.read` selects and folds a key's rows: `exact` — the rows with `s == key` (else every `s`
  *  starting with it); `under` — only the groups whose path keys meet the paths under it (rows outside are dropped by
  *  `fold`); `fold` — the first-hit rule (default `FirstHits`, the contains literal's). */
-export interface ReadOpts { exact?: boolean; under?: string; fold?: (key: string) => FirstHits }
+export interface ReadOpts { exact?: boolean; under?: string; fold?: (key: string) => FirstHits; rule?: HexRule | null }
 
 export class StaticNames {
   private shards?: Promise<Shard[]>
@@ -486,14 +489,15 @@ export class StaticNames {
   }
 
   /** `key`'s first hits (lowercased, ≥ 3 characters): its range read once and folded; `maxRows` refuses
-   *  (null) a range above it before any data is fetched. `opts`: the anchored readers' selection and fold. */
+   *  (null) a range above it before any data is fetched. `opts`: the anchored readers' selection and fold, and
+   *  the generation's hex-run rule (`rule`, the default fold's). */
   async read(key: string, maxRows = Infinity, opts: ReadOpts = {}): Promise<{ io: Io; fold: FirstHits | null }> {
     const io: Io = { shard: null, groups: 0, bytes: 0, rows_read: 0, rows_matching: 0, index: 'none', ms: {} }
     let t = await this.clock()
     const lap = async (name: string) => { const now = await this.clock(); io.ms[name] = now - t; t = now }
     const sel = await this.select(key, io, opts)
     await lap('index')
-    const fold = opts.fold ? opts.fold(key) : new FirstHits(key)
+    const fold = opts.fold ? opts.fold(key) : new FirstHits(key, opts.rule ?? null)
     if (!sel || !sel.groups.length) return { io, fold }
     io.groups = sel.groups.length
     if (sel.rows > maxRows) { io.rows_read = sel.rows; return { io, fold: null } }
@@ -525,8 +529,8 @@ export class StaticNames {
 
   /** Answer `key` (lowercased, ≥ 3 characters) on each date; `maxRows` refuses (null) a range above it
    *  before any data is fetched. */
-  async answer(key: string, dates: string[], maxRows = Infinity): Promise<{ io: Io; answer: Answer | null }> {
-    const { io, fold } = await this.read(key, maxRows)
+  async answer(key: string, dates: string[], maxRows = Infinity, rule: HexRule | null = null): Promise<{ io: Io; answer: Answer | null }> {
+    const { io, fold } = await this.read(key, maxRows, { rule })
     if (!fold) return { io, answer: null }
     const t = await this.clock()
     const answer = fold.answer(dates)

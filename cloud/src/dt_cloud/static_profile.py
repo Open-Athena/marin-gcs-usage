@@ -52,12 +52,25 @@ class Profile:
     anchors: bool = False
     #: Mounted dirs copied onto the tasks' PYTHONPATH in place of the image's own code (a staged tree).
     src: tuple[str, ...] = ()
+    #: The hex-run rule a new generation is built with (specs/static-hex-runs.md): `MIN,TAIL` (e.g. `16,8`) or `off`.
+    #: Required (no default): `hex_rule()`. A generation records its rule (`scans.json` `hex_runs`); its runs follow it.
+    hex_runs: str = ""
 
     def need(self, name: str):
         v = getattr(self, name)
         if v in (None, "", ()):
             raise SystemExit(f"static names: no {name} in the deployment profile: set {ENV[name]} (or STATIC_NAMES_PROFILE)")
         return v
+
+    def hex_rule(self):
+        """The profile's hex-run rule (`hex_runs.HexRule`, or None for `off`)."""
+        from .hex_runs import parse_rule
+
+        raw = self.need("hex_runs")
+        try:
+            return parse_rule(raw)
+        except ValueError as e:
+            raise SystemExit(f"static names: {ENV['hex_runs']}: {e}") from e
 
     def r2_env_secrets(self) -> dict[str, str]:
         """`{env var: secret name}` for the R2 copy, checked complete."""
@@ -77,6 +90,7 @@ ENV = {
     "project": "GCP_PROJECT", "region": "STATIC_NAMES_REGION", "image": "STATIC_NAMES_IMAGE", "sa": "STATIC_NAMES_SA",
     "r2_sa": "STATIC_NAMES_R2_SA", "machine": "STATIC_NAMES_MACHINE", "ssd_gb": "STATIC_NAMES_SSD", "spot": "STATIC_NAMES_SPOT",
     "append_tasks": "STATIC_NAMES_APPEND_TASKS", "drill": "STATIC_NAMES_DRILL", "anchors": "STATIC_NAMES_ANCHORS", "src": "STATIC_NAMES_SRC",
+    "hex_runs": "STATIC_NAMES_HEX_RUNS",
 }
 
 

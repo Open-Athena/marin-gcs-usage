@@ -30,11 +30,12 @@ import pyarrow.parquet as pq
 from click import IntRange, group, option
 
 from . import static_catalog as sc
+from .hex_runs import HexRule, occurs, occurs_sql, rule_from_json, rule_json
 from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
 from .static_names import (
     ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SX_RG,
     SX_SCHEMA, Reader, _batches, _src, _sx_cast, _task, answer_rows, connect, err, hist_sql, q, range_preds,
-    SCAN_ID, read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
+    SCAN_ID, gen_rule_at, read_json, scan_epoch, scan_sql, sidecar_rows, suffix_sql, upload_tree, write_sorted,
 )
 
 CDELTA_SCHEMA = CINTERVAL_SCHEMA.append(pa.field("op", pa.int8(), nullable=False))
@@ -52,7 +53,8 @@ def run_key(first: str, last: str) -> str:
 # ── 1. Coalesced append on the open versions ───────────────────────────────
 
 
-def append_open(con, prev_sql: str, scan: dict, r: dict, name: str, out: Path, *, bucket: str, mount: str | None) -> dict:
+def append_open(con, prev_sql: str, scan: dict, r: dict, name: str, out: Path, *, bucket: str, mount: str | None,
+                rule: HexRule | None = None) -> dict:
     """Append `scan` to one key range's open coalesced versions (`prev_sql`: `CINTERVAL_SCHEMA` rows; closed ones
     may ride along and are ignored), keyed on `ANSWER_COLS` alone, so the runs are the coalesced versions
     directly. Writes `cdelta/<name>.parquet` (`CDELTA_SCHEMA`, sorted `(depth, path, usr, vf, op)`),
@@ -72,7 +74,7 @@ def append_open(con, prev_sql: str, scan: dict, r: dict, name: str, out: Path, *
     rows = write_sorted(_batches(con, f"SELECT * FROM civ WHERE vt = {OPEN} ORDER BY depth, path, usr, vf"),
                         out / "copen" / f"{name}.parquet", CINTERVAL_SCHEMA, INTERVAL_RG, dictionary=["usr"])
     (out / "dhist").mkdir(parents=True, exist_ok=True)
-    pq.write_table(con.execute(hist_sql("cdl")).to_arrow_table(), out / "dhist" / f"{name}.parquet", compression=CODEC)
+    pq.write_table(con.execute(hist_sql("cdl", rule)).to_arrow_table(), out / "dhist" / f"{name}.parquet", compression=CODEC)
     con.execute("DROP TABLE pv; DROP TABLE civ; DROP TABLE cdl")
     doc = {"range": name, "scan": scan["id"], "opened": n_open, "closed": n_close, "open": rows, "s": round(monotonic() - t0, 1)}
     err(f"append {name} {scan['id']}: {n_open:,} opened, {n_close:,} closed, {rows:,} open in {doc['s']}s")
@@ -172,10 +174,10 @@ def sidecar_rows_empty() -> pa.Table:
     return pa.table({f.name: pa.array([], f.type) for f in SIDECAR_SCHEMA}, schema=SIDECAR_SCHEMA)
 
 
-def delta_shards(con, cdelta_files: list[str], out: Path, target_rows: int = RUN_SHARD_ROWS) -> dict:
+def delta_shards(con, cdelta_files: list[str], out: Path, target_rows: int = RUN_SHARD_ROWS, rule: HexRule | None = None) -> dict:
     """One scan's run shards from its `cdelta` files: every version's suffix rows (depth ≥ 1), the opened ones
     open and the closed ones with their final `vt` (close records), sorted `(s, path, usr, vf)` by DuckDB."""
-    sql = f"SELECT s, depth, path, usr, vf, vt, size, n_files FROM ({suffix_sql(cdelta_files)}) ORDER BY s, path, usr, vf"
+    sql = f"SELECT s, depth, path, usr, vf, vt, size, n_files FROM ({suffix_sql(cdelta_files, rule=rule)}) ORDER BY s, path, usr, vf"
     return write_run_shards((_sx_cast(b) for b in _batches(con, sql)), out, target_rows)
 
 
@@ -221,7 +223,7 @@ def merge_drills(dirs: list[Path], out: Path, run: dict, tmp: str | Path | None 
                        tier={k: run[k] for k in ("key", "first", "last", "level", "scans")})
 
 
-def merge_catalogs(tiers: list[Path], out: Path, membership: dict | None = None) -> dict:
+def merge_catalogs(tiers: list[Path], out: Path, membership: dict | None = None, rule: HexRule | None = None) -> dict:
     """Tiers' catalogs (oldest first) merged into `out/{cells,index}.parquet` by `pyrmts.runs` on `(q, bucket, vf)`,
     the newest tier's row winning (headers; cells are never duplicated across tiers): the base plus every run is
     the whole catalog, equal to a rebuild; runs alone, a merged run's catalog. `membership` (a merged run's: the
@@ -234,7 +236,8 @@ def merge_catalogs(tiers: list[Path], out: Path, membership: dict | None = None)
     pq.write_table(index, out / "index.parquet", compression=CODEC)
     doc = {"cells_rows": rows, "row_groups": index.num_rows, "bytes": (out / "cells.parquet").stat().st_size}
     if membership is not None:
-        meta = {**doc, "index_bytes": (out / "index.parquet").stat().st_size, "cell_rg": sc.CELL_RG, "membership": membership}
+        meta = {**doc, "index_bytes": (out / "index.parquet").stat().st_size, "cell_rg": sc.CELL_RG, "membership": membership,
+                **rule_json(rule)}
         (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     return doc
 
@@ -255,7 +258,8 @@ def missing_files(runs: list[dict], exists: Callable[[str], bool], drill_meta: C
     return out
 
 
-def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list[str]], V: int, out: Path, tmp: Path) -> dict:
+def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list[str]], V: int, out: Path, tmp: Path,
+                  rule: HexRule | None = None) -> dict:
     """A run's catalog: `static_catalog.append` from the merged `tiers` (the base and every live run) and every
     scan's `cdelta` since the base (`deltas`, oldest first, the last = this run's scan), minus what the tiers
     hold: the new cells and the new or changed headers."""
@@ -264,7 +268,7 @@ def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list
         if d.exists():
             shutil.rmtree(d)
     merge_catalogs(tiers, prev)
-    doc = sc.append(con, prev=prev, base=base, deltas=deltas, V=V, out=full)
+    doc = sc.append(con, prev=prev, base=base, deltas=deltas, V=V, out=full, rule=rule)
     pf, ff = q(str(prev / "cells.parquet")), q(str(full / "cells.parquet"))
     gone = con.execute(f"SELECT count(*) FILTER (WHERE bucket <> ''), count(*) FROM (SELECT * FROM read_parquet({pf}) EXCEPT SELECT * FROM read_parquet({ff}))").fetchone()
     if gone[0]:
@@ -276,7 +280,7 @@ def catalog_delta(con, tiers: list[Path], base: sc.BaseShards, deltas: list[list
     heads = con.execute(f"SELECT count(*) FROM read_parquet({q(str(out / 'cells.parquet'))}) WHERE bucket = ''").fetchone()[0]
     meta = {"cells_rows": rows, "row_groups": index.num_rows, "bytes": (out / "cells.parquet").stat().st_size,
             "index_bytes": (out / "index.parquet").stat().st_size, "cell_rg": sc.CELL_RG, "headers": heads,
-            "headers_changed": gone[1], "membership": {"max_rows": V}, "append": doc}
+            "headers_changed": gone[1], "membership": {"max_rows": V}, "append": doc, **rule_json(rule)}
     (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     return meta
 
@@ -298,8 +302,8 @@ def combine_rows(rows: list[dict]) -> list[dict]:
 class TieredReader:
     """The suffix reader over a base and its runs: every tier's range rows, combined, then `answer_rows`."""
 
-    def __init__(self, readers: list[Reader]):
-        self.readers = readers
+    def __init__(self, readers: list[Reader], rule: HexRule | None = None):
+        self.readers, self.rule = readers, rule
 
     def rows(self, key: str) -> tuple[list[dict], dict]:
         rows, io = [], {"groups": 0, "bytes": 0, "rows_read": 0, "files": 0, "tiers": len(self.readers)}
@@ -313,7 +317,7 @@ class TieredReader:
     def answer(self, term: str, dates: list[str]) -> dict:
         key = term.lower()
         rows, io = self.rows(key)
-        return answer_rows(key, rows, io, dates)
+        return answer_rows(key, rows, io, dates, self.rule)
 
     def hits(self, term: str) -> list[tuple]:
         """Every first hit `(path, usr, vf, vt, size, n_files)` (ms stamps), sorted: what the map filter cuts by path."""
@@ -325,7 +329,7 @@ class TieredReader:
         for r in rows:
             name = r["path"].rsplit("/", 1)[-1].lower()
             parent = r["path"].rsplit("/", 1)[0].lower() if "/" in r["path"] else ""
-            if r["depth"] >= 1 and key in name and key not in parent:
+            if r["depth"] >= 1 and occurs(key, name, self.rule) and not occurs(key, parent, self.rule):
                 out.add((r["path"], r["usr"], _ms(r["vf"]), _ms(r["vt"]), r["size"], r["n_files"]))
         return sorted(out)
 
@@ -580,7 +584,7 @@ def append_cmd(bucket, date, force, gen, index, mount, mem, per_task, out, threa
             src = f"{mount}/{prefix}/cintervals/{name}.parquet"
         outp = Path(out) / name
         doc = append_open(con, f"SELECT * FROM read_parquet({q(src)})", scan, ranges["ranges"][i], name, outp,
-                          bucket=read_json(f"gs://{bucket}/{run}/scans.json")["bucket"], mount=mount)
+                          bucket=read_json(f"gs://{bucket}/{run}/scans.json")["bucket"], mount=mount, rule=gen_rule_at(bucket, gen))
         upload_tree(outp / "copen", scratch, f"{prefix}/state/{date}/copen")
         upload_tree(outp / "cdelta", bucket, f"{run}/cdelta")
         upload_tree(outp / "dhist", bucket, f"{run}/dhist")
@@ -609,7 +613,7 @@ def shards_cmd(bucket, date, gen, mount, mem, target_rows, out, threads, tmp) ->
     con = connect(threads, mem, tmp)
     t0 = monotonic()
     outp = Path(out) / "run"
-    doc = delta_shards(con, files, outp, target_rows)
+    doc = delta_shards(con, files, outp, target_rows, gen_rule_at(bucket, gen))
     upload_tree(outp, bucket, run)
     shutil.rmtree(outp)
     doc["s"] = round(monotonic() - t0, 1)
@@ -637,7 +641,8 @@ def catalog_cmd(bucket, date, gen, mount, mem, threads, tmp) -> None:
     con = connect(threads, mem, tmp)
     t0 = monotonic()
     out = Path(tmp) / "catalog-run"
-    meta = catalog_delta(con, tiers, sc.BaseShards(f"{mount}/{prefix}", side), deltas, V, out, Path(tmp) / "catalog-work")
+    meta = catalog_delta(con, tiers, sc.BaseShards(f"{mount}/{prefix}", side), deltas, V, out, Path(tmp) / "catalog-work",
+                         gen_rule_at(bucket, gen))
     upload_tree(out, bucket, f"{run}/catalog")
     shutil.rmtree(out)
     meta["s"] = round(monotonic() - t0, 1)
@@ -691,7 +696,7 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
             dirs = [Path(mount) / prefix / r["key"] for r in ins]
             doc = merge_shards(dirs, outp)
             membership = json.loads((dirs[-1] / "catalog" / "meta.json").read_text())["membership"]
-            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership)
+            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership, gen_rule_at(bucket, gen))
             if all(r["key"] in drilled for r in ins):
                 merge_drills(dirs, outp / "drill", m, tmp)
             # anchored search's tiers (`static_anchors`): merged when every input carries them (else the merged run has
@@ -700,7 +705,8 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
                 from .static_anchors import Tier as ATier, merge_run_local
 
                 meta_a = json.loads((dirs[-1] / "anchors" / "meta.json").read_text())
-                merge_run_local(connect(16, "100GB", tmp), [ATier(d) for d in dirs], ATier(outp), meta_a["R"], meta_a["K"], m["scans"])
+                merge_run_local(connect(16, "100GB", tmp), [ATier(d) for d in dirs], ATier(outp), meta_a["R"], meta_a["K"], m["scans"],
+                                rule=rule_from_json(meta_a.get("hex_runs")))
             (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
             # a merged run is written once: an earlier attempt may have left only the same keys (overwritten here)
             ours = {f"{prefix}/{m['key']}/{f.relative_to(outp).as_posix()}" for f in outp.rglob("*") if f.is_file()}
@@ -713,7 +719,8 @@ def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
     if max(r["level"] for r in after) >= COMPACT_LEVEL:
         err(f"level {COMPACT_LEVEL} reached: compact into a new base generation")
     if not b.blob(f"{run}/meta.json").exists():
-        b.blob(f"{run}/meta.json").upload_from_string(json.dumps({"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], **meta}, indent=1) + "\n")
+        b.blob(f"{run}/meta.json").upload_from_string(json.dumps({"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], **meta,
+                                                                  **rule_json(gen_rule_at(bucket, gen))}, indent=1) + "\n")
     # A manifest only after every file of every run it lists exists (the readers need each tier whole), and never one
     # whose drill covers fewer scans than the last's.
     if missing := missing_files(after, lambda k: b.blob(f"{prefix}/{k}").exists(), drill_meta):
@@ -784,7 +791,7 @@ def rebuild_state_cmd(bucket, date, force, gen, index, mount, mem, per_task, out
 
 
 def verify_terms(con, src: str, version: int, date: str, before: str, terms: list[str], reader: TieredReader, catalog: TieredCatalog,
-                 base_reader: Reader, base_catalog: sc.Catalog, base_last: str) -> dict:
+                 base_reader: Reader, base_catalog: sc.Catalog, base_last: str, rule: HexRule | None = None) -> dict:
     """`verify`'s checks over given readers (the base plus runs, tiered; the base alone) and the date's scan file `src`.
     The previous-scan check (tiered = the base alone) runs only when `before` is in the base (≤ `base_last`)."""
     from .static_catalog import PARENT
@@ -798,11 +805,12 @@ def verify_terms(con, src: str, version: int, date: str, before: str, terms: lis
     report: dict = {"date": date, "before": before, "terms": {}}
     pairs = equal = 0
     for t in terms:
-        brute = [tuple(r) for r in con.execute(f"""SELECT path, usr, size, n_files FROM sc WHERE contains(l, {q(t)}) AND NOT contains(par, {q(t)})
+        hit = f"{occurs_sql('l', q(t), rule)} AND NOT {occurs_sql('par', q(t), rule)}"
+        brute = [tuple(r) for r in con.execute(f"""SELECT path, usr, size, n_files FROM sc WHERE {hit}
             ORDER BY path, usr""").fetchall()] if len(t) >= 3 else None
         bucket_tot: dict[str, list[int]] = {}
         for bk, b_, o_ in con.execute(f"""SELECT split_part(path, '/', 1), sum(size)::BIGINT, sum(n_files)::BIGINT FROM sc
-                WHERE contains(l, {q(t)}) AND NOT contains(par, {q(t)}) GROUP BY 1""").fetchall():
+                WHERE {hit} GROUP BY 1""").fetchall():
             if b_ or o_:
                 bucket_tot[bk] = [int(b_), int(o_)]
         bucket_tot = dict(sorted(bucket_tot.items()))
@@ -882,10 +890,11 @@ def verify_cmd(bucket, date, gen, mount, mem, threads, terms_file, tmp) -> None:
     before = m["scans"][m["scans"].index(date) - 1]
     terms = sorted({x.lower() for x in read_text(terms_file).splitlines() if x.strip()})
     dirs = [prefix, *(f"{prefix}/{r['key']}" for r in m["runs"])]
+    rule = gen_rule_at(bucket, gen)
     con = connect(threads, mem, tmp)
     report = verify_terms(con, f"{mount}/{scan['src']}", scan["version"], date, before, terms,
-                          TieredReader([gcs_reader(bucket, d) for d in dirs]), TieredCatalog([gcs_catalog(bucket, d) for d in dirs]),
-                          gcs_reader(bucket, prefix), gcs_catalog(bucket, prefix), m["scans"][m["base_scans"] - 1])
+                          TieredReader([gcs_reader(bucket, d) for d in dirs], rule), TieredCatalog([gcs_catalog(bucket, d) for d in dirs]),
+                          gcs_reader(bucket, prefix, rule), gcs_catalog(bucket, prefix), m["scans"][m["base_scans"] - 1], rule)
     report["tiers"] = len(dirs)
     body = json.dumps(report, indent=1) + "\n"
     _gcs().bucket(bucket).blob(f"{prefix}/{run_key(date, date)}/verify.json").upload_from_string(body)

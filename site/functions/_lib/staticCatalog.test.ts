@@ -160,6 +160,31 @@ describe('static dispatch', () => {
     expect([before.root, after.root]).toEqual([{ b: 30_000, o: 300 }, { b: 30_000, o: 300 }])
   })
 
+  it('flags a dir-only (v1) scan\'s totals `dirs_only` (its folder-name matches), and refuses a diff across a dir-only and a full scan', async () => {
+    const v1 = (dirs: string[]): Store => ({ ...fixtureStore(), dirOnly: async () => dirs })
+    const one = await staticSummary(ENV, params({ date: '2026-08-01', name: 'bkt' }), v1(['2026-08-01']))
+    const body = await one.json()
+    expect([one.status, body]).toEqual([200, { ...side('2026-08-01', 'bounded-name-postings', 'bkt', expected.bkt['2026-08-01']), dirs_only: true }])
+    const parsed = parseName(body, { date: '2026-08-01', name: 'bkt' })
+    expect(parsed.execution.after.dirs_only).toEqual(true)
+    // A full scan beside it: unflagged.
+    const full = await staticSummary(ENV, params({ date: '2026-10-01', name: 'bkt' }), v1(['2026-08-01']))
+    expect([full.status, await full.json()]).toEqual([200, side('2026-10-01', 'bounded-name-postings', 'bkt', expected.bkt['2026-10-01'])])
+    const split = await staticSummary(ENV, params({ from: '2026-08-01', date: '2026-10-01', name: 'bkt' }), v1(['2026-08-01']))
+    expect([split.status, await split.json()]).toEqual([400, {
+      error: 'One of these scans lists folders only (files aren’t searchable on it), so a search can’t be compared across the two; compare two scans that both list files. This is not a zero-match result.',
+      code: 'scan-dirs-only',
+    }])
+    // Both sides dir-only: comparable, each side flagged.
+    const both = await staticSummary(ENV, params({ from: '2026-08-01', date: '2026-09-01', name: 'bkt' }), v1(['2026-08-01', '2026-09-01']))
+    const diff = await both.json() as { before: { dirs_only?: true }; after: { dirs_only?: true } }
+    expect([both.status, diff.before.dirs_only, diff.after.dirs_only]).toEqual([200, true, true])
+    const result = parseName(diff, { from: '2026-08-01', date: '2026-09-01', name: 'bkt' })
+    expect([result.execution.before?.dirs_only, result.execution.after.dirs_only]).toEqual([true, true])
+    // The contract: `dirs_only` is `true` or absent.
+    expect(() => parseName({ ...(body as object), dirs_only: false }, { date: '2026-08-01', name: 'bkt' })).toThrow()
+  })
+
   it('refuses a scan outside the generation (400) and fails closed (503) when the index is unreadable', async () => {
     const outside = await staticSummary(ENV, params({ date: '2026-09-02', name: 'foo' }), fixtureStore())
     expect([outside.status, await outside.json()]).toEqual([400, { error: 'This scan is not in the static name index yet. This is not a zero-match result.', code: 'scan-not-indexed' }])

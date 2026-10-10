@@ -18,7 +18,7 @@ import { snapshotsPrefix } from '../_lib/shared.js'
 import { type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
-import { liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
+import { hexNote, hexQuery, liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
 import { indexedOnly, reject, rejectBody, rejectQuery, rejectScope } from '../_lib/indexedOnly.js'
 import { readRootAgg, readRootRows } from '../_lib/view.js'
 import { type OverTime, overTimePoint, readOverTime } from '../_lib/overTime.js'
@@ -119,6 +119,9 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   const strict = !!qp.query && indexedOnly(env)
   const refused = strict ? rejectQuery(url.searchParams.get('q'), url.searchParams.get('qs'), env.QUERY_SYNTAX) ?? rejectScope(!!(lens || owner || classes)) : null
   if (refused) return new Response(rejectBody(refused), { status: 400, headers: { 'content-type': 'application/json' } })
+  // The static index's hex-run rule: substrings match where they `occur` under it, static or not (`hexRuns.ts`).
+  const hx = await hexQuery(env, qp.query)
+  qp.query = hx.query
   const query = qp.query && !qp.query(path) ? qp.query : undefined
   if (qp.query && !query) paths.length = 0
   const sfs = query && !lens && !classes ? staticFilterStore(env) : null
@@ -178,12 +181,14 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
   // or a rollup under an owner pool (rollups carry no owners).
   const found = skey ? await st.time('static', sfs!.source.hits(skey, path)) : null
   const shits = found?.rollup && owner ? null : found
-  // The scans it is exact on: the drilldown's are its base generation's.
+  // The scans it is exact on: the drilldown's are its base generation's, less the dir-only ones (a v1 source
+  // lists no files, so a name's total there reads ~0 — a gap, not a point).
   const sscans = shits ? new Set(shits.scans ?? await sfs!.scans()) : null
+  if (sscans) for (const d of await sfs!.dirOnly?.() ?? []) sscans.delete(d)
   // Indexed-only: no answer is `scan-not-indexed` (never the client's roots read per scan).
   if (query && strict && !shits) return new Response(rejectBody(reject('scan-not-indexed')), { status: 400, headers: { 'content-type': 'application/json' } })
   if (query && !shits && !paths.length) return json({ error: 'a filtered series needs its match roots (paths=)' }, 400)
-  /** Indexed-only: the scans the answer doesn't cover (gaps in the series, named). */
+  /** The scans a static answer doesn't cover: gaps in the series, named (indexed-only or not). */
   const unindexed: string[] = []
   const indexable = !split && !lens && !owner && !classes && !shits
   const lines = indexable ? await st.time('overtime', Promise.all((paths.length ? paths : [path]).map(p => readOverTime(env, p)))) : []
@@ -202,9 +207,9 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
         const t = shits.rollup ? rollupTotal(shits.rollup, date) : liveTotal(shits.hits, date, u => ownerOk(u, owner))
         return { date, b: t.b, o: t.o }
       }
-      // A scan the answer doesn't cover: the client's match roots (`paths=`), unless they come from a rollup,
-      // which lists only some of them (a gap, not a wrong point).
-      if (shits && (!paths.length || shits.rollup || strict)) { if (strict) unindexed.push(date); return null }
+      // A scan the static answer doesn't cover: a gap, named — never the current scan's match roots read on
+      // it (another scan's roots, or a rollup's few) nor a zero.
+      if (shits) { unindexed.push(date); return null }
       const covered = ot ? overTimePoint(ot, date) : undefined
       if (covered !== undefined) return covered && { date, ...covered }
       if (split) {
@@ -251,6 +256,6 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
     for (const g of got) if (g) points.push(g)
   }
   points.sort((a, b) => a.date.localeCompare(b.date))
-  const body = JSON.stringify({ path, ...(unindexed.length ? { unindexed: unindexed.sort() } : {}), ...(paths.length ? { paths } : {}), ...(lens ? { lens: lensTag } : {}), ...(owner ? { owner } : {}), points, ...(split ? { roots: rootPoints(rootsByDate) } : {}) })
+  const body = JSON.stringify({ path, ...(qp.query ? hexNote(hx.hexRuns, qp.query.ast) : {}), ...(unindexed.length ? { unindexed: unindexed.sort() } : {}), ...(paths.length ? { paths } : {}), ...(lens ? { lens: lensTag } : {}), ...(owner ? { owner } : {}), points, ...(split ? { roots: rootPoints(rootsByDate) } : {}) })
   return cacheStore(env, cacheKey, body, { 'server-timing': st.header(), ...(engine ? { 'x-query-engine': engine } : {}) }, ctx.waitUntil?.bind(ctx))
 }
