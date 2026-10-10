@@ -422,6 +422,8 @@ export const perScan = (env: Env): Env => (intervalsOn(env) ? { ...env, PATH_STO
 /** `env` reading owner-slice rows (a user lens, an owner pool, owner totals, class scopes): the interval
  *  store's slice sorts where its generation has them (`openInterval`), else per-scan stores. */
 export const slices = (env: Env): Env => (intervalsOn(env) ? { ...env, [IV_SLICED]: true } as Env : env)
+/** `env` reading the interval store's folded sorts (one row per path, exact totals) again. */
+export const folded = (env: Env): Env => (isSliced(env) ? { ...env, [IV_SLICED]: false } as Env : env)
 /** The marker `slices` sets on an env (a symbol: not a binding or var; object spreads carry it). */
 export const IV_SLICED = Symbol('interval-store slices')
 const isSliced = (env: Env): boolean => !!(env as Env & { [IV_SLICED]?: boolean })[IV_SLICED]
