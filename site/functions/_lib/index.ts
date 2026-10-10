@@ -130,6 +130,15 @@ interface D1Handle {
   /** Where the handle's own files are read from, when not the deployment's store (the interval
    *  store on `INDEX_R2`). */
   src?: ByteStore
+  /** An interval store's per-scan runs read beside this handle (specs/interval-store.md §2.7; oldest first): each a
+   *  handle on the run's own sort. A read plans every tier, and combines the rows of one version across tiers (the
+   *  smallest `vt`: a run's close record ends a version an older tier still holds open) before testing liveness
+   *  (`combineLive`). Every usable run, also at a scan before its first: liveness there doesn't need it, but a row's
+   *  `vt` does (a diff's lookups trust it to say whether the version is live at the other scan, `Ask`). */
+  runs?: IndexHandle[]
+  /** A run's handle (its key, `deltas/<first>[_<last>]`): a group can matter at `asOf` when a version in it opened by
+   *  then (`vfMin ≤ asOf`), live or not — a close record is not live, yet it ends one. */
+  run?: string
 }
 
 /** Ranged reads of whole-key objects (`S3Store`'s `get` shape). `tail`, where the store has suffix
@@ -479,16 +488,136 @@ export function r2Bytes(r2: R2Bucket): ByteStore {
   }
 }
 
-/** The generation's scans (`scans.json`: id → epoch), held per isolate for a minute. */
-const ivScansHeld = new Map<string, Promise<Map<string, number>>>()
-async function ivScans(env: Env): Promise<Map<string, number>> {
+// --- the store's per-scan runs (specs/interval-store.md §2.7, `interval_append`) ---
+//
+// A base generation plus one small run per newer scan under `deltas/<first>[_<last>]/served/` (the base's sorts, cut
+// from the scan's changes: versions opened there and close records), merged on a binary counter and listed by the
+// newest immutable `manifests/<scan id>.json` (ids sort in time order). A run is read as one more tier of every sort
+// (`IndexHandle.runs`). A broken run — its files missing or unreadable (a publish caught mid-copy, a corrupt object) —
+// cuts the stack there for `IV_BROKEN_TTL`: its scans and every later run's leave the store (they read per-scan), the
+// ones before it answer as before, never a failed request (`ivRetry`).
+
+/** A run a manifest lists (`interval_append.manifest`). */
+interface IvRun { key: string; first: string; last: string; level: number; scans: string[] }
+interface IvManifest { gen: string; date: string; scans: string[]; stamps: Record<string, number>; runs: IvRun[] }
+/** The store's scans (id → epoch), the base's alone, and the usable runs (oldest first). `cut`: a broken run cut the
+ *  stack. */
+interface IvState { scans: Map<string, number>; base: Set<string>; runs: IvRun[]; cut: boolean }
+/** How long a state stands before the manifests are listed again (a new scan's run shows up within it). */
+export const IV_STATE_TTL = 60_000
+/** How long a broken run stays cut out (then it is tried again: a publish caught mid-copy heals). */
+export const IV_BROKEN_TTL = 30_000
+const ivStates = new Map<string, { at: number; p: Promise<IvState>; ok?: IvState }>()
+const ivBroken = new Map<string, { at: number; error: string }>()
+const ivGenKey = (env: Env): string => `${storeKey(env)}|${env.INTERVAL_STORE_GEN}${ivRev(env)}`
+
+/** A read of an interval store's run failed: the run is cut out (`ivMarkBroken`) and the read can be retried
+ *  (`ivRetry`), when the run's scans read per-scan. */
+export class IvTierBroken extends Error {
+  constructor(readonly run: string, cause: unknown) {
+    super(`interval store run ${run} is broken: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = 'IvTierBroken'
+  }
+}
+
+/** Cut run `key` out of the env's store for `IV_BROKEN_TTL` (logged once per window), and drop the held state. */
+export function ivMarkBroken(env: Env, key: string, error: unknown): IvTierBroken {
+  const e = error instanceof IvTierBroken ? error : new IvTierBroken(key, error)
+  const k = `${ivGenKey(env)}|${key}`
+  const was = ivBroken.get(k)
+  if (!was || Date.now() - was.at >= IV_BROKEN_TTL) {
+    ivBroken.set(k, { at: Date.now(), error: e.message })
+    console.error(`${e.message}; its scans and every later run's read per-scan for ${IV_BROKEN_TTL / 1000}s`)
+  }
+  ivStates.delete(ivGenKey(env))
+  return e
+}
+
+/** `f`, once more when it failed on a broken run (`IvTierBroken`): the stack is cut by then, so the retry reads the
+ *  run's scans per-scan and the rest as before. */
+export async function ivRetry<T>(f: () => Promise<T>): Promise<T> {
+  try {
+    return await f()
+  } catch (e) {
+    if (!(e instanceof IvTierBroken)) throw e
+    return f()
+  }
+}
+
+/** The newest `manifests/<scan id>.json`, or null (none, or a bucket without `list`). */
+async function ivManifest(env: Env): Promise<IvManifest | null> {
+  const r2 = env.INDEX_R2! as R2Bucket & { list?: R2Bucket['list'] }
+  if (typeof r2.list !== 'function') return null
+  const prefix = `${IV_PREFIX}/${env.INTERVAL_STORE_GEN}/manifests/`
+  const keys: string[] = []
+  let cursor: string | undefined
+  do {
+    const page = await r2.list({ prefix, ...(cursor ? { cursor } : {}) })
+    for (const o of page.objects) if (/^[^/]+\.json$/.test(o.key.slice(prefix.length))) keys.push(o.key)
+    cursor = page.truncated ? page.cursor : undefined
+  } while (cursor)
+  if (!keys.length) return null
+  keys.sort()
+  const o = await env.INDEX_R2!.get(keys[keys.length - 1])
+  if (!o) return null
+  const m = await o.json<IvManifest>()
+  if (!Array.isArray(m.runs) || !Array.isArray(m.scans) || typeof m.stamps !== 'object') throw new Error(`interval store: bad ${keys[keys.length - 1]}`)
+  return m
+}
+
+async function loadIvState(env: Env): Promise<IvState> {
   const gen = env.INTERVAL_STORE_GEN!
-  return shared(ivScansHeld, gen, async () => {
-    const o = await env.INDEX_R2!.get(`${IV_PREFIX}/${gen}/scans.json`)
-    if (!o) throw new Error(`interval store ${gen}: no scans.json`)
-    const doc = await o.json<{ scans: { id: string; ts: number }[] }>()
-    return new Map(doc.scans.map(x => [x.id, x.ts]))
-  }, 60_000)
+  const o = await env.INDEX_R2!.get(`${IV_PREFIX}/${gen}/scans.json`)
+  if (!o) throw new Error(`interval store ${gen}: no scans.json`)
+  const doc = await o.json<{ scans: { id: string; ts: number }[] }>()
+  const scans = new Map(doc.scans.map(x => [x.id, x.ts]))
+  const base = new Set(scans.keys())
+  const m = await ivManifest(env)
+  const runs: IvState['runs'] = []
+  let cut = false
+  for (const r of m?.runs ?? []) {
+    const b = ivBroken.get(`${ivGenKey(env)}|${r.key}`)
+    const ts = r.scans.map(x => m!.stamps[x])
+    if ((b && Date.now() - b.at < IV_BROKEN_TTL) || ts.some(t => typeof t !== 'number')) { cut = true; break }
+    runs.push(r)
+    r.scans.forEach((x, i) => scans.set(x, ts[i]))
+  }
+  return { scans, base, runs, cut }
+}
+
+/** The store's state, re-read once it is `IV_STATE_TTL` old (`IV_BROKEN_TTL` when cut); a failed re-read keeps
+ *  serving the last good one. */
+function ivState(env: Env): Promise<IvState> {
+  const k = ivGenKey(env)
+  const cur = ivStates.get(k)
+  const age = cur ? Date.now() - cur.at : Infinity
+  if (cur && age < (cur.ok?.cut ? IV_BROKEN_TTL : IV_STATE_TTL)) return cur.p
+  const last = cur?.ok
+  const entry: { at: number; p: Promise<IvState>; ok?: IvState } = { at: Date.now(), p: Promise.resolve(null as unknown as IvState) }
+  entry.p = loadIvState(env).then(
+    st => { entry.ok = st; return st },
+    e => { if (ivStates.get(k) === entry) ivStates.delete(k); if (last) return last; throw e },
+  )
+  ivStates.set(k, entry)
+  return entry.p
+}
+
+/** The generation's scans, its runs' included (id → epoch). */
+async function ivScans(env: Env): Promise<Map<string, number>> {
+  return (await ivState(env)).scans
+}
+
+/** A run's served sort: its footer (memoized as the base's), and the data file there (R2 `head`, where the binding
+ *  has it), so a run listed before its files are whole is broken here, not mid-read. */
+function ivRunFooter(env: Env, run: string, file: string): Promise<FooterIndex> {
+  const dir = `${IV_PREFIX}/${env.INTERVAL_STORE_GEN!}/${run}/served`
+  const key = ivKey(env, `${dir}/${file}.groups.parquet`)
+  return shared(ivFooters, `${storeKey(env)}|${key}`, async () => {
+    const r2 = env.INDEX_R2! as R2Bucket & { head?: R2Bucket['head'] }
+    const [footer, data] = await Promise.all([openFooter(env, key, r2Bytes(env.INDEX_R2!)), typeof r2.head === 'function' ? r2.head(`${dir}/${file}.parquet`) : Promise.resolve(true)])
+    if (!data) throw Object.assign(new Error(`${dir}/${file}.parquet: not found`), { name: 'NotFoundError' })
+    return footer
+  }, 30_000)
 }
 
 /** A served sort of the interval store as an index handle as of `date`'s scan (`pq` mode over its
@@ -496,7 +625,7 @@ async function ivScans(env: Env): Promise<Map<string, number>> {
  *  `slices(env)` the variant reads its owner-slice sort (`IV_SLICE_SORTS`; the handle keeps the variant's
  *  name, so lens-sorted logic holds); a held date's other variants (a v1 `user` sort) are refused, so a
  *  sliced read of a held date never mixes in per-scan rows. A generation without slice sorts: null. */
-export async function openInterval(env: Env, date: string, variant: string): Promise<IndexHandle | null> {
+export async function openInterval(env: Env, date: string, variant: string, retried = false): Promise<IndexHandle | null> {
   const sliced = isSliced(env)
   const file0 = sliced ? IV_SLICE_SORTS.get(variant) : IV_SORTS.has(variant) ? variant : undefined
   // The sort's footer (and its sibling's: a view reads P's row from `path`, then `bysize`, and a diff
@@ -507,14 +636,19 @@ export async function openInterval(env: Env, date: string, variant: string): Pro
     if (held && !ivNoSlices.has(env.INTERVAL_STORE_GEN!)) throw new Error(`index variant '${variant}' not synced for ${date}`)
   }
   if (!file0) return null
-  const asOf = (await ivScans(env)).get(date)
+  const st = await ivState(env)
+  const asOf = st.scans.get(date)
   if (asOf == null) return null
+  // The standalone `reads` sort has no runs: it answers the base's scans only.
+  if (variant === 'reads' && !st.base.has(date)) return null
+  const runs = variant === 'reads' ? [] : st.runs
   const gen = env.INTERVAL_STORE_GEN!
   if (sliced) {
     const at = ivNoSlices.get(gen)
     if (at != null && Date.now() - at < 60_000) return null
   }
-  const ck = `iv:${gen}${ivRev(env)}:${date}:${variant}${sliced ? ':s' : ''}`
+  for (const r of runs) for (const f of [file0, IV_SIBLING.get(file0)]) if (f) ivRunFooter(env, r.key, f).catch(() => {})
+  const ck = `iv:${gen}${ivRev(env)}:${date}:${variant}${sliced ? ':s' : ''}|${runs.map(r => r.key).join(',')}`
   try {
     return await shared(handles, ck, async (): Promise<IndexHandle> => {
       const src = r2Bytes(env.INDEX_R2!)
@@ -525,13 +659,35 @@ export async function openInterval(env: Env, date: string, variant: string): Pro
       const schema = JSON.parse(kv.get('schema')!) as SchemaElement[]
       const version = Number(kv.get('version'))
       const file: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
-      return { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}${sliced ? ':s' : ''}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
+      const h: PqHandle = { mode: 'pq', file, env, date, variant, gen: `iv:${gen}${ivRev(env)}${sliced ? ':s' : ''}`, dir, schema, version, columns: variant === 'reads' ? null : rowColumns(version, schema), floor: null, footer, asOf, src }
+      if (!runs.length) return h
+      return { ...h, runs: await Promise.all(runs.map(r => openIvRun(env, h, r.key, file0))) }
     }, 300_000)
   } catch (e) {
+    // A run that won't open is cut out; the date is then the store's (an older run's or the base's) or per-scan.
+    if (e instanceof IvTierBroken && !retried) return openInterval(env, date, variant, true)
     if (!sliced || (e as Error).name !== 'NotFoundError') throw e
     ivNoSlices.set(gen, Date.now())
     return null
   }
+}
+
+/** Run `run`'s handle on sort `file`, as of `base`'s scan (`IvTierBroken` when its files won't open). */
+async function openIvRun(env: Env, base: PqHandle, run: string, file: string): Promise<IndexHandle> {
+  const dir = `${IV_PREFIX}/${env.INTERVAL_STORE_GEN!}/${run}/served`
+  const key = ivKey(env, `${dir}/${file}.parquet`)
+  let footer: FooterIndex
+  try {
+    footer = await ivRunFooter(env, run, file)
+  } catch (e) {
+    throw ivMarkBroken(env, run, e)
+  }
+  const kv = new Map((footer.metadata.key_value_metadata ?? []).map(e => [e.key, e.value]))
+  const schema = JSON.parse(kv.get('schema')!) as SchemaElement[]
+  const version = Number(kv.get('version'))
+  const src = base.src!
+  const fileSlice: FileSlice = { get byteLength() { return 0 }, slice: async (s0, e) => toBuffer((await src.get(key, { offset: s0, length: (e ?? s0) - s0 })).bytes) }
+  return { ...base, file: fileSlice, gen: `${base.gen}/${run}`, dir, schema, version, columns: rowColumns(version, schema), footer, run, runs: undefined }
 }
 
 /** Each path's `last_read` at a scan, from the interval store's `reads` sort (absent = never read): per
@@ -606,8 +762,10 @@ export function columnsFor(h: IndexHandle, fields: (keyof Row)[]): string[] {
   const have = new Set(h.schema.slice(1).map(l => l.name))
   const out = new Set<string>()
   for (const f of fields) for (const c of map[f] ?? [f]) if (have.has(c)) out.add(c)
-  // An interval store's rows are versions: a read keeps those live at its scan, by `vf`/`vt`.
+  // An interval store's rows are versions: a read keeps those live at its scan, by `vf`/`vt` — and with runs, combines
+  // a version's rows across tiers by its identity.
   if (h.asOf != null) for (const c of ['vf', 'vt']) out.add(c)
+  if (h.runs?.length) for (const c of ['depth', 'path', 'usr']) if (have.has(c)) out.add(c)
   return [...out]
 }
 
@@ -867,9 +1025,11 @@ async function readFooterJson(h: PqHandle, fg: FooterGroup): Promise<Map<number,
  * skips the path test, a mixed-user one the keyed rect). */
 async function pqGroups(h: PqHandle, pass0: (g: NonNullable<FooterGroup['bounds']>) => boolean): Promise<BlobGroup[]> {
   // As of a scan (an interval store): a group can answer only if one of its versions is live then.
+  // A run's group can matter once a version in it opened by then, live or not (its close records end versions).
   const D = h.asOf
+  const run = !!h.run
   const pass = D == null ? pass0 : (g: { vfMin?: number; vtMax?: number } & NonNullable<FooterGroup['bounds']>) =>
-    (g.vfMin == null || g.vfMin <= D) && (g.vtMax == null || D < g.vtMax) && pass0(g)
+    (g.vfMin == null || g.vfMin <= D) && (run || g.vtMax == null || D < g.vtMax) && pass0(g)
   const sel = h.footer.groups.filter(fg => !fg.bounds || pass(fg.bounds))
   h.trace?.('fgroups', sel.length)
   const all = (await mapLimit(sel, GROUP_READS, fg => readFooterGroup(h, fg))).flat()
@@ -1083,6 +1243,11 @@ async function readGroup(h: IndexHandle, rgJson: string, columns?: string[], hel
   return (D == null ? raw : raw.filter(r => num(r.vf) <= D && D < num(r.vt))).map(toRow(h))
 }
 
+/** One row group's rows, every version (an interval-store handle's tier: `combineLive` tests them after combining). */
+async function readGroupVersions(h: IndexHandle, rgJson: string, columns?: string[]): Promise<Row[]> {
+  return (await readGroupRaw(h, rgJson, columns ?? h.columns ?? undefined)).map(toRow(h))
+}
+
 /** A row group's every version (an interval-store handle), unfiltered by time: what the group cache
  *  holds for it, shared by every scan the store serves. */
 async function readGroupAll(h: IndexHandle, rgJson: string, held?: FileSlice): Promise<Row[]> {
@@ -1095,7 +1260,29 @@ const liveAt = (h: IndexHandle, rows: Row[]): Row[] => {
   return D == null ? rows : rows.filter(r => r.vf! <= D && D < r.vt!)
 }
 
-export interface Span extends GroupSpan { rg: number }
+export interface Span extends GroupSpan {
+  rg: number
+  /** The tier the group is in, on a handle with `runs`: 0 (or absent) its own file, `i` its run `i - 1`. */
+  tier?: number
+}
+
+/** A span's identity across tiers. */
+const spanKey = (s: Span): number => (s.tier ?? 0) * 2 ** 32 + s.rg
+const bySpan = (a: Span, b: Span): number => (a.tier ?? 0) - (b.tier ?? 0) || a.rg - b.rg
+/** A handle's tiers: itself, then its runs. */
+const tiersOf = (h: IndexHandle): IndexHandle[] => [h, ...(h.runs ?? [])]
+
+/** Rows of every tier combined, one per version (`(depth, path, usr, vf)`; the smallest `vt`), then those live at
+ *  the handle's scan: `interval_read.combine` + `live_rows`. */
+export function combineLive(h: IndexHandle, rows: Row[]): Row[] {
+  const best = new Map<string, Row>()
+  for (const r of rows) {
+    const k = `${r.depth}\0${r.path}\0${r.usr ?? ''}\0${r.vf}`
+    const c = best.get(k)
+    if (!c || r.vt! < c.vt!) best.set(k, r)
+  }
+  return liveAt(h, [...best.values()])
+}
 
 /** Decoded row groups, per isolate (LRU by an estimated byte size).
  *
@@ -1176,7 +1363,9 @@ function cachedGroup(h: IndexHandle, rg: number): Row[] | undefined {
  * group's rows (kept per group, in input order). */
 /** `stop`: the caller no longer wants the answer (a time budget ran out) — groups not yet fetched or decoded
  *  are skipped (their slots stay empty), so abandoned work stops taking the isolate's CPU. */
-async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: string }[], f: (rows: Row[]) => T, stop?: () => boolean): Promise<T[]> {
+/** `versions`: an interval store's groups are handed to `f` with every version (a tiered read combines the tiers'
+ *  rows before testing liveness, `combineLive`), not only those live at the handle's scan. */
+async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: string }[], f: (rows: Row[]) => T, stop?: () => boolean, versions = false): Promise<T[]> {
   const out: T[] = new Array(groups.length)
   const miss: { i: number; rg: number; json: string; start: number; end: number }[] = []
   const waits: Promise<void>[] = []
@@ -1186,11 +1375,10 @@ async function readGroupsCached<T>(h: IndexHandle, groups: { rg: number; json: s
   // A group's rows at this handle's scan (the entry holds every version: `cachedGroup`).
   const take = (i: number, rg: number, all: Row[], put: boolean) => {
     if (put) cachePut(ivGroupKey(h, rg), all, all.length * ROW_BYTES)
-    const rows = liveAt(h, all)
-    out[i] = f(rows)
+    out[i] = f(versions ? all : liveAt(h, all))
   }
   groups.forEach((g, i) => {
-    const hit = cachedGroup(h, g.rg)
+    const hit = versions && iv ? cacheGet<Row>(ivGroupKey(h, g.rg)) : cachedGroup(h, g.rg)
     if (hit) {
       h.trace?.('gcache', 1)
       out[i] = f(hit)
@@ -1288,6 +1476,35 @@ export class TooWide extends Error {}
  * finer per-ask test. A group spanning a depth boundary resets path order, so
  * the path test only applies within a single depth (`d_min = d_max`). */
 async function selectSpans(h: IndexHandle, rects: Rect[], cap = 4000, bMin = 0, lens?: Lens): Promise<Span[]> {
+  return overTiers(h, t => selectSpans1(t, rects, cap, bMin, lens))
+}
+
+/** `select` over each of a handle's tiers (itself, then its runs), each span tagged with its tier. A run's failure
+ *  cuts it out (`IvTierBroken`); a refusal (`TooWide`) is the read's. */
+async function overTiers(h: IndexHandle, select: (t: IndexHandle) => Promise<Span[]>): Promise<Span[]> {
+  if (!h.runs?.length) return select(h)
+  const got = await Promise.all(tiersOf(h).map(async (t, i) => {
+    try {
+      const sp = await select(t)
+      return i ? sp.map(x => ({ ...x, tier: i })) : sp
+    } catch (e) {
+      throw i && !(e instanceof TooWide) ? ivMarkBroken(h.env, t.run!, e) : e
+    }
+  }))
+  return got.flat()
+}
+
+/** A read of tier `i` of `h`, a run's failure cutting it out (`IvTierBroken`). */
+async function onTier<T>(h: IndexHandle, i: number, f: (t: IndexHandle) => Promise<T>): Promise<T> {
+  const t = tiersOf(h)[i]
+  try {
+    return await f(t)
+  } catch (e) {
+    throw i ? ivMarkBroken(h.env, t.run!, e) : e
+  }
+}
+
+async function selectSpans1(h: IndexHandle, rects: Rect[], cap = 4000, bMin = 0, lens?: Lens): Promise<Span[]> {
   if (h.mode !== 'd1') {
     const pass = (g: Parameters<typeof groupMatches>[0]) => groupMatches(g, rects, bMin, lens, lensSorted(h.variant))
     const out = h.mode === 'blob' ? h.groups.filter(pass) : await pqGroups(h, pass)
@@ -1408,10 +1625,10 @@ export async function planRects(
   const t0 = now()
   for (let i = 0; i < rects.length; i += RECTS_PER_QUERY) {
     const spans = await selectSpans(h, rects.slice(i, i + RECTS_PER_QUERY), 4000, thrAt ? thrAt(dMin) : 0, lens)
-    for (const s of spans) byRg.set(s.rg, s)
+    for (const s of spans) byRg.set(spanKey(s), s)
   }
   h.trace?.('spans', now() - t0)
-  return [...byRg.values()].sort((a, b) => a.rg - b.rg).filter(s => !thrAt || s.bMax >= thrAt(Math.max(s.dMin, dMin)))
+  return [...byRg.values()].sort(bySpan).filter(s => !thrAt || s.bMax >= thrAt(Math.max(s.dMin, dMin)))
 }
 
 /** Decode a planned set of groups (cached per isolate, `GROUP_READS` in
@@ -1424,6 +1641,18 @@ async function decodeSpans(h: IndexHandle, kept: Span[], keep: (r: Row) => boole
   const totalRows = kept.reduce((n, s) => n + (s.rowEnd - s.rowStart), 0)
   if (totalRows > 700_000) throw new Error('query too wide: drill deeper or raise minArea')
   let t0 = now()
+  if (h.runs?.length) {
+    // Every tier's groups, every version of them, combined and then tested live.
+    h.trace?.('ngroups', kept.length)
+    const got = await Promise.all(tiersOf(h).map((_, i) => onTier(h, i, async t => {
+      const mine = kept.filter(s => (s.tier ?? 0) === i)
+      if (!mine.length) return []
+      const jsons = await fetchGroupJson(t, mine.map(s => s.rg))
+      return (await readGroupsCached(t, mine.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop, true)).flat()
+    })))
+    h.trace?.('groups', now() - t0, h.variant)
+    return combineLive(h, got.flat())
+  }
   const jsons = await fetchGroupJson(h, kept.map(s => s.rg))
   h.trace?.('rgjson', now() - t0)
   h.trace?.('ngroups', kept.length)
@@ -1566,6 +1795,10 @@ export function groupMatchesSize(g: { pMin: string; pMax: string; bMax: number; 
  * one byte floor — one SQL pass per batch of ranges, no depth rect (the
  * depth test is per row, §1.3 "attenuation"). */
 async function selectSizeSpans(h: IndexHandle, ranges: { pLo: string; pHi: string }[], thrMin: number, cap = 4000, lens?: Lens): Promise<Span[]> {
+  return overTiers(h, t => selectSizeSpans1(t, ranges, thrMin, cap, lens))
+}
+
+async function selectSizeSpans1(h: IndexHandle, ranges: { pLo: string; pHi: string }[], thrMin: number, cap = 4000, lens?: Lens): Promise<Span[]> {
   if (h.mode !== 'd1') {
     const pass = (g: Parameters<typeof groupMatchesSize>[0]) => groupMatchesSize(g, ranges, thrMin, lens)
     const out = h.mode === 'blob' ? h.groups.filter(pass) : await pqGroups(h, pass)
@@ -1589,6 +1822,8 @@ async function selectSizeSpans(h: IndexHandle, ranges: { pLo: string; pHi: strin
  * threshold falls with depth (`atten < 1`). */
 const maxDepths = new Map<string, Promise<number>>()
 async function tierMaxDepth(h: IndexHandle): Promise<number> {
+  // A run may hold paths deeper than its base's.
+  if (h.runs?.length) return Math.max(...await Promise.all(tiersOf(h).map((t, i) => onTier(h, i, () => tierMaxDepth({ ...t, runs: undefined })))))
   if (h.mode === 'blob') return h.groups.reduce((m, g) => Math.max(m, g.dMax), 0)
   if (h.mode === 'pq') {
     // The footer groups' `d_max` stats bound it; decode only where a group has none.
@@ -1632,10 +1867,10 @@ export async function planSizeRects(
   const byRg = new Map<number, Span>()
   const t0 = now()
   for (let i = 0; i < rects.length; i += RANGES_PER_QUERY) {
-    for (const s of await selectSizeSpans(h, rects.slice(i, i + RANGES_PER_QUERY), thrMin, 4000, lens)) byRg.set(s.rg, s)
+    for (const s of await selectSizeSpans(h, rects.slice(i, i + RANGES_PER_QUERY), thrMin, 4000, lens)) byRg.set(spanKey(s), s)
   }
   h.trace?.('spans', now() - t0)
-  return [...byRg.values()].sort((a, b) => a.rg - b.rg)
+  return [...byRg.values()].sort(bySpan)
 }
 
 /** Whether a size sort is keyed on each path's total (`tot`, spec
@@ -1754,13 +1989,13 @@ export async function readAsks(
         next.push({ depth, asks: part.slice(0, m) }, { depth, asks: part.slice(m) })
         return
       }
-      for (const s of cand) if (!found.has(s.rg) && part.some(a => groupMayHold(s, a))) found.set(s.rg, s)
+      for (const s of cand) if (!found.has(spanKey(s)) && part.some(a => groupMayHold(s, a))) found.set(spanKey(s), s)
     })
     parts = next
   }
   if (parts.length) cut = true
   h.trace?.('spans', now() - t0)
-  const spans = [...found.values()].sort((a, b) => a.rg - b.rg)
+  const spans = [...found.values()].sort(bySpan)
   if (over()) {
     const n = `${cut ? '≥' : ''}${spans.length} row groups`
     if (wideKey != null) {
@@ -1770,6 +2005,23 @@ export async function readAsks(
     throw new Error(`lookup too wide: ${n} (cap ${maxGroups})`)
   }
   t0 = now()
+  if (h.runs?.length) {
+    h.trace?.('ngroups', spans.length)
+    const got = await Promise.all(tiersOf(h).map((_, i) => onTier(h, i, async t => {
+      const mine = spans.filter(s => (s.tier ?? 0) === i)
+      if (!mine.length) return []
+      const jsons = await fetchGroupJson(t, mine.map(s => s.rg))
+      const per = columns
+        ? await mapLimit(mine, GROUP_READS, async s => {
+          const j = jsons.get(s.rg)
+          return j ? (await readGroupVersions(t, j, columns)).filter(keep) : []
+        })
+        : await readGroupsCached(t, mine.flatMap(s => { const json = jsons.get(s.rg); return json ? [{ rg: s.rg, json }] : [] }), rows => rows.filter(keep), stop, true)
+      return per.flat()
+    })))
+    h.trace?.('groups', now() - t0)
+    return { rows: combineLive(h, got.flat()), groups: spans.length }
+  }
   const jsons = await fetchGroupJson(h, spans.map(s => s.rg))
   h.trace?.('rgjson', now() - t0)
   h.trace?.('ngroups', spans.length)

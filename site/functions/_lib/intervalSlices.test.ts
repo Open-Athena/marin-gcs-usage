@@ -34,7 +34,21 @@ function r2(): R2Bucket {
     const part = buf.slice(offset, offset + length)
     return { size: buf.byteLength, arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength), json: async () => JSON.parse(new TextDecoder().decode(part)) }
   }
-  return { get } as unknown as R2Bucket
+  // `list` / `head` over the fixture dir: the store's runs (`g5`) are found by their manifests.
+  const list = async ({ prefix, cursor }: { prefix: string; cursor?: string }) => {
+    const mod = 'node:fs'
+    const fs = (await import(/* @vite-ignore */ mod)) as { existsSync(p: string): boolean; readdirSync(p: string, o: { recursive: true }): string[]; statSync(p: string): { isFile(): boolean } }
+    const dir = prefix.slice(0, prefix.lastIndexOf('/') + 1)
+    const root = fixture(`iv/${dir}`)
+    const keys = fs.existsSync(root) ? fs.readdirSync(root, { recursive: true }).map(f => `${dir}${f}`).filter(k => k.startsWith(prefix) && fs.statSync(fixture(`iv/${k}`)).isFile()).sort() : []
+    return { objects: keys.map(key => ({ key })), truncated: false, cursor }
+  }
+  const head = async (key: string) => {
+    const mod = 'node:fs'
+    const fs = (await import(/* @vite-ignore */ mod)) as { existsSync(p: string): boolean }
+    return fs.existsSync(fixture(`iv/${key}`)) ? { key } : null
+  }
+  return { get, list, head } as unknown as R2Bucket
 }
 
 const files = (dir: string, sorts: Record<string, string>) =>
@@ -88,150 +102,152 @@ const SCOPES: { lens?: { key: string }; owner?: OwnerScope }[] = [
   { owner: 'owned' }, { owner: 'unowned' }, { owner: { not: ['alice'] } },
 ]
 
-describe('interval store: owner slices', () => {
-  it('opens the slice sorts for a sliced read of a held date, and refuses its v1 `user` sort', async () => {
-    const h = await openIndex(slices(iv), S1, 'bysize-user')
-    expect([h.mode, h.variant, h.version, h.asOf, h.gen, h.columns?.includes('usr')]).toEqual(['pq', 'bysize-user', 3, 1790726820, 'iv:g2:s', true])
-    await expect(openIndex(slices(iv), S1, 'user')).rejects.toThrow(`index variant 'user' not synced for ${S1}`)
-  })
+// Each suite runs over `g2` (one generation of the three scans) and `g5` (a base of two and a per-scan run of the third,
+// `interval_append`): the same answers.
+for (const GEN of ['g2', 'g5'] as const) {
+  const ivg = (): Env => ({ ...iv, INTERVAL_STORE_GEN: GEN }) as Env
+  describe(`interval store ${GEN}: owner slices`, () => {
+    it('opens the slice sorts for a sliced read of a held date, and refuses its v1 `user` sort', async () => {
+      const h = await openIndex(slices(ivg()), S1, 'bysize-user')
+      expect([h.mode, h.variant, h.version, h.asOf, h.gen, h.columns?.includes('usr')]).toEqual(['pq', 'bysize-user', 3, 1790726820, `iv:${GEN}:s`, true])
+      await expect(openIndex(slices(ivg()), S1, 'user')).rejects.toThrow(`index variant 'user' not synced for ${S1}`)
+    })
 
-  it('reads a user\'s view from the user-first size sort, as the per-scan reader does', async () => {
-    // The path-first slice sort (`slices-bytotal`) mixes users in every group: a big user's root there
-    // selects most groups over the threshold (gcs: refused as too wide on 2 of 5 v1 scans). The store
-    // plans a big subtree on its size sort alone (`ivPlanRows`, lowered here to reach that read).
-    const o = { ...base, date: S2, path: 'bk/nest', lens: { key: 'alice' }, ivPlanRows: 0 }
-    const [got, want] = [await buildView(iv, o), await buildView(perScan, o)]
-    expect([got.index, got.tier, got.tree]).toEqual(['iv:g2', 'bysize-user', storeKinds(want.tree)])
-  })
+    it('reads a user\'s view from the user-first size sort, as the per-scan reader does', async () => {
+      // The path-first slice sort (`slices-bytotal`) mixes users in every group: a big user's root there
+      // selects most groups over the threshold (gcs: refused as too wide on 2 of 5 v1 scans). The store
+      // plans a big subtree on its size sort alone (`ivPlanRows`, lowered here to reach that read).
+      const o = { ...base, date: S2, path: 'bk/nest', lens: { key: 'alice' }, ivPlanRows: 0 }
+      const [got, want] = [await buildView(ivg(), o), await buildView(perScan, o)]
+      expect([got.index, got.tier, got.tree]).toEqual([`iv:${GEN}`, 'bysize-user', storeKinds(want.tree)])
+    })
 
-  it('serves every lens view and owner pool of every scan as the per-scan reader draws it, reading nothing per-scan', async () => {
-    let drawn = 0
-    for (const date of [S1, S2, S3]) {
-      for (const path of PATHS) {
-        for (const scope of SCOPES) {
-          const o = { ...base, date, path, ...scope }
-          const want = await buildView(perScan, o).catch(e => String(e))
-          const [got, gets] = await perScanGets(() => buildView(iv, o).catch(e => String(e)))
-          const tree = (v: typeof want) => (typeof v === 'string' ? v : v.tree)
-          expect({ o, tree: tree(got), gets }).toEqual({ o, tree: storeKinds(tree(want)), gets: [] })
-          if (typeof got !== 'string' && typeof want !== 'string') {
-            // `none`: nothing in scope (an owner with no bytes there), drawn without a read.
-            expect([got.index, want.index === 'none']).toEqual([want.index === 'none' ? 'none' : 'iv:g2', want.index === 'none'])
-            drawn += got.index === 'none' ? 0 : 1
+    it('serves every lens view and owner pool of every scan as the per-scan reader draws it, reading nothing per-scan', async () => {
+      let drawn = 0
+      for (const date of [S1, S2, S3]) {
+        for (const path of PATHS) {
+          for (const scope of SCOPES) {
+            const o = { ...base, date, path, ...scope }
+            const want = await buildView(perScan, o).catch(e => String(e))
+            const [got, gets] = await perScanGets(() => buildView(ivg(), o).catch(e => String(e)))
+            const tree = (v: typeof want) => (typeof v === 'string' ? v : v.tree)
+            expect({ o, tree: tree(got), gets }).toEqual({ o, tree: storeKinds(tree(want)), gets: [] })
+            if (typeof got !== 'string' && typeof want !== 'string') {
+              // `none`: nothing in scope (an owner with no bytes there), drawn without a read.
+              expect([got.index, want.index === 'none']).toEqual([want.index === 'none' ? 'none' : `iv:${GEN}`, want.index === 'none'])
+              drawn += got.index === 'none' ? 0 : 1
+            }
           }
         }
       }
-    }
-    expect(drawn).toBe(49)
-  })
+      expect(drawn).toBe(49)
+    })
 
-  it('totals a root by owner as the per-scan reader does', async () => {
-    for (const date of [S1, S2, S3]) {
-      for (const path of ['', 'bk', 'bk/m', 'bk/nest']) {
-        for (const scope of SCOPES) {
-          const o = { date, path, ...scope }
-          expect({ o, agg: await readRootAgg(iv, o) }).toEqual({ o, agg: await readRootAgg(perScan, o) })
+    it('totals a root by owner as the per-scan reader does', async () => {
+      for (const date of [S1, S2, S3]) {
+        for (const path of ['', 'bk', 'bk/m', 'bk/nest']) {
+          for (const scope of SCOPES) {
+            const o = { date, path, ...scope }
+            expect({ o, agg: await readRootAgg(ivg(), o) }).toEqual({ o, agg: await readRootAgg(perScan, o) })
+          }
         }
       }
-    }
-  })
+    })
 
-  it('diffs a lens and a pool across scans as the per-scan reader does', async () => {
-    for (const [from, to] of [[S1, S2], [S2, S3], [S1, S3]]) {
-      for (const scope of SCOPES) {
-        const o = { ...base, from, to, path: '', top: 500, ...scope }
-        // A lens with nothing on either side is a 404 from both.
-        const shape = (d: Awaited<ReturnType<typeof buildDiff>> | string) => typeof d === 'string' ? d
-          : { rows: d.rows.map(r => r.p.split('/').pop() === 'twin' ? { ...r, k: 'dir' } : r), totals: [d.total_a, d.total_b, d.objects_a, d.objects_b] }
-        // The store's read first: a per-scan diff that throws on one side leaves the other side's reads in flight.
-        const [got, gets] = await perScanGets(() => buildDiff(iv, o).catch(e => `${(e as Error).name}: ${(e as Error).message}`))
-        const want = await buildDiff(perScan, o).catch(e => `${(e as Error).name}: ${(e as Error).message}`)
-        expect({ o, got: shape(got), gets }).toEqual({ o, got: shape(want), gets: [] })
-      }
-    }
-  })
-
-  it('reads the slice sorts, never the folded ones, for owner-scoped reads', () => {
-    expect([...new Set(r2Reads.filter(k => k.includes('/served/')))].sort()).toEqual([
-      'interval-store/g2/served/slices-bysize-user.groups.parquet',
-      'interval-store/g2/served/slices-bysize-user.parquet',
-      'interval-store/g2/served/slices-bytotal.groups.parquet',
-      'interval-store/g2/served/slices-bytotal.parquet',
-      'interval-store/g2/served/slices.groups.parquet',
-      'interval-store/g2/served/slices.parquet',
-    ])
-  })
-})
-
-// A user lens's assigned regions (specs/interval-store.md §2.6): on S2 (`v2-lens`, where bob holds all of
-// `bk/flat`'s 8,000 files) carol is assigned 26 of them — 24 of 32 KiB, and `f00000` and `f00016` of one
-// byte. A view reads the largest `REGION_READS` (24) regions and values the rest from the assignments'
-// totals: two unread regions with no row of their own. The interval store reads the regions from its
-// folded `bysize` (one exact row per path: a path-first read of the slice sorts selected a run per depth
-// per dyadic segment, and a big user's root regions were refused as too wide).
-describe('interval store: a lens\'s assigned regions', () => {
-  const FILES: [string, number][] = [
-    ...Array.from({ length: 24 }, (_, i): [string, number] => [`bk/flat/f${String(16 * i + 15).padStart(5, '0')}`, 32768]),
-    ['bk/flat/f00000', 1],
-    ['bk/flat/f00016', 1],
-  ]
-  const claims = FILES.map(([p, bytes], i) => ({ prefix: `gs://${p}`, kind: 'object', owner: 'carol', ts: 1, action_id: i + 1, bytes, objects: 1, us: { bob: bytes }, uo: { bob: 1 } }))
-  const ledger = [
-    ...claims.map(c => `INSERT INTO actions (id, actor, ts, scan, pattern, set_owner, owner, kind) VALUES (${c.action_id}, 'ann', 1, '${S2}', '${c.prefix}', 1, 'carol', 'object');`),
-    ...claims.map(c => `INSERT INTO owner_prefixes (action_id, prefix, owner, ts, kind) VALUES (${c.action_id}, '${c.prefix}', 'carol', 1, 'object');`),
-    `INSERT INTO owner_totals (scan, head, body, claims) VALUES ('${S2}', ${claims.length}, '{}', '${JSON.stringify(claims)}');`,
-  ].join('\n')
-  let envs: { perScan: Env; iv: Env }
-  // The store's reads from here on (the groups each test decodes are cached for the next).
-  let n0 = 0
-  beforeAll(async () => { envs = await seed(ledger); n0 = r2Reads.length })
-  const lens = { key: 'carol' }
-  type N = { n: string; k: string; b: number; o: number; c?: N[] }
-  const shape = (n: N): unknown => [n.n, n.k, n.b, n.o, ...(n.c ? [n.c.map(shape)] : [])]
-  const byName = (n: N): N => ({ ...n, ...(n.c ? { c: [...n.c].sort((x, y) => (x.n < y.n ? -1 : 1)).map(byName) } : {}) })
-  const tiles = FILES.map(([p, b]) => [p.split('/').pop(), 'file', b, 1]).sort((x, y) => (x[0]! < y[0]! ? -1 : 1))
-
-  it('values an unread region once: its objects from the assignment, never added again to it or its ancestors', async () => {
-    for (const env of [envs.perScan, envs.iv]) {
-      const flat = await buildView(env, { ...base, date: S2, path: 'bk/flat', lens, threshold: 1 })
-      expect(shape(byName(flat.tree as N))).toEqual(['flat', 'dir', 24 * 32768 + 2, 26, tiles])
-      const bk = await buildView(env, { ...base, date: S2, path: 'bk', lens, threshold: 1 })
-      expect(shape(byName(bk.tree as N))).toEqual(['bk', 'dir', 24 * 32768 + 2, 26, [['flat', 'dir', 24 * 32768 + 2, 26, tiles]]])
-    }
-  })
-
-  it('draws them from the folded `bysize` on the interval store, as the per-scan reader does', async () => {
-    for (const path of ['', 'bk', 'bk/flat']) {
-      const o = { ...base, date: S2, path, lens }
-      const want = await buildView(envs.perScan, o)
-      const [got, gets] = await perScanGets(() => buildView(envs.iv, o))
-      expect({ path, tree: got.tree, index: got.index, gets }).toEqual({ path, tree: storeKinds(want.tree), index: 'iv:g2', gets: [] })
-    }
-    // carol's own rows come from the slice sort, whose footer says she has none: its groups go unread.
-    expect([...new Set(r2Reads.slice(n0).filter(k => k.endsWith('.parquet') && !k.endsWith('.groups.parquet')))].sort()).toEqual([
-      'interval-store/g2/served/bysize.parquet',
-    ])
-  })
-})
-
-// Unscoped diffs between the store's scans (specs/interval-store.md §2.6): a name one side lacks is looked
-// up on the other within the version window the drawn side's row implies (`Ask.vtLe` / `vfGe`), or is
-// that very row when its version is live at the other scan. The answers are the per-scan reader's. (Here
-// S1/S3 and S2 share only `bk`: every lookup finds the name absent; `intervalStore.test.ts` checks
-// bounded lookups that find rows.)
-describe('interval store: unscoped diffs', () => {
-  it('diffs pairs of scans as the per-scan reader does, lookups and all', async () => {
-    for (const [from, to] of [[S1, S2], [S2, S3], [S1, S3], [S2, S1]]) {
-      for (const path of ['', 'bk', 'bk/m', 'bk/nest']) {
-        for (const minArea of [12, 400]) {
-          const o = { ...base, minArea, from, to, path, top: 500 }
+    it('diffs a lens and a pool across scans as the per-scan reader does', async () => {
+      for (const [from, to] of [[S1, S2], [S2, S3], [S1, S3]]) {
+        for (const scope of SCOPES) {
+          const o = { ...base, from, to, path: '', top: 500, ...scope }
+          // A lens with nothing on either side is a 404 from both.
           const shape = (d: Awaited<ReturnType<typeof buildDiff>> | string) => typeof d === 'string' ? d
-            : { rows: d.rows.map(r => r.p.split('/').pop() === 'twin' ? { ...r, k: 'dir' } : r), totals: [d.total_a, d.total_b, d.objects_a, d.objects_b], lookups: d.lookups }
-          const [got, gets] = await perScanGets(() => buildDiff(iv, o).catch(e => `${(e as Error).name}: ${(e as Error).message}`))
+            : { rows: d.rows.map(r => r.p.split('/').pop() === 'twin' ? { ...r, k: 'dir' } : r), totals: [d.total_a, d.total_b, d.objects_a, d.objects_b] }
+          // The store's read first: a per-scan diff that throws on one side leaves the other side's reads in flight.
+          const [got, gets] = await perScanGets(() => buildDiff(ivg(), o).catch(e => `${(e as Error).name}: ${(e as Error).message}`))
           const want = await buildDiff(perScan, o).catch(e => `${(e as Error).name}: ${(e as Error).message}`)
           expect({ o, got: shape(got), gets }).toEqual({ o, got: shape(want), gets: [] })
         }
       }
-    }
+    })
+
+    it('reads the slice sorts, never the folded ones, for owner-scoped reads', () => {
+      const sorts = ['slices-bysize-user', 'slices-bytotal', 'slices'].flatMap(x => [`${x}.groups.parquet`, `${x}.parquet`])
+      const dirs = [`interval-store/${GEN}/served/`, ...(GEN === 'g5' ? [`interval-store/${GEN}/deltas/${S3}/served/`] : [])]
+      expect([...new Set(r2Reads.filter(k => k.startsWith(`interval-store/${GEN}/`) && k.includes('/served/')))].sort()).toEqual(dirs.flatMap(d => sorts.map(x => d + x)).sort())
+    })
   })
-})
+
+  // A user lens's assigned regions (specs/interval-store.md §2.6): on S2 (`v2-lens`, where bob holds all of
+  // `bk/flat`'s 8,000 files) carol is assigned 26 of them — 24 of 32 KiB, and `f00000` and `f00016` of one
+  // byte. A view reads the largest `REGION_READS` (24) regions and values the rest from the assignments'
+  // totals: two unread regions with no row of their own. The interval store reads the regions from its
+  // folded `bysize` (one exact row per path: a path-first read of the slice sorts selected a run per depth
+  // per dyadic segment, and a big user's root regions were refused as too wide).
+  describe(`interval store ${GEN}: a lens's assigned regions`, () => {
+    const FILES: [string, number][] = [
+      ...Array.from({ length: 24 }, (_, i): [string, number] => [`bk/flat/f${String(16 * i + 15).padStart(5, '0')}`, 32768]),
+      ['bk/flat/f00000', 1],
+      ['bk/flat/f00016', 1],
+    ]
+    const claims = FILES.map(([p, bytes], i) => ({ prefix: `gs://${p}`, kind: 'object', owner: 'carol', ts: 1, action_id: i + 1, bytes, objects: 1, us: { bob: bytes }, uo: { bob: 1 } }))
+    const ledger = [
+      ...claims.map(c => `INSERT INTO actions (id, actor, ts, scan, pattern, set_owner, owner, kind) VALUES (${c.action_id}, 'ann', 1, '${S2}', '${c.prefix}', 1, 'carol', 'object');`),
+      ...claims.map(c => `INSERT INTO owner_prefixes (action_id, prefix, owner, ts, kind) VALUES (${c.action_id}, '${c.prefix}', 'carol', 1, 'object');`),
+      `INSERT INTO owner_totals (scan, head, body, claims) VALUES ('${S2}', ${claims.length}, '{}', '${JSON.stringify(claims)}');`,
+    ].join('\n')
+    let envs: { perScan: Env; iv: Env }
+    // The store's reads from here on (the groups each test decodes are cached for the next).
+    let n0 = 0
+    beforeAll(async () => { envs = await seed(ledger); n0 = r2Reads.length })
+    const lens = { key: 'carol' }
+    type N = { n: string; k: string; b: number; o: number; c?: N[] }
+    const shape = (n: N): unknown => [n.n, n.k, n.b, n.o, ...(n.c ? [n.c.map(shape)] : [])]
+    const byName = (n: N): N => ({ ...n, ...(n.c ? { c: [...n.c].sort((x, y) => (x.n < y.n ? -1 : 1)).map(byName) } : {}) })
+    const tiles = FILES.map(([p, b]) => [p.split('/').pop(), 'file', b, 1]).sort((x, y) => (x[0]! < y[0]! ? -1 : 1))
+
+    it('values an unread region once: its objects from the assignment, never added again to it or its ancestors', async () => {
+      for (const env of [envs.perScan, { ...envs.iv, INTERVAL_STORE_GEN: GEN } as Env]) {
+        const flat = await buildView(env, { ...base, date: S2, path: 'bk/flat', lens, threshold: 1 })
+        expect(shape(byName(flat.tree as N))).toEqual(['flat', 'dir', 24 * 32768 + 2, 26, tiles])
+        const bk = await buildView(env, { ...base, date: S2, path: 'bk', lens, threshold: 1 })
+        expect(shape(byName(bk.tree as N))).toEqual(['bk', 'dir', 24 * 32768 + 2, 26, [['flat', 'dir', 24 * 32768 + 2, 26, tiles]]])
+      }
+    })
+
+    it('draws them from the folded `bysize` on the interval store, as the per-scan reader does', async () => {
+      for (const path of ['', 'bk', 'bk/flat']) {
+        const o = { ...base, date: S2, path, lens }
+        const want = await buildView(envs.perScan, o)
+        const [got, gets] = await perScanGets(() => buildView({ ...envs.iv, INTERVAL_STORE_GEN: GEN } as Env, o))
+        expect({ path, tree: got.tree, index: got.index, gets }).toEqual({ path, tree: storeKinds(want.tree), index: `iv:${GEN}`, gets: [] })
+      }
+      // carol's own rows come from the slice sort, whose footer says she has none: its groups go unread.
+      expect([...new Set(r2Reads.slice(n0).filter(k => k.startsWith(`interval-store/${GEN}/`) && k.endsWith('.parquet') && !k.endsWith('.groups.parquet')))].sort()).toEqual([
+        // …and on g5 the run's (its close records end versions the base holds open).
+        ...(GEN === 'g5' ? [`interval-store/${GEN}/deltas/${S3}/served/bysize.parquet`] : []),
+        `interval-store/${GEN}/served/bysize.parquet`,
+      ])
+    })
+  })
+
+  // Unscoped diffs between the store's scans (specs/interval-store.md §2.6): a name one side lacks is looked
+  // up on the other within the version window the drawn side's row implies (`Ask.vtLe` / `vfGe`), or is
+  // that very row when its version is live at the other scan. The answers are the per-scan reader's. (Here
+  // S1/S3 and S2 share only `bk`: every lookup finds the name absent; `intervalStore.test.ts` checks
+  // bounded lookups that find rows.)
+  describe(`interval store ${GEN}: unscoped diffs`, () => {
+    it('diffs pairs of scans as the per-scan reader does, lookups and all', async () => {
+      for (const [from, to] of [[S1, S2], [S2, S3], [S1, S3], [S2, S1]]) {
+        for (const path of ['', 'bk', 'bk/m', 'bk/nest']) {
+          for (const minArea of [12, 400]) {
+            const o = { ...base, minArea, from, to, path, top: 500 }
+            const shape = (d: Awaited<ReturnType<typeof buildDiff>> | string) => typeof d === 'string' ? d
+              : { rows: d.rows.map(r => r.p.split('/').pop() === 'twin' ? { ...r, k: 'dir' } : r), totals: [d.total_a, d.total_b, d.objects_a, d.objects_b], lookups: d.lookups }
+            const [got, gets] = await perScanGets(() => buildDiff(ivg(), o).catch(e => `${(e as Error).name}: ${(e as Error).message}`))
+            const want = await buildDiff(perScan, o).catch(e => `${(e as Error).name}: ${(e as Error).message}`)
+            expect({ o, got: shape(got), gets }).toEqual({ o, got: shape(want), gets: [] })
+          }
+        }
+      }
+    })
+  })
+}

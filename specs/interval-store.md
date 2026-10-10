@@ -6,6 +6,7 @@
 - v3 reports the prototype: every gcs scan built, verified and served from R2 on dev (§6). It also folds `last_read` into the version key, on that evidence (§2.2).
 - v4: closed versions in dyadic time segments (§2.4), the owner-slice table and its reader (§2.1, §2.6), shared footer and group decodes in the reader (§2.6), generation `2026-10-09b` (§6).
 - v5: the diff gap, in the reader alone (§2.5, §2.6, §6.2): one-request footers, footer groups read whole, one cached row group for every scan, lookups bounded by the other scan's version. A lens reads the user-first slice sort. Fixed: the lens's unread-region double count, and the opt-in isolate's shared miss memo. The gcs-scale parity sample over the slice sorts (§6.2).
+- v6: the per-scan append, built (§2.7, `dt-cloud interval-store append`), the reader's base + runs (§2.7), and the first real runs (§6.3).
 
 Nothing here deletes anything. §4 is a proposal for Ryan.
 
@@ -140,17 +141,30 @@ Every read is today's `index.ts` plan, with one more conjunct on each group (`vf
 
 ### 2.7 Per-scan append and compaction (`static_append`'s tiering)
 
-For each scan D, after its per-scan sort is cut, as today:
+**Built** (`cloud/src/dt_cloud/interval_append.py`): `dt-cloud interval-store append [-c] [-n] SCAN_ID`, profile-driven (the interval profile's `append` section, `interval_profiles/gcs.json`; `$INTERVAL_STORE_PROFILE` or `-P`; overrides `$INTERVAL_STORE_SRC`, `$INTERVAL_STORE_IMAGE`, `$R2_ENDPOINT`). Its own command, not a stage of the static `runs add` chain: the two stores have their own generations, bases, manifests and compaction schedules, and a stage there would tie the store's append to the name index's (a failure, a timeout, a catch-up). It reuses that chain's pieces: `pending_scans` (strict scan-id order; exit 3 when SCAN_ID is not published or an earlier one is pending, `-c` catches up), `BatchRunner`, `job_spec` (labels `purpose=interval-store`, cost label `component=interval-store`), `push_run` (the binary counter), the R2 copy (`publish.copy_one`, as the R2 account from Secret Manager).
 
-1. **Append** (256 key ranges, Batch): `append_intervals(prev = the range's open versions, new = D's per-path rows)`, with the §2.2 key. This writes the next open state (scratch bucket, newest only) and D's delta: opened versions plus close records (the closed version's row with its final `vt`).
-2. **Run:** cut the delta into both sorts, with `.groups.parquet`, under `interval-store/<gen>/deltas/<scan>/`.
-3. **Merge runs on a binary counter.** When the two newest runs have the same level they merge (`pyrmts.runs.merge_parquets`; identity `(depth, path, vf)`, `vt` = min).
-   - A reader plans the base and every live run, and combines rows of equal identity by the smallest `vt` before testing liveness (`interval_read.combine`).
-   - A close record keeps its version's size, so the same plan finds both the record and the row it closes.
-4. **Manifest** `manifests/<scan>.json`, uploaded last.
-5. **Compaction** into a new generation at level 5, or on demand.
+For each scan D, each stage skipped when its output exists (a rerun resumes):
 
-Measured size of a scan's delta (§6): ~2–3M opens plus ~1–2M close records. That's ~4M rows, ~0.12 GB in both sorts, against 21.7 GB for a per-scan path store.
+1. **prepare** (local): pin D's newest `path` sort (GCS generation, size, crc32c, source format) as `deltas/<D>/scans.json`, refusing any scan but the next.
+2. **ranges** (Batch, `append_tasks` tasks over the base's 256 key ranges): per range, `append_intervals` over the open versions (the previous scan's state in the scratch bucket, or for the first run the base's range files) and D's rows, for the three version tables the store serves:
+   - `pvl` (one row per path, `last_read` in the key: the folded sorts);
+   - `sv` (owner slices: `slices`, `slices-bysize-user`);
+   - `svt` (slices split where their path's version changes, with its total: `slices-bytotal`).
+
+   Each writes its delta `deltas/<D>/<t>/r####.parquet` (opened versions `op` 1, close records `op` −1) and the next open state `state/<D>/<t>/` (scratch); `ranges/r####.json` last. A range raises unless its open state is D's rows exactly (count and Σ hash).
+3. **publish** (Batch, one task): the run's five served sorts (`deltas/<D>/served/{path,bysize,slices,slices-bytotal,slices-bysize-user}.parquet` + `.groups.parquet`, open versions then close records), its `meta.json`; the counter's merges (per range `pyrmts.runs.merge_parquets` on the deltas, identity `(depth, path[, usr], vf)`, `vt` min, then the merged run's own cut); then `manifests/<D>.json` (the base's scans, the runs, each run scan's epoch), written once and only after every file of every run it lists exists.
+4. **r2** (Batch, one task, as the R2 account): each listed run's served files, checked on R2, then the manifest.
+5. **prune** (local): every earlier scan's `state/` in the scratch bucket, once D's state is complete and published.
+
+**Exact, version for version.** Base + runs equals a full `build` + `fold` + `build -S` + `fold -S` through D, row for row, with each run alone and with runs merged (`test_interval_append.py`). Two things make that so:
+- `wts` is carried as the build carries it: a version opened by a read-day change alone keeps its path version's `wts` (`fold` takes it from the path version), and a slice piece opened by its path's change alone keeps its slice version's (`fold -S`).
+- The open states carry each path's version start (`pvf`): a slice piece splits where its path's version changes, as `fold -S` intersects slices with path versions.
+
+**The reader** (`index.ts`): `openInterval` reads the newest manifest (R2 `list`, held a minute) and opens each listed run's sort beside the base (`IndexHandle.runs`). Every read plans each tier — a run's group can matter at D once a version in it opened by then (`vf_min ≤ D`), live or not, since its close records end versions an older tier still holds open — and combines a version's rows across tiers (the smallest `vt`) before testing liveness (`combineLive`; `interval_read.Store` likewise). Every run is read at every scan, also before its first: liveness there doesn't need it, but a row's `vt` does, and a diff's bounded lookups trust it (§2.6). A broken run (its footer or data missing at open, or a read that fails) is cut out for 30 s: its scans and every later run's read per-scan, the others as before, and the request is retried around it (`ivRetry` in `/api/subtree`, `/api/diff`, `/api/series`), never a failed request.
+
+**Compaction** into a new generation at level 5 (reported by publish), or on demand — not built.
+
+Measured size of a scan's delta (§6): ~2–3M opens plus ~1–2M close records. That's ~4M rows, ~0.12 GB in both sorts, against 21.7 GB for a per-scan path store. A real run: §6.3.
 
 ## 3. Not built
 
@@ -158,7 +172,7 @@ Measured size of a scan's delta (§6): ~2–3M opens plus ~1–2M close records.
 - **A floor on the dyadic level.** A historical root still reads one group per small block (L0–L3: ~4 groups of 8K rows for a few rows over the threshold). Putting levels below 4 into L4 would cut that to one, ~30% of a historical diff's groups (§6.2). Deferred to the next compaction (§2.7), which rewrites the closed segments anyway; a standalone re-cut is ~$5 of GCS → R2 egress for the folded sorts.
 - **A lens's unread ancestors' own slices.** An ancestor of U's assigned regions whose own slice is under the threshold is valued from its bands alone, the lens's lower bound (`OwnerLens.value`). On v1 scans per-scan reads a coarse user tier (16 MiB floor) that holds that slice: ahmed-ahmed's `marin-us-east5/tokenized` is 120 MB short on the store (§6.2). A point read of U's slice at those few paths would close it.
 - Shrinking close records. Today a close record is the full row. Identity + `vt` + `size` would do; a sweep scan closes 58–126M versions.
-- The per-scan append in the job (§2.7), for the slice versions as well as the folded ones, and cw.
+- The append in the gcs job (a patch for `job/run.sh`: `specs/interval-store-append-gcs.md`), cw's profile, compaction (§2.7), and rebuilding a lost open-version state from the base and the runs' deltas.
 
 ## 4. Retention of per-scan artifacts (proposal — Ryan decides)
 
@@ -337,6 +351,28 @@ Every diff has the same rows as before. The lens views' trees equal per-scan's (
 - **v1 views: tile bytes equal, except one.** `(other)` `f`/`cb`/`d` differ, as in §6.1 (per-scan v1 reads coarse tiers). ahmed-ahmed's `marin-us-east5/tokenized` is 120 MB / 78 objects short on the store, and a few unread ancestors lack `d`/`a`/`cb`: an ancestor of assigned regions whose own slice is under the threshold is valued from its bands (§3).
 
 **Cost of this round:** R2 reads only (no egress fee, a few thousand class B operations); GCS egress from the per-scan reads of the timing and parity runs, ~3 GB, ~$0.40. No writes, no re-cut.
+
+### 6.3 The per-scan append, real (2026-10-10)
+
+**2026-10-09T1236** (the first scan past the base `2026-10-09b`), `dt-cloud interval-store append -P gcs 2026-10-09T1236` from the laptop driving Batch (us-east1; the staged `dt_cloud` on the profile's pinned image):
+
+| Stage | Wall | Batch | Notes |
+|---|---:|---:|---|
+| prepare | 8 s | — | pin the scan's `path` sort |
+| ranges | 744 s | 16 spot n2-highmem-16 × 645 s run (+53 s provisioning) | 256 ranges, median 18.2 s, max 55 s, 5,543 range-seconds |
+| publish | 261 s | 1 × 82 s | the cut: 5 sorts in 65 s; no merge (the first run) |
+| r2 | 142 s | 1 n2-highmem-4 × 24 s | 664 MB |
+| prune | 2 s | — | nothing earlier |
+| **total** | **1,162 s** | | |
+
+- **The run:** 1,106,575 versions opened, 5,310,963 closed (paths gone since the 07:00 scan), 605,023,916 open after. Every range's open state equals the scan's rows exactly (count and Σ hash, for `pvl`, `sv` and `svt`: 256/256). Served: 6.4M rows per sort, 785 groups, 664 MB for the five.
+- **Cost, ≈ $0.77:** ranges 16 × 698 s × $0.22/VM-hour ≈ $0.68; publish and r2 ≈ $0.01; GCS → R2 egress 0.66 GB × $0.12 ≈ $0.08. Standing: the newest open state in the scratch bucket (~23 GB, ≈ $0.46/month; earlier ones pruned).
+- **Wall time** was ~4 min of polling at the static chain's backoff (to 120 s) over jobs of 24–82 s; the append now polls at most every 20 s. The ranges stage is I/O: each range reads the open state (here the base's whole range files, ~4× the open rows; a later scan reads its predecessor's open state alone) and the scan's rows twice. Levers, unmeasured: a smaller machine (`INTERVAL_STORE_MACHINE`; DuckDB is sized to it), more tasks for wall time.
+
+**Parity** (`wt/iv-append/tmp/bench/parity.test.ts`, untracked: the TS reader in Node, the store on R2 vs per-scan on GCS with footers from `.groups.parquet`; read-only). For 2026-10-09 (the base's last scan, read with the run beside it) and 2026-10-09T1236: the root and all six buckets, lenses `michael-ryan` and `ahmed-ahmed` and pools `unowned` and `owned` at the root; and 10-09 → 10-09T1236 diffs, plain, both lenses and both pools. Every node, every field.
+- **25 of 27 equal exactly**: all 14 plain views, all 4 lens views, both 10-09 pool views, all 5 diffs.
+- The two pool views at 10-09T1236 differ only in float rounding of fractional class / owner bytes in three `(other)` folds (`cb` 7017443922487.375 vs .367; summation order), as §6.1 found for the base.
+- Reader timings (laptop, ms, cold / warm): root 709 / 36, buckets 274–831 / 580–1,783, lens views 2,071–3,965; per-scan 148–1,217 and lenses 2,097–6,271. Diffs: plain 771 (per-scan 1,851), lens `michael-ryan` 1,853 (10,559).
 
 ## 7. The per-scan `bysize` undercount (a prod bug this found)
 

@@ -15,7 +15,7 @@
  */
 import { type Ctx, json, requireScope, requireViewer } from '../_lib/auth.js'
 import { snapshotsPrefix } from '../_lib/shared.js'
-import { type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
+import { ivRetry, type Lens, makeStore, pathGens, withPathStore, pathScans, storeReady } from '../_lib/index.js'
 import { hasLedger, ledgerHead } from '../_lib/ledger.js'
 import { classKey, ownerKey, ownerOk, parseClasses, parseOwner, QueryError, queryParam } from '../_lib/scope.js'
 import { hexNote, hexQuery, liveTotal, rollupTotal, staticFilterStore, staticLiteral, staticTag } from '../_lib/staticFilter.js'
@@ -215,19 +215,19 @@ export const onRequestGet = async (ctx0: Ctx & { waitUntil?: (p: Promise<unknown
       const covered = ot ? overTimePoint(ot, date) : undefined
       if (covered !== undefined) return covered && { date, ...covered }
       if (split) {
-        const rows = await readRootRows(env, date)
+        const rows = await ivRetry(() => readRootRows(env, date))
         if (!rows) return null
         rootsByDate.set(date, rows)
         return { date, b: rows.reduce((n, r) => n + r.b, 0), o: rows.reduce((n, r) => n + r.o, 0) }
       }
       if (paths.length) {
         // Σ over the match roots; a root absent from a scan contributes 0.
-        const parts = await Promise.all(paths.map(p => readRootAgg(env, { date, path: p, lens, owner, classes })))
+        const parts = await Promise.all(paths.map(p => ivRetry(() => readRootAgg(env, { date, path: p, lens, owner, classes }))))
         const b = parts.reduce((n, a) => n + (a?.b ?? 0), 0)
         const o = parts.reduce((n, a) => n + (a?.o ?? 0), 0)
         return parts.some(Boolean) ? { date, b, o } : null
       }
-      const a = await readRootAgg(env, { date, path, lens, owner, classes })
+      const a = await ivRetry(() => readRootAgg(env, { date, path, lens, owner, classes }))
       return a ? { date, ...a } : null
     } catch (e) {
       const msg = (e as Error).message

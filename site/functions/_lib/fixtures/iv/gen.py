@@ -8,7 +8,10 @@ per `(date, path, w, h, depth)` the view computed from that scan's own rows by t
 (`interval_verify.Scan.view`), flattened (`interval_read.flatten`). The generator asserts the Python
 interval reader returns the same trees.
 
-    cloud/.venv-or-root/bin/python site/functions/_lib/fixtures/iv/gen.py
+    cloud/.venv-or-root/bin/python site/functions/_lib/fixtures/iv/gen.py [g2 | tiered]
+
+`tiered`: the base + per-scan runs generations (`interval_append`): `g3` / `g4` over `g1`'s scans (runs unmerged /
+merged), `g5` over `g2`'s.
 """
 from __future__ import annotations
 
@@ -84,6 +87,70 @@ def main() -> None:
     slices_gen()
 
 
+#: Base + per-scan runs (`interval_append`) over `g1`'s scans: the base holds the first four, each later scan is a
+#: run. `g3`: the newest manifest lists the runs unmerged (each its own tier); `g4`: merged into one, as the binary
+#: counter merges two level-0 runs. Both must serve exactly `g1`'s answers (`expected.json`).
+TIERED = {"g3": False, "g4": True}
+
+
+def tiered_gens(mount: Path, work: Path, scans: list[dict], n_base: int, ranges: dict, *, rg_rows: int, gens: dict[str, bool] = TIERED) -> None:
+    """`gens` built over the scans under `mount`, intermediates in `work`."""
+    from dt_cloud import interval_append as ia
+    from dt_cloud import interval_store as ist
+    from dt_cloud.static_append import push_run, run_key
+
+    doc = {"bucket": "b", "scans": scans[:n_base]}
+    base = work / "base-out"
+    con = duckdb.connect()
+    for i in range(ranges["k"]):
+        ist.build_range(doc, ranges, i, base, con, mount=str(mount))
+        ist.fold_range(str(base), i, base, con)
+        ist.build_slices_range(doc, ranges, i, base, con, mount=str(mount))
+        ist.slice_totals_range(str(base), i, base, con)
+    names = [f"r{i:04d}" for i in range(ranges["k"])]
+    runs, prev = {}, None
+    for s in scans[n_base:]:
+        d = work / "runs" / s["id"]
+        for i, name in enumerate(names):
+            state = ia.run_state_sql(str(prev / "state"), name) if prev else ia.base_state_sql(str(base), name)
+            ia.append_range(con, state, s, ranges["ranges"][i], name, d, bucket="b", mount=str(mount))
+        runs[s["id"]] = d
+        prev = d
+    for gen, merged in gens.items():
+        out = HERE / "interval-store" / gen
+        shutil.rmtree(out, ignore_errors=True)
+        for sort in ia.RUN_SORTS:
+            sub, _, _ = ist.SORTS[sort]
+            ist.write_served(con, f"read_parquet('{base}/{sub}/r*.parquet')", sort, out / "served" / f"{sort}.parquet", ist.SUB_SCHEMA[sub],
+                             rg_rows=rg_rows, stamps=[x["ts"] for x in scans[:n_base]])
+        (out / "scans.json").write_text(json.dumps({"scans": [{"id": x["id"], "ts": x["ts"]} for x in scans[:n_base]]}, indent=1) + "\n")
+        live, dirs, stamps = [], {}, {}
+        for s in scans[n_base:]:
+            new = {"key": run_key(s["id"], s["id"]), "first": s["id"], "last": s["id"], "scans": [s["id"]]}
+            dirs[new["key"]], stamps[new["key"]] = runs[s["id"]], {s["id"]: s["ts"]}
+            if merged:
+                live, merges = push_run(live, new)
+                for ins, m in merges:
+                    md = work / "merged" / gen / m["key"]
+                    for name in names:
+                        ia.merge_range([str(dirs[r["key"]]) for r in ins], name, md)
+                    dirs[m["key"]] = md
+                    stamps[m["key"]] = {k: v for r in ins for k, v in stamps[r["key"]].items()}
+            else:
+                live = [*live, {**new, "level": 0}]
+            for r in live:
+                if not (out / r["key"] / "served").exists():
+                    ia.cut_run(con, str(dirs[r["key"]]), out / r["key"] / "served", rg_rows=rg_rows)
+            m = ia.manifest(gen, {"scans": scans[:n_base]}, [{**r, "stamps": stamps[r["key"]]} for r in live])
+            (out / "manifests").mkdir(parents=True, exist_ok=True)
+            (out / "manifests" / f"{s['id']}.json").write_text(json.dumps(m, indent=1) + "\n")
+        # The cut's per-sort reports aren't read by the Worker.
+        for f in out.rglob("*.json"):
+            if f.parent.name == "served":
+                f.unlink()
+        print(f"{gen}: runs {[r['key'] for r in live]}", file=sys.stderr)
+
+
 #: `g2`: the per-scan store fixtures `v2-slices` (multi-owner slices) and `v2-lens` as three scans —
 #: slices, lens, slices again (every version closes and reopens) — so `intervalStore.test.ts` compares
 #: sliced reads (lens, owner pools) of the interval store with the per-scan reader over the same files.
@@ -119,5 +186,30 @@ def slices_gen() -> None:
     print(f"{G2}: {sorted(p.name for p in (out / 'served').iterdir())}", file=sys.stderr)
 
 
+def tiered() -> None:
+    """`g3`, `g4` over `g1`'s six scans (the same generator, seed and ranges as `main`), and `g5` over `g2`'s three."""
+    from dt_cloud import static_names as sn
+
+    spec = importlib.util.spec_from_file_location("tis", ROOT / "cloud/tests/test_interval_store.py")
+    t = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(t)
+    work = HERE / "work"
+    shutil.rmtree(work, ignore_errors=True)
+    rng = random.Random(11)
+    paths = t._universe(rng)
+    scans = []
+    for j, d in enumerate(t.DATES):
+        v = 2 if j >= t.V2_FROM else 1
+        key = f"listing/{d}/path-index.parquet"
+        (work / key).parent.mkdir(parents=True, exist_ok=True)
+        t._write(t._scan_rows(rng, paths, j), work / key, v)
+        scans.append({"id": d, "src": key, "ts": sn.scan_epoch(d), "version": v})
+    ranges = {"k": 3, "ranges": [{"i": 0, "lo": [0, ""], "hi": [2, "b1/gof"]}, {"i": 1, "lo": [2, "b1/gof"], "hi": [3, ""]}, {"i": 2, "lo": [3, ""], "hi": None}]}
+    tiered_gens(work, work / "tiered", scans, 4, ranges, rg_rows=4)
+    g2 = [{"id": d, "src": f"{name}/path-index.parquet", "ts": sn.scan_epoch(d), "version": 2} for d, name in G2_SCANS]
+    tiered_gens(HERE.parent, work / "tiered-g5", g2, 2, {"k": 1, "ranges": [{"i": 0, "lo": [0, ""], "hi": None}]}, rg_rows=256, gens={"g5": False})
+    shutil.rmtree(work)
+
+
 if __name__ == "__main__":
-    slices_gen() if sys.argv[1:] == ["g2"] else main()
+    {"g2": slices_gen, "tiered": tiered}.get(sys.argv[1] if sys.argv[1:] else "", main)()
