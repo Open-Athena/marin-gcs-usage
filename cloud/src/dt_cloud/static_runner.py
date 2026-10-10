@@ -1,9 +1,11 @@
 """`dt-cloud static-names runs add SCAN_ID`: append one scan to the static name index as a run (specs/static-append.md),
 in Python, so a deployment's scan job calls it directly (no `gcloud`: GCS and Batch over their APIs):
 
-    prepare → append (key ranges on Batch) → shards ∥ catalog → [drill (long ∥ short)] ∥ [anchors] → publish (tier merges +
-      `manifests/<id>.json`) → R2 (each run the manifest lists, its `drill/meta.json` last; then a check that every
-      served file of those runs is on R2; then the manifest, last) [→ verify] → prune
+    prepare → append (key ranges on Batch) → shards ∥ catalog → [drill (long ∥ short)] ∥ [anchors] → publish (local:
+      `manifests/<id>.json`, the run at level 0) → R2 (each run the manifest lists, its `drill/meta.json` last; then a check
+      that every served file of those runs is on R2; then the manifest, last) [→ verify] → prune
+    then, once after the scans: merge (the newest manifest's due carries, `static_merge`, one Batch job waited on up to
+      `-w` s; then R2 for the revision it publishes) — non-fatal: the store is servable whatever becomes of it
 
 The drill stage (the heavy-term drilldown, `static_drill`) runs when the profile says so (`drill`): one Batch job of two
 tasks, `build -k task` (task 0 the long kind, task 1 the short; the second to finish writes `meta.json`). The anchors
@@ -17,7 +19,7 @@ itself, else it refuses (exit 3), or with `-c` catches up every pending scan in 
 output is in the data bucket, so a rerun resumes at the first missing one; the R2 copy skips objects already there,
 so it always runs.
 
-Exit status: 0 done, 3 not published yet or not the next scan, 1 a stage failed.
+Exit status: 0 done, 3 not published yet or not the next scan, 1 a stage failed (the merge stage never fails the run).
 
 Config: the deployment profile (`static_profile`: `STATIC_NAMES_PROFILE` = an example or a JSON file, then each
 field's env var); a run needs its generation, buckets, layouts, region, image, accounts, R2 bucket and R2 secrets.
@@ -40,6 +42,7 @@ from click import argument, command, option
 
 from .cost_labels import label_batch_spec
 from .scan_id import SCAN_ID
+from .static_merge import parse_manifest, plan_carries
 from .static_names import PREFIX, err
 from .static_profile import Profile, profile
 
@@ -49,6 +52,10 @@ NOT_NEXT = 3
 
 class NotNext(Exception):
     """The scan can't be appended now (not published, or an earlier published scan is pending): exit 3."""
+
+
+class StillRunning(Exception):
+    """A Batch job outlived the wait given for it (it keeps running; nothing is cancelled)."""
 
 
 def ready(p: Profile, gen: str | None = None) -> Profile:
@@ -177,14 +184,17 @@ class BatchRunner:
         stays low (at 120 s, 10-10's chain lost minutes between stages)."""
         self.cfg, self.log, self.delay, self.max_delay = cfg, log, delay, max_delay
 
-    def __call__(self, name: str, spec: dict) -> None:
+    def __call__(self, name: str, spec: dict, wait: float | None = None) -> None:
+        """Submit, then poll until the job ends; `wait`: stop polling after that many seconds (`StillRunning`; the job runs on)."""
         from .batch import submit_job
         from .gcp import batch_job
 
         submit_job(spec, name, region=self.cfg.region)
         self.log(f"submitted {name}")
-        delay = self.delay
+        delay, t0 = self.delay, monotonic()
         while True:
+            if wait is not None and monotonic() - t0 >= wait:
+                raise StillRunning(f"Batch job {name}: still running after {wait:.0f}s")
             st = batch_job(name, project=self.cfg.project, region=self.cfg.region).get("status", {})
             state = st.get("state", "?")
             counts = " ".join(f"{k}={v}" for g in (st.get("taskGroups") or {}).values() for k, v in sorted(g.get("counts", {}).items()))
@@ -193,7 +203,7 @@ class BatchRunner:
                 return
             if state in ("FAILED", "DELETION_IN_PROGRESS", "CANCELLED"):
                 raise RuntimeError(f"Batch job {name}: {state}")
-            time.sleep(delay)
+            time.sleep(delay if wait is None else max(0.0, min(delay, wait - (monotonic() - t0))))
             delay = min(delay * 2, self.max_delay)
 
 
@@ -203,8 +213,9 @@ class BatchRunner:
 @dataclass
 class Runner:
     """The chain over injectable effects (tests pass fakes): `exists(key)` / `count(prefix, suffix)` / `read_json(key)` on
-    the data bucket (keys relative to it), `published()` the scan ids under the base's layouts, `run_job(name, spec)`,
-    `prepare(scan_id)` and `prune(scan_id)` (the `runs` CLI's local stages), `list_keys(prefix)`, `log`."""
+    the data bucket (keys relative to it), `published()` the scan ids under the base's layouts, `run_job(name, spec[, wait])`,
+    `prepare(scan_id)`, `publish(scan_id)` and `prune(scan_id)` (the `runs` CLI's local stages), `list_keys(prefix)`, `log`.
+    `merge`: run the merge stage after the scans; `merge_wait`: how long it waits on its Batch job (None: to its end)."""
     cfg: Profile
     exists: Callable[[str], bool]
     count: Callable[[str, str], int]
@@ -213,11 +224,14 @@ class Runner:
     run_job: Callable[[str, dict], None]
     prepare: Callable[[str], None]
     prune: Callable[[str], None]
+    publish: Callable[[str], None]
     list_keys: Callable[[str], list[str]] = lambda prefix: []
     log: Callable[[str], None] = err
     dry_run: bool = False
     verify_terms: str | None = None
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    merge: bool = True
+    merge_wait: float | None = 0
 
     @property
     def root(self) -> str:
@@ -239,7 +253,10 @@ class Runner:
         return [*(s["id"] for s in base["scans"]), *(s for r in runs for s in r["scans"])], base.get("layouts")
 
     def manifests(self) -> list[str]:
-        return sorted(k for k in self.list_keys(f"{self.root}/manifests/") if k.endswith(".json"))
+        """The manifests' keys, oldest first: by scan, then revision (`static_merge.manifest_keys`)."""
+        from .static_merge import manifest_keys
+
+        return [f"{self.root}/{k}" for k in manifest_keys([k.removeprefix(f"{self.root}/") for k in self.list_keys(f"{self.root}/manifests/")])]
 
     def run(self, scan_id: str, catch_up: bool = False) -> list[str]:
         """Append `scan_id` (and with `catch_up` every earlier pending scan, in order). Returns the scans appended."""
@@ -253,11 +270,13 @@ class Runner:
                     self.drill_anchors(scan_id)
                 self.r2(scan_id)
                 self.stage(f"{scan_id} prune", lambda: self.prune(scan_id))
+            self.carries()
             return []
         if len(todo) > 1:
             self.log(f"catching up {len(todo)} scans: {', '.join(todo)}")
         for s in todo:
             self.one(s)
+        self.carries()
         return todo
 
     def stage(self, name: str, fn: Callable[[], None]) -> None:
@@ -332,12 +351,11 @@ class Runner:
         self.concurrently(d, jobs)
         # 4. drill ∥ anchors (the profile's `drill`, `anchors`): neither reads the other's output, so they run at once.
         self.drill_anchors(d)
-        # 5. publish: the binary counter's merges, then `manifests/<d>.json` (written once).
+        # 5. publish (local, seconds): `manifests/<d>.json` (written once), the run at level 0; carries come after (`carries`).
         if self.exists(f"{self.root}/manifests/{d}.json"):
             self.log(f"{d} publish: done")
         else:
-            name, spec = self.job("publish", d, 1, "static_append", ["publish", *g])
-            self.stage(f"{d} publish", lambda: self.run_job(name, spec))
+            self.stage(f"{d} publish", lambda: self.publish(d))
         # 6. R2: the runs the manifest lists, then the manifest, last.
         self.r2(d)
         # 7. verify (optional): brute force from the scan file vs the base + runs.
@@ -393,14 +411,17 @@ class Runner:
                     raise RuntimeError(f"{run}/{m}: not written (the task succeeded)")
         return "anchors", build
 
-    def r2(self, d: str) -> None:
-        """One job: `r2-copy` of each run the manifest lists (its liveness markers last: `drill/meta.json`, then the starts-with
-        catalog's `anchors/start/meta.json` before `anchors/meta.json`, so a run's anchors go live with their catalog), then
-        `r2-verify` (every served file of those runs on R2), then `r2-copy` of `manifests/` (each copy skips what R2 holds)."""
-        key = f"{self.root}/manifests/{d}.json"
-        runs = [r["key"] for r in self.read_json(key)["runs"]] if self.exists(key) else [f"deltas/{d} (and the merges publish makes)"]
+    def r2(self, d: str, manifest: str | None = None) -> None:
+        """One job: `r2-copy` of each run the manifest `manifests/<manifest>.json` (default `d`'s own) lists (its liveness
+        markers last: `drill/meta.json`, then the starts-with catalog's `anchors/start/meta.json` before `anchors/meta.json`,
+        so a run's anchors go live with their catalog), then `r2-verify` (every served file of those runs on R2), then
+        `r2-copy` of that manifest alone (each copy skips what R2 holds): no manifest reaches R2 before its runs are checked
+        there."""
+        stem = manifest or d
+        key = f"{self.root}/manifests/{stem}.json"
+        runs = [r["key"] for r in self.read_json(key)["runs"]] if self.exists(key) else [f"deltas/{d}"]
         if self.dry_run:
-            self.log(f"{d} r2: would copy {', '.join(runs)}, check them, then copy manifests/")
+            self.log(f"{d} r2: would copy {', '.join(runs)}, check them, then copy manifests/{stem}.json")
             return
         cmds = []
         for r in runs:
@@ -408,15 +429,51 @@ class Runner:
                                                                 "-x", "anchors/start/meta.json"], mount=False))
             for m in ("drill/meta.json", "anchors/start/meta.json", "anchors/meta.json"):
                 cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", f"{self.cfg.gen}/{r}", "-o", m], mount=False))
-        cmds.append(task_command(self.cfg, "static_names", ["r2-verify", "-g", self.cfg.gen, "-m", d], mount=False))
-        cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", self.cfg.gen, "-o", "manifests/"], mount=False))
+        cmds.append(task_command(self.cfg, "static_names", ["r2-verify", "-g", self.cfg.gen, "-m", stem], mount=False))
+        cmds.append(task_command(self.cfg, "static_names", ["r2-copy", "-g", self.cfg.gen, "-o", f"manifests/{stem}.json"], mount=False))
         name = job_id("r2", d, self.now())
         spec = job_spec(self.cfg, name, 1, cmds, stage="r2", scratch=False, r2=True, machine="n2-highmem-4", ssd_gb=375)
-        self.stage(f"{d} r2 ({len(runs)} runs + manifests/)", lambda: self.run_job(name, spec))
+        self.stage(f"{d} r2 ({len(runs)} runs + manifests/{stem}.json)", lambda: self.run_job(name, spec))
+
+    def carries(self, fatal: bool = False) -> None:
+        """The merge stage, once after the scans: the newest manifest's due carries (`static_merge.plan_carries`), when any,
+        as one Batch job (`static_merge carry`: each merged run, then a revision of the newest manifest), waited on up to
+        `merge_wait` s; then, when the newest manifest is a revision, the R2 job for it (a merge that outlived the wait
+        reaches R2 here on a later run, or with the next scan's manifest, which lists its run). Non-fatal: a failure or
+        timeout is logged and the store stays as it was, servable (the next run plans again; a merge resumes). `fatal`: raise
+        a failure (`RuntimeError`) instead."""
+        if not self.merge:
+            return
+        try:
+            keys = self.manifests()
+            if not keys:
+                return
+            m = self.read_json(keys[-1])
+            drilled = {r["key"] for r in m["runs"] if self.exists(f"{self.root}/{r['key']}/drill/meta.json")}
+            _, merges = plan_carries(m["runs"], drilled)
+            if merges:
+                desc = "; ".join(f"{len(ins)} runs → {out['key']} (level {out['level']})" for ins, out in merges)
+                name, spec = self.job("merge", m["date"], 1, "static_merge", ["carry", "-g", self.cfg.gen])
+                try:
+                    self.stage(f"merge: {desc}", lambda: self.run_job(name, spec, wait=self.merge_wait))
+                except StillRunning as e:
+                    self.log(f"merge: {e}; it publishes its revision on GCS when done, and R2 gets it with a later run")
+                    return
+                if self.dry_run:
+                    return
+                keys = self.manifests()
+            scan, rev = parse_manifest(keys[-1].rsplit("/", 1)[-1])
+            if rev:
+                self.r2(scan, keys[-1].rsplit("/", 1)[-1].removesuffix(".json"))
+        except Exception as e:
+            if fatal:
+                raise RuntimeError(str(e)) from e
+            self.log(f"merge: failed, not fatal (every listed run is whole; the next run plans again): {e}")
 
 
-def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None = None) -> Runner:
-    """`Runner` over the real data bucket, Batch, and the `runs` CLI's `prepare` / `prune`."""
+def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None = None, merge: bool = True,
+               merge_wait: float | None = 0) -> Runner:
+    """`Runner` over the real data bucket, Batch, and the `runs` CLI's `prepare` / `publish` / `prune`."""
     from google.cloud import storage
 
     from . import static_append as sa
@@ -434,6 +491,9 @@ def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None 
         except SystemExit as e:
             raise NotNext(str(e)) from e
 
+    def publish(d):
+        sa.publish_cmd.callback(bucket=cfg.bucket, date=d, gen=cfg.gen, dry_run=False)
+
     def prune(d):
         k = read_json(f"gs://{cfg.bucket}/{PREFIX}/{cfg.gen}/ranges.json")["k"]
         doc = sa.prune_state(client, cfg.gen, d, k, bucket=cfg.bucket, scratch=cfg.scratch, dry_run=dry_run)
@@ -448,8 +508,11 @@ def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None 
         run_job=BatchRunner(cfg, err),
         prepare=prepare,
         prune=prune,
+        publish=publish,
         dry_run=dry_run,
         verify_terms=verify_terms,
+        merge=merge,
+        merge_wait=merge_wait,
         list_keys=lambda prefix: [x.name for x in client.list_blobs(cfg.bucket, prefix=prefix)],
     )
 
@@ -457,15 +520,17 @@ def gcs_runner(cfg: Profile, *, dry_run: bool = False, verify_terms: str | None 
 @command("add")
 @option("-c", "--catch-up", is_flag=True, help="Append every earlier published scan still pending first, in scan-id order")
 @option("-g", "--gen", help="Base generation (default: the profile's, $STATIC_NAMES_GEN)")
+@option("-M", "--no-merge", is_flag=True, help="Skip the merge stage (the due carries wait for a later run, or `runs merge`)")
 @option("-n", "--dry-run", is_flag=True, help="Report each stage's state and what would run; submit and write nothing")
 @option("-t", "--verify-terms", help="Also run `runs verify` with this terms file (a gs:// URL)")
+@option("-w", "--merge-wait", default=0, type=float, help="Seconds to wait on the merge job (default 0: submit it and go; it publishes on GCS when done)")
 @argument("scan_id")
-def add_cmd(catch_up: bool, gen: str | None, dry_run: bool, verify_terms: str | None, scan_id: str) -> None:
+def add_cmd(catch_up: bool, gen: str | None, no_merge: bool, dry_run: bool, verify_terms: str | None, merge_wait: float, scan_id: str) -> None:
     """Append SCAN_ID to the static name index: prepare → append → shards ∥ catalog → [drill] ∥ [anchors] → publish → R2 → prune, each stage
-    skipped when its output exists. Exit 3 when SCAN_ID is not published yet, or an earlier published scan is pending
-    (without -c)."""
+    skipped when its output exists; then the merge stage (the due carries, non-fatal). Exit 3 when SCAN_ID is not published
+    yet, or an earlier published scan is pending (without -c)."""
     cfg = ready(profile(), gen)
-    runner = gcs_runner(cfg, dry_run=dry_run, verify_terms=verify_terms)
+    runner = gcs_runner(cfg, dry_run=dry_run, verify_terms=verify_terms, merge=not no_merge, merge_wait=merge_wait)
     try:
         done = runner.run(scan_id, catch_up=catch_up)
     except NotNext as e:
@@ -475,3 +540,21 @@ def add_cmd(catch_up: bool, gen: str | None, dry_run: bool, verify_terms: str | 
         err(f"static-names runs add {scan_id}: {e}")
         sys.exit(1)
     print(json.dumps({"gen": cfg.gen, "scan": scan_id, "appended": done, "dry_run": dry_run}))
+
+
+@command("merge")
+@option("-g", "--gen", help="Base generation (default: the profile's, $STATIC_NAMES_GEN)")
+@option("-n", "--dry-run", is_flag=True, help="Report the due carries; submit and write nothing")
+@option("-w", "--wait", type=float, help="Seconds to wait on the merge job (default: to its end, Batch's own cap)")
+def merge_cmd(gen: str | None, dry_run: bool, wait: float | None) -> None:
+    """The newest manifest's due carries, on their own: the merge job (`static_merge carry`), then R2 for the revision it
+    publishes (`runs add`'s merge stage, alone: for a schedule of its own, or to catch up). Exit 1 when it fails (the store
+    stays as it was)."""
+    cfg = ready(profile(), gen)
+    runner = gcs_runner(cfg, dry_run=dry_run, merge_wait=wait)
+    try:
+        runner.carries(fatal=True)
+    except RuntimeError as e:
+        err(f"static-names runs merge: {e}")
+        sys.exit(1)
+    print(json.dumps({"gen": cfg.gen, "manifest": (runner.manifests() or [None])[-1], "dry_run": dry_run}))

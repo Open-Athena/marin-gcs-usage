@@ -12,7 +12,8 @@ Per scan `D`, under `static-names/<gen>/deltas/<D>/`:
    rows with their final `vt`), planned and sorted into the run's own `shards.json`, `sx/`, `sidecar/`.
 3. `catalog` (one task): `static_catalog.append` from the base + live runs' merged catalog; the run's
    catalog is what that adds (new cells, changed or new headers).
-4. `publish`: the binary counter's merges, then `manifests/<D>.json` (written last).
+4. `publish`: `manifests/<D>.json` (written last), the run added at level 0. The binary counter's carries run apart
+   (`static_merge`, `runs merge`), each published as a revision `manifests/<id>.m<NNN>.json` of the newest manifest.
 5. `prune`: once `D`'s state is complete (every range's `copen` and `done/` marker, and `manifests/<D>.json`),
    every earlier scan's `state/<prev>/` goes: only the newest complete state is kept. A lost state is rebuilt
    from the base's `cintervals` and every run's `cdelta` (`rebuild-state`).
@@ -30,7 +31,7 @@ import pyarrow.parquet as pq
 from click import IntRange, group, option
 
 from . import static_catalog as sc
-from .hex_runs import HexRule, occurs, occurs_sql, rule_from_json, rule_json
+from .hex_runs import HexRule, occurs, occurs_sql, rule_json
 from .static_profile import data_bucket, layouts as profile_layouts, scratch_bucket
 from .static_names import (
     ANSWER_COLS, CINTERVAL_SCHEMA, CODEC, INTERVAL_RG, KEY_COLS, OPEN, PREFIX, SX_RG,
@@ -211,14 +212,14 @@ def merge_cdeltas(files_oldest_first: list[str], out: Path) -> int:
 # ── 3. Catalogs ────────────────────────────────────────────────────────────
 
 
-def merge_drills(dirs: list[Path], out: Path, run: dict, tmp: str | Path | None = None) -> dict:
+def merge_drills(dirs: list[Path], out: Path, run: dict, tmp: str | Path | None = None, *, threads: int = 16, mem: str = "100GB") -> dict:
     """The merged run's `drill/` (`static_drill.merge_tiers` of the inputs', oldest first): every input must have one (the
     counter merges runs carrying `drill/` only with each other, `push_run`)."""
     from .static_drill import Tier, merge_tiers
 
     if lack := [d.name for d in dirs if not (d / "drill" / "meta.json").exists()]:
         raise ValueError(f"{run['key']}: inputs without drill/: {lack}")
-    con = connect(16, "100GB", tmp)
+    con = connect(threads, mem, tmp)
     return merge_tiers(con, [Tier(d / "drill", d.name) for d in dirs], out,
                        tier={k: run[k] for k in ("key", "first", "last", "level", "scans")})
 
@@ -504,11 +505,20 @@ def _gcs():
 
 
 def _latest_manifest(bucket: str, gen: str, before: str | None = None) -> dict | None:
-    """The newest `manifests/<D>.json` of the generation (strictly before `before`, when given), or None."""
-    keys = sorted(b.name for b in _gcs().list_blobs(bucket, prefix=f"{PREFIX}/{gen}/manifests/"))
-    if before:
-        keys = [k for k in keys if Path(k).stem < before]
-    return read_json(f"gs://{bucket}/{keys[-1]}") if keys else None
+    """The newest manifest of the generation (of a scan strictly before `before`, when given), or None: the greatest
+    `manifests/<id>.json` or merge revision `manifests/<id>.m<NNN>.json` (`static_merge`), which sort by scan, then
+    revision."""
+    prefix = f"{PREFIX}/{gen}/"
+    keys = latest_key([b.name.removeprefix(prefix) for b in _gcs().list_blobs(bucket, prefix=f"{prefix}manifests/")], before)
+    return read_json(f"gs://{bucket}/{prefix}{keys}") if keys else None
+
+
+def latest_key(keys: list[str], before: str | None = None) -> str | None:
+    """The newest manifest among generation-relative `keys` (of a scan strictly before `before`), or None."""
+    from .static_merge import manifest_keys, parse_manifest
+
+    ms = [k for k in manifest_keys(keys) if before is None or parse_manifest(k.removeprefix("manifests/"))[0] < before]
+    return ms[-1] if ms else None
 
 
 def _state(bucket: str, gen: str, date: str) -> tuple[dict, list[dict]]:
@@ -649,99 +659,58 @@ def catalog_cmd(bucket, date, gen, mount, mem, threads, tmp) -> None:
     print(json.dumps(meta, indent=1))
 
 
+def publish_run(store, date: str, rule: HexRule | None = None, dry_run: bool = False) -> dict:
+    """Add scan `date`'s run (level 0) to the newest earlier manifest's runs (a scan's, or a merge's revision of it) and
+    write `manifests/<date>.json`, last and once (`store`: a `static_merge.RunStore` over the generation). No carries: the
+    binary counter's merges run apart (`static_merge`), each published as a revision of the newest manifest, so a scan's
+    publish takes seconds however big a carry it makes due. Refuses (`SystemExit`) a manifest that exists, whose runs lack
+    a reader file, or whose drill covers fewer scans than the last's. Returns the manifest (dry run: and the carries due)."""
+    from .static_merge import plan_carries
+
+    base = store.read_json("scans.json")
+    prev = latest_key(store.keys("manifests/"), before=date)
+    runs = store.read_json(prev)["runs"] if prev else []
+    run = run_key(date, date)
+    key = f"manifests/{date}.json"
+    if store.exists(key):
+        raise SystemExit(f"{key} exists: manifests are never rewritten")
+    if not store.exists(f"{run}/catalog/meta.json"):
+        raise SystemExit(f"{run}: no catalog yet")
+    meta = {"rows": store.read_json(f"{run}/shards.json")["total_rows"], "bytes": sum(store.listing(f"{run}/sx/").values())}
+
+    def drill_meta(k: str) -> dict | None:
+        return store.read_json(f"{k}/drill/meta.json") if store.exists(f"{k}/drill/meta.json") else None
+
+    new = {"key": run, "first": date, "last": date, "level": 0, "scans": [date], **meta}
+    after = [*runs, new]
+    drilled = {r["key"] for r in after if drill_meta(r["key"]) is not None}
+    doc = manifest(store.gen, [s["id"] for s in base["scans"]], after)
+    if dry_run:
+        return {"manifest": doc, "carries_due": [[[r["key"] for r in ins], m["key"]] for ins, m in plan_carries(after, drilled)[1]]}
+    if not store.exists(f"{run}/meta.json"):
+        store.create(f"{run}/meta.json", json.dumps({"gen": store.gen, "first": date, "last": date, "level": 0, "scans": [date], **meta,
+                                                     **rule_json(rule)}, indent=1) + "\n")
+    # A manifest only after every file of every run it lists exists (the readers need each tier whole), and never one
+    # whose drill covers fewer scans than the last's.
+    if missing := missing_files(after, store.exists, drill_meta):
+        raise SystemExit(f"not publishing {key}: listed runs lack {missing}")
+    if lost := sorted(set(drill_scans(runs, drilled)) - set(drill_scans(after, drilled))):
+        raise SystemExit(f"not publishing {key}: its runs' drill would no longer cover {lost}")
+    store.create(key, json.dumps(doc, indent=1) + "\n")
+    return doc
+
+
 @cli.command("publish")
 @option("-b", "--bucket", default=data_bucket, help="Bucket")
 @option("-d", "--date", required=True, help="The scan")
 @option("-g", "--gen", required=True, help="Base generation")
-@option("-m", "--mount", help="Local mount of the data bucket (needed when the counter carries: the merges read the runs)")
-@option("-n", "--dry-run", is_flag=True, help="Print the manifest and merges; write nothing")
-@option("-T", "--tmp", default="/stage/tmp", help="Scratch dir for merges")
-def publish_cmd(bucket, date, gen, mount, dry_run, tmp) -> None:
-    """Carry the binary counter (merging runs as it says, each into a new run dir) and write `manifests/<D>.json`
-    last. A level reaching `COMPACT_LEVEL` is reported: time for a new base generation."""
-    prefix = f"{PREFIX}/{gen}"
-    base, runs = _state(bucket, gen, date)
-    run = f"{prefix}/{run_key(date, date)}"
-    b = _gcs().bucket(bucket)
-    key = f"{prefix}/manifests/{date}.json"
-    if b.blob(key).exists():
-        raise SystemExit(f"{key} exists: manifests are never rewritten")
-    meta = {"rows": 0, "bytes": 0}
-    for blob in _gcs().list_blobs(bucket, prefix=f"{run}/sx/"):
-        meta["bytes"] += int(blob.size)
-    plan = read_json(f"gs://{bucket}/{run}/shards.json")
-    meta["rows"] = plan["total_rows"]
-    if not b.blob(f"{run}/catalog/meta.json").exists():
-        raise SystemExit(f"{run}: no catalog yet")
+@option("-n", "--dry-run", is_flag=True, help="Print the manifest (and the carries it makes due); write nothing")
+def publish_cmd(bucket, date, gen, dry_run) -> None:
+    """Add the scan's run (level 0) to the newest earlier manifest's runs and write `manifests/<D>.json`, last and once
+    (`publish_run`). No carries: those run apart (`runs merge`)."""
+    from .static_merge import GcsRunStore
 
-    def drill_meta(k: str) -> dict | None:
-        blob = b.blob(f"{prefix}/{k}/drill/meta.json")
-        return json.loads(blob.download_as_bytes()) if blob.exists() else None
-
-    new = {"key": run_key(date, date), "first": date, "last": date, "scans": [date], **meta}
-    drilled = {r["key"] for r in [*runs, new] if drill_meta(r["key"]) is not None}
-    after, merges = push_run(runs, new, drilled)
-    if len(after) >= 2 and after[-1]["level"] == after[-2]["level"]:
-        err(f"not merging {after[-2]['key']} and {after[-1]['key']}: only one carries drill/")
-    if dry_run:
-        print(json.dumps({"merges": [[[r["key"] for r in ins], m["key"]] for ins, m in merges],
-                          "manifest": manifest(gen, [s["id"] for s in base["scans"]], after)}, indent=1))
-        return
-    if merges:
-        if not mount:
-            raise SystemExit("the counter carries: pass -m (the merges read the runs)")
-        for ins, m in merges:
-            outp = Path(tmp) / "merge" / m["key"]
-            shutil.rmtree(outp, ignore_errors=True)
-            dirs = [Path(mount) / prefix / r["key"] for r in ins]
-            t = monotonic()
-
-            def lap(what: str) -> None:
-                # each tier's merge time, so a slow publish shows which tier dominates
-                nonlocal t
-                err(f"publish {date}: {m['key']} {what} in {monotonic() - t:.0f}s")
-                t = monotonic()
-            doc = merge_shards(dirs, outp)
-            lap(f"shards ({doc['rows']:,} rows)")
-            membership = json.loads((dirs[-1] / "catalog" / "meta.json").read_text())["membership"]
-            merge_catalogs([d / "catalog" for d in dirs], outp / "catalog", membership, gen_rule_at(bucket, gen))
-            lap("catalog")
-            if all(r["key"] in drilled for r in ins):
-                merge_drills(dirs, outp / "drill", m, tmp)
-                lap("drill")
-            # anchored search's tiers (`static_anchors`): merged when every input carries them (else the merged run has
-            # none, and the anchored stack is cut there)
-            if all((d / "anchors" / "meta.json").exists() for d in dirs):
-                from .static_anchors import Tier as ATier, merge_run_local
-
-                meta_a = json.loads((dirs[-1] / "anchors" / "meta.json").read_text())
-                merge_run_local(connect(16, "100GB", tmp), [ATier(d) for d in dirs], ATier(outp), meta_a["R"], meta_a["K"], m["scans"],
-                                rule=rule_from_json(meta_a.get("hex_runs")))
-                lap("names + anchors")
-            (outp / "meta.json").write_text(json.dumps({**m, **doc}, indent=1) + "\n")
-            # a merged run is written once: an earlier attempt may have left only the same keys (overwritten here)
-            ours = {f"{prefix}/{m['key']}/{f.relative_to(outp).as_posix()}" for f in outp.rglob("*") if f.is_file()}
-            if stale := sorted(x.name for x in _gcs().list_blobs(bucket, prefix=f"{prefix}/{m['key']}/") if x.name not in ours):
-                raise SystemExit(f"{prefix}/{m['key']}/ holds {len(stale)} objects this merge doesn't write (e.g. {stale[0]}): not merging into it")
-            up = upload_tree(outp, bucket, f"{prefix}/{m['key']}")
-            lap(f"upload ({len(up)} files, {sum(f['size'] for f in up) / 2**30:.1f} GiB)")
-            shutil.rmtree(outp)
-            m.update(rows=doc["rows"], bytes=doc["bytes"])
-    doc = manifest(gen, [s["id"] for s in base["scans"]], after)
-    if max(r["level"] for r in after) >= COMPACT_LEVEL:
-        err(f"level {COMPACT_LEVEL} reached: compact into a new base generation")
-    if not b.blob(f"{run}/meta.json").exists():
-        b.blob(f"{run}/meta.json").upload_from_string(json.dumps({"gen": gen, "first": date, "last": date, "level": 0, "scans": [date], **meta,
-                                                                  **rule_json(gen_rule_at(bucket, gen))}, indent=1) + "\n")
-    # A manifest only after every file of every run it lists exists (the readers need each tier whole), and never one
-    # whose drill covers fewer scans than the last's.
-    if missing := missing_files(after, lambda k: b.blob(f"{prefix}/{k}").exists(), drill_meta):
-        raise SystemExit(f"not publishing {key}: listed runs lack {missing}")
-    drilled_after = {r["key"] for r in after if drill_meta(r["key"]) is not None}
-    if lost := sorted(set(drill_scans(runs, drilled)) - set(drill_scans(after, drilled_after))):
-        raise SystemExit(f"not publishing {key}: its runs' drill would no longer cover {lost}")
-    b.blob(key).upload_from_string(json.dumps(doc, indent=1) + "\n", if_generation_match=0)
-    print(json.dumps(doc, indent=1))
+    print(json.dumps(publish_run(GcsRunStore(bucket, None, gen), date, gen_rule_at(bucket, gen), dry_run), indent=1))
 
 
 @cli.command("prune")

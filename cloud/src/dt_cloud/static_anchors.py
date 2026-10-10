@@ -1040,9 +1040,12 @@ def _tier_root(mount: str, gen: str, run: str | None) -> Path:
 
 
 def _manifest_runs(mount: str, gen: str, through: str | None = None) -> list[dict]:
-    """The newest manifest's runs (oldest first), cut after run `through` (its scan id) when given."""
-    d = Path(mount) / PREFIX / gen / "manifests"
-    keys = sorted(d.glob("*.json"))
+    """The newest manifest's runs (oldest first; a merge's revision counts, `static_merge`), cut after run `through` (its
+    scan id) when given."""
+    from .static_merge import manifest_keys
+
+    d = Path(mount) / PREFIX / gen
+    keys = [d / k for k in manifest_keys([f"manifests/{p.name}" for p in (d / "manifests").glob("*.json")])]
     if not keys:
         return []
     runs = json.loads(keys[-1].read_text())["runs"]
@@ -1414,7 +1417,9 @@ def query_cmd(cases_file, dates, gen, root) -> None:
     import fsspec
 
     fs, base = fsspec.core.url_to_fs(f"{root.rstrip('/')}/{PREFIX}/{gen}")
-    mf = sorted(fs.glob(f"{base}/manifests/*.json"))
+    from .static_merge import manifest_keys
+
+    mf = [f"{base}/{k}" for k in manifest_keys([f"manifests/{p.rsplit('/', 1)[-1]}" for p in fs.glob(f"{base}/manifests/*.json")])]
     runs = json.loads(fs.cat(mf[-1]))["runs"] if mf else []
     from .static_names import gen_rule
 
