@@ -456,6 +456,9 @@ def test_anchors_and_drill_readers_take_the_newest_revision(chain, tmp_path):
     _merge(store, tmp_path)
     (tmp_path / "static-names" / "g").symlink_to(store.root)
     assert [r["key"] for r in _manifest_runs(str(tmp_path), "g")] == [sa.run_key(a, b), f"deltas/{c}"]
+    # an inner scan's earlier tiers (`anchors run` backfilling it): the newest manifest of an earlier scan's
+    assert [[r["key"] for r in _manifest_runs(str(tmp_path), "g", before=x)] for x in (a, b, c)] == [
+        [], [f"deltas/{a}"], [f"deltas/{a}", f"deltas/{b}"]]
 
 
 def test_a_revision_is_refused_while_a_run_it_lists_lacks_a_file(chain, tmp_path):
@@ -512,3 +515,86 @@ def test_a_publish_landing_right_after_a_revision(chain, tmp_path, stale):
     assert sm.manifest_keys(store.keys("manifests/")) == [f"manifests/{n}" for n in (
         f"{a}.json", f"{b}.json", f"{c}.json", f"{c}.m001.json", f"{d}.json", *([f"{d}.m001.json"] if stale else []))]
     assert _stack(store, sa.latest_key(store.keys("manifests/"))) == [(ab, 1), (f"deltas/{c}", 0), (f"deltas/{d}", 0)]
+
+
+# ── Backfilling a merged run's tier ────────────────────────────────────────
+
+
+class OrderStore(sm.LocalRunStore):
+    """Records each uploaded key in order."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.uploaded: list[str] = []
+
+    def upload(self, local, prefix, last=("meta.json",)):
+        out = super().upload(local, prefix, last)
+        self.uploaded += [f["key"] for f in out]
+        return out
+
+
+def _fake_merge(name, dirs, outp, run, rule, tmp, mem, threads):
+    """A tier merge's shape: the drill's files (or names + anchors, with the starts-with catalog), `meta.json` naming
+    the inputs."""
+    files = {"drill": ["drill/long/roots/r0000.parquet", "drill/aliases.parquet", "drill/meta.json"],
+             "anchors": ["names/s0000.parquet", "names/sidecar.parquet", "anchors/meta.json", "anchors/start/meta.json", "anchors/rollups/long-s0000.parquet"]}[name]
+    for f in files:
+        (outp / f).parent.mkdir(parents=True, exist_ok=True)
+        (outp / f).write_text(json.dumps({"inputs": [d.name for d in dirs], "run": run, "mem": mem, "threads": threads}) + "\n")
+    return name, 0.0, {"files": len(files)}
+
+
+def _bf_store(tmp_path, *built: str, tier: str = "drill") -> OrderStore:
+    """cw's stack: `manifests/c.json` lists the L1 `deltas/a_b` and the L0 `deltas/c`; `built` runs hold `tier`."""
+    store = OrderStore(tmp_path / "gen", tmp_path / "scratch", gen="g")
+    a, b, c = "2026-10-09T1801", "2026-10-10T0001", "2026-10-10T0601"
+    store.create(f"manifests/{c}.json", json.dumps({"date": c, "runs": [_merged(a, b, 1, [a, b]), _run(c)]}))
+    marker = sm.BACKFILL_TIERS[tier]["last"][-1]
+    for k in built:
+        store.create(f"{k}/{marker}", "{}")
+    return store
+
+
+def test_backfill_tier_merges_the_scans_runs_with_its_markers_last(tmp_path):
+    a, b = "2026-10-09T1801", "2026-10-10T0001"
+    key = f"deltas/{a}_{b}"
+    store = _bf_store(tmp_path, f"deltas/{a}", f"deltas/{b}")
+    doc = sm.backfill_tier(store, store.root, key, "drill", tmp=tmp_path / "t", mem="90GB", threads=16, merge=_fake_merge, log=lambda m: None)
+    assert doc == {"key": key, "tier": "drill", "inputs": [f"deltas/{a}", f"deltas/{b}"], "files": 3, "doc": {"files": 3}}
+    assert store.uploaded == [f"{key}/drill/aliases.parquet", f"{key}/drill/long/roots/r0000.parquet", f"{key}/drill/meta.json"]
+    assert store.read_json(f"{key}/drill/meta.json") == {"inputs": [a, b], "mem": "90GB", "threads": 16,
+                                                         "run": {"key": key, "first": a, "last": b, "level": 1, "scans": [a, b]}}
+    # done: a no-op
+    assert sm.backfill_tier(store, store.root, key, "drill", tmp=tmp_path / "t", merge=_fake_merge, log=lambda m: None) is None
+
+
+def test_backfill_tier_anchors_markers_last_in_order(tmp_path):
+    a, b = "2026-10-09T1801", "2026-10-10T0001"
+    key = f"deltas/{a}_{b}"
+    store = _bf_store(tmp_path, f"deltas/{a}", f"deltas/{b}", tier="anchors")
+    sm.backfill_tier(store, store.root, key, "anchors", tmp=tmp_path / "t", merge=_fake_merge, log=lambda m: None)
+    assert store.uploaded == [f"{key}/{f}" for f in ("anchors/rollups/long-s0000.parquet", "names/s0000.parquet", "names/sidecar.parquet",
+                                                    "anchors/start/meta.json", "anchors/meta.json")]
+
+
+def test_backfill_tier_refuses(tmp_path):
+    a, b, c = "2026-10-09T1801", "2026-10-10T0001", "2026-10-10T0601"
+    key = f"deltas/{a}_{b}"
+    bf = lambda store, k: sm.backfill_tier(store, store.root, k, "drill", tmp=tmp_path / "t", merge=_fake_merge, log=lambda m: None)  # noqa: E731
+    got = []
+    for store, k in ((_bf_store(tmp_path / "1", f"deltas/{a}"), key), (_bf_store(tmp_path / "2"), f"deltas/{c}"), (_bf_store(tmp_path / "3"), "deltas/x_y")):
+        with pytest.raises(ValueError) as e:
+            bf(store, k)
+        got.append(str(e.value))
+    store = _bf_store(tmp_path / "4", f"deltas/{a}", f"deltas/{b}")
+    store.create(f"{key}/drill/stray.parquet", "")
+    with pytest.raises(RuntimeError) as e:
+        bf(store, key)
+    got.append(str(e.value))
+    assert got == [
+        f"{key}: its scans' runs lack drill/meta.json: ['deltas/{b}'] (build them first, oldest first)",
+        f"deltas/{c}: a level-0 run (its drill is built, not merged)",
+        "deltas/x_y: no manifest lists it",
+        f"{key}/ holds 1 drill objects this backfill doesn't write (e.g. {key}/drill/stray.parquet): not writing into it",
+    ]
+    assert not store.exists(f"{key}/drill/meta.json")

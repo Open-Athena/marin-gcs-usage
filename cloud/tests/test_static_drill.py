@@ -217,10 +217,16 @@ def world(request, tmp_path_factory):
             runs.append(run)
             deltas.append(cdelta)
             prior.append(sd.Tier(run / "drill", scan["id"]))
+        # a merged run's drill backfilled from its scans' level-0 drills, each built over the separate runs before it
+        # (`static_merge.backfill_tier`: cw's `deltas/2026-10-09T1801_2026-10-10T0001`, merged before drill was on)
+        a, b = scans[BASE]["id"], scans[BASE + 1]["id"]
+        bf = root / "backfill" / sa.run_key(a, b) / "drill"
+        sd.merge_tiers(con, prior[1:3], bf, tier={"key": sa.run_key(a, b), "first": a, "last": b, "level": 1, "scans": [a, b]})
+        backfill = sd.Tier(bf, sa.run_key(a, b))
     finally:
         sr.ROOT_RG, sr.IDX_RG = old_rg, old_idx
     return {"cfg": cfg, "base_out": base["out"], "run_dirs": runs, "scans": scans, "merged": merged, "drills": drills, "base": prior[0], "runs": prior[1:],
-            "counter": counter_stacks, "counter_built": counter_built, "metas": metas, "con": con}
+            "counter": counter_stacks, "counter_built": counter_built, "metas": metas, "con": con, "backfill": backfill}
 
 
 # (name, last scan index, tiers, the level-0 tiers they were built from): every run apart, and the binary counter's
@@ -231,7 +237,8 @@ STACKS = [("run1", BASE, lambda w: [w["base"], w["runs"][0]], lambda w: w["runs"
           ("runs1-4", BASE + 3, lambda w: [w["base"], *w["runs"]], lambda w: w["runs"]),
           ("counter-2", BASE + 1, lambda w: w["counter"][BASE + 1], lambda w: w["counter_built"][:2]),
           ("counter-2+1", BASE + 2, lambda w: w["counter"][BASE + 2], lambda w: w["counter_built"][:3]),
-          ("counter-4", BASE + 3, lambda w: w["counter"][BASE + 3], lambda w: w["counter_built"])]
+          ("counter-4", BASE + 3, lambda w: w["counter"][BASE + 3], lambda w: w["counter_built"]),
+          ("backfill-2+1+1", BASE + 3, lambda w: [w["base"], w["backfill"], *w["runs"][2:]], lambda w: w["runs"])]
 
 
 def _members(tier: sd.Tier, kind: str) -> list[str]:

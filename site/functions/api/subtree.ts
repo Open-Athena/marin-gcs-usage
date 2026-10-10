@@ -26,6 +26,7 @@ import { askBox, boxFor, boxStatus, type BoxEnv, withProvenance } from '../_lib/
 import { extrasFor } from '../_lib/extras.js'
 import { isScanId } from '../../src/scanSlug.js'
 import { indexedScan, noScan, scanArg } from '../_lib/scanArg.js'
+import { traceJoins } from '../_lib/shared.js'
 
 
 type SubtreeCtx = { request: Request; env: Env; waitUntil?: (p: Promise<unknown>) => void }
@@ -44,6 +45,7 @@ async function subtree(ctx0: SubtreeCtx, gate: boolean): Promise<Response> {
   if (ctx1 instanceof Response) return ctx1
   const ctx = withPathStore(ctx1)
   const st = serverTiming()
+  traceJoins(ctx.env, st.trace)
   if (!storeReady(ctx.env)) {
     return new Response('subtree API not configured (missing index store creds)', { status: 503 })
   }

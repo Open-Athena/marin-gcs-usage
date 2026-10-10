@@ -1039,13 +1039,14 @@ def _tier_root(mount: str, gen: str, run: str | None) -> Path:
     return Path(mount) / PREFIX / gen / ("" if run is None else f"deltas/{run}")
 
 
-def _manifest_runs(mount: str, gen: str, through: str | None = None) -> list[dict]:
+def _manifest_runs(mount: str, gen: str, through: str | None = None, before: str | None = None) -> list[dict]:
     """The newest manifest's runs (oldest first; a merge's revision counts, `static_merge`), cut after run `through` (its
-    scan id) when given."""
-    from .static_merge import manifest_keys
+    scan id) when given; `before`: the newest manifest of a scan strictly before that one's instead."""
+    from .static_merge import manifest_keys, parse_manifest
 
     d = Path(mount) / PREFIX / gen
-    keys = [d / k for k in manifest_keys([f"manifests/{p.name}" for p in (d / "manifests").glob("*.json")])]
+    names = [f"manifests/{p.name}" for p in (d / "manifests").glob("*.json")]
+    keys = [d / k for k in manifest_keys(names) if before is None or parse_manifest(k.removeprefix("manifests/"))[0] < before]
     if not keys:
         return []
     runs = json.loads(keys[-1].read_text())["runs"]
@@ -1312,8 +1313,9 @@ def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
             err(f"anchors {prefix}: done")
         return
     t0 = monotonic()
-    # The tiers before the run: the newest manifest's runs before it (the run listed, published by hand), or all of them
-    # (a run being appended: `runs add` builds it before `publish` lists it).
+    # The tiers before the run: the newest manifest's runs before it (the run listed, published by hand), else the newest
+    # earlier scan's manifest's (a run being appended: `runs add` builds it before `publish` lists it; or a scan inside a
+    # merged run, its level-0 run backfilled before the merge's tier is, `runs add`'s backfill).
     listed = _manifest_runs(mount, gen)
     if f"deltas/{run}" in {r["key"] for r in listed}:
         runs = _manifest_runs(mount, gen, run)
@@ -1321,7 +1323,7 @@ def run_cmd(bucket, run, gen, K, mount, mem, threads, R, tmp) -> None:
         if runs[-1].get("level", 0) != 0:
             raise SystemExit(f"{runs[-1]['key']} is a merged run: build its scans' runs and merge them")
     else:
-        before, scans = listed, [run]
+        before, scans = _manifest_runs(mount, gen, before=run), [run]
     base = _tier_root(mount, gen, None)
     keys = {k: str(base / ANCHORS / f"keys-{k}.parquet") for k in KINDS}
     prior = [Tier(base, keys)] + [Tier(Path(mount) / PREFIX / gen / r["key"]) for r in before]
