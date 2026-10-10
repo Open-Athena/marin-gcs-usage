@@ -137,6 +137,8 @@ database_id = "e52398b7-5538-4bc4-83db-3355a1b5ef9a"
 migrations_dir = "migrations/gcs"
 
 [env.preview.vars]
+PATH_STORE = "opt-in"   # the interval store (INDEX_R2) for requests carrying `ps=iv`; others read per-scan (`_lib/index.ts`)
+INTERVAL_STORE_GEN = "2026-10-09b"   # the interval store generation the opt-in reads
 QUERY_BOX_HOT_L1 = "1"
 QUERY_BOX_HOT_L2 = "1"
 QUERY_BOX_NAME_SUMMARY = "1"
