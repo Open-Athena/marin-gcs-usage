@@ -110,7 +110,7 @@ STORE_REGION = "auto"
 # Functions its data. The store reuses the primary's R2 secrets (same bucket,
 # named by binding in `secrets`), so no new Pages secret is needed.
 STORES_EXTRA = "meta"
-STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"our storage","SNAPSHOTS_SUBDIR":"meta","STORE_SCHEME":"gs://","STORE_BUCKETS":"oa-gcs-usage-dvx,oa-cw-s3-usage-index","STORE_PREFIXES":"meta-l2/,snapshots/meta/","STORE_BUCKET":"oa-cw-s3-usage-index","STORE_REGION":"auto"},"secrets":{"STORE_ENDPOINT":"STORE_ENDPOINT","STORE_ACCESS_KEY_ID":"STORE_ACCESS_KEY_ID","STORE_SECRET_ACCESS_KEY":"STORE_SECRET_ACCESS_KEY"}}}'
+STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"Marin usage — meta","SNAPSHOTS_SUBDIR":"meta","STORE_SCHEME":"gs://","STORE_BUCKETS":"oa-gcs-usage-dvx,oa-cw-s3-usage-index","STORE_PREFIXES":"meta-l2/,snapshots/meta/","STORE_BUCKET":"oa-cw-s3-usage-index","STORE_REGION":"auto","ROOT_TITLE":"Data behind this site: scans, indexes and listings in oa-gcs-usage-dvx (GCS) and oa-cw-s3-usage-index (R2)"},"secrets":{"STORE_ENDPOINT":"STORE_ENDPOINT","STORE_ACCESS_KEY_ID":"STORE_ACCESS_KEY_ID","STORE_SECRET_ACCESS_KEY":"STORE_SECRET_ACCESS_KEY"}}}'
 
 
 # Global cache tier for the index reader's JSON (`functions/_lib/edgeCache.ts`:
@@ -202,7 +202,7 @@ STORE_REGION = "auto"
 # Functions its data. The store reuses the primary's R2 secrets (same bucket,
 # named by binding in `secrets`), so no new Pages secret is needed.
 STORES_EXTRA = "meta"
-STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"our storage","SNAPSHOTS_SUBDIR":"meta","STORE_SCHEME":"gs://","STORE_BUCKETS":"oa-gcs-usage-dvx,oa-cw-s3-usage-index","STORE_PREFIXES":"meta-l2/,snapshots/meta/","STORE_BUCKET":"oa-cw-s3-usage-index","STORE_REGION":"auto"},"secrets":{"STORE_ENDPOINT":"STORE_ENDPOINT","STORE_ACCESS_KEY_ID":"STORE_ACCESS_KEY_ID","STORE_SECRET_ACCESS_KEY":"STORE_SECRET_ACCESS_KEY"}}}'
+STORES_JSON = '{"meta":{"scope":"admin","vars":{"ROOT_LABEL":"Marin usage — meta","SNAPSHOTS_SUBDIR":"meta","STORE_SCHEME":"gs://","STORE_BUCKETS":"oa-gcs-usage-dvx,oa-cw-s3-usage-index","STORE_PREFIXES":"meta-l2/,snapshots/meta/","STORE_BUCKET":"oa-cw-s3-usage-index","STORE_REGION":"auto","ROOT_TITLE":"Data behind this site: scans, indexes and listings in oa-gcs-usage-dvx (GCS) and oa-cw-s3-usage-index (R2)"},"secrets":{"STORE_ENDPOINT":"STORE_ENDPOINT","STORE_ACCESS_KEY_ID":"STORE_ACCESS_KEY_ID","STORE_SECRET_ACCESS_KEY":"STORE_SECRET_ACCESS_KEY"}}}'
 
 # Static name search (specs/architecture/static-name-search.md, specs/static-append.md): the map's `?f=` filter
 # and /names read cw's static name index from its R2 bucket (INDEX_R2, below; generation `STATIC_GEN` under
